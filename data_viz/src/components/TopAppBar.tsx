@@ -26,7 +26,7 @@ export default function TopAppBar() {
       <Box sx={{ display: "flex", alignItems: "center", px: 2, py: 0.5 }}>
         <ShowChart fontSize="small" sx={{ mr: 1 }} />
         <Typography variant="h6" sx={{ fontWeight: 600, mr: 4 }}>
-          Quant DataViz
+          Oxpicious DataViz
         </Typography>
         <Tabs
           value={activeIdx >= 0 ? activeIdx : 0}

@@ -26,6 +26,9 @@ export interface EtfMarginQuery {
   sector?: string;
   /** L2 industry slug (e.g. "banks", "semi", "broad_csi300"). */
   industry?: string;
+  /** Exact ETF code (6-digit, suffix-stripped). When set, sector/industry
+   *  filters and pagination are bypassed — only the matching ETF is returned. */
+  code?: string;
   start_date?: string;
   end_date?: string;
   /** Optional cap on number of ETFs returned per theme (for dev / fast preview). */
@@ -62,6 +65,10 @@ interface DbEtfMarginRow extends QueryResultRow {
   adj_low: number | null;
   adj_close: number | null;
   adj_prev_close: number | null;
+  is_split_event_day: number | null;
+  action_type: string | null;
+  implied_dividend_per_share: number | null;
+  cum_split_factor: number | null;
   volume_wan: number | null;
   amount_wan: number | null;
   rz_balance: number | null;
@@ -93,6 +100,10 @@ function transformEtfRow(r: DbEtfMarginRow): EtfMarginRow {
     adj_low: toNum(r.adj_low),
     adj_close: toNum(r.adj_close),
     adj_prev_close: toNum(r.adj_prev_close),
+    is_split_event_day: Number(r.is_split_event_day) | 0,
+    action_type: r.action_type ?? null,
+    implied_dividend_per_share: toNum(r.implied_dividend_per_share),
+    cum_split_factor: toNum(r.cum_split_factor),
     volume_wan: toNum(r.volume_wan) ?? 0,
     amount_wan: toNum(r.amount_wan) ?? 0,
     rz_balance: toNum(r.rz_balance) ?? 0,
@@ -105,6 +116,7 @@ function transformEtfRow(r: DbEtfMarginRow): EtfMarginRow {
 const ETF_MARGIN_COLUMNS = `
   date, prev_close, open, high, low, close,
   adj_open, adj_high, adj_low, adj_close, adj_prev_close,
+  is_split_event_day, action_type, implied_dividend_per_share, cum_split_factor,
   volume_wan, amount_wan,
   rz_balance, rq_balance_qty, rq_balance_amt, total_balance
 `;
@@ -155,34 +167,34 @@ export async function listThemes(): Promise<SectorNode[]> {
         industry_id: r.industry_id,
         industry_label: r.industry_label,
         industry_slug: r.industry_slug,
-        etf_count: 0,
-        etfs: [],
+        count: 0,
+        items: [],
       });
     }
     const ind = sector.industries.get(r.industry_id)!;
-    ind.etfs.push(etf);
-    ind.etf_count++;
+    ind.items.push(etf);
+    ind.count++;
   }
 
-  // Build the output tree, sorted by etf_count DESC (OTHER last)
+  // Build the output tree, sorted by count DESC (OTHER last)
   const sectors: SectorNode[] = [];
   for (const [sector_id, sector] of sectorMap) {
     const industries = Array.from(sector.industries.values()).sort((a, b) => {
       if (a.industry_id === "OTHER") return 1;
       if (b.industry_id === "OTHER") return -1;
-      return b.etf_count - a.etf_count;
+      return b.count - a.count;
     });
     sectors.push({
       sector_id,
       sector_label: sector.sector_label,
-      etf_count: industries.reduce((sum, i) => sum + i.etf_count, 0),
+      count: industries.reduce((sum, i) => sum + i.count, 0),
       industries,
     });
   }
   sectors.sort((a, b) => {
     if (a.sector_id === "OTHER") return 1;
     if (b.sector_id === "OTHER") return -1;
-    return b.etf_count - a.etf_count;
+    return b.count - a.count;
   });
   return sectors;
 }
@@ -195,13 +207,15 @@ export async function getEtfMarginCombined(
 ): Promise<EtfMarginCombinedResponse> {
   const sectorFilter = (q.sector ?? "").trim();
   const industryFilter = (q.industry ?? "").trim();
+  // When a code filter is provided, sector/industry/pagination are bypassed.
+  const codeFilter = stripExchangeSuffix((q.code ?? "").trim());
 
   // 1. Fetch all distinct (code, name) + classification, ordered by score DESC.
   const metaRows = await queryRows<DbEtfMetaRow>(META_SQL);
 
-  // 2. Filter by sector + industry.  metaRows are already ordered by score
-  //    DESC; preserve that order so pagination returns the highest-quality
-  //    ETFs first.
+  // 2. Filter by sector + industry (or by exact code when codeFilter is set).
+  //    metaRows are already ordered by score DESC; preserve that order so
+  //    pagination returns the highest-quality ETFs first.
   const meta = new Map<string, { name: string; sector_id: string; sector_label: string; industry_id: string; industry_label: string }>();
   const wantedCodes: string[] = [];
   for (const r of metaRows) {
@@ -214,6 +228,11 @@ export async function getEtfMarginCombined(
       industry_id: r.industry_id,
       industry_label: r.industry_label,
     });
+    if (codeFilter) {
+      // Exact code search — ignore sector/industry filters.
+      if (code.toUpperCase() === codeFilter.toUpperCase()) wantedCodes.push(code);
+      continue;
+    }
     const sectorOk = !sectorFilter || r.sector_id === sectorFilter;
     // industry filter matches either the industry_slug (URL-friendly) or the
     // industry_id (canonical).  Both are unique per industry.

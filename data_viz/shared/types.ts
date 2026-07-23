@@ -114,6 +114,14 @@ export interface EtfMarginRow {
   adj_low: number | null;
   adj_close: number | null;
   adj_prev_close: number | null;
+  /** 1 when a corporate action (dividend/split) was detected on this day. */
+  is_split_event_day: number;
+  /** 'dividend' | 'split_or_conv' | '' | null — type of corp-action event. */
+  action_type: string | null;
+  /** Per-share dividend amount (negative = price drop). Null when no event. */
+  implied_dividend_per_share: number | null;
+  /** Cumulative split/adjustment factor (1.0 = no adjustment). */
+  cum_split_factor: number | null;
   volume_wan: number;
   amount_wan: number;
   rz_balance: number;
@@ -153,15 +161,15 @@ export interface IndustryNode {
   industry_id: string;
   industry_label: string;
   industry_slug: string;
-  etf_count: number;
-  etfs: Array<{ code: string; name: string }>;
+  count: number;
+  items: Array<{ code: string; name: string }>;
 }
 
 /** L1 sector node — top level of the two-level selector. */
 export interface SectorNode {
   sector_id: string;
   sector_label: string;
-  etf_count: number;
+  count: number;
   industries: IndustryNode[];
 }
 
@@ -215,6 +223,29 @@ export interface IndexBaselineResponse {
   rows: IndexBaselineRow[];
 }
 
+/** One index with its daily baseline rows (used in the combined response). */
+export interface IndexBundle {
+  code: string;
+  name: string;
+  sector_id: string;
+  sector_label: string;
+  industry_id: string;
+  industry_label: string;
+  rows: IndexBaselineRow[];
+}
+
+/** Paginated response for the index two-level selector page. */
+export interface IndexCombinedResponse {
+  sector_id: string;
+  industry_id: string;
+  dates: string[];
+  indices: IndexBundle[];
+  total_indices: number;
+  total_pages: number;
+  page: number;
+  page_size: number;
+}
+
 /** One 5-minute intraday OHLC bar. */
 export interface IndexIntraday5minRow {
   time: string;
@@ -252,8 +283,18 @@ export interface SecCompositionResponse {
   holdings: SecCompositionHolding[];
   /** Top 5 by weight — for the text list display. */
   top5: SecCompositionHolding[];
-  /** Source: "full" = all holdings available, "top5" = only top 5 available. */
-  source: "full" | "top5";
+  /** Source:
+   *   "full"  = all ETF holdings available,
+   *   "top5"  = only top 5 ETF holdings available,
+   *   "index" = ETF had no holdings; fell back to the tracking index's
+   *             composition (see `index_source`). */
+  source: "full" | "top5" | "index";
+  /** Populated only when `source === "index"` — identifies the tracking
+   *  index whose composition is being shown as a fallback. */
+  index_source?: {
+    code: string;
+    name: string;
+  };
 }
 
 // ----------------------------------------------------------------------------

@@ -24,7 +24,7 @@ import type {
   SectorNode,
   EtfMarginCombinedResponse,
   IndexInfo,
-  IndexBaselineResponse,
+  IndexCombinedResponse,
   IndexIntraday5minResponse,
   SecCompositionResponse,
 } from "../../shared/types";
@@ -93,7 +93,7 @@ function extractLatestDate(url: string, data: unknown): string {
       return indices.reduce((max, i) => (i.last_date > max ? i.last_date : max), "");
     }
     if (url.startsWith("/api/index-baseline/combined")) {
-      const dates = (data as IndexBaselineResponse)?.dates ?? [];
+      const dates = (data as IndexCombinedResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
     }
     if (url.startsWith("/api/etf-margin/combined")) {
@@ -259,8 +259,10 @@ export function fetchEtfMarginCombined(
   limitPerTheme?: number,
   page?: number,
   pageSize?: number,
+  code?: string | null,
 ): Promise<EtfMarginCombinedResponse> {
   const params = new URLSearchParams();
+  if (code) params.set("code", code);
   if (sector) params.set("sector", sector);
   if (industry) params.set("industry", industry);
   if (startDate) params.set("start_date", startDate);
@@ -276,17 +278,29 @@ export function fetchIndexList(): Promise<IndexInfo[]> {
   return fetchJson<IndexInfo[]>(`/api/index-baseline/list`);
 }
 
-export function fetchIndexBaseline(
-  code: string,
+export function fetchIndexThemes(): Promise<SectorNode[]> {
+  return fetchJson<SectorNode[]>(`/api/index-baseline/themes`);
+}
+
+export function fetchIndicesCombined(
+  sector?: string | null,
+  industry?: string | null,
   startDate?: string | null,
   endDate?: string | null,
-): Promise<IndexBaselineResponse> {
+  page?: number,
+  pageSize?: number,
+  code?: string | null,
+): Promise<IndexCombinedResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
+  if (sector) params.set("sector", sector);
+  if (industry) params.set("industry", industry);
   if (startDate) params.set("start_date", startDate);
   if (endDate) params.set("end_date", endDate);
+  if (page) params.set("page", String(page));
+  if (pageSize) params.set("page_size", String(pageSize));
   const qs = params.toString();
-  return fetchJson<IndexBaselineResponse>(`/api/index-baseline/combined${qs ? `?${qs}` : ""}`);
+  return fetchJson<IndexCombinedResponse>(`/api/index-baseline/combined${qs ? `?${qs}` : ""}`);
 }
 
 export function fetchIndexIntraday5min(

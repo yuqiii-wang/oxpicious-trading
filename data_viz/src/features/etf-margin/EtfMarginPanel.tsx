@@ -21,11 +21,13 @@ import type { EtfBundle } from "../../../shared/types";
 import CompositionPieChart from "./CompositionPieChart";
 import {
   DOWN_COLOR,
+  DIVIDEND_COLOR,
   MA120_COLOR,
   MA20_COLOR,
   MA60_COLOR,
   NEUTRAL_FILL,
   PALETTE_HI,
+  SPLIT_COLOR,
   UP_COLOR,
   axisColors,
 } from "@/theme/chart-palette";
@@ -56,7 +58,10 @@ function buildOption(etf: EtfBundle, themeMode: "light" | "dark"): EChartsOption
   const c = axisColors(themeMode);
   const rows = etf.rows;
   const dates = rows.map((r) => r.date);
-  const close = rows.map((r) => r.close);
+  // Use ADJUSTED OHLC (adj_*) so the curve stays continuous across dividends
+  // and splits — raw OHLC shows a fake gap on corp-action days (e.g. a 3:1
+  // split looks like a -67% crash). Fall back to raw when adj_* is missing.
+  const close = rows.map((r) => r.adj_close ?? r.close);
   const volume = rows.map((r) => r.volume_wan);
   const isBond = etf.is_bond;
 
@@ -64,6 +69,69 @@ function buildOption(etf: EtfBundle, themeMode: "light" | "dark"): EChartsOption
   const ma20 = safeMa(closePct, 20);
   const ma60 = safeMa(closePct, 60);
   const ma120 = safeMa(closePct, 120);
+
+  // SZSE ETF trend CSVs report prices in 0.001元 (milliyuan); divide stored
+  // price-derived amounts by 1000 to obtain yuan.
+  const PRICE_SCALE = 1000;
+
+  // Corporate-action event markers (dividends / splits) — markers only, no
+  // text labels (full detail is shown in the axis tooltip). Gold diamond =
+  // dividend, teal diamond = split/conversion. coord uses the date category.
+  const markPointData: Array<{
+    name: string;
+    coord: [string, number];
+    itemStyle: { color: string };
+    symbol: string;
+    symbolSize: number;
+  }> = [];
+  // date → human-readable corp-action detail for the axis tooltip.
+  const corpActionByDate = new Map<string, { type: string; text: string }>();
+  let prevCumFactor: number | null = null;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const at = (r.action_type ?? "").trim();
+    const curCum = r.cum_split_factor ?? 1;
+    if (at) {
+      const y = closePct[i];
+      if (y != null && Number.isFinite(y)) {
+        if (at === "dividend") {
+          const divStored = Math.abs(r.implied_dividend_per_share ?? 0);
+          const perShare = divStored / PRICE_SCALE;
+          markPointData.push({
+            name: "Dividend",
+            coord: [r.date, y],
+            itemStyle: { color: DIVIDEND_COLOR },
+            symbol: "diamond",
+            symbolSize: 12,
+          });
+          corpActionByDate.set(r.date, {
+            type: at,
+            text: `Dividend · ${fmtNum(perShare, 3)} yuan per share`,
+          });
+        } else {
+          // split ratio = cum_factor[t] / cum_factor[t-1]
+          const ratio = prevCumFactor && prevCumFactor > 0 ? curCum / prevCumFactor : null;
+          markPointData.push({
+            name: "Split",
+            coord: [r.date, y],
+            itemStyle: { color: SPLIT_COLOR },
+            symbol: "diamond",
+            symbolSize: 12,
+          });
+          corpActionByDate.set(r.date, {
+            type: at,
+            text: ratio != null && Number.isFinite(ratio) && ratio > 0
+              ? `Split · 1 share split to ${fmtNum(ratio, 2)} shares`
+              : "Split/Conversion",
+          });
+        }
+      }
+    }
+    prevCumFactor = curCum;
+  }
+  const corpMarkPoint = markPointData.length
+    ? { data: markPointData, label: { show: false } }
+    : undefined;
 
   // Margin scores
   const marginRows = rows.map((r) => ({
@@ -86,7 +154,7 @@ function buildOption(etf: EtfBundle, themeMode: "light" | "dark"): EChartsOption
   // Volume bar colors (price-up green / price-down red)
   // Compare intraday close vs open — not close vs previous day's close.
   // Volume is stored in 万 (10k) shares — convert to mil (1 mil = 100 万) for display.
-  const open = rows.map((r) => r.open);
+  const open = rows.map((r) => r.adj_open ?? r.open);
   const volData = volume.map((v, i) => {
     const up = close[i] >= open[i];
     return {
@@ -111,6 +179,7 @@ function buildOption(etf: EtfBundle, themeMode: "light" | "dark"): EChartsOption
       lineStyle: { color: PALETTE_HI, width: 1.35 },
       areaStyle: { color: NEUTRAL_FILL, opacity: 0.08 },
       z: 5,
+      markPoint: corpMarkPoint,
     });
     series.push({
       type: "line",
@@ -145,11 +214,12 @@ function buildOption(etf: EtfBundle, themeMode: "light" | "dark"): EChartsOption
   } else {
     // Candlestick on rebased percentages (matches draw_candlestick in Python)
     // Rebase all OHLC using the same base (close[0]) to preserve relative relationships
-    // between open/close on the same day (critical for correct green/red coloring)
-    const opens = rows.map((r) => r.open);
-    const highs = rows.map((r) => r.high);
-    const lows = rows.map((r) => r.low);
-    const closes = rows.map((r) => r.close);
+    // between open/close on the same day (critical for correct green/red coloring).
+    // Uses ADJUSTED OHLC so dividends/splits don't create artificial gaps.
+    const opens = rows.map((r) => r.adj_open ?? r.open);
+    const highs = rows.map((r) => r.adj_high ?? r.high);
+    const lows = rows.map((r) => r.adj_low ?? r.low);
+    const closes = close;
     const base = closes[0];
     const isValidBase = Number.isFinite(base) && Math.abs(base) >= 1e-9;
     const openPct = opens.map((v) => (v != null && Number.isFinite(v) && isValidBase) ? (v / base - 1) * 100 : null);
@@ -163,7 +233,7 @@ function buildOption(etf: EtfBundle, themeMode: "light" | "dark"): EChartsOption
       broken.arrays[1][i],
     ]);
     series.push(
-      candlestickSeries(candleData, { name: "OHLC %", yAxisIndex: 0, z: 3 }),
+      candlestickSeries(candleData, { name: "OHLC %", yAxisIndex: 0, z: 3, markPoint: corpMarkPoint }),
     );
     series.push({
       type: "line",
@@ -252,6 +322,12 @@ function buildOption(etf: EtfBundle, themeMode: "light" | "dark"): EChartsOption
         if (arr.length === 0) return "";
         const dateStr = (arr[0].axisValue as string) || "";
         let html = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
+        // Corporate-action event (dividend / split) on the hovered day
+        const corp = corpActionByDate.get(dateStr);
+        if (corp) {
+          const color = corp.type === "dividend" ? DIVIDEND_COLOR : SPLIT_COLOR;
+          html += `<div style="margin-bottom:4px"><span style="color:${color}">●</span> <b style="color:${color}">${corp.text}</b></div>`;
+        }
         for (const p of arr) {
           if (p.value == null) continue;
           const name = p.seriesName ?? "";
@@ -336,7 +412,9 @@ function buildOption(etf: EtfBundle, themeMode: "light" | "dark"): EChartsOption
 }
 
 function ReturnBadges({ etf }: { etf: EtfBundle }) {
-  const close = etf.rows.map((r) => r.close);
+  // Use adjusted close so return badges reflect true total return (dividends
+  // and splits folded in) rather than the raw price gap on corp-action days.
+  const close = etf.rows.map((r) => r.adj_close ?? r.close);
   const r1m = retBadge(close, Math.min(21, close.length - 1));
   const r3m = retBadge(close, Math.min(63, close.length - 1));
   const r6m = retBadge(close, Math.min(126, close.length - 1));

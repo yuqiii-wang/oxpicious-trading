@@ -44,8 +44,6 @@ CREATE TABLE IF NOT EXISTS stats.index_basic_stats (
     CONSTRAINT fk_index_basic_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.index_identity(date, code)
 );
 
--- Backward-compat: add the intraday-availability flag to pre-existing tables.
-ALTER TABLE stats.index_basic_stats ADD COLUMN IF NOT EXISTS has_intraday_5mins BOOLEAN NOT NULL DEFAULT FALSE;
 
 COMMENT ON TABLE  stats.index_basic_stats                    IS 'Index daily OHLCV + volume + turnover + change metrics.';
 COMMENT ON COLUMN stats.index_basic_stats.volume             IS 'Index trading volume (shares).';
@@ -127,5 +125,19 @@ COMMENT ON COLUMN stats.index_intraday_5min.change             IS 'Absolute chan
 COMMENT ON COLUMN stats.index_intraday_5min.change_pct         IS 'Percentage change from the bar''s open (%).';
 
 -- Indexes
-CREATE INDEX IF NOT EXISTS idx_index_baseline_code_date
-    ON stats.index_identity (code, date);
+DROP INDEX IF EXISTS stats.idx_index_baseline_code_date;
+
+CREATE INDEX IF NOT EXISTS idx_index_identity_code_date
+    ON stats.index_identity (code, date DESC) INCLUDE (name);
+
+CREATE INDEX IF NOT EXISTS idx_index_basic_stats_code_date
+    ON stats.index_basic_stats (code, date);
+
+CREATE INDEX IF NOT EXISTS idx_index_valuation_code_date
+    ON stats.index_valuation (code, date);
+
+CREATE INDEX IF NOT EXISTS idx_index_tech_stats_code_date
+    ON stats.index_tech_stats (code, date);
+
+CREATE INDEX IF NOT EXISTS idx_index_intraday_5min_code_date_time
+    ON stats.index_intraday_5min (code, date, time);

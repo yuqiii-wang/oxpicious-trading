@@ -1,6 +1,6 @@
 -- ============================================================================
 --  Stock Baseline - Split Tables
---  Source: build_szse_sse_stock.py (from SZSE archive/trend + SSE trend CSVs)
+--  Source: build_szse_sse_bse_stocks.py (from SZSE archive/trend + SSE trend + BSE trend CSVs)
 --  Split into: stock_identity, stock_basic_stats
 --  Reconstruct via: v_stock_baseline view (see 99_reconstruct_views.sql)
 --
@@ -19,41 +19,14 @@
 CREATE TABLE IF NOT EXISTS stats.stock_identity (
     date                      DATE          NOT NULL,
     code                      TEXT          NOT NULL,
+    code_suffix               TEXT,
     name                      TEXT          NOT NULL DEFAULT '',
 
     CONSTRAINT pk_stock_identity PRIMARY KEY (date, code),
     CONSTRAINT chk_stock_identity_code_format
-        CHECK (code ~ '^\d{6}\.(SZ|SS)$')
+        CHECK (code ~ '^\d{6}\.(SZ|SS|BJ)$')
 );
 
--- Backward-compat: migrate older schemas that used (trade_date, stock_code, stock_name).
--- Rename columns in-place if the old names exist (idempotent via DO block).
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'stock_identity'
-          AND column_name = 'trade_date'
-    ) THEN
-        ALTER TABLE stats.stock_identity RENAME COLUMN trade_date TO date;
-    END IF;
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'stock_identity'
-          AND column_name = 'stock_code'
-    ) THEN
-        ALTER TABLE stats.stock_identity RENAME COLUMN stock_code TO code;
-    END IF;
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'stock_identity'
-          AND column_name = 'stock_name'
-    ) THEN
-        ALTER TABLE stats.stock_identity RENAME COLUMN stock_name TO name;
-    END IF;
-END $$;
-
-ALTER TABLE stats.stock_identity ALTER COLUMN name SET DEFAULT '';
 
 COMMENT ON TABLE  stats.stock_identity            IS 'Stock identity: one row per (date, code). PK shared by all stock sub-tables. Mirrors etf_identity.';
 COMMENT ON COLUMN stats.stock_identity.code       IS 'Stock ticker with exchange suffix, e.g. "000001.SZ" (Ping An Bank) or "600000.SS" (Pudong Development Bank).';
@@ -78,34 +51,6 @@ CREATE TABLE IF NOT EXISTS stats.stock_basic_stats (
     CONSTRAINT fk_stock_basic_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.stock_identity(date, code)
 );
 
--- Backward-compat: add the intraday-availability flag to pre-existing tables.
-ALTER TABLE stats.stock_basic_stats ADD COLUMN IF NOT EXISTS has_intraday_5mins BOOLEAN NOT NULL DEFAULT FALSE;
-
--- Backward-compat: migrate older schemas that used (trade_date, stock_code, close, pe).
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'stock_basic_stats'
-          AND column_name = 'trade_date'
-    ) THEN
-        ALTER TABLE stats.stock_basic_stats RENAME COLUMN trade_date TO date;
-    END IF;
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'stock_basic_stats'
-          AND column_name = 'stock_code'
-    ) THEN
-        ALTER TABLE stats.stock_basic_stats RENAME COLUMN stock_code TO code;
-    END IF;
-END $$;
-
--- Add OHLC columns if missing (older schema only had close + pe).
-ALTER TABLE stats.stock_basic_stats ADD COLUMN IF NOT EXISTS prev_close  NUMERIC(18,4);
-ALTER TABLE stats.stock_basic_stats ADD COLUMN IF NOT EXISTS open        NUMERIC(18,4);
-ALTER TABLE stats.stock_basic_stats ADD COLUMN IF NOT EXISTS high        NUMERIC(18,4);
-ALTER TABLE stats.stock_basic_stats ADD COLUMN IF NOT EXISTS low         NUMERIC(18,4);
-ALTER TABLE stats.stock_basic_stats ADD COLUMN IF NOT EXISTS pct_change  NUMERIC(10,4);
 
 COMMENT ON TABLE  stats.stock_basic_stats             IS 'Stock daily OHLC + pct_change (mirrors etf_basic_stats) + pe. Source: SZSE archive/trend + SSE trend CSVs.';
 COMMENT ON COLUMN stats.stock_basic_stats.prev_close  IS 'Previous closing price (yuan). 前收 from source CSV.';
@@ -117,9 +62,32 @@ COMMENT ON COLUMN stats.stock_basic_stats.pct_change  IS 'Daily pct change (%). 
 COMMENT ON COLUMN stats.stock_basic_stats.pe          IS 'Price-to-earnings ratio (PE); NULL for SSE stocks (SSE price endpoint does not publish PE).';
 COMMENT ON COLUMN stats.stock_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future stock intraday support).';
 
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_stock_baseline_code_date
-    ON stats.stock_identity (code, date);
+-- ----------------------------------------------------------------------------
+-- Indexes for stock_identity
+--   stock_identity is large (~3M+ rows, one per (date, code)) and serves as the
+--   FK parent for all stock sub-tables. The dominant access patterns are:
+--     (a) latest name/stats for one code:   WHERE code=$1 ORDER BY date DESC LIMIT 1
+--     (b) all stocks of one exchange:         WHERE code_suffix='SZ' (or 'SS')
+--     (c) bulk join by (date, code):         handled by the PK
+-- ----------------------------------------------------------------------------
+
+-- (a) Covering index for latest-per-code lookups — the dominant pattern used by
+--     stream_szse_price.py / stream_sse_price.py load_target_stocks (LATERAL
+--     ... ORDER BY date DESC LIMIT 1) and single-code name resolutions.
+--     date DESC matches the "latest first" ordering so the planner can stop
+--     after LIMIT 1 without a sort; INCLUDE (name, code_suffix) lets the
+--     Index Only Scan return these columns without heap fetches.
+CREATE INDEX IF NOT EXISTS idx_stock_identity_code_date
+    ON stats.stock_identity (code, date DESC) INCLUDE (name, code_suffix);
+
+-- (b) Exchange-filtered lookups — WHERE code_suffix='SZ'/'SS', then by code.
+--     Supports listing all stocks of one exchange with latest-name-per-code
+--     via DISTINCT ON (code) ... ORDER BY code, date DESC.
+CREATE INDEX IF NOT EXISTS idx_stock_identity_suffix_code_date
+    ON stats.stock_identity (code_suffix, code, date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_stock_basic_stats_code_date
+    ON stats.stock_basic_stats (code, date);
 
 -- ----------------------------------------------------------------------------
 -- Table: stock_intraday_5min
@@ -132,6 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_stock_baseline_code_date
 CREATE TABLE IF NOT EXISTS stats.stock_intraday_5min (
     date                      DATE          NOT NULL,
     code                      TEXT          NOT NULL,
+    code_suffix               TEXT,
     time                      TIME          NOT NULL,
     open                      NUMERIC(18,4),
     high                      NUMERIC(18,4),
@@ -157,3 +126,7 @@ COMMENT ON COLUMN stats.stock_intraday_5min.change_pct   IS 'Percentage change f
 
 CREATE INDEX IF NOT EXISTS idx_stock_intraday_5min_code_date_time
     ON stats.stock_intraday_5min (code, date, time);
+CREATE INDEX IF NOT EXISTS idx_stock_intraday_5min_code_date
+    ON stats.stock_intraday_5min (code, date);
+CREATE INDEX IF NOT EXISTS idx_stock_intraday_5min_code
+    ON stats.stock_intraday_5min (code);

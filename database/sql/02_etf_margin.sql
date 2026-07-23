@@ -41,8 +41,6 @@ CREATE TABLE IF NOT EXISTS stats.etf_basic_stats (
     CONSTRAINT fk_etf_basic_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.etf_identity(date, code)
 );
 
--- Backward-compat: add the intraday-availability flag to pre-existing tables.
-ALTER TABLE stats.etf_basic_stats ADD COLUMN IF NOT EXISTS has_intraday_5mins BOOLEAN NOT NULL DEFAULT FALSE;
 
 COMMENT ON TABLE  stats.etf_basic_stats                    IS 'ETF raw basic_stats (yuan).';
 COMMENT ON COLUMN stats.etf_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future ETF intraday support).';
@@ -142,8 +140,25 @@ COMMENT ON TABLE  stats.etf_composition_link         IS 'ETF composition snapsho
 COMMENT ON COLUMN stats.etf_composition_link.comp_match_date IS 'Date of the composition snapshot merged onto this row via merge_asof (NULL if no composition data).';
 
 -- Indexes
-CREATE INDEX IF NOT EXISTS idx_etf_margin_code_date
-    ON stats.etf_identity (code, date);
+DROP INDEX IF EXISTS stats.idx_etf_margin_code_date;
+
+CREATE INDEX IF NOT EXISTS idx_etf_identity_code_date
+    ON stats.etf_identity (code, date DESC) INCLUDE (name);
+
+CREATE INDEX IF NOT EXISTS idx_etf_basic_stats_code_date
+    ON stats.etf_basic_stats (code, date);
+
+CREATE INDEX IF NOT EXISTS idx_etf_tech_stats_code_date
+    ON stats.etf_tech_stats (code, date);
+
+CREATE INDEX IF NOT EXISTS idx_etf_adjustment_code_date
+    ON stats.etf_adjustment (code, date);
+
+CREATE INDEX IF NOT EXISTS idx_etf_liquidity_margin_code_date
+    ON stats.etf_liquidity_margin (code, date);
+
+CREATE INDEX IF NOT EXISTS idx_etf_composition_link_code_date
+    ON stats.etf_composition_link (code, date);
 
 CREATE INDEX IF NOT EXISTS idx_etf_margin_split_events
     ON stats.etf_adjustment (date)

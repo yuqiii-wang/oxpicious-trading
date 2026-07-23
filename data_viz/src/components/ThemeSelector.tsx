@@ -1,29 +1,33 @@
 /**
- * Two-level ETF theme selector — L1 sector chips → L2 industry chips.
+ * Two-level theme selector — L1 sector chips → L2 industry chips.
  *
- * Reads the two-level taxonomy tree (SectorNode[]) from /api/etf-margin/themes,
- * which is precomputed by build_etf_classification.py via
- * _classification.classify_etf_full() and stored in stats.etf_meta.
+ * Reusable across ETF and Index pages. Reads the two-level taxonomy tree
+ * (SectorNode[]) from the backend, which is precomputed by the Python
+ * classification scripts and stored in stats.etf_meta / stats.index_meta.
  *
  * Row 1: L1 sector chips (e.g. 金融, 科技, 医药, 宽基, 创业板 …).
  *        Clicking a sector selects it and reveals its L2 industries in Row 2.
  * Row 2: L2 industry chips for the selected sector (e.g. 银行, 证券, 保险 …).
- *        "All" chip clears the industry filter (shows all ETFs in the sector).
+ *        "All" chip clears the industry filter (shows all items in the sector).
  */
 import { Box, Chip, Stack, Typography } from "@mui/material";
-import { useStore } from "@/store/filters";
 import type { SectorNode } from "../../shared/types";
 
 interface Props {
   sectors: SectorNode[];
+  sectorId: string | null;
+  industrySlug: string | null;
+  onSectorChange: (id: string | null) => void;
+  onIndustryChange: (slug: string | null) => void;
 }
 
-export default function ThemeSelector({ sectors }: Props) {
-  const sectorId = useStore((s) => s.sectorId);
-  const setSectorId = useStore((s) => s.setSectorId);
-  const industrySlug = useStore((s) => s.industrySlug);
-  const setIndustrySlug = useStore((s) => s.setIndustrySlug);
-
+export default function ThemeSelector({
+  sectors,
+  sectorId,
+  industrySlug,
+  onSectorChange,
+  onIndustryChange,
+}: Props) {
   const activeSector = sectors.find((s) => s.sector_id === sectorId) ?? null;
 
   return (
@@ -49,11 +53,11 @@ export default function ThemeSelector({ sectors }: Props) {
         {sectors.map((s) => (
           <Chip
             key={s.sector_id}
-            label={`${s.sector_label} (${s.etf_count})`}
+            label={`${s.sector_label} (${s.count})`}
             size="small"
             color={s.sector_id === sectorId ? "primary" : "default"}
             variant={s.sector_id === sectorId ? "filled" : "outlined"}
-            onClick={() => setSectorId(s.sector_id)}
+            onClick={() => onSectorChange(s.sector_id)}
             sx={{ fontSize: "0.7rem" }}
           />
         ))}
@@ -69,21 +73,21 @@ export default function ThemeSelector({ sectors }: Props) {
             Industry
           </Typography>
           <Chip
-            label={`All (${activeSector.etf_count})`}
+            label={`All (${activeSector.count})`}
             size="small"
             color={industrySlug === null ? "secondary" : "default"}
             variant={industrySlug === null ? "filled" : "outlined"}
-            onClick={() => setIndustrySlug(null)}
+            onClick={() => onIndustryChange(null)}
             sx={{ fontSize: "0.7rem" }}
           />
           {activeSector.industries.map((ind) => (
             <Chip
               key={ind.industry_id}
-              label={`${ind.industry_label.split("  ")[0] ?? ind.industry_label} (${ind.etf_count})`}
+              label={`${ind.industry_label.split("  ")[0] ?? ind.industry_label} (${ind.count})`}
               size="small"
               color={ind.industry_slug === industrySlug ? "secondary" : "default"}
               variant={ind.industry_slug === industrySlug ? "filled" : "outlined"}
-              onClick={() => setIndustrySlug(ind.industry_slug)}
+              onClick={() => onIndustryChange(ind.industry_slug)}
               sx={{ fontSize: "0.7rem" }}
             />
           ))}

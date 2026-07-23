@@ -1,16 +1,18 @@
 """
-build_szse_sse_stock.py — Build a combined SZSE + SSE individual-stock CSV (close + PE)
+build_szse_sse_bse_stocks.py — Build a combined SZSE + SSE + BSE individual-stock CSV (close + PE)
 from the locally cached archive + trend files.
 
-The SZSE/SSE daily market files (download_szse_archive.py / download_szse_trend.py /
-download_sse_price.py with security_type="stock") already contain per-stock OHLCV and
-市盈率 (PE) for every Shenzhen/Shanghai-listed stock from 2022-01-01 onward. This
-script consolidates those per-day CSVs into one long DataFrame for downstream use.
+The SZSE/SSE/BSE daily market files (download_szse_archive.py / download_szse_trend.py /
+download_sse_price.py / download_bse_price.py with security_type="stock") already contain
+per-stock OHLCV and 市盈率 (PE) for every Shenzhen/Shanghai/Beijing-listed stock from
+2022-01-01 onward. This script consolidates those per-day CSVs into one long DataFrame
+for downstream use.
 
 CRITICAL: Stock codes must be disambiguated with exchange suffixes (.SS for Shanghai,
-.SZ for Shenzhen) because 000xxx/001xxx codes overlap:
+.SZ for Shenzhen, .BJ for Beijing) because 000xxx/001xxx codes overlap:
   - SSE (Shanghai): 000xxx codes are INDICES (e.g., 000001 = SSE Composite)
   - SZSE (Shenzhen): 000xxx codes are individual stocks (e.g., 000001 = Ping An Bank)
+  - BSE (Beijing): 43xxxx / 83xxxx / 87xxxx / 920xxx codes are individual stocks
 
 Notes:
   - 证券代码 is stored without leading zeros in the source CSV ("1" → "000001");
@@ -31,8 +33,8 @@ Output:
   use the same column names as etf_identity / etf_basic_stats for symmetry.
 
 Usage:
-  python build_szse_sse_stock.py
-  python build_szse_sse_stock.py --limit 50     # dev: first 50 files only
+  python build_szse_sse_bse_stocks.py
+  python build_szse_sse_bse_stocks.py --limit 50     # dev: first 50 files only
 """
 import os
 import sys
@@ -76,6 +78,7 @@ TEMP_DATA    = os.path.join(PROJECT_ROOT, "temp_data")
 SZSE_ARCHIVE_DIR  = os.path.join(PROJECT_ROOT, "temps", "szse_archive")
 SZSE_TREND_DIR    = os.path.join(PROJECT_ROOT, "temps", "szse_trend")
 SSE_TREND_DIR     = os.path.join(PROJECT_ROOT, "temps", "sse_trend")
+BSE_TREND_DIR     = os.path.join(PROJECT_ROOT, "temps", "bse_trend")
 OUTPUT_DIR        = os.path.join(TEMP_DATA, "analysis_output", "szse_sse_stock")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -102,7 +105,7 @@ def _read_one(path, market):
 
     Args:
         path: path to the CSV file
-        market: "深圳" for SZSE, "上海" for SSE — used to add exchange suffix
+        market: "深圳" for SZSE, "上海" for SSE, "北京" for BSE — used to add exchange suffix
     """
     try:
         df = pd.read_csv(path, dtype={"证券代码": str}, thousands=",")
@@ -116,7 +119,7 @@ def _read_one(path, market):
     # The original regex `^\d{1,6}(\.0+)?$` only matched float-conversion artifacts
     # (e.g. "1.0") and rejected every real row because source CSVs now store codes
     # with the suffix already appended.
-    df = df[df["证券代码"].str.match(r"^\d{1,6}(\.(?:SZ|SS|SH|sz|ss|sh))?$", na=False)].copy()
+    df = df[df["证券代码"].str.match(r"^\d{1,6}(\.(?:SZ|SS|SH|BJ|sz|ss|sh|bj))?$", na=False)].copy()
     if df.empty:
         return None
     keep = {k: v for k, v in COL_MAP.items() if k in df.columns}
@@ -134,21 +137,29 @@ def build_all(limit=None, verbose=True):
     szse_archive_files = sorted(glob.glob(os.path.join(SZSE_ARCHIVE_DIR, "szse_stock_*.csv")))
     szse_trend_files   = sorted(glob.glob(os.path.join(SZSE_TREND_DIR, "szse_trend_stock_*.csv")))
     sse_trend_files    = sorted(glob.glob(os.path.join(SSE_TREND_DIR, "sse_trend_stock_*.csv")))
+    bse_trend_files    = sorted(glob.glob(os.path.join(BSE_TREND_DIR, "bse_trend_stock_*.csv")))
 
-    files = szse_archive_files + szse_trend_files + sse_trend_files
+    files = szse_archive_files + szse_trend_files + sse_trend_files + bse_trend_files
     if limit:
         files = files[:limit]
 
     if verbose:
         print(f"  [SCAN] {len(szse_archive_files)} szse_archive + "
               f"{len(szse_trend_files)} szse_trend + "
-              f"{len(sse_trend_files)} sse_trend "
+              f"{len(sse_trend_files)} sse_trend + "
+              f"{len(bse_trend_files)} bse_trend "
               f"= {len(files)} stock CSVs", flush=True)
 
     counts = Counter()
     frames = []
     for path in files:
-        market = "深圳" if "szse" in path.lower() else "上海"
+        low_path = path.lower()
+        if "bse" in low_path:
+            market = "北京"
+        elif "szse" in low_path:
+            market = "深圳"
+        else:
+            market = "上海"
         df = _read_one(path, market)
         if df is None or df.empty:
             counts["empty"] += 1
@@ -176,10 +187,11 @@ def build_all(limit=None, verbose=True):
         d1 = combined["date"].max().strftime("%Y-%m-%d")
         n_szse = combined["code"].str.endswith(".SZ").sum()
         n_sse = combined["code"].str.endswith(".SS").sum()
+        n_bse = combined["code"].str.endswith(".BJ").sum()
         print(f"    [SAVE] {OUT_PATH}", flush=True)
         print(f"           {len(combined):,} rows | {n_stocks} stocks | "
               f"{n_dates} dates | {d0} → {d1}", flush=True)
-        print(f"           SZSE (.SZ): {n_szse:,} | SSE (.SS): {n_sse:,}", flush=True)
+        print(f"           SZSE (.SZ): {n_szse:,} | SSE (.SS): {n_sse:,} | BSE (.BJ): {n_bse:,}", flush=True)
         print(f"           pe non-null: {combined['pe'].notna().sum():,} | "
               f"pe>0: {(combined['pe'] > 0).sum():,}", flush=True)
 
@@ -190,17 +202,18 @@ def build_all(limit=None, verbose=True):
 
 async def main():
     import asyncio
-    ap = argparse.ArgumentParser(description="Build combined SZSE + SSE stock CSV (close+PE) and insert to database.")
+    ap = argparse.ArgumentParser(description="Build combined SZSE + SSE + BSE stock CSV (close+PE) and insert to database.")
     ap.add_argument("--limit", type=int, default=None, help="Dev: first N files only")
     ap.add_argument("--force", action="store_true", help="Rebuild all data (truncate tables first)")
     args = ap.parse_args()
 
     t0 = time.time()
     print("=" * 78, flush=True)
-    print("  SZSE + SSE STOCK BUILDER  ·  per-day CSV → stock_combined.csv + DATABASE", flush=True)
+    print("  SZSE + SSE + BSE STOCK BUILDER  ·  per-day CSV → stock_combined.csv + DATABASE", flush=True)
     print("=" * 78, flush=True)
     print(f"  SZSE Archive dir: {SZSE_ARCHIVE_DIR}", flush=True)
     print(f"  SSE Trend dir   : {SSE_TREND_DIR}", flush=True)
+    print(f"  BSE Trend dir   : {BSE_TREND_DIR}", flush=True)
     print(f"  Output          : {OUT_PATH}", flush=True)
     print(f"  Today           : {TODAY_STR}", flush=True)
 
@@ -250,6 +263,7 @@ async def main():
                     identity_rows.append({
                         "date": row["date"],
                         "code": row["code"],
+                        "code_suffix": row["code"].split(".")[-1] if "." in str(row["code"]) and str(row["code"]).split(".")[-1] in ("SZ", "SS", "BJ") else None,
                         "name": str(row.get("name", "")) if pd.notna(row.get("name")) else "",
                     })
                     basic_stats_rows.append({

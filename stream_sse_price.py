@@ -16,6 +16,13 @@ and upserted into ``stats.stock_intraday_5min``:
 Trading hours (Asia/Shanghai): 09:30-11:30, 13:00-15:00 on trading days only.
 Outside trading hours the loop sleeps until the next session.
 
+Skip logic: Once a stock's bar reaches 15:00 (CLOSE_TIME), it is marked as
+finished and skipped in subsequent cycles for that trade_date. This prevents
+re-processing stocks after the market closes. At startup, the script queries
+stats.stock_intraday_5min to pre-populate finished_codes with stocks that
+already have a 15:00 bar for today — preventing re-processing if the script
+restarts after close.
+
 Requires tables from database/sql/06_stock_baseline.sql (stock_identity +
 stock_intraday_5min). Run that SQL first.
 
@@ -48,7 +55,6 @@ from _download_commons import (
 )
 from _db_commons import (
     bulk_upsert,
-    ensure_table_exists,
     get_db_connection,
 )
 # Reuse the SSE JSONP fetch/parse helpers already proven in download_sse_price.
@@ -88,6 +94,8 @@ TRADING_SESSIONS: List[Tuple[time, time]] = [
     (time(13, 0), time(15, 0)),
 ]
 
+CLOSE_TIME = time(15, 0)
+
 DEFAULT_POLL_INTERVAL_SEC = 60
 DEFAULT_BAR_WINDOW = 5
 INTER_PAGE_SLEEP_SEC = 0.3
@@ -97,23 +105,6 @@ CSV_COLUMNS = [
     "update_time", "code", "name", "open", "high", "low", "last",
     "prev_close", "change", "volume", "amount",
 ]
-
-STOCK_INTRADAY_DDL = """
-CREATE TABLE IF NOT EXISTS stats.stock_intraday_5min (
-    date                      DATE          NOT NULL,
-    code                      TEXT          NOT NULL,
-    time                      TIME          NOT NULL,
-    open                      NUMERIC(18,4),
-    high                      NUMERIC(18,4),
-    low                       NUMERIC(18,4),
-    close                     NUMERIC(18,4),
-    volume                    NUMERIC(24,4),
-    change                    NUMERIC(18,4),
-    change_pct                NUMERIC(10,4),
-    CONSTRAINT pk_stock_intraday_5min PRIMARY KEY (date, code, time),
-    CONSTRAINT fk_stock_intraday_5min_date_code FOREIGN KEY (date, code) REFERENCES stats.stock_identity(date, code)
-);
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +258,7 @@ def write_snapshot_csv(update_dt: datetime, snapshot: Snapshot) -> Path:
 def aggregate_bars(
     buffer: List[Tuple[datetime, Snapshot]],
     prev_bar_cumvol: Dict[str, float],
+    finished_codes: set,
     trade_date,
 ) -> Tuple[List[dict], List[dict], Optional[time]]:
     """Aggregate 5 one-minute samples into per-stock OHLCV bars.
@@ -276,6 +268,9 @@ def aggregate_bars(
         prev_bar_cumvol: mutable dict bare_code -> cumulative volume at the end
             of the previous bar. Updated in place. Reset to {} at the start of
             each trading day by the caller.
+        finished_codes: mutable set of bare codes that have already reached
+            CLOSE_TIME for this trade_date. Stocks in this set are skipped.
+            Updated in place when bar_time reaches CLOSE_TIME.
         trade_date: datetime.date for the bars.
 
     Returns (identity_rows, bar_rows, bar_time).
@@ -296,7 +291,13 @@ def aggregate_bars(
 
     identity_rows: List[dict] = []
     bar_rows: List[dict] = []
+    n_skipped = 0
     for code in sorted(all_codes):
+        # Skip stocks that have already reached CLOSE_TIME for this trade_date.
+        if code in finished_codes:
+            n_skipped += 1
+            continue
+
         lasts: List[float] = []
         cumvols: List[float] = []
         name = ""
@@ -337,10 +338,14 @@ def aggregate_bars(
         change_pct = round((c - o) / o * 100, 4) if o else None
 
         full_code = add_exchange_suffix(code, "上海")
-        identity_rows.append({"date": trade_date, "code": full_code, "name": name})
+        # Exchange suffix: only SZ, SS, or BJ are valid.
+        parts = full_code.rsplit(".", 1)
+        code_suffix = parts[-1] if len(parts) == 2 and parts[-1] in ("SZ", "SS", "BJ") else None
+        identity_rows.append({"date": trade_date, "code": full_code, "code_suffix": code_suffix, "name": name})
         bar_rows.append({
             "date": trade_date,
             "code": full_code,
+            "code_suffix": code_suffix,
             "time": bar_time,
             "open": o,
             "high": h,
@@ -350,6 +355,13 @@ def aggregate_bars(
             "change": change,
             "change_pct": change_pct,
         })
+
+        # Mark this stock as finished if the bar reaches CLOSE_TIME.
+        if bar_time >= CLOSE_TIME:
+            finished_codes.add(code)
+
+    if n_skipped > 0:
+        logger.debug("aggregate_bars: skipped %d already-finished stocks (bar_time=%s)", n_skipped, bar_time)
 
     return identity_rows, bar_rows, bar_time
 
@@ -365,10 +377,50 @@ def _ensure_conn(conn):
     return conn
 
 
+def _prepopulate_finished_codes(conn, trade_date, finished_codes: set) -> None:
+    """Query stats.stock_intraday_5min to find stocks that already have a
+    15:00 bar for trade_date. Their bare codes are added to finished_codes.
+
+    This is called at startup to prevent re-processing stocks if the script
+    restarts after the market has closed.
+    """
+    query = """
+        SELECT DISTINCT ON (code) code
+          FROM stats.stock_intraday_5min
+         WHERE date = %s
+           AND time = %s
+           AND code_suffix = 'SS'
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, (trade_date, CLOSE_TIME))
+            rows = cur.fetchall()
+            for r in rows:
+                full_code = r[0]
+                # Strip the exchange suffix to get bare code
+                bare = full_code.split(".")[0]
+                finished_codes.add(bare)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to pre-populate finished_codes from DB: %s", e)
+
+
 def load_bars(conn, identity_rows: List[dict], bar_rows: List[dict]) -> None:
-    """Upsert identity rows (FK parent) then intraday bars."""
+    """Upsert identity rows (FK parent) then intraday bars.
+
+    Dedup identity rows by (date, code) — aggregate_bars emits one identity
+    row per bar, so duplicate keys in a single INSERT ... ON CONFLICT raise
+    "cannot affect row a second time".
+    """
     if identity_rows:
-        bulk_upsert(conn, "stats.stock_identity", identity_rows, ["date", "code"])
+        seen = set()
+        uniq = []
+        for r in identity_rows:
+            k = (r["date"], r["code"])
+            if k in seen:
+                continue
+            seen.add(k)
+            uniq.append(r)
+        bulk_upsert(conn, "stats.stock_identity", uniq, ["date", "code"])
     if bar_rows:
         bulk_upsert(conn, "stats.stock_intraday_5min", bar_rows, ["date", "code", "time"])
 
@@ -385,12 +437,25 @@ def stream(
     host_tracker = HostStatusTracker()
 
     conn = get_db_connection()
-    ensure_table_exists(conn, "stats.stock_intraday_5min", STOCK_INTRADAY_DDL)
-    logger.info("DB ready, stats.stock_intraday_5min ensured.")
+    logger.info("DB ready (stats.stock_intraday_5min expected to pre-exist).")
 
     buffer: List[Tuple[datetime, Snapshot]] = []
     prev_bar_cumvol: Dict[str, float] = {}
+    finished_codes: set = set()
     current_trade_date = None
+
+    # Pre-populate finished_codes from DB: stocks that already have a 15:00 bar
+    # for today. This prevents re-processing if the script restarts after close.
+    today = datetime.now().date()
+    if is_trading_day(today):
+        t0 = _time.time()
+        _prepopulate_finished_codes(conn, today, finished_codes)
+        logger.info(
+            "Pre-populated %d finished codes from DB for %s in %.1fs",
+            len(finished_codes), today, _time.time() - t0,
+        )
+        # Set current_trade_date to avoid clearing finished_codes on first iteration.
+        current_trade_date = today
 
     logger.info(
         "stream_sse_price started (poll=%.0fs bar_window=%d once=%s)",
@@ -408,7 +473,7 @@ def stream(
                     update_dt = buffer[-1][0]
                     trade_date = update_dt.date()
                     identity_rows, bar_rows, bar_time = aggregate_bars(
-                        buffer, prev_bar_cumvol, trade_date,
+                        buffer, prev_bar_cumvol, finished_codes, trade_date,
                     )
                     if bar_rows:
                         conn = _ensure_conn(conn)
@@ -427,12 +492,13 @@ def stream(
                 sleep_until(nxt)
                 continue
 
-            # New trading day: reset cumulative-volume baseline.
+            # New trading day: reset cumulative-volume baseline and finished_codes.
             if current_trade_date != now.date():
                 current_trade_date = now.date()
                 prev_bar_cumvol.clear()
+                finished_codes.clear()
                 buffer.clear()
-                logger.info("New trading day %s; cumulative-volume baseline reset.", current_trade_date)
+                logger.info("New trading day %s; cumulative-volume baseline and finished_codes reset.", current_trade_date)
 
             cycle_start = _time.time()
             update_dt, snapshot = fetch_snapshot(session, host_tracker=host_tracker)
@@ -452,7 +518,7 @@ def stream(
                 if len(buffer) >= bar_window:
                     trade_date = update_dt.date()
                     identity_rows, bar_rows, bar_time = aggregate_bars(
-                        buffer, prev_bar_cumvol, trade_date,
+                        buffer, prev_bar_cumvol, finished_codes, trade_date,
                     )
                     if bar_rows:
                         conn = _ensure_conn(conn)

@@ -23,6 +23,7 @@ router.get("/combined", async (req: Request, res: Response) => {
     const query = {
       sector: typeof req.query.sector === "string" ? req.query.sector : undefined,
       industry: typeof req.query.industry === "string" ? req.query.industry : undefined,
+      code: typeof req.query.code === "string" ? req.query.code : undefined,
       // Backward-compat: old 'theme' query param is treated as 'industry' slug.
       ...(typeof req.query.theme === "string" && !req.query.industry
         ? { industry: req.query.theme as string }

@@ -46,6 +46,10 @@ export const PE_COLOR = cssVar("--chart-pe", "#e377c2"); // tableau pink — sta
 // Spot / max pain / OI-weighted
 export const SPOT_COLOR = cssVar("--chart-spot", "#2C3E50");
 
+// Corporate-action event markers (dividends / splits)
+export const DIVIDEND_COLOR = cssVar("--chart-dividend", "#f1c40f"); // gold — dividend marker
+export const SPLIT_COLOR = cssVar("--chart-split", "#16a085"); // teal — split/conversion marker
+
 // ----------------------------------------------------------------------------
 // Muted multi-series palette (Tableau-10 desaturated — for multi-expiry/date)
 // ----------------------------------------------------------------------------

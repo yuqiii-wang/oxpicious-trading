@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _db_commons import get_db_connection_async, bulk_upsert_async
-from _classification import classify_etf_full
+from _classification import classify_etf_full, get_industry_index
 
 # stdout encoding (Windows)
 import locale as _locale
@@ -60,10 +60,16 @@ async def main():
         update_rows = []
         sector_counter = Counter()
         industry_counter = Counter()
+        index_count = 0
         for r in rows:
             code = r["code"]
             name = r["name"] or ""
             sector_id, sector_label, industry_id, industry_label, industry_slug = classify_etf_full(name)
+            # Primary tracking index for this ETF's industry (used as a
+            # composition fallback in the UI when the ETF has no holdings).
+            idx_code, idx_name = get_industry_index(industry_id)
+            if idx_code:
+                index_count += 1
             update_rows.append({
                 "code": code,
                 "sector_id": sector_id,
@@ -71,6 +77,8 @@ async def main():
                 "industry_id": industry_id,
                 "industry_label": industry_label,
                 "industry_slug": industry_slug,
+                "index_code": idx_code or "",
+                "index_name": idx_name or "",
             })
             sector_counter[sector_id] += 1
             industry_counter[industry_id] += 1
@@ -78,6 +86,7 @@ async def main():
         n_classified = sum(1 for r in update_rows if r["sector_id"] != "OTHER")
         print(f"    → {n_classified:,}/{len(update_rows):,} ETFs classified into a sector", flush=True)
         print(f"    → {len(update_rows) - n_classified:,} ETFs unclassified (OTHER)", flush=True)
+        print(f"    → {index_count:,} ETFs have a tracking index (composition fallback)", flush=True)
 
         print(f"\n    Sector distribution (L1):", flush=True)
         for sid, cnt in sector_counter.most_common():

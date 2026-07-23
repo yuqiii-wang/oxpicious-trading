@@ -230,7 +230,15 @@ export default function CompositionPieChart({ etfCode, open, onToggle }: Props) 
   const hasData = data && data.holdings.length > 0;
   const allUnclassified =
     industryData.length === 1 && industryData[0]?.name === "未分类";
-  const isFullComposition = data?.source === "full";
+  const isIndexFallback = data?.source === "index";
+
+  // Source badge label + color across the three source types.
+  const sourceBadge = (() => {
+    if (!data) return { label: "Top5", color: "default" as const };
+    if (data.source === "full") return { label: "Full", color: "success" as const };
+    if (data.source === "index") return { label: "Index", color: "info" as const };
+    return { label: "Top5", color: "default" as const };
+  })();
 
   return (
     <Box>
@@ -285,13 +293,29 @@ export default function CompositionPieChart({ etfCode, open, onToggle }: Props) 
                   {data!.holdings.length} holdings ({data!.snapshot_date})
                 </Typography>
                 <Chip
-                  label={isFullComposition ? "Full" : "Top5"}
+                  label={sourceBadge.label}
                   size="small"
-                  color={isFullComposition ? "success" : "default"}
+                  color={sourceBadge.color}
                   variant="outlined"
                   sx={{ fontSize: "0.6rem", height: 16 }}
                 />
+                {isIndexFallback && data!.index_source && (
+                  <Chip
+                    label={`via ${data!.index_source.code} · ${data!.index_source.name}`}
+                    size="small"
+                    color="info"
+                    variant="filled"
+                    sx={{ fontSize: "0.6rem", height: 16 }}
+                  />
+                )}
               </Stack>
+
+              {isIndexFallback && data!.index_source && (
+                <Alert severity="info" sx={{ py: 0.25, mb: 0.5 }} icon={false}>
+                  No ETF holdings available — showing composition of tracking index{" "}
+                  <b>{data!.index_source.code}</b> ({data!.index_source.name || "—"}).
+                </Alert>
+              )}
 
               {allUnclassified && !selectedIndustry && (
                 <Alert severity="info" sx={{ py: 0.25, mb: 0.5 }} icon={false}>

@@ -16,10 +16,6 @@ CREATE TABLE IF NOT EXISTS stats.stock_industry_map (
     CONSTRAINT pk_stock_industry_map PRIMARY KEY (stock_code)
 );
 
--- Backward-compat: add columns if table was created by an older schema version.
-ALTER TABLE stats.stock_industry_map ADD COLUMN IF NOT EXISTS sector_id     TEXT NOT NULL DEFAULT 'OTHER';
-ALTER TABLE stats.stock_industry_map ADD COLUMN IF NOT EXISTS sector_label  TEXT NOT NULL DEFAULT '其他';
-ALTER TABLE stats.stock_industry_map ADD COLUMN IF NOT EXISTS industry_id   TEXT NOT NULL DEFAULT 'OTHER';
 
 COMMENT ON TABLE  stats.stock_industry_map              IS 'Stock → industry mapping (East Money classification). Used for ETF composition pie chart.';
 COMMENT ON COLUMN stats.stock_industry_map.industry     IS 'East Money industry board name (e.g. 银行, 半导体, 医药制造).';

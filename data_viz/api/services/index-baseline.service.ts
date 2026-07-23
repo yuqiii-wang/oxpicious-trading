@@ -1,7 +1,10 @@
 /**
- * Index Baseline service — queries stats.v_index_baseline view.
+ * Index Baseline service — queries stats.v_index_baseline view + stats.index_meta.
  *
  * Returns the list of available indices and their daily OHLCV + PE + MA data.
+ * Index classification (L1 sector + L2 industry) is read from precomputed
+ * columns in stats.index_meta (populated by build_index_classification.py via
+ * _classification.classify_index_full()). No classification logic lives in TS.
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
@@ -11,6 +14,10 @@ import type {
   IndexBaselineRow,
   IndexIntraday5minResponse,
   IndexIntraday5minRow,
+  IndexBundle,
+  IndexCombinedResponse,
+  SectorNode,
+  IndustryNode,
 } from "../../shared/types.js";
 
 interface DbIndexMetaRow extends QueryResultRow {
@@ -19,9 +26,15 @@ interface DbIndexMetaRow extends QueryResultRow {
   n_days: number;
   first_date: string;
   last_date: string;
+  sector_id: string;
+  sector_label: string;
+  industry_id: string;
+  industry_label: string;
+  industry_slug: string;
 }
 
 interface DbIndexRow extends QueryResultRow {
+  code: string;
   date: string;
   open: number | null;
   high: number | null;
@@ -133,6 +146,211 @@ export async function getIndexBaseline(
     name,
     dates: rows.map((r) => formatDate(r.date)),
     rows: rows.map(transformRow),
+  };
+}
+
+// ----------------------------------------------------------------------------
+//  Meta query — fetch all indices with precomputed L1/L2 classification from
+//  stats.index_meta, ordered by n_days DESC (most data first).
+// ----------------------------------------------------------------------------
+const INDEX_META_SQL = `
+  SELECT code,
+         COALESCE(name, '') AS name,
+         COALESCE(n_days, 0) AS n_days,
+         first_date,
+         last_date,
+         COALESCE(sector_id,     'OTHER')     AS sector_id,
+         COALESCE(sector_label,  '其他')       AS sector_label,
+         COALESCE(industry_id,   'OTHER')     AS industry_id,
+         COALESCE(industry_label,'未分类')     AS industry_label,
+         COALESCE(industry_slug, 'other')     AS industry_slug
+    FROM stats.index_meta
+   ORDER BY n_days DESC, code
+`;
+
+// ----------------------------------------------------------------------------
+//  Index themes — build the two-level L1 sector → L2 industry → indices tree
+//  from the precomputed classification columns in stats.index_meta.
+// ----------------------------------------------------------------------------
+export async function listIndexThemes(): Promise<SectorNode[]> {
+  const rows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
+
+  const sectorMap = new Map<string, {
+    sector_label: string;
+    industries: Map<string, IndustryNode>;
+  }>();
+
+  for (const r of rows) {
+    const item = { code: r.code, name: r.name ?? "" };
+    if (!sectorMap.has(r.sector_id)) {
+      sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
+    }
+    const sector = sectorMap.get(r.sector_id)!;
+    if (!sector.industries.has(r.industry_id)) {
+      sector.industries.set(r.industry_id, {
+        industry_id: r.industry_id,
+        industry_label: r.industry_label,
+        industry_slug: r.industry_slug,
+        count: 0,
+        items: [],
+      });
+    }
+    const ind = sector.industries.get(r.industry_id)!;
+    ind.items.push(item);
+    ind.count++;
+  }
+
+  const sectors: SectorNode[] = [];
+  for (const [sector_id, sector] of sectorMap) {
+    const industries = Array.from(sector.industries.values()).sort((a, b) => {
+      if (a.industry_id === "OTHER") return 1;
+      if (b.industry_id === "OTHER") return -1;
+      return b.count - a.count;
+    });
+    sectors.push({
+      sector_id,
+      sector_label: sector.sector_label,
+      count: industries.reduce((sum, i) => sum + i.count, 0),
+      industries,
+    });
+  }
+  sectors.sort((a, b) => {
+    if (a.sector_id === "OTHER") return 1;
+    if (b.sector_id === "OTHER") return -1;
+    return b.count - a.count;
+  });
+  return sectors;
+}
+
+// ----------------------------------------------------------------------------
+//  Combined index data with sector/industry filter + pagination
+// ----------------------------------------------------------------------------
+export interface IndexCombinedQuery {
+  sector?: string;
+  industry?: string;
+  /** Exact index code (e.g. "000300", "H30007"). When set, sector/industry
+   *  filters and pagination are bypassed — only the matching index is returned. */
+  code?: string;
+  start_date?: string;
+  end_date?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export async function getIndicesCombined(
+  q: IndexCombinedQuery,
+): Promise<IndexCombinedResponse> {
+  const sectorFilter = (q.sector ?? "").trim();
+  const industryFilter = (q.industry ?? "").trim();
+  // When a code filter is provided, sector/industry/pagination are bypassed.
+  const codeFilter = (q.code ?? "").trim().toUpperCase();
+
+  // 1. Fetch all indices with classification, ordered by n_days DESC.
+  const metaRows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
+
+  // 2. Filter by sector + industry (or by exact code when codeFilter is set).
+  const meta = new Map<string, { name: string; sector_id: string; sector_label: string; industry_id: string; industry_label: string }>();
+  const wantedCodes: string[] = [];
+  for (const r of metaRows) {
+    meta.set(r.code, {
+      name: r.name ?? "",
+      sector_id: r.sector_id,
+      sector_label: r.sector_label,
+      industry_id: r.industry_id,
+      industry_label: r.industry_label,
+    });
+    if (codeFilter) {
+      // Exact code search — ignore sector/industry filters.
+      if (r.code.toUpperCase() === codeFilter) wantedCodes.push(r.code);
+      continue;
+    }
+    const sectorOk = !sectorFilter || r.sector_id === sectorFilter;
+    const industryOk = !industryFilter || r.industry_slug === industryFilter || r.industry_id === industryFilter;
+    if (sectorOk && industryOk) wantedCodes.push(r.code);
+  }
+
+  const totalIndices = wantedCodes.length;
+  const pageSize = q.page_size && q.page_size > 0 ? q.page_size : 6;
+  const totalPages = Math.max(1, Math.ceil(totalIndices / pageSize));
+  const page = q.page && q.page > 0 ? Math.min(q.page, totalPages) : 1;
+  const pageCodes = wantedCodes.slice((page - 1) * pageSize, page * pageSize);
+
+  if (pageCodes.length === 0) {
+    return {
+      sector_id: sectorFilter,
+      industry_id: industryFilter,
+      dates: [],
+      indices: [],
+      total_indices: 0,
+      total_pages: 1,
+      page: 1,
+      page_size: pageSize,
+    };
+  }
+
+  // 3. Fetch row data for the wanted indices (with optional date filtering)
+  const params: unknown[] = [];
+  let paramIdx = 1;
+  params.push(pageCodes);
+  const whereParts: string[] = [`code = ANY($${paramIdx++}::text[])`];
+  const startDate = toDateParam(q.start_date);
+  const endDate = toDateParam(q.end_date);
+  if (startDate) {
+    whereParts.push(`date >= $${paramIdx++}::date`);
+    params.push(startDate);
+  }
+  if (endDate) {
+    whereParts.push(`date <= $${paramIdx++}::date`);
+    params.push(endDate);
+  }
+
+  const sql = `
+    SELECT code, date, open, high, low, close, volume, turnover, change_pct,
+           pe, cons_number, ma5, ma20, ma60, ma120, ma255, has_intraday_5mins
+      FROM stats.v_index_baseline
+     WHERE ${whereParts.join(" AND ")}
+     ORDER BY code, date ASC
+  `;
+  const dbRows = await queryRows<DbIndexRow>(sql, params);
+
+  // Group rows by code
+  const byCode = new Map<string, IndexBaselineRow[]>();
+  for (const r of dbRows) {
+    if (!byCode.has(r.code)) byCode.set(r.code, []);
+    byCode.get(r.code)!.push(transformRow(r));
+  }
+
+  // 4. Build bundles
+  const indices: IndexBundle[] = [];
+  for (const code of pageCodes) {
+    const rows = byCode.get(code) ?? [];
+    if (rows.length === 0) continue;
+    const m = meta.get(code)!;
+    indices.push({
+      code,
+      name: m.name,
+      sector_id: m.sector_id,
+      sector_label: m.sector_label,
+      industry_id: m.industry_id,
+      industry_label: m.industry_label,
+      rows,
+    });
+  }
+
+  // Union of all dates across selected indices (sorted)
+  const dateSet = new Set<string>();
+  for (const idx of indices) for (const r of idx.rows) dateSet.add(r.date);
+  const dates = Array.from(dateSet).sort();
+
+  return {
+    sector_id: sectorFilter,
+    industry_id: industryFilter,
+    dates,
+    indices,
+    total_indices: totalIndices,
+    total_pages: totalPages,
+    page,
+    page_size: pageSize,
   };
 }
 

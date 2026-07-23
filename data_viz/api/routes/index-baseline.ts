@@ -2,11 +2,16 @@
  * Index Baseline API routes.
  */
 import { Router, type Request, type Response } from "express";
-import { listIndices, getIndexBaseline, getIndexIntraday5min } from "../services/index-baseline.service.js";
+import {
+  listIndices,
+  getIndexIntraday5min,
+  listIndexThemes,
+  getIndicesCombined,
+} from "../services/index-baseline.service.js";
 
 const router = Router();
 
-/** GET /api/index-baseline/list — list all available indices */
+/** GET /api/index-baseline/list — list all available indices (flat list) */
 router.get("/list", async (_req: Request, res: Response) => {
   try {
     res.json(await listIndices());
@@ -16,17 +21,36 @@ router.get("/list", async (_req: Request, res: Response) => {
   }
 });
 
-/** GET /api/index-baseline/combined?code=000001&start_date=&end_date= */
+/** GET /api/index-baseline/themes — two-level L1 sector → L2 industry tree */
+router.get("/themes", async (_req: Request, res: Response) => {
+  try {
+    res.json(await listIndexThemes());
+  } catch (err) {
+    console.error("[index-baseline/themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/index-baseline/combined?sector=&industry=&page=&page_size=
+ *  Paginated indices filtered by L1 sector + L2 industry. */
 router.get("/combined", async (req: Request, res: Response) => {
   try {
-    const code = typeof req.query.code === "string" ? req.query.code : "";
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    const startDate = typeof req.query.start_date === "string" ? req.query.start_date : undefined;
-    const endDate = typeof req.query.end_date === "string" ? req.query.end_date : undefined;
-    res.json(await getIndexBaseline(code, startDate, endDate));
+    const query = {
+      sector: typeof req.query.sector === "string" ? req.query.sector : undefined,
+      industry: typeof req.query.industry === "string" ? req.query.industry : undefined,
+      code: typeof req.query.code === "string" ? req.query.code : undefined,
+      start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
+      end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+      page:
+        typeof req.query.page === "string"
+          ? parseInt(req.query.page, 10)
+          : undefined,
+      page_size:
+        typeof req.query.page_size === "string"
+          ? parseInt(req.query.page_size, 10)
+          : undefined,
+    };
+    res.json(await getIndicesCombined(query));
   } catch (err) {
     console.error("[index-baseline/combined] error:", err);
     res.status(500).json({ error: String(err) });

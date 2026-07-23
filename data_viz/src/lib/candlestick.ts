@@ -26,6 +26,8 @@ export interface CandlestickOverrides {
   yAxisIndex?: number;
   z?: number;
   barWidth?: string | number;
+  /** markPoint config — used by ETF panels to flag dividend/split events. */
+  markPoint?: SeriesOption["markPoint"];
 }
 
 /**

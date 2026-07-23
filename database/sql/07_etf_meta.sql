@@ -19,16 +19,11 @@ CREATE TABLE IF NOT EXISTS stats.etf_meta (
     industry_id               TEXT          NOT NULL DEFAULT 'OTHER',
     industry_label            TEXT          NOT NULL DEFAULT '未分类',
     industry_slug             TEXT          NOT NULL DEFAULT 'other',
+    index_code                TEXT          NOT NULL DEFAULT '',
+    index_name                TEXT          NOT NULL DEFAULT '',
 
     CONSTRAINT pk_etf_meta PRIMARY KEY (code)
 );
-
--- Backward-compat: add columns if table was created by an older schema version.
-ALTER TABLE stats.etf_meta ADD COLUMN IF NOT EXISTS sector_id     TEXT NOT NULL DEFAULT 'OTHER';
-ALTER TABLE stats.etf_meta ADD COLUMN IF NOT EXISTS sector_label  TEXT NOT NULL DEFAULT '其他';
-ALTER TABLE stats.etf_meta ADD COLUMN IF NOT EXISTS industry_id   TEXT NOT NULL DEFAULT 'OTHER';
-ALTER TABLE stats.etf_meta ADD COLUMN IF NOT EXISTS industry_label TEXT NOT NULL DEFAULT '未分类';
-ALTER TABLE stats.etf_meta ADD COLUMN IF NOT EXISTS industry_slug TEXT NOT NULL DEFAULT 'other';
 
 COMMENT ON TABLE  stats.etf_meta                IS 'ETF quality metrics for ranking: n_ohlcv_days, has_margin, avg_volume_wan. Precomputed L1/L2 classification from _classification.py.';
 COMMENT ON COLUMN stats.etf_meta.n_ohlcv_days  IS 'Number of daily OHLCV records (data completeness).';
@@ -40,9 +35,17 @@ COMMENT ON COLUMN stats.etf_meta.sector_label   IS 'L1 sector label (Chinese, e.
 COMMENT ON COLUMN stats.etf_meta.industry_id    IS 'L2 industry/theme id (e.g. BANKS, SEMI, BROAD_CSI300).';
 COMMENT ON COLUMN stats.etf_meta.industry_label IS 'L2 industry label (Chinese).';
 COMMENT ON COLUMN stats.etf_meta.industry_slug  IS 'L2 industry slug (URL-safe, e.g. banks, semi, broad_csi300).';
+COMMENT ON COLUMN stats.etf_meta.index_code     IS 'Primary tracking index code for this ETFs industry (from _classification.INDUSTRY_INDEX_MAP). Used as composition fallback when the ETF has no holdings.';
+COMMENT ON COLUMN stats.etf_meta.index_name     IS 'Primary tracking index name (Chinese), paired with index_code.';
 
 CREATE INDEX IF NOT EXISTS idx_etf_meta_quality
     ON stats.etf_meta (data_quality_score DESC);
 
 CREATE INDEX IF NOT EXISTS idx_etf_meta_sector_industry
     ON stats.etf_meta (sector_id, industry_id);
+
+-- Supports the composition-fallback lookup: given an ETF code, find its
+-- tracking index in O(log n) without a full table scan.
+CREATE INDEX IF NOT EXISTS idx_etf_meta_index_code
+    ON stats.etf_meta (index_code)
+    WHERE index_code <> '';

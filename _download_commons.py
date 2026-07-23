@@ -1057,6 +1057,8 @@ def add_exchange_suffix(stock_code: str, market: Optional[str] = None) -> str:
             return code + ".SS"
         if "深圳" in market:
             return code + ".SZ"
+        if "北京" in market:
+            return code + ".BJ"
     exchange = get_exchange_from_code(code)
     if exchange:
         return code + "." + exchange

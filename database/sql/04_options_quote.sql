@@ -164,3 +164,18 @@ CREATE INDEX IF NOT EXISTS idx_options_quote_underlying_date_expiry
 
 CREATE INDEX IF NOT EXISTS idx_options_quote_contract_date
     ON stats.options_identity (contract_code, date);
+
+CREATE INDEX IF NOT EXISTS idx_options_strike_contract_date
+    ON stats.options_strike (contract_code, date);
+
+CREATE INDEX IF NOT EXISTS idx_options_settlement_contract_date
+    ON stats.options_settlement (contract_code, date);
+
+CREATE INDEX IF NOT EXISTS idx_options_greeks_contract_date
+    ON stats.options_greeks (contract_code, date);
+
+CREATE INDEX IF NOT EXISTS idx_options_volume_oi_contract_date
+    ON stats.options_volume_oi (contract_code, date);
+
+CREATE INDEX IF NOT EXISTS idx_options_aggregate_contract_date
+    ON stats.options_aggregate (contract_code, date);

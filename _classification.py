@@ -316,6 +316,32 @@ for _entry in _ENTRIES:
 
 
 # ============================================================================
+#  Derived: INDUSTRY_INDEX_MAP — industry_id -> (index_code, index_name)
+#  The FIRST index in each industry's 'index' dict is treated as the primary
+#  tracking index for that industry.  Used as a composition fallback when an
+#  ETF has no holdings of its own (build_etf_classification.py writes the
+#  index_code/index_name into stats.etf_meta so the TS backend can look it
+#  up without duplicating the taxonomy).
+# ============================================================================
+INDUSTRY_INDEX_MAP = {}
+for _entry in _ENTRIES:
+    _idx = _entry.get("index", {}) or {}
+    if _idx:
+        _code, _name = next(iter(_idx.items()))
+        INDUSTRY_INDEX_MAP[_entry["id"]] = (_code, _name)
+
+
+def get_industry_index(industry_id):
+    """Return (index_code, index_name) for the given industry_id.
+
+    Returns (None, None) when the industry has no associated tracking index.
+    The first index in the industry's 'index' dict is returned (treated as
+    the primary tracking index for that industry).
+    """
+    return INDUSTRY_INDEX_MAP.get(industry_id, (None, None))
+
+
+# ============================================================================
 #  Classifier: ETF (two-phase keyword scoring)
 # ============================================================================
 def _score_kw_hits(name, kws):
@@ -527,6 +553,23 @@ def classify_index(name: str, code: str = ""):
         return (sid, slab, tid, tlabel)
 
     return ("BROAD", "宽基", "BROAD_GENERAL", "综合指数")
+
+
+def classify_index_full(name: str, code: str = ""):
+    """Classify an index and return (sector_id, sector_label, industry_id, industry_label, industry_slug).
+
+    Same as classify_index() but also returns the industry_slug (URL-safe)
+    for frontend routing — mirrors classify_etf_full().
+    """
+    sid, slab, iid, ilabel = classify_index(name, code)
+    entry = _ENTRY_BY_ID.get(iid)
+    if entry:
+        islug = entry["slug"]
+    elif iid == "BROAD_GENERAL":
+        islug = "broad_general"
+    else:
+        islug = "other"
+    return (sid, slab, iid, ilabel, islug)
 
 
 # ============================================================================

@@ -28,6 +28,8 @@
 
   --chart-pe: #e377c2;            /* tableau pink — PE ratio */
   --chart-spot: #2C3E50;          /* spot / underlying reference line */
+  --chart-dividend: #f1c40f;      /* gold — dividend event marker */
+  --chart-split: #16a085;         /* teal — split/conversion event marker */
 
   /* ---- Muted multi-series palette (Tableau-10 desaturated) -------------- */
   --chart-muted-1: #4C78A8;       /* muted blue */
