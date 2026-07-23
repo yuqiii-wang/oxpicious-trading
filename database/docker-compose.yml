@@ -1,0 +1,31 @@
+name: oxpicious-trading-cluster
+
+services:
+  db:
+    image: supabase/postgres:17.6.1.150_amd64
+    container_name: oxpicious-db
+    shm_size: 256m
+    ports:
+      - "9876:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+      - ./sql:/docker-entrypoint-sql.d
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - supabase_network
+
+volumes:
+  db_data:
+
+networks:
+  supabase_network:
+    driver: bridge

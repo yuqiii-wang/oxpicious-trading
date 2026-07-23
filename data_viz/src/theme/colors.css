@@ -1,0 +1,78 @@
+/**
+ * Shared color tokens — the SINGLE source of truth for every color used in the
+ * app (ECharts canvas series, axis/grid/tooltip theming, and MUI overrides).
+ *
+ * Consumed two ways:
+ *   1. DOM / CSS — reference the variable directly, e.g. `color: var(--chart-subtitle)`.
+ *   2. JS / ECharts — `chart-palette.ts` resolves these at runtime via
+ *      `getComputedStyle` (with matching fallbacks) so canvas-rendered charts
+ *      stay in sync with this file.
+ *
+ * Light and dark axis/grid/tooltip sets are defined as separate variables
+ * (rather than scoped under `[data-theme]`) so `axisColors(mode)` can pick the
+ * right set without relying on a theme attribute on <html>.
+ */
+:root {
+  /* ---- Chart series colors (ported from _plot_commons.py) ---------------- */
+  --chart-up: #27ae60;            /* price-up green (also RZ margin fill) */
+  --chart-down: #c0392b;          /* price-down red (also RQ margin fill) */
+  --chart-hi: #2980b9;            /* rebased-close line blue */
+  --chart-neutral-fill: #95a5a6;  /* neutral gray for price-area fill */
+  --chart-ma20: #f39c12;          /* MA20 orange */
+  --chart-ma60: #8e44ad;          /* MA60 purple */
+  --chart-ma120: #7f8c8d;         /* MA120 gray */
+
+  --chart-iv-blue: #1F77B4;       /* standard tableau blue */
+  --chart-atm-gray: #7F7F7F;      /* neutral gray for ATM vertical line */
+  --chart-marker-edge-gray: #444444;
+
+  --chart-pe: #e377c2;            /* tableau pink — PE ratio */
+  --chart-spot: #2C3E50;          /* spot / underlying reference line */
+
+  /* ---- Muted multi-series palette (Tableau-10 desaturated) -------------- */
+  --chart-muted-1: #4C78A8;       /* muted blue */
+  --chart-muted-2: #F58518;       /* muted orange */
+  --chart-muted-3: #54A24B;       /* muted green */
+  --chart-muted-4: #E45756;       /* muted red */
+  --chart-muted-5: #72B7B2;       /* muted teal */
+  --chart-muted-6: #B279A2;       /* muted purple */
+  --chart-muted-7: #FF9DA6;       /* muted pink */
+  --chart-muted-8: #9D755D;       /* muted brown */
+
+  /* ---- UI text tokens --------------------------------------------------- */
+  --chart-subtitle: #7A8190;      /* card subtitle / muted label gray */
+  --chart-muted-inline: #888888;  /* fallback inline gray (autocomplete hints) */
+
+  /* ---- Light theme axis / grid / tooltip -------------------------------- */
+  --chart-axis-line-light: #9AA4B8;
+  --chart-split-line-light: #E1E5EC;
+  --chart-text-light: #5A6273;
+  --chart-tooltip-bg-light: #FFFFFF;
+
+  /* ---- Dark theme axis / grid / tooltip --------------------------------- */
+  --chart-axis-line-dark: #3A445C;
+  --chart-split-line-dark: #1F2740;
+  --chart-text-dark: #9AA4B8;
+  --chart-tooltip-bg-dark: #1A2238;
+
+  /* ---- MUI theme tokens (light) ----------------------------------------- */
+  --mui-primary-light: #1F3A5F;
+  --mui-bg-default-light: #F7F8FA;
+  --mui-bg-paper-light: #FFFFFF;
+  --mui-text-primary-light: #1A1F2E;
+  --mui-text-secondary-light: #5A6273;
+  --mui-divider-light: #E1E5EC;
+  --mui-appbar-bg-light: #1F3A5F;
+  --mui-appbar-text-light: #FFFFFF;
+
+  /* ---- MUI theme tokens (dark) ------------------------------------------ */
+  --mui-primary-dark: #5B8DEF;
+  --mui-secondary-dark: #7AB8E8;
+  --mui-bg-default-dark: #0F1729;
+  --mui-bg-paper-dark: #1A2238;
+  --mui-text-primary-dark: #E6EAF2;
+  --mui-text-secondary-dark: #9AA4B8;
+  --mui-divider-dark: #2A3146;
+  --mui-appbar-bg-dark: #0A1124;
+  --mui-appbar-text-dark: #E6EAF2;
+}
