@@ -39,14 +39,13 @@ import requests
 from _download_commons import (
     DEFAULT_START_DATE,
     DEFAULT_TIMEOUT,
-    HostStatusTracker,
+    AntiBotProxy,
+    AntiBotConfig,
     build_headers_with_referer,
     business_days,
     is_trading_day,
     is_valid_file,
-    random_sleep,
     resolve_out_dir,
-    safe_get,
     setup_logger,
 )
 
@@ -130,7 +129,7 @@ def _fetch_page(
     trade_date: date,
     page_no: int,
     page_size: int,
-    host_tracker: HostStatusTracker,
+    proxy: AntiBotProxy,
 ) -> Optional[Dict[str, Any]]:
     """Fetch one page from the SSE commonSoaQuery JSONP endpoint.
 
@@ -156,14 +155,12 @@ def _fetch_page(
     else:
         params["preStockCode"] = ""
 
-    resp = safe_get(
+    resp = proxy.get(
         session,
         SSE_QUERY_URL,
         params=params,
         headers=SSE_HEADERS,
         timeout=DEFAULT_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag=f"[{sql_id} {ymd} p{page_no}]",
     )
@@ -227,7 +224,7 @@ def _download_summary(
     session: requests.Session,
     trade_date: date,
     out_dir: Path,
-    host_tracker: HostStatusTracker,
+    proxy: AntiBotProxy,
     sleep_sec: float,
 ) -> Tuple[Optional[Path], int]:
     """Fetch the single-row market-wide summary for one trade date.
@@ -241,7 +238,7 @@ def _download_summary(
         return out_file, -1
 
     payload = _fetch_page(
-        session, SUMMARY_SQL_ID, trade_date, 1, SUMMARY_PAGE_SIZE, host_tracker,
+        session, SUMMARY_SQL_ID, trade_date, 1, SUMMARY_PAGE_SIZE, proxy,
     )
     if payload is None:
         logger.error("[summary %s] request failed", ymd)
@@ -255,7 +252,7 @@ def _download_summary(
     parsed = [_parse_summary_row(r) for r in rows_raw]
     _write_csv(out_file, parsed, SUMMARY_COLUMNS)
     logger.info("[summary %s] saved %d row(s) -> %s", ymd, len(parsed), out_file.name)
-    random_sleep(sleep_sec)
+    # Auto-sleep handled by proxy.get()/post()
     return out_file, len(parsed)
 
 
@@ -263,7 +260,7 @@ def _download_detail(
     session: requests.Session,
     trade_date: date,
     out_dir: Path,
-    host_tracker: HostStatusTracker,
+    proxy: AntiBotProxy,
     sleep_sec: float,
 ) -> Tuple[Optional[Path], int]:
     """Fetch the per-security detail for one trade date, paginating to the end.
@@ -281,12 +278,12 @@ def _download_detail(
     total: Optional[int] = None
 
     while True:
-        if host_tracker.is_blocked(SSE_QUERY_URL):
+        if proxy.is_blocked(SSE_QUERY_URL):
             logger.warning("[detail %s] host blocked, stopping pagination", ymd)
             break
 
         payload = _fetch_page(
-            session, DETAIL_SQL_ID, trade_date, page_no, DETAIL_PAGE_SIZE, host_tracker,
+            session, DETAIL_SQL_ID, trade_date, page_no, DETAIL_PAGE_SIZE, proxy,
         )
         if payload is None:
             logger.error("[detail %s] page %d failed", ymd, page_no)
@@ -308,7 +305,7 @@ def _download_detail(
             break
 
         page_no += 1
-        random_sleep(sleep_sec)
+        # Auto-sleep handled by proxy.get()/post()
 
     if not all_rows:
         logger.info("[detail %s] no data", ymd)
@@ -325,7 +322,7 @@ def _download_detail(
 def _find_best_margin_end_date(
     out_dir: Path,
     session: Optional[requests.Session] = None,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> date:
     """Pick the most recent trade date for which SSE margin data is available.
 
@@ -337,7 +334,7 @@ def _find_best_margin_end_date(
     today = date.today()
 
     sess = session or requests.Session()
-    tracker = host_tracker or HostStatusTracker()
+    proxy_instance = proxy or AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
 
     candidates: List[date] = []
     if is_trading_day(today) and now.hour >= 15:
@@ -348,15 +345,15 @@ def _find_best_margin_end_date(
     for cand in candidates:
         if not is_trading_day(cand):
             continue
-        if tracker.is_blocked(SSE_QUERY_URL):
+        if proxy_instance.is_blocked(SSE_QUERY_URL):
             break
-        payload = _fetch_page(sess, SUMMARY_SQL_ID, cand, 1, SUMMARY_PAGE_SIZE, tracker)
+        payload = _fetch_page(sess, SUMMARY_SQL_ID, cand, 1, SUMMARY_PAGE_SIZE, proxy_instance)
         if payload is None:
             continue
         rows = payload.get("result") or []
         if rows:
             return cand
-        random_sleep(0.5)
+        proxy_instance.sleep(0.5)
 
     return _prev_business_day(today, skip_days=2)
 
@@ -366,7 +363,7 @@ def download_sse_margin(
     end_date: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
     report_types: Optional[List[str]] = None,
-    sleep_sec: float = 0.8,
+    sleep_sec: float = 5.0,
     session: Optional[requests.Session] = None,
 ) -> dict:
     """Download SSE margin (融资融券) data day by day.
@@ -388,10 +385,13 @@ def download_sse_margin(
     """
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_margin", out_root)
     sess = session or requests.Session()
-    host_tracker = HostStatusTracker()
+    
+    # Create unified AntiBotProxy
+    proxy_config = AntiBotConfig(base_sleep_sec=sleep_sec)
+    proxy = AntiBotProxy(proxy_config)
 
     if end_date is None:
-        best_date = _find_best_margin_end_date(out_dir, sess, host_tracker)
+        best_date = _find_best_margin_end_date(out_dir, sess, proxy)
         effective_end_date = best_date
     else:
         effective_end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
@@ -420,12 +420,12 @@ def download_sse_margin(
 
     try:
         for d in days:
-            if host_tracker.is_blocked(SSE_QUERY_URL):
+            if proxy.is_blocked(SSE_QUERY_URL):
                 logger.warning("[host-blocked] query.sse.com.cn is blocked, stopping")
                 break
 
             if "summary" in report_types:
-                path, n = _download_summary(sess, d, out_dir, host_tracker, sleep_sec)
+                path, n = _download_summary(sess, d, out_dir, proxy, sleep_sec)
                 if n == -1:
                     stats["skipped_summary"] += 1
                 elif path is None:
@@ -434,7 +434,7 @@ def download_sse_margin(
                     stats["downloaded_summary"] += 1
 
             if "detail" in report_types:
-                path, n = _download_detail(sess, d, out_dir, host_tracker, sleep_sec)
+                path, n = _download_detail(sess, d, out_dir, proxy, sleep_sec)
                 if n == -1:
                     stats["skipped_detail"] += 1
                 elif path is None:

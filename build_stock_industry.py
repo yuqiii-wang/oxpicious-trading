@@ -13,31 +13,24 @@ Derives the stock→industry classification from EXISTING database data:
      _classification.classify_stock())
 
 No external network access required — uses only data already in the database.
+No CSV I/O. No date-gap detection — every run rebuilds the full mapping
+because the underlying ETF holdings and industry taxonomy may have changed.
 
 Usage:
   python build_stock_industry.py
   python build_stock_industry.py --force   # truncate before insert
 """
 import os, sys, time, argparse
-import warnings
-warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _db_commons import get_db_connection_async, bulk_upsert_async, truncate_table_async
+from _build_commons import (
+    setup_utf8_stdout, get_db_connection_async, bulk_upsert_async,
+    truncate_table_async, print_build_header, print_wall_time,
+)
 # Unified classification taxonomy (single source of truth).
 from _classification import classify_industry_from_name, classify_stock
 
-# stdout encoding (Windows)
-import locale as _locale
-try:
-    _locale.setlocale(_locale.LC_ALL, "")
-except Exception:
-    pass
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+setup_utf8_stdout()
 
 import asyncio
 from collections import Counter, defaultdict
@@ -68,9 +61,7 @@ async def main():
     args = parser.parse_args()
 
     t0 = time.time()
-    print("=" * 70)
-    print("  BUILD STOCK INDUSTRY MAP (from existing DB data)")
-    print("=" * 70)
+    print_build_header("BUILD STOCK INDUSTRY MAP (from existing DB data)")
 
     conn = await get_db_connection_async()
     try:
@@ -205,8 +196,7 @@ async def main():
     finally:
         await conn.close()
 
-    print(f"\n  Wall time: {int(time.time()-t0)}s")
-    print("=" * 70)
+    print_wall_time(t0)
 
 
 if __name__ == "__main__":

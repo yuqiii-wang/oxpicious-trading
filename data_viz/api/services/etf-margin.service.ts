@@ -18,7 +18,6 @@ import type {
   EtfMarginCombinedResponse,
   SectorNode,
   IndustryNode,
-  Top5Holding,
 } from "../../shared/types.js";
 
 export interface EtfMarginQuery {
@@ -35,7 +34,7 @@ export interface EtfMarginQuery {
   limit_per_theme?: number;
   /** 1-based page number for pagination. */
   page?: number;
-  /** Number of ETFs per page (default 6). */
+  /** Number of ETFs per page (default 2). */
   page_size?: number;
 }
 
@@ -51,6 +50,8 @@ interface DbEtfMetaRow extends QueryResultRow {
   industry_id: string;
   industry_label: string;
   industry_slug: string;
+  index_code: string;
+  index_name: string;
 }
 
 interface DbEtfMarginRow extends QueryResultRow {
@@ -75,13 +76,6 @@ interface DbEtfMarginRow extends QueryResultRow {
   rq_balance_qty: number | null;
   rq_balance_amt: number | null;
   total_balance: number | null;
-}
-
-interface DbTop5Row extends QueryResultRow {
-  stock_code: string | null;
-  stock_name: string | null;
-  weight_pct: number | null;
-  rank: number;
 }
 
 // ----------------------------------------------------------------------------
@@ -133,9 +127,12 @@ const META_SQL = `
          COALESCE(MAX(m.sector_label),  '其他')       AS sector_label,
          COALESCE(MAX(m.industry_id),   'OTHER')     AS industry_id,
          COALESCE(MAX(m.industry_label),'未分类')     AS industry_label,
-         COALESCE(MAX(m.industry_slug), 'other')     AS industry_slug
+         COALESCE(MAX(m.industry_slug), 'other')     AS industry_slug,
+         COALESCE(MAX(eim.index_code), '')            AS index_code,
+         COALESCE(MAX(eim.index_name), '')            AS index_name
     FROM stats.v_etf_margin v
     LEFT JOIN stats.etf_meta m ON v.code = m.code
+    LEFT JOIN stats.etf_index_map eim ON v.code = eim.etf_code
    GROUP BY v.code
    ORDER BY score DESC, v.code
 `;
@@ -216,7 +213,7 @@ export async function getEtfMarginCombined(
   // 2. Filter by sector + industry (or by exact code when codeFilter is set).
   //    metaRows are already ordered by score DESC; preserve that order so
   //    pagination returns the highest-quality ETFs first.
-  const meta = new Map<string, { name: string; sector_id: string; sector_label: string; industry_id: string; industry_label: string }>();
+  const meta = new Map<string, { name: string; sector_id: string; sector_label: string; industry_id: string; industry_label: string; index_code: string; index_name: string }>();
   const wantedCodes: string[] = [];
   for (const r of metaRows) {
     const code = stripExchangeSuffix(r.code);
@@ -227,6 +224,8 @@ export async function getEtfMarginCombined(
       sector_label: r.sector_label,
       industry_id: r.industry_id,
       industry_label: r.industry_label,
+      index_code: r.index_code ?? "",
+      index_name: r.index_name ?? "",
     });
     if (codeFilter) {
       // Exact code search — ignore sector/industry filters.
@@ -248,7 +247,7 @@ export async function getEtfMarginCombined(
   const totalEtfs = wantedList.length;
 
   // 4. Pagination
-  const pageSize = q.page_size && q.page_size > 0 ? q.page_size : 6;
+  const pageSize = q.page_size && q.page_size > 0 ? q.page_size : 2;
   const totalPages = Math.max(1, Math.ceil(totalEtfs / pageSize));
   const page = q.page && q.page > 0 ? Math.min(q.page, totalPages) : 1;
   const pageCodes = wantedList.slice((page - 1) * pageSize, page * pageSize);
@@ -302,10 +301,7 @@ export async function getEtfMarginCombined(
     nameByCode.set(stripped, r.name ?? "");
   }
 
-  // 6. Fetch top5 holdings for the wanted ETFs (latest snapshot per ETF)
-  const top5Map = await fetchTop5Holdings(pageCodes);
-
-  // 7. Build bundles
+  // 6. Build bundles
   const etfs: EtfBundle[] = [];
   for (const code of pageCodes) {
     const rows = byCode.get(code) ?? [];
@@ -316,11 +312,12 @@ export async function getEtfMarginCombined(
       name: nameByCode.get(code) ?? m.name,
       is_bond: m.sector_id === "BOND",
       rows,
-      top5: top5Map.get(code) ?? [],
       sector_id: m.sector_id,
       sector_label: m.sector_label,
       industry_id: m.industry_id,
       industry_label: m.industry_label,
+      index_code: m.index_code,
+      index_name: m.index_name,
     });
   }
 
@@ -342,41 +339,3 @@ export async function getEtfMarginCombined(
   };
 }
 
-// ----------------------------------------------------------------------------
-//  Top5 holdings — query stats.sec_composition (source_type='etf', rank <= 5)
-//  for the latest snapshot per ETF.  Returns a map of stripped_code → Top5Holding[].
-// ----------------------------------------------------------------------------
-async function fetchTop5Holdings(
-  codes: string[],
-): Promise<Map<string, Top5Holding[]>> {
-  const result = new Map<string, Top5Holding[]>();
-  if (codes.length === 0) return result;
-
-  const sql = `
-    SELECT t.stock_code, t.stock_name, t.weight_pct, t.rank,
-           REGEXP_REPLACE(t.code, '\\.(SZ|SS|SH)$', '') AS stripped_code
-    FROM stats.sec_composition t
-    INNER JOIN (
-      SELECT code, MAX(snapshot_date) AS max_date
-      FROM stats.sec_composition
-      WHERE source_type = 'etf'
-      GROUP BY code
-    ) latest ON t.code = latest.code
-           AND t.snapshot_date = latest.max_date
-    WHERE t.source_type = 'etf'
-      AND REGEXP_REPLACE(t.code, '\\.(SZ|SS|SH)$', '') = ANY($1::text[])
-      AND t.rank <= 5
-    ORDER BY t.code, t.rank
-  `;
-  const rows = await queryRows<DbTop5Row & { stripped_code: string }>(sql, [codes]);
-  for (const r of rows) {
-    const code = r.stripped_code;
-    if (!result.has(code)) result.set(code, []);
-    const name = r.stock_name ?? "";
-    const pct = toNum(r.weight_pct);
-    if (name && pct && pct > 0) {
-      result.get(code)!.push({ stock_name: name, weight_pct: pct });
-    }
-  }
-  return result;
-}

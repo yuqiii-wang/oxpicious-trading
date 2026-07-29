@@ -5,6 +5,8 @@
  * - Auto-resizes the chart on container resize.
  * - Exposes the chart instance via ref for cross-chart sync (used by the
  *   debt-baseline 4-panel view to share x-axis crosshair).
+ * - Supports an `onEvents` prop for attaching interaction handlers (click,
+ *   hover, etc.) that stay in sync with the latest option data.
  */
 import { useEffect, useRef } from "react";
 import * as echarts from "echarts";
@@ -14,12 +16,19 @@ import { useStore } from "@/store/filters";
 interface EChartProps {
   option: EChartsOption;
   height?: number | string;
+  /** Minimum container height (default 200). Set to a smaller value for
+   *  narrow strip charts (e.g. timeline markers). */
+  minHeight?: number;
   /** Optional group name for cross-chart tooltip sync. */
   group?: string;
   onReady?: (instance: echarts.ECharts) => void;
+  /** Event handlers keyed by ECharts event name (e.g. { click: fn }). Handlers
+   *  are re-bound when this object identity changes, so pass a stable
+   *  reference (e.g. via useCallback) to avoid unnecessary re-binds. */
+  onEvents?: Record<string, (params: unknown) => void>;
 }
 
-export default function EChart({ option, height = 320, group, onReady }: EChartProps) {
+export default function EChart({ option, height = 320, minHeight = 200, group, onReady, onEvents }: EChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
   const themeMode = useStore((s) => s.themeMode);
@@ -51,6 +60,20 @@ export default function EChart({ option, height = 320, group, onReady }: EChartP
     chartRef.current.setOption(option, { notMerge: false, lazyUpdate: true });
   }, [option]);
 
+  // Bind / re-bind event handlers when onEvents identity changes
+  useEffect(() => {
+    if (!chartRef.current || !onEvents) return;
+    const chart = chartRef.current;
+    for (const [eventName, handler] of Object.entries(onEvents)) {
+      chart.on(eventName, handler);
+    }
+    return () => {
+      for (const eventName of Object.keys(onEvents)) {
+        chart.off(eventName);
+      }
+    };
+  }, [onEvents]);
+
   // Re-render on theme change (text/grid colors depend on mode)
   useEffect(() => {
     if (!chartRef.current) return;
@@ -63,7 +86,7 @@ export default function EChart({ option, height = 320, group, onReady }: EChartP
       style={{
         width: "100%",
         height: typeof height === "number" ? `${height}px` : height,
-        minHeight: 200,
+        minHeight,
       }}
     />
   );

@@ -1,8 +1,7 @@
 """stream_szse_price.py — Stream SZSE equity prices and build 5-minute OHLCV bars.
 
-Targets SZSE-listed stocks that appear in ETF holdings with weight >= 1%
-(~2,017 stocks), retrieved from stats.stock_identity joined with
-stats.sec_composition.
+Targets SZSE-listed stocks that appear in ETF holdings (any weight),
+retrieved from stats.stock_identity joined with stats.sec_composition.
 
 Architecture:
   * Round-based streaming (no rigid biz-hour gating). The target list is split
@@ -110,7 +109,12 @@ from _download_commons import (
 )
 from _db_commons import (
     bulk_upsert,
+    check_stock_intraday_exists,
     get_db_connection,
+)
+from _study_and_select_stocks import (
+    TARGET_LOOKBACK_DAYS,
+    load_target_stocks,
 )
 
 # ---------------------------------------------------------------------------
@@ -128,6 +132,13 @@ for _s in (sys.stdout, sys.stderr):
 
 
 logger = setup_logger("stream_szse")
+
+# Module-load timestamp — used by main() to log total time from import to
+# stream() entry, so we can see whether top-level imports (pandas via
+# _download_commons, requests, etc.) are the slow part.
+_MODULE_LOAD_T0 = _time.time()
+logger.info("[startup] module loaded; top-level imports done @ %.2fs.",
+            _time.time() - _MODULE_LOAD_T0)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -206,41 +217,9 @@ def sleep_chunks(sec: float, chunk_sec: float = 5.0) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Target stock list: SZSE stocks in ETF holdings with weight >= 1%
+# Target stock list: see _study_and_select_stocks.load_target_stocks
+# (SZSE stocks currently held by ETFs — imported above).
 # ---------------------------------------------------------------------------
-def load_target_stocks(conn) -> List[Tuple[str, str]]:
-    """Return [(bare_code, name), ...] for SZSE stocks held by ETFs (weight >= 1%).
-
-    Joins stats.stock_identity (SZSE codes only) with the latest ETF
-    composition snapshot in stats.sec_composition. ``stock_code`` in
-    sec_composition carries the exchange suffix (e.g. "000001.SZ"), matching
-    stock_identity.code.
-    """
-    query = """
-        SELECT DISTINCT ON (si.code) si.code, si.name
-          FROM stats.stock_identity si
-          JOIN stats.sec_composition sc
-            ON sc.stock_code = si.code
-         WHERE si.code LIKE '%.SZ'
-           AND sc.source_type = 'etf'
-           AND sc.weight_pct >= 1.0
-           AND sc.snapshot_date = (
-               SELECT MAX(snapshot_date) FROM stats.sec_composition
-                WHERE source_type = 'etf'
-           )
-         ORDER BY si.code, si.date DESC;
-    """
-    with conn.cursor() as cur:
-        cur.execute(query)
-        rows = cur.fetchall()
-    stocks: List[Tuple[str, str]] = []
-    for r in rows:
-        # r is a tuple (code, name); code is suffixed e.g. "000001.SZ".
-        full_code = r[0]
-        name = r[1] or ""
-        bare = full_code.split(".")[0]
-        stocks.append((bare, name))
-    return stocks
 
 
 def split_groups(stocks: List[Tuple[str, str]], n: int) -> List[List[Tuple[str, str]]]:
@@ -716,7 +695,18 @@ def aggregate_5min(
         change = round(c - o, 4)
         change_pct = round((c - o) / o * 100, 4) if o else None
 
-        identity_rows.append({"date": trade_date, "code": full_code, "code_suffix": code_suffix, "name": name})
+        # is_in_etf=True by construction: load_target_stocks() pre-filters the
+        # streaming target list to stocks whose latest stock_identity row (last
+        # 30 days) has is_in_etf=TRUE, so every identity row emitted here is
+        # for an ETF-held stock. Setting it explicitly keeps new (date, code)
+        # rows from defaulting to FALSE before the next backfill runs.
+        identity_rows.append({
+            "date": trade_date,
+            "code": full_code,
+            "code_suffix": code_suffix,
+            "name": name,
+            "is_in_etf": True,
+        })
         bar_rows.append({
             "date": trade_date,
             "code": full_code,
@@ -789,10 +779,32 @@ async def _process_stocks(
             latest_times[bare_code] = lt
             identity_rows.extend(ident)
             bar_rows.extend(bars)
-            logger.info(
-                "%s[%s] %s: %d samples -> %d bars (latest=%s) in %.1fs",
-                tag, source, bare_code, len(samples), len(bars), lt, fe,
-            )
+            
+            # Check if we got samples but 0 bars (likely date mismatch)
+            if len(bars) == 0 and len(samples) > 0:
+                # Check if data already exists for this stock on trade_date
+                data_existed = False
+                if conn is not None:
+                    full_code = add_exchange_suffix(bare_code, "深圳")
+                    data_existed = await asyncio.to_thread(
+                        check_stock_intraday_exists, conn, full_code, trade_date
+                    )
+                
+                if data_existed:
+                    logger.info(
+                        "%s[%s] %s: %d samples -> 0 bars, data existed for %s, skipped",
+                        tag, source, bare_code, len(samples), trade_date,
+                    )
+                else:
+                    logger.info(
+                        "%s[%s] %s: %d samples -> 0 bars (latest=%s) in %.1fs",
+                        tag, source, bare_code, len(samples), lt, fe,
+                    )
+            else:
+                logger.info(
+                    "%s[%s] %s: %d samples -> %d bars (latest=%s) in %.1fs",
+                    tag, source, bare_code, len(samples), len(bars), lt, fe,
+                )
             # Incremental DB upsert so each stock's bars appear in
             # stats.stock_intraday_5min immediately (not only at round-end).
             if conn is not None and (ident or bars):
@@ -1017,16 +1029,35 @@ async def stream(
     # concurrent use, so each async worker gets its own. Bars are upserted
     # per-stock (incrementally) so rows appear in stats.stock_intraday_5min as
     # soon as each stock is fetched. conn is for load_target_stocks only.
+    t_stream = _time.time()
+    logger.info("[startup] stream() entered; opening 5 DB connections...")
+
+    t_step = _time.time()
     conn = get_db_connection()
+    logger.info("[startup] DB conn (main) ready in %.2fs.", _time.time() - t_step)
+
+    t_step = _time.time()
     conn_a = get_db_connection()
+    logger.info("[startup] DB conn_a (akshare) ready in %.2fs.", _time.time() - t_step)
+
+    t_step = _time.time()
     conn_b = get_db_connection()
+    logger.info("[startup] DB conn_b (szse) ready in %.2fs.", _time.time() - t_step)
+
+    t_step = _time.time()
     conn_c = get_db_connection()
+    logger.info("[startup] DB conn_c (em_push2his) ready in %.2fs.", _time.time() - t_step)
+
+    t_step = _time.time()
     conn_d = get_db_connection()
-    logger.info("DB ready (stats.stock_intraday_5min expected to pre-exist).")
+    logger.info("[startup] DB conn_d (em_push2) ready in %.2fs.", _time.time() - t_step)
+    logger.info("[startup] all 5 DB connections ready in %.2fs total (stats.stock_intraday_5min expected to pre-exist).",
+                _time.time() - t_stream)
 
     t0 = _time.time()
+    logger.info("[startup] calling load_target_stocks(conn)...")
     stocks = load_target_stocks(conn)
-    logger.info("Loaded %d target SZSE stocks (ETF weight >= 1%%) in %.1fs.",
+    logger.info("[startup] Loaded %d target SZSE stocks (ETF weight >= 1%%) in %.2fs.",
                 len(stocks), _time.time() - t0)
     if not stocks:
         logger.error("No target stocks found; ensure sec_composition is populated.")
@@ -1034,27 +1065,36 @@ async def stream(
             c.close()
         return
 
+    t0 = _time.time()
     groups = split_groups(stocks, n_groups)
     group_sizes = [len(g) for g in groups]
     logger.info(
-        "stream_szse_price started: %d stocks -> %d groups (sizes: min=%d max=%d avg=%.1f); "
-        "4 parallel procs (A=akshare, C=em_push2his, D=em_push2, B=szse); cooldown=%.0fs once=%s",
+        "[startup] stream_szse_price started: %d stocks -> %d groups (sizes: min=%d max=%d avg=%.1f); "
+        "4 parallel procs (A=akshare, C=em_push2his, D=em_push2, B=szse); cooldown=%.0fs once=%s (split_groups in %.2fs)",
         len(stocks), len(groups), min(group_sizes), max(group_sizes),
         sum(group_sizes) / len(group_sizes) if group_sizes else 0,
-        poll_interval, once,
+        poll_interval, once, _time.time() - t0,
     )
 
     # Import AkShare up-front (heavy module: pandas/numpy/requests + V8).
     t0 = _time.time()
+    logger.info("[startup] importing AkShare (heavy: pandas/numpy/requests + V8)...")
     _get_akshare()
-    logger.info("AkShare imported (V8 ready) in %.1fs.", _time.time() - t0)
+    logger.info("[startup] AkShare imported (V8 ready) in %.2fs.", _time.time() - t0)
     # curl_cffi drives the East Money sources C/D (TLS renegotiation).
     t0 = _time.time()
+    logger.info("[startup] creating curl_cffi Session (EM sources C/D)...")
     _get_em_session()
-    logger.info("curl_cffi Session created (EM sources C/D ready) in %.1fs.", _time.time() - t0)
+    logger.info("[startup] curl_cffi Session created (EM sources C/D ready) in %.2fs.", _time.time() - t0)
 
+    t0 = _time.time()
     session = build_default_session()
+    logger.info("[startup] build_default_session() ready in %.2fs.", _time.time() - t0)
+
+    t0 = _time.time()
     host_tracker = HostStatusTracker()
+    logger.info("[startup] HostStatusTracker() ready in %.2fs.", _time.time() - t0)
+    logger.info("[startup] total startup time: %.2fs; entering main loop.", _time.time() - t_stream)
 
     # --- Per-biz-day state (reset whenever we anchor to a new biz day) ---
     current_biz_day = None
@@ -1203,6 +1243,9 @@ async def stream(
 
 
 def main() -> None:
+    t_main = _time.time()
+    logger.info("[startup] main() entered @ %.2fs after module load.",
+                _time.time() - _MODULE_LOAD_T0)
     ap = argparse.ArgumentParser(
         description="Stream SZSE equity prices into 5-min OHLCV bars "
                     "(4 parallel procs: A=akshare, C=em_push2his, "
@@ -1215,6 +1258,8 @@ def main() -> None:
     ap.add_argument("--once", action="store_true",
                     help="Run one round then exit (dev/test).")
     args = ap.parse_args()
+    logger.info("[startup] args parsed (interval=%.1f groups=%d once=%s) in %.2fs; calling asyncio.run(stream)...",
+                args.interval, args.groups, args.once, _time.time() - t_main)
     try:
         asyncio.run(stream(
             poll_interval=args.interval,

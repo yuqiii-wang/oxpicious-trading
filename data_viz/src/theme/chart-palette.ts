@@ -31,9 +31,11 @@ export const UP_COLOR = cssVar("--chart-up", "#27ae60"); // price-up green (also
 export const DOWN_COLOR = cssVar("--chart-down", "#c0392b"); // price-down red (also RQ margin fill)
 export const PALETTE_HI = cssVar("--chart-hi", "#2980b9"); // rebased-close line blue
 export const NEUTRAL_FILL = cssVar("--chart-neutral-fill", "#95a5a6"); // neutral gray for price-area fill
+export const MA5_COLOR = cssVar("--chart-ma5", "#e91e63"); // MA5 magenta
 export const MA20_COLOR = cssVar("--chart-ma20", "#f39c12"); // MA20 orange
 export const MA60_COLOR = cssVar("--chart-ma60", "#8e44ad"); // MA60 purple
 export const MA120_COLOR = cssVar("--chart-ma120", "#7f8c8d"); // MA120 gray
+export const MA255_COLOR = cssVar("--chart-ma255", "#16a085"); // MA255 teal
 
 // Quant / IV-smile colors
 export const IV_BLUE = cssVar("--chart-iv-blue", "#1F77B4"); // standard tableau blue
@@ -128,6 +130,12 @@ export const CHINABOND_SERIES = [
   { col: "cb_5y", label: "5Y", color: MUTED_PALETTE[2] },
   { col: "cb_10y", label: "10Y", color: MUTED_PALETTE[4] },
   { col: "cb_30y", label: "30Y", color: MUTED_PALETTE[6] },
+] as const;
+
+// PBoC LPR tenors (monthly announcement; 1Y + 5Y+)
+export const LPR_SERIES = [
+  { col: "lpr_1y", label: "1Y LPR", color: MUTED_PALETTE[0] },
+  { col: "lpr_5y", label: "5Y+ LPR", color: MUTED_PALETTE[1] },
 ] as const;
 
 export const MAX_PAIN_COLOR = MA60_COLOR;

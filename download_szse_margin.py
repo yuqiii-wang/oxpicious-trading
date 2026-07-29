@@ -144,7 +144,7 @@ def download_szse_margin(
     end_date: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
     report_types: Optional[List[str]] = None,
-    sleep_sec: float = 0.8,
+    sleep_sec: float = 5.0,
     session: Optional[requests.Session] = None,
 ) -> dict:
     """
@@ -155,7 +155,7 @@ def download_szse_margin(
     https://www.szse.cn/disclosure/margin/margin/index.html with ``txtDate``
     set to the target business date per request, walking backwards from
     *end_date* until *start_date* (default: DEFAULT_START_DATE in
-    _download_commons, currently 2022-01-01).
+    _download_commons, currently 2020-01-01).
 
     ``report_types`` defaults to ``["summary", "detail"]``:
 

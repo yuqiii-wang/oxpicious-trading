@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -15,6 +14,9 @@ from _download_commons import (
     EMPTY_HTML_MAX_BYTES,
     DEFAULT_TIMEOUT,
     COMMON_BASE_HEADERS,
+    DEFAULT_START_DATE,
+    AntiBotProxy,
+    AntiBotConfig,
     setup_logger,
     resolve_out_dir,
     parse_date_window,
@@ -27,9 +29,6 @@ from _download_commons import (
     scan_present_filenames,
     RunStats,
     convert_xlsx_to_csv,
-    safe_get,
-    safe_post,
-    HostStatusTracker,
 )
 
 
@@ -102,7 +101,7 @@ FORM_HEADERS.update(
 )
 
 SHIBOR_TIMEOUT: Tuple[int, int] = (15, 120)
-SLEEP_SEC = 1.0
+SLEEP_SEC = 5.0
 MAX_CHUNK_MONTHS = 12
 RE_DATE_RANGE_IN_NAME = re.compile(r"_(\d{8})_(\d{8})\.xlsx$")
 
@@ -146,14 +145,15 @@ def split_chunks(
     return chunks
 
 
-def _fetch_member_info(session: requests.Session, host_tracker: Optional[HostStatusTracker] = None) -> Optional[MemberInfo]:
-    resp = safe_post(
+def _fetch_member_info(session: requests.Session, proxy: Optional[AntiBotProxy] = None) -> Optional[MemberInfo]:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
+    resp = proxy.post(
         session,
         SHIBOR_BASE + API_PNL_BK,
         headers=AJAX_HEADERS,
         timeout=SHIBOR_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag="[member-info]",
     )
@@ -202,21 +202,22 @@ def _check_data(
     end: date,
     members: Optional[MemberInfo] = None,
     tendency_value: str = "",
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Tuple[bool, str]:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
     s_s, s_e = _ymd(start), _ymd(end)
     tag = f"[check {data_type} {s_s}~{s_e}]"
 
     if data_type == T_SHIBOR_HIS:
         params = {"lang": "cn", "startDate": s_s, "endDate": s_e}
-        resp = safe_post(
+        resp = proxy.post(
             session,
             SHIBOR_BASE + API_CHECK_SHIBOR_HIS,
             params=params,
             headers=AJAX_HEADERS,
             timeout=SHIBOR_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=tag,
         )
@@ -231,14 +232,12 @@ def _check_data(
             "startDate": s_s,
             "endDate": s_e,
         }
-        resp = safe_post(
+        resp = proxy.post(
             session,
             SHIBOR_BASE + API_CHECK_SHIBOR_PRI,
             data=data,
             headers=AJAX_HEADERS,
             timeout=SHIBOR_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=tag,
         )
@@ -249,27 +248,23 @@ def _check_data(
             "endDate": s_e,
             "tendencyvalue": tendency_value,
         }
-        resp = safe_post(
+        resp = proxy.post(
             session,
             SHIBOR_BASE + API_CHECK_SHIBOR_MN,
             params=params,
             headers=AJAX_HEADERS,
             timeout=SHIBOR_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=tag,
         )
     elif data_type == T_LPR_HIS:
         params = {"lang": "CN", "startDate": s_s, "endDate": s_e}
-        resp = safe_post(
+        resp = proxy.post(
             session,
             SHIBOR_BASE + API_CHECK_LPR_HIS,
             params=params,
             headers=AJAX_HEADERS,
             timeout=SHIBOR_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=tag,
         )
@@ -304,21 +299,22 @@ def _download_excel(
     out_file: Path,
     members: Optional[MemberInfo] = None,
     tendency_value: str = "",
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
     s_s, s_e = _ymd(start), _ymd(end)
     tag = f"[download {data_type} {s_s}~{s_e}]"
 
     if data_type == T_SHIBOR_HIS:
         params = {"lang": "cn", "startDate": s_s, "endDate": s_e}
-        resp = safe_post(
+        resp = proxy.post(
             session,
             SHIBOR_BASE + API_XLSX_SHIBOR_HIS,
             params=params,
             headers=FORM_HEADERS,
             timeout=SHIBOR_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=tag,
         )
@@ -334,14 +330,12 @@ def _download_excel(
             "instnCnNm": members.instn_cn_nm,
             "instnEnNm": members.instn_en_nm,
         }
-        resp = safe_post(
+        resp = proxy.post(
             session,
             SHIBOR_BASE + API_XLSX_SHIBOR_PRI,
             params=params,
             headers=FORM_HEADERS,
             timeout=SHIBOR_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=tag,
         )
@@ -352,27 +346,23 @@ def _download_excel(
             "endDate": s_e,
             "tendencyvalue": tendency_value,
         }
-        resp = safe_post(
+        resp = proxy.post(
             session,
             SHIBOR_BASE + API_XLSX_SHIBOR_MN,
             params=params,
             headers=FORM_HEADERS,
             timeout=SHIBOR_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=tag,
         )
     elif data_type == T_LPR_HIS:
         params = {"lang": "CN", "startDate": s_s, "endDate": s_e}
-        resp = safe_post(
+        resp = proxy.post(
             session,
             SHIBOR_BASE + API_XLSX_LPR_HIS,
             params=params,
             headers=FORM_HEADERS,
             timeout=SHIBOR_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=tag,
         )
@@ -409,13 +399,14 @@ def _chunk_filename(data_type: str, start: date, end: date) -> str:
 def download_shibor(
     *,
     out_root: Optional[str] = None,
-    start_date: Optional[str] = "2021-01-01",
+    start_date: Optional[str] = DEFAULT_START_DATE,
     end_date: Optional[str] = None,
     lookback_years: int = 3,
     data_types: Optional[List[str]] = None,
     chunk_months: int = MAX_CHUNK_MONTHS,
     sleep_sec: float = SLEEP_SEC,
     tendency_value: str = "",
+    db_table: str = "stats.debt_identity",
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "shibor", out_root)
 
@@ -441,7 +432,12 @@ def download_shibor(
 
     session = build_session()
     stats = RunStats()
-    host_tracker = HostStatusTracker()
+    
+    # Create unified AntiBotProxy
+    proxy_config = AntiBotConfig(
+        base_sleep_sec=sleep_sec,
+    )
+    proxy = AntiBotProxy(proxy_config)
 
     logger.info(
         "Starting SHIBOR download: requested %s -> %s (lookback=%dy). "
@@ -452,7 +448,7 @@ def download_shibor(
     try:
         members: Optional[MemberInfo] = None
         if T_SHIBOR_PRI in data_types:
-            members = _fetch_member_info(session, host_tracker)
+            members = _fetch_member_info(session, proxy)
             if members is None:
                 logger.warning("shibor_pri_his will be skipped (no member list)")
                 data_types = [t for t in data_types if t != T_SHIBOR_PRI]
@@ -460,7 +456,7 @@ def download_shibor(
         for dt in data_types:
             logger.info("== Processing data_type %s (%s) ==", dt, DATA_TYPES[dt]["label"])
 
-            if host_tracker.is_blocked(SHIBOR_BASE):
+            if proxy.is_blocked(SHIBOR_BASE):
                 logger.warning("  [host-blocked] shibor.sh.cn is blocked, skipping %s", dt)
                 stats.failed += len(chunk_plan.items) if 'chunk_plan' in locals() else 1
                 continue
@@ -475,6 +471,7 @@ def download_shibor(
                 type_configs=type_cfgs,
                 min_bytes=MIN_VALID_BYTES,
                 ext_glob="*.xlsx",
+                db_table=db_table,
             )
             stats.skipped_cached += chunk_plan.present_count
             logger.info(
@@ -486,7 +483,7 @@ def download_shibor(
 
             citem: ChunkDownloadPlanItem
             for citem in chunk_plan.items:
-                if host_tracker.is_blocked(SHIBOR_BASE):
+                if proxy.is_blocked(SHIBOR_BASE):
                     logger.warning("  [host-blocked] shibor.sh.cn blocked, skipping remaining chunks")
                     stats.failed += len(chunk_plan.items) - chunk_plan.items.index(citem)
                     break
@@ -503,31 +500,31 @@ def download_shibor(
                         logger.info("%s csv already converted, skipping", tag)
                     else:
                         convert_xlsx_to_csv(fpath, logger=logger, log_tag=tag)
-                    time.sleep(max(0.1, sleep_sec * 0.3))
+                    proxy.sleep(max(0.1, sleep_sec * 0.3))
                     continue
 
                 ok, msg = _check_data(session, dt, cs, ce, members=members,
                                       tendency_value=tendency_value,
-                                      host_tracker=host_tracker)
+                                      proxy=proxy)
                 if not ok:
                     if msg == "no records returned" or "no records" in msg.lower():
                         logger.info("  [empty] %s (%s)", tag, msg)
                     else:
                         logger.warning("  [check-fail] %s (%s)", tag, msg)
                     stats.empty += 1
-                    time.sleep(max(0.2, sleep_sec * 0.5))
+                    proxy.sleep(max(0.2, sleep_sec * 0.5))
                     continue
 
                 saved = _download_excel(session, dt, cs, ce, fpath, members=members,
                                         tendency_value=tendency_value,
-                                        host_tracker=host_tracker)
+                                        proxy=proxy)
                 if saved:
                     stats.downloaded += 1
                     stats.files.append(str(fpath))
                 else:
                     stats.failed += 1
 
-                time.sleep(sleep_sec)
+                # Auto-sleep handled by proxy.get()/post()
 
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")

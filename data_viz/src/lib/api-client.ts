@@ -18,6 +18,7 @@ import { LruCache } from "@/lib/lru-cache";
 import type {
   LatestDatesResponse,
   DebtBaselineResponse,
+  PbocOmaResponse,
   OptionsCombinedResponse,
   OptionsUnderlying,
   EtfOhlcvResponse,
@@ -27,6 +28,15 @@ import type {
   IndexCombinedResponse,
   IndexIntraday5minResponse,
   SecCompositionResponse,
+  StockBaselineResponse,
+  StockCombinedResponse,
+  MovAveSpreadCodesResponse,
+  MovAveSpreadChartResponse,
+  MaSpreadSecType,
+  PerfAttrCodesResponse,
+  PerfAttrChartResponse,
+  PerfAttrAttributionResponse,
+  PerfAttrSecType,
 } from "../../shared/types";
 
 // Module-level cache singleton: 100 entries, 10-minute TTL (safety net).
@@ -41,9 +51,32 @@ let _versionCache: { value: LatestDatesResponse; expiresAt: number } | null = nu
 /**
  * Manual cache invalidation — call after destructive operations or when the
  * user explicitly wants fresh data (e.g. a "Refresh" button).
+ *
+ * Three flavors:
+ *   • clearApiCache()              — wipes everything (use sparingly).
+ *   • invalidateCacheForUrl(url)   — removes one exact URL (use for plot-level
+ *                                     refresh where one endpoint = one plot).
+ *   • invalidateCacheForPrefix(p)  — removes all URLs starting with `p` (use
+ *                                     for page-level refresh where one logical
+ *                                     "page" maps to multiple endpoints that
+ *                                     share a common route prefix, e.g.
+ *                                     "/api/debt-baseline").
+ *
+ * All three also clear the version cache so the next fetch re-checks the
+ * DB's latest date instead of trusting the stale 30s snapshot.
  */
 export function clearApiCache(): void {
   apiCache.clear();
+  _versionCache = null;
+}
+
+export function invalidateCacheForUrl(url: string): void {
+  apiCache.delete(url);
+  _versionCache = null;
+}
+
+export function invalidateCacheForPrefix(prefix: string): void {
+  apiCache.deletePrefix(prefix);
   _versionCache = null;
 }
 
@@ -69,9 +102,10 @@ function mapUrlToSource(url: string): keyof LatestDatesResponse | null {
   if (url.startsWith("/api/etf-margin/combined"))         return "etf_margin";
   if (url.startsWith("/api/szse-options/combined"))       return "options";
   if (url.startsWith("/api/szse-options/etf-ohlcv"))      return "etf_margin";
+  if (url.startsWith("/api/stock-baseline/combined"))     return "stock_baseline";
   // No date in response — TTL only:
   // /api/etf-margin/themes, /api/szse-options/underlyings,
-  // /api/index-baseline/intraday-5min
+  // /api/index-baseline/intraday-5min, /api/stock-baseline/themes
   return null;
 }
 
@@ -106,6 +140,10 @@ function extractLatestDate(url: string, data: unknown): string {
     }
     if (url.startsWith("/api/szse-options/etf-ohlcv")) {
       const dates = (data as EtfOhlcvResponse)?.dates ?? [];
+      return dates.length ? dates[dates.length - 1] : "";
+    }
+    if (url.startsWith("/api/stock-baseline/combined")) {
+      const dates = (data as StockCombinedResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
     }
   } catch {
@@ -217,6 +255,11 @@ export function fetchDebtBaseline(
   return fetchJson<DebtBaselineResponse>(`/api/debt-baseline${qs ? `?${qs}` : ""}`);
 }
 
+/** PBoC Open Market Announcements — small dataset, no date filter (TTL-only cache). */
+export function fetchPbocOmaAnnouncements(): Promise<PbocOmaResponse> {
+  return fetchJson<PbocOmaResponse>(`/api/debt-baseline/oma`);
+}
+
 export function fetchUnderlyings(): Promise<OptionsUnderlying[]> {
   return fetchJson<OptionsUnderlying[]>(`/api/szse-options/underlyings`);
 }
@@ -319,4 +362,122 @@ export function fetchSecComposition(code: string): Promise<SecCompositionRespons
   if (code) params.set("code", code);
   const qs = params.toString();
   return fetchJson<SecCompositionResponse>(`/api/sec-composition${qs ? `?${qs}` : ""}`);
+}
+
+export function fetchStockBaseline(
+  code: string,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<StockBaselineResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<StockBaselineResponse>(`/api/stock-baseline${qs ? `?${qs}` : ""}`);
+}
+
+export function fetchStockThemes(): Promise<SectorNode[]> {
+  return fetchJson<SectorNode[]>(`/api/stock-baseline/themes`);
+}
+
+export function fetchStocksCombined(
+  sector?: string | null,
+  industry?: string | null,
+  startDate?: string | null,
+  endDate?: string | null,
+  page?: number,
+  pageSize?: number,
+  code?: string | null,
+): Promise<StockCombinedResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (sector) params.set("sector", sector);
+  if (industry) params.set("industry", industry);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  if (page) params.set("page", String(page));
+  if (pageSize) params.set("page_size", String(pageSize));
+  const qs = params.toString();
+  return fetchJson<StockCombinedResponse>(`/api/stock-baseline/combined${qs ? `?${qs}` : ""}`);
+}
+
+// ---------------------------------------------------------------------------
+//  Analysis Commons — MA-Spread (ETF + Index)
+//  All three endpoints require an `sec_type` query param ('etf' | 'index')
+//  and rely on the LRU TTL cache only (no version check; the analysis schema
+//  is recomputed offline by analyze_mov_ave_spread.py).
+// ---------------------------------------------------------------------------
+export function fetchMovAveSpreadCodes(
+  secType: MaSpreadSecType,
+): Promise<MovAveSpreadCodesResponse> {
+  const params = new URLSearchParams();
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<MovAveSpreadCodesResponse>(
+    `/api/analysis/mov-ave-spread/codes${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchMovAveSpreadChart(
+  code: string,
+  secType: MaSpreadSecType,
+): Promise<MovAveSpreadChartResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<MovAveSpreadChartResponse>(
+    `/api/analysis/mov-ave-spread/chart${qs ? `?${qs}` : ""}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Analysis Commons — Perf Attribution (ETF/Index × Index)
+//  TTL-only cache (analysis schema is recomputed offline).
+// ---------------------------------------------------------------------------
+export function fetchPerfAttrCodes(
+  secType: PerfAttrSecType = "etf",
+): Promise<PerfAttrCodesResponse> {
+  return fetchJson<PerfAttrCodesResponse>(
+    `/api/analysis/perf-attr/codes?sec_type=${secType}`,
+  );
+}
+
+/** Themes tree (L1 sector → L2 industry → items) for the ThemeSelector.
+ *  Only includes codes that have rows in analysis.sec_alloc_perf_attribution. */
+export function fetchPerfAttrThemes(
+  secType: PerfAttrSecType = "etf",
+): Promise<SectorNode[]> {
+  return fetchJson<SectorNode[]>(
+    `/api/analysis/perf-attr/themes?sec_type=${secType}`,
+  );
+}
+
+export function fetchPerfAttrAttribution(
+  code: string,
+  secType: PerfAttrSecType = "etf",
+): Promise<PerfAttrAttributionResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<PerfAttrAttributionResponse>(
+    `/api/analysis/perf-attr/attribution?${qs}`,
+  );
+}
+
+export function fetchPerfAttrChart(
+  code: string,
+  benchmarkCode: string,
+  secType: PerfAttrSecType = "etf",
+): Promise<PerfAttrChartResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (benchmarkCode) params.set("benchmark_code", benchmarkCode);
+  params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<PerfAttrChartResponse>(
+    `/api/analysis/perf-attr/chart?${qs}`,
+  );
 }

@@ -51,12 +51,11 @@ import requests
 from _download_commons import (
     DEFAULT_TIMEOUT,
     MIN_VALID_BYTES,
-    HostStatusTracker,
+    AntiBotProxy,
+    AntiBotConfig,
     build_headers_with_referer,
     is_valid_file,
-    random_sleep,
     resolve_out_dir,
-    safe_post,
     setup_logger,
 )
 
@@ -120,7 +119,7 @@ def _fetch_page(
     session: requests.Session,
     page: int,
     timeout: Tuple[int, int] = DEFAULT_TIMEOUT,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch one page of BSE quotation data.
 
@@ -128,23 +127,23 @@ def _fetch_page(
     to the BSE list endpoint and returns the parsed JSON object (the first
     element of the response array), or None on failure.
     """
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(rotate_browser_profile=False, base_sleep_sec=5.0))
+    
     data = {
         "page": str(page),
         "pageSize": str(PAGE_SIZE),
         "sortColumn": "hqzqdm",
         "sortType": "asc",
     }
-    resp = safe_post(
+    # We disable browser profile rotation because BSE needs specific headers
+    # (Content-Type / X-Requested-With) that would be clobbered by fingerprint overlay.
+    resp = proxy.post(
         session,
         BSE_LIST_URL,
         data=data,
         headers=BSE_HEADERS,
         timeout=timeout,
-        host_tracker=host_tracker,
-        # anti_bot=False: we need our explicit Content-Type / X-Requested-With
-        # headers, and the browser-fingerprint overlay would clobber Accept
-        # with a text/html value the XHR endpoint may reject.
-        anti_bot=False,
         logger=logger,
         log_tag=f"[fetch-page {page}] ",
     )
@@ -306,7 +305,7 @@ def download_bse_price(
     out_root: Optional[str] = None,
     *,
     page_size: int = PAGE_SIZE,
-    sleep_sec: float = 0.8,
+    sleep_sec: float = 5.0,
     force: bool = False,
     session: Optional[requests.Session] = None,
 ) -> dict:
@@ -325,12 +324,18 @@ def download_bse_price(
     """
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "bse_trend", out_root)
     sess = session or requests.Session()
-    host_tracker = HostStatusTracker()
+    
+    # Create unified AntiBotProxy with disabled browser rotation (BSE needs specific headers)
+    proxy_config = AntiBotConfig(
+        rotate_browser_profile=False,
+        base_sleep_sec=sleep_sec,
+    )
+    proxy = AntiBotProxy(proxy_config)
 
     logger.info("Starting BSE price download (page_size=%d)", page_size)
 
     # First page: discover the trade date and total record count.
-    first = _fetch_page(sess, 0, host_tracker=host_tracker)
+    first = _fetch_page(sess, 0, proxy=proxy)
     if first is None:
         logger.error("Failed to fetch first BSE page")
         return {"downloaded": 0, "failed": 1, "out_dir": str(out_dir)}
@@ -390,13 +395,12 @@ def download_bse_price(
     # reach totalPages. Pages past the last one return empty content arrays.
     page_index = 1
     while written < total and (total_pages == 0 or page_index < total_pages):
-        if host_tracker.is_blocked(BSE_LIST_URL):
+        if proxy.is_blocked(BSE_LIST_URL):
             logger.warning("  [host-blocked] bse.cn is blocked, stopping pagination")
             break
 
-        random_sleep(sleep_sec)
-
-        payload = _fetch_page(sess, page_index, host_tracker=host_tracker)
+        # Auto-sleep is handled by proxy.post() inside _fetch_page
+        payload = _fetch_page(sess, page_index, proxy=proxy)
         if payload is None:
             logger.error("page %d failed: request returned None", page_index)
             break

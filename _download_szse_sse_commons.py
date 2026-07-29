@@ -11,6 +11,8 @@ from _download_commons import (
     EMPTY_HTML_MAX_BYTES,
     DEFAULT_TIMEOUT,
     COMMON_BASE_HEADERS,
+    AntiBotProxy,
+    AntiBotConfig,
     build_headers_with_referer,
     resolve_out_dir,
     parse_date_window,
@@ -19,12 +21,11 @@ from _download_commons import (
     is_error_html,
     safe_write_bytes,
     build_day_download_plan,
+    DayDownloadPlan,
     DayDownloadPlanItem,
     RunStats,
     setup_logger,
     convert_xlsx_to_csv,
-    safe_get,
-    HostStatusTracker,
 )
 
 
@@ -53,8 +54,9 @@ def download_xlsx_once(
     out_file: Path,
     log_tag: str,
     timeout: Tuple[int, int] = DEFAULT_TIMEOUT,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
     code_suffix: str = "",
+    code_filter: Optional[List[str]] = None,
 ) -> Optional[Path]:
     if is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
         logger.info("%s already exists, skipping", log_tag)
@@ -62,17 +64,21 @@ def download_xlsx_once(
         if is_valid_file(csv_file, min_bytes=MIN_VALID_BYTES):
             logger.info("%s csv already converted, skipping", log_tag)
         else:
-            convert_xlsx_to_csv(out_file, logger=logger, log_tag=log_tag, code_suffix=code_suffix)
+            convert_xlsx_to_csv(
+                out_file, logger=logger, log_tag=log_tag,
+                code_suffix=code_suffix, code_filter=code_filter,
+            )
         return out_file
 
-    resp = safe_get(
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+
+    resp = proxy.get(
         session,
         BASE_URL,
         params=params,
         headers=headers,
         timeout=timeout,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag=log_tag,
     )
@@ -95,7 +101,13 @@ def download_xlsx_once(
     saved = safe_write_bytes(
         out_file, resp.content,
         min_bytes=MIN_VALID_BYTES, logger=logger, log_tag=log_tag,
+        auto_convert=not code_filter,
     )
+    if saved and code_filter:
+        convert_xlsx_to_csv(
+            out_file, logger=logger, log_tag=log_tag,
+            code_suffix=code_suffix, code_filter=code_filter,
+        )
     return out_file if saved else None
 
 
@@ -112,11 +124,37 @@ def run_szse_download(
     end_date: Optional[str] = None,
     start_date: str,
     security_types: Optional[List[str]] = None,
-    sleep_sec: float = 0.8,
+    sleep_sec: float = 5.0,
     session: Optional[requests.Session] = None,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
     code_suffix: str = "",
+    db_table: Optional[str] = None,
+    db_date_column: str = "date",
+    db_table_by_type: Optional[Dict[str, str]] = None,
+    db_code_suffix: Optional[str] = None,
+    code_filter_by_type: Optional[Dict[str, List[str]]] = None,
 ) -> dict:
+    """Run a SZSE download loop.
+
+    When *db_table* is provided, the download plan is built from DB state
+    (dates already present in the DB table are skipped) instead of scanning
+    the local filesystem for cached xlsx files.
+
+    *db_table_by_type* overrides *db_table* on a per-security-type basis —
+    useful when each type (stock/etf/option) feeds a different identity
+    table (e.g. ``stats.stock_identity`` vs ``stats.etf_identity``). When
+    both are given, *db_table_by_type* wins for types it covers; *db_table*
+    is used as a fallback for types not in the mapping.
+
+    *db_code_suffix* is forwarded to ``check_identity`` as the ``code_suffix``
+    filter so multi-source identity tables can be queried per-exchange
+    (e.g. ``code_suffix="SZ"`` for SZSE-only rows).
+
+    *code_filter_by_type* maps a security type (e.g. ``"index"``) to a list
+    of bare 6-digit codes to keep when converting the xlsx to CSV. Types
+    absent from the mapping (or when the param is None) keep all rows. The
+    xlsx is always written in full; only the CSV is filtered.
+    """
     out_dir = resolve_out_dir(caller_file, out_dirname, out_root)
 
     _start, _end = parse_date_window(
@@ -134,22 +172,56 @@ def run_szse_download(
                 f"Valid: {list(security_cfgs.keys())}"
             )
 
-    type_configs_for_plan: Dict[str, Dict[str, str]] = {
-        st: {"prefix": security_cfgs[st]["prefix"]}
-        for st in security_types
-    }
+    # Build the per-day plan. When db_table_by_type is provided, each type
+    # gets its own check_identity query against its own identity table;
+    # otherwise all types share a single db_table (or a filesystem scan).
+    if db_table_by_type:
+        plan = DayDownloadPlan()
+        for st in security_types:
+            tbl = db_table_by_type.get(st, db_table)
+            single_type_cfgs = {st: {"prefix": security_cfgs[st]["prefix"]}}
+            sub_plan = build_day_download_plan(
+                out_dir=out_dir,
+                start_date=_start,
+                end_date=_end,
+                type_configs=single_type_cfgs,
+                min_bytes=MIN_VALID_BYTES,
+                weekdays_only=True,
+                sort_newest_first=True,
+                ext_glob="*.xlsx",
+                db_table=tbl,
+                db_date_column=db_date_column,
+                db_code_suffix=db_code_suffix,
+            )
+            plan.items.extend(sub_plan.items)
+            plan.present_count += sub_plan.present_count
+            plan.total_expected += sub_plan.total_expected
+    else:
+        type_configs_for_plan: Dict[str, Dict[str, str]] = {
+            st: {"prefix": security_cfgs[st]["prefix"]}
+            for st in security_types
+        }
+        plan = build_day_download_plan(
+            out_dir=out_dir,
+            start_date=_start,
+            end_date=_end,
+            type_configs=type_configs_for_plan,
+            min_bytes=MIN_VALID_BYTES,
+            weekdays_only=True,
+            sort_newest_first=True,
+            ext_glob="*.xlsx",
+            db_table=db_table,
+            db_date_column=db_date_column,
+            db_code_suffix=db_code_suffix,
+        )
 
-    plan = build_day_download_plan(
-        out_dir=out_dir,
-        start_date=_start,
-        end_date=_end,
-        type_configs=type_configs_for_plan,
-        min_bytes=MIN_VALID_BYTES,
-        weekdays_only=True,
-        sort_newest_first=True,
-        ext_glob="*.xlsx",
-    )
-
+    # Create proxy if not provided
+    if proxy is None:
+        proxy_config = AntiBotConfig(
+            base_sleep_sec=sleep_sec,
+        )
+        proxy = AntiBotProxy(proxy_config)
+    
     sess = session or requests.Session()
     stats = RunStats(skipped_cached=plan.present_count)
 
@@ -162,7 +234,7 @@ def run_szse_download(
     try:
         item: DayDownloadPlanItem
         for item in plan.items:
-            if host_tracker and host_tracker.is_blocked(BASE_URL):
+            if proxy.is_blocked(BASE_URL):
                 logger.warning("  [host-blocked] szse.cn is blocked, skipping remaining tasks")
                 stats.failed += len(plan.items) - plan.items.index(item)
                 break
@@ -170,6 +242,11 @@ def run_szse_download(
             ymd = item.day.strftime("%Y%m%d")
             tag = log_tag_fn(item.type_key, ymd)
             out_file = out_dir / f"{item.prefix}_{ymd}.xlsx"
+            code_filter = (
+                code_filter_by_type.get(item.type_key)
+                if code_filter_by_type is not None
+                else None
+            )
 
             if is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
                 stats.skipped_cached += 1
@@ -177,11 +254,17 @@ def run_szse_download(
                 if is_valid_file(csv_file, min_bytes=MIN_VALID_BYTES):
                     logger.info("%s csv already converted, skipping", tag)
                 else:
-                    convert_xlsx_to_csv(out_file, logger=logger, log_tag=tag, code_suffix=code_suffix)
+                    convert_xlsx_to_csv(
+                        out_file, logger=logger, log_tag=tag,
+                        code_suffix=code_suffix, code_filter=code_filter,
+                    )
                 continue
 
             params = params_builder(item.type_key, item.day)
-            path = download_xlsx_once(sess, params, headers, out_file, tag, host_tracker=host_tracker, code_suffix=code_suffix)
+            path = download_xlsx_once(
+                sess, params, headers, out_file, tag,
+                proxy=proxy, code_suffix=code_suffix, code_filter=code_filter,
+            )
             if path is not None:
                 stats.downloaded += 1
                 stats.files.append(str(path))
@@ -190,8 +273,7 @@ def run_szse_download(
                     stats.skipped_cached += 1
                 else:
                     stats.failed += 1
-
-            time.sleep(sleep_sec)
+            # Auto-sleep is handled by proxy.get() inside download_xlsx_once
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
 

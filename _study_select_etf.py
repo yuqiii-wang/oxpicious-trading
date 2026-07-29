@@ -1,12 +1,13 @@
 """
 _study_select_etf.py — Study & select SZSE ETFs by theme/industry.
 
-Studying unique ETF names from the SZSE combined archive, mapping them by
+Studying unique ETF names from the database, mapping them by
 similar theme and industry, ordering by quantity per theme. Exports both a
 study report CSV and a selection plan consumed by plot_szse_etf_and_margin.py.
 
 Pipeline:
-  1. Load combined CSV (produced by build_szse_etf_and_margin.py)
+  1. Load combined OHLCV + margin data from the database (stats.etf_identity
+     JOIN etf_basic_stats LEFT JOIN etf_liquidity_margin)
   2. Extract unique ETF names & codes
   3. Classify each into a theme via keyword rules
   4. Count per theme, order themes by quantity (descending)
@@ -33,6 +34,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _download_commons import strip_exchange_suffix
+from _db_commons import get_db_connection
 # Unified classification taxonomy (single source of truth).
 # All theme/industry rules now live in _classification.py; this module just
 # consumes the exported ETF_THEME_RULES / ETF_THEMES OrderedDict and the
@@ -52,35 +54,70 @@ from _classification import (
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 TEMP_DATA    = os.path.join(PROJECT_ROOT, "temp_data")
 OUTPUT_DIR   = os.path.join(TEMP_DATA, "analysis_output", "szse_sse_etf_margin")
-COMBINED_CSV = os.path.join(OUTPUT_DIR, "etf_margin_combined.csv")
-UNIVERSE_CSV = os.path.join(OUTPUT_DIR, "etf_universe.csv")
 STUDY_DIR    = os.path.join(OUTPUT_DIR, "study")
 os.makedirs(STUDY_DIR, exist_ok=True)
 
 TODAY_STR = datetime.now().strftime("%Y-%m-%d")
 
 # ============================================================================
-# Data loading
+# Data loading — from database (replaces old CSV read)
 # ============================================================================
 _combined_cache = None
 
-def load_combined(combined_csv=COMBINED_CSV):
-    """Load (cached) combined CSV with parsed date column and zero-padded codes."""
+def load_combined():
+    """Load (cached) combined OHLCV + margin data from the database.
+
+    Queries stats.etf_identity JOIN etf_basic_stats LEFT JOIN etf_liquidity_margin
+    to reconstruct the same column set previously exported to
+    etf_margin_combined.csv.
+    """
     global _combined_cache
     if _combined_cache is not None:
         return _combined_cache
-    if not os.path.exists(combined_csv):
-        print(f"    [FATAL] Combined CSV not found: {combined_csv}", flush=True)
-        print(f"           Run build_szse_etf_and_margin.py first.", flush=True)
+
+    print(f"    [LOAD] querying stats.etf_identity + etf_basic_stats + "
+          f"etf_liquidity_margin from database …", flush=True)
+
+    query = """
+        SELECT
+            i.date, i.code, i.name,
+            b.prev_close, b.open, b.high, b.low, b.close, b.pct_change,
+            COALESCE(l.volume_wan, 0)     AS volume_wan,
+            COALESCE(l.amount_wan, 0)     AS amount_wan,
+            COALESCE(l.rz_buy, 0)         AS rz_buy,
+            COALESCE(l.rz_balance, 0)     AS rz_balance,
+            COALESCE(l.rq_sell_qty, 0)    AS rq_sell_qty,
+            COALESCE(l.rq_balance_qty, 0) AS rq_balance_qty,
+            COALESCE(l.rq_balance_amt, 0) AS rq_balance_amt,
+            COALESCE(l.total_balance, 0)  AS total_balance
+        FROM stats.etf_identity i
+        JOIN stats.etf_basic_stats b
+            ON b.date = i.date AND b.code = i.code
+        LEFT JOIN stats.etf_liquidity_margin l
+            ON l.date = i.date AND l.code = i.code
+        ORDER BY i.code, i.date
+    """
+
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query)
+            rows = cur.fetchall()
+            col_names = [desc[0] for desc in cur.description]
+    finally:
+        conn.close()
+
+    if not rows:
+        print(f"    [FATAL] No ETF data found in database. "
+              f"Run build_szse_sse_etf_and_margin.py first.", flush=True)
         sys.exit(1)
-    print(f"    [LOAD] reading {combined_csv} ({os.path.getsize(combined_csv):,} bytes)", flush=True)
-    df = pd.read_csv(combined_csv, dtype={"code": str, "name": str})
+
+    df = pd.DataFrame(rows, columns=col_names)
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"]).sort_values(["code", "date"]).reset_index(drop=True)
-    df["code"] = df["code"].apply(
-        lambda s: str(int(float(s))).zfill(6) if re.fullmatch(r"\d+(\.0+)?", s or "") else str(s).strip()
-    )
-    df["code"] = df["code"].apply(strip_exchange_suffix)
+    # etf_identity.code is stored WITH exchange suffix (e.g. "159530.SZ");
+    # strip it so downstream code sees bare 6-digit codes.
+    df["code"] = df["code"].astype(str).apply(strip_exchange_suffix)
     _combined_cache = df
     print(f"    → {len(df):,} rows · {df['code'].nunique()} ETFs · "
           f"{df['date'].min().date()} → {df['date'].max().date()}", flush=True)
@@ -474,7 +511,7 @@ def main():
     print(f"  Today        : {TODAY_STR}", flush=True)
 
     # --- (1) Load ---
-    print("\n[1/3] Loading combined CSV …", flush=True)
+    print("\n[1/3] Loading ETF data from database …", flush=True)
     combined = load_combined()
 
     # Optional dev limit

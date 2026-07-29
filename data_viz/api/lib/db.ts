@@ -47,10 +47,9 @@ function loadDbEnv(): void {
   );
   if (fs.existsSync(envPath)) {
     dotenv.config({ path: envPath });
-  } else {
-    // Fallback: rely on already-set environment variables
-    dotenv.config();
   }
+  // No root .env fallback — database/.env is the single source of truth.
+  // If it's absent, rely on already-set environment variables.
   _envLoaded = true;
 }
 
@@ -68,7 +67,7 @@ export interface DbConfig {
 export function getDbConfig(): DbConfig {
   loadDbEnv();
   return {
-    host:     process.env.SUPABASE_HOST ?? "localhost",
+    host:     process.env.SUPABASE_HOST ?? "127.0.0.1",
     port:     parseInt(process.env.SUPABASE_PORT ?? "9876", 10),
     database: process.env.SUPABASE_DB ?? "oxpicious-stats",
     user:     process.env.SUPABASE_USER ?? "postgres",

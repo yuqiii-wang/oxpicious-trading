@@ -15,6 +15,8 @@ import szseOptionsRoutes from "./routes/szse-options.js";
 import etfMarginRoutes from "./routes/etf-margin.js";
 import indexBaselineRoutes from "./routes/index-baseline.js";
 import secCompositionRoutes from "./routes/sec-composition.js";
+import stockBaselineRoutes from "./routes/stock-baseline.js";
+import analysisRoutes from "./routes/analysis.js";
 import cacheRoutes from "./routes/cache.js";
 
 const app: express.Application = express();
@@ -31,6 +33,8 @@ app.use("/api/szse-options", szseOptionsRoutes);
 app.use("/api/etf-margin", etfMarginRoutes);
 app.use("/api/index-baseline", indexBaselineRoutes);
 app.use("/api/sec-composition", secCompositionRoutes);
+app.use("/api/stock-baseline", stockBaselineRoutes);
+app.use("/api/analysis", analysisRoutes);
 app.use("/api/cache", cacheRoutes);
 
 /**

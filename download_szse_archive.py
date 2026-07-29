@@ -19,6 +19,7 @@ ETF_EXTRA_PARAMS: Dict[str, Optional[str]] = {
     "radioClass": "15,16,18,38,55,56,58,65,MF",
     "txtSite": "all",
 }
+INDEX_EXTRA_PARAMS: Dict[str, Optional[str]] = {}
 
 SECURITY_CFGS: Dict[str, Dict[str, object]] = {
     "stock": {
@@ -33,6 +34,29 @@ SECURITY_CFGS: Dict[str, Dict[str, object]] = {
         "prefix": "szse_etf",
         "extra": ETF_EXTRA_PARAMS,
     },
+    "index": {
+        "catalogid": "1815_stock",
+        "tabkey": "tab7",
+        "prefix": "szse_index",
+        "extra": INDEX_EXTRA_PARAMS,
+    },
+}
+
+# Per-type identity tables for check_identity (DB-first download mode).
+# code_suffix='SZ' filters to SZSE-only rows so multi-source tables
+# (SZSE+SSE+BSE) are queried per-exchange.
+# 'index' has no identity table — falls back to filesystem scan.
+DB_TABLE_BY_TYPE: Dict[str, str] = {
+    "stock": "stats.stock_identity",
+    "etf": "stats.etf_identity",
+}
+
+# Per-type CSV row filter. The index tab7 export contains ~180 indexes
+# per day; only the two broad-market benchmarks below are persisted to CSV.
+# The xlsx is always written in full; only the CSV is filtered.
+INDEX_CODES_TO_KEEP: List[str] = ["399001", "399006"]  # 深证成指, 创业板指
+CODE_FILTER_BY_TYPE: Dict[str, List[str]] = {
+    "index": INDEX_CODES_TO_KEEP,
 }
 
 ARCHIVE_HEADERS = build_headers(REFERER_ARCHIVE)
@@ -64,16 +88,22 @@ def download_szse_archive(
     end_date: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
     security_types: Optional[List[str]] = None,
-    sleep_sec: float = 0.8,
+    sleep_sec: float = 5.0,
     session: Optional[requests.Session] = None,
 ) -> dict:
     """
-    Download SZSE archive market data day by day for stocks and ETFs/funds.
+    Download SZSE archive market data day by day for stocks, ETFs/funds,
+    and indexes.
 
     Each date is requested individually against
     https://www.szse.cn/market/trend/archive/index.html until start_date is
     reached (default: DEFAULT_START_DATE in _download_commons, currently
-    2022-01-01).
+    2020-01-01).
+
+    ``security_types`` defaults to ``["stock", "etf", "index"]``. For the
+    ``index`` type (CATALOGID=1815_stock, TABKEY=tab7) the xlsx contains
+    ~180 indexes per day; the CSV is filtered to only 399001 深证成指 and
+    399006 创业板指 (see CODE_FILTER_BY_TYPE). The xlsx is kept in full.
     """
     return run_szse_download(
         caller_file=str(Path(__file__).resolve()),
@@ -90,6 +120,9 @@ def download_szse_archive(
         sleep_sec=sleep_sec,
         session=session,
         code_suffix=".SZ",
+        db_table_by_type=DB_TABLE_BY_TYPE,
+        db_code_suffix="SZ",
+        code_filter_by_type=CODE_FILTER_BY_TYPE,
     )
 
 

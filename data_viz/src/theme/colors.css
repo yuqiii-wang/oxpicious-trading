@@ -18,9 +18,11 @@
   --chart-down: #c0392b;          /* price-down red (also RQ margin fill) */
   --chart-hi: #2980b9;            /* rebased-close line blue */
   --chart-neutral-fill: #95a5a6;  /* neutral gray for price-area fill */
+  --chart-ma5: #e91e63;           /* MA5 magenta — bright, fast MA */
   --chart-ma20: #f39c12;          /* MA20 orange */
   --chart-ma60: #8e44ad;          /* MA60 purple */
   --chart-ma120: #7f8c8d;         /* MA120 gray */
+  --chart-ma255: #16a085;         /* MA255 teal — slow, long-term MA */
 
   --chart-iv-blue: #1F77B4;       /* standard tableau blue */
   --chart-atm-gray: #7F7F7F;      /* neutral gray for ATM vertical line */

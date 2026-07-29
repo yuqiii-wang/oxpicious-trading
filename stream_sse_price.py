@@ -41,11 +41,12 @@ import sys
 import time as _time
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
 from _download_commons import (
+    DEFAULT_TIMEOUT,
     HostStatusTracker,
     add_exchange_suffix,
     build_default_session,
@@ -57,14 +58,25 @@ from _db_commons import (
     bulk_upsert,
     get_db_connection,
 )
-# Reuse the SSE JSONP fetch/parse helpers already proven in download_sse_price.
-from download_sse_price import (
+from _study_and_select_stocks import (
+    ETF_WEIGHT_THRESHOLD,
+    load_etf_member_codes,
+)
+# Reuse the SSE JSONP fetch/parse helpers + shared list-endpoint constants
+# from download_sse_trend (the today/snapshot half of the former
+# download_sse_price). _fetch_page and _extract_update_datetime are defined
+# locally because the streaming loop uses a different fetch signature
+# (host_tracker instead of AntiBotProxy) and needs the full real-time field
+# set, not just code+name.
+from download_sse_trend import (
+    INTER_PAGE_SLEEP_SEC,
+    JSONP_CALLBACK,
     PAGE_SIZE,
     SSE_HEADERS,
     SSE_LIST_URL,
-    _extract_update_datetime,
-    _fetch_page,
+    STREAM_SELECT_FIELDS,
     _num,
+    _parse_jsonp,
 )
 
 # ---------------------------------------------------------------------------
@@ -98,13 +110,88 @@ CLOSE_TIME = time(15, 0)
 
 DEFAULT_POLL_INTERVAL_SEC = 60
 DEFAULT_BAR_WINDOW = 5
-INTER_PAGE_SLEEP_SEC = 0.3
 
-# Local CSV archive: one file per poll, written under temps/sse_intraday/.
+# Local CSV archive: one file per trading day, appended to on every poll,
+# under temps/sse_intraday/.
 CSV_COLUMNS = [
     "update_time", "code", "name", "open", "high", "low", "last",
     "prev_close", "change", "volume", "amount",
 ]
+
+# STREAM_SELECT_FIELDS and INTER_PAGE_SLEEP_SEC are imported from
+# download_sse_trend (shared with the snapshot fetcher). The streaming
+# endpoint needs last/volume/open/... — unlike the archive's list fetcher
+# which only selects code+name and fetches OHLCV via the dayk endpoint.
+
+
+# ---------------------------------------------------------------------------
+# SSE list endpoint helpers (local — signature differs from download_sse_trend)
+# ---------------------------------------------------------------------------
+def _extract_update_datetime(payload: Dict[str, Any]) -> Optional[datetime]:
+    """Extract the snapshot update datetime from the SSE list endpoint response.
+
+    The yunhq list endpoint returns top-level ``date`` (YYYYMMDD) and ``time``
+    (HHMMSS) fields — the "更新时间" shown on the webpage, not the local clock.
+    Returns None if the fields are missing or unparseable.
+    """
+    date_raw = payload.get("date")
+    time_raw = payload.get("time")
+    if not date_raw:
+        return None
+    try:
+        date_str = str(date_raw)
+        time_str = str(time_raw).zfill(6) if time_raw is not None else "000000"
+        dt_str = (
+            f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]} "
+            f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
+        )
+        return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, IndexError) as e:
+        logger.warning(
+            "Failed to parse SSE update time: date=%r time=%r error=%s",
+            date_raw, time_raw, e,
+        )
+        return None
+
+
+def _fetch_page(
+    session: requests.Session,
+    begin: int,
+    end: int,
+    host_tracker: Optional[HostStatusTracker] = None,
+) -> Optional[Dict[str, Any]]:
+    """Fetch one page from the SSE list endpoint with full real-time fields.
+
+    Unlike ``download_sse_trend._fetch_snapshot_page`` this returns the raw
+    payload (caller drives pagination + update-datetime extraction) so the
+    60-second polling cadence is not slowed by the 20s anti-bot sleep.
+    ``host_tracker`` records 4xx errors for blocking detection.
+    """
+    params = {
+        "callback": JSONP_CALLBACK,
+        "begin": str(begin),
+        "end": str(end),
+        "select": STREAM_SELECT_FIELDS,
+    }
+    try:
+        resp = session.get(
+            SSE_LIST_URL,
+            params=params,
+            headers=SSE_HEADERS,
+            timeout=DEFAULT_TIMEOUT,
+        )
+    except requests.RequestException as e:
+        logger.warning("SSE list page %d-%d request failed: %s", begin, end, e)
+        return None
+
+    if resp.status_code != 200 and host_tracker is not None:
+        host_tracker.record_error(SSE_LIST_URL, resp.status_code, resp.reason)
+
+    try:
+        return _parse_jsonp(resp.text)
+    except ValueError as e:
+        logger.warning("SSE list page %d-%d JSONP parse failed: %s", begin, end, e)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +241,7 @@ def sleep_until(target_dt: datetime, chunk_sec: float = 60.0) -> None:
 def _parse_snapshot_row(row: list) -> Optional[Dict[str, object]]:
     """Map one SSE list row to a full record dict.
 
-    Row order matches SELECT_FIELDS in download_sse_price:
+    Row order matches STREAM_SELECT_FIELDS in download_sse_trend:
     code, name, open, high, low, last, prev_close, change, volume, amount
     """
     if not row:
@@ -185,7 +272,7 @@ def fetch_snapshot(
 
     Returns (update_dt, {bare_code: (name, last, cumvol)}) or (None, {}).
     The ``update_dt`` comes from the API's date+time fields (the "更新时间" on
-    the webpage), not from local clock — consistent with download_sse_price.
+    the webpage), not from local clock — consistent with download_sse_trend.
     """
     first = _fetch_page(session, 0, page_size, host_tracker=host_tracker)
     if first is None:
@@ -228,20 +315,23 @@ def fetch_snapshot(
 
 
 def write_snapshot_csv(update_dt: datetime, snapshot: Snapshot) -> Path:
-    """Archive one polled snapshot to a CSV file under temps/sse_intraday/.
+    """Append one polled snapshot to the daily CSV file under temps/sse_intraday/.
 
-    One file per poll, named sse_intraday_YYYYMMDD_HHMMSS.csv (using the
-    server update time), so every queried snapshot is persisted verbatim.
-    Volume/amount are stored raw (shares / yuan) as returned by the endpoint.
+    One file per trading day, named sse_intraday_YYYYMMDD.csv (using the
+    server update date). Every poll appends rows to the same daily file; the
+    header is written only when the file is created (or is empty). Volume and
+    amount are stored raw (shares / yuan) as returned by the endpoint.
     """
     out_dir = resolve_out_dir(__file__, "sse_intraday", None)
-    ts = update_dt.strftime("%Y%m%d_%H%M%S")
-    out_file = out_dir / f"sse_intraday_{ts}.csv"
+    ds = update_dt.strftime("%Y%m%d")
+    out_file = out_dir / f"sse_intraday_{ds}.csv"
     iso = update_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    with open(out_file, "w", encoding="utf-8-sig", newline="") as f:
+    needs_header = (not out_file.exists()) or out_file.stat().st_size == 0
+    with open(out_file, "a", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
-        writer.writeheader()
+        if needs_header:
+            writer.writeheader()
         for code, rec in snapshot.items():
             row = {"update_time": iso, "code": code}
             for col in CSV_COLUMNS:
@@ -260,6 +350,7 @@ def aggregate_bars(
     prev_bar_cumvol: Dict[str, float],
     finished_codes: set,
     trade_date,
+    etf_member_codes: Optional[set] = None,
 ) -> Tuple[List[dict], List[dict], Optional[time]]:
     """Aggregate 5 one-minute samples into per-stock OHLCV bars.
 
@@ -272,6 +363,11 @@ def aggregate_bars(
             CLOSE_TIME for this trade_date. Stocks in this set are skipped.
             Updated in place when bar_time reaches CLOSE_TIME.
         trade_date: datetime.date for the bars.
+        etf_member_codes: optional set of full codes (e.g. "600000.SS") that
+            are currently in any ETF (latest sec_composition snapshot,
+            weight_pct > 0.1). When supplied, identity rows get
+            is_in_etf=full_code in etf_member_codes; otherwise is_in_etf is
+            left unset (defaults to FALSE on insert, preserved on update).
 
     Returns (identity_rows, bar_rows, bar_time).
       * identity_rows feed stats.stock_identity (satisfies the FK).
@@ -341,7 +437,10 @@ def aggregate_bars(
         # Exchange suffix: only SZ, SS, or BJ are valid.
         parts = full_code.rsplit(".", 1)
         code_suffix = parts[-1] if len(parts) == 2 and parts[-1] in ("SZ", "SS", "BJ") else None
-        identity_rows.append({"date": trade_date, "code": full_code, "code_suffix": code_suffix, "name": name})
+        identity_row = {"date": trade_date, "code": full_code, "code_suffix": code_suffix, "name": name}
+        if etf_member_codes is not None:
+            identity_row["is_in_etf"] = full_code in etf_member_codes
+        identity_rows.append(identity_row)
         bar_rows.append({
             "date": trade_date,
             "code": full_code,
@@ -404,6 +503,10 @@ def _prepopulate_finished_codes(conn, trade_date, finished_codes: set) -> None:
         logger.warning("Failed to pre-populate finished_codes from DB: %s", e)
 
 
+# ETF membership / target-stock-list helpers live in _study_and_select_stocks
+# (imported above): ETF_WEIGHT_THRESHOLD, load_etf_member_codes.
+
+
 def load_bars(conn, identity_rows: List[dict], bar_rows: List[dict]) -> None:
     """Upsert identity rows (FK parent) then intraday bars.
 
@@ -457,6 +560,16 @@ def stream(
         # Set current_trade_date to avoid clearing finished_codes on first iteration.
         current_trade_date = today
 
+    # Load the current ETF-member set once per session (snapshots change
+    # quarterly). Used by aggregate_bars to set is_in_etf on new identity rows
+    # so they don't default to FALSE before the next backfill runs.
+    t0 = _time.time()
+    etf_member_codes = load_etf_member_codes(conn)
+    logger.info(
+        "Loaded %d ETF-member codes (latest snapshot, weight_pct > %.1f%%) in %.1fs",
+        len(etf_member_codes), ETF_WEIGHT_THRESHOLD, _time.time() - t0,
+    )
+
     logger.info(
         "stream_sse_price started (poll=%.0fs bar_window=%d once=%s)",
         poll_interval, bar_window, once,
@@ -474,6 +587,7 @@ def stream(
                     trade_date = update_dt.date()
                     identity_rows, bar_rows, bar_time = aggregate_bars(
                         buffer, prev_bar_cumvol, finished_codes, trade_date,
+                        etf_member_codes=etf_member_codes,
                     )
                     if bar_rows:
                         conn = _ensure_conn(conn)
@@ -519,6 +633,7 @@ def stream(
                     trade_date = update_dt.date()
                     identity_rows, bar_rows, bar_time = aggregate_bars(
                         buffer, prev_bar_cumvol, finished_codes, trade_date,
+                        etf_member_codes=etf_member_codes,
                     )
                     if bar_rows:
                         conn = _ensure_conn(conn)

@@ -3,8 +3,8 @@
  * source in a single query.  Used by the frontend to decide whether cached
  * data is stale (DB has newer rows than what the UI currently holds).
  *
- * A single round-trip fetches MAX(date) for all 5 sources:
- *   debt, etf_margin, index_baseline, options, sec_composition
+ * A single round-trip fetches MAX(date) for all 6 sources:
+ *   debt, etf_margin, index_baseline, options, sec_composition, stock_baseline
  */
 import { queryRows, formatDate } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
@@ -16,6 +16,7 @@ interface DbLatestDatesRow extends QueryResultRow {
   index_baseline: Date | string | null;
   options: Date | string | null;
   sec_composition: Date | string | null;
+  stock_baseline: Date | string | null;
 }
 
 /**
@@ -29,7 +30,8 @@ export async function getLatestDates(): Promise<LatestDatesResponse> {
       (SELECT MAX(date)          FROM stats.v_etf_margin)     AS etf_margin,
       (SELECT MAX(date)          FROM stats.v_index_baseline) AS index_baseline,
       (SELECT MAX(date)          FROM stats.v_options_quote)  AS options,
-      (SELECT MAX(snapshot_date) FROM stats.sec_composition)  AS sec_composition
+      (SELECT MAX(snapshot_date) FROM stats.sec_composition)  AS sec_composition,
+      (SELECT MAX(date)          FROM stats.v_stock_baseline) AS stock_baseline
   `;
   const rows = await queryRows<DbLatestDatesRow>(sql);
   const r = rows[0];
@@ -39,5 +41,6 @@ export async function getLatestDates(): Promise<LatestDatesResponse> {
     index_baseline: formatDate(r?.index_baseline),
     options:        formatDate(r?.options),
     sec_composition: formatDate(r?.sec_composition),
+    stock_baseline: formatDate(r?.stock_baseline),
   };
 }

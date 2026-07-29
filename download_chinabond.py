@@ -14,6 +14,9 @@ from _download_commons import (
     EMPTY_HTML_MAX_BYTES,
     DEFAULT_TIMEOUT,
     COMMON_BASE_HEADERS,
+    DEFAULT_START_DATE,
+    AntiBotProxy,
+    AntiBotConfig,
     setup_logger,
     resolve_out_dir,
     parse_date_window,
@@ -28,9 +31,6 @@ from _download_commons import (
     RunStats,
     business_days,
     convert_xlsx_to_csv,
-    safe_get,
-    safe_post,
-    HostStatusTracker,
 )
 
 
@@ -52,7 +52,7 @@ YC_CFG_BUILTIN: Dict[str, Dict[str, str]] = {
 }
 
 CHINABOND_TIMEOUT: Tuple[int, int] = (20, 180)
-SLEEP_SEC = 1.5
+SLEEP_SEC = 5.0
 
 CHINABOND_HEADERS: Dict[str, str] = dict(COMMON_BASE_HEADERS)
 CHINABOND_HEADERS["Referer"] = YIELD_MAIN
@@ -75,13 +75,14 @@ def build_session() -> requests.Session:
     return s
 
 
-def bootstrap_session(session: requests.Session, host_tracker: Optional[HostStatusTracker] = None) -> bool:
-    resp = safe_get(
+def bootstrap_session(session: requests.Session, proxy: Optional[AntiBotProxy] = None) -> bool:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
+    resp = proxy.get(
         session,
         YIELD_MAIN,
         timeout=CHINABOND_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag="[bootstrap]",
     )
@@ -91,13 +92,14 @@ def bootstrap_session(session: requests.Session, host_tracker: Optional[HostStat
     return True
 
 
-def fetch_yc_tree(session: requests.Session, host_tracker: Optional[HostStatusTracker] = None) -> list:
-    resp = safe_post(
+def fetch_yc_tree(session: requests.Session, proxy: Optional[AntiBotProxy] = None) -> list:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
+    resp = proxy.post(
         session,
         API_QUERY_TREE,
         timeout=CHINABOND_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag="[fetch-yc-tree]",
     )
@@ -112,10 +114,10 @@ def fetch_yc_tree(session: requests.Session, host_tracker: Optional[HostStatusTr
         return []
 
 
-def resolve_yc_defid(session: requests.Session, curve_key: str, host_tracker: Optional[HostStatusTracker] = None) -> Optional[str]:
+def resolve_yc_defid(session: requests.Session, curve_key: str, proxy: Optional[AntiBotProxy] = None) -> Optional[str]:
     if curve_key in YC_CFG_BUILTIN and YC_CFG_BUILTIN[curve_key].get("ycDefId"):
         return YC_CFG_BUILTIN[curve_key]["ycDefId"]
-    tree = fetch_yc_tree(session, host_tracker)
+    tree = fetch_yc_tree(session, proxy)
     if not tree:
         return None
     if curve_key not in YC_CFG_BUILTIN:
@@ -136,8 +138,11 @@ def download_day_bzqx(
     yc_defid: str,
     work_date: date,
     out_file: Path,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
     params = {
         "ycDefIds": yc_defid,
         "zblx": "txy",
@@ -151,13 +156,11 @@ def download_day_bzqx(
     }
     tag = f"[day {work_date}]"
 
-    resp = safe_get(
+    resp = proxy.get(
         session,
         API_DOWN_BZQX_DETAIL,
         params=params,
         timeout=CHINABOND_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag=tag,
     )
@@ -183,8 +186,11 @@ def download_year_bzqx(
     yc_defid: str,
     year: int,
     out_file: Path,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
     params = (
         f"year={year}&&wrjxCBFlag=0&&zblx=txy&&"
         f"ycDefId={yc_defid}&&locale=zh_CN"
@@ -192,12 +198,10 @@ def download_year_bzqx(
     url = API_DOWN_YEAR_BZQX + "?" + params
     tag = f"[year {year}]"
 
-    resp = safe_get(
+    resp = proxy.get(
         session,
         url,
         timeout=CHINABOND_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag=tag,
     )
@@ -232,11 +236,12 @@ def download_chinabond(
     *,
     out_root: Optional[str] = None,
     mode: str = "year",
-    start_date: Optional[str] = "2021-01-01",
+    start_date: Optional[str] = DEFAULT_START_DATE,
     end_date: Optional[str] = None,
     lookback_years: int = 3,
     curve_keys: Optional[List[str]] = None,
     sleep_sec: float = SLEEP_SEC,
+    db_table: str = "stats.debt_identity",
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "chinabond", out_root)
 
@@ -265,21 +270,26 @@ def download_chinabond(
     )
 
     session = build_session()
-    host_tracker = HostStatusTracker()
+    
+    # Create unified AntiBotProxy
+    proxy_config = AntiBotConfig(
+        base_sleep_sec=sleep_sec,
+    )
+    proxy = AntiBotProxy(proxy_config)
 
-    if not bootstrap_session(session, host_tracker):
+    if not bootstrap_session(session, proxy):
         return {"error": "bootstrap failed", "out_dir": str(out_dir)}
 
     stats = RunStats()
 
     try:
         for ck in curve_keys:
-            if host_tracker.is_blocked(CHINABOND_BASE):
+            if proxy.is_blocked(CHINABOND_BASE):
                 logger.warning("  [host-blocked] yield.chinabond.com.cn is blocked, skipping %s", ck)
                 stats.failed += 1
                 continue
 
-            yc_defid = resolve_yc_defid(session, ck, host_tracker)
+            yc_defid = resolve_yc_defid(session, ck, proxy)
             if not yc_defid:
                 logger.error(
                     "[%s] cannot resolve ycDefId, skipping curve", ck,
@@ -308,18 +318,19 @@ def download_chinabond(
                     min_bytes=MIN_VALID_BYTES,
                     always_refresh_years=always_refresh,
                     ext_glob="*.xlsx",
+                    db_table=db_table,
                 )
                 stats.skipped_cached += year_plan.present_count
 
                 yitem: YearDownloadPlanItem
                 for yitem in year_plan.items:
-                    if host_tracker.is_blocked(CHINABOND_BASE):
+                    if proxy.is_blocked(CHINABOND_BASE):
                         logger.warning("  [host-blocked] yield.chinabond.com.cn blocked, skipping remaining years")
                         stats.failed += len(year_plan.items) - year_plan.items.index(yitem)
                         break
 
                     fpath = out_dir / _year_filename(ck, yitem.year)
-                    ok = download_year_bzqx(session, yc_defid, yitem.year, fpath, host_tracker)
+                    ok = download_year_bzqx(session, yc_defid, yitem.year, fpath, proxy)
                     if ok:
                         if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
                             stats.files.append(str(fpath))
@@ -329,7 +340,7 @@ def download_chinabond(
                             stats.skipped_cached += 1
                         else:
                             stats.empty += 1
-                    time.sleep(sleep_sec)
+                    # Auto-sleep is handled by proxy.get() inside download_year_bzqx
 
             else:
                 type_cfg = {ck: {"prefix": cfg["prefix"]}}
@@ -342,6 +353,7 @@ def download_chinabond(
                     weekdays_only=True,
                     sort_newest_first=False,
                     ext_glob="*.xlsx",
+                    db_table=db_table,
                 )
                 stats.skipped_cached += day_plan.present_count
                 logger.info(
@@ -350,13 +362,13 @@ def download_chinabond(
 
                 ditem: DayDownloadPlanItem
                 for ditem in day_plan.items:
-                    if host_tracker.is_blocked(CHINABOND_BASE):
+                    if proxy.is_blocked(CHINABOND_BASE):
                         logger.warning("  [host-blocked] yield.chinabond.com.cn blocked, skipping remaining days")
                         stats.failed += len(day_plan.items) - day_plan.items.index(ditem)
                         break
 
                     fpath = out_dir / _day_filename(ck, ditem.day)
-                    ok = download_day_bzqx(session, yc_defid, ditem.day, fpath, host_tracker)
+                    ok = download_day_bzqx(session, yc_defid, ditem.day, fpath, proxy)
                     if ok:
                         if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
                             stats.files.append(str(fpath))
@@ -366,7 +378,7 @@ def download_chinabond(
                             stats.skipped_cached += 1
                         else:
                             stats.empty += 1
-                    time.sleep(sleep_sec)
+                    # Auto-sleep is handled by proxy.get() inside download_day_bzqx
 
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")

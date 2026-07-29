@@ -17,6 +17,31 @@ import pandas as pd
 warnings.filterwarnings("ignore", message="Workbook contains no default style")
 
 
+# ---------------------------------------------------------------------------
+# Trading-day calendar — migrated to utils/_holidays_and_weekdays
+# ---------------------------------------------------------------------------
+# The holiday table (CN_HOLIDAYS / CN_ADJUSTED_WORKDAYS) and trading-day
+# helpers (is_trading_day, last_business_day, next_business_day,
+# business_days, count_weekdays, date_range_backward, date_range_forward,
+# parse_date_window) now live in utils/_holidays_and_weekdays.py.
+#
+# We re-export them here for backward compatibility so existing
+# `from _download_commons import is_trading_day` imports keep working.
+# ---------------------------------------------------------------------------
+from utils._holidays_and_weekdays import (  # noqa: E402
+    CN_ADJUSTED_WORKDAYS,
+    CN_HOLIDAYS,
+    business_days,
+    count_weekdays,
+    date_range_backward,
+    date_range_forward,
+    is_trading_day,
+    last_business_day,
+    next_business_day,
+    parse_date_window,
+)
+
+
 MIN_VALID_BYTES = 1024
 EMPTY_HTML_MAX_BYTES = 8192
 DEFAULT_TIMEOUT: Tuple[int, int] = (15, 60)
@@ -28,107 +53,8 @@ DEFAULT_SLEEP_SEC = 20.0
 
 # Shared default start date for all downloaders. Centralized here so the
 # project's historical backfill horizon can be changed in one place.
-DEFAULT_START_DATE = "2022-01-01"
+DEFAULT_START_DATE = "2020-01-01"
 
-
-def _parse_dates(date_strings: List[str]) -> Set[date]:
-    return {datetime.strptime(s, "%Y-%m-%d").date() for s in date_strings}
-
-
-CN_HOLIDAYS: Set[date] = _parse_dates([
-    # 2021
-    "2021-01-01",
-    "2021-02-11", "2021-02-12", "2021-02-13", "2021-02-14", "2021-02-15", "2021-02-16", "2021-02-17",
-    "2021-04-04", "2021-04-05", "2021-04-06",
-    "2021-05-01", "2021-05-02", "2021-05-03", "2021-05-04", "2021-05-05",
-    "2021-06-14",
-    "2021-09-21",
-    "2021-10-01", "2021-10-02", "2021-10-03", "2021-10-04", "2021-10-05", "2021-10-06", "2021-10-07",
-    # 2022
-    "2022-01-01",
-    "2022-01-31", "2022-02-01", "2022-02-02", "2022-02-03", "2022-02-04", "2022-02-05", "2022-02-06",
-    "2022-04-03", "2022-04-04", "2022-04-05",
-    "2022-05-01", "2022-05-02", "2022-05-03", "2022-05-04",
-    "2022-06-03", "2022-06-04", "2022-06-05",
-    "2022-09-10", "2022-09-11", "2022-09-12",
-    "2022-10-01", "2022-10-02", "2022-10-03", "2022-10-04", "2022-10-05", "2022-10-06", "2022-10-07",
-    # 2023
-    "2023-01-01",
-    "2023-01-21", "2023-01-22", "2023-01-23", "2023-01-24", "2023-01-25", "2023-01-26", "2023-01-27",
-    "2023-04-05",
-    "2023-05-01", "2023-05-02", "2023-05-03", "2023-05-04", "2023-05-05",
-    "2023-06-22", "2023-06-23", "2023-06-24",
-    "2023-09-29", "2023-09-30",
-    "2023-10-01", "2023-10-02", "2023-10-03", "2023-10-04", "2023-10-05", "2023-10-06",
-    # 2024
-    "2024-01-01",
-    "2024-02-10", "2024-02-11", "2024-02-12", "2024-02-13", "2024-02-14", "2024-02-15", "2024-02-16", "2024-02-17",
-    "2024-04-04", "2024-04-05", "2024-04-06",
-    "2024-05-01", "2024-05-02", "2024-05-03", "2024-05-04", "2024-05-05",
-    "2024-06-10",
-    "2024-09-17",
-    "2024-10-01", "2024-10-02", "2024-10-03", "2024-10-04", "2024-10-05", "2024-10-06", "2024-10-07",
-    # 2025
-    "2025-01-01",
-    "2025-01-29", "2025-01-30", "2025-01-31", "2025-02-01", "2025-02-02", "2025-02-03", "2025-02-04",
-    "2025-04-04",
-    "2025-05-01", "2025-05-02", "2025-05-03", "2025-05-04", "2025-05-05",
-    "2025-06-02",
-    "2025-09-08",
-    "2025-10-01", "2025-10-02", "2025-10-03", "2025-10-04", "2025-10-05", "2025-10-06", "2025-10-07",
-    # 2026
-    "2026-01-01",
-    "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-21", "2026-02-22", "2026-02-23",
-    "2026-04-06",
-    "2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05",
-    "2026-06-22",
-    "2026-09-28",
-    "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07",
-])
-
-
-CN_ADJUSTED_WORKDAYS: Set[date] = _parse_dates([
-    # 2021
-    "2021-02-07", "2021-02-20",
-    "2021-04-03",
-    "2021-04-25", "2021-05-08",
-    "2021-06-13",
-    "2021-09-19",
-    "2021-09-26", "2021-10-09",
-    # 2022
-    "2022-01-29", "2022-01-30",
-    "2022-04-02",
-    "2022-04-30",
-    "2022-09-18",
-    "2022-09-25", "2022-10-08",
-    # 2023
-    "2023-01-28", "2023-01-29",
-    "2023-04-08",
-    "2023-04-29", "2023-04-30",
-    "2023-06-25",
-    "2023-10-07", "2023-10-08",
-    # 2024
-    "2024-02-04", "2024-02-18",
-    "2024-04-07",
-    "2024-04-28", "2024-05-11",
-    "2024-06-08",
-    "2024-09-15",
-    "2024-09-29", "2024-10-12",
-    # 2025
-    "2025-01-26", "2025-01-27",
-    "2025-04-07",
-    "2025-04-27", "2025-05-10",
-    "2025-06-01",
-    "2025-09-06",
-    "2025-09-28", "2025-10-11",
-    # 2026
-    "2026-02-14", "2026-02-24",
-    "2026-04-05",
-    "2026-04-26", "2026-05-09",
-    "2026-06-20",
-    "2026-09-26",
-    "2026-09-27", "2026-10-10",
-])
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -404,94 +330,41 @@ def resolve_out_dir(
     return out_dir
 
 
-def is_trading_day(d: date) -> bool:
-    if d in CN_ADJUSTED_WORKDAYS:
-        return True
-    if d in CN_HOLIDAYS:
-        return False
-    return d.weekday() < 5
-
-
-def last_business_day(ref: Optional[date] = None) -> date:
-    """Return the most recent trading day on or before ``ref`` (default: today).
-
-    Takes into account weekends, Chinese public holidays (CN_HOLIDAYS), and
-    adjusted workdays (CN_ADJUSTED_WORKDAYS).
-    """
-    d = ref if ref is not None else date.today()
-    while not is_trading_day(d):
-        d -= timedelta(days=1)
-    return d
-
-
-def next_business_day(ref: Optional[date] = None) -> date:
-    """Return the next trading day on or after ``ref`` (default: today).
-
-    Takes into account weekends, Chinese public holidays (CN_HOLIDAYS), and
-    adjusted workdays (CN_ADJUSTED_WORKDAYS).
-    """
-    d = ref if ref is not None else date.today()
-    while not is_trading_day(d):
-        d += timedelta(days=1)
-    return d
-
-
-def date_range_backward(end_date: date, start_date: date) -> Iterable[date]:
-    cur = end_date
-    while cur >= start_date:
-        yield cur
-        cur -= timedelta(days=1)
-
-
-def date_range_forward(start_date: date, end_date: date) -> Iterable[date]:
-    cur = start_date
-    while cur <= end_date:
-        yield cur
-        cur += timedelta(days=1)
-
-
-def count_weekdays(start_date: date, end_date: date) -> int:
-    return sum(1 for d in date_range_backward(end_date, start_date) if is_trading_day(d))
-
-
-def business_days(start_date: date, end_date: date, *, reverse: bool = True) -> List[date]:
-    gen = date_range_backward(end_date, start_date) if reverse else date_range_forward(start_date, end_date)
-    return [d for d in gen if is_trading_day(d)]
-
-
-def parse_date_window(
-    *,
-    end_date: Optional[str] = None,
-    start_date: Optional[str] = None,
-    default_end: Optional[date] = None,
-    lookback_days: Optional[int] = None,
-    lookback_years: Optional[int] = None,
-) -> Tuple[date, date]:
-    today = date.today()
-    if end_date:
-        _end = datetime.strptime(end_date, "%Y-%m-%d").date()
-    elif default_end is not None:
-        _end = default_end
-    else:
-        _end = last_business_day(today)
-    if start_date:
-        _start = datetime.strptime(start_date, "%Y-%m-%d").date()
-    else:
-        if lookback_years is not None:
-            extra_days = int(lookback_years * 365 + 30)
-            _start = _end - timedelta(days=extra_days)
-        elif lookback_days is not None:
-            _start = _end - timedelta(days=lookback_days)
-        else:
-            _start = _end - timedelta(days=365 * 3 + 30)
-    if _end < _start:
-        raise ValueError(f"end_date ({_end}) must be >= start_date ({_start})")
-    return _start, _end
+# is_trading_day / last_business_day / next_business_day / business_days /
+# count_weekdays / date_range_backward / date_range_forward / parse_date_window
+# are re-exported from utils._holidays_and_weekdays at the top of this module.
 
 
 def is_valid_file(path: Path, *, min_bytes: int = MIN_VALID_BYTES) -> bool:
     try:
         return path.exists() and path.is_file() and path.stat().st_size >= min_bytes
+    except OSError:
+        return False
+
+
+def is_fresh_today(path: Path, *, min_bytes: int = MIN_VALID_BYTES, hour: int = 17) -> bool:
+    """Check if a file exists, is valid, and was modified at or after *hour* on today's date.
+
+    Args:
+        path: Path to the file
+        min_bytes: Minimum valid file size (default MIN_VALID_BYTES)
+        hour: Hour threshold (0-23) — file must be modified at or after this hour today
+
+    Returns:
+        True if file exists, has valid size, and was modified today at or after the specified hour;
+        False otherwise.
+    """
+    if not is_valid_file(path, min_bytes=min_bytes):
+        return False
+    try:
+        mtime = path.stat().st_mtime
+        mtime_dt = datetime.fromtimestamp(mtime)
+        today = datetime.now()
+        # Check if modification date is today
+        if mtime_dt.date() != today.date():
+            return False
+        # Check if modification hour is >= threshold
+        return mtime_dt.hour >= hour
     except OSError:
         return False
 
@@ -539,6 +412,48 @@ def normalize_code_column(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
     return result
 
 
+def _normalize_raw_code(val: Any) -> str:
+    """Normalize a raw code cell to a 6-digit zero-padded string.
+
+    Handles float exports (1.0 -> "000001"), bare numeric strings
+    ("399001" -> "399001"), and already-suffixed strings ("399001.SZ" ->
+    "399001"). Non-numeric strings are returned unchanged.
+    """
+    s = str(val).strip()
+    if not s:
+        return ""
+    if "." in s:
+        s = s.split(".", 1)[0]
+    if s.isdigit():
+        return s.zfill(6)
+    return s
+
+
+def filter_by_code(df: pd.DataFrame, code_filter: List[str]) -> pd.DataFrame:
+    """Keep only rows whose code column value matches one of *code_filter*.
+
+    Looks for the first of these columns (in order): 证券代码, 指数代码.
+    Raw cell values are normalized via :func:`_normalize_raw_code` before
+    comparison, so callers can pass bare 6-digit codes like
+    ``["399001", "399006"]`` regardless of how Excel exported the column
+    (int, float-with-trailing-.0, or already-suffixed). Returns *df*
+    unchanged if no recognized code column exists or *code_filter* is empty.
+    """
+    if not code_filter:
+        return df
+    code_col = None
+    for cand in ("证券代码", "指数代码"):
+        if cand in df.columns:
+            code_col = cand
+            break
+    if code_col is None:
+        return df
+    normalized = df[code_col].map(_normalize_raw_code)
+    wanted = {_normalize_raw_code(c) for c in code_filter}
+    mask = normalized.isin(wanted)
+    return df[mask].reset_index(drop=True)
+
+
 def convert_xlsx_to_csv(
     xlsx_path: Path,
     *,
@@ -548,7 +463,17 @@ def convert_xlsx_to_csv(
     logger: Optional[logging.Logger] = None,
     log_tag: str = "",
     code_suffix: str = "",
+    code_filter: Optional[List[str]] = None,
 ) -> Optional[Path]:
+    """Convert an xlsx file to CSV.
+
+    *code_suffix* is appended to the 证券代码 column (e.g. ".SZ") via
+    :func:`normalize_code_column`. *code_filter*, when provided, keeps only
+    rows whose 证券代码 / 指数代码 value (normalized to a 6-digit string)
+    is in the list — used to extract a subset of rows (e.g. only
+    399001 / 399006 from a full-index export) into the CSV. The xlsx itself
+    is left untouched.
+    """
     if not xlsx_path.exists() or not xlsx_path.is_file():
         if logger:
             logger.warning(
@@ -574,6 +499,8 @@ def convert_xlsx_to_csv(
         if isinstance(df, dict):
             first_sheet = next(iter(df.values()))
             first_sheet = normalize_dataframe_numbers(first_sheet)
+            if code_filter:
+                first_sheet = filter_by_code(first_sheet, code_filter)
             if code_suffix:
                 first_sheet = normalize_code_column(first_sheet, code_suffix)
             first_sheet.to_csv(csv_path, index=False, encoding=encoding)
@@ -581,6 +508,8 @@ def convert_xlsx_to_csv(
             rows = len(first_sheet)
         else:
             df = normalize_dataframe_numbers(df)
+            if code_filter:
+                df = filter_by_code(df, code_filter)
             if code_suffix:
                 df = normalize_code_column(df, code_suffix)
             df.to_csv(csv_path, index=False, encoding=encoding)
@@ -694,7 +623,15 @@ def safe_write_bytes(
     min_bytes: int = MIN_VALID_BYTES,
     logger: Optional[logging.Logger] = None,
     log_tag: str = "",
+    auto_convert: bool = True,
 ) -> bool:
+    """Save *content* to *out_file*.
+
+    For ``.xlsx``/``.xls`` files, the CSV conversion is also triggered
+    unless *auto_convert* is False — in which case the caller is expected
+    to invoke :func:`convert_xlsx_to_csv` itself (e.g. with a code_filter
+    that this auto-conversion path does not apply).
+    """
     if len(content) < min_bytes:
         if logger:
             logger.warning(
@@ -708,14 +645,15 @@ def safe_write_bytes(
         sz = out_file.stat().st_size
         logger.info("%s saved %s (%d bytes)", log_tag, out_file.name, sz)
 
-    suffix = out_file.suffix.lower()
-    if suffix in (".xlsx", ".xls"):
-        convert_xlsx_to_csv(
-            out_file,
-            sheet_name=0,
-            logger=logger,
-            log_tag=log_tag,
-        )
+    if auto_convert:
+        suffix = out_file.suffix.lower()
+        if suffix in (".xlsx", ".xls"):
+            convert_xlsx_to_csv(
+                out_file,
+                sheet_name=0,
+                logger=logger,
+                log_tag=log_tag,
+            )
 
     return True
 
@@ -982,6 +920,98 @@ def scan_present_dates_with_pattern(
 
 
 # ---------------------------------------------------------------------------
+# DB-based scan helpers — DEPRECATED
+# ---------------------------------------------------------------------------
+# These thin wrappers delegate to _db_commons.check_identity() /
+# _db_commons.check_identity_years() and are kept only for backward
+# compatibility. New code should call check_identity / check_identity_years
+# directly.
+# ---------------------------------------------------------------------------
+
+def get_existing_dates_from_db(
+    table_name: str,
+    date_column: str = "date",
+) -> Set[date]:
+    """Query the database for existing dates in a table (sync, DEPRECATED).
+
+    .. deprecated::
+        Use :func:`_db_commons.check_identity` instead, which returns the
+        complementary set (missing dates) and properly skips holidays and
+        weekends. This wrapper queries the raw present-date set without any
+        holiday awareness.
+
+    Args:
+        table_name: table name with optional schema prefix
+                    (e.g., "stats.etf_identity").
+        date_column: name of the date column (default "date").
+
+    Returns:
+        Set of ``datetime.date`` objects present in the table.
+    """
+    from _db_commons import get_db_connection, _build_identity_where_clause, _build_identity_params
+    conn = get_db_connection()
+    try:
+        schema, table = _parse_table_name_local(table_name)
+        # Query ALL present dates (no range filter); use IS NOT NULL guard.
+        # We reuse the identifier-quoting helper to avoid SQL injection on
+        # the table/column names, but the predicate is just IS NOT NULL.
+        from psycopg import sql
+        where = sql.SQL("{col} IS NOT NULL").format(col=sql.Identifier(date_column))
+        query = sql.SQL("SELECT DISTINCT {col} FROM {tbl} WHERE {where}").format(
+            col=sql.Identifier(date_column),
+            tbl=sql.Identifier(schema, table) if schema else sql.Identifier(table),
+            where=where,
+        )
+        with conn.cursor() as cur:
+            cur.execute(query)
+            return {row[0] for row in cur.fetchall() if row[0] is not None}
+    finally:
+        conn.close()
+
+
+def _parse_table_name_local(table_name: str):
+    """Parse a (schema, table) tuple — same logic as _db_commons._parse_table_name."""
+    parts = table_name.split(".", 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return None, parts[0]
+
+
+def get_existing_years_from_db(
+    table_name: str,
+    date_column: str = "date",
+) -> Set[int]:
+    """Query the database for years that have at least one row in a table (DEPRECATED).
+
+    .. deprecated::
+        Use :func:`_db_commons.check_identity_years` instead.
+
+    Args:
+        table_name: table name with optional schema prefix.
+        date_column: name of the date column (default "date").
+
+    Returns:
+        Set of years (int) that have data in the table.
+    """
+    from _db_commons import get_db_connection
+    from psycopg import sql
+    conn = get_db_connection()
+    schema, table = _parse_table_name_local(table_name)
+    try:
+        tbl = sql.Identifier(schema, table) if schema else sql.Identifier(table)
+        query = sql.SQL(
+            'SELECT DISTINCT EXTRACT(YEAR FROM {col})::int '
+            "FROM {tbl} "
+            "WHERE {col} IS NOT NULL"
+        ).format(col=sql.Identifier(date_column), tbl=tbl)
+        with conn.cursor() as cur:
+            cur.execute(query)
+            return {row[0] for row in cur.fetchall() if row[0] is not None}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Stock code normalization helpers
 # ---------------------------------------------------------------------------
 #
@@ -1114,14 +1144,26 @@ def build_day_download_plan(
     weekdays_only: bool = True,
     sort_newest_first: bool = True,
     ext_glob: str = "*.xlsx",
+    db_table: Optional[str] = None,
+    db_date_column: str = "date",
+    db_code_suffix: Optional[str] = None,
 ) -> DayDownloadPlan:
+    """Build a per-day download plan.
+
+    When *db_table* is provided, missing trading days are computed via
+    :func:`_db_commons.check_identity` (which skips holidays and weekends
+    via ``utils._holidays_and_weekdays``) instead of scanning the local
+    filesystem.  All types share the same DB-derived missing-date set —
+    a date missing from the DB is queued for download for every type.
+
+    *db_code_suffix* is forwarded to ``check_identity`` as the
+    ``code_suffix`` filter, so multi-source identity tables (e.g.
+    ``stats.stock_identity`` fed by SZSE + SSE + BSE) can be queried
+    per-exchange.
+    """
     type_keys = list(type_configs.keys())
     prefix_map = {tk: type_configs[tk]["prefix"] for tk in type_keys}
     prefixes = list(prefix_map.values())
-
-    present_by_prefix = scan_present_day_keys(
-        out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
-    )
 
     all_dates = business_days(start_date, end_date, reverse=sort_newest_first) if weekdays_only else list(
         reversed(list(date_range_backward(end_date, start_date))) if sort_newest_first else list(date_range_forward(start_date, end_date))
@@ -1130,6 +1172,25 @@ def build_day_download_plan(
         all_dates = list(date_range_forward(start_date, end_date))
     elif not weekdays_only and sort_newest_first:
         all_dates = list(date_range_backward(end_date, start_date))
+
+    if db_table:
+        # check_identity returns the set of expected trading days that are
+        # NOT in the identity table; the present set is the complement within
+        # all_dates. skip_holidays matches the weekdays_only filter so the
+        # expected-date generation matches all_dates.
+        from _db_commons import check_identity
+        missing_dates = check_identity(
+            db_table, start_date, end_date,
+            date_column=db_date_column,
+            code_suffix=db_code_suffix,
+            skip_holidays=weekdays_only,
+        )
+        present_set = set(all_dates) - missing_dates
+        present_by_prefix: Dict[str, Set[date]] = {p: set(present_set) for p in prefixes}
+    else:
+        present_by_prefix = scan_present_day_keys(
+            out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
+        )
 
     plan = DayDownloadPlan()
     plan.total_expected = len(all_dates) * len(type_keys)
@@ -1181,16 +1242,35 @@ def build_year_download_plan(
     min_bytes: int = MIN_VALID_BYTES,
     always_refresh_years: Optional[Set[int]] = None,
     ext_glob: str = "*.xlsx",
+    db_table: Optional[str] = None,
+    db_date_column: str = "date",
 ) -> YearDownloadPlan:
+    """Build a per-year download plan.
+
+    When *db_table* is provided, years with NO row in the DB table within
+    [start_date, end_date] are computed via
+    :func:`_db_commons.check_identity_years` instead of scanning the local
+    filesystem. A year is "present" if it has at least one row.
+    """
     type_keys = list(type_configs.keys())
     prefix_map = {tk: type_configs[tk]["prefix"] for tk in type_keys}
     prefixes = list(prefix_map.values())
 
-    present_by_prefix = scan_present_year_keys(
-        out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
-    )
-
     years = list(range(start_date.year, end_date.year + 1))
+
+    if db_table:
+        from _db_commons import check_identity_years
+        missing_years = check_identity_years(
+            db_table, start_date, end_date,
+            date_column=db_date_column,
+        )
+        present_years_set = set(years) - missing_years
+        present_by_prefix: Dict[str, Set[int]] = {p: set(present_years_set) for p in prefixes}
+    else:
+        present_by_prefix = scan_present_year_keys(
+            out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
+        )
+
     plan = YearDownloadPlan()
     plan.total_expected = len(years) * len(type_keys)
 
@@ -1236,14 +1316,49 @@ def build_chunk_download_plan(
     type_configs: Dict[str, Dict[str, Any]],
     min_bytes: int = MIN_VALID_BYTES,
     ext_glob: str = "*.xlsx",
+    db_table: Optional[str] = None,
+    db_date_column: str = "date",
 ) -> ChunkDownloadPlan:
+    """Build a per-chunk download plan.
+
+    When *db_table* is provided, a chunk is considered "present" if its end
+    date exists in the DB table. Missing chunk-end dates are computed via
+    :func:`_db_commons.check_identity` with ``skip_holidays=False`` (chunk
+    end dates may fall on non-trading days). A chunk is "missing" if its
+    end date is in the missing set.
+
+    This is a heuristic — the build script processes chunks sequentially, so
+    the end date being present implies the chunk was fully processed.
+    """
     type_keys = list(type_configs.keys())
     prefix_map = {tk: type_configs[tk]["prefix"] for tk in type_keys}
     prefixes = list(prefix_map.values())
 
-    present_by_prefix = scan_present_chunk_keys(
-        out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
-    )
+    if db_table:
+        # Find the overall span covering every chunk's [cs, ce] so we can
+        # run a single check_identity query covering all chunk end dates.
+        all_chunks_flat = [c for chunks in chunks_by_type.values() for c in chunks]
+        if all_chunks_flat:
+            min_cs = min(c[0] for c in all_chunks_flat)
+            max_ce = max(c[1] for c in all_chunks_flat)
+            from _db_commons import check_identity
+            # skip_holidays=False because chunk end dates may be weekends/holidays
+            missing_dates = check_identity(
+                db_table, min_cs, max_ce,
+                date_column=db_date_column,
+                skip_holidays=False,
+            )
+        else:
+            missing_dates = set()
+        # A chunk (cs, ce) is "present" if ce is NOT in the missing set.
+        present_by_prefix: Dict[str, Set[Tuple[date, date]]] = {
+            p: {(cs, ce) for (cs, ce) in chunks_by_type.get(tk, []) if ce not in missing_dates}
+            for p, tk in zip(prefixes, type_keys)
+        }
+    else:
+        present_by_prefix = scan_present_chunk_keys(
+            out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
+        )
 
     plan = ChunkDownloadPlan()
 
@@ -1317,7 +1432,290 @@ class HostStatusTracker:
 
 
 # ---------------------------------------------------------------------------
+# Unified Anti-Bot Proxy: consolidates all anti-bot mechanisms into one class
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AntiBotConfig:
+    """Configuration for anti-bot behavior.
+    
+    All anti-bot features are enabled by default and can be selectively disabled.
+    """
+    # Browser fingerprint rotation
+    rotate_browser_profile: bool = True
+    # Add random parameter to requests
+    add_random_param: bool = True
+    # Sleep between requests
+    enable_sleep: bool = True
+    # Base sleep duration (seconds)
+    base_sleep_sec: float = DEFAULT_SLEEP_SEC
+    # Jitter factor for sleep (0.0 = no jitter, 1.0 = 100% jitter)
+    sleep_jitter: float = 0.5
+    # Track host blocking (4xx errors)
+    enable_host_tracking: bool = True
+    # Timeout for requests
+    timeout: Tuple[int, int] = DEFAULT_TIMEOUT
+
+
+class AntiBotProxy:
+    """Unified anti-bot proxy that consolidates browser fingerprint rotation,
+    sleep with jitter, host blocking detection, and request parameter randomization.
+    
+    This class provides a single interface for all anti-bot mechanisms, making
+    it easy to configure and use across the entire codebase.
+    
+    Example usage:
+        proxy = AntiBotProxy(base_sleep_sec=20.0)
+        session = requests.Session()
+        
+        # Simple GET with anti-bot protection
+        resp = proxy.get(session, url, headers=base_headers)
+        
+        # POST with custom sleep
+        resp = proxy.post(session, url, data=payload, sleep_sec=30.0)
+        
+        # Manual sleep after processing
+        proxy.sleep()
+        
+        # Check if host is blocked
+        if proxy.is_blocked(url):
+            # Handle blocked host
+            pass
+    """
+    
+    def __init__(self, config: Optional[AntiBotConfig] = None):
+        """Initialize the anti-bot proxy with optional configuration.
+        
+        Args:
+            config: AntiBotConfig instance. If None, defaults are used.
+        """
+        self.config = config or AntiBotConfig()
+        self._host_tracker = HostStatusTracker() if self.config.enable_host_tracking else None
+    
+    def get(
+        self,
+        session: requests.Session,
+        url: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[Tuple[int, int]] = None,
+        sleep_sec: Optional[float] = None,
+        anti_bot: bool = True,
+        logger: Optional[logging.Logger] = None,
+        log_tag: str = "",
+    ) -> Optional[requests.Response]:
+        """Perform a GET request with anti-bot protection.
+        
+        Args:
+            session: requests.Session instance
+            url: URL to fetch
+            params: Query parameters
+            headers: Request headers
+            timeout: Request timeout (overrides config.timeout)
+            sleep_sec: Custom sleep duration after request
+            anti_bot: If False, skip anti-bot mechanisms
+            logger: Logger for warnings/errors
+            log_tag: Tag for log messages
+        
+        Returns:
+            requests.Response on success, None on failure or blocked host
+        """
+        return self._request(
+            session, "get", url,
+            params=params, headers=headers, data=None,
+            timeout=timeout, sleep_sec=sleep_sec,
+            anti_bot=anti_bot, logger=logger, log_tag=log_tag,
+        )
+    
+    def post(
+        self,
+        session: requests.Session,
+        url: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        data: Optional[Any] = None,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[Tuple[int, int]] = None,
+        sleep_sec: Optional[float] = None,
+        anti_bot: bool = True,
+        logger: Optional[logging.Logger] = None,
+        log_tag: str = "",
+    ) -> Optional[requests.Response]:
+        """Perform a POST request with anti-bot protection.
+        
+        Args:
+            session: requests.Session instance
+            url: URL to fetch
+            params: Query parameters
+            data: POST body data
+            headers: Request headers
+            timeout: Request timeout (overrides config.timeout)
+            sleep_sec: Custom sleep duration after request
+            anti_bot: If False, skip anti-bot mechanisms
+            logger: Logger for warnings/errors
+            log_tag: Tag for log messages
+        
+        Returns:
+            requests.Response on success, None on failure or blocked host
+        """
+        return self._request(
+            session, "post", url,
+            params=params, headers=headers, data=data,
+            timeout=timeout, sleep_sec=sleep_sec,
+            anti_bot=anti_bot, logger=logger, log_tag=log_tag,
+        )
+    
+    def _request(
+        self,
+        session: requests.Session,
+        method: str,
+        url: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        data: Optional[Any] = None,
+        timeout: Optional[Tuple[int, int]] = None,
+        sleep_sec: Optional[float] = None,
+        anti_bot: bool = True,
+        logger: Optional[logging.Logger] = None,
+        log_tag: str = "",
+    ) -> Optional[requests.Response]:
+        """Internal request handler with anti-bot protection."""
+        # Check host blocking
+        if self._host_tracker and self._host_tracker.is_blocked(url):
+            if logger:
+                logger.warning("%sskipping request to blocked host: %s", log_tag, url)
+            return None
+        
+        # Prepare parameters with anti-bot randomization
+        final_params = dict(params or {})
+        if anti_bot and self.config.add_random_param:
+            final_params["random"] = random.random()
+        
+        # Prepare headers with browser fingerprint rotation
+        final_headers = dict(headers or {})
+        if anti_bot and self.config.rotate_browser_profile:
+            final_headers = merge_browser_profile(final_headers)
+        
+        # Use custom or configured timeout
+        request_timeout = timeout if timeout is not None else self.config.timeout
+        
+        try:
+            if method == "get":
+                resp = session.get(url, params=final_params, headers=final_headers, timeout=request_timeout)
+            else:
+                resp = session.post(url, params=final_params, data=data, headers=final_headers, timeout=request_timeout)
+            
+            # Handle 4xx errors (potential blocking)
+            if 400 <= resp.status_code < 500:
+                if self._host_tracker:
+                    self._host_tracker.record_error(url, resp.status_code, f"HTTP {resp.status_code}")
+                if logger:
+                    logger.error("%sHTTP %d for %s", log_tag, resp.status_code, url)
+                return None
+            
+            resp.raise_for_status()
+            
+            # Sleep after successful request
+            if self.config.enable_sleep:
+                self.sleep(sleep_sec=sleep_sec)
+            
+            return resp
+            
+        except requests.RequestException as e:
+            status_code = getattr(e.response, "status_code", None)
+            if status_code is not None and 400 <= status_code < 500 and self._host_tracker:
+                self._host_tracker.record_error(url, status_code, str(e))
+            if logger:
+                logger.warning("%sRequest failed: %s", log_tag, e)
+            return None
+    
+    def sleep(self, sleep_sec: Optional[float] = None) -> None:
+        """Sleep with jitter based on configured base sleep duration.
+        
+        Args:
+            sleep_sec: Custom sleep duration. If None, uses config.base_sleep_sec.
+        """
+        if not self.config.enable_sleep:
+            return
+        
+        base = sleep_sec if sleep_sec is not None else self.config.base_sleep_sec
+        if base <= 0:
+            return
+        
+        jitter = base * self.config.sleep_jitter
+        sleep_time = random.uniform(base - jitter, base + jitter)
+        time.sleep(max(0, sleep_time))
+    
+    def sleep_range(self, min_sec: float, max_sec: float) -> None:
+        """Sleep for a random duration between min_sec and max_sec.
+        
+        Args:
+            min_sec: Minimum sleep duration
+            max_sec: Maximum sleep duration
+        """
+        if not self.config.enable_sleep:
+            return
+        
+        if min_sec <= 0 and max_sec <= 0:
+            return
+        
+        sleep_time = random.uniform(min(min_sec, max_sec), max(min_sec, max_sec))
+        time.sleep(max(0, sleep_time))
+    
+    def is_blocked(self, url: str) -> bool:
+        """Check if the host for the given URL is blocked.
+        
+        Args:
+            url: URL to check
+        
+        Returns:
+            True if blocked, False otherwise or if host tracking is disabled
+        """
+        if self._host_tracker is None:
+            return False
+        return self._host_tracker.is_blocked(url)
+    
+    def unblock(self, url: str) -> None:
+        """Unblock the host for the given URL.
+        
+        Args:
+            url: URL whose host should be unblocked
+        """
+        if self._host_tracker is not None:
+            self._host_tracker.unblock(url)
+    
+    def record_error(self, url: str, status_code: int, reason: str = "") -> None:
+        """Record an error for the host of the given URL.
+        
+        Args:
+            url: URL where error occurred
+            status_code: HTTP status code
+            reason: Optional reason for the error
+        """
+        if self._host_tracker is not None:
+            self._host_tracker.record_error(url, status_code, reason)
+    
+    def get_host_status(self, url: str) -> Optional[HostStatus]:
+        """Get the status of the host for the given URL.
+        
+        Args:
+            url: URL to check
+        
+        Returns:
+            HostStatus if available, None otherwise
+        """
+        if self._host_tracker is None:
+            return None
+        return self._host_tracker.get_status(url)
+
+
+# ---------------------------------------------------------------------------
 # Unified HTTP request functions with anti-bot mechanisms and 4xx detection
+# 
+# Note: These functions are now wrappers around AntiBotProxy for backward
+# compatibility. New code should prefer using AntiBotProxy directly.
 # ---------------------------------------------------------------------------
 
 def safe_get(
@@ -1332,36 +1730,47 @@ def safe_get(
     logger: Optional[logging.Logger] = None,
     log_tag: str = "",
 ) -> Optional[requests.Response]:
-    if host_tracker and host_tracker.is_blocked(url):
-        if logger:
-            logger.warning("%sskipping request to blocked host: %s", log_tag, url)
-        return None
-
-    final_params = dict(params or {})
-    if anti_bot:
-        final_params["random"] = random.random()
-
-    final_headers = dict(headers or {})
-    if anti_bot:
-        final_headers = merge_browser_profile(final_headers)
-
-    try:
-        resp = session.get(url, params=final_params, headers=final_headers, timeout=timeout)
-        if 400 <= resp.status_code < 500:
-            if host_tracker:
-                host_tracker.record_error(url, resp.status_code, f"HTTP {resp.status_code}")
-            if logger:
-                logger.error("%sHTTP %d for %s", log_tag, resp.status_code, url)
-            return None
-        resp.raise_for_status()
-        return resp
-    except requests.RequestException as e:
-        status_code = getattr(e.response, "status_code", None)
-        if status_code is not None and 400 <= status_code < 500 and host_tracker:
-            host_tracker.record_error(url, status_code, str(e))
-        if logger:
-            logger.warning("%sRequest failed: %s", log_tag, e)
-        return None
+    """Backward-compatible wrapper for GET requests with anti-bot protection.
+    
+    This function is now implemented using AntiBotProxy internally. New code
+    should prefer using AntiBotProxy directly for more flexibility.
+    
+    Args:
+        session: requests.Session instance
+        url: URL to fetch
+        params: Query parameters
+        headers: Request headers
+        timeout: Request timeout
+        host_tracker: Optional HostStatusTracker for blocking detection
+        anti_bot: If False, skip anti-bot mechanisms
+        logger: Logger for warnings/errors
+        log_tag: Tag for log messages
+    
+    Returns:
+        requests.Response on success, None on failure or blocked host
+    """
+    # Create a temporary AntiBotProxy with host_tracker if provided
+    config = AntiBotConfig(
+        rotate_browser_profile=anti_bot,
+        add_random_param=anti_bot,
+        enable_sleep=False,  # Legacy safe_get doesn't sleep automatically
+        enable_host_tracking=host_tracker is not None,
+        timeout=timeout,
+    )
+    proxy = AntiBotProxy(config)
+    
+    # If a host_tracker was provided, use it instead of creating a new one
+    if host_tracker is not None:
+        proxy._host_tracker = host_tracker
+    
+    return proxy.get(
+        session, url,
+        params=params,
+        headers=headers,
+        anti_bot=anti_bot,
+        logger=logger,
+        log_tag=log_tag,
+    )
 
 
 def safe_post(
@@ -1377,42 +1786,49 @@ def safe_post(
     logger: Optional[logging.Logger] = None,
     log_tag: str = "",
 ) -> Optional[requests.Response]:
-    if host_tracker and host_tracker.is_blocked(url):
-        if logger:
-            logger.warning("%sskipping request to blocked host: %s", log_tag, url)
-        return None
-
-    final_params = dict(params or {})
-    if anti_bot:
-        final_params["random"] = random.random()
-
-    final_headers = dict(headers or {})
-    if anti_bot:
-        final_headers = merge_browser_profile(final_headers)
-
-    try:
-        resp = session.post(
-            url,
-            params=final_params,
-            data=data,
-            headers=final_headers,
-            timeout=timeout,
-        )
-        if 400 <= resp.status_code < 500:
-            if host_tracker:
-                host_tracker.record_error(url, resp.status_code, f"HTTP {resp.status_code}")
-            if logger:
-                logger.error("%sHTTP %d for %s", log_tag, resp.status_code, url)
-            return None
-        resp.raise_for_status()
-        return resp
-    except requests.RequestException as e:
-        status_code = getattr(e.response, "status_code", None)
-        if status_code is not None and 400 <= status_code < 500 and host_tracker:
-            host_tracker.record_error(url, status_code, str(e))
-        if logger:
-            logger.warning("%sRequest failed: %s", log_tag, e)
-        return None
+    """Backward-compatible wrapper for POST requests with anti-bot protection.
+    
+    This function is now implemented using AntiBotProxy internally. New code
+    should prefer using AntiBotProxy directly for more flexibility.
+    
+    Args:
+        session: requests.Session instance
+        url: URL to fetch
+        params: Query parameters
+        data: POST body data
+        headers: Request headers
+        timeout: Request timeout
+        host_tracker: Optional HostStatusTracker for blocking detection
+        anti_bot: If False, skip anti-bot mechanisms
+        logger: Logger for warnings/errors
+        log_tag: Tag for log messages
+    
+    Returns:
+        requests.Response on success, None on failure or blocked host
+    """
+    # Create a temporary AntiBotProxy with host_tracker if provided
+    config = AntiBotConfig(
+        rotate_browser_profile=anti_bot,
+        add_random_param=anti_bot,
+        enable_sleep=False,  # Legacy safe_post doesn't sleep automatically
+        enable_host_tracking=host_tracker is not None,
+        timeout=timeout,
+    )
+    proxy = AntiBotProxy(config)
+    
+    # If a host_tracker was provided, use it instead of creating a new one
+    if host_tracker is not None:
+        proxy._host_tracker = host_tracker
+    
+    return proxy.post(
+        session, url,
+        params=params,
+        data=data,
+        headers=headers,
+        anti_bot=anti_bot,
+        logger=logger,
+        log_tag=log_tag,
+    )
 
 
 # ---------------------------------------------------------------------------

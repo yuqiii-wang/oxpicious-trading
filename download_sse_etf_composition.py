@@ -52,15 +52,13 @@ import requests
 from _download_commons import (
     DEFAULT_SLEEP_SEC,
     DEFAULT_TIMEOUT,
-    HostStatusTracker,
+    AntiBotProxy,
+    AntiBotConfig,
     RunStats,
     build_default_session,
     build_headers_with_referer,
     is_valid_file,
-    random_sleep,
-    random_sleep_range,
     resolve_out_dir,
-    safe_get,
     setup_logger,
 )
 
@@ -128,7 +126,7 @@ def _is_sse_etf_code(code: str) -> bool:
 
 def fetch_sse_etf_list(
     session: requests.Session,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> List[Dict[str, str]]:
     """Fetch the SSE fund suggest-data JS and extract SSE ETF codes + names.
 
@@ -142,13 +140,14 @@ def fetch_sse_etf_list(
     excluding LOF/closed-end funds (501xxx etc.). Returns a list of
     ``{code, etf_name, fund_type}`` dicts (fund_type is "" — not in the source).
     """
-    resp = safe_get(
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+    
+    resp = proxy.get(
         session,
         SSE_SUGGEST_DATA_URL,
         headers=SSE_HEADERS,
         timeout=DEFAULT_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag="[etf-list]",
     )
@@ -371,7 +370,7 @@ def download_composition(
     session: requests.Session,
     etf: Dict[str, str],
     out_dir: Path,
-    host_tracker: HostStatusTracker,
+    proxy: AntiBotProxy,
     skip_cached: bool = True,
     sleep_sec: float = SLEEP_SEC,
 ) -> Tuple[bool, str]:
@@ -400,19 +399,17 @@ def download_composition(
                 convert_xml_to_csv(xml_path, csv_path, etf_name, fund_type)
             return True, "cached"
 
-    if host_tracker.is_blocked(PCF_DOWNLOAD_URL):
+    if proxy.is_blocked(PCF_DOWNLOAD_URL):
         return False, "blocked"
 
     resp = None
     for attempt in range(1, 5):
-        resp = safe_get(
+        resp = proxy.get(
             session,
             PCF_DOWNLOAD_URL,
             params={"fundCode": code},
             headers=SSE_HEADERS,
             timeout=DEFAULT_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=f"[dl {code}]",
         )
@@ -422,7 +419,7 @@ def download_composition(
                 return False, "failed"
             backoff = 2.0 * attempt
             logger.warning("[dl %s] attempt %d failed; retry in %.1fs", code, attempt, backoff)
-            random_sleep_range(backoff, backoff * 1.5)
+            proxy.sleep_range(backoff, backoff * 1.5)
             continue
         break
 
@@ -456,7 +453,7 @@ def download_composition(
     _write_per_file_csv(rows, csv_path)
     logger.info("[dl %s] saved %s + %s (%d holdings, T=%s)",
                 code, xml_path.name, csv_path.name, len(rows), trading_day)
-    random_sleep(sleep_sec, jitter_factor=0.3)
+    # Auto-sleep handled by proxy.get()/post()
     return True, "downloaded"
 
 
@@ -570,7 +567,14 @@ def download_sse_etf_composition(
     today = date.today()
 
     session = build_default_session()
-    host_tracker = HostStatusTracker()
+    
+    # Create unified AntiBotProxy with custom config
+    proxy_config = AntiBotConfig(
+        base_sleep_sec=sleep_sec,
+        sleep_jitter=0.3,
+    )
+    proxy = AntiBotProxy(proxy_config)
+    
     stats = RunStats()
 
     # --- Enumerate SSE ETFs ---
@@ -582,7 +586,7 @@ def download_sse_etf_composition(
                 etfs.append({"code": c, "etf_name": "", "fund_type": ""})
         logger.info("[main] using %d ETF codes from CLI override", len(etfs))
     else:
-        etfs = fetch_sse_etf_list(session, host_tracker)
+        etfs = fetch_sse_etf_list(session, proxy)
         if not etfs:
             logger.warning("[main] fund list page yielded no ETFs; trying etf_universe.csv fallback")
             etfs = _load_etf_codes_from_universe()
@@ -632,12 +636,12 @@ def download_sse_etf_composition(
             etfs_iter = etfs
 
         for etf in etfs_iter:
-            if host_tracker.is_blocked(PCF_DOWNLOAD_URL):
+            if proxy.is_blocked(PCF_DOWNLOAD_URL):
                 logger.warning("[host-blocked] query.sse.com.cn blocked, stopping")
                 break
 
             _, status = download_composition(
-                session, etf, out_dir, host_tracker,
+                session, etf, out_dir, proxy,
                 skip_cached=skip_cached, sleep_sec=auto_sleep,
             )
             if status == "downloaded":

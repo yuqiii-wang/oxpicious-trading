@@ -1,34 +1,51 @@
 """
-build_szse_sse_etf_and_margin.py — Build combined SZSE + SSE ETF OHLCV + margin + composition CSV.
+build_szse_sse_etf_and_margin.py — Build combined SZSE + SSE ETF OHLCV + margin +
+composition data and insert directly to the database (no intermediate CSV,
+missing-data-only).
 
 Reads the per-day SZSE/SSE CSV archives produced by download scripts:
   • SZSE: szse_archive/szse_etf_YYYYMMDD.csv        (2022-01 → 2025-06-30 legacy)
   • SZSE: szse_trend/szse_trend_etf_YYYYMMDD.csv    (2025-07 → today snapshot)
   • SSE: sse_trend/sse_trend_stock_YYYYMMDD.csv     (today snapshot, stocks only — NO ETFs)
   • SZSE: szse_margin/szse_margin_detail_YYYYMMDD.csv  (per-security margin detail)
-  • SZSE: szse_etf_composition/szse_etf_comp_YYYYMMDD_<code>.csv (per-file finished CSV; .md sibling kept as raw archive)
+  • SZSE: szse_etf_composition/szse_etf_comp_YYYYMMDD_<code>.csv (per-file finished CSV)
+  • CSI:  csi_index_composition/*_closeweight_*.csv (index composition)
 
-CRITICAL: Stock/ETF codes must be disambiguated with exchange suffixes (.SS for Shanghai,
-.SZ for Shenzhen) because 000xxx/001xxx codes overlap between indices and stocks.
-ETF codes have NO overlap:
+CRITICAL: Stock/ETF codes must be disambiguated with exchange suffixes (.SS for
+Shanghai, .SZ for Shenzhen) because 000xxx/001xxx codes overlap between indices
+and stocks. ETF codes have NO overlap:
   - SSE: 510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 516xxx, 518xxx, 56xxx
   - SZSE: 150xxx, 159xxx, 16xxx
 
-NOTE: The SSE price endpoint (download_sse_price.py) returns only stocks (600/601/603/605/688),
-not ETFs. SSE ETF data would require a separate download script targeting a different endpoint.
+Missing-data detection flow (DB-first):
+  OHLCV + margin (cross-date dependency — splits + MAs need FULL per-code history):
+    1. Glob all source CSV files (filenames only — no reading yet)
+    2. Extract available dates from filenames
+    3. Query stats.etf_identity by index for existing (date, code) pairs
+    4. missing_dates = available_dates - existing_dates
+    5. If no missing dates: query DB for historical OHLCV+margin only (for
+       composition merge_asof + etf_meta stats), skip CSV reading entirely
+    6. If missing dates exist: read ONLY the source CSVs for those missing
+       dates, then query DB for existing OHLCV+margin (historical context
+       for split adjustment + MA computation), and concatenate the two
+    7. Merge OHLCV + margin, apply split adjustment, compute MAs (over the
+       combined full history)
+    8. Filter merged to (date, code) NOT in existing_keys [and within
+       --start/--end range]
+    9. Bulk upsert only the missing rows into etf_identity + 5 sub-tables
 
-Filters ETF/LOF rows by exchange-specific code prefixes, excludes money-market /
-fixed-income ETFs, parses comma-formatted numeric strings, and merges OHLCV
-with margin data on (date, code). Also aggregates composition per-file CSVs
-(produced by download_szse_etf_composition.py) to extract top 5 weighted
-holdings for each ETF.
+  Composition (sec_composition — no cross-date dependency):
+    1. Read all composition CSVs, build holdings rows
+    2. Query stats.sec_composition for existing (code, snapshot_date) pairs
+    3. Filter to missing (code, snapshot_date) pairs
+    4. Bulk upsert only the missing rows
 
-Outputs:
-  • analysis_output/szse_sse_etf_margin/etf_margin_combined.csv  (long format with top5 columns)
-  • analysis_output/szse_sse_etf_margin/per_etf/<code>.csv         (per-ETF wide)
-  • analysis_output/szse_sse_etf_margin/etf_universe.csv            (one row per ETF)
-  • analysis_output/szse_etf_composition/composition_combined.csv
-  • analysis_output/szse_etf_composition/composition_universe.csv
+  ETF meta (etf_meta — per-code metadata, not per-date):
+    Computed from full merged data (n_ohlcv_days, avg_volume_wan, etc.) and
+    upserted unconditionally (ON CONFLICT DO UPDATE — idempotent).
+
+With --force: truncate all target tables first, then read ALL source CSVs
+(no DB historical query needed since DB is empty).
 
 Usage:
   python build_szse_sse_etf_and_margin.py
@@ -49,30 +66,21 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _download_commons import read_csv_preferred, strip_exchange_suffix
 from _study_select_etf import ETF_THEME_RULES
-from _db_commons import (
-    get_db_connection_async, get_existing_keys_async, bulk_upsert_async,
-    truncate_table_async
+from _build_commons import (
+    setup_utf8_stdout, add_common_build_args, get_db_or_exit,
+    parse_num, parse_date, ymd_from_filename, ymd_to_date, in_range,
+    glob_source_files, print_build_header, print_wall_time,
+    PROJECT_ROOT, TODAY_STR,
+    get_existing_keys_async, bulk_upsert_async, truncate_table_async,
 )
 
-# ---------------------------------------------------------------------------
-# stdout encoding (Windows)
-# ---------------------------------------------------------------------------
-import locale as _locale
-try:
-    _locale.setlocale(_locale.LC_ALL, "")
-except Exception:
-    pass
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+setup_utf8_stdout()
+
+import asyncio
 
 # ============================================================================
 # Paths
 # ============================================================================
-PROJECT_ROOT        = os.path.dirname(os.path.abspath(__file__))
-TEMP_DATA           = os.path.join(PROJECT_ROOT, "temp_data")
 SZSE_ARCHIVE_DIR    = os.path.join(PROJECT_ROOT, "temps", "szse_archive")
 SZSE_TREND_DIR      = os.path.join(PROJECT_ROOT, "temps", "szse_trend")
 SSE_TREND_DIR       = os.path.join(PROJECT_ROOT, "temps", "sse_trend")
@@ -80,16 +88,7 @@ SZSE_MARGIN_DIR     = os.path.join(PROJECT_ROOT, "temps", "szse_margin")
 SSE_MARGIN_DIR      = os.path.join(PROJECT_ROOT, "temps", "sse_margin")
 COMP_DIR            = os.path.join(PROJECT_ROOT, "temps", "szse_etf_composition")
 INDEX_COMP_DIR      = os.path.join(PROJECT_ROOT, "temps", "csi_index_composition")
-OUTPUT_DIR          = os.path.join(TEMP_DATA, "analysis_output", "szse_sse_etf_margin")
-PER_ETF_DIR         = os.path.join(OUTPUT_DIR, "per_etf")
-COMP_OUTPUT_DIR     = os.path.join(TEMP_DATA, "analysis_output", "szse_etf_composition")
-COMP_PER_ETF_DIR    = os.path.join(COMP_OUTPUT_DIR, "per_etf")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(PER_ETF_DIR, exist_ok=True)
-os.makedirs(COMP_OUTPUT_DIR, exist_ok=True)
-os.makedirs(COMP_PER_ETF_DIR, exist_ok=True)
-
-TODAY_STR = datetime.datetime.now().strftime("%Y-%m-%d")
+SZSE_INDEX_COMP_DIR = os.path.join(PROJECT_ROOT, "temps", "szse_index_composition")
 
 # ============================================================================
 # ETF code patterns by exchange (NO overlap between exchanges)
@@ -120,10 +119,6 @@ def is_sse_etf_code(code):
     return len(s) == 6 and s.isdigit() and any(s.startswith(p) for p in SSE_ETF_PREFIXES)
 
 
-def is_etf_code(code):
-    return is_szse_etf_code(code) or is_sse_etf_code(code)
-
-
 def get_exchange_for_etf(code):
     if is_szse_etf_code(code):
         return "SZ"
@@ -141,26 +136,6 @@ MONEY_MARKET_KW = (
     "稳健", "增益", "固定",
     "国开", "政金", "地债", "地方债", "进出口", "农发",
 )
-
-
-def parse_num(s):
-    if s is None:
-        return 0.0
-    if isinstance(s, (int, float)):
-        try:
-            v = float(s)
-            return 0.0 if not np.isfinite(v) else v
-        except Exception:
-            return 0.0
-    txt = str(s).strip()
-    if not txt or txt in ("--", "-", "—", "null", "NULL", "None", "nan", "NaN"):
-        return 0.0
-    txt = txt.replace(",", "").replace("，", "").replace(" ", "").replace("\u3000", "")
-    try:
-        v = float(txt)
-        return 0.0 if not np.isfinite(v) else v
-    except Exception:
-        return 0.0
 
 
 def is_money_market_etf(name):
@@ -298,30 +273,8 @@ def apply_split_adjustment(df: pd.DataFrame, verbose: bool = True) -> pd.DataFra
     return df
 
 
-def _ymd_from_filename(path, prefix, suffix=".csv"):
-    b = os.path.basename(path)
-    if not b.startswith(prefix):
-        return None
-    m = re.search(r"(\d{8})", b)
-    if not m:
-        return None
-    return m.group(1)
-
-
-def _in_range(ymd, start_ymd, end_ymd):
-    if ymd is None:
-        return False
-    if start_ymd and ymd < start_ymd:
-        return False
-    if end_ymd and ymd > end_ymd:
-        return False
-    return True
-
-
 # ============================================================================
 # Composition: read finished per-file CSVs produced by download_szse_etf_composition.py
-# Each .md file has a sibling .csv (same stem) with COMBINED_COLS schema, so the
-# build step just aggregates the finished CSVs instead of re-parsing markdown.
 # ============================================================================
 COMBINED_COLS = [
     "trade_date", "etf_code", "etf_name", "fund_type", "target_index",
@@ -330,10 +283,12 @@ COMBINED_COLS = [
 ]
 
 
-def build_composition(limit=None, verbose=True):
+def build_composition(verbose=True):
+    """Read all per-file composition CSVs and return (comp_long, comp_universe).
+
+    No CSV output — caller inserts directly to database.
+    """
     files = sorted(glob.glob(os.path.join(COMP_DIR, "szse_etf_comp_*.csv")))
-    if limit:
-        files = files[:limit]
     if verbose:
         print(f"    [COMP] {len(files)} per-file CSVs in {COMP_DIR}", flush=True)
 
@@ -341,9 +296,6 @@ def build_composition(limit=None, verbose=True):
     dfs = []
     for path in files:
         try:
-            # keep_default_na=False preserves "" for empty cells (matches the original
-            # MD-parsing behaviour where missing fields were "" not NaN); numeric cols
-            # are coerced to numeric below.
             df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
         except Exception:
             counts["failed"] += 1
@@ -361,7 +313,6 @@ def build_composition(limit=None, verbose=True):
         return pd.DataFrame(columns=COMBINED_COLS), pd.DataFrame()
 
     combined = pd.concat(dfs, ignore_index=True)
-    # Ensure expected column order / fill missing columns
     for c in COMBINED_COLS:
         if c not in combined.columns:
             combined[c] = None
@@ -371,22 +322,9 @@ def build_composition(limit=None, verbose=True):
         combined[c] = pd.to_numeric(combined[c], errors="coerce")
     combined = combined.sort_values(["etf_code", "trade_date", "stock_code"]).reset_index(drop=True)
 
-    combined_path = os.path.join(COMP_OUTPUT_DIR, "composition_combined.csv")
-    combined.to_csv(combined_path, index=False, encoding="utf-8-sig")
     if verbose:
-        print(f"    [SAVE] {combined_path} ({len(combined):,} rows, "
-              f"{combined['etf_code'].nunique()} ETFs, "
-              f"{combined['trade_date'].dt.strftime('%Y-%m-%d').nunique()} dates)",
-              flush=True)
-
-    n_written = 0
-    for code, sub in combined.groupby("etf_code"):
-        out = os.path.join(COMP_PER_ETF_DIR, f"{code}.csv")
-        sub.sort_values(["trade_date", "stock_code"]).to_csv(
-            out, index=False, encoding="utf-8-sig")
-        n_written += 1
-    if verbose:
-        print(f"    [SAVE] {COMP_PER_ETF_DIR} ({n_written} per-ETF files)", flush=True)
+        print(f"    [COMP] {len(combined):,} rows, {combined['etf_code'].nunique()} ETFs, "
+              f"{combined['trade_date'].dt.strftime('%Y-%m-%d').nunique()} dates", flush=True)
 
     universe_rows = []
     for code, sub in combined.groupby("etf_code"):
@@ -410,129 +348,20 @@ def build_composition(limit=None, verbose=True):
             "n_equity_latest":    int((latest["cash_sub_flag"] != "必须").sum()),
         })
     universe = pd.DataFrame(universe_rows).sort_values("etf_code").reset_index(drop=True)
-    universe_path = os.path.join(COMP_OUTPUT_DIR, "composition_universe.csv")
-    universe.to_csv(universe_path, index=False, encoding="utf-8-sig")
-    if verbose:
-        print(f"    [SAVE] {universe_path} ({len(universe)} ETFs)", flush=True)
 
     print(f"    [STATS] parsed={counts['parsed']} failed={counts['failed']} "
           f"total_holdings={counts['holdings']:,}", flush=True)
     return combined, universe
 
 
-def get_top5_constituents_for_date(comp_long, code, target_date, n=5):
-    if comp_long is None:
-        return [], None
-    target_code = strip_exchange_suffix(str(code)).zfill(6)
-    sub = comp_long[comp_long["etf_code"] == target_code]
-    if sub.empty:
-        return [], None
-
-    sub = sub[sub["trade_date"].notna()].copy()
-    if sub.empty:
-        return [], None
-
-    comp_dates = sorted(sub["trade_date"].unique())
-
-    best_date = None
-    target_month = target_date.to_period("M")
-    target_quarter = target_date.to_period("Q")
-
-    same_month_dates = [d for d in comp_dates if d.to_period("M") == target_month]
-    if same_month_dates:
-        prior_month = [d for d in same_month_dates if d <= target_date]
-        if prior_month:
-            best_date = max(prior_month)
-
-    if best_date is None:
-        same_quarter_dates = [d for d in comp_dates if d.to_period("Q") == target_quarter]
-        if same_quarter_dates:
-            prior_quarter = [d for d in same_quarter_dates if d <= target_date]
-            if prior_quarter:
-                best_date = max(prior_quarter)
-
-    if best_date is None:
-        candidates = [d for d in comp_dates if d <= target_date]
-        if candidates:
-            best_date = max(candidates)
-        else:
-            best_date = min(comp_dates, key=lambda d: abs((d - target_date).days))
-
-    snap = sub[(sub["trade_date"] == best_date) & (sub["cash_sub_flag"] != "必须")].copy()
-    if snap.empty:
-        return [], best_date
-    snap["_shares"] = pd.to_numeric(snap["shares"], errors="coerce").fillna(0.0)
-    snap["_w"] = snap["_shares"].abs()
-    total_w = float(snap["_w"].sum())
-    if total_w <= 0:
-        return [], best_date
-    snap["_pct"] = snap["_w"] / total_w * 100.0
-    snap = snap.sort_values("_pct", ascending=False).head(n)
-    out = []
-    for _, r in snap.iterrows():
-        out.append({
-            "stock_code": str(r.get("stock_code", "")).strip(),
-            "stock_name": str(r.get("stock_name", "")).strip(),
-            "weight_pct": float(r["_pct"]),
-        })
-    return out, best_date
-
-
-def build_top5_snapshots(comp_long):
-    if comp_long is None or comp_long.empty:
-        return pd.DataFrame()
-
-    df = comp_long[comp_long["cash_sub_flag"] != "必须"].copy()
-    if df.empty:
-        return pd.DataFrame()
-
-    df["_shares"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0.0)
-    df["_w"] = df["_shares"].abs()
-
-    snapshot_rows = []
-    for (etf_code, trade_date), sub in df.groupby(["etf_code", "trade_date"]):
-        total_w = float(sub["_w"].sum())
-        if total_w <= 0:
-            continue
-        sub = sub.copy()
-        sub["_pct"] = sub["_w"] / total_w * 100.0
-        sub = sub.sort_values("_pct", ascending=False).head(5)
-
-        row = {"etf_code": etf_code, "comp_date": trade_date}
-        for i, (_, r) in enumerate(sub.iterrows(), 1):
-            row[f"top{i}_code"] = str(r.get("stock_code", "")).strip()
-            row[f"top{i}_name"] = str(r.get("stock_name", "")).strip()
-            row[f"top{i}_weight_pct"] = float(r["_pct"])
-        for i in range(len(sub) + 1, 6):
-            row[f"top{i}_code"] = ""
-            row[f"top{i}_name"] = ""
-            row[f"top{i}_weight_pct"] = 0.0
-        snapshot_rows.append(row)
-
-    if not snapshot_rows:
-        return pd.DataFrame()
-
-    snaps = pd.DataFrame(snapshot_rows)
-    snaps["comp_date"] = pd.to_datetime(snaps["comp_date"], errors="coerce")
-    snaps = snaps.sort_values(["etf_code", "comp_date"]).reset_index(drop=True)
-    return snaps
-
-
 # ============================================================================
-# Index composition: read CSI index closeweight CSVs produced by
-# download_index_composition.py. Each CSV has columns:
-#   snapshot_date, index_code, index_name, stock_code, stock_name, weight_pct
-# The stock_code already carries an exchange suffix (.SS/.SZ).
+# Index composition: read CSI index closeweight CSVs
 # ============================================================================
 def build_index_composition_rows(verbose=True):
     """Read CSI index composition CSVs and build rows for stats.sec_composition.
 
     Returns a list of dicts with keys:
       snapshot_date, code, source_type, rank, stock_code, stock_name, weight_pct
-
-    The 'code' is the bare 6-digit index code (e.g. '930606').
-    'source_type' is always 'index'.
-    'rank' is assigned 1..N by weight_pct DESC within each (index, snapshot).
     """
     if not os.path.isdir(INDEX_COMP_DIR):
         if verbose:
@@ -562,7 +391,6 @@ def build_index_composition_rows(verbose=True):
         return []
 
     combined = pd.concat(dfs, ignore_index=True)
-    # Ensure expected columns exist
     for c in ("snapshot_date", "index_code", "stock_code", "stock_name", "weight_pct"):
         if c not in combined.columns:
             if verbose:
@@ -605,17 +433,104 @@ def build_index_composition_rows(verbose=True):
 
 
 # ============================================================================
-# Build OHLCV long DataFrame from szse_etf_*.csv + szse_trend_etf_*.csv + sse_trend_stock_*.csv
+# SZSE index composition: read SZSE index composition CSVs
 # ============================================================================
-def _scan_ohlcv_dir(scan_dir, file_prefix, start_ymd, end_ymd, market):
-    pattern = os.path.join(scan_dir, f"{file_prefix}*.csv")
-    files = sorted(glob.glob(pattern))
+def build_szse_index_composition_rows(verbose=True):
+    """Read SZSE index composition CSVs and build rows for stats.sec_composition.
+
+    Reads files from temps/szse_index_composition/ which are produced by
+    download_szse_index_composition.py. These contain the latest constituent
+    stocks for SZSE indices like 399001 (深证成指) and 399006 (创业板指),
+    with weights computed from float shares.
+
+    Returns a list of dicts with keys:
+      snapshot_date, code, source_type, rank, stock_code, stock_name, weight_pct
+    """
+    if not os.path.isdir(SZSE_INDEX_COMP_DIR):
+        if verbose:
+            print(f"    [SZSE-INDEX-COMP] dir not found: {SZSE_INDEX_COMP_DIR}", flush=True)
+        return []
+
+    files = sorted(glob.glob(os.path.join(SZSE_INDEX_COMP_DIR, "*_closeweight_*.csv")))
+    if not files:
+        if verbose:
+            print(f"    [SZSE-INDEX-COMP] no CSVs found in {SZSE_INDEX_COMP_DIR}", flush=True)
+        return []
+
+    if verbose:
+        print(f"    [SZSE-INDEX-COMP] {len(files)} CSV files in {SZSE_INDEX_COMP_DIR}", flush=True)
+
+    dfs = []
+    for path in files:
+        try:
+            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
+        except Exception:
+            continue
+        if df is None or len(df) == 0:
+            continue
+        dfs.append(df)
+
+    if not dfs:
+        return []
+
+    combined = pd.concat(dfs, ignore_index=True)
+    for c in ("snapshot_date", "index_code", "stock_code", "stock_name", "weight_pct"):
+        if c not in combined.columns:
+            if verbose:
+                print(f"    [SZSE-INDEX-COMP] WARN: missing column '{c}'", flush=True)
+            return []
+    combined["weight_pct"] = pd.to_numeric(combined["weight_pct"], errors="coerce").fillna(0.0)
+    combined = combined.sort_values(
+        ["index_code", "snapshot_date", "weight_pct"],
+        ascending=[True, True, False],
+    ).reset_index(drop=True)
+
+    rows = []
+    for (index_code, snap_date), sub in combined.groupby(["index_code", "snapshot_date"]):
+        snap_date_str = str(snap_date).strip()
+        try:
+            snap_date_obj = datetime.datetime.strptime(snap_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        for rank_idx, (_, r) in enumerate(sub.iterrows(), start=1):
+            sc = str(r.get("stock_code", "")).strip()
+            sc_stripped = sc.split(".")[0].zfill(6)
+            if len(sc_stripped) != 6 or not sc_stripped.isdigit():
+                continue
+            rows.append({
+                "snapshot_date": snap_date_obj,
+                "code": str(index_code).strip().zfill(6),
+                "source_type": "index",
+                "rank": rank_idx,
+                "stock_code": sc,
+                "stock_name": str(r.get("stock_name", "") or ""),
+                "weight_pct": float(r["weight_pct"]),
+            })
+
+    if verbose:
+        n_indices = combined["index_code"].nunique()
+        n_dates = combined["snapshot_date"].nunique()
+        print(f"    [SZSE-INDEX-COMP] {len(rows):,} rows from {n_indices} indices, "
+              f"{n_dates} snapshot dates", flush=True)
+    return rows
+
+
+# ============================================================================
+# Build OHLCV long DataFrame (FULL history — no date filter, needed for
+# split adjustment + MA correctness)
+# ============================================================================
+def _scan_ohlcv_dir(scan_dir, file_prefix, market, files=None):
+    if files is None:
+        pattern = os.path.join(scan_dir, f"{file_prefix}*.csv")
+        files = sorted(glob.glob(pattern))
+    else:
+        files = [f for f in files if os.path.basename(f).startswith(file_prefix)]
     rows = []
     n_empty = 0
     n_ok = 0
     for path in files:
-        ymd = _ymd_from_filename(path, file_prefix)
-        if not _in_range(ymd, start_ymd, end_ymd):
+        ymd = ymd_from_filename(path, file_prefix)
+        if not ymd:
             continue
         xlsx_path = str(Path(path).with_suffix(".xlsx"))
         try:
@@ -672,36 +587,68 @@ def _scan_ohlcv_dir(scan_dir, file_prefix, start_ymd, end_ymd, market):
     return rows, n_ok, n_empty, len(files)
 
 
-def build_ohlcv_df(start_date=None, end_date=None, verbose=True):
-    start_ymd = start_date.replace("-", "") if start_date else None
-    end_ymd   = end_date.replace("-", "")   if end_date   else None
+def build_ohlcv_df(verbose=True, ohlcv_files=None):
+    """Read OHLCV source CSVs and return a long DataFrame.
 
+    Args:
+        ohlcv_files: if provided, a dict with keys "szse_archive", "szse_trend",
+                     "sse_trend" mapping to lists of file paths. Only these
+                     files are read (incremental mode — caller already filtered
+                     to missing dates via DB query). If None, glob all files
+                     in the source directories (--force mode).
+
+    Split adjustment and MA computation require the full per-code chronological
+    history. In incremental mode, the caller queries the DB for existing data
+    and concatenates it with the new rows before applying split/MA.
+    """
     rows_a, ok_a, empty_a, tot_a = [], 0, 0, 0
     rows_t, ok_t, empty_t, tot_t = [], 0, 0, 0
     rows_sse, ok_sse, empty_sse, tot_sse = [], 0, 0, 0
 
-    if os.path.isdir(SZSE_ARCHIVE_DIR):
-        if verbose:
-            print(f"    [OHLCV-szse-archive] scanning {os.path.join(SZSE_ARCHIVE_DIR, 'szse_etf_*.csv')}", flush=True)
-        rows_a, ok_a, empty_a, tot_a = _scan_ohlcv_dir(SZSE_ARCHIVE_DIR, "szse_etf_", start_ymd, end_ymd, "深圳")
-        if verbose:
-            print(f"      → scanned {tot_a} files  {ok_a} ok  {empty_a} empty  {len(rows_a)} rows", flush=True)
-
-    if os.path.isdir(SZSE_TREND_DIR):
-        if verbose:
-            print(f"    [OHLCV-szse-trend] scanning {os.path.join(SZSE_TREND_DIR, 'szse_trend_etf_*.csv')}", flush=True)
-        rows_t, ok_t, empty_t, tot_t = _scan_ohlcv_dir(SZSE_TREND_DIR, "szse_trend_etf_", start_ymd, end_ymd, "深圳")
-        if verbose:
-            print(f"      → scanned {tot_t} files  {ok_t} ok  {empty_t} empty  {len(rows_t)} rows", flush=True)
-
-    if os.path.isdir(SSE_TREND_DIR):
-        if verbose:
-            print(f"    [OHLCV-sse-trend] scanning {os.path.join(SSE_TREND_DIR, 'sse_trend_stock_*.csv')}", flush=True)
-        rows_sse, ok_sse, empty_sse, tot_sse = _scan_ohlcv_dir(SSE_TREND_DIR, "sse_trend_stock_", start_ymd, end_ymd, "上海")
-        if verbose:
-            if len(rows_sse) == 0:
-                print(f"      → [INFO] SSE trend files contain stocks only (600/601/603/605/688 prefixes), not ETFs.", flush=True)
-            print(f"      → scanned {tot_sse} files  {ok_sse} ok  {empty_sse} empty  {len(rows_sse)} rows", flush=True)
+    if ohlcv_files is not None:
+        # Incremental: read only the provided (missing-date) files
+        fa = ohlcv_files.get("szse_archive", [])
+        if fa:
+            rows_a, ok_a, empty_a, tot_a = _scan_ohlcv_dir(
+                SZSE_ARCHIVE_DIR, "szse_etf_", "深圳", files=fa)
+            if verbose:
+                print(f"    [OHLCV-szse-archive] read {tot_a} files  {ok_a} ok  {empty_a} empty  {len(rows_a)} rows", flush=True)
+        ft = ohlcv_files.get("szse_trend", [])
+        if ft:
+            rows_t, ok_t, empty_t, tot_t = _scan_ohlcv_dir(
+                SZSE_TREND_DIR, "szse_trend_etf_", "深圳", files=ft)
+            if verbose:
+                print(f"    [OHLCV-szse-trend] read {tot_t} files  {ok_t} ok  {empty_t} empty  {len(rows_t)} rows", flush=True)
+        fs = ohlcv_files.get("sse_trend", [])
+        if fs:
+            rows_sse, ok_sse, empty_sse, tot_sse = _scan_ohlcv_dir(
+                SSE_TREND_DIR, "sse_trend_stock_", "上海", files=fs)
+            if verbose:
+                if len(rows_sse) == 0:
+                    print(f"      → [INFO] SSE trend files contain stocks only (600/601/603/605/688 prefixes), not ETFs.", flush=True)
+                print(f"      → read {tot_sse} files  {ok_sse} ok  {empty_sse} empty  {len(rows_sse)} rows", flush=True)
+    else:
+        # --force mode: glob all files in source directories
+        if os.path.isdir(SZSE_ARCHIVE_DIR):
+            if verbose:
+                print(f"    [OHLCV-szse-archive] scanning {SZSE_ARCHIVE_DIR}", flush=True)
+            rows_a, ok_a, empty_a, tot_a = _scan_ohlcv_dir(SZSE_ARCHIVE_DIR, "szse_etf_", "深圳")
+            if verbose:
+                print(f"      → scanned {tot_a} files  {ok_a} ok  {empty_a} empty  {len(rows_a)} rows", flush=True)
+        if os.path.isdir(SZSE_TREND_DIR):
+            if verbose:
+                print(f"    [OHLCV-szse-trend] scanning {SZSE_TREND_DIR}", flush=True)
+            rows_t, ok_t, empty_t, tot_t = _scan_ohlcv_dir(SZSE_TREND_DIR, "szse_trend_etf_", "深圳")
+            if verbose:
+                print(f"      → scanned {tot_t} files  {ok_t} ok  {empty_t} empty  {len(rows_t)} rows", flush=True)
+        if os.path.isdir(SSE_TREND_DIR):
+            if verbose:
+                print(f"    [OHLCV-sse-trend] scanning {SSE_TREND_DIR}", flush=True)
+            rows_sse, ok_sse, empty_sse, tot_sse = _scan_ohlcv_dir(SSE_TREND_DIR, "sse_trend_stock_", "上海")
+            if verbose:
+                if len(rows_sse) == 0:
+                    print(f"      → [INFO] SSE trend files contain stocks only (600/601/603/605/688 prefixes), not ETFs.", flush=True)
+                print(f"      → scanned {tot_sse} files  {ok_sse} ok  {empty_sse} empty  {len(rows_sse)} rows", flush=True)
 
     all_rows = rows_a + rows_t + rows_sse
     if verbose:
@@ -726,20 +673,23 @@ def build_ohlcv_df(start_date=None, end_date=None, verbose=True):
 
 
 # ============================================================================
-# Build margin long DataFrame from szse_margin_detail_*.csv + sse_margin_detail_*.csv
+# Build margin long DataFrame (FULL history — needed for etf_meta has_margin)
 # ============================================================================
-def _scan_margin_dir(scan_dir, file_prefix, start_ymd, end_ymd, market, verbose=True):
-    pattern = os.path.join(scan_dir, f"{file_prefix}*.csv")
-    files = sorted(glob.glob(pattern))
+def _scan_margin_dir(scan_dir, file_prefix, market, verbose=True, files=None):
+    if files is None:
+        pattern = os.path.join(scan_dir, f"{file_prefix}*.csv")
+        files = sorted(glob.glob(pattern))
+    else:
+        files = [f for f in files if os.path.basename(f).startswith(file_prefix)]
     if verbose:
-        print(f"    [MARGIN-{market}] scanning {len(files)} {file_prefix}*.csv files", flush=True)
+        print(f"    [MARGIN-{market}] reading {len(files)} {file_prefix}*.csv files", flush=True)
 
     rows = []
     n_empty = 0
     n_ok = 0
     for path in files:
-        ymd = _ymd_from_filename(path, file_prefix)
-        if not _in_range(ymd, start_ymd, end_ymd):
+        ymd = ymd_from_filename(path, file_prefix)
+        if not ymd:
             continue
         xlsx_path = str(Path(path).with_suffix(".xlsx"))
         try:
@@ -790,27 +740,46 @@ def _scan_margin_dir(scan_dir, file_prefix, start_ymd, end_ymd, market, verbose=
     return rows, n_ok, n_empty
 
 
-def build_margin_df(start_date=None, end_date=None, verbose=True):
-    start_ymd = start_date.replace("-", "") if start_date else None
-    end_ymd   = end_date.replace("-", "")   if end_date   else None
+def build_margin_df(verbose=True, margin_files=None):
+    """Read margin source CSVs and return a long DataFrame.
 
+    Args:
+        margin_files: if provided, a dict with keys "szse", "sse" mapping to
+                      lists of file paths. Only these files are read (incremental
+                      mode). If None, glob all files (--force mode).
+    """
     all_rows = []
     n_ok_total = 0
     n_empty_total = 0
 
-    if os.path.isdir(SZSE_MARGIN_DIR):
-        rows_szse, ok_szse, empty_szse = _scan_margin_dir(
-            SZSE_MARGIN_DIR, "szse_margin_detail_", start_ymd, end_ymd, "深圳", verbose)
-        all_rows.extend(rows_szse)
-        n_ok_total += ok_szse
-        n_empty_total += empty_szse
-
-    if os.path.isdir(SSE_MARGIN_DIR):
-        rows_sse, ok_sse, empty_sse = _scan_margin_dir(
-            SSE_MARGIN_DIR, "sse_margin_detail_", start_ymd, end_ymd, "上海", verbose)
-        all_rows.extend(rows_sse)
-        n_ok_total += ok_sse
-        n_empty_total += empty_sse
+    if margin_files is not None:
+        if margin_files.get("szse"):
+            rows_szse, ok_szse, empty_szse = _scan_margin_dir(
+                SZSE_MARGIN_DIR, "szse_margin_detail_", "深圳", verbose,
+                files=margin_files["szse"])
+            all_rows.extend(rows_szse)
+            n_ok_total += ok_szse
+            n_empty_total += empty_szse
+        if margin_files.get("sse"):
+            rows_sse, ok_sse, empty_sse = _scan_margin_dir(
+                SSE_MARGIN_DIR, "sse_margin_detail_", "上海", verbose,
+                files=margin_files["sse"])
+            all_rows.extend(rows_sse)
+            n_ok_total += ok_sse
+            n_empty_total += empty_sse
+    else:
+        if os.path.isdir(SZSE_MARGIN_DIR):
+            rows_szse, ok_szse, empty_szse = _scan_margin_dir(
+                SZSE_MARGIN_DIR, "szse_margin_detail_", "深圳", verbose)
+            all_rows.extend(rows_szse)
+            n_ok_total += ok_szse
+            n_empty_total += empty_szse
+        if os.path.isdir(SSE_MARGIN_DIR):
+            rows_sse, ok_sse, empty_sse = _scan_margin_dir(
+                SSE_MARGIN_DIR, "sse_margin_detail_", "上海", verbose)
+            all_rows.extend(rows_sse)
+            n_ok_total += ok_sse
+            n_empty_total += empty_sse
 
     if not all_rows:
         if verbose:
@@ -826,18 +795,13 @@ def build_margin_df(start_date=None, end_date=None, verbose=True):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
 
     n_before = len(out)
-
-    # Vectorized dedup: for each (date, code), sum the margin cols. Since 0 + x = x,
-    # this correctly handles all edge cases (single row, all-zero dup, one-non-zero dup,
-    # multi-non-zero dup) without dropping the grouping columns (which groupby().apply()
-    # can do in pandas 2.x).
     out = out.groupby(["date", "code"], as_index=False)[margin_cols].sum()
     n_after = len(out)
     n_merged = n_before - n_after
 
     if verbose:
         print(f"    [MARGIN] total: {n_ok_total} files with data, {n_empty_total} empty, "
-              f"{len(all_rows)} raw rows → {n_after} merged rows ({n_merged} duplicates handled)", flush=True)
+              f"{n_before} raw rows → {n_after} merged rows ({n_merged} duplicates handled)", flush=True)
 
     out = out.sort_values(["code", "date"]).reset_index(drop=True)
     return out
@@ -868,314 +832,388 @@ def classify_etf_theme(name):
 
 
 # ============================================================================
+# Query existing OHLCV + margin from the database (replaces reading full
+# source CSV history — the DB is indexed and much faster than scanning
+# 1400+ CSV files). Used in incremental mode to get historical context for
+# split adjustment + MA computation, concatenated with missing-date CSVs.
+# ============================================================================
+async def query_existing_ohlcv_margin_from_db(conn, verbose=True):
+    """Query all existing OHLCV + margin data from the database.
+
+    Returns (ohlcv_df, margin_df) with the same column schemas as
+    build_ohlcv_df() and build_margin_df() so they can be concatenated
+    with new (missing-date) source data before applying split/MA.
+    """
+    if verbose:
+        print("    [DB] Querying existing OHLCV + margin from database …", flush=True)
+
+    rows = await conn.fetch("""
+        SELECT
+            i.date, i.code, i.name,
+            b.prev_close, b.open, b.high, b.low, b.close, b.pct_change,
+            COALESCE(l.volume_wan, 0)   AS volume_wan,
+            COALESCE(l.amount_wan, 0)   AS amount_wan,
+            COALESCE(l.rz_buy, 0)       AS rz_buy,
+            COALESCE(l.rz_balance, 0)   AS rz_balance,
+            COALESCE(l.rq_sell_qty, 0)  AS rq_sell_qty,
+            COALESCE(l.rq_balance_qty, 0) AS rq_balance_qty,
+            COALESCE(l.rq_balance_amt, 0) AS rq_balance_amt,
+            COALESCE(l.total_balance, 0) AS total_balance
+        FROM stats.etf_identity i
+        JOIN stats.etf_basic_stats b ON b.date = i.date AND b.code = i.code
+        LEFT JOIN stats.etf_liquidity_margin l ON l.date = i.date AND l.code = i.code
+        ORDER BY i.code, i.date
+    """)
+
+    if not rows:
+        if verbose:
+            print("    [DB] No existing OHLCV data found", flush=True)
+        return pd.DataFrame(), pd.DataFrame()
+
+    df = pd.DataFrame([dict(r) for r in rows])
+    # Use astype("datetime64[us]") to match CSV-parsed dates (pandas 2.x
+    # defaults to us for string parsing, but datetime.date objects from
+    # asyncpg produce datetime64[s], causing merge_asof dtype mismatch)
+    df["date"] = pd.to_datetime(df["date"]).astype("datetime64[us]")
+    # asyncpg returns NUMERIC columns as decimal.Decimal, which makes the
+    # DataFrame columns object-dtype. When concatenated with CSV-sourced
+    # rows (float64), the mixed Decimal+float column stays object-dtype and
+    # breaks downstream numeric aggregations (e.g. groupby().mean() on
+    # volume_wan). Coerce all numeric columns to float64 up front so the
+    # DB-sourced frame matches the CSV-sourced frame's dtypes.
+    for _nc in ["prev_close", "open", "high", "low", "close", "pct_change",
+                "volume_wan", "amount_wan", "rz_buy", "rz_balance",
+                "rq_sell_qty", "rq_balance_qty", "rq_balance_amt",
+                "total_balance"]:
+        if _nc in df.columns:
+            df[_nc] = pd.to_numeric(df[_nc], errors="coerce")
+
+    ohlcv_cols = ["date", "code", "name", "prev_close", "open", "high", "low",
+                  "close", "pct_change", "volume_wan", "amount_wan"]
+    margin_cols = ["date", "code", "rz_buy", "rz_balance", "rq_sell_qty",
+                   "rq_balance_qty", "rq_balance_amt", "total_balance"]
+
+    ohlcv_df = df[ohlcv_cols].copy()
+
+    # Margin: only keep rows with actual margin activity
+    margin_df = df[margin_cols].copy()
+    margin_mask = (
+        (margin_df["rz_balance"] > 0) |
+        (margin_df["rq_balance_qty"] > 0) |
+        (margin_df["total_balance"] > 0)
+    )
+    margin_df = margin_df[margin_mask].reset_index(drop=True)
+
+    if verbose:
+        n_codes = ohlcv_df["code"].nunique()
+        n_dates = ohlcv_df["date"].dt.strftime("%Y-%m-%d").nunique()
+        d0 = ohlcv_df["date"].min().date()
+        d1 = ohlcv_df["date"].max().date()
+        print(f"    [DB] OHLCV: {len(ohlcv_df):,} rows | {n_codes} codes | "
+              f"{n_dates} dates | {d0} → {d1}", flush=True)
+        print(f"    [DB] Margin: {len(margin_df):,} rows with margin activity", flush=True)
+
+    return ohlcv_df, margin_df
+
+
+# ============================================================================
 # Main pipeline
 # ============================================================================
 async def main():
-    import asyncio
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--start-date", default=None, help="YYYY-MM-DD inclusive")
-    ap.add_argument("--end-date",   default=None, help="YYYY-MM-DD inclusive")
-    ap.add_argument("--force",      action="store_true", help="Overwrite existing outputs")
+    ap = argparse.ArgumentParser(
+        description="Build SZSE + SSE ETF + margin + composition and insert to database (missing-data-only)."
+    )
+    add_common_build_args(ap)
     args = ap.parse_args()
 
     t0 = time.time()
-    print("=" * 78, flush=True)
-    print("  BUILD SZSE + SSE ETF + MARGIN + COMPOSITION TO DATABASE", flush=True)
-    print("=" * 78, flush=True)
-    print(f"  SZSE Archive dir   (2023 → 2025-06): {SZSE_ARCHIVE_DIR}", flush=True)
-    print(f"  SZSE Trend dir     (2025-07 → today): {SZSE_TREND_DIR}", flush=True)
-    print(f"  SSE Trend dir      (today): {SSE_TREND_DIR}", flush=True)
-    print(f"  Margin dir : {SZSE_MARGIN_DIR}", flush=True)
-    print(f"  Composition dir: {COMP_DIR}", flush=True)
-    print(f"  Index comp dir : {INDEX_COMP_DIR}", flush=True)
-    print(f"  Output dir : {OUTPUT_DIR}", flush=True)
-    print(f"  Date range : {args.start_date or '(all)'} → {args.end_date or '(all)'}", flush=True)
-    print(f"  Today      : {TODAY_STR}", flush=True)
-
-    combined_csv = os.path.join(OUTPUT_DIR, "etf_margin_combined.csv")
-    universe_csv = os.path.join(OUTPUT_DIR, "etf_universe.csv")
-    if (not args.force
-            and os.path.exists(combined_csv)
-            and os.path.exists(universe_csv)
-            and os.path.getsize(combined_csv) > 1000):
-        print(f"\n  [SKIP] outputs already exist ({combined_csv}); use --force to rebuild", flush=True)
-        return
-
-    print("\n[1/5] Building OHLCV long frame from szse_etf_*.csv + sse_trend_stock_*.csv …", flush=True)
-    ohlcv_df = build_ohlcv_df(args.start_date, args.end_date)
-    if len(ohlcv_df) == 0:
-        print("    [FATAL] No OHLCV rows parsed — check archive dir", flush=True)
-        sys.exit(1)
-    n_szse = ohlcv_df["code"].str.endswith(".SZ").sum()
-    n_sse = ohlcv_df["code"].str.endswith(".SS").sum()
-    print(f"    → {len(ohlcv_df):,} OHLCV rows  ·  {ohlcv_df['code'].nunique()} unique ETFs", flush=True)
-    print(f"    → SZSE (.SZ): {n_szse:,}  ·  SSE (.SS): {n_sse:,}", flush=True)
-    print(f"    → date range: {ohlcv_df['date'].min().date()} → {ohlcv_df['date'].max().date()}", flush=True)
-
-    print("\n[2/5] Building margin long frame from szse_margin_detail_*.csv …", flush=True)
-    margin_df = build_margin_df(args.start_date, args.end_date)
-    if len(margin_df) == 0:
-        print("    [WARN] No margin rows parsed — proceeding with OHLCV only", flush=True)
-        margin_df = pd.DataFrame(columns=["date", "code", "rz_buy", "rz_balance",
-                                            "rq_sell_qty", "rq_balance_qty",
-                                            "rq_balance_amt", "total_balance"])
-    else:
-        print(f"    → {len(margin_df):,} margin rows  ·  {margin_df['code'].nunique()} unique ETFs", flush=True)
-        print(f"    → date range: {margin_df['date'].min().date()} → {margin_df['date'].max().date()}", flush=True)
-
-    print("\n[3/5] Building composition long frame from szse_etf_comp_*.csv …", flush=True)
-    comp_long, comp_universe = build_composition(verbose=True)
-
-    print("\n[4/5] Merging OHLCV + margin on (date, code) …", flush=True)
-    if len(margin_df):
-        merged = ohlcv_df.merge(margin_df, on=["date", "code"], how="left", validate="m:1")
-    else:
-        merged = ohlcv_df.copy()
-        for c in ["rz_buy", "rz_balance", "rq_sell_qty", "rq_balance_qty",
-                  "rq_balance_amt", "total_balance"]:
-            merged[c] = 0.0
-    for c in ["rz_buy", "rz_balance", "rq_sell_qty", "rq_balance_qty",
-              "rq_balance_amt", "total_balance"]:
-        if c in merged.columns:
-            merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0.0)
-
-    print("\n  [4b/5] Computing rq_balance_amt for SSE ETFs (quantity × mid price) …", flush=True)
-    has_rq_qty = "rq_balance_qty" in merged.columns and (merged["rq_balance_qty"] > 0).any()
-    has_rq_amt = "rq_balance_amt" in merged.columns
-    if has_rq_qty and has_rq_amt:
-        sse_mask = merged["code"].str.endswith(".SS")
-        missing_rq_amt = sse_mask & (merged["rq_balance_amt"] == 0) & (merged["rq_balance_qty"] > 0)
-        if missing_rq_amt.any():
-            mid_price = (
-                merged.loc[missing_rq_amt, "open"] + merged.loc[missing_rq_amt, "close"]
-            ) / 2.0
-            merged.loc[missing_rq_amt, "rq_balance_amt"] = (
-                merged.loc[missing_rq_amt, "rq_balance_qty"] * mid_price
-            )
-            print(f"    → Filled rq_balance_amt for {missing_rq_amt.sum():,} SSE ETF rows "
-                  f"(融券余量 × (open+close)/2 mid price)", flush=True)
-        else:
-            print(f"    → No SSE ETF rows need rq_balance_amt computation", flush=True)
-    else:
-        print(f"    → Skipped: rq_balance_qty/rq_balance_amt not available", flush=True)
-
-    print("\n  [4c/5] Applying corp-action adjustment (splits + dividends) …", flush=True)
-    merged = apply_split_adjustment(merged, verbose=True)
-
-    print("\n  [4d/5] Adding MA statistics (adj_close-based) …", flush=True)
-    merged = merged.sort_values(["code", "date"]).reset_index(drop=True)
-    merged["ma5"] = merged.groupby("code", sort=False)["adj_close"].transform(
-        lambda x: x.rolling(window=5, min_periods=1).mean()
-    ).round(6)
-    merged["ma5_ratio"] = ((merged["adj_close"] / merged["ma5"]) - 1.0).round(6)
-    merged["ma20"] = merged.groupby("code", sort=False)["adj_close"].transform(
-        lambda x: x.rolling(window=20, min_periods=1).mean()
-    ).round(6)
-    merged["ma60"] = merged.groupby("code", sort=False)["adj_close"].transform(
-        lambda x: x.rolling(window=60, min_periods=1).mean()
-    ).round(6)
-    merged["ma120"] = merged.groupby("code", sort=False)["adj_close"].transform(
-        lambda x: x.rolling(window=120, min_periods=1).mean()
-    ).round(6)
-    merged["ma255"] = merged.groupby("code", sort=False)["adj_close"].transform(
-        lambda x: x.rolling(window=255, min_periods=1).mean()
-    ).round(6)
-    print(f"    → MA columns added: ma5, ma5_ratio, ma20, ma60, ma120, ma255", flush=True)
-
-    print("\n  [4e/5] Adding top5 constituent columns (date-range matched) …", flush=True)
-    top5_cols = []
-    for i in range(1, 6):
-        top5_cols.extend([f"top{i}_code", f"top{i}_name", f"top{i}_weight_pct"])
-    # NOTE: do NOT pre-initialize top1..top5_* columns in `merged` here.
-    # merge_asof would otherwise see a name conflict with snaps' top*_code and
-    # create suffixed columns (top1_code_x empty + top1_code_y populated),
-    # silently dropping the populated data. Columns are filled after the merge.
-    merged["comp_match_date"] = ""
-
-    if comp_long is not None and len(comp_long) > 0:
-        print("    Building top5 snapshot table …", flush=True)
-        snaps = build_top5_snapshots(comp_long)
-        if not snaps.empty:
-            print(f"    → {len(snaps):,} snapshots across {snaps['etf_code'].nunique()} ETFs", flush=True)
-
-            merged["_comp_key"] = merged["code"].apply(
-                lambda c: strip_exchange_suffix(str(c)).zfill(6))
-            snaps = snaps.rename(columns={"etf_code": "_comp_key"})
-
-            merged_sorted = merged.sort_values(["_comp_key", "date"]).reset_index(drop=True)
-            snaps_sorted = snaps.sort_values(["_comp_key", "comp_date"]).reset_index(drop=True)
-
-            print("    Running merge_asof (per-ETF batches) …", flush=True)
-            matched_dfs = []
-            for comp_key, etf_sub in merged_sorted.groupby("_comp_key", sort=False):
-                snap_sub = snaps_sorted[snaps_sorted["_comp_key"] == comp_key]
-                if snap_sub.empty:
-                    matched_dfs.append(etf_sub)
-                    continue
-
-                etf_sub_sorted = etf_sub.sort_values("date")
-                snap_sub_sorted = snap_sub.sort_values("comp_date")
-
-                etf_matched = pd.merge_asof(
-                    etf_sub_sorted,
-                    snap_sub_sorted,
-                    left_on="date",
-                    right_on="comp_date",
-                    direction="backward",
-                )
-                matched_dfs.append(etf_matched)
-
-            matched = pd.concat(matched_dfs, ignore_index=True)
-            matched = matched.sort_values(["code", "date"]).reset_index(drop=True)
-
-            # After merge, top*_code columns exist only for matched groups.
-            # Create/fill them for unmatched groups so the final schema is uniform.
-            for i in range(1, 6):
-                for col in [f"top{i}_code", f"top{i}_name"]:
-                    if col in matched.columns:
-                        matched[col] = matched[col].fillna("")
-                    else:
-                        matched[col] = ""
-                pct_col = f"top{i}_weight_pct"
-                if pct_col in matched.columns:
-                    matched[pct_col] = matched[pct_col].fillna(0.0)
-                else:
-                    matched[pct_col] = 0.0
-
-            matched["comp_match_date"] = matched["comp_date"].dt.strftime("%Y-%m-%d").fillna("")
-            matched = matched.drop(columns=["comp_date", "_comp_key"], errors="ignore")
-
-            merged = matched
-            print(f"    → top5 data applied via merge_asof", flush=True)
-        else:
-            print(f"    → [WARN] No composition snapshots built", flush=True)
-            for col in top5_cols:
-                merged[col] = "" if "_pct" not in col else 0.0
-
-        n_matched = (merged["comp_match_date"] != "").sum()
-        print(f"    → {n_matched:,} / {len(merged):,} rows matched to composition data", flush=True)
-    else:
-        print(f"    → [WARN] No composition data available for top5 columns", flush=True)
-        for col in top5_cols:
-            merged[col] = "" if "_pct" not in col else 0.0
-
-    col_order = [
-        "date", "code", "name",
-        "prev_close", "open", "high", "low", "close", "pct_change",
-        "cum_split_factor", "is_split_event_day",
-        "action_type", "implied_dividend_per_share", "cum_dividend_per_share",
-        "adj_prev_close", "adj_open", "adj_high", "adj_low", "adj_close",
-        "ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
-        "volume_wan", "amount_wan",
-        "rz_buy", "rz_balance",
-        "rq_sell_qty", "rq_balance_qty", "rq_balance_amt", "total_balance",
-        "comp_match_date",
-    ] + top5_cols
-    col_order = [c for c in col_order if c in merged.columns]
-    merged = merged[col_order].sort_values(["code", "date"]).reset_index(drop=True)
-    n_szse_out = merged["code"].str.endswith(".SZ").sum()
-    n_sse_out = merged["code"].str.endswith(".SS").sum()
-    print(f"    → merged: {len(merged):,} rows  ·  {merged['code'].nunique()} ETFs", flush=True)
-    print(f"    → SZSE (.SZ): {n_szse_out:,}  ·  SSE (.SS): {n_sse_out:,}", flush=True)
-
-    merged.to_csv(combined_csv, index=False, encoding="utf-8-sig")
-    print(f"    → Saved {combined_csv}  ({os.path.getsize(combined_csv):,} bytes)", flush=True)
-
-    n_per_etf = 0
-    for code, sub in merged.groupby("code"):
-        sub = sub.sort_values("date").reset_index(drop=True)
-        out_path = os.path.join(PER_ETF_DIR, f"{code}.csv")
-        sub.to_csv(out_path, index=False, encoding="utf-8-sig")
-        n_per_etf += 1
-    print(f"    → Saved {n_per_etf} per-ETF CSVs under {PER_ETF_DIR}", flush=True)
-
-    print("\n[5/5] Building ETF universe CSV …", flush=True)
-    uni_rows = []
-    for code, sub in merged.groupby("code"):
-        name = str(sub["name"].dropna().iloc[0]) if sub["name"].notna().any() else ""
-        tid, tlabel, tslug = classify_etf_theme(name)
-        code_base = strip_exchange_suffix(code)
-        has_comp = comp_universe is not None and code_base in comp_universe["etf_code"].values
-        n_comp_dates = 0
-        n_holdings_latest = 0
-        if has_comp:
-            cu = comp_universe[comp_universe["etf_code"] == code_base].iloc[0]
-            n_comp_dates = int(cu.get("n_dates", 0))
-            n_holdings_latest = int(cu.get("n_holdings_latest", 0))
-        exchange = "SZ" if code.endswith(".SZ") else "SS"
-        uni_rows.append({
-            "code":             code,
-            "exchange":         exchange,
-            "name":             name,
-            "n_ohlcv_days":     int(len(sub)),
-            "n_margin_days":    int((sub["rz_balance"] > 0).sum()) if "rz_balance" in sub.columns else 0,
-            "n_comp_dates":     n_comp_dates,
-            "n_holdings_latest": n_holdings_latest,
-            "first_date":       sub["date"].min().strftime("%Y-%m-%d") if len(sub) else "",
-            "last_date":        sub["date"].max().strftime("%Y-%m-%d") if len(sub) else "",
-            "theme_id":         tid,
-            "theme_label":      tlabel,
-            "theme_slug":       tslug,
-        })
-    uni_df = pd.DataFrame(uni_rows).sort_values(["theme_id", "n_ohlcv_days"],
-                                                 ascending=[True, False])
-    uni_df.to_csv(universe_csv, index=False, encoding="utf-8-sig")
-    print(f"    → Saved {universe_csv}  ({len(uni_df)} ETFs)", flush=True)
+    print_build_header(
+        "BUILD SZSE + SSE ETF + MARGIN + COMPOSITION  ·  missing-data-only → DATABASE",
+        **{
+            "SZSE Archive dir": SZSE_ARCHIVE_DIR,
+            "SZSE Trend dir":   SZSE_TREND_DIR,
+            "Margin dir":       SZSE_MARGIN_DIR,
+            "Composition dir":  COMP_DIR,
+            "Index comp dir":   INDEX_COMP_DIR,
+            "Date range":       f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
+            "Today":            TODAY_STR,
+        }
+    )
 
     # ------------------------------------------------------------------
-    # Insert to database
+    # (1) Discover source files (fast — filenames only, no reading)
     # ------------------------------------------------------------------
-    print("\n[6/6] Inserting data to database …", flush=True)
-    
-    # Connect to database (async)
-    print("    [DB] Connecting to database …", flush=True)
+    print("\n[1/6] Discovering source CSV files …", flush=True)
+    szse_archive_files = glob_source_files(SZSE_ARCHIVE_DIR, "szse_etf_*.csv")
+    szse_trend_files   = glob_source_files(SZSE_TREND_DIR, "szse_trend_etf_*.csv")
+    sse_trend_files    = glob_source_files(SSE_TREND_DIR, "sse_trend_stock_*.csv")
+    szse_margin_files  = glob_source_files(SZSE_MARGIN_DIR, "szse_margin_detail_*.csv")
+    sse_margin_files   = glob_source_files(SSE_MARGIN_DIR, "sse_margin_detail_*.csv")
+
+    # Extract available OHLCV dates from filenames
+    available_ohlcv_dates = set()
+    for f in szse_archive_files:
+        ymd = ymd_from_filename(f, "szse_etf_")
+        if ymd:
+            d = ymd_to_date(ymd)
+            if d:
+                available_ohlcv_dates.add(d)
+    for f in szse_trend_files:
+        ymd = ymd_from_filename(f, "szse_trend_etf_")
+        if ymd:
+            d = ymd_to_date(ymd)
+            if d:
+                available_ohlcv_dates.add(d)
+
+    print(f"    → OHLCV: {len(szse_archive_files)} szse_archive + "
+          f"{len(szse_trend_files)} szse_trend + {len(sse_trend_files)} sse_trend files", flush=True)
+    print(f"    → Margin: {len(szse_margin_files)} szse + {len(sse_margin_files)} sse files", flush=True)
+    print(f"    → {len(available_ohlcv_dates)} unique OHLCV dates available in source files", flush=True)
+
+    # ------------------------------------------------------------------
+    # (2) Connect to DB and find missing dates
+    # ------------------------------------------------------------------
+    print("\n[2/6] Connecting to database and detecting missing dates …", flush=True)
+    conn = await get_db_or_exit()
+
     try:
-        conn = await get_db_connection_async()
-        print("    [DB] Connected successfully", flush=True)
-    except Exception as e:
-        print(f"    [DB] [WARN] Database connection failed: {e}", flush=True)
-        print(f"    [DB] Continuing without database insertion", flush=True)
-    else:
-        try:
-            if args.force:
-                print("    [DB] Force mode: truncating existing tables", flush=True)
-                # CASCADE truncates all FK child tables automatically
-                await truncate_table_async(conn, "stats.etf_identity")
-                # sec_composition, etf_meta have no FK to etf_identity
-                await truncate_table_async(conn, "stats.sec_composition")
-                await truncate_table_async(conn, "stats.etf_meta")
-
-            # Convert date to datetime.date for asyncpg DATE codec.
-            # asyncpg requires datetime.date instances; passing str raises
-            # "expected a date instance, got 'str'".
-            merged_db = merged.copy()
-            merged_db["date"] = merged_db["date"].dt.date
-            # comp_match_date is a string ("YYYY-MM-DD" or ""); convert to date or None
-            def _parse_comp_date(s):
-                if not s or str(s).strip() == "":
-                    return None
-                try:
-                    return datetime.datetime.strptime(str(s), "%Y-%m-%d").date()
-                except ValueError:
-                    return None
-            merged_db["comp_match_date"] = merged_db["comp_match_date"].apply(_parse_comp_date)
-
-            # Get existing keys from etf_identity (the PK parent table)
+        if args.force:
+            print("    [DB] Force mode: truncating existing tables", flush=True)
+            await truncate_table_async(conn, "stats.etf_identity")
+            await truncate_table_async(conn, "stats.sec_composition")
+            await truncate_table_async(conn, "stats.etf_meta")
+            existing_keys = set()
+            existing_dates = set()
+        else:
             existing_keys = await get_existing_keys_async(
                 conn, "stats.etf_identity", ["date", "code"]
             )
-            print(f"    [DB] {len(existing_keys):,} existing (date, code) pairs in stats.etf_identity", flush=True)
+            existing_dates = {d for (d, _c) in existing_keys}
 
-            # Build rows for each split table, skipping rows already present.
+        missing_ohlcv_dates = available_ohlcv_dates - existing_dates
+        print(f"    [DB] {len(existing_keys):,} existing (date, code) pairs in stats.etf_identity", flush=True)
+        print(f"    [DB] {len(missing_ohlcv_dates)} dates missing "
+              f"(out of {len(available_ohlcv_dates)} available)", flush=True)
+
+        # ------------------------------------------------------------------
+        # (3) Read ONLY missing-date source CSVs + query DB for historical context
+        #
+        # The DB is the source of truth for existing data. We query it by
+        # index (etf_identity PK = date+code) to find which dates are missing,
+        # then read ONLY the source CSVs for those missing dates. For split
+        # adjustment + MA correctness (cross-date dependency), we also query
+        # the existing OHLCV+margin from the DB and concatenate with the new
+        # data before applying the corp-action algorithm.
+        # ------------------------------------------------------------------
+        if args.force:
+            print("\n[3/6] Reading ALL source CSVs (force mode) …", flush=True)
+            ohlcv_df = build_ohlcv_df(verbose=True)
+            margin_df = build_margin_df(verbose=True)
+        elif not missing_ohlcv_dates:
+            print("\n[3/6] OHLCV up to date — querying DB for historical context only …", flush=True)
+            ohlcv_df, margin_df = await query_existing_ohlcv_margin_from_db(conn, verbose=True)
+        else:
+            print(f"\n[3/6] Reading source CSVs for {len(missing_ohlcv_dates)} missing dates "
+                  f"+ querying DB for historical context …", flush=True)
+            missing_ymd = {d.strftime("%Y%m%d") for d in missing_ohlcv_dates}
+
+            missing_szse_archive = [f for f in szse_archive_files
+                                    if ymd_from_filename(f, "szse_etf_") in missing_ymd]
+            missing_szse_trend   = [f for f in szse_trend_files
+                                    if ymd_from_filename(f, "szse_trend_etf_") in missing_ymd]
+            missing_sse_trend    = [f for f in sse_trend_files
+                                    if ymd_from_filename(f, "sse_trend_stock_") in missing_ymd]
+            missing_szse_margin  = [f for f in szse_margin_files
+                                    if ymd_from_filename(f, "szse_margin_detail_") in missing_ymd]
+            missing_sse_margin   = [f for f in sse_margin_files
+                                    if ymd_from_filename(f, "sse_margin_detail_") in missing_ymd]
+
+            print(f"    → OHLCV files to read: {len(missing_szse_archive)} szse_archive + "
+                  f"{len(missing_szse_trend)} szse_trend + {len(missing_sse_trend)} sse_trend", flush=True)
+            print(f"    → Margin files to read: {len(missing_szse_margin)} szse + "
+                  f"{len(missing_sse_margin)} sse", flush=True)
+
+            ohlcv_file_sets = {
+                "szse_archive": missing_szse_archive,
+                "szse_trend":   missing_szse_trend,
+                "sse_trend":    missing_sse_trend,
+            }
+            new_ohlcv_df = build_ohlcv_df(verbose=True, ohlcv_files=ohlcv_file_sets)
+
+            margin_file_sets = {
+                "szse": missing_szse_margin,
+                "sse":  missing_sse_margin,
+            }
+            new_margin_df = build_margin_df(verbose=True, margin_files=margin_file_sets)
+
+            # Query historical OHLCV + margin from DB (for split/MA correctness)
+            hist_ohlcv_df, hist_margin_df = await query_existing_ohlcv_margin_from_db(conn, verbose=True)
+
+            # Combine historical (DB) + new (CSV) — keep last for overlapping keys
+            if len(hist_ohlcv_df) and len(new_ohlcv_df):
+                ohlcv_df = pd.concat([hist_ohlcv_df, new_ohlcv_df], ignore_index=True)
+                ohlcv_df = ohlcv_df.drop_duplicates(subset=["date", "code"], keep="last")
+            elif len(new_ohlcv_df):
+                ohlcv_df = new_ohlcv_df
+            else:
+                ohlcv_df = hist_ohlcv_df
+            ohlcv_df = ohlcv_df.sort_values(["code", "date"]).reset_index(drop=True)
+
+            if len(hist_margin_df) and len(new_margin_df):
+                margin_df = pd.concat([hist_margin_df, new_margin_df], ignore_index=True)
+                margin_df = margin_df.drop_duplicates(subset=["date", "code"], keep="last")
+            elif len(new_margin_df):
+                margin_df = new_margin_df
+            else:
+                margin_df = hist_margin_df
+            if len(margin_df):
+                margin_df = margin_df.sort_values(["code", "date"]).reset_index(drop=True)
+
+        if len(ohlcv_df) == 0:
+            print("    [FATAL] No OHLCV rows to process — check source files and DB", flush=True)
+            sys.exit(1)
+        if len(margin_df) == 0:
+            print("    [WARN] No margin rows — proceeding with OHLCV only", flush=True)
+            margin_df = pd.DataFrame(columns=["date", "code", "rz_buy", "rz_balance",
+                                              "rq_sell_qty", "rq_balance_qty",
+                                              "rq_balance_amt", "total_balance"])
+
+        # ------------------------------------------------------------------
+        # (4) Merge OHLCV + margin, apply split adjustment + MAs (full history)
+        # ------------------------------------------------------------------
+        print("\n[4/6] Merging OHLCV + margin, applying corp-action adjustment + MAs …", flush=True)
+        if len(margin_df):
+            merged = ohlcv_df.merge(margin_df, on=["date", "code"], how="left", validate="m:1")
+        else:
+            merged = ohlcv_df.copy()
+            for c in ["rz_buy", "rz_balance", "rq_sell_qty", "rq_balance_qty",
+                      "rq_balance_amt", "total_balance"]:
+                merged[c] = 0.0
+        for c in ["rz_buy", "rz_balance", "rq_sell_qty", "rq_balance_qty",
+                  "rq_balance_amt", "total_balance"]:
+            if c in merged.columns:
+                merged[c] = pd.to_numeric(merged[c], errors="coerce").fillna(0.0)
+
+        # Compute rq_balance_amt for SSE ETFs (quantity × mid price)
+        has_rq_qty = "rq_balance_qty" in merged.columns and (merged["rq_balance_qty"] > 0).any()
+        has_rq_amt = "rq_balance_amt" in merged.columns
+        if has_rq_qty and has_rq_amt:
+            sse_mask = merged["code"].str.endswith(".SS")
+            missing_rq_amt = sse_mask & (merged["rq_balance_amt"] == 0) & (merged["rq_balance_qty"] > 0)
+            if missing_rq_amt.any():
+                mid_price = (
+                    merged.loc[missing_rq_amt, "open"] + merged.loc[missing_rq_amt, "close"]
+                ) / 2.0
+                merged.loc[missing_rq_amt, "rq_balance_amt"] = (
+                    merged.loc[missing_rq_amt, "rq_balance_qty"] * mid_price
+                )
+                print(f"    → Filled rq_balance_amt for {missing_rq_amt.sum():,} SSE ETF rows", flush=True)
+
+        # Apply corp-action adjustment (needs full per-code history)
+        merged = apply_split_adjustment(merged, verbose=True)
+
+        # Compute MAs (needs full per-code history)
+        merged = merged.sort_values(["code", "date"]).reset_index(drop=True)
+        merged["ma5"] = merged.groupby("code", sort=False)["adj_close"].transform(
+            lambda x: x.rolling(window=5, min_periods=1).mean()
+        ).round(6)
+        merged["ma5_ratio"] = ((merged["adj_close"] / merged["ma5"]) - 1.0).round(6)
+        merged["ma20"] = merged.groupby("code", sort=False)["adj_close"].transform(
+            lambda x: x.rolling(window=20, min_periods=1).mean()
+        ).round(6)
+        merged["ma60"] = merged.groupby("code", sort=False)["adj_close"].transform(
+            lambda x: x.rolling(window=60, min_periods=1).mean()
+        ).round(6)
+        merged["ma120"] = merged.groupby("code", sort=False)["adj_close"].transform(
+            lambda x: x.rolling(window=120, min_periods=1).mean()
+        ).round(6)
+        merged["ma255"] = merged.groupby("code", sort=False)["adj_close"].transform(
+            lambda x: x.rolling(window=255, min_periods=1).mean()
+        ).round(6)
+        print(f"    → MA columns added: ma5, ma5_ratio, ma20, ma60, ma120, ma255", flush=True)
+
+        # ------------------------------------------------------------------
+        # (4b) Build composition (for sec_composition insertion)
+        # ------------------------------------------------------------------
+        print("\n    Building composition …", flush=True)
+        comp_long, comp_universe = build_composition(verbose=True)
+
+        # ------------------------------------------------------------------
+        # (4c) Build universe (for etf_meta stats — from FULL merged data)
+        # ------------------------------------------------------------------
+        uni_rows = []
+        for code, sub in merged.groupby("code"):
+            name = str(sub["name"].dropna().iloc[0]) if sub["name"].notna().any() else ""
+            tid, tlabel, tslug = classify_etf_theme(name)
+            code_base = strip_exchange_suffix(code)
+            has_comp = comp_universe is not None and code_base in comp_universe["etf_code"].values
+            n_comp_dates = 0
+            n_holdings_latest = 0
+            if has_comp:
+                cu = comp_universe[comp_universe["etf_code"] == code_base].iloc[0]
+                n_comp_dates = int(cu.get("n_dates", 0))
+                n_holdings_latest = int(cu.get("n_holdings_latest", 0))
+            exchange = "SZ" if code.endswith(".SZ") else "SS"
+            uni_rows.append({
+                "code":             code,
+                "exchange":         exchange,
+                "name":             name,
+                "n_ohlcv_days":     int(len(sub)),
+                "n_margin_days":    int((sub["rz_balance"] > 0).sum()) if "rz_balance" in sub.columns else 0,
+                "n_comp_dates":     n_comp_dates,
+                "n_holdings_latest": n_holdings_latest,
+                "first_date":       sub["date"].min().strftime("%Y-%m-%d") if len(sub) else "",
+                "last_date":        sub["date"].max().strftime("%Y-%m-%d") if len(sub) else "",
+                "theme_id":         tid,
+                "theme_label":      tlabel,
+                "theme_slug":       tslug,
+            })
+        uni_df = pd.DataFrame(uni_rows).sort_values(["theme_id", "n_ohlcv_days"],
+                                                     ascending=[True, False])
+
+        # ------------------------------------------------------------------
+        # (5) Filter to missing (date, code) pairs and insert OHLCV/margin tables
+        # ------------------------------------------------------------------
+        print("\n[5/6] Filtering to missing (date, code) pairs and inserting …", flush=True)
+
+        # Filter merged to missing (date, code) pairs [and within --start/--end range]
+        merged_db = merged.copy()
+        merged_db["date"] = merged_db["date"].dt.date
+
+        start_d = parse_date(args.start_date) if args.start_date else None
+        end_d = parse_date(args.end_date) if args.end_date else None
+
+        def _is_missing(row):
+            d = row["date"]
+            if start_d and d < start_d:
+                return False
+            if end_d and d > end_d:
+                return False
+            return (d, row["code"]) not in existing_keys
+
+        missing_mask = merged_db.apply(_is_missing, axis=1)
+        merged_missing = merged_db[missing_mask].reset_index(drop=True)
+        print(f"    [DB] {len(merged_missing):,} rows to insert "
+              f"(out of {len(merged_db):,} total, filtered to missing + date range)", flush=True)
+
+        if len(merged_missing) == 0 and not args.force:
+            print("    [INFO] etf_identity is up to date — no new OHLCV/margin rows to insert", flush=True)
+        else:
+            # Dedupe within the batch
+            merged_missing = merged_missing.drop_duplicates(subset=["date", "code"], keep="last")
+
+            # Build rows for each split table
             identity_rows, basic_rows, tech_rows = [], [], []
-            adj_rows, liq_rows, comp_link_rows = [], [], []
-            for _, row in merged_db.iterrows():
-                key = (row["date"], row["code"])
-                if key in existing_keys:
-                    continue
+            adj_rows, liq_rows = [], []
+            for _, row in merged_missing.iterrows():
+                code = str(row["code"])
+                suffix = (code.split(".")[-1]
+                          if "." in code and code.split(".")[-1] in ("SZ", "SS", "SH")
+                          else None)
                 identity_rows.append({
                     "date": row["date"],
-                    "code": row["code"],
+                    "code": code,
+                    "code_suffix": suffix,
                     "name": str(row.get("name", "")) if pd.notna(row.get("name")) else "",
                 })
                 basic_rows.append({
@@ -1224,13 +1262,7 @@ async def main():
                     "rq_balance_amt": row.get("rq_balance_amt", 0),
                     "total_balance": row.get("total_balance", 0),
                 })
-                comp_link_rows.append({
-                    "date": row["date"],
-                    "code": row["code"],
-                    "comp_match_date": row.get("comp_match_date"),
-                })
 
-            # Insert identity first (FK parent), then sub-tables
             pk_cols = ["date", "code"]
             split_tables = [
                 ("stats.etf_identity",         identity_rows),
@@ -1238,7 +1270,6 @@ async def main():
                 ("stats.etf_tech_stats",       tech_rows),
                 ("stats.etf_adjustment",        adj_rows),
                 ("stats.etf_liquidity_margin",  liq_rows),
-                ("stats.etf_composition_link",  comp_link_rows),
             ]
             for tbl, rows in split_tables:
                 if rows:
@@ -1247,182 +1278,156 @@ async def main():
                 else:
                     print(f"    [DB] No new rows to insert into {tbl}", flush=True)
 
-            # ---- sec_composition: ALL stock holdings per ETF per snapshot ----
-            # Source 1 (preferred): comp_long — ALL holdings from per-file
-            #   composition CSVs (download_szse_etf_composition.py). ~65 ETFs
-            #   with complete holdings. Rank assigned 1..N by weight DESC.
-            # Source 2 (fallback): top1..top5_* columns in merged_db — top 5
-            #   from SZSE trend/archive CSVs. ~505 ETFs with only top 5.
-            # Source 3: CSI index composition CSVs (download_index_composition.py).
-            #   ALL constituents for CSI indices, source_type='index'.
-            # ETFs with full composition (Source 1) are skipped in Source 2.
-            holdings_rows = []
-            etf_codes_with_full_comp: set = set()
+        # ------------------------------------------------------------------
+        # (6) sec_composition: insert only missing (code, snapshot_date) pairs
+        # ------------------------------------------------------------------
+        print("\n[6/6] Inserting composition data (missing snapshots only) …", flush=True)
 
-            # Source 1: Full composition data (comp_long → ALL holdings)
-            if comp_long is not None and len(comp_long) > 0:
-                comp_eq = comp_long[comp_long["cash_sub_flag"] != "必须"].copy()
-                if len(comp_eq) > 0:
-                    comp_eq["_shares"] = pd.to_numeric(comp_eq["shares"], errors="coerce").fillna(0.0)
-                    comp_eq["_w"] = comp_eq["_shares"].abs()
-                    n_full = 0
-                    for (etf_stripped, trade_date), sub in comp_eq.groupby(["etf_code", "trade_date"]):
-                        if pd.isna(trade_date):
-                            continue
-                        total_w = float(sub["_w"].sum())
-                        if total_w <= 0:
-                            continue
-                        code_str = str(etf_stripped).strip().zfill(6)
-                        suffix = get_exchange_for_etf(code_str)
-                        if not suffix:
-                            continue
-                        etf_code_full = f"{code_str}.{suffix}"
-                        snap_date = pd.Timestamp(trade_date).date()
-                        # Sort by weight DESC and assign rank 1..N
-                        sub_sorted = sub.sort_values("_w", ascending=False).reset_index(drop=True)
-                        rows_before = len(holdings_rows)
-                        for rank_idx, (_, r) in enumerate(sub_sorted.iterrows(), start=1):
-                            # stock_code in comp CSVs carries an exchange suffix
-                            # (e.g. "300001.SZ"); keep it as-is so it matches
-                            # stock_industry_map.stock_code (built from this table).
-                            sc = str(r.get("stock_code", "")).strip()
-                            sc_stripped = sc.split(".")[0].zfill(6)
-                            if len(sc_stripped) != 6 or not sc_stripped.isdigit():
-                                continue
-                            holdings_rows.append({
-                                "snapshot_date": snap_date,
-                                "code": etf_code_full,
-                                "source_type": "etf",
-                                "rank": rank_idx,
-                                "stock_code": sc,
-                                "stock_name": str(r.get("stock_name", "") or ""),
-                                "weight_pct": float(r["_w"]) / total_w * 100.0,
-                            })
-                        # Only mark this ETF as having full composition when at
-                        # least one holdings row was actually added; otherwise
-                        # the top5 fallback (Source 2) must still cover it.
-                        if len(holdings_rows) > rows_before:
-                            etf_codes_with_full_comp.add(code_str)
-                            n_full += 1
-                    print(f"    [DB] Built {len(holdings_rows):,} sec_composition rows (full comp) "
-                          f"from {n_full} ETFs", flush=True)
-            else:
-                print(f"    [DB] No full composition data (comp_long empty)", flush=True)
+        # Query existing (code, snapshot_date) pairs from sec_composition
+        comp_existing_rows = await conn.fetch(
+            "SELECT DISTINCT code, snapshot_date FROM stats.sec_composition"
+        )
+        existing_comp_keys = {(r["code"], r["snapshot_date"]) for r in comp_existing_rows}
+        print(f"    [DB] {len(existing_comp_keys):,} existing (code, snapshot_date) pairs in stats.sec_composition", flush=True)
 
-            # Source 2: Top-5 fallback (top1..top5_* columns) for ETFs without
-            # full composition data.
-            n_top5 = 0
-            n_top5_rows = 0
-            if "comp_match_date" in merged_db.columns:
-                snap_df = merged_db[
-                    merged_db["comp_match_date"].notna()
-                    & (merged_db["comp_match_date"].astype(str) != "")
-                ].drop_duplicates(subset=["code", "comp_match_date"], keep="first")
-                for _, row in snap_df.iterrows():
-                    etf_code = str(row.get("code", "")).strip()
-                    # Strip suffix to check against full-comp set
-                    etf_stripped = etf_code.split(".")[0].zfill(6)
-                    if etf_stripped in etf_codes_with_full_comp:
-                        continue  # Already have full composition
-                    snap_date = row.get("comp_match_date")
-                    if not etf_code or snap_date is None:
+        holdings_rows = []
+        etf_codes_with_full_comp: set = set()
+
+        # Source 1: Full composition data (comp_long → ALL holdings)
+        if comp_long is not None and len(comp_long) > 0:
+            comp_eq = comp_long[comp_long["cash_sub_flag"] != "必须"].copy()
+            if len(comp_eq) > 0:
+                comp_eq["_shares"] = pd.to_numeric(comp_eq["shares"], errors="coerce").fillna(0.0)
+                comp_eq["_w"] = comp_eq["_shares"].abs()
+                n_full = 0
+                for (etf_stripped, trade_date), sub in comp_eq.groupby(["etf_code", "trade_date"]):
+                    if pd.isna(trade_date):
                         continue
-                    n_top5 += 1
-                    for rank in range(1, 6):
-                        stock_code = str(row.get(f"top{rank}_code", "")).strip()
-                        if not stock_code:
+                    total_w = float(sub["_w"].sum())
+                    if total_w <= 0:
+                        continue
+                    code_str = str(etf_stripped).strip().zfill(6)
+                    suffix = get_exchange_for_etf(code_str)
+                    if not suffix:
+                        continue
+                    etf_code_full = f"{code_str}.{suffix}"
+                    snap_date = pd.Timestamp(trade_date).date()
+                    # Skip if this (code, snapshot_date) is already in DB
+                    if (etf_code_full, snap_date) in existing_comp_keys:
+                        continue
+                    sub_sorted = sub.sort_values("_w", ascending=False).reset_index(drop=True)
+                    rows_before = len(holdings_rows)
+                    for rank_idx, (_, r) in enumerate(sub_sorted.iterrows(), start=1):
+                        sc = str(r.get("stock_code", "")).strip()
+                        sc_stripped = sc.split(".")[0].zfill(6)
+                        if len(sc_stripped) != 6 or not sc_stripped.isdigit():
                             continue
-                        stock_name = str(row.get(f"top{rank}_name", "")).strip()
-                        weight_pct = float(row.get(f"top{rank}_weight_pct", 0.0) or 0.0)
                         holdings_rows.append({
                             "snapshot_date": snap_date,
-                            "code": etf_code,
+                            "code": etf_code_full,
                             "source_type": "etf",
-                            "rank": rank,
-                            "stock_code": stock_code,
-                            "stock_name": stock_name,
-                            "weight_pct": weight_pct,
+                            "rank": rank_idx,
+                            "stock_code": sc,
+                            "stock_name": str(r.get("stock_name", "") or ""),
+                            "weight_pct": float(r["_w"]) / total_w * 100.0,
                         })
-                        n_top5_rows += 1
-                print(f"    [DB] Built {n_top5_rows:,} sec_composition rows (top5 fallback) "
-                      f"from {n_top5} ETFs", flush=True)
-            else:
-                print(f"    [DB] No comp_match_date column — skipping top5 fallback", flush=True)
+                    if len(holdings_rows) > rows_before:
+                        etf_codes_with_full_comp.add(code_str)
+                        n_full += 1
+                print(f"    [DB] Built {len(holdings_rows):,} sec_composition rows (full comp) "
+                      f"from {n_full} ETFs (skipped existing)", flush=True)
 
-            # Source 3: CSI index composition (download_index_composition.py)
-            index_comp_rows = build_index_composition_rows(verbose=True)
-            if index_comp_rows:
-                holdings_rows.extend(index_comp_rows)
-                print(f"    [DB] Built {len(index_comp_rows):,} sec_composition rows (index comp) "
-                      f"from {len(set(r['code'] for r in index_comp_rows))} indices", flush=True)
-            else:
-                print(f"    [DB] No index composition data found", flush=True)
+        # Source 2: CSI index composition
+        index_comp_rows = build_index_composition_rows(verbose=True)
+        if index_comp_rows:
+            # Filter to missing (code, snapshot_date) pairs
+            n_index_before = len(index_comp_rows)
+            index_comp_rows = [
+                r for r in index_comp_rows
+                if (r["code"], r["snapshot_date"]) not in existing_comp_keys
+            ]
+            n_index_skipped = n_index_before - len(index_comp_rows)
+            holdings_rows.extend(index_comp_rows)
+            print(f"    [DB] Built {len(index_comp_rows):,} sec_composition rows (CSI index comp) "
+                  f"from {len(set(r['code'] for r in index_comp_rows))} indices "
+                  f"(skipped {n_index_skipped} existing)", flush=True)
+        else:
+            print(f"    [DB] No CSI index composition data found", flush=True)
 
-            if holdings_rows:
-                inserted = await bulk_upsert_async(
-                    conn, "stats.sec_composition", holdings_rows,
-                    ["code", "snapshot_date", "rank"],
-                )
-                print(f"    [DB] Inserted {inserted:,} rows into stats.sec_composition", flush=True)
-            else:
-                print(f"    [DB] No rows to insert into stats.sec_composition", flush=True)
+        # Source 2b: SZSE index composition (399001, 399006, etc.)
+        szse_index_comp_rows = build_szse_index_composition_rows(verbose=True)
+        if szse_index_comp_rows:
+            n_szse_before = len(szse_index_comp_rows)
+            szse_index_comp_rows = [
+                r for r in szse_index_comp_rows
+                if (r["code"], r["snapshot_date"]) not in existing_comp_keys
+            ]
+            n_szse_skipped = n_szse_before - len(szse_index_comp_rows)
+            holdings_rows.extend(szse_index_comp_rows)
+            print(f"    [DB] Built {len(szse_index_comp_rows):,} sec_composition rows (SZSE index comp) "
+                  f"from {len(set(r['code'] for r in szse_index_comp_rows))} indices "
+                  f"(skipped {n_szse_skipped} existing)", flush=True)
+        else:
+            print(f"    [DB] No SZSE index composition data found", flush=True)
 
-            # ---- etf_meta: per-ETF quality metrics for ranking (Feature 3) ----
-            # n_ohlcv_days  : sufficient daily data (from uni_df)
-            # has_margin    : any margin data
-            # avg_volume_wan: mean daily volume (万) per ETF
-            # data_quality_score = (n_ohlcv_days>=200?100:0) + (has_margin?50:0)
-            #                    + volume_rank_component(0..50)
-            avg_vol_by_code: dict = {}
-            if "volume_wan" in merged_db.columns:
-                avg_vol_by_code = merged_db.groupby("code")["volume_wan"].mean().to_dict()
+        if holdings_rows:
+            inserted = await bulk_upsert_async(
+                conn, "stats.sec_composition", holdings_rows,
+                ["code", "snapshot_date", "rank"],
+            )
+            print(f"    [DB] Inserted {inserted:,} rows into stats.sec_composition", flush=True)
+        else:
+            print(f"    [DB] No new rows to insert into stats.sec_composition", flush=True)
 
-            etf_meta_rows = []
-            for _, row in uni_df.iterrows():
-                code = str(row.get("code", "")).strip()
-                if not code:
-                    continue
-                n_days = int(row.get("n_ohlcv_days", 0) or 0)
-                n_margin = int(row.get("n_margin_days", 0) or 0)
-                has_margin = n_margin > 0
-                avg_vol = float(avg_vol_by_code.get(code, 0.0) or 0.0)
-                fd = row.get("first_date", "")
-                ld = row.get("last_date", "")
-                fd_date = datetime.datetime.strptime(str(fd), "%Y-%m-%d").date() if fd else None
-                ld_date = datetime.datetime.strptime(str(ld), "%Y-%m-%d").date() if ld else None
-                base_score = (100 if n_days >= 200 else 0) + (50 if has_margin else 0)
-                etf_meta_rows.append({
-                    "code": code,
-                    "name": str(row.get("name", "") or ""),
-                    "n_ohlcv_days": n_days,
-                    "has_margin": has_margin,
-                    "avg_volume_wan": avg_vol,
-                    "first_date": fd_date,
-                    "last_date": ld_date,
-                    "data_quality_score": base_score,  # volume rank added below
-                })
+        # ---- etf_meta: per-ETF quality metrics (upsert all from full data) ----
+        avg_vol_by_code: dict = {}
+        if "volume_wan" in merged_db.columns:
+            avg_vol_by_code = merged_db.groupby("code")["volume_wan"].mean().to_dict()
 
-            # Add volume-rank component (0..50): highest-volume ETF gets +50,
-            # scaling down linearly by rank.
-            if etf_meta_rows:
-                by_vol = sorted(etf_meta_rows, key=lambda r: r["avg_volume_wan"], reverse=True)
-                n_etf = len(by_vol)
-                for rank_i, r in enumerate(by_vol):
-                    r["data_quality_score"] += int(50 * (1.0 - rank_i / max(n_etf, 1)))
+        etf_meta_rows = []
+        for _, row in uni_df.iterrows():
+            code = str(row.get("code", "")).strip()
+            if not code:
+                continue
+            n_days = int(row.get("n_ohlcv_days", 0) or 0)
+            n_margin = int(row.get("n_margin_days", 0) or 0)
+            has_margin = n_margin > 0
+            avg_vol = float(avg_vol_by_code.get(code, 0.0) or 0.0)
+            fd = row.get("first_date", "")
+            ld = row.get("last_date", "")
+            fd_date = datetime.datetime.strptime(str(fd), "%Y-%m-%d").date() if fd else None
+            ld_date = datetime.datetime.strptime(str(ld), "%Y-%m-%d").date() if ld else None
+            base_score = (100 if n_days >= 200 else 0) + (50 if has_margin else 0)
+            etf_meta_rows.append({
+                "code": code,
+                "name": str(row.get("name", "") or ""),
+                "n_ohlcv_days": n_days,
+                "has_margin": has_margin,
+                "avg_volume_wan": avg_vol,
+                "first_date": fd_date,
+                "last_date": ld_date,
+                "data_quality_score": base_score,
+            })
 
-            if etf_meta_rows:
-                inserted = await bulk_upsert_async(
-                    conn, "stats.etf_meta", etf_meta_rows, ["code"]
-                )
-                print(f"    [DB] Inserted {inserted:,} rows into stats.etf_meta", flush=True)
-            else:
-                print(f"    [DB] No rows to insert into stats.etf_meta", flush=True)
+        # Add volume-rank component (0..50)
+        if etf_meta_rows:
+            by_vol = sorted(etf_meta_rows, key=lambda r: r["avg_volume_wan"], reverse=True)
+            n_etf = len(by_vol)
+            for rank_i, r in enumerate(by_vol):
+                r["data_quality_score"] += int(50 * (1.0 - rank_i / max(n_etf, 1)))
 
-            # (etf_composition table is deprecated — all holdings now go to
-            #  stats.sec_composition above. See 08_etf_composition.sql for the DROP.)
-        finally:
-            await conn.close()
+        if etf_meta_rows:
+            inserted = await bulk_upsert_async(
+                conn, "stats.etf_meta", etf_meta_rows, ["code"]
+            )
+            print(f"    [DB] Upserted {inserted:,} rows into stats.etf_meta", flush=True)
+        else:
+            print(f"    [DB] No rows to insert into stats.etf_meta", flush=True)
 
+    finally:
+        await conn.close()
+
+    # Console summary
     print(f"\n  Theme distribution:", flush=True)
     for tid, sub in uni_df.groupby("theme_id"):
         print(f"    · {tid:<20s} {len(sub):>4d}", flush=True)
@@ -1431,10 +1436,8 @@ async def main():
     for exc, sub in uni_df.groupby("exchange"):
         print(f"    · {exc:<4s} {len(sub):>4d} ETFs", flush=True)
 
-    print(f"\n  Wall time: {int(time.time()-t0)}s", flush=True)
-    print("=" * 78, flush=True)
+    print_wall_time(t0)
 
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())

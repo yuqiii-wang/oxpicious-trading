@@ -30,6 +30,28 @@ SECURITY_CFGS: Dict[str, Dict[str, str]] = {
         "tabkey": "tab6",
         "prefix": "szse_trend_option",
     },
+    "index": {
+        "catalogid": "1815_stock_snapshot",
+        "tabkey": "tab7",
+        "prefix": "szse_trend_index",
+    },
+}
+
+# Per-type identity tables for check_identity (DB-first download mode).
+# code_suffix='SZ' filters to SZSE-only rows so multi-source tables
+# (SZSE+SSE+BSE) are queried per-exchange.
+# 'option' and 'index' have no identity table — fall back to filesystem scan.
+DB_TABLE_BY_TYPE: Dict[str, str] = {
+    "stock": "stats.stock_identity",
+    "etf": "stats.etf_identity",
+}
+
+# Per-type CSV row filter. The index tab7 export contains ~180 indexes
+# per day; only the two broad-market benchmarks below are persisted to CSV.
+# The xlsx is always written in full; only the CSV is filtered.
+INDEX_CODES_TO_KEEP: List[str] = ["399001", "399006"]  # 深证成指, 创业板指
+CODE_FILTER_BY_TYPE: Dict[str, List[str]] = {
+    "index": INDEX_CODES_TO_KEEP,
 }
 
 TREND_HEADERS = build_headers(REFERER_TREND)
@@ -58,19 +80,22 @@ def download_szse_trend(
     end_date: Optional[str] = None,
     start_date: str = "2025-07-01",
     security_types: Optional[List[str]] = None,
-    sleep_sec: float = 0.8,
+    sleep_sec: float = 5.0,
     session: Optional[requests.Session] = None,
 ) -> dict:
     """
     Download SZSE trend page market data day by day for stocks, ETFs/funds,
-    and options.
+    options, and indexes.
 
     Uses CATALOGID=1815_stock_snapshot from
     https://www.szse.cn/market/trend/index.html with ``txtBeginDate`` and
     ``txtEndDate`` set to the **same** business date each request, walking
     backwards from *end_date* until *start_date* (default 2025-07-01).
 
-    ``security_types`` defaults to ``["stock", "etf", "option"]``.
+    ``security_types`` defaults to ``["stock", "etf", "option", "index"]``.
+    For the ``index`` type (TABKEY=tab7) the xlsx contains ~180 indexes per
+    day; the CSV is filtered to only 399001 深证成指 and 399006 创业板指
+    (see CODE_FILTER_BY_TYPE). The xlsx is kept in full.
     """
     return run_szse_download(
         caller_file=str(Path(__file__).resolve()),
@@ -87,6 +112,9 @@ def download_szse_trend(
         sleep_sec=sleep_sec,
         session=session,
         code_suffix=".SZ",
+        db_table_by_type=DB_TABLE_BY_TYPE,
+        db_code_suffix="SZ",
+        code_filter_by_type=CODE_FILTER_BY_TYPE,
     )
 
 

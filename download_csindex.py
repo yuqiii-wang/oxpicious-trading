@@ -15,20 +15,19 @@ from _download_commons import (
     DEFAULT_TIMEOUT,
     DEFAULT_SLEEP_SEC,
     COMMON_BASE_HEADERS,
+    AntiBotProxy,
+    AntiBotConfig,
     setup_logger,
     resolve_out_dir,
     parse_date_window,
     is_valid_file,
+    is_fresh_today,
     is_error_html,
     safe_write_bytes,
     build_default_session,
     convert_xlsx_to_csv,
     read_csv_preferred,
     RunStats,
-    random_sleep,
-    safe_get,
-    safe_post,
-    HostStatusTracker,
     merge_browser_profile,
 )
 
@@ -44,7 +43,7 @@ from _classification import ICONIC_INDEXES
 
 CSINDEX_BASE = "https://www.csindex.com.cn"
 
-# POST export: daily OHLCV + turnover as Excel (body must be a JSON array)
+#-- POST export: daily OHLCV + amount as Excel (body must be a JSON array)
 API_EXPORT_PERF = CSINDEX_BASE + "/csindex-home/exportExcel/downloadindex-perf"
 API_EXPORT_PERF_TESHU = CSINDEX_BASE + "/csindex-home/exportExcel/downloadindex-perf-teshu"
 
@@ -61,7 +60,7 @@ INDICATOR_XLS_TEMPLATE = (
 
 DETAIL_REFERER = CSINDEX_BASE + "/zh-CN/indices/index#/indices/family/detail?indexCode={indexCode}"
 
-DEFAULT_LOOKBACK_YEARS = 5
+DEFAULT_START_DATE = "2020-01-01"  # Aligns with project convention: trend data starts from 2020
 UPDATE_WINDOW_DAYS = 35  # ~1 month plus weekend/holiday buffer
 SLEEP_SEC = DEFAULT_SLEEP_SEC
 CSINDEX_TIMEOUT: Tuple[int, int] = (15, 120)
@@ -89,7 +88,7 @@ def _detail_referer(index_code: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. Export Excel download (OHLCV + turnover)
+# 1. Export Excel download (OHLCV + amount)
 # ---------------------------------------------------------------------------
 
 def download_export_excel(
@@ -98,13 +97,16 @@ def download_export_excel(
     start_date: date,
     end_date: date,
     out_file: Path,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
-    """Download daily OHLCV+turnover history via the POST export Excel endpoint.
+    """Download daily OHLCV+amount history via the POST export Excel endpoint.
 
     The body must be a JSON **array** (a single object returns HTTP 500).
     Some "special" indices (e.g. 000010) require the ``-teshu`` variant.
     """
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+    
     body = json.dumps([
         {"indexCode": index_code, "startDate": _ymd(start_date), "endDate": _ymd(end_date)}
     ])
@@ -112,15 +114,13 @@ def download_export_excel(
     base_headers["Referer"] = _detail_referer(index_code)
 
     for url, label in ((API_EXPORT_PERF, "regular"), (API_EXPORT_PERF_TESHU, "teshu")):
-        resp = safe_post(
+        resp = proxy.post(
             session,
             url,
             params={"language": "CH"},
             data=body,
             headers=base_headers,
             timeout=CSINDEX_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=f"  [export {label} {index_code}]",
         )
@@ -141,8 +141,7 @@ def download_export_excel(
         # Check for error HTML (anti-bot block page)
         if is_error_html(ctype, content):
             logger.warning("  [export-%s] %s got error HTML response (blocked?)", label, index_code)
-            if host_tracker:
-                host_tracker.record_error(url, 403, "error_html_detected")
+            proxy.record_error(url, 403, "error_html_detected")
             continue
 
         # Otherwise it's likely a JSON error — try the teshu variant
@@ -167,13 +166,16 @@ def fetch_pe_series(
     index_code: str,
     start_date: date,
     end_date: date,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch historical PE (peg) series via the indexCsiDsPe endpoint.
 
     The ``peg`` field in csindex's API is a PE ratio variant (not the standard
     PEG ratio), with values in the 10-30 range typical of P/E. We treat it as PE.
     """
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+
     params = {
         "indexCode": index_code,
         "startDate": _ymd(start_date),
@@ -182,14 +184,12 @@ def fetch_pe_series(
     base_headers = dict(CSINDEX_HEADERS)
     base_headers["Referer"] = _detail_referer(index_code)
 
-    resp = safe_get(
+    resp = proxy.get(
         session,
         API_INDEX_CSI_DS_PE,
         params=params,
         headers=base_headers,
         timeout=CSINDEX_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag=f"  [pe-fetch {index_code}]",
     )
@@ -200,8 +200,7 @@ def fetch_pe_series(
     ctype = resp.headers.get("Content-Type", "")
     if is_error_html(ctype, resp.content):
         logger.warning("  [pe-fetch] %s: got error HTML response (blocked?)", index_code)
-        if host_tracker:
-            host_tracker.record_error(API_INDEX_CSI_DS_PE, 403, "error_html_detected")
+        proxy.record_error(API_INDEX_CSI_DS_PE, 403, "error_html_detected")
         return []
 
     try:
@@ -220,6 +219,33 @@ def fetch_pe_series(
     return data
 
 
+def load_pe_cache(pe_cache_file: Path) -> Optional[List[Dict[str, Any]]]:
+    """Load cached PE records from JSON file. Returns None if invalid."""
+    if not is_valid_file(pe_cache_file, min_bytes=MIN_VALID_BYTES):
+        return None
+    try:
+        with pe_cache_file.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        logger.warning("  [pe-cache] %s: unexpected JSON structure, ignoring cache", pe_cache_file.name)
+        return None
+    except (ValueError, OSError) as e:
+        logger.warning("  [pe-cache] %s: load error: %s", pe_cache_file.name, e)
+        return None
+
+
+def save_pe_cache(pe_cache_file: Path, pe_records: List[Dict[str, Any]]) -> bool:
+    """Persist PE records to JSON file for future skip."""
+    try:
+        with pe_cache_file.open("w", encoding="utf-8") as f:
+            json.dump(pe_records, f, ensure_ascii=False)
+        return True
+    except OSError as e:
+        logger.warning("  [pe-cache] %s: save error: %s", pe_cache_file.name, e)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # 3. Intraday granular ticks (1-day data)
 # ---------------------------------------------------------------------------
@@ -227,7 +253,7 @@ def fetch_pe_series(
 def fetch_intraday(
     session: requests.Session,
     index_code: str,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch latest trading-day intraday ticks via index-perf-oneday.
 
@@ -240,17 +266,18 @@ def fetch_intraday(
     served exclusively via this JSON endpoint (the data source behind the
     website's intraday chart). We parse the JSON directly.
     """
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
+    
     base_headers = dict(CSINDEX_HEADERS)
     base_headers["Referer"] = _detail_referer(index_code)
 
-    resp = safe_get(
+    resp = proxy.get(
         session,
         API_INDEX_PERF_ONEDAY,
         params={"indexCode": index_code},
         headers=base_headers,
         timeout=CSINDEX_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag=f"  [intraday-fetch {index_code}]",
     )
@@ -261,8 +288,7 @@ def fetch_intraday(
     ctype = resp.headers.get("Content-Type", "")
     if is_error_html(ctype, resp.content):
         logger.warning("  [intraday-fetch] %s: got error HTML response (blocked?)", index_code)
-        if host_tracker:
-            host_tracker.record_error(API_INDEX_PERF_ONEDAY, 403, "error_html_detected")
+        proxy.record_error(API_INDEX_PERF_ONEDAY, 403, "error_html_detected")
         return None
 
     try:
@@ -336,7 +362,7 @@ def save_intraday(
 
 
 # ---------------------------------------------------------------------------
-# 4. Merge: 5y export + 1m export + PE -> history CSV
+# 4. Merge: from2020 export + 1m export + PE -> history CSV
 # ---------------------------------------------------------------------------
 
 def _normalize_export_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -375,8 +401,8 @@ def _normalize_export_columns(df: pd.DataFrame) -> pd.DataFrame:
             rename_map[col] = "change"
         elif "成交量" in s or "volume" in sl:
             rename_map[col] = "volume"
-        elif "成交金额" in s or "turnover" in sl:
-            rename_map[col] = "turnover"
+        elif "成交金额" in s or "turnover" in sl or "amount" in sl:
+            rename_map[col] = "amount"
         elif "样本" in s or "cons" in sl:
             rename_map[col] = "consNumber"
     return df.rename(columns=rename_map)
@@ -414,20 +440,20 @@ def build_history_csv(
     out_dir: Path,
     pe_records: List[Dict[str, Any]],
 ) -> Optional[Path]:
-    """Merge 5y export + 1m export + PE into a single daily history CSV.
+    """Merge from2020 export + 1m export + PE into a single daily history CSV.
 
-    The 1m data overrides the 5y data for overlapping dates (update/insert).
+    The 1m data overrides the from2020 data for overlapping dates (update/insert).
     PE (peg) is merged by date as a left join.
     """
-    fivex_xlsx = out_dir / f"{index_code}_5y.xlsx"
+    from2020_xlsx = out_dir / f"{index_code}_from2020.xlsx"
     onem_xlsx = out_dir / f"{index_code}_1m.xlsx"
 
     # Read with dtype=object to preserve original cell values
-    df_5y = read_csv_preferred(fivex_xlsx, dtype=object, logger=logger, log_tag=f"[5y {index_code}]")
+    df_from2020 = read_csv_preferred(from2020_xlsx, dtype=object, logger=logger, log_tag=f"[from2020 {index_code}]")
     df_1m = read_csv_preferred(onem_xlsx, dtype=object, logger=logger, log_tag=f"[1m {index_code}]")
 
     frames: List[pd.DataFrame] = []
-    for df_raw in (df_5y, df_1m):
+    for df_raw in (df_from2020, df_1m):
         if df_raw is None or df_raw.empty:
             continue
         df = _normalize_export_columns(df_raw)
@@ -440,7 +466,7 @@ def build_history_csv(
         logger.warning("  [history] %s: no export data to build history", index_code)
         return None
 
-    # Concatenate; 1m (last) overrides 5y for overlapping dates
+    # Concatenate; 1m (last) overrides from2020 for overlapping dates
     df = pd.concat(frames, ignore_index=True)
     if "date" in df.columns:
         df = df.drop_duplicates(subset=["date"], keep="last")
@@ -481,7 +507,7 @@ def build_history_csv(
     preferred_cols = [
         "date", "indexCode", "indexName",
         "open", "high", "low", "close",
-        "volume", "turnover", "change", "changePct",
+        "volume", "amount", "change", "changePct",
         "pe", "consNumber",
     ]
     final_cols = [c for c in preferred_cols if c in df.columns]
@@ -509,18 +535,19 @@ def download_index(
     *,
     index_codes: Optional[List[str]] = None,
     out_root: Optional[str] = None,
-    lookback_years: int = DEFAULT_LOOKBACK_YEARS,
+    start_date: str = DEFAULT_START_DATE,
     update_days: int = UPDATE_WINDOW_DAYS,
     sleep_sec: float = SLEEP_SEC,
     skip_intraday: bool = False,
 ) -> dict:
-    """Download iconic CSI index daily history (OHLCV + turnover + PE).
+    """Download iconic CSI index daily history (OHLCV + amount + PE).
 
     Flow per index:
-      1. Download 5-year daily history via export Excel (skip if already cached).
+      1. Download full-range daily history via export Excel, from ``start_date``
+         (default 2020-01-01) to today (skip if already cached).
       2. Download 1-month daily history via export Excel (always, for incremental update).
-      3. Fetch PE (peg) series for the full range.
-      4. Merge 5y + 1m + PE into ``{indexCode}_history.csv``.
+      3. Fetch PE (peg) series for the full range (skip if cached and fresh today after 17:00).
+      4. Merge full-range + 1m + PE into ``{indexCode}_history.csv``.
       5. Fetch intraday granular ticks for the latest trading day (skip if unavailable).
     """
     script_dir = Path(__file__).resolve().parent
@@ -530,80 +557,112 @@ def download_index(
     if index_codes is None:
         index_codes = list(ICONIC_INDEXES.keys())
 
-    _start, _end = parse_date_window(lookback_years=lookback_years)
+    _start, _end = parse_date_window(start_date=start_date)
     update_end = _end
     update_start = _end - timedelta(days=update_days)
 
     logger.info(
-        "Starting csindex download: codes=%s window=%s->%s (lookback=%dy) "
+        "Starting csindex download: codes=%s window=%s->%s (start=%s) "
         "update=%s->%s out=%s",
-        index_codes, _start, _end, lookback_years,
+        index_codes, _start, _end, start_date,
         update_start, update_end, out_dir,
     )
 
     session = build_session()
     stats = RunStats()
-    host_tracker = HostStatusTracker()
+    
+    # Create unified AntiBotProxy
+    proxy_config = AntiBotConfig(
+        base_sleep_sec=sleep_sec,
+    )
+    proxy = AntiBotProxy(proxy_config)
 
     try:
         for code in index_codes:
             name = ICONIC_INDEXES.get(code, code)
             logger.info("== Index %s (%s) ==", code, name)
 
-            if host_tracker.is_blocked(CSINDEX_BASE):
+            if proxy.is_blocked(CSINDEX_BASE):
                 logger.warning("  [host-blocked] csindex.com.cn is blocked, skipping all tasks for %s", code)
                 stats.failed += 4
                 continue
 
-            # --- Step 1: 5-year export (skip if cached) ---
-            fivex_file = out_dir / f"{code}_5y.xlsx"
-            fivex_csv_file = fivex_file.with_suffix(".csv")
-            fivex_downloaded = False
-            if is_valid_file(fivex_file, min_bytes=MIN_VALID_BYTES):
-                logger.info("  [5y] %s already cached, skipping download", code)
+            # --- Step 1: full-range export (skip if cached) ---
+            from2020_file = out_dir / f"{code}_from2020.xlsx"
+            from2020_csv_file = from2020_file.with_suffix(".csv")
+            from2020_downloaded = False
+            if is_valid_file(from2020_file, min_bytes=MIN_VALID_BYTES):
+                logger.info("  [from2020] %s already cached, skipping download", code)
                 stats.skipped_cached += 1
-                if is_valid_file(fivex_csv_file, min_bytes=MIN_VALID_BYTES):
-                    logger.info("  [5y] %s already converted, skipping csv conversion", code)
+                if is_valid_file(from2020_csv_file, min_bytes=MIN_VALID_BYTES):
+                    logger.info("  [from2020] %s already converted, skipping csv conversion", code)
                 else:
-                    convert_xlsx_to_csv(fivex_file, logger=logger, log_tag=f"[5y {code}]")
+                    convert_xlsx_to_csv(from2020_file, logger=logger, log_tag=f"[from2020 {code}]")
             else:
-                ok = download_export_excel(session, code, _start, _end, fivex_file, host_tracker)
-                fivex_downloaded = ok
+                ok = download_export_excel(session, code, _start, _end, from2020_file, proxy)
+                from2020_downloaded = ok
                 if ok:
                     stats.downloaded += 1
-                    stats.files.append(str(fivex_file))
+                    stats.files.append(str(from2020_file))
                 else:
                     stats.failed += 1
-            if fivex_downloaded:
-                random_sleep(sleep_sec)
+            if from2020_downloaded:
+                pass  # Auto-sleep handled by proxy.post() inside download_export_excel
 
-            if host_tracker.is_blocked(CSINDEX_BASE):
-                logger.warning("  [host-blocked] csindex.com.cn blocked after 5y download, skipping remaining tasks for %s", code)
+            if proxy.is_blocked(CSINDEX_BASE):
+                logger.warning("  [host-blocked] csindex.com.cn blocked after from2020 download, skipping remaining tasks for %s", code)
                 stats.failed += 3
                 continue
 
-            # --- Step 2: 1-month export (always, for incremental update) ---
+            # --- Step 2: 1-month export (skip if cached and fresh today after 17:00) ---
             onem_file = out_dir / f"{code}_1m.xlsx"
-            ok = download_export_excel(session, code, update_start, update_end, onem_file, host_tracker)
-            if ok:
-                stats.downloaded += 1
-                stats.files.append(str(onem_file))
+            onem_csv_file = onem_file.with_suffix(".csv")
+            onem_downloaded = False
+            if is_fresh_today(onem_file, min_bytes=MIN_VALID_BYTES, hour=17):
+                logger.info("  [1m] %s already cached and fresh (updated after 17:00), skipping download", code)
+                stats.skipped_cached += 1
+                if is_valid_file(onem_csv_file, min_bytes=MIN_VALID_BYTES):
+                    logger.info("  [1m] %s already converted, skipping csv conversion", code)
+                else:
+                    convert_xlsx_to_csv(onem_file, logger=logger, log_tag=f"[1m {code}]")
             else:
-                stats.failed += 1
-            random_sleep(sleep_sec)
+                ok = download_export_excel(session, code, update_start, update_end, onem_file, proxy)
+                onem_downloaded = ok
+                if ok:
+                    stats.downloaded += 1
+                    stats.files.append(str(onem_file))
+                else:
+                    stats.failed += 1
+            if onem_downloaded:
+                pass  # Auto-sleep handled by proxy.post() inside download_export_excel
 
-            if host_tracker.is_blocked(CSINDEX_BASE):
+            if proxy.is_blocked(CSINDEX_BASE):
                 logger.warning("  [host-blocked] csindex.com.cn blocked after 1m download, skipping remaining tasks for %s", code)
                 stats.failed += 2
                 continue
 
-            # --- Step 3: PE series (always fetch, lightweight) ---
-            pe_records = fetch_pe_series(session, code, _start, _end, host_tracker)
-            if pe_records:
-                logger.info("  [pe] %s: %d records", code, len(pe_records))
-            else:
-                logger.warning("  [pe] %s: no PE data returned", code)
-            random_sleep(sleep_sec)
+            # --- Step 3: PE series (skip if cached and fresh today after 17:00) ---
+            pe_cache_file = out_dir / f"{code}_pe.json"
+            pe_records: List[Dict[str, Any]] = []
+            if is_fresh_today(pe_cache_file, min_bytes=MIN_VALID_BYTES, hour=17):
+                cached = load_pe_cache(pe_cache_file)
+                if cached is not None:
+                    pe_records = cached
+                    logger.info("  [pe] %s: cached and fresh (%d records), skipping fetch", code, len(pe_records))
+                    stats.skipped_cached += 1
+                else:
+                    logger.info("  [pe] %s: cache invalid, refetching", code)
+            if not pe_records:
+                pe_records = fetch_pe_series(session, code, _start, _end, proxy)
+                if pe_records:
+                    logger.info("  [pe] %s: %d records", code, len(pe_records))
+                    if save_pe_cache(pe_cache_file, pe_records):
+                        logger.info("  [pe] %s: cached to %s", code, pe_cache_file.name)
+                    stats.downloaded += 1
+                else:
+                    logger.warning("  [pe] %s: no PE data returned", code)
+                    stats.failed += 1
+            # Auto-sleep handled by proxy.get() inside fetch_pe_series (only when fetched)
 
             # --- Step 4: Merge into history CSV ---
             history_file = build_history_csv(code, name, out_dir, pe_records)
@@ -612,15 +671,14 @@ def download_index(
 
             # --- Step 5: Intraday granular ticks (skip if unavailable) ---
             if not skip_intraday:
-                intraday_data = fetch_intraday(session, code, host_tracker)
+                intraday_data = fetch_intraday(session, code, proxy)
                 if intraday_data is not None:
                     saved = save_intraday(intraday_data, code, name, out_dir)
                     if saved:
                         stats.files.append(str(saved))
                 else:
                     logger.info("  [intraday] %s: 1-day data not available, skipping", code)
-
-            random_sleep(sleep_sec)
+            # Auto-sleep handled by proxy.get() inside fetch_intraday (if called)
 
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
@@ -628,10 +686,9 @@ def download_index(
     summary = stats.to_dict(
         out_dir=str(out_dir),
         index_codes=index_codes,
-        lookback_years=lookback_years,
-        update_days=update_days,
         start_date=str(_start),
         end_date=str(_end),
+        update_days=update_days,
     )
     logger.info(
         "Done csindex download. downloaded=%d skipped(cached)=%d failed=%d out=%s",

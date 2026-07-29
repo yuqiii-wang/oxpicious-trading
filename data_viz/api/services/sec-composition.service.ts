@@ -3,8 +3,7 @@
  * JOIN stock_industry_map.
  *
  * sec_composition stores:
- *   - Full composition (ALL holdings, rank 1..N) for ~65 ETFs (source_type='etf')
- *   - Top-5 (rank 1-5) for ~505 ETFs without full composition data (source_type='etf')
+ *   - Full composition (ALL holdings, rank 1..N) for ETFs (source_type='etf')
  *   - Index composition (ALL constituents) for CSI indices (source_type='index')
  *
  * Lookup order for a requested ETF:
@@ -16,9 +15,7 @@
  *
  * Returns:
  *   - holdings: ALL holdings for the ETF/index with industry + L1 sector classification.
- *   - top5:     Top 5 by weight (for the text list display).
  *   - source:   "full"  = all ETF holdings available,
- *               "top5"  = only top 5 ETF holdings available,
  *               "index" = ETF had no holdings; tracking index composition used.
  *   - index_source: populated only when source === "index" (which index was used).
  */
@@ -141,10 +138,13 @@ async function fetchTrackingIndex(
  *   1. ETF holdings (source_type='etf'). If any rows exist → return them.
  *   2. If the ETF has NO holdings, look up its tracking index in
  *      stats.etf_meta and return the index's composition (source_type='index').
+ *   3. If neither ETF holdings nor a tracking index is found, try a direct
+ *      index lookup (source_type='index') with the bare code. This lets
+ *      callers pass a bare index code (e.g. "000300" or "H30007") directly
+ *      — used by the Index Baseline page, which has no etf_meta entry.
  *
- * Returns holdings (all), top5 (text list), and the source type
- * ("full" = all ETF holdings, "top5" = only top 5 ETF holdings,
- *  "index" = tracking index composition used as fallback).
+ * Returns holdings (all) and the source type
+ * ("full" = ETF holdings, "index" = tracking/raw index composition).
  */
 export async function getSecComposition(
   codeParam: string,
@@ -155,8 +155,7 @@ export async function getSecComposition(
       code: codeParam,
       snapshot_date: "",
       holdings: [],
-      top5: [],
-      source: "top5",
+      source: "full",
     };
   }
 
@@ -164,13 +163,11 @@ export async function getSecComposition(
   const etfRows = await fetchHoldings(stripped, "etf");
   if (etfRows.length > 0) {
     const holdings = etfRows.map(toHolding);
-    const source: "full" | "top5" = holdings.length > 5 ? "full" : "top5";
     return {
       code: etfRows[0].code,
       snapshot_date: formatDate(etfRows[0].snapshot_date),
       holdings,
-      top5: holdings.slice(0, 5),
-      source,
+      source: "full",
     };
   }
 
@@ -184,11 +181,23 @@ export async function getSecComposition(
         code: codeParam,
         snapshot_date: formatDate(idxRows[0].snapshot_date),
         holdings,
-        top5: holdings.slice(0, 5),
         source: "index",
         index_source: { code: idx.code, name: idx.name },
       };
     }
+  }
+
+  // 3. Direct index lookup — caller passed a bare index code with no
+  //    associated etf_meta entry (e.g. the Index Baseline page).
+  const directIdxRows = await fetchHoldings(stripped, "index");
+  if (directIdxRows.length > 0) {
+    const holdings = directIdxRows.map(toHolding);
+    return {
+      code: codeParam,
+      snapshot_date: formatDate(directIdxRows[0].snapshot_date),
+      holdings,
+      source: "index",
+    };
   }
 
   // No ETF holdings and no usable index composition.
@@ -196,7 +205,6 @@ export async function getSecComposition(
     code: codeParam,
     snapshot_date: "",
     holdings: [],
-    top5: [],
-    source: "top5",
+    source: "full",
   };
 }

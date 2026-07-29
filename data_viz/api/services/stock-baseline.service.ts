@@ -1,0 +1,457 @@
+/**
+ * Stock Baseline service — queries stats.v_stock_baseline view
+ * (stock_identity + stock_basic_stats JOIN) plus stats.stock_industry_map
+ * for L1/L2 classification.
+ *
+ *   • getStockBaseline() — single-code OHLC + pct_change + PE, used by the
+ *     composition pie chart's per-stock candlestick expansion.
+ *   • listStockThemes() — two-level L1 sector → L2 industry tree (mirrors
+ *     listIndexThemes()).
+ *   • getStocksCombined() — paginated stock list filtered by sector +
+ *     industry + (optionally) exact code search.
+ *
+ * Stock classification (L1 sector + L2 industry) is read from precomputed
+ * columns in stats.stock_industry_map (populated by build_stock_industry.py
+ * via _classification.classify_stock()).  The industry_slug is derived as
+ * LOWER(industry_id) at query time — this matches the slug convention used
+ * by the ETF/Index taxonomy in _classification.py (e.g. BANKS → banks).
+ *
+ * Suffix convention (project-wide, see project_memory.md):
+ *   • .SZ  = Shenzhen Stock Exchange  (深圳证券交易所)
+ *   • .SS  = Shanghai Stock Exchange  (上海证券交易所, Yahoo Finance
+ *             convention — NOT Tushare's .SH)
+ *   • .BJ  = Beijing Stock Exchange     (北京证券交易所)
+ *
+ * Both stock_identity.code AND stock_industry_map.stock_code store codes
+ * WITH the exchange suffix (e.g. "000001.SZ" = Ping An Bank, a Shenzhen
+ * stock; "600000.SS" = 浦发银行, a Shanghai stock).  The JOIN is therefore
+ * a direct equality on si.code = sim.stock_code — no suffix stripping.
+ *
+ * Note: bare "000001" is ambiguous — it could be Ping An Bank (000001.SZ) or
+ * the Shanghai Composite Index (000001.SS, an INDEX stored in index_identity,
+ * NOT in this table).  The suffix disambiguates correctly.
+ *
+ * Rows with NULL OHLC are filtered out (v_stock_baseline is a LEFT JOIN of
+ * stock_identity + stock_basic_stats — identity-only rows like the historical
+ * "test"/"test2" rows on 2026-07-23/24 have NULL OHLC and must be skipped so
+ * they don't override the real stock name in MAX(name) resolution).
+ */
+import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
+import type { QueryResultRow } from "pg";
+import type {
+  StockBaselineResponse,
+  StockBaselineRow,
+  StockBundle,
+  StockCombinedResponse,
+  SectorNode,
+  IndustryNode,
+} from "../../shared/types.js";
+
+interface DbStockRow extends QueryResultRow {
+  date: string;
+  code: string;
+  name: string | null;
+  prev_close: number | null;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  pct_change: number | null;
+  pe: number | null;
+  is_pe_estimated: boolean | null;
+  has_intraday_5mins: boolean | null;
+}
+
+interface DbStockMetaRow extends QueryResultRow {
+  // Suffixed code (e.g. "000001.SZ") — the canonical key used everywhere
+  // (stock_identity, stock_industry_map, v_stock_baseline).
+  code: string;
+  name: string;
+  n_days: number;
+  first_date: string;
+  last_date: string;
+  sector_id: string;
+  sector_label: string;
+  industry_id: string;
+  industry_label: string;
+  industry_slug: string;
+}
+
+const SUFFIX_RE = /\.(SZ|SS|BJ)$/;
+
+export async function getStockBaseline(
+  codeParam: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<StockBaselineResponse> {
+  const code = codeParam.trim();
+  if (!code) {
+    return { code: codeParam, name: "", dates: [], rows: [] };
+  }
+
+  // Use exact match when the input already carries an exchange suffix
+  // (index-friendly — idx_stock_basic_stats_code_date); fall back to
+  // REGEXP_REPLACE for bare 6-digit codes.
+  const hasSuffix = SUFFIX_RE.test(code);
+  const codePredicate = hasSuffix ? "code = $1" : "REGEXP_REPLACE(code, '\\.(SZ|SS|BJ)$', '') = $1";
+
+  const params: unknown[] = [code];
+  let paramIdx = 2;
+  const whereParts: string[] = [codePredicate];
+  // Skip rows with NULL OHLC (identity-only rows like the historical
+  // "test"/"test2" entries — they have no matching stock_basic_stats row).
+  whereParts.push("close IS NOT NULL");
+  const sd = toDateParam(startDate);
+  const ed = toDateParam(endDate);
+  if (sd) {
+    whereParts.push(`date >= $${paramIdx++}::date`);
+    params.push(sd);
+  }
+  if (ed) {
+    whereParts.push(`date <= $${paramIdx++}::date`);
+    params.push(ed);
+  }
+
+  const sql = `
+    SELECT date, code, name, prev_close, open, high, low, close,
+           pct_change, pe, is_pe_estimated, has_intraday_5mins
+      FROM stats.v_stock_baseline
+     WHERE ${whereParts.join(" AND ")}
+     ORDER BY date ASC
+  `;
+  const rows = await queryRows<DbStockRow>(sql, params);
+
+  // Resolve the display name via mode (most frequent non-empty name) —
+  // robust against a few bogus "test" rows that would otherwise shadow
+  // the real name via latest-by-date resolution.
+  const nameTally = new Map<string, number>();
+  for (const r of rows) {
+    if (r.name) nameTally.set(r.name, (nameTally.get(r.name) ?? 0) + 1);
+  }
+  let name = "";
+  let bestCnt = -1;
+  for (const [nm, cnt] of nameTally) {
+    if (cnt > bestCnt || (cnt === bestCnt && nm < name)) {
+      name = nm;
+      bestCnt = cnt;
+    }
+  }
+
+  return {
+    code: rows.length > 0 ? rows[0].code : code,
+    name,
+    dates: rows.map((r) => formatDate(r.date)),
+    rows: rows.map<StockBaselineRow>((r) => ({
+      date: formatDate(r.date),
+      open: toNum(r.open),
+      high: toNum(r.high),
+      low: toNum(r.low),
+      close: toNum(r.close),
+      prev_close: toNum(r.prev_close),
+      pct_change: toNum(r.pct_change),
+      pe: toNum(r.pe),
+      is_pe_estimated: r.is_pe_estimated === true,
+      has_intraday_5mins: r.has_intraday_5mins === true,
+    })),
+  };
+}
+
+// ----------------------------------------------------------------------------
+//  Meta query — fetch all stocks with precomputed L1/L2 classification from
+//  stats.stock_industry_map, ordered by n_days DESC (most data first).
+//
+//  Key points:
+//    • stock_identity.code and stock_industry_map.stock_code BOTH store the
+//      code WITH exchange suffix (e.g. "000001.SZ") — JOIN is a direct
+//      equality, no suffix stripping.
+//    • Only rows with non-NULL close are counted toward n_days — this
+//      excludes bogus identity-only rows (e.g. historical "test" entries on
+//      2026-07-23/24) that would otherwise inflate the count and override
+//      the real stock name via MAX(name).
+//    • name is resolved as the most recent name WHERE close IS NOT NULL,
+//      so "test" can't shadow the real "平安银行".
+//    • Filters out stocks with fewer than MIN_DAYS rows so the selector
+//      doesn't show transient/new listings with no chartable history.
+// ----------------------------------------------------------------------------
+const MIN_DAYS = 40;
+
+const STOCK_META_SQL = `
+  WITH ohlc_rows AS (
+    SELECT si.code, si.date, si.name
+      FROM stats.stock_identity si
+      LEFT JOIN stats.stock_basic_stats b
+             ON si.date = b.date AND si.code = b.code
+     WHERE b.close IS NOT NULL
+  )
+  SELECT o.code                                       AS code,
+         -- Pick the most frequent non-NULL name (mode) — robust against a
+         -- few bogus "test"/"test2" rows that would otherwise shadow the
+         -- real name (e.g. 000002.SZ has 2 "test2" rows mixed with 1100+
+         -- "万科Ａ" rows; mode() correctly returns "万科Ａ").
+         mode() WITHIN GROUP (ORDER BY o.name)         AS name,
+         COUNT(*)                                       AS n_days,
+         MIN(o.date)::text                              AS first_date,
+         MAX(o.date)::text                              AS last_date,
+         COALESCE(MAX(sim.sector_id),     'OTHER')    AS sector_id,
+         COALESCE(MAX(sim.sector_label),  '其他')      AS sector_label,
+         COALESCE(MAX(sim.industry_id),   'OTHER')    AS industry_id,
+         COALESCE(MAX(sim.industry),       '未分类')    AS industry_label,
+         LOWER(COALESCE(MAX(sim.industry_id), 'OTHER')) AS industry_slug
+    FROM ohlc_rows o
+    LEFT JOIN stats.stock_industry_map sim ON sim.stock_code = o.code
+   GROUP BY o.code
+  HAVING COUNT(*) >= ${MIN_DAYS}
+   ORDER BY n_days DESC, o.code
+`;
+
+// ----------------------------------------------------------------------------
+//  Stock themes — build the two-level L1 sector → L2 industry → stocks tree
+//  from the precomputed classification columns in stock_industry_map.
+// ----------------------------------------------------------------------------
+export async function listStockThemes(): Promise<SectorNode[]> {
+  const rows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
+
+  const sectorMap = new Map<string, {
+    sector_label: string;
+    industries: Map<string, IndustryNode>;
+  }>();
+
+  for (const r of rows) {
+    // Use the SUFFIXED code (e.g. "000001.SZ") as the canonical identifier
+    // — this matches what stock_identity, stock_industry_map, and
+    // v_stock_baseline all use.  CodeSearchBar uses partial matching, so
+    // searching "000001" still finds "000001.SZ".
+    const item = { code: r.code, name: r.name ?? "" };
+    if (!sectorMap.has(r.sector_id)) {
+      sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
+    }
+    const sector = sectorMap.get(r.sector_id)!;
+    if (!sector.industries.has(r.industry_id)) {
+      sector.industries.set(r.industry_id, {
+        industry_id: r.industry_id,
+        industry_label: r.industry_label,
+        industry_slug: r.industry_slug,
+        count: 0,
+        items: [],
+      });
+    }
+    const ind = sector.industries.get(r.industry_id)!;
+    ind.items.push(item);
+    ind.count++;
+  }
+
+  const sectors: SectorNode[] = [];
+  for (const [sector_id, sector] of sectorMap) {
+    const industries = Array.from(sector.industries.values()).sort((a, b) => {
+      if (a.industry_id === "OTHER") return 1;
+      if (b.industry_id === "OTHER") return -1;
+      return b.count - a.count;
+    });
+    sectors.push({
+      sector_id,
+      sector_label: sector.sector_label,
+      count: industries.reduce((sum, i) => sum + i.count, 0),
+      industries,
+    });
+  }
+  sectors.sort((a, b) => {
+    if (a.sector_id === "OTHER") return 1;
+    if (b.sector_id === "OTHER") return -1;
+    return b.count - a.count;
+  });
+  return sectors;
+}
+
+// ----------------------------------------------------------------------------
+//  Combined stock data with sector/industry filter + pagination
+// ----------------------------------------------------------------------------
+export interface StockCombinedQuery {
+  sector?: string;
+  industry?: string;
+  /** Exact stock code.  Accepts both suffixed ("000001.SZ") and bare
+   *  ("000001") forms — the bare form is matched against the stripped code.
+   *  When set, sector/industry/pagination are bypassed — only the matching
+   *  stock is returned. */
+  code?: string;
+  start_date?: string;
+  end_date?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export async function getStocksCombined(
+  q: StockCombinedQuery,
+): Promise<StockCombinedResponse> {
+  const sectorFilter = (q.sector ?? "").trim();
+  const industryFilter = (q.industry ?? "").trim();
+  // Normalize the code search: strip any suffix so we can match against both
+  // the suffixed ("000001.SZ") and stripped ("000001") forms in metaRows.
+  const rawCodeFilter = (q.code ?? "").trim().toUpperCase();
+  // Strip optional suffix (.SS/.SZ/.SH/.BJ — accept .SH as an alias for .SS
+  // since some users type Tushare convention).
+  const codeFilterBare = rawCodeFilter.replace(/\.(SS|SZ|SH|BJ)$/i, "");
+  const codeFilterHasSuffix = codeFilterBare !== rawCodeFilter;
+
+  // 1. Fetch all stocks with classification, ordered by n_days DESC.
+  const metaRows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
+
+  // 2. Filter by sector + industry (or by exact code when codeFilter is set).
+  // metaRows are already ordered by n_days DESC; preserve that order so
+  // pagination returns the most-liquid stocks first.
+  const meta = new Map<string, {
+    name: string;
+    sector_id: string;
+    sector_label: string;
+    industry_id: string;
+    industry_label: string;
+  }>();
+  const wantedCodes: string[] = [];
+  for (const r of metaRows) {
+    meta.set(r.code, {
+      name: r.name ?? "",
+      sector_id: r.sector_id,
+      sector_label: r.sector_label,
+      industry_id: r.industry_id,
+      industry_label: r.industry_label,
+    });
+    if (codeFilterBare) {
+      // Exact code search — ignore sector/industry filters.
+      // Match either the full suffixed code (e.g. "000001.SZ") or the
+      // stripped 6-digit form ("000001").
+      const stripped = r.code.replace(/\.(SZ|SS|BJ)$/, "").toUpperCase();
+      const matches = codeFilterHasSuffix
+        ? r.code.toUpperCase() === rawCodeFilter
+        : stripped === codeFilterBare;
+      if (matches) wantedCodes.push(r.code);
+      continue;
+    }
+    const sectorOk = !sectorFilter || r.sector_id === sectorFilter;
+    const industryOk = !industryFilter
+      || r.industry_slug === industryFilter
+      || r.industry_id === industryFilter;
+    if (sectorOk && industryOk) wantedCodes.push(r.code);
+  }
+
+  const totalStocks = wantedCodes.length;
+  const pageSize = q.page_size && q.page_size > 0 ? q.page_size : 2;
+  const totalPages = Math.max(1, Math.ceil(totalStocks / pageSize));
+  const page = q.page && q.page > 0 ? Math.min(q.page, totalPages) : 1;
+  const pageCodes = wantedCodes.slice((page - 1) * pageSize, page * pageSize);
+
+  if (pageCodes.length === 0) {
+    return {
+      sector_id: sectorFilter,
+      industry_id: industryFilter,
+      dates: [],
+      stocks: [],
+      total_stocks: 0,
+      total_pages: 1,
+      page: 1,
+      page_size: pageSize,
+    };
+  }
+
+  // 3. Fetch row data for the wanted stocks (with optional date filtering)
+  //    pageCodes already carries the suffix (e.g. "000001.SZ"), so we match
+  //    directly: code = ANY($1).  Skip rows with NULL close (bogus identity-
+  //    only entries like "test"/"test2").
+  const params: unknown[] = [];
+  let paramIdx = 1;
+  params.push(pageCodes);
+  const whereParts: string[] = [
+    `code = ANY($${paramIdx++}::text[])`,
+    "close IS NOT NULL",
+  ];
+  const startDate = toDateParam(q.start_date);
+  const endDate = toDateParam(q.end_date);
+  if (startDate) {
+    whereParts.push(`date >= $${paramIdx++}::date`);
+    params.push(startDate);
+  }
+  if (endDate) {
+    whereParts.push(`date <= $${paramIdx++}::date`);
+    params.push(endDate);
+  }
+
+  const sql = `
+    SELECT code, date, name, prev_close, open, high, low, close,
+           pct_change, pe, is_pe_estimated, has_intraday_5mins
+      FROM stats.v_stock_baseline
+     WHERE ${whereParts.join(" AND ")}
+     ORDER BY code, date ASC
+  `;
+  const dbRows = await queryRows<DbStockRow>(sql, params);
+
+  // Group rows by suffixed code (no stripping — code is the canonical key)
+  const byCode = new Map<string, StockBaselineRow[]>();
+  // Tally name frequencies per code so we can pick the mode (most frequent)
+  // — robust against a few bogus "test" rows that would otherwise shadow
+  // the real name via latest-by-date resolution.
+  const nameCounts = new Map<string, Map<string, number>>();
+  for (const r of dbRows) {
+    if (!byCode.has(r.code)) byCode.set(r.code, []);
+    byCode.get(r.code)!.push({
+      date: formatDate(r.date),
+      open: toNum(r.open),
+      high: toNum(r.high),
+      low: toNum(r.low),
+      close: toNum(r.close),
+      prev_close: toNum(r.prev_close),
+      pct_change: toNum(r.pct_change),
+      pe: toNum(r.pe),
+      is_pe_estimated: r.is_pe_estimated === true,
+      has_intraday_5mins: r.has_intraday_5mins === true,
+    });
+    if (r.name) {
+      if (!nameCounts.has(r.code)) nameCounts.set(r.code, new Map());
+      const counts = nameCounts.get(r.code)!;
+      counts.set(r.name, (counts.get(r.name) ?? 0) + 1);
+    }
+  }
+  // Resolve display name = mode (most frequent name) per code
+  const nameByCode = new Map<string, string>();
+  for (const [code, counts] of nameCounts) {
+    let best = "";
+    let bestCnt = -1;
+    for (const [nm, cnt] of counts) {
+      if (cnt > bestCnt || (cnt === bestCnt && nm < best)) {
+        best = nm;
+        bestCnt = cnt;
+      }
+    }
+    if (best) nameByCode.set(code, best);
+  }
+
+  // 4. Build bundles — use the suffixed code as the canonical identifier
+  const stocks: StockBundle[] = [];
+  for (const code of pageCodes) {
+    const rows = byCode.get(code) ?? [];
+    if (rows.length === 0) continue;
+    const m = meta.get(code)!;
+    stocks.push({
+      code,
+      name: nameByCode.get(code) ?? m.name,
+      sector_id: m.sector_id,
+      sector_label: m.sector_label,
+      industry_id: m.industry_id,
+      industry_label: m.industry_label,
+      rows,
+    });
+  }
+
+  // Union of all dates across selected stocks (sorted)
+  const dateSet = new Set<string>();
+  for (const s of stocks) for (const r of s.rows) dateSet.add(r.date);
+  const dates = Array.from(dateSet).sort();
+
+  return {
+    sector_id: sectorFilter,
+    industry_id: industryFilter,
+    dates,
+    stocks,
+    total_stocks: totalStocks,
+    total_pages: totalPages,
+    page,
+    page_size: pageSize,
+  };
+}

@@ -50,6 +50,23 @@ export class LruCache<T> {
     this.map.clear();
   }
 
+  /** Remove one entry by exact key. No-op if the key is not present. */
+  delete(key: string): void {
+    this.map.delete(key);
+  }
+
+  /** Remove every entry whose key starts with `prefix`. Used by the
+   *  page-level refresh to invalidate all URLs that share a route prefix
+   *  (e.g. all "/api/debt-baseline*" entries). */
+  deletePrefix(prefix: string): void {
+    if (!prefix) return;
+    for (const key of Array.from(this.map.keys())) {
+      if (key.startsWith(prefix)) {
+        this.map.delete(key);
+      }
+    }
+  }
+
   get size(): number {
     return this.map.size;
   }

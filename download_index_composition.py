@@ -43,14 +43,14 @@ import requests
 from _download_commons import (
     DEFAULT_TIMEOUT,
     MIN_VALID_BYTES,
+    AntiBotProxy,
+    AntiBotConfig,
     setup_logger,
     resolve_out_dir,
     is_valid_file,
     build_default_session,
     RunStats,
     random_browser_profile,
-    safe_get,
-    HostStatusTracker,
     add_exchange_suffix,
 )
 
@@ -93,22 +93,23 @@ logger = setup_logger("csi_index_composition")
 def fetch_closeweight_xls(
     session: requests.Session,
     index_code: str,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[bytes]:
     """Download the closeweight xls for the given index code.
 
     Returns raw bytes on success, None on failure.
     """
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=1.0))
+    
     url = CLOSEWEIGHT_URL_TEMPLATE.format(index_code=index_code)
     browser_profile = random_browser_profile()
 
-    resp = safe_get(
+    resp = proxy.get(
         session,
         url,
         headers=browser_profile,
         timeout=DEFAULT_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=False,
         logger=logger,
         log_tag=f"[dl {index_code}]",
     )
@@ -307,7 +308,13 @@ def download_index_composition(
 
     session = build_default_session()
     stats = RunStats()
-    host_tracker = HostStatusTracker()
+    
+    # Create unified AntiBotProxy
+    proxy_config = AntiBotConfig(
+        base_sleep_sec=sleep_sec,
+    )
+    proxy = AntiBotProxy(proxy_config)
+    
     results: List[Dict[str, Any]] = []
 
     try:
@@ -327,14 +334,14 @@ def download_index_composition(
                 results.append({"code": code, "name": name, "status": "cached", "file": str(cached)})
                 continue
 
-            if host_tracker.is_blocked(CLOSEWEIGHT_URL_TEMPLATE):
+            if proxy.is_blocked(CLOSEWEIGHT_URL_TEMPLATE):
                 logger.warning("  [host-blocked] OSS bucket blocked, skipping %s", code)
                 stats.failed += 1
                 results.append({"code": code, "name": name, "status": "blocked"})
                 continue
 
             # Download
-            raw = fetch_closeweight_xls(session, code, host_tracker)
+            raw = fetch_closeweight_xls(session, code, proxy)
             if raw is None:
                 stats.failed += 1
                 results.append({"code": code, "name": name, "status": "download_failed"})

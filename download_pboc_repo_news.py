@@ -14,6 +14,9 @@ from bs4 import BeautifulSoup
 from _download_commons import (
     COMMON_BASE_HEADERS,
     DEFAULT_TIMEOUT,
+    DEFAULT_START_DATE,
+    AntiBotProxy,
+    AntiBotConfig,
     setup_logger,
     resolve_out_dir,
     parse_date_window,
@@ -21,8 +24,6 @@ from _download_commons import (
     build_default_session,
     RunStats,
     business_days,
-    safe_get,
-    HostStatusTracker,
 )
 
 
@@ -47,7 +48,7 @@ CATEGORY_CONFIGS: Dict[str, Dict[str, str]] = {
 RE_PAGING_TAG = re.compile(r"""tagname=(['"])([^'"]*/(\w+)-(\d+)\.html)\1""")
 
 PBOC_MIN_VALID_BYTES = 200
-SLEEP_SEC = 0.8
+SLEEP_SEC = 5.0
 EMPTY_PLACEHOLDER_SUFFIX = "_empty.md"
 
 RE_PUBDATE_META = re.compile(r"(\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}:\d{2}")
@@ -964,17 +965,18 @@ def fetch_list_page(
     category: str,
     page: int,
     page_prefix_fmt: Optional[str] = None,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> tuple[List[AnnouncementItem], Optional[str]]:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
     url = list_page_url(category, page, page_prefix_fmt)
     logger.info("Fetching list page %s page=%d (%s)", category, page, url)
 
-    resp = safe_get(
+    resp = proxy.get(
         session,
         url,
         timeout=DEFAULT_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag=f"[list {category} p{page}]",
     )
@@ -1052,11 +1054,14 @@ def smart_pagination_pages(
     target_start: date,
     max_pages: int = 200,
     jump_interval: int = 10,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Tuple[List[int], Optional[str]]:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
     page_prefix_fmt: Optional[str] = None
 
-    items, detected_fmt = fetch_list_page(session, category, 1, page_prefix_fmt, host_tracker)
+    items, detected_fmt = fetch_list_page(session, category, 1, page_prefix_fmt, proxy)
     if detected_fmt:
         page_prefix_fmt = detected_fmt
     if not items:
@@ -1082,7 +1087,7 @@ def smart_pagination_pages(
     last_in_range_page = 1
 
     while current_page < max_pages:
-        if host_tracker and host_tracker.is_blocked(PBOC_BASE):
+        if proxy.is_blocked(PBOC_BASE):
             logger.warning("[smart-pagination] pboc.gov.cn blocked, stopping pagination")
             break
 
@@ -1093,7 +1098,7 @@ def smart_pagination_pages(
         logger.info("[smart-pagination] jumping from page %d to page %d (interval=%d)",
                     current_page, next_jump, jump_interval)
 
-        jump_items, _ = fetch_list_page(session, category, next_jump, page_prefix_fmt, host_tracker)
+        jump_items, _ = fetch_list_page(session, category, next_jump, page_prefix_fmt, proxy)
         jump_dates = [d for d in (estimate_item_date(it) for it in jump_items) if d is not None]
 
         if not jump_items:
@@ -1121,7 +1126,7 @@ def smart_pagination_pages(
                     next_jump, newest_on_jump, target_start)
 
         for p in range(last_in_range_page + 1, next_jump + 1):
-            inc_items, _ = fetch_list_page(session, category, p, page_prefix_fmt, host_tracker)
+            inc_items, _ = fetch_list_page(session, category, p, page_prefix_fmt, proxy)
             if not inc_items:
                 logger.info("[smart-pagination] incremental page %d returned no items, boundary at page %d", p, last_in_range_page)
                 break
@@ -1149,14 +1154,15 @@ def smart_pagination_pages(
 
 
 def fetch_detail(
-    session: requests.Session, item: AnnouncementItem, host_tracker: Optional[HostStatusTracker] = None
+    session: requests.Session, item: AnnouncementItem, proxy: Optional[AntiBotProxy] = None
 ) -> bool:
-    resp = safe_get(
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
+    resp = proxy.get(
         session,
         item.detail_url,
         timeout=DEFAULT_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag=f"[detail {item.title[:30]}]",
     )
@@ -1196,7 +1202,7 @@ def download_pboc_repo_news(
         )
     else:
         if start_date is None:
-            start_date = "2021-01-01"
+            start_date = DEFAULT_START_DATE
         _start, _end = parse_date_window(
             end_date=end_date,
             start_date=start_date,
@@ -1211,7 +1217,12 @@ def download_pboc_repo_news(
 
     session = build_session()
     stats = RunStats()
-    host_tracker = HostStatusTracker()
+    
+    # Create unified AntiBotProxy
+    proxy_config = AntiBotConfig(
+        base_sleep_sec=sleep_sec,
+    )
+    proxy = AntiBotProxy(proxy_config)
 
     prefixes = [CATEGORY_CONFIGS[c]["file_prefix"] for c in categories]
     cached_dates_by_prefix = scan_present_dates_with_pattern(
@@ -1277,7 +1288,7 @@ def download_pboc_repo_news(
                 target_start = missing_dates[0] if missing_dates else _start
                 pages_to_process, page_prefix_fmt = smart_pagination_pages(
                     session, cat, target_start, max_pages=max_pages, jump_interval=10,
-                    host_tracker=host_tracker,
+                    proxy=proxy,
                 )
                 if not pages_to_process:
                     logger.info("  [%s] no pages to process", cat)
@@ -1287,11 +1298,11 @@ def download_pboc_repo_news(
                 pages_to_process = list(range(1, max_pages + 1))
 
             for page in pages_to_process:
-                if host_tracker.is_blocked(PBOC_BASE):
+                if proxy.is_blocked(PBOC_BASE):
                     logger.warning("  [host-blocked] pboc.gov.cn blocked, skipping remaining pages")
                     break
 
-                items, detected = fetch_list_page(session, cat, page, page_prefix_fmt, host_tracker)
+                items, detected = fetch_list_page(session, cat, page, page_prefix_fmt, proxy)
                 if detected and not page_prefix_fmt:
                     page_prefix_fmt = detected
                 if not items:
@@ -1303,7 +1314,7 @@ def download_pboc_repo_news(
                 reached_boundary = False
 
                 for item in items:
-                    if host_tracker.is_blocked(PBOC_BASE):
+                    if proxy.is_blocked(PBOC_BASE):
                         logger.warning("  [host-blocked] pboc.gov.cn blocked, skipping remaining items")
                         reached_boundary = True
                         break
@@ -1334,10 +1345,10 @@ def download_pboc_repo_news(
                             page_in_range_count += 1
                             continue
 
-                    ok = fetch_detail(session, item, host_tracker)
+                    ok = fetch_detail(session, item, proxy)
                     if not ok:
                         stats.failed += 1
-                        time.sleep(sleep_sec)
+                        # Auto-sleep handled by proxy.get()/post()
                         continue
 
                     if item.pub_date:
@@ -1350,7 +1361,7 @@ def download_pboc_repo_news(
 
                     if d is None:
                         stats.failed += 1
-                        time.sleep(sleep_sec)
+                        # Auto-sleep handled by proxy.get()/post()
                         continue
 
                     found_dates.add(d)
@@ -1358,7 +1369,7 @@ def download_pboc_repo_news(
                     if d in cached_dates:
                         stats.skipped_cached += 1
                         page_in_range_count += 1
-                        time.sleep(max(0.1, sleep_sec * 0.3))
+                        proxy.sleep(max(0.1, sleep_sec * 0.3))
                         continue
 
                     if d < eff_start:
@@ -1371,7 +1382,7 @@ def download_pboc_repo_news(
                         break
                     if d > _end:
                         skipped_oob += 1
-                        time.sleep(max(0.1, sleep_sec * 0.3))
+                        proxy.sleep(max(0.1, sleep_sec * 0.3))
                         continue
 
                     page_in_range_count += 1
@@ -1395,7 +1406,7 @@ def download_pboc_repo_news(
                             convert_md_to_csv(fpath)
                         except Exception as e:
                             logger.warning("  [conv %s] per-file CSV conversion failed: %s", fname, e)
-                    time.sleep(sleep_sec)
+                    # Auto-sleep handled by proxy.get()/post()
 
                 if reached_boundary:
                     logger.info(

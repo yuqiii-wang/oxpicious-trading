@@ -10,29 +10,26 @@ columns.
 Mirrors build_etf_classification.py — the DB columns are the single source
 of truth consumed by the TypeScript backend (index-baseline.service.ts).
 
+This is a meta-only build (no date dimension): it derives L1/L2 labels from
+each index's name and upserts them keyed by code. No CSV I/O. Every run
+re-classifies all indices because name-based taxonomy may change when
+_classification.py is updated.
+
 Usage:
   python build_index_classification.py
   python build_index_classification.py --force   (truncate + rebuild all)
 """
 import os, sys, time
-import warnings
-warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _db_commons import get_db_connection_async, bulk_upsert_async, truncate_table_async
+from _build_commons import (
+    setup_utf8_stdout, add_common_build_args,
+    get_db_connection_async, bulk_upsert_async, truncate_table_async,
+    print_build_header, print_wall_time,
+)
 from _classification import classify_index_full
 
-# stdout encoding (Windows)
-import locale as _locale
-try:
-    _locale.setlocale(_locale.LC_ALL, "")
-except Exception:
-    pass
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+setup_utf8_stdout()
 
 import asyncio
 import argparse
@@ -41,13 +38,13 @@ from collections import Counter
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--force", action="store_true", help="Rebuild all data (truncate table first)")
+    add_common_build_args(ap)
     args = ap.parse_args()
 
     t0 = time.time()
-    print("=" * 70)
-    print("  BUILD INDEX CLASSIFICATION (L1 sector + L2 industry → stats.index_meta)")
-    print("=" * 70)
+    print_build_header(
+        "BUILD INDEX CLASSIFICATION (L1 sector + L2 industry → stats.index_meta)",
+    )
 
     conn = await get_db_connection_async()
     try:
@@ -119,8 +116,7 @@ async def main():
     finally:
         await conn.close()
 
-    print(f"\n  Wall time: {int(time.time()-t0)}s")
-    print("=" * 70)
+    print_wall_time(t0)
 
 
 if __name__ == "__main__":

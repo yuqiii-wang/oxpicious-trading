@@ -18,16 +18,18 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 
 import requests
 
+from _db_commons import check_identity
 from _download_commons import (
     DEFAULT_START_DATE,
     DEFAULT_TIMEOUT,
     MIN_VALID_BYTES,
     EMPTY_HTML_MAX_BYTES,
-    HostStatusTracker,
+    AntiBotProxy,
+    AntiBotConfig,
     RunStats,
     build_headers_with_referer,
     business_days,
@@ -35,9 +37,7 @@ from _download_commons import (
     is_error_html,
     parse_date_window,
     resolve_out_dir,
-    safe_get,
     setup_logger,
-    random_sleep,
 )
 
 
@@ -53,8 +53,11 @@ def download_options_risk_once(
     session: requests.Session,
     trade_date: date,
     out_file: Path,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[Path]:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
     ymd = trade_date.strftime("%Y%m%d")
     params = {
         "trade_date": ymd,
@@ -62,14 +65,12 @@ def download_options_risk_once(
     }
     log_tag = f"[options_risk {ymd}]"
 
-    resp = safe_get(
+    resp = proxy.get(
         session,
         SSE_DOWNLOAD_URL,
         params=params,
         headers=SSE_HEADERS,
         timeout=DEFAULT_TIMEOUT,
-        host_tracker=host_tracker,
-        anti_bot=True,
         logger=logger,
         log_tag=log_tag,
     )
@@ -106,12 +107,17 @@ def download_sse_options_risk(
     out_root: Optional[str] = None,
     end_date: Optional[str] = None,
     start_date: str = DEFAULT_START_DATE,
-    sleep_sec: float = 0.8,
+    sleep_sec: float = 5.0,
     session: Optional[requests.Session] = None,
+    db_table: str = "stats.options_identity",
+    db_code_suffix: str = "SS",
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_options_risk", out_root)
     sess = session or requests.Session()
-    host_tracker = HostStatusTracker()
+
+    # Create unified AntiBotProxy
+    proxy_config = AntiBotConfig(base_sleep_sec=sleep_sec)
+    proxy = AntiBotProxy(proxy_config)
 
     _start, _end = parse_date_window(
         end_date=end_date,
@@ -121,19 +127,33 @@ def download_sse_options_risk(
     days = business_days(_start, _end, reverse=True)
     total_days = len(days)
 
+    # DB-first: skip dates already present in the options identity table.
+    # check_identity returns the set of expected trading days that are NOT
+    # yet in the DB; dates outside this set are skipped (already built).
+    db_missing: Set[date] = set()
+    if db_table:
+        db_missing = check_identity(
+            db_table, _start, _end, code_suffix=db_code_suffix,
+        )
+
     stats = RunStats()
 
     logger.info(
-        "Starting SSE options risk download: %s -> %s (%d trading days)",
-        _start, _end, total_days,
+        "Starting SSE options risk download: %s -> %s (%d trading days, %d missing in DB)",
+        _start, _end, total_days, len(db_missing) if db_table else total_days,
     )
 
     try:
         for idx, d in enumerate(days):
-            if host_tracker.is_blocked(SSE_DOWNLOAD_URL):
+            if proxy.is_blocked(SSE_DOWNLOAD_URL):
                 logger.warning("[host-blocked] query.sse.com.cn is blocked, skipping remaining tasks")
                 stats.failed += len(days) - idx
                 break
+
+            # Skip dates already present in the DB identity table
+            if db_table and d not in db_missing:
+                stats.skipped_cached += 1
+                continue
 
             ymd = d.strftime("%Y%m%d")
             out_file = out_dir / f"sse_options_risk_{ymd}.csv"
@@ -142,14 +162,14 @@ def download_sse_options_risk(
                 stats.skipped_cached += 1
                 continue
 
-            path = download_options_risk_once(sess, d, out_file, host_tracker)
+            path = download_options_risk_once(sess, d, out_file, proxy)
             if path is not None:
                 stats.downloaded += 1
                 stats.files.append(str(path))
             else:
                 stats.failed += 1
 
-            random_sleep(sleep_sec)
+            # Auto-sleep handled by proxy.get()/post()
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
 

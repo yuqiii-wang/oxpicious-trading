@@ -30,15 +30,14 @@ import pandas as pd
 from _download_commons import (
     DEFAULT_TIMEOUT,
     MIN_VALID_BYTES,
-    HostStatusTracker,
+    AntiBotProxy,
+    AntiBotConfig,
     RunStats,
     build_headers_with_referer,
     is_valid_file,
     last_business_day,
     resolve_out_dir,
-    safe_post,
     setup_logger,
-    random_sleep,
 )
 
 
@@ -70,8 +69,11 @@ def download_options_price_once(
     session: requests.Session,
     trade_date: date,
     out_file: Path,
-    host_tracker: Optional[HostStatusTracker] = None,
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Optional[Path]:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+
     ymd = trade_date.strftime("%Y%m%d")
     log_tag = f"[options_price {ymd}]"
 
@@ -93,14 +95,12 @@ def download_options_price_once(
             "pageHelp.cacheSize": 1,
         }
 
-        resp = safe_post(
+        resp = proxy.post(
             session,
             SSE_QUERY_URL,
             data=post_data,
             headers=SSE_HEADERS,
             timeout=DEFAULT_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=log_tag,
         )
@@ -125,7 +125,7 @@ def download_options_price_once(
             break
 
         page_no += 1
-        random_sleep(0.2)
+        proxy.sleep(0.2)
 
     if not all_results:
         logger.warning("%s no data returned", log_tag)
@@ -190,7 +190,9 @@ def download_sse_options_price(
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_options_price", out_root)
     sess = session or requests.Session()
-    host_tracker = HostStatusTracker()
+    
+    # Create unified AntiBotProxy
+    proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
 
     trade_date = last_business_day()
     ymd = trade_date.strftime("%Y%m%d")
@@ -216,7 +218,7 @@ def download_sse_options_price(
         )
         return summary
 
-    if host_tracker.is_blocked(SSE_QUERY_URL):
+    if proxy.is_blocked(SSE_QUERY_URL):
         logger.warning("[host-blocked] query.sse.com.cn is blocked, cannot download")
         stats.failed += 1
         summary = stats.to_dict(
@@ -229,7 +231,7 @@ def download_sse_options_price(
         )
         return summary
 
-    path = download_options_price_once(sess, trade_date, out_file, host_tracker)
+    path = download_options_price_once(sess, trade_date, out_file, proxy)
     if path is not None:
         stats.downloaded += 1
         stats.files.append(str(path))

@@ -9,28 +9,24 @@ industry_id / industry_label / industry_slug columns.
 The DB columns are the single source of truth consumed by the TypeScript
 backend (etf-margin.service.ts) — no classification logic is duplicated in TS.
 
+This is a meta-only build (no date dimension): it derives L1/L2 labels from
+each ETF's name and upserts them keyed by code. No CSV I/O. No date-gap
+detection — every run re-classifies all ETFs because name-based taxonomy
+may change when _classification.py is updated.
+
 Usage:
   python build_etf_classification.py
 """
 import os, sys, time
-import warnings
-warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _db_commons import get_db_connection_async, bulk_upsert_async
+from _build_commons import (
+    setup_utf8_stdout, get_db_connection_async, bulk_upsert_async,
+    print_build_header, print_wall_time,
+)
 from _classification import classify_etf_full, get_industry_index
 
-# stdout encoding (Windows)
-import locale as _locale
-try:
-    _locale.setlocale(_locale.LC_ALL, "")
-except Exception:
-    pass
-for _s in (sys.stdout, sys.stderr):
-    try:
-        _s.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+setup_utf8_stdout()
 
 import asyncio
 from collections import Counter
@@ -38,13 +34,15 @@ from collections import Counter
 
 async def main():
     t0 = time.time()
-    print("=" * 70)
-    print("  BUILD ETF CLASSIFICATION (L1 sector + L2 industry → stats.etf_meta)")
-    print("=" * 70)
+    print_build_header(
+        "BUILD ETF CLASSIFICATION (L1 sector + L2 industry → stats.etf_meta)",
+    )
 
     conn = await get_db_connection_async()
     try:
-        # 1. Read all ETFs from etf_meta (code is stored WITHOUT exchange suffix)
+        # 1. Read all ETFs from etf_meta (code is stored WITH exchange suffix,
+        #    e.g. 159530.SZ — see project_memory.md "etf_meta.code is stored
+        #    WITH exchange suffix" lesson).
         print("\n[1/3] Reading ETFs from stats.etf_meta …", flush=True)
         rows = await conn.fetch(
             """
@@ -108,8 +106,7 @@ async def main():
     finally:
         await conn.close()
 
-    print(f"\n  Wall time: {int(time.time()-t0)}s")
-    print("=" * 70)
+    print_wall_time(t0)
 
 
 if __name__ == "__main__":

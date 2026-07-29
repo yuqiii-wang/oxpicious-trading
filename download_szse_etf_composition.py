@@ -24,6 +24,8 @@ import pandas as pd
 from _download_commons import (
     DEFAULT_TIMEOUT,
     DEFAULT_START_DATE,
+    AntiBotProxy,
+    AntiBotConfig,
     setup_logger,
     resolve_out_dir,
     is_valid_file,
@@ -31,10 +33,8 @@ from _download_commons import (
     build_default_session,
     RunStats,
     is_trading_day,
-    random_browser_profile,
     add_exchange_suffix,
-    safe_get,
-    HostStatusTracker,
+    random_browser_profile,
 )
 
 
@@ -44,7 +44,7 @@ REFERER = "https://www.szse.cn/disclosure/fund/currency/index.html"
 CATALOGID = "sgshqd"
 PAGE_SIZE = 20
 MD_MIN_BYTES = 200
-SLEEP_SEC = 0.6
+SLEEP_SEC = 5.0
 
 RE_ENCODE_OPEN = re.compile(r"encode-open=['\"]([^'\"]+)['\"]")
 RE_ETF_CODE_FROM_PATH = re.compile(r"/files/text/etf/ETF(\d{6})(\d{8})\.txt")
@@ -157,15 +157,15 @@ def generate_hybrid_dates(
     return dates
 
 
-def build_list_headers(base_profile: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    h = base_profile if base_profile is not None else random_browser_profile()
+def build_list_headers(base_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    h = dict(base_headers) if base_headers else {}
     h["Referer"] = REFERER
     h["Accept"] = "application/json, text/javascript, */*; q=0.01"
     return h
 
 
-def build_detail_headers(base_profile: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    h = base_profile if base_profile is not None else random_browser_profile()
+def build_detail_headers(base_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    h = dict(base_headers) if base_headers else {}
     h["Referer"] = REFERER
     h["Accept"] = "text/plain,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     return h
@@ -211,9 +211,12 @@ def fetch_list_page(
     session: requests.Session,
     trade_date: date,
     page_no: int,
-    browser_profile: Dict[str, str],
-    host_tracker: Optional[HostStatusTracker] = None,
+    base_headers: Dict[str, str],
+    proxy: Optional[AntiBotProxy] = None,
 ) -> Tuple[int, int, List[EtfCompositionItem]]:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
     date_str = trade_date.strftime("%Y-%m-%d")
     params: Dict[str, Any] = {
         "SHOWTYPE": "JSON",
@@ -227,14 +230,12 @@ def fetch_list_page(
 
     payload = None
     for attempt in range(1, 5):
-        resp = safe_get(
+        resp = proxy.get(
             session,
             LIST_API_URL,
             params=params,
-            headers=build_list_headers(browser_profile),
+            headers=build_list_headers(base_headers),
             timeout=DEFAULT_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=f"[list {date_str} p{page_no}]",
         )
@@ -244,7 +245,7 @@ def fetch_list_page(
                 return 0, 0, []
             backoff = 2.0 * attempt
             logger.warning("[list %s p%d] attempt %d failed; retry in %.1fs", date_str, page_no, attempt, backoff)
-            time.sleep(backoff)
+            proxy.sleep(backoff)
             continue
         try:
             payload = resp.json()
@@ -286,11 +287,14 @@ def fetch_list_page(
 def fetch_all_etfs_for_date(
     session: requests.Session,
     trade_date: date,
-    browser_profile: Dict[str, str],
-    host_tracker: Optional[HostStatusTracker] = None,
+    base_headers: Dict[str, str],
+    proxy: Optional[AntiBotProxy] = None,
 ) -> List[EtfCompositionItem]:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
     date_str = trade_date.strftime("%Y-%m-%d")
-    pagecount, recordcount, first_items = fetch_list_page(session, trade_date, 1, browser_profile, host_tracker)
+    pagecount, recordcount, first_items = fetch_list_page(session, trade_date, 1, base_headers, proxy)
     if pagecount <= 0 or recordcount <= 0:
         if first_items:
             logger.info("[list %s] p%d: got %d items (no metadata pages)", date_str, 1, len(first_items))
@@ -307,10 +311,10 @@ def fetch_all_etfs_for_date(
     seen_codes: Set[str] = {it.etf_code for it in all_items}
 
     for pno in range(2, pagecount + 1):
-        if host_tracker and host_tracker.is_blocked(LIST_API_URL):
+        if proxy.is_blocked(LIST_API_URL):
             logger.warning("[list %s] szse.cn blocked, stopping pagination at page %d", date_str, pno)
             break
-        _, _, page_items = fetch_list_page(session, trade_date, pno, browser_profile, host_tracker)
+        _, _, page_items = fetch_list_page(session, trade_date, pno, base_headers, proxy)
         added = 0
         for it in page_items:
             if it.etf_code not in seen_codes:
@@ -319,7 +323,7 @@ def fetch_all_etfs_for_date(
                 added += 1
         logger.info("[list %s] p%d/%d: page_items=%d new=%d cumulative=%d",
                     date_str, pno, pagecount, len(page_items), added, len(all_items))
-        time.sleep(random.uniform(5.0, 6.0))
+        proxy.sleep(random.uniform(5.0, 6.0))
 
     return all_items
 
@@ -381,9 +385,12 @@ def download_composition(
     session: requests.Session,
     item: EtfCompositionItem,
     out_file: Path,
-    browser_profile: Dict[str, str],
-    host_tracker: Optional[HostStatusTracker] = None,
+    base_headers: Dict[str, str],
+    proxy: Optional[AntiBotProxy] = None,
 ) -> bool:
+    if proxy is None:
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+    
     if is_valid_file(out_file, min_bytes=MD_MIN_BYTES):
         # Cached MD: ensure the per-file CSV exists too (backfill legacy MDs)
         csv_path = out_file.with_suffix(".csv")
@@ -396,13 +403,11 @@ def download_composition(
 
     resp = None
     for attempt in range(1, 5):
-        resp = safe_get(
+        resp = proxy.get(
             session,
             item.detail_url,
-            headers=build_detail_headers(browser_profile),
+            headers=build_detail_headers(base_headers),
             timeout=DEFAULT_TIMEOUT,
-            host_tracker=host_tracker,
-            anti_bot=True,
             logger=logger,
             log_tag=f"[dl {item.etf_code} {item.trade_date}]",
         )
@@ -768,7 +773,12 @@ def download_szse_etf_composition(
 
     session = build_default_session()
     stats = RunStats(skipped_cached=len(saved_filenames))
-    host_tracker = HostStatusTracker()
+    
+    # Create unified AntiBotProxy
+    proxy_config = AntiBotConfig(
+        base_sleep_sec=auto_sleep,
+    )
+    proxy = AntiBotProxy(proxy_config)
 
     dates_processed = 0
     try:
@@ -777,12 +787,12 @@ def download_szse_etf_composition(
         else:
             dates_iter = target_dates
         for d in dates_iter:
-            if host_tracker.is_blocked(LIST_API_URL):
+            if proxy.is_blocked(LIST_API_URL):
                 logger.warning("  [host-blocked] szse.cn blocked, stopping download")
                 break
 
             ymd = d.strftime("%Y%m%d")
-            browser_profile = random_browser_profile()
+            base_headers = random_browser_profile()
             if tqdm:
                 dates_iter.set_postfix({"date": str(d)})
             logger.info("== Date %s (%d/%d) ==", d, dates_processed + 1, len(target_dates))
@@ -792,11 +802,11 @@ def download_szse_etf_composition(
                 dates_processed += 1
                 continue
 
-            items = fetch_all_etfs_for_date(session, d, browser_profile, host_tracker)
+            items = fetch_all_etfs_for_date(session, d, base_headers, proxy)
             if not items:
                 logger.info("  No ETF items found for %s, skipping", d)
                 dates_processed += 1
-                time.sleep(auto_sleep * 0.3)
+                proxy.sleep(auto_sleep * 0.3)
                 continue
 
             logger.info("  Found %d ETFs for %s", len(items), d)
@@ -824,7 +834,7 @@ def download_szse_etf_composition(
             else:
                 items_iter = items
             for it in items_iter:
-                if host_tracker.is_blocked(DETAIL_BASE_URL):
+                if proxy.is_blocked(DETAIL_BASE_URL):
                     logger.warning("  [host-blocked] reportdocs.static.szse.cn blocked, skipping remaining items")
                     break
 
@@ -842,7 +852,7 @@ def download_szse_etf_composition(
                     saved_filenames.add(it.md_filename)
                     continue
 
-                ok = download_composition(session, it, out_file, browser_profile, host_tracker)
+                ok = download_composition(session, it, out_file, base_headers, proxy)
                 if ok:
                     stats.downloaded += 1
                     stats.files.append(str(out_file))
@@ -851,14 +861,14 @@ def download_szse_etf_composition(
                 else:
                     stats.failed += 1
                     date_failed += 1
-                time.sleep(date_sleep)
+                proxy.sleep(date_sleep)
 
             logger.info(
                 "  Date %s done: downloaded=%d cached=%d failed=%d (total expected=%d)",
                 ymd, date_downloaded, date_cached, date_failed, len(items),
             )
             dates_processed += 1
-            time.sleep(auto_sleep)
+            proxy.sleep(auto_sleep)
 
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")

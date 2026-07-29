@@ -58,7 +58,7 @@ TAXONOMY = {
         "科技创新":        {"id": "TECH_INNOV",    "en": "Sci-Tech Innovation",      "slug": "tech_innov",     "kw": ["科技创新", "科技100", "科技龙头", "科技30", "科技ETF", "科技"], "codes": ["931187"], "index": {"931447": "科技先锋"}},
         "5G/通信":         {"id": "COMMS",         "en": "5G · Communications",       "slug": "comms",          "kw": ["5G", "通信", "电信", "通信设备"], "index": {"931160": "通信设备"}},
         "消费电子":        {"id": "CONSUMER_ELEC", "en": "Consumer Electronics",      "slug": "consumer_elec",  "kw": ["消费电子", "电子50", "电子ETF", "中证电子", "电子"], "codes": ["930652"], "index": {"930652": "中证电子"}},
-        "传媒/影视/游戏":  {"id": "MEDIA",         "en": "Media · Gaming",            "slug": "media",          "kw": ["传媒", "影视", "游戏", "VR", "元宇宙"]},
+        "传媒/影视/游戏":  {"id": "MEDIA",         "en": "Media · Gaming",            "slug": "media",          "kw": ["传媒", "影视", "游戏", "VR", "元宇宙"], "codes": ["399971"], "index": {"399971": "中证传媒"}},
         "互联网":          {"id": "INTERNET",      "en": "Internet",                 "slug": "internet",       "kw": ["互联网"]},
         "量子科技":        {"id": "QUANTUM",       "en": "Quantum",                   "slug": "quantum",        "kw": ["量子"]},
         "信息安全/IT":     {"id": "INFO_SEC",      "en": "IT · Cybersecurity",       "slug": "info_sec",       "kw": ["信息安全", "信息技术", "TMT", "中证TMT", "全指信息"], "codes": ["000998", "000993"], "index": {"000998": "中证TMT", "000993": "全指信息"}},
@@ -69,7 +69,7 @@ TAXONOMY = {
         "医疗器械":     {"id": "MED_DEVICES",  "en": "Medical Devices",     "slug": "med_devices",  "kw": ["医疗器械", "医疗设备", "器械"]},
         "疫苗":         {"id": "VACCINE",      "en": "Vaccines",            "slug": "vaccine",      "kw": ["疫苗", "生物疫苗"]},
         "中药":         {"id": "TCM",          "en": "TCM",                 "slug": "tcm",          "kw": ["中药"]},
-        "医药":         {"id": "PHARMA_BROAD", "en": "Broad Pharma",        "slug": "pharma_broad", "kw": ["医药", "医药100", "全指医药"], "codes": ["000978", "000991"]},
+        "医药":         {"id": "PHARMA_BROAD", "en": "Broad Pharma",        "slug": "pharma_broad", "kw": ["医药", "医药100", "全指医药"], "codes": ["000978", "000991"], "index": {"000978": "医药100", "000991": "全指医药"}},
         "医疗服务":     {"id": "HC_SERVICES",  "en": "Healthcare Services", "slug": "hc_services",  "kw": ["医疗", "健康", "医院", "CXO", "医美", "中证医疗"], "codes": ["399989"], "index": {"399989": "中证医疗"}},
         "港股生物科技": {"id": "HK_BIOTECH",   "en": "HK Biotech",          "slug": "hk_biotech",   "kw": ["恒生生物科技", "港股通生物科技", "生物科技ETF港股"]},
     },
@@ -79,7 +79,7 @@ TAXONOMY = {
         "必选消费":   {"id": "STAPLES",       "en": "Staples",               "slug": "staples",       "kw": ["消费", "主要消费", "粮油", "饮食"], "codes": ["000932"], "index": {"000932": "主要消费"}},
         "农业":       {"id": "AGRI",          "en": "Agriculture",           "slug": "agri",          "kw": ["农业", "畜牧", "养殖", "粮食", "猪肉"], "index": {"000949": "中证农业"}},
         "食品饮料":   {"id": "FOOD_BEV",      "en": "Food & Beverage",       "slug": "food_bev",      "kw": ["食品", "饮料", "乳业", "生鲜", "酒", "糖"], "index": {"000807": "食品饮料"}},
-        "可选消费":   {"id": "DISCRETIONARY", "en": "Discretionary · Auto",  "slug": "discretionary", "kw": ["可选", "家电", "家居", "汽车", "娱乐", "酒店", "旅游", "餐饮", "零售", "纺织", "服装"]},
+        "可选消费":   {"id": "DISCRETIONARY", "en": "Discretionary · Auto",  "slug": "discretionary", "kw": ["可选", "消费服务", "家电", "家居", "汽车", "娱乐", "酒店", "旅游", "餐饮", "零售", "纺织", "服装"], "codes": ["000806"], "index": {"000806": "消费服务"}},
         "体育":       {"id": "SPORTS",        "en": "Sports",                "slug": "sports",        "kw": ["体育"], "index": {"399804": "中证体育"}},
         "教育":       {"id": "EDUCATION",     "en": "Education",             "slug": "education",     "kw": ["教育"], "index": {"931456": "中国教育"}},
     },
@@ -98,8 +98,8 @@ TAXONOMY = {
         "油气":          {"id": "OIL_GAS",     "en": "Oil & Gas",          "slug": "oil_gas",     "kw": ["油气", "全球油气"]},
         "天然气":        {"id": "NAT_GAS",     "en": "Natural Gas",        "slug": "nat_gas",     "kw": ["天然气"]},
         "煤炭":          {"id": "COAL",        "en": "Coal",               "slug": "coal",        "kw": ["煤炭", "中证煤炭"], "codes": ["399998"]},
-        "电力/电网":     {"id": "POWER_GRID",  "en": "Power · Grid",       "slug": "power_grid",  "kw": ["公用事业", "绿色电力", "电网设备", "电网", "电力", "中证环保", "环保"], "codes": ["000827"], "index": {"000827": "中证环保", "H30199": "中证电力"}},
-        "石化/能源化工": {"id": "PETROCHEM",   "en": "Petrochemical",      "slug": "petrochem",   "kw": ["石化", "能源化工"]},
+        "电力/电网":     {"id": "POWER_GRID",  "en": "Power · Grid",       "slug": "power_grid",  "kw": ["绿色电力", "电网设备", "电网", "电力", "中证环保", "环保"], "codes": ["000827"], "index": {"000827": "中证环保", "H30199": "中证电力"}},
+        "石化/能源化工": {"id": "PETROCHEM",   "en": "Petrochemical",      "slug": "petrochem",   "kw": ["石化", "能源化工"], "codes": ["H11057"], "index": {"H11057": "石化产业"}},
         "能源/资源":     {"id": "ENG_GENERAL", "en": "Broad Energy",      "slug": "eng_general", "kw": ["能源", "资源", "天然", "燃气"]},
     },
     "材料": {
@@ -120,16 +120,25 @@ TAXONOMY = {
         "工业母机":     {"id": "MACHINE_TOOL", "en": "Machine Tool",           "slug": "machine_tool",  "kw": ["工业母机", "机床"]},
         "工程机械":     {"id": "ENG_MACHINERY","en": "Engineering Machinery",   "slug": "eng_machinery", "kw": ["工程机械", "机械"]},
         "高端制造":     {"id": "ADVMFG",       "en": "Advanced Manufacturing",  "slug": "advmfg",        "kw": ["高端制造", "高端装备", "智能制造", "工业4", "工业40", "产业升级", "新兴产业"], "index": {"399803": "工业4.0"}},
-        "运输/物流":    {"id": "TRANSPORT",    "en": "Transport · Logistics",   "slug": "transport",     "kw": ["高铁", "交运", "运输", "物流", "港口", "高速", "铁路", "航运", "机场"]},
+        "运输/物流":    {"id": "TRANSPORT",    "en": "Transport · Logistics",   "slug": "transport",     "kw": ["高铁", "交运", "运输", "物流", "港口", "高速", "铁路", "航运", "机场"], "codes": ["932536"], "index": {"932536": "航运发展"}},
     },
     "军工": {
         "_id": "MIL", "_en": "Defense & Aerospace",
         "国防装备": {"id": "DEFENSE",   "en": "Defense",   "slug": "defense",   "kw": ["军工", "国防", "军工龙头", "军工50", "军工指数", "中证军工"], "codes": ["399967"], "index": {"399967": "中证军工"}},
         "航空航天": {"id": "AEROSPACE", "en": "Aerospace", "slug": "aerospace", "kw": ["航天", "卫星", "空天", "通用航空", "航空", "中证航空航天", "航空航天"], "codes": ["931066"], "index": {"931066": "中证航空航天", "931594": "卫星产业"}},
     },
-    "地产基建": {
-        "_id": "RE", "_en": "Real Estate & Infra",
-        "地产/基建": {"id": "RE_INFRA", "en": "RE · Infra", "slug": "re_infra", "kw": ["地产", "基建", "建筑", "物业", "开发", "装修", "REITs", "新基建", "房地产"], "index": {"932076": "全指地产"}},
+    "地产": {
+        "_id": "RE", "_en": "Real Estate",
+        "地产": {"id": "RE_REAL_ESTATE", "en": "Real Estate", "slug": "re_real_estate", "kw": ["地产", "物业", "开发", "装修", "房地产", "REITs"], "index": {"932076": "全指地产"}},
+    },
+    "基建": {
+        "_id": "INFRA", "_en": "Infrastructure",
+        "公用事业":   {"id": "INFRA_UTIL",   "en": "Utilities",            "slug": "infra_utilities",    "kw": ["公用事业", "公用"], "codes": ["000007"], "index": {"000007": "公用指数"}},
+        "电力":       {"id": "INFRA_POWER",  "en": "Power",                "slug": "infra_power",        "kw": ["电力", "电网", "电网设备"]},
+        "水务":       {"id": "INFRA_WATER",  "en": "Water Utilities",      "slug": "infra_water",        "kw": ["水务", "水利", "供水"]},
+        "燃气":       {"id": "INFRA_GAS",    "en": "Gas",                  "slug": "infra_gas",          "kw": ["燃气", "供气"]},
+        "公路/交通":  {"id": "INFRA_ROAD",   "en": "Road · Transport",     "slug": "infra_road",         "kw": ["公路", "高速", "路桥", "交通基建"]},
+        "建筑/基建":  {"id": "INFRA_CONSTR", "en": "Construction · Infra", "slug": "infra_construction", "kw": ["建筑", "施工", "基建", "新基建", "基础设施"]},
     },
 
     # ── THEME SECTORS (ETF-specific cross-cutting classifications) ─────
@@ -137,7 +146,7 @@ TAXONOMY = {
         "_id": "GEM", "_en": "ChiNext",
         "创业板｜双创 Dual Board":            {"id": "GEM_DUAL",     "en": "Dual Board",       "slug": "gem_dual",        "kw": ["双创基金ETF", "双创50ETF", "双创ETF基金", "双创龙头ETF", "科创创业50ETF", "科创创业", "双创50", "双创ETF", "双创龙头"]},
         "创业板｜50/大盘 Large Cap":          {"id": "GEM_CORE_L",   "en": "Large Cap",        "slug": "gem_core_large",  "kw": ["创业板50ETF", "创业板50", "创50ETF富国", "创50ETF工银", "创业50ETF", "创50ETF", "创业大盘ETF", "创50"]},
-        "创业板｜综指/200 Board-Wide":        {"id": "GEM_CORE_B",   "en": "Board-Wide",       "slug": "gem_core_board",  "kw": ["创业板综增强ETF", "创业板综指增强", "创业板综指ETF", "创业综指ETF", "创业板综ETF", "创业板200ETF", "创业板LOF基金", "创业板LOF", "创业板指数LOF", "创业板指数", "平安创业板ETF", "BOCI创业板ETF", "浦银创业板ETF", "创业板ETF增强", "创业板增强ETF", "创业板ETF东财", "创业板ETF华夏", "创业板ETF南方", "创业板ETF博时", "创业板ETF天弘", "创业板ETF富国", "创业板ETF工银", "创业板ETF广发", "创业板ETF建信", "创业板ETF汇添富", "创业板ETF融通", "创业板ETF万家", "创业板ETF华泰柏瑞", "创业板ETF嘉实", "创业板ETF国泰", "创业板ETF大成", "创业板ETF易方达", "创业板ETF招商", "创业板ETF"]},
+        "创业板｜综指/200 Board-Wide":        {"id": "GEM_CORE_B",   "en": "Board-Wide",       "slug": "gem_core_board",  "kw": ["创业板综增强ETF", "创业板综指增强", "创业板综指ETF", "创业综指ETF", "创业板综ETF", "创业板200ETF", "创业板LOF基金", "创业板LOF", "创业板指数LOF", "创业板指数", "平安创业板ETF", "BOCI创业板ETF", "浦银创业板ETF", "创业板ETF增强", "创业板增强ETF", "创业板ETF东财", "创业板ETF华夏", "创业板ETF南方", "创业板ETF博时", "创业板ETF天弘", "创业板ETF富国", "创业板ETF工银", "创业板ETF广发", "创业板ETF建信", "创业板ETF汇添富", "创业板ETF融通", "创业板ETF万家", "创业板ETF华泰柏瑞", "创业板ETF嘉实", "创业板ETF国泰", "创业板ETF大成", "创业板ETF易方达", "创业板ETF招商", "创业板ETF"], "codes": ["399006"], "index": {"399006": "创业板指"}},
         "创业板｜人工智能 GEM · AI":           {"id": "GEM_AI",       "en": "GEM · AI",         "slug": "gem_ai",          "kw": ["创业板人工智能"]},
         "创业板｜增强策略 GEM · Enhanced":    {"id": "GEM_ENH",      "en": "GEM · Enhanced",   "slug": "gem_enhance",     "kw": ["创业板综增强", "创业板增强"]},
         "创业板｜行业细分 GEM · Sector":      {"id": "GEM_SECTOR",   "en": "GEM · Sector",     "slug": "gem_sector",      "kw": ["创业板医药ETF", "创业板软件ETF", "创业板成长ETF"]},
@@ -146,15 +155,15 @@ TAXONOMY = {
     },
     "科创板": {
         "_id": "STAR", "_en": "STAR Market",
-        "宽基｜科创板 STAR Market": {"id": "BROAD_STAR", "en": "STAR Market", "slug": "broad_star", "kw": ["科创50ETF", "科创板", "科创50", "科创100", "科创200", "科创综指", "科创芯片", "科创新能", "科创信息", "北证50"], "codes": ["000688", "899050"], "index": {"000688": "科创50", "899050": "北证50"}},
+        "宽基｜科创板 STAR Market": {"id": "BROAD_STAR", "en": "STAR Market", "slug": "broad_star", "kw": ["科创50ETF", "科创板", "科创50", "科创100", "科创200", "科创综指", "科创芯片", "科创新能", "科创信息", "北证50"], "codes": ["000688", "899050", "000680"], "index": {"000688": "科创50", "899050": "北证50", "000680": "科创综指"}},
     },
     "宽基": {
         "_id": "BROAD", "_en": "Broad Market",
-        "宽基｜沪深300 CSI 300":             {"id": "BROAD_CSI300",  "en": "CSI 300",         "slug": "broad_csi300",  "kw": ["沪深300", "300ETF", "鹏华300LOF", "信诚300LOF", "巨潮100", "长盛中证800LOF", "中证90LOF", "中证800ETF", "中证800LOF", "中证800增强", "800增强ETF", "800增强", "中证800", "中证A100"], "codes": ["000300", "000510", "000903", "000905", "000852", "000906"], "index": {"000300": "沪深300", "000510": "中证A500", "000852": "中证1000"}},
-        "宽基｜中证500/A500 CSI 500 & A500": {"id": "BROAD_CSI500",  "en": "CSI 500 & A500", "slug": "broad_csi500",  "kw": ["中证500", "500ETF", "中证A500", "A500", "500ETF联接LOF", "500增强LOF", "鹏华500LOF", "信诚500LOF", "泰达500增强", "500增强", "中证500增强", "500增强ETF", "中证1000"], "codes": ["000905", "000852"]},
-        "宽基｜中证1000/2000 CSI 1000/2000": {"id": "BROAD_CSI1000", "en": "CSI 1000/2000",  "slug": "broad_csi1000", "kw": ["中证2000指数", "中证2000增强", "2000增强ETF", "2000指数ETF", "中证1000", "1000ETF", "1000增强", "国证2000", "2000ETF"]},
+        "宽基｜沪深300 CSI 300":             {"id": "BROAD_CSI300",  "en": "CSI 300",         "slug": "broad_csi300",  "kw": ["沪深300", "300ETF", "鹏华300LOF", "信诚300LOF", "巨潮100", "长盛中证800LOF", "中证90LOF", "中证800ETF", "中证800LOF", "中证800增强", "800增强ETF", "800增强", "中证800", "中证A100"], "codes": ["000300", "000510", "000903", "000905", "000906"], "index": {"000300": "沪深300", "000510": "中证A500"}},
+        "宽基｜中证500/A500 CSI 500 & A500": {"id": "BROAD_CSI500",  "en": "CSI 500 & A500", "slug": "broad_csi500",  "kw": ["中证500", "500ETF", "中证A500", "A500", "500ETF联接LOF", "500增强LOF", "鹏华500LOF", "信诚500LOF", "泰达500增强", "500增强", "中证500增强", "500增强ETF", "中证1000"], "codes": ["000905"], "index": {"000905": "中证500"}},
+        "宽基｜中证1000/2000 CSI 1000/2000": {"id": "BROAD_CSI1000", "en": "CSI 1000/2000",  "slug": "broad_csi1000", "kw": ["中证2000指数", "中证2000增强", "2000增强ETF", "2000指数ETF", "中证1000", "1000ETF", "1000增强", "国证2000", "2000ETF"], "codes": ["000852"], "index": {"000852": "中证1000"}},
         "宽基｜上证50 SSE 50":                {"id": "BROAD_SSE50",   "en": "SSE 50",          "slug": "broad_sse50",    "kw": ["上证50"], "codes": ["000016"], "index": {"000016": "上证50"}},
-        "宽基｜上证/深证 SSE/SZSE Composite":{"id": "BROAD_SSE",     "en": "SSE/SZSE Comp",   "slug": "broad_sse_szse","kw": ["深主板50ETF", "深证50", "深证100", "深证300", "深50", "深100", "深300", "深证", "上证", "大盘", "中盘", "小盘", "全指", "A股", "中证100", "国证", "深创", "A50", "中创", "深成", "深F", "央视50", "央视", "新经济", "中小100ETF", "中小企业100LOF", "申万中小LOF", "申万100LOF", "海富通100LOF", "浙江100ETF", "湾区100ETF", "建信优势LOF", "南方天元LOF", "100ETF", "中小板", "中小100", "中小企业", "上证指数", "深成"], "codes": ["000001", "399001", "399004", "399100", "399106", "399305"], "index": {"000001": "上证指数"}},
+        "宽基｜上证/深证 SSE/SZSE Composite":{"id": "BROAD_SSE",     "en": "SSE/SZSE Comp",   "slug": "broad_sse_szse","kw": ["深主板50ETF", "深证50", "深证100", "深证300", "深50", "深100", "深300", "深证", "上证", "大盘", "中盘", "小盘", "全指", "A股", "中证100", "国证", "深创", "A50", "中创", "深成", "深F", "央视50", "央视", "新经济", "中小100ETF", "中小企业100LOF", "申万中小LOF", "申万100LOF", "海富通100LOF", "浙江100ETF", "湾区100ETF", "建信优势LOF", "南方天元LOF", "100ETF", "中小板", "中小100", "中小企业", "上证指数", "深成"], "codes": ["000001", "399001", "399004", "399100", "399106", "399305"], "index": {"000001": "上证指数", "000045": "上证小盘", "399001": "深证成指"}},
     },
     "货币": {
         "_id": "MMF", "_en": "Money Market",
@@ -163,8 +172,8 @@ TAXONOMY = {
     "债券": {
         "_id": "BOND", "_en": "Bonds",
         "债券｜可转债 Convertible":      {"id": "BOND_CONVERTIBLE", "en": "Convertible",     "slug": "bond_convertible", "kw": ["可转债", "转债ETF", "转债", "可交债", "可交换债", "可交换"]},
-        "债券｜利率债 Rate · Govt":       {"id": "BOND_RATE",        "en": "Rate · Govt",      "slug": "bond_rate",        "kw": ["科创债", "国债ETF", "国债", "国开债", "政金债", "利率债", "地方债", "地方政府债", "十年国债", "10年国债", "5年国债", "30年国债", "2年国债", "国债期货", "信诚双盈", "融通通福", "万家强化收益", "中海惠裕", "天弘丰利", "天弘同利", "富国天丰", "富国天盈", "富国天锋", "工银四季", "鹏华丰利", "鹏华丰和", "鹏华丰泽", "鹏华丰润", "鹏华丰锐", "金鹰持久增利", "南方金利", "建信丰裕", "招商丰泰", "汇添富季季红", "长信利众", "长信利鑫", "红土创新精选", "国寿精选"]},
-        "债券｜信用债 Credit · Corp":     {"id": "BOND_CREDIT",      "en": "Credit · Corp",    "slug": "bond_credit",      "kw": ["双债", "强债", "综债", "信用债", "公司债", "企业债", "中期票据", "高等级", "高收益", "城投债", "产业债", "鹏华增瑞", "广发聚利", "广发聚源"]},
+        "债券｜利率债 Rate · Govt":       {"id": "BOND_RATE",        "en": "Rate · Govt",      "slug": "bond_rate",        "kw": ["科创债", "国债ETF", "国债", "国开债", "政金债", "利率债", "地方债", "地方政府债", "十年国债", "10年国债", "5年国债", "30年国债", "2年国债", "国债期货", "信诚双盈", "融通通福", "万家强化收益", "中海惠裕", "天弘丰利", "天弘同利", "富国天丰", "富国天盈", "富国天锋", "工银四季", "鹏华丰利", "鹏华丰和", "鹏华丰泽", "鹏华丰润", "鹏华丰锐", "金鹰持久增利", "南方金利", "建信丰裕", "招商丰泰", "汇添富季季红", "长信利众", "长信利鑫", "红土创新精选", "国寿精选"], "codes": ["000012"], "index": {"000012": "国债指数"}},
+        "债券｜信用债 Credit · Corp":     {"id": "BOND_CREDIT",      "en": "Credit · Corp",    "slug": "bond_credit",      "kw": ["双债", "强债", "综债", "信用债", "公司债", "企业债", "中期票据", "高等级", "高收益", "城投债", "产业债", "鹏华增瑞", "广发聚利", "广发聚源"], "codes": ["000013"], "index": {"000013": "企债指数"}},
         "债券｜短债/纯债 Short-Duration": {"id": "BOND_DURATION",    "en": "Short-Duration",  "slug": "bond_duration",    "kw": ["短债ETF", "短债", "中短债", "超短债", "纯债", "债基", "债券ETF", "债券"]},
     },
     "混合": {
@@ -191,7 +200,7 @@ TAXONOMY = {
     },
     "策略": {
         "_id": "SMART", "_en": "Smart Beta & Factor",
-        "策略｜红利 Dividend":          {"id": "SMART_DIV",   "en": "Dividend",       "slug": "smartbeta_dividend",  "kw": ["红利低波动", "红利低波", "红利质量", "央企红利", "国企红利", "港股红利", "红利港股", "红利", "股息", "高股息", "高息", "中证红利"], "codes": ["000922"], "index": {"000922": "中证红利", "000824": "国企红利", "000825": "央企红利"}},
+        "策略｜红利 Dividend":          {"id": "SMART_DIV",   "en": "Dividend",       "slug": "smartbeta_dividend",  "kw": ["红利低波动", "红利低波", "红利质量", "央企红利", "国企红利", "港股红利", "红利港股", "红利", "股息", "高股息", "高息", "中证红利"], "codes": ["000922"], "index": {"000922": "中证红利", "000824": "国企红利", "000825": "央企红利", "930740": "300红利低波"}},
         "策略｜低波/价值 Low-Vol · Value":{"id": "SMART_LV",    "en": "Low-Vol · Value","slug": "smartbeta_lv_value",  "kw": ["低波动", "低波", "低贝", "价值", "质量", "基本面", "等权", "动量", "成长", "央企", "国企", "民企", "国企改革"], "index": {"399974": "国企改革"}},
         "策略｜现金流 Cashflow":        {"id": "SMART_CF",    "en": "Cashflow",       "slug": "smartbeta_cashflow",  "kw": ["中证现金流ETF", "自由现金流ETF基金", "自由现金流ETF工银", "自由现金流ETF广发", "自由现金流ETF易方达", "现金流100ETF", "自由现金流ETF", "现金流ETF南方", "现金流ETF基金", "现金流ETF永赢", "现金流ETF汇添富", "现金流ETF长城", "现金流ETF", "800现金流ETF", "现金流", "自由现金流"]},
         "策略｜量化 Multi-Factor":     {"id": "SMART_QUANT", "en": "Multi-Factor",   "slug": "smartbeta_quant",    "kw": ["多因子LOF", "多策略LOF", "申万量化LOF", "多因子", "多策略", "量化"]},
@@ -208,7 +217,7 @@ TAXONOMY = {
     },
     "ESG": {
         "_id": "ESG", "_en": "ESG & Green",
-        "ESG｜绿色/环保/碳 ESG · Green": {"id": "ESG_GREEN", "en": "ESG · Green", "slug": "esg_green", "kw": ["ESG", "绿色", "环保", "可持续", "责任", "气候", "双碳", "碳"], "index": {"931800": "绿色生态"}},
+        "ESG｜绿色/环保/碳 ESG · Green": {"id": "ESG_GREEN", "en": "ESG · Green", "slug": "esg_green", "kw": ["ESG", "300ESG", "绿色", "环保", "可持续", "责任", "气候", "双碳", "碳"], "codes": ["931463"], "index": {"931463": "300ESG", "931800": "绿色生态"}},
     },
 }
 

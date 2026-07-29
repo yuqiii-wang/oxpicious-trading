@@ -85,6 +85,10 @@ export default function CodeSearchBar({
  * industry slug that contain it.  The comparison is case-insensitive and
  * ignores exchange suffixes (.SS/.SZ/.SH/.BJ/.HK).
  *
+ * Handles both suffixed ("000001.SZ") and bare ("000001") item codes — the
+ * suffix is stripped from both sides before comparing so a bare input still
+ * matches a suffixed stored code (and vice versa).
+ *
  * Returns null when the code is not found in any sector/industry.
  */
 export function findCodeInThemes(
@@ -93,9 +97,14 @@ export function findCodeInThemes(
 ): { sectorId: string; industrySlug: string; name: string } | null {
   const normalized = rawCode.trim().toUpperCase().replace(/\.(SS|SZ|SH|BJ|HK)$/i, "");
   if (!normalized) return null;
+  const stripSuffix = (c: string) => c.toUpperCase().replace(/\.(SS|SZ|SH|BJ|HK)$/i, "");
   for (const s of sectors) {
     for (const ind of s.industries) {
-      const hit = ind.items.find((it) => it.code.toUpperCase() === normalized);
+      // Match either by suffixed code or by stripped 6-digit form.
+      const hit = ind.items.find(
+        (it) => it.code.toUpperCase() === normalized
+          || stripSuffix(it.code) === normalized,
+      );
       if (hit) {
         return { sectorId: s.sector_id, industrySlug: ind.industry_slug, name: hit.name };
       }

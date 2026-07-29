@@ -8,7 +8,12 @@
  */
 import { query, queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
-import type { DebtBaselineRow, DebtBaselineResponse } from "../../shared/types.js";
+import type {
+  DebtBaselineRow,
+  DebtBaselineResponse,
+  PbocOmaRow,
+  PbocOmaResponse,
+} from "../../shared/types.js";
 
 export interface DebtBaselineQuery {
   start_date?: string;
@@ -45,6 +50,8 @@ interface DbDebtRow extends QueryResultRow {
   cb_5y: number | null;
   cb_10y: number | null;
   cb_30y: number | null;
+  lpr_1y: number | null;
+  lpr_5y: number | null;
 }
 
 function transformRow(r: DbDebtRow): DebtBaselineRow {
@@ -78,6 +85,8 @@ function transformRow(r: DbDebtRow): DebtBaselineRow {
     cb_5y: toNum(r.cb_5y),
     cb_10y: toNum(r.cb_10y),
     cb_30y: toNum(r.cb_30y),
+    lpr_1y: toNum(r.lpr_1y),
+    lpr_5y: toNum(r.lpr_5y),
   };
 }
 
@@ -90,7 +99,8 @@ const SELECT_COLUMNS = `
   outright_repo_tenor_label, outright_repo_serial,
   mlf_marker, mlf_quantity, mlf_tenor_days, mlf_tenor_label, mlf_serial,
   shibor_o_n, shibor_1w, shibor_1m, shibor_3m, shibor_6m, shibor_1y,
-  cb_1y, cb_5y, cb_10y, cb_30y
+  cb_1y, cb_5y, cb_10y, cb_30y,
+  lpr_1y, lpr_5y
 `;
 
 export async function getDebtBaseline(
@@ -139,4 +149,46 @@ export async function getDebtBaseline(
   const dates = transformed.map((r) => r.date);
 
   return { dates, rows: transformed, minDate, maxDate };
+}
+
+// ----------------------------------------------------------------------------
+// PBoC Open Market Announcements (stats.pboc_oma)
+//   High-level policy notices — NOT daily transaction announcements.
+//   Small table (~20 rows), always returned in full (no date filter needed).
+// ----------------------------------------------------------------------------
+interface DbPbocOmaRow extends QueryResultRow {
+  date: Date | string;
+  title: string;
+  type: string | null;
+  content: string | null;
+  detail_url: string | null;
+  keywords: string | null;
+  serial_year: string | null;
+  serial_no: string | null;
+  detail_slug: string | null;
+}
+
+function transformOmaRow(r: DbPbocOmaRow): PbocOmaRow {
+  return {
+    date: formatDate(r.date),
+    title: r.title ?? "",
+    type: r.type ?? "other",
+    content: r.content ?? "",
+    detail_url: r.detail_url ?? "",
+    keywords: r.keywords ?? "",
+    serial_year: r.serial_year ?? "",
+    serial_no: r.serial_no ?? "",
+    detail_slug: r.detail_slug ?? "",
+  };
+}
+
+export async function getPbocOmaAnnouncements(): Promise<PbocOmaResponse> {
+  const sql = `
+    SELECT date, title, type, content, detail_url, keywords,
+           serial_year, serial_no, detail_slug
+    FROM stats.pboc_oma
+    ORDER BY date ASC, title ASC
+  `;
+  const rows = await queryRows<DbPbocOmaRow>(sql);
+  return { rows: rows.map(transformOmaRow) };
 }
