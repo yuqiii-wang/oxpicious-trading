@@ -1,17 +1,18 @@
 /**
- * ETF + Margin service — queries stats.v_etf_margin view and stats.etf_meta.
+ * ETF + Margin service — queries stats.v_etf_margin view and stats.sec_classification.
  *
- * ETF classification (L1 sector + L2 industry) is read from precomputed
- * columns in stats.etf_meta (populated by build_etf_classification.py via
- * _classification.classify_etf_full()).  No classification logic lives in TS —
- * the Python _classification.py is the single source of truth.
+ * ETF classification (L1 sector + L2 industry) + tracking index are read from
+ * precomputed columns in stats.sec_classification (type='etf', populated by
+ * build_classification.py via CSV + index inheritance).  No classification
+ * logic lives in TS — the Python build_classification.py is the single
+ * source of truth.
  *
  * All row data is fetched from the database with index-driven WHERE clauses
  * on (code, date).
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { stripExchangeSuffix } from "../lib/classify-etf.js";
+import { stripExchangeSuffix, matchesExchange } from "../lib/classify-etf.js";
 import type {
   EtfMarginRow,
   EtfBundle,
@@ -28,6 +29,8 @@ export interface EtfMarginQuery {
   /** Exact ETF code (6-digit, suffix-stripped). When set, sector/industry
    *  filters and pagination are bypassed — only the matching ETF is returned. */
   code?: string;
+  /** Exchange filter: 'SS' (SSE+STAR), 'SZ' (SZSE+GEM), 'BJ' (BSE). */
+  exchange?: string;
   start_date?: string;
   end_date?: string;
   /** Optional cap on number of ETFs returned per theme (for dev / fast preview). */
@@ -52,6 +55,9 @@ interface DbEtfMetaRow extends QueryResultRow {
   industry_slug: string;
   index_code: string;
   index_name: string;
+  exchange: string;
+  has_margin: boolean;
+  n_days: number;
 }
 
 interface DbEtfMarginRow extends QueryResultRow {
@@ -117,29 +123,48 @@ const ETF_MARGIN_COLUMNS = `
 
 // ----------------------------------------------------------------------------
 //  Meta query — fetch all ETFs with precomputed L1/L2 classification from
-//  stats.etf_meta, ordered by data_quality_score DESC.
+//  stats.sec_classification (type='etf').
+//
+//  Ordering (high → low priority):
+//    1. has_margin DESC   — ETFs with margin data (融资融券) come first
+//    2. n_days DESC       — longer date range (more trading-day history) first
+//    3. score DESC        — selectivity_rank_score as a tiebreaker
+//    4. v.code            — stable final tiebreaker
+//
+//  Filter: HAVING COUNT(v.date) >= 40 — ETFs with fewer than 40 trading days
+//  of actual rows in v_etf_margin are suppressed from the data-viz list
+//  (matches the "Insufficient data" alert threshold in EtfMarginPanel).
+//  Uses the live row count from the view (not the precomputed sec_classification
+//  .n_days column, which may be stale).
+//
+//  Labels are DENORMALIZED onto sec_classification by build_classification.py
+//  — no JOIN to a catalog table is needed.
 // ----------------------------------------------------------------------------
 const META_SQL = `
   SELECT v.code,
          MAX(v.name) AS name,
-         COALESCE(MAX(m.data_quality_score), 0) AS score,
-         COALESCE(MAX(m.sector_id),     'OTHER')     AS sector_id,
-         COALESCE(MAX(m.sector_label),  '其他')       AS sector_label,
-         COALESCE(MAX(m.industry_id),   'OTHER')     AS industry_id,
-         COALESCE(MAX(m.industry_label),'未分类')     AS industry_label,
-         COALESCE(MAX(m.industry_slug), 'other')     AS industry_slug,
-         COALESCE(MAX(eim.index_code), '')            AS index_code,
-         COALESCE(MAX(eim.index_name), '')            AS index_name
+         COALESCE(MAX(m.selectivity_rank_score), 0) AS score,
+         COALESCE(MAX(m.sector_id),       'OTHER')  AS sector_id,
+         COALESCE(MAX(m.sector_label),    '其他')   AS sector_label,
+         COALESCE(MAX(m.industry_id),     'OTHER')  AS industry_id,
+         COALESCE(MAX(m.industry_label),  '未分类')  AS industry_label,
+         COALESCE(MAX(m.industry_slug),   'other')  AS industry_slug,
+         COALESCE(MAX(m.parent_index_code), '')     AS index_code,
+         COALESCE(MAX(mi.name), '')                  AS index_name,
+         COALESCE(MAX(m.exchange), '')               AS exchange,
+         COALESCE(BOOL_OR(m.has_margin), FALSE)      AS has_margin,
+         COUNT(v.date)                               AS n_days
     FROM stats.v_etf_margin v
-    LEFT JOIN stats.etf_meta m ON v.code = m.code
-    LEFT JOIN stats.etf_index_map eim ON v.code = eim.etf_code
+    LEFT JOIN stats.sec_classification m ON v.code = m.code AND m.type = 'etf'
+    LEFT JOIN stats.sec_classification mi ON mi.code = m.parent_index_code AND mi.type = 'index'
    GROUP BY v.code
-   ORDER BY score DESC, v.code
+  HAVING COUNT(v.date) >= 40
+   ORDER BY has_margin DESC, n_days DESC, score DESC, v.code
 `;
 
 // ----------------------------------------------------------------------------
 //  Themes — build the two-level L1 sector → L2 industry → ETFs tree from
-//  the precomputed classification columns in stats.etf_meta.
+//  the precomputed classification columns in stats.sec_classification.
 // ----------------------------------------------------------------------------
 export async function listThemes(): Promise<SectorNode[]> {
   const rows = await queryRows<DbEtfMetaRow>(META_SQL);
@@ -204,15 +229,18 @@ export async function getEtfMarginCombined(
 ): Promise<EtfMarginCombinedResponse> {
   const sectorFilter = (q.sector ?? "").trim();
   const industryFilter = (q.industry ?? "").trim();
+  const exchangeFilter = (q.exchange ?? "").trim() || null;
   // When a code filter is provided, sector/industry/pagination are bypassed.
   const codeFilter = stripExchangeSuffix((q.code ?? "").trim());
 
-  // 1. Fetch all distinct (code, name) + classification, ordered by score DESC.
+  // 1. Fetch all distinct (code, name) + classification, ordered by has_margin
+  //    DESC, n_days DESC, score DESC (see META_SQL).
   const metaRows = await queryRows<DbEtfMetaRow>(META_SQL);
 
-  // 2. Filter by sector + industry (or by exact code when codeFilter is set).
-  //    metaRows are already ordered by score DESC; preserve that order so
-  //    pagination returns the highest-quality ETFs first.
+  // 2. Filter by sector + industry + exchange (or by exact code when codeFilter is set).
+  //    metaRows are already ordered by has_margin DESC, n_days DESC, score DESC
+  //    (see META_SQL); preserve that order so pagination returns ETFs with
+  //    margin data + longer history first.
   const meta = new Map<string, { name: string; sector_id: string; sector_label: string; industry_id: string; industry_label: string; index_code: string; index_name: string }>();
   const wantedCodes: string[] = [];
   for (const r of metaRows) {
@@ -228,7 +256,7 @@ export async function getEtfMarginCombined(
       index_name: r.index_name ?? "",
     });
     if (codeFilter) {
-      // Exact code search — ignore sector/industry filters.
+      // Exact code search — ignore sector/industry/exchange filters.
       if (code.toUpperCase() === codeFilter.toUpperCase()) wantedCodes.push(code);
       continue;
     }
@@ -236,7 +264,8 @@ export async function getEtfMarginCombined(
     // industry filter matches either the industry_slug (URL-friendly) or the
     // industry_id (canonical).  Both are unique per industry.
     const industryOk = !industryFilter || r.industry_slug === industryFilter || r.industry_id === industryFilter;
-    if (sectorOk && industryOk) wantedCodes.push(code);
+    const exchangeOk = matchesExchange(r.exchange, exchangeFilter);
+    if (sectorOk && industryOk && exchangeOk) wantedCodes.push(code);
   }
 
   // 3. Optional cap per theme (legacy dev param)

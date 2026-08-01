@@ -1,6 +1,6 @@
 /**
  * Sec Composition service — queries stats.sec_composition (ETF + index holdings)
- * JOIN stock_industry_map.
+ * JOIN sec_classification (type='stock') for L1/L2 classification labels.
  *
  * sec_composition stores:
  *   - Full composition (ALL holdings, rank 1..N) for ETFs (source_type='etf')
@@ -9,8 +9,8 @@
  * Lookup order for a requested ETF:
  *   1. ETF holdings (source_type='etf'). If any rows exist → return them.
  *   2. If the ETF has NO holdings, look up its tracking index in
- *      stats.etf_meta (index_code, populated by build_etf_classification.py
- *      from _classification.INDUSTRY_INDEX_MAP) and return the index's
+ *      stats.sec_classification (type='etf', parent_index_code populated by
+ *      build_classification.py from the CSIndex CSV) and return the index's
  *      composition (source_type='index') as a fallback.
  *
  * Returns:
@@ -24,6 +24,8 @@ import type { QueryResultRow } from "pg";
 import type {
   SecCompositionResponse,
   SecCompositionHolding,
+  LinkedEtfsResponse,
+  LinkedEtfRow,
 } from "../../shared/types.js";
 
 interface DbCompositionRow extends QueryResultRow {
@@ -89,9 +91,9 @@ async function fetchHoldings(
            h.stock_code,
            h.stock_name,
            h.weight_pct,
-           COALESCE(sim.industry, '未分类')      AS industry,
-           COALESCE(sim.sector_id, 'OTHER')     AS sector_id,
-           COALESCE(sim.sector_label, '其他')    AS sector_label
+           COALESCE(sc.industry_label, '未分类')  AS industry,
+           COALESCE(sc.sector_id, 'OTHER')        AS sector_id,
+           COALESCE(sc.sector_label, '其他')      AS sector_label
       FROM stats.sec_composition h
       CROSS JOIN (
         SELECT MAX(snapshot_date) AS snap_date
@@ -99,8 +101,13 @@ async function fetchHoldings(
          WHERE source_type = $2
            AND ${latestCodePredicate}
       ) latest
-      LEFT JOIN stats.stock_industry_map sim
-        ON sim.stock_code = h.stock_code
+      LEFT JOIN LATERAL (
+        SELECT sc.sector_id, sc.industry_id, sc.sector_label, sc.industry_label
+          FROM stats.sec_classification sc
+         WHERE sc.code = h.stock_code AND sc.type = 'stock'
+         ORDER BY sc.parent_index_weight DESC NULLS LAST, sc.parent_index_code
+         LIMIT 1
+      ) sc ON true
      WHERE h.source_type = $2
        AND ${codePredicate}
        AND h.snapshot_date = latest.snap_date
@@ -110,20 +117,25 @@ async function fetchHoldings(
 }
 
 /**
- * Look up the primary tracking index for an ETF from stats.etf_meta.
- * Returns null if the ETF has no associated index (index_code is empty).
+ * Look up the primary tracking index for an ETF from stats.sec_classification.
+ * Returns null if the ETF has no associated index (parent_index_code is empty).
  *
- * etf_meta.code is stored WITH exchange suffix (e.g. 159530.SZ), so the
- * suffix is stripped on the DB side to match the bare input code.
+ * sec_classification.code is stored WITH exchange suffix (e.g. 159530.SZ), so the
+ * suffix is stripped on the DB side to match the bare input code.  The index
+ * name is resolved via a self-JOIN on the index's own sec_classification row.
  */
 async function fetchTrackingIndex(
   strippedEtfCode: string,
 ): Promise<{ code: string; name: string } | null> {
   const rows = await queryRows<IndexMetaRow>(
-    `SELECT index_code, index_name
-       FROM stats.etf_meta
-      WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1
-        AND index_code <> ''
+    `SELECT sc.parent_index_code AS index_code,
+            si.name               AS index_name
+       FROM stats.sec_classification sc
+       LEFT JOIN stats.sec_classification si
+         ON si.code = sc.parent_index_code AND si.type = 'index'
+      WHERE sc.type = 'etf'
+        AND REGEXP_REPLACE(sc.code, '\\.(SZ|SS|SH)$', '') = $1
+        AND sc.parent_index_code <> ''
       LIMIT 1`,
     [strippedEtfCode],
   );
@@ -137,11 +149,11 @@ async function fetchTrackingIndex(
  * Lookup order:
  *   1. ETF holdings (source_type='etf'). If any rows exist → return them.
  *   2. If the ETF has NO holdings, look up its tracking index in
- *      stats.etf_meta and return the index's composition (source_type='index').
+ *      stats.sec_classification and return the index's composition (source_type='index').
  *   3. If neither ETF holdings nor a tracking index is found, try a direct
  *      index lookup (source_type='index') with the bare code. This lets
  *      callers pass a bare index code (e.g. "000300" or "H30007") directly
- *      — used by the Index Baseline page, which has no etf_meta entry.
+ *      — used by the Index Baseline page, which has no sec_classification entry.
  *
  * Returns holdings (all) and the source type
  * ("full" = ETF holdings, "index" = tracking/raw index composition).
@@ -188,7 +200,7 @@ export async function getSecComposition(
   }
 
   // 3. Direct index lookup — caller passed a bare index code with no
-  //    associated etf_meta entry (e.g. the Index Baseline page).
+  //    associated sec_classification entry (e.g. the Index Baseline page).
   const directIdxRows = await fetchHoldings(stripped, "index");
   if (directIdxRows.length > 0) {
     const holdings = directIdxRows.map(toHolding);
@@ -206,5 +218,128 @@ export async function getSecComposition(
     snapshot_date: "",
     holdings: [],
     source: "full",
+  };
+}
+
+// ----------------------------------------------------------------------------
+//  Linked ETFs — ETFs tracking a given index (stats.sec_classification
+//  type='etf' WHERE parent_index_code = $1), enriched with the latest close
+//  price + trading-day count from stats.v_etf_margin.
+//
+//  Used by the Index Baseline page's "Linked ETFs" expansion shown beside
+//  the Composition pie. The input is a bare index code (e.g. "000300") as
+//  stored on sec_classification.code for type='index' rows.
+// ----------------------------------------------------------------------------
+interface DbLinkedEtfRow extends QueryResultRow {
+  code: string;
+  name: string | null;
+  exchange: string | null;
+  sector_label: string | null;
+  industry_label: string | null;
+  latest_date: string | null;
+  latest_close: number | null;
+  latest_amount_wan: number | null;
+  aum_yi: number | null;
+  n_days: number | null;
+}
+
+export async function getLinkedEtfs(
+  indexCodeParam: string,
+): Promise<LinkedEtfsResponse> {
+  const indexCode = indexCodeParam.replace(SUFFIX_RE, "").trim();
+  if (!indexCode) {
+    return {
+      index_code: indexCodeParam,
+      etfs: [],
+      total_etf_amt: null,
+      total_etf_amt_ma5: null,
+      total_etf_amt_date: "",
+    };
+  }
+
+  // Three CTEs:
+  //   linked_etfs — ETF sec_classification rows whose parent_index_code = $1.
+  //                 Also pulls aum_yi (net asset value in 亿元) which is
+  //                 populated from the etf_index_map_all_*.csv by
+  //                 build_classification.py.  Available for ALL ETFs (SSE +
+  //                 SZSE), unlike v_etf_margin.amount_wan (SZSE only).
+  //   latest      — DISTINCT ON (code) picks the most-recent v_etf_margin row
+  //                 per ETF (gives latest_date + latest_close).
+  //   counts      — per-ETF trading-day count from v_etf_margin.
+  const sql = `
+    WITH linked_etfs AS (
+      SELECT sc.code, sc.name, sc.exchange, sc.sector_label, sc.industry_label, sc.aum_yi
+        FROM stats.sec_classification sc
+       WHERE sc.type = 'etf'
+         AND sc.parent_index_code = $1
+    ),
+    latest AS (
+      SELECT DISTINCT ON (code) code, date AS latest_date, close AS latest_close, amount_wan AS latest_amount_wan
+        FROM stats.v_etf_margin
+       WHERE code IN (SELECT code FROM linked_etfs)
+       ORDER BY code, date DESC
+    ),
+    counts AS (
+      SELECT code, COUNT(*) AS n_days
+        FROM stats.v_etf_margin
+       WHERE code IN (SELECT code FROM linked_etfs)
+       GROUP BY code
+    )
+    SELECT le.code,
+           le.name,
+           le.exchange,
+           COALESCE(le.sector_label,    '其他')   AS sector_label,
+           COALESCE(le.industry_label, '未分类')  AS industry_label,
+           COALESCE(la.latest_date::text, '')    AS latest_date,
+           la.latest_close,
+           la.latest_amount_wan,
+           le.aum_yi,
+           COALESCE(co.n_days, 0)                AS n_days
+      FROM linked_etfs le
+      LEFT JOIN latest  la ON la.code = le.code
+      LEFT JOIN counts  co ON co.code = le.code
+     ORDER BY le.aum_yi DESC NULLS LAST, n_days DESC, le.code
+  `;
+  const [rows, extRows] = await Promise.all([
+    queryRows<DbLinkedEtfRow>(sql, [indexCode]),
+    // Fetch the latest index_exts row for this index — gives the precomputed
+    // total_etf_amt (Σ ETF turnover tracking the index, yuan) and its 5-day
+    // moving average (total_etf_amt_ma5). Both are NULL when the index has
+    // no tracking ETF (no index_exts row).
+    queryRows<{
+      total_etf_amt: number | null;
+      total_etf_amt_ma5: number | null;
+      date: string | null;
+    }>(
+      `SELECT total_etf_amt, total_etf_amt_ma5, date::text AS date
+         FROM stats.index_exts
+        WHERE code = $1
+        ORDER BY date DESC
+        LIMIT 1`,
+      [indexCode],
+    ),
+  ]);
+  const ext = extRows[0];
+  return {
+    index_code: indexCode,
+    etfs: rows.map<LinkedEtfRow>((r) => ({
+      code: r.code,
+      name: r.name ?? "",
+      exchange: r.exchange ?? "",
+      sector_label: r.sector_label ?? "其他",
+      industry_label: r.industry_label ?? "未分类",
+      latest_date: formatDate(r.latest_date) || "",
+      latest_close: toNum(r.latest_close),
+      // Trading amount (成交金额) from v_etf_margin.amount_wan (万元) → 亿元.
+      latest_trading_amount: (() => {
+        const wan = toNum(r.latest_amount_wan);
+        return wan != null ? wan / 10000 : null;
+      })(),
+      aum_yi: toNum(r.aum_yi),
+      n_days: parseInt(String(r.n_days ?? 0), 10) || 0,
+    })),
+    total_etf_amt: toNum(ext?.total_etf_amt),
+    total_etf_amt_ma5: toNum(ext?.total_etf_amt_ma5),
+    total_etf_amt_date: ext?.date ?? "",
   };
 }

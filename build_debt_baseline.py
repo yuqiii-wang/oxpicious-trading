@@ -798,6 +798,75 @@ def _filter_files_by_missing_years(files, missing_dates):
     return out
 
 
+def _latest_file_by_date_token(files, token_index=1):
+    """Find the file whose filename contains the max YYYYMMDD date token.
+
+    SHIBOR files are named shibor_his_YYYYMMDD_YYYYMMDD.xlsx; the second
+    date token is the (inclusive) end date. Returns the file with the
+    latest end date, or None if no file has a parseable token.
+    """
+    best = None
+    best_end = None
+    for f in files:
+        tokens = re.findall(r'(\d{8})', os.path.basename(f))
+        if len(tokens) <= token_index:
+            continue
+        try:
+            end_dt = datetime.strptime(tokens[token_index], "%Y%m%d")
+        except ValueError:
+            continue
+        if best_end is None or end_dt > best_end:
+            best_end = end_dt
+            best = f
+    return best
+
+
+def _latest_file_by_year(files):
+    """Find the file whose filename contains the max 4-digit year token.
+
+    China bond files are named chinabond_bzqx_treasury_bond_YYYY.xlsx.
+    """
+    best = None
+    best_year = -1
+    for f in files:
+        for y in re.findall(r'(\d{4})', os.path.basename(f)):
+            yi = int(y)
+            if 1990 <= yi <= 2100 and yi > best_year:
+                best_year = yi
+                best = f
+    return best
+
+
+def _discover_dates_from_latest_files(shibor_files, chinabond_files, verbose=False):
+    """Read the latest SHIBOR + China bond files to discover available dates.
+
+    Returns a set of datetime.date. This augments the available-dates set
+    BEFORE the missing-dates check so the early-exit does not fire when
+    SHIBOR/China bond source files have newer dates than the instruments/LPR
+    CSVs (which are the only sources the check otherwise considers).
+    """
+    dates = set()
+    shibor_latest = _latest_file_by_date_token(shibor_files)
+    if shibor_latest:
+        df = _read_shibor_xlsx(shibor_latest)
+        if df is not None and len(df) > 0:
+            d = pd.to_datetime(df["日期"], errors="coerce").dropna().dt.date
+            dates |= set(d.tolist())
+            if verbose and len(d):
+                print(f"    [SHIBOR] latest file {os.path.basename(shibor_latest)}: "
+                      f"max date={d.max()}", flush=True)
+    chinabond_latest = _latest_file_by_year(chinabond_files)
+    if chinabond_latest:
+        df = _read_chinabond_xlsx(chinabond_latest)
+        if df is not None and len(df) > 0:
+            d = pd.to_datetime(df["日期"], errors="coerce").dropna().dt.date
+            dates |= set(d.tolist())
+            if verbose and len(d):
+                print(f"    [CHINABOND] latest file {os.path.basename(chinabond_latest)}: "
+                      f"max date={d.max()}", flush=True)
+    return dates
+
+
 async def main():
     ap = argparse.ArgumentParser()
     add_common_build_args(ap)
@@ -882,6 +951,17 @@ async def main():
         lpr_dates_only_df = build_lpr_df(verbose=False)
         if lpr_dates_only_df is not None and len(lpr_dates_only_df) > 0:
             all_available_dates.update(lpr_dates_only_df["date"].dt.date.tolist())
+
+        # Augment available dates with the latest SHIBOR + China bond file
+        # dates. Without this, the early-exit below would fire whenever the
+        # instruments/LPR CSVs are caught up — even if SHIBOR/China bond
+        # source files have newer dates — and the freshest debt data would
+        # never be loaded (the extra-dates merge at step 5 is unreachable
+        # once the early-exit fires).
+        file_dates = _discover_dates_from_latest_files(
+            shibor_files_all, chinabond_files_all, verbose=True)
+        if file_dates:
+            all_available_dates |= file_dates
 
         if args.force:
             existing_dates_set = set()

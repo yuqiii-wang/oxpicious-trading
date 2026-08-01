@@ -203,7 +203,7 @@ def _check_data(
     members: Optional[MemberInfo] = None,
     tendency_value: str = "",
     proxy: Optional[AntiBotProxy] = None,
-) -> Tuple[bool, str]:
+) -> Tuple[bool, str, bool]:
     if proxy is None:
         proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
     
@@ -223,7 +223,7 @@ def _check_data(
         )
     elif data_type == T_SHIBOR_PRI:
         if members is None:
-            return False, "member info not available"
+            return False, "member info not available", False
         data = {
             "memCode": members.mem_code,
             "instnCnNm": members.instn_cn_nm,
@@ -269,15 +269,15 @@ def _check_data(
             log_tag=tag,
         )
     else:
-        return False, f"unknown data_type: {data_type}"
+        return False, f"unknown data_type: {data_type}", False
 
     if resp is None:
-        return False, "check request failed"
+        return False, "check request failed", False
 
     try:
         payload = resp.json()
     except ValueError as e:
-        return False, f"check json error: {e}"
+        return False, f"check json error: {e}", False
 
     msg = ""
     data_block = payload.get("data")
@@ -287,8 +287,8 @@ def _check_data(
     if msg:
         logger.warning("Check[%s %s~%s] server message: %s", data_type, s_s, s_e, msg)
     if not records:
-        return False, msg or "no records returned"
-    return True, msg or "ok"
+        return False, msg or "no records returned", True
+    return True, msg or "ok", False
 
 
 def _download_excel(
@@ -503,15 +503,23 @@ def download_shibor(
                     proxy.sleep(max(0.1, sleep_sec * 0.3))
                     continue
 
-                ok, msg = _check_data(session, dt, cs, ce, members=members,
+                # Skip chunks previously confirmed to have no data (empty marker)
+                if fpath.exists() and not is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
+                    stats.empty += 1
+                    continue
+
+                ok, msg, confirmed_empty = _check_data(session, dt, cs, ce, members=members,
                                       tendency_value=tendency_value,
                                       proxy=proxy)
                 if not ok:
-                    if msg == "no records returned" or "no records" in msg.lower():
-                        logger.info("  [empty] %s (%s)", tag, msg)
+                    if confirmed_empty:
+                        logger.info("  [empty] %s (%s), writing empty marker", tag, msg)
+                        fpath.parent.mkdir(parents=True, exist_ok=True)
+                        fpath.write_bytes(b"")
+                        stats.empty += 1
                     else:
                         logger.warning("  [check-fail] %s (%s)", tag, msg)
-                    stats.empty += 1
+                        stats.failed += 1
                     proxy.sleep(max(0.2, sleep_sec * 0.5))
                     continue
 

@@ -3,14 +3,22 @@
 This module is the TODAY/latest-biz-date half of the former ``download_sse_price``.
 It fetches the SSE list endpoint — the same JSONP data source used by
 ``stream_sse_price.py`` (yunhq.sse.com.cn:32042/v1/sh1/list/exchange/equity)
-— and writes a single date-grouped CSV under ``temps/sse_trend/``:
+— and writes date-grouped CSVs under ``temps/sse_trend/``:
 
-    sse_trend_stock_{YYYYMMDD}.csv
+    sse_trend_stock_{YYYYMMDD}.csv   — ALL SSE equities (股票 tab)
+    sse_trend_etf_{YYYYMMDD}.csv     — ALL SSE funds/ETFs (基金 tab)
 
-This is effectively the end-of-day snapshot: one row per stock with OHLCV +
+This is effectively the end-of-day snapshot: one row per security with OHLCV +
 last price. The trade date is taken from the API response's ``date`` field
 (never from ``datetime.now()``), so running on a non-trading day yields the
-last trading day's snapshot.
+last trading day's snapshot. The 更新时间 (update datetime) is extracted from
+the ``date`` + ``time`` fields and checked/logged to verify freshness.
+
+The ETF/fund snapshot uses the 基金 tab of
+https://www.sse.com.cn/market/price/report/ — the ``exchange/fund`` list
+endpoint, which shares the same JSONP schema as the equity endpoint (only the
+path suffix differs). It returns all SSE-listed funds (ETFs, LOFs, closed-end
+funds).
 
 For HISTORICAL data (per-stock ``{code}_trend.csv`` + ``{code}_pe.csv``
 archives), use ``download_sse_archive.py`` — it fetches the dayk endpoint.
@@ -20,13 +28,14 @@ Output columns (same schema as the archive, empty when not published by SSE):
     涨跌幅（%）,成交量(万股),成交金额(万元),市盈率
 
 Usage:
-  python download_sse_trend.py                  # all SSE equities (default)
-  python download_sse_trend.py --force          # overwrite existing file
+  python download_sse_trend.py                  # equities + ETFs (default)
+  python download_sse_trend.py --force          # overwrite existing files
+  python download_sse_trend.py --no-etf         # equities only
 """
 from __future__ import annotations
 
 import time as _time
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -68,16 +77,29 @@ STREAM_SELECT_FIELDS = "code,name,open,high,low,last,prev_close,change,volume,am
 
 # Inter-page sleep for the list endpoint pagination (lightweight, no anti-bot
 # cadence needed — same as stream_sse_price).
-INTER_PAGE_SLEEP_SEC = 0.3
+INTER_PAGE_SLEEP_SEC = 3.0
+
+# SSE fund (ETF) list endpoint — same JSONP schema as the equity list endpoint,
+# only the path suffix differs (/exchange/fund vs /exchange/equity). Selected
+# via the 基金 tab on https://www.sse.com.cn/market/price/report/. The fund
+# endpoint returns all SSE-listed funds (ETFs, LOFs, closed-end funds) — the
+# same ~1000+ securities shown on the report page's 基金 tab.
+SSE_FUND_LIST_URL = SSE_LIST_URL.replace("/equity", "/fund")
 
 
 # ---------------------------------------------------------------------------
 # Output path helper
 # ---------------------------------------------------------------------------
-def _get_out_file(out_dir: Path, trade_date_str: str) -> Path:
-    """Get date-grouped trend CSV path under temps/sse_trend/."""
+def _get_out_file(
+    out_dir: Path, trade_date_str: str, prefix: str = "sse_trend_stock"
+) -> Path:
+    """Get date-grouped trend CSV path under temps/sse_trend/.
+
+    ``prefix`` selects the security type: ``sse_trend_stock`` (equities,
+    default) or ``sse_trend_etf`` (funds/ETFs).
+    """
     ymd = trade_date_str.replace("-", "")
-    return out_dir / f"sse_trend_stock_{ymd}.csv"
+    return out_dir / f"{prefix}_{ymd}.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -102,18 +124,44 @@ def _extract_trade_date_str(payload: Dict[str, Any]) -> Optional[str]:
         return None
 
 
+def _extract_update_datetime(payload: Dict[str, Any]) -> Optional[datetime]:
+    """Extract the 更新时间 (update datetime) from the SSE list endpoint response.
+
+    The yunhq list endpoint returns top-level ``date`` (YYYYMMDD) and ``time``
+    (HHMMSS) fields — the "更新时间" shown on the webpage, not the local clock.
+    Returns None if the fields are missing or unparseable. Used to verify the
+    freshness of the ETF/fund snapshot when loading.
+    """
+    date_raw = payload.get("date")
+    time_raw = payload.get("time")
+    if not date_raw:
+        return None
+    try:
+        date_str = str(date_raw)
+        time_str = str(time_raw).zfill(6) if time_raw is not None else "000000"
+        dt_str = (
+            f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]} "
+            f"{time_str[:2]}:{time_str[2:4]}:{time_str[4:6]}"
+        )
+        return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, IndexError):
+        return None
+
+
 def _fetch_snapshot_page(
     session: requests.Session,
     begin: int,
     end: int,
+    list_url: str = SSE_LIST_URL,
     host_tracker: Optional[HostStatusTracker] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Fetch one page from the SSE list endpoint with full real-time fields.
+    """Fetch one page from an SSE list endpoint with full real-time fields.
 
     Uses a plain session (no AntiBotProxy) so the snapshot is fast — the list
     endpoint is lightweight and does not require the 20s anti-bot cadence
-    used for the dayk endpoint. ``host_tracker`` records 4xx errors for
-    blocking detection (same pattern as stream_sse_price).
+    used for the dayk endpoint. ``list_url`` selects the asset type
+    (equity/fund/index); ``host_tracker`` records 4xx errors for blocking
+    detection (same pattern as stream_sse_price).
     """
     params = {
         "callback": JSONP_CALLBACK,
@@ -123,7 +171,7 @@ def _fetch_snapshot_page(
     }
     try:
         resp = session.get(
-            SSE_LIST_URL,
+            list_url,
             params=params,
             headers=SSE_HEADERS,
             timeout=DEFAULT_TIMEOUT,
@@ -133,7 +181,7 @@ def _fetch_snapshot_page(
         return None
 
     if resp.status_code != 200 and host_tracker is not None:
-        host_tracker.record_error(SSE_LIST_URL, resp.status_code, resp.reason)
+        host_tracker.record_error(list_url, resp.status_code, resp.reason)
 
     try:
         return _parse_jsonp(resp.text)
@@ -202,28 +250,42 @@ def _parse_snapshot_to_trend_row(
 
 def _fetch_today_snapshot(
     session: requests.Session,
-) -> Tuple[Optional[str], List[Dict[str, Any]]]:
-    """Fetch the SSE list endpoint snapshot (all equities, full field set).
+    list_url: str = SSE_LIST_URL,
+) -> Tuple[Optional[datetime], Optional[str], List[Dict[str, Any]]]:
+    """Fetch the SSE list endpoint snapshot (all securities, full field set).
 
     Paginates through the list endpoint exactly like the webpage's "刷新"
-    button (and stream_sse_price). Returns
-    ``(trade_date_str, [trend_row, ...])``.
+    button (and stream_sse_price). ``list_url`` selects the asset type
+    (equity/fund/index).
+
+    Returns ``(update_dt, trade_date_str, [trend_row, ...])`` where
+    ``update_dt`` is the 更新时间 (date + time from the API response) and
+    ``trade_date_str`` is the trade date derived from the ``date`` field.
     """
     host_tracker = HostStatusTracker()
+    asset_tag = list_url.rsplit("/", 1)[-1]  # "equity" / "fund" / "index"
 
-    # First page: discover total record count + trade date.
-    first = _fetch_snapshot_page(session, 0, PAGE_SIZE, host_tracker)
+    # First page: discover total record count + trade date + 更新时间.
+    first = _fetch_snapshot_page(
+        session, 0, PAGE_SIZE, list_url=list_url, host_tracker=host_tracker
+    )
     if first is None:
-        logger.error("Failed to fetch first SSE list page")
-        return None, []
+        logger.error("Failed to fetch first SSE list page (%s)", asset_tag)
+        return None, None, []
 
+    update_dt = _extract_update_datetime(first)  # 更新时间 (date + time)
     trade_date_str = _extract_trade_date_str(first)
     if trade_date_str is None:
-        logger.error("Failed to extract trade date from SSE list response")
-        return None, []
+        logger.error("Failed to extract trade date from SSE list response (%s)", asset_tag)
+        return update_dt, None, []
 
     total = int(first.get("total", 0))
-    logger.info("SSE snapshot: trade_date=%s total=%d", trade_date_str, total)
+    logger.info(
+        "SSE snapshot [%s]: trade_date=%s 更新时间=%s total=%d",
+        asset_tag, trade_date_str,
+        update_dt.strftime("%Y-%m-%d %H:%M:%S") if update_dt else "N/A",
+        total,
+    )
 
     rows: List[Dict[str, Any]] = []
     for row in first.get("list", []) or []:
@@ -234,16 +296,18 @@ def _fetch_today_snapshot(
     written = len(first.get("list", []) or [])
     page_index = 1
     while written < total:
-        if host_tracker.is_blocked(SSE_LIST_URL):
+        if host_tracker.is_blocked(list_url):
             logger.warning(
-                "SSE host blocked mid-pagination, using partial snapshot (%d stocks)",
+                "SSE host blocked mid-pagination, using partial snapshot (%d items)",
                 len(rows),
             )
             break
         begin = page_index * PAGE_SIZE
         end = begin + PAGE_SIZE
         _time.sleep(INTER_PAGE_SLEEP_SEC)
-        payload = _fetch_snapshot_page(session, begin, end, host_tracker)
+        payload = _fetch_snapshot_page(
+            session, begin, end, list_url=list_url, host_tracker=host_tracker
+        )
         if payload is None:
             logger.warning(
                 "page %d (begin=%d) failed; using partial snapshot",
@@ -261,64 +325,39 @@ def _fetch_today_snapshot(
         page_index += 1
 
     logger.info(
-        "Fetched %d rows (total=%d, pages=%d) for trade_date=%s",
-        len(rows), total, page_index, trade_date_str,
+        "Fetched %d rows (total=%d, pages=%d) for trade_date=%s [%s]",
+        len(rows), total, page_index, trade_date_str, asset_tag,
     )
-    return trade_date_str, rows
+    return update_dt, trade_date_str, rows
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Per-type download helper (shared by equity + ETF snapshots)
 # ---------------------------------------------------------------------------
-def download_sse_trend(
-    out_root: Optional[str] = None,
+def _download_one_type(
+    sess: requests.Session,
+    out_dir: Path,
+    expected_latest_str: str,
+    list_url: str,
+    prefix: str,
     *,
     force: bool = False,
-    session: Optional[requests.Session] = None,
 ) -> dict:
-    """Download SSE TODAY's price snapshot via the list endpoint.
+    """Download one snapshot type (equity or fund) and write its CSV.
 
-    Fetches the same JSONP endpoint used by ``stream_sse_price.py``
-    (yunhq.sse.com.cn:32042/v1/sh1/list/exchange/equity) with the full
-    real-time field set (open/high/low/last/prev_close/volume/amount) and
-    writes a single date-grouped CSV:
-
-        temps/sse_trend/sse_trend_stock_{YYYYMMDD}.csv
-
-    The trade date (``{YYYYMMDD}`` and the 交易日期 column) is derived
-    strictly from the API response's ``date`` field, never from
-    ``datetime.now()`` — so running on a non-trading day yields the last
-    trading day's snapshot.
-
-    For HISTORICAL data, run ``download_sse_archive.py`` instead (it fetches
-    the dayk endpoint and writes per-stock ``{code}_trend.csv`` /
-    ``{code}_pe.csv`` archives).
-
-    Loads ALL SSE equities (no ETF filter). Skips when the file for the
-    snapshot date already exists unless ``force=True``. The CSV file is
-    checked FIRST before any API request to avoid unnecessary network traffic.
+    Handles the skip-check (file exists + contains expected date), fetch via
+    ``_fetch_today_snapshot`` (which checks the 更新时间), and CSV write.
+    Returns a result dict with downloaded/failed/file/trade_date/update_time.
     """
-    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_trend", out_root)
-    sess = session or requests.Session()
+    out_file = _get_out_file(out_dir, expected_latest_str, prefix=prefix)
 
-    today = date.today()
-    expected_latest_biz_date = last_business_day(today)
-    expected_latest_str = expected_latest_biz_date.isoformat()
-    logger.info(
-        "Today: %s, expected latest trading day: %s", today, expected_latest_biz_date,
-    )
-
-    # --- Check CSV file FIRST before any DB scan or API request ---
-    # This is critical for idempotency and avoiding unnecessary network calls.
-    out_file = _get_out_file(out_dir, expected_latest_str)
+    # --- Check CSV file FIRST before any API request (idempotency) ---
     if not force and is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
-        # Verify the existing file actually contains data for the expected date
         try:
             with open(out_file, encoding=CSV_ENCODING, newline="") as f:
                 reader = __import__("csv").DictReader(f)
                 rows = [dict(r) for r in reader]
             if rows:
-                # Check if the file contains the expected date
                 dates_in_file = {r.get("交易日期", "") for r in rows}
                 if expected_latest_str in dates_in_file:
                     logger.info(
@@ -329,7 +368,6 @@ def download_sse_trend(
                     return {
                         "downloaded": 0,
                         "failed": 0,
-                        "out_dir": str(out_dir),
                         "file": str(out_file),
                         "trade_date": expected_latest_str,
                         "skipped": True,
@@ -346,11 +384,11 @@ def download_sse_trend(
                 out_file.name,
             )
 
-    # Fetch the snapshot (paginated, full field set) — ALL SSE equities.
-    trade_date_str, rows = _fetch_today_snapshot(sess)
+    # Fetch the snapshot (paginated, full field set) + check 更新时间.
+    update_dt, trade_date_str, rows = _fetch_today_snapshot(sess, list_url=list_url)
     if trade_date_str is None or not rows:
-        logger.error("No snapshot data fetched")
-        return {"downloaded": 0, "failed": 1, "out_dir": str(out_dir)}
+        logger.error("No snapshot data fetched for %s", prefix)
+        return {"downloaded": 0, "failed": 1, "file": str(out_file)}
 
     # Write the date-grouped CSV.
     _write_rows(out_file, rows, write_header=True)
@@ -359,9 +397,81 @@ def download_sse_trend(
     return {
         "downloaded": len(rows),
         "failed": 0,
-        "out_dir": str(out_dir),
         "file": str(out_file),
         "trade_date": trade_date_str,
+        "update_time": update_dt.strftime("%Y-%m-%d %H:%M:%S") if update_dt else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+def download_sse_trend(
+    out_root: Optional[str] = None,
+    *,
+    force: bool = False,
+    include_etf: bool = True,
+    session: Optional[requests.Session] = None,
+) -> dict:
+    """Download SSE TODAY's price snapshot via the list endpoint.
+
+    Fetches the same JSONP endpoints used by ``stream_sse_price.py``
+    (yunhq.sse.com.cn:32042/v1/sh1/list/exchange/{equity,fund}) with the full
+    real-time field set (open/high/low/last/prev_close/volume/amount) and
+    writes date-grouped CSVs under ``temps/sse_trend/``:
+
+        sse_trend_stock_{YYYYMMDD}.csv   — ALL SSE equities
+        sse_trend_etf_{YYYYMMDD}.csv     — ALL SSE funds/ETFs (when include_etf)
+
+    The trade date (``{YYYYMMDD}`` and the 交易日期 column) is derived
+    strictly from the API response's ``date`` field, never from
+    ``datetime.now()`` — so running on a non-trading day yields the last
+    trading day's snapshot. The 更新时间 (update datetime) is extracted from
+    the ``date`` + ``time`` fields and checked/logged for each snapshot to
+    verify freshness.
+
+    The ETF/fund snapshot uses the 基金 tab of
+    https://www.sse.com.cn/market/price/report/ — the ``exchange/fund`` list
+    endpoint, which shares the same JSONP schema as the equity endpoint (only
+    the path suffix differs). It returns all SSE-listed funds (ETFs, LOFs,
+    closed-end funds).
+
+    For HISTORICAL data, run ``download_sse_archive.py`` instead (it fetches
+    the dayk endpoint and writes per-stock ``{code}_trend.csv`` /
+    ``{code}_pe.csv`` archives).
+
+    Skips when the file for the snapshot date already exists unless
+    ``force=True``. Each CSV file is checked FIRST before any API request to
+    avoid unnecessary network traffic.
+    """
+    out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_trend", out_root)
+    sess = session or requests.Session()
+
+    today = date.today()
+    expected_latest_biz_date = last_business_day(today)
+    expected_latest_str = expected_latest_biz_date.isoformat()
+    logger.info(
+        "Today: %s, expected latest trading day: %s", today, expected_latest_biz_date,
+    )
+
+    # --- Equity snapshot (股票 tab / exchange/equity) ---
+    stock_result = _download_one_type(
+        sess, out_dir, expected_latest_str,
+        SSE_LIST_URL, "sse_trend_stock", force=force,
+    )
+
+    # --- ETF/fund snapshot (基金 tab / exchange/fund) ---
+    etf_result = None
+    if include_etf:
+        etf_result = _download_one_type(
+            sess, out_dir, expected_latest_str,
+            SSE_FUND_LIST_URL, "sse_trend_etf", force=force,
+        )
+
+    return {
+        "out_dir": str(out_dir),
+        "stock": stock_result,
+        "etf": etf_result,
     }
 
 
@@ -371,11 +481,14 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(
         description="Download SSE TODAY's price snapshot via the list endpoint "
                     "(same data source as stream_sse_price). Writes "
-                    "sse_trend_stock_{YYYYMMDD}.csv under temps/sse_trend/. "
-                    "Loads ALL SSE equities. For HISTORICAL data, use "
-                    "download_sse_archive.py instead."
+                    "sse_trend_stock_{YYYYMMDD}.csv (equities) and "
+                    "sse_trend_etf_{YYYYMMDD}.csv (funds/ETFs) under "
+                    "temps/sse_trend/. Loads ALL SSE equities + funds. For "
+                    "HISTORICAL data, use download_sse_archive.py instead."
     )
     ap.add_argument("--force", action="store_true",
-                    help="Overwrite existing date CSV file.")
+                    help="Overwrite existing date CSV files.")
+    ap.add_argument("--no-etf", action="store_true",
+                    help="Skip the ETF/fund snapshot (only download equities).")
     args = ap.parse_args()
-    print(download_sse_trend(force=args.force))
+    print(download_sse_trend(force=args.force, include_etf=not args.no_etf))

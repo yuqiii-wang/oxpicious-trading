@@ -1,7 +1,7 @@
 /**
  * Stock Baseline service — queries stats.v_stock_baseline view
- * (stock_identity + stock_basic_stats JOIN) plus stats.stock_industry_map
- * for L1/L2 classification.
+ * (stock_identity + stock_basic_stats JOIN) plus stats.sec_classification
+ * (type='stock') for L1/L2 classification.
  *
  *   • getStockBaseline() — single-code OHLC + pct_change + PE, used by the
  *     composition pie chart's per-stock candlestick expansion.
@@ -11,10 +11,9 @@
  *     industry + (optionally) exact code search.
  *
  * Stock classification (L1 sector + L2 industry) is read from precomputed
- * columns in stats.stock_industry_map (populated by build_stock_industry.py
- * via _classification.classify_stock()).  The industry_slug is derived as
- * LOWER(industry_id) at query time — this matches the slug convention used
- * by the ETF/Index taxonomy in _classification.py (e.g. BANKS → banks).
+ * columns in stats.sec_classification (type='stock', populated by
+ * build_classification.py via index-inheritance).  Labels + slug are
+ * DENORMALIZED onto sec_classification — no JOIN to a catalog table.
  *
  * Suffix convention (project-wide, see project_memory.md):
  *   • .SZ  = Shenzhen Stock Exchange  (深圳证券交易所)
@@ -22,10 +21,10 @@
  *             convention — NOT Tushare's .SH)
  *   • .BJ  = Beijing Stock Exchange     (北京证券交易所)
  *
- * Both stock_identity.code AND stock_industry_map.stock_code store codes
- * WITH the exchange suffix (e.g. "000001.SZ" = Ping An Bank, a Shenzhen
- * stock; "600000.SS" = 浦发银行, a Shanghai stock).  The JOIN is therefore
- * a direct equality on si.code = sim.stock_code — no suffix stripping.
+ * Both stock_identity.code AND sec_classification.code (type='stock') store
+ * codes WITH the exchange suffix (e.g. "000001.SZ" = Ping An Bank, a
+ * Shenzhen stock; "600000.SS" = 浦发银行, a Shanghai stock).  The JOIN is
+ * therefore a direct equality — no suffix stripping.
  *
  * Note: bare "000001" is ambiguous — it could be Ping An Bank (000001.SZ) or
  * the Shanghai Composite Index (000001.SS, an INDEX stored in index_identity,
@@ -38,6 +37,7 @@
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
+import { matchesExchange } from "../lib/classify-etf.js";
 import type {
   StockBaselineResponse,
   StockBaselineRow,
@@ -64,7 +64,7 @@ interface DbStockRow extends QueryResultRow {
 
 interface DbStockMetaRow extends QueryResultRow {
   // Suffixed code (e.g. "000001.SZ") — the canonical key used everywhere
-  // (stock_identity, stock_industry_map, v_stock_baseline).
+  // (stock_identity, sec_classification type='stock', v_stock_baseline).
   code: string;
   name: string;
   n_days: number;
@@ -75,6 +75,7 @@ interface DbStockMetaRow extends QueryResultRow {
   industry_id: string;
   industry_label: string;
   industry_slug: string;
+  exchange: string;
 }
 
 const SUFFIX_RE = /\.(SZ|SS|BJ)$/;
@@ -158,18 +159,25 @@ export async function getStockBaseline(
 
 // ----------------------------------------------------------------------------
 //  Meta query — fetch all stocks with precomputed L1/L2 classification from
-//  stats.stock_industry_map, ordered by n_days DESC (most data first).
+//  stats.sec_classification (type='stock'), ordered by n_days DESC (most data first).
+//
+//  Labels (sector_label, industry_label, industry_slug) are DENORMALIZED
+//  onto sec_classification by build_classification.py — no JOIN to a
+//  catalog table is needed.
 //
 //  Key points:
-//    • stock_identity.code and stock_industry_map.stock_code BOTH store the
-//      code WITH exchange suffix (e.g. "000001.SZ") — JOIN is a direct
-//      equality, no suffix stripping.
+//    • stock_identity.code and sec_classification.code (type='stock') BOTH
+//      store the code WITH exchange suffix (e.g. "000001.SZ") — JOIN is a
+//      direct equality, no suffix stripping.
+//    • A stock may have MULTIPLE sec_classification rows (one per qualifying
+//      parent index). The LATERAL subquery picks the highest-weight row so
+//      each stock gets exactly one (sector_id, industry_id) pair.
 //    • Only rows with non-NULL close are counted toward n_days — this
 //      excludes bogus identity-only rows (e.g. historical "test" entries on
 //      2026-07-23/24) that would otherwise inflate the count and override
 //      the real stock name via MAX(name).
-//    • name is resolved as the most recent name WHERE close IS NOT NULL,
-//      so "test" can't shadow the real "平安银行".
+//    • name is resolved as the most frequent non-NULL name (mode) — robust
+//      against a few bogus "test"/"test2" rows.
 //    • Filters out stocks with fewer than MIN_DAYS rows so the selector
 //      doesn't show transient/new listings with no chartable history.
 // ----------------------------------------------------------------------------
@@ -192,13 +200,21 @@ const STOCK_META_SQL = `
          COUNT(*)                                       AS n_days,
          MIN(o.date)::text                              AS first_date,
          MAX(o.date)::text                              AS last_date,
-         COALESCE(MAX(sim.sector_id),     'OTHER')    AS sector_id,
-         COALESCE(MAX(sim.sector_label),  '其他')      AS sector_label,
-         COALESCE(MAX(sim.industry_id),   'OTHER')    AS industry_id,
-         COALESCE(MAX(sim.industry),       '未分类')    AS industry_label,
-         LOWER(COALESCE(MAX(sim.industry_id), 'OTHER')) AS industry_slug
+         COALESCE(MAX(sc.sector_id),       'OTHER')    AS sector_id,
+         COALESCE(MAX(sc.sector_label),     '其他')     AS sector_label,
+         COALESCE(MAX(sc.industry_id),      'OTHER')    AS industry_id,
+         COALESCE(MAX(sc.industry_label),   '未分类')    AS industry_label,
+         COALESCE(MAX(sc.industry_slug),    'other')    AS industry_slug,
+         COALESCE(MAX(sc.exchange), '')                 AS exchange
     FROM ohlc_rows o
-    LEFT JOIN stats.stock_industry_map sim ON sim.stock_code = o.code
+    LEFT JOIN LATERAL (
+      SELECT sc.sector_id, sc.sector_label, sc.industry_id, sc.industry_label,
+             sc.industry_slug, sc.exchange
+        FROM stats.sec_classification sc
+       WHERE sc.code = o.code AND sc.type = 'stock'
+       ORDER BY sc.parent_index_weight DESC NULLS LAST, sc.parent_index_code
+       LIMIT 1
+    ) sc ON true
    GROUP BY o.code
   HAVING COUNT(*) >= ${MIN_DAYS}
    ORDER BY n_days DESC, o.code
@@ -206,7 +222,7 @@ const STOCK_META_SQL = `
 
 // ----------------------------------------------------------------------------
 //  Stock themes — build the two-level L1 sector → L2 industry → stocks tree
-//  from the precomputed classification columns in stock_industry_map.
+//  from the precomputed classification columns in sec_classification.
 // ----------------------------------------------------------------------------
 export async function listStockThemes(): Promise<SectorNode[]> {
   const rows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
@@ -218,7 +234,7 @@ export async function listStockThemes(): Promise<SectorNode[]> {
 
   for (const r of rows) {
     // Use the SUFFIXED code (e.g. "000001.SZ") as the canonical identifier
-    // — this matches what stock_identity, stock_industry_map, and
+    // — this matches what stock_identity, sec_classification, and
     // v_stock_baseline all use.  CodeSearchBar uses partial matching, so
     // searching "000001" still finds "000001.SZ".
     const item = { code: r.code, name: r.name ?? "" };
@@ -273,6 +289,8 @@ export interface StockCombinedQuery {
    *  When set, sector/industry/pagination are bypassed — only the matching
    *  stock is returned. */
   code?: string;
+  /** Exchange filter: 'SS' (SSE+STAR), 'SZ' (SZSE+GEM), 'BJ' (BSE). */
+  exchange?: string;
   start_date?: string;
   end_date?: string;
   page?: number;
@@ -284,6 +302,7 @@ export async function getStocksCombined(
 ): Promise<StockCombinedResponse> {
   const sectorFilter = (q.sector ?? "").trim();
   const industryFilter = (q.industry ?? "").trim();
+  const exchangeFilter = (q.exchange ?? "").trim() || null;
   // Normalize the code search: strip any suffix so we can match against both
   // the suffixed ("000001.SZ") and stripped ("000001") forms in metaRows.
   const rawCodeFilter = (q.code ?? "").trim().toUpperCase();
@@ -295,7 +314,7 @@ export async function getStocksCombined(
   // 1. Fetch all stocks with classification, ordered by n_days DESC.
   const metaRows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
 
-  // 2. Filter by sector + industry (or by exact code when codeFilter is set).
+  // 2. Filter by sector + industry + exchange (or by exact code when codeFilter is set).
   // metaRows are already ordered by n_days DESC; preserve that order so
   // pagination returns the most-liquid stocks first.
   const meta = new Map<string, {
@@ -315,7 +334,7 @@ export async function getStocksCombined(
       industry_label: r.industry_label,
     });
     if (codeFilterBare) {
-      // Exact code search — ignore sector/industry filters.
+      // Exact code search — ignore sector/industry/exchange filters.
       // Match either the full suffixed code (e.g. "000001.SZ") or the
       // stripped 6-digit form ("000001").
       const stripped = r.code.replace(/\.(SZ|SS|BJ)$/, "").toUpperCase();
@@ -329,7 +348,8 @@ export async function getStocksCombined(
     const industryOk = !industryFilter
       || r.industry_slug === industryFilter
       || r.industry_id === industryFilter;
-    if (sectorOk && industryOk) wantedCodes.push(r.code);
+    const exchangeOk = matchesExchange(r.exchange, exchangeFilter);
+    if (sectorOk && industryOk && exchangeOk) wantedCodes.push(r.code);
   }
 
   const totalStocks = wantedCodes.length;

@@ -50,6 +50,7 @@ DEFAULT_TIMEOUT: Tuple[int, int] = (15, 60)
 # Centralized here so the project's anti-bot policy can be changed in one place.
 # Individual downloaders may override based on target site's aggressiveness.
 DEFAULT_SLEEP_SEC = 20.0
+DEFAULT_SHORT_SLEEP_SEC=8.0
 
 # Shared default start date for all downloaders. Centralized here so the
 # project's historical backfill horizon can be changed in one place.
@@ -1089,13 +1090,22 @@ def add_exchange_suffix(stock_code: str, market: Optional[str] = None) -> str:
             return code + ".SZ"
         if "北京" in market:
             return code + ".BJ"
+        if "香港" in market:
+            return code + ".HK"
     exchange = get_exchange_from_code(code)
     if exchange:
         return code + "." + exchange
     import warnings
+    prefix = code[:3]
+    if prefix in AMBIGUOUS_PREFIXES:
+        reason = (
+            f"Codes {prefix}xxx are ambiguous (used by both Shanghai indices "
+            f"and Shenzhen stocks)"
+        )
+    else:
+        reason = f"Unrecognized prefix '{prefix}' (not a stock/index prefix)"
     warnings.warn(
-        f"Cannot determine exchange for stock code '{code}'. "
-        f"Codes 000xxx/001xxx are ambiguous (used by both Shanghai indices and Shenzhen stocks). "
+        f"Cannot determine exchange for code '{code}'. {reason}. "
         f"Pass 'market' parameter explicitly. Returning code without suffix."
     )
     return code
@@ -1105,9 +1115,58 @@ def strip_exchange_suffix(stock_code: str) -> str:
     code = str(stock_code).strip()
     if "." in code:
         parts = code.split(".")
-        if len(parts) == 2 and parts[1] in ("SS", "SZ"):
+        if len(parts) == 2 and parts[1] in ("SS", "SZ", "BJ", "HK"):
             return parts[0]
     return code
+
+
+# ---------------------------------------------------------------------------
+# Classification JSON loader — replacement for _classification.ICONIC_INDEXES
+# ---------------------------------------------------------------------------
+
+_CLASSIFICATION_JSON_PATH = Path(__file__).resolve().parent / "sec_classification.json"
+
+
+def load_classification_indices() -> Dict[str, Dict[str, Any]]:
+    """Load index classifications from ``sec_classification.json``.
+
+    Returns a dict keyed by index code, where each value is the full index
+    entry from the JSON::
+
+        {
+            "name": str,
+            "exchange": Optional[str],   # "SS" | "SZ" | "BJ" | "HK" | None
+            "sector_id": str,
+            "industry_id": str,
+            "tags": List[Dict[str, str]],
+            "n_days": int,
+            "first_date": Optional[str],
+            "last_date": Optional[str],
+        }
+
+    This replaces ``_classification.ICONIC_INDEXES`` (code → short name) and
+    ``_classification.classify_index()`` (name → sector/industry) by providing
+    the pre-classified data directly from the authoritative JSON cache.
+    """
+    import json as _json
+    if not _CLASSIFICATION_JSON_PATH.is_file():
+        return {}
+    with _CLASSIFICATION_JSON_PATH.open("r", encoding="utf-8") as f:
+        state = _json.load(f)
+    return state.get("indices", {})
+
+
+def load_classification_index_names() -> Dict[str, str]:
+    """Return a flat ``{code: name}`` dict from ``sec_classification.json``.
+
+    Convenience wrapper around :func:`load_classification_indices` for callers
+    that only need the code → name mapping (drop-in replacement for
+    ``ICONIC_INDEXES``).
+    """
+    return {
+        code: info.get("name", code)
+        for code, info in load_classification_indices().items()
+    }
 
 
 # ---------------------------------------------------------------------------

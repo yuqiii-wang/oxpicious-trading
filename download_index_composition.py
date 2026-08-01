@@ -19,10 +19,20 @@ CSV schema (matches what build_szse_sse_etf_and_margin.py expects):
                    the 交易所 column
   - weight_pct:    float, the closing weight percentage (e.g. 10.335)
 
+Month-start refresh:
+  On the 1st day of each month the cache is bypassed and every index is
+  re-downloaded. The CSV is stamped with TODAY's date (not the xls's snapshot
+  date, which typically reflects the previous business day — e.g. running on
+  2026-08-01 yields a CSV dated 20260801 even though the xls reports
+  2026-07-31). This ensures a fresh monthly snapshot flows through to prod
+  (stats.sec_composition) under the new month's date. Use --force-month-start
+  to trigger this behavior on any day for testing.
+
 Usage:
   python download_index_composition.py
   python download_index_composition.py --index-codes 930606,000300
   python download_index_composition.py --skip-cached
+  python download_index_composition.py --force-month-start
   python download_index_composition.py --out-root /tmp/csi_comp
 """
 from __future__ import annotations
@@ -30,8 +40,6 @@ from __future__ import annotations
 import argparse
 import logging
 import re
-import sys
-import time
 from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
@@ -42,6 +50,7 @@ import requests
 
 from _download_commons import (
     DEFAULT_TIMEOUT,
+    DEFAULT_SLEEP_SEC,
     MIN_VALID_BYTES,
     AntiBotProxy,
     AntiBotConfig,
@@ -50,14 +59,11 @@ from _download_commons import (
     is_valid_file,
     build_default_session,
     RunStats,
-    random_browser_profile,
     add_exchange_suffix,
+    load_classification_indices,
+    load_classification_index_names,
 )
-
-try:
-    from _classification import ICONIC_INDEXES
-except ImportError:
-    ICONIC_INDEXES = {}
+from _download_commons_monthly import is_month_start
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -81,7 +87,17 @@ COLUMN_MATCHERS: List[tuple[str, str]] = [
     ("权重",              "weight_pct"),
 ]
 
-SLEEP_SEC = 1.0  # OSS bucket — no anti-bot, keep sleep short
+SLEEP_SEC = DEFAULT_SLEEP_SEC
+
+# SZSE indices that must NOT be downloaded from csindex.com.cn
+# (they are covered by SZSE-specific downloaders)
+CSINDEX_SKIP_CODES = {"399001", "399006", "399237"}
+
+# Bond market indices track bonds (not stocks), so they don't have meaningful
+# composition (closeweight) data. They are tracked via daily index OHLCV
+# data instead (downloaded by download_csindex.py).
+DEBT_SECTOR_INDUSTRY_IDS = frozenset({"DEBT_TREASURY", "DEBT_CORP"})
+DEBT_SECTOR_ID = "DEBT"
 
 logger = setup_logger("csi_index_composition")
 
@@ -100,15 +116,13 @@ def fetch_closeweight_xls(
     Returns raw bytes on success, None on failure.
     """
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=1.0))
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
     
     url = CLOSEWEIGHT_URL_TEMPLATE.format(index_code=index_code)
-    browser_profile = random_browser_profile()
 
     resp = proxy.get(
         session,
         url,
-        headers=browser_profile,
         timeout=DEFAULT_TIMEOUT,
         logger=logger,
         log_tag=f"[dl {index_code}]",
@@ -280,6 +294,7 @@ def download_index_composition(
     out_root: Optional[str] = None,
     skip_cached: bool = True,
     sleep_sec: float = SLEEP_SEC,
+    force_month_start: bool = False,
 ) -> dict:
     """Download CSI index composition (closeweight) for the given index codes.
 
@@ -288,6 +303,9 @@ def download_index_composition(
         out_root: alternative output root directory
         skip_cached: skip indices that already have a cached CSV
         sleep_sec: sleep between downloads
+        force_month_start: force month-start behavior (bypass cache + stamp
+            CSVs with today's date) regardless of the actual calendar day.
+            Useful for testing the monthly refresh flow on any day.
 
     Returns:
         Summary dict with download stats and output directory.
@@ -295,11 +313,29 @@ def download_index_composition(
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "csi_index_composition", out_root)
 
     if not index_codes:
-        index_codes = sorted(ICONIC_INDEXES.keys())
+        index_codes = sorted(load_classification_index_names().keys())
 
     if not index_codes:
-        logger.warning("No index codes to download (ICONIC_INDEXES is empty)")
+        logger.warning("No index codes to download (sec_classification.json has no indices)")
         return {"out_dir": str(out_dir), "downloaded": 0, "skipped_cached": 0, "failed": 0}
+
+    # Load index metadata from sec_classification.json (replaces _classification.py).
+    _index_meta = load_classification_indices()
+    _index_names = {c: info.get("name", c) for c, info in _index_meta.items()}
+
+    # Month-start trigger: on the 1st of each month (or when forced), stamp
+    # CSVs with today's date so a fresh monthly snapshot flows to prod even
+    # if the xls still reports the previous business day.  Indices that
+    # already have today's CSV are skipped.
+    today = date.today()
+    month_start = force_month_start or is_month_start(today)
+    if month_start:
+        logger.info(
+            "Month-start refresh (today=%s, forced=%s): stamping CSVs with "
+            "today's date (overrides xls snapshot_date). Already-downloaded "
+            "CSVs for today are skipped.",
+            today.isoformat(), force_month_start,
+        )
 
     logger.info(
         "Starting CSI index composition download: %d indices, out=%s",
@@ -309,9 +345,10 @@ def download_index_composition(
     session = build_default_session()
     stats = RunStats()
     
-    # Create unified AntiBotProxy
+    # Create unified AntiBotProxy with jitter
     proxy_config = AntiBotConfig(
         base_sleep_sec=sleep_sec,
+        sleep_jitter=0.3,
     )
     proxy = AntiBotProxy(proxy_config)
     
@@ -323,16 +360,58 @@ def download_index_composition(
             if not code:
                 continue
 
-            name = ICONIC_INDEXES.get(code, code)
+            name = _index_names.get(code, code)
+
+            if code in CSINDEX_SKIP_CODES:
+                logger.info("== Index %s (%s) — skipped (in CSINDEX_SKIP_CODES, handled by SZSE downloader) ==", code, name)
+                stats.skipped_cached += 1
+                results.append({
+                    "code": code, "name": name,
+                    "status": "szse_index_skip",
+                })
+                continue
+
             logger.info("== Index %s (%s) ==", code, name)
 
-            # Check cache
-            cached = find_cached_csv(out_dir, code)
-            if skip_cached and cached:
-                logger.info("  [cache] %s already cached: %s", code, cached.name)
+            # Debt sector indices (国债指数, 企债指数) track bonds, not stocks,
+            # so they don't have meaningful composition data. Skip them —
+            # daily index OHLCV data (downloaded by download_csindex.py) is
+            # sufficient.  Sector/industry are read from sec_classification.json.
+            idx_info = _index_meta.get(code, {})
+            sid = idx_info.get("sector_id")
+            iid = idx_info.get("industry_id")
+            ilabel = idx_info.get("name", code)
+            if sid == DEBT_SECTOR_ID or iid in DEBT_SECTOR_INDUSTRY_IDS:
+                logger.info("  [debt] %s is a debt sector index (%s), skipping "
+                            "composition download (daily index only)", code, ilabel)
                 stats.skipped_cached += 1
-                results.append({"code": code, "name": name, "status": "cached", "file": str(cached)})
+                results.append({
+                    "code": code, "name": name,
+                    "status": "debt_index_skip",
+                    "sector": sid,
+                    "industry": iid,
+                })
                 continue
+
+            # Check cache.
+            # On month-start: skip only if today's CSV already exists (prevents
+            #   re-downloading on the same day while still creating a fresh
+            #   monthly snapshot for indices not yet downloaded today).
+            # On non-month-start: skip if any valid cached CSV exists.
+            if month_start:
+                today_csv = out_dir / f"{code}_closeweight_{today.strftime('%Y%m%d')}.csv"
+                if is_valid_file(today_csv, min_bytes=MIN_VALID_BYTES):
+                    logger.info("  [cache] %s already downloaded today: %s", code, today_csv.name)
+                    stats.skipped_cached += 1
+                    results.append({"code": code, "name": name, "status": "cached", "file": str(today_csv)})
+                    continue
+            else:
+                cached = find_cached_csv(out_dir, code)
+                if skip_cached and cached:
+                    logger.info("  [cache] %s already cached: %s", code, cached.name)
+                    stats.skipped_cached += 1
+                    results.append({"code": code, "name": name, "status": "cached", "file": str(cached)})
+                    continue
 
             if proxy.is_blocked(CLOSEWEIGHT_URL_TEMPLATE):
                 logger.warning("  [host-blocked] OSS bucket blocked, skipping %s", code)
@@ -360,8 +439,15 @@ def download_index_composition(
                 results.append({"code": code, "name": name, "status": "empty"})
                 continue
 
-            # Save CSV
-            snapshot_date = normalized["snapshot_date"].iloc[0]
+            # Save CSV. On month-start refresh, stamp the CSV with today's
+            # date (overriding the xls's snapshot_date, which is usually the
+            # previous business day) so a fresh monthly snapshot flows to
+            # prod (stats.sec_composition) under the new month's date.
+            if month_start:
+                snapshot_date = today.isoformat()
+                normalized["snapshot_date"] = snapshot_date
+            else:
+                snapshot_date = normalized["snapshot_date"].iloc[0]
             csv_name = csv_filename_for(code, snapshot_date)
             csv_path = out_dir / csv_name
             normalized.to_csv(csv_path, index=False, encoding="utf-8-sig")
@@ -375,11 +461,11 @@ def download_index_composition(
                 "file": str(csv_path),
                 "n_constituents": len(normalized),
                 "snapshot_date": snapshot_date,
+                "month_start": month_start,
             })
-            logger.info("  [ok] %s: %d constituents, snapshot=%s → %s",
-                        code, len(normalized), snapshot_date, csv_name)
-
-            time.sleep(sleep_sec)
+            logger.info("  [ok] %s: %d constituents, snapshot=%s → %s%s",
+                        code, len(normalized), snapshot_date, csv_name,
+                        " (month-start stamp)" if month_start else "")
 
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
@@ -406,7 +492,7 @@ if __name__ == "__main__":
     )
     ap.add_argument(
         "--index-codes", type=str, default=None,
-        help="Comma-separated list of index codes (default: all ICONIC_INDEXES). "
+        help="Comma-separated list of index codes (default: all from sec_classification.json). "
              "Example: --index-codes 930606,000300,399997",
     )
     ap.add_argument(
@@ -416,6 +502,12 @@ if __name__ == "__main__":
     ap.add_argument(
         "--no-skip-cached", action="store_true", default=False,
         help="Re-download even if a cached CSV exists",
+    )
+    ap.add_argument(
+        "--force-month-start", action="store_true", default=False,
+        help="Force month-start behavior: bypass cache and stamp CSVs with "
+             "today's date (overrides xls snapshot_date). For testing the "
+             "monthly refresh flow on any day.",
     )
     ap.add_argument(
         "--sleep-sec", type=float, default=SLEEP_SEC,
@@ -432,5 +524,6 @@ if __name__ == "__main__":
         out_root=args.out_root,
         skip_cached=not args.no_skip_cached,
         sleep_sec=args.sleep_sec,
+        force_month_start=args.force_month_start,
     )
     print(result)

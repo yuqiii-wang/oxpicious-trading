@@ -1,9 +1,9 @@
 /**
- * IntradayPanel — closeable 5-min candlestick expansion for the Index
+ * IntradayPanel — closeable 5-min OHLC expansion for the Index
  * Baseline page. Rendered below an IndexPanel when the user clicks a date
  * that has 5-minute intraday bars (gold-ringed marker on the close line).
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -15,9 +15,14 @@ import {
 } from "@mui/material";
 import { Close } from "@mui/icons-material";
 import EChart from "@/components/EChart";
+import OhlcModeToggle from "@/components/OhlcModeToggle";
 import RefreshButton from "@/components/RefreshButton";
-import { fmtNum } from "@/lib/series";
-import { candlestickSeries } from "@/lib/candlestick";
+import {
+  ohlcSeries,
+  rebasePriceArrays,
+  formatPriceValue,
+  type OhlcMode,
+} from "@/lib/ohlc";
 import { axisColors } from "@/theme/chart-palette";
 import type { IndexIntraday5minResponse } from "../../../../shared/types";
 import type { EChartsOption } from "echarts";
@@ -47,11 +52,30 @@ export default function IntradayPanel({
   onClose,
   onRefresh,
 }: Props) {
+  // OHLC display mode — "percentage" (default) rebases intraday OHLC to %
+  // change from the first bar's close; "absolute" shows raw prices.
+  const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
+
   const option = useMemo<EChartsOption>(() => {
     const c = axisColors(themeMode);
     const bars = data?.bars ?? [];
     const times = bars.map((b) => b.time);
-    const ohlc = bars.map((b) => [b.open, b.close, b.low, b.high]);
+    const open = bars.map((b) => b.open);
+    const close = bars.map((b) => b.close);
+    const low = bars.map((b) => b.low);
+    const high = bars.map((b) => b.high);
+
+    // Rebase OHLC to % change from first close in percentage mode.
+    const { rebased } = rebasePriceArrays(
+      { open, close, low, high },
+      ohlcMode,
+    );
+    const ohlc = times.map((_, i) => [
+      rebased.open[i],
+      rebased.close[i],
+      rebased.low[i],
+      rebased.high[i],
+    ]);
 
     return {
       backgroundColor: "transparent",
@@ -75,10 +99,16 @@ export default function IntradayPanel({
           let html = `<div style="font-weight:600;margin-bottom:4px">${time}</div>`;
           for (const p of arr) {
             if (p.value == null) continue;
-            const v = Array.isArray(p.value) ? p.value[p.value.length - 1] : p.value;
-            if (v == null || (typeof v === "number" && !Number.isFinite(v))) continue;
-            const vstr = typeof v === "number" ? fmtNum(v) : String(v);
-            html += `<div>${p.marker ?? ""} ${p.seriesName ?? ""}: <b>${vstr}</b></div>`;
+            const name = p.seriesName ?? "";
+            if (Array.isArray(p.value)) {
+              const [o, cl, l, h] = p.value;
+              if (o == null && cl == null && l == null && h == null) continue;
+              html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
+            } else {
+              const v = p.value as number;
+              if (!Number.isFinite(v)) continue;
+              html += `<div>${p.marker ?? ""} ${name}: <b>${formatPriceValue(v, ohlcMode)}</b></div>`;
+            }
           }
           return html;
         },
@@ -97,15 +127,19 @@ export default function IntradayPanel({
       yAxis: {
         type: "value",
         scale: true,
-        name: "Price",
+        name: ohlcMode === "percentage" ? "%" : "Price",
         nameTextStyle: { color: c.textColor, fontSize: 9 },
         axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: number) => fmtNum(v) },
+        axisLabel: {
+          color: c.textColor,
+          fontSize: 9,
+          formatter: (v: number) => formatPriceValue(v, ohlcMode),
+        },
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
-      series: [candlestickSeries(ohlc, { name: "5min" })],
+      series: [ohlcSeries(ohlc, { name: "5min" })],
     };
-  }, [data, themeMode]);
+  }, [data, themeMode, ohlcMode]);
 
   return (
     <Card sx={{ mt: 1 }}>
@@ -122,6 +156,7 @@ export default function IntradayPanel({
         }
         action={
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>
+            <OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />
             {onRefresh && (
               <RefreshButton
                 onClick={onRefresh}

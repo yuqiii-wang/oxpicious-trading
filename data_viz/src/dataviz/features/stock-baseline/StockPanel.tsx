@@ -16,9 +16,15 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert, Box, Chip, Slider, Stack, Typography } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
+import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { useStore } from "@/store/filters";
 import { breakArraysAtGaps, fmtNum, fmtPct, safeMa } from "@/lib/series";
-import { candlestickSeries } from "@/lib/candlestick";
+import {
+  ohlcSeries,
+  rebasePriceArrays,
+  formatPriceValue,
+  type OhlcMode,
+} from "@/lib/ohlc";
 import {
   MA20_COLOR,
   MA60_COLOR,
@@ -28,6 +34,8 @@ import {
   UP_COLOR,
   DOWN_COLOR,
   axisColors,
+  commonLegend,
+  commonGrid,
 } from "@/theme/chart-palette";
 import type { StockBundle } from "../../../../shared/types";
 import type { EChartsOption } from "echarts";
@@ -93,6 +101,9 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
   const allRows = stock.rows;
   const maxIdx = allRows.length - 1;
   const [range, setRange] = useState<[number, number]>([0, maxIdx]);
+  // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
+  // from the first valid close; "absolute" shows raw prices.
+  const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
   // Reset slider when data changes (e.g., sector switch or page change).
   // When defaultStartDate/defaultEndDate are provided (aligned to the
@@ -127,7 +138,7 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
   );
 
   // Detect whether OHLC is available — when most rows have all four
-  // components, render a candlestick; otherwise fall back to a close line.
+  // components, render an OHLC chart; otherwise fall back to a close line.
   const hasOhlc = useMemo(() => {
     if (filteredRows.length === 0) return false;
     const ohlcCount = filteredRows.filter(
@@ -138,7 +149,7 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
 
   const hasPe = useMemo(() => {
     if (filteredRows.length === 0) return false;
-    return filteredRows.some((r) => r.pe != null);
+    return filteredRows.some((r) => r.pe != null && r.pe !== 0);
   }, [filteredRows]);
 
   const option = useMemo<EChartsOption>(() => {
@@ -158,8 +169,17 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
     const ma60 = safeMa(close, 60);
     const ma120 = safeMa(close, 120);
 
+    // Rebase price-derived arrays (OHLC + MAs) to % change in percentage mode.
+    // pe and isPeEstimatedNum are NOT price-derived — kept in absolute units.
+    const { rebased } = rebasePriceArrays(
+      { open, high, low, close, ma5, ma20, ma60, ma120 },
+      ohlcMode,
+    );
+
     const broken = breakArraysAtGaps(dates, [
-      open, high, low, close, ma5, ma20, ma60, ma120, pe, isPeEstimatedNum,
+      rebased.open, rebased.high, rebased.low, rebased.close,
+      rebased.ma5, rebased.ma20, rebased.ma60, rebased.ma120,
+      pe, isPeEstimatedNum,
     ]);
 
     const candleData: Array<Array<number | null>> = broken.dates.map((_, i) => [
@@ -173,10 +193,14 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
       {
         type: "value",
         scale: true,
-        name: "Price",
+        name: ohlcMode === "percentage" ? "%" : "Price",
         nameTextStyle: { color: c.textColor, fontSize: 9 },
         axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: number) => fmtNum(v) },
+        axisLabel: {
+          color: c.textColor,
+          fontSize: 9,
+          formatter: (v: number) => formatPriceValue(v, ohlcMode),
+        },
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
     ];
@@ -195,7 +219,7 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
 
     const series: EChartsOption["series"] = [
       ...(hasOhlc
-        ? [candlestickSeries(candleData, {
+        ? [ohlcSeries(candleData, {
             name: "OHLC",
             yAxisIndex: 0,
             z: 5,
@@ -252,12 +276,14 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
       },
     ];
     if (hasPe) {
-      // Separate PE into actual (solid) and estimated (dashed) series
+      // Separate PE into actual (solid) and estimated (light, continuous)
+      // series. Null or 0 values are suppressed so missing/placeholder PE
+      // samples do not render on the chart.
       const peActual = broken.arrays[8].map((val, i) =>
-        broken.arrays[9][i] === 1 ? null : val
+        broken.arrays[9][i] === 1 || val == null || val === 0 ? null : val
       );
       const peEstimated = broken.arrays[8].map((val, i) =>
-        broken.arrays[9][i] === 1 ? val : null
+        broken.arrays[9][i] === 1 && val != null && val !== 0 ? val : null
       );
       series.push({
         type: "line",
@@ -276,7 +302,8 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
         data: peEstimated,
         smooth: false,
         symbol: "none",
-        lineStyle: { color: PE_COLOR, width: 1.1, opacity: 0.6, type: "dashed" },
+        connectNulls: false,
+        lineStyle: { color: PE_COLOR, width: 1.1, opacity: 0.4 },
         z: 6,
       });
     }
@@ -284,7 +311,7 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
     return {
       backgroundColor: "transparent",
       animation: false,
-      grid: { left: 50, right: hasPe ? 60 : 50, top: 16, bottom: 28 },
+      grid: commonGrid({ left: 50, right: hasPe ? 60 : 50, bottom: 28 }),
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "cross", snap: true },
@@ -301,31 +328,28 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
           if (arr.length === 0) return "";
           const dateStr = (arr[0].axisValue as string) || "";
           let html = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
+          const isPriceSeries = (name: string) =>
+            name === "OHLC" || name === "Close" || name.startsWith("MA");
           for (const p of arr) {
             if (p.value == null) continue;
             const name = p.seriesName ?? "";
             if (Array.isArray(p.value)) {
               const [o, cl, l, h] = p.value;
               if (o == null && cl == null && l == null && h == null) continue;
-              html += `<div>${p.marker ?? ""} ${name}: O=${fmtNum(o)} H=${fmtNum(h)} L=${fmtNum(l)} C=${fmtNum(cl)}</div>`;
+              html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
             } else {
               const v = p.value as number;
               if (!Number.isFinite(v)) continue;
-              const vstr = name === "PE" ? fmtNum(v, 2) : fmtNum(v);
+              const vstr = isPriceSeries(name)
+                ? formatPriceValue(v, ohlcMode)
+                : name === "PE" || name === "PE (est)" ? fmtNum(v, 2) : fmtNum(v);
               html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}</b></div>`;
             }
           }
           return html;
         },
       },
-      legend: {
-        top: 0,
-        right: 0,
-        textStyle: { color: c.textColor, fontSize: 8 },
-        itemWidth: 10,
-        itemHeight: 6,
-        type: "scroll",
-      },
+      legend: commonLegend(themeMode, { type: "scroll" }),
       xAxis: {
         type: "category",
         data: broken.dates,
@@ -341,11 +365,11 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
       yAxis,
       series,
     };
-  }, [filteredRows, themeMode, hasOhlc, hasPe]);
+  }, [filteredRows, themeMode, hasOhlc, hasPe, ohlcMode]);
 
   const subtitle = hasOhlc
-    ? `${stock.sector_label} / ${stock.industry_label} · Candlestick OHLC + MA5/MA20/MA60/MA120${hasPe ? " · PE" : ""}`
-    : `${stock.sector_label} / ${stock.industry_label} · Close + MA5/MA20/MA60/MA120${hasPe ? " · PE" : ""}`;
+    ? `${stock.sector_label} / ${stock.industry_label} · OHLC${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120${hasPe ? " · PE" : ""}`
+    : `${stock.sector_label} / ${stock.industry_label} · Close${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120${hasPe ? " · PE" : ""}`;
 
   const filteredStock: StockBundle = useMemo(
     () => ({ ...stock, rows: filteredRows }),
@@ -356,7 +380,12 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
     <ChartCard
       title={`${stock.code} · ${stock.name}`}
       subtitle={subtitle}
-      action={<ReturnBadges stock={filteredStock} />}
+      action={
+        <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
+          <OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />
+          <ReturnBadges stock={filteredStock} />
+        </Stack>
+      }
       height={360}
     >
       <Box sx={{ width: "100%" }}>

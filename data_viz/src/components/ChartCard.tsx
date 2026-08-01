@@ -32,7 +32,7 @@ export default function ChartCard({
         action={action}
         sx={{ pb: 0.5, "& .MuiCardHeader-content": { overflow: "hidden" } }}
       />
-      <CardContent sx={{ pt: 0.5, pb: 1.5, height: height ? `${height}px` : undefined }}>
+      <CardContent sx={{ pt: 0.5, pb: 1.5, minHeight: height ? `${height}px` : undefined }}>
         <Box sx={{ width: "100%" }}>{children}</Box>
       </CardContent>
     </Card>

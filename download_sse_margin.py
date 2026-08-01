@@ -246,8 +246,11 @@ def _download_summary(
 
     rows_raw = payload.get("result") or []
     if not rows_raw:
-        logger.info("[summary %s] no data", ymd)
-        return None, 0
+        # API confirmed no data for this date — write a header-only CSV so the
+        # next run's is_valid_file() check skips it instead of re-fetching.
+        logger.info("[summary %s] no data, writing empty CSV", ymd)
+        _write_csv(out_file, [], SUMMARY_COLUMNS)
+        return out_file, 0
 
     parsed = [_parse_summary_row(r) for r in rows_raw]
     _write_csv(out_file, parsed, SUMMARY_COLUMNS)
@@ -276,6 +279,10 @@ def _download_detail(
     all_rows: List[Dict[str, Any]] = []
     page_no = 1
     total: Optional[int] = None
+    # True when page 1 returned a valid payload with zero rows — i.e. the API
+    # confirmed there is no data for this date (as opposed to a transient
+    # request failure that left all_rows empty).
+    api_confirmed_empty = False
 
     while True:
         if proxy.is_blocked(SSE_QUERY_URL):
@@ -292,6 +299,8 @@ def _download_detail(
         rows_raw = payload.get("result") or []
         if not rows_raw:
             logger.info("[detail %s] page %d returned no rows, stopping", ymd, page_no)
+            if page_no == 1:
+                api_confirmed_empty = True
             break
 
         all_rows.extend(_parse_detail_row(r) for r in rows_raw)
@@ -308,7 +317,13 @@ def _download_detail(
         # Auto-sleep handled by proxy.get()/post()
 
     if not all_rows:
-        logger.info("[detail %s] no data", ymd)
+        if api_confirmed_empty:
+            # API confirmed no data for this date — write a header-only CSV so
+            # the next run's is_valid_file() check skips it instead of re-fetching.
+            logger.info("[detail %s] no data, writing empty CSV", ymd)
+            _write_csv(out_file, [], DETAIL_COLUMNS)
+            return out_file, 0
+        logger.info("[detail %s] no data (transient failure)", ymd)
         return None, 0
 
     _write_csv(out_file, all_rows, DETAIL_COLUMNS)
@@ -413,6 +428,7 @@ def download_sse_margin(
         "downloaded_summary": 0, "downloaded_detail": 0,
         "skipped_summary": 0, "skipped_detail": 0,
         "failed_summary": 0, "failed_detail": 0,
+        "empty_summary": 0, "empty_detail": 0,
         "out_dir": str(out_dir),
         "start_date": str(_start),
         "end_date": str(effective_end_date),
@@ -430,6 +446,8 @@ def download_sse_margin(
                     stats["skipped_summary"] += 1
                 elif path is None:
                     stats["failed_summary"] += 1
+                elif n == 0:
+                    stats["empty_summary"] += 1
                 else:
                     stats["downloaded_summary"] += 1
 
@@ -439,15 +457,17 @@ def download_sse_margin(
                     stats["skipped_detail"] += 1
                 elif path is None:
                     stats["failed_detail"] += 1
+                elif n == 0:
+                    stats["empty_detail"] += 1
                 else:
                     stats["downloaded_detail"] += 1
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
 
     logger.info(
-        "Done SSE margin. summary: dl=%d skip=%d fail=%d | detail: dl=%d skip=%d fail=%d out=%s",
-        stats["downloaded_summary"], stats["skipped_summary"], stats["failed_summary"],
-        stats["downloaded_detail"], stats["skipped_detail"], stats["failed_detail"],
+        "Done SSE margin. summary: dl=%d skip=%d fail=%d empty=%d | detail: dl=%d skip=%d fail=%d empty=%d out=%s",
+        stats["downloaded_summary"], stats["skipped_summary"], stats["failed_summary"], stats["empty_summary"],
+        stats["downloaded_detail"], stats["skipped_detail"], stats["failed_detail"], stats["empty_detail"],
         out_dir,
     )
     return stats

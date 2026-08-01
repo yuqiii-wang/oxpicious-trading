@@ -38,6 +38,7 @@ export default function IndexBaselinePage() {
   const [sectors, setSectors] = useState<SectorNode[]>([]);
   const [sectorId, setSectorId] = useState<string | null>(null);
   const [industrySlug, setIndustrySlug] = useState<string | null>(null);
+  const [exchange, setExchange] = useState<string | null>(null);
   const [data, setData] = useState<IndexCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,18 +59,22 @@ export default function IndexBaselinePage() {
     fetchIndexThemes()
       .then((list) => {
         setSectors(list);
-        // Auto-select the first sector (highest count) if available
-        if (list.length > 0) setSectorId(list[0].sector_id);
+        // Default to BROAD sector (broad-based indices) if available,
+        // else fall back to the first sector (highest count).
+        if (list.length > 0) {
+          const broad = list.find((s) => s.sector_id === "BROAD");
+          setSectorId(broad ? broad.sector_id : list[0].sector_id);
+        }
       })
       .catch((e: Error) => setError(e.message));
   }, [refreshKey]);
 
-  // Reset to page 1 whenever sector or industry changes
+  // Reset to page 1 whenever sector, industry, or exchange changes
   useEffect(() => {
     setPage(1);
-  }, [sectorId, industrySlug]);
+  }, [sectorId, industrySlug, exchange]);
 
-  // Load index data whenever sector/industry, page, or search code changes.
+  // Load index data whenever sector/industry/exchange, page, or search code changes.
   // When searchCode is set, fetch only that one index (bypassing sector/pagination).
   useEffect(() => {
     let cancelled = false;
@@ -78,7 +83,7 @@ export default function IndexBaselinePage() {
     setError(null);
     const promise = searchCode
       ? fetchIndicesCombined(null, null, null, null, 1, 1, searchCode)
-      : fetchIndicesCombined(sectorId, industrySlug, null, null, page, PAGE_SIZE);
+      : fetchIndicesCombined(sectorId, industrySlug, null, null, page, PAGE_SIZE, undefined, exchange);
     promise
       .then((d) => {
         if (cancelled) return;
@@ -93,7 +98,7 @@ export default function IndexBaselinePage() {
     return () => {
       cancelled = true;
     };
-  }, [sectorId, industrySlug, page, searchCode, refreshKey]);
+  }, [sectorId, industrySlug, exchange, page, searchCode, refreshKey]);
 
   const handleRefresh = () => {
     // Both endpoints share the "/api/index-baseline/" prefix:
@@ -138,6 +143,10 @@ export default function IndexBaselinePage() {
     setSearchCode(null);
     setIndustrySlug(slug);
   };
+  const handleExchangeChange = (ex: string | null) => {
+    setSearchCode(null);
+    setExchange(ex);
+  };
 
   const activeSector = sectors.find((s) => s.sector_id === sectorId);
   const activeIndustry = activeSector?.industries.find(
@@ -181,8 +190,10 @@ export default function IndexBaselinePage() {
         sectors={sectors}
         sectorId={sectorId}
         industrySlug={industrySlug}
+        exchange={exchange}
         onSectorChange={handleSectorChange}
         onIndustryChange={handleIndustryChange}
+        onExchangeChange={handleExchangeChange}
       />
 
       {loading && (

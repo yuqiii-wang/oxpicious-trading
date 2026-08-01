@@ -24,7 +24,7 @@ Missing-data detection flow (DB-first):
     3. Query stats.etf_identity by index for existing (date, code) pairs
     4. missing_dates = available_dates - existing_dates
     5. If no missing dates: query DB for historical OHLCV+margin only (for
-       composition merge_asof + etf_meta stats), skip CSV reading entirely
+       composition merge_asof + sec_classification stats), skip CSV reading entirely
     6. If missing dates exist: read ONLY the source CSVs for those missing
        dates, then query DB for existing OHLCV+margin (historical context
        for split adjustment + MA computation), and concatenate the two
@@ -40,9 +40,11 @@ Missing-data detection flow (DB-first):
     3. Filter to missing (code, snapshot_date) pairs
     4. Bulk upsert only the missing rows
 
-  ETF meta (etf_meta — per-code metadata, not per-date):
-    Computed from full merged data (n_ohlcv_days, avg_volume_wan, etc.) and
-    upserted unconditionally (ON CONFLICT DO UPDATE — idempotent).
+  ETF meta (sec_classification type='etf' — per-code metadata, not per-date):
+    Computed from full merged data (n_days, avg_volume_wan, etc.) and
+    upserted unconditionally (ON CONFLICT DO UPDATE — idempotent). Only
+    quality-metric columns are updated; classification + index_code columns
+    (populated by build_etf_index_map.py) are preserved on conflict.
 
 With --force: truncate all target tables first, then read ALL source CSVs
 (no DB historical query needed since DB is empty).
@@ -65,7 +67,13 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _download_commons import read_csv_preferred, strip_exchange_suffix
-from _study_select_etf import ETF_THEME_RULES
+from _study_select_etf import ETF_THEMES
+# Derive ETF_THEME_RULES (list of (theme_id, label, slug, keywords) tuples)
+# from ETF_THEMES OrderedDict for the keyword-based classify_etf_theme below.
+ETF_THEME_RULES = [
+    (tid, cfg.get("theme_label", tid), cfg.get("slug", tid), cfg.get("kw", []))
+    for tid, cfg in ETF_THEMES.items()
+]
 from _build_commons import (
     setup_utf8_stdout, add_common_build_args, get_db_or_exit,
     parse_num, parse_date, ymd_from_filename, ymd_to_date, in_range,
@@ -440,8 +448,8 @@ def build_szse_index_composition_rows(verbose=True):
 
     Reads files from temps/szse_index_composition/ which are produced by
     download_szse_index_composition.py. These contain the latest constituent
-    stocks for SZSE indices like 399001 (深证成指) and 399006 (创业板指),
-    with weights computed from float shares.
+    stocks for SZSE indices like 399001 (深证成指), 399006 (创业板指), and
+    399237 (运输指数), with weights computed from float shares.
 
     Returns a list of dicts with keys:
       snapshot_date, code, source_type, rank, stock_code, stock_name, weight_pct
@@ -662,6 +670,34 @@ def build_ohlcv_df(verbose=True, ohlcv_files=None):
     out = out.drop_duplicates(subset=["date", "code"], keep="last")
     out = out.sort_values(["code", "date"]).reset_index(drop=True)
 
+    # ------------------------------------------------------------------
+    # Normalize 1000x amount error in SZSE/SSE source data.
+    #
+    # The SZSE archive .xlsx reports 成交金额(万元) in MIXED units: some
+    # rows have amount in 万元 (correct), others have amount = vol_wan ×
+    # close (1000× too big). The SSE trend has the same issue for some
+    # securities. The discriminator is amt / (vol × close):
+    #   SZSE close is in 千分位 (price_yuan × 1000):
+    #     correct ratio ≈ 0.001, bad ratio ≈ 1.0  → threshold 0.1
+    #   SSE close is in 元 (price_yuan):
+    #     correct ratio ≈ 1.0, bad ratio ≈ 1000  → threshold 100
+    # When bad, amount_wan is divided by 1000 to convert to proper 万元.
+    # ------------------------------------------------------------------
+    _vol = pd.to_numeric(out["volume_wan"], errors="coerce")
+    _cls = pd.to_numeric(out["close"], errors="coerce")
+    _amt = pd.to_numeric(out["amount_wan"], errors="coerce")
+    _ratio = _amt / (_vol * _cls)
+    _szse = out["code"].str.endswith(".SZ")
+    _bad_szse = _szse & (_ratio > 0.1) & (_vol > 0) & (_cls > 0) & (_amt > 0)
+    _bad_sse = (~_szse) & (_ratio > 100) & (_vol > 0) & (_cls > 0) & (_amt > 0)
+    _bad_mask = _bad_szse | _bad_sse
+    _n_fixed = int(_bad_mask.sum())
+    if _n_fixed > 0:
+        out.loc[_bad_mask, "amount_wan"] = out.loc[_bad_mask, "amount_wan"] / 1000.0
+        if verbose:
+            print(f"    [AMT-FIX] normalized {_n_fixed:,} rows with 1000× amount error "
+                  f"(SZSE: {int(_bad_szse.sum()):,}, SSE: {int(_bad_sse.sum()):,})", flush=True)
+
     if verbose:
         n_szse = out["code"].str.endswith(".SZ").sum()
         n_sse = out["code"].str.endswith(".SS").sum()
@@ -673,7 +709,7 @@ def build_ohlcv_df(verbose=True, ohlcv_files=None):
 
 
 # ============================================================================
-# Build margin long DataFrame (FULL history — needed for etf_meta has_margin)
+# Build margin long DataFrame (FULL history — needed for sec_classification has_margin)
 # ============================================================================
 def _scan_margin_dir(scan_dir, file_prefix, market, verbose=True, files=None):
     if files is None:
@@ -981,7 +1017,9 @@ async def main():
             print("    [DB] Force mode: truncating existing tables", flush=True)
             await truncate_table_async(conn, "stats.etf_identity")
             await truncate_table_async(conn, "stats.sec_composition")
-            await truncate_table_async(conn, "stats.etf_meta")
+            # NOTE: do NOT truncate stats.sec_classification here — it holds both ETF and
+            # index rows. ETF classification + index_code come from
+            # build_etf_index_map.py; only quality metrics are refreshed below.
             existing_keys = set()
             existing_dates = set()
         else:
@@ -1139,7 +1177,7 @@ async def main():
         comp_long, comp_universe = build_composition(verbose=True)
 
         # ------------------------------------------------------------------
-        # (4c) Build universe (for etf_meta stats — from FULL merged data)
+        # (4c) Build universe (for sec_classification stats — from FULL merged data)
         # ------------------------------------------------------------------
         uni_rows = []
         for code, sub in merged.groupby("code"):
@@ -1173,8 +1211,29 @@ async def main():
 
         # ------------------------------------------------------------------
         # (5) Filter to missing (date, code) pairs and insert OHLCV/margin tables
+        #
+        # CORP-ACTION RE-SYNC: codes with any detected split/dividend event
+        # (is_split_event_day=1 OR cum_split_factor deviates from 1.0) must
+        # have ALL their rows re-upserted — not just missing ones. Otherwise
+        # the cumulative split factor fails to propagate to rows inserted
+        # before the event day was backfilled (e.g. 2022 rows inserted before
+        # 2021 history existed → factor stays 1.0 → adj_close gap on chart).
         # ------------------------------------------------------------------
         print("\n[5/6] Filtering to missing (date, code) pairs and inserting …", flush=True)
+
+        # Identify codes whose adjustment factors must be re-synced
+        split_affected_codes: set = set(
+            merged.loc[merged["is_split_event_day"] == 1, "code"].unique()
+        )
+        # Also include codes with non-trivial cumulative factor (dividend-like
+        # events produce cum_split_factor slightly > 1.0 via cumprod of daily
+        # dividend factors). These also need propagation to all rows.
+        split_affected_codes |= set(
+            merged.loc[merged["cum_split_factor"].abs() - 1.0 > 1e-4, "code"].unique()
+        )
+        if split_affected_codes:
+            print(f"    [CORP-RESYNC] {len(split_affected_codes)} codes with corp-action "
+                  f"events — re-upserting ALL their rows (not just missing)", flush=True)
 
         # Filter merged to missing (date, code) pairs [and within --start/--end range]
         merged_db = merged.copy()
@@ -1183,18 +1242,24 @@ async def main():
         start_d = parse_date(args.start_date) if args.start_date else None
         end_d = parse_date(args.end_date) if args.end_date else None
 
-        def _is_missing(row):
+        def _should_upsert(row):
             d = row["date"]
             if start_d and d < start_d:
                 return False
             if end_d and d > end_d:
                 return False
-            return (d, row["code"]) not in existing_keys
+            if (d, row["code"]) not in existing_keys:
+                return True
+            # Re-upsert ALL rows for split-affected codes so the cumulative
+            # split factor propagates to previously-inserted rows.
+            if row["code"] in split_affected_codes:
+                return True
+            return False
 
-        missing_mask = merged_db.apply(_is_missing, axis=1)
+        missing_mask = merged_db.apply(_should_upsert, axis=1)
         merged_missing = merged_db[missing_mask].reset_index(drop=True)
-        print(f"    [DB] {len(merged_missing):,} rows to insert "
-              f"(out of {len(merged_db):,} total, filtered to missing + date range)", flush=True)
+        print(f"    [DB] {len(merged_missing):,} rows to upsert "
+              f"(out of {len(merged_db):,} total, missing + corp-action resync)", flush=True)
 
         if len(merged_missing) == 0 and not args.force:
             print("    [INFO] etf_identity is up to date — no new OHLCV/margin rows to insert", flush=True)
@@ -1225,6 +1290,7 @@ async def main():
                     "low": row.get("low"),
                     "close": row.get("close"),
                     "pct_change": row.get("pct_change"),
+                    "is_close_estimated": bool(row.get("is_close_estimated", False)),
                 })
                 tech_rows.append({
                     "date": row["date"],
@@ -1354,7 +1420,7 @@ async def main():
         else:
             print(f"    [DB] No CSI index composition data found", flush=True)
 
-        # Source 2b: SZSE index composition (399001, 399006, etc.)
+        # Source 2b: SZSE index composition (399001, 399006, 399237, etc.)
         szse_index_comp_rows = build_szse_index_composition_rows(verbose=True)
         if szse_index_comp_rows:
             n_szse_before = len(szse_index_comp_rows)
@@ -1379,12 +1445,17 @@ async def main():
         else:
             print(f"    [DB] No new rows to insert into stats.sec_composition", flush=True)
 
-        # ---- etf_meta: per-ETF quality metrics (upsert all from full data) ----
+        # ---- sec_classification (type='etf'): per-ETF quality metrics (upsert all from full data) ----
+        # Only quality-metric columns are in the row dict, so ON CONFLICT (code)
+        # DO UPDATE SET preserves classification + index_code columns populated
+        # by build_etf_index_map.py. New ETFs not in the CSV get inserted with
+        # classification defaults ('OTHER') — re-run build_etf_index_map.py to
+        # backfill their classification + index_code.
         avg_vol_by_code: dict = {}
         if "volume_wan" in merged_db.columns:
             avg_vol_by_code = merged_db.groupby("code")["volume_wan"].mean().to_dict()
 
-        etf_meta_rows = []
+        sec_classification_rows = []
         for _, row in uni_df.iterrows():
             code = str(row.get("code", "")).strip()
             if not code:
@@ -1398,31 +1469,32 @@ async def main():
             fd_date = datetime.datetime.strptime(str(fd), "%Y-%m-%d").date() if fd else None
             ld_date = datetime.datetime.strptime(str(ld), "%Y-%m-%d").date() if ld else None
             base_score = (100 if n_days >= 200 else 0) + (50 if has_margin else 0)
-            etf_meta_rows.append({
+            sec_classification_rows.append({
                 "code": code,
                 "name": str(row.get("name", "") or ""),
-                "n_ohlcv_days": n_days,
+                "type": "etf",
+                "n_days": n_days,
                 "has_margin": has_margin,
                 "avg_volume_wan": avg_vol,
                 "first_date": fd_date,
                 "last_date": ld_date,
-                "data_quality_score": base_score,
+                "selectivity_rank_score": base_score,
             })
 
         # Add volume-rank component (0..50)
-        if etf_meta_rows:
-            by_vol = sorted(etf_meta_rows, key=lambda r: r["avg_volume_wan"], reverse=True)
+        if sec_classification_rows:
+            by_vol = sorted(sec_classification_rows, key=lambda r: r["avg_volume_wan"], reverse=True)
             n_etf = len(by_vol)
             for rank_i, r in enumerate(by_vol):
-                r["data_quality_score"] += int(50 * (1.0 - rank_i / max(n_etf, 1)))
+                r["selectivity_rank_score"] += int(50 * (1.0 - rank_i / max(n_etf, 1)))
 
-        if etf_meta_rows:
+        if sec_classification_rows:
             inserted = await bulk_upsert_async(
-                conn, "stats.etf_meta", etf_meta_rows, ["code"]
+                conn, "stats.sec_classification", sec_classification_rows, ["code"]
             )
-            print(f"    [DB] Upserted {inserted:,} rows into stats.etf_meta", flush=True)
+            print(f"    [DB] Upserted {inserted:,} ETF quality rows into stats.sec_classification", flush=True)
         else:
-            print(f"    [DB] No rows to insert into stats.etf_meta", flush=True)
+            print(f"    [DB] No ETF quality rows to insert into stats.sec_classification", flush=True)
 
     finally:
         await conn.close()

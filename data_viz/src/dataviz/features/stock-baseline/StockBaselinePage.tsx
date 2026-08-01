@@ -4,7 +4,7 @@
  * Layout (mirrors the Index Baseline page):
  *   • ThemeSelector — two-level cascade (L1 sector → L2 industry), loads from
  *     /api/stock-baseline/themes which returns the precomputed taxonomy tree
- *     built from stats.stock_industry_map.
+ *     built from stats.sec_classification.
  *   • Stack of StockPanel cards (one per stock, full width) — candlestick +
  *     MA5/MA20/MA60/MA120 (computed client-side) + PE ratio on twin axis
  *     (when available — only SZSE stocks publish PE).
@@ -37,6 +37,7 @@ export default function StockBaselinePage() {
   const [sectors, setSectors] = useState<SectorNode[]>([]);
   const [sectorId, setSectorId] = useState<string | null>(null);
   const [industrySlug, setIndustrySlug] = useState<string | null>(null);
+  const [exchange, setExchange] = useState<string | null>(null);
   const [data, setData] = useState<StockCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,18 +52,22 @@ export default function StockBaselinePage() {
     fetchStockThemes()
       .then((list) => {
         setSectors(list);
-        // Auto-select the first sector (highest count) if available
-        if (list.length > 0) setSectorId(list[0].sector_id);
+        // Default to BROAD sector (broad-based index stocks) if available,
+        // else fall back to the first sector (highest count).
+        if (list.length > 0) {
+          const broad = list.find((s) => s.sector_id === "BROAD");
+          setSectorId(broad ? broad.sector_id : list[0].sector_id);
+        }
       })
       .catch((e: Error) => setError(e.message));
   }, []);
 
-  // Reset to page 1 whenever sector or industry changes
+  // Reset to page 1 whenever sector, industry, or exchange changes
   useEffect(() => {
     setPage(1);
-  }, [sectorId, industrySlug]);
+  }, [sectorId, industrySlug, exchange]);
 
-  // Load stock data whenever sector/industry, page, or search code changes.
+  // Load stock data whenever sector/industry/exchange, page, or search code changes.
   // When searchCode is set, fetch only that one stock (bypassing sector/pagination).
   useEffect(() => {
     let cancelled = false;
@@ -71,7 +76,7 @@ export default function StockBaselinePage() {
     setError(null);
     const promise = searchCode
       ? fetchStocksCombined(null, null, null, null, 1, 1, searchCode)
-      : fetchStocksCombined(sectorId, industrySlug, null, null, page, PAGE_SIZE);
+      : fetchStocksCombined(sectorId, industrySlug, null, null, page, PAGE_SIZE, undefined, exchange);
     promise
       .then((d) => {
         if (cancelled) return;
@@ -86,7 +91,7 @@ export default function StockBaselinePage() {
     return () => {
       cancelled = true;
     };
-  }, [sectorId, industrySlug, page, searchCode]);
+  }, [sectorId, industrySlug, exchange, page, searchCode]);
 
   // Resolve a searched code against the themes tree: update sector/industry
   // highlights + activate single-result mode. Shows an error if not found.
@@ -118,6 +123,10 @@ export default function StockBaselinePage() {
   const handleIndustryChange = (slug: string | null) => {
     setSearchCode(null);
     setIndustrySlug(slug);
+  };
+  const handleExchangeChange = (ex: string | null) => {
+    setSearchCode(null);
+    setExchange(ex);
   };
 
   const activeSector = sectors.find((s) => s.sector_id === sectorId);
@@ -172,8 +181,10 @@ export default function StockBaselinePage() {
         sectors={sectors}
         sectorId={sectorId}
         industrySlug={industrySlug}
+        exchange={exchange}
         onSectorChange={handleSectorChange}
         onIndustryChange={handleIndustryChange}
+        onExchangeChange={handleExchangeChange}
       />
 
       {loading && (

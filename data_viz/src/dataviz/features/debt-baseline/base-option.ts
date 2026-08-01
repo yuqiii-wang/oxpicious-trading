@@ -6,7 +6,7 @@
  */
 import type { EChartsOption, SeriesOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import { axisColors, MUTED_PALETTE } from "@/theme/chart-palette";
+import { axisColors, MUTED_PALETTE, commonLegend, commonGrid } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 
 export type AxisColors = ReturnType<typeof axisColors>;
@@ -53,12 +53,12 @@ export function buildBaseOption(
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: {
+    grid: commonGrid({
       left: 64,
       right: 64,
       top: 28,
       bottom: 56,
-    },
+    }),
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross", snap: true },
@@ -127,13 +127,7 @@ export function buildBaseOption(
         splitLine: { show: false },
       },
     ],
-    legend: {
-      top: 0,
-      left: "right",
-      textStyle: { color: c.textColor, fontSize: 10 },
-      itemWidth: 14,
-      itemHeight: 8,
-    },
+    legend: commonLegend(mode, { left: "right", itemWidth: 14, itemHeight: 8 }),
     ...extra,
   };
 }

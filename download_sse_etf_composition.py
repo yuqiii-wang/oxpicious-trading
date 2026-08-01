@@ -22,6 +22,15 @@ Download behavior:
   * Skip logic: if an ETF already has a cached snapshot from the current month,
     it will be skipped (use --no-skip-cached to force re-download).
 
+Month-start refresh:
+  On the 1st day of each month the cache is bypassed and every ETF is
+  re-downloaded. The XML/CSV is stamped with TODAY's date (not the xls's
+  TradingDay, which typically reflects the previous business day — e.g.
+  running on 2026-08-01 yields a file dated 20260801 even though the XML
+  reports 2026-07-31). This ensures a fresh monthly snapshot flows through
+  to prod under the new month's date. Use --force-month-start to trigger
+  this behavior on any day for testing.
+
 Anti-bot: ``safe_get(anti_bot=True)`` rotates the browser fingerprint
 (User-Agent / Sec-Ch-Ua / Sec-Fetch-* via ``merge_browser_profile``) on every
 request, and ``random_sleep`` / ``random_sleep_range`` add jittered delays.
@@ -61,6 +70,7 @@ from _download_commons import (
     resolve_out_dir,
     setup_logger,
 )
+from _download_commons_monthly import is_month_start
 
 
 # ---------------------------------------------------------------------------
@@ -373,20 +383,27 @@ def download_composition(
     proxy: AntiBotProxy,
     skip_cached: bool = True,
     sleep_sec: float = SLEEP_SEC,
+    month_start: bool = False,
+    today_date: Optional[date] = None,
 ) -> Tuple[bool, str]:
     """Download one ETF's PCF XML, save raw + per-file CSV.
 
     Returns (success, status) where status ∈ {"downloaded", "cached", "empty",
     "failed", "blocked"}.
+
+    When *month_start* is True, the cache is bypassed and the output files are
+    stamped with *today_date* (overriding the XML's TradingDay) so a fresh
+    monthly snapshot flows to prod under the new month's date.
     """
     code = etf["code"]
     etf_name = etf.get("etf_name", "")
     fund_type = etf.get("fund_type", "")
 
-    # Cache check: skip if we already have a snapshot from the current month.
-    # This mirrors the SZSE hybrid schedule — one snapshot per ETF per month,
-    # with quarterly months (Jan/Apr/Jul/Oct) accumulating as history.
-    if skip_cached:
+    # Cache check (skipped during month-start refresh): skip if we already have
+    # a snapshot from the current month. This mirrors the SZSE hybrid schedule —
+    # one snapshot per ETF per month, with quarterly months (Jan/Apr/Jul/Oct)
+    # accumulating as history.
+    if skip_cached and not month_start:
         latest_cached = _latest_cached_date_for_code(out_dir, code)
         today = date.today()
         if (latest_cached is not None
@@ -437,6 +454,13 @@ def download_composition(
     if not (trading_day and trading_day.isdigit() and len(trading_day) == 8):
         logger.warning("[dl %s] invalid TradingDay '%s', skipping", code, trading_day)
         return False, "empty"
+
+    # On month-start refresh, stamp the output with today's date (overriding
+    # the XML's TradingDay, which is usually the previous business day) so a
+    # fresh monthly snapshot flows to prod under the new month's date.
+    if month_start and today_date is not None:
+        trading_day = today_date.strftime("%Y%m%d")
+        parsed["header"]["TradingDay"] = trading_day  # _pcf_to_combined_rows reads this
 
     base = f"sse_etf_comp_{trading_day}_{code}"
     xml_path = out_dir / f"{base}.xml"
@@ -562,9 +586,22 @@ def download_sse_etf_composition(
     max_etfs: Optional[int] = None,
     skip_cached: bool = True,
     convert_csv: bool = True,
+    force_month_start: bool = False,
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_etf_composition", out_root)
     today = date.today()
+
+    # Month-start trigger: on the 1st of each month (or when forced), bypass
+    # the cache and stamp output files with today's date so a fresh monthly
+    # snapshot flows to prod even if the XML still reports the previous biz day.
+    month_start = force_month_start or is_month_start(today)
+    if month_start:
+        skip_cached = False
+        logger.info(
+            "Month-start refresh (today=%s, forced=%s): bypassing cache and "
+            "stamping files with today's date (overrides XML TradingDay).",
+            today.isoformat(), force_month_start,
+        )
 
     session = build_default_session()
     
@@ -598,8 +635,10 @@ def download_sse_etf_composition(
         etfs = etfs[:max_etfs]
 
     # --- Auto-cooldown: count how many ETFs actually need downloading ---
-    need_download = 0
-    if skip_cached:
+    if month_start:
+        need_download = len(etfs)
+    elif skip_cached:
+        need_download = 0
         for etf in etfs:
             latest = _latest_cached_date_for_code(out_dir, etf["code"])
             if latest is None or latest.year != today.year or latest.month != today.month:
@@ -643,6 +682,7 @@ def download_sse_etf_composition(
             _, status = download_composition(
                 session, etf, out_dir, proxy,
                 skip_cached=skip_cached, sleep_sec=auto_sleep,
+                month_start=month_start, today_date=today,
             )
             if status == "downloaded":
                 downloaded += 1
@@ -698,6 +738,10 @@ if __name__ == "__main__":
                     help="Skip ETFs whose latest snapshot is already cached (default: enabled)")
     ap.add_argument("--no-skip-cached", action="store_true", default=False,
                     help="Re-download even if a cached snapshot exists")
+    ap.add_argument("--force-month-start", action="store_true", default=False,
+                    help="Force month-start behavior: bypass cache and stamp files with "
+                         "today's date (overrides XML TradingDay). For testing the "
+                         "monthly refresh flow on any day.")
     ap.add_argument("--convert-csv", action="store_true", default=True,
                     help="Aggregate per-file CSVs into combined + universe CSVs (default: enabled)")
     ap.add_argument("--no-convert-csv", action="store_true", default=False,
@@ -715,5 +759,6 @@ if __name__ == "__main__":
         max_etfs=args.max_etfs,
         skip_cached=args.skip_cached and not args.no_skip_cached,
         convert_csv=args.convert_csv and not args.no_convert_csv,
+        force_month_start=args.force_month_start,
     )
     print(result)

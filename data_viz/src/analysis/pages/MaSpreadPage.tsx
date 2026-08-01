@@ -20,6 +20,7 @@ import {
   Box,
   Chip,
   CircularProgress,
+  IconButton,
   InputAdornment,
   Slider,
   Stack,
@@ -28,9 +29,8 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import {
-  Search,
-} from "@mui/icons-material";
+import { ArrowBack, Search } from "@mui/icons-material";
+import { useNavigate } from "react-router-dom";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
@@ -41,6 +41,8 @@ import {
   DOWN_COLOR,
   SPOT_COLOR,
   axisColors,
+  commonLegend,
+  commonGrid,
 } from "@/theme/chart-palette";
 import {
   fetchMovAveSpreadCodes,
@@ -93,7 +95,9 @@ function buildPairOption(
   const dates = rows.map((r) => r.date);
   const shorts = rows.map((r) => r.short_value);
   const longs = rows.map((r) => r.long_value);
-  // slope / curvature arrays for the tooltip (short is null when ma_short = 0).
+  // slope / curvature arrays for the tooltip. short_slope / short_curvature
+  // are populated for every pair — including Price/MA pairs (ma_short = 0),
+  // which carry the 1st/2nd derivative of price itself.
   const shortSlopes = rows.map((r) => r.short_slope);
   const shortCurvs = rows.map((r) => r.short_curvature);
   const longSlopes = rows.map((r) => r.long_slope);
@@ -122,12 +126,11 @@ function buildPairOption(
   const lColor = MA120_COLOR;
   const sName = shortLabel(pair.ma_short);
   const lName = `MA${pair.ma_long}`;
-  const hasShort = pair.ma_short !== 0;
 
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: { left: 55, right: 18, top: 30, bottom: 30 },
+    grid: commonGrid({ left: 55, right: 18, bottom: 30 }),
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "line", snap: true },
@@ -156,23 +159,15 @@ function buildPairOption(
           html += `<div>${sName}: ${fmtNum(sv)}</div>`;
           html += `<div>${lName}: ${fmtNum(lv)}</div>`;
           html += `<div>gap: ${gv != null ? fmtPct(gv, 3) : "—"}</div>`;
-          // slope (1st derivative) + curvature (2nd derivative) per MA.
-          if (hasShort) {
-            html += `<div style="margin-top:2px;opacity:0.85">${sName} slope: ${fmtNum(ss)} · curv: ${fmtNum(sc)}</div>`;
-          }
+          // slope (1st derivative) + curvature (2nd derivative) of both the
+          // short series (price or MA) and the long MA.
+          html += `<div style="margin-top:2px;opacity:0.85">${sName} slope: ${fmtNum(ss)} · curv: ${fmtNum(sc)}</div>`;
           html += `<div style="opacity:0.85">${lName} slope: ${fmtNum(ls)} · curv: ${fmtNum(lc)}</div>`;
         }
         return html;
       },
     },
-    legend: {
-      top: 0,
-      right: 0,
-      textStyle: { color: c.textColor, fontSize: 10 },
-      itemWidth: 12,
-      itemHeight: 7,
-      data: [sName, lName],
-    },
+    legend: commonLegend(themeMode, { itemWidth: 12, itemHeight: 7, data: [sName, lName] }),
     xAxis: {
       type: "category",
       data: dates,
@@ -251,6 +246,7 @@ function buildPairOption(
 // ============================================================================
 
 export default function MaSpreadPage() {
+  const navigate = useNavigate();
   const themeMode = useStore((s) => s.themeMode);
 
   // ---- Security-type selector (ETF | Index | Stock) ---------------------
@@ -371,13 +367,23 @@ export default function MaSpreadPage() {
 
   return (
     <Box>
-      <Typography variant="h5" sx={{ fontWeight: 700, mb: 0.5 }}>
-        MA-Spread
-      </Typography>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5 }}>
+        <IconButton
+          onClick={() => navigate("/analysis/commons")}
+          size="small"
+          aria-label="back to commons"
+        >
+          <ArrowBack />
+        </IconButton>
+        <Typography variant="h5" sx={{ fontWeight: 700 }}>
+          MA-Spread
+        </Typography>
+      </Box>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
         9 pairs (5 Price/MA + 4 MA5/MA). The plot shows the short + long series
         with green fill when short &gt; long (growth) and red fill when short &lt; long (decline).
-        The chart tooltip shows each MA's slope (1st derivative) and curvature (2nd derivative).
+        The chart tooltip shows each series' slope (1st derivative) and curvature (2nd derivative) —
+        including price's own slope/curvature for Price/MA pairs.
         Toggle the security type (ETF / Index / Stock) in the left panel.
         Stock support is reserved — the list will be empty until
         stock_tech_stats is created and the build script populates stock rows.

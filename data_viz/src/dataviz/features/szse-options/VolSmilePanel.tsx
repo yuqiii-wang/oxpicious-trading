@@ -15,6 +15,8 @@ import {
   MUTED_PALETTE,
   PRICE_SCALE,
   axisColors,
+  commonLegend,
+  commonGrid,
 } from "@/theme/chart-palette";
 import { fmtNum, fmtPct } from "@/lib/series";
 import type { EChartsOption } from "echarts";
@@ -145,7 +147,7 @@ function buildSmileOption(snap: OptionsRow[], label: string, dateStr: string): E
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: { left: 50, right: 12, top: 36, bottom: 36 },
+    grid: commonGrid({ left: 50, right: 12, top: 36, bottom: 36 }),
     title: {
       text: `${label}  (${dateStr})  S=${fmtNum(S)}元`,
       left: "left",
@@ -225,13 +227,7 @@ function buildSmileOption(snap: OptionsRow[], label: string, dateStr: string): E
         return html;
       },
     },
-    legend: {
-      top: 14,
-      right: 0,
-      textStyle: { color: textColor, fontSize: 8 },
-      itemWidth: 10,
-      itemHeight: 6,
-    },
+    legend: commonLegend(themeMode, { top: 14 }),
     xAxis: {
       type: "value",
       min: 0.7,

@@ -3,7 +3,7 @@
  *
  *   Panel 1: Put/Call OI Ratio over time + MA5 / MA20 lines + reference 1.0 line
  *   Panel 2: Total OI trend (Call vs Put, in 万张)
- *   Panel 3: ETF Candlestick + volume bars (twin axis)
+ *   Panel 3: ETF OHLC + volume bars (twin axis)
  *
  * Mirrors plot_annual_sentiment() in plot_szse_options.py.
  */
@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert, Box, Slider, Stack, Typography } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
+import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { useStore } from "@/store/filters";
 import type {
   EtfOhlcvResponse,
@@ -23,10 +24,24 @@ import {
   MA20_COLOR,
   UP_COLOR,
   axisColors,
+  commonLegend,
+  commonGrid,
 } from "@/theme/chart-palette";
 import { breakArraysAtGaps, fmtNum, safeMa } from "@/lib/series";
-import { candlestickSeries } from "@/lib/candlestick";
+import {
+  ohlcSeries,
+  rebasePriceArrays,
+  formatPriceValue,
+  type OhlcMode,
+} from "@/lib/ohlc";
 import type { EChartsOption } from "echarts";
+
+/**
+ * Shared group name — wiring this on every EChart + calling
+ * `connectChartsByGroup()` in main.tsx makes the axis-pointer / tooltip
+ * sync across all three panels so hovering one shows tooltips on all.
+ */
+const CHART_GROUP = "annual-sentiment";
 
 interface Props {
   rows: OptionsRow[];
@@ -65,9 +80,10 @@ function buildPcRatioOption(dates: string[], pcRatio: number[], themeMode: "ligh
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: { left: 50, right: 20, top: 28, bottom: 40 },
+    grid: commonGrid({ left: 50, right: 20, bottom: 40 }),
     tooltip: {
       trigger: "axis",
+      axisPointer: { type: "cross", snap: true },
       backgroundColor: c.tooltipBg,
       borderColor: c.splitLineColor,
       textStyle: { color: c.textColor, fontSize: 11 },
@@ -91,7 +107,8 @@ function buildPcRatioOption(dates: string[], pcRatio: number[], themeMode: "ligh
         return html;
       },
     },
-    legend: { top: 0, right: 0, textStyle: { color: c.textColor, fontSize: 10 } },
+    axisPointer: { link: [{ xAxisIndex: "all" }] },
+    legend: commonLegend(themeMode),
     xAxis: {
       type: "category",
       data: broken.dates,
@@ -151,9 +168,10 @@ function buildOiTrendOption(dates: string[], callOi: number[], putOi: number[], 
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: { left: 56, right: 20, top: 28, bottom: 40 },
+    grid: commonGrid({ left: 56, right: 20, bottom: 40 }),
     tooltip: {
       trigger: "axis",
+      axisPointer: { type: "cross", snap: true },
       backgroundColor: c.tooltipBg,
       borderColor: c.splitLineColor,
       textStyle: { color: c.textColor, fontSize: 11 },
@@ -177,7 +195,8 @@ function buildOiTrendOption(dates: string[], callOi: number[], putOi: number[], 
         return html;
       },
     },
-    legend: { top: 0, right: 0, textStyle: { color: c.textColor, fontSize: 10 } },
+    axisPointer: { link: [{ xAxisIndex: "all" }] },
+    legend: commonLegend(themeMode),
     xAxis: {
       type: "category",
       data: broken.dates,
@@ -216,12 +235,32 @@ function buildOiTrendOption(dates: string[], callOi: number[], putOi: number[], 
   };
 }
 
-function buildCandlestickOption(ohlcv: EtfOhlcvResponse, themeMode: "light" | "dark"): EChartsOption {
+function buildCandlestickOption(
+  ohlcv: EtfOhlcvResponse,
+  themeMode: "light" | "dark",
+  ohlcMode: OhlcMode,
+): EChartsOption {
   const c = axisColors(themeMode);
   const rows = ohlcv.rows;
   const dates = rows.map((r) => r.date);
-  const candleData = rows.map((r) => [r.open, r.close, r.low, r.high]);
-  // ohlcv.volume is in 万 (10k) shares — convert to mil (1 mil = 100 万)
+  const open = rows.map((r) => r.open);
+  const close = rows.map((r) => r.close);
+  const low = rows.map((r) => r.low);
+  const high = rows.map((r) => r.high);
+
+  // Rebase OHLC to % change from first close in percentage mode.
+  const { rebased } = rebasePriceArrays(
+    { open, close, low, high },
+    ohlcMode,
+  );
+  const candleData = rows.map((_, i) => [
+    rebased.open[i],
+    rebased.close[i],
+    rebased.low[i],
+    rebased.high[i],
+  ]);
+  // ohlcv.volume is in 万 (10k) shares — convert to mil (1 mil = 100 万).
+  // Volume bar color uses RAW close vs open (invariant under rebase).
   const volumes = rows.map((r, i) => ({
     value: r.volume / 100,
     itemStyle: {
@@ -233,10 +272,10 @@ function buildCandlestickOption(ohlcv: EtfOhlcvResponse, themeMode: "light" | "d
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: { left: 56, right: 56, top: 28, bottom: 40 },
+    grid: commonGrid({ left: 56, right: 56, bottom: 40 }),
     tooltip: {
       trigger: "axis",
-      axisPointer: { type: "cross" },
+      axisPointer: { type: "cross", snap: true },
       backgroundColor: c.tooltipBg,
       borderColor: c.splitLineColor,
       textStyle: { color: c.textColor, fontSize: 11 },
@@ -252,15 +291,23 @@ function buildCandlestickOption(ohlcv: EtfOhlcvResponse, themeMode: "light" | "d
         let html = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
         for (const p of arr) {
           if (p.value == null) continue;
-          const v = Array.isArray(p.value) ? p.value[p.value.length - 1] : p.value;
-          if (v == null || (typeof v === "number" && !Number.isFinite(v))) continue;
-          const vstr = typeof v === "number" ? fmtNum(v) : String(v);
-          html += `<div>${p.marker ?? ""} ${p.seriesName ?? ""}: <b>${vstr}</b></div>`;
+          const name = p.seriesName ?? "";
+          if (Array.isArray(p.value)) {
+            const [o, cl, l, h] = p.value;
+            if (o == null && cl == null && l == null && h == null) continue;
+            html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
+          } else {
+            const v = p.value as number;
+            if (!Number.isFinite(v)) continue;
+            const vstr = name === "Volume" ? fmtNum(v) + " mil" : fmtNum(v);
+            html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}</b></div>`;
+          }
         }
         return html;
       },
     },
-    legend: { top: 0, right: 0, textStyle: { color: c.textColor, fontSize: 10 } },
+    axisPointer: { link: [{ xAxisIndex: "all" }] },
+    legend: commonLegend(themeMode),
     xAxis: {
       type: "category",
       data: dates,
@@ -273,10 +320,14 @@ function buildCandlestickOption(ohlcv: EtfOhlcvResponse, themeMode: "light" | "d
       {
         type: "value",
         scale: true,
-        name: "Price (元)",
+        name: ohlcMode === "percentage" ? "%" : "Price (元)",
         nameTextStyle: { color: c.textColor, fontSize: 10 },
         axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: { color: c.textColor, fontSize: 10, formatter: (v: number) => fmtNum(v) },
+        axisLabel: {
+          color: c.textColor,
+          fontSize: 10,
+          formatter: (v: number) => formatPriceValue(v, ohlcMode),
+        },
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
       {
@@ -290,7 +341,7 @@ function buildCandlestickOption(ohlcv: EtfOhlcvResponse, themeMode: "light" | "d
       },
     ],
     series: [
-      candlestickSeries(candleData, { name: "OHLC" }),
+      ohlcSeries(candleData, { name: "OHLC" }),
       {
         type: "bar",
         name: "Volume",
@@ -308,6 +359,9 @@ export default function AnnualSentimentPanel({ rows, ohlcv }: Props) {
   const daily = useMemo(() => buildDailyOi(rows), [rows]);
   const maxIdx = daily.length - 1;
   const [range, setRange] = useState<[number, number]>([0, maxIdx]);
+  // OHLC display mode — "percentage" (default) rebases ETF OHLC to % change
+  // from the first close; "absolute" shows raw prices.
+  const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
   // Reset slider when underlying changes (new daily data arrives)
   useEffect(() => {
@@ -351,7 +405,7 @@ export default function AnnualSentimentPanel({ rows, ohlcv }: Props) {
         subtitle="Daily P/C ratio + MA5 / MA20 · dotted line at 1.0"
         height={320}
       >
-        <EChart option={buildPcRatioOption(dates, pcRatio, themeMode)} height={300} />
+        <EChart option={buildPcRatioOption(dates, pcRatio, themeMode)} height={300} group={CHART_GROUP} />
       </ChartCard>
 
       <ChartCard
@@ -359,16 +413,17 @@ export default function AnnualSentimentPanel({ rows, ohlcv }: Props) {
         subtitle="Call OI vs Put OI (mil contracts)"
         height={320}
       >
-        <EChart option={buildOiTrendOption(dates, callOi, putOi, themeMode)} height={300} />
+        <EChart option={buildOiTrendOption(dates, callOi, putOi, themeMode)} height={300} group={CHART_GROUP} />
       </ChartCard>
 
       <ChartCard
         title="ETF Price & Volume"
-        subtitle="Candlestick + volume (price-up green / price-down red)"
+        subtitle="OHLC + volume (price-up green / price-down red)"
         height={360}
+        action={<OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />}
       >
         {filteredOhlcv && filteredOhlcv.rows.length > 0 ? (
-          <EChart option={buildCandlestickOption(filteredOhlcv, themeMode)} height={340} />
+          <EChart option={buildCandlestickOption(filteredOhlcv, themeMode, ohlcMode)} height={340} group={CHART_GROUP} />
         ) : (
           <Alert severity="info">No ETF OHLCV data available for this underlying.</Alert>
         )}

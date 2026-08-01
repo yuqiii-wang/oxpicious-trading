@@ -34,14 +34,27 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
   },
   {
     slug: "perf-attr",
-    title: "Perf Attribution",
+    title: "Sec Allocation Perf Attribution",
     description:
       "Daily return decomposition: ETF subject_return vs index benchmark_return. " +
       "Green fill = ETF outperforms; red fill = ETF underperforms. " +
       "6 broad-market benchmark indices (沪深300, 上证指数, 中证1000, 深证成指, 创业板指, 科创50). " +
-      "Also shows amount_ratio = benchmark amount (yuan) / ETF amount (yuan). " +
+      "Also shows amount_ratio = benchmark trading amount (yuan) / ETF trading amount (yuan). " +
       "Backed by analysis.sec_alloc_perf_attribution.",
-    tags: ["ETF", "Index", "return decomposition", "2-curve + fill", "amount ratio"],
+    tags: ["ETF", "Index", "return decomposition", "2-curve + fill", "trading amount ratio"],
+  },
+  {
+    slug: "capital-flow",
+    title: "Industry Capital Flow (Broad-Market Adjusted)",
+    description:
+      "Captures each industry's trending popularity after stripping the dilution from " +
+      "broad-market ETFs that share overlapping stock holdings with the industry. " +
+      "Pure metrics: pure_flow, pure_growth, pure_popularity, observed_popularity, " +
+      "popularity_retention. Browse industries (sorted by latest pure popularity), " +
+      "drill into a (industry × benchmark) pair to view time-series in three modes " +
+      "(popularity / returns / retention). " +
+      "Backed by analysis.capital_flow.",
+    tags: ["ETF", "Index", "industry popularity", "overlap-weighted", "broad-market adjustment"],
   },
 ];
 

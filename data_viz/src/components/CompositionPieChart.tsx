@@ -41,6 +41,18 @@ interface Props {
   /** Notified when the per-stock candlestick expansion opens/closes so the
    *  parent can expand its card height to fit the chart. */
   onStockCandleOpenChange?: (open: boolean) => void;
+  /** When true, the toggle + refresh buttons are NOT rendered — the parent
+   *  renders them in a shared button row (e.g. IndexPanel places the
+   *  Composition and Linked-ETFs buttons on the same horizontal row).
+   *  Defaults to false (standalone mode used by EtfMarginPanel). */
+  hideButton?: boolean;
+  /** External refresh key — when provided, the parent owns the refresh state
+   *  and renders its own refresh button. Bumping this value triggers a refetch.
+   *  When absent, the internal refresh key is used (standalone mode). */
+  refreshKey?: number;
+  /** Notifies the parent of loading-state changes so the parent's refresh
+   *  button can show a spinner. Only meaningful when hideButton=true. */
+  onLoadingChange?: (loading: boolean) => void;
 }
 
 interface SelectedStock {
@@ -60,6 +72,9 @@ export default function CompositionPieChart({
   open,
   onToggle,
   onStockCandleOpenChange,
+  hideButton = false,
+  refreshKey: externalRefreshKey,
+  onLoadingChange,
 }: Props) {
   const themeMode = useStore((s) => s.themeMode);
   const [loading, setLoading] = useState(false);
@@ -70,7 +85,15 @@ export default function CompositionPieChart({
   // Plot-level refresh key — bumped by the refresh button to force a cache
   // bypass + refetch of this code's composition. Each code has its own
   // cache key (/api/sec-composition?code=…), so only this plot is affected.
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [internalRefreshKey, setInternalRefreshKey] = useState(0);
+  // When the parent provides an external refresh key (hideButton mode), it
+  // owns the refresh state; otherwise the internal key is used.
+  const refreshKey = externalRefreshKey ?? internalRefreshKey;
+
+  // Ref so onLoadingChange can be called from the fetch effect without
+  // being added to the effect's dependency array (avoids re-run loops).
+  const onLoadingChangeRef = useRef(onLoadingChange);
+  onLoadingChangeRef.current = onLoadingChange;
 
   // Refs so the ECharts click handlers (set once via onReady) always read
   // the latest values without needing to re-bind.
@@ -84,17 +107,20 @@ export default function CompositionPieChart({
     if (!open || !code) return;
     let cancelled = false;
     setLoading(true);
+    onLoadingChangeRef.current?.(true);
     setError(null);
     fetchSecComposition(code)
       .then((d) => {
         if (cancelled) return;
         setData(d);
         setLoading(false);
+        onLoadingChangeRef.current?.(false);
       })
       .catch((e: Error) => {
         if (cancelled) return;
         setError(e.message);
         setLoading(false);
+        onLoadingChangeRef.current?.(false);
       });
     return () => {
       cancelled = true;
@@ -103,7 +129,7 @@ export default function CompositionPieChart({
 
   const handleRefresh = () => {
     invalidateCacheForUrl(`/api/sec-composition?code=${code}`);
-    setRefreshKey((k) => k + 1);
+    setInternalRefreshKey((k) => k + 1);
   };
 
   // Reset to industry layer when data changes
@@ -281,25 +307,27 @@ export default function CompositionPieChart({
 
   return (
     <Box>
-      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexWrap: "wrap" }}>
-        <Button
-          size="small"
-          variant="outlined"
-          startIcon={<PieChartIcon />}
-          onClick={onToggle}
-          sx={{ fontSize: "0.7rem", textTransform: "none", mt: 0.5 }}
-        >
-          {open ? "Hide Composition" : "Composition"}
-        </Button>
-        {open && (
-          <RefreshButton
-            onClick={handleRefresh}
-            loading={loading}
-            size="tiny"
-            tooltip={`Refresh composition for ${code}`}
-          />
-        )}
-      </Box>
+      {!hideButton && (
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexWrap: "wrap" }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<PieChartIcon />}
+            onClick={onToggle}
+            sx={{ fontSize: "0.7rem", textTransform: "none", mt: 0.5 }}
+          >
+            {open ? "Hide Composition" : "Composition"}
+          </Button>
+          {open && (
+            <RefreshButton
+              onClick={handleRefresh}
+              loading={loading}
+              size="tiny"
+              tooltip={`Refresh composition for ${code}`}
+            />
+          )}
+        </Box>
+      )}
 
       {open && (
         <Box sx={{ mt: 1 }}>
@@ -350,7 +378,7 @@ export default function CompositionPieChart({
 
               {allUnclassified && !selectedIndustry && (
                 <Alert severity="info" sx={{ py: 0.25, mb: 0.5 }} icon={false}>
-                  Industry mapping not yet populated — run build_stock_industry.py to classify stocks.
+                  Industry mapping not yet populated — run build_classification.py to classify stocks.
                 </Alert>
               )}
 

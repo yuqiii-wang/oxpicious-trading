@@ -12,7 +12,7 @@ import pandas as pd
 
 from _download_commons import (
     MIN_VALID_BYTES,
-    DEFAULT_TIMEOUT,
+    DEFAULT_START_DATE,
     DEFAULT_SLEEP_SEC,
     COMMON_BASE_HEADERS,
     AntiBotProxy,
@@ -29,9 +29,12 @@ from _download_commons import (
     read_csv_preferred,
     RunStats,
     merge_browser_profile,
+    load_classification_index_names,
 )
 
-from _classification import ICONIC_INDEXES
+# SZSE indices that must NOT be downloaded from csindex.com.cn
+# (they are covered by download_szse_trend.py via East Money API)
+CSINDEX_SKIP_CODES = {"399001", "399006", "399237"}
 
 # ---------------------------------------------------------------------------
 # csindex.com.cn API endpoints
@@ -60,7 +63,6 @@ INDICATOR_XLS_TEMPLATE = (
 
 DETAIL_REFERER = CSINDEX_BASE + "/zh-CN/indices/index#/indices/family/detail?indexCode={indexCode}"
 
-DEFAULT_START_DATE = "2020-01-01"  # Aligns with project convention: trend data starts from 2020
 UPDATE_WINDOW_DAYS = 35  # ~1 month plus weekend/holiday buffer
 SLEEP_SEC = DEFAULT_SLEEP_SEC
 CSINDEX_TIMEOUT: Tuple[int, int] = (15, 120)
@@ -555,7 +557,10 @@ def download_index(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if index_codes is None:
-        index_codes = list(ICONIC_INDEXES.keys())
+        index_codes = list(load_classification_index_names().keys())
+
+    # Load index names from sec_classification.json (replaces _classification.py).
+    _index_names = load_classification_index_names()
 
     _start, _end = parse_date_window(start_date=start_date)
     update_end = _end
@@ -579,7 +584,13 @@ def download_index(
 
     try:
         for code in index_codes:
-            name = ICONIC_INDEXES.get(code, code)
+            name = _index_names.get(code, code)
+
+            if code in CSINDEX_SKIP_CODES:
+                logger.info("== Index %s (%s) — skipped (in CSINDEX_SKIP_CODES, handled by SZSE downloader) ==", code, name)
+                stats.skipped_cached += 1
+                continue
+
             logger.info("== Index %s (%s) ==", code, name)
 
             if proxy.is_blocked(CSINDEX_BASE):

@@ -1,10 +1,13 @@
 /**
- * Two-level theme selector — L1 sector chips → L2 industry chips.
+ * Two-level theme selector — L1 sector chips → L2 industry chips,
+ * plus an exchange filter row.
  *
  * Reusable across ETF and Index pages. Reads the two-level taxonomy tree
  * (SectorNode[]) from the backend, which is precomputed by the Python
- * classification scripts and stored in stats.etf_meta / stats.index_meta.
+ * classification scripts and stored in stats.sec_classification (type='etf'/'index').
  *
+ * Row 0: Exchange chips (All, SSE, SZSE, BSE) — filters securities by listing
+ *        exchange. "All" clears the exchange filter.
  * Row 1: L1 sector chips (e.g. 金融, 科技, 医药, 宽基, 创业板 …).
  *        Clicking a sector selects it and reveals its L2 industries in Row 2.
  * Row 2: L2 industry chips for the selected sector (e.g. 银行, 证券, 保险 …).
@@ -13,20 +16,34 @@
 import { Box, Chip, Stack, Typography } from "@mui/material";
 import type { SectorNode } from "../../shared/types";
 
+/** Exchange filter options — maps to sec_classification.exchange column.
+ *  SS includes STAR (科创板), SZ includes GEM (创业板) — both are sub-boards
+ *  of SSE and SZSE respectively. */
+const EXCHANGE_OPTIONS: Array<{ value: string | null; label: string }> = [
+  { value: null, label: "All" },
+  { value: "SS", label: "SSE" },
+  { value: "SZ", label: "SZSE" },
+  { value: "BJ", label: "BSE" },
+];
+
 interface Props {
   sectors: SectorNode[];
   sectorId: string | null;
   industrySlug: string | null;
+  exchange: string | null;
   onSectorChange: (id: string | null) => void;
   onIndustryChange: (slug: string | null) => void;
+  onExchangeChange: (ex: string | null) => void;
 }
 
 export default function ThemeSelector({
   sectors,
   sectorId,
   industrySlug,
+  exchange,
   onSectorChange,
   onIndustryChange,
+  onExchangeChange,
 }: Props) {
   const activeSector = sectors.find((s) => s.sector_id === sectorId) ?? null;
 
@@ -42,6 +59,27 @@ export default function ThemeSelector({
         borderRadius: 1.5,
       }}
     >
+      {/* Row 0: Exchange chips */}
+      <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap", alignItems: "center" }}>
+        <Typography
+          variant="subtitle2"
+          sx={{ fontWeight: 600, minWidth: 56, fontSize: "0.75rem" }}
+        >
+          Exchange
+        </Typography>
+        {EXCHANGE_OPTIONS.map((opt) => (
+          <Chip
+            key={opt.label}
+            label={opt.label}
+            size="small"
+            color={exchange === opt.value ? "primary" : "default"}
+            variant={exchange === opt.value ? "filled" : "outlined"}
+            onClick={() => onExchangeChange(opt.value)}
+            sx={{ fontSize: "0.7rem" }}
+          />
+        ))}
+      </Box>
+
       {/* Row 1: L1 sector chips */}
       <Box sx={{ display: "flex", gap: 0.75, flexWrap: "wrap", alignItems: "center" }}>
         <Typography

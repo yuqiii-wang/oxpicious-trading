@@ -9,6 +9,7 @@ psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/stats/02_etf_m
 psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/stats/03_sec_composition.sql
 psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/stats/04_options_quote.sql
 psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/stats/05_index_baseline.sql
+psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/stats/08_index_exts.sql
 psql -U postgres -d "oxpicious-stats" -f /docker-entrypoint-sql.d/stats/99_reconstruct_views.sql
 
 # analysis schema (new: analysis_identity registry + per-analysis result tables)

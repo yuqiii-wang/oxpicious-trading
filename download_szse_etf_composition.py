@@ -24,6 +24,7 @@ import pandas as pd
 from _download_commons import (
     DEFAULT_TIMEOUT,
     DEFAULT_START_DATE,
+    DEFAULT_SHORT_SLEEP_SEC,
     AntiBotProxy,
     AntiBotConfig,
     setup_logger,
@@ -36,6 +37,7 @@ from _download_commons import (
     add_exchange_suffix,
     random_browser_profile,
 )
+from _download_commons_monthly import is_month_start, most_recent_trading_day
 
 
 LIST_API_URL = "https://www.szse.cn/api/report/ShowReport/data"
@@ -44,7 +46,7 @@ REFERER = "https://www.szse.cn/disclosure/fund/currency/index.html"
 CATALOGID = "sgshqd"
 PAGE_SIZE = 20
 MD_MIN_BYTES = 200
-SLEEP_SEC = 5.0
+SLEEP_SEC = DEFAULT_SHORT_SLEEP_SEC
 
 RE_ENCODE_OPEN = re.compile(r"encode-open=['\"]([^'\"]+)['\"]")
 RE_ETF_CODE_FROM_PATH = re.compile(r"/files/text/etf/ETF(\d{6})(\d{8})\.txt")
@@ -121,13 +123,13 @@ def generate_hybrid_dates(
     quarterly_months: Tuple[int, ...] = (1, 4, 7, 10),
 ) -> List[date]:
     dates: List[date] = []
-    
+
     cur_year = end_date.year
     cur_month = end_date.month
-    
+
     last_month_year = cur_year
     last_month_month = cur_month
-    
+
     while True:
         d = first_business_day_of_month(cur_year, cur_month)
         if d < start_date:
@@ -136,24 +138,24 @@ def generate_hybrid_dates(
             pass
         else:
             is_last_month = (cur_year == last_month_year and cur_month == last_month_month)
-            
+
             if is_last_month:
                 dates.append(d)
             else:
                 if cur_month in quarterly_months:
                     dates.append(d)
-        
+
         if cur_month == 1:
             cur_year -= 1
             cur_month = 12
         else:
             cur_month -= 1
-        
+
         if cur_year < start_date.year:
             break
         if cur_year == start_date.year and cur_month < start_date.month:
             break
-    
+
     return dates
 
 
@@ -706,11 +708,30 @@ def download_szse_etf_composition(
     skip_today: bool = True,
     convert_csv: bool = True,
     download_mode: str = "hybrid",
+    force_month_start: bool = False,
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "szse_etf_composition", out_root)
 
     _start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else datetime.strptime(DEFAULT_START_DATE, "%Y-%m-%d").date()
     _end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else date.today()
+
+    # Month-start trigger: on the 1st of each month (or when forced), bypass
+    # the cache for the most recent trading day and stamp files with today's
+    # date so a fresh monthly snapshot flows to prod even if the actual data
+    # is from the previous business day.
+    today = date.today()
+    month_start = force_month_start or is_month_start(today)
+    dl_date: Optional[date] = None   # the trading day to download from the API
+    stamp_date: Optional[date] = None  # the date to stamp in filenames/trade_date
+    if month_start:
+        dl_date = most_recent_trading_day(today)
+        stamp_date = today
+        logger.info(
+            "Month-start refresh (today=%s, forced=%s): forcing download for "
+            "trading day %s, stamping files with today's date %s.",
+            today.isoformat(), force_month_start,
+            dl_date.isoformat(), stamp_date.isoformat(),
+        )
 
     if download_mode == "hybrid":
         target_dates = generate_hybrid_dates(_start, _end)
@@ -721,12 +742,16 @@ def download_szse_etf_composition(
         target_dates = [d for d in target_dates if d.month in (1, 4, 7, 10)]
     else:
         target_dates = generate_monthly_first_biz_dates(_start, _end)
-    
-    if skip_today:
-        today = date.today()
+
+    # On month-start, don't skip today (we need dl_date in the target set).
+    if skip_today and not month_start:
         target_dates = [d for d in target_dates if d != today]
     if max_dates is not None and max_dates > 0:
         target_dates = target_dates[:max_dates]
+
+    # On month-start, ensure dl_date is in target_dates (prepend if missing).
+    if month_start and dl_date and dl_date not in target_dates:
+        target_dates.insert(0, dl_date)
 
     if not target_dates:
         logger.warning("No target dates generated for %s -> %s (mode=%s)", _start, _end, download_mode)
@@ -745,6 +770,11 @@ def download_szse_etf_composition(
                 cached_dates.add(d)
             except ValueError:
                 pass
+
+    # On month-start, force re-download of dl_date by removing it from the
+    # cached set (the API is still queried and files are re-downloaded).
+    if month_start and dl_date:
+        cached_dates.discard(dl_date)
 
     missing_dates = len(target_dates) - len(cached_dates & set(target_dates))
     cache_ratio = (len(cached_dates & set(target_dates))) / len(target_dates) if target_dates else 1.0
@@ -808,6 +838,17 @@ def download_szse_etf_composition(
                 dates_processed += 1
                 proxy.sleep(auto_sleep * 0.3)
                 continue
+
+            # On month-start, stamp items for dl_date with today's date so
+            # files are named with today's date and the trade_date column in
+            # the CSV reflects the new month — even though the actual PCF
+            # data is from the most recent trading day (dl_date).
+            if month_start and stamp_date and d == dl_date:
+                for it in items:
+                    it.trade_date = stamp_date
+                    it.md_filename = md_filename_for(stamp_date, it.etf_code)
+                logger.info("  [month-start] Stamped %d items with %s (data from %s)",
+                            len(items), stamp_date.isoformat(), d.isoformat())
 
             logger.info("  Found %d ETFs for %s", len(items), d)
 
@@ -917,6 +958,10 @@ if __name__ == "__main__":
     ap.add_argument("--download-mode", type=str, default="hybrid",
                     choices=["hybrid", "monthly", "quarterly"],
                     help="Download mode: hybrid (quarterly for history + monthly for latest month), monthly, or quarterly (default: hybrid)")
+    ap.add_argument("--force-month-start", action="store_true", default=False,
+                    help="Force month-start behavior: bypass cache for the most recent "
+                         "trading day and stamp files with today's date. For testing the "
+                         "monthly refresh flow on any day.")
     args = ap.parse_args()
 
     skip_today = args.skip_today and not args.no_skip_today
@@ -931,5 +976,6 @@ if __name__ == "__main__":
         skip_today=skip_today,
         convert_csv=convert_csv,
         download_mode=args.download_mode,
+        force_month_start=args.force_month_start,
     )
     print(result)

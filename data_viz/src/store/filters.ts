@@ -40,6 +40,10 @@ interface AppState {
   industrySlug: string | null;
   setIndustrySlug: (slug: string | null) => void;
 
+  /** Exchange filter — 'SS' (SSE), 'SZ' (SZSE), 'BJ' (BSE), or null (All). */
+  exchange: string | null;
+  setExchange: (ex: string | null) => void;
+
   /** Legacy theme slug — kept for backward compat, mapped to industrySlug. */
   themeSlug: string | null;
   setThemeSlug: (slug: string | null) => void;
@@ -82,6 +86,9 @@ export const useStore = create<AppState>((set) => ({
 
   industrySlug: null,
   setIndustrySlug: (slug) => set({ industrySlug: slug }),
+
+  exchange: null,
+  setExchange: (ex) => set({ exchange: ex }),
 
   themeSlug: null,
   setThemeSlug: (slug) => set({ industrySlug: slug }),

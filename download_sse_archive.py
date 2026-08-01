@@ -94,6 +94,7 @@ from _download_commons import (
     DEFAULT_SLEEP_SEC,
     DEFAULT_START_DATE,
     MIN_VALID_BYTES,
+    DEFAULT_SHORT_SLEEP_SEC,
     AntiBotProxy,
     AntiBotConfig,
     build_headers_with_referer,
@@ -182,7 +183,7 @@ TRADE_STATS_DIRNAME = ARCHIVE_DIRNAME  # "sse_archive"
 QUARTERLY_MONTHS: Tuple[int, ...] = (2, 4, 5, 8, 9, 11)
 # Smaller sleep than the dayk/list endpoint — query.sse.com.cn is a lightweight
 # query API and does not require the 20s cadence used for yunhq.sse.com.cn.
-TRADE_STATS_SLEEP_SEC = 8.0
+TRADE_STATS_SLEEP_SEC = DEFAULT_SHORT_SLEEP_SEC
 # PE file holds both metrics per the user's request.
 PE_COLUMNS: List[str] = [
     "日期", "证券代码", "证券简称", "静态市盈率(倍)", "总换手率(%)",

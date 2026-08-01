@@ -257,6 +257,18 @@ export interface IndexBaselineResponse {
   rows: IndexBaselineRow[];
 }
 
+/**
+ * One (sector_id, industry_id) classification tag for an index.
+ * Mirrors a row in stats.sec_index_tags. An index may carry multiple tags,
+ * enabling multi-faceted browsing (e.g. "央企红利" is both DIV/DIV_SOE and
+ * BROAD/BROAD_SOE). The PRIMARY tag matches the index's sector_id/industry_id
+ * fields on sec_classification and is conventionally the first entry.
+ */
+export interface IndexTag {
+  sector_id: string;
+  industry_id: string;
+}
+
 /** One index with its daily baseline rows (used in the combined response). */
 export interface IndexBundle {
   code: string;
@@ -265,6 +277,9 @@ export interface IndexBundle {
   sector_label: string;
   industry_id: string;
   industry_label: string;
+  /** All classification tags for this index (primary first). Empty/absent
+   *  when the index only carries the single (sector_id, industry_id) pair. */
+  tags?: IndexTag[];
   rows: IndexBaselineRow[];
 }
 
@@ -299,7 +314,7 @@ export interface IndexIntraday5minResponse {
 }
 
 // ----------------------------------------------------------------------------
-// Security Composition (sec_composition + stock_industry_map)
+// Security Composition (sec_composition + sec_classification)
 // ----------------------------------------------------------------------------
 export interface SecCompositionHolding {
   stock_code: string;
@@ -329,6 +344,50 @@ export interface SecCompositionResponse {
 }
 
 // ----------------------------------------------------------------------------
+// Linked ETFs (sec_classification type='etf', parent_index_code = index code)
+// Used by the Index Baseline page's "Linked ETFs" expansion beside the
+// Composition pie — shows the ETFs tracking the displayed index.
+// ----------------------------------------------------------------------------
+/** One ETF that tracks the requested index. */
+export interface LinkedEtfRow {
+  /** ETF code WITH exchange suffix (e.g. "510300.SZ"). */
+  code: string;
+  name: string;
+  /** Exchange suffix: SS | SZ | BJ | HK ("" when unknown). */
+  exchange: string;
+  sector_label: string;
+  industry_label: string;
+  /** Latest trading day with a row in stats.v_etf_margin (YYYY-MM-DD, "" if none). */
+  latest_date: string;
+  /** Close price on latest_date (NULL when no rows). */
+  latest_close: number | null;
+  /** Trading amount (成交金额, turnover) in 亿元 on latest_date — from
+   *  v_etf_margin.amount_wan / 10000. NULL when no v_etf_margin rows. */
+  latest_trading_amount: number | null;
+  /** Valuation amount (NAV/AUM) in 亿元 — from sec_classification.aum_yi,
+   *  populated from etf_index_map_all_*.csv. Available for ALL ETFs. */
+  aum_yi: number | null;
+  /** Number of trading-day rows in stats.v_etf_margin. */
+  n_days: number;
+}
+
+export interface LinkedEtfsResponse {
+  /** The requested index code (echoed back, suffix-stripped). */
+  index_code: string;
+  etfs: LinkedEtfRow[];
+  /** Aggregate ETF trading turnover (yuan) tracking this index on the latest
+   *  date with an index_exts row — from stats.index_exts.total_etf_amt.
+   *  NULL when the index has no tracking ETF (no index_exts row). */
+  total_etf_amt: number | null;
+  /** 5-trading-day moving average of total_etf_amt (yuan) on the latest date —
+   *  from stats.index_exts.total_etf_amt_ma5. NULL when insufficient history. */
+  total_etf_amt_ma5: number | null;
+  /** Latest date (YYYY-MM-DD) of the index_exts row used for total_etf_amt.
+   *  "" when the index has no index_exts row. */
+  total_etf_amt_date: string;
+}
+
+// ----------------------------------------------------------------------------
 // Stock Baseline (v_stock_baseline view — stock_identity + stock_basic_stats)
 // Used by the composition pie chart's per-stock candlestick expansion.
 // ----------------------------------------------------------------------------
@@ -353,7 +412,7 @@ export interface StockBaselineResponse {
 }
 
 // ----------------------------------------------------------------------------
-// Stock Combined (v_stock_baseline view + stock_industry_map)
+// Stock Combined (v_stock_baseline view + sec_classification)
 // Used by the Stock Baseline page — paginated stock list filtered by sector +
 // industry, mirroring IndexCombinedResponse.
 // ----------------------------------------------------------------------------
@@ -496,7 +555,8 @@ export interface MovAveSpreadChartResponse {
 //    PK: (code, date, sec_type, benchmark_code)
 //
 //    Per-row: subject_return, benchmark_return, active_return,
-//    benchmark_amount, code_amount, amount_ratio_benchmark_to_code (GENERATED).
+//    benchmark_etf_amount, code_etf_amount, etf_amount_ratio_benchmark_to_code
+//    (GENERATED), corr_{5,20,60,255}d.
 // ----------------------------------------------------------------------------
 export type PerfAttrSecType = "etf" | "index";
 
@@ -529,9 +589,24 @@ export interface PerfAttrBenchmarkRow {
   active_return: number | null;
   code_sec_shared_weight: number | null;
   benchmark_sec_shared_weight: number | null;
-  amount_ratio: number | null;
-  /** Benchmark's yuan amount on this date (src=index_basic_stats.amount×1e8). NULL when source amount is NULL. */
-  benchmark_amount: number | null;
+  /** benchmark_etf_amount / code_etf_amount (GENERATED). A LIQUIDITY ratio
+   *  (≥1 means benchmark ETF-market turnover exceeds subject's). Its inverse
+   *  (1/ratio) is the subject's SHARE of the benchmark ETF market. NULL when
+   *  either amount is NULL/0 (e.g. benchmark has no tracking ETF). */
+  etf_amount_ratio: number | null;
+  /** Aggregate ETF turnover (yuan) tracking benchmark_code on this date
+   *  (Σ etf_liquidity_margin.amount_wan×1e4 where parent_index_code = benchmark_code).
+   *  NULL when no ETF tracks the benchmark (e.g. 000001 上证指数). */
+  benchmark_etf_amount: number | null;
+  /** Subject's ETF turnover (yuan). For sec_type='etf': the ETF's own amount.
+   *  For sec_type='index': aggregate ETF turnover tracking the subject index.
+   *  NULL for stocks and for indices with no tracking ETF. */
+  code_etf_amount: number | null;
+  /** TRUE iff the benchmark index is broad-market (any tag in
+   *  stats.sec_index_tags with is_broad_market=TRUE). Sourced from the DB,
+   *  replacing the former hardcoded BROAD_MARKET_BENCHMARKS list. NULL when
+   *  the benchmark has no classification (e.g. unclassified index). */
+  is_broad_market: boolean | null;
 }
 
 export interface PerfAttrAttributionResponse {
@@ -547,8 +622,53 @@ export interface PerfAttrChartRow {
   subject_return: number | null;
   benchmark_return: number | null;
   active_return: number | null;
-  /** benchmark_amount / code_amount (GENERATED). NULL when either is 0/NULL. */
-  amount_ratio: number | null;
+  /** benchmark_etf_amount / code_etf_amount (GENERATED). LIQUIDITY ratio,
+   *  NOT a price-attribution proportion. */
+  etf_amount_ratio: number | null;
+  /** Aggregate ETF turnover (yuan) tracking benchmark_code on this date. */
+  benchmark_etf_amount: number | null;
+  /** Subject's ETF turnover (yuan) on this date. */
+  code_etf_amount: number | null;
+  /** Number of ETFs tracking benchmark_code on this date (from stats.index_exts).
+   *  NULL when no ETF tracks the benchmark. */
+  benchmark_etf_num: number | null;
+  /** Number of ETFs tracking the subject index on this date (from stats.index_exts).
+   *  Only meaningful for sec_type='index'; NULL for ETF subjects. */
+  code_etf_num: number | null;
+  /** Industry id of the benchmark index (e.g. BANKS, SEMI, BROAD_CSI) from
+   *  stats.sec_classification where type='index'. Constant across all dates
+   *  for one benchmark. NULL when the benchmark has no classification. */
+  benchmark_industry_id: string | null;
+  /** Industry id of the subject. For sec_type='etf': the linked parent
+   *  index's industry_id. For sec_type='index': the subject index's own
+   *  industry_id. Constant across all dates for one subject. NULL when no
+   *  classification is available. */
+  code_industry_id: string | null;
+  /** Aggregate ETF turnover (yuan) tracking ALL indices in the benchmark's
+   *  industry on this date (from stats.etf_trading_amt where
+   *  code = benchmark_industry_id). NULL when benchmark_industry_id is NULL
+   *  or no ETF tracks any index in that industry on this date. */
+  benchmark_industry_etf_amount: number | null;
+  /** Aggregate ETF turnover (yuan) tracking ALL indices in the subject's
+   *  industry on this date (from stats.etf_trading_amt where
+   *  code = code_industry_id). NULL when code_industry_id is NULL or no ETF
+   *  tracks any index in that industry on this date. */
+  code_industry_etf_amount: number | null;
+  /** Number of ETFs tracking indices in the benchmark's industry on this date. */
+  benchmark_industry_etf_num: number | null;
+  /** Number of ETFs tracking indices in the subject's industry on this date. */
+  code_industry_etf_num: number | null;
+  /** Subject close price on this date (COALESCE(adj_close, close) for ETFs;
+   *  close for indices). Used for the two-curve close-price comparison chart. */
+  subject_close: number | null;
+  /** Benchmark index close on this date. */
+  benchmark_close: number | null;
+  /** Rolling Pearson correlation of subject close vs benchmark close over the
+   *  trailing N trading days. NULL when fewer than N non-NaN closes in window. */
+  corr_5d: number | null;
+  corr_20d: number | null;
+  corr_60d: number | null;
+  corr_255d: number | null;
 }
 
 export interface PerfAttrChartResponse {
@@ -557,4 +677,110 @@ export interface PerfAttrChartResponse {
   benchmark_code: string;
   benchmark_name: string;
   rows: PerfAttrChartRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Analysis Commons — Capital Flow (Industry × Broad-Market Benchmark)
+//    analysis.capital_flow
+//    PK: (date, industry_id, benchmark_code)
+//
+//    Captures each industry's "trending popularity" after removing the
+//    dilution caused by broad-market ETFs that share overlapping stock
+//    holdings with the industry. Pure metrics:
+//      • pure_flow         = I * (1 - w_i * O_b / (O_b + O_i))
+//      • pure_growth       = g_i - w_i * g_b
+//      • pure_popularity   = pure_flow * pure_growth
+//      • observed_popularity = I * g_i  (no removal)
+//      • popularity_retention = pure / observed
+// ----------------------------------------------------------------------------
+/** One industry in the capital-flow list. */
+export interface CapitalFlowIndustryRow {
+  industry_id: string;
+  industry_label: string;
+  first_date: string;
+  last_date: string;
+  n_dates: number;
+  /** Number of distinct benchmarks the industry is paired against. */
+  n_benchmarks: number;
+  /** Latest pure_popularity (summed or max across benchmarks) — used to sort. */
+  latest_pure_popularity: number | null;
+  /** Latest observed_popularity (raw, no broad-market removal). */
+  latest_observed_popularity: number | null;
+  /** Latest popularity_retention = pure / observed. */
+  latest_retention: number | null;
+  /** Average pure_growth across all dates and benchmarks (fractional). */
+  avg_pure_growth: number | null;
+}
+
+export interface CapitalFlowIndustriesResponse {
+  industries: CapitalFlowIndustryRow[];
+}
+
+/** Per-date row of the chart for one (industry, benchmark) pair. */
+export interface CapitalFlowChartRow {
+  date: string;
+  /** I (yuan): aggregate industry ETF trading amount on this date. */
+  industry_etf_amount: number | null;
+  /** Number of ETFs in the industry on this date. */
+  industry_etf_num: number | null;
+  /** g_i: amount-weighted avg ETF return in the industry (fractional). */
+  industry_return: number | null;
+  /** B (yuan): aggregate ETF trading amount tracking the benchmark. */
+  benchmark_etf_amount: number | null;
+  benchmark_etf_num: number | null;
+  /** g_b: benchmark index daily return (fractional). */
+  benchmark_return: number | null;
+  /** w_i (PERCENT): fraction of industry weight on overlap stocks. */
+  industry_overlap_weight: number | null;
+  /** w_b (PERCENT): fraction of benchmark weight on overlap stocks. */
+  benchmark_overlap_weight: number | null;
+  /** O_i = I * w_i / 100 (yuan). */
+  industry_overlap_amount: number | null;
+  /** O_b = B * w_b / 100 (yuan). */
+  benchmark_overlap_amount: number | null;
+  /** I * (1 - w_i * O_b / (O_b + O_i)) (yuan). */
+  pure_flow: number | null;
+  /** g_i - w_i * g_b (fractional). */
+  pure_growth: number | null;
+  /** pure_flow * pure_growth. */
+  pure_popularity: number | null;
+  /** I * g_i (raw popularity, no removal). */
+  observed_popularity: number | null;
+  /** pure_popularity / observed_popularity. Unbounded (NULL when observed=0). */
+  popularity_retention: number | null;
+}
+
+export interface CapitalFlowChartResponse {
+  industry_id: string;
+  industry_label: string;
+  benchmark_code: string;
+  benchmark_label: string;
+  rows: CapitalFlowChartRow[];
+}
+
+/** One benchmark in the list (industry_id is implicit from the request). */
+export interface CapitalFlowBenchmarkRow {
+  benchmark_code: string;
+  benchmark_label: string;
+  /** Average overlap weight w_i across all dates for this pair (PERCENT). */
+  avg_w_i: number | null;
+  /** Average overlap weight w_b across all dates for this pair (PERCENT). */
+  avg_w_b: number | null;
+  /** Sum of pure_popularity across all dates. */
+  total_pure_popularity: number | null;
+  /** Sum of observed_popularity across all dates. */
+  total_observed_popularity: number | null;
+  /** Average pure_growth across all dates (fractional). */
+  avg_pure_growth: number | null;
+  /** Number of dates with data. */
+  n_dates: number;
+  first_date: string;
+  last_date: string;
+}
+
+/** Response for /capital-flow/benchmarks?industry_id=AI. */
+export interface CapitalFlowBenchmarksResponse {
+  industry_id: string;
+  industry_label: string;
+  benchmarks: CapitalFlowBenchmarkRow[];
 }

@@ -171,8 +171,11 @@ def download_day_bzqx(
     ctype = resp.headers.get("Content-Type", "")
     if is_error_html(ctype, resp.content, max_html_bytes=EMPTY_HTML_MAX_BYTES):
         logger.warning(
-            "  [day-empty] %s (html error page, len=%d)", work_date, len(resp.content)
+            "  [day-empty] %s (html error page, len=%d), writing empty marker",
+            work_date, len(resp.content),
         )
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_bytes(b"")
         return False
 
     return safe_write_bytes(
@@ -212,8 +215,11 @@ def download_year_bzqx(
     ctype = resp.headers.get("Content-Type", "")
     if is_error_html(ctype, resp.content, max_html_bytes=EMPTY_HTML_MAX_BYTES):
         logger.warning(
-            "  [year-empty] %d (html error page, len=%d)", year, len(resp.content)
+            "  [year-empty] %d (html error page, len=%d), writing empty marker",
+            year, len(resp.content),
         )
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_bytes(b"")
         return False
 
     return safe_write_bytes(
@@ -330,6 +336,11 @@ def download_chinabond(
                         break
 
                     fpath = out_dir / _year_filename(ck, yitem.year)
+                    # Skip years previously confirmed to have no data (empty marker),
+                    # unless this is an always-refresh (current) year
+                    if yitem.year not in always_refresh and fpath.exists() and not is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
+                        stats.empty += 1
+                        continue
                     ok = download_year_bzqx(session, yc_defid, yitem.year, fpath, proxy)
                     if ok:
                         if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
@@ -368,6 +379,10 @@ def download_chinabond(
                         break
 
                     fpath = out_dir / _day_filename(ck, ditem.day)
+                    # Skip dates previously confirmed to have no data (empty marker)
+                    if fpath.exists() and not is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
+                        stats.empty += 1
+                        continue
                     ok = download_day_bzqx(session, yc_defid, ditem.day, fpath, proxy)
                     if ok:
                         if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):

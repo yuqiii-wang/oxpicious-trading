@@ -35,18 +35,123 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _download_commons import strip_exchange_suffix
 from _db_commons import get_db_connection
-# Unified classification taxonomy (single source of truth).
-# All theme/industry rules now live in _classification.py; this module just
-# consumes the exported ETF_THEME_RULES / ETF_THEMES OrderedDict and the
-# classifier functions (classify_etf, compute_keyword_match_score,
-# get_theme_taxonomy) — no more local copy of the keyword tables.
-from _classification import (
-    ETF_THEME_RULES,         # list of (theme_id, label, slug, [keywords])
-    ETF_THEMES_COMPAT as ETF_THEMES,  # OrderedDict (annotated with taxonomy keys)
-    classify_etf,             # (name) -> (theme_id, theme_label, slug)
-    compute_keyword_match_score,  # (name, theme_id) -> (total_len, n_hits, longest_kw)
-    get_theme_taxonomy,       # (theme_id) -> (group_id, group_label, ind_id, ind_label)
-)
+
+# ---------------------------------------------------------------------------
+# Classification — loaded from sec_classification.json (replaces _classification.py)
+# ---------------------------------------------------------------------------
+import json as _json
+from pathlib import Path as _Path
+
+_CLASSIFICATION_JSON = _Path(__file__).resolve().parent / "sec_classification.json"
+with _CLASSIFICATION_JSON.open("r", encoding="utf-8") as _f:
+    _CLASSIFICATION = _json.load(_f)
+
+_CATALOG = _CLASSIFICATION.get("catalog", {})
+_ETFS_JSON = _CLASSIFICATION.get("etfs", {})
+
+# Build bare-code → {sector_id, industry_id, name} lookup from the JSON etfs section.
+_BARE_CODE_TO_ETF: dict = {}
+for _full_code, _info in _ETFS_JSON.items():
+    _bare = _full_code.rsplit(".", 1)[0] if "." in _full_code else _full_code
+    _BARE_CODE_TO_ETF[_bare] = _info
+
+# Build industry_id → (sector_id, sector_label, industry_id, industry_label, slug) lookup
+# and industry_id → [keywords] lookup from the catalog + build_classification.INDEX_RULES.
+from build_classification import INDEX_RULES as _INDEX_RULES
+
+_INDUSTRY_LOOKUP: dict = {}
+_KEYWORDS_BY_INDUSTRY: dict = {}
+for _sid, _sdata in _CATALOG.items():
+    _s_label = _sdata.get("label", _sid)
+    for _iid, _idata in (_sdata.get("industries") or {}).items():
+        _i_label = _idata.get("label", _iid)
+        _slug = _idata.get("slug", _iid.lower())
+        _INDUSTRY_LOOKUP[_iid] = (_sid, _s_label, _iid, _i_label, _slug)
+        _KEYWORDS_BY_INDUSTRY[_iid] = []
+
+# Fill keywords from INDEX_RULES (same keywords as the former _classification.TAXONOMY).
+for _sid, _s_label, _iid, _i_label, _kws in _INDEX_RULES:
+    _KEYWORDS_BY_INDUSTRY[_iid] = list(_kws)
+
+# ETF_THEMES: OrderedDict keyed by industry_id (drop-in replacement for ETF_THEMES_COMPAT).
+ETF_THEMES: "OrderedDict[str, dict]" = OrderedDict()
+for _iid, (_sid, _s_label, _, _i_label, _slug) in _INDUSTRY_LOOKUP.items():
+    ETF_THEMES[_iid] = {
+        "theme_label": _i_label,
+        "slug": _slug,
+        "kw": _KEYWORDS_BY_INDUSTRY.get(_iid, []),
+        "theme_group_id": _sid,
+        "theme_group_label": _s_label,
+        "industry_id": _iid,
+        "industry_label": _i_label,
+    }
+ETF_THEMES["OTHER"] = {
+    "theme_label": "其他｜未分类  Unclassified",
+    "slug": "other",
+    "kw": [],
+    "theme_group_id": "OTHER",
+    "theme_group_label": "其他",
+    "industry_id": "OTHER",
+    "industry_label": "未分类",
+}
+
+
+def classify_etf(code: str, name: str = ""):
+    """Classify an ETF by code (JSON lookup) with keyword fallback by name.
+
+    Returns (theme_id, theme_label, slug) — same tuple shape as the former
+    _classification.classify_etf for backward compatibility.
+    """
+    info = _BARE_CODE_TO_ETF.get(code)
+    if info is not None:
+        iid = info.get("industry_id", "OTHER")
+        lookup = _INDUSTRY_LOOKUP.get(iid)
+        if lookup:
+            _, _, _, label, slug = lookup
+            return (iid, label, slug)
+    # Fallback: keyword matching using INDEX_RULES keywords.
+    s = str(name or "")
+    if not s:
+        return ("OTHER", "其他｜未分类  Unclassified", "other")
+    best_id = "OTHER"
+    best_label = "其他｜未分类  Unclassified"
+    best_slug = "other"
+    best_score = 0
+    for iid, kws in _KEYWORDS_BY_INDUSTRY.items():
+        score = sum(len(kw) for kw in kws if kw in s)
+        if score > best_score:
+            best_score = score
+            lookup = _INDUSTRY_LOOKUP.get(iid)
+            if lookup:
+                _, _, _, best_label, best_slug = lookup
+                best_id = iid
+    return (best_id, best_label, best_slug)
+
+
+def compute_keyword_match_score(name: str, theme_id: str):
+    """Score how well *name* matches *theme_id* keywords.
+
+    Returns (total_len, n_hits, longest_kw) — higher = better.
+    """
+    s = str(name or "")
+    kws = _KEYWORDS_BY_INDUSTRY.get(theme_id, [])
+    if not kws:
+        return (0, 0, 0)
+    hits = [kw for kw in kws if kw in s]
+    if not hits:
+        return (0, 0, 0)
+    return (sum(len(kw) for kw in hits), len(hits), max(len(kw) for kw in hits))
+
+
+def get_theme_taxonomy(theme_id: str):
+    """Return (theme_group_id, theme_group_label, industry_id, industry_label)."""
+    cfg = ETF_THEMES.get(theme_id) or ETF_THEMES["OTHER"]
+    return (
+        cfg.get("theme_group_id", "OTHER"),
+        cfg.get("theme_group_label", "其他"),
+        cfg.get("industry_id", theme_id),
+        cfg.get("industry_label", cfg.get("theme_label", "")),
+    )
 
 # ============================================================================
 # Paths
@@ -154,7 +259,7 @@ def study_etf_themes(combined_df=None, save=True, require_recent_data=True):
     rows = []
     for code, sub in combined_df.groupby("code"):
         name = str(sub["name"].dropna().iloc[0]) if sub["name"].notna().any() else ""
-        tid, tlabel, tslug = classify_etf(name)
+        tid, tlabel, tslug = classify_etf(code, name)
         tgid, tglab, iid, ilab = get_theme_taxonomy(tid)
         rz = pd.to_numeric(sub.get("rz_balance", 0), errors="coerce").fillna(0.0)
         rq = pd.to_numeric(sub.get("rq_balance_amt", 0), errors="coerce").fillna(0.0)
@@ -288,7 +393,7 @@ def select_etfs_for_plotting(
     # --- (1) Classify ---
     code_theme = {}
     for code, name in code_name_map.items():
-        tid, tlabel, tslug = classify_etf(name)
+        tid, tlabel, tslug = classify_etf(code, name)
         code_theme[code] = (tid, tlabel, tslug)
 
     if verbose:
@@ -573,7 +678,7 @@ def main():
     plan_rows = []
     for fig_idx, (slug, label, etf_list) in enumerate(figure_specs):
         for panel_idx, (code, name) in enumerate(etf_list):
-            tid, _, _ = classify_etf(name)
+            tid, _, _ = classify_etf(code, name)
             tgid, tglab, iid, ilab = get_theme_taxonomy(tid)
             plan_rows.append({
                 "fig_idx":          fig_idx,

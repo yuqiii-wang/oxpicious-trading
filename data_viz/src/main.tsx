@@ -26,6 +26,7 @@ function ThemedApp() {
 
 // Wire up ECharts cross-chart tooltip sync once.
 connectChartsByGroup("debt-baseline");
+connectChartsByGroup("annual-sentiment");
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

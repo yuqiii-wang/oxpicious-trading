@@ -28,6 +28,7 @@ import type {
   IndexCombinedResponse,
   IndexIntraday5minResponse,
   SecCompositionResponse,
+  LinkedEtfsResponse,
   StockBaselineResponse,
   StockCombinedResponse,
   MovAveSpreadCodesResponse,
@@ -37,6 +38,9 @@ import type {
   PerfAttrChartResponse,
   PerfAttrAttributionResponse,
   PerfAttrSecType,
+  CapitalFlowIndustriesResponse,
+  CapitalFlowBenchmarksResponse,
+  CapitalFlowChartResponse,
 } from "../../shared/types";
 
 // Module-level cache singleton: 100 entries, 10-minute TTL (safety net).
@@ -118,6 +122,13 @@ function extractLatestDate(url: string, data: unknown): string {
   try {
     if (url.startsWith("/api/debt-baseline")) {
       return (data as DebtBaselineResponse)?.maxDate ?? "";
+    }
+    // Order matters: the linked-etfs sub-route must be checked BEFORE the
+    // broader /api/sec-composition prefix (linked-etfs returns etfs[].latest_date,
+    // not a top-level snapshot_date).
+    if (url.startsWith("/api/sec-composition/linked-etfs")) {
+      const etfs = (data as LinkedEtfsResponse)?.etfs ?? [];
+      return etfs.reduce((max, e) => (e.latest_date > max ? e.latest_date : max), "");
     }
     if (url.startsWith("/api/sec-composition")) {
       return (data as SecCompositionResponse)?.snapshot_date ?? "";
@@ -303,6 +314,7 @@ export function fetchEtfMarginCombined(
   page?: number,
   pageSize?: number,
   code?: string | null,
+  exchange?: string | null,
 ): Promise<EtfMarginCombinedResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
@@ -313,6 +325,7 @@ export function fetchEtfMarginCombined(
   if (limitPerTheme) params.set("limit_per_theme", String(limitPerTheme));
   if (page) params.set("page", String(page));
   if (pageSize) params.set("page_size", String(pageSize));
+  if (exchange) params.set("exchange", exchange);
   const qs = params.toString();
   return fetchJson<EtfMarginCombinedResponse>(`/api/etf-margin/combined${qs ? `?${qs}` : ""}`);
 }
@@ -333,6 +346,7 @@ export function fetchIndicesCombined(
   page?: number,
   pageSize?: number,
   code?: string | null,
+  exchange?: string | null,
 ): Promise<IndexCombinedResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
@@ -342,6 +356,7 @@ export function fetchIndicesCombined(
   if (endDate) params.set("end_date", endDate);
   if (page) params.set("page", String(page));
   if (pageSize) params.set("page_size", String(pageSize));
+  if (exchange) params.set("exchange", exchange);
   const qs = params.toString();
   return fetchJson<IndexCombinedResponse>(`/api/index-baseline/combined${qs ? `?${qs}` : ""}`);
 }
@@ -362,6 +377,15 @@ export function fetchSecComposition(code: string): Promise<SecCompositionRespons
   if (code) params.set("code", code);
   const qs = params.toString();
   return fetchJson<SecCompositionResponse>(`/api/sec-composition${qs ? `?${qs}` : ""}`);
+}
+
+/** Fetch ETFs tracking the given index (parent_index_code = code).
+ *  Used by the Index Baseline page's "Linked ETFs" expansion. */
+export function fetchLinkedEtfs(code: string): Promise<LinkedEtfsResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  const qs = params.toString();
+  return fetchJson<LinkedEtfsResponse>(`/api/sec-composition/linked-etfs${qs ? `?${qs}` : ""}`);
 }
 
 export function fetchStockBaseline(
@@ -389,6 +413,7 @@ export function fetchStocksCombined(
   page?: number,
   pageSize?: number,
   code?: string | null,
+  exchange?: string | null,
 ): Promise<StockCombinedResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
@@ -398,6 +423,7 @@ export function fetchStocksCombined(
   if (endDate) params.set("end_date", endDate);
   if (page) params.set("page", String(page));
   if (pageSize) params.set("page_size", String(pageSize));
+  if (exchange) params.set("exchange", exchange);
   const qs = params.toString();
   return fetchJson<StockCombinedResponse>(`/api/stock-baseline/combined${qs ? `?${qs}` : ""}`);
 }
@@ -479,5 +505,56 @@ export function fetchPerfAttrChart(
   const qs = params.toString();
   return fetchJson<PerfAttrChartResponse>(
     `/api/analysis/perf-attr/chart?${qs}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Analysis Commons — Capital Flow (Industry × Broad-Market Benchmark)
+//  TTL-only cache (analysis schema is recomputed offline by
+//  analyze_capital_flow.py).
+// ---------------------------------------------------------------------------
+export function fetchCapitalFlowIndustries(): Promise<CapitalFlowIndustriesResponse> {
+  return fetchJson<CapitalFlowIndustriesResponse>(
+    `/api/analysis/capital-flow/industries`,
+  );
+}
+
+/** Themes tree (L1 sector → L2 industry) for the Capital Flow ThemeSelector.
+ *  Only industries present in analysis.capital_flow are included. */
+export function fetchCapitalFlowThemes(): Promise<SectorNode[]> {
+  return fetchJson<SectorNode[]>(
+    `/api/analysis/capital-flow/themes`,
+  );
+}
+
+export function fetchCapitalFlowBenchmarks(
+  industryId: string,
+): Promise<CapitalFlowBenchmarksResponse> {
+  const params = new URLSearchParams();
+  if (industryId) params.set("industry_id", industryId);
+  const qs = params.toString();
+  return fetchJson<CapitalFlowBenchmarksResponse>(
+    `/api/analysis/capital-flow/benchmarks?${qs}`,
+  );
+}
+
+/**
+ * Fetch the per-date time series for one industry × a SET of benchmark codes.
+ * Only the requested benchmarks are fetched (the page defaults to 000300 +
+ * 000852), so the user onboards to just two plots instead of loading every
+ * benchmark. Returns one CapitalFlowChartResponse per requested code, in the
+ * requested order.
+ */
+export function fetchCapitalFlowCharts(
+  industryId: string,
+  benchmarkCodes: string[],
+): Promise<CapitalFlowChartResponse[]> {
+  const params = new URLSearchParams();
+  if (industryId) params.set("industry_id", industryId);
+  const codes = (benchmarkCodes ?? []).map((c) => c.trim()).filter((c) => c.length > 0);
+  if (codes.length > 0) params.set("benchmark_codes", codes.join(","));
+  const qs = params.toString();
+  return fetchJson<CapitalFlowChartResponse[]>(
+    `/api/analysis/capital-flow/chart?${qs}`,
   );
 }

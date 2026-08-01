@@ -36,6 +36,8 @@ export default function EtfMarginPage() {
   const setSectorId = useStore((s) => s.setSectorId);
   const industrySlug = useStore((s) => s.industrySlug);
   const setIndustrySlug = useStore((s) => s.setIndustrySlug);
+  const exchange = useStore((s) => s.exchange);
+  const setExchange = useStore((s) => s.setExchange);
 
   const [sectors, setSectors] = useState<SectorNode[]>([]);
   const [data, setData] = useState<EtfMarginCombinedResponse | null>(null);
@@ -59,12 +61,12 @@ export default function EtfMarginPage() {
       .catch((e: Error) => setError(e.message));
   }, [refreshKey]);
 
-  // Reset to page 1 whenever sector or industry changes
+  // Reset to page 1 whenever sector, industry, or exchange changes
   useEffect(() => {
     setPage(1);
-  }, [sectorId, industrySlug]);
+  }, [sectorId, industrySlug, exchange]);
 
-  // Load ETF data whenever sector/industry, page, or search code changes.
+  // Load ETF data whenever sector/industry/exchange, page, or search code changes.
   // When searchCode is set, fetch only that one ETF (bypassing sector/pagination).
   useEffect(() => {
     let cancelled = false;
@@ -73,7 +75,7 @@ export default function EtfMarginPage() {
     setError(null);
     const promise = searchCode
       ? fetchEtfMarginCombined(null, null, null, null, undefined, 1, 1, searchCode)
-      : fetchEtfMarginCombined(sectorId, industrySlug, null, null, undefined, page, PAGE_SIZE);
+      : fetchEtfMarginCombined(sectorId, industrySlug, null, null, undefined, page, PAGE_SIZE, undefined, exchange);
     promise
       .then((d) => {
         if (cancelled) return;
@@ -88,7 +90,7 @@ export default function EtfMarginPage() {
     return () => {
       cancelled = true;
     };
-  }, [sectorId, industrySlug, page, searchCode, refreshKey]);
+  }, [sectorId, industrySlug, exchange, page, searchCode, refreshKey]);
 
   const handleRefresh = () => {
     // Both endpoints share the "/api/etf-margin/" prefix:
@@ -128,6 +130,10 @@ export default function EtfMarginPage() {
   const handleIndustryChange = (slug: string | null) => {
     setSearchCode(null);
     setIndustrySlug(slug);
+  };
+  const handleExchangeChange = (ex: string | null) => {
+    setSearchCode(null);
+    setExchange(ex);
   };
 
   const activeSector = sectors.find((s) => s.sector_id === sectorId);
@@ -190,8 +196,10 @@ export default function EtfMarginPage() {
         sectors={sectors}
         sectorId={sectorId}
         industrySlug={industrySlug}
+        exchange={exchange}
         onSectorChange={handleSectorChange}
         onIndustryChange={handleIndustryChange}
+        onExchangeChange={handleExchangeChange}
       />
 
       {loading && (

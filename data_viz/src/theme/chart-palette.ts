@@ -85,6 +85,52 @@ export interface AxisColors {
 }
 
 /**
+ * Shared legend config — positions legend at top-right with enough clearance
+ * so it never overlaps y-axis names/labels. Callers should pair this with
+ * `commonGrid()` to ensure the plot area starts below the legend.
+ *
+ * The legend is positioned 4px from the top edge of the chart container,
+ * and the grid should have top >= 30 to leave room for the legend height
+ * (~20px) plus the y-axis name (~12px).
+ */
+export function commonLegend(
+  mode: ThemeMode,
+  extra: Partial<import("echarts").LegendComponentOption> = {},
+): import("echarts").LegendComponentOption {
+  const c = axisColors(mode);
+  return {
+    type: "scroll",
+    top: 4,
+    right: 8,
+    textStyle: { color: c.textColor, fontSize: 9 },
+    itemWidth: 10,
+    itemHeight: 6,
+    itemGap: 15,
+    ...extra,
+  };
+}
+
+/**
+ * Shared grid config — positions the plot area with enough margin to
+ * accommodate a legend at the top-right and axes on both sides.
+ *
+ * Default: left=56, right=56, top=32, bottom=32
+ * The top=32 ensures the legend (~20px at top) + y-axis name (~12px)
+ * sit comfortably above the plot area without overlapping.
+ */
+export function commonGrid(
+  overrides: Partial<import("echarts").GridComponentOption> = {},
+): import("echarts").GridComponentOption {
+  return {
+    left: 56,
+    right: 56,
+    top: 32,
+    bottom: 32,
+    ...overrides,
+  };
+}
+
+/**
  * Resolve the axis/grid/tooltip color set for the given theme mode. Replaces
  * the `axisColors()` / `getAxisColors()` helpers that were duplicated across
  * ~8 chart components.

@@ -42,10 +42,8 @@ const APPS: Record<AppKey, AppConfig> = {
   },
   analysis: {
     label: "Analysis",
-    defaultPath: "/analysis/new",
+    defaultPath: "/analysis/commons",
     tabs: [
-      { label: "New", path: "/analysis/new" },
-      { label: "Archive", path: "/analysis/archive" },
       { label: "Commons", path: "/analysis/commons" },
     ],
   },

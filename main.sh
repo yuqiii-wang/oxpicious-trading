@@ -33,20 +33,18 @@ do
 done
 
 # on monthly start date
-# python download_sse_etf_composition.py
-# python download_szse_etf_composition.py
-# python download_index_composition.py
-# python download_szse_index_composition.py
+python download_sse_etf_composition.py
+python download_szse_etf_composition.py
+python download_index_composition.py
+python download_szse_index_composition.py
+python download_csindex_linked_etf.py
 
 # download, run once 
 python download_szse_archive.py
 python download_sse_archive.py
 
 # build, run once
-python build_etf_classification.py
-python build_index_classification.py
-python build_stock_industry.py
-python build_etf_index_map.py
+python build_sec_classification.py
 
 # always run
 python stream_sse_price.py

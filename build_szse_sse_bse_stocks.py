@@ -47,7 +47,7 @@ Notes:
   - Two-pass insert: rows with actual PE are inserted FIRST (so the DB has
     the latest actual PE for each stock), then rows with missing PE are
     estimated by querying the DB for the last actual PE before that date.
-  - is_in_etf: for each (date, code) inserted into stock_identity, the flag
+  - is_in_index_or_etf: for each (date, code) inserted into stock_identity, the flag
     is set TRUE when the stock appears in ANY ETF's active composition
     (most recent sec_composition snapshot on or before the date) with
     weight_pct > 0.1. Snapshots are forward-filled (merge_asof semantics).
@@ -538,13 +538,13 @@ async def estimate_missing_pe_async(conn, missing_pe_rows,
 
 
 # ============================================================================
-# is_in_etf computation — forward-fill (merge_asof) from sec_composition snapshots
+# is_in_index_or_etf computation — forward-fill (merge_asof) from sec_composition snapshots
 # ============================================================================
 # sec_composition ETF snapshots are sparse (quarterly-ish, 39 snapshots over
 # ~4 years). A snapshot on date X applies FORWARD until the next snapshot
 # (per the schema comment "applied forward via merge_asof"). So for a given
 # target date D, the "active" ETF composition for each ETF is the most recent
-# snapshot on or before D. A stock is_in_etf on date D if it appears in ANY
+# snapshot on or before D. A stock is_in_index_or_etf on date D if it appears in ANY
 # ETF's active composition with weight_pct > 0.1.
 #
 # Implementation: 2 DB queries + Python binary search.
@@ -556,7 +556,7 @@ async def estimate_missing_pe_async(conn, missing_pe_rows,
 ETF_WEIGHT_THRESHOLD = 0.1  # weight_pct > this → considered "in ETF"
 
 
-async def compute_is_in_etf_async(conn, target_dates):
+async def compute_is_in_index_or_etf_async(conn, target_dates):
     """For each target date, return the set of stock codes that appear in any
     ETF's active composition (most recent snapshot on or before the date) with
     weight_pct > ETF_WEIGHT_THRESHOLD.
@@ -857,14 +857,14 @@ async def main():
             return v
 
         # --- 4a. Build & insert identity rows (all rows, FK parent) ----------
-        # Compute is_in_etf: for each date in this batch, find which stocks
+        # Compute is_in_index_or_etf: for each date in this batch, find which stocks
         # appear in any ETF's active composition (most recent snapshot on or
-        # before that date) with weight_pct > 0.1. See compute_is_in_etf_async.
+        # before that date) with weight_pct > 0.1. See compute_is_in_index_or_etf_async.
         batch_dates = set(combined_db["date"].tolist())
-        print(f"    [ETF] Resolving is_in_etf for {len(batch_dates)} dates from "
+        print(f"    [ETF] Resolving is_in_index_or_etf for {len(batch_dates)} dates from "
               f"sec_composition (source_type='etf', weight_pct > {ETF_WEIGHT_THRESHOLD}) …",
               flush=True)
-        etf_membership = await compute_is_in_etf_async(conn, batch_dates)
+        etf_membership = await compute_is_in_index_or_etf_async(conn, batch_dates)
 
         identity_rows = []
         n_in_etf = 0
@@ -881,10 +881,10 @@ async def main():
                 "code": code,
                 "code_suffix": suffix,
                 "name": str(row.get("name", "")) if pd.notna(row.get("name")) else "",
-                "is_in_etf": in_etf,
+                "is_in_index_or_etf": in_etf,
             })
         print(f"    [ETF] {n_in_etf:,} / {len(identity_rows):,} rows flagged "
-              f"is_in_etf=true in this batch", flush=True)
+              f"is_in_index_or_etf=true in this batch", flush=True)
 
         if identity_rows:
             inserted = await bulk_upsert_async(
@@ -919,6 +919,7 @@ async def main():
                 "pct_change": _to_db(row.get("pct_change")),
                 "pe": _to_db(row.get("pe")),
                 "is_pe_estimated": False,
+                "is_close_estimated": bool(row.get("is_close_estimated", False)),
             }
             if close_val is None:
                 pe_only_actual_rows.append(entry)
@@ -1007,6 +1008,7 @@ async def main():
                     # is_pe_estimated=true only when estimation succeeded;
                     # rows with no prior actual PE get NULL pe and false.
                     "is_pe_estimated": est_pe is not None,
+                    "is_close_estimated": bool(row.get("is_close_estimated", False)),
                 })
 
             if estimated_basic_stats_rows:

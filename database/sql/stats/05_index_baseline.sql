@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS stats.index_basic_stats (
     amount                    NUMERIC(24,4),
     change                     NUMERIC(18,4),
     change_pct                 NUMERIC(10,4),
+    is_close_estimated         BOOLEAN       NOT NULL DEFAULT FALSE,
     has_intraday_5mins         BOOLEAN       NOT NULL DEFAULT FALSE,
 
     CONSTRAINT pk_index_basic_stats PRIMARY KEY (date, code),
@@ -50,6 +51,7 @@ COMMENT ON COLUMN stats.index_basic_stats.volume             IS 'Index trading v
 COMMENT ON COLUMN stats.index_basic_stats.amount             IS 'Index trading amount (成交金额, 亿元).';
 COMMENT ON COLUMN stats.index_basic_stats.change             IS 'Absolute price change from previous close.';
 COMMENT ON COLUMN stats.index_basic_stats.change_pct         IS 'Percentage change from previous close (%).';
+COMMENT ON COLUMN stats.index_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index (highest composition shared weight > 60%). If no proxy index qualifies, prev_close is carried forward.';
 COMMENT ON COLUMN stats.index_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) in stats.index_intraday_5min.';
 
 -- ----------------------------------------------------------------------------

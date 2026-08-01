@@ -1,13 +1,15 @@
 /**
- * Index Baseline service — queries stats.v_index_baseline view + stats.index_meta.
+ * Index Baseline service — queries stats.v_index_baseline view + stats.sec_classification.
  *
  * Returns the list of available indices and their daily OHLCV + PE + MA data.
  * Index classification (L1 sector + L2 industry) is read from precomputed
- * columns in stats.index_meta (populated by build_index_classification.py via
- * _classification.classify_index_full()). No classification logic lives in TS.
+ * columns in stats.sec_classification (type='index', populated by
+ * build_classification.py via keyword rules).
+ * No classification logic lives in TS.
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
+import { matchesExchange } from "../lib/classify-etf.js";
 import type {
   IndexInfo,
   IndexBaselineResponse,
@@ -31,6 +33,7 @@ interface DbIndexMetaRow extends QueryResultRow {
   industry_id: string;
   industry_label: string;
   industry_slug: string;
+  exchange: string;
 }
 
 interface DbIndexRow extends QueryResultRow {
@@ -84,7 +87,9 @@ function transformRow(r: DbIndexRow): IndexBaselineRow {
   };
 }
 
-/** List all available indices with their date coverage. */
+/** List all available indices with their date coverage.
+ *  Filters out indices with fewer than 40 trading days (insufficient for
+ *  visualization — matches the "Insufficient data" alert threshold). */
 export async function listIndices(): Promise<IndexInfo[]> {
   const rows = await queryRows<DbIndexMetaRow>(`
     SELECT code,
@@ -94,6 +99,7 @@ export async function listIndices(): Promise<IndexInfo[]> {
            MAX(date)::text AS last_date
       FROM stats.index_identity
      GROUP BY code
+    HAVING COUNT(*) >= 40
      ORDER BY n_days DESC, code
   `);
   return rows.map((r) => ({
@@ -151,26 +157,37 @@ export async function getIndexBaseline(
 
 // ----------------------------------------------------------------------------
 //  Meta query — fetch all indices with precomputed L1/L2 classification from
-//  stats.index_meta, ordered by n_days DESC (most data first).
+//  stats.sec_classification (type='index'), ordered by n_days DESC (most data first).
+//
+//  Filter: n_days >= 40 — indices with fewer than 40 trading days of history
+//  are suppressed from the data-viz list (matches the "Insufficient data"
+//  alert threshold in IndexPanel).
+//
+//  Labels (sector_label, industry_label, industry_slug) are DENORMALIZED
+//  onto sec_classification by build_classification.py — no JOIN to a
+//  catalog table is needed.
 // ----------------------------------------------------------------------------
 const INDEX_META_SQL = `
-  SELECT code,
-         COALESCE(name, '') AS name,
-         COALESCE(n_days, 0) AS n_days,
-         first_date,
-         last_date,
-         COALESCE(sector_id,     'OTHER')     AS sector_id,
-         COALESCE(sector_label,  '其他')       AS sector_label,
-         COALESCE(industry_id,   'OTHER')     AS industry_id,
-         COALESCE(industry_label,'未分类')     AS industry_label,
-         COALESCE(industry_slug, 'other')     AS industry_slug
-    FROM stats.index_meta
-   ORDER BY n_days DESC, code
+  SELECT sc.code,
+         COALESCE(sc.name, '') AS name,
+         COALESCE(sc.n_days, 0) AS n_days,
+         sc.first_date,
+         sc.last_date,
+         COALESCE(sc.sector_id,       'OTHER')  AS sector_id,
+         COALESCE(sc.sector_label,    '其他')   AS sector_label,
+         COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
+         COALESCE(sc.industry_label,  '未分类')  AS industry_label,
+         COALESCE(sc.industry_slug,   'other')  AS industry_slug,
+         COALESCE(sc.exchange, '')               AS exchange
+    FROM stats.sec_classification sc
+   WHERE sc.type = 'index'
+     AND sc.n_days >= 40
+   ORDER BY sc.n_days DESC, sc.code
 `;
 
 // ----------------------------------------------------------------------------
 //  Index themes — build the two-level L1 sector → L2 industry → indices tree
-//  from the precomputed classification columns in stats.index_meta.
+//  from the precomputed classification columns in stats.sec_classification.
 // ----------------------------------------------------------------------------
 export async function listIndexThemes(): Promise<SectorNode[]> {
   const rows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
@@ -231,6 +248,8 @@ export interface IndexCombinedQuery {
   /** Exact index code (e.g. "000300", "H30007"). When set, sector/industry
    *  filters and pagination are bypassed — only the matching index is returned. */
   code?: string;
+  /** Exchange filter: 'SS' (SSE+STAR), 'SZ' (SZSE+GEM), 'BJ' (BSE). */
+  exchange?: string;
   start_date?: string;
   end_date?: string;
   page?: number;
@@ -242,13 +261,14 @@ export async function getIndicesCombined(
 ): Promise<IndexCombinedResponse> {
   const sectorFilter = (q.sector ?? "").trim();
   const industryFilter = (q.industry ?? "").trim();
+  const exchangeFilter = (q.exchange ?? "").trim() || null;
   // When a code filter is provided, sector/industry/pagination are bypassed.
   const codeFilter = (q.code ?? "").trim().toUpperCase();
 
   // 1. Fetch all indices with classification, ordered by n_days DESC.
   const metaRows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
 
-  // 2. Filter by sector + industry (or by exact code when codeFilter is set).
+  // 2. Filter by sector + industry + exchange (or by exact code when codeFilter is set).
   const meta = new Map<string, { name: string; sector_id: string; sector_label: string; industry_id: string; industry_label: string }>();
   const wantedCodes: string[] = [];
   for (const r of metaRows) {
@@ -260,13 +280,14 @@ export async function getIndicesCombined(
       industry_label: r.industry_label,
     });
     if (codeFilter) {
-      // Exact code search — ignore sector/industry filters.
+      // Exact code search — ignore sector/industry/exchange filters.
       if (r.code.toUpperCase() === codeFilter) wantedCodes.push(r.code);
       continue;
     }
     const sectorOk = !sectorFilter || r.sector_id === sectorFilter;
     const industryOk = !industryFilter || r.industry_slug === industryFilter || r.industry_id === industryFilter;
-    if (sectorOk && industryOk) wantedCodes.push(r.code);
+    const exchangeOk = matchesExchange(r.exchange, exchangeFilter);
+    if (sectorOk && industryOk && exchangeOk) wantedCodes.push(r.code);
   }
 
   const totalIndices = wantedCodes.length;

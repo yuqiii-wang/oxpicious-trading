@@ -40,6 +40,8 @@ import {
   CHINABOND_SERIES,
   LPR_SERIES,
   axisColors,
+  commonLegend,
+  commonGrid,
 } from "@/theme/chart-palette";
 import { computeOutrightRepoLifecycle } from "@/lib/lifecycle";
 import { fmtNum, fmtPct } from "@/lib/series";
@@ -139,7 +141,7 @@ function OmaNewsPanel({ minDate, maxDate }: OmaNewsPanelProps) {
     return {
       backgroundColor: "transparent",
       animation: false,
-      grid: { left: 16, right: 16, top: 16, bottom: 28 },
+      grid: commonGrid({ left: 16, right: 16, top: 16, bottom: 28 }),
       tooltip: {
         trigger: "item" as const,
         backgroundColor: c.tooltipBg,
@@ -182,15 +184,7 @@ function OmaNewsPanel({ minDate, maxDate }: OmaNewsPanelProps) {
         max: 1,
         show: false,
       },
-      legend: {
-        top: 0,
-        left: "right",
-        textStyle: { color: c.textColor, fontSize: 9 },
-        itemWidth: 10,
-        itemHeight: 8,
-        // Only show legend entries for types that exist in the data
-        data: Array.from(seriesByType.keys()).map((t) => omaTypeLabel(t)),
-      },
+      legend: commonLegend(themeMode, { left: "right", data: Array.from(seriesByType.keys()).map((t) => omaTypeLabel(t)) }),
       series: Array.from(seriesByType.entries()).map(([type, points]) => ({
         name: omaTypeLabel(type),
         type: "scatter" as const,

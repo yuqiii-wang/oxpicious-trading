@@ -45,6 +45,12 @@ import type {
   PerfAttrSecType,
   SectorNode,
   IndustryNode,
+  CapitalFlowIndustryRow,
+  CapitalFlowIndustriesResponse,
+  CapitalFlowChartRow,
+  CapitalFlowChartResponse,
+  CapitalFlowBenchmarkRow,
+  CapitalFlowBenchmarksResponse,
 } from "../../shared/types.js";
 
 // ----------------------------------------------------------------------------
@@ -120,6 +126,7 @@ interface DbChartRow extends QueryResultRow {
   ma5_vs_ma120: number | null;
   ma5_vs_ma255: number | null;
   // 10 slope/curvature columns from the detail row.
+  price_slope: number | null;
   ma5_slope: number | null;
   ma20_slope: number | null;
   ma60_slope: number | null;
@@ -130,6 +137,7 @@ interface DbChartRow extends QueryResultRow {
   ma60_curvature: number | null;
   ma120_curvature: number | null;
   ma255_curvature: number | null;
+  price_curvature: number | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -352,8 +360,8 @@ function buildChartSql(secType: MaSpreadSecType): string {
       d.price_vs_ma5, d.price_vs_ma20, d.price_vs_ma60,
       d.price_vs_ma120, d.price_vs_ma255,
       d.ma5_vs_ma20, d.ma5_vs_ma60, d.ma5_vs_ma120, d.ma5_vs_ma255,
-      d.ma5_slope, d.ma20_slope, d.ma60_slope, d.ma120_slope, d.ma255_slope,
-      d.ma5_curvature, d.ma20_curvature, d.ma60_curvature,
+      d.price_slope, d.ma5_slope, d.ma20_slope, d.ma60_slope, d.ma120_slope, d.ma255_slope,
+      d.price_curvature, d.ma5_curvature, d.ma20_curvature, d.ma60_curvature,
       d.ma120_curvature, d.ma255_curvature
     ${src.chartFromClause}
     WHERE d.sec_type = $2
@@ -410,9 +418,10 @@ export async function getMovAveSpreadChart(
       const shortVal = maShort === 0 ? price : ma5;
       const longVal = pickLong(r, maLong);
       const gapVal = toNum(r[gapCol as keyof DbChartRow]);
-      // slope/curvature: short MA has none when ma_short = 0 (price).
-      const shortSlope = maShort === 0 ? null : pickSlope(r, maShort);
-      const shortCurv  = maShort === 0 ? null : pickCurvature(r, maShort);
+      // slope/curvature: when ma_short = 0 the short series is price, so use
+      // price_slope / price_curvature; otherwise use the short MA's derivatives.
+      const shortSlope = maShort === 0 ? toNum(r.price_slope) : pickSlope(r, maShort);
+      const shortCurv  = maShort === 0 ? toNum(r.price_curvature) : pickCurvature(r, maShort);
       const row: MovAveSpreadDetailRow = {
         date: dateStr,
         short_value: shortVal,
@@ -531,8 +540,10 @@ interface DbPerfAttrAttributionRow extends QueryResultRow {
   active_return: number | null;
   code_sec_shared_weight: number | null;
   benchmark_sec_shared_weight: number | null;
-  amount_ratio: number | null;
-  benchmark_amount: number | null;
+  etf_amount_ratio: number | null;
+  benchmark_etf_amount: number | null;
+  code_etf_amount: number | null;
+  is_broad_market: boolean | null;
 }
 
 export async function getPerfAttrAttribution(
@@ -563,8 +574,10 @@ export async function getPerfAttrAttribution(
       a.active_return,
       a.code_sec_shared_weight,
       a.benchmark_sec_shared_weight,
-      a.amount_ratio_benchmark_to_code AS amount_ratio,
-      a.benchmark_amount
+      a.etf_amount_ratio_benchmark_to_code AS etf_amount_ratio,
+      a.benchmark_etf_amount,
+      a.code_etf_amount,
+      bm.is_broad_market
     FROM analysis.sec_alloc_perf_attribution a
     CROSS JOIN latest_date ld
     LEFT JOIN LATERAL (
@@ -573,6 +586,14 @@ export async function getPerfAttrAttribution(
       WHERE code = a.benchmark_code
       ORDER BY code, date DESC
     ) bi ON true
+    LEFT JOIN LATERAL (
+      -- Broad-market flag from stats.sec_index_tags: TRUE iff ANY tag for
+      -- this benchmark index has is_broad_market = TRUE. NULL when the
+      -- benchmark has no tags (e.g. unclassified index).
+      SELECT BOOL_OR(is_broad_market) AS is_broad_market
+      FROM stats.sec_index_tags
+      WHERE code = a.benchmark_code
+    ) bm ON true
     WHERE a.sec_type = $1::text
       AND REGEXP_REPLACE(a.code, '\\.(SZ|SS|SH)$', '') = $2::text
       AND a.date = ld.max_date
@@ -595,8 +616,10 @@ export async function getPerfAttrAttribution(
     active_return: toNum(r.active_return),
     code_sec_shared_weight: toNum(r.code_sec_shared_weight),
     benchmark_sec_shared_weight: toNum(r.benchmark_sec_shared_weight),
-    amount_ratio: toNum(r.amount_ratio),
-    benchmark_amount: toNum(r.benchmark_amount),
+    etf_amount_ratio: toNum(r.etf_amount_ratio),
+    benchmark_etf_amount: toNum(r.benchmark_etf_amount),
+    code_etf_amount: toNum(r.code_etf_amount),
+    is_broad_market: r.is_broad_market === null ? null : Boolean(r.is_broad_market),
   }));
 
   return {
@@ -616,10 +639,18 @@ export async function getPerfAttrAttribution(
 //  for the requested sec_type.
 // ----------------------------------------------------------------------------
 
-/** Whitelisted sec_type → meta-table mapping (safe for string interpolation). */
+/** Whitelisted sec_type → meta-table mapping (safe for string interpolation).
+ *  Both ETF and index classification now live in the unified stats.sec_classification
+ *  table, discriminated by the `type` column. */
 const PERF_ATTR_META_TABLE: Record<string, string> = {
-  etf: "stats.etf_meta",
-  index: "stats.index_meta",
+  etf: "stats.sec_classification",
+  index: "stats.sec_classification",
+};
+
+/** Whitelisted sec_type → type discriminator for sec_classification WHERE clause. */
+const PERF_ATTR_META_TYPE: Record<string, string> = {
+  etf: "etf",
+  index: "index",
 };
 
 interface DbPerfAttrMetaRow extends QueryResultRow {
@@ -636,8 +667,11 @@ export async function listPerfAttrThemes(
   secType: PerfAttrSecType,
 ): Promise<SectorNode[]> {
   const metaTable = PERF_ATTR_META_TABLE[secType] ?? PERF_ATTR_META_TABLE.etf;
+  const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
   // Select distinct codes that have perf-attr rows, then join with the
-  // classification meta table to recover sector/industry classification.
+  // classification meta table (sec_classification filtered by type) to recover
+  // sector/industry classification. Labels are denormalized onto
+  // sec_classification — no JOIN to a catalog table is needed.
   const sql = `
     WITH perf_codes AS (
       SELECT DISTINCT code
@@ -646,16 +680,16 @@ export async function listPerfAttrThemes(
     )
     SELECT
       pc.code,
-      COALESCE(m.name, '')           AS name,
-      COALESCE(m.sector_id,     'OTHER')     AS sector_id,
-      COALESCE(m.sector_label,  '其他')       AS sector_label,
-      COALESCE(m.industry_id,   'OTHER')     AS industry_id,
-      COALESCE(m.industry_label,'未分类')     AS industry_label,
-      COALESCE(m.industry_slug, 'other')     AS industry_slug
+      COALESCE(m.name, '')             AS name,
+      COALESCE(m.sector_id,       'OTHER')  AS sector_id,
+      COALESCE(m.sector_label,    '其他')   AS sector_label,
+      COALESCE(m.industry_id,     'OTHER')  AS industry_id,
+      COALESCE(m.industry_label,  '未分类') AS industry_label,
+      COALESCE(m.industry_slug,   'other')  AS industry_slug
     FROM perf_codes pc
-    LEFT JOIN ${metaTable} m ON m.code = pc.code
+    LEFT JOIN ${metaTable} m ON m.code = pc.code AND m.type = $2::text
   `;
-  const rows = await queryRows<DbPerfAttrMetaRow>(sql, [secType]);
+  const rows = await queryRows<DbPerfAttrMetaRow>(sql, [secType, metaType]);
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -716,8 +750,56 @@ interface DbPerfAttrChartRow extends QueryResultRow {
   subject_return: number | null;
   benchmark_return: number | null;
   active_return: number | null;
-  amount_ratio: number | null;
+  etf_amount_ratio: number | null;
+  benchmark_etf_amount: number | null;
+  code_etf_amount: number | null;
+  benchmark_etf_num: number | null;
+  code_etf_num: number | null;
+  benchmark_industry_id: string | null;
+  code_industry_id: string | null;
+  benchmark_industry_etf_amount: number | null;
+  code_industry_etf_amount: number | null;
+  benchmark_industry_etf_num: number | null;
+  code_industry_etf_num: number | null;
+  subject_close: number | null;
+  benchmark_close: number | null;
+  corr_5d: number | null;
+  corr_20d: number | null;
+  corr_60d: number | null;
+  corr_255d: number | null;
 }
+
+/** Per-sec_type subject source-table JOIN + price expression for the
+ *  close-price lookup in getPerfAttrChart. Mirrors the SEC_SOURCES pattern
+ *  above but keyed on the perf-attr table alias `a` (not `d`).
+ *
+ *  `industryCodeExpr` resolves the subject's industry lookup key — for ETF
+ *  subjects, the linked parent index's code (joined to sec_classification
+ *  type='index' for industry_id); for index subjects, the bare subject code. */
+const PERF_ATTR_SUBJECT_SOURCE: Record<PerfAttrSecType, {
+  joinClause: string;
+  priceExpr: string;
+  industryCodeExpr: string;
+}> = {
+  etf: {
+    joinClause:
+      "LEFT JOIN stats.etf_basic_stats   sb ON sb.date = a.date AND sb.code = a.code\n" +
+      "LEFT JOIN stats.etf_adjustment    sa ON sa.date = a.date AND sa.code = a.code",
+    priceExpr: "COALESCE(sa.adj_close, sb.close)",
+    // ETF subject → look up parent_index_code, then the index's industry_id.
+    industryCodeExpr:
+      "(SELECT sc_etf.parent_index_code FROM stats.sec_classification sc_etf " +
+      " WHERE sc_etf.code = a.code AND sc_etf.type = 'etf' AND sc_etf.parent_index_code <> '' " +
+      " LIMIT 1)",
+  },
+  index: {
+    joinClause:
+      "LEFT JOIN stats.index_basic_stats  sb ON sb.date = a.date AND sb.code = a.code",
+    priceExpr: "sb.close",
+    // Index subject → own industry_id (strip exchange suffix just in case).
+    industryCodeExpr: "REGEXP_REPLACE(a.code, '\\.(SZ|SS|SH)$', '')",
+  },
+};
 
 export async function getPerfAttrChart(
   rawCode: string,
@@ -727,12 +809,57 @@ export async function getPerfAttrChart(
   const target = stripped(rawCode);
   const benchmarkCode = rawBenchmarkCode.trim();
   const nameTable = PERF_ATTR_NAME_TABLE[secType] ?? PERF_ATTR_NAME_TABLE.etf;
+  const subjSrc = PERF_ATTR_SUBJECT_SOURCE[secType] ?? PERF_ATTR_SUBJECT_SOURCE.etf;
 
   const [chartRows, nameRows, benchNameRows] = await Promise.all([
     queryRows<DbPerfAttrChartRow>(
-      `SELECT a.date, a.subject_return, a.benchmark_return, a.active_return,
-              a.amount_ratio_benchmark_to_code AS amount_ratio
+      `SELECT a.date,
+              a.subject_return,
+              a.benchmark_return,
+              a.active_return,
+              a.etf_amount_ratio_benchmark_to_code AS etf_amount_ratio,
+              a.benchmark_etf_amount,
+              a.code_etf_amount,
+              ieb.etf_num AS benchmark_etf_num,
+              iec.etf_num AS code_etf_num,
+              bindustry.industry_id AS benchmark_industry_id,
+              cindustry.industry_id AS code_industry_id,
+              etbind.total_etf_amt AS benchmark_industry_etf_amount,
+              etcind.total_etf_amt AS code_industry_etf_amount,
+              etbind.etf_num AS benchmark_industry_etf_num,
+              etcind.etf_num AS code_industry_etf_num,
+              a.corr_5d,
+              a.corr_20d,
+              a.corr_60d,
+              a.corr_255d,
+              ${subjSrc.priceExpr} AS subject_close,
+              ib.close AS benchmark_close
        FROM analysis.sec_alloc_perf_attribution a
+       ${subjSrc.joinClause}
+       LEFT JOIN stats.index_basic_stats ib ON ib.date = a.date AND ib.code = a.benchmark_code
+       LEFT JOIN stats.index_exts ieb ON ieb.date = a.date AND ieb.code = a.benchmark_code
+       LEFT JOIN stats.index_exts iec ON iec.date = a.date AND iec.code = a.code
+       -- Benchmark index industry (constant per benchmark_code)
+       LEFT JOIN LATERAL (
+         SELECT industry_id FROM stats.sec_classification
+         WHERE code = a.benchmark_code AND type = 'index'
+         LIMIT 1
+       ) bindustry ON true
+       -- Subject industry (constant per subject code): resolved via
+       -- industryCodeExpr which differs by sec_type (ETF → parent index's
+       -- industry; Index → own industry).
+       LEFT JOIN LATERAL (
+         SELECT industry_id FROM stats.sec_classification
+         WHERE code = ${subjSrc.industryCodeExpr} AND type = 'index'
+         LIMIT 1
+       ) cindustry ON true
+       -- Industry-level ETF trading amounts (per date, per industry_id).
+       -- NULL when the industry_id is NULL or no ETF tracks any index in
+       -- that industry on this date.
+       LEFT JOIN stats.etf_trading_amt etbind
+         ON etbind.date = a.date AND etbind.code = bindustry.industry_id
+       LEFT JOIN stats.etf_trading_amt etcind
+         ON etcind.date = a.date AND etcind.code = cindustry.industry_id
        WHERE a.sec_type = $1::text
          AND REGEXP_REPLACE(a.code, '\\.(SZ|SS|SH)$', '') = $2::text
          AND a.benchmark_code = $3::text
@@ -759,7 +886,418 @@ export async function getPerfAttrChart(
       subject_return: toNum(r.subject_return),
       benchmark_return: toNum(r.benchmark_return),
       active_return: toNum(r.active_return),
-      amount_ratio: toNum(r.amount_ratio),
+      etf_amount_ratio: toNum(r.etf_amount_ratio),
+      benchmark_etf_amount: toNum(r.benchmark_etf_amount),
+      code_etf_amount: toNum(r.code_etf_amount),
+      benchmark_etf_num: r.benchmark_etf_num == null ? null : Number(r.benchmark_etf_num),
+      code_etf_num: r.code_etf_num == null ? null : Number(r.code_etf_num),
+      benchmark_industry_id: r.benchmark_industry_id ?? null,
+      code_industry_id: r.code_industry_id ?? null,
+      benchmark_industry_etf_amount: toNum(r.benchmark_industry_etf_amount),
+      code_industry_etf_amount: toNum(r.code_industry_etf_amount),
+      benchmark_industry_etf_num: r.benchmark_industry_etf_num == null ? null : Number(r.benchmark_industry_etf_num),
+      code_industry_etf_num: r.code_industry_etf_num == null ? null : Number(r.code_industry_etf_num),
+      subject_close: toNum(r.subject_close),
+      benchmark_close: toNum(r.benchmark_close),
+      corr_5d: toNum(r.corr_5d),
+      corr_20d: toNum(r.corr_20d),
+      corr_60d: toNum(r.corr_60d),
+      corr_255d: toNum(r.corr_255d),
     })),
   };
+}
+
+// ============================================================================
+//  Capital Flow — Industry × Broad-Market Benchmark
+//    analysis.capital_flow
+//    PK: (date, industry_id, benchmark_code)
+//
+//  Three endpoints:
+//    listCapitalFlowIndustries()  — one row per industry_id (with latest
+//                                   pure/observed popularity stats for sort).
+//    getCapitalFlowBenchmarks(id) — per-benchmark breakdown for one industry.
+//    getCapitalFlowChart(id, bc)  — per-date time series for one pair.
+// ============================================================================
+interface DbCapitalFlowIndustryRow extends QueryResultRow {
+  industry_id: string;
+  industry_label: string;
+  first_date: Date | string;
+  last_date: Date | string;
+  n_dates: number;
+  n_benchmarks: number;
+  latest_pure_popularity: number | null;
+  latest_observed_popularity: number | null;
+  latest_retention: number | null;
+  avg_pure_growth: number | null;
+}
+
+export async function listCapitalFlowIndustries(): Promise<CapitalFlowIndustriesResponse> {
+  // For each industry: aggregate across all paired benchmarks on the latest
+  // date (SUM pure/observed popularity, since one industry × multiple
+  // benchmarks yields multiple rows per date). Also compute average
+  // pure_growth across all dates/benchmarks as a trend strength indicator.
+  const sql = `
+    WITH industry_dates AS (
+      SELECT industry_id, MIN(date) AS first_date, MAX(date) AS last_date,
+             COUNT(DISTINCT date) AS n_dates,
+             COUNT(DISTINCT benchmark_code) AS n_benchmarks
+      FROM analysis.capital_flow
+      GROUP BY industry_id
+    ),
+    latest_per_industry AS (
+      SELECT DISTINCT ON (industry_id) industry_id, date AS latest_date
+      FROM analysis.capital_flow
+      ORDER BY industry_id, date DESC
+    ),
+    latest_sums AS (
+      SELECT cf.industry_id,
+             SUM(cf.pure_popularity)         AS latest_pure_popularity,
+             SUM(cf.observed_popularity)     AS latest_observed_popularity,
+             SUM(cf.pure_popularity) /
+               NULLIF(SUM(cf.observed_popularity), 0) AS latest_retention
+      FROM analysis.capital_flow cf
+      JOIN latest_per_industry l ON l.industry_id = cf.industry_id
+                                AND l.latest_date = cf.date
+      GROUP BY cf.industry_id
+    ),
+    avg_growth AS (
+      SELECT industry_id, AVG(pure_growth) AS avg_pure_growth
+      FROM analysis.capital_flow
+      WHERE pure_growth IS NOT NULL
+      GROUP BY industry_id
+    )
+    SELECT
+      id.industry_id,
+      COALESCE(sc.industry_label, id.industry_id) AS industry_label,
+      id.first_date,
+      id.last_date,
+      id.n_dates,
+      id.n_benchmarks,
+      ls.latest_pure_popularity,
+      ls.latest_observed_popularity,
+      ls.latest_retention,
+      ag.avg_pure_growth
+    FROM industry_dates id
+    LEFT JOIN latest_sums ls ON ls.industry_id = id.industry_id
+    LEFT JOIN avg_growth ag  ON ag.industry_id  = id.industry_id
+    LEFT JOIN LATERAL (
+      SELECT industry_label FROM stats.sec_classification
+      WHERE industry_id = id.industry_id AND type = 'index'
+      LIMIT 1
+    ) sc ON true
+    ORDER BY ls.latest_pure_popularity DESC NULLS LAST, id.industry_id
+  `;
+  const rows = await queryRows<DbCapitalFlowIndustryRow>(sql, []);
+  const industries: CapitalFlowIndustryRow[] = rows.map((r) => ({
+    industry_id: r.industry_id,
+    industry_label: r.industry_label ?? "",
+    first_date: formatDate(r.first_date),
+    last_date: formatDate(r.last_date),
+    n_dates: Number(r.n_dates) || 0,
+    n_benchmarks: Number(r.n_benchmarks) || 0,
+    latest_pure_popularity: toNum(r.latest_pure_popularity),
+    latest_observed_popularity: toNum(r.latest_observed_popularity),
+    latest_retention: toNum(r.latest_retention),
+    avg_pure_growth: toNum(r.avg_pure_growth),
+  }));
+  return { industries };
+}
+
+// ----------------------------------------------------------------------------
+
+interface DbCapitalFlowBenchmarkRow extends QueryResultRow {
+  benchmark_code: string;
+  benchmark_label: string;
+  avg_w_i: number | null;
+  avg_w_b: number | null;
+  total_pure_popularity: number | null;
+  total_observed_popularity: number | null;
+  avg_pure_growth: number | null;
+  n_dates: number;
+  first_date: Date | string;
+  last_date: Date | string;
+}
+
+export async function getCapitalFlowBenchmarks(
+  rawIndustryId: string,
+): Promise<CapitalFlowBenchmarksResponse> {
+  const industryId = (rawIndustryId ?? "").trim();
+  if (!industryId) {
+    throw new Error("Missing 'industry_id' parameter");
+  }
+  const sql = `
+    SELECT
+      cf.benchmark_code,
+      COALESCE(bi.name, cf.benchmark_label, cf.benchmark_code) AS benchmark_label,
+      AVG(cf.industry_overlap_weight)  AS avg_w_i,
+      AVG(cf.benchmark_overlap_weight) AS avg_w_b,
+      SUM(cf.pure_popularity)         AS total_pure_popularity,
+      SUM(cf.observed_popularity)     AS total_observed_popularity,
+      AVG(cf.pure_growth)             AS avg_pure_growth,
+      COUNT(DISTINCT cf.date)         AS n_dates,
+      MIN(cf.date)                    AS first_date,
+      MAX(cf.date)                    AS last_date
+    FROM analysis.capital_flow cf
+    INNER JOIN stats.sec_index_tags sit
+      ON sit.code = cf.benchmark_code AND sit.is_broad_market = TRUE
+    LEFT JOIN LATERAL (
+      SELECT DISTINCT ON (code) code, name
+      FROM stats.index_identity
+      WHERE code = cf.benchmark_code
+      ORDER BY code, date DESC
+    ) bi ON true
+    WHERE cf.industry_id = $1::text
+    GROUP BY cf.benchmark_code, bi.name, cf.benchmark_label
+    ORDER BY SUM(cf.pure_popularity) DESC NULLS LAST, cf.benchmark_code
+  `;
+  const [benchRows, labelRows] = await Promise.all([
+    queryRows<DbCapitalFlowBenchmarkRow>(sql, [industryId]),
+    queryRows<{ industry_label: string | null }>(
+      `SELECT industry_label FROM stats.sec_classification
+       WHERE industry_id = $1::text AND type = 'index' LIMIT 1`,
+      [industryId],
+    ),
+  ]);
+  const benchmarks: CapitalFlowBenchmarkRow[] = benchRows.map((r) => ({
+    benchmark_code: r.benchmark_code,
+    benchmark_label: r.benchmark_label ?? "",
+    avg_w_i: toNum(r.avg_w_i),
+    avg_w_b: toNum(r.avg_w_b),
+    total_pure_popularity: toNum(r.total_pure_popularity),
+    total_observed_popularity: toNum(r.total_observed_popularity),
+    avg_pure_growth: toNum(r.avg_pure_growth),
+    n_dates: Number(r.n_dates) || 0,
+    first_date: formatDate(r.first_date),
+    last_date: formatDate(r.last_date),
+  }));
+  return {
+    industry_id: industryId,
+    industry_label: labelRows[0]?.industry_label ?? "",
+    benchmarks,
+  };
+}
+
+// ----------------------------------------------------------------------------
+
+interface DbCapitalFlowChartRow extends QueryResultRow {
+  date: Date | string;
+  benchmark_code: string;
+  industry_etf_amount: number | null;
+  industry_etf_num: number | null;
+  industry_return: number | null;
+  benchmark_etf_amount: number | null;
+  benchmark_etf_num: number | null;
+  benchmark_return: number | null;
+  industry_overlap_weight: number | null;
+  benchmark_overlap_weight: number | null;
+  industry_overlap_amount: number | null;
+  benchmark_overlap_amount: number | null;
+  pure_flow: number | null;
+  pure_growth: number | null;
+  pure_popularity: number | null;
+  observed_popularity: number | null;
+  popularity_retention: number | null;
+}
+
+/** Map one DB chart row to the API row shape (shared by all benchmarks). */
+function mapCapitalFlowChartRow(r: DbCapitalFlowChartRow): CapitalFlowChartRow {
+  return {
+    date: formatDate(r.date),
+    industry_etf_amount: toNum(r.industry_etf_amount),
+    industry_etf_num: r.industry_etf_num == null ? null : Number(r.industry_etf_num),
+    industry_return: toNum(r.industry_return),
+    benchmark_etf_amount: toNum(r.benchmark_etf_amount),
+    benchmark_etf_num: r.benchmark_etf_num == null ? null : Number(r.benchmark_etf_num),
+    benchmark_return: toNum(r.benchmark_return),
+    industry_overlap_weight: toNum(r.industry_overlap_weight),
+    benchmark_overlap_weight: toNum(r.benchmark_overlap_weight),
+    industry_overlap_amount: toNum(r.industry_overlap_amount),
+    benchmark_overlap_amount: toNum(r.benchmark_overlap_amount),
+    pure_flow: toNum(r.pure_flow),
+    pure_growth: toNum(r.pure_growth),
+    pure_popularity: toNum(r.pure_popularity),
+    observed_popularity: toNum(r.observed_popularity),
+    popularity_retention: toNum(r.popularity_retention),
+  };
+}
+
+/**
+ * Fetch the per-date time series for one industry × a SET of benchmark codes.
+ *
+ * Replaces the old single-benchmark `getCapitalFlowChart` so the frontend can
+ * request only the specific benchmarks it wants to plot (e.g. just 000300 +
+ * 000852) in a single DB round-trip, instead of loading every benchmark for
+ * the industry. Returns one `CapitalFlowChartResponse` per requested code, in
+ * the requested order. Codes with no rows still yield an entry (empty rows).
+ */
+export async function getCapitalFlowCharts(
+  rawIndustryId: string,
+  rawBenchmarkCodes: string[] | null | undefined,
+): Promise<CapitalFlowChartResponse[]> {
+  const industryId = (rawIndustryId ?? "").trim();
+  if (!industryId) throw new Error("Missing 'industry_id' parameter");
+
+  // Trim + dedupe + drop empty codes.
+  const codes = Array.from(new Set(
+    (rawBenchmarkCodes ?? [])
+      .map((c) => (c ?? "").trim())
+      .filter((c) => c.length > 0),
+  ));
+  if (codes.length === 0) return [];
+
+  const sql = `
+    SELECT
+      cf.benchmark_code,
+      cf.date,
+      cf.industry_etf_amount,
+      cf.industry_etf_num,
+      cf.industry_return,
+      cf.benchmark_etf_amount,
+      cf.benchmark_etf_num,
+      cf.benchmark_return,
+      cf.industry_overlap_weight,
+      cf.benchmark_overlap_weight,
+      cf.industry_overlap_amount,
+      cf.benchmark_overlap_amount,
+      cf.pure_flow,
+      cf.pure_growth,
+      cf.pure_popularity,
+      cf.observed_popularity,
+      cf.popularity_retention
+    FROM analysis.capital_flow cf
+    WHERE cf.industry_id = $1::text
+      AND cf.benchmark_code = ANY($2::text[])
+    ORDER BY cf.benchmark_code, cf.date ASC
+  `;
+  const [chartRows, indLabelRows, benchNameRows] = await Promise.all([
+    queryRows<DbCapitalFlowChartRow>(sql, [industryId, codes]),
+    queryRows<{ industry_label: string | null }>(
+      `SELECT industry_label FROM stats.sec_classification
+       WHERE industry_id = $1::text AND type = 'index' LIMIT 1`,
+      [industryId],
+    ),
+    queryRows<{ code: string; name: string | null }>(
+      `SELECT DISTINCT ON (code) code, name FROM stats.index_identity
+       WHERE code = ANY($1::text[]) ORDER BY code, date DESC`,
+      [codes],
+    ),
+  ]);
+
+  const industryLabel = indLabelRows[0]?.industry_label ?? "";
+  const benchNameMap = new Map<string, string>();
+  for (const r of benchNameRows) benchNameMap.set(r.code, r.name ?? "");
+
+  // Group rows by benchmark_code (rows are already ordered by code then date).
+  const byCode = new Map<string, DbCapitalFlowChartRow[]>();
+  for (const r of chartRows) {
+    const arr = byCode.get(r.benchmark_code);
+    if (arr) arr.push(r);
+    else byCode.set(r.benchmark_code, [r]);
+  }
+
+  // Emit one response per requested code, in the requested order.
+  return codes.map((bc) => ({
+    industry_id: industryId,
+    industry_label: industryLabel,
+    benchmark_code: bc,
+    benchmark_label: benchNameMap.get(bc) ?? "",
+    rows: (byCode.get(bc) ?? []).map(mapCapitalFlowChartRow),
+  }));
+}
+
+// ----------------------------------------------------------------------------
+//  listCapitalFlowThemes — two-level L1 sector → L2 industry tree for the
+//  Capital Flow page's ThemeSelector. Mirrors listPerfAttrThemes(), but the
+//  selectable unit is an INDUSTRY (analysis.capital_flow.industry_id), not a
+//  code. Each industry is classified via stats.sec_classification (type='index')
+//  so it inherits the same sector/industry taxonomy used elsewhere.
+//
+//  items[] is left empty: the page plots the industry as a whole, so there are
+//  no per-code children to render. industry count = number of dates the
+//  industry has data for (a useful "how much data" signal on the chip).
+// ----------------------------------------------------------------------------
+interface DbCapitalFlowThemeRow extends QueryResultRow {
+  industry_id: string;
+  sector_id: string;
+  sector_label: string;
+  industry_label: string;
+  industry_slug: string;
+  n_dates: number;
+  n_benchmarks: number;
+}
+
+export async function listCapitalFlowThemes(): Promise<SectorNode[]> {
+  const sql = `
+    WITH flow_industries AS (
+      SELECT
+        industry_id,
+        COUNT(DISTINCT date)           AS n_dates,
+        COUNT(DISTINCT benchmark_code) AS n_benchmarks
+      FROM analysis.capital_flow
+      GROUP BY industry_id
+    )
+    SELECT
+      fi.industry_id,
+      COALESCE(m.sector_id,      'OTHER')  AS sector_id,
+      COALESCE(m.sector_label,   '其他')   AS sector_label,
+      COALESCE(m.industry_label, fi.industry_id) AS industry_label,
+      COALESCE(m.industry_slug,  LOWER(fi.industry_id)) AS industry_slug,
+      fi.n_dates,
+      fi.n_benchmarks
+    FROM flow_industries fi
+    LEFT JOIN LATERAL (
+      SELECT sector_id, sector_label, industry_label, industry_slug
+      FROM stats.sec_classification
+      WHERE industry_id = fi.industry_id AND type = 'index'
+      LIMIT 1
+    ) m ON true
+  `;
+  const rows = await queryRows<DbCapitalFlowThemeRow>(sql, []);
+
+  const sectorMap = new Map<string, {
+    sector_label: string;
+    industries: Map<string, IndustryNode & { n_dates: number; n_benchmarks: number }>;
+  }>();
+
+  for (const r of rows) {
+    if (!sectorMap.has(r.sector_id)) {
+      sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
+    }
+    const sector = sectorMap.get(r.sector_id)!;
+    if (!sector.industries.has(r.industry_id)) {
+      sector.industries.set(r.industry_id, {
+        industry_id: r.industry_id,
+        industry_label: r.industry_label,
+        industry_slug: r.industry_slug,
+        count: 0,
+        items: [],
+        n_dates: Number(r.n_dates) || 0,
+        n_benchmarks: Number(r.n_benchmarks) || 0,
+      });
+    }
+  }
+
+  const sectors: SectorNode[] = [];
+  for (const [sector_id, sector] of sectorMap) {
+    const industries = Array.from(sector.industries.values()).sort((a, b) => {
+      if (a.industry_id === "OTHER") return 1;
+      if (b.industry_id === "OTHER") return -1;
+      return b.n_dates - a.n_dates;
+    });
+    // Per-industry chip count = number of broad-market benchmarks paired
+    // with this industry (informative and stable across selections).
+    for (const ind of industries) ind.count = ind.n_benchmarks;
+    sectors.push({
+      sector_id,
+      sector_label: sector.sector_label,
+      count: industries.reduce((sum, i) => sum + i.n_benchmarks, 0),
+      industries: industries.map(({ n_dates, n_benchmarks, ...rest }) => rest),
+    });
+  }
+  sectors.sort((a, b) => {
+    if (a.sector_id === "OTHER") return 1;
+    if (b.sector_id === "OTHER") return -1;
+    return b.count - a.count;
+  });
+  return sectors;
 }

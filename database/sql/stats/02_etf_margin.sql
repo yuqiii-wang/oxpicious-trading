@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS stats.etf_basic_stats (
     low                       NUMERIC(18,4),
     close                     NUMERIC(18,4),
     pct_change                NUMERIC(10,4),
+    is_close_estimated        BOOLEAN       NOT NULL DEFAULT FALSE,
     has_intraday_5mins        BOOLEAN       NOT NULL DEFAULT FALSE,
 
     CONSTRAINT pk_etf_basic_stats PRIMARY KEY (date, code),
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS stats.etf_basic_stats (
 
 
 COMMENT ON TABLE  stats.etf_basic_stats                    IS 'ETF raw basic_stats (yuan).';
+COMMENT ON COLUMN stats.etf_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index/ETF (highest composition shared weight > 60%). If no proxy qualifies, prev_close is carried forward.';
 COMMENT ON COLUMN stats.etf_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future ETF intraday support).';
 
 -- ----------------------------------------------------------------------------

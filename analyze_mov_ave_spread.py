@@ -62,16 +62,16 @@ DESCRIPTION = (
     "Moving-average spread analysis (ETF + Index). For each security (ETF or "
     "index) and business date, computes 9 gap pairs (5 Price/MA + 4 MA5/MA) "
     "as gap_value = (short_value - long_value) / long_value, plus 1st "
-    "derivative (slope) and 2nd derivative (curvature) of each MA (ma5 / "
-    "ma20 / ma60 / ma120 / ma255) computed per code ordered by date. The "
-    "sec_type column discriminates the source universe; the schema CHECK "
+    "derivative (slope) and 2nd derivative (curvature) of price and each MA "
+    "(ma5 / ma20 / ma60 / ma120 / ma255) computed per code ordered by date. "
+    "The sec_type column discriminates the source universe; the schema CHECK "
     "allows 'etf' | 'index' | 'stock', but this script currently computes "
     "only 'etf' and 'index' (stock requires stats.stock_tech_stats, which "
     "does not yet exist). 'etf' uses COALESCE(etf_adjustment.adj_close, "
     "etf_basic_stats.close) for price and etf_tech_stats for MAs; 'index' "
     "uses index_basic_stats.close for price and index_tech_stats for MAs. "
     "Detail table stores one wide row per (sec_type, code, date) with all "
-    "9 gap values + 10 slope/curvature columns."
+    "9 gap values + 12 slope/curvature columns (price + 5 MAs × slope/curv)."
 )
 
 # stats.*_tech_stats column names by MA window (identical for etf and index).
@@ -174,15 +174,19 @@ def _safe_ratio(num, den):
 
 def _compute_slopes_curvatures(df: pd.DataFrame) -> pd.DataFrame:
     """Add 1st-derivative (slope) and 2nd-derivative (curvature) columns for
-    each MA window, computed per (sec_type, code) ordered by date.
+    price and each MA window, computed per (sec_type, code) ordered by date.
 
-    slope[t]      = MA[t] - MA[t-1]        (NULL on first date of each code)
-    curvature[t]  = slope[t] - slope[t-1]  (NULL on first two dates of each code)
+    slope[t]      = value[t] - value[t-1]   (NULL on first date of each code)
+    curvature[t]  = slope[t] - slope[t-1]   (NULL on first two dates of each code)
 
-    Adds columns ma{W}_slope and ma{W}_curvature for W in MA_WINDOWS.
+    Adds columns price_slope / price_curvature (from `price`) and
+    ma{W}_slope / ma{W}_curvature for W in MA_WINDOWS (from `ma{W}`).
     """
     df = df.sort_values(["sec_type", "code", "date"]).reset_index(drop=True)
     grp_keys = ["sec_type", "code"]
+    # Price 1st + 2nd derivative.
+    df["price_slope"] = df.groupby(grp_keys, sort=False)["price"].diff()
+    df["price_curvature"] = df.groupby(grp_keys, sort=False)["price_slope"].diff()
     for w in MA_WINDOWS:
         ma_col = f"ma{w}"
         slope_col = f"ma{w}_slope"
@@ -243,6 +247,7 @@ async def fetch_source_data(conn, sec_type: str) -> pd.DataFrame:
 
     Returns a DataFrame with columns:
         sec_type, code, date, price, ma5, ma20, ma60, ma120, ma255,
+        price_slope, price_curvature,
         ma5_slope, ma20_slope, ma60_slope, ma120_slope, ma255_slope,
         ma5_curvature, ma20_curvature, ma60_curvature, ma120_curvature,
         ma255_curvature
@@ -271,6 +276,7 @@ async def fetch_source_data(conn, sec_type: str) -> pd.DataFrame:
     # Reorder columns for readability.
     df = df[["sec_type", "code", "date", "price",
              "ma5", "ma20", "ma60", "ma120", "ma255",
+             "price_slope", "price_curvature",
              "ma5_slope", "ma20_slope", "ma60_slope", "ma120_slope", "ma255_slope",
              "ma5_curvature", "ma20_curvature", "ma60_curvature",
              "ma120_curvature", "ma255_curvature"]]
@@ -304,7 +310,8 @@ def build_detail_rows(df: pd.DataFrame):
     emit a wide-format dict suitable for bulk_upsert into
     analysis.mov_ave_spreads_detail.
 
-    Includes the precomputed ma{W}_slope and ma{W}_curvature columns.
+    Includes the precomputed price_slope / price_curvature and
+    ma{W}_slope / ma{W}_curvature columns.
 
     Uses vectorized pandas ops + to_dict(orient='records') for speed on large
     DataFrames (millions of rows).
@@ -325,6 +332,8 @@ def build_detail_rows(df: pd.DataFrame):
         "ma5_vs_ma60":    _gap_col(df, "ma5",   "ma60"),
         "ma5_vs_ma120":   _gap_col(df, "ma5",   "ma120"),
         "ma5_vs_ma255":   _gap_col(df, "ma5",   "ma255"),
+        "price_slope":     df["price_slope"],
+        "price_curvature": df["price_curvature"],
         "ma5_slope":       df["ma5_slope"],
         "ma20_slope":      df["ma20_slope"],
         "ma60_slope":      df["ma60_slope"],
@@ -396,7 +405,7 @@ async def main():
             return
 
         # ---- Step 2: build detail rows -------------------------------------
-        print("\n[2/3] Computing 9 wide gap columns + 10 slope/curvature "
+        print("\n[2/3] Computing 9 wide gap columns + 12 slope/curvature "
               "columns per (sec_type, code, date)...", flush=True)
         detail = build_detail_rows(df)
         print(f"    → {len(detail):,} detail rows", flush=True)

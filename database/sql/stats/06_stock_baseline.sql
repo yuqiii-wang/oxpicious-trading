@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS stats.stock_identity (
     code                      TEXT          NOT NULL,
     code_suffix               TEXT,
     name                      TEXT          NOT NULL DEFAULT '',
-    is_in_etf                 BOOLEAN       NOT NULL DEFAULT FALSE,
+    is_in_index_or_etf        BOOLEAN       NOT NULL DEFAULT FALSE,
 
     CONSTRAINT pk_stock_identity PRIMARY KEY (date, code),
     CONSTRAINT chk_stock_identity_code_format
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS stats.stock_identity (
 
 COMMENT ON TABLE  stats.stock_identity            IS 'Stock identity: one row per (date, code). PK shared by all stock sub-tables. Mirrors etf_identity.';
 COMMENT ON COLUMN stats.stock_identity.code       IS 'Stock ticker with exchange suffix, e.g. "000001.SZ" (Ping An Bank) or "600000.SS" (Pudong Development Bank).';
-COMMENT ON COLUMN stats.stock_identity.is_in_etf  IS 'TRUE when this stock appears in any ETF composition (stats.sec_composition source_type=etf). Populated by populate_is_in_etf.py; used by stream_szse_price.py to avoid runtime EXISTS subquery.';
+COMMENT ON COLUMN stats.stock_identity.is_in_index_or_etf  IS 'TRUE when this stock appears in any ETF or index composition (stats.sec_composition source_type in etf/index). Populated by populate_is_in_etf.py; used by stream_szse_price.py to avoid runtime EXISTS subquery.';
 
 -- ----------------------------------------------------------------------------
 -- Table: stock_basic_stats
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS stats.stock_basic_stats (
     pct_change                NUMERIC(10,4),
     pe                        NUMERIC(18,4),
     is_pe_estimated           BOOLEAN       NOT NULL DEFAULT FALSE,
+    is_close_estimated        BOOLEAN       NOT NULL DEFAULT FALSE,
     has_intraday_5mins        BOOLEAN       NOT NULL DEFAULT FALSE,
 
     CONSTRAINT pk_stock_basic_stats PRIMARY KEY (date, code),
@@ -64,6 +65,7 @@ COMMENT ON COLUMN stats.stock_basic_stats.close       IS 'Closing price (yuan). 
 COMMENT ON COLUMN stats.stock_basic_stats.pct_change  IS 'Daily pct change (%). 涨跌幅（%） from source CSV; SSE derives as change/prev_close*100.';
 COMMENT ON COLUMN stats.stock_basic_stats.pe          IS 'Price-to-earnings ratio (PE). For SSE stocks (where the dayk endpoint does not publish PE), pe is merged from separate {code}_pe.csv files when available; otherwise it is estimated from the last actual PE assuming constant EPS (see is_pe_estimated). NULL when no actual PE has ever been recorded for the stock, or when source data contains "-", empty, or 0.0 (SZSE uses 市盈率=0 as a loss-making marker, treated as NULL).';
 COMMENT ON COLUMN stats.stock_basic_stats.is_pe_estimated IS 'TRUE when pe was estimated from the last actual PE row using constant-EPS assumption: estimated_pe = today_close * last_pe / last_close. FALSE when pe comes directly from the source CSV (actual), or when pe is NULL because no prior actual PE exists to estimate from.';
+COMMENT ON COLUMN stats.stock_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index (highest composition shared weight > 60%). If no proxy index qualifies, prev_close is carried forward.';
 COMMENT ON COLUMN stats.stock_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future stock intraday support).';
 
 -- ----------------------------------------------------------------------------
@@ -87,10 +89,10 @@ CREATE INDEX IF NOT EXISTS idx_stock_identity_code_date
 -- (b) Exchange-filtered lookups — WHERE code_suffix='SZ'/'SS', then by code.
 --     Supports listing all stocks of one exchange with latest-name-per-code
 --     via DISTINCT ON (code) ... ORDER BY code, date DESC.
---     INCLUDE (name, is_in_etf) lets the Index Only Scan return these columns
---     without heap fetches (stream_szse_price.py filters on is_in_etf).
+--     INCLUDE (name, is_in_index_or_etf) lets the Index Only Scan return these
+--     columns without heap fetches (stream_szse_price.py filters on is_in_index_or_etf).
 CREATE INDEX IF NOT EXISTS idx_stock_identity_suffix_code_date
-    ON stats.stock_identity (code_suffix, code, date DESC) INCLUDE (name, is_in_etf);
+    ON stats.stock_identity (code_suffix, code, date DESC) INCLUDE (name, is_in_index_or_etf);
 
 CREATE INDEX IF NOT EXISTS idx_stock_basic_stats_code_date
     ON stats.stock_basic_stats (code, date);

@@ -6,11 +6,10 @@ import SzseOptionsPage from "@/dataviz/pages/SzseOptionsPage";
 import EtfMarginPage from "@/dataviz/pages/EtfMarginPage";
 import IndexBaselinePage from "@/dataviz/pages/IndexBaselinePage";
 import StockBaselinePage from "@/dataviz/pages/StockBaselinePage";
-import NewPage from "@/analysis/pages/NewPage";
-import ArchivePage from "@/analysis/pages/ArchivePage";
 import CommonsPage from "@/analysis/pages/CommonsPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import PerfAttrPage from "@/analysis/pages/PerfAttrPage";
+import CapitalFlowPage from "@/analysis/pages/CapitalFlowPage";
 
 export default function App() {
   return (
@@ -25,12 +24,11 @@ export default function App() {
           <Route path="/dataviz/etf-margin" element={<EtfMarginPage />} />
           <Route path="/dataviz/index-baseline" element={<IndexBaselinePage />} />
           <Route path="/dataviz/stock-baseline" element={<StockBaselinePage />} />
-          <Route path="/analysis" element={<Navigate to="/analysis/new" replace />} />
-          <Route path="/analysis/new" element={<NewPage />} />
-          <Route path="/analysis/archive" element={<ArchivePage />} />
+          <Route path="/analysis" element={<Navigate to="/analysis/commons" replace />} />
           <Route path="/analysis/commons" element={<CommonsPage />} />
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
           <Route path="/analysis/commons/perf-attr" element={<PerfAttrPage />} />
+          <Route path="/analysis/commons/capital-flow" element={<CapitalFlowPage />} />
         </Routes>
       </Box>
     </Router>

@@ -2,21 +2,31 @@
  * IndexPanel — single index chart + slider + intraday expansion + composition pie.
  *
  * Layout (mirrors EtfMarginPanel):
- *   • Candlestick OHLC (or close line fallback) + MA5/MA20/MA60/MA120 +
+ *   • OHLC (or close line fallback) + MA5/MA20/MA60/MA120 +
  *     volume bars + PE ratio (twin axis).
  *   • Date range slider (windowing) per panel.
  *   • Clicking a date point that has 5-min intraday bars (gold-ringed marker
- *     on the close line) expands a closeable intraday candlestick chart below.
+ *     on the close line) expands a closeable intraday OHLC chart below.
  *   • CompositionPieChart toggle — lifted open state expands the card height
  *     so the pie chart stays inside the parent box.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Box, Slider, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Slider, Stack, Typography } from "@mui/material";
+import { PieChart as PieChartIcon } from "@mui/icons-material";
+import { Link as LinkIcon } from "@mui/icons-material";
 import ChartCard from "@/components/ChartCard";
 import CompositionPieChart from "@/components/CompositionPieChart";
+import LinkedEtfsList from "@/components/LinkedEtfsList";
+import OhlcModeToggle from "@/components/OhlcModeToggle";
+import RefreshButton from "@/components/RefreshButton";
 import EChart from "@/components/EChart";
 import { breakArraysAtGaps, fmtNum } from "@/lib/series";
-import { candlestickSeries } from "@/lib/candlestick";
+import {
+  ohlcSeries,
+  rebasePriceArrays,
+  formatPriceValue,
+  type OhlcMode,
+} from "@/lib/ohlc";
 import { fetchIndexIntraday5min, invalidateCacheForUrl } from "@/lib/api-client";
 import {
   MA20_COLOR,
@@ -28,6 +38,8 @@ import {
   UP_COLOR,
   DOWN_COLOR,
   axisColors,
+  commonLegend,
+  commonGrid,
 } from "@/theme/chart-palette";
 import type {
   IndexBundle,
@@ -46,6 +58,9 @@ export default function IndexPanel({ index, themeMode }: Props) {
   const allRows = index.rows;
   const maxIdx = allRows.length - 1;
   const [range, setRange] = useState<[number, number]>([0, maxIdx]);
+  // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
+  // from the first valid close; "absolute" shows raw prices.
+  const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
   // Intraday 5-min expansion state — keyed by date.
   const [intradayDate, setIntradayDate] = useState<string | null>(null);
@@ -62,6 +77,27 @@ export default function IndexPanel({ index, themeMode }: Props) {
   // Per-stock candlestick expansion open state — when true the card grows
   // further to fit the stock chart below the pie charts.
   const [stockCandleOpen, setStockCandleOpen] = useState(false);
+  // Linked-ETFs list open state — toggles the table of ETFs tracking this
+  // index (shown beside the Composition button).
+  const [linkedEtfsOpen, setLinkedEtfsOpen] = useState(false);
+
+  // Lifted refresh + loading state for the two side panels (Composition +
+  // Linked ETFs). Both render their own buttons in a SHARED button row
+  // (hideButton=true), so the parent owns the refresh keys + loading
+  // spinners. Each panel is notified of loading changes via onLoadingChange.
+  const [compositionRefreshKey, setCompositionRefreshKey] = useState(0);
+  const [compositionLoading, setCompositionLoading] = useState(false);
+  const [linkedEtfsRefreshKey, setLinkedEtfsRefreshKey] = useState(0);
+  const [linkedEtfsLoading, setLinkedEtfsLoading] = useState(false);
+
+  const handleCompositionRefresh = () => {
+    invalidateCacheForUrl(`/api/sec-composition?code=${index.code}`);
+    setCompositionRefreshKey((k) => k + 1);
+  };
+  const handleLinkedEtfsRefresh = () => {
+    invalidateCacheForUrl(`/api/sec-composition/linked-etfs?code=${index.code}`);
+    setLinkedEtfsRefreshKey((k) => k + 1);
+  };
 
   // Reset slider when data changes.
   useEffect(() => {
@@ -71,6 +107,7 @@ export default function IndexPanel({ index, themeMode }: Props) {
     setIntradayError(null);
     setCompositionOpen(false);
     setStockCandleOpen(false);
+    setLinkedEtfsOpen(false);
   }, [index.code, allRows.length]);
 
   // Filter rows to the selected date window
@@ -156,7 +193,7 @@ export default function IndexPanel({ index, themeMode }: Props) {
   }, []);
 
   // Detect whether OHLC is available — when most rows have all four
-  // components, render a candlestick; otherwise fall back to a close line.
+  // components, render an OHLC chart; otherwise fall back to a close line.
   const hasOhlc = useMemo(() => {
     if (filteredRows.length === 0) return false;
     const ohlcCount = filteredRows.filter(
@@ -173,18 +210,29 @@ export default function IndexPanel({ index, themeMode }: Props) {
     const high = rows.map((r) => r.high);
     const low = rows.map((r) => r.low);
     const close = rows.map((r) => r.close);
-    const volume = rows.map((r) => (r.volume != null ? r.volume / 1e6 : null));
+    // Trading amount (成交金额) in 亿元 — replaces volume (shares) as the
+    // bottom bar series.  Source: CSIndex history CSV "成交金额（亿元）".
+    const tradingAmount = rows.map((r) => r.amount);
     const ma5 = rows.map((r) => r.ma5);
     const ma20 = rows.map((r) => r.ma20);
     const ma60 = rows.map((r) => r.ma60);
     const ma120 = rows.map((r) => r.ma120);
     const pe = rows.map((r) => r.pe);
 
+    // Rebase price-derived arrays (OHLC + MAs) to % change in percentage mode.
+    // tradingAmount and pe are NOT price-derived — kept in absolute units.
+    const { rebased } = rebasePriceArrays(
+      { open, high, low, close, ma5, ma20, ma60, ma120 },
+      ohlcMode,
+    );
+
     const broken = breakArraysAtGaps(dates, [
-      open, high, low, close, ma5, ma20, ma60, ma120, volume, pe,
+      rebased.open, rebased.high, rebased.low, rebased.close,
+      rebased.ma5, rebased.ma20, rebased.ma60, rebased.ma120,
+      tradingAmount, pe,
     ]);
 
-    const volData = broken.arrays[8].map((v, i) => {
+    const amtData = broken.arrays[8].map((v, i) => {
       const o = broken.arrays[0][i];
       const cl = broken.arrays[3][i];
       const up = o != null && cl != null ? cl >= o : true;
@@ -201,7 +249,7 @@ export default function IndexPanel({ index, themeMode }: Props) {
     return {
       backgroundColor: "transparent",
       animation: false,
-      grid: { left: 50, right: 50, top: 16, bottom: 28 },
+      grid: commonGrid({ left: 50, right: 50, bottom: 28 }),
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "cross", snap: true },
@@ -218,24 +266,30 @@ export default function IndexPanel({ index, themeMode }: Props) {
           if (arr.length === 0) return "";
           const dateStr = (arr[0].axisValue as string) || "";
           let html = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
+          const isPriceSeries = (name: string) =>
+            name === "OHLC" || name === "Close" || name.startsWith("MA");
           for (const p of arr) {
             if (p.value == null) continue;
-            const v = Array.isArray(p.value) ? p.value[p.value.length - 1] : p.value;
-            if (v == null || (typeof v === "number" && !Number.isFinite(v))) continue;
-            const vstr = typeof v === "number" ? fmtNum(v) : String(v);
-            html += `<div>${p.marker ?? ""} ${p.seriesName ?? ""}: <b>${vstr}</b></div>`;
+            const name = p.seriesName ?? "";
+            if (Array.isArray(p.value)) {
+              const [o, cl, l, h] = p.value as Array<number | null>;
+              if (o == null && cl == null && l == null && h == null) continue;
+              html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
+            } else {
+              const v = p.value as number;
+              if (!Number.isFinite(v)) continue;
+              const vstr = isPriceSeries(name)
+                ? formatPriceValue(v, ohlcMode)
+                : fmtNum(v);
+              // Trading Amt bars are in 亿元 (turnover / 成交金额).
+              const unit = name === "Trading Amt" ? " (亿元)" : "";
+              html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}${unit}</b></div>`;
+            }
           }
           return html;
         },
       },
-      legend: {
-        top: 0,
-        right: 0,
-        textStyle: { color: c.textColor, fontSize: 8 },
-        itemWidth: 10,
-        itemHeight: 6,
-        type: "scroll",
-      },
+      legend: commonLegend(themeMode, { type: "scroll" }),
       xAxis: {
         type: "category",
         data: broken.dates,
@@ -252,16 +306,20 @@ export default function IndexPanel({ index, themeMode }: Props) {
         {
           type: "value",
           scale: true,
-          name: "Price",
+          name: ohlcMode === "percentage" ? "%" : "Price",
           nameTextStyle: { color: c.textColor, fontSize: 9 },
           axisLine: { lineStyle: { color: c.axisLineColor } },
-          axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: number) => fmtNum(v) },
+          axisLabel: {
+            color: c.textColor,
+            fontSize: 9,
+            formatter: (v: number) => formatPriceValue(v, ohlcMode),
+          },
           splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
         },
         {
           type: "value",
           scale: true,
-          name: "Volume (mil)",
+          name: "Trading Amt (亿)",
           nameTextStyle: { color: c.textColor, fontSize: 9 },
           axisLine: { lineStyle: { color: c.axisLineColor } },
           axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: number) => fmtNum(v) },
@@ -280,7 +338,7 @@ export default function IndexPanel({ index, themeMode }: Props) {
       ],
       series: [
         ...(hasOhlc
-          ? [candlestickSeries(candleData, {
+          ? [ohlcSeries(candleData, {
               name: "OHLC",
               yAxisIndex: 0,
               z: 5,
@@ -337,9 +395,9 @@ export default function IndexPanel({ index, themeMode }: Props) {
         },
         {
           type: "bar",
-          name: "Volume",
+          name: "Trading Amt",
           yAxisIndex: 1,
-          data: volData,
+          data: amtData,
           barWidth: "90%",
           z: 1,
         },
@@ -347,23 +405,26 @@ export default function IndexPanel({ index, themeMode }: Props) {
           type: "line",
           name: "PE",
           yAxisIndex: 2,
-          data: broken.arrays[9],
+          data: broken.arrays[9].map((v) => (v == null || v === 0 ? null : v)),
           smooth: false,
           symbol: "none",
+          connectNulls: false,
           lineStyle: { color: PE_COLOR, width: 1.1, opacity: 0.85 },
           z: 6,
         },
       ],
     };
-  }, [filteredRows, themeMode, hasOhlc]);
+  }, [filteredRows, themeMode, hasOhlc, ohlcMode]);
 
   const subtitle = hasOhlc
-    ? `${index.sector_label} / ${index.industry_label} · Candlestick OHLC + MA5/MA20/MA60/MA120 · Volume · PE`
-    : `${index.sector_label} / ${index.industry_label} · Close + MA5/MA20/MA60/MA120 · Volume · PE`;
+    ? `${index.sector_label} / ${index.industry_label} · OHLC${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120 · Volume · PE`
+    : `${index.sector_label} / ${index.industry_label} · Close${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120 · Volume · PE`;
 
-  // Dynamic card height: expand when intraday panel OR composition panel is
-  // open; expand further when the per-stock candlestick expansion is open.
-  const cardHeight = intradayDate || compositionOpen
+  // Dynamic card height (used as minHeight — ChartCard grows to fit content).
+  // Reserve a baseline when collapsed; expand when any side panel opens;
+  // expand further when the per-stock candlestick is open.
+  const anyPanelOpen = intradayDate || compositionOpen || linkedEtfsOpen;
+  const cardHeight = anyPanelOpen
     ? (stockCandleOpen ? 1020 : 680)
     : 360;
 
@@ -372,6 +433,7 @@ export default function IndexPanel({ index, themeMode }: Props) {
       title={`${index.code} · ${index.name}`}
       subtitle={subtitle}
       height={cardHeight}
+      action={<OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />}
     >
       <Box sx={{ width: "100%" }}>
         <EChart option={option} height={250} onReady={handleReady} />
@@ -416,11 +478,64 @@ export default function IndexPanel({ index, themeMode }: Props) {
           />
         )}
 
+        {/* Shared button row — Composition and Linked ETFs toggles sit on the
+         * same horizontal line. Both panels render only their content (the
+         * buttons + refresh spinners are owned by this parent via hideButton
+         * + lifted refresh/loading state). */}
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexWrap: "wrap" }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<PieChartIcon />}
+            onClick={() => setCompositionOpen(!compositionOpen)}
+            sx={{ fontSize: "0.7rem", textTransform: "none", mt: 0.5 }}
+          >
+            {compositionOpen ? "Hide Composition" : "Composition"}
+          </Button>
+          {compositionOpen && (
+            <RefreshButton
+              onClick={handleCompositionRefresh}
+              loading={compositionLoading}
+              size="tiny"
+              tooltip={`Refresh composition for ${index.code}`}
+            />
+          )}
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<LinkIcon />}
+            onClick={() => setLinkedEtfsOpen(!linkedEtfsOpen)}
+            sx={{ fontSize: "0.7rem", textTransform: "none", mt: 0.5 }}
+          >
+            {linkedEtfsOpen ? "Hide Linked ETFs" : "Linked ETFs"}
+          </Button>
+          {linkedEtfsOpen && (
+            <RefreshButton
+              onClick={handleLinkedEtfsRefresh}
+              loading={linkedEtfsLoading}
+              size="tiny"
+              tooltip={`Refresh linked ETFs for ${index.code}`}
+            />
+          )}
+        </Box>
+
         <CompositionPieChart
           code={index.code}
           open={compositionOpen}
           onToggle={() => setCompositionOpen(!compositionOpen)}
           onStockCandleOpenChange={setStockCandleOpen}
+          hideButton
+          refreshKey={compositionRefreshKey}
+          onLoadingChange={setCompositionLoading}
+        />
+
+        <LinkedEtfsList
+          code={index.code}
+          open={linkedEtfsOpen}
+          onToggle={() => setLinkedEtfsOpen(!linkedEtfsOpen)}
+          hideButton
+          refreshKey={linkedEtfsRefreshKey}
+          onLoadingChange={setLinkedEtfsLoading}
         />
 
         {filteredRows.length < 40 && (

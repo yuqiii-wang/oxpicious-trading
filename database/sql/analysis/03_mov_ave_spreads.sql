@@ -63,12 +63,14 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
     ma5_vs_ma120      NUMERIC(10,6),
     ma5_vs_ma255      NUMERIC(10,6),
 
+    price_slope       NUMERIC(10,6), -- 1st derivative of price
     ma5_slope         NUMERIC(10,6), -- 1st derivative of MA5
     ma20_slope        NUMERIC(10,6), -- 1st derivative of MA20
     ma60_slope        NUMERIC(10,6), -- 1st derivative of MA60
     ma120_slope       NUMERIC(10,6), -- 1st derivative of MA120
     ma255_slope       NUMERIC(10,6),
 
+    price_curvature   NUMERIC(10,6), -- 2nd derivative of price
     ma5_curvature     NUMERIC(10,6), -- 2nd derivative of MA5
     ma20_curvature    NUMERIC(10,6), -- 2nd derivative of MA20
     ma60_curvature    NUMERIC(10,6), -- 2nd derivative of MA60
@@ -96,11 +98,13 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_vs_ma20  IS '(ma5 - ma20) 
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_vs_ma60  IS '(ma5 - ma60) / ma60.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_vs_ma120 IS '(ma5 - ma120) / ma120.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_vs_ma255 IS '(ma5 - ma255) / ma255.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.price_slope     IS '1st derivative of price (price[t] - price[t-1]) per trading day. NULL on the first date of each code.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_slope       IS '1st derivative of MA5 (MA5[t] - MA5[t-1]) per trading day. NULL on the first date of each code.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma20_slope      IS '1st derivative of MA20 (MA20[t] - MA20[t-1]).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma60_slope      IS '1st derivative of MA60 (MA60[t] - MA60[t-1]).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma120_slope     IS '1st derivative of MA120 (MA120[t] - MA120[t-1]).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma255_slope     IS '1st derivative of MA255 (MA255[t] - MA255[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.price_curvature IS '2nd derivative of price (slope[t] - slope[t-1]). NULL on the first two dates of each code.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma5_curvature   IS '2nd derivative of MA5 (slope[t] - slope[t-1]). NULL on the first two dates of each code.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma20_curvature  IS '2nd derivative of MA20 (slope[t] - slope[t-1]).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma60_curvature  IS '2nd derivative of MA60 (slope[t] - slope[t-1]).';

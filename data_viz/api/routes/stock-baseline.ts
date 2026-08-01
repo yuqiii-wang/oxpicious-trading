@@ -7,7 +7,7 @@
  *
  * GET /api/stock-baseline/themes
  *   Returns the two-level L1 sector → L2 industry → stocks taxonomy tree
- *   (SectorNode[]), precomputed by build_stock_industry.py.
+ *   (SectorNode[]), precomputed by build_classification.py.
  *
  * GET /api/stock-baseline/combined?sector=&industry=&code=&page=&page_size=
  *   Paginated stocks filtered by L1 sector + L2 industry, with optional
@@ -40,6 +40,7 @@ router.get("/combined", async (req: Request, res: Response) => {
       sector: typeof req.query.sector === "string" ? req.query.sector : undefined,
       industry: typeof req.query.industry === "string" ? req.query.industry : undefined,
       code: typeof req.query.code === "string" ? req.query.code : undefined,
+      exchange: typeof req.query.exchange === "string" ? req.query.exchange : undefined,
       start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
       end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
       page:

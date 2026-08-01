@@ -22,6 +22,8 @@ import {
   SPOT_COLOR,
   UP_COLOR,
   axisColors,
+  commonLegend,
+  commonGrid,
 } from "@/theme/chart-palette";
 import { computeSnapshotStats } from "@/lib/options-stats";
 import { fmtPct, fmtMil, fmtNum } from "@/lib/series";
@@ -238,7 +240,7 @@ function buildWallOption(
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: { left: 70, right: 20, top: 50, bottom: 36 },
+    grid: commonGrid({ left: 70, right: 20, top: 50, bottom: 36 }),
     title: {
       text: `${label}  (${dateStr})  Spot=${fmtNum(stats.S)}  CW=${cwStr}  PW=${pwStr}  P/C=${fmtNum(stats.pcRatio)}  IV=${ivStr}  Skew=${skStr}  GEX=${gexStr}`,
       left: "left",
@@ -265,14 +267,7 @@ function buildWallOption(
         return `<b>K=${strikeYuan}</b><br/>${lines}`;
       },
     },
-    legend: {
-      top: 22,
-      right: 0,
-      textStyle: { color: textColor, fontSize: 8 },
-      itemWidth: 10,
-      itemHeight: 6,
-      type: "scroll",
-    },
+    legend: commonLegend(themeMode, { top: 22, type: "scroll" }),
     xAxis: {
       type: "value",
       name: "OI (contracts)  Call→ | ←Put",

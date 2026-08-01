@@ -1,10 +1,10 @@
 /**
- * StockCandlestickChart — closeable daily candlestick expansion for a single
+ * StockCandlestickChart — closeable daily OHLC expansion for a single
  * stock, rendered below the composition pie chart when the user clicks a
  * stock slice in Layer 2.
  *
  * Fetches OHLC + PE from /api/stock-baseline (stats.v_stock_baseline) and
- * renders a candlestick + MA20/MA60 + PE (twin axis, when available) chart.
+ * renders an OHLC + MA20/MA60 + PE (twin axis, when available) chart.
  * Mirrors IndexPanel's daily chart style on a compact card.
  *
  * The close (×) button calls `onClose`; the parent CompositionPieChart also
@@ -22,15 +22,23 @@ import {
 } from "@mui/material";
 import { Close } from "@mui/icons-material";
 import EChart from "@/components/EChart";
+import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { fetchStockBaseline } from "@/lib/api-client";
 import { useStore } from "@/store/filters";
 import { breakArraysAtGaps, fmtNum, safeMa } from "@/lib/series";
-import { candlestickSeries } from "@/lib/candlestick";
+import {
+  ohlcSeries,
+  rebasePriceArrays,
+  formatPriceValue,
+  type OhlcMode,
+} from "@/lib/ohlc";
 import {
   MA20_COLOR,
   MA60_COLOR,
   PE_COLOR,
   axisColors,
+  commonLegend,
+  commonGrid,
 } from "@/theme/chart-palette";
 import type { StockBaselineResponse } from "../../shared/types";
 import type { EChartsOption } from "echarts";
@@ -55,6 +63,9 @@ export default function StockCandlestickChart({
   const [data, setData] = useState<StockBaselineResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
+  // from the first valid close; "absolute" shows raw prices.
+  const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
   // Fetch daily OHLC whenever the stock code changes.
   useEffect(() => {
@@ -96,7 +107,17 @@ export default function StockCandlestickChart({
     const ma20 = safeMa(close, 20);
     const ma60 = safeMa(close, 60);
 
-    const broken = breakArraysAtGaps(dates, [open, high, low, close, ma20, ma60, pe, isPeEstimatedNum]);
+    // Rebase price-derived arrays (OHLC + MAs) to % change in percentage mode.
+    // pe and isPeEstimatedNum are NOT price-derived — kept in absolute units.
+    const { rebased } = rebasePriceArrays(
+      { open, high, low, close, ma20, ma60 },
+      ohlcMode,
+    );
+
+    const broken = breakArraysAtGaps(dates, [
+      rebased.open, rebased.high, rebased.low, rebased.close,
+      rebased.ma20, rebased.ma60, pe, isPeEstimatedNum,
+    ]);
     const candleData: Array<Array<number | null>> = broken.dates.map((_, i) => [
       broken.arrays[0][i],
       broken.arrays[3][i],
@@ -108,10 +129,14 @@ export default function StockCandlestickChart({
       {
         type: "value",
         scale: true,
-        name: "Price",
+        name: ohlcMode === "percentage" ? "%" : "Price",
         nameTextStyle: { color: c.textColor, fontSize: 9 },
         axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: number) => fmtNum(v) },
+        axisLabel: {
+          color: c.textColor,
+          fontSize: 9,
+          formatter: (v: number) => formatPriceValue(v, ohlcMode),
+        },
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
     ];
@@ -129,7 +154,7 @@ export default function StockCandlestickChart({
     }
 
     const series: EChartsOption["series"] = [
-      candlestickSeries(candleData, { name: "OHLC", yAxisIndex: 0, z: 5 }),
+      ohlcSeries(candleData, { name: "OHLC", yAxisIndex: 0, z: 5 }),
       {
         type: "line",
         name: "MA20",
@@ -184,7 +209,7 @@ export default function StockCandlestickChart({
     return {
       backgroundColor: "transparent",
       animation: false,
-      grid: { left: 50, right: hasPe ? 60 : 20, top: 16, bottom: 28 },
+      grid: commonGrid({ left: 50, right: hasPe ? 60 : 20, bottom: 28 }),
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "cross", snap: true },
@@ -201,30 +226,28 @@ export default function StockCandlestickChart({
           if (arr.length === 0) return "";
           const dateStr = (arr[0].axisValue as string) || "";
           let html = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
+          const isPriceSeries = (name: string) =>
+            name === "OHLC" || name === "Close" || name.startsWith("MA");
           for (const p of arr) {
             if (p.value == null) continue;
+            const name = p.seriesName ?? "";
             if (Array.isArray(p.value)) {
               const [o, cl, l, h] = p.value;
               if (o == null && cl == null && l == null && h == null) continue;
-              html += `<div>${p.marker ?? ""} ${p.seriesName ?? ""}: O=${fmtNum(o)} H=${fmtNum(h)} L=${fmtNum(l)} C=${fmtNum(cl)}</div>`;
+              html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
             } else {
               const v = p.value as number;
               if (!Number.isFinite(v)) continue;
-              const vstr = p.seriesName === "PE" ? fmtNum(v, 2) : fmtNum(v);
-              html += `<div>${p.marker ?? ""} ${p.seriesName ?? ""}: <b>${vstr}</b></div>`;
+              const vstr = isPriceSeries(name)
+                ? formatPriceValue(v, ohlcMode)
+                : name === "PE" || name === "PE (est)" ? fmtNum(v, 2) : fmtNum(v);
+              html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}</b></div>`;
             }
           }
           return html;
         },
       },
-      legend: {
-        top: 0,
-        right: 0,
-        textStyle: { color: c.textColor, fontSize: 8 },
-        itemWidth: 10,
-        itemHeight: 6,
-        type: "scroll",
-      },
+      legend: commonLegend(themeMode, { type: "scroll" }),
       xAxis: {
         type: "category",
         data: broken.dates,
@@ -240,7 +263,7 @@ export default function StockCandlestickChart({
       yAxis,
       series,
     };
-  }, [data, themeMode, hasPe]);
+  }, [data, themeMode, hasPe, ohlcMode]);
 
   const rowCount = data?.rows.length ?? 0;
   const subtitle = data
@@ -263,9 +286,12 @@ export default function StockCandlestickChart({
           </span>
         }
         action={
-          <IconButton aria-label="close stock chart" onClick={onClose} size="small">
-            <Close fontSize="small" />
-          </IconButton>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />
+            <IconButton aria-label="close stock chart" onClick={onClose} size="small">
+              <Close fontSize="small" />
+            </IconButton>
+          </Box>
         }
         sx={{ pb: 0.5, "& .MuiCardHeader-content": { overflow: "hidden" } }}
       />

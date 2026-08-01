@@ -18,6 +18,10 @@ import {
   getPerfAttrChart,
   getPerfAttrAttribution,
   listPerfAttrThemes,
+  listCapitalFlowIndustries,
+  getCapitalFlowBenchmarks,
+  getCapitalFlowCharts,
+  listCapitalFlowThemes,
 } from "../services/analysis.service.js";
 import type { PerfAttrSecType } from "../../shared/types.js";
 
@@ -118,6 +122,89 @@ router.get("/perf-attr/chart", async (req: Request, res: Response) => {
     res.json(await getPerfAttrChart(code, benchmarkCode, parsePerfAttrSecType(req)));
   } catch (err) {
     console.error("[analysis/perf-attr/chart] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Capital Flow (Industry × Broad-Market Benchmark) --------------------
+//   GET /api/analysis/capital-flow/industries
+//     Returns all industries with rows in analysis.capital_flow, with latest
+//     pure/observed popularity aggregated across benchmarks.
+//
+//   GET /api/analysis/capital-flow/themes
+//     Returns the L1 sector → L2 industry tree (SectorNode[]) for the
+//     ThemeSelector. Only industries present in analysis.capital_flow are
+//     included, classified via stats.sec_classification.
+//
+//   GET /api/analysis/capital-flow/benchmarks?industry_id=AI
+//     Returns per-benchmark breakdown for one industry.
+//
+//   GET /api/analysis/capital-flow/chart?industry_id=AI&benchmark_codes=000300,000852
+//     Returns the per-date time series for one industry × a SET of benchmark
+//     codes. `benchmark_codes` is a comma-separated list; only those benchmarks
+//     are fetched (the frontend defaults to 000300 + 000852 so it loads just
+//     the two plots it shows). Returns an array of CapitalFlowChartResponse,
+//     one per requested code, in the requested order.
+router.get("/capital-flow/industries", async (_req: Request, res: Response) => {
+  try {
+    res.json(await listCapitalFlowIndustries());
+  } catch (err) {
+    console.error("[analysis/capital-flow/industries] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/capital-flow/themes", async (_req: Request, res: Response) => {
+  try {
+    res.json(await listCapitalFlowThemes());
+  } catch (err) {
+    console.error("[analysis/capital-flow/themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/capital-flow/benchmarks", async (req: Request, res: Response) => {
+  try {
+    const industryId = typeof req.query.industry_id === "string"
+      ? req.query.industry_id.trim()
+      : "";
+    if (!industryId) {
+      res.status(400).json({ error: "Missing 'industry_id' parameter" });
+      return;
+    }
+    res.json(await getCapitalFlowBenchmarks(industryId));
+  } catch (err) {
+    console.error("[analysis/capital-flow/benchmarks] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/capital-flow/chart", async (req: Request, res: Response) => {
+  try {
+    const industryId = typeof req.query.industry_id === "string"
+      ? req.query.industry_id.trim()
+      : "";
+    if (!industryId) {
+      res.status(400).json({ error: "Missing 'industry_id' parameter" });
+      return;
+    }
+    // benchmark_codes is a comma-separated list (e.g. "000300,000852").
+    // For backward compatibility, a single benchmark_code param is also
+    // accepted and treated as a one-element list.
+    const rawCodes = typeof req.query.benchmark_codes === "string"
+      ? req.query.benchmark_codes
+      : (typeof req.query.benchmark_code === "string" ? req.query.benchmark_code : "");
+    const codes = rawCodes
+      .split(",")
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0);
+    if (codes.length === 0) {
+      res.status(400).json({ error: "Missing 'benchmark_codes' parameter" });
+      return;
+    }
+    res.json(await getCapitalFlowCharts(industryId, codes));
+  } catch (err) {
+    console.error("[analysis/capital-flow/chart] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

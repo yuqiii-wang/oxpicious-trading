@@ -93,9 +93,11 @@ def download_xlsx_once(
         and is_error_html(content_type, resp.content, max_html_bytes=EMPTY_HTML_MAX_BYTES)
     ):
         logger.warning(
-            "%s got html response (no data? length=%d)",
+            "%s got html response (no data? length=%d), writing empty marker",
             log_tag, len(resp.content),
         )
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_bytes(b"")
         return None
 
     saved = safe_write_bytes(
@@ -260,6 +262,11 @@ def run_szse_download(
                     )
                 continue
 
+            # Skip dates previously confirmed to have no data (empty marker)
+            if out_file.exists():
+                stats.empty += 1
+                continue
+
             params = params_builder(item.type_key, item.day)
             path = download_xlsx_once(
                 sess, params, headers, out_file, tag,
@@ -271,6 +278,8 @@ def run_szse_download(
             else:
                 if is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
                     stats.skipped_cached += 1
+                elif out_file.exists():
+                    stats.empty += 1
                 else:
                     stats.failed += 1
             # Auto-sleep is handled by proxy.get() inside download_xlsx_once
@@ -283,7 +292,7 @@ def run_szse_download(
         end_date=str(_end),
     )
     logger.info(
-        "Done %s. downloaded=%d skipped=%d failed=%d out=%s",
-        banner_label, stats.downloaded, stats.skipped_cached, stats.failed, out_dir,
+        "Done %s. downloaded=%d skipped=%d failed=%d empty=%d out=%s",
+        banner_label, stats.downloaded, stats.skipped_cached, stats.failed, stats.empty, out_dir,
     )
     return summary

@@ -85,10 +85,15 @@ def download_options_risk_once(
         and is_error_html(content_type, resp.content, max_html_bytes=EMPTY_HTML_MAX_BYTES)
     ):
         logger.warning(
-            "%s got html response (no data? length=%d)",
+            "%s got html response (no data? length=%d), writing empty marker",
             log_tag, len(resp.content),
         )
-        return None
+        # API confirmed no data for this date — write an empty marker file so
+        # the next run skips it instead of re-fetching. The caller treats a
+        # returned path with a sub-MIN_VALID_BYTES file as an "empty" result.
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_bytes(b"")
+        return out_file
 
     sz = len(resp.content)
     if sz < MIN_VALID_BYTES:
@@ -161,11 +166,20 @@ def download_sse_options_risk(
             if is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
                 stats.skipped_cached += 1
                 continue
+            # An existing but sub-threshold file is a no-data marker written
+            # by a previous run (API confirmed no data for this date). Skip
+            # it so we don't re-fetch dates already known to have no data.
+            if out_file.exists():
+                stats.empty += 1
+                continue
 
             path = download_options_risk_once(sess, d, out_file, proxy)
-            if path is not None:
+            if path is not None and is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
                 stats.downloaded += 1
                 stats.files.append(str(path))
+            elif path is not None:
+                # API returned no data — empty marker file was written.
+                stats.empty += 1
             else:
                 stats.failed += 1
 
@@ -179,8 +193,8 @@ def download_sse_options_risk(
         end_date=str(_end),
     )
     logger.info(
-        "Done SSE options risk. downloaded=%d skipped=%d failed=%d out=%s",
-        stats.downloaded, stats.skipped_cached, stats.failed, out_dir,
+        "Done SSE options risk. downloaded=%d skipped=%d empty=%d failed=%d out=%s",
+        stats.downloaded, stats.skipped_cached, stats.empty, stats.failed, out_dir,
     )
     return summary
 

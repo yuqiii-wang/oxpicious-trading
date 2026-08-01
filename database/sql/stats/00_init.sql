@@ -10,7 +10,6 @@
 \ir 04_options_quote.sql
 \ir 05_index_baseline.sql
 \ir 06_stock_baseline.sql
-\ir 07_etf_meta.sql
-\ir 08_etf_composition.sql
-\ir 09_stock_industry_map.sql
+\ir 07_sec_classification.sql
+\ir 09_sec_map.sql
 \ir 99_reconstruct_views.sql

@@ -654,10 +654,9 @@ def aggregate_5min(
         return [], [], None
 
     full_code = add_exchange_suffix(bare_code, "深圳")
-    # Exchange suffix: only SZ, SS, or BJ are valid (Beijing Stock Exchange).
-    # Other codes like SH/HK are not used for stocks in this project.
+    # Exchange suffix: SZ, SS, BJ, or HK are valid.
     parts = full_code.rsplit(".", 1)
-    code_suffix = parts[-1] if len(parts) == 2 and parts[-1] in ("SZ", "SS", "BJ") else None
+    code_suffix = parts[-1] if len(parts) == 2 and parts[-1] in ("SZ", "SS", "BJ", "HK") else None
 
     # Keep only samples that belong to the current biz day.
     in_day: List[MinuteSample] = [s for s in samples if s[0].date() == trade_date]
@@ -695,9 +694,9 @@ def aggregate_5min(
         change = round(c - o, 4)
         change_pct = round((c - o) / o * 100, 4) if o else None
 
-        # is_in_etf=True by construction: load_target_stocks() pre-filters the
+        # is_in_index_or_etf=True by construction: load_target_stocks() pre-filters the
         # streaming target list to stocks whose latest stock_identity row (last
-        # 30 days) has is_in_etf=TRUE, so every identity row emitted here is
+        # 30 days) has is_in_index_or_etf=TRUE, so every identity row emitted here is
         # for an ETF-held stock. Setting it explicitly keeps new (date, code)
         # rows from defaulting to FALSE before the next backfill runs.
         identity_rows.append({
@@ -705,7 +704,7 @@ def aggregate_5min(
             "code": full_code,
             "code_suffix": code_suffix,
             "name": name,
-            "is_in_etf": True,
+            "is_in_index_or_etf": True,
         })
         bar_rows.append({
             "date": trade_date,

@@ -49,7 +49,7 @@ DB_TABLE_BY_TYPE: Dict[str, str] = {
 # Per-type CSV row filter. The index tab7 export contains ~180 indexes
 # per day; only the two broad-market benchmarks below are persisted to CSV.
 # The xlsx is always written in full; only the CSV is filtered.
-INDEX_CODES_TO_KEEP: List[str] = ["399001", "399006"]  # 深证成指, 创业板指
+INDEX_CODES_TO_KEEP: List[str] = ["399001", "399006", "399237"]  # 深证成指, 创业板指, 运输指数
 CODE_FILTER_BY_TYPE: Dict[str, List[str]] = {
     "index": INDEX_CODES_TO_KEEP,
 }
@@ -94,8 +94,8 @@ def download_szse_trend(
 
     ``security_types`` defaults to ``["stock", "etf", "option", "index"]``.
     For the ``index`` type (TABKEY=tab7) the xlsx contains ~180 indexes per
-    day; the CSV is filtered to only 399001 深证成指 and 399006 创业板指
-    (see CODE_FILTER_BY_TYPE). The xlsx is kept in full.
+    day; the CSV is filtered to only 399001 深证成指, 399006 创业板指,
+    and 399237 运输指数 (see CODE_FILTER_BY_TYPE). The xlsx is kept in full.
     """
     return run_szse_download(
         caller_file=str(Path(__file__).resolve()),
