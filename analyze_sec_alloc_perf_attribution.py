@@ -1,26 +1,25 @@
 """
-analyze_sec_alloc_perf_attribution.py — Daily Performance Attribution
-(ETF + Index subjects × Index benchmarks)
+analyze_sec_alloc_perf_attribution.py — Daily Composition Overlap + Liquidity
++ Rolling Correlations (Index subjects × Index benchmarks)
 
-Populates analysis.sec_alloc_perf_attribution with daily return decomposition
-for:
-  1. ETF subjects (top-3 by avg volume per industry, classified via
-     _study_select_etf.study_etf_themes) vs ALL indices as benchmarks.
-  2. Index subjects (ALL indices) vs ALL indices as benchmarks (excl. self).
+Populates analysis.sec_alloc_perf_attribution with daily composition overlap,
+ETF-market liquidity, and rolling close-price correlations for Index subjects
+(ALL indices with composition data) vs ALL indices as benchmarks (excl.
+self-pairs).
+
+ETF subjects are currently BYPASSED — the ETF selection + return-fetch code
+has been removed to keep this script focused on the index × index cross
+product that the UI actually consumes. Re-introducing ETF subjects would
+require porting select_etf_subjects / fetch_etf_returns back from git history.
 
 Subject / benchmark pairing:
-  code            = ETF code WITH suffix (e.g. "510050.SS") for sec_type='etf'
-                    OR bare index code (e.g. "000300") for sec_type='index'
-  sec_type        = 'etf' or 'index' (determines source table for returns)
+  code            = bare index code (e.g. "000300") for sec_type='index'
+  sec_type        = 'index' (determines source table for close prices)
   benchmark_code  = any index code from stats.index_identity (e.g. "000300")
 
-Per-row decomposition:
-  subject_return     = ETF  (close_t - close_{t-1})  — adj_close when available
-  benchmark_return   = index (close_t - close_{t-1})
-  active_return      = subject_return - benchmark_return
-  allocation_effect  = NULL  (Brinson-Fachler not computed in this run)
-  code_sec_shared_weight         = Σ w_etf   on stocks held by BOTH ETF & benchmark
-  benchmark_sec_shared_weight    = Σ w_index on stocks held by BOTH ETF & benchmark
+Per-row fields:
+  code_sec_shared_weight         = Σ w_subject   on stocks held by BOTH
+  benchmark_sec_shared_weight    = Σ w_benchmark on stocks held by BOTH
     (Computed from latest snapshot in stats.sec_composition; same for all dates.)
 
   ETF-MARKET AMOUNT (liquidity view, NOT price attribution):
@@ -30,13 +29,16 @@ Per-row decomposition:
                            ETFs tracking benchmark_code, identified via
                            stats.sec_classification.parent_index_code). NULL
                            when no ETF tracks the benchmark (e.g. 000001).
-    code_etf_amount      = subject's own amount_wan×1e4 (sec_type='etf') OR
-                           stats.index_exts.total_etf_amt for the subject
-                           index (sec_type='index', same source as above).
+    code_etf_amount      = stats.index_exts.total_etf_amt for the subject
+                           index (same source as benchmark_etf_amount).
     etf_amount_ratio_benchmark_to_code = GENERATED (not inserted) =
                            benchmark_etf_amount / code_etf_amount.
                            The inverse (1/ratio) is the subject's SHARE of the
                            benchmark ETF market — interpretable as a proportion.
+    etf_amount_ratio_benchmark_to_code_ma5 = 5-trading-day moving average of
+                           the ratio (computed in pandas, NOT generated, since
+                           a moving average needs preceding rows). NULL when
+                           the underlying ratio is NULL.
 
   STATISTICAL ATTRIBUTION (rolling correlations):
     corr_5d/20d/60d/255d = rolling Pearson corr of subject vs benchmark close.
@@ -53,23 +55,22 @@ import asyncio
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _build_commons import (  # noqa: E402
+from utils.build_commons import (  # noqa: E402
     setup_utf8_stdout,
     get_db_connection_async,
     bulk_upsert_async,
     truncate_table_async,
     print_build_header,
     print_wall_time,
+    fetch_codes_with_recent_data_async,
+    RECENT_TRADING_DAYS,
+    recent_trading_day_cutoff,
 )
 
 setup_utf8_stdout()
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
-
-# study_etf_themes classifies ETFs by name into theme/industry and computes
-# per-ETF quality metrics (n_ohlcv_days, avg_volume_wan, has_recent_data).
-from _study_select_etf import study_etf_themes  # noqa: E402
 
 
 # ----------------------------------------------------------------------------
@@ -79,10 +80,6 @@ from _study_select_etf import study_etf_themes  # noqa: E402
 ANALYSIS_NAME = "sec_alloc_perf_attribution"
 TABLE = "analysis.sec_alloc_perf_attribution"
 
-# ETF selection: top-N ETFs by avg trading volume per industry.
-TOP_N_PER_INDUSTRY = 3
-MIN_OHLCV_DAYS = 40
-
 # Benchmark selection: keep ALL broad-market indices + top-N highest-traded
 # non-broad indices (ranked by aggregate ETF turnover). Bounds the
 # subject × benchmark cross product while retaining the most liquid
@@ -90,29 +87,22 @@ MIN_OHLCV_DAYS = 40
 TOP_N_NON_BROAD = 3
 
 DESCRIPTION = (
-    "Daily performance attribution for ETF + Index subjects vs all index "
-    "benchmarks. ETF subjects: top-3 by avg volume per industry (via "
-    "_study_select_etf.study_etf_themes; min 40 OHLCV days; recent data; "
-    "MUST have composition data in stats.sec_composition — cross-border ETFs "
-    "whose SZSE composition CSVs contain only a cash placeholder row are "
-    "excluded). Index subjects: only indices with composition data (44 CSI "
-    "indices with closeweight CSVs) vs all indices (excl. self-pairs). For "
-    "each (code, index, date, sec_type) tuple: subject_return = ETF adj_close "
-    "diff or index close diff, benchmark_return = index close diff (absolute "
-    "price/points difference, NOT fractional ratio), active_return = "
-    "subject_return - benchmark_return. allocation_effect (Brinson-Fachler) "
-    "is NULL. code_sec_shared_weight and benchmark_sec_shared_weight computed "
-    "from latest stats.sec_composition snapshot overlap (stocks held by BOTH "
-    "subject and benchmark). "
+    "Daily composition overlap + ETF-market liquidity + rolling close "
+    "correlations for Index subjects vs all index benchmarks. Index subjects: "
+    "only indices with composition data (44 CSI indices with closeweight "
+    "CSVs) vs all indices (excl. self-pairs). For each (code, benchmark_code, "
+    "date) tuple: code_sec_shared_weight and benchmark_sec_shared_weight "
+    "computed from latest stats.sec_composition snapshot overlap (stocks held "
+    "by BOTH subject and benchmark). "
     "ETF-MARKET AMOUNT (liquidity view): benchmark_etf_amount = "
     "stats.index_exts.total_etf_amt for benchmark_code on this date "
     "(precomputed by build_index_exts.py = Σ "
     "etf_liquidity_margin.amount_wan×1e4 across ALL ETFs tracking "
     "benchmark_code via stats.sec_classification.parent_index_code); NULL "
     "when no ETF tracks the benchmark (e.g. 000001 上证指数 has no direct "
-    "ETF). code_etf_amount = subject's own amount_wan×1e4 (sec_type='etf') "
-    "OR stats.index_exts.total_etf_amt for the subject index "
-    "(sec_type='index'). Both in yuan; "
+    "ETF). code_etf_amount = stats.index_exts.total_etf_amt for the subject "
+    "index (same aggregation as benchmark_etf_amount but keyed on subject "
+    "code). Both in yuan; "
     "etf_amount_ratio_benchmark_to_code (GENERATED ALWAYS column) = "
     "benchmark_etf_amount / code_etf_amount; its INVERSE is the subject's "
     "share of the benchmark ETF market. NOTE: this is a LIQUIDITY ratio, not "
@@ -122,16 +112,14 @@ DESCRIPTION = (
     "(computed via pandas vectorized df.rolling(N, min_periods=max(2N/3, 3))."
     "corr(series) against a wide-format benchmark-close pivot; min_periods="
     "2N/3 allows up to 1/3 of window data missing). "
-    "Subject close = COALESCE(etf_adjustment.adj_close, etf_basic_stats.close) "
-    "for ETFs, index_basic_stats.close for indices. "
+    "Subject close = index_basic_stats.close. "
     "NOTE: benchmark indices WITHOUT composition data are still included as "
-    "benchmarks (benchmark_return is meaningful on its own); only their "
-    "shared_weight columns are NULL."
+    "benchmarks; only their shared_weight columns are NULL."
 )
 
 
 # ----------------------------------------------------------------------------
-#  Step 1 — Select ETF subjects: top-3 by volume per industry
+#  Step 1 — Fetch composition shared weights (ALL subject × benchmark pairs)
 # ----------------------------------------------------------------------------
 
 async def fetch_codes_with_composition(conn) -> set:
@@ -141,8 +129,7 @@ async def fetch_codes_with_composition(conn) -> set:
 
     This is used to filter subjects to only those with real composition data,
     so the resulting perf-attr rows actually have shared_weight values
-    populated (the chart's "Contribution" bar = return × shared_weight needs
-    shared_weight to be non-NULL).
+    populated.
 
     Background: many ETFs (cross-border ETFs like 159920 恒生ETF) and many
     indices (SSE/SZSE-published 000xxx/399xxx that aren't CSI indices) have
@@ -160,153 +147,6 @@ async def fetch_codes_with_composition(conn) -> set:
     """)
     return {r["code"] for r in rows}
 
-
-async def select_etf_subjects(conn, codes_with_comp: set) -> list:
-    """Select top-N ETFs by avg volume per industry.
-
-    Uses _study_select_etf.study_etf_themes() for classification.  The
-    combined DataFrame is fetched directly (WITH exchange-suffixed codes) so
-    that the returned study_df codes carry the .SZ/.SS/.SH suffix required by
-    the attribution table's CHECK constraint.
-
-    Filters out ETFs that have no composition data in stats.sec_composition
-    (cross-border ETFs whose SZSE-published composition CSVs contain only a
-    cash placeholder row). Without this filter, every (subject, benchmark)
-    pair for such ETFs would have NULL shared_weight — making the entire
-    "Fluctuation Attribution" chart empty for those subjects.
-
-    Returns:
-        List of ETF codes with exchange suffix (e.g. "510050.SS").
-    """
-    # Fetch combined ETF data with suffixed codes (do NOT strip suffix —
-    # the attribution table CHECK requires \d{6}.(SZ|SS|SH) for ETFs).
-    rows = await conn.fetch("""
-        SELECT
-            i.date, i.code, i.name,
-            b.prev_close, b.open, b.high, b.low, b.close, b.pct_change,
-            COALESCE(l.volume_wan, 0)     AS volume_wan,
-            COALESCE(l.amount_wan, 0)     AS amount_wan,
-            COALESCE(l.rz_balance, 0)     AS rz_balance,
-            COALESCE(l.rq_balance_amt, 0) AS rq_balance_amt
-        FROM stats.etf_identity i
-        JOIN stats.etf_basic_stats b
-            ON b.date = i.date AND b.code = i.code
-        LEFT JOIN stats.etf_liquidity_margin l
-            ON l.date = i.date AND l.code = i.code
-        ORDER BY i.code, i.date
-    """)
-    if not rows:
-        print("    [FATAL] No ETF data found in stats.etf_identity.", flush=True)
-        return []
-
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"]).sort_values(["code", "date"]).reset_index(drop=True)
-    print(f"    → {len(df):,} rows · {df['code'].nunique()} ETFs · "
-          f"{df['date'].min().date()} → {df['date'].max().date()}", flush=True)
-
-    # study_etf_themes classifies by name (classify_etf) and computes
-    # per-code: theme_id, industry_id, avg_volume_wan, n_ohlcv_days,
-    # has_recent_data, has_margin.  save=False avoids CSV side-effects.
-    study_df, summary_df = study_etf_themes(df, save=False, require_recent_data=True)
-    print(f"    → {len(study_df):,} ETFs after recent-data filter across "
-          f"{study_df['industry_id'].nunique()} industries", flush=True)
-
-    # Filter: sufficient OHLCV history.
-    study_df = study_df[study_df["n_ohlcv_days"] >= MIN_OHLCV_DAYS].copy()
-    print(f"    → {len(study_df):,} ETFs after ≥{MIN_OHLCV_DAYS} OHLCV-day filter",
-          flush=True)
-
-    # Filter: must have real composition data in stats.sec_composition.
-    # Cross-border ETFs (e.g. 159920 恒生ETF) have only a cash placeholder row
-    # in their SZSE composition CSV — build_szse_sse_etf_and_margin.py filters
-    # those out, leaving sec_composition empty for those codes. Without this
-    # filter, every (subject, benchmark) pair for those ETFs would have NULL
-    # shared_weight, rendering the Fluctuation Attribution chart empty.
-    before = len(study_df)
-    study_df = study_df[study_df["code"].isin(codes_with_comp)].copy()
-    print(f"    → {len(study_df):,} ETFs after composition-data filter "
-          f"(dropped {before - len(study_df)} without composition)", flush=True)
-
-    # Top-N by avg_volume_wan DESC per industry_id.
-    selected = (
-        study_df.sort_values("avg_volume_wan", ascending=False)
-        .groupby("industry_id", group_keys=False)
-        .head(TOP_N_PER_INDUSTRY)
-    )
-    codes = selected["code"].tolist()
-    print(f"    → {len(codes)} ETFs selected (top-{TOP_N_PER_INDUSTRY} per industry)",
-          flush=True)
-    if codes:
-        # Print per-industry breakdown for visibility.
-        for iid, grp in selected.groupby("industry_id"):
-            labels = grp["industry_label"].iloc[0] if "industry_label" in grp.columns else iid
-            names = ", ".join(
-                f"{c}({n})" for c, n in zip(grp["code"], grp["name"])
-            )
-            print(f"      · {iid:<20s} {labels[:16]:<16s} → {names}", flush=True)
-    return codes
-
-
-# ----------------------------------------------------------------------------
-#  Step 2 — Fetch ETF daily returns + volume
-# ----------------------------------------------------------------------------
-
-async def fetch_etf_returns(conn, codes: list) -> pd.DataFrame:
-    """Fetch daily returns for the selected ETF codes.
-
-    subject_return = price_t - price_{t-1}  (absolute diff, per code ordered
-    by date).  price = COALESCE(etf_adjustment.adj_close, etf_basic_stats.close).
-
-    Returns DataFrame: [code, date, subject_return, code_etf_amount, subject_close]
-      - First row per code (NULL return) is dropped.
-      - code_etf_amount = etf_liquidity_margin.amount_wan * 10000 (万元→yuan;
-        NULL when no liquidity_margin row). For sec_type='etf' subjects this
-        IS the code_etf_amount written to the table; for sec_type='index'
-        subjects the caller (build_and_insert) overwrites it with the aggregate
-        ETF amount tracking the subject index.
-      - subject_close = the close price used to compute subject_return
-        (kept for downstream rolling-correlation computation).
-    """
-    if not codes:
-        return pd.DataFrame(columns=["code", "date", "subject_return", "code_etf_amount", "subject_close"])
-
-    rows = await conn.fetch("""
-        SELECT
-            b.code,
-            b.date,
-            COALESCE(a.adj_close, b.close) AS price,
-            l.amount_wan * 10000 AS code_etf_amount
-        FROM stats.etf_basic_stats b
-        LEFT JOIN stats.etf_adjustment a
-            ON a.date = b.date AND a.code = b.code
-        LEFT JOIN stats.etf_liquidity_margin l
-            ON l.date = b.date AND l.code = b.code
-        WHERE b.code = ANY($1::text[])
-        ORDER BY b.code, b.date
-    """, codes)
-
-    if not rows:
-        return pd.DataFrame(columns=["code", "date", "subject_return", "code_etf_amount", "subject_close"])
-
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["price"] = pd.to_numeric(df["price"], errors="coerce")
-    df["code_etf_amount"] = pd.to_numeric(df["code_etf_amount"], errors="coerce")
-    df = df.sort_values(["code", "date"]).reset_index(drop=True)
-
-    # subject_return = today's price - previous trading day's price (per code).
-    df["subject_return"] = df.groupby("code")["price"].diff()
-    # Drop first row per code (NULL return — no previous day).
-    df = df.dropna(subset=["subject_return"])
-    # Rename price → subject_close for clarity (used for rolling correlation).
-    df = df.rename(columns={"price": "subject_close"})
-    return df[["code", "date", "subject_return", "code_etf_amount", "subject_close"]]
-
-
-# ----------------------------------------------------------------------------
-#  Step 2b — Fetch composition shared weights (ALL subject × benchmark pairs)
-# ----------------------------------------------------------------------------
 
 async def fetch_shared_weights(conn) -> dict:
     """Compute shared weight for every (subject, benchmark) pair.
@@ -382,8 +222,9 @@ async def fetch_shared_weights(conn) -> dict:
 
     return result
 
-async def fetch_index_returns(conn) -> pd.DataFrame:
-    """Fetch daily returns for STOCK-BASED indices used as benchmarks.
+async def fetch_index_closes(conn) -> pd.DataFrame:
+    """Fetch daily close prices for indices used as benchmarks (and as
+    subject candidates).
 
     Benchmark pool:
       1. ALL broad-market indices (stats.sec_classification.sector_id='BROAD')
@@ -397,12 +238,8 @@ async def fetch_index_returns(conn) -> pd.DataFrame:
          diversity.
       3. DEBT-sector indices are always excluded.
 
-    benchmark_return = close_t - close_{t-1}  (absolute points diff, per
-    code ordered by date).
-
-    Returns DataFrame: [benchmark_code, date, benchmark_return, benchmark_close]
-      - First row per code (NULL return) is dropped.
-      - benchmark_close = the index close (kept for downstream rolling-
+    Returns DataFrame: [benchmark_code, date, benchmark_close]
+      - benchmark_close = the index close (used for downstream rolling-
         correlation computation against subject closes).
       - benchmark_etf_amount is NOT fetched here — it is fetched separately
         by fetch_etf_amount_by_index() and merged in build_and_insert()
@@ -458,19 +295,16 @@ async def fetch_index_returns(conn) -> pd.DataFrame:
 
     if not rows:
         return pd.DataFrame(
-            columns=["benchmark_code", "date", "benchmark_return", "benchmark_close"]
+            columns=["benchmark_code", "date", "benchmark_close"]
         )
 
     df = pd.DataFrame([dict(r) for r in rows])
     df["date"] = pd.to_datetime(df["date"]).dt.date
     df["close"] = pd.to_numeric(df["close"], errors="coerce")
     df = df.sort_values(["benchmark_code", "date"]).reset_index(drop=True)
-
-    df["benchmark_return"] = df.groupby("benchmark_code")["close"].diff()
-    df = df.dropna(subset=["benchmark_return"])
     # Rename close → benchmark_close for clarity (used for rolling correlation).
     df = df.rename(columns={"close": "benchmark_close"})
-    return df[["benchmark_code", "date", "benchmark_return", "benchmark_close"]]
+    return df[["benchmark_code", "date", "benchmark_close"]]
 
 
 # ----------------------------------------------------------------------------
@@ -491,9 +325,9 @@ async def fetch_etf_amount_by_index(conn) -> pd.DataFrame:
     turnover (stats.index_basic_stats.amount, which includes ALL market
     participants — stocks, futures, etc.), we use the ETF-market turnover
     tracking the index — a tighter measure of ETF-market liquidity for that
-    benchmark. For ETF subjects (sec_type='etf'), code_etf_amount is the
-    subject's OWN amount (set in fetch_etf_returns) and is NOT overwritten
-    by this aggregate — only index subjects and benchmarks use it.
+    benchmark. For index subjects, code_etf_amount is this aggregate keyed
+    on the subject code; for benchmark rows, benchmark_etf_amount is this
+    aggregate keyed on the benchmark code.
 
     Caveats:
       - Indices with no tracking ETF (e.g. 000001 上证指数, 399001 深证成指)
@@ -526,8 +360,8 @@ async def fetch_etf_amount_by_index(conn) -> pd.DataFrame:
 #  Step 4 — Build + insert attribution rows (per ETF to bound memory)
 # ----------------------------------------------------------------------------
 
-async def build_and_insert(conn, subject_returns: pd.DataFrame,
-                           index_returns: pd.DataFrame,
+async def build_and_insert(conn, subject_closes: pd.DataFrame,
+                           index_closes: pd.DataFrame,
                            shared_weights: dict,
                            etf_amount_by_index: pd.DataFrame,
                            sec_type: str) -> int:
@@ -544,11 +378,8 @@ async def build_and_insert(conn, subject_returns: pd.DataFrame,
       columns [index_code, date, etf_amount]. Used to populate:
         - benchmark_etf_amount = etf_amount where index_code = benchmark_code
         - code_etf_amount for sec_type='index' = etf_amount where
-          index_code = subject_code (overwrites the per-ETF amount that
-          was attached in fetch_etf_returns — for index subjects that
-          column is absent/irrelevant anyway).
-      For sec_type='etf' subjects, code_etf_amount is the subject's own
-      amount already present in subject_returns (NOT overwritten).
+          index_code = subject_code (the aggregate ETF turnover tracking
+          the subject index).
 
     For each (subject, benchmark, date) row, also computes the Pearson
     correlation between the subject's close prices and the benchmark's
@@ -559,9 +390,9 @@ async def build_and_insert(conn, subject_returns: pd.DataFrame,
 
     Returns total rows inserted.
     """
-    n_subjects = subject_returns["code"].nunique() if not subject_returns.empty else 0
-    n_indices = (index_returns["benchmark_code"].nunique()
-                 if not index_returns.empty else 0)
+    n_subjects = subject_closes["code"].nunique() if not subject_closes.empty else 0
+    n_indices = (index_closes["benchmark_code"].nunique()
+                 if not index_closes.empty else 0)
     print(f"    → {n_subjects} {sec_type}s × {n_indices} indices "
           f"(cross-product on shared dates)", flush=True)
 
@@ -574,8 +405,8 @@ async def build_and_insert(conn, subject_returns: pd.DataFrame,
     # reused for every subject.  Each column is one benchmark's close-price
     # history; the index is trading dates (date objects).
     benchmark_close_wide = (
-        index_returns.pivot(index="date", columns="benchmark_code",
-                            values="benchmark_close")
+        index_closes.pivot(index="date", columns="benchmark_code",
+                           values="benchmark_close")
         .sort_index()
     )
 
@@ -599,13 +430,13 @@ async def build_and_insert(conn, subject_returns: pd.DataFrame,
     CORR_WINDOWS = (5, 20, 60, 255)
 
     total = 0
-    subject_codes = sorted(subject_returns["code"].unique())
+    subject_codes = sorted(subject_closes["code"].unique())
 
     for i, subject_code in enumerate(subject_codes):
-        sub = subject_returns[subject_returns["code"] == subject_code].copy()
-        # Inner merge on date: pairs this subject's returns with every index's
-        # return on the same trading day.
-        merged = sub.merge(index_returns, on="date", how="inner")
+        sub = subject_closes[subject_closes["code"] == subject_code].copy()
+        # Inner merge on date: pairs this subject's closes with every index's
+        # close on the same trading day.
+        merged = sub.merge(index_closes, on="date", how="inner")
         if merged.empty:
             continue
 
@@ -616,11 +447,7 @@ async def build_and_insert(conn, subject_returns: pd.DataFrame,
                 continue
 
         # Vectorized column assembly.
-        merged["active_return"] = (
-            merged["subject_return"] - merged["benchmark_return"]
-        )
         merged["sec_type"] = sec_type
-        merged["allocation_effect"] = None
 
         # Look up shared weights for each (subject_code, benchmark_code) pair.
         # Shared weights are from latest composition snapshot — same for all dates.
@@ -681,13 +508,9 @@ async def build_and_insert(conn, subject_returns: pd.DataFrame,
         #
         # For sec_type='index': code_etf_amount = aggregate ETF turnover
         # tracking the SUBJECT index (column = subject_code in the wide
-        # pivot).  Overwrites any per-ETF amount that was attached in
-        # fetch_etf_returns (irrelevant for index subjects — they have no
-        # own amount in etf_liquidity_margin).
-        #
-        # For sec_type='etf': code_etf_amount is already in `merged` (from
-        # fetch_etf_returns via the per-subject sub-frame) and is NOT
-        # overwritten — it is the subject's own ETF turnover.
+        # pivot). Index subjects have no own amount in etf_liquidity_margin,
+        # so the aggregate ETF turnover tracking the subject index is the
+        # correct code_etf_amount.
         if not etf_amount_wide.empty:
             # Build a long-format DataFrame of (date, benchmark_code, etf_amount)
             # by stacking the wide pivot.  This is reused for both the
@@ -711,17 +534,17 @@ async def build_and_insert(conn, subject_returns: pd.DataFrame,
             )
 
             # code_etf_amount for index subjects: when sec_type='index',
-            # overwrite code_etf_amount with the aggregate ETF turnover
-            # tracking the subject index (keyed on subject code).
+            # set code_etf_amount = aggregate ETF turnover tracking the
+            # subject index (keyed on subject code).
             if sec_type == "index":
                 subject_amt = (
                     etf_amount_long[etf_amount_long["index_code"] == subject_code]
                     .rename(columns={"etf_amount": "code_etf_amount"})
                     [["date", "code_etf_amount"]]
                 )
-                # Drop the (now-irrelevant) per-ETF code_etf_amount column
-                # if it was carried in from fetch_etf_returns; replace with
-                # the aggregate.
+                # Drop any pre-existing code_etf_amount column before merge
+                # (index_subject_returns has no such column, but this guard
+                # keeps the merge deterministic).
                 if "code_etf_amount" in merged.columns:
                     merged = merged.drop(columns=["code_etf_amount"])
                 merged = merged.merge(subject_amt, on="date", how="left")
@@ -731,12 +554,56 @@ async def build_and_insert(conn, subject_returns: pd.DataFrame,
             if "code_etf_amount" not in merged.columns:
                 merged["code_etf_amount"] = None
 
+        # ---- etf_amount_ratio_benchmark_to_code_ma5 ------------------------
+        # 5-trading-day moving average of the liquidity ratio
+        # (benchmark_etf_amount / code_etf_amount). The ratio itself is a
+        # GENERATED ALWAYS column in PostgreSQL (computed on insert from the
+        # two amount columns), so it is NOT in the inserted payload — but the
+        # MA5 is a regular column and MUST be computed here because a moving
+        # average cannot be expressed as a GENERATED column (it needs the
+        # preceding 4 rows).
+        #
+        # Mirror the SQL GENERATED ratio logic exactly (NULL when either
+        # amount is NULL or zero), PLUS a cap at |ratio| < 1e6 to match the
+        # SQL column's NUMERIC(10,4) limit (max 999,999.9999). Ratios
+        # exceeding this cap — e.g. a tiny subject ETF turnover vs a large
+        # broad-market benchmark — are set to NULL in BOTH the SQL GENERATED
+        # column and this MA5 computation, so the two stay consistent.
+        # Without the cap, the GENERATED column would overflow on insert.
+        #
+        # Then compute rolling(5).mean() per (code, benchmark_code) group
+        # with min_periods=1 so the first 4 days of each series get a
+        # partial average instead of NULL.  transform() preserves the
+        # original index so the result aligns back to `merged` regardless
+        # of the sort order used inside groupby.
+        RATIO_CAP = 1_000_000  # NUMERIC(10,4) max absolute value = 10^(10-4)
+        bench_amt = pd.to_numeric(merged["benchmark_etf_amount"], errors="coerce")
+        code_amt = pd.to_numeric(merged["code_etf_amount"], errors="coerce")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            raw_ratio = bench_amt / code_amt
+        merged["_ratio"] = np.where(
+            bench_amt.isna() | code_amt.isna()
+            | (bench_amt == 0) | (code_amt == 0)
+            | (np.abs(raw_ratio) >= RATIO_CAP),
+            np.nan,
+            raw_ratio,
+        )
+        # Sort by (benchmark_code, date) so rolling sees correct temporal order,
+        # then transform back — the Series index is the sorted frame's index
+        # (same labels as merged), so assignment aligns automatically.
+        ma5 = (
+            merged.sort_values(["benchmark_code", "date"])
+            .groupby("benchmark_code", group_keys=False)["_ratio"]
+            .transform(lambda s: s.rolling(5, min_periods=1).mean())
+        )
+        merged["etf_amount_ratio_benchmark_to_code_ma5"] = ma5
+        merged = merged.drop(columns=["_ratio"])
+
         out_cols = [
             "code", "date", "sec_type", "benchmark_code",
-            "subject_return", "benchmark_return", "active_return",
-            "allocation_effect",
             "code_sec_shared_weight", "benchmark_sec_shared_weight",
             "benchmark_etf_amount", "code_etf_amount",
+            "etf_amount_ratio_benchmark_to_code_ma5",
             "corr_5d", "corr_20d", "corr_60d", "corr_255d",
         ]
         out = merged[out_cols].copy()
@@ -775,26 +642,49 @@ async def build_and_insert(conn, subject_returns: pd.DataFrame,
 async def main():
     t0 = time.time()
     print_build_header(
-        "ANALYZE SEC ALLOC PERF ATTRIBUTION (ETF + INDEX × INDEX)",
+        "ANALYZE SEC ALLOC PERF ATTRIBUTION (INDEX × INDEX)",
         table=TABLE,
-        sec_types="etf, index",
-        top_n_per_industry=f"{TOP_N_PER_INDUSTRY}",
-        min_ohlcv_days=MIN_OHLCV_DAYS,
-        allocation_effect="NULL (not computed)",
+        sec_types="index",
+        top_n_non_broad=f"{TOP_N_NON_BROAD}",
     )
 
     conn = await get_db_connection_async()
     try:
-        # ---- Step 1: fetch ALL index returns (used as benchmarks) -----
-        print("\n[1/6] Fetching all index returns (benchmarks)...",
+        # ---- Step 1: fetch ALL index closes (used as benchmarks) -----
+        print("\n[1/6] Fetching all index closes (benchmarks)...",
               flush=True)
-        index_returns = await fetch_index_returns(conn)
-        n_indices = index_returns["benchmark_code"].nunique() if not index_returns.empty else 0
-        print(f"    → {len(index_returns):,} index rows across {n_indices} indices",
+        index_closes = await fetch_index_closes(conn)
+        n_indices = index_closes["benchmark_code"].nunique() if not index_closes.empty else 0
+        print(f"    → {len(index_closes):,} index rows across {n_indices} indices",
               flush=True)
 
-        if index_returns.empty:
+        if index_closes.empty:
             print("    → no index data; exiting.", flush=True)
+            return
+
+        # ---- Step 1b: recent-data pre-filter ----------------------------
+        # Drop any index (benchmark OR subject candidate) whose latest
+        # stats.index_identity row is older than the cutoff — i.e. NO data
+        # in the last RECENT_TRADING_DAYS trading days. Such indices are
+        # delisted / suspended / never-traded and would contribute empty
+        # subject rows. Filtering here covers BOTH the benchmark universe
+        # and index subjects (subjects are derived from this same
+        # index_closes frame below).
+        cutoff = recent_trading_day_cutoff(RECENT_TRADING_DAYS)
+        active_index_codes = await fetch_codes_with_recent_data_async(
+            conn, "stats.index_identity", n_trading_days=RECENT_TRADING_DAYS,
+        )
+        before = int(index_closes["benchmark_code"].nunique())
+        index_closes = index_closes[
+            index_closes["benchmark_code"].isin(active_index_codes)
+        ].copy()
+        after = int(index_closes["benchmark_code"].nunique())
+        print(f"    → recent-data pre-filter (cutoff={cutoff.isoformat()}, "
+              f"{RECENT_TRADING_DAYS} trading days): kept {after} of {before} "
+              f"indices (dropped {before - after} with no recent data)",
+              flush=True)
+        if index_closes.empty:
+            print("    → no indices with recent data; exiting.", flush=True)
             return
 
         # ---- Step 2: fetch composition shared weights + codes-with-comp --
@@ -809,9 +699,9 @@ async def main():
 
         # ---- Step 2b: fetch aggregate ETF amount per (date, index) ----
         # Reads precomputed total_etf_amt from stats.index_exts (built by
-        # build_index_exts.py). Used to populate benchmark_etf_amount (for all
-        # subjects) and code_etf_amount (for index subjects).  ETF subjects
-        # get their own amount from fetch_etf_returns instead.
+        # build_index_exts.py). Used to populate benchmark_etf_amount AND
+        # code_etf_amount for index subjects (both keyed on the tracked index
+        # code via stats.sec_classification.parent_index_code).
         print("\n[2b/6] Fetching total_etf_amt from stats.index_exts per "
               "(date, tracking_index)...", flush=True)
         etf_amount_by_index = await fetch_etf_amount_by_index(conn)
@@ -831,36 +721,15 @@ async def main():
 
         total = 0
 
-        # ---- Step 3a: ETF subjects -----------------------------------
-        # BYPASS: ETF attribution disabled for now — no ETF rows generated.
-        # To re-enable, uncomment the block below.
-        print("\n[3a/6] ETF subjects BYPASSED — skipping ETF attribution flow.",
-              flush=True)
-        # etf_codes = await select_etf_subjects(conn, codes_with_comp)
-        # if etf_codes:
-        #     print(f"\n[3b/6] Fetching ETF daily returns...", flush=True)
-        #     etf_returns = await fetch_etf_returns(conn, etf_codes)
-        #     print(f"    → {len(etf_returns):,} ETF rows with returns", flush=True)
-        #     if not etf_returns.empty:
-        #         n = await build_and_insert(conn, etf_returns, index_returns,
-        #                                    shared_weights,
-        #                                    etf_amount_by_index,
-        #                                    sec_type="etf")
-        #         total += n
-        #         print(f"    → ETF total: {n:,} rows", flush=True)
-        # else:
-        #     print("    → no ETFs selected; skipping ETF flow.", flush=True)
-
-        # ---- Step 3c: Index subjects ---------------------------------
-        print("\n[3c/6] Building Index subjects (indices with composition vs all "
+        # ---- Step 3a: Index subjects ---------------------------------
+        print("\n[3a/6] Building Index subjects (indices with composition vs all "
               "indices)...", flush=True)
         # Index subjects: rename columns from benchmark_* to subject_*.
         # NOTE: benchmark_etf_amount is NOT carried in this rename — it is
         # fetched separately via etf_amount_by_index and merged inside
         # build_and_insert (keyed on subject_code as the tracked index).
-        index_subject_returns = index_returns.rename(columns={
+        index_subject_closes = index_closes.rename(columns={
             "benchmark_code": "code",
-            "benchmark_return": "subject_return",
             "benchmark_close": "subject_close",
         })
         # Filter: only include index subjects that have composition data.
@@ -868,15 +737,15 @@ async def main():
         # NO published composition (only 44 CSI indices have closeweight CSVs).
         # Without this filter, every (subject, benchmark) pair for those
         # indices would have NULL shared_weight, rendering the chart empty.
-        before_idx = index_subject_returns["code"].nunique()
-        index_subject_returns = index_subject_returns[
-            index_subject_returns["code"].isin(codes_with_comp)
+        before_idx = index_subject_closes["code"].nunique()
+        index_subject_closes = index_subject_closes[
+            index_subject_closes["code"].isin(codes_with_comp)
         ].copy()
-        after_idx = index_subject_returns["code"].nunique()
+        after_idx = index_subject_closes["code"].nunique()
         print(f"    → {after_idx} of {before_idx} indices have composition data "
               f"(dropped {before_idx - after_idx} without composition)", flush=True)
-        if not index_subject_returns.empty:
-            n = await build_and_insert(conn, index_subject_returns, index_returns,
+        if not index_subject_closes.empty:
+            n = await build_and_insert(conn, index_subject_closes, index_closes,
                                        shared_weights,
                                        etf_amount_by_index,
                                        sec_type="index")

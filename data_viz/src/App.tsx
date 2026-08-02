@@ -9,7 +9,7 @@ import StockBaselinePage from "@/dataviz/pages/StockBaselinePage";
 import CommonsPage from "@/analysis/pages/CommonsPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import PerfAttrPage from "@/analysis/pages/PerfAttrPage";
-import CapitalFlowPage from "@/analysis/pages/CapitalFlowPage";
+import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
 
 export default function App() {
   return (
@@ -28,7 +28,7 @@ export default function App() {
           <Route path="/analysis/commons" element={<CommonsPage />} />
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
           <Route path="/analysis/commons/perf-attr" element={<PerfAttrPage />} />
-          <Route path="/analysis/commons/capital-flow" element={<CapitalFlowPage />} />
+          <Route path="/analysis/commons/industry-sentiments" element={<IndustrySentimentsPage />} />
         </Routes>
       </Box>
     </Router>

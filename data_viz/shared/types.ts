@@ -554,7 +554,7 @@ export interface MovAveSpreadChartResponse {
 //    analysis.sec_alloc_perf_attribution
 //    PK: (code, date, sec_type, benchmark_code)
 //
-//    Per-row: subject_return, benchmark_return, active_return,
+//    Per-row: code_sec_shared_weight, benchmark_sec_shared_weight,
 //    benchmark_etf_amount, code_etf_amount, etf_amount_ratio_benchmark_to_code
 //    (GENERATED), corr_{5,20,60,255}d.
 // ----------------------------------------------------------------------------
@@ -568,10 +568,6 @@ export interface PerfAttrCodeRow {
   n_dates: number;
   /** Available benchmark index codes for this subject. */
   benchmarks: string[];
-  /** Latest active_return for the default benchmark (000300, or first available). */
-  latest_active_return: number | null;
-  /** Average |active_return| across all dates and benchmarks. */
-  avg_abs_active_return: number | null;
 }
 
 export interface PerfAttrCodesResponse {
@@ -579,14 +575,11 @@ export interface PerfAttrCodesResponse {
   codes: PerfAttrCodeRow[];
 }
 
-/** Per-benchmark breakdown for the latest date (rise/drop attribution). */
+/** Per-benchmark breakdown for the latest date. */
 export interface PerfAttrBenchmarkRow {
   benchmark_code: string;
   benchmark_name: string;
   date: string;
-  subject_return: number | null;
-  benchmark_return: number | null;
-  active_return: number | null;
   code_sec_shared_weight: number | null;
   benchmark_sec_shared_weight: number | null;
   /** benchmark_etf_amount / code_etf_amount (GENERATED). A LIQUIDITY ratio
@@ -607,6 +600,20 @@ export interface PerfAttrBenchmarkRow {
    *  replacing the former hardcoded BROAD_MARKET_BENCHMARKS list. NULL when
    *  the benchmark has no classification (e.g. unclassified index). */
   is_broad_market: boolean | null;
+  /** Benchmark's FRACTIONAL daily return = (close_t - close_{t-1}) /
+   *  close_{t-1} (e.g. 0.0125 = +1.25%). Computed on-the-fly in the
+   *  attribution SQL via LATERAL joins to stats.index_basic_stats (NOT stored
+   *  as a DB column). NULL when the benchmark has no close for the previous
+   *  trading day. Used by the Fluctuation Attribution chart to compute the
+   *  shared-weight contribution = benchmark_return × (shared_weight / 100). */
+  benchmark_return: number | null;
+  /** Subject's FRACTIONAL daily return (same formula as benchmark_return).
+   *  Computed on-the-fly; NULL for ETF subjects (not currently populated)
+   *  and when no previous-day close exists. */
+  subject_return: number | null;
+  /** subject_return - benchmark_return (both fractional). NULL when either
+   *  is NULL. Shown in the Fluctuation Attribution tooltip. */
+  active_return: number | null;
 }
 
 export interface PerfAttrAttributionResponse {
@@ -619,12 +626,13 @@ export interface PerfAttrAttributionResponse {
 
 export interface PerfAttrChartRow {
   date: string;
-  subject_return: number | null;
-  benchmark_return: number | null;
-  active_return: number | null;
   /** benchmark_etf_amount / code_etf_amount (GENERATED). LIQUIDITY ratio,
    *  NOT a price-attribution proportion. */
   etf_amount_ratio: number | null;
+  /** 5-trading-day moving average of etf_amount_ratio (populated by the
+   *  analysis Python script via pandas rolling(5).mean(); NULL when the
+   *  underlying ratio is NULL for the trailing 5-day window). */
+  etf_amount_ratio_ma5: number | null;
   /** Aggregate ETF turnover (yuan) tracking benchmark_code on this date. */
   benchmark_etf_amount: number | null;
   /** Subject's ETF turnover (yuan) on this date. */
@@ -635,29 +643,6 @@ export interface PerfAttrChartRow {
   /** Number of ETFs tracking the subject index on this date (from stats.index_exts).
    *  Only meaningful for sec_type='index'; NULL for ETF subjects. */
   code_etf_num: number | null;
-  /** Industry id of the benchmark index (e.g. BANKS, SEMI, BROAD_CSI) from
-   *  stats.sec_classification where type='index'. Constant across all dates
-   *  for one benchmark. NULL when the benchmark has no classification. */
-  benchmark_industry_id: string | null;
-  /** Industry id of the subject. For sec_type='etf': the linked parent
-   *  index's industry_id. For sec_type='index': the subject index's own
-   *  industry_id. Constant across all dates for one subject. NULL when no
-   *  classification is available. */
-  code_industry_id: string | null;
-  /** Aggregate ETF turnover (yuan) tracking ALL indices in the benchmark's
-   *  industry on this date (from stats.etf_trading_amt where
-   *  code = benchmark_industry_id). NULL when benchmark_industry_id is NULL
-   *  or no ETF tracks any index in that industry on this date. */
-  benchmark_industry_etf_amount: number | null;
-  /** Aggregate ETF turnover (yuan) tracking ALL indices in the subject's
-   *  industry on this date (from stats.etf_trading_amt where
-   *  code = code_industry_id). NULL when code_industry_id is NULL or no ETF
-   *  tracks any index in that industry on this date. */
-  code_industry_etf_amount: number | null;
-  /** Number of ETFs tracking indices in the benchmark's industry on this date. */
-  benchmark_industry_etf_num: number | null;
-  /** Number of ETFs tracking indices in the subject's industry on this date. */
-  code_industry_etf_num: number | null;
   /** Subject close price on this date (COALESCE(adj_close, close) for ETFs;
    *  close for indices). Used for the two-curve close-price comparison chart. */
   subject_close: number | null;
@@ -677,110 +662,180 @@ export interface PerfAttrChartResponse {
   benchmark_code: string;
   benchmark_name: string;
   rows: PerfAttrChartRow[];
+  /** ETFs tracking the benchmark index (from stats.sec_classification where
+   *  type='etf' AND parent_index_code = benchmark_code). Empty when no ETF
+   *  tracks the benchmark (e.g. 000001 上证指数). */
+  benchmark_linked_etfs: LinkedEtfName[];
+  /** ETFs tracking the subject index (from stats.sec_classification where
+   *  type='etf' AND parent_index_code = code). Empty for ETF subjects and
+   *  for indices with no tracking ETF. */
+  code_linked_etfs: LinkedEtfName[];
+}
+
+/** Lightweight linked-ETF descriptor (code + name only) for the PerfAttr
+ *  chart's "linked ETFs" button. */
+export interface LinkedEtfName {
+  /** ETF code WITH exchange suffix (e.g. "510300.SH"). */
+  code: string;
+  /** ETF display name (e.g. "沪深300ETF"). */
+  name: string;
 }
 
 // ----------------------------------------------------------------------------
-//  Analysis Commons — Capital Flow (Industry × Broad-Market Benchmark)
-//    analysis.capital_flow
-//    PK: (date, industry_id, benchmark_code)
+//  Analysis Commons — Industry Sentiments
+//  (member index values rebased-to-100 client-side + server-side mean/var
+//   per pool_size slice, anchored at history start)
 //
-//    Captures each industry's "trending popularity" after removing the
-//    dilution caused by broad-market ETFs that share overlapping stock
-//    holdings with the industry. Pure metrics:
-//      • pure_flow         = I * (1 - w_i * O_b / (O_b + O_i))
-//      • pure_growth       = g_i - w_i * g_b
-//      • pure_popularity   = pure_flow * pure_growth
-//      • observed_popularity = I * g_i  (no removal)
-//      • popularity_retention = pure / observed
+//    analysis.industry_sentiments (PK: date, industry_id, pool_size)
+//
+//    Each industry's plot shows its member INDEX VALUES directly, rebased to
+//    100 at the start of the displayed (zoom) window. Rebased-to-100 makes
+//    member indices comparable regardless of absolute price level — e.g. CSI
+//    500 (~5500pts) and SSE 50 (~2600pts) plot on a common scale, so a +10%
+//    move on either looks equally large. The LINE rebasing is computed in
+//    the BROWSER (IndustrySentimentsPage.tsx) from raw daily closes.
+//
+//    ADDITIONALLY, the server precomputes MEAN and VARIANCE of rebased-to-100
+//    values across member indices, per (date, industry_id, pool_size) slice.
+//    pool_size ∈ ('small' <51 stocks, 'mid' <301, 'large' otherwise, 'all').
+//    The MEAN anchor is the START OF ALL HISTORY (per-index first available
+//    close) — a fixed server-side point. When the client-side slider narrows,
+//    the lines re-rebase to the slider's window-start but the mean/var overlay
+//    STAYS anchored at history start (aligned only at full slider range).
+//
+//    BROAD-MARKET indices (BROAD_CSI, BROAD_SSE, BROAD_SZSE, BROAD_STAR) are
+//    classified as industries under the FIN sector in stats.sec_classification
+//    and are aggregated IDENTICALLY to industry indices.
+//
+//    Data source (queried directly by the API):
+//      stats.index_basic_stats.close   (raw daily index closes)
+//      JOIN stats.sec_classification   (type='index') for industry membership
+//      stats.sec_composition           (stock_num → pool_size classification)
 // ----------------------------------------------------------------------------
-/** One industry in the capital-flow list. */
-export interface CapitalFlowIndustryRow {
-  industry_id: string;
-  industry_label: string;
-  first_date: string;
-  last_date: string;
-  n_dates: number;
-  /** Number of distinct benchmarks the industry is paired against. */
-  n_benchmarks: number;
-  /** Latest pure_popularity (summed or max across benchmarks) — used to sort. */
-  latest_pure_popularity: number | null;
-  /** Latest observed_popularity (raw, no broad-market removal). */
-  latest_observed_popularity: number | null;
-  /** Latest popularity_retention = pure / observed. */
-  latest_retention: number | null;
-  /** Average pure_growth across all dates and benchmarks (fractional). */
-  avg_pure_growth: number | null;
-}
-
-export interface CapitalFlowIndustriesResponse {
-  industries: CapitalFlowIndustryRow[];
-}
-
-/** Per-date row of the chart for one (industry, benchmark) pair. */
-export interface CapitalFlowChartRow {
+/** One daily close for a member index in an industry. */
+export interface IndustrySentimentsIndexRow {
   date: string;
-  /** I (yuan): aggregate industry ETF trading amount on this date. */
-  industry_etf_amount: number | null;
-  /** Number of ETFs in the industry on this date. */
-  industry_etf_num: number | null;
-  /** g_i: amount-weighted avg ETF return in the industry (fractional). */
-  industry_return: number | null;
-  /** B (yuan): aggregate ETF trading amount tracking the benchmark. */
-  benchmark_etf_amount: number | null;
-  benchmark_etf_num: number | null;
-  /** g_b: benchmark index daily return (fractional). */
-  benchmark_return: number | null;
-  /** w_i (PERCENT): fraction of industry weight on overlap stocks. */
-  industry_overlap_weight: number | null;
-  /** w_b (PERCENT): fraction of benchmark weight on overlap stocks. */
-  benchmark_overlap_weight: number | null;
-  /** O_i = I * w_i / 100 (yuan). */
-  industry_overlap_amount: number | null;
-  /** O_b = B * w_b / 100 (yuan). */
-  benchmark_overlap_amount: number | null;
-  /** I * (1 - w_i * O_b / (O_b + O_i)) (yuan). */
-  pure_flow: number | null;
-  /** g_i - w_i * g_b (fractional). */
-  pure_growth: number | null;
-  /** pure_flow * pure_growth. */
-  pure_popularity: number | null;
-  /** I * g_i (raw popularity, no removal). */
-  observed_popularity: number | null;
-  /** pure_popularity / observed_popularity. Unbounded (NULL when observed=0). */
-  popularity_retention: number | null;
+  /** Raw daily close from stats.index_basic_stats.close. NULL when the index
+   *  has no row on this date (e.g. not yet listed). The frontend rebases to
+   *  100 using the first non-null close in the visible (zoom) window. */
+  close: number | null;
+  /** Number of constituent stocks from the latest stats.sec_composition
+   *  snapshot <= this date. NULL when the index has no composition snapshot
+   *  (index contributes only to the 'all' pool_size slice). Drives the
+   *  pool_size classification shown in the tooltip. */
+  stock_num: number | null;
 }
 
-export interface CapitalFlowChartResponse {
+/** One member index's full close time series within an industry. */
+export interface IndustrySentimentsIndex {
+  code: string;
+  name: string;
+  /** Exchange code from stats.sec_classification.exchange. 'HK' for Hong
+   *  Kong-linked indices, NULL/empty for mainland. Used by the frontend's
+   *  show/hide HK toggle. */
+  exchange: string | null;
+  rows: IndustrySentimentsIndexRow[];
+}
+
+/** One per-date aggregation row for a pool_size slice. mean_rebased and
+ *  var_rebased are computed across rebased-to-100 values of member indices
+ *  in this pool_size slice on this date (anchored at history start). */
+export interface IndustrySentimentsAggRow {
+  date: string;
+  pool_size: "small" | "mid" | "large" | "all";
+  /** Number of member indices contributing to this slice on this date. */
+  index_count: number | null;
+  /** AVG(rebased_to_100) across member indices in this slice. 100 = members
+   *  flat vs history start. NULL when no members in slice on this date. */
+  mean_rebased: number | null;
+  /** VARIANCE(rebased_to_100) across member indices in this slice. NULL when
+   *  fewer than 2 members (can't compute variance). */
+  var_rebased: number | null;
+}
+
+/** Response for GET /api/analysis/industry-sentiments/chart?industry_id=...
+ *  Returns one entry per member index in the industry (raw close series for
+ *  the multi-line plot) PLUS the precomputed mean/var aggregation rows per
+ *  pool_size slice (for the overlay) PLUS a set of broad-market benchmark
+ *  close series (CSI 300, SSE 50, CSI 1000) for the optional benchmark
+ *  dropdown overlay. */
+export interface IndustrySentimentsChartResponse {
   industry_id: string;
   industry_label: string;
-  benchmark_code: string;
-  benchmark_label: string;
-  rows: CapitalFlowChartRow[];
+  /** All indices classified into this industry (stats.sec_classification
+   *  type='index' AND industry_id = $1). Indices with no index_basic_stats
+   *  rows are omitted (nothing to plot). */
+  indices: IndustrySentimentsIndex[];
+  /** Precomputed mean/var aggregation rows for this industry, one per
+   *  (date, pool_size) — across all 4 pool_size slices. The frontend filters
+   *  to the user-selected pool_size for the overlay. Empty when the analysis
+   *  hasn't been run yet. */
+  aggregation: IndustrySentimentsAggRow[];
+  /** Broad-market benchmark close series — CSI 300 (000300), SSE 50
+   *  (000016), CSI 1000 (000852). The frontend renders a multi-select
+   *  dropdown so the user can tick any subset to overlay (each rebased to
+   *  100 at the visible window start, same as member indices). Benchmarks
+   *  with no close data are omitted. Empty when no benchmarks have data. */
+  benchmarks: IndustrySentimentsIndex[];
 }
 
-/** One benchmark in the list (industry_id is implicit from the request). */
-export interface CapitalFlowBenchmarkRow {
-  benchmark_code: string;
-  benchmark_label: string;
-  /** Average overlap weight w_i across all dates for this pair (PERCENT). */
-  avg_w_i: number | null;
-  /** Average overlap weight w_b across all dates for this pair (PERCENT). */
-  avg_w_b: number | null;
-  /** Sum of pure_popularity across all dates. */
-  total_pure_popularity: number | null;
-  /** Sum of observed_popularity across all dates. */
-  total_observed_popularity: number | null;
-  /** Average pure_growth across all dates (fractional). */
-  avg_pure_growth: number | null;
-  /** Number of dates with data. */
-  n_dates: number;
-  first_date: string;
-  last_date: string;
-}
-
-/** Response for /capital-flow/benchmarks?industry_id=AI. */
-export interface CapitalFlowBenchmarksResponse {
+// ----------------------------------------------------------------------------
+//  Industry Correlations — pairwise rolling Pearson correlation between two
+//  industries' mean_rebased series (analysis.industry_sentiments.mean_rebased).
+//  Drives the expandable Correlation chart on the IndustrySentiments page
+//  (multi-industry mode only — Correlation button is disabled when fewer
+//  than 2 industries are selected).
+//
+//  Source: analysis.industry_correlations (built by
+//  analyze_industry_correlations.py). One row per (date, pair, pool_size)
+//  with corr_5d / corr_20d / corr_60d / corr_255d.
+//
+//  Order convention: rows are stored with industry_id < benchmark_industry_id
+//  (lexicographic, COLLATE "C") to deduplicate (A,B) vs (B,A). The API
+//  returns rows matching either direction of the user-selected industry_ids
+//  set — the frontend renders each pair as a single line.
+//
+//  Same-pool slices only: industry_pool_size = benchmark_industry_pool_size.
+//  Cross-pool comparisons are not materialized (see SQL comments for why).
+// ----------------------------------------------------------------------------
+/** One pairwise correlation row — the rolling Pearson correlation between
+ *  industry_id and benchmark_industry_id's mean_rebased series at `date`
+ *  over 4 trailing windows. NULL (corr_*) when insufficient overlap. */
+export interface IndustryCorrelationRow {
+  /** Subject industry (lexicographically smaller). */
   industry_id: string;
+  /** Benchmark industry (lexicographically larger). */
+  benchmark_industry_id: string;
+  /** Display label for the subject industry (looked up from
+   *  stats.sec_classification.industry_label). Falls back to industry_id
+   *  when the label is missing or empty. */
   industry_label: string;
-  benchmarks: CapitalFlowBenchmarkRow[];
+  /** Display label for the benchmark industry. */
+  benchmark_industry_label: string;
+  /** End date of the rolling window (YYYY-MM-DD). */
+  date: string;
+  /** Pool_size slice (same for both industries — cross-pool is not
+   *  materialized). small / mid / large / all. */
+  pool_size: "small" | "mid" | "large" | "all";
+  /** 5-day rolling Pearson correlation. NULL when < 5 overlapping days. */
+  corr_5d: number | null;
+  /** 20-day rolling Pearson correlation. NULL when < 20 overlapping days. */
+  corr_20d: number | null;
+  /** 60-day rolling Pearson correlation. NULL when < 60 overlapping days. */
+  corr_60d: number | null;
+  /** 255-day rolling Pearson correlation. NULL when < 255 overlapping days. */
+  corr_255d: number | null;
+}
+
+/** Response for GET /api/analysis/industry-correlations?industry_ids=...
+ *  &pool_size=all */
+export interface IndustryCorrelationsResponse {
+  /** Distinct industry_ids requested (deduplicated). */
+  industry_ids: string[];
+  /** Pool_size slice used. */
+  pool_size: "small" | "mid" | "large" | "all";
+  /** Pairwise correlation rows — one per (date, lexicographic pair) where
+   *  both endpoints are in industry_ids. Empty when the analysis hasn't
+   *  been run or no pairs have enough overlapping history. */
+  correlations: IndustryCorrelationRow[];
 }

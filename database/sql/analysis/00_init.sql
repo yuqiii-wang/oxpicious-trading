@@ -8,4 +8,4 @@
 \ir 02_analysis_identity.sql
 \ir 03_mov_ave_spreads.sql
 \ir 04_sec_alloc_perf_attribution.sql
-\ir 05_capital_analysis.sql
+\ir 05_industry_sentiments.sql

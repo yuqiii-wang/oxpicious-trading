@@ -18,10 +18,9 @@ import {
   getPerfAttrChart,
   getPerfAttrAttribution,
   listPerfAttrThemes,
-  listCapitalFlowIndustries,
-  getCapitalFlowBenchmarks,
-  getCapitalFlowCharts,
-  listCapitalFlowThemes,
+  getIndustrySentimentsChart,
+  listIndustrySentimentsThemes,
+  getIndustryCorrelations,
 } from "../services/analysis.service.js";
 import type { PerfAttrSecType } from "../../shared/types.js";
 
@@ -98,7 +97,12 @@ router.get("/perf-attr/attribution", async (req: Request, res: Response) => {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
     }
-    res.json(await getPerfAttrAttribution(code, parsePerfAttrSecType(req)));
+    // Optional `date` query param — when present, returns the attribution for
+    // that specific date instead of the latest. Used by the expanded-plots
+    // date click handler to refresh only the Fluctuation Attribution chart.
+    const rawDate = typeof req.query.date === "string" ? req.query.date.trim() : "";
+    const date = rawDate || null;
+    res.json(await getPerfAttrAttribution(code, parsePerfAttrSecType(req), date));
   } catch (err) {
     console.error("[analysis/perf-attr/attribution] error:", err);
     res.status(500).json({ error: String(err) });
@@ -126,44 +130,32 @@ router.get("/perf-attr/chart", async (req: Request, res: Response) => {
   }
 });
 
-// ---- Capital Flow (Industry × Broad-Market Benchmark) --------------------
-//   GET /api/analysis/capital-flow/industries
-//     Returns all industries with rows in analysis.capital_flow, with latest
-//     pure/observed popularity aggregated across benchmarks.
+// ---- Industry Sentiments (member index values, rebased to 100 client-side)
+//   NO analysis.industry_sentiments table — the data is queried directly from
+//   stats.index_basic_stats JOIN stats.sec_classification at request time.
+//   The frontend rebases each member index to 100 at the start of the
+//   displayed (zoom) window (scale-invariant comparison across indices with
+//   different absolute price levels).
 //
-//   GET /api/analysis/capital-flow/themes
-//     Returns the L1 sector → L2 industry tree (SectorNode[]) for the
-//     ThemeSelector. Only industries present in analysis.capital_flow are
-//     included, classified via stats.sec_classification.
+//   GET /api/analysis/industry-sentiments/themes
+//     Returns the L1 sector → L2 industry tree (SectorNode[]) built directly
+//     from stats.sec_classification (type='index'). Each industry's chip
+//     count = number of member indices in that industry.
 //
-//   GET /api/analysis/capital-flow/benchmarks?industry_id=AI
-//     Returns per-benchmark breakdown for one industry.
-//
-//   GET /api/analysis/capital-flow/chart?industry_id=AI&benchmark_codes=000300,000852
-//     Returns the per-date time series for one industry × a SET of benchmark
-//     codes. `benchmark_codes` is a comma-separated list; only those benchmarks
-//     are fetched (the frontend defaults to 000300 + 000852 so it loads just
-//     the two plots it shows). Returns an array of CapitalFlowChartResponse,
-//     one per requested code, in the requested order.
-router.get("/capital-flow/industries", async (_req: Request, res: Response) => {
+//   GET /api/analysis/industry-sentiments/chart?industry_id=BANKS
+//     Returns per-index close time series for ONE industry. One entry per
+//     member index, each with its raw daily close series. The frontend
+//     rebases each to 100 at the start of the visible (zoom) window.
+router.get("/industry-sentiments/themes", async (_req: Request, res: Response) => {
   try {
-    res.json(await listCapitalFlowIndustries());
+    res.json(await listIndustrySentimentsThemes());
   } catch (err) {
-    console.error("[analysis/capital-flow/industries] error:", err);
+    console.error("[analysis/industry-sentiments/themes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-router.get("/capital-flow/themes", async (_req: Request, res: Response) => {
-  try {
-    res.json(await listCapitalFlowThemes());
-  } catch (err) {
-    console.error("[analysis/capital-flow/themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-router.get("/capital-flow/benchmarks", async (req: Request, res: Response) => {
+router.get("/industry-sentiments/chart", async (req: Request, res: Response) => {
   try {
     const industryId = typeof req.query.industry_id === "string"
       ? req.query.industry_id.trim()
@@ -172,39 +164,42 @@ router.get("/capital-flow/benchmarks", async (req: Request, res: Response) => {
       res.status(400).json({ error: "Missing 'industry_id' parameter" });
       return;
     }
-    res.json(await getCapitalFlowBenchmarks(industryId));
+    res.json(await getIndustrySentimentsChart(industryId));
   } catch (err) {
-    console.error("[analysis/capital-flow/benchmarks] error:", err);
+    console.error("[analysis/industry-sentiments/chart] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-router.get("/capital-flow/chart", async (req: Request, res: Response) => {
+// ---- Industry Correlations (pairwise rolling correlation between
+//      industries' mean_rebased series — drives the Correlation chart on
+//      the IndustrySentiments page when 2+ industries are selected).
+//   GET /api/analysis/industry-correlations?industry_ids=BANKS,AI&pool_size=all
+//     Returns IndustryCorrelationsResponse: one row per (date, pair) for
+//     every lexicographic (a<b) pair from the user-selected industry_ids
+//     set, with corr_5d / corr_20d / corr_60d / corr_255d. The frontend
+//     renders one line per pair, with a window toggle (5d/20d/60d/255d).
+router.get("/industry-correlations", async (req: Request, res: Response) => {
   try {
-    const industryId = typeof req.query.industry_id === "string"
-      ? req.query.industry_id.trim()
+    const raw = typeof req.query.industry_ids === "string"
+      ? req.query.industry_ids
       : "";
-    if (!industryId) {
-      res.status(400).json({ error: "Missing 'industry_id' parameter" });
-      return;
-    }
-    // benchmark_codes is a comma-separated list (e.g. "000300,000852").
-    // For backward compatibility, a single benchmark_code param is also
-    // accepted and treated as a one-element list.
-    const rawCodes = typeof req.query.benchmark_codes === "string"
-      ? req.query.benchmark_codes
-      : (typeof req.query.benchmark_code === "string" ? req.query.benchmark_code : "");
-    const codes = rawCodes
+    const industryIds = raw
       .split(",")
-      .map((c) => c.trim())
-      .filter((c) => c.length > 0);
-    if (codes.length === 0) {
-      res.status(400).json({ error: "Missing 'benchmark_codes' parameter" });
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (industryIds.length < 2) {
+      res.status(400).json({
+        error: "Need at least 2 industry_ids (comma-separated)",
+      });
       return;
     }
-    res.json(await getCapitalFlowCharts(industryId, codes));
+    const poolSize = typeof req.query.pool_size === "string"
+      ? req.query.pool_size.trim()
+      : "all";
+    res.json(await getIndustryCorrelations(industryIds, poolSize));
   } catch (err) {
-    console.error("[analysis/capital-flow/chart] error:", err);
+    console.error("[analysis/industry-correlations] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

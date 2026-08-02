@@ -38,9 +38,8 @@ import type {
   PerfAttrChartResponse,
   PerfAttrAttributionResponse,
   PerfAttrSecType,
-  CapitalFlowIndustriesResponse,
-  CapitalFlowBenchmarksResponse,
-  CapitalFlowChartResponse,
+  IndustrySentimentsChartResponse,
+  IndustryCorrelationsResponse,
 } from "../../shared/types";
 
 // Module-level cache singleton: 100 entries, 10-minute TTL (safety net).
@@ -483,10 +482,12 @@ export function fetchPerfAttrThemes(
 export function fetchPerfAttrAttribution(
   code: string,
   secType: PerfAttrSecType = "etf",
+  date?: string | null,
 ): Promise<PerfAttrAttributionResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
   params.set("sec_type", secType);
+  if (date) params.set("date", date);
   const qs = params.toString();
   return fetchJson<PerfAttrAttributionResponse>(
     `/api/analysis/perf-attr/attribution?${qs}`,
@@ -509,52 +510,59 @@ export function fetchPerfAttrChart(
 }
 
 // ---------------------------------------------------------------------------
-//  Analysis Commons — Capital Flow (Industry × Broad-Market Benchmark)
-//  TTL-only cache (analysis schema is recomputed offline by
-//  analyze_capital_flow.py).
+//  Analysis Commons — Industry Sentiments (member index values, rebased to 100)
+//  TTL-only cache. NO analysis-table intermediary — the data is queried
+//  directly from stats.index_basic_stats JOIN stats.sec_classification at
+//  request time. The frontend rebases each member index to 100 at the start
+//  of the displayed (zoom) window (scale-invariant comparison across indices
+//  with different absolute price levels).
 // ---------------------------------------------------------------------------
-export function fetchCapitalFlowIndustries(): Promise<CapitalFlowIndustriesResponse> {
-  return fetchJson<CapitalFlowIndustriesResponse>(
-    `/api/analysis/capital-flow/industries`,
-  );
-}
-
-/** Themes tree (L1 sector → L2 industry) for the Capital Flow ThemeSelector.
- *  Only industries present in analysis.capital_flow are included. */
-export function fetchCapitalFlowThemes(): Promise<SectorNode[]> {
+/** Themes tree (L1 sector → L2 industry) for the ThemeSelector.
+ *  Built directly from stats.sec_classification (type='index'). Each
+ *  industry's chip count = number of member indices in that industry. */
+export function fetchIndustrySentimentsThemes(): Promise<SectorNode[]> {
   return fetchJson<SectorNode[]>(
-    `/api/analysis/capital-flow/themes`,
-  );
-}
-
-export function fetchCapitalFlowBenchmarks(
-  industryId: string,
-): Promise<CapitalFlowBenchmarksResponse> {
-  const params = new URLSearchParams();
-  if (industryId) params.set("industry_id", industryId);
-  const qs = params.toString();
-  return fetchJson<CapitalFlowBenchmarksResponse>(
-    `/api/analysis/capital-flow/benchmarks?${qs}`,
+    `/api/analysis/industry-sentiments/themes`,
   );
 }
 
 /**
- * Fetch the per-date time series for one industry × a SET of benchmark codes.
- * Only the requested benchmarks are fetched (the page defaults to 000300 +
- * 000852), so the user onboards to just two plots instead of loading every
- * benchmark. Returns one CapitalFlowChartResponse per requested code, in the
- * requested order.
+ * Fetch per-index close time series for ONE industry. Returns one entry per
+ * member index in the industry, each with its raw daily close series from
+ * stats.index_basic_stats. The frontend rebases each to 100 at the start of
+ * the visible (zoom) window.
  */
-export function fetchCapitalFlowCharts(
+export function fetchIndustrySentimentsChart(
   industryId: string,
-  benchmarkCodes: string[],
-): Promise<CapitalFlowChartResponse[]> {
+): Promise<IndustrySentimentsChartResponse> {
   const params = new URLSearchParams();
   if (industryId) params.set("industry_id", industryId);
-  const codes = (benchmarkCodes ?? []).map((c) => c.trim()).filter((c) => c.length > 0);
-  if (codes.length > 0) params.set("benchmark_codes", codes.join(","));
   const qs = params.toString();
-  return fetchJson<CapitalFlowChartResponse[]>(
-    `/api/analysis/capital-flow/chart?${qs}`,
+  return fetchJson<IndustrySentimentsChartResponse>(
+    `/api/analysis/industry-sentiments/chart?${qs}`,
+  );
+}
+
+/**
+ * Fetch pairwise rolling correlation time series between selected
+ * industries' mean_rebased series. Returns one row per (date, pair) for
+ * every lexicographic (a<b) pair from `industryIds`, with corr_5d /
+ * corr_20d / corr_60d / corr_255d. Drives the expandable Correlation chart
+ * on the IndustrySentiments page — only enabled when ≥2 industries are
+ * selected.
+ *
+ * `poolSize` selects the same-pool slice for both endpoints (cross-pool
+ * comparisons are not materialized). Defaults to 'all'.
+ */
+export function fetchIndustryCorrelations(
+  industryIds: string[],
+  poolSize: "all" | "small" | "mid" | "large" = "all",
+): Promise<IndustryCorrelationsResponse> {
+  const params = new URLSearchParams();
+  if (industryIds.length > 0) params.set("industry_ids", industryIds.join(","));
+  params.set("pool_size", poolSize);
+  const qs = params.toString();
+  return fetchJson<IndustryCorrelationsResponse>(
+    `/api/analysis/industry-correlations?${qs}`,
   );
 }

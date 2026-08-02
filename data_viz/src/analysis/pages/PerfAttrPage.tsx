@@ -1,16 +1,23 @@
 /**
- * Performance Attribution analysis page (ETF/Index subjects × Index benchmarks).
+ * Performance Attribution analysis page (Index subjects × Index benchmarks).
  *
  * Layout mirrors the data-viz ETF + Index pages:
  *   • Header — title + subtitle (active sector/industry label)
- *   • Controls — ETF | Index toggle + CodeSearchBar + RefreshButton
+ *   • Controls — Index toggle + CodeSearchBar + RefreshButton
  *   • ThemeSelector — two-level cascade (L1 sector → L2 industry)
  *   • Stack of PerfAttrPanel cards — one per code on the current page.
- *     Each panel renders the Fluctuation Attribution chart for the latest
- *     date: grouped bars per benchmark showing benchmark_return (signed,
- *     green=positive, red=negative) on the left axis and code_sec_shared_weight
- *     (overlap %) on the right axis; tooltip includes benchmark/code ETF
- *     amounts (亿) and the bench/code amount ratio.
+ *     Each panel renders:
+ *       1. Fluctuation Attribution chart (top) — grouped bars per benchmark
+ *          showing shared-weight contribution (= fractional benchmark return ×
+ *          composition overlap) and overlap %. Click a bar to select that
+ *          benchmark. An All/Sector toggle shows/hides broad-market benchmarks.
+ *       2. %/Abs toggle for the time-series charts (shown after a bar is clicked).
+ *       3. Index Trading Amt Contribution (benchmark vs subject ETF turnover)
+ *       4. Close Price History Trend (subject vs benchmark) with rolling
+ *          close correlations (5/20/60/255d) in the tooltip.
+ *     Returns are NOT stored in the DB — benchmark_return and subject_return
+ *     are computed on-the-fly in the attribution SQL via LATERAL joins to
+ *     stats.index_basic_stats (fractional returns, scale-invariant).
  *   • Pagination — page_size codes per page.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,12 +25,11 @@ import {
   Alert,
   Box,
   CircularProgress,
-  FormControlLabel,
   IconButton,
   Pagination,
+  Popover,
   Slider,
   Stack,
-  Switch,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
@@ -74,20 +80,49 @@ const PAGE_SIZE = 2;
 // ----------------------------------------------------------------------------
 
 // ============================================================================
-//  Chart: Fluctuation Attribution
-//  Vertical grouped bar chart — one pair of bars per benchmark:
-//    Bar 1 (left  Y-axis): effective contribution = benchmark_return ×
-//                           (code_sec_shared_weight / 100). Green if positive,
-//                           red if negative. The raw return is shown in the
-//                           label and tooltip for reference.
-//    Bar 2 (right Y-axis): code_sec_shared_weight (% overlap with subject)
+//  Chart: Subject vs Benchmark close-price comparison (two-line chart).
+//  Uses the /api/analysis/perf-attr/chart endpoint which returns the full
+//  date series of subject_close + benchmark_close (plus the four corr_Nd
+//  rolling correlations) for one (code, benchmark_code) pair.
 //
-//  Label overlap mitigation:
-//    • xAxis category labels rotated 55° and truncated to 6 chars.
-//    • Bar value labels are placed INSIDE each bar (insideTop for non-negative,
-//      insideBottom for negative) so they never collide with neighbours or
-//      with the x-axis — no padding hack. Labels are hidden for tiny bars
-//      where they wouldn't fit.
+//  Two display modes (toggled in the panel header):
+//    • "absolute"  — raw close prices on dual y-axes (subject left, benchmark
+//                    right).  Useful when the two series live on very
+//                    different scales (e.g. ETF ≈5 yuan vs index ≈3000 pts).
+//    • "percentage" — both curves rebased to 0% at the first date where BOTH
+//                    have non-null closes, then plotted on a single shared
+//                    y-axis.  This aligns the two starting points to the
+//                    same horizontal baseline so relative performance is
+//                    directly comparable.
+//
+//  The tooltip on each hovered date shows:
+//    • subject close (or % change)  • benchmark close (or % change)
+//    • active return / spread (subj − bench) — computed client-side from
+//      close-price diffs (returns are no longer stored in the DB).
+//    • corr_5d / corr_20d / corr_60d / corr_255d — the Pearson correlation
+//      between the two close-price series over the trailing 5 / 20 / 60 /
+//      255 trading days ending at the hovered date.
+// ============================================================================
+type ChartMode = "absolute" | "percentage";
+
+// ============================================================================
+//  Chart: Fluctuation Attribution (recovered).
+//  Vertical grouped bar chart — one pair of bars per benchmark:
+//    Bar 1 (left  Y-axis): shared-weight contribution = benchmark_return ×
+//                          (code_sec_shared_weight / 100). Both values are
+//                          FRACTIONAL (benchmark_return is a fractional daily
+//                          return, e.g. 0.0125 = +1.25%; shared_weight is in
+//                          %, e.g. 57.166). The product is a scale-invariant
+//                          return attribution: "the benchmark's % return scaled
+//                          by how much the subject overlaps via composition."
+//                          Green if benchmark rose, red if dropped.
+//    Bar 2 (right Y-axis): code_sec_shared_weight (% overlap with subject).
+//
+//  Computed on-the-fly from PerfAttrAttributionResponse (latest date per
+//  benchmark). Returns are NOT stored in the DB — they're computed in the
+//  attribution SQL via LATERAL joins to stats.index_basic_stats.
+//
+//  Clicking a bar selects that benchmark for the time-series charts below.
 // ============================================================================
 function buildFluctuationOption(
   data: PerfAttrAttributionResponse,
@@ -95,8 +130,7 @@ function buildFluctuationOption(
   showBroadMarket = true,
 ): EChartsOption {
   const c = axisColors(themeMode);
-  // Sort benchmarks by effective contribution (discounted) rather than raw
-  // return — more relevant after the discount is applied.
+  // Sort by effective contribution (fractional return × overlap fraction).
   let sorted = [...data.benchmarks].sort((a, b) => {
     const ar = a.benchmark_return ?? 0;
     const br = b.benchmark_return ?? 0;
@@ -109,19 +143,13 @@ function buildFluctuationOption(
     return beff - aeff;
   });
 
-  // Optionally filter out broad market benchmarks (沪深300, 上证指数, etc.)
-  // so sector/industry benchmarks stand out more clearly.
   if (!showBroadMarket) {
     sorted = sorted.filter((b) => b.is_broad_market !== true);
   }
 
-  // Drop benchmarks with no shared weight or null contribution (i.e. either
-  // benchmark_return or code_sec_shared_weight is null) — they carry no
-  // meaningful attribution signal and would render as empty bars.
+  // Drop benchmarks with no shared weight or null return.
   sorted = sorted.filter(
-    (b) =>
-      b.code_sec_shared_weight != null &&
-      b.benchmark_return != null,
+    (b) => b.code_sec_shared_weight != null && b.benchmark_return != null,
   );
 
   const labels = sorted.map((b) => b.benchmark_name || b.benchmark_code);
@@ -133,7 +161,7 @@ function buildFluctuationOption(
   const activeReturns = sorted.map((b) => b.active_return);
   const codes = sorted.map((b) => b.benchmark_code);
 
-  // Discounted (effective) contribution: return × overlap_fraction
+  // Contribution = fractional_return × (shared_weight / 100).
   const contrib = sorted.map((b, i) => {
     const r = returns[i];
     const w = sharedWts[i];
@@ -141,22 +169,16 @@ function buildFluctuationOption(
     return r * (w / 100);
   });
 
-  // Max absolute contribution — used to hide labels that can't fit.
   const maxAbsContrib = contrib.reduce(
     (m, v) => (v == null ? m : Math.max(m, Math.abs(v))),
     0,
   );
-  const LABEL_MIN_RATIO = 0.08; // hide label if bar < 8% of max height
+  const LABEL_MIN_RATIO = 0.08;
 
-  // Per-bar color: green for rise, red for drop, neutral gray when null.
-  // Color still follows RAW return (green/red tells the direction of the
-  // underlying benchmark move), while height shows the discounted impact.
   const returnColors = returns.map((v) =>
     v == null ? c.axisLineColor : v >= 0 ? UP_COLOR : DOWN_COLOR,
   );
 
-  // Signed-position helpers for bar labels. Positive contributions label
-  // near the top edge, negative near the bottom edge, both INSIDE the bar.
   const contribLabelPosition = (val: number | null) => {
     if (val == null) return "insideTop" as const;
     return val >= 0 ? ("insideTop" as const) : ("insideBottom" as const);
@@ -165,6 +187,10 @@ function buildFluctuationOption(
     if (val == null || maxAbsContrib === 0) return false;
     return Math.abs(val) / maxAbsContrib >= LABEL_MIN_RATIO;
   };
+
+  // Format a fractional value as a signed percentage string.
+  const fmtPctSigned = (v: number | null, digits = 2): string =>
+    v == null ? "—" : (v >= 0 ? "+" : "") + fmtNum(v * 100, digits) + "%";
 
   return {
     backgroundColor: "transparent",
@@ -179,12 +205,9 @@ function buildFluctuationOption(
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           dataIndex?: number;
-          seriesName?: string;
-          value?: number | null;
         }>;
         if (arr.length === 0) return "";
         const idx = arr[0].dataIndex ?? 0;
-        const code = codes[idx];
         const rv = returns[idx];
         const cv = contrib[idx];
         const sw = sharedWts[idx];
@@ -194,18 +217,16 @@ function buildFluctuationOption(
         const ar = activeReturns[idx];
         const sign = cv == null ? "" : cv >= 0 ? "▲ " : "▼ ";
         const rsign = rv == null ? "" : rv >= 0 ? "▲ " : "▼ ";
-        // Subject's SHARE of the benchmark ETF market = 1 / ratio (only
-        // meaningful when both amounts are non-null and ratio > 0).
         const share = er == null || er === 0 ? null : 1 / er;
         return `
-          <div style="font-weight:600">${labels[idx]} <span style="opacity:0.6">(${code})</span></div>
-          <div style="margin-top:2px">${sign}Contribution (Return×Wt): <b style="color:${cv == null ? c.textColor : cv >= 0 ? UP_COLOR : DOWN_COLOR}">${fmtNum(cv, 4)}</b></div>
-          <div>${rsign}Raw Return: ${rv == null ? "—" : fmtNum(rv, 4)}</div>
-          <div>Active vs subject: ${fmtNum(ar, 4)}</div>
+          <div style="font-weight:600">${labels[idx]} <span style="opacity:0.6">(${codes[idx]})</span></div>
+          <div style="margin-top:2px">${sign}Contribution (Ret×Wt): <b style="color:${cv == null ? c.textColor : cv >= 0 ? UP_COLOR : DOWN_COLOR}">${fmtPctSigned(cv)}</b></div>
+          <div>${rsign}Raw Return: ${fmtPctSigned(rv)}</div>
+          <div>Active vs subject: ${fmtPctSigned(ar)}</div>
           <div>Shared wt (in subject): ${sw == null ? "—" : fmtNum(sw, 4) + "%"}</div>
           <div>Benchmark ETF Trading Amt: ${ba == null ? "—" : fmtYi(ba, 2)}</div>
           <div>Code ETF Trading Amt: ${ca == null ? "—" : fmtYi(ca, 2)}</div>
-          <div>ETF Trading Amt Ratio (bench/code): ${er == null ? "—" : fmtNum(er, 4)}${share == null ? "" : ` · share ${fmtNum(share, 4)}`}</div>
+          <div>ETF Amt Ratio (bench/code): ${er == null ? "—" : fmtNum(er, 4)}${share == null ? "" : ` · share ${fmtNum(share, 4)}`}</div>
         `;
       },
     },
@@ -219,8 +240,6 @@ function buildFluctuationOption(
         fontSize: 8,
         interval: 0,
         rotate: 55,
-        // Broad market benchmarks get a lighter label color via rich text so
-        // they visually recede behind sector/industry benchmarks.
         formatter: (v: string, i: number) => {
           const lbl = v.length > 6 ? v.slice(0, 5) + "…" : v;
           return sorted[i].is_broad_market === true
@@ -242,7 +261,7 @@ function buildFluctuationOption(
         axisLabel: {
           color: c.textColor,
           fontSize: 9,
-          formatter: (v: number) => fmtNum(v, 2),
+          formatter: (v: number) => fmtPctSigned(v, 2),
         },
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
@@ -264,21 +283,14 @@ function buildFluctuationOption(
         name: "Contribution",
         type: "bar",
         yAxisIndex: 0,
-        // Per-item label: each bar carries its own label position + visibility
-        // (series-level label.position doesn't accept per-item functions in
-        // the ECharts TS bindings, and per-item overrides are the documented
-        // escape hatch for directional bar charts).
-        // Each bar also carries `benchmarkCode` so the click handler can
-        // identify which benchmark was clicked without indexing back into the
-        // sorted array.
         data: contrib.map((v, i) => {
           const visible = contribLabelVisible(v);
           const pos: "insideTop" | "insideBottom" = contribLabelPosition(v);
           const raw = returns[i];
           const rawStr =
-            raw == null ? "" : `  [${raw >= 0 ? "▲" : "▼"}${fmtNum(raw, 2)}]`;
+            raw == null ? "" : `  [${raw >= 0 ? "▲" : "▼"}${fmtNum(raw * 100, 2)}%]`;
           const lblText =
-            visible && v != null ? fmtNum(v, 2) + rawStr : "";
+            visible && v != null ? fmtPctSigned(v, 2) + rawStr : "";
           const broad = sorted[i].is_broad_market === true;
           return {
             value: v,
@@ -299,7 +311,6 @@ function buildFluctuationOption(
           };
         }),
         barMaxWidth: 28,
-        // Series-level label is a fallback; data items override the key fields.
         label: {
           show: false,
           color: c.textColor,
@@ -331,37 +342,10 @@ function buildFluctuationOption(
           };
         }),
         barMaxWidth: 28,
-        label: { show: false, color: c.textColor, fontSize: 8 },
       },
     ],
   };
 }
-
-// ============================================================================
-//  Chart: Subject vs Benchmark close-price comparison (two-line chart).
-//  Shown when a user clicks a bar in the Fluctuation Attribution chart.
-//  Uses the existing /api/analysis/perf-attr/chart endpoint which returns
-//  the full date series of subject_close + benchmark_close (plus the four
-//  corr_Nd rolling correlations) for one (code, benchmark_code) pair.
-//
-//  Two display modes (toggled in the panel header):
-//    • "absolute"  — raw close prices on dual y-axes (subject left, benchmark
-//                    right).  Useful when the two series live on very
-//                    different scales (e.g. ETF ≈5 yuan vs index ≈3000 pts).
-//    • "percentage" — both curves rebased to 0% at the first date where BOTH
-//                    have non-null closes, then plotted on a single shared
-//                    y-axis.  This aligns the two starting points to the
-//                    same horizontal baseline so relative performance is
-//                    directly comparable.
-//
-//  The tooltip on each hovered date shows:
-//    • subject close (or % change)  • benchmark close (or % change)
-//    • active return / spread (subj − bench)
-//    • corr_5d / corr_20d / corr_60d / corr_255d — the Pearson correlation
-//      between the two close-price series over the trailing 5 / 20 / 60 /
-//      255 trading days ending at the hovered date.
-// ============================================================================
-type ChartMode = "absolute" | "percentage";
 
 function buildComparisonOption(
   data: PerfAttrChartResponse,
@@ -372,8 +356,19 @@ function buildComparisonOption(
   const dates = data.rows.map((r) => r.date);
   const subjectCloses = data.rows.map((r) => r.subject_close);
   const benchmarkCloses = data.rows.map((r) => r.benchmark_close);
-  const subjectReturns = data.rows.map((r) => r.subject_return);
-  const benchmarkReturns = data.rows.map((r) => r.benchmark_return);
+  // Compute daily returns client-side from close-price diffs (returns are
+  // no longer stored in the DB — subject_return / benchmark_return columns
+  // were removed). First row per series has no prior close → null.
+  const subjectReturns = subjectCloses.map((v, i) => {
+    if (i === 0 || v == null) return null;
+    const prev = subjectCloses[i - 1];
+    return prev == null ? null : v - prev;
+  });
+  const benchmarkReturns = benchmarkCloses.map((v, i) => {
+    if (i === 0 || v == null) return null;
+    const prev = benchmarkCloses[i - 1];
+    return prev == null ? null : v - prev;
+  });
   const corr5d = data.rows.map((r) => r.corr_5d);
   const corr20d = data.rows.map((r) => r.corr_20d);
   const corr60d = data.rows.map((r) => r.corr_60d);
@@ -575,71 +570,147 @@ function buildComparisonOption(
 }
 
 // ============================================================================
-//  Chart: Amount Contribution (ETF-market turnover over time).
-//  Renders two area lines comparing benchmark vs subject ETF turnover.
-//  Two modes share the same chart geometry:
-//    • mode="index"    — benchmark_etf_amount vs code_etf_amount
-//                         (per-index aggregate ETF turnover from index_exts)
-//    • mode="industry" — benchmark_industry_etf_amount vs code_industry_etf_amount
-//                         (per-industry aggregate ETF turnover from etf_trading_amt)
-//  Both plotted in 亿元 (yuan / 1e8) on a shared y-axis so the user can
-//  visually compare the relative SIZE of the two ETF markets. The tooltip
-//  also surfaces the bench/code ratio (computed on the fly for industry mode
-//  since no GENERATED column exists for it). Shares the same date range
-//  (slider-sliced `filteredChartData`) as the close-price comparison chart.
+//  Chart: Index Trading Amt Contribution (ETF-market turnover over time).
+//  Renders two area lines comparing benchmark vs subject INDEX-LEVEL ETF
+//  turnover (per-index aggregate from stats.index_exts, precomputed by
+//  build_index_exts.py = Σ etf_liquidity_margin.amount_wan×1e4 across ALL
+//  ETFs tracking each index via stats.sec_classification.parent_index_code).
+//
+//  A display-mode toggle (chartMode) applies to both expanded plots (this
+//  one and the close-price comparison below):
+//    • "absolute"   — raw 亿元 values on a shared y-axis (default). Best for
+//                     comparing the relative SIZE of the two ETF markets.
+//    • "percentage" — both curves rebased to 0% at the first date where both
+//                     have non-null, non-zero amounts. Best for comparing
+//                     relative GROWTH in turnover over time. The tooltip still
+//                     surfaces the raw 亿元 value in parentheses.
+//  The tooltip surfaces the bench/code liquidity ratio (DB-GENERATED
+//  etf_amount_ratio_benchmark_to_code), the subject's share (1/ratio), AND
+//  the 5-day moving average of the ratio (etf_amount_ratio_benchmark_to_code_ma5,
+//  precomputed by analyze_sec_alloc_perf_attribution.py) as a dedicated line
+//  — the former standalone MA5 chart has been consolidated into this tooltip.
+//  Shares the same date range (slider-sliced `filteredChartData`) as the
+//  close-price plot.
 // ============================================================================
-type AmountContributionMode = "index" | "industry";
-
 function buildAmountContributionOption(
   data: PerfAttrChartResponse,
   themeMode: ThemeMode,
-  mode: AmountContributionMode = "index",
+  chartMode: ChartMode = "absolute",
 ): EChartsOption {
   const c = axisColors(themeMode);
   const dates = data.rows.map((r) => r.date);
   // Divide yuan by 1e8 → 亿元 for readable y-axis values.
-  const isIndex = mode === "index";
-  const benchmarkAmounts = data.rows.map((r) => {
-    const v = isIndex ? r.benchmark_etf_amount : r.benchmark_industry_etf_amount;
-    return v == null ? null : v / 1e8;
-  });
-  const codeAmounts = data.rows.map((r) => {
-    const v = isIndex ? r.code_etf_amount : r.code_industry_etf_amount;
-    return v == null ? null : v / 1e8;
-  });
-  const benchmarkEtfNums = data.rows.map((r) =>
-    isIndex ? r.benchmark_etf_num : r.benchmark_industry_etf_num,
+  const benchmarkAmountsRaw = data.rows.map((r) =>
+    r.benchmark_etf_amount == null ? null : r.benchmark_etf_amount / 1e8,
   );
-  const codeEtfNums = data.rows.map((r) =>
-    isIndex ? r.code_etf_num : r.code_industry_etf_num,
+  const codeAmountsRaw = data.rows.map((r) =>
+    r.code_etf_amount == null ? null : r.code_etf_amount / 1e8,
   );
-  // For index mode, the ratio is the DB-generated etf_amount_ratio. For
-  // industry mode, compute it on the fly (bench / code).
-  const ratios = data.rows.map((r) => {
-    if (isIndex) return r.etf_amount_ratio;
-    const ba = r.benchmark_industry_etf_amount;
-    const ca = r.code_industry_etf_amount;
-    if (ba == null || ca == null || ca === 0) return null;
-    return ba / ca;
-  });
+  // Watermark condition: no ETFs linked to either the benchmark or the code
+  // (subject) index. Both linked_etfs arrays are empty → the "Index Trading
+  // Amt contribution" concept is meaningless for this pair.
+  const noEtfLinked =
+    data.benchmark_linked_etfs.length === 0 && data.code_linked_etfs.length === 0;
+  const benchmarkEtfNums = data.rows.map((r) => r.benchmark_etf_num);
+  const codeEtfNums = data.rows.map((r) => r.code_etf_num);
+  // DB-generated liquidity ratio (benchmark_etf_amount / code_etf_amount).
+  const ratios = data.rows.map((r) => r.etf_amount_ratio);
+  // 5-day moving average of the ratio (precomputed by the analyze script).
+  const ratioMa5s = data.rows.map((r) => r.etf_amount_ratio_ma5);
 
   const subjectName = data.name || data.code;
   const benchmarkName = data.benchmark_name || data.benchmark_code;
-  // Industry ids are constant across dates — pull from the first non-null row.
-  const benchmarkIndustryId = data.rows.find((r) => r.benchmark_industry_id)?.benchmark_industry_id ?? null;
-  const codeIndustryId = data.rows.find((r) => r.code_industry_id)?.code_industry_id ?? null;
-  const benchLabel = isIndex
-    ? `${benchmarkName} ETF Amt`
-    : `${benchmarkIndustryId ?? "—"} Industry Amt`;
-  const codeLabel = isIndex
-    ? `${subjectName} ETF Amt`
-    : `${codeIndustryId ?? "—"} Industry Amt`;
-  const yAxisName = isIndex ? "Index ETF Amt (亿元)" : "Industry ETF Amt (亿元)";
+  const benchLabel = `${benchmarkName} ETF Amt`;
+  const codeLabel = `${subjectName} ETF Amt`;
+
+  // ---- Percentage mode: rebase each curve independently to 0% at the first
+  //      date where it has a non-null, non-zero amount. This ensures that a
+  //      benchmark with no tracking ETF (all-null benchmark_etf_amount) does
+  //      NOT blank out the code ETF amount line — each series gets its own
+  //      base. When both share the same first date, they naturally align at
+  //      0% together. ----
+  const isPercentage = chartMode === "percentage";
+  let benchmarkAmounts: (number | null)[] = benchmarkAmountsRaw;
+  let codeAmounts: (number | null)[] = codeAmountsRaw;
+  let baseDate: string | null = null;
+
+  if (isPercentage) {
+    // Find first non-null, non-zero for benchmark.
+    let benchBaseIdx = -1;
+    let benchBase: number | null = null;
+    for (let i = 0; i < benchmarkAmountsRaw.length; i++) {
+      const b = benchmarkAmountsRaw[i];
+      if (b != null && b !== 0) {
+        benchBaseIdx = i;
+        benchBase = b;
+        break;
+      }
+    }
+    // Find first non-null, non-zero for code.
+    let codeBaseIdx = -1;
+    let codeBase: number | null = null;
+    for (let i = 0; i < codeAmountsRaw.length; i++) {
+      const co = codeAmountsRaw[i];
+      if (co != null && co !== 0) {
+        codeBaseIdx = i;
+        codeBase = co;
+        break;
+      }
+    }
+    // Rebase benchmark series.
+    if (benchBaseIdx >= 0 && benchBase != null) {
+      baseDate = dates[benchBaseIdx];
+      benchmarkAmounts = benchmarkAmountsRaw.map((v, i) => {
+        if (i < benchBaseIdx || v == null) return null;
+        return (v / benchBase! - 1) * 100;
+      });
+    } else {
+      benchmarkAmounts = benchmarkAmountsRaw.map(() => null);
+    }
+    // Rebase code series independently.
+    if (codeBaseIdx >= 0 && codeBase != null) {
+      if (baseDate == null) baseDate = dates[codeBaseIdx];
+      codeAmounts = codeAmountsRaw.map((v, i) => {
+        if (i < codeBaseIdx || v == null) return null;
+        return (v / codeBase! - 1) * 100;
+      });
+    } else {
+      codeAmounts = codeAmountsRaw.map(() => null);
+    }
+  }
+
+  const fmtPct = (v: number | null): string =>
+    v == null ? "—" : (v >= 0 ? "+" : "") + fmtNum(v, 2) + "%";
+
+  const yAxisName = isPercentage
+    ? (baseDate ? `% change (base: ${baseDate})` : "% change")
+    : "Index ETF Amt (亿元)";
+  const yAxisLabelFormatter = isPercentage
+    ? (v: number) => (v >= 0 ? "+" : "") + fmtNum(v, 1) + "%"
+    : (v: number) => fmtNum(v, 1);
 
   return {
     backgroundColor: "transparent",
     animation: false,
     grid: commonGrid({ left: 56, right: 56, bottom: 32 }),
+    // Watermark shown when neither the benchmark nor the subject index has
+    // any tracking ETF — the "Index Trading Amt contribution" concept is
+    // meaningless for this pair.
+    graphic: noEtfLinked
+      ? ({
+          type: "text",
+          left: "center",
+          top: "middle",
+          style: {
+            text: "no etf linked to both selected indices",
+            fontSize: 13,
+            fontWeight: 500,
+            fill: SUBTITLE_COLOR,
+            opacity: 0.5,
+            textAlign: "center" as const,
+          },
+        } as EChartsOption["graphic"])
+      : undefined,
     tooltip: {
       trigger: "axis",
       backgroundColor: c.tooltipBg,
@@ -653,17 +724,31 @@ function buildAmountContributionOption(
         const idx = arr[0].dataIndex ?? 0;
         const ba = benchmarkAmounts[idx];
         const ca = codeAmounts[idx];
+        const baRaw = benchmarkAmountsRaw[idx];
+        const caRaw = codeAmountsRaw[idx];
         const er = ratios[idx];
+        const erMa5 = ratioMa5s[idx];
         const benchNum = benchmarkEtfNums[idx];
         const codeNum = codeEtfNums[idx];
         // Subject's SHARE of the benchmark ETF market = 1 / ratio (only
         // meaningful when both amounts are non-null and ratio > 0).
         const share = er == null || er === 0 ? null : 1 / er;
+        const shareMa5 = erMa5 == null || erMa5 === 0 ? null : 1 / erMa5;
+        // In percentage mode the main value is the % change, with the raw
+        // 亿元 shown in parentheses for reference. In absolute mode the raw
+        // 亿元 is the main value.
+        const benchValStr = isPercentage
+          ? `${fmtPct(ba)} <span style="opacity:0.5">(${baRaw == null ? "—" : fmtNum(baRaw, 2) + " 亿"})</span>`
+          : `${ba == null ? "—" : fmtNum(ba, 2) + " 亿"}`;
+        const codeValStr = isPercentage
+          ? `${fmtPct(ca)} <span style="opacity:0.5">(${caRaw == null ? "—" : fmtNum(caRaw, 2) + " 亿"})</span>`
+          : `${ca == null ? "—" : fmtNum(ca, 2) + " 亿"}`;
         return `
           <div style="font-weight:600">${dates[idx]}</div>
-          <div style="margin-top:2px">${benchLabel}: <b style="color:${MUTED_PALETTE[1]}">${ba == null ? "—" : fmtNum(ba, 2) + " 亿"}</b>${benchNum == null ? "" : ` <span style="opacity:0.6">(${benchNum} ETFs)</span>`}</div>
-          <div>${codeLabel}: <b style="color:${MUTED_PALETTE[0]}">${ca == null ? "—" : fmtNum(ca, 2) + " 亿"}</b>${codeNum == null ? "" : ` <span style="opacity:0.6">(${codeNum} ETFs)</span>`}</div>
-          <div style="margin-top:2px;opacity:0.85">Ratio (bench/code): ${er == null ? "—" : fmtNum(er, 4)}${share == null ? "" : ` · share ${fmtNum(share, 4)}`}</div>
+          <div style="margin-top:2px">${benchLabel}: <b style="color:${MUTED_PALETTE[1]}">${benchValStr}</b>${benchNum == null ? "" : ` <span style="opacity:0.6">(${benchNum} ETFs)</span>`}</div>
+          <div>${codeLabel}: <b style="color:${MUTED_PALETTE[0]}">${codeValStr}</b>${codeNum == null ? "" : ` <span style="opacity:0.6">(${codeNum} ETFs)</span>`}</div>
+          <div style="margin-top:2px;opacity:0.85">Ratio (bench/code): <b style="color:${MUTED_PALETTE[1]}">${er == null ? "—" : fmtNum(er, 4)}</b>${share == null ? "" : ` · share ${fmtNum(share, 4)}`}</div>
+          <div style="opacity:0.85">MA5 Ratio: <b style="color:${MUTED_PALETTE[0]}">${erMa5 == null ? "—" : fmtNum(erMa5, 4)}</b>${shareMa5 == null ? "" : ` · share ${fmtNum(shareMa5, 4)}`}</div>
         `;
       },
     },
@@ -692,7 +777,7 @@ function buildAmountContributionOption(
       axisLabel: {
         color: c.textColor,
         fontSize: 9,
-        formatter: (v: number) => fmtNum(v, 1),
+        formatter: yAxisLabelFormatter,
       },
       splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
     },
@@ -724,7 +809,7 @@ function buildAmountContributionOption(
 }
 
 // ============================================================================
-//  Panel — one card per code: fetches its attribution and renders the chart.
+//  Panel — one card per code: benchmark selector + two time-series charts.
 // ============================================================================
 interface PanelProps {
   code: string;
@@ -738,8 +823,8 @@ function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Selected benchmark for the two-curve comparison chart (set by clicking
-  // a bar in the fluctuation chart).
+  // Selected benchmark for the two time-series charts. Auto-selected when
+  // attribution data loads (000300 if available, else first benchmark).
   const [selectedBenchmark, setSelectedBenchmark] = useState<{
     code: string;
     name: string;
@@ -749,17 +834,91 @@ function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
   const [chartError, setChartError] = useState<string | null>(null);
 
   // Date range slider state — two indices into the chart data rows array.
-  // Mirrors the pattern used by EtfMarginPanel, IndexPanel, StockPanel.
   const [range, setRange] = useState<[number, number]>([0, 0]);
 
-  // Toggle: show/hide broad market benchmark bars in the attribution chart.
+  // Comparison chart display mode: "percentage" rebases both curves to 0% at
+  // the first common date (best for relative-performance trend comparison);
+  // "absolute" shows raw close prices on dual y-axes.
+  const [chartMode, setChartMode] = useState<ChartMode>("percentage");
+
+  // Broad-market benchmark visibility in the Fluctuation Attribution chart.
+  // When FALSE, broad-market benchmarks (沪深300, 上证指数, etc.) are hidden so
+  // sector/industry benchmarks stand out.
   const [showBroadMarket, setShowBroadMarket] = useState(true);
 
+  // Popover anchor for the "Linked ETFs" button in the Index Trading Amt
+  // contribution chart header. Null when the popover is closed.
+  const [etfPopoverAnchor, setEtfPopoverAnchor] = useState<HTMLElement | null>(null);
+
+  // Click handler for the Fluctuation Attribution chart — uses dataIndex
+  // from the click params to look up the benchmark code from a ref to the
+  // sorted benchmarks array. Ref-based so the chart-level binding (done once
+  // via onReady) always reads the latest data without re-binding.
+  const dataRef = useRef(data);
+  useEffect(() => { dataRef.current = data; }, [data]);
+  const showBroadMarketRef = useRef(showBroadMarket);
+  useEffect(() => { showBroadMarketRef.current = showBroadMarket; }, [showBroadMarket]);
+
+  const handleFluctuationReady = useCallback((chart: echarts.ECharts) => {
+    // Use zr-level (canvas) click to avoid ECharts series-level event
+    // binding quirks. Convert pixel → x-axis category index → benchmark code.
+    chart.getZr().on("click", (params: { offsetX?: number; offsetY?: number }) => {
+      const x = params.offsetX;
+      const y = params.offsetY;
+      if (x == null || y == null) return;
+      // Only fire inside the plot grid.
+      if (!chart.containPixel("grid", [x, y])) return;
+      const idx = chart.convertFromPixel({ xAxisIndex: 0 }, x);
+      const dataIdx = Math.round(idx);
+      if (dataIdx < 0) return;
+      const d = dataRef.current;
+      if (!d) return;
+      // Re-derive the sorted+filtered benchmarks the same way
+      // buildFluctuationOption does, to map index → benchmark_code.
+      let sorted = [...d.benchmarks].sort((a, b) => {
+        const ar = a.benchmark_return ?? 0;
+        const br = b.benchmark_return ?? 0;
+        const aw = a.code_sec_shared_weight ?? 0;
+        const bw = b.code_sec_shared_weight ?? 0;
+        const aeff = ar * (aw / 100);
+        const beff = br * (bw / 100);
+        if (aeff >= 0 && beff < 0) return -1;
+        if (aeff < 0 && beff >= 0) return 1;
+        return beff - aeff;
+      });
+      if (!showBroadMarketRef.current) {
+        sorted = sorted.filter((b) => b.is_broad_market !== true);
+      }
+      sorted = sorted.filter(
+        (b) => b.code_sec_shared_weight != null && b.benchmark_return != null,
+      );
+      const bench = sorted[dataIdx];
+      if (bench) {
+        setSelectedBenchmark({
+          code: bench.benchmark_code,
+          name: bench.benchmark_name || bench.benchmark_code,
+        });
+      }
+    });
+  }, []);
+
+  // Memoized Fluctuation Attribution chart option — recomputes only when the
+  // attribution data, theme, or broad-market toggle changes. Returns null
+  // when data hasn't loaded yet (the chart is only rendered when data is
+  // non-null, but useMemo runs on every render regardless).
+  const fluctuationOption = useMemo(
+    () => (data ? buildFluctuationOption(data, themeMode, showBroadMarket) : null),
+    [data, themeMode, showBroadMarket],
+  );
+
+  // Fetch attribution data (benchmark list for the selector) on mount.
+  // NOTE: no auto-select — the expanded time-series charts are shown ONLY
+  // after the user clicks a bar in the Fluctuation Attribution chart.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchPerfAttrAttribution(code, secType)
+    fetchPerfAttrAttribution(code, secType, null)
       .then((d) => {
         if (cancelled) return;
         setData(d);
@@ -775,8 +934,7 @@ function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
     };
   }, [code, secType]);
 
-  // Reset the comparison chart when the subject code or sec_type changes so a
-  // stale benchmark selection from the previous subject doesn't persist.
+  // Reset when the subject code or sec_type changes.
   useEffect(() => {
     setSelectedBenchmark(null);
     setChartData(null);
@@ -784,7 +942,7 @@ function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
     setRange([0, 0]);
   }, [code, secType]);
 
-  // Fetch the two-curve chart data whenever the user clicks a bar.
+  // Fetch the time-series chart data whenever the selected benchmark changes.
   useEffect(() => {
     if (!selectedBenchmark) {
       setChartData(null);
@@ -799,7 +957,6 @@ function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
       .then((d) => {
         if (cancelled) return;
         setChartData(d);
-        // Reset slider to full range on new data.
         const maxIdx = Math.max(0, d.rows.length - 1);
         setRange([0, maxIdx]);
         setChartLoading(false);
@@ -814,33 +971,6 @@ function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
     };
   }, [selectedBenchmark, code, secType]);
 
-  // Reset slider when chart data changes (e.g., different benchmark clicked).
-  useEffect(() => {
-    if (!chartData) return;
-    const maxIdx = Math.max(0, chartData.rows.length - 1);
-    setRange([0, maxIdx]);
-  }, [chartData]);
-
-  // Click handler — reads the `benchmarkCode` field embedded in each bar's
-  // data object (see buildFluctuationOption) and resolves its display name
-  // from the current attribution payload. Wrapped in useCallback so the
-  // onEvents object identity stays stable across renders (avoids re-binding
-  // the ECharts click listener on every parent re-render).
-  const handleBarClick = useCallback(
-    (params: unknown) => {
-      const p = params as {
-        data?: { benchmarkCode?: string };
-        componentType?: string;
-      };
-      if (p.componentType !== "series") return;
-      const bc = p.data?.benchmarkCode;
-      if (!bc) return;
-      const bench = data?.benchmarks.find((b) => b.benchmark_code === bc);
-      setSelectedBenchmark({ code: bc, name: bench?.benchmark_name || bc });
-    },
-    [data],
-  );
-
   // Slice chart rows to the selected date window.
   const filteredChartData = useMemo<PerfAttrChartResponse | null>(() => {
     if (!chartData) return null;
@@ -850,8 +980,7 @@ function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
   }, [chartData, range]);
 
   // Wire up cross-chart tooltip sync via echarts.connect() — the two
-  // expanded charts (comparison + cumulative) share one group so hovering
-  // either chart shows the tooltip on both simultaneously.
+  // charts share one group so hovering either shows the tooltip on both.
   const chartGroup = selectedBenchmark
     ? `perf-attr-${code}-${selectedBenchmark.code}`
     : null;
@@ -870,7 +999,7 @@ function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
     : `${code} · ${name || "—"}`;
 
   return (
-    <ChartCard title="Fluctuation Attribution" subtitle={subtitle}>
+    <ChartCard title="Perf Attribution" subtitle={subtitle}>
       {loading && (
         <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
           <CircularProgress size={20} />
@@ -883,98 +1012,196 @@ function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
       )}
       {!loading && !error && data && data.benchmarks.length > 0 && (
         <>
-          <Stack direction="row" justifyContent="flex-end" alignItems="center" sx={{ mb: -0.5 }}>
-            <FormControlLabel
-              sx={{ mr: 1 }}
-              control={
-                <Switch
-                  size="small"
-                  checked={showBroadMarket}
-                  onChange={(e) => setShowBroadMarket(e.target.checked)}
-                />
-              }
-              label={
-                <Typography variant="caption" color="text.secondary">
-                  Broad market
-                </Typography>
-              }
-            />
-          </Stack>
-          <EChart
-            option={buildFluctuationOption(data, themeMode, showBroadMarket)}
-            height={360}
-            onEvents={{ click: handleBarClick }}
-          />
-        </>
-      )}
-      {!loading && !error && data && data.benchmarks.length === 0 && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-          <Typography variant="body2" color="text.secondary">
-            No benchmark data for {code}.
-          </Typography>
-        </Box>
-      )}
-
-      {/* Trading Amount Contribution charts — appears when a bar is clicked.
-          Only the two amount charts (Index + Industry) are loaded; the
-          close-price comparison chart is omitted to keep the panel focused
-          on trading-amount analysis. */}
-      {selectedBenchmark && (
-        <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: "divider" }}>
-          <Box
-            sx={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              mb: 0.5,
-              gap: 1,
-            }}
-          >
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                Trading Amt Contribution
+          {/* Fluctuation Attribution chart — shared-weight contribution per
+              benchmark for the latest date. Bar 1 (left axis) = benchmark
+              fractional return × (shared_weight/100); Bar 2 (right axis) =
+              shared_weight %. Click a bar to select that benchmark for the
+              time-series charts below. */}
+          <Box sx={{ mb: 1 }}>
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                mb: 0.25,
+                gap: 1,
+              }}
+            >
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
+                Fluctuation Attribution (contribution = return × overlap) · {data.latest_date}
               </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {code} · {data?.name || name || "—"} vs {selectedBenchmark.code} ·{" "}
-                {selectedBenchmark.name}
+              <ToggleButtonGroup
+                size="small"
+                value={showBroadMarket ? "all" : "sector"}
+                exclusive
+                onChange={(_, v) => { if (v) setShowBroadMarket(v === "all"); }}
+                sx={{ flexShrink: 0 }}
+              >
+                <ToggleButton
+                  value="all"
+                  sx={{ py: 0, px: 0.75, fontSize: "0.6rem", lineHeight: 1.2 }}
+                >
+                  All
+                </ToggleButton>
+                <ToggleButton
+                  value="sector"
+                  sx={{ py: 0, px: 0.75, fontSize: "0.6rem", lineHeight: 1.2 }}
+                >
+                  Sector
+                </ToggleButton>
+              </ToggleButtonGroup>
+            </Box>
+            <EChart
+              option={fluctuationOption ?? {}}
+              height={300}
+              onReady={handleFluctuationReady}
+            />
+          </Box>
+
+          {/* Expanded time-series charts — shown ONLY after the user clicks a
+              bar in the Fluctuation Attribution chart above. No dropdown; the
+              benchmark is selected exclusively via bar click.
+              1. Index Trading Amt contribution (benchmark vs subject index ETF
+                 turnover) — tooltip surfaces the bench/code liquidity ratio,
+                 its 5-day MA, and the subject's share (1/ratio).
+              2. Close price history trend (subject vs benchmark) — tooltip
+                 surfaces the rolling 5/20/60/255-day close-price correlations.
+              The %/Abs toggle applies to both charts: "percentage" rebases
+              both curves to 0% at the first common date; "absolute" shows raw
+              values (亿元 / close price). */}
+          {!selectedBenchmark && (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
+              <Typography variant="body2" color="text.secondary" sx={{ fontStyle: "italic" }}>
+                Click a bar above to expand the time-series charts for that benchmark.
               </Typography>
             </Box>
-            <IconButton
-              size="small"
-              aria-label="close amount charts"
-              onClick={() => setSelectedBenchmark(null)}
-              sx={{ flexShrink: 0 }}
-            >
-              <Close fontSize="small" />
-            </IconButton>
-          </Box>
-          {chartLoading && (
+          )}
+          {selectedBenchmark && chartLoading && (
             <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
               <CircularProgress size={20} />
             </Box>
           )}
-          {chartError && (
+          {selectedBenchmark && chartError && (
             <Alert severity="error" sx={{ py: 0.5 }}>
               {chartError}
             </Alert>
           )}
-          {!chartLoading && !chartError && filteredChartData && filteredChartData.rows.length > 0 && (
+          {selectedBenchmark && !chartLoading && !chartError && filteredChartData && filteredChartData.rows.length > 0 && (
             <>
               <Box sx={{ mt: 1 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25 }}>
-                  Index Trading Amt contribution (benchmark vs subject index ETF turnover)
-                </Typography>
+                {/* Expanded charts header: selected benchmark label + %/Abs toggle */}
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    mb: 0.25,
+                    gap: 1,
+                  }}
+                >
+                  <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
+                    Selected: <b>{selectedBenchmark.name}</b> ({selectedBenchmark.code})
+                  </Typography>
+                  <ToggleButtonGroup
+                    size="small"
+                    value={chartMode}
+                    exclusive
+                    onChange={(_, v) => {
+                      if (v) setChartMode(v as ChartMode);
+                    }}
+                    sx={{ flexShrink: 0 }}
+                  >
+                    <ToggleButton
+                      value="percentage"
+                      sx={{ py: 0, px: 0.75, fontSize: "0.65rem", lineHeight: 1.2 }}
+                    >
+                      %
+                    </ToggleButton>
+                    <ToggleButton
+                      value="absolute"
+                      sx={{ py: 0, px: 0.75, fontSize: "0.65rem", lineHeight: 1.2 }}
+                    >
+                      Abs
+                    </ToggleButton>
+                  </ToggleButtonGroup>
+                </Box>
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, mb: 0.25 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Index Trading Amt contribution (benchmark vs subject index ETF turnover)
+                  </Typography>
+                  {/* Linked ETFs button — opens a popover listing the ETFs
+                      tracking the benchmark and subject indices. */}
+                  <Typography
+                    component="span"
+                    variant="caption"
+                    onClick={(e) => setEtfPopoverAnchor(e.currentTarget)}
+                    sx={{
+                      cursor: "pointer",
+                      color: "primary.main",
+                      fontSize: "0.65rem",
+                      textDecoration: "underline",
+                      ml: 0.5,
+                    }}
+                  >
+                    Linked ETFs
+                  </Typography>
+                  <Popover
+                    open={etfPopoverAnchor != null}
+                    anchorEl={etfPopoverAnchor}
+                    onClose={() => setEtfPopoverAnchor(null)}
+                    anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+                    transformOrigin={{ vertical: "top", horizontal: "left" }}
+                    PaperProps={{ sx: { maxWidth: 360, p: 1.25 } }}
+                  >
+                    {filteredChartData && (
+                      <Box sx={{ fontSize: "0.75rem" }}>
+                        <Typography variant="caption" sx={{ fontWeight: 600, display: "block", mb: 0.5 }}>
+                          Benchmark: {filteredChartData.benchmark_name || filteredChartData.benchmark_code}
+                        </Typography>
+                        {filteredChartData.benchmark_linked_etfs.length > 0 ? (
+                          <Box component="ul" sx={{ m: 0, pl: 1.5, mb: 1 }}>
+                            {filteredChartData.benchmark_linked_etfs.map((etf) => (
+                              <li key={etf.code}>
+                                {etf.name} <span style={{ opacity: 0.5 }}>({etf.code})</span>
+                              </li>
+                            ))}
+                          </Box>
+                        ) : (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1, fontStyle: "italic" }}>
+                            No ETF tracks this benchmark index.
+                          </Typography>
+                        )}
+                        <Typography variant="caption" sx={{ fontWeight: 600, display: "block", mb: 0.5 }}>
+                          Subject: {filteredChartData.name || filteredChartData.code}
+                        </Typography>
+                        {filteredChartData.code_linked_etfs.length > 0 ? (
+                          <Box component="ul" sx={{ m: 0, pl: 1.5 }}>
+                            {filteredChartData.code_linked_etfs.map((etf) => (
+                              <li key={etf.code}>
+                                {etf.name} <span style={{ opacity: 0.5 }}>({etf.code})</span>
+                              </li>
+                            ))}
+                          </Box>
+                        ) : (
+                          <Typography variant="caption" color="text.secondary" sx={{ display: "block", fontStyle: "italic" }}>
+                            No ETF tracks this subject index.
+                          </Typography>
+                        )}
+                      </Box>
+                    )}
+                  </Popover>
+                </Box>
                 <EChart
-                  option={buildAmountContributionOption(filteredChartData, themeMode, "index")}
+                  option={buildAmountContributionOption(filteredChartData, themeMode, chartMode)}
                   height={170}
                   group={`perf-attr-${code}-${selectedBenchmark.code}`}
                 />
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1, mb: 0.25 }}>
-                  Industry Trading Amt contribution (benchmark vs subject industry ETF turnover)
+                  Close price history trend (subject vs benchmark)
                 </Typography>
                 <EChart
-                  option={buildAmountContributionOption(filteredChartData, themeMode, "industry")}
-                  height={170}
+                  option={buildComparisonOption(filteredChartData, themeMode, chartMode)}
+                  height={200}
                   group={`perf-attr-${code}-${selectedBenchmark.code}`}
                 />
               </Box>
@@ -1002,13 +1229,20 @@ function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
               )}
             </>
           )}
-          {!chartLoading && !chartError && filteredChartData && filteredChartData.rows.length === 0 && (
+          {selectedBenchmark && !chartLoading && !chartError && filteredChartData && filteredChartData.rows.length === 0 && (
             <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
               <Typography variant="body2" color="text.secondary">
                 No data in the selected date range.
               </Typography>
             </Box>
           )}
+        </>
+      )}
+      {!loading && !error && data && data.benchmarks.length === 0 && (
+        <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
+          <Typography variant="body2" color="text.secondary">
+            No benchmark data for {code}.
+          </Typography>
         </Box>
       )}
     </ChartCard>
@@ -1135,7 +1369,7 @@ export default function PerfAttrPage() {
     }
     // Build the set of codes that belong to the selected sector/industry in
     // the themes tree, then preserve the order from `all` (which is already
-    // sorted by avg_abs_active_return DESC).
+    // sorted by n_dates DESC NULLS LAST, code by the codes endpoint).
     const wantedSet = new Set<string>();
     for (const s of sectors) {
       if (sectorId && s.sector_id !== sectorId) continue;
@@ -1202,10 +1436,11 @@ export default function PerfAttrPage() {
             (沪深300, 中证A500, 中证500, 中证1000, 中证2000, 上证50, 上证指数,
             深证成指, 创业板指, 科创50, 科创综指, 科技先锋, 北证50,
             国债指数, 企债指数) are shown in a lighter color.
-            Click any bar to load two Trading Amount Contribution charts:
-            one at the index level (per-index aggregate ETF turnover) and
-            one at the industry level (per-industry aggregate ETF turnover),
-            comparing benchmark vs subject ETF turnover over time.
+            Click any bar to load two charts: an index-level ETF turnover
+            (Trading Amt Contribution — tooltip surfaces the bench/code liquidity
+            ratio + 5-day MA) and a close-price history trend (subject vs
+            benchmark) with a percentage/absolute mode toggle. Both share the
+            same date range slider and synced tooltips.
           </Typography>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>

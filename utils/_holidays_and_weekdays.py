@@ -185,6 +185,33 @@ def next_business_day(ref: Optional[date] = None) -> date:
     return d
 
 
+def recent_trading_day_cutoff(n_trading_days: int, ref: Optional[date] = None) -> date:
+    """Return the date ``n_trading_days`` trading days ago (inclusive),
+    measured from the most recent trading day on or before ``ref`` (default today).
+
+    The returned date is the Nth-most-recent trading day, so the closed
+    interval [cutoff, last_business_day(ref)] contains exactly
+    ``n_trading_days`` trading days. Used by analyze_* scripts as a
+    pre-filter to skip delisted/suspended securities: a code whose latest
+    data point is older than ``cutoff`` has had no activity in the recent
+    trading window and is excluded from the analysis universe.
+
+    Examples (assuming ``ref`` is itself a trading day):
+      n=1  → cutoff == ref              (just the most recent trading day)
+      n=22 → cutoff is the 22nd-most-recent trading day (≈ one trading month)
+    """
+    if n_trading_days < 1:
+        raise ValueError("n_trading_days must be >= 1")
+    end = last_business_day(ref)
+    cur = end
+    count = 1  # `end` is the 1st trading day in the window
+    while count < n_trading_days:
+        cur -= timedelta(days=1)
+        if is_trading_day(cur):
+            count += 1
+    return cur
+
+
 def date_range_backward(end_date: date, start_date: date) -> Iterable[date]:
     """Yield dates from ``end_date`` down to ``start_date`` (inclusive)."""
     cur = end_date

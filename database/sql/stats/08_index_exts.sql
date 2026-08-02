@@ -38,11 +38,13 @@ CREATE TABLE IF NOT EXISTS stats.index_exts (
 -- below migrate pre-existing installs.
 ALTER TABLE stats.index_exts ADD COLUMN IF NOT EXISTS total_etf_amt     NUMERIC(18,4);
 ALTER TABLE stats.index_exts ADD COLUMN IF NOT EXISTS total_etf_amt_ma5 NUMERIC(18,4);
+ALTER TABLE stats.index_exts ADD COLUMN IF NOT EXISTS stock_num         INTEGER;
 
-COMMENT ON TABLE  stats.index_exts                  IS 'Index extension metrics: one row per (date, index_code). Stores etf_num (count of ETFs tracking this index), total_etf_amt (Σ ETF turnover tracking this index, yuan), and total_etf_amt_ma5 (5-day MA of total_etf_amt). Sourced via stats.sec_classification.parent_index_code = code.';
+COMMENT ON TABLE  stats.index_exts                  IS 'Index extension metrics: one row per (date, index_code). Stores etf_num (count of ETFs tracking this index), total_etf_amt (Σ ETF turnover tracking this index, yuan), total_etf_amt_ma5 (5-day MA of total_etf_amt), and stock_num (count of constituent stocks from the latest composition snapshot ≤ date). Sourced via stats.sec_classification.parent_index_code = code (ETF metrics) and stats.sec_composition (stock_num).';
 COMMENT ON COLUMN stats.index_exts.etf_num          IS 'Number of ETFs tracking this index on this date. Source: COUNT(DISTINCT etf_liquidity_margin.code) where the ETF''s stats.sec_classification.parent_index_code = this index code. NULL when no ETF tracks the index (e.g. 000001 上证指数 has no direct ETF).';
-COMMENT ON COLUMN stats.index_exts.total_etf_amt    IS 'Aggregate ETF trading turnover (yuan) on this date across ALL ETFs tracking this index. Source: Σ stats.etf_liquidity_margin.amount_wan × 1e4 where the ETF''s stats.sec_classification.parent_index_code = this index code. NULL when no ETF tracks the index. Consumed by analyze_sec_alloc_perf_attribution.py as the benchmark/index ETF-market trading volume.';
-COMMENT ON COLUMN stats.index_exts.total_etf_amt_ma5 IS '5-trading-day moving average of total_etf_amt (AVG over the trailing 5 rows per code ordered by date). NULL for the first 4 rows of a code''s history.';
+COMMENT ON COLUMN stats.index_exts.total_etf_amt    IS 'Aggregate ETF trading turnover (yuan) on this date across ALL ETFs tracking this index. Source: Σ stats.etf_liquidity_margin.amount_wan × 1e4 where the ETF''s stats.sec_classification.parent_index_code = this index code. NULL when no ETF tracks the index. Consumed by analyze_sec_alloc_perf_attribution.py as the index''s ETF-market trading volume.';
+COMMENT ON COLUMN stats.index_exts.total_etf_amt_ma5 IS '5-trading-day moving average of total_etf_amt (AVG over the trailing 5 rows per code ordered by date). NULL for the first 4 days of a code''s history.';
+COMMENT ON COLUMN stats.index_exts.stock_num        IS 'Number of constituent stocks in this index as of the latest stats.sec_composition snapshot_date <= this date (source_type=''index''). Source: COUNT(DISTINCT stock_code) GROUP BY code, snapshot_date, then LATERAL latest-snapshot lookup per (date, code). NULL when the index has no composition snapshot (e.g. cross-market H-prefixed indices without a CSI closeweight pull). Used by analyze_industry_sentiments.py to classify each index into a pool_size bucket: small (stock_num<51), mid (51-180), large (>180).';
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_index_exts_code_date
