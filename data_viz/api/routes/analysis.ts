@@ -9,11 +9,16 @@
  *  GET /api/analysis/mov-ave-spread/chart?sec_type=etf&code=510050
  *    Returns all 9 pair time series for one asset (drives the 3×3 grid of
  *    small charts).
+ *
+ *  GET /api/analysis/mov-ave-spread/themes?sec_type=etf
+ *    Returns the L1 sector → L2 industry → items tree for the ThemeSelector,
+ *    filtered to codes that have rows in analysis.mov_ave_spreads_detail.
  */
 import { Router, type Request, type Response } from "express";
 import {
   listMovAveSpreadCodes,
   getMovAveSpreadChart,
+  listMovAveSpreadThemes,
   listPerfAttrCodes,
   getPerfAttrChart,
   getPerfAttrAttribution,
@@ -21,7 +26,13 @@ import {
   getIndustrySentimentsChart,
   listIndustrySentimentsThemes,
   getIndustryCorrelations,
-} from "../services/analysis.service.js";
+  getIndustryBenchmarkAttribution,
+  listIndustryAttributionBenchmarks,
+  getBenchmarkPriceChart,
+  getIndustryAttributionPriceSeries,
+  getAllIndustriesAttribution,
+  getMemberIndexAttribution,
+} from "../services/analysis/index.js";
 import type { PerfAttrSecType } from "../../shared/types.js";
 
 const router = Router();
@@ -57,6 +68,19 @@ router.get("/mov-ave-spread/chart", async (req: Request, res: Response) => {
     res.json(await getMovAveSpreadChart(code, parseSecType(req)));
   } catch (err) {
     console.error("[analysis/mov-ave-spread/chart] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- MA-Spread themes tree (L1 sector → L2 industry → items)
+// Mirrors /api/analysis/perf-attr/themes but only includes codes that have
+// rows in analysis.mov_ave_spreads_detail for the requested sec_type. Used
+// by the ThemeSelector on the MA-Spread page.
+router.get("/mov-ave-spread/themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listMovAveSpreadThemes(parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/mov-ave-spread/themes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
@@ -172,7 +196,7 @@ router.get("/industry-sentiments/chart", async (req: Request, res: Response) => 
 });
 
 // ---- Industry Correlations (pairwise rolling correlation between
-//      industries' mean_rebased series — drives the Correlation chart on
+//      industries' mean_price series — drives the Correlation chart on
 //      the IndustrySentiments page when 2+ industries are selected).
 //   GET /api/analysis/industry-correlations?industry_ids=BANKS,AI&pool_size=all
 //     Returns IndustryCorrelationsResponse: one row per (date, pair) for
@@ -200,6 +224,145 @@ router.get("/industry-correlations", async (req: Request, res: Response) => {
     res.json(await getIndustryCorrelations(industryIds, poolSize));
   } catch (err) {
     console.error("[analysis/industry-correlations] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Industry-level Benchmark Attribution (aggregated
+//      sec_alloc_perf_attribution per industry_id). Drives the "Benchmark
+//      Attribution" view on the IndustrySentiments page — the toggle that
+//      swaps the price/correlation plot for a fluctuation-attribution bar
+//      chart per industry. Aggregates per-index rows to one row per
+//      (industry_id, benchmark_code, date).
+//   GET /api/analysis/industry-benchmark-attribution?industry_id=BANKS&date=YYYY-MM-DD
+//     Returns IndustryBenchmarkAttributionResponse: one row per benchmark
+//     with avg shared_weight, avg rolling corr (5/20/60/255d), summed ETF
+//     trading_amount, benchmark_return (computed on-the-fly), and
+//     avg_subject_return. `date` is optional (defaults to latest available).
+router.get("/industry-benchmark-attribution", async (req: Request, res: Response) => {
+  try {
+    const industryId = typeof req.query.industry_id === "string"
+      ? req.query.industry_id.trim()
+      : "";
+    if (!industryId) {
+      res.status(400).json({ error: "Missing 'industry_id' parameter" });
+      return;
+    }
+    const rawDate = typeof req.query.date === "string" ? req.query.date.trim() : "";
+    const date = rawDate || null;
+    res.json(await getIndustryBenchmarkAttribution(industryId, date));
+  } catch (err) {
+    console.error("[analysis/industry-benchmark-attribution] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Industry Attribution Benchmark list + price chart. Drives the
+//      benchmark dropdown and the 1st plot (benchmark price chart,
+//      clickable to pick a date) in "Benchmark Attribution" mode on the
+//      Industry Sentiments page.
+//   GET /api/analysis/industry-attribution/benchmarks
+//     Returns IndustryAttributionBenchmarksResponse: list of all benchmark
+//     codes that appear in analysis.industry_attributions, enriched with
+//     display name and is_broad_market flag. Broad-market benchmarks first.
+//   GET /api/analysis/industry-attribution/benchmark-price?code=000300
+//     Returns BenchmarkPriceChartResponse: daily close + fractional daily
+//     return series for ONE benchmark index (from stats.index_basic_stats).
+router.get("/industry-attribution/benchmarks", async (_req: Request, res: Response) => {
+  try {
+    const benchmarks = await listIndustryAttributionBenchmarks();
+    res.json({ benchmarks });
+  } catch (err) {
+    console.error("[analysis/industry-attribution/benchmarks] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/industry-attribution/benchmark-price", async (req: Request, res: Response) => {
+  try {
+    const code = typeof req.query.code === "string" ? req.query.code.trim() : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getBenchmarkPriceChart(code));
+  } catch (err) {
+    console.error("[analysis/industry-attribution/benchmark-price] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+//   GET /api/analysis/industry-attribution/non-this-industry-price
+//     ?industry_id=BANKS&benchmark_code=000300
+//   Returns IndustryAttributionPriceSeriesResponse: benchmark close +
+//   benchmark_rolling + non_this_industry_price + non_this_industry_rolling_price
+//   for ONE (industry_id, benchmark_code) pair. Drives the green/red shade
+//   overlay on the BenchmarkPriceChart.
+router.get("/industry-attribution/non-this-industry-price", async (req: Request, res: Response) => {
+  try {
+    const industryId = typeof req.query.industry_id === "string"
+      ? req.query.industry_id.trim() : "";
+    const benchmarkCode = typeof req.query.benchmark_code === "string"
+      ? req.query.benchmark_code.trim() : "";
+    if (!industryId) {
+      res.status(400).json({ error: "Missing 'industry_id' parameter" });
+      return;
+    }
+    if (!benchmarkCode) {
+      res.status(400).json({ error: "Missing 'benchmark_code' parameter" });
+      return;
+    }
+    res.json(await getIndustryAttributionPriceSeries(industryId, benchmarkCode));
+  } catch (err) {
+    console.error("[analysis/industry-attribution/non-this-industry-price] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+//   GET /api/analysis/industry-attribution/all-industries
+//     ?benchmark_code=000300&date=YYYY-MM-DD (date optional → latest)
+//   Returns AllIndustriesAttributionResponse: one row per industry with
+//   benchmark_shared_weight + industry_shared_weight for the given
+//   (benchmark_code, date). Drives the industry-level bar chart.
+router.get("/industry-attribution/all-industries", async (req: Request, res: Response) => {
+  try {
+    const benchmarkCode = typeof req.query.benchmark_code === "string"
+      ? req.query.benchmark_code.trim() : "";
+    if (!benchmarkCode) {
+      res.status(400).json({ error: "Missing 'benchmark_code' parameter" });
+      return;
+    }
+    const date = typeof req.query.date === "string" ? req.query.date.trim() : null;
+    res.json(await getAllIndustriesAttribution(benchmarkCode, date || null));
+  } catch (err) {
+    console.error("[analysis/industry-attribution/all-industries] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+//   GET /api/analysis/industry-attribution/member-indices
+//     ?industry_id=BANKS&benchmark_code=000300&date=YYYY-MM-DD (date optional → latest)
+//   Returns MemberIndexAttributionResponse: one row per member index with
+//   code_sec_shared_weight + benchmark_sec_shared_weight for the given
+//   (industry_id, benchmark_code, date). Drives the per-industry bar charts.
+router.get("/industry-attribution/member-indices", async (req: Request, res: Response) => {
+  try {
+    const industryId = typeof req.query.industry_id === "string"
+      ? req.query.industry_id.trim() : "";
+    const benchmarkCode = typeof req.query.benchmark_code === "string"
+      ? req.query.benchmark_code.trim() : "";
+    if (!industryId) {
+      res.status(400).json({ error: "Missing 'industry_id' parameter" });
+      return;
+    }
+    if (!benchmarkCode) {
+      res.status(400).json({ error: "Missing 'benchmark_code' parameter" });
+      return;
+    }
+    const date = typeof req.query.date === "string" ? req.query.date.trim() : null;
+    res.json(await getMemberIndexAttribution(industryId, benchmarkCode, date || null));
+  } catch (err) {
+    console.error("[analysis/industry-attribution/member-indices] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

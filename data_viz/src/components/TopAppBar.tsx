@@ -20,7 +20,7 @@ import { Brightness4, Brightness7, ShowChart, ArrowDropDown } from "@mui/icons-m
 import { useLocation, useNavigate } from "react-router-dom";
 import { useStore } from "@/store/filters";
 
-type AppKey = "dataviz" | "analysis";
+type AppKey = "live" | "dataviz" | "analysis";
 
 interface AppConfig {
   label: string;
@@ -29,6 +29,15 @@ interface AppConfig {
 }
 
 const APPS: Record<AppKey, AppConfig> = {
+  live: {
+    label: "Live Data",
+    defaultPath: "/live/index",
+    tabs: [
+      { label: "Index", path: "/live/index" },
+      { label: "ETF", path: "/live/etf" },
+      { label: "Stock", path: "/live/stock" },
+    ],
+  },
   dataviz: {
     label: "DataViz",
     defaultPath: "/dataviz/debt-baseline",
@@ -58,7 +67,9 @@ export default function TopAppBar() {
 
   const activeApp: AppKey = location.pathname.startsWith("/analysis")
     ? "analysis"
-    : "dataviz";
+    : location.pathname.startsWith("/live")
+      ? "live"
+      : "dataviz";
   const config = APPS[activeApp];
   const activeIdx = config.tabs.findIndex((t) => location.pathname.startsWith(t.path));
 

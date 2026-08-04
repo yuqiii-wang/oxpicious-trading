@@ -122,8 +122,8 @@ SELECT
     t.ma120,
     t.ma255,
     -- Liquidity & margin
-    lm.volume_wan,
-    lm.amount_wan,
+    lm.trading_shares,
+    lm.trading_amount,
     lm.rz_buy,
     lm.rz_balance,
     lm.rq_sell_qty,
@@ -219,8 +219,8 @@ SELECT
     bs.high,
     bs.low,
     bs.close,
-    bs.volume,
-    bs.amount,
+    bs.trading_shares,
+    bs.trading_amount,
     bs.change,
     bs.change_pct,
     bs.has_intraday_5mins,
@@ -286,7 +286,7 @@ COMMENT ON VIEW stats.v_stock_baseline IS 'Reconstructed stock_baseline view: JO
 
 -- (B) ETF margin: time-series for one ETF
 -- SELECT date, open, high, low, close, adj_close,
---        volume_wan, amount_wan,
+--        trading_shares, trading_amount,
 --        rz_balance, rq_balance_amt, total_balance
 --   FROM stats.v_etf_margin
 --  WHERE code = :code

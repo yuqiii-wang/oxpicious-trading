@@ -63,7 +63,7 @@ interface DbEtfOhlcvRow extends QueryResultRow {
   high: number | null;
   low: number | null;
   close: number | null;
-  volume_wan: number | null;
+  trading_shares: number | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -193,7 +193,7 @@ export async function getEtfOhlcv(
 
   const sql = `
     SELECT date, adj_open, adj_high, adj_low, adj_close,
-           open, high, low, close, volume_wan
+           open, high, low, close, trading_shares
     FROM stats.v_etf_margin
     WHERE ${where.join(" AND ")}
     ORDER BY date ASC
@@ -215,7 +215,7 @@ export async function getEtfOhlcv(
       high: useVal(r.adj_high, r.high),
       low: useVal(r.adj_low, r.low),
       close: useVal(r.adj_close, r.close),
-      volume: toNum(r.volume_wan) ?? 0,
+      volume: toNum(r.trading_shares) ?? 0,
     };
   });
 

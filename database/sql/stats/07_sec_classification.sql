@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS stats.sec_classification (
     n_days                    INTEGER       NOT NULL DEFAULT 0,
 
     has_margin                BOOLEAN       NOT NULL DEFAULT FALSE,
-    avg_volume_wan            NUMERIC(24,4) NOT NULL DEFAULT 0,
+    avg_shares                NUMERIC(24,4) NOT NULL DEFAULT 0,
     selectivity_rank_score    INTEGER       NOT NULL DEFAULT 0,
 
     parent_index_code         TEXT          NOT NULL DEFAULT '',
@@ -99,7 +99,7 @@ COMMENT ON COLUMN stats.sec_classification.industry_label        IS 'L2 industry
 COMMENT ON COLUMN stats.sec_classification.industry_slug         IS 'URL-safe slug = LOWER(industry_id), e.g. banks, semi, broad_csi. Denormalized from catalog.';
 COMMENT ON COLUMN stats.sec_classification.n_days                IS 'Coverage: n_ohlcv_days for ETF, COUNT(*) for index/stock from identity table.';
 COMMENT ON COLUMN stats.sec_classification.has_margin            IS 'ETF only: TRUE if any margin data exists. Populated by build_szse_sse_etf_and_margin.py.';
-COMMENT ON COLUMN stats.sec_classification.avg_volume_wan        IS 'ETF only: average daily volume in 万 (10k) shares. Populated by build_szse_sse_etf_and_margin.py.';
+COMMENT ON COLUMN stats.sec_classification.avg_shares           IS 'ETF only: average daily volume in shares (converted × 10000 from source 万股). Populated by build_szse_sse_etf_and_margin.py.';
 COMMENT ON COLUMN stats.sec_classification.selectivity_rank_score IS 'ETF only: composite score. Populated by build_szse_sse_etf_and_margin.py.';
 COMMENT ON COLUMN stats.sec_classification.parent_index_code     IS 'Hierarchy: ETF → tracking index code; stock → ONE ROW PER qualifying index (weight >2%, non-BROAD); index → empty string. PK component, never NULL.';
 COMMENT ON COLUMN stats.sec_classification.parent_index_weight   IS 'Stock only: weight_pct of the stock in its parent index. NULL for ETF/index.';

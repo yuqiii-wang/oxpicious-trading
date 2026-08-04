@@ -4,10 +4,10 @@
  * Layout (mirrors the ETF + Margin page):
  *   • ThemeSelector — two-level cascade (L1 sector → L2 industry), loads from
  *     /api/index-baseline/themes which returns the precomputed taxonomy tree.
- *   • Stack of IndexPanel cards (one per index, full width) — candlestick/line +
+ *   • Stack of IndexPanel cards (one per index, full width) — OHLC/line +
  *     MA5/MA20/MA60/MA120 + volume bars + PE ratio + composition pie chart.
  *     Clicking a date point that has 5-min intraday bars (gold-ringed marker on
- *     the close line) expands a closeable intraday candlestick chart below.
+ *     the close line) expands a closeable intraday OHLC chart below.
  *   • Pagination — 2 indices per page.
  */
 import { useEffect, useState } from "react";
@@ -134,6 +134,16 @@ export default function IndexBaselinePage() {
     setSearchCode(null);
   };
 
+  // Clicking an L3 item chip narrows the page to a single index WITHOUT
+  // disturbing the sector/industry highlight (the chip already belongs to
+  // the active industry/sector, so the highlight is correct as-is). Keeps
+  // Row 3's chip list stable so the user can quickly switch between items.
+  const handleItemSelected = (code: string) => {
+    setError(null);
+    setSearchCode(code);
+    setPage(1);
+  };
+
   // Clicking a sector/industry chip exits search mode and browses normally.
   const handleSectorChange = (id: string | null) => {
     setSearchCode(null);
@@ -194,6 +204,10 @@ export default function IndexBaselinePage() {
         onSectorChange={handleSectorChange}
         onIndustryChange={handleIndustryChange}
         onExchangeChange={handleExchangeChange}
+        itemKind="Index"
+        selectedItemCode={searchCode}
+        onItemSelected={handleItemSelected}
+        onClearItemSelection={handleClearSearch}
       />
 
       {loading && (

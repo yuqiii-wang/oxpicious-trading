@@ -25,7 +25,7 @@ COMMENT ON COLUMN stats.index_identity.code            IS 'Index code, e.g. "000
 
 -- ----------------------------------------------------------------------------
 -- Table: index_basic_stats
---   ← Daily OHLCV + volume + amount + change metrics
+--   ← Daily OHLCV + trading_shares + trading_amount + change metrics
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS stats.index_basic_stats (
     date                      DATE          NOT NULL,
@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS stats.index_basic_stats (
     high                      NUMERIC(18,4),
     low                       NUMERIC(18,4),
     close                     NUMERIC(18,4),
-    volume                    NUMERIC(24,4),
-    amount                    NUMERIC(24,4),
+    trading_shares            NUMERIC(24,4),
+    trading_amount            NUMERIC(24,4),
     change                     NUMERIC(18,4),
     change_pct                 NUMERIC(10,4),
     is_close_estimated         BOOLEAN       NOT NULL DEFAULT FALSE,
@@ -46,9 +46,9 @@ CREATE TABLE IF NOT EXISTS stats.index_basic_stats (
 );
 
 
-COMMENT ON TABLE  stats.index_basic_stats                    IS 'Index daily OHLCV + volume + amount + change metrics.';
-COMMENT ON COLUMN stats.index_basic_stats.volume             IS 'Index trading volume (交易量, shares).';
-COMMENT ON COLUMN stats.index_basic_stats.amount             IS 'Index trading amount (成交金额, 亿元).';
+COMMENT ON TABLE  stats.index_basic_stats                    IS 'Index daily OHLCV + trading_shares + trading_amount + change metrics.';
+COMMENT ON COLUMN stats.index_basic_stats.trading_shares             IS 'Index trading volume in shares (交易量).';
+COMMENT ON COLUMN stats.index_basic_stats.trading_amount     IS 'Index trading turnover (成交金额, yuan). Source CSV column 成交金额(亿元) is multiplied by 1e8 to convert to yuan.';
 COMMENT ON COLUMN stats.index_basic_stats.change             IS 'Absolute price change from previous close.';
 COMMENT ON COLUMN stats.index_basic_stats.change_pct         IS 'Percentage change from previous close (%).';
 COMMENT ON COLUMN stats.index_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index (highest composition shared weight > 60%). If no proxy index qualifies, prev_close is carried forward.';

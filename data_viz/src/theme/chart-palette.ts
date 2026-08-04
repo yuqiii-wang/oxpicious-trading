@@ -48,6 +48,11 @@ export const PE_COLOR = cssVar("--chart-pe", "#e377c2"); // tableau pink — sta
 // Spot / max pain / OI-weighted
 export const SPOT_COLOR = cssVar("--chart-spot", "#2C3E50");
 
+// Bollinger band envelope (±k×σ around an MA). Used on the MA-Spread page
+// to draw the upper/lower band lines and the faint fill between them.
+export const BOLL_BAND_COLOR = cssVar("--chart-boll-band", "#3498db"); // soft blue
+export const BOLL_BAND_FILL = cssVar("--chart-boll-fill", "#3498db");  // same hue, opacity applied at use site
+
 // Corporate-action event markers (dividends / splits)
 export const DIVIDEND_COLOR = cssVar("--chart-dividend", "#f1c40f"); // gold — dividend marker
 export const SPLIT_COLOR = cssVar("--chart-split", "#16a085"); // teal — split/conversion marker

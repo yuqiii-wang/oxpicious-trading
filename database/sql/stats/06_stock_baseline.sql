@@ -50,13 +50,19 @@ CREATE TABLE IF NOT EXISTS stats.stock_basic_stats (
     is_pe_estimated           BOOLEAN       NOT NULL DEFAULT FALSE,
     is_close_estimated        BOOLEAN       NOT NULL DEFAULT FALSE,
     has_intraday_5mins        BOOLEAN       NOT NULL DEFAULT FALSE,
+    -- Trading shares and trading_amount. Source CSV stores 成交量(万股) and 成交金额(万元);
+    -- converted to shares and yuan for cross-table comparability (e.g. industry
+    -- sentiment aggregation sums stock trading_amount to derive total industry capital
+    -- flow in yuan).
+    trading_shares            NUMERIC(24,4),
+    trading_amount            NUMERIC(24,4),
 
     CONSTRAINT pk_stock_basic_stats PRIMARY KEY (date, code),
     CONSTRAINT fk_stock_basic_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.stock_identity(date, code)
 );
 
 
-COMMENT ON TABLE  stats.stock_basic_stats             IS 'Stock daily OHLC + pct_change (mirrors etf_basic_stats) + pe. Source: SZSE archive/trend + SSE trend + SSE PE CSVs.';
+COMMENT ON TABLE  stats.stock_basic_stats             IS 'Stock daily OHLC + pct_change + pe + trading_shares/trading_amount. Source: SZSE archive/trend + SSE trend + SSE PE CSVs. Volume in shares, trading_amount in yuan.';
 COMMENT ON COLUMN stats.stock_basic_stats.prev_close  IS 'Previous closing price (yuan). 前收 from source CSV.';
 COMMENT ON COLUMN stats.stock_basic_stats.open        IS 'Opening price (yuan). 开盘 from source CSV.';
 COMMENT ON COLUMN stats.stock_basic_stats.high        IS 'High price (yuan). 最高 from source CSV.';
@@ -67,6 +73,8 @@ COMMENT ON COLUMN stats.stock_basic_stats.pe          IS 'Price-to-earnings rati
 COMMENT ON COLUMN stats.stock_basic_stats.is_pe_estimated IS 'TRUE when pe was estimated from the last actual PE row using constant-EPS assumption: estimated_pe = today_close * last_pe / last_close. FALSE when pe comes directly from the source CSV (actual), or when pe is NULL because no prior actual PE exists to estimate from.';
 COMMENT ON COLUMN stats.stock_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index (highest composition shared weight > 60%). If no proxy index qualifies, prev_close is carried forward.';
 COMMENT ON COLUMN stats.stock_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future stock intraday support).';
+COMMENT ON COLUMN stats.stock_basic_stats.trading_shares      IS 'Trading volume in SHARES. Source CSV stores 成交量(万股); converted to shares (× 10000) to match stats.index_basic_stats.trading_shares convention. NULL for PE-only rows (no OHLCV source).';
+COMMENT ON COLUMN stats.stock_basic_stats.trading_amount IS 'Trading turnover in yuan. Source CSV stores 成交金额(万元); converted to yuan (× 10000). Used by analyze_industry_sentiments.py to compute total industry capital flow (SUM across union of member-index stocks).';
 
 -- ----------------------------------------------------------------------------
 -- Indexes for stock_identity
@@ -101,7 +109,7 @@ CREATE INDEX IF NOT EXISTS idx_stock_basic_stats_code_date
 -- Table: stock_intraday_5min
 --   ← 5-minute intraday OHLCV bars streamed from the SSE price endpoint
 --   (https://www.sse.com.cn/market/price/report/ "刷新" button JSONP source).
---   Mirrors index_intraday_5min but adds a `volume` column: the SSE endpoint
+--   Mirrors index_intraday_5min but adds a `trading_shares` column: the SSE endpoint
 --   publishes today's CUMULATIVE volume, so per-bar volume is derived by
 --   subtracting the previous bar's cumulative volume from the current bar's.
 -- ----------------------------------------------------------------------------
@@ -114,7 +122,7 @@ CREATE TABLE IF NOT EXISTS stats.stock_intraday_5min (
     high                      NUMERIC(18,4),
     low                       NUMERIC(18,4),
     close                     NUMERIC(18,4),
-    volume                    NUMERIC(24,4),
+    trading_shares            NUMERIC(24,4),
     change                    NUMERIC(18,4),
     change_pct                NUMERIC(10,4),
 
@@ -128,7 +136,7 @@ COMMENT ON COLUMN stats.stock_intraday_5min.open         IS 'Opening price of th
 COMMENT ON COLUMN stats.stock_intraday_5min.high         IS 'Highest latest price during the 5-minute bar.';
 COMMENT ON COLUMN stats.stock_intraday_5min.low          IS 'Lowest latest price during the 5-minute bar.';
 COMMENT ON COLUMN stats.stock_intraday_5min.close        IS 'Closing price of the 5-minute bar (last sample latest price).';
-COMMENT ON COLUMN stats.stock_intraday_5min.volume       IS 'Volume traded during the 5-minute window in shares (cumulative day volume at bar end minus cumulative volume at previous bar end).';
+COMMENT ON COLUMN stats.stock_intraday_5min.trading_shares       IS 'Volume traded during the 5-minute window in shares (cumulative day volume at bar end minus cumulative volume at previous bar end).';
 COMMENT ON COLUMN stats.stock_intraday_5min.change       IS 'Absolute change from the bar''s open (close - open).';
 COMMENT ON COLUMN stats.stock_intraday_5min.change_pct   IS 'Percentage change from the bar''s open (%) = (close - open) / open * 100.';
 

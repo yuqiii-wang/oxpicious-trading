@@ -11,20 +11,20 @@
  *   Click an industry slice → drills into Layer 2.
  * Layer 2: Pie chart of individual stocks within the selected industry.
  *   "← Back" button returns to Layer 1.
- *   Click a stock slice → toggles a daily candlestick chart of that stock
+ *   Click a stock slice → toggles a daily OHLC chart of that stock
  *   below the pies (click the same stock again, or the × button, to close).
  *
  * The `open` / `onToggle` props are controlled by the parent
  * (e.g. EtfMarginPanel / IndexPanel) so the parent box can expand to fit
- * the pie chart. `onStockCandleOpenChange` lets the parent expand further
- * when the per-stock candlestick expansion is open.
+ * the pie chart. `onStockOhlcOpenChange` lets the parent expand further
+ * when the per-stock OHLC expansion is open.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
 import { PieChart as PieChartIcon } from "@mui/icons-material";
 import EChart from "@/components/EChart";
 import RefreshButton from "@/components/RefreshButton";
-import StockCandlestickChart from "@/components/StockCandlestickChart";
+import StockOhlcExpansionChart from "@/components/StockOhlcExpansionChart";
 import { useStore } from "@/store/filters";
 import { fetchSecComposition, invalidateCacheForUrl } from "@/lib/api-client";
 import { MUTED_PALETTE, axisColors } from "@/theme/chart-palette";
@@ -38,9 +38,9 @@ interface Props {
   /** Controlled open state — lifted to parent so it can expand the card. */
   open: boolean;
   onToggle: () => void;
-  /** Notified when the per-stock candlestick expansion opens/closes so the
+  /** Notified when the per-stock OHLC expansion opens/closes so the
    *  parent can expand its card height to fit the chart. */
-  onStockCandleOpenChange?: (open: boolean) => void;
+  onStockOhlcOpenChange?: (open: boolean) => void;
   /** When true, the toggle + refresh buttons are NOT rendered — the parent
    *  renders them in a shared button row (e.g. IndexPanel places the
    *  Composition and Linked-ETFs buttons on the same horizontal row).
@@ -71,7 +71,7 @@ export default function CompositionPieChart({
   code,
   open,
   onToggle,
-  onStockCandleOpenChange,
+  onStockOhlcOpenChange,
   hideButton = false,
   refreshKey: externalRefreshKey,
   onLoadingChange,
@@ -138,11 +138,11 @@ export default function CompositionPieChart({
     setSelectedStock(null);
   }, [data]);
 
-  // Notify parent whenever the per-stock candlestick expansion toggles, so
+  // Notify parent whenever the per-stock OHLC expansion toggles, so
   // the parent box can grow to fit the chart.
   useEffect(() => {
-    onStockCandleOpenChange?.(selectedStock != null);
-  }, [selectedStock, onStockCandleOpenChange]);
+    onStockOhlcOpenChange?.(selectedStock != null);
+  }, [selectedStock, onStockOhlcOpenChange]);
 
   // Layer 1: aggregate holdings by industry
   const industryData = useMemo<PieItem[]>(() => {
@@ -443,7 +443,7 @@ export default function CompositionPieChart({
                       option={stockOption}
                       height={280}
                       onReady={(chart) => {
-                        // Click handler: toggle the per-stock candlestick
+                        // Click handler: toggle the per-stock OHLC
                         // expansion. Clicking the same stock again closes it;
                         // clicking a different stock switches the chart.
                         chart.on("click", (params: { componentType?: string; data?: unknown }) => {
@@ -473,18 +473,18 @@ export default function CompositionPieChart({
                       }}
                       color="text.secondary"
                     >
-                      Click a slice to {selectedStock ? "switch" : "show"} the stock candlestick
+                      Click a slice to {selectedStock ? "switch" : "show"} the stock OHLC
                       {selectedStock ? " · click again to close" : ""}
                     </Typography>
                   </Box>
                 )}
               </Stack>
 
-              {/* Per-stock daily candlestick expansion — opens when a stock
+              {/* Per-stock daily OHLC expansion — opens when a stock
                   slice is clicked in Layer 2. The parent box is notified via
-                  onStockCandleOpenChange so it can grow to fit. */}
+                  onStockOhlcOpenChange so it can grow to fit. */}
               {selectedStock && (
-                <StockCandlestickChart
+                <StockOhlcExpansionChart
                   code={selectedStock.code}
                   name={selectedStock.name}
                   weightPct={selectedStock.weightPct}

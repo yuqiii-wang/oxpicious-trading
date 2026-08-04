@@ -235,7 +235,7 @@ function buildOiTrendOption(dates: string[], callOi: number[], putOi: number[], 
   };
 }
 
-function buildCandlestickOption(
+function buildOhlcOption(
   ohlcv: EtfOhlcvResponse,
   themeMode: "light" | "dark",
   ohlcMode: OhlcMode,
@@ -423,7 +423,7 @@ export default function AnnualSentimentPanel({ rows, ohlcv }: Props) {
         action={<OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />}
       >
         {filteredOhlcv && filteredOhlcv.rows.length > 0 ? (
-          <EChart option={buildCandlestickOption(filteredOhlcv, themeMode, ohlcMode)} height={340} group={CHART_GROUP} />
+          <EChart option={buildOhlcOption(filteredOhlcv, themeMode, ohlcMode)} height={340} group={CHART_GROUP} />
         ) : (
           <Alert severity="info">No ETF OHLCV data available for this underlying.</Alert>
         )}

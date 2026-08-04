@@ -76,8 +76,8 @@ interface DbEtfMarginRow extends QueryResultRow {
   action_type: string | null;
   implied_dividend_per_share: number | null;
   cum_split_factor: number | null;
-  volume_wan: number | null;
-  amount_wan: number | null;
+  trading_shares: number | null;
+  trading_amount: number | null;
   rz_balance: number | null;
   rq_balance_qty: number | null;
   rq_balance_amt: number | null;
@@ -104,12 +104,14 @@ function transformEtfRow(r: DbEtfMarginRow): EtfMarginRow {
     action_type: r.action_type ?? null,
     implied_dividend_per_share: toNum(r.implied_dividend_per_share),
     cum_split_factor: toNum(r.cum_split_factor),
-    volume_wan: toNum(r.volume_wan) ?? 0,
-    amount_wan: toNum(r.amount_wan) ?? 0,
-    rz_balance: toNum(r.rz_balance) ?? 0,
-    rq_balance_qty: toNum(r.rq_balance_qty) ?? 0,
-    rq_balance_amt: toNum(r.rq_balance_amt) ?? 0,
-    total_balance: toNum(r.total_balance) ?? 0,
+    trading_shares: toNum(r.trading_shares) ?? 0,
+    trading_amount: toNum(r.trading_amount) ?? 0,
+    // Margin fields preserve NULL (no data) so the chart can break the line
+    // instead of interpolating across missing/zero samples.
+    rz_balance: toNum(r.rz_balance),
+    rq_balance_qty: toNum(r.rq_balance_qty),
+    rq_balance_amt: toNum(r.rq_balance_amt),
+    total_balance: toNum(r.total_balance),
   };
 }
 
@@ -117,7 +119,7 @@ const ETF_MARGIN_COLUMNS = `
   date, prev_close, open, high, low, close,
   adj_open, adj_high, adj_low, adj_close, adj_prev_close,
   is_split_event_day, action_type, implied_dividend_per_share, cum_split_factor,
-  volume_wan, amount_wan,
+  trading_shares, trading_amount,
   rz_balance, rq_balance_qty, rq_balance_amt, total_balance
 `;
 

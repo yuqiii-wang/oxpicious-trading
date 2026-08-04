@@ -98,6 +98,11 @@ def download_xlsx_once(
         )
         out_file.parent.mkdir(parents=True, exist_ok=True)
         out_file.write_bytes(b"")
+        # Also write an empty CSV marker so filesystem scans checking *.csv
+        # (including empty markers via skip_empty_markers=True) can skip
+        # this date on the next run without re-downloading.
+        csv_marker = out_file.with_suffix(".csv")
+        csv_marker.write_bytes(b"")
         return None
 
     saved = safe_write_bytes(
@@ -135,6 +140,7 @@ def run_szse_download(
     db_table_by_type: Optional[Dict[str, str]] = None,
     db_code_suffix: Optional[str] = None,
     code_filter_by_type: Optional[Dict[str, List[str]]] = None,
+    skip_empty_markers: bool = False,
 ) -> dict:
     """Run a SZSE download loop.
 
@@ -156,6 +162,12 @@ def run_szse_download(
     of bare 6-digit codes to keep when converting the xlsx to CSV. Types
     absent from the mapping (or when the param is None) keep all rows. The
     xlsx is always written in full; only the CSV is filtered.
+
+    *skip_empty_markers* — when True, dates that have a local 0-byte CSV
+    marker (created when a previous fetch returned no data) are also
+    excluded from the download plan, preventing re-downloading dates
+    already confirmed to have no data. Works in both DB-first and
+    filesystem-scan modes.
     """
     out_dir = resolve_out_dir(caller_file, out_dirname, out_root)
 
@@ -194,6 +206,7 @@ def run_szse_download(
                 db_table=tbl,
                 db_date_column=db_date_column,
                 db_code_suffix=db_code_suffix,
+                skip_empty_markers=skip_empty_markers,
             )
             plan.items.extend(sub_plan.items)
             plan.present_count += sub_plan.present_count
@@ -215,6 +228,7 @@ def run_szse_download(
             db_table=db_table,
             db_date_column=db_date_column,
             db_code_suffix=db_code_suffix,
+            skip_empty_markers=skip_empty_markers,
         )
 
     # Create proxy if not provided

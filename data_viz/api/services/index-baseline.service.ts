@@ -43,8 +43,8 @@ interface DbIndexRow extends QueryResultRow {
   high: number | null;
   low: number | null;
   close: number | null;
-  volume: number | null;
-  amount: number | null;
+  trading_shares: number | null;
+  trading_amount: number | null;
   change_pct: number | null;
   pe: number | null;
   cons_number: number | null;
@@ -73,8 +73,8 @@ function transformRow(r: DbIndexRow): IndexBaselineRow {
     high: toNum(r.high),
     low: toNum(r.low),
     close: toNum(r.close),
-    volume: toNum(r.volume),
-    amount: toNum(r.amount),
+    trading_shares: toNum(r.trading_shares),
+    trading_amount: toNum(r.trading_amount),
     change_pct: toNum(r.change_pct),
     pe: toNum(r.pe),
     cons_number: toNum(r.cons_number),
@@ -132,7 +132,7 @@ export async function getIndexBaseline(
   }
 
   const sql = `
-    SELECT date, open, high, low, close, volume, amount, change_pct,
+    SELECT date, open, high, low, close, trading_shares, trading_amount, change_pct,
            pe, cons_number, ma5, ma20, ma60, ma120, ma255, has_intraday_5mins
       FROM stats.v_index_baseline
      WHERE ${whereParts.join(" AND ")}
@@ -326,7 +326,7 @@ export async function getIndicesCombined(
   }
 
   const sql = `
-    SELECT code, date, open, high, low, close, volume, amount, change_pct,
+    SELECT code, date, open, high, low, close, trading_shares, trading_amount, change_pct,
            pe, cons_number, ma5, ma20, ma60, ma120, ma255, has_intraday_5mins
       FROM stats.v_index_baseline
      WHERE ${whereParts.join(" AND ")}

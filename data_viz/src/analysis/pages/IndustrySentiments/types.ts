@@ -1,0 +1,79 @@
+/**
+ * Shared types for the Industry Sentiments analysis page sub-modules.
+ */
+import type {
+  IndustrySentimentsAggRow,
+  IndustrySentimentsChartResponse,
+} from "../../../../shared/types";
+import type { ThemeMode } from "@/store/filters";
+
+/** Pool-size bucket: small <51, mid 51-180, large >180, all = no filter. */
+export type PoolSize = "all" | "small" | "mid" | "large";
+
+/** Rolling-correlation window selector. */
+export type CorrWindow = "5d" | "20d" | "60d" | "255d";
+
+/**
+ * One industry's precomputed aggregation set, used to render a per-industry
+ * mean curve in multi-industry "Mean only" mode.
+ */
+export interface PerIndustryAggregation {
+  industry_id: string;
+  industry_label: string;
+  aggregation: IndustrySentimentsAggRow[];
+}
+
+/** Props for the main IndustrySentimentsPlot card. */
+export interface PlotProps {
+  data: IndustrySentimentsChartResponse;
+  themeMode: ThemeMode;
+  /** When true, the data is a merge of multiple industries. The single
+   *  mean/var overlay is hidden; instead, when meanOnly is ON, one mean
+   *  curve per industry is rendered (each in a distinct color). */
+  multiIndustry: boolean;
+  /** Number of source industries in the merge (1 when single-select). Used
+   *  only for the subtitle when multiIndustry is true. */
+  numIndustries: number;
+  /** Per-industry chart responses (the un-merged source data). Used to build
+   *  per-industry aggregation sets for the multi-industry mean overlay. Empty
+   *  in single-industry mode (the merged `data.aggregation` is used instead). */
+  chartDataList: IndustrySentimentsChartResponse[];
+  /** Selected industry IDs (passed through from the page so the auto-expanded
+   *  Correlation section can fetch pairwise correlation rows from the API).
+   *  Empty in single-industry mode. */
+  selectedIndustryIds: string[];
+}
+
+/** Props for the IndustryBenchmarkAttributionChart component. */
+export interface AttributionChartProps {
+  industryId: string;
+  industryLabel: string;
+  /** As-of date for the attribution ("" or null → latest available). */
+  date: string | null;
+  themeMode: ThemeMode;
+  /** The benchmark code selected in the dropdown (shown as the 1st plot).
+   *  Highlighted in the attribution bar chart so the user can see where the
+   *  navigation benchmark sits relative to the other benchmarks. */
+  selectedBenchmarkCode: string | null;
+}
+
+/** Props for the BenchmarkPriceChart component (1st plot in attribution mode). */
+export interface BenchmarkPriceChartProps {
+  /** The benchmark code to fetch + display. */
+  benchmarkCode: string | null;
+  themeMode: ThemeMode;
+  /** Currently selected date (markLine position). Null → latest date. */
+  selectedDate: string | null;
+  /** Callback fired when the user clicks a date on the chart. */
+  onDateSelect: (date: string) => void;
+  /** Selected industries to overlay as non-this-industry shades. Each entry
+   *  has an industry_id and a display label. When empty, no shades are drawn. */
+  selectedIndustries: Array<{ id: string; label: string }>;
+}
+
+/** Props for the CorrelationChart component. */
+export interface CorrelationChartProps {
+  industryIds: string[];
+  poolSize: PoolSize;
+  themeMode: ThemeMode;
+}

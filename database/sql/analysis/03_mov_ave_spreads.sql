@@ -41,9 +41,15 @@ DELETE FROM analysis.analysis_identity WHERE name = 'etf_mov_ave_spread';
 --                                            (etf vs index), ticker, and date
 --    price_vs_ma{5,20,60,120,255}        — (price - maX) / maX
 --    ma5_vs_ma{20,60,120,255}            — (ma5  - maX) / maX
+--    std_{5,20,60,120,255}days            — rolling population σ of price over
+--                                            N trading days (Bollinger band
+--                                            width). Same units as price.
+--                                            NULL until N rows are available.
 --
 --  Gap values are stored as signed fractional ratios (e.g. 0.05 = +5%).
 --  NULL when either the numerator or denominator is NULL or non-positive.
+--  σ values are in price units (not price²) so NUMERIC(10,6) holds them
+--  without overflow for any realistic ETF / index / stock price.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_spreads_detail (
     sec_type        TEXT         NOT NULL,  -- 'etf' | 'index'
@@ -76,6 +82,16 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
     ma60_curvature    NUMERIC(10,6), -- 2nd derivative of MA60
     ma120_curvature   NUMERIC(10,6), -- 2nd derivative of MA120
     ma255_curvature   NUMERIC(10,6), -- 2nd derivative of MA255
+
+    -- 5 rolling population σ columns (in price units, Bollinger band width).
+    -- σ_N[t] = sqrt( mean( (price[t-N+1..t] - mean(price[t-N+1..t]))^2 ) )
+    -- using ddof=0 (population std, the Bollinger convention). NULL until
+    -- the rolling window is fully populated (N consecutive rows).
+    std_5days         NUMERIC(10,6),
+    std_20days        NUMERIC(10,6),
+    std_60days        NUMERIC(10,6),
+    std_120days       NUMERIC(10,6),
+    std_255days       NUMERIC(10,6),
 
     CONSTRAINT pk_mov_ave_spreads_detail PRIMARY KEY (sec_type, code, date),
     CONSTRAINT chk_mov_ave_spreads_detail_sec_type
@@ -110,3 +126,8 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma20_curvature  IS '2nd deriva
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma60_curvature  IS '2nd derivative of MA60 (slope[t] - slope[t-1]).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma120_curvature IS '2nd derivative of MA120 (slope[t] - slope[t-1]).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.ma255_curvature IS '2nd derivative of MA255 (slope[t] - slope[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_5days   IS 'Rolling population σ (ddof=0) of price over 5 trading days. Bollinger band width for MA5 envelope. NULL until 5 consecutive rows.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_20days  IS 'Rolling population σ (ddof=0) of price over 20 trading days. Bollinger band width for MA20 envelope. NULL until 20 consecutive rows.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_60days  IS 'Rolling population σ (ddof=0) of price over 60 trading days. Bollinger band width for MA60 envelope. NULL until 60 consecutive rows.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_120days IS 'Rolling population σ (ddof=0) of price over 120 trading days. Bollinger band width for MA120 envelope. NULL until 120 consecutive rows.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_255days IS 'Rolling population σ (ddof=0) of price over 255 trading days. Bollinger band width for MA255 envelope. NULL until 255 consecutive rows.';

@@ -186,8 +186,8 @@ def load_combined():
         SELECT
             i.date, i.code, i.name,
             b.prev_close, b.open, b.high, b.low, b.close, b.pct_change,
-            COALESCE(l.volume_wan, 0)     AS volume_wan,
-            COALESCE(l.amount_wan, 0)     AS amount_wan,
+            COALESCE(l.trading_shares, 0) AS trading_shares,
+            COALESCE(l.trading_amount, 0) AS trading_amount,
             COALESCE(l.rz_buy, 0)         AS rz_buy,
             COALESCE(l.rz_balance, 0)     AS rz_balance,
             COALESCE(l.rq_sell_qty, 0)    AS rq_sell_qty,
@@ -243,7 +243,7 @@ def study_etf_themes(combined_df=None, save=True, require_recent_data=True):
         (study_df, summary_df)
         - study_df:   per-ETF row with [code, name, theme_id, theme_label, slug,
                        theme_group_id, theme_group_label, industry_id, industry_label,
-                       n_ohlcv_days, n_margin_days, has_margin, avg_volume_wan,
+                       n_ohlcv_days, n_margin_days, has_margin, avg_shares,
                        has_recent_data]
         - summary_df: per-theme row with [theme_id, theme_label, slug,
                        theme_group_id, theme_group_label, industry_id, industry_label,
@@ -262,7 +262,7 @@ def study_etf_themes(combined_df=None, save=True, require_recent_data=True):
         tgid, tglab, iid, ilab = get_theme_taxonomy(tid)
         rz = pd.to_numeric(sub.get("rz_balance", 0), errors="coerce").fillna(0.0)
         rq = pd.to_numeric(sub.get("rq_balance_amt", 0), errors="coerce").fillna(0.0)
-        vol = pd.to_numeric(sub.get("volume_wan", 0), errors="coerce").fillna(0.0)
+        vol = pd.to_numeric(sub.get("trading_shares", 0), errors="coerce").fillna(0.0)
         n_margin = int(((rz > 0) | (rq > 0)).sum())
         has_recent = (sub["date"] >= cutoff_date).any()
         rows.append({
@@ -278,7 +278,7 @@ def study_etf_themes(combined_df=None, save=True, require_recent_data=True):
             "n_ohlcv_days":       len(sub),
             "n_margin_days":      n_margin,
             "has_margin":         n_margin > 0,
-            "avg_volume_wan":     float(vol.mean()) if len(vol) else 0.0,
+            "avg_shares":         float(vol.mean()) if len(vol) else 0.0,
             "has_recent_data":    has_recent,
         })
     study_df = pd.DataFrame(rows)
@@ -380,7 +380,7 @@ def select_etfs_for_plotting(
         rz = pd.to_numeric(sub.get("rz_balance", 0), errors="coerce").fillna(0.0)
         rq = pd.to_numeric(sub.get("rq_balance_amt", 0), errors="coerce").fillna(0.0)
         code_margin_map[code] = int(((rz > 0) | (rq > 0)).sum())
-        vol = pd.to_numeric(sub.get("volume_wan", 0), errors="coerce").fillna(0.0)
+        vol = pd.to_numeric(sub.get("trading_shares", 0), errors="coerce").fillna(0.0)
         code_volume_map[code] = float(vol.mean()) if len(vol) else 0.0
         code_recent_map[code] = (sub["date"] >= cutoff_date).any()
 
@@ -417,7 +417,7 @@ def select_etfs_for_plotting(
     #   3. n_margin_days DESC — within same keyword tier, more margin days
     #      act as a reliability tie-breaker.
     #   4. n_ohlcv_days DESC — longer price-history better.
-    #   5. avg_volume_wan DESC — higher trading liquidity better.
+    #   5. avg_shares DESC — higher trading liquidity better.
     theme_all_codes = OrderedDict()
     total_qualified = 0
     for tid in ETF_THEMES.keys():

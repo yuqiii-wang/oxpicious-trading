@@ -1,44 +1,28 @@
 /**
  * StockPanel — single stock chart + slider.
  *
- * Layout (mirrors IndexPanel + StockCandlestickChart but without intraday
+ * Layout (mirrors IndexPanel + StockOhlcExpansionChart but without intraday
  * expansion — 5-min intraday bars are not yet collected for stocks):
- *   • Candlestick OHLC + MA5/MA20/MA60/MA120 (computed client-side from
- *     close) + PE ratio on a twin axis (when available — only SZSE stocks
- *     publish PE via the source endpoint).
+ *   • Daily OHLC + MA5/MA20/MA60/MA120 (computed client-side from close) +
+ *     PE ratio on a twin axis (when available — only SZSE stocks publish PE
+ *     via the source endpoint).
  *   • Date range slider (windowing) per panel.
  *
- * MA values are computed client-side because the stock baseline view does not
- * carry precomputed MA columns (v_stock_baseline only exposes OHLC +
- * pct_change + PE from the source CSVs).
+ * The OHLC chart itself is the shared `StockOhlcChart` component, reused by
+ * the composition pie expansion (StockOhlcExpansionChart) so the two render
+ * identically. This file owns only the ChartCard chrome, the slider, and the
+ * return badges; `hasOhlc`/`hasPe` are computed here only to drive the
+ * subtitle (the chart recomputes them internally).
  */
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Box, Chip, Slider, Stack, Typography } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
-import { useStore } from "@/store/filters";
-import { breakArraysAtGaps, fmtNum, fmtPct, safeMa } from "@/lib/series";
-import {
-  ohlcSeries,
-  rebasePriceArrays,
-  formatPriceValue,
-  type OhlcMode,
-} from "@/lib/ohlc";
-import {
-  MA20_COLOR,
-  MA60_COLOR,
-  MA120_COLOR,
-  MUTED_PALETTE,
-  PE_COLOR,
-  UP_COLOR,
-  DOWN_COLOR,
-  axisColors,
-  commonLegend,
-  commonGrid,
-} from "@/theme/chart-palette";
+import StockOhlcChart from "@/components/StockOhlcChart";
+import { fmtPct } from "@/lib/series";
+import { type OhlcMode } from "@/lib/ohlc";
+import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
 import type { StockBundle } from "../../../../shared/types";
-import type { EChartsOption } from "echarts";
 
 interface Props {
   stock: StockBundle;
@@ -97,7 +81,6 @@ function ReturnBadges({ stock }: { stock: StockBundle }) {
 }
 
 export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: Props) {
-  const themeMode = useStore((s) => s.themeMode);
   const allRows = stock.rows;
   const maxIdx = allRows.length - 1;
   const [range, setRange] = useState<[number, number]>([0, maxIdx]);
@@ -152,221 +135,6 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
     return filteredRows.some((r) => r.pe != null && r.pe !== 0);
   }, [filteredRows]);
 
-  const option = useMemo<EChartsOption>(() => {
-    const c = axisColors(themeMode);
-    const rows = filteredRows;
-    const dates = rows.map((r) => r.date);
-    const open = rows.map((r) => r.open);
-    const high = rows.map((r) => r.high);
-    const low = rows.map((r) => r.low);
-    const close = rows.map((r) => r.close);
-    const pe = rows.map((r) => r.pe);
-    const isPeEstimatedNum = rows.map((r) => (r.is_pe_estimated ? 1 : 0));
-    // Compute MA client-side — the stock baseline view does not carry
-    // precomputed MA columns (only OHLC + pct_change + PE).
-    const ma5 = safeMa(close, 5);
-    const ma20 = safeMa(close, 20);
-    const ma60 = safeMa(close, 60);
-    const ma120 = safeMa(close, 120);
-
-    // Rebase price-derived arrays (OHLC + MAs) to % change in percentage mode.
-    // pe and isPeEstimatedNum are NOT price-derived — kept in absolute units.
-    const { rebased } = rebasePriceArrays(
-      { open, high, low, close, ma5, ma20, ma60, ma120 },
-      ohlcMode,
-    );
-
-    const broken = breakArraysAtGaps(dates, [
-      rebased.open, rebased.high, rebased.low, rebased.close,
-      rebased.ma5, rebased.ma20, rebased.ma60, rebased.ma120,
-      pe, isPeEstimatedNum,
-    ]);
-
-    const candleData: Array<Array<number | null>> = broken.dates.map((_, i) => [
-      broken.arrays[0][i],
-      broken.arrays[3][i],
-      broken.arrays[2][i],
-      broken.arrays[1][i],
-    ]);
-
-    const yAxis: EChartsOption["yAxis"] = [
-      {
-        type: "value",
-        scale: true,
-        name: ohlcMode === "percentage" ? "%" : "Price",
-        nameTextStyle: { color: c.textColor, fontSize: 9 },
-        axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: {
-          color: c.textColor,
-          fontSize: 9,
-          formatter: (v: number) => formatPriceValue(v, ohlcMode),
-        },
-        splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
-      },
-    ];
-    if (hasPe) {
-      (yAxis as Array<unknown>).push({
-        type: "value",
-        scale: true,
-        name: "PE",
-        nameTextStyle: { color: PE_COLOR, fontSize: 9 },
-        axisLine: { lineStyle: { color: PE_COLOR } },
-        axisLabel: { color: PE_COLOR, fontSize: 9, formatter: (v: number) => fmtNum(v) },
-        splitLine: { show: false },
-        offset: 40,
-      });
-    }
-
-    const series: EChartsOption["series"] = [
-      ...(hasOhlc
-        ? [ohlcSeries(candleData, {
-            name: "OHLC",
-            yAxisIndex: 0,
-            z: 5,
-          })]
-        : [{
-            type: "line" as const,
-            name: "Close",
-            yAxisIndex: 0,
-            data: broken.arrays[3],
-            smooth: false,
-            symbol: "none",
-            lineStyle: { color: MUTED_PALETTE[0], width: 1.3 },
-            z: 5,
-          }]),
-      {
-        type: "line",
-        name: "MA5",
-        yAxisIndex: 0,
-        data: broken.arrays[4],
-        smooth: false,
-        symbol: "none",
-        lineStyle: { color: MUTED_PALETTE[2], width: 0.8 },
-        z: 4,
-      },
-      {
-        type: "line",
-        name: "MA20",
-        yAxisIndex: 0,
-        data: broken.arrays[5],
-        smooth: false,
-        symbol: "none",
-        lineStyle: { color: MA20_COLOR, width: 0.9 },
-        z: 4,
-      },
-      {
-        type: "line",
-        name: "MA60",
-        yAxisIndex: 0,
-        data: broken.arrays[6],
-        smooth: false,
-        symbol: "none",
-        lineStyle: { color: MA60_COLOR, width: 0.8, type: "dashed" },
-        z: 4,
-      },
-      {
-        type: "line",
-        name: "MA120",
-        yAxisIndex: 0,
-        data: broken.arrays[7],
-        smooth: false,
-        symbol: "none",
-        lineStyle: { color: MA120_COLOR, width: 0.7, type: "dotted" },
-        z: 4,
-      },
-    ];
-    if (hasPe) {
-      // Separate PE into actual (solid) and estimated (light, continuous)
-      // series. Null or 0 values are suppressed so missing/placeholder PE
-      // samples do not render on the chart.
-      const peActual = broken.arrays[8].map((val, i) =>
-        broken.arrays[9][i] === 1 || val == null || val === 0 ? null : val
-      );
-      const peEstimated = broken.arrays[8].map((val, i) =>
-        broken.arrays[9][i] === 1 && val != null && val !== 0 ? val : null
-      );
-      series.push({
-        type: "line",
-        name: "PE",
-        yAxisIndex: 1,
-        data: peActual,
-        smooth: false,
-        symbol: "none",
-        lineStyle: { color: PE_COLOR, width: 1.1, opacity: 0.85 },
-        z: 6,
-      });
-      series.push({
-        type: "line",
-        name: "PE (est)",
-        yAxisIndex: 1,
-        data: peEstimated,
-        smooth: false,
-        symbol: "none",
-        connectNulls: false,
-        lineStyle: { color: PE_COLOR, width: 1.1, opacity: 0.4 },
-        z: 6,
-      });
-    }
-
-    return {
-      backgroundColor: "transparent",
-      animation: false,
-      grid: commonGrid({ left: 50, right: hasPe ? 60 : 50, bottom: 28 }),
-      tooltip: {
-        trigger: "axis",
-        axisPointer: { type: "cross", snap: true },
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
-        formatter: (params: unknown) => {
-          const arr = (Array.isArray(params) ? params : [params]) as Array<{
-            axisValue?: string;
-            marker?: string;
-            seriesName?: string;
-            value?: Array<number | null> | number;
-          }>;
-          if (arr.length === 0) return "";
-          const dateStr = (arr[0].axisValue as string) || "";
-          let html = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
-          const isPriceSeries = (name: string) =>
-            name === "OHLC" || name === "Close" || name.startsWith("MA");
-          for (const p of arr) {
-            if (p.value == null) continue;
-            const name = p.seriesName ?? "";
-            if (Array.isArray(p.value)) {
-              const [o, cl, l, h] = p.value;
-              if (o == null && cl == null && l == null && h == null) continue;
-              html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
-            } else {
-              const v = p.value as number;
-              if (!Number.isFinite(v)) continue;
-              const vstr = isPriceSeries(name)
-                ? formatPriceValue(v, ohlcMode)
-                : name === "PE" || name === "PE (est)" ? fmtNum(v, 2) : fmtNum(v);
-              html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}</b></div>`;
-            }
-          }
-          return html;
-        },
-      },
-      legend: commonLegend(themeMode, { type: "scroll" }),
-      xAxis: {
-        type: "category",
-        data: broken.dates,
-        axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: {
-          color: c.textColor,
-          fontSize: 8,
-          formatter: (v: string) => v.slice(0, 7),
-          interval: Math.max(1, Math.floor(broken.dates.length / 8)),
-        },
-        splitLine: { show: false },
-      },
-      yAxis,
-      series,
-    };
-  }, [filteredRows, themeMode, hasOhlc, hasPe, ohlcMode]);
-
   const subtitle = hasOhlc
     ? `${stock.sector_label} / ${stock.industry_label} · OHLC${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120${hasPe ? " · PE" : ""}`
     : `${stock.sector_label} / ${stock.industry_label} · Close${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120${hasPe ? " · PE" : ""}`;
@@ -389,7 +157,7 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
       height={360}
     >
       <Box sx={{ width: "100%" }}>
-        <EChart option={option} height={250} />
+        <StockOhlcChart rows={filteredRows} ohlcMode={ohlcMode} height={250} />
         {maxIdx > 0 && (
           <Box sx={{ px: 1, mt: 0.25 }}>
             <Slider

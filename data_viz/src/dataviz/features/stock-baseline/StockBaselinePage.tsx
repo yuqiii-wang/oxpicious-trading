@@ -5,7 +5,7 @@
  *   • ThemeSelector — two-level cascade (L1 sector → L2 industry), loads from
  *     /api/stock-baseline/themes which returns the precomputed taxonomy tree
  *     built from stats.sec_classification.
- *   • Stack of StockPanel cards (one per stock, full width) — candlestick +
+ *   • Stack of StockPanel cards (one per stock, full width) — OHLC +
  *     MA5/MA20/MA60/MA120 (computed client-side) + PE ratio on twin axis
  *     (when available — only SZSE stocks publish PE).
  *   • Pagination — 2 stocks per page.

@@ -4,7 +4,7 @@
  * (type='stock') for L1/L2 classification.
  *
  *   • getStockBaseline() — single-code OHLC + pct_change + PE, used by the
- *     composition pie chart's per-stock candlestick expansion.
+ *     composition pie chart's per-stock OHLC expansion.
  *   • listStockThemes() — two-level L1 sector → L2 industry tree (mirrors
  *     listIndexThemes()).
  *   • getStocksCombined() — paginated stock list filtered by sector +

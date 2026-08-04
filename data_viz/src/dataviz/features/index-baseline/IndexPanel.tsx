@@ -67,16 +67,13 @@ export default function IndexPanel({ index, themeMode }: Props) {
   const [intradayData, setIntradayData] = useState<IndexIntraday5minResponse | null>(null);
   const [intradayLoading, setIntradayLoading] = useState(false);
   const [intradayError, setIntradayError] = useState<string | null>(null);
-  // Plot-level refresh key for the IntradayPanel — bumped by the panel's
-  // refresh button to force a cache bypass + refetch of the 5-min bars.
-  const [intradayRefreshKey, setIntradayRefreshKey] = useState(0);
 
   // Lifted composition panel open state — controls ChartCard height so the
   // pie chart stays inside the parent box when expanded.
   const [compositionOpen, setCompositionOpen] = useState(false);
-  // Per-stock candlestick expansion open state — when true the card grows
+  // Per-stock OHLC expansion open state — when true the card grows
   // further to fit the stock chart below the pie charts.
-  const [stockCandleOpen, setStockCandleOpen] = useState(false);
+  const [stockOhlcOpen, setStockOhlcOpen] = useState(false);
   // Linked-ETFs list open state — toggles the table of ETFs tracking this
   // index (shown beside the Composition button).
   const [linkedEtfsOpen, setLinkedEtfsOpen] = useState(false);
@@ -106,7 +103,7 @@ export default function IndexPanel({ index, themeMode }: Props) {
     setIntradayData(null);
     setIntradayError(null);
     setCompositionOpen(false);
-    setStockCandleOpen(false);
+    setStockOhlcOpen(false);
     setLinkedEtfsOpen(false);
   }, [index.code, allRows.length]);
 
@@ -210,9 +207,10 @@ export default function IndexPanel({ index, themeMode }: Props) {
     const high = rows.map((r) => r.high);
     const low = rows.map((r) => r.low);
     const close = rows.map((r) => r.close);
-    // Trading amount (成交金额) in 亿元 — replaces volume (shares) as the
-    // bottom bar series.  Source: CSIndex history CSV "成交金额（亿元）".
-    const tradingAmount = rows.map((r) => r.amount);
+    // Trading turnover (成交金额) in yuan — replaces volume (shares) as the
+    // bottom bar series.  Source: stats.index_basic_stats.trading_amount (now stored
+    // in yuan). Divided by 1e8 below for display in 亿元.
+    const tradingAmount = rows.map((r) => (r.trading_amount == null ? null : r.trading_amount / 1e8));
     const ma5 = rows.map((r) => r.ma5);
     const ma20 = rows.map((r) => r.ma20);
     const ma60 = rows.map((r) => r.ma60);
@@ -422,10 +420,10 @@ export default function IndexPanel({ index, themeMode }: Props) {
 
   // Dynamic card height (used as minHeight — ChartCard grows to fit content).
   // Reserve a baseline when collapsed; expand when any side panel opens;
-  // expand further when the per-stock candlestick is open.
+  // expand further when the per-stock OHLC is open.
   const anyPanelOpen = intradayDate || compositionOpen || linkedEtfsOpen;
   const cardHeight = anyPanelOpen
-    ? (stockCandleOpen ? 1020 : 680)
+    ? (stockOhlcOpen ? 1020 : 680)
     : 360;
 
   return (
@@ -523,7 +521,7 @@ export default function IndexPanel({ index, themeMode }: Props) {
           code={index.code}
           open={compositionOpen}
           onToggle={() => setCompositionOpen(!compositionOpen)}
-          onStockCandleOpenChange={setStockCandleOpen}
+          onStockOhlcOpenChange={setStockOhlcOpen}
           hideButton
           refreshKey={compositionRefreshKey}
           onLoadingChange={setCompositionLoading}

@@ -60,7 +60,6 @@ INDEX_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("TECH", "科技", "CONSUMER_ELEC", "消费电子", ["消费电子", "电子"]),
     ("TECH", "科技", "DIGITAL", "数字经济", ["数字经济", "数据"]),
     ("TECH", "科技", "TMT", "TMT", ["TMT"]),
-    ("TECH", "科技", "TECH_INNOV", "科技创新", ["科技", "创新100"]),
 
     # --- NEV (新能源) ---
     ("NEV", "新能源", "PV", "光伏", ["光伏"]),
@@ -169,9 +168,12 @@ INDEX_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("REGION", "区域概念", "REGION_HK_LINK", "沪港深/港股通",
      ["沪港深", "港股通", "香港", "中华"]),
 
-    # --- BROAD (宽基) — true broad-market board indices ONLY ---
-    # Only the 4 board-level sub-industries remain: CSI (cross-market),
-    # SSE (Shanghai), SZSE (Shenzhen), STAR (科创).
+    # --- BROAD (宽基) — broad-market indices ---
+    # Board-level sub-industries: CSI (cross-market), SSE (Shanghai),
+    # SZSE (Shenzhen), STAR (科创).  Plus BROAD_TECH_INNOV (科技创新) —
+    # cross-cutting tech-innovation themes (中证科技, 科技50, 科技龙头, …)
+    # that span multiple TECH sub-industries and represent the broad tech
+    # market rather than a single sub-industry.
     # Factor/strategy → STRATEGY, SOE-theme → SOE, HK/cross-border →
     #   tagged by their underlying sector (TECH/FIN/…) or OTHER.
     # is_broad_market is TRUE ONLY for BROAD primary tags — sector indices
@@ -180,6 +182,9 @@ INDEX_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("BROAD", "宽基", "BROAD_STAR", "科创", ["科创"]),
     ("BROAD", "宽基", "BROAD_SZSE", "深证", ["深证", "创业板"]),
     ("BROAD", "宽基", "BROAD_SSE", "上证", ["上证"]),
+    # BROAD_TECH_INNOV placed BEFORE BROAD_CSI so "中证科技" resolves to
+    # 科技创新 (more specific) rather than 中证 (generic catch-all).
+    ("BROAD", "宽基", "BROAD_TECH_INNOV", "科技创新", ["科技", "创新100"]),
     ("BROAD", "宽基", "BROAD_CSI", "中证", ["中证", "沪深", "A股", "北证"]),
 ]
 

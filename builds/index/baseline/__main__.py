@@ -12,7 +12,7 @@ benchmarks:
   • temps/szse_trend/szse_trend_index_YYYYMMDD.csv    (399001, 399006, 399237)
 
 SZSE columns (交易日期, 指数代码, ...) are mapped to the CSIndex schema
-(date, indexCode, ...). Fields not provided by SZSE (volume, pe,
+(date, indexCode, ...). Fields not provided by SZSE (trading_shares, pe,
 consNumber) are set to NULL; absolute change is computed as close − prev_close.
 
 Computes moving averages (ma5, ma20, ma60, ma120, ma255) from daily close.
@@ -42,7 +42,7 @@ stream_sse_price.py and is NOT truncated here.)
 
 Inserts to database tables:
   • index_identity          (date, code, name)
-  • index_basic_stats       (date, code, OHLCV, volume, amount, change)
+  • index_basic_stats       (date, code, OHLCV, trading_shares, trading_amount, change)
   • index_valuation         (date, code, PE, consNumber)
   • index_tech_stats        (date, code, MAs)
 
@@ -267,8 +267,8 @@ def _fill_missing_closes(combined: pd.DataFrame,
                 "high": None,
                 "low": None,
                 "close": round(estimated_close, 4),
-                "volume": None,
-                "amount": None,
+                "trading_shares": None,
+                "trading_amount": None,
                 "change": round(estimated_close - prev_close, 4),
                 "changePct": round((estimated_close - prev_close) / prev_close * 100.0, 4) if prev_close else None,
                 "pe": None,
@@ -309,8 +309,8 @@ def _load_szse_index_history(verbose: bool = True) -> list:
 
     Returns a list of per-code DataFrames (one per SZSE index code), each
     with the same columns as a CSIndex *_history.csv after schema
-    normalization (date, code, indexName, open, high, low, close, volume,
-    amount, change, changePct, pe, consNumber). Returns an empty list
+    normalization (date, code, indexName, open, high, low, close, trading_shares,
+    trading_amount, change, changePct, pe, consNumber). Returns an empty list
     if no files are found.
     """
     archive_files = sorted(glob.glob(os.path.join(SZSE_ARCHIVE_DIR, "szse_index_*.csv")))
@@ -335,7 +335,7 @@ def _load_szse_index_history(verbose: bool = True) -> list:
         "最低": "low",
         "今收": "close",
         "涨跌幅（%）": "changePct",
-        "成交金额(亿元)": "amount",
+        "成交金额(亿元)": "trading_amount",
     }
 
     dfs = []
@@ -356,9 +356,12 @@ def _load_szse_index_history(verbose: bool = True) -> list:
             continue
 
         # Parse numerics
-        for col in ["prev_close", "open", "high", "low", "close", "amount", "changePct"]:
+        for col in ["prev_close", "open", "high", "low", "close", "trading_amount", "changePct"]:
             if col in df.columns:
                 df[col] = df[col].apply(parse_num)
+        # SZSE 成交金额(亿元) → yuan to match the "yuan everywhere" DB convention.
+        if "trading_amount" in df.columns:
+            df["trading_amount"] = df["trading_amount"] * 1e8  # 亿元 → yuan
 
         # Parse date
         df["date"] = df["date"].apply(parse_date)
@@ -368,7 +371,7 @@ def _load_szse_index_history(verbose: bool = True) -> list:
         df["change"] = (df["close"] - df["prev_close"]).round(4)
 
         # Fields not provided by SZSE index data
-        df["volume"] = None
+        df["trading_shares"] = None
         df["pe"] = None
         df["consNumber"] = None
 
@@ -437,13 +440,20 @@ def build_daily_df(existing_keys: set, shared_weights: dict = None,
             continue
         df["code"] = code
 
-        # Backward compat: old CSVs use "turnover", new ones use "amount"
-        if "turnover" in df.columns and "amount" not in df.columns:
-            df = df.rename(columns={"turnover": "amount"})
+        # Backward compat: old CSVs use "turnover", new ones use "trading_amount"
+        if "turnover" in df.columns and "trading_amount" not in df.columns:
+            df = df.rename(columns={"turnover": "trading_amount"})
+        # Backward compat: old CSVs use "shares", new schema uses "trading_shares"
+        if "shares" in df.columns and "trading_shares" not in df.columns:
+            df = df.rename(columns={"shares": "trading_shares"})
 
-        for col in ["open", "high", "low", "close", "volume", "amount", "change", "changePct", "pe", "consNumber"]:
+        for col in ["open", "high", "low", "close", "trading_shares", "trading_amount", "change", "changePct", "pe", "consNumber"]:
             if col in df.columns:
                 df[col] = df[col].apply(parse_num)
+        # CSIndex history trading_amount is in 亿元 → convert to yuan to match
+        # the "yuan everywhere" DB convention.
+        if "trading_amount" in df.columns:
+            df["trading_amount"] = df["trading_amount"] * 1e8  # 亿元 → yuan
 
         df["date"] = df["date"].apply(parse_date)
         df = df.dropna(subset=["date"])
@@ -546,8 +556,8 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
             "high": row["high"],
             "low": row["low"],
             "close": row["close"],
-            "volume": row["volume"],
-            "amount": row["amount"],
+            "trading_shares": row["trading_shares"],
+            "trading_amount": row["trading_amount"],
             "change": row["change"],
             "change_pct": row["changePct"],
             "is_close_estimated": bool(row.get("is_close_estimated", False)),

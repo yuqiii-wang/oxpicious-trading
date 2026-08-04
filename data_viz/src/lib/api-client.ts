@@ -40,6 +40,15 @@ import type {
   PerfAttrSecType,
   IndustrySentimentsChartResponse,
   IndustryCorrelationsResponse,
+  IndustryBenchmarkAttributionResponse,
+  IndustryAttributionBenchmarksResponse,
+  BenchmarkPriceChartResponse,
+  IndustryAttributionPriceSeriesResponse,
+  AllIndustriesAttributionResponse,
+  MemberIndexAttributionResponse,
+  LiveDataSecType,
+  LiveDataDatesResponse,
+  LiveDataCombinedResponse,
 } from "../../shared/types";
 
 // Module-level cache singleton: 100 entries, 10-minute TTL (safety net).
@@ -444,6 +453,19 @@ export function fetchMovAveSpreadCodes(
   );
 }
 
+/** Themes tree (L1 sector → L2 industry → items) for the ThemeSelector.
+ *  Only includes codes that have rows in analysis.mov_ave_spreads_detail. */
+export function fetchMovAveSpreadThemes(
+  secType: MaSpreadSecType,
+): Promise<SectorNode[]> {
+  const params = new URLSearchParams();
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<SectorNode[]>(
+    `/api/analysis/mov-ave-spread/themes${qs ? `?${qs}` : ""}`,
+  );
+}
+
 export function fetchMovAveSpreadChart(
   code: string,
   secType: MaSpreadSecType,
@@ -545,7 +567,7 @@ export function fetchIndustrySentimentsChart(
 
 /**
  * Fetch pairwise rolling correlation time series between selected
- * industries' mean_rebased series. Returns one row per (date, pair) for
+ * industries' mean_price series. Returns one row per (date, pair) for
  * every lexicographic (a<b) pair from `industryIds`, with corr_5d /
  * corr_20d / corr_60d / corr_255d. Drives the expandable Correlation chart
  * on the IndustrySentiments page — only enabled when ≥2 industries are
@@ -564,5 +586,159 @@ export function fetchIndustryCorrelations(
   const qs = params.toString();
   return fetchJson<IndustryCorrelationsResponse>(
     `/api/analysis/industry-correlations?${qs}`,
+  );
+}
+
+/**
+ * Fetch the industry-level benchmark attribution for ONE industry at a
+ * specific (or latest) date. Reads pre-materialized rows from
+ * analysis.industry_attributions (industry_shared_weight +
+ * benchmark_shared_weight per benchmark_code). benchmark_return is computed
+ * on-the-fly. Drives the per-industry attribution bar charts (2nd plot
+ * onward) in "Benchmark Attribution" mode on the IndustrySentiments page.
+ *
+ * `date` is optional (defaults to latest available). Returns one row per
+ * benchmark with the shared weights and benchmark_return for that
+ * (industry, benchmark, date).
+ */
+export function fetchIndustryBenchmarkAttribution(
+  industryId: string,
+  date?: string | null,
+): Promise<IndustryBenchmarkAttributionResponse> {
+  const params = new URLSearchParams();
+  if (industryId) params.set("industry_id", industryId);
+  if (date) params.set("date", date);
+  const qs = params.toString();
+  return fetchJson<IndustryBenchmarkAttributionResponse>(
+    `/api/analysis/industry-benchmark-attribution?${qs}`,
+  );
+}
+
+/**
+ * Fetch the list of benchmark codes that appear in
+ * analysis.industry_attributions, enriched with display name and
+ * is_broad_market flag. Broad-market benchmarks are sorted first. Drives
+ * the benchmark dropdown in "Benchmark Attribution" mode.
+ */
+export function fetchIndustryAttributionBenchmarks(): Promise<IndustryAttributionBenchmarksResponse> {
+  return fetchJson<IndustryAttributionBenchmarksResponse>(
+    `/api/analysis/industry-attribution/benchmarks`,
+  );
+}
+
+/**
+ * Fetch the daily close + fractional daily return series for ONE benchmark
+ * index. Drives the 1st plot (benchmark price chart, clickable to pick a
+ * date) in "Benchmark Attribution" mode.
+ */
+export function fetchBenchmarkPriceChart(
+  code: string,
+): Promise<BenchmarkPriceChartResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  const qs = params.toString();
+  return fetchJson<BenchmarkPriceChartResponse>(
+    `/api/analysis/industry-attribution/benchmark-price?${qs}`,
+  );
+}
+
+/**
+ * Fetch the non-this-industry price series for ONE (industry, benchmark) pair.
+ * Returns benchmark close + benchmark_rolling + non_this_industry_price +
+ * non_this_industry_rolling_price per date. Drives the green/red shade overlay
+ * on the BenchmarkPriceChart.
+ */
+export function fetchIndustryAttributionPriceSeries(
+  industryId: string,
+  benchmarkCode: string,
+): Promise<IndustryAttributionPriceSeriesResponse> {
+  const params = new URLSearchParams();
+  params.set("industry_id", industryId);
+  params.set("benchmark_code", benchmarkCode);
+  return fetchJson<IndustryAttributionPriceSeriesResponse>(
+    `/api/analysis/industry-attribution/non-this-industry-price?${params.toString()}`,
+  );
+}
+
+/** Fetch all industries' benchmark_shared_weight for a given benchmark+date.
+ *  Drives the industry-level bar chart in "Benchmark Attribution" mode. */
+export function fetchAllIndustriesAttribution(
+  benchmarkCode: string,
+  date?: string | null,
+): Promise<AllIndustriesAttributionResponse> {
+  const params = new URLSearchParams();
+  params.set("benchmark_code", benchmarkCode);
+  if (date) params.set("date", date);
+  return fetchJson<AllIndustriesAttributionResponse>(
+    `/api/analysis/industry-attribution/all-industries?${params.toString()}`,
+  );
+}
+
+/** Fetch all member indices' code_sec_shared_weight for a given
+ *  industry+benchmark+date. Drives the per-industry bar charts. */
+export function fetchMemberIndexAttribution(
+  industryId: string,
+  benchmarkCode: string,
+  date?: string | null,
+): Promise<MemberIndexAttributionResponse> {
+  const params = new URLSearchParams();
+  params.set("industry_id", industryId);
+  params.set("benchmark_code", benchmarkCode);
+  if (date) params.set("date", date);
+  return fetchJson<MemberIndexAttributionResponse>(
+    `/api/analysis/industry-attribution/member-indices?${params.toString()}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Live Data — intraday 5-min bars (index + stock)
+//  TTL-only cache (no version check; the intraday tables are populated by
+//  the streaming price-download scripts and the latest date moves
+//  continuously throughout the trading day).
+// ---------------------------------------------------------------------------
+/** Distinct trading days with at least one intraday bar, descending. */
+export function fetchLiveDataDates(
+  secType: LiveDataSecType,
+): Promise<LiveDataDatesResponse> {
+  const params = new URLSearchParams();
+  params.set("type", secType);
+  return fetchJson<LiveDataDatesResponse>(
+    `/api/live-data/dates?${params.toString()}`,
+  );
+}
+
+/** L1 sector → L2 industry tree restricted to codes with intraday data. */
+export function fetchLiveDataThemes(
+  secType: LiveDataSecType,
+): Promise<SectorNode[]> {
+  const params = new URLSearchParams();
+  params.set("type", secType);
+  return fetchJson<SectorNode[]>(
+    `/api/live-data/themes?${params.toString()}`,
+  );
+}
+
+/** Paginated list of codes with their intraday bars for one date. */
+export function fetchLiveDataCombined(
+  secType: LiveDataSecType,
+  date?: string | null,
+  sector?: string | null,
+  industry?: string | null,
+  exchange?: string | null,
+  page?: number,
+  pageSize?: number,
+  code?: string | null,
+): Promise<LiveDataCombinedResponse> {
+  const params = new URLSearchParams();
+  params.set("type", secType);
+  if (date) params.set("date", date);
+  if (sector) params.set("sector", sector);
+  if (industry) params.set("industry", industry);
+  if (exchange) params.set("exchange", exchange);
+  if (page) params.set("page", String(page));
+  if (pageSize) params.set("page_size", String(pageSize));
+  if (code) params.set("code", code);
+  return fetchJson<LiveDataCombinedResponse>(
+    `/api/live-data/combined?${params.toString()}`,
   );
 }

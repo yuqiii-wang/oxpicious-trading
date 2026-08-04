@@ -4,7 +4,11 @@ Uses CATALOGID=1815_stock_snapshot, TABKEY=tab6 from
 https://www.szse.cn/market/trend/index.html. Writes
 ``szse_trend_option_{YYYYMMDD}.xlsx/.csv`` under ``temps/sse_trend/``.
 
-No identity table — falls back to filesystem scan.
+DB-first mode: queries ``stats.options_identity`` to find missing trading
+days, skipping dates already in the DB. Also skips dates with local 0-byte
+CSV markers (previously fetched but no data found). Note: options_identity
+has no code_suffix column (PK is date + contract_code), so db_code_suffix
+is intentionally omitted.
 """
 from __future__ import annotations
 
@@ -30,6 +34,13 @@ SECURITY_CFGS: Dict[str, Dict[str, str]] = {
         "tabkey": "tab6",
         "prefix": "szse_trend_option",
     },
+}
+
+# DB-first mode: stats.options_identity has PK (date, contract_code) with NO
+# code_suffix column, so db_code_suffix is intentionally omitted. The
+# check_identity query only filters by date when code/code_suffix are None.
+DB_TABLE_BY_TYPE: Dict[str, str] = {
+    "option": "stats.options_identity",
 }
 
 TREND_HEADERS = build_headers(REFERER_TREND)
@@ -75,6 +86,8 @@ def download_szse_trend_option(
         sleep_sec=sleep_sec,
         session=session,
         code_suffix=".SZ",
+        db_table_by_type=DB_TABLE_BY_TYPE,
+        skip_empty_markers=True,
     )
 
 

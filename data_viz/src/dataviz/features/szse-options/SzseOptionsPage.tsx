@@ -50,7 +50,7 @@ export default function SzseOptionsPage() {
   // Page-level refresh key — bumped by the header refresh button to force
   // a cache bypass + refetch of the three endpoints that drive the page:
   //   • /api/szse-options/combined        (VolSmile + MarketInterestWall + AnnualSentiment)
-  //   • /api/szse-options/etf-ohlcv       (AnnualSentiment ETF candlestick)
+  //   • /api/szse-options/etf-ohlcv       (AnnualSentiment ETF OHLC)
   //   • /api/szse-options/underlyings     (the underlying dropdown)
   // The underlyings list is also re-fetched because it's small and the
   // user expects a fully refreshed page after clicking the button.
@@ -93,7 +93,7 @@ export default function SzseOptionsPage() {
   const handleRefresh = () => {
     // All three endpoints share the "/api/szse-options/" prefix:
     //   • /api/szse-options/combined?underlying=…  (3 panels)
-    //   • /api/szse-options/etf-ohlcv?code=…        (ETF candlestick)
+    //   • /api/szse-options/etf-ohlcv?code=…        (ETF OHLC)
     //   • /api/szse-options/underlyings             (dropdown)
     // Prefix invalidation covers all of them in one call.
     invalidateCacheForPrefix("/api/szse-options/");

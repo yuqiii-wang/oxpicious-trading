@@ -158,12 +158,14 @@ export interface EtfMarginRow {
   implied_dividend_per_share: number | null;
   /** Cumulative split/adjustment factor (1.0 = no adjustment). */
   cum_split_factor: number | null;
-  volume_wan: number;
-  amount_wan: number;
-  rz_balance: number;
-  rq_balance_qty: number;
-  rq_balance_amt: number;
-  total_balance: number;
+  trading_shares: number;
+  trading_amount: number;
+  /** 融资余额 (cash borrow balance, yuan). Null when no margin data. */
+  rz_balance: number | null;
+  rq_balance_qty: number | null;
+  /** 融券余额金额 (sec borrow balance in yuan). Null when no margin data. */
+  rq_balance_amt: number | null;
+  total_balance: number | null;
 }
 
 export interface EtfBundle {
@@ -228,8 +230,8 @@ export interface IndexBaselineRow {
   high: number | null;
   low: number | null;
   close: number | null;
-  volume: number | null;
-  amount: number | null;
+  trading_shares: number | null;
+  trading_amount: number | null;
   change_pct: number | null;
   pe: number | null;
   cons_number: number | null;
@@ -361,8 +363,8 @@ export interface LinkedEtfRow {
   latest_date: string;
   /** Close price on latest_date (NULL when no rows). */
   latest_close: number | null;
-  /** Trading amount (成交金额, turnover) in 亿元 on latest_date — from
-   *  v_etf_margin.amount_wan / 10000. NULL when no v_etf_margin rows. */
+  /** Trading amount (成交金额, turnover) in yuan on latest_date — from
+   *  v_etf_margin.trading_amount. NULL when no v_etf_margin rows. */
   latest_trading_amount: number | null;
   /** Valuation amount (NAV/AUM) in 亿元 — from sec_classification.aum_yi,
    *  populated from etf_index_map_all_*.csv. Available for ALL ETFs. */
@@ -376,20 +378,20 @@ export interface LinkedEtfsResponse {
   index_code: string;
   etfs: LinkedEtfRow[];
   /** Aggregate ETF trading turnover (yuan) tracking this index on the latest
-   *  date with an index_exts row — from stats.index_exts.total_etf_amt.
+   *  date with an index_exts row — from stats.index_exts.total_etf_trading_amount.
    *  NULL when the index has no tracking ETF (no index_exts row). */
-  total_etf_amt: number | null;
-  /** 5-trading-day moving average of total_etf_amt (yuan) on the latest date —
-   *  from stats.index_exts.total_etf_amt_ma5. NULL when insufficient history. */
-  total_etf_amt_ma5: number | null;
-  /** Latest date (YYYY-MM-DD) of the index_exts row used for total_etf_amt.
+  total_etf_trading_amount: number | null;
+  /** 5-trading-day moving average of total_etf_trading_amount (yuan) on the latest date —
+   *  from stats.index_exts.total_etf_trading_amount_ma5. NULL when insufficient history. */
+  total_etf_trading_amount_ma5: number | null;
+  /** Latest date (YYYY-MM-DD) of the index_exts row used for total_etf_trading_amount.
    *  "" when the index has no index_exts row. */
-  total_etf_amt_date: string;
+  total_etf_trading_amount_date: string;
 }
 
 // ----------------------------------------------------------------------------
 // Stock Baseline (v_stock_baseline view — stock_identity + stock_basic_stats)
-// Used by the composition pie chart's per-stock candlestick expansion.
+// Used by the composition pie chart's per-stock OHLC expansion.
 // ----------------------------------------------------------------------------
 export interface StockBaselineRow {
   date: string;
@@ -499,6 +501,15 @@ export interface MovAveSpreadDetailRow {
   long_slope: number | null;
   /** 2nd derivative of the long MA on this date. */
   long_curvature: number | null;
+  /**
+   * Rolling population σ (ddof=0) of price over the long MA's window
+   * (e.g. std_20days when ma_long = 20). In price units. Used to draw the
+   * Bollinger-style envelope (long_value ± k × long_std) on Price/MA charts.
+   * NULL until the rolling window is fully populated. MA5/MA charts also
+   * carry this field (the σ of the long MA's window) but the envelope is
+   * only drawn around the long MA on Price/MA charts by convention.
+   */
+  long_std: number | null;
 }
 
 /** One pair's full time series. */
@@ -555,7 +566,7 @@ export interface MovAveSpreadChartResponse {
 //    PK: (code, date, sec_type, benchmark_code)
 //
 //    Per-row: code_sec_shared_weight, benchmark_sec_shared_weight,
-//    benchmark_etf_amount, code_etf_amount, etf_amount_ratio_benchmark_to_code
+//    benchmark_etf_trading_amount, code_etf_trading_amount, etf_trading_amount_ratio_benchmark_to_code
 //    (GENERATED), corr_{5,20,60,255}d.
 // ----------------------------------------------------------------------------
 export type PerfAttrSecType = "etf" | "index";
@@ -582,19 +593,19 @@ export interface PerfAttrBenchmarkRow {
   date: string;
   code_sec_shared_weight: number | null;
   benchmark_sec_shared_weight: number | null;
-  /** benchmark_etf_amount / code_etf_amount (GENERATED). A LIQUIDITY ratio
+  /** benchmark_etf_trading_amount / code_etf_trading_amount (GENERATED). A LIQUIDITY ratio
    *  (≥1 means benchmark ETF-market turnover exceeds subject's). Its inverse
    *  (1/ratio) is the subject's SHARE of the benchmark ETF market. NULL when
    *  either amount is NULL/0 (e.g. benchmark has no tracking ETF). */
-  etf_amount_ratio: number | null;
+  etf_trading_amount_ratio: number | null;
   /** Aggregate ETF turnover (yuan) tracking benchmark_code on this date
-   *  (Σ etf_liquidity_margin.amount_wan×1e4 where parent_index_code = benchmark_code).
+   *  (Σ etf_liquidity_margin.trading_amount where parent_index_code = benchmark_code).
    *  NULL when no ETF tracks the benchmark (e.g. 000001 上证指数). */
-  benchmark_etf_amount: number | null;
-  /** Subject's ETF turnover (yuan). For sec_type='etf': the ETF's own amount.
+  benchmark_etf_trading_amount: number | null;
+  /** Subject's ETF turnover (yuan). For sec_type='etf': the ETF's own trading_amount.
    *  For sec_type='index': aggregate ETF turnover tracking the subject index.
    *  NULL for stocks and for indices with no tracking ETF. */
-  code_etf_amount: number | null;
+  code_etf_trading_amount: number | null;
   /** TRUE iff the benchmark index is broad-market (any tag in
    *  stats.sec_index_tags with is_broad_market=TRUE). Sourced from the DB,
    *  replacing the former hardcoded BROAD_MARKET_BENCHMARKS list. NULL when
@@ -626,17 +637,17 @@ export interface PerfAttrAttributionResponse {
 
 export interface PerfAttrChartRow {
   date: string;
-  /** benchmark_etf_amount / code_etf_amount (GENERATED). LIQUIDITY ratio,
+  /** benchmark_etf_trading_amount / code_etf_trading_amount (GENERATED). LIQUIDITY ratio,
    *  NOT a price-attribution proportion. */
-  etf_amount_ratio: number | null;
-  /** 5-trading-day moving average of etf_amount_ratio (populated by the
+  etf_trading_amount_ratio: number | null;
+  /** 5-trading-day moving average of etf_trading_amount_ratio (populated by the
    *  analysis Python script via pandas rolling(5).mean(); NULL when the
    *  underlying ratio is NULL for the trailing 5-day window). */
-  etf_amount_ratio_ma5: number | null;
+  etf_trading_amount_ratio_ma5: number | null;
   /** Aggregate ETF turnover (yuan) tracking benchmark_code on this date. */
-  benchmark_etf_amount: number | null;
+  benchmark_etf_trading_amount: number | null;
   /** Subject's ETF turnover (yuan) on this date. */
-  code_etf_amount: number | null;
+  code_etf_trading_amount: number | null;
   /** Number of ETFs tracking benchmark_code on this date (from stats.index_exts).
    *  NULL when no ETF tracks the benchmark. */
   benchmark_etf_num: number | null;
@@ -737,20 +748,30 @@ export interface IndustrySentimentsIndex {
   rows: IndustrySentimentsIndexRow[];
 }
 
-/** One per-date aggregation row for a pool_size slice. mean_rebased and
- *  var_rebased are computed across rebased-to-100 values of member indices
- *  in this pool_size slice on this date (anchored at history start). */
+/** One per-date aggregation row for a pool_size slice. mean_price and
+ *  var_price are computed across rebased-to-100 close values of member
+ *  indices in this pool_size slice on this date (anchored at history start).
+ *  mean_pe and total_trading_amount are computed on RAW values (no rebasing). */
 export interface IndustrySentimentsAggRow {
   date: string;
   pool_size: "small" | "mid" | "large" | "all";
-  /** Number of member indices contributing to this slice on this date. */
+  /** Number of member indices with close data contributing to this slice on
+   *  this date. PE/amount means may be computed over fewer indices. */
   index_count: number | null;
-  /** AVG(rebased_to_100) across member indices in this slice. 100 = members
-   *  flat vs history start. NULL when no members in slice on this date. */
-  mean_rebased: number | null;
-  /** VARIANCE(rebased_to_100) across member indices in this slice. NULL when
-   *  fewer than 2 members (can't compute variance). */
-  var_rebased: number | null;
+  /** AVG(rebased_to_100 close) across member indices in this slice.
+   *  100 = members flat vs history start. NULL when no members in slice. */
+  mean_price: number | null;
+  /** VARIANCE(rebased_to_100 close) across member indices in this slice.
+   *  NULL when fewer than 2 members (can't compute variance). */
+  var_price: number | null;
+  /** AVG(raw PE) across member indices in this slice. Source:
+   *  stats.index_valuation.pe. NULL PE excluded. NULL when no PE data. */
+  mean_pe: number | null;
+  /** SUM(stock trading amount in yuan) across the UNION of stocks from all
+   *  member indices' active compositions in this slice. Each stock counted
+   *  ONCE (union, not sum-per-index). Source: stats.stock_basic_stats.trading_amount.
+   *  NULL when no stock amount data is available for the union set. */
+  total_trading_amount: number | null;
 }
 
 /** Response for GET /api/analysis/industry-sentiments/chart?industry_id=...
@@ -781,7 +802,7 @@ export interface IndustrySentimentsChartResponse {
 
 // ----------------------------------------------------------------------------
 //  Industry Correlations — pairwise rolling Pearson correlation between two
-//  industries' mean_rebased series (analysis.industry_sentiments.mean_rebased).
+//  industries' mean_price series (analysis.industry_sentiments.mean_price).
 //  Drives the expandable Correlation chart on the IndustrySentiments page
 //  (multi-industry mode only — Correlation button is disabled when fewer
 //  than 2 industries are selected).
@@ -795,11 +816,12 @@ export interface IndustrySentimentsChartResponse {
 //  returns rows matching either direction of the user-selected industry_ids
 //  set — the frontend renders each pair as a single line.
 //
-//  Same-pool slices only: industry_pool_size = benchmark_industry_pool_size.
-//  Cross-pool comparisons are not materialized (see SQL comments for why).
+//  Same-pool slices only: a single `pool_size` column captures the slice in
+//  which both industries are compared. Cross-pool comparisons are not
+//  materialized (see SQL comments for why).
 // ----------------------------------------------------------------------------
 /** One pairwise correlation row — the rolling Pearson correlation between
- *  industry_id and benchmark_industry_id's mean_rebased series at `date`
+ *  industry_id and benchmark_industry_id's mean_price series at `date`
  *  over 4 trailing windows. NULL (corr_*) when insufficient overlap. */
 export interface IndustryCorrelationRow {
   /** Subject industry (lexicographically smaller). */
@@ -838,4 +860,265 @@ export interface IndustryCorrelationsResponse {
    *  both endpoints are in industry_ids. Empty when the analysis hasn't
    *  been run or no pairs have enough overlapping history. */
   correlations: IndustryCorrelationRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Industry-level Benchmark Attribution — reads pre-materialized rows from
+//  analysis.industry_attributions (PK: date, industry_id, benchmark_code).
+//  Each row carries industry_shared_weight (SUM of member indices' overlap
+//  with the benchmark — can exceed 100) and benchmark_shared_weight (the
+//  benchmark's weight on the UNION of industry member stocks — bounded
+//  [0, 100]). benchmark_return is computed on-the-fly via a LATERAL join to
+//  stats.index_basic_stats.
+//
+//  Drives the per-industry attribution bar charts (2nd plot onward) on the
+//  Industry Sentiments page in "Benchmark Attribution" mode. The 1st plot is
+//  the benchmark price chart (clickable to pick a date); each subsequent plot
+//  shows the attribution bars for ONE selected industry at the clicked date.
+//
+//  Source: analysis.industry_attributions (built by
+//  analyze.industry_sentiments.attributions — truncate-then-recompute).
+// ----------------------------------------------------------------------------
+/** One row per (industry_id, benchmark_code, date) — pre-materialized in
+ *  analysis.industry_attributions. */
+export interface IndustryBenchmarkAttributionRow {
+  /** Benchmark index code (e.g. "000300"). */
+  benchmark_code: string;
+  /** Display name of the benchmark (looked up from stats.index_identity). */
+  benchmark_name: string;
+  /** As-of date (YYYY-MM-DD). */
+  date: string;
+  /** SUM of member indices' code_sec_shared_weight with the benchmark, from
+   *  analysis.industry_attributions. Can exceed 100 (sum of multiple member
+   *  portfolios — expected, NOT double-counting). NULL when no overlap data. */
+  industry_shared_weight: number | null;
+  /** Benchmark's weight on the UNION of industry member stocks, from
+   *  analysis.industry_attributions. Bounded [0, 100] (percent). NULL when
+   *  the benchmark has no composition data; 0 when no overlap. */
+  benchmark_shared_weight: number | null;
+  /** TRUE iff the benchmark index is broad-market (from stats.sec_index_tags). */
+  is_broad_market: boolean | null;
+  /** Benchmark's FRACTIONAL daily return = (close_t - close_{t-1}) /
+   *  close_{t-1}. Computed on-the-fly via LATERAL join to
+   *  stats.index_basic_stats (NOT stored as a DB column). NULL when no
+   *  previous-day close. */
+  benchmark_return: number | null;
+}
+
+/** Response for GET /api/analysis/industry-benchmark-attribution?industry_id=...
+ *  &date=YYYY-MM-DD (date optional, defaults to latest available). */
+export interface IndustryBenchmarkAttributionResponse {
+  industry_id: string;
+  industry_label: string;
+  /** As-of date for the attribution (latest available when no `date` was
+   *  requested). Empty string when no rows exist for the industry. */
+  latest_date: string;
+  /** One row per benchmark. Empty when the analysis hasn't been run or the
+   *  industry has no member indices. */
+  benchmarks: IndustryBenchmarkAttributionRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Industry Attribution Benchmark list + price chart — drives the benchmark
+//  dropdown and the 1st plot (benchmark price chart, clickable to pick a
+//  date) in "Benchmark Attribution" mode on the Industry Sentiments page.
+// ----------------------------------------------------------------------------
+
+/** One entry in the benchmark dropdown — a benchmark index code that appears
+ *  in analysis.industry_attributions, enriched with display name and
+ *  is_broad_market flag. Broad-market benchmarks are sorted first. */
+export interface IndustryAttributionBenchmarkEntry {
+  benchmark_code: string;
+  benchmark_name: string;
+  is_broad_market: boolean | null;
+}
+
+/** Response for GET /api/analysis/industry-attribution/benchmarks — the list
+ *  of all benchmark codes that appear in analysis.industry_attributions. */
+export interface IndustryAttributionBenchmarksResponse {
+  benchmarks: IndustryAttributionBenchmarkEntry[];
+}
+
+/** One row in the benchmark price series — date, raw close, and fractional
+ *  daily return. */
+export interface BenchmarkPriceRow {
+  date: string;
+  close: number | null;
+  daily_return: number | null;
+}
+
+/** Response for GET /api/analysis/industry-attribution/benchmark-price?code=... */
+export interface BenchmarkPriceChartResponse {
+  code: string;
+  name: string;
+  rows: BenchmarkPriceRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Industry Attribution Non-This-Industry Price Series — drives the green/red
+//  shade overlay on the BenchmarkPriceChart in "Benchmark Attribution" mode.
+//  One row per date for a given (industry_id, benchmark_code) pair, containing
+//  the benchmark close + the non-this-industry price columns. Only broad-market
+//  benchmarks have non-NULL non_this_industry_* values.
+// ----------------------------------------------------------------------------
+
+/** One row in the non-this-industry price series. */
+export interface IndustryAttributionPriceSeriesRow {
+  date: string;
+  /** Raw benchmark close on the date (from stats.index_basic_stats). */
+  benchmark_close: number | null;
+  /** Benchmark close rebased to 100 at the first date in the response.
+   *  Computed server-side so the frontend doesn't need to scan the full
+   *  series to find the base. */
+  benchmark_rolling: number | null;
+  /** Today's non-industry price = bench_prev_close × (1 + non_industry_return).
+   *  NULL for non-broad-market benchmarks. */
+  non_this_industry_price: number | null;
+  /** Accumulated non-industry price, rebased to 100 at benchmark start.
+   *  NULL for non-broad-market benchmarks. */
+  non_this_industry_rolling_price: number | null;
+}
+
+/** Response for GET /api/analysis/industry-attribution/non-this-industry-price
+ *  ?industry_id=BANKS&benchmark_code=000300 */
+export interface IndustryAttributionPriceSeriesResponse {
+  industry_id: string;
+  industry_label: string;
+  benchmark_code: string;
+  benchmark_name: string;
+  /** TRUE iff the benchmark is broad-market (non_this_industry_* will be
+   *  non-NULL). FALSE or NULL when the benchmark is not broad-market — the
+   *  frontend shows a placeholder message. */
+  is_broad_market: boolean | null;
+  rows: IndustryAttributionPriceSeriesRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  All-Industries Attribution Bar Chart — one row per industry for a given
+//  (benchmark_code, date). Drives the industry-level bar chart in "Benchmark
+//  Attribution" mode: each bar = one industry's benchmark_shared_weight
+//  (the benchmark's weight % on that industry's union of stocks).
+//
+//  GET /api/analysis/industry-attribution/all-industries
+//    ?benchmark_code=000300&date=YYYY-MM-DD (date optional → latest)
+// ----------------------------------------------------------------------------
+/** One industry row in the all-industries attribution bar chart. */
+export interface AllIndustriesAttributionRow {
+  industry_id: string;
+  industry_label: string;
+  sector_label: string | null;
+  /** Benchmark's weight % on this industry's union of stocks (0-100). */
+  benchmark_shared_weight: number | null;
+  /** SUM of member indices' overlap with the benchmark (can exceed 100). */
+  industry_shared_weight: number | null;
+  /** Benchmark's FRACTIONAL daily return = (close_t - close_{t-1}) /
+   *  close_{t-1}. Computed on-the-fly via LATERAL join to
+   *  stats.index_basic_stats (NOT stored as a DB column). NULL when no
+   *  previous-day close. Used to compute Contribution =
+   *  benchmark_return × (benchmark_shared_weight / 100) — same convention
+   *  as Sec Allocation Perf Attribution. */
+  benchmark_return: number | null;
+}
+
+/** Response for GET /api/analysis/industry-attribution/all-industries. */
+export interface AllIndustriesAttributionResponse {
+  benchmark_code: string;
+  benchmark_name: string;
+  /** As-of date (latest available when no `date` was requested). */
+  date: string;
+  is_broad_market: boolean | null;
+  /** Benchmark's FRACTIONAL daily return on the as-of date (same value
+   *  across all industries — they share the benchmark). NULL when no
+   *  previous-day close is available. */
+  benchmark_return: number | null;
+  industries: AllIndustriesAttributionRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Member-Index Attribution Bar Chart — one row per member index for a given
+//  (industry_id, benchmark_code, date). Drives the per-industry bar charts in
+//  "Benchmark Attribution" mode: each bar = one member index's
+//  code_sec_shared_weight (the index's own weight % on stocks shared with the
+//  benchmark).
+//
+//  GET /api/analysis/industry-attribution/member-indices
+//    ?industry_id=BANKS&benchmark_code=000300&date=YYYY-MM-DD (date optional → latest)
+// ----------------------------------------------------------------------------
+/** One member-index row in the per-industry attribution bar chart. */
+export interface MemberIndexAttributionRow {
+  /** Member index code (e.g. "399986"). */
+  code: string;
+  /** Display name of the member index. */
+  name: string;
+  /** The index's own weight % on stocks shared with the benchmark (0-100). */
+  code_sec_shared_weight: number | null;
+  /** The benchmark's weight % on stocks shared with this index (0-100). */
+  benchmark_sec_shared_weight: number | null;
+}
+
+/** Response for GET /api/analysis/industry-attribution/member-indices. */
+export interface MemberIndexAttributionResponse {
+  industry_id: string;
+  industry_label: string;
+  benchmark_code: string;
+  benchmark_name: string;
+  /** As-of date (latest available when no `date` was requested). */
+  date: string;
+  is_broad_market: boolean | null;
+  indices: MemberIndexAttributionRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Live Data — intraday 5-min bars (index + stock)
+//  Source: stats.index_intraday_5min / stats.stock_intraday_5min
+//  ETF is currently unsupported (no stats.etf_intraday_5min table) — the
+//  frontend renders an empty placeholder for the ETF tab.
+// ----------------------------------------------------------------------------
+/** Security type for Live Data. ETF returns an empty payload. */
+export type LiveDataSecType = "index" | "stock";
+
+/** One 5-minute intraday OHLC bar. The `volume` column is only present on
+ *  the stock table (NULL for indices — the SSE index endpoint does not
+ *  publish per-bar volume). */
+export interface LiveDataIntradayBar {
+  time: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  volume: number | null;
+  change: number | null;
+  change_pct: number | null;
+}
+
+/** One code with its intraday bars for a single date. */
+export interface LiveDataBundle {
+  code: string;
+  name: string;
+  sector_id: string;
+  sector_label: string;
+  industry_id: string;
+  industry_label: string;
+  bars: LiveDataIntradayBar[];
+}
+
+/** Paginated response for the Live Data combined endpoint. */
+export interface LiveDataCombinedResponse {
+  type: LiveDataSecType;
+  /** Trading day (YYYY-MM-DD) the bars belong to. Empty when no data exists. */
+  date: string;
+  sector_id: string;
+  industry_id: string;
+  codes: LiveDataBundle[];
+  total_codes: number;
+  total_pages: number;
+  page: number;
+  page_size: number;
+}
+
+/** Response for GET /api/live-data/dates?type=index — distinct trading days
+ *  with at least one intraday bar, descending (most recent first). */
+export interface LiveDataDatesResponse {
+  type: LiveDataSecType;
+  dates: string[];
 }

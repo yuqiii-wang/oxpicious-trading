@@ -1215,6 +1215,7 @@ def build_day_download_plan(
     db_table: Optional[str] = None,
     db_date_column: str = "date",
     db_code_suffix: Optional[str] = None,
+    skip_empty_markers: bool = False,
 ) -> DayDownloadPlan:
     """Build a per-day download plan.
 
@@ -1228,6 +1229,16 @@ def build_day_download_plan(
     ``code_suffix`` filter, so multi-source identity tables (e.g.
     ``stats.stock_identity`` fed by SZSE + SSE + BSE) can be queried
     per-exchange.
+
+    *skip_empty_markers* — when True, also scans local ``*.csv`` files
+    (including 0-byte empty markers created when a date was previously
+    fetched but the server returned no data) and treats those dates as
+    "already tried" so they are excluded from the download plan. This
+    works in both DB-first and filesystem-scan modes. In DB-first mode,
+    dates present in the DB are already excluded; *skip_empty_markers*
+    additionally excludes dates that have a local empty-marker CSV but
+    are not yet in the DB (download was attempted, no data found, build
+    step has not run).
     """
     type_keys = list(type_configs.keys())
     prefix_map = {tk: type_configs[tk]["prefix"] for tk in type_keys}
@@ -1255,10 +1266,25 @@ def build_day_download_plan(
         )
         present_set = set(all_dates) - missing_dates
         present_by_prefix: Dict[str, Set[date]] = {p: set(present_set) for p in prefixes}
+        if skip_empty_markers:
+            # Also exclude dates with local empty-marker CSVs (already tried,
+            # no data found, not yet in DB).
+            empty_marker_dates = scan_present_day_keys(
+                out_dir, prefixes=prefixes, min_bytes=0, ext_glob="*.csv",
+            )
+            for p in prefixes:
+                present_by_prefix[p] |= empty_marker_dates.get(p, set())
     else:
         present_by_prefix = scan_present_day_keys(
             out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
         )
+        if skip_empty_markers:
+            # Also count dates with empty-marker CSVs (0 bytes) as present.
+            empty_marker_dates = scan_present_day_keys(
+                out_dir, prefixes=prefixes, min_bytes=0, ext_glob="*.csv",
+            )
+            for p in prefixes:
+                present_by_prefix[p] |= empty_marker_dates.get(p, set())
 
     plan = DayDownloadPlan()
     plan.total_expected = len(all_dates) * len(type_keys)

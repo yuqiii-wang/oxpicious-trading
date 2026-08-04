@@ -238,7 +238,7 @@ interface DbLinkedEtfRow extends QueryResultRow {
   industry_label: string | null;
   latest_date: string | null;
   latest_close: number | null;
-  latest_amount_wan: number | null;
+  latest_trading_amount: number | null;
   aum_yi: number | null;
   n_days: number | null;
 }
@@ -251,9 +251,9 @@ export async function getLinkedEtfs(
     return {
       index_code: indexCodeParam,
       etfs: [],
-      total_etf_amt: null,
-      total_etf_amt_ma5: null,
-      total_etf_amt_date: "",
+      total_etf_trading_amount: null,
+      total_etf_trading_amount_ma5: null,
+      total_etf_trading_amount_date: "",
     };
   }
 
@@ -262,7 +262,7 @@ export async function getLinkedEtfs(
   //                 Also pulls aum_yi (net asset value in 亿元) which is
   //                 populated from the etf_index_map_all_*.csv by
   //                 build_classification.py.  Available for ALL ETFs (SSE +
-  //                 SZSE), unlike v_etf_margin.amount_wan (SZSE only).
+  //                 SZSE), unlike v_etf_margin.trading_amount (SZSE only).
   //   latest      — DISTINCT ON (code) picks the most-recent v_etf_margin row
   //                 per ETF (gives latest_date + latest_close).
   //   counts      — per-ETF trading-day count from v_etf_margin.
@@ -274,7 +274,7 @@ export async function getLinkedEtfs(
          AND sc.parent_index_code = $1
     ),
     latest AS (
-      SELECT DISTINCT ON (code) code, date AS latest_date, close AS latest_close, amount_wan AS latest_amount_wan
+      SELECT DISTINCT ON (code) code, date AS latest_date, close AS latest_close, trading_amount AS latest_trading_amount
         FROM stats.v_etf_margin
        WHERE code IN (SELECT code FROM linked_etfs)
        ORDER BY code, date DESC
@@ -292,7 +292,7 @@ export async function getLinkedEtfs(
            COALESCE(le.industry_label, '未分类')  AS industry_label,
            COALESCE(la.latest_date::text, '')    AS latest_date,
            la.latest_close,
-           la.latest_amount_wan,
+           la.latest_trading_amount,
            le.aum_yi,
            COALESCE(co.n_days, 0)                AS n_days
       FROM linked_etfs le
@@ -303,15 +303,15 @@ export async function getLinkedEtfs(
   const [rows, extRows] = await Promise.all([
     queryRows<DbLinkedEtfRow>(sql, [indexCode]),
     // Fetch the latest index_exts row for this index — gives the precomputed
-    // total_etf_amt (Σ ETF turnover tracking the index, yuan) and its 5-day
-    // moving average (total_etf_amt_ma5). Both are NULL when the index has
+    // total_etf_trading_amount (Σ ETF turnover tracking the index, yuan) and its 5-day
+    // moving average (total_etf_trading_amount_ma5). Both are NULL when the index has
     // no tracking ETF (no index_exts row).
     queryRows<{
-      total_etf_amt: number | null;
-      total_etf_amt_ma5: number | null;
+      total_etf_trading_amount: number | null;
+      total_etf_trading_amount_ma5: number | null;
       date: string | null;
     }>(
-      `SELECT total_etf_amt, total_etf_amt_ma5, date::text AS date
+      `SELECT total_etf_trading_amount, total_etf_trading_amount_ma5, date::text AS date
          FROM stats.index_exts
         WHERE code = $1
         ORDER BY date DESC
@@ -330,16 +330,13 @@ export async function getLinkedEtfs(
       industry_label: r.industry_label ?? "未分类",
       latest_date: formatDate(r.latest_date) || "",
       latest_close: toNum(r.latest_close),
-      // Trading amount (成交金额) from v_etf_margin.amount_wan (万元) → 亿元.
-      latest_trading_amount: (() => {
-        const wan = toNum(r.latest_amount_wan);
-        return wan != null ? wan / 10000 : null;
-      })(),
+      // Trading amount (成交金额) from v_etf_margin.trading_amount (yuan).
+      latest_trading_amount: toNum(r.latest_trading_amount),
       aum_yi: toNum(r.aum_yi),
       n_days: parseInt(String(r.n_days ?? 0), 10) || 0,
     })),
-    total_etf_amt: toNum(ext?.total_etf_amt),
-    total_etf_amt_ma5: toNum(ext?.total_etf_amt_ma5),
-    total_etf_amt_date: ext?.date ?? "",
+    total_etf_trading_amount: toNum(ext?.total_etf_trading_amount),
+    total_etf_trading_amount_ma5: toNum(ext?.total_etf_trading_amount_ma5),
+    total_etf_trading_amount_date: ext?.date ?? "",
   };
 }

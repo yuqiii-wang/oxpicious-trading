@@ -6,6 +6,9 @@ import SzseOptionsPage from "@/dataviz/pages/SzseOptionsPage";
 import EtfMarginPage from "@/dataviz/pages/EtfMarginPage";
 import IndexBaselinePage from "@/dataviz/pages/IndexBaselinePage";
 import StockBaselinePage from "@/dataviz/pages/StockBaselinePage";
+import LiveDataIndexPage from "@/live/pages/LiveDataIndexPage";
+import LiveDataEtfPage from "@/live/pages/LiveDataEtfPage";
+import LiveDataStockPage from "@/live/pages/LiveDataStockPage";
 import CommonsPage from "@/analysis/pages/CommonsPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import PerfAttrPage from "@/analysis/pages/PerfAttrPage";
@@ -18,6 +21,10 @@ export default function App() {
       <Box component="main" sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 1600, mx: "auto" }}>
         <Routes>
           <Route path="/" element={<Navigate to="/dataviz/debt-baseline" replace />} />
+          <Route path="/live" element={<Navigate to="/live/index" replace />} />
+          <Route path="/live/index" element={<LiveDataIndexPage />} />
+          <Route path="/live/etf" element={<LiveDataEtfPage />} />
+          <Route path="/live/stock" element={<LiveDataStockPage />} />
           <Route path="/dataviz" element={<Navigate to="/dataviz/debt-baseline" replace />} />
           <Route path="/dataviz/debt-baseline" element={<DebtBaselinePage />} />
           <Route path="/dataviz/szse-options" element={<SzseOptionsPage />} />

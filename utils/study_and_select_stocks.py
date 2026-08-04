@@ -118,3 +118,50 @@ def load_target_stocks(
         bare = full_code.split(".")[0]
         stocks.append((bare, name))
     return stocks
+
+
+# ---------------------------------------------------------------------------
+# Yesterday's top-traded SZSE stocks (by trading_amount)
+# ---------------------------------------------------------------------------
+def load_yesterday_top_traded_stocks(
+    conn,
+    n: int = 300,
+) -> List[Tuple[str, str]]:
+    """Return [(bare_code, name), ...] for the top-N SZSE stocks by
+    ``trading_amount`` on the most recent trading day in
+    ``stats.stock_basic_stats``.
+
+    "Yesterday" is resolved as MAX(date) in stock_basic_stats for SZSE codes,
+    which is the last completed trading day — robust to weekends/holidays.
+
+    Used by stream_szse_price.py hourly mode: during trading hours the
+    streamer samples the top-300 most-traded SZSE stocks each hour instead
+    of the full ETF-member list (which is loaded after 15:30).
+    """
+    query = """
+        WITH latest AS (
+            SELECT MAX(date) AS d
+              FROM stats.stock_basic_stats
+             WHERE code LIKE '%%.SZ'
+        )
+        SELECT sbs.code, si.name
+          FROM stats.stock_basic_stats sbs
+          CROSS JOIN latest l
+          LEFT JOIN stats.stock_identity si
+            ON si.code = sbs.code AND si.date = sbs.date
+         WHERE sbs.date = l.d
+           AND sbs.code LIKE '%%.SZ'
+           AND sbs.trading_amount IS NOT NULL
+         ORDER BY sbs.trading_amount DESC
+         LIMIT %s
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, (n,))
+        rows = cur.fetchall()
+    stocks: List[Tuple[str, str]] = []
+    for r in rows:
+        full_code = r[0]
+        name = r[1] or ""
+        bare = full_code.split(".")[0]
+        stocks.append((bare, name))
+    return stocks

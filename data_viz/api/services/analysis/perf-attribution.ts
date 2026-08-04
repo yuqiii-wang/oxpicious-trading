@@ -1,0 +1,471 @@
+/**
+ * Performance Attribution - ETF/Index subjects x Index benchmarks.
+ * Extracted from the former analysis.service.ts.
+ */
+import { queryRows, formatDate, toNum } from "../../lib/db.js";
+import type { QueryResultRow } from "pg";
+import { stripExchangeSuffix } from "../../lib/classify-etf.js";
+import { stripped } from "./_shared.js";
+import type {
+  PerfAttrSecType,
+  PerfAttrCodeRow,
+  PerfAttrCodesResponse,
+  PerfAttrAttributionResponse,
+  PerfAttrBenchmarkRow,
+  PerfAttrChartResponse,
+  SectorNode,
+  IndustryNode,
+} from "../../../shared/types.js";
+
+// ============================================================================
+//  Performance Attribution — ETF/Index subjects × Index benchmarks
+//    analysis.sec_alloc_perf_attribution
+//    PK: (code, date, sec_type, benchmark_code)
+// ============================================================================
+
+/** Whitelisted sec_type → name table mapping (safe for string interpolation). */
+const PERF_ATTR_NAME_TABLE: Record<string, string> = {
+  etf: "stats.etf_identity",
+  index: "stats.index_identity",
+};
+
+interface DbPerfAttrCodeRow extends QueryResultRow {
+  code: string;
+  name: string;
+  first_date: Date | string;
+  last_date: Date | string;
+  n_dates: number;
+  benchmarks: string[];
+}
+
+export async function listPerfAttrCodes(
+  secType: PerfAttrSecType,
+): Promise<PerfAttrCodesResponse> {
+  const nameTable = PERF_ATTR_NAME_TABLE[secType] ?? PERF_ATTR_NAME_TABLE.etf;
+  const sql = `
+    WITH latest_name AS (
+      SELECT DISTINCT ON (code) code, name
+      FROM ${nameTable}
+      ORDER BY code, date DESC
+    ),
+    code_stats AS (
+      SELECT
+        code,
+        MIN(date) AS first_date,
+        MAX(date) AS last_date,
+        COUNT(DISTINCT date) AS n_dates
+      FROM analysis.sec_alloc_perf_attribution
+      WHERE sec_type = $1::text
+      GROUP BY code
+    ),
+    bench_list AS (
+      SELECT code, ARRAY_AGG(DISTINCT benchmark_code ORDER BY benchmark_code) AS benchmarks
+      FROM analysis.sec_alloc_perf_attribution
+      WHERE sec_type = $1::text
+      GROUP BY code
+    )
+    SELECT
+      cs.code,
+      COALESCE(n.name, '') AS name,
+      cs.first_date,
+      cs.last_date,
+      cs.n_dates,
+      COALESCE(bl.benchmarks, '{}') AS benchmarks
+    FROM code_stats cs
+    LEFT JOIN latest_name n  ON n.code  = cs.code
+    LEFT JOIN bench_list bl  ON bl.code = cs.code
+    ORDER BY cs.n_dates DESC NULLS LAST, cs.code
+  `;
+  const rows = await queryRows<DbPerfAttrCodeRow>(sql, [secType]);
+  const codes: PerfAttrCodeRow[] = rows.map((r) => ({
+    code: stripped(r.code),
+    name: r.name ?? "",
+    first_date: formatDate(r.first_date),
+    last_date: formatDate(r.last_date),
+    n_dates: Number(r.n_dates) || 0,
+    benchmarks: Array.isArray(r.benchmarks) ? r.benchmarks : [],
+  }));
+  return { sec_type: secType, codes };
+}
+
+// ----------------------------------------------------------------------------
+
+interface DbPerfAttrAttributionRow extends QueryResultRow {
+  benchmark_code: string;
+  benchmark_name: string | null;
+  date: Date | string;
+  code_sec_shared_weight: number | null;
+  benchmark_sec_shared_weight: number | null;
+  etf_trading_amount_ratio: number | null;
+  benchmark_etf_trading_amount: number | null;
+  code_etf_trading_amount: number | null;
+  is_broad_market: boolean | null;
+  benchmark_return: number | null;
+  subject_return: number | null;
+}
+
+export async function getPerfAttrAttribution(
+  rawCode: string,
+  secType: PerfAttrSecType,
+  date?: string | null,
+): Promise<PerfAttrAttributionResponse> {
+  const target = stripped(rawCode);
+  const nameTable = PERF_ATTR_NAME_TABLE[secType] ?? PERF_ATTR_NAME_TABLE.etf;
+  // When a specific date is requested ($3), use it directly; otherwise fall
+  // back to MAX(date) (latest trading day). COALESCE keeps a single SQL shape
+  // so the prepared-statement cache stays effective.
+  //
+  // Fractional returns (benchmark_return, subject_return) are computed
+  // on-the-fly via LATERAL joins to stats.index_basic_stats — they are NOT
+  // stored as DB columns. The return = (close_t - close_{t-1}) / close_{t-1}.
+  // Subject return uses index_basic_stats (correct for sec_type='index';
+  // returns NULL for ETF subjects since their codes carry exchange suffixes
+  // that don't match index_basic_stats.code).
+  const sql = `
+    WITH target_date AS (
+      SELECT COALESCE(
+        $3::date,
+        (SELECT MAX(date) FROM analysis.sec_alloc_perf_attribution
+         WHERE sec_type = $1::text
+           AND REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $2::text)
+      ) AS max_date
+    ),
+    subject_name AS (
+      SELECT DISTINCT ON (code) code, name
+      FROM ${nameTable}
+      WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $2::text
+      ORDER BY code, date DESC
+    )
+    SELECT
+      a.benchmark_code,
+      bi.name AS benchmark_name,
+      a.date,
+      a.code_sec_shared_weight,
+      a.benchmark_sec_shared_weight,
+      a.etf_trading_amount_ratio_benchmark_to_code AS etf_trading_amount_ratio,
+      a.benchmark_etf_trading_amount,
+      a.code_etf_trading_amount,
+      bm.is_broad_market,
+      CASE
+        WHEN ib.close IS NOT NULL AND pb.close IS NOT NULL AND pb.close != 0
+        THEN (ib.close - pb.close) / pb.close
+        ELSE NULL
+      END AS benchmark_return,
+      CASE
+        WHEN sb.close IS NOT NULL AND ps.close IS NOT NULL AND ps.close != 0
+        THEN (sb.close - ps.close) / ps.close
+        ELSE NULL
+      END AS subject_return
+    FROM analysis.sec_alloc_perf_attribution a
+    CROSS JOIN target_date ld
+    LEFT JOIN LATERAL (
+      SELECT DISTINCT ON (code) code, name
+      FROM stats.index_identity
+      WHERE code = a.benchmark_code
+      ORDER BY code, date DESC
+    ) bi ON true
+    LEFT JOIN LATERAL (
+      SELECT close FROM stats.index_basic_stats
+      WHERE code = a.benchmark_code AND date = a.date
+    ) ib ON true
+    LEFT JOIN LATERAL (
+      SELECT close FROM stats.index_basic_stats
+      WHERE code = a.benchmark_code AND date < a.date
+      ORDER BY date DESC LIMIT 1
+    ) pb ON true
+    LEFT JOIN LATERAL (
+      SELECT close FROM stats.index_basic_stats
+      WHERE code = a.code AND date = a.date
+    ) sb ON true
+    LEFT JOIN LATERAL (
+      SELECT close FROM stats.index_basic_stats
+      WHERE code = a.code AND date < a.date
+      ORDER BY date DESC LIMIT 1
+    ) ps ON true
+    LEFT JOIN LATERAL (
+      SELECT BOOL_OR(is_broad_market) AS is_broad_market
+      FROM stats.sec_index_tags
+      WHERE code = a.benchmark_code
+    ) bm ON true
+    WHERE a.sec_type = $1::text
+      AND REGEXP_REPLACE(a.code, '\\.(SZ|SS|SH)$', '') = $2::text
+      AND a.date = ld.max_date
+    ORDER BY a.benchmark_code
+  `;
+  const [attrRows, nameRows] = await Promise.all([
+    queryRows<DbPerfAttrAttributionRow>(sql, [secType, target, date ?? null]),
+    queryRows<{ name: string | null }>(
+      `SELECT DISTINCT ON (code) code, name FROM ${nameTable} WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1::text ORDER BY code, date DESC`,
+      [target],
+    ),
+  ]);
+
+  const benchmarks: PerfAttrBenchmarkRow[] = attrRows.map((r) => {
+    const br = toNum(r.benchmark_return);
+    const sr = toNum(r.subject_return);
+    return {
+      benchmark_code: r.benchmark_code,
+      benchmark_name: r.benchmark_name ?? "",
+      date: formatDate(r.date),
+      code_sec_shared_weight: toNum(r.code_sec_shared_weight),
+      benchmark_sec_shared_weight: toNum(r.benchmark_sec_shared_weight),
+      etf_trading_amount_ratio: toNum(r.etf_trading_amount_ratio),
+      benchmark_etf_trading_amount: toNum(r.benchmark_etf_trading_amount),
+      code_etf_trading_amount: toNum(r.code_etf_trading_amount),
+      is_broad_market: r.is_broad_market === null ? null : Boolean(r.is_broad_market),
+      benchmark_return: br,
+      subject_return: sr,
+      active_return: br == null || sr == null ? null : sr - br,
+    };
+  });
+
+  return {
+    code: target,
+    name: nameRows[0]?.name ?? "",
+    sec_type: secType,
+    latest_date: benchmarks[0]?.date ?? "",
+    benchmarks,
+  };
+}
+
+// ----------------------------------------------------------------------------
+//  listPerfAttrThemes — two-level L1 sector → L2 industry → items tree for the
+//  Perf Attribution page's ThemeSelector. Mirrors listThemes() in
+//  etf-margin.service.ts and listIndexThemes() in index-baseline.service.ts,
+//  but only includes codes that have rows in analysis.sec_alloc_perf_attribution
+//  for the requested sec_type.
+// ----------------------------------------------------------------------------
+
+/** Whitelisted sec_type → meta-table mapping (safe for string interpolation).
+ *  Both ETF and index classification now live in the unified stats.sec_classification
+ *  table, discriminated by the `type` column. */
+const PERF_ATTR_META_TABLE: Record<string, string> = {
+  etf: "stats.sec_classification",
+  index: "stats.sec_classification",
+};
+
+/** Whitelisted sec_type → type discriminator for sec_classification WHERE clause. */
+const PERF_ATTR_META_TYPE: Record<string, string> = {
+  etf: "etf",
+  index: "index",
+};
+
+interface DbPerfAttrMetaRow extends QueryResultRow {
+  code: string;
+  name: string;
+  sector_id: string;
+  sector_label: string;
+  industry_id: string;
+  industry_label: string;
+  industry_slug: string;
+}
+
+export async function listPerfAttrThemes(
+  secType: PerfAttrSecType,
+): Promise<SectorNode[]> {
+  const metaTable = PERF_ATTR_META_TABLE[secType] ?? PERF_ATTR_META_TABLE.etf;
+  const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
+  // Select distinct codes that have perf-attr rows, then join with the
+  // classification meta table (sec_classification filtered by type) to recover
+  // sector/industry classification. Labels are denormalized onto
+  // sec_classification — no JOIN to a catalog table is needed.
+  const sql = `
+    WITH perf_codes AS (
+      SELECT DISTINCT code
+      FROM analysis.sec_alloc_perf_attribution
+      WHERE sec_type = $1::text
+    )
+    SELECT
+      pc.code,
+      COALESCE(m.name, '')             AS name,
+      COALESCE(m.sector_id,       'OTHER')  AS sector_id,
+      COALESCE(m.sector_label,    '其他')   AS sector_label,
+      COALESCE(m.industry_id,     'OTHER')  AS industry_id,
+      COALESCE(m.industry_label,  '未分类') AS industry_label,
+      COALESCE(m.industry_slug,   'other')  AS industry_slug
+    FROM perf_codes pc
+    LEFT JOIN ${metaTable} m ON m.code = pc.code AND m.type = $2::text
+  `;
+  const rows = await queryRows<DbPerfAttrMetaRow>(sql, [secType, metaType]);
+
+  const sectorMap = new Map<string, {
+    sector_label: string;
+    industries: Map<string, IndustryNode>;
+  }>();
+
+  for (const r of rows) {
+    // Strip exchange suffix so the items[] codes match the codes returned by
+    // listPerfAttrCodes (which also strips the suffix).
+    const code = stripExchangeSuffix(r.code);
+    if (!code) continue;
+    const item = { code, name: r.name ?? "" };
+
+    if (!sectorMap.has(r.sector_id)) {
+      sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
+    }
+    const sector = sectorMap.get(r.sector_id)!;
+    if (!sector.industries.has(r.industry_id)) {
+      sector.industries.set(r.industry_id, {
+        industry_id: r.industry_id,
+        industry_label: r.industry_label,
+        industry_slug: r.industry_slug,
+        count: 0,
+        items: [],
+      });
+    }
+    const ind = sector.industries.get(r.industry_id)!;
+    ind.items.push(item);
+    ind.count++;
+  }
+
+  const sectors: SectorNode[] = [];
+  for (const [sector_id, sector] of sectorMap) {
+    const industries = Array.from(sector.industries.values()).sort((a, b) => {
+      if (a.industry_id === "OTHER") return 1;
+      if (b.industry_id === "OTHER") return -1;
+      return b.count - a.count;
+    });
+    sectors.push({
+      sector_id,
+      sector_label: sector.sector_label,
+      count: industries.reduce((sum, i) => sum + i.count, 0),
+      industries,
+    });
+  }
+  sectors.sort((a, b) => {
+    if (a.sector_id === "OTHER") return 1;
+    if (b.sector_id === "OTHER") return -1;
+    return b.count - a.count;
+  });
+  return sectors;
+}
+
+// ----------------------------------------------------------------------------
+
+interface DbPerfAttrChartRow extends QueryResultRow {
+  date: Date | string;
+  etf_trading_amount_ratio: number | null;
+  etf_trading_amount_ratio_ma5: number | null;
+  benchmark_etf_trading_amount: number | null;
+  code_etf_trading_amount: number | null;
+  benchmark_etf_num: number | null;
+  code_etf_num: number | null;
+  subject_close: number | null;
+  benchmark_close: number | null;
+  corr_5d: number | null;
+  corr_20d: number | null;
+  corr_60d: number | null;
+  corr_255d: number | null;
+}
+
+/** Per-sec_type subject source-table JOIN + price expression for the
+ *  close-price lookup in getPerfAttrChart. Mirrors the SEC_SOURCES pattern
+ *  above but keyed on the perf-attr table alias `a` (not `d`). */
+const PERF_ATTR_SUBJECT_SOURCE: Record<PerfAttrSecType, {
+  joinClause: string;
+  priceExpr: string;
+}> = {
+  etf: {
+    joinClause:
+      "LEFT JOIN stats.etf_basic_stats   sb ON sb.date = a.date AND sb.code = a.code\n" +
+      "LEFT JOIN stats.etf_adjustment    sa ON sa.date = a.date AND sa.code = a.code",
+    priceExpr: "COALESCE(sa.adj_close, sb.close)",
+  },
+  index: {
+    joinClause:
+      "LEFT JOIN stats.index_basic_stats  sb ON sb.date = a.date AND sb.code = a.code",
+    priceExpr: "sb.close",
+  },
+};
+
+export async function getPerfAttrChart(
+  rawCode: string,
+  rawBenchmarkCode: string,
+  secType: PerfAttrSecType,
+): Promise<PerfAttrChartResponse> {
+  const target = stripped(rawCode);
+  const benchmarkCode = rawBenchmarkCode.trim();
+  const nameTable = PERF_ATTR_NAME_TABLE[secType] ?? PERF_ATTR_NAME_TABLE.etf;
+  const subjSrc = PERF_ATTR_SUBJECT_SOURCE[secType] ?? PERF_ATTR_SUBJECT_SOURCE.etf;
+
+  const [chartRows, nameRows, benchNameRows, benchLinkedEtfs, codeLinkedEtfs] = await Promise.all([
+    queryRows<DbPerfAttrChartRow>(
+      `SELECT a.date,
+              a.etf_trading_amount_ratio_benchmark_to_code AS etf_trading_amount_ratio,
+              a.etf_trading_amount_ratio_benchmark_to_code_ma5 AS etf_trading_amount_ratio_ma5,
+              a.benchmark_etf_trading_amount,
+              a.code_etf_trading_amount,
+              ieb.etf_num AS benchmark_etf_num,
+              iec.etf_num AS code_etf_num,
+              a.corr_5d,
+              a.corr_20d,
+              a.corr_60d,
+              a.corr_255d,
+              ${subjSrc.priceExpr} AS subject_close,
+              ib.close AS benchmark_close
+       FROM analysis.sec_alloc_perf_attribution a
+       ${subjSrc.joinClause}
+       LEFT JOIN stats.index_basic_stats ib ON ib.date = a.date AND ib.code = a.benchmark_code
+       LEFT JOIN stats.index_exts ieb ON ieb.date = a.date AND ieb.code = a.benchmark_code
+       LEFT JOIN stats.index_exts iec ON iec.date = a.date AND iec.code = a.code
+       WHERE a.sec_type = $1::text
+         AND REGEXP_REPLACE(a.code, '\\.(SZ|SS|SH)$', '') = $2::text
+         AND a.benchmark_code = $3::text
+       ORDER BY a.date ASC`,
+      [secType, target, benchmarkCode],
+    ),
+    queryRows<{ name: string | null }>(
+      `SELECT DISTINCT ON (code) code, name FROM ${nameTable} WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1::text ORDER BY code, date DESC`,
+      [target],
+    ),
+    queryRows<{ name: string | null }>(
+      `SELECT DISTINCT ON (code) code, name FROM stats.index_identity WHERE code = $1::text ORDER BY code, date DESC`,
+      [benchmarkCode],
+    ),
+    // ETFs tracking the benchmark index (parent_index_code = benchmark_code).
+    queryRows<{ code: string; name: string | null }>(
+      `SELECT code, name FROM stats.sec_classification
+       WHERE type = 'etf' AND parent_index_code = $1::text
+       ORDER BY name NULLS LAST, code`,
+      [benchmarkCode],
+    ),
+    // ETFs tracking the subject index (parent_index_code = code). For ETF
+    // subjects (sec_type='etf') this returns nothing — the subject IS the ETF.
+    queryRows<{ code: string; name: string | null }>(
+      `SELECT code, name FROM stats.sec_classification
+       WHERE type = 'etf' AND parent_index_code = $1::text
+       ORDER BY name NULLS LAST, code`,
+      [target],
+    ),
+  ]);
+
+  return {
+    code: target,
+    name: nameRows[0]?.name ?? "",
+    benchmark_code: benchmarkCode,
+    benchmark_name: benchNameRows[0]?.name ?? "",
+    rows: chartRows.map((r) => ({
+      date: formatDate(r.date),
+      etf_trading_amount_ratio: toNum(r.etf_trading_amount_ratio),
+      etf_trading_amount_ratio_ma5: toNum(r.etf_trading_amount_ratio_ma5),
+      benchmark_etf_trading_amount: toNum(r.benchmark_etf_trading_amount),
+      code_etf_trading_amount: toNum(r.code_etf_trading_amount),
+      benchmark_etf_num: r.benchmark_etf_num == null ? null : Number(r.benchmark_etf_num),
+      code_etf_num: r.code_etf_num == null ? null : Number(r.code_etf_num),
+      subject_close: toNum(r.subject_close),
+      benchmark_close: toNum(r.benchmark_close),
+      corr_5d: toNum(r.corr_5d),
+      corr_20d: toNum(r.corr_20d),
+      corr_60d: toNum(r.corr_60d),
+      corr_255d: toNum(r.corr_255d),
+    })),
+    benchmark_linked_etfs: benchLinkedEtfs.map((r) => ({
+      code: r.code,
+      name: r.name ?? r.code,
+    })),
+    code_linked_etfs: codeLinkedEtfs.map((r) => ({
+      code: r.code,
+      name: r.name ?? r.code,
+    })),
+  };
+}

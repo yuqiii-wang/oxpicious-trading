@@ -27,7 +27,8 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
       "Per-security 9-pair grid (5 Price/MA + 4 MA5/MA): each pair shows two curves " +
       "(short + long MA) with green fill when short > long (growth) and red fill " +
       "when short < long (decline). Monthly/quarterly/yearly summary stats per pair. " +
-      "Supports ETF, Index, and Stock universes via a left-panel toggle " +
+      "Toggle ETF / Index / Stock via the top-bar toggle; ThemeSelector + " +
+      "CodeSearchBar mirror the other analysis-commons pages " +
       "(Stock is reserved until stock_tech_stats is created). " +
       "Backed by analysis.mov_ave_spreads_detail + _summary.",
     tags: ["ETF", "Index", "Stock", "MA spread", "2-curve + fill"],

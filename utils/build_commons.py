@@ -349,6 +349,70 @@ async def find_missing_keys(
 
 
 # ============================================================================
+# Analysis missing-dates detection — used by analyze_* scripts
+# ============================================================================
+async def find_missing_analysis_dates(
+    conn,
+    analysis_table: str,
+    source_identity_tables: Sequence[str],
+    *,
+    date_column: str = "date",
+) -> Set[datetime.date]:
+    """Return the set of dates present in source identity tables but NOT
+    yet in the analysis result table.
+
+    This is the analysis-script counterpart of :func:`find_missing_dates`.
+    Build scripts compare source CSV filenames against a single identity
+    table; analysis scripts compare the dates already materialized in their
+    result table against the UNION of dates across one or more source
+    identity tables (e.g. stats.etf_identity + stats.index_identity for
+    analyze.mov_ave_spread).
+
+    Args:
+        conn: asyncpg connection.
+        analysis_table: analysis result table, optionally schema-qualified
+            (e.g. "analysis.mov_ave_spreads_detail").
+        source_identity_tables: list of stats schema identity tables whose
+            UNION of ``date_column`` values forms the "expected" set.
+        date_column: date column name (default "date").
+
+    Returns:
+        Set of ``datetime.date`` present in any source table but missing
+        from the analysis table. Empty set if the analysis table already
+        has every source date (DB is up to date) or if all sources are
+        empty.
+    """
+    # Existing dates in the analysis table.
+    existing_rows = await conn.fetch(
+        f'SELECT DISTINCT "{date_column}" FROM {analysis_table}'
+    )
+    existing_dates = {
+        r[date_column] for r in existing_rows if r[date_column] is not None
+    }
+
+    # Source dates = UNION across all source identity tables.
+    source_dates: Set[datetime.date] = set()
+    for tbl in source_identity_tables:
+        rows = await conn.fetch(f'SELECT DISTINCT "{date_column}" FROM {tbl}')
+        for r in rows:
+            if r[date_column] is not None:
+                source_dates.add(r[date_column])
+
+    return source_dates - existing_dates
+
+
+def add_force_arg(parser: argparse.ArgumentParser) -> None:
+    """Add only the ``--force`` flag (for scripts that don't need
+    ``--start-date`` / ``--end-date``, e.g. analysis scripts whose date
+    range is driven by source identity tables rather than CLI args).
+    """
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Rebuild all data (truncate target tables first)",
+    )
+
+
+# ============================================================================
 # Source-CSV filtering by missing dates
 # ============================================================================
 def filter_source_files_by_missing_dates(

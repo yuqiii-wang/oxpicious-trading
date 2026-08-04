@@ -8,10 +8,10 @@
  *   • a left tick at the open price
  *   • a right tick at the close price
  * Colored green when close >= open, red otherwise — identical up/down
- * coloring to the former candlestick (matches `draw_candlestick` in
+ * coloring to the legacy OHLC rendering (matches `draw_ohlc` in
  * _plot_commons.py).
  *
- * Data order matches the previous candlestick convention:
+ * Data order matches the previous OHLC convention:
  * `[open, close, low, high]` (low before high). Kept so existing data
  * preparation and tooltip destructuring (`const [o, cl, l, h] = value`)
  * continue to work unchanged.
@@ -110,7 +110,7 @@ export function formatPriceValue(
 
 /**
  * Render a single OHLC bar. Returns undefined for gap/NaN rows so ECharts
- * draws nothing (matching the previous candlestick gap behavior).
+ * draws nothing (matching the previous OHLC gap behavior).
  */
 const ohlcRenderItem: CustomSeriesRenderItem = (params, api) => {
   const openVal = api.value(0);
@@ -168,7 +168,7 @@ const ohlcRenderItem: CustomSeriesRenderItem = (params, api) => {
  * Build an OHLC bar series option using the shared style.
  *
  * @param data       Array of `[open, close, low, high]` tuples (low before
- *                   high — kept identical to the previous candlestick order).
+ *                   high — kept identical to the previous OHLC order).
  * @param overrides  Optional per-series fields (name, yAxisIndex, z).
  */
 export function ohlcSeries(

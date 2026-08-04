@@ -135,17 +135,19 @@ export default function LinkedEtfsList({
   );
 
   // ---- Aggregation row values (computed over ALL linked ETFs, not just the
-  //      current page). total_etf_amt / total_etf_amt_ma5 come from
+  //      current page). total_etf_trading_amount / total_etf_trading_amount_ma5 come from
   //      stats.index_exts (Σ ETF turnover tracking the index, SSE+SZSE, yuan);
   //      the per-ETF "Trading Amt" column is SZSE-only (v_etf_margin), so its
-  //      sum is reported separately and generally ≤ total_etf_amt.
+  //      sum is reported separately and generally ≤ total_etf_trading_amount.
   const sumTradingAmtYi = (() => {
     if (!data) return null;
     let sum = 0;
     let any = false;
     for (const e of data.etfs) {
       if (e.latest_trading_amount != null) {
-        sum += e.latest_trading_amount;
+        // latest_trading_amount is in yuan (from v_etf_margin.trading_amount);
+        // convert to 亿元 (/1e8) to match the "Trading Amt (亿)" column.
+        sum += e.latest_trading_amount / 1e8;
         any = true;
       }
     }
@@ -164,11 +166,11 @@ export default function LinkedEtfsList({
     return any ? sum : null;
   })();
   const totalEtfAmtYi =
-    data?.total_etf_amt != null ? data.total_etf_amt / 1e8 : null;
+    data?.total_etf_trading_amount != null ? data.total_etf_trading_amount / 1e8 : null;
   const totalEtfAmtMa5Yi =
-    data?.total_etf_amt_ma5 != null ? data.total_etf_amt_ma5 / 1e8 : null;
+    data?.total_etf_trading_amount_ma5 != null ? data.total_etf_trading_amount_ma5 / 1e8 : null;
   const aggDate =
-    data?.total_etf_amt_date ||
+    data?.total_etf_trading_amount_date ||
     data?.etfs.reduce((m, e) => (e.latest_date > m ? e.latest_date : m), "") ||
     "";
 
@@ -274,7 +276,7 @@ export default function LinkedEtfsList({
                       </TableHead>
                       <TableBody>
                         {/* Frozen aggregation row — index-level totals from
-                            stats.index_exts (total_etf_amt, total_etf_amt_ma5)
+                            stats.index_exts (total_etf_trading_amount, total_etf_trading_amount_ma5)
                             plus client-side sums over all linked ETFs.
                             position: sticky pins it to the top of the
                             scrollable container so it stays visible. */}
@@ -325,7 +327,7 @@ export default function LinkedEtfsList({
                               {e.latest_close != null ? fmtNum(e.latest_close) : "—"}
                             </TableCell>
                             <TableCell sx={{ ...CELL_SX, fontFamily: "monospace" }} align="right">
-                              {e.latest_trading_amount != null ? fmtNum(e.latest_trading_amount) : "—"}
+                              {e.latest_trading_amount != null ? fmtNum(e.latest_trading_amount / 1e8) : "—"}
                             </TableCell>
                             {/* Index-level metrics — not applicable per-ETF. */}
                             <TableCell sx={{ ...CELL_SX, color: "text.disabled" }} align="right">—</TableCell>

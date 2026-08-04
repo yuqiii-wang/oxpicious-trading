@@ -41,6 +41,8 @@ the former stats.sec_sector_industry_map has been DROPPED.
 Usage:
   python build_classification.py                # load JSON indices + recompute ETFs/stocks + save JSON + upsert DB
   python build_classification.py --no-db        # same but skip DB upsert
+  python build_classification.py --force        # truncate sec_classification before upsert (removes stale rows)
+  python build_classification.py --reclassify   # reclassify ALL indices from keyword rules (ignores JSON cache)
 """
 from __future__ import annotations
 
@@ -59,6 +61,7 @@ from utils.build_commons import (
     print_build_header, print_wall_time,
     PROJECT_ROOT, TODAY_STR,
     bulk_upsert_async, truncate_table_async,
+    add_force_arg,
 )
 
 setup_utf8_stdout()
@@ -858,15 +861,31 @@ async def build_classification(
 # DB upsert
 # ============================================================================
 
-async def upsert_to_db(conn, state: Dict[str, Any], verbose: bool = True):
+async def upsert_to_db(conn, state: Dict[str, Any], verbose: bool = True,
+                       force: bool = False):
     """Upsert the classification state to stats.sec_classification + stats.sec_index_tags.
 
     Labels (sector_label, industry_label, industry_slug) are DENORMALIZED
     onto every sec_classification row by looking them up from the in-memory
     catalog at upsert time.  No separate catalog table is needed — the
     former stats.sec_sector_industry_map has been DROPPED.
+
+    ``force`` — when True, truncates stats.sec_classification entirely before
+    upserting, removing stale rows (e.g. ETFs no longer in the CSV, indices
+    no longer in the JSON).  When False (default), existing index/ETF rows
+    are upserted in place (stale rows preserved).  sec_index_tags and
+    sec_owners are always truncated + rebuilt (needed for correctness when
+    JSON is hand-edited).  Stock rows are always DELETEd + re-inserted
+    (the set of qualifying indices can change between runs).
     """
     catalog = state["catalog"]
+
+    # --- 0. Force mode: truncate sec_classification to remove stale rows ---
+    if force:
+        if verbose:
+            print(f"    [DB] Force mode: truncating stats.sec_classification...",
+                  flush=True)
+        await truncate_table_async(conn, "stats.sec_classification")
 
     # --- 0. Migrate old NULL parent_index_code → '' (new NOT NULL schema) ---
     # Idempotent: no-op once all rows have been migrated.
@@ -1081,15 +1100,25 @@ async def main():
                     help="Force reclassification of ALL indices from keyword rules "
                          "(ignores stale JSON-cached sector_id/industry_id/tags). "
                          "Use this after changing INDEX_RULES to propagate new rules.")
+    add_force_arg(ap)
     args = ap.parse_args()
 
     t0 = datetime.datetime.now()
+    mode_parts = []
+    if args.no_db:
+        mode_parts.append("no-db")
+    if args.force:
+        mode_parts.append("FORCE (truncate + recompute)")
+    else:
+        mode_parts.append("incremental (upsert)")
+    if args.reclassify:
+        mode_parts.append("reclassify")
     print_build_header(
         "BUILD CLASSIFICATION  ·  sector → industry  ·  ETF + Index + Stock",
         **{
             "JSON path": JSON_PATH,
             "Today": TODAY_STR,
-            "Mode": ("no-db" if args.no_db else "default") + (" + reclassify" if args.reclassify else ""),
+            "Mode": " + ".join(mode_parts),
         }
     )
 
@@ -1141,7 +1170,7 @@ async def main():
         # --- Upsert to DB ---
         if conn is not None:
             print("\n[DB] Upserting to database …", flush=True)
-            await upsert_to_db(conn, state, verbose=True)
+            await upsert_to_db(conn, state, verbose=True, force=args.force)
     finally:
         if conn is not None:
             await conn.close()

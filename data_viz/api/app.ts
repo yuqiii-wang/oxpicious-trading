@@ -16,6 +16,7 @@ import etfMarginRoutes from "./routes/etf-margin.js";
 import indexBaselineRoutes from "./routes/index-baseline.js";
 import secCompositionRoutes from "./routes/sec-composition.js";
 import stockBaselineRoutes from "./routes/stock-baseline.js";
+import liveDataRoutes from "./routes/live-data.js";
 import analysisRoutes from "./routes/analysis.js";
 import cacheRoutes from "./routes/cache.js";
 
@@ -34,6 +35,7 @@ app.use("/api/etf-margin", etfMarginRoutes);
 app.use("/api/index-baseline", indexBaselineRoutes);
 app.use("/api/sec-composition", secCompositionRoutes);
 app.use("/api/stock-baseline", stockBaselineRoutes);
+app.use("/api/live-data", liveDataRoutes);
 app.use("/api/analysis", analysisRoutes);
 app.use("/api/cache", cacheRoutes);
 

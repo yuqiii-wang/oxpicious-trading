@@ -48,7 +48,7 @@ Missing-data detection flow (DB-first):
     4. Bulk upsert only the missing rows
 
   ETF meta (sec_classification type='etf' — per-code metadata, not per-date):
-    Computed from full merged data (n_days, avg_volume_wan, etc.) and
+    Computed from full merged data (n_days, avg_shares, etc.) and
     upserted unconditionally (ON CONFLICT DO UPDATE — idempotent). Only
     quality-metric columns are updated; classification + index_code columns
     (populated by build_etf_index_map.py) are preserved on conflict.
@@ -546,6 +546,19 @@ def build_ohlcv_df(verbose=True, ohlcv_files=None):
             print(f"    [AMT-FIX] normalized {_n_fixed:,} rows with 1000× amount error "
                   f"(SZSE: {int(_bad_szse.sum()):,}, SSE: {int(_bad_sse.sum()):,})", flush=True)
 
+    # Convert amount from 万元 → yuan to match the "yuan everywhere" DB convention.
+    # The 1000x error fix above operates on the raw 万元 values, so this
+    # conversion MUST come after the fix. Output column is `trading_amount`
+    # (renamed from legacy `amount`).
+    out["trading_amount"] = out["amount_wan"] * 10000.0  # 万元 → yuan
+    out = out.drop(columns=["amount_wan"])
+
+    # Convert volume from 万份/万股 → shares. Output column is `trading_shares`
+    # (renamed from legacy `volume_wan`; data now in shares, not 万份).
+    if "volume_wan" in out.columns:
+        out["trading_shares"] = out["volume_wan"] * 10000.0  # 万份/万股 → shares
+        out = out.drop(columns=["volume_wan"])
+
     if verbose:
         n_szse = out["code"].str.endswith(".SZ").sum()
         n_sse = out["code"].str.endswith(".SS").sum()
@@ -735,8 +748,8 @@ async def query_existing_ohlcv_margin_from_db(conn, verbose=True):
         SELECT
             i.date, i.code, i.name,
             b.prev_close, b.open, b.high, b.low, b.close, b.pct_change,
-            COALESCE(l.volume_wan, 0)   AS volume_wan,
-            COALESCE(l.amount_wan, 0)   AS amount_wan,
+            COALESCE(l.trading_shares, 0) AS trading_shares,
+            COALESCE(l.trading_amount, 0) AS trading_amount,
             COALESCE(l.rz_buy, 0)       AS rz_buy,
             COALESCE(l.rz_balance, 0)   AS rz_balance,
             COALESCE(l.rq_sell_qty, 0)  AS rq_sell_qty,
@@ -763,17 +776,17 @@ async def query_existing_ohlcv_margin_from_db(conn, verbose=True):
     # DataFrame columns object-dtype. When concatenated with CSV-sourced
     # rows (float64), the mixed Decimal+float column stays object-dtype and
     # breaks downstream numeric aggregations (e.g. groupby().mean() on
-    # volume_wan). Coerce all numeric columns to float64 up front so the
+    # trading_shares). Coerce all numeric columns to float64 up front so the
     # DB-sourced frame matches the CSV-sourced frame's dtypes.
     for _nc in ["prev_close", "open", "high", "low", "close", "pct_change",
-                "volume_wan", "amount_wan", "rz_buy", "rz_balance",
+                "trading_shares", "trading_amount", "rz_buy", "rz_balance",
                 "rq_sell_qty", "rq_balance_qty", "rq_balance_amt",
                 "total_balance"]:
         if _nc in df.columns:
             df[_nc] = pd.to_numeric(df[_nc], errors="coerce")
 
     ohlcv_cols = ["date", "code", "name", "prev_close", "open", "high", "low",
-                  "close", "pct_change", "volume_wan", "amount_wan"]
+                  "close", "pct_change", "trading_shares", "trading_amount"]
     margin_cols = ["date", "code", "rz_buy", "rz_balance", "rq_sell_qty",
                    "rq_balance_qty", "rq_balance_amt", "total_balance"]
 
@@ -1172,8 +1185,8 @@ async def main():
                 liq_rows.append({
                     "date": row["date"],
                     "code": row["code"],
-                    "volume_wan": row.get("volume_wan", 0),
-                    "amount_wan": row.get("amount_wan", 0),
+                    "trading_shares": row.get("trading_shares", 0),
+                    "trading_amount": row.get("trading_amount", 0),
                     "rz_buy": row.get("rz_buy", 0),
                     "rz_balance": row.get("rz_balance", 0),
                     "rq_sell_qty": row.get("rq_sell_qty", 0),
@@ -1277,8 +1290,8 @@ async def main():
         # classification defaults ('OTHER') — re-run build_etf_index_map.py to
         # backfill their classification + index_code.
         avg_vol_by_code: dict = {}
-        if "volume_wan" in merged_db.columns:
-            avg_vol_by_code = merged_db.groupby("code")["volume_wan"].mean().to_dict()
+        if "trading_shares" in merged_db.columns:
+            avg_vol_by_code = merged_db.groupby("code")["trading_shares"].mean().to_dict()
 
         sec_classification_rows = []
         for _, row in uni_df.iterrows():
@@ -1300,7 +1313,7 @@ async def main():
                 "type": "etf",
                 "n_days": n_days,
                 "has_margin": has_margin,
-                "avg_volume_wan": avg_vol,
+                "avg_shares": avg_vol,
                 "first_date": fd_date,
                 "last_date": ld_date,
                 "selectivity_rank_score": base_score,
@@ -1308,7 +1321,7 @@ async def main():
 
         # Add volume-rank component (0..50)
         if sec_classification_rows:
-            by_vol = sorted(sec_classification_rows, key=lambda r: r["avg_volume_wan"], reverse=True)
+            by_vol = sorted(sec_classification_rows, key=lambda r: r["avg_shares"], reverse=True)
             n_etf = len(by_vol)
             for rank_i, r in enumerate(by_vol):
                 r["selectivity_rank_score"] += int(50 * (1.0 - rank_i / max(n_etf, 1)))

@@ -6,7 +6,11 @@ https://www.szse.cn/market/trend/index.html. Writes
 
 The xlsx contains ~180 indexes per day; the CSV is filtered to only
 399001 深证成指, 399006 创业板指, and 399237 运输指数. The xlsx is kept in full.
-No identity table — falls back to filesystem scan.
+
+DB-first mode: queries ``stats.index_identity`` to find missing trading days,
+skipping dates already in the DB. Additionally, ``skip_empty_markers=True``
+excludes dates that have a local 0-byte CSV marker (previously fetched but
+the server returned no data), preventing re-downloading those dates.
 """
 from __future__ import annotations
 
@@ -39,6 +43,12 @@ SECURITY_CFGS: Dict[str, Dict[str, str]] = {
 INDEX_CODES_TO_KEEP: List[str] = ["399001", "399006", "399237"]
 CODE_FILTER_BY_TYPE: Dict[str, List[str]] = {
     "index": INDEX_CODES_TO_KEEP,
+}
+
+# DB-first mode: stats.index_identity has NO code_suffix column (codes are
+# bare 6-digit like "399001"), so db_code_suffix is intentionally omitted.
+DB_TABLE_BY_TYPE: Dict[str, str] = {
+    "index": "stats.index_identity",
 }
 
 TREND_HEADERS = build_headers(REFERER_TREND)
@@ -84,7 +94,9 @@ def download_szse_trend_index(
         sleep_sec=sleep_sec,
         session=session,
         code_suffix=".SZ",
+        db_table_by_type=DB_TABLE_BY_TYPE,
         code_filter_by_type=CODE_FILTER_BY_TYPE,
+        skip_empty_markers=True,
     )
 
 

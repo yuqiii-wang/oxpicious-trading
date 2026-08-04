@@ -30,12 +30,15 @@ do
   python -m "$m"
 done
 
-# analyze, run daily
-for f in \
-  analyze_mov_ave_spread.py \
-  analyze_sec_alloc_perf_attribution.py
+# analyze, run daily. industry_correlations is now an internal step of
+# industry_sentiments (runs automatically after the sentiments table is
+# repopulated, reusing the same DB connection).
+for m in \
+  analyze.industry_sentiments \
+  analyze.mov_ave_spread \
+  analyze.sec_alloc_perf_attribution
 do
-  python "$f"
+  python -m "$m"
 done
 
 # on monthly start date
@@ -55,5 +58,6 @@ python -m downloads.stock.sse.archive
 python -m builds.classification
 
 # always run
-python -m downloads.stock.sse.price
-python -m downloads.stock.szse.price
+python -m downloads.stream.sse.price
+python -m downloads.stream.szse.price
+python -m downloads.stream.csindex.price   

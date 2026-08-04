@@ -197,6 +197,7 @@ def download_szse_margin(
         sleep_sec=sleep_sec,
         session=session,
         code_suffix=".SZ",
+        skip_empty_markers=True,
     )
 
 

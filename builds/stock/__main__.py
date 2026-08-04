@@ -106,6 +106,8 @@ COL_MAP = {
     "最低":         "low",
     "今收":         "close",
     "涨跌幅（%）":  "pct_change",
+    "成交量(万股)": "volume_wan",   # raw 万股 → converted to shares below
+    "成交金额(万元)": "amount_wan", # raw 万元 → converted to yuan below
     "市盈率":       "pe",
 }
 
@@ -165,7 +167,8 @@ def _read_one(path, market):
     out["code"] = out["code"].apply(
         lambda c: str(c).split(".")[0].zfill(6)
     ).apply(lambda c: add_exchange_suffix(c, market))
-    for c in ("prev_close", "open", "high", "low", "close", "pct_change", "pe"):
+    for c in ("prev_close", "open", "high", "low", "close", "pct_change",
+              "volume_wan", "amount_wan", "pe"):
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
     # Treat "-", empty, and 0.0 as NULL for pe: pd.to_numeric already turns
@@ -173,6 +176,18 @@ def _read_one(path, market):
     # 市盈率=0 as a loss-making marker rather than a real PE value.
     if "pe" in out.columns:
         out["pe"] = out["pe"].where(out["pe"] != 0, np.nan)
+    # Convert volume/amount from source units (万股/万元) to DB conventions
+    # (trading_shares/trading_amount in yuan) to match stats.stock_basic_stats. The
+    # output columns are `trading_shares` and `trading_amount` (renamed from legacy
+    # `volume`/`amount`). This enables cross-table comparability — e.g.
+    # analyze_industry_sentiments.py sums stock trading_amount (in yuan) to
+    # derive total industry capital flow.
+    if "volume_wan" in out.columns:
+        out["trading_shares"] = out["volume_wan"] * 10000.0  # 万股 → shares
+        out = out.drop(columns=["volume_wan"])
+    if "amount_wan" in out.columns:
+        out["trading_amount"] = out["amount_wan"] * 10000.0  # 万元 → yuan
+        out = out.drop(columns=["amount_wan"])
     return out
 
 
@@ -221,6 +236,9 @@ def build_missing_rows(file_market_pairs, verbose=True):
         print(f"           SZSE (.SZ): {n_szse:,} | SSE (.SS): {n_sse:,} | BSE (.BJ): {n_bse:,}", flush=True)
         print(f"           pe non-null: {combined['pe'].notna().sum():,} | "
               f"pe>0: {(combined['pe'] > 0).sum():,}", flush=True)
+        if "trading_shares" in combined.columns:
+            print(f"           trading_shares non-null: {combined['trading_shares'].notna().sum():,} | "
+                  f"trading_amount non-null: {combined['trading_amount'].notna().sum():,}", flush=True)
         print(f"    [STATS] ok={counts['ok']} empty={counts['empty']} "
               f"total_rows={counts['rows']:,}", flush=True)
     return combined
@@ -319,7 +337,7 @@ def merge_sse_pe(combined, sse_pe, verbose=True):
     if combined.empty:
         combined = pd.DataFrame(columns=[
             "date", "code", "name", "code_suffix",
-            "open", "high", "low", "close", "volume", "amount", "pe"
+            "open", "high", "low", "close", "trading_shares", "trading_amount", "pe"
         ])
 
     before_pe_nonnull = combined["pe"].notna().sum() if "pe" in combined.columns else 0
@@ -354,7 +372,7 @@ def merge_sse_pe(combined, sse_pe, verbose=True):
         ].apply(lambda c: "SS" if str(c).endswith(".SS") else None)
 
     # Ensure OHLCV columns exist for PE-only rows (will be NaN)
-    for col in ["open", "high", "low", "close", "volume", "amount"]:
+    for col in ["open", "high", "low", "close", "trading_shares", "trading_amount"]:
         if col not in merged.columns:
             merged[col] = pd.NA
 
@@ -919,6 +937,8 @@ async def main():
                 "pe": _to_db(row.get("pe")),
                 "is_pe_estimated": False,
                 "is_close_estimated": bool(row.get("is_close_estimated", False)),
+                "trading_shares": _to_db(row.get("trading_shares")),
+                "trading_amount": _to_db(row.get("trading_amount")),
             }
             if close_val is None:
                 pe_only_actual_rows.append(entry)
@@ -1008,6 +1028,8 @@ async def main():
                     # rows with no prior actual PE get NULL pe and false.
                     "is_pe_estimated": est_pe is not None,
                     "is_close_estimated": bool(row.get("is_close_estimated", False)),
+                    "trading_shares": _to_db(row.get("trading_shares")),
+                    "trading_amount": _to_db(row.get("trading_amount")),
                 })
 
             if estimated_basic_stats_rows:

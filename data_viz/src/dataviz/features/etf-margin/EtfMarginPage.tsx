@@ -122,6 +122,16 @@ export default function EtfMarginPage() {
     setSearchCode(null);
   };
 
+  // Clicking an L3 item chip narrows the page to a single ETF WITHOUT
+  // disturbing the sector/industry highlight (the chip already belongs to
+  // the active industry/sector, so the highlight is correct as-is). Keeps
+  // Row 3's chip list stable so the user can quickly switch between ETFs.
+  const handleItemSelected = (code: string) => {
+    setError(null);
+    setSearchCode(code);
+    setPage(1);
+  };
+
   // Clicking a sector/industry chip exits search mode and browses normally.
   const handleSectorChange = (id: string | null) => {
     setSearchCode(null);
@@ -200,6 +210,10 @@ export default function EtfMarginPage() {
         onSectorChange={handleSectorChange}
         onIndustryChange={handleIndustryChange}
         onExchangeChange={handleExchangeChange}
+        itemKind="ETF"
+        selectedItemCode={searchCode}
+        onItemSelected={handleItemSelected}
+        onClearItemSelection={handleClearSearch}
       />
 
       {loading && (

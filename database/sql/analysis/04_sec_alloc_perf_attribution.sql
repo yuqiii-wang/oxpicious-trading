@@ -25,18 +25,18 @@
 --    benchmark_sec_shared_weight = Σ w_benchmark on shared stocks
 --
 --  ETF-MARKET AMOUNT:
---    benchmark_etf_amount = Σ etf_liquidity_margin.amount_wan × 1e4 across
+--    benchmark_etf_trading_amount = Σ etf_liquidity_margin.trading_amount across
 --                           ALL ETFs tracking benchmark_code on this date
 --                           (parent_index_code = benchmark_code in
 --                           stats.sec_classification). NULL when no ETF
 --                           tracks the benchmark.
---    code_etf_amount      = subject's own amount (etf_liquidity_margin.amount_wan
---                           × 1e4) when sec_type='etf'; aggregate ETF amount
+--    code_etf_trading_amount      = subject's own turnover (etf_liquidity_margin.trading_amount)
+--                           when sec_type='etf'; aggregate ETF turnover
 --                           tracking the subject index when sec_type='index'.
---    etf_amount_ratio_benchmark_to_code = GENERATED column =
---      benchmark_etf_amount / code_etf_amount (NULL when either is NULL/0).
+--    etf_trading_amount_ratio_benchmark_to_code = GENERATED column =
+--      benchmark_etf_trading_amount / code_etf_trading_amount (NULL when either is NULL/0).
 --      A ratio ≥ 1 means the benchmark's ETF-market turnover is larger than
---      the subject's. The INVERSE (code_etf_amount / benchmark_etf_amount)
+--      the subject's. The INVERSE (code_etf_trading_amount / benchmark_etf_trading_amount)
 --      is the subject's SHARE of the benchmark's ETF market and is the
 --      interpretable "proportion" form — computed in the UI as 1/ratio.
 --
@@ -65,29 +65,29 @@ CREATE TABLE analysis.sec_alloc_perf_attribution (
     -- ETF-market turnover aggregated across ALL ETFs tracking the benchmark
     -- index (via stats.sec_classification.parent_index_code). NULL when no
     -- ETF tracks the benchmark (e.g. broad indices like 上证指数 000001).
-    benchmark_etf_amount               NUMERIC(16,2),  -- Σ etf amount_wan×1e4 for ETFs tracking benchmark_code
-    -- Subject's own ETF amount (sec_type='etf') OR aggregate ETF amount
+    benchmark_etf_trading_amount               NUMERIC(16,2),  -- Σ etf trading_amount for ETFs tracking benchmark_code
+    -- Subject's own ETF trading_amount (sec_type='etf') OR aggregate ETF trading_amount
     -- tracking the subject index (sec_type='index'). NULL for stocks.
-    code_etf_amount                    NUMERIC(16,2),
-    etf_amount_ratio_benchmark_to_code NUMERIC(10,4)
+    code_etf_trading_amount                    NUMERIC(16,2),
+    etf_trading_amount_ratio_benchmark_to_code NUMERIC(10,4)
         GENERATED ALWAYS AS (
             CASE
-                WHEN benchmark_etf_amount IS NULL OR code_etf_amount IS NULL
-                  OR benchmark_etf_amount = 0 OR code_etf_amount = 0
+                WHEN benchmark_etf_trading_amount IS NULL OR code_etf_trading_amount IS NULL
+                  OR benchmark_etf_trading_amount = 0 OR code_etf_trading_amount = 0
                 THEN NULL
                 -- Cap at NUMERIC(10,4) max (|ratio| < 10^6). Ratios
                 -- exceeding this (tiny subject ETF turnover vs a large
                 -- benchmark) are NULL'd to avoid overflow — see the
                 -- matching cap in analyze_sec_alloc_perf_attribution.py.
-                WHEN ABS(benchmark_etf_amount / code_etf_amount) >= 1000000
+                WHEN ABS(benchmark_etf_trading_amount / code_etf_trading_amount) >= 1000000
                 THEN NULL
-                ELSE benchmark_etf_amount / code_etf_amount
+                ELSE benchmark_etf_trading_amount / code_etf_trading_amount
             END
         ) STORED,
-    -- 5-trading-day moving average of etf_amount_ratio_benchmark_to_code,
+    -- 5-trading-day moving average of etf_trading_amount_ratio_benchmark_to_code,
     -- populated by analyze_sec_alloc_perf_attribution.py via pandas
     -- rolling(5).mean() per (code, sec_type, benchmark_code) group.
-    etf_amount_ratio_benchmark_to_code_ma5 NUMERIC(10,4),
+    etf_trading_amount_ratio_benchmark_to_code_ma5 NUMERIC(10,4),
 
     corr_5d                NUMERIC(8,4),  -- 5-day close correlation between subject and benchmark
     corr_20d               NUMERIC(8,4),  -- 20-day close correlation between subject and benchmark
@@ -110,15 +110,15 @@ CREATE INDEX idx_sec_perf_attr_date_code_benchmark
 CREATE INDEX idx_sec_perf_attr_sec_type_date
     ON analysis.sec_alloc_perf_attribution (sec_type, date);
 
-COMMENT ON TABLE  analysis.sec_alloc_perf_attribution                  IS 'Daily composition overlap + ETF-market liquidity + rolling close correlations: one row per (code, date, sec_type, benchmark_code). Stores composition overlap metrics (code_sec_shared_weight, benchmark_sec_shared_weight), ETF-market turnover (benchmark_etf_amount, code_etf_amount, etf_amount_ratio_benchmark_to_code), and rolling close correlations (corr_5d/20d/60d/255d). sec_type ∈ {stock, etf, index}. Composition and ETF-amount columns are NULL for stocks.';
+COMMENT ON TABLE  analysis.sec_alloc_perf_attribution                  IS 'Daily composition overlap + ETF-market liquidity + rolling close correlations: one row per (code, date, sec_type, benchmark_code). Stores composition overlap metrics (code_sec_shared_weight, benchmark_sec_shared_weight), ETF-market turnover (benchmark_etf_trading_amount, code_etf_trading_amount, etf_trading_amount_ratio_benchmark_to_code), and rolling close correlations (corr_5d/20d/60d/255d). sec_type ∈ {stock, etf, index}. Composition and ETF trading_amount columns are NULL for stocks.';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.sec_type         IS 'Subject security type: stock, etf, or index. Determines which source price table and (for etf/index) which composition source applies.';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.benchmark_code IS 'Benchmark index code (typically one of the 6 broad-market indices: 000300, 000001, 000852, 399001, 399006, 000688, but not constrained).';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.code_sec_shared_weight         IS 'Σ w_subject on stocks held by BOTH securities. The fraction of the subject''s weight that overlaps with the benchmark. NULL for stocks (no internal holdings).';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.benchmark_sec_shared_weight    IS 'Σ w_benchmark on stocks held by BOTH securities. The fraction of the benchmark''s weight that overlaps with the subject. NULL for stocks (no internal holdings).';
-COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.benchmark_etf_amount           IS 'Aggregate ETF turnover (yuan) on this date across ALL ETFs tracking benchmark_code. Source: Σ stats.etf_liquidity_margin.amount_wan × 1e4 where the ETF''s stats.sec_classification.parent_index_code = benchmark_code. NULL when no ETF tracks the benchmark (e.g. 上证指数 000001 has no direct ETF tracking it).';
-COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.code_etf_amount                IS 'Subject''s ETF turnover (yuan). For sec_type=''etf'': the ETF''s own stats.etf_liquidity_margin.amount_wan × 1e4. For sec_type=''index'': aggregate ETF turnover tracking the subject index (same aggregation as benchmark_etf_amount but keyed on subject code). NULL for stocks and for indices with no tracking ETF.';
-COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.etf_amount_ratio_benchmark_to_code IS 'GENERATED ALWAYS AS (CASE WHEN benchmark_etf_amount IS NULL OR code_etf_amount IS NULL OR benchmark_etf_amount = 0 OR code_etf_amount = 0 THEN NULL WHEN ABS(benchmark_etf_amount / code_etf_amount) >= 1000000 THEN NULL ELSE benchmark_etf_amount / code_etf_amount END). Ratio ≥ 1 means benchmark''s ETF-market turnover exceeds subject''s. NOTE: this is a LIQUIDITY ratio, not a price-attribution proportion. The subject''s SHARE of the benchmark ETF market = 1 / etf_amount_ratio_benchmark_to_code (computed in UI). Capped at |ratio| < 10^6 to fit NUMERIC(10,4); larger ratios (tiny subject ETF turnover vs a large benchmark) are NULL''d — see matching cap in analyze_sec_alloc_perf_attribution.py.';
-COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.etf_amount_ratio_benchmark_to_code_ma5 IS '5-trading-day moving average of etf_amount_ratio_benchmark_to_code. Populated by analyze_sec_alloc_perf_attribution.py via pandas rolling(5).mean() per (code, sec_type, benchmark_code) group (min_periods=1, so the first 4 days of each series use a partial average). NULL when the underlying ratio is NULL for the entire trailing 5-day window. Smooths the noisy daily liquidity ratio so the UI can show a stable trend alongside the raw daily value.';
+COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.benchmark_etf_trading_amount           IS 'Aggregate ETF turnover (yuan) on this date across ALL ETFs tracking benchmark_code. Source: Σ stats.etf_liquidity_margin.trading_amount where the ETF''s stats.sec_classification.parent_index_code = benchmark_code. NULL when no ETF tracks the benchmark (e.g. 上证指数 000001 has no direct ETF tracking it).';
+COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.code_etf_trading_amount                IS 'Subject''s ETF turnover (yuan). For sec_type=''etf'': the ETF''s own stats.etf_liquidity_margin.trading_amount. For sec_type=''index'': aggregate ETF turnover tracking the subject index (same aggregation as benchmark_etf_trading_amount but keyed on subject code). NULL for stocks and for indices with no tracking ETF.';
+COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.etf_trading_amount_ratio_benchmark_to_code IS 'GENERATED ALWAYS AS (CASE WHEN benchmark_etf_trading_amount IS NULL OR code_etf_trading_amount IS NULL OR benchmark_etf_trading_amount = 0 OR code_etf_trading_amount = 0 THEN NULL WHEN ABS(benchmark_etf_trading_amount / code_etf_trading_amount) >= 1000000 THEN NULL ELSE benchmark_etf_trading_amount / code_etf_trading_amount END). Ratio ≥ 1 means benchmark''s ETF-market turnover exceeds subject''s. NOTE: this is a LIQUIDITY ratio, not a price-attribution proportion. The subject''s SHARE of the benchmark ETF market = 1 / etf_trading_amount_ratio_benchmark_to_code (computed in UI). Capped at |ratio| < 10^6 to fit NUMERIC(10,4); larger ratios (tiny subject ETF turnover vs a large benchmark) are NULL''d — see matching cap in analyze_sec_alloc_perf_attribution.py.';
+COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.etf_trading_amount_ratio_benchmark_to_code_ma5 IS '5-trading-day moving average of etf_trading_amount_ratio_benchmark_to_code. Populated by analyze_sec_alloc_perf_attribution.py via pandas rolling(5).mean() per (code, sec_type, benchmark_code) group (min_periods=1, so the first 4 days of each series use a partial average). NULL when the underlying ratio is NULL for the entire trailing 5-day window. Smooths the noisy daily liquidity ratio so the UI can show a stable trend alongside the raw daily value.';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_5d                IS 'Rolling Pearson correlation of subject close vs benchmark close over trailing 5 trading days (min_periods ≈ 2N/3). NULL when insufficient non-NaN data.';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_20d               IS 'Rolling Pearson correlation of subject close vs benchmark close over trailing 20 trading days (min_periods ≈ 2N/3).';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_60d               IS 'Rolling Pearson correlation of subject close vs benchmark close over trailing 60 trading days (min_periods ≈ 2N/3).';
@@ -130,7 +130,7 @@ COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_255d              IS 
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('sec_alloc_perf_attribution', 'sec_alloc_perf_attribution', NULL, NOW(),
-     'Daily composition overlap + ETF-market liquidity + rolling close correlations across stocks, ETFs, and sub-indices. Stores code_sec_shared_weight / benchmark_sec_shared_weight (composition overlap from stats.sec_composition), benchmark_etf_amount / code_etf_amount (ETF-market turnover from stats.index_exts), etf_amount_ratio_benchmark_to_code (GENERATED liquidity ratio), and corr_5d/20d/60d/255d (rolling Pearson close-price correlations). Composition and ETF-amount columns are NULL for stocks.')
+     'Daily composition overlap + ETF-market liquidity + rolling close correlations across stocks, ETFs, and sub-indices. Stores code_sec_shared_weight / benchmark_sec_shared_weight (composition overlap from stats.sec_composition), benchmark_etf_trading_amount / code_etf_trading_amount (ETF-market turnover from stats.index_exts), etf_trading_amount_ratio_benchmark_to_code (GENERATED liquidity ratio), and corr_5d/20d/60d/255d (rolling Pearson close-price correlations). Composition and ETF trading_amount columns are NULL for stocks.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

@@ -109,8 +109,8 @@ COMMENT ON COLUMN stats.etf_adjustment.adj_close     IS 'Split-adjusted close; t
 CREATE TABLE IF NOT EXISTS stats.etf_liquidity_margin (
     date                      DATE          NOT NULL,
     code                      TEXT          NOT NULL,
-    volume_wan                NUMERIC(24,4) NOT NULL DEFAULT 0,
-    amount_wan                NUMERIC(24,4) NOT NULL DEFAULT 0,
+    trading_shares            NUMERIC(24,4) NOT NULL DEFAULT 0,
+    trading_amount            NUMERIC(24,4) NOT NULL DEFAULT 0,
     rz_buy                    NUMERIC(24,4) NOT NULL DEFAULT 0,
     rz_balance                NUMERIC(24,4) NOT NULL DEFAULT 0,
     rq_sell_qty               NUMERIC(24,4) NOT NULL DEFAULT 0,
@@ -122,10 +122,48 @@ CREATE TABLE IF NOT EXISTS stats.etf_liquidity_margin (
     CONSTRAINT fk_etf_liquidity_margin_date_code FOREIGN KEY (date, code) REFERENCES stats.etf_identity(date, code)
 );
 
-COMMENT ON TABLE  stats.etf_liquidity_margin         IS 'ETF liquidity (volume/amount) + margin balances.';
+COMMENT ON TABLE  stats.etf_liquidity_margin         IS 'ETF liquidity (trading_shares/trading_amount) + margin balances.';
+COMMENT ON COLUMN stats.etf_liquidity_margin.trading_shares IS 'ETF trading volume in shares. Source CSV stores 成交量(万股); converted to shares (× 10000) in builds/etf/__main__.py.';
+COMMENT ON COLUMN stats.etf_liquidity_margin.trading_amount IS 'ETF trading turnover in yuan. Source CSV stores 成交金额(万元); converted to yuan (× 10000) in builds/etf/__main__.py. A 1000x error normalization fix is applied before conversion (see build script).';
 COMMENT ON COLUMN stats.etf_liquidity_margin.rz_balance IS '融资余额 (yuan) — borrowed cash to buy the ETF; always non-negative.';
 COMMENT ON COLUMN stats.etf_liquidity_margin.rq_balance_amt IS '融券余额 (yuan) — borrowed ETF value outstanding; SSE source computes as 融券余量 × (open+close)/2 mid price.';
 COMMENT ON COLUMN stats.etf_liquidity_margin.total_balance IS 'rz_balance + rq_balance_amt — total margin outstanding.';
+
+-- ----------------------------------------------------------------------------
+-- Table: etf_intraday_5min
+--   ← 5-minute intraday OHLCV bars streamed from the SSE fund tab
+--   (https://www.sse.com.cn/market/price/report/ "刷新" button JSONP source,
+--    /exchange/fund endpoint). Mirrors stock_intraday_5min: the SSE list
+--    endpoint publishes today's CUMULATIVE volume, so per-bar volume is
+--    derived by subtracting the previous bar's cumulative volume from the
+--    current bar's.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stats.etf_intraday_5min (
+    date                      DATE          NOT NULL,
+    code                      TEXT          NOT NULL,
+    code_suffix               TEXT,
+    time                      TIME          NOT NULL,
+    open                      NUMERIC(18,4),
+    high                      NUMERIC(18,4),
+    low                       NUMERIC(18,4),
+    close                     NUMERIC(18,4),
+    trading_shares            NUMERIC(24,4),
+    change                    NUMERIC(18,4),
+    change_pct                NUMERIC(10,4),
+
+    CONSTRAINT pk_etf_intraday_5min PRIMARY KEY (date, code, time),
+    CONSTRAINT fk_etf_intraday_5min_date_code FOREIGN KEY (date, code) REFERENCES stats.etf_identity(date, code)
+);
+
+COMMENT ON TABLE  stats.etf_intraday_5min              IS 'ETF 5-minute intraday OHLCV bars streamed from the SSE fund tab (https://www.sse.com.cn/market/price/report/). Mirrors stock_intraday_5min.';
+COMMENT ON COLUMN stats.etf_intraday_5min.time         IS 'Bar end time (HH:MM:SS); timestamp of the last 1-minute sample in the bar, truncated to the minute.';
+COMMENT ON COLUMN stats.etf_intraday_5min.open         IS 'Opening price of the 5-minute bar (first sample latest price).';
+COMMENT ON COLUMN stats.etf_intraday_5min.high         IS 'Highest latest price during the 5-minute bar.';
+COMMENT ON COLUMN stats.etf_intraday_5min.low          IS 'Lowest latest price during the 5-minute bar.';
+COMMENT ON COLUMN stats.etf_intraday_5min.close        IS 'Closing price of the 5-minute bar (last sample latest price).';
+COMMENT ON COLUMN stats.etf_intraday_5min.trading_shares       IS 'Volume traded during the 5-minute window in shares (cumulative day volume at bar end minus cumulative volume at previous bar end).';
+COMMENT ON COLUMN stats.etf_intraday_5min.change       IS 'Absolute change from the bar''s open (close - open).';
+COMMENT ON COLUMN stats.etf_intraday_5min.change_pct   IS 'Percentage change from the bar''s open (%) = (close - open) / open * 100.';
 
 -- ----------------------------------------------------------------------------
 -- Table: etf_composition_link  (REMOVED)
@@ -170,3 +208,11 @@ CREATE INDEX IF NOT EXISTS idx_etf_liquidity_margin_code_date
 CREATE INDEX IF NOT EXISTS idx_etf_margin_split_events
     ON stats.etf_adjustment (date)
     WHERE is_split_event_day = 1;
+
+-- (c) etf_intraday_5min — intraday bar lookups. Mirrors idx_stock_intraday_5min_*.
+CREATE INDEX IF NOT EXISTS idx_etf_intraday_5min_code_date_time
+    ON stats.etf_intraday_5min (code, date, time);
+CREATE INDEX IF NOT EXISTS idx_etf_intraday_5min_code_date
+    ON stats.etf_intraday_5min (code, date);
+CREATE INDEX IF NOT EXISTS idx_etf_intraday_5min_code
+    ON stats.etf_intraday_5min (code);

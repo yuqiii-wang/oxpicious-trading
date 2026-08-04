@@ -8,9 +8,9 @@
  *     For equity ETFs: OHLC bars of rebased OHLC %.
  *   • Twin axis (hidden): RZ green fill UP from middle (always ≥0) +
  *     RQ red fill DOWN from middle (always ≤0).
- *   • Twin axis (right, visible): trading-amount bars colored by price-up/down
- *     (source: stats.etf_liquidity_margin.amount_wan = 成交金额(万元) from
- *      build_szse_sse_etf_and_margin.py; displayed in 亿元, /10000).
+ *   • Twin axis (right, visible): trading-turnover bars colored by price-up/down
+ *     (source: stats.etf_liquidity_margin.trading_amount = 成交金额(yuan) from
+ *      build_szse_sse_etf_and_margin.py; displayed in 亿元, /1e8).
  *
  * Return badges shown in the panel header.
  */
@@ -76,10 +76,10 @@ function buildOption(
   // and splits — raw OHLC shows a fake gap on corp-action days (e.g. a 3:1
   // split looks like a -67% crash). Fall back to raw when adj_* is missing.
   const close = rows.map((r) => r.adj_close ?? r.close);
-  // Trading amount (成交金额) in 万元 — sourced from stats.etf_liquidity_margin
-  // .amount_wan (loaded by build_szse_sse_etf_and_margin.py from the CSV's
-  // 成交金额(万元) column). Displayed in 亿元 (1 亿 = 10000 万).
-  const amount = rows.map((r) => r.amount_wan);
+  // Trading turnover (成交金额) in yuan — sourced from stats.etf_liquidity_margin
+  // .trading_amount (loaded by build_szse_sse_etf_and_margin.py from the CSV's
+  // 成交金额 column, stored in yuan). Displayed in 亿元 (1 亿 = 1e8 yuan).
+  const tradingAmount = rows.map((r) => r.trading_amount);
   const isBond = etf.is_bond;
 
   // Rebase close to % change in percentage mode; raw in absolute mode.
@@ -165,10 +165,10 @@ function buildOption(
   // Date → raw balance (yuan) lookups for tooltip display. The plotted series
   // values are shifted/clipped scores (not raw yuan), so the tooltip must
   // re-resolve the actual balance by date to show a meaningful "mil" figure.
-  const rzByDate = new Map<string, number>(
+  const rzByDate = new Map<string, number | null>(
     rows.map((r) => [r.date, r.rz_balance]),
   );
-  const rqByDate = new Map<string, number>(
+  const rqByDate = new Map<string, number | null>(
     rows.map((r) => [r.date, r.rq_balance_amt]),
   );
 
@@ -180,14 +180,14 @@ function buildOption(
   const maxAbs = marginVals.length > 0 ? Math.max(...marginVals.map(Math.abs)) : 0;
   const marginAxisRange = Math.max(1e-6, maxAbs) * 1.15;
 
-  // Trading-amount bar colors (price-up green / price-down red)
+  // Trading-turnover bar colors (price-up green / price-down red)
   // Compare intraday close vs open — not close vs previous day's close.
-  // amount_wan is stored in 万元 — convert to 亿元 (/10000) for display.
+  // trading_amount is stored in yuan — convert to 亿元 (/1e8) for display.
   const open = rows.map((r) => r.adj_open ?? r.open);
-  const amtData = amount.map((v, i) => {
+  const amtData = tradingAmount.map((v, i) => {
     const up = close[i] >= open[i];
     return {
-      value: v / 10000,
+      value: v / 1e8,
       itemStyle: { color: up ? UP_COLOR : DOWN_COLOR, opacity: 0.4 },
     };
   });
@@ -330,7 +330,7 @@ function buildOption(
     z: 3,
   });
 
-  // Trading-amount bars (visible right axis)
+  // Trading-turnover bars (visible right axis)
   series.push({
     type: "bar",
     name: "Amount",
@@ -370,7 +370,7 @@ function buildOption(
           if (p.value == null) continue;
           const name = p.seriesName ?? "";
           if (Array.isArray(p.value)) {
-            // Candlestick: [open, close, low, high]
+            // OHLC: [open, close, low, high]
             const [o, cl, l, h] = p.value;
             if (o == null && cl == null && l == null && h == null) continue;
             html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
@@ -501,9 +501,9 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }
   // Lifted composition panel open state — controls ChartCard height so the
   // pie chart stays inside the parent box when expanded.
   const [compositionOpen, setCompositionOpen] = useState(false);
-  // Per-stock candlestick expansion open state — when true the card grows
+  // Per-stock OHLC expansion open state — when true the card grows
   // further to fit the stock chart below the pie charts.
-  const [stockCandleOpen, setStockCandleOpen] = useState(false);
+  const [stockOhlcOpen, setStockOhlcOpen] = useState(false);
 
   // Reset slider when data changes (e.g., theme switch or page change).
   // When defaultStartDate/defaultEndDate are provided (aligned to the
@@ -530,7 +530,7 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }
     }
     setRange([startIdx, endIdx]);
     setCompositionOpen(false);
-    setStockCandleOpen(false);
+    setStockOhlcOpen(false);
   }, [etf.code, allRows.length, defaultStartDate, defaultEndDate]);
 
   // Filter rows to the selected date window
@@ -549,9 +549,9 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }
 
   // Dynamic card height: expand when composition panel is open so the pie
   // chart fits inside the parent box; expand further when the per-stock
-  // candlestick expansion is open.
+  // OHLC expansion is open.
   const cardHeight = compositionOpen
-    ? (stockCandleOpen ? 1060 : 720)
+    ? (stockOhlcOpen ? 1060 : 720)
     : 360;
 
   return (
@@ -594,7 +594,7 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }
           code={etf.code}
           open={compositionOpen}
           onToggle={() => setCompositionOpen(!compositionOpen)}
-          onStockCandleOpenChange={setStockCandleOpen}
+          onStockOhlcOpenChange={setStockOhlcOpen}
         />
         {filteredRows.length < 40 && (
           <Alert severity="info" sx={{ mt: 0.5, py: 0.25 }} icon={false}>
