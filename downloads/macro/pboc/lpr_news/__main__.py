@@ -685,6 +685,50 @@ def build_lpr_combined_csv(md_dir: Path, output_dir: Optional[Path] = None) -> D
 
 
 # ============================================================================
+# Database latest-date lookup (used by skip-if-uptodate)
+# ============================================================================
+def _get_latest_db_lpr_date() -> Optional[date]:
+    """Query ``stats.debt_lpr`` for the most recent announcement date.
+
+    Returns ``None`` if the table is empty, the DB is unreachable, or any
+    other error occurs. Used by :func:`download_pboc_lpr_news` to skip the
+    download entirely when the page-1 top item's date is already present
+    in the database.
+    """
+    try:
+        from utils.db_commons import get_db_connection
+    except Exception as e:  # pragma: no cover - import guard
+        logger.debug("[lpr] cannot import utils.db_commons: %s", e)
+        return None
+    try:
+        conn = get_db_connection()
+    except Exception as e:
+        logger.debug("[lpr] DB connection failed: %s", e)
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT MAX(date) FROM stats.debt_lpr")
+            row = cur.fetchone()
+            if row and row[0] is not None:
+                v = row[0]
+                if isinstance(v, date):
+                    return v
+                try:
+                    return datetime.strptime(str(v), "%Y-%m-%d").date()
+                except ValueError:
+                    return None
+        return None
+    except Exception as e:
+        logger.debug("[lpr] DB latest date query failed: %s", e)
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# ============================================================================
 # Main download entry point
 # ============================================================================
 def download_pboc_lpr_news(
@@ -697,6 +741,7 @@ def download_pboc_lpr_news(
     sleep_sec: float = SLEEP_SEC,
     convert_csv: bool = True,
     build_csv: bool = True,
+    force: bool = False,
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "pboc_lpr_news", out_root)
 
@@ -737,6 +782,18 @@ def download_pboc_lpr_news(
     else:
         logger.info("[lpr] no prior cached files")
 
+    # Query DB for the latest known LPR date. Combined with cached_latest
+    # (local files), this gives the authoritative "latest known" date used
+    # by the skip-if-uptodate check below. DB is optional — if unreachable
+    # or empty, the skip check falls back to local-only.
+    db_latest = _get_latest_db_lpr_date()
+    local_latest = cached_latest
+    _known_candidates = [d for d in (local_latest, db_latest) if d is not None]
+    latest_known = max(_known_candidates) if _known_candidates else None
+    if local_latest or db_latest:
+        logger.info("[lpr] latest known: local=%s, db=%s, combined=%s",
+                    local_latest, db_latest, latest_known)
+
     logger.info("Starting PBoC LPR download: %s -> %s", _start, _end)
 
     skipped_oob = 0
@@ -757,14 +814,63 @@ def download_pboc_lpr_news(
             cached_earliest is not None
             and cached_earliest <= _start + HISTORY_COVERED_BUFFER
         )
+
+        # Cache for list-page items already fetched during the skip check,
+        # so the main loop can reuse them instead of re-hitting the server.
+        prefetched_pages: Dict[int, List[LprAnnouncementItem]] = {}
+
         if history_covered:
             logger.info(
                 "[lpr] history covered (earliest=%s within %.0f days of %s), "
                 "fetching page 1 only for recent updates",
                 cached_earliest, HISTORY_COVERED_BUFFER.total_seconds() / 86400, _start,
             )
+            # Pre-fetch page 1 to inspect the top item's date. If it is
+            # already known locally or in the DB, there is nothing new to
+            # download — skip the entire detail-fetch loop.
+            page1_items, detected_fmt = fetch_list_page(session, 1, None, proxy)
+            if detected_fmt:
+                page_prefix_fmt = detected_fmt
+            else:
+                page_prefix_fmt = None
+            prefetched_pages[1] = page1_items
+
+            if not force:
+                page1_dates = [
+                    d for d in (estimate_item_date(it) for it in page1_items)
+                    if d is not None
+                ]
+                latest_on_page = max(page1_dates) if page1_dates else None
+                if (latest_on_page is not None
+                        and latest_known is not None
+                        and latest_on_page <= latest_known):
+                    logger.info(
+                        "[lpr] page 1 top date %s already covered by "
+                        "local=%s db=%s (combined=%s); skipping download "
+                        "(use --force to override)",
+                        latest_on_page, local_latest, db_latest, latest_known,
+                    )
+                    summary = stats.to_dict(
+                        skipped_out_of_range=0,
+                        out_dir=str(out_dir),
+                        start_date=str(_start),
+                        end_date=str(_end),
+                    )
+                    summary["skipped_uptodate"] = True
+                    summary["latest_known"] = (
+                        str(latest_known) if latest_known else None
+                    )
+                    summary["latest_on_page"] = (
+                        str(latest_on_page) if latest_on_page else None
+                    )
+                    if build_csv:
+                        try:
+                            csv_counts = build_lpr_combined_csv(out_dir)
+                            summary["csv"] = csv_counts
+                        except Exception as e:
+                            logger.error("build_lpr_combined_csv failed: %s", e)
+                    return summary
             pages_to_process = [1]
-            page_prefix_fmt = None  # detected on page 1 in the main loop
         else:
             target_start = _start
             pages_to_process, page_prefix_fmt = smart_pagination_pages(
@@ -782,9 +888,15 @@ def download_pboc_lpr_news(
                 logger.warning("  [host-blocked] stopping")
                 break
 
-            items, detected = fetch_list_page(session, page, page_prefix_fmt, proxy)
-            if detected and not page_prefix_fmt:
-                page_prefix_fmt = detected
+            # Reuse prefetched list-page items when available (skip check
+            # already fetched page 1); otherwise fetch now.
+            if page in prefetched_pages:
+                items = prefetched_pages.pop(page)
+                detected = None
+            else:
+                items, detected = fetch_list_page(session, page, page_prefix_fmt, proxy)
+                if detected and not page_prefix_fmt:
+                    page_prefix_fmt = detected
             if not items:
                 logger.info("  page %d returned no items, stopping", page)
                 break
@@ -1048,6 +1160,9 @@ if __name__ == "__main__":
                         help="Skip per-file CSV conversion")
     parser.add_argument("--no-build-csv", action="store_true", default=False,
                         help="Skip building combined lpr_combined.csv")
+    parser.add_argument("--force", action="store_true", default=False,
+                        help="Skip the up-to-date check and always download "
+                             "(overrides the page-1 vs local/DB latest skip)")
     args = parser.parse_args()
 
     convert_csv = not args.no_convert_csv
@@ -1063,4 +1178,5 @@ if __name__ == "__main__":
             years=args.years,
             convert_csv=convert_csv,
             build_csv=build_csv,
+            force=args.force,
         ))

@@ -63,6 +63,7 @@ from analyze.sec_alloc_perf_attribution.config import (  # noqa: E402
     TOP_N_NON_BROAD,
     DESCRIPTION,
 )
+from analyze._common import upsert_analysis_identity  # noqa: E402
 from analyze.sec_alloc_perf_attribution.fetch import (  # noqa: E402
     fetch_codes_with_composition,
     fetch_shared_weights,
@@ -215,25 +216,12 @@ async def main() -> None:
         # ---- Step 4: upsert analysis_identity -------------------------
         print(f"\n[4/6] Upserting analysis.analysis_identity registry...",
               flush=True)
-        await conn.execute(
-            """
-            INSERT INTO analysis.analysis_identity
-                (name, detail_name, summary_name, last_run_datetime, description)
-            VALUES ($1, $2, $3, NOW(), $4)
-            ON CONFLICT (name) DO UPDATE SET
-                detail_name       = EXCLUDED.detail_name,
-                summary_name      = EXCLUDED.summary_name,
-                last_run_datetime = NOW(),
-                description       = EXCLUDED.description
-            """,
-            ANALYSIS_NAME,
-            "sec_alloc_perf_attribution",
-            None,
-            DESCRIPTION,
+        await upsert_analysis_identity(
+            conn,
+            name=ANALYSIS_NAME,
+            detail_name="sec_alloc_perf_attribution",
+            description=DESCRIPTION,
         )
-        print(f"    -> upserted analysis_identity: name={ANALYSIS_NAME!r}, "
-              f"detail_name='sec_alloc_perf_attribution', summary_name=NULL",
-              flush=True)
 
         print_wall_time(t0)
     finally:

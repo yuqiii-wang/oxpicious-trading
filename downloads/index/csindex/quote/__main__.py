@@ -248,6 +248,24 @@ def save_pe_cache(pe_cache_file: Path, pe_records: List[Dict[str, Any]]) -> bool
         return False
 
 
+def _normalize_pe_date(val: Any) -> str:
+    """Normalize a PE tradeDate value to YYYYMMDD string (no hyphens/slashes)."""
+    s = str(val).strip()
+    if not s or s == "nan":
+        return ""
+    return s.replace("-", "").replace("/", "")
+
+
+def _index_pe_by_date(pe_records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Index PE records by normalized tradeDate (YYYYMMDD). Later entries win on dup."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for r in pe_records:
+        d = _normalize_pe_date(r.get("tradeDate"))
+        if d:
+            out[d] = r
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 3. Intraday granular ticks (1-day data)
 # ---------------------------------------------------------------------------
@@ -652,27 +670,69 @@ def download_index(
                 stats.failed += 2
                 continue
 
-            # --- Step 3: PE series (skip if cached and fresh today after 17:00) ---
+            # --- Step 3: PE series (incremental: skip already-fetched dates) ---
+            # If PE is already present in the cache, only fetch dates newer than
+            # the latest cached PE date (instead of overwriting the whole history).
             pe_cache_file = out_dir / f"{code}_pe.json"
             pe_records: List[Dict[str, Any]] = []
-            if is_fresh_today(pe_cache_file, min_bytes=MIN_VALID_BYTES, hour=17):
-                cached = load_pe_cache(pe_cache_file)
-                if cached is not None:
-                    pe_records = cached
-                    logger.info("  [pe] %s: cached and fresh (%d records), skipping fetch", code, len(pe_records))
-                    stats.skipped_cached += 1
-                else:
-                    logger.info("  [pe] %s: cache invalid, refetching", code)
-            if not pe_records:
-                pe_records = fetch_pe_series(session, code, _start, _end, proxy)
-                if pe_records:
-                    logger.info("  [pe] %s: %d records", code, len(pe_records))
+
+            # Load existing cache to enable incremental fetch
+            existing_pe = load_pe_cache(pe_cache_file) or []
+            existing_by_date = _index_pe_by_date(existing_pe)
+
+            # Determine fetch start: latest cached PE date (overlap by 1 day to
+            # allow override), else full-range start.
+            fetch_start = _start
+            if existing_by_date:
+                latest_pe_str = max(existing_by_date.keys())
+                try:
+                    latest_pe_dt = datetime.strptime(latest_pe_str, "%Y%m%d").date()
+                    fetch_start = latest_pe_dt
+                    logger.info(
+                        "  [pe] %s: cache has %d records (latest=%s), incremental fetch %s~%s",
+                        code, len(existing_by_date), latest_pe_str, fetch_start, _end,
+                    )
+                except ValueError:
+                    pass
+
+            # Skip fetch entirely if cache is fresh today after 17:00 (already up-to-date)
+            pe_cache_fresh = (
+                is_fresh_today(pe_cache_file, min_bytes=MIN_VALID_BYTES, hour=17)
+                and bool(existing_by_date)
+            )
+
+            if pe_cache_fresh:
+                pe_records = list(existing_by_date.values())
+                logger.info("  [pe] %s: cached and fresh (%d records), skipping fetch", code, len(pe_records))
+                stats.skipped_cached += 1
+            else:
+                new_records = fetch_pe_series(session, code, fetch_start, _end, proxy)
+                if new_records:
+                    # Merge: new records override existing for same date
+                    new_by_date = _index_pe_by_date(new_records)
+                    existing_by_date.update(new_by_date)
+                    pe_records = list(existing_by_date.values())
                     if save_pe_cache(pe_cache_file, pe_records):
-                        logger.info("  [pe] %s: cached to %s", code, pe_cache_file.name)
+                        logger.info(
+                            "  [pe] %s: cached to %s (total=%d, fetched=%d new)",
+                            code, pe_cache_file.name, len(pe_records), len(new_by_date),
+                        )
+                    else:
+                        logger.info(
+                            "  [pe] %s: %d records (fetched %d new, merged total %d)",
+                            code, len(pe_records), len(new_by_date), len(pe_records),
+                        )
                     stats.downloaded += 1
                 else:
-                    logger.warning("  [pe] %s: no PE data returned", code)
-                    stats.failed += 1
+                    pe_records = list(existing_by_date.values())
+                    if pe_records:
+                        logger.warning(
+                            "  [pe] %s: fetch returned no data, using existing cache (%d records)",
+                            code, len(pe_records),
+                        )
+                    else:
+                        logger.warning("  [pe] %s: no PE data returned", code)
+                        stats.failed += 1
             # Auto-sleep handled by proxy.get() inside fetch_pe_series (only when fetched)
 
             # --- Step 4: Merge into history CSV ---

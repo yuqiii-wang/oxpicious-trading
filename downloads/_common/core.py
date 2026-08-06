@@ -51,6 +51,10 @@ DEFAULT_TIMEOUT: Tuple[int, int] = (15, 60)
 # Individual downloaders may override based on target site's aggressiveness.
 DEFAULT_SLEEP_SEC = 20.0
 DEFAULT_SHORT_SLEEP_SEC=8.0
+# Long sleep for aggressive anti-bot sites (e.g. cninfo, SSE dividend endpoint
+# when called at quarterly cadence). 90s between requests makes a full ETF-held
+# sweep take ~hours but is the safest cadence for sites that block on volume.
+LONG_SLEEP_INTERVAL = 90.0
 
 # Shared default start date for all downloaders. Centralized here so the
 # project's historical backfill horizon can be changed in one place.

@@ -138,7 +138,12 @@ export default function StockOhlcExpansionChart({
           )}
           {!loading && !error && data && rowCount > 0 && (
             <>
-              <StockOhlcChart rows={filteredRows} ohlcMode={ohlcMode} height={250} />
+              <StockOhlcChart
+                rows={filteredRows}
+                ohlcMode={ohlcMode}
+                height={250}
+                dividends={data?.dividends ?? []}
+              />
               {maxIdx > 0 && (
                 <Box sx={{ px: 1, mt: 0.25 }}>
                   <Slider

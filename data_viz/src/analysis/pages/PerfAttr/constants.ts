@@ -7,4 +7,4 @@
  * because each panel renders up to three charts plus an expandable
  * time-series section, so larger pages get unwieldy.
  */
-export const PAGE_SIZE = 2;
+export const PAGE_SIZE = 1;

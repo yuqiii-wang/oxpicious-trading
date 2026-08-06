@@ -87,3 +87,6 @@ COMMENT ON COLUMN stats.etf_trading_amt.total_etf_trading_amount_ma5 IS '5-tradi
 CREATE INDEX IF NOT EXISTS idx_etf_trading_amt_code_date
     ON stats.etf_trading_amt (code, date);
 
+
+CREATE TABLE IF NOT EXISTS stats.etf_trading_amt (
+);

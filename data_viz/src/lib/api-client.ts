@@ -46,6 +46,8 @@ import type {
   IndustryAttributionPriceSeriesResponse,
   AllIndustriesAttributionResponse,
   MemberIndexAttributionResponse,
+  IndustryEtfPriceSeriesResponse,
+  IndustryEtfContributionBarsResponse,
   LiveDataSecType,
   LiveDataDatesResponse,
   LiveDataCombinedResponse,
@@ -645,8 +647,9 @@ export function fetchBenchmarkPriceChart(
 /**
  * Fetch the non-this-industry price series for ONE (industry, benchmark) pair.
  * Returns benchmark close + benchmark_rolling + non_this_industry_price +
- * non_this_industry_rolling_price per date. Drives the green/red shade overlay
- * on the BenchmarkPriceChart.
+ * 5 rolling_Xdays_price columns (5/20/60/255/500) per date. Drives the
+ * green/red shade overlay on the BenchmarkPriceChart — the frontend dropdown
+ * picks which rolling window drives the shade.
  */
 export function fetchIndustryAttributionPriceSeries(
   industryId: string,
@@ -687,6 +690,47 @@ export function fetchMemberIndexAttribution(
   if (date) params.set("date", date);
   return fetchJson<MemberIndexAttributionResponse>(
     `/api/analysis/industry-attribution/member-indices?${params.toString()}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Industry ETF Contribution — drives the "ETF Contribution" view on the
+//  Industry Sentiments page. Mirrors "Benchmark Attribution" but with ETFs
+//  as the unit of analysis.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the daily close series for ALL ETFs tracking member indices of the
+ * selected industries. Drives the 1st plot in "ETF Contribution" mode:
+ * a multi-line chart where each line is one ETF, rebased to 100 at its own
+ * first available date (cascading rebasing handled client-side). The chart
+ * is clickable to pick the as-of date for the per-industry bar charts below.
+ */
+export function fetchIndustryEtfPriceSeries(
+  industryIds: string[],
+): Promise<IndustryEtfPriceSeriesResponse> {
+  const params = new URLSearchParams();
+  if (industryIds.length > 0) params.set("industry_ids", industryIds.join(","));
+  return fetchJson<IndustryEtfPriceSeriesResponse>(
+    `/api/analysis/industry-etf-contribution/etf-price?${params.toString()}`,
+  );
+}
+
+/**
+ * Fetch per-ETF contribution bars for ONE industry at a specific (or latest)
+ * date. Returns one row per ETF with trading_amount + etf_return, plus the
+ * industry aggregate from analysis.industry_etf_contribution. Drives the
+ * 2nd+ plots in "ETF Contribution" mode.
+ */
+export function fetchIndustryEtfContributionBars(
+  industryId: string,
+  date?: string | null,
+): Promise<IndustryEtfContributionBarsResponse> {
+  const params = new URLSearchParams();
+  params.set("industry_id", industryId);
+  if (date) params.set("date", date);
+  return fetchJson<IndustryEtfContributionBarsResponse>(
+    `/api/analysis/industry-etf-contribution/etf-bars?${params.toString()}`,
   );
 }
 

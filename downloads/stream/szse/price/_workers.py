@@ -126,6 +126,33 @@ def sleep_until(target_dt: datetime, chunk_sec: float = 60.0) -> None:
         _time.sleep(min(chunk_sec, max(0.0, remaining)))
 
 
+async def probe_szse_for_today_bars(
+    session,
+    host_tracker,
+    target_date,
+    probe_code: str,
+) -> Tuple[bool, int]:
+    """Probe the SZSE source by fetching one index. Returns (has_today_bars, n_today_samples).
+
+    Used on fresh start to detect whether the SZSE API has intraday data for
+    ``target_date``. If the probe returns zero bars (or only yesterday's
+    cached data), the caller should wait until trading hours start before
+    entering the main loop — this prevents wasting API calls fetching zero
+    bars pre-market or during lunch break.
+
+    The probe fetches an always-on SZSE index via the same ssjjhq endpoint
+    used by the index round, and checks that the returned samples are dated
+    for ``target_date`` (the API may return stale data outside trading hours).
+    """
+    samples = await asyncio.to_thread(
+        fetch_szse_index_minute, session, probe_code, host_tracker
+    )
+    if not samples:
+        return False, 0
+    today_samples = [s for s in samples if s[0].date() == target_date]
+    return bool(today_samples), len(today_samples)
+
+
 def split_groups(stocks: List[Tuple[str, str]], n: int) -> List[List[Tuple[str, str]]]:
     """Split stocks into ``n`` near-equal groups (round-robin for balance).
 

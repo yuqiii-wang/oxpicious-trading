@@ -63,6 +63,14 @@ Cooldown: random_sleep(DEFAULT_SLEEP_SEC) per worker between fetches
 Termination: Ctrl-C cancels both async workers (state.stop + task.cancel) and
 exits cleanly after reaping them; the finally block closes the DB and session.
 
+Fresh-start probe: on startup (before entering the main loop) the streamer
+probes the SZSE source by fetching one always-on index (399001 深证成指). If
+the probe returns zero bars for today (pre-market, lunch break, or stale
+cached yesterday data), the streamer waits until the next trading moment
+(09:30 or 13:00 today, or 09:30 next trading day) before entering the main
+loop. This prevents wasting API calls fetching zero bars outside trading
+hours. The probe runs only once on fresh start.
+
 Requires tables from database/sql/05_index_baseline.sql (index_identity +
 index_intraday_5min) and database/sql/06_stock_baseline.sql (stock_identity +
 stock_intraday_5min) and database/sql/03_sec_composition.sql (sec_composition).
@@ -106,6 +114,7 @@ from ._workers import (
     _szse_worker,
     _not_finished,
     next_trading_moment,
+    probe_szse_for_today_bars,
     sleep_chunks,
     sleep_until,
     split_groups,
@@ -262,6 +271,39 @@ async def stream(
     emitted_map_idx: dict = {}
 
     try:
+        # --- Fresh-start probe: check if the SZSE source has bars for today.
+        # If the probe returns zero bars (pre-market, lunch break, or stale
+        # cached yesterday data), wait until trading hours start before
+        # entering the main loop. This prevents wasting API calls fetching
+        # zero bars outside trading hours. Only probed once on fresh start. ---
+        _fs_now = datetime.now()
+        _fs_today = _fs_now.date()
+        if is_trading_day(_fs_today):
+            _probe_code = INDEX_ALWAYS_CODES[0]
+            _has_bars, _n = await probe_szse_for_today_bars(
+                session, host_tracker, _fs_today, _probe_code
+            )
+            if not _has_bars:
+                _nxt = next_trading_moment(_fs_now)
+                if _nxt > _fs_now:
+                    logger.info(
+                        "[fresh-start] SZSE probe (%s) returned 0 bars for today (%s); "
+                        "waiting until %s for trading hours to start.",
+                        _probe_code, _fs_today, _nxt.strftime("%Y-%m-%d %H:%M"),
+                    )
+                    await asyncio.to_thread(sleep_until, _nxt)
+                else:
+                    logger.warning(
+                        "[fresh-start] SZSE probe (%s) returned 0 bars during trading hours; "
+                        "entering main loop (API may be down).",
+                        _probe_code,
+                    )
+            else:
+                logger.info(
+                    "[fresh-start] SZSE probe (%s) returned %d bars for today; entering main loop.",
+                    _probe_code, _n,
+                )
+
         while True:
             now = datetime.now()
             today = now.date()

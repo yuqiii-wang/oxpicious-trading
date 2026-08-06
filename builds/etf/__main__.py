@@ -900,6 +900,33 @@ async def main():
               f"(out of {len(available_ohlcv_dates)} available)", flush=True)
 
         # ------------------------------------------------------------------
+        # Recent-date re-scan — catch newly-listed ETFs whose (date, code)
+        # pairs are absent from already-loaded dates.
+        #
+        # The date-level missing check above only flags dates with ZERO DB
+        # rows. Once a date has any rows it is never re-read, so a new ETF
+        # (e.g. 159066, first listed 2026-07-06) whose later-day rows were
+        # not in the CSV when the date was first loaded will never be
+        # backfilled — the date is "present" so its CSV is skipped on every
+        # subsequent run. Re-reading the last RECENT_REFRESH_DAYS of
+        # already-loaded dates closes this gap. The per-(date, code) upsert
+        # filter (_should_upsert below) ensures only genuinely missing pairs
+        # are written, so this is pure catch-up, not duplicate writes.
+        # ------------------------------------------------------------------
+        RECENT_REFRESH_DAYS = 30
+        max_available = max(available_ohlcv_dates) if available_ohlcv_dates else None
+        recent_refresh_dates: set = set()
+        if max_available is not None:
+            cutoff = max_available - datetime.timedelta(days=RECENT_REFRESH_DAYS)
+            recent_refresh_dates = {
+                d for d in (available_ohlcv_dates & existing_dates) if d >= cutoff
+            }
+        dates_to_read = missing_ohlcv_dates | recent_refresh_dates
+        if recent_refresh_dates:
+            print(f"    [DB] {len(recent_refresh_dates)} recent dates (last {RECENT_REFRESH_DAYS}d) "
+                  f"re-scanned for newly-listed ETFs", flush=True)
+
+        # ------------------------------------------------------------------
         # (3) Read ONLY missing-date source CSVs + query DB for historical context
         #
         # The DB is the source of truth for existing data. We query it by
@@ -913,24 +940,25 @@ async def main():
             print("\n[3/6] Reading ALL source CSVs (force mode) …", flush=True)
             ohlcv_df = build_ohlcv_df(verbose=True)
             margin_df = build_margin_df(verbose=True)
-        elif not missing_ohlcv_dates:
+        elif not dates_to_read:
             print("\n[3/6] OHLCV up to date — querying DB for historical context only …", flush=True)
             ohlcv_df, margin_df = await query_existing_ohlcv_margin_from_db(conn, verbose=True)
         else:
-            print(f"\n[3/6] Reading source CSVs for {len(missing_ohlcv_dates)} missing dates "
+            print(f"\n[3/6] Reading source CSVs for {len(missing_ohlcv_dates)} missing + "
+                  f"{len(recent_refresh_dates)} recent dates "
                   f"+ querying DB for historical context …", flush=True)
-            missing_ymd = {d.strftime("%Y%m%d") for d in missing_ohlcv_dates}
+            read_ymd = {d.strftime("%Y%m%d") for d in dates_to_read}
 
             missing_szse_archive = [f for f in szse_archive_files
-                                    if ymd_from_filename(f, "szse_etf_") in missing_ymd]
+                                    if ymd_from_filename(f, "szse_etf_") in read_ymd]
             missing_szse_trend   = [f for f in szse_trend_files
-                                    if ymd_from_filename(f, "szse_trend_etf_") in missing_ymd]
+                                    if ymd_from_filename(f, "szse_trend_etf_") in read_ymd]
             missing_sse_trend    = [f for f in sse_trend_files
-                                    if ymd_from_filename(f, "sse_trend_stock_") in missing_ymd]
+                                    if ymd_from_filename(f, "sse_trend_stock_") in read_ymd]
             missing_szse_margin  = [f for f in szse_margin_files
-                                    if ymd_from_filename(f, "szse_margin_detail_") in missing_ymd]
+                                    if ymd_from_filename(f, "szse_margin_detail_") in read_ymd]
             missing_sse_margin   = [f for f in sse_margin_files
-                                    if ymd_from_filename(f, "sse_margin_detail_") in missing_ymd]
+                                    if ymd_from_filename(f, "sse_margin_detail_") in read_ymd]
 
             print(f"    → OHLCV files to read: {len(missing_szse_archive)} szse_archive + "
                   f"{len(missing_szse_trend)} szse_trend + {len(missing_sse_trend)} sse_trend", flush=True)
@@ -1284,14 +1312,24 @@ async def main():
             print(f"    [DB] No new rows to insert into stats.sec_composition", flush=True)
 
         # ---- sec_classification (type='etf'): per-ETF quality metrics (upsert all from full data) ----
-        # Only quality-metric columns are in the row dict, so ON CONFLICT (code)
-        # DO UPDATE SET preserves classification + index_code columns populated
-        # by build_etf_index_map.py. New ETFs not in the CSV get inserted with
-        # classification defaults ('OTHER') — re-run build_etf_index_map.py to
-        # backfill their classification + index_code.
+        # sec_classification PK is (code, parent_index_code). This script only
+        # updates quality-metric columns (n_days, has_margin, avg_shares, …) and
+        # does NOT know each ETF's parent_index_code (tracking index), which is
+        # populated by builds.classification. To upsert against the composite PK
+        # we look up the existing (code → parent_index_code) map for ETF rows
+        # first; new ETFs default to parent_index_code='' (root) and are
+        # backfilled by builds.classification on its next run.
         avg_vol_by_code: dict = {}
         if "trading_shares" in merged_db.columns:
             avg_vol_by_code = merged_db.groupby("code")["trading_shares"].mean().to_dict()
+
+        existing_etf_pks = await conn.fetch(
+            "SELECT code, parent_index_code FROM stats.sec_classification "
+            "WHERE type = 'etf'"
+        )
+        etf_parent_index_by_code = {
+            r["code"]: r["parent_index_code"] for r in existing_etf_pks
+        }
 
         sec_classification_rows = []
         for _, row in uni_df.iterrows():
@@ -1311,6 +1349,7 @@ async def main():
                 "code": code,
                 "name": str(row.get("name", "") or ""),
                 "type": "etf",
+                "parent_index_code": etf_parent_index_by_code.get(code, ""),
                 "n_days": n_days,
                 "has_margin": has_margin,
                 "avg_shares": avg_vol,
@@ -1328,7 +1367,8 @@ async def main():
 
         if sec_classification_rows:
             inserted = await bulk_upsert_async(
-                conn, "stats.sec_classification", sec_classification_rows, ["code"]
+                conn, "stats.sec_classification", sec_classification_rows,
+                ["code", "parent_index_code"],
             )
             print(f"    [DB] Upserted {inserted:,} ETF quality rows into stats.sec_classification", flush=True)
         else:

@@ -404,6 +404,51 @@ export interface StockBaselineRow {
   pe: number | null;
   is_pe_estimated: boolean;
   has_intraday_5mins: boolean;
+  /** Trading volume in shares (from stats.stock_liquidity_margin.trading_shares,
+   *  converted from 成交量(万股) × 10000 by builds/stock). 0 when source row
+   *  was PE-only (NULL OHLC). */
+  trading_shares: number;
+  /** Trading turnover in yuan (from stats.stock_liquidity_margin.trading_amount,
+   *  converted from 成交金额(万元) × 10000 by builds/stock). 0 when source row
+   *  was PE-only. */
+  trading_amount: number;
+  /** 融资余额 (cash borrow balance, yuan) from SZSE + SSE margin detail CSVs.
+   *  Null when no margin data (most stocks have no margin activity most days). */
+  rz_balance: number | null;
+  /** 融资买入额 (cash borrow buy, yuan). Null when no margin data. */
+  rz_buy: number | null;
+  /** 融券余量 (sec borrow balance quantity, shares). Null when no margin data. */
+  rq_balance_qty: number | null;
+  /** 融券余额 (sec borrow balance amount, yuan). Null when no margin data. */
+  rq_balance_amt: number | null;
+  /** rz_balance + rq_balance_amt — total margin outstanding (yuan). */
+  total_balance: number | null;
+}
+
+/** One dividend event (利润分配/分红) for a stock. Sourced from
+ *  stats.stock_dividends (loaded by builds.stock.dividends from SSE
+ *  {code}_dividend.csv files). The ex_dividend_date is the date the stock
+ *  starts trading without the right to the dividend — it's the natural event
+ *  marker date for the OHLC chart (price drops by ~ dividend_per_share_pre_tax
+ *  on this day). */
+export interface StockDividend {
+  /** Ex-dividend date (除息交易日) — YYYY-MM-DD. Used as the event date on the
+   *  OHLC chart's x-axis. */
+  ex_dividend_date: string;
+  /** Share registration date (股权登记日) — YYYY-MM-DD. Last day to buy the
+   *  stock and still receive the dividend. NULL when the SSE API omits it. */
+  record_date: string | null;
+  /** Dividend per share, pre-tax (每股红利含税), in yuan. NULL when missing. */
+  dividend_per_share_pre_tax: number | null;
+  /** Dividend per share, post-tax (每股红利税后), in yuan. NULL when missing. */
+  dividend_per_share_post_tax: number | null;
+  /** Total dividend payout (分红总额), in 万元. NULL when missing. */
+  total_dividend_wan: number | null;
+  /** Closing price on the day BEFORE ex-dividend (除息前日收盘价), in yuan.
+   *  NULL when missing. */
+  pre_close_price: number | null;
+  /** Ex-dividend opening quote (除息报价), in yuan. NULL when missing. */
+  open_price: number | null;
 }
 
 export interface StockBaselineResponse {
@@ -411,6 +456,10 @@ export interface StockBaselineResponse {
   name: string;
   dates: string[];
   rows: StockBaselineRow[];
+  /** Dividend events for this stock (all dates — not windowed). Empty when
+   *  the stock has no dividend history (e.g. new listings, non-dividend-paying
+   *  stocks). Sourced from stats.stock_dividends. */
+  dividends: StockDividend[];
 }
 
 // ----------------------------------------------------------------------------
@@ -427,6 +476,9 @@ export interface StockBundle {
   industry_id: string;
   industry_label: string;
   rows: StockBaselineRow[];
+  /** Dividend events for this stock (all dates — not windowed). Empty when
+   *  the stock has no dividend history. Sourced from stats.stock_dividends. */
+  dividends: StockDividend[];
 }
 
 /** Paginated response for the stock two-level selector page. */
@@ -510,6 +562,14 @@ export interface MovAveSpreadDetailRow {
    * only drawn around the long MA on Price/MA charts by convention.
    */
   long_std: number | null;
+  /** Open price on this date (from basic_stats.open). */
+  open: number | null;
+  /** High price on this date (from basic_stats.high). */
+  high: number | null;
+  /** Low price on this date (from basic_stats.low). */
+  low: number | null;
+  /** Trading amount in yuan on this date (from basic_stats.trading_amount). */
+  trading_amount: number | null;
 }
 
 /** One pair's full time series. */
@@ -558,6 +618,33 @@ export interface MovAveSpreadChartResponse {
   name: string;
   /** 9 pair time series (5 price-vs-MA + 4 ma5-vs-MA). */
   pairs: MovAveSpreadPairSeries[];
+  /**
+   * Per-extreme-date valley-low rows from
+   * analysis.mov_ave_peaks_and_floors (filtered by sec_type + code). Each
+   * row's `date` is the actual biz date of a local min close observed
+   * within a continuous belt; `extreme_val` is that min close price.
+   * The frontend plots one red down-triangle marker per row directly
+   * from this array — it does NOT derive valley lows from the per-date
+   * detail series (which would smear each extreme across every detail
+   * date that maps to it via peaks_and_floors_date).
+   */
+  valley_lows: MovAveSpreadValleyLow[];
+}
+
+/** One row of analysis.mov_ave_peaks_and_floors for the requested code. */
+export interface MovAveSpreadValleyLow {
+  /** Extreme biz date (local min close within a continuous belt). */
+  date: string;
+  /** Min close price observed on `date`. */
+  extreme_val: number;
+  /**
+   * The furthest date within ±30 trading days of `date` whose OHLC low is
+   * strictly lower than the valley_low's OHLC high. NULL when no qualifying
+   * date exists. The frontend draws a light-red horizontal band linking
+   * `date` and `nearby_extreme_date`, with upper/lower bounds from the two
+   * days' OHLC highs/lows.
+   */
+  nearby_extreme_date?: string | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -769,7 +856,7 @@ export interface IndustrySentimentsAggRow {
   mean_pe: number | null;
   /** SUM(stock trading amount in yuan) across the UNION of stocks from all
    *  member indices' active compositions in this slice. Each stock counted
-   *  ONCE (union, not sum-per-index). Source: stats.stock_basic_stats.trading_amount.
+   *  ONCE (union, not sum-per-index). Source: stats.stock_liquidity_margin.trading_amount.
    *  NULL when no stock amount data is available for the union set. */
   total_trading_amount: number | null;
 }
@@ -939,12 +1026,18 @@ export interface IndustryAttributionBenchmarksResponse {
   benchmarks: IndustryAttributionBenchmarkEntry[];
 }
 
-/** One row in the benchmark price series — date, raw close, and fractional
- *  daily return. */
+/** One row in the benchmark price series — date, raw close, fractional
+ *  daily return, and trading amount (yuan). The trading amount drives the
+ *  optional bar overlay on the BenchmarkPriceChart, where each selected
+ *  industry's `benchmark_shared_weight` proportion of the bar is highlighted
+ *  in the industry's color (bar total = benchmark trading amount). */
 export interface BenchmarkPriceRow {
   date: string;
   close: number | null;
   daily_return: number | null;
+  /** Benchmark's daily trading turnover in yuan (stats.index_basic_stats.trading_amount).
+   *  NULL when no trading_amount row exists for this date. */
+  trading_amount: number | null;
 }
 
 /** Response for GET /api/analysis/industry-attribution/benchmark-price?code=... */
@@ -974,9 +1067,27 @@ export interface IndustryAttributionPriceSeriesRow {
   /** Today's non-industry price = bench_prev_close × (1 + non_industry_return).
    *  NULL for non-broad-market benchmarks. */
   non_this_industry_price: number | null;
-  /** Accumulated non-industry price, rebased to 100 at benchmark start.
-   *  NULL for non-broad-market benchmarks. */
-  non_this_industry_rolling_price: number | null;
+  /** Non-industry price rebased to 100, computed over the trailing
+   *  5-trading-day window ending on `date`. NULL for non-broad-market
+   *  benchmarks. Drives the BenchmarkPriceChart shade when the user
+   *  selects "5 days" in the rolling-days dropdown. */
+  non_this_industry_rolling_5days_price: number | null;
+  /** Same as above over the trailing 20-trading-day window. */
+  non_this_industry_rolling_20days_price: number | null;
+  /** Same as above over the trailing 60-trading-day window. */
+  non_this_industry_rolling_60days_price: number | null;
+  /** Same as above over the trailing 255-trading-day window (~1 year). */
+  non_this_industry_rolling_255days_price: number | null;
+  /** Same as above over the trailing 500-trading-day window (~2 years). */
+  non_this_industry_rolling_500days_price: number | null;
+  /** Benchmark's weight % (0-100) on the UNION of this industry's member
+   *  stocks (latest stats.sec_composition snapshot). Sourced directly from
+   *  analysis.industry_attributions.benchmark_shared_weight. Used by the
+   *  BenchmarkPriceChart bar overlay: highlighted portion of each bar =
+   *  trading_amount × (benchmark_shared_weight / 100); the bar TOTAL always
+   *  equals the benchmark's trading_amount on that date. NULL when the
+   *  benchmark has no composition data. */
+  benchmark_shared_weight: number | null;
 }
 
 /** Response for GET /api/analysis/industry-attribution/non-this-industry-price
@@ -1066,6 +1177,83 @@ export interface MemberIndexAttributionResponse {
   date: string;
   is_broad_market: boolean | null;
   indices: MemberIndexAttributionRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Industry ETF Contribution — drives the "ETF Contribution" view on the
+//  Industry Sentiments page. Mirrors "Benchmark Attribution" but replaces
+//  benchmark-indices with ETFs as the unit of analysis.
+//
+//  1st plot: multi-ETF price line chart — each ETF's daily close rebased to
+//  100 at its OWN first available date (cascading rebasing: a later-listed
+//  ETF starts at the MEAN of already-active ETFs on its first date so it
+//  blends in rather than jumping to 100). Clickable to pick the as-of date.
+//
+//  2nd+ plots: per-industry bar charts — each bar = one ETF showing its
+//  trading amount (capital flow) and % share of the industry total.
+//
+//  Source: stats.etf_basic_stats (close), stats.etf_liquidity_margin
+//  (trading_amount), stats.sec_classification (ETF→parent_index→industry_id
+//  linkage). Industry aggregate from analysis.industry_etf_contribution.
+// ----------------------------------------------------------------------------
+
+/** One row in an ETF's daily close series (for the 1st plot). */
+export interface IndustryEtfPriceRow {
+  date: string;
+  close: number | null;
+  /** ETF daily trading turnover (yuan) from stats.etf_liquidity_margin.trading_amount.
+   *  Drives the optional "Trading Amt" bar overlay on the price chart — each
+   *  ETF's bar segment is its proportional share of the date's total ETF
+   *  trading amount. NULL when no liquidity data. */
+  trading_amount: number | null;
+}
+
+/** One ETF's price series entry — code, name, parent index, and close rows. */
+export interface IndustryEtfPriceSeriesEntry {
+  etf_code: string;
+  etf_name: string;
+  /** The member index code this ETF tracks (stats.sec_classification.parent_index_code). */
+  parent_index_code: string;
+  industry_id: string;
+  industry_label: string;
+  rows: IndustryEtfPriceRow[];
+}
+
+/** Response for GET /api/analysis/industry-etf-contribution/etf-price
+ *  ?industry_ids=BANKS,AI — multi-ETF price series for the 1st plot. */
+export interface IndustryEtfPriceSeriesResponse {
+  industry_ids: string[];
+  etfs: IndustryEtfPriceSeriesEntry[];
+}
+
+/** One ETF row in the per-industry contribution bar chart (2nd+ plots). */
+export interface IndustryEtfContributionBarRow {
+  etf_code: string;
+  etf_name: string;
+  parent_index_code: string;
+  /** ETF daily trading turnover (yuan) from stats.etf_liquidity_margin.trading_amount. */
+  trading_amount: number | null;
+  /** ETF FRACTIONAL daily return = (close_t - close_{t-1}) / close_{t-1}.
+   *  Computed on-the-fly. NULL when no previous-day close. */
+  etf_return: number | null;
+}
+
+/** Response for GET /api/analysis/industry-etf-contribution/etf-bars
+ *  ?industry_id=BANKS&date=YYYY-MM-DD (date optional → latest). */
+export interface IndustryEtfContributionBarsResponse {
+  industry_id: string;
+  industry_label: string;
+  /** As-of date (latest available when no `date` was requested). */
+  date: string;
+  /** Industry aggregate ETF trading amount (pool_size='all') from
+   *  analysis.industry_etf_contribution. NULL when no aggregate row exists. */
+  industry_etf_trading_amount: number | null;
+  /** 5-day MA of the industry aggregate. NULL when no MA data. */
+  industry_etf_trading_amount_ma5: number | null;
+  /** 20-day MA of the industry aggregate. NULL when no MA data.
+   *  Exposed by the UI "Trading Amt" MA selector alongside MA5. */
+  industry_etf_trading_amount_ma20: number | null;
+  etfs: IndustryEtfContributionBarRow[];
 }
 
 // ----------------------------------------------------------------------------

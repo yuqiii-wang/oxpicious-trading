@@ -7,15 +7,18 @@
  *   • ThemeSelector — two-level cascade (L1 sector → L2 industry) + exchange
  *     filter row
  *   • Stack of MaSpreadPanel cards — one per code on the current page.
- *     Each panel renders:
- *       1. Date-range slider (drives all 9 pairs — they share one date axis)
+ *     Each panel renders (top → bottom):
+ *       1. 9 pair chips arranged as a 2-row grid aligned by long MA (Price
+ *          row + MA5 row), with a "Trend Study" column header above the
+ *          MA60 column (shared by Price/MA60 and MA5/MA60). Clicking a chip
+ *          selects the pair shown in the chart below.
  *       2. Two-curve chart (short + long MA) with green fill when short > long
  *          (growth) and red fill when short < long (decline).
  *       3. Latest-snapshot summary line for the selected pair (date, short,
  *          long, gap %).
- *       4. 9 pair chips (Price/MA5 … MA5/MA255); clicking one selects the pair
- *          shown in the chart above.
- *   • Pagination — PAGE_SIZE codes per page.
+ *       4. Date-range slider at the bottom of the plot (drives all 9 pairs —
+ *          they share one date axis).
+ *     • Pagination — PAGE_SIZE codes per page.
  *
  * 9 pairs (canonical order):
  *   Price/MA5, Price/MA20, Price/MA60, Price/MA120, Price/MA255,
@@ -238,8 +241,6 @@ export default function MaSpreadPage() {
             (2nd derivative) — including price's own slope/curvature for
             Price/MA pairs. Click a pair chip to switch the chart; the
             date-range slider drives all 9 pairs (they share one date axis).
-            Stock support is reserved — the list will be empty until
-            stock_tech_stats is created and the build script populates stock rows.
           </Typography>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
@@ -278,13 +279,12 @@ export default function MaSpreadPage() {
         onSectorChange={handleSectorChange}
         onIndustryChange={handleIndustryChange}
         onExchangeChange={handleExchangeChange}
-        // L3 security-level chips row — renders one chip per individual ETF or
-        // Index under the active industry (or all items in the active sector
-        // when industry="All"). Clicking a chip narrows the page to display
-        // ONLY that security (reuses the searchCode single-code path).
-        // Only shown for etf / index — stock is reserved until
-        // stock_tech_stats is created.
-        itemKind={secType === "etf" ? "ETF" : secType === "index" ? "Index" : undefined}
+        // L3 security-level chips row — renders one chip per individual ETF,
+        // Index, or Stock under the active industry (or all items in the
+        // active sector when industry="All"). Clicking a chip narrows the
+        // page to display ONLY that security (reuses the searchCode
+        // single-code path).
+        itemKind={secType === "etf" ? "ETF" : secType === "index" ? "Index" : secType === "stock" ? "Stock" : undefined}
         selectedItemCode={searchCode}
         onItemSelected={(code) => {
           setError(null);

@@ -5,7 +5,7 @@
  *     /api/etf-margin/themes which returns the precomputed taxonomy tree.
  *   • Stack of EtfMarginPanel cards (one per row, full width) — rebased close %,
  *     MA20/MA60/MA120, RZ/RQ margin fills, volume bars
- *   • Pagination — 2 ETFs per page, each page triggers one API request
+ *   • Pagination — 1 ETF per page, each page triggers one API request
  *
  * Defaults to the "BROAD" sector (broad-based index ETFs).
  */
@@ -29,7 +29,7 @@ import type {
   SectorNode,
 } from "../../../../shared/types";
 
-const PAGE_SIZE = 2;
+const PAGE_SIZE = 1;
 
 export default function EtfMarginPage() {
   const sectorId = useStore((s) => s.sectorId);
@@ -101,17 +101,24 @@ export default function EtfMarginPage() {
   };
 
   // Resolve a searched code against the themes tree: update sector/industry
-  // highlights + activate single-result mode. Shows an error if not found.
+  // highlights + activate single-result mode.
+  //
+  // The themes tree (listThemes) applies a `HAVING COUNT(v.date) >= 40`
+  // threshold, so newly-listed ETFs (< 40 trading days) are absent from it.
+  // When findCodeInThemes returns null we still activate single-result mode
+  // — the /combined API uses a threshold-free code-lookup query, so the ETF
+  // is returned directly from the DB if it exists. If the API also finds
+  // nothing, the "No data available for ETF code" warning (rendered below)
+  // surfaces the not-found state.
   const handleSearch = (code: string) => {
     const found = findCodeInThemes(sectors, code);
-    if (!found) {
-      setError(`ETF code not found: ${code}`);
-      setSearchCode(null);
-      return;
-    }
     setError(null);
-    setSectorId(found.sectorId);
-    setIndustrySlug(found.industrySlug);
+    if (found) {
+      setSectorId(found.sectorId);
+      setIndustrySlug(found.industrySlug);
+    }
+    // found is null for newly-listed ETFs not in the themes tree — still
+    // search by code so the threshold-free API path is taken.
     setSearchCode(code);
     setPage(1);
   };

@@ -37,7 +37,7 @@ import type {
   SectorNode,
 } from "../../../shared/types";
 
-const PAGE_SIZE = 2;
+const PAGE_SIZE = 1;
 
 export default function EtfPage() {
   const [sectors, setSectors] = useState<SectorNode[]>([]);

@@ -361,13 +361,65 @@ async def get_db_connection_async():
         raise
 
 
+async def get_db_pool_async(min_size: int = 1, max_size: int = 5,
+                            max_queries: int = 50000):
+    """Create an asyncpg connection pool (async).
+
+    A pool is required when an async task needs to run multiple DB
+    operations in parallel (e.g. ``batched_upsert_by_date`` with
+    ``max_concurrent > 1``). A single asyncpg.Connection processes one
+    query at a time — it cannot run two ``executemany`` calls
+    concurrently even with ``asyncio.gather``. Each parallel chunk
+    therefore needs its own connection borrowed from the pool.
+
+    Args:
+        min_size: number of connections opened eagerly at pool creation.
+            Keep small (1) so startup stays fast; connections are
+            created on demand up to ``max_size``.
+        max_size: hard cap on concurrent connections. Set this to match
+            the parallelism level of the caller (e.g. 4 for
+            ``max_concurrent=4``). Each connection consumes a backend
+            process on the Postgres server, so keep ≤ ~8 to avoid
+            starving other clients.
+        max_queries: asyncpg recycles a connection after this many
+            queries to defend against memory leaks in long-lived
+            sessions. 50K is high enough that a single analyze run will
+            not trigger recycling mid-way (which would lose the prepared
+            statement cache).
+
+    Returns:
+        asyncpg.pool.Pool. The caller is responsible for closing it
+        (``await pool.close()``) when done — typically in a ``finally``
+        block.
+    """
+    if not HAS_ASYNCPG:
+        raise ImportError(
+            "asyncpg is required for connection pooling. "
+            "Install with: pip install asyncpg"
+        )
+    conn_params = _get_conn_params()
+    # Same timeout rationale as get_db_connection_async (checkpoint storms).
+    pool = await asyncpg.create_pool(
+        host=conn_params["host"],
+        port=conn_params["port"],
+        database=conn_params["database"],
+        user=conn_params["user"],
+        password=conn_params["password"],
+        min_size=min_size,
+        max_size=max_size,
+        max_queries=max_queries,
+        command_timeout=300,  # 5 min per query — upserts of 100K rows can take >60s under WAL pressure
+    )
+    return pool
+
+
 async def get_existing_keys_async(conn, table_name, key_columns):
     """Get set of existing key tuples from a table (async)."""
     if not key_columns:
         return set()
-    
+
     schema, table = _parse_table_name(table_name)
-    
+
     columns_sql = ", ".join([f'"{c}"' for c in key_columns])
     
     if schema:

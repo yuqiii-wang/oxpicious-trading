@@ -67,6 +67,9 @@ import type {
 import { IndustrySentimentsPlot } from "./IndustrySentimentsPlot";
 import { BenchmarkPriceChart } from "./BenchmarkPriceChart";
 import { IndustryBenchmarkAttributionChart } from "./IndustryBenchmarkAttributionChart";
+import { IndustryEtfPriceChart } from "./IndustryEtfPriceChart";
+import { IndustryEtfContributionChart } from "./IndustryEtfContributionChart";
+import { MarketTrendChart } from "./MarketTrendChart";
 
 export default function IndustrySentimentsPage() {
   const navigate = useNavigate();
@@ -91,7 +94,7 @@ export default function IndustrySentimentsPage() {
   // swaps them for a benchmark price chart (1st plot, clickable to pick a
   // date) + one per-industry attribution bar chart per selected industry
   // (2nd plot onward — sourced from analysis.industry_attributions).
-  const [viewMode, setViewMode] = useState<"correlation" | "attribution">("correlation");
+  const [viewMode, setViewMode] = useState<"correlation" | "attribution" | "etf_contribution" | "market_trend">("correlation");
   // Benchmark dropdown list (fetched once when entering attribution mode).
   const [attributionBenchmarks, setAttributionBenchmarks] = useState<IndustryAttributionBenchmarkEntry[]>([]);
   // The selected benchmark code (drives the 1st plot). Defaults to 000300
@@ -271,6 +274,7 @@ export default function IndustrySentimentsPage() {
     invalidateCacheForPrefix("/api/analysis/industry-correlations");
     invalidateCacheForPrefix("/api/analysis/industry-benchmark-attribution");
     invalidateCacheForPrefix("/api/analysis/industry-attribution-bars");
+    invalidateCacheForPrefix("/api/analysis/industry-etf-contribution");
     setRefreshKey((k) => k + 1);
   };
 
@@ -433,12 +437,14 @@ export default function IndustrySentimentsPage() {
               value={viewMode}
               exclusive
               size="small"
-              onChange={(_, v: "correlation" | "attribution" | null) => {
+              onChange={(_, v: "correlation" | "attribution" | "etf_contribution" | "market_trend" | null) => {
                 if (v) setViewMode(v);
               }}
             >
               <ToggleButton value="correlation">Industry Correlation</ToggleButton>
               <ToggleButton value="attribution">Benchmark Attribution</ToggleButton>
+              <ToggleButton value="etf_contribution">ETF Contribution</ToggleButton>
+              <ToggleButton value="market_trend">Market Trend</ToggleButton>
             </ToggleButtonGroup>
             {viewMode === "attribution" && (
               <Autocomplete
@@ -529,6 +535,52 @@ export default function IndustrySentimentsPage() {
                 />
               ))}
             </Stack>
+          )}
+
+          {viewMode === "etf_contribution" && (
+            <Stack spacing={1.5}>
+              {/* 1st plot: Multi-ETF price chart with cascading rebase.
+                  Each ETF tracking a member index of the selected industries
+                  is plotted as a separate line, rebased to 100 at its own
+                  first available date. Later-listed ETFs start at the MEAN
+                  of already-active ETFs on their first date (cascading
+                  rebase) so they blend in rather than jumping to 100. The
+                  chart is clickable — clicking a date sets the as-of date
+                  for the bar charts below.
+
+                  In-plot controls (top-right): a "Trading Amt" MA dropdown
+                  (MA5 / MA20) and a merged toggle that switches between the
+                  price-trend curve being prominent (trading-amt bars + MA
+                  lowkey) vs the trading-amt bars + MA being prominent (price
+                  curve lowkey). The plot is never hidden — only the relative
+                  emphasis flips. */}
+              <IndustryEtfPriceChart
+                industryIds={selectedIndustryIds}
+                themeMode={themeMode}
+                selectedDate={selectedDate}
+                onDateSelect={(d) => setSelectedDate(d)}
+              />
+
+              {/* 2nd+ plots: Per-industry ETF contribution bar charts.
+                  One plot per selected industry; each bar = one ETF showing
+                  its trading amount (capital flow, colored by return
+                  direction) and its % share of the industry total ETF
+                  trading amount. Same date as the IndustryEtfPriceChart
+                  above. */}
+              {selectedIndustries.map((ind) => (
+                <IndustryEtfContributionChart
+                  key={ind.id}
+                  industryId={ind.id}
+                  industryLabel={ind.label}
+                  date={selectedDate}
+                  themeMode={themeMode}
+                />
+              ))}
+            </Stack>
+          )}
+
+          {viewMode === "market_trend" && (
+            <MarketTrendChart themeMode={themeMode} />
           )}
         </>
       )}

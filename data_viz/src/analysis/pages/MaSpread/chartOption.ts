@@ -4,34 +4,26 @@
  * Extracted from the former MaSpreadPage.tsx so the panel component stays
  * focused on data fetching + layout.
  *
- * Implementation: 5 series in one stack ("gapFill"):
- *   1. Visible short line (z=5, no stack)
- *   2. Visible long line  (z=5, no stack)
- *   3. Stack base (invisible): min(short, long)        — stack 'gapFill'
- *   4. Positive delta (green area): max(short - long, 0) — stack 'gapFill'
- *   5. Negative delta (red area):   max(long - short, 0) — stack 'gapFill'
+ * Implementation:
+ *   For Price/MA pairs (ma_short === 0):
+ *     - OHLC bars (shared ohlcSeries from @/lib/ohlc) — replaces the close line
+ *     - Long MA line  (z=5, no stack)
+ *     - Gap fill stack (3 series: _base, _pos, _neg)
+ *     - Bollinger envelope (optional)
+ *     - Trading amount bars on secondary y-axis
  *
- * When short > long: base=long, pos=short-long, neg=0 → green fill spans
- *   [long, short] = [min, max].
- * When short < long: base=short, pos=0, neg=long-short → red fill spans
- *   [short, long] = [min, max].
- * When short == long: pos=neg=0 → no fill (lines touch).
+ *   For MA/MA pairs (ma_short === 5):
+ *     - Short MA line + Long MA line
+ *     - Gap fill stack (3 series: _base, _pos, _neg)
+ *     - Trading amount bars on secondary y-axis
  *
- * Bollinger envelope (Price/MA pairs only, ma_short === 0):
- *   When bollingerK > 0 and the pair is a Price/MA pair, 2 additional dashed
- *   lines are drawn around the long MA:
- *     Upper = long_value + k × long_std
- *     Lower = long_value - k × long_std
- *   where long_std is the rolling population σ of price over the long MA's
- *   window (std_5days / std_20days / ... / std_255days, precomputed in the
- *   detail table). A faint fill (opacity 0.08) between Upper and Lower
- *   highlights the envelope region without obscuring the gap fill. The 2
- *   band lines + 2 stack series for the fill are appended after the 5
- *   gap-fill series. MA5/MA pairs do not get the envelope — only Price/MA
- *   pairs do, by convention (the σ is of price, so it is meaningful to
- *   band the price's MA, not an MA of an MA).
+ * Gap fill stack ("gapFill"):
+ *   1. Stack base (invisible): min(short, long)
+ *   2. Positive delta (green area): max(short - long, 0)
+ *   3. Negative delta (red area):   max(long - short, 0)
  */
-import { fmtNum, fmtPct } from "@/lib/series";
+import { fmtNum, fmtPct, fmtYi } from "@/lib/series";
+import { ohlcSeries, type OhlcMode } from "@/lib/ohlc";
 import {
   MA120_COLOR,
   UP_COLOR,
@@ -45,15 +37,237 @@ import {
 } from "@/theme/chart-palette";
 import type { ThemeMode } from "@/store/filters";
 import type { EChartsOption } from "echarts";
-import type { MovAveSpreadPairSeries } from "../../../../shared/types";
+import type { MovAveSpreadPairSeries, MovAveSpreadValleyLow } from "../../../../shared/types";
 
 // Color for the "price" series (ma_short = 0).
 const PRICE_COLOR = SPOT_COLOR;
+
+// ---- Trend classification constants (Price/MA60 pair only) --------------
+// downward_trend: close < MA60, with <5 day interruptions bridged.
+//                 Dominates over flat_trend (close-below-MA60 wins regardless
+//                 of MA60 slope).
+// flat_trend:     MA60 slope ∈ [−0.5, +0.5] (raw price diff, no unit
+//                 conversion — uses existing ma60_slope column as-is).
+// upward_trend:   everything else (close >= MA60 AND slope outside flat band).
+const TREND_MAX_INTERRUPTION = 5;
+const TREND_FLAT_SLOPE_MIN = -0.5;
+const TREND_FLAT_SLOPE_MAX = 0.5;
+const TREND_DOWN_COLOR = "rgba(229, 57, 53, 0.07)"; // light red
+const TREND_FLAT_COLOR = "rgba(255, 193, 7, 0.07)"; // light amber
+const TREND_UP_COLOR = "rgba(76, 175, 80, 0.05)";   // light green
+
+type TrendType = "downward" | "flat" | "upward";
+
+interface TrendBand {
+  startIdx: number;
+  endIdx: number;
+  trend: TrendType;
+}
+
+/**
+ * Compute trend classification bands from Price/MA60 pair data.
+ *
+ * Algorithm:
+ *   1. Raw below_ma60: close (short_value) < MA60 (long_value).
+ *   2. Bridge gaps < TREND_MAX_INTERRUPTION consecutive non-below days into
+ *      single downward belts (same <5 day logic as the Python belt detector).
+ *   3. Bridged below-ma60 periods = downward_trend (dominates).
+ *   4. For remaining days: if MA60 slope (long_slope) ∈ [−0.5, +0.5] → flat,
+ *      else → upward.
+ *   5. Weak-rebound reclassification: an "upward" band where close stays
+ *      below MA60 + 1σ for ALL days (weak rebound that never exceeds 1 std
+ *      above MA60) AND there exist non-flat trends (downward or upward)
+ *      both before AND after the band → reclassify as flat. This catches
+ *      brief rebounds within a broader trend context that are really just
+ *      flat consolidation, not a genuine upward trend.
+ *   6. Merge adjacent bands of the same type after reclassification.
+ *
+ * Returns a list of contiguous {startIdx, endIdx, trend} bands covering
+ * the full date range (or empty array if not a Price/MA60 pair).
+ */
+function computeTrendBands(
+  shorts: Array<number | null>,
+  longs: Array<number | null>,
+  longSlopes: Array<number | null>,
+  longStds: Array<number | null>,
+): TrendBand[] {
+  const n = shorts.length;
+  if (n === 0) return [];
+
+  // Step 1: raw below_ma60 boolean array.
+  const belowMA60: boolean[] = new Array(n).fill(false);
+  for (let i = 0; i < n; i++) {
+    const s = shorts[i];
+    const l = longs[i];
+    if (s != null && l != null && Number.isFinite(s) && Number.isFinite(l)) {
+      belowMA60[i] = s < l;
+    }
+  }
+
+  // Step 2: bridge gaps < TREND_MAX_INTERRUPTION into downward belts.
+  // A day is "downward" if it's belowMA60 OR within a bridged gap between
+  // two belowMA60 segments separated by < TREND_MAX_INTERRUPTION days.
+  const isDownward: boolean[] = new Array(n).fill(false);
+  let i = 0;
+  while (i < n) {
+    if (!belowMA60[i]) {
+      i++;
+      continue;
+    }
+    // Start of a belowMA60 run at index i.
+    let runEnd = i;
+    let j = i + 1;
+    while (j < n) {
+      if (belowMA60[j]) {
+        runEnd = j;
+        j++;
+      } else {
+        // Check if the gap is bridgeable (< TREND_MAX_INTERRUPTION non-below days).
+        let gapLen = 0;
+        let k = j;
+        while (k < n && !belowMA60[k]) {
+          gapLen++;
+          k++;
+        }
+        if (gapLen < TREND_MAX_INTERRUPTION && k < n && belowMA60[k]) {
+          // Bridgeable: extend the run to include the gap.
+          runEnd = k;
+          j = k + 1;
+        } else {
+          // Not bridgeable: end the run here.
+          break;
+        }
+      }
+    }
+    // Mark the entire bridged run [i, runEnd] as downward.
+    for (let m = i; m <= runEnd; m++) {
+      isDownward[m] = true;
+    }
+    i = runEnd + 1;
+  }
+
+  // Step 3: classify each day and merge into contiguous bands.
+  const rawBands: TrendBand[] = [];
+  let curTrend: TrendType | null = null;
+  let curStart = 0;
+  for (let idx = 0; idx < n; idx++) {
+    let t: TrendType;
+    if (isDownward[idx]) {
+      t = "downward";
+    } else {
+      const slope = longSlopes[idx];
+      if (slope != null && Number.isFinite(slope) &&
+          slope >= TREND_FLAT_SLOPE_MIN && slope <= TREND_FLAT_SLOPE_MAX) {
+        t = "flat";
+      } else {
+        t = "upward";
+      }
+    }
+    if (t === curTrend) {
+      // extend current band
+    } else {
+      if (curTrend !== null) {
+        rawBands.push({ startIdx: curStart, endIdx: idx - 1, trend: curTrend });
+      }
+      curTrend = t;
+      curStart = idx;
+    }
+  }
+  if (curTrend !== null) {
+    rawBands.push({ startIdx: curStart, endIdx: n - 1, trend: curTrend });
+  }
+
+  // Step 4: weak-rebound reclassification.
+  // For each "upward" band, check if:
+  //   (a) ALL days in [startIdx, endIdx] have close < MA60 + 1×std
+  //       (weak rebound — never exceeds 1σ above MA60)
+  //   (b) There exists a non-flat band (downward or upward) before this band
+  //   (c) There exists a non-flat band (downward or upward) after this band
+  // If all three conditions are met → reclassify as flat.
+  const bands = rawBands.map((b) => ({ ...b }));
+  for (let bi = 0; bi < bands.length; bi++) {
+    if (bands[bi].trend !== "upward") continue;
+
+    // Condition (a): all days have close < MA60 + 1×std.
+    let allWeak = true;
+    for (let idx = bands[bi].startIdx; idx <= bands[bi].endIdx; idx++) {
+      const s = shorts[idx];
+      const l = longs[idx];
+      const sd = longStds[idx];
+      if (s == null || l == null || sd == null ||
+          !Number.isFinite(s) || !Number.isFinite(l) || !Number.isFinite(sd)) {
+        allWeak = false;
+        break;
+      }
+      if (s >= l + sd) {
+        // Close exceeds MA60 + 1σ — not a weak rebound.
+        allWeak = false;
+        break;
+      }
+    }
+    if (!allWeak) continue;
+
+    // Condition (b): non-flat band exists before.
+    let hasNonFlatBefore = false;
+    for (let bj = 0; bj < bi; bj++) {
+      if (bands[bj].trend === "downward" || bands[bj].trend === "upward") {
+        hasNonFlatBefore = true;
+        break;
+      }
+    }
+    if (!hasNonFlatBefore) continue;
+
+    // Condition (c): non-flat band exists after.
+    let hasNonFlatAfter = false;
+    for (let bj = bi + 1; bj < bands.length; bj++) {
+      if (bands[bj].trend === "downward" || bands[bj].trend === "upward") {
+        hasNonFlatAfter = true;
+        break;
+      }
+    }
+    if (!hasNonFlatAfter) continue;
+
+    // All conditions met → reclassify as flat.
+    bands[bi].trend = "flat";
+  }
+
+  // Step 5: merge adjacent bands of the same type after reclassification.
+  const merged: TrendBand[] = [];
+  for (const b of bands) {
+    if (merged.length > 0 && merged[merged.length - 1].trend === b.trend) {
+      merged[merged.length - 1].endIdx = b.endIdx;
+    } else {
+      merged.push({ ...b });
+    }
+  }
+  return merged;
+}
+
+/** Convert trend bands to ECharts markArea data format. */
+function trendBandsToMarkArea(
+  bands: TrendBand[],
+  dates: string[],
+): Array<[{ xAxis: string; itemStyle: { color: string } }, { xAxis: string }]> {
+  const colorMap: Record<TrendType, string> = {
+    downward: TREND_DOWN_COLOR,
+    flat: TREND_FLAT_COLOR,
+    upward: TREND_UP_COLOR,
+  };
+  return bands.map((b) => [
+    {
+      xAxis: dates[b.startIdx],
+      itemStyle: { color: colorMap[b.trend] },
+    },
+    { xAxis: dates[b.endIdx] },
+  ]);
+}
 
 /** Short-series label, e.g. "Price" or "MA5". */
 export function shortLabel(maShort: number): string {
   return maShort === 0 ? "Price" : `MA${maShort}`;
 }
+
+export type TradingAmtMode = "off" | "lowkey" | "highlight";
 
 export interface BuildPairOptionArgs {
   /** The pair's full time series. */
@@ -66,29 +280,217 @@ export interface BuildPairOptionArgs {
    * Only applies to Price/MA pairs (ma_short === 0); MA5/MA pairs ignore it.
    */
   bollingerK?: number;
+  /**
+   * Trading amount display mode.
+   * - "off": hide trading amount bars entirely.
+   * - "lowkey": show bars with low opacity (subtle background reference).
+   * - "highlight": show bars with strong opacity (prominent visual weight).
+   * Defaults to "lowkey".
+   */
+  tradingAmtMode?: TradingAmtMode;
+  /**
+   * Per-extreme-date valley-low rows from analysis.mov_ave_peaks_and_floors
+   * (one row per mov_ave_peaks_and_floors.date for the selected code).
+   * Each entry places a single red down-triangle marker at (date,
+   * extreme_val). Sourced directly from the peaks_and_floors table — NOT
+   * derived from the per-date detail series.
+   */
+  valleyLows?: MovAveSpreadValleyLow[];
+  /**
+   * Display mode for price-derived series.
+   * - "absolute": show raw values (default — backward compatible).
+   * - "percentage": only the y-axis labels and tooltip values are converted
+   *   to % change from the first valid close. The chart data itself stays
+   *   in absolute units, so the rendering (OHLC bars, MA lines, Bollinger
+   *   band shade, gap fill) is visually identical in both modes.
+   */
+  ohlcMode?: OhlcMode;
+}
+
+/** Format a yuan amount as 亿元 (100M yuan). */
+function fmtAmtYi(v: number | null | undefined, digits = 2): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return fmtYi(v, digits);
 }
 
 export function buildPairOption({
   pair,
   themeMode,
   bollingerK = 2,
+  tradingAmtMode = "lowkey",
+  valleyLows = [],
+  ohlcMode = "absolute",
 }: BuildPairOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
   const n = rows.length;
 
+  const isPricePair = pair.ma_short === 0;
+
   const dates = rows.map((r) => r.date);
   const shorts = rows.map((r) => r.short_value);
   const longs = rows.map((r) => r.long_value);
-  // slope / curvature arrays for the tooltip. short_slope / short_curvature
-  // are populated for every pair — including Price/MA pairs (ma_short = 0),
-  // which carry the 1st/2nd derivative of price itself.
+  // slope / curvature arrays for the tooltip.
   const shortSlopes = rows.map((r) => r.short_slope);
   const shortCurvs = rows.map((r) => r.short_curvature);
   const longSlopes = rows.map((r) => r.long_slope);
   const longCurvs = rows.map((r) => r.long_curvature);
   const longStds = rows.map((r) => r.long_std);
+  // OHLC + trading amount arrays.
+  const opens = rows.map((r) => r.open);
+  const highs = rows.map((r) => r.high);
+  const lows = rows.map((r) => r.low);
+  const tradingAmts = rows.map((r) => r.trading_amount);
 
+  // ---- Valley-low markers (red down triangles) --------------------------
+  // Sourced DIRECTLY from analysis.mov_ave_peaks_and_floors (one row per
+  // extreme date for this code). Each mov_ave_peaks_and_floors.date is
+  // plotted exactly once — we do NOT derive markers from the per-date
+  // detail series (which would smear each extreme across every detail
+  // date that maps to it via peaks_and_floors_date).
+  const extremeMap = new Map<string, number>(); // dateStr -> extreme_val
+  for (const v of valleyLows) {
+    if (v.extreme_val != null && Number.isFinite(v.extreme_val)) {
+      extremeMap.set(v.date, v.extreme_val);
+    }
+  }
+
+  // ---- Trend classification bands (any MA60 long pair: Price/MA60 + MA5/MA60)
+  // downward_trend dominates (short < MA60, with <5 day bridging); flat_trend
+  // when MA60 slope ∈ [−0.5, +0.5]; upward_trend otherwise. Shown as subtle
+  // background color bands. For Price/MA60 "short" is close; for MA5/MA60
+  // "short" is MA5 (short-term MA vs long-term MA trend signal).
+  const isMA60Pair = pair.ma_long === 60;
+  const trendBands = isMA60Pair ? computeTrendBands(shorts, longs, longSlopes, longStds) : [];
+  const hasTrendBands = trendBands.length > 0;
+
+  // Build scatter data: one red down-triangle per unique extreme date,
+  // placed at (date, extreme_val) on the chart.
+  const valleyLowData: Array<number | null> = new Array(n).fill(null);
+  if (extremeMap.size > 0) {
+    for (let i = 0; i < n; i++) {
+      const ev = extremeMap.get(dates[i]);
+      if (ev != null) {
+        valleyLowData[i] = ev;
+      }
+    }
+  }
+  const hasValleyLows = valleyLowData.some((v) => v != null);
+
+  // ---- Nearby-extreme bands (light-red horizontal bands) ----------------
+  // For each valley low that has a nearby_extreme_date, draw a horizontal
+  // light-red band linking the two dates. Upper bound = max of the two
+  // days' OHLC highs; lower bound = min of the two days' OHLC lows. Both
+  // dates must be present in the (slider-filtered) rows for the band to
+  // render — consistent with how valley-low markers respect the slider.
+  const NEARBY_BAND_FILL = "rgba(229, 57, 53, 0.12)";
+  const NEARBY_BAND_BORDER = "rgba(229, 57, 53, 0.35)";
+
+  interface NearbyBand {
+    startDate: string;
+    endDate: string;
+    startIndex: number;
+    endIndex: number;
+    lower: number;
+    upper: number;
+  }
+
+  // date → {high, low, index} lookup from the (filtered) rows.
+  const ohlcByDate = new Map<
+    string,
+    { high: number | null; low: number | null; index: number }
+  >();
+  for (let i = 0; i < n; i++) {
+    ohlcByDate.set(dates[i], { high: highs[i], low: lows[i], index: i });
+  }
+
+  const nearbyBands: NearbyBand[] = [];
+  for (const v of valleyLows) {
+    const nd = v.nearby_extreme_date;
+    if (!nd || nd === v.date) continue;
+    const o1 = ohlcByDate.get(v.date);
+    const o2 = ohlcByDate.get(nd);
+    if (!o1 || !o2) continue;
+    const h1 = o1.high, l1 = o1.low, h2 = o2.high, l2 = o2.low;
+    if (h1 == null || l1 == null || h2 == null || l2 == null) continue;
+    if (
+      !Number.isFinite(h1) || !Number.isFinite(l1) ||
+      !Number.isFinite(h2) || !Number.isFinite(l2)
+    ) continue;
+    const lower = Math.min(l1, l2);
+    const upper = Math.max(h1, h2);
+    const i1 = o1.index;
+    const i2 = o2.index;
+    nearbyBands.push({
+      startDate: i1 <= i2 ? v.date : nd,
+      endDate: i1 <= i2 ? nd : v.date,
+      startIndex: Math.min(i1, i2),
+      endIndex: Math.max(i1, i2),
+      lower,
+      upper,
+    });
+  }
+  const hasNearbyBands = nearbyBands.length > 0;
+  type NearbyBandPoint = { coord: [string, number] };
+  type NearbyBandMarkAreaItem = [
+    { coord: [string, number]; itemStyle: { color: string; borderColor: string; borderWidth: number } },
+    NearbyBandPoint,
+  ];
+
+  // ---- Percentage mode: base value for y-axis label + tooltip conversion --
+  // In percentage mode the chart data stays in absolute units (identical
+  // rendering to absolute mode); only the y-axis labels and tooltip values
+  // are converted to % change from the first valid close. This keeps the
+  // visual style (gap fill, Bollinger band shade, OHLC bars) exactly the
+  // same in both modes.
+  let baseVal: number | null = null;
+  for (let i = 0; i < n; i++) {
+    const v = shorts[i];
+    if (v != null && Number.isFinite(v) && Math.abs(v) >= 1e-9) {
+      baseVal = v;
+      break;
+    }
+  }
+  const hasBase = baseVal != null && Number.isFinite(baseVal) && Math.abs(baseVal) >= 1e-9;
+
+  /** Convert an absolute price value to a % change string from baseVal. */
+  const fmtPctFromBase = (v: number | null | undefined): string => {
+    if (v == null || !Number.isFinite(v) || !hasBase || baseVal == null) return "—";
+    return fmtPct((v / baseVal - 1) * 100, 2);
+  };
+  /** Format an absolute value: % from base in percentage mode, raw in absolute. */
+  const fmtPrice = (v: number | null | undefined): string =>
+    ohlcMode === "percentage" ? fmtPctFromBase(v) : fmtNum(v);
+
+  // nearbyBandMarkArea — uses absolute bounds (same as absolute mode).
+  const nearbyBandMarkArea: NearbyBandMarkAreaItem[] = nearbyBands.map((b) => [
+    {
+      coord: [b.startDate, b.lower],
+      itemStyle: {
+        color: NEARBY_BAND_FILL,
+        borderColor: NEARBY_BAND_BORDER,
+        borderWidth: 0.5,
+      },
+    },
+    { coord: [b.endDate, b.upper] },
+  ]) as NearbyBandMarkAreaItem[];
+
+  // OHLC bar data: [open, close, low, high] per date, shared ohlcSeries format.
+  // Null for dates missing any OHLC component.
+  const ohlcData: Array<Array<number | null>> = new Array(n).fill(null);
+  if (isPricePair) {
+    for (let i = 0; i < n; i++) {
+      const o = opens[i];
+      const cl = shorts[i]; // close = short_value for Price/MA pairs
+      const l = lows[i];
+      const h = highs[i];
+      if (o != null && cl != null && l != null && h != null) {
+        ohlcData[i] = [o, cl, l, h];
+      }
+    }
+  }
+
+  // Gap fill stack — uses absolute shorts/longs (same as absolute mode).
   const baseData: Array<number | null> = new Array(n).fill(null);
   const posData: Array<number | null> = new Array(n).fill(null);
   const negData: Array<number | null> = new Array(n).fill(null);
@@ -114,12 +516,6 @@ export function buildPairOption({
   const lName = `MA${pair.ma_long}`;
 
   // ---- Bollinger envelope (Price/MA pairs only) -------------------------
-  // Upper = long + k×σ, Lower = long - k×σ. NULL when long or σ is NULL.
-  // Also build the stacked-area fill: bollBase = Lower (invisible base),
-  // bollDelta = Upper - Lower = 2k×σ (invisible line, visible area fill).
-  // The fill opacity is very low (0.08) so it doesn't compete with the
-  // green/red gap fill between the short and long lines.
-  const isPricePair = pair.ma_short === 0;
   const showBoll = isPricePair && bollingerK > 0;
   const upperData: Array<number | null> = new Array(n).fill(null);
   const lowerData: Array<number | null> = new Array(n).fill(null);
@@ -135,24 +531,280 @@ export function buildPairOption({
       upperData[i] = upper;
       lowerData[i] = lower;
       bollBase[i] = lower;
-      bollDelta[i] = upper - lower; // = 2 * bollingerK * sd
+      bollDelta[i] = upper - lower;
     }
   }
   const upperName = `Upper (+${bollingerK}σ)`;
   const lowerName = `Lower (−${bollingerK}σ)`;
 
-  // Legend data: always show short + long; add Bollinger upper/lower only
-  // when the envelope is drawn. The stack helper series (_base/_pos/_neg/
-  // _bollBase/_bollDelta) are hidden from the legend.
+  // Legend data
   const legendData: string[] = [sName, lName];
   if (showBoll) {
     legendData.push(upperName, lowerName);
   }
+  if (tradingAmtMode !== "off") {
+    legendData.push("Amt Up", "Amt Down");
+  }
+  if (hasValleyLows) {
+    legendData.push("Valley Low");
+  }
+  if (hasNearbyBands) {
+    legendData.push("Nearby Extreme");
+  }
+  // Trend legend entries are shown as dummy series below (markArea itself
+  // doesn't produce legend items).
+  const trendLegendNames = hasTrendBands ? ["▼ Downward", "▬ Flat", "▲ Upward"] : [];
+  if (hasTrendBands) {
+    legendData.push(...trendLegendNames);
+  }
+
+  // Trading amount bar data — null-filtered (null where no trading amount).
+  const amtBarData: Array<number | null> = tradingAmts.map((v) =>
+    v != null && Number.isFinite(v) ? v : null,
+  );
+
+  // Build series array
+  const echartsSeries: EChartsOption["series"] = [];
+
+  // ---- Price/MA pair: OHLC bars instead of line ----
+  if (isPricePair) {
+    echartsSeries.push(ohlcSeries(ohlcData, { name: sName, z: 5 }));
+  } else {
+    // ---- MA/MA pair: short line ----
+    echartsSeries.push({
+      type: "line",
+      name: sName,
+      data: shorts,
+      symbol: "none",
+      lineStyle: { color: sColor, width: 1.4 },
+      z: 5,
+    });
+  }
+
+  // Long MA line (always present). Trend markArea is attached here (only
+  // on the Price/MA60 pair) so the background bands render behind the MA line.
+  echartsSeries.push({
+    type: "line",
+    name: lName,
+    data: longs,
+    symbol: "none",
+    lineStyle: { color: lColor, width: 1.4 },
+    z: 5,
+    ...(hasTrendBands
+      ? {
+          markArea: {
+            silent: true,
+            itemStyle: { borderWidth: 0 },
+            data: trendBandsToMarkArea(trendBands, dates),
+          },
+        }
+      : {}),
+  });
+
+  // ---- Gap fill stack ----
+  echartsSeries.push({
+    type: "line",
+    name: "_base",
+    data: baseData,
+    stack: "gapFill",
+    symbol: "none",
+    lineStyle: { opacity: 0 },
+    z: 1,
+  });
+  echartsSeries.push({
+    type: "line",
+    name: "_pos",
+    data: posData,
+    stack: "gapFill",
+    symbol: "none",
+    lineStyle: { opacity: 0 },
+    areaStyle: { color: UP_COLOR, opacity: 0.4 },
+    z: 2,
+  });
+  echartsSeries.push({
+    type: "line",
+    name: "_neg",
+    data: negData,
+    stack: "gapFill",
+    symbol: "none",
+    lineStyle: { opacity: 0 },
+    areaStyle: { color: DOWN_COLOR, opacity: 0.4 },
+    z: 2,
+  });
+
+  // ---- Bollinger envelope series ----
+  if (showBoll) {
+    echartsSeries.push({
+      type: "line",
+      name: upperName,
+      data: upperData,
+      symbol: "none",
+      lineStyle: { color: BOLL_BAND_COLOR, width: 1, type: "dashed", opacity: 0.7 },
+      z: 4,
+    });
+    echartsSeries.push({
+      type: "line",
+      name: lowerName,
+      data: lowerData,
+      symbol: "none",
+      lineStyle: { color: BOLL_BAND_COLOR, width: 1, type: "dashed", opacity: 0.7 },
+      z: 4,
+    });
+    echartsSeries.push({
+      type: "line",
+      name: "_bollBase",
+      data: bollBase,
+      stack: "bollBand",
+      symbol: "none",
+      lineStyle: { opacity: 0 },
+      areaStyle: { opacity: 0 },
+      z: 0,
+    });
+    echartsSeries.push({
+      type: "line",
+      name: "_bollDelta",
+      data: bollDelta,
+      stack: "bollBand",
+      symbol: "none",
+      lineStyle: { opacity: 0 },
+      areaStyle: { color: BOLL_BAND_FILL, opacity: 0.08 },
+      z: 0,
+    });
+  }
+
+  // ---- Valley-low markers (red down triangles) ---------------------------
+  // Plotted on the primary (price) y-axis at (valley_low_date, valley_low).
+  // Shown on all pair charts as a visual reference for the monthly valley
+  // low detected by the peaks_and_floors algorithm (close < MA60 − 2σ
+  // Bollinger band, continuous belt with < 5 day interruptions).
+  if (hasValleyLows) {
+    echartsSeries.push({
+      type: "scatter",
+      name: "Valley Low",
+      data: valleyLowData,
+      symbol: "triangle",
+      symbolSize: 12,
+      symbolRotate: 180, // point down
+      itemStyle: {
+        color: "#E53935", // red
+        borderColor: "#B71C1C",
+        borderWidth: 0.5,
+      },
+      z: 20,
+      // Light-red horizontal band linking each valley_low_date with its
+      // nearby_extreme_date. Upper/lower bounds come from the two days'
+      // OHLC highs/lows. Attached to the valley-low scatter (z=20) so the
+      // band renders above price/MA lines as a highlight overlay.
+      ...(hasNearbyBands
+        ? {
+            markArea: {
+              silent: true,
+              data: nearbyBandMarkArea,
+            },
+          }
+        : {}),
+    });
+  }
+
+  // ---- Nearby-extreme band legend dummy series --------------------------
+  // markArea doesn't produce a legend entry, so add an invisible dummy
+  // scatter with one null point — the legend swatch shows the band color.
+  if (hasNearbyBands) {
+    echartsSeries.push({
+      type: "scatter",
+      name: "Nearby Extreme",
+      data: [null],
+      symbol: "rect",
+      symbolSize: 7,
+      itemStyle: { color: "rgba(229, 57, 53, 0.5)" },
+      z: 0,
+    });
+  }
+
+  // ---- Trend legend dummy series (Price/MA60 pair only) -----------------
+  // markArea doesn't produce legend entries, so add 3 invisible dummy
+  // scatter series with 1 null point each — the legend item shows the
+  // trend color, but nothing renders on the chart.
+  if (hasTrendBands) {
+    const trendLegendColors: Record<string, string> = {
+      "▼ Downward": TREND_DOWN_COLOR.replace("0.07", "0.6"),
+      "▬ Flat": TREND_FLAT_COLOR.replace("0.07", "0.6"),
+      "▲ Upward": TREND_UP_COLOR.replace("0.05", "0.6"),
+    };
+    for (const name of trendLegendNames) {
+      echartsSeries.push({
+        type: "scatter",
+        name,
+        data: [null],
+        symbol: "circle",
+        symbolSize: 7,
+        itemStyle: { color: trendLegendColors[name] },
+        z: 0,
+      });
+    }
+  }
+
+  // ---- Trading amount bars on secondary y-axis (up/down colored) ----
+  if (tradingAmtMode !== "off") {
+    const isHighlight = tradingAmtMode === "highlight";
+    const barOpacity = isHighlight ? 0.6 : 0.15;
+    const barWidth = isHighlight ? "70%" : "50%";
+
+    // Split into up (green) and down (red) series for OHLC-based coloring.
+    // For Price/MA pairs, direction = close >= open.
+    // For MA/MA pairs, direction = short >= long (gap sign).
+    const upData: Array<number | null> = new Array(n).fill(null);
+    const downData: Array<number | null> = new Array(n).fill(null);
+
+    for (let i = 0; i < n; i++) {
+      const amt = amtBarData[i];
+      if (amt == null) continue;
+      let isUp: boolean;
+      if (isPricePair) {
+        const o = opens[i];
+        const cl = shorts[i]; // close
+        isUp = o != null && cl != null ? cl >= o : true;
+      } else {
+        const s = shorts[i];
+        const l = longs[i];
+        isUp = s != null && l != null ? s >= l : true;
+      }
+      if (isUp) {
+        upData[i] = amt;
+      } else {
+        downData[i] = amt;
+      }
+    }
+
+    echartsSeries.push({
+      type: "bar",
+      name: "Amt Up",
+      data: upData,
+      yAxisIndex: 1,
+      barWidth,
+      itemStyle: { color: UP_COLOR, opacity: barOpacity },
+      z: 0,
+      stack: "amt",
+    });
+    echartsSeries.push({
+      type: "bar",
+      name: "Amt Down",
+      data: downData,
+      yAxisIndex: 1,
+      barWidth,
+      itemStyle: { color: DOWN_COLOR, opacity: barOpacity },
+      z: 0,
+      stack: "amt",
+    });
+  }
+
+  // Grid with more right margin for the secondary axis label
+  const grid = commonGrid({ left: 55, right: 55, bottom: 30 });
 
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: commonGrid({ left: 55, right: 18, bottom: 30 }),
+    grid,
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "line", snap: true },
@@ -178,20 +830,99 @@ export function buildPairOption({
           const sc = shortCurvs[idx];
           const ls = longSlopes[idx];
           const lc = longCurvs[idx];
-          html += `<div>${sName}: ${fmtNum(sv)}</div>`;
-          html += `<div>${lName}: ${fmtNum(lv)}</div>`;
-          html += `<div>gap: ${gv != null ? fmtPct(gv, 3) : "—"}</div>`;
-          // slope (1st derivative) + curvature (2nd derivative) of both the
-          // short series (price or MA) and the long MA.
-          html += `<div style="margin-top:2px;opacity:0.85">${sName} slope: ${fmtNum(ss)} · curv: ${fmtNum(sc)}</div>`;
-          html += `<div style="opacity:0.85">${lName} slope: ${fmtNum(ls)} · curv: ${fmtNum(lc)}</div>`;
-          // Bollinger band values (only for Price/MA pairs with envelope on).
+
+          // OHLC for Price/MA pairs
+          if (isPricePair) {
+            const o = opens[idx];
+            const h = highs[idx];
+            const l = lows[idx];
+            const cl = shorts[idx];
+            html += `<div>O: ${fmtPrice(o)}  H: ${fmtPrice(h)}</div>`;
+            html += `<div>L: ${fmtPrice(l)}  C: ${fmtPrice(cl)}</div>`;
+          } else {
+            html += `<div>${sName}: ${fmtPrice(sv)}</div>`;
+          }
+
+          html += `<div>${lName}: ${fmtPrice(lv)}</div>`;
+          html += `<div>gap: ${gv != null ? fmtPct(gv * 100, 3) : "—"}</div>`;
+
+          // Trading amount
+          const amt = tradingAmts[idx];
+          if (amt != null) {
+            html += `<div style="margin-top:2px;opacity:0.85">Trading Amt: ${fmtAmtYi(amt)}</div>`;
+          }
+
+          // slope + curvature.
+          // In percentage mode, slope (1st derivative) and curvature (2nd
+          // derivative) are rebased to 100 by scaling with 100/baseVal — i.e.,
+          // they become the slope/curvature of the rebased series (where the
+          // first valid short value = 100). Tooltip annotates the rebase so
+          // the user knows the values are on the rebased scale.
+          const isPctSlope = ohlcMode === "percentage" && hasBase && baseVal != null;
+          const slopeScale = isPctSlope && baseVal != null ? 100 / baseVal : 1;
+          const fmtSlope = (v: number | null | undefined): string =>
+            fmtNum(v != null && Number.isFinite(v) ? v * slopeScale : null);
+          const rebasedTag = isPctSlope
+            ? ' <span style="opacity:0.6;font-size:0.9em">(rebased to 100)</span>'
+            : "";
+          html += `<div style="margin-top:2px;opacity:0.85">${sName} slope: ${fmtSlope(ss)} · curv: ${fmtSlope(sc)}${rebasedTag}</div>`;
+          html += `<div style="opacity:0.85">${lName} slope: ${fmtSlope(ls)} · curv: ${fmtSlope(lc)}${rebasedTag}</div>`;
+
+          // Bollinger band values.
+          // Upper/Lower are price levels → use fmtPrice (% change from base
+          // in percentage mode). σ and band width are scatter/difference
+          // measures → scale linearly by 100/baseVal (same as slope/curv),
+          // NOT the % change formula. The previous fmtPrice(uv - lo) was
+          // buggy in percentage mode (applied % change to a difference).
           if (showBoll) {
             const uv = upperData[idx];
             const lo = lowerData[idx];
             const sd = longStds[idx];
-            html += `<div style="margin-top:2px;opacity:0.85">Upper: ${fmtNum(uv)} · Lower: ${fmtNum(lo)}</div>`;
-            html += `<div style="opacity:0.85">σ${pair.ma_long}d: ${fmtNum(sd)} · band width: ${uv != null && lo != null ? fmtNum(uv - lo) : "—"}</div>`;
+            const bw = uv != null && lo != null ? uv - lo : null;
+            html += `<div style="margin-top:2px;opacity:0.85">Upper: ${fmtPrice(uv)} · Lower: ${fmtPrice(lo)}</div>`;
+            html += `<div style="opacity:0.85">σ${pair.ma_long}d: ${fmtSlope(sd)} · band width: ${fmtSlope(bw)}${rebasedTag}</div>`;
+          }
+
+          // Valley low marker info
+          const vl = valleyLowData[idx];
+          if (vl != null) {
+            html += `<div style="margin-top:2px;color:#E53935;font-weight:600">▼ Valley Low: ${fmtPrice(vl)}</div>`;
+          }
+
+          // Nearby-extreme band info
+          if (hasNearbyBands) {
+            const band = nearbyBands.find(
+              (b) => idx >= b.startIndex && idx <= b.endIndex,
+            );
+            if (band) {
+              html += `<div style="margin-top:2px;color:#E53935;opacity:0.9">Nearby Extreme: ${band.startDate} ↔ ${band.endDate} · [${fmtPrice(band.lower)}, ${fmtPrice(band.upper)}]</div>`;
+            }
+          }
+
+          // Trend classification (Price/MA60 pair only)
+          if (hasTrendBands) {
+            const band = trendBands.find(
+              (b) => idx >= b.startIdx && idx <= b.endIdx,
+            );
+            if (band) {
+              const trendLabels: Record<TrendType, string> = {
+                downward: "▼ Downward",
+                flat: "▬ Flat",
+                upward: "▲ Upward",
+              };
+              const trendColors: Record<TrendType, string> = {
+                downward: "#E53935",
+                flat: "#FFB300",
+                upward: "#43A047",
+              };
+              const periodStart = dates[band.startIdx];
+              const periodEnd = dates[band.endIdx];
+              const nDays = band.endIdx - band.startIdx + 1;
+              const periodText = periodStart === periodEnd
+                ? `${periodStart} (${nDays}d)`
+                : `${periodStart} → ${periodEnd} (${nDays}d)`;
+              html += `<div style="margin-top:2px;color:${trendColors[band.trend]};font-weight:600">Trend: ${trendLabels[band.trend]} · ${periodText}</div>`;
+            }
           }
         }
         return html;
@@ -210,106 +941,35 @@ export function buildPairOption({
       },
       splitLine: { show: false },
     },
-    yAxis: {
-      type: "value",
-      scale: true,
-      axisLine: { lineStyle: { color: c.axisLineColor } },
-      axisLabel: {
-        color: c.textColor,
-        fontSize: 9,
-        formatter: (v: number) => fmtNum(v),
-      },
-      splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
-    },
-    series: [
+    yAxis: [
       {
-        type: "line",
-        name: sName,
-        data: shorts,
-        symbol: "none",
-        lineStyle: { color: sColor, width: 1.4 },
-        z: 5,
+        type: "value",
+        scale: true,
+        name: ohlcMode === "percentage" ? "%" : undefined,
+        nameTextStyle: { color: c.textColor, fontSize: 9 },
+        axisLine: { lineStyle: { color: c.axisLineColor } },
+        axisLabel: {
+          color: c.textColor,
+          fontSize: 9,
+          formatter: (v: number) => fmtPrice(v),
+        },
+        splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
+      // Right axis: trading amount in 亿元
       {
-        type: "line",
-        name: lName,
-        data: longs,
-        symbol: "none",
-        lineStyle: { color: lColor, width: 1.4 },
-        z: 5,
+        type: "value" as const,
+        scale: true,
+        name: "Amt (亿)",
+        nameTextStyle: { color: c.textColor, fontSize: 9 },
+        axisLine: { lineStyle: { color: c.axisLineColor } },
+        axisLabel: {
+          color: c.textColor,
+          fontSize: 9,
+          formatter: (v: number) => fmtNum(v / 1e8, 1),
+        },
+        splitLine: { show: false },
       },
-      {
-        type: "line",
-        name: "_base",
-        data: baseData,
-        stack: "gapFill",
-        symbol: "none",
-        lineStyle: { opacity: 0 },
-        z: 1,
-      },
-      {
-        type: "line",
-        name: "_pos",
-        data: posData,
-        stack: "gapFill",
-        symbol: "none",
-        lineStyle: { opacity: 0 },
-        areaStyle: { color: UP_COLOR, opacity: 0.4 },
-        z: 2,
-      },
-      {
-        type: "line",
-        name: "_neg",
-        data: negData,
-        stack: "gapFill",
-        symbol: "none",
-        lineStyle: { opacity: 0 },
-        areaStyle: { color: DOWN_COLOR, opacity: 0.4 },
-        z: 2,
-      },
-      // ---- Bollinger envelope series (only rendered when showBoll = true) ----
-      // Upper band: dashed line, drawn at z=4 so it sits above the gap-fill
-      // stack but below the short/long lines (z=5).
-      ...(showBoll ? [{
-        type: "line" as const,
-        name: upperName,
-        data: upperData,
-        symbol: "none",
-        lineStyle: { color: BOLL_BAND_COLOR, width: 1, type: "dashed" as const, opacity: 0.7 },
-        z: 4,
-      }] : []),
-      // Lower band: dashed line.
-      ...(showBoll ? [{
-        type: "line" as const,
-        name: lowerName,
-        data: lowerData,
-        symbol: "none",
-        lineStyle: { color: BOLL_BAND_COLOR, width: 1, type: "dashed" as const, opacity: 0.7 },
-        z: 4,
-      }] : []),
-      // Stack base for the band fill = Lower (invisible line + invisible area).
-      ...(showBoll ? [{
-        type: "line" as const,
-        name: "_bollBase",
-        data: bollBase,
-        stack: "bollBand",
-        symbol: "none",
-        lineStyle: { opacity: 0 },
-        areaStyle: { opacity: 0 },
-        z: 0,
-      }] : []),
-      // Stack delta = Upper - Lower = 2k×σ (invisible line, visible area fill).
-      // The fill opacity is very low so the green/red gap fill stays prominent.
-      ...(showBoll ? [{
-        type: "line" as const,
-        name: "_bollDelta",
-        data: bollDelta,
-        stack: "bollBand",
-        symbol: "none",
-        lineStyle: { opacity: 0 },
-        areaStyle: { color: BOLL_BAND_FILL, opacity: 0.08 },
-        z: 0,
-      }] : []),
     ],
+    series: echartsSeries,
   };
 }

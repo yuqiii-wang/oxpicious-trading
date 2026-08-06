@@ -26,12 +26,12 @@
 --      • PE is already a ratio (scale-invariant) — rebasing would lose the
 --        absolute valuation level (you want to see 15x vs 30x, not 100 vs 200).
 --        mean_pe = AVG(raw PE) across member indices, NULL PE excluded.
---      • total_trading_amount = SUM(stock_basic_stats.trading_amount) across the UNION of
+--      • total_trading_amount = SUM(stock_liquidity_margin.trading_amount) across the UNION of
 --        stocks from all member indices' active compositions. This captures
 --        total industry capital flow (yuan), counting each stock ONCE even if
 --        it appears in multiple member indices. Stock trading_amount source:
---        stats.stock_basic_stats.trading_amount (in yuan, converted from source CSV
---        成交金额(万元) × 10000).
+--        stats.stock_liquidity_margin.trading_amount (in yuan, converted from source CSV
+--        成交金额(万元) × 10000). Mirrors etf_liquidity_margin.trading_amount.
 --
 --    NOTE: the rebased-to-100 ANCHOR for mean_price/var_price is the START OF
 --    ALL HISTORY (fixed server-side). The frontend multi-line plot uses a
@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS analysis.industry_sentiments (
     -- no member indices have PE data on this date.
     mean_pe                   NUMERIC(12,6),
 
-    -- Total trading_amount (yuan): SUM of stats.stock_basic_stats.trading_amount across
+    -- Total trading_amount (yuan): SUM of stats.stock_liquidity_margin.trading_amount across
     -- the UNION of stocks from all member indices' active compositions. Each
     -- stock counted ONCE (union, not sum-per-index). NULL when no stock trading_amount
     -- data is available for the union set on this date.
@@ -136,13 +136,13 @@ CREATE INDEX IF NOT EXISTS idx_industry_sentiments_industry_pool_date
 CREATE INDEX IF NOT EXISTS idx_industry_sentiments_date_industry
     ON analysis.industry_sentiments (date, industry_id);
 
-COMMENT ON TABLE  analysis.industry_sentiments                IS 'Industry sentiment cross-section: one row per (date, industry_id, pool_size). Aggregates index values across member indices (stats.sec_classification type=''index'' AND industry_id matches AND index has composition data in stats.sec_composition source_type=''index'') in the named pool_size slice. Indices WITHOUT composition data are excluded entirely. mean_price/var_price: rebased-to-100 at each index''s first available close (history start). mean_pe: raw PE from stats.index_valuation. total_trading_amount: SUM of stock_basic_stats.trading_amount across the UNION of stocks from member indices'' active compositions (yuan). pool_size: small (stock_num<51), mid (51-180), large (>180), all (every compositioned member). Broad-market industries BROAD_CSI/BROAD_SSE/BROAD_SZSE/BROAD_STAR are aggregated identically. Built by analyze_industry_sentiments.py (truncate-then-recompute).';
+COMMENT ON TABLE  analysis.industry_sentiments                IS 'Industry sentiment cross-section: one row per (date, industry_id, pool_size). Aggregates index values across member indices (stats.sec_classification type=''index'' AND industry_id matches AND index has composition data in stats.sec_composition source_type=''index'') in the named pool_size slice. Indices WITHOUT composition data are excluded entirely. mean_price/var_price: rebased-to-100 at each index''s first available close (history start). mean_pe: raw PE from stats.index_valuation. total_trading_amount: SUM of stock_liquidity_margin.trading_amount across the UNION of stocks from member indices'' active compositions (yuan). pool_size: small (stock_num<51), mid (51-180), large (>180), all (every compositioned member). Broad-market industries BROAD_CSI/BROAD_SSE/BROAD_SZSE/BROAD_STAR are aggregated identically. Built by analyze_industry_sentiments.py (truncate-then-recompute).';
 COMMENT ON COLUMN analysis.industry_sentiments.pool_size      IS 'Pool-size slice: small (stock_num<51), mid (51-180), large (>180), all (every member). Classification source: stats.sec_composition (LATEST snapshot per code, no temporal filter — same composition used for all dates).';
 COMMENT ON COLUMN analysis.industry_sentiments.index_count    IS 'Number of distinct member indices with close data contributing to this (date, industry_id, pool_size) slice on this date.';
 COMMENT ON COLUMN analysis.industry_sentiments.mean_price     IS 'AVG(rebased_to_100 close) across member indices in this pool_size slice on this date. Rebased-to-100 at each index''s first available close (history start). 100 = members flat vs their history-start value.';
 COMMENT ON COLUMN analysis.industry_sentiments.var_price      IS 'VARIANCE(rebased_to_100 close) across member indices in this pool_size slice on this date. Captures cross-index dispersion (how spread out the members are).';
 COMMENT ON COLUMN analysis.industry_sentiments.mean_pe        IS 'AVG(raw PE) across member indices in this pool_size slice on this date. Source: stats.index_valuation.pe. NULL PE values excluded from the mean. NULL when no member indices have PE data on this date.';
-COMMENT ON COLUMN analysis.industry_sentiments.total_trading_amount IS 'SUM(stock_basic_stats.trading_amount) across the UNION of stocks from all member indices'' compositions (LATEST sec_composition snapshot per code, no temporal filter — same stock universe for all dates) in this pool_size slice on this date. Each stock counted ONCE (union, not sum-per-index). Source: stats.stock_basic_stats.trading_amount (in yuan). NULL when no stock trading_amount data is available for the union set on this date.';
+COMMENT ON COLUMN analysis.industry_sentiments.total_trading_amount IS 'SUM(stock_liquidity_margin.trading_amount) across the UNION of stocks from all member indices'' compositions (LATEST sec_composition snapshot per code, no temporal filter — same stock universe for all dates) in this pool_size slice on this date. Each stock counted ONCE (union, not sum-per-index). Source: stats.stock_liquidity_margin.trading_amount (in yuan). NULL when no stock trading_amount data is available for the union set on this date.';
 
 -- ============================================================================
 --  Industry Correlations — pairwise rolling Pearson correlation of the
@@ -353,13 +353,20 @@ CREATE TABLE IF NOT EXISTS analysis.industry_attributions (
     --   price (today)  = benchmark_prev_close × (1 + non_industry_return_t).
     --                    Shows what today's close would be if ONLY non-shared
     --                    stocks moved today (shared stocks held flat).
-    --   rolling_price  = 100 × cumprod(1 + non_industry_return) from the
-    --                    benchmark's first available close. Shows the
-    --                    cumulative performance of the non-shared portion.
+    --   rolling_Xdays_price = 100 × cumprod(1 + non_industry_return) over the
+    --                    trailing X-day window ending on `date` (X ∈
+    --                    {5, 20, 60, 255, 500}). Shows the cumulative
+    --                    performance of the non-shared portion over the last
+    --                    X trading days. Returns outside [-0.5, 0.5] are
+    --                    treated as 0 to prevent compounding artifacts.
     --   trading_amt    = benchmark.trading_amount - SUM(shared_stock.trading_amount).
     --                    The benchmark's turnover excluding the shared stocks.
     benchmark_non_this_industry_price      NUMERIC(20,4),
-    benchmark_non_this_industry_rolling_price      NUMERIC(20,4),
+    benchmark_non_this_industry_rolling_5days_price        NUMERIC(20,4),
+    benchmark_non_this_industry_rolling_20days_price       NUMERIC(20,4),
+    benchmark_non_this_industry_rolling_60days_price       NUMERIC(20,4),
+    benchmark_non_this_industry_rolling_255days_price      NUMERIC(20,4),
+    benchmark_non_this_industry_rolling_500days_price      NUMERIC(20,4),
     benchmark_non_this_industry_trading_amt NUMERIC(20,4),
 
     CONSTRAINT pk_industry_attributions PRIMARY KEY
@@ -381,7 +388,11 @@ COMMENT ON COLUMN analysis.industry_attributions.date                  IS 'Tradi
 COMMENT ON COLUMN analysis.industry_attributions.industry_shared_weight  IS 'SUM(code_sec_shared_weight) across member indices in the industry, from analysis.sec_alloc_perf_attribution (sec_type=''index''). Each member contributes its OWN weight on stocks shared with the benchmark. Can exceed 100 (sum of multiple member portfolios — expected, NOT double-counting). Self-pairs (member == benchmark) excluded by sec_alloc_perf_attribution. NULL when the benchmark has no composition data (all members'' code_sec_shared_weight are NULL).';
 COMMENT ON COLUMN analysis.industry_attributions.benchmark_shared_weight IS 'SUM(benchmark weight_pct) on the UNION of stocks held by ANY industry member (latest stats.sec_composition snapshot, source_type=''index''). Each stock counted ONCE (union) -> no double-counting. Bounded [0, 100] (weight_pct is stored as a percent, 0-100, not a fraction): fraction of the benchmark''s weight in the industry''s stock union. NULL when the benchmark has no composition data; 0 when the benchmark has composition but no overlap with the industry''s stocks. Recomputed from sec_composition (NOT summed from sec_alloc_perf_attribution) to avoid double-counting stocks held by multiple members.';
 COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_price IS 'Benchmark close on the date with industry-shared stocks removed (today snapshot). Computed ONLY for broad-market benchmarks (is_broad_market=TRUE); NULL otherwise. Return-based decomposition: non_industry_return = (bench_return - swf × shared_portfolio_return) / (1 - swf), where swf = benchmark_shared_weight/100. price = bench_prev_close × (1 + non_industry_return). Shows what today''s close would be if only non-shared stocks moved today.';
-COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_rolling_price IS 'Accumulated non-industry benchmark price, rebased to 100 at the benchmark''s first available close. Computed ONLY for broad-market benchmarks. = 100 × cumprod(1 + non_industry_return) from benchmark start. Shows the cumulative performance of the benchmark''s non-shared portion. When above the benchmark close, the industry was a drag; when below, the industry was a boost.';
+COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_rolling_5days_price IS 'Non-industry benchmark price rebased to 100, computed over the trailing 5-trading-day window ending on `date`. Computed ONLY for broad-market benchmarks (is_broad_market=TRUE); NULL otherwise. = 100 × cumprod(1 + non_industry_return) over the last 5 trading days. Returns outside [-0.5, 0.5] are treated as 0 to prevent compounding artifacts. Shows the short-term cumulative performance of the benchmark''s non-shared portion. The BenchmarkPriceChart dropdown lets the user pick which window (5/20/60/255/500) to overlay.';
+COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_rolling_20days_price IS 'Non-industry benchmark price rebased to 100, computed over the trailing 20-trading-day window ending on `date`. Computed ONLY for broad-market benchmarks (is_broad_market=TRUE); NULL otherwise. = 100 × cumprod(1 + non_industry_return) over the last 20 trading days. Returns outside [-0.5, 0.5] are treated as 0 to prevent compounding artifacts.';
+COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_rolling_60days_price IS 'Non-industry benchmark price rebased to 100, computed over the trailing 60-trading-day window ending on `date`. Computed ONLY for broad-market benchmarks (is_broad_market=TRUE); NULL otherwise. = 100 × cumprod(1 + non_industry_return) over the last 60 trading days. Returns outside [-0.5, 0.5] are treated as 0 to prevent compounding artifacts.';
+COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_rolling_255days_price IS 'Non-industry benchmark price rebased to 100, computed over the trailing 255-trading-day window ending on `date`. Computed ONLY for broad-market benchmarks (is_broad_market=TRUE); NULL otherwise. = 100 × cumprod(1 + non_industry_return) over the last 255 trading days (~1 year). Returns outside [-0.5, 0.5] are treated as 0 to prevent compounding artifacts.';
+COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_rolling_500days_price IS 'Non-industry benchmark price rebased to 100, computed over the trailing 500-trading-day window ending on `date`. Computed ONLY for broad-market benchmarks (is_broad_market=TRUE); NULL otherwise. = 100 × cumprod(1 + non_industry_return) over the last 500 trading days (~2 years). Returns outside [-0.5, 0.5] are treated as 0 to prevent compounding artifacts.';
 COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_trading_amt IS 'Benchmark trading_amount on the date minus SUM of shared stocks'' trading_amount on the date. Computed ONLY for broad-market benchmarks. Shows the benchmark''s turnover excluding the industry''s shared stocks. NULL when the benchmark has no trading_amount data or no shared stock data on that date.';
 
 -- ----------------------------------------------------------------------------
@@ -402,6 +413,125 @@ ON CONFLICT (name) DO UPDATE SET
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('industry_correlations', 'industry_correlations', NULL, NOW(),
      'Pairwise rolling Pearson correlation between two industries'' mean_price series (analysis.industry_sentiments.mean_price). One row per (date, industry_id, benchmark_industry_id, pool_size) with corr_5d / corr_20d / corr_60d / corr_255d. Both industries are compared in the SAME pool_size slice (single pool_size column). Self-pairs (A=B) excluded. Order convention: industry_id < benchmark_industry_id to deduplicate. Only same-pool slices materialized (all, small, mid, large). Built by analyze_industry_correlations.py (truncate-then-recompute).')
+ON CONFLICT (name) DO UPDATE SET
+    detail_name       = EXCLUDED.detail_name,
+    summary_name      = EXCLUDED.summary_name,
+    last_run_datetime = NOW(),
+    description       = EXCLUDED.description;
+
+
+-- ============================================================================
+--  Industry ETF Contribution — per-(date, industry_id, pool_size) aggregate
+--  ETF trading turnover, sourced from analysis.sec_alloc_perf_attribution.
+--
+--  Table: analysis.industry_etf_contribution
+--    PK: (date, industry_id, pool_size)
+--
+--  AGGREGATION
+--    industry_etf_trading_amount = SUM(code_etf_trading_amount) across member
+--      indices in the industry (from analysis.sec_alloc_perf_attribution where
+--      sec_type='index'). Each member index's code_etf_trading_amount is the
+--      aggregate ETF turnover tracking that index (precomputed in
+--      stats.index_exts.total_etf_trading_amount and carried into
+--      sec_alloc_perf_attribution). The SUM is the total ETF-market turnover
+--      tracking ANY member index in this industry on this date.
+--
+--      NOTE: an ETF that tracks multiple member indices in the SAME industry
+--      would be counted once per tracked index. In practice most ETFs track
+--      exactly ONE index (parent_index_code), so double-counting is rare.
+--      This mirrors the existing industry_sentiments.total_trading_amount
+--      pattern (SUM across member indices) and is consistent with the
+--      "ETF contribution = total ETF activity tracking this industry" semantics.
+--
+--  POOL_SIZE
+--    Same classification as industry_sentiments:
+--      small = stock_num < 51, mid = 51-180, large = > 180, all = every member.
+--    stock_num is looked up from the LATEST sec_composition snapshot per index
+--    code (temporal extrapolation — same as industry_sentiments).
+--
+--  MA5
+--    industry_etf_trading_amount_ma5 = 5-trading-day moving average of
+--    industry_etf_trading_amount, computed in pandas (rolling(5).mean(),
+--    min_periods=1) per (industry_id, pool_size) group. Smooths the noisy
+--    daily ETF turnover so the UI can show a stable trend.
+--
+--  MA20
+--    industry_etf_trading_amount_ma20 = 20-trading-day moving average of
+--    industry_etf_trading_amount, computed in pandas (rolling(20).mean(),
+--    min_periods=1) per (industry_id, pool_size) group. A longer-window
+--    smoother than MA5 for the UI's "Trading Amt" MA selector.
+--
+--  COUNT
+--    industry_etf_count = COUNT(DISTINCT member index) with non-NULL
+--      code_etf_trading_amount in this slice on this date.
+--
+--  SOURCE
+--    analysis.sec_alloc_perf_attribution (code_etf_trading_amount, per
+--      (code, date, sec_type='index') — DISTINCT since the same value appears
+--      for every benchmark_code)
+--    stats.sec_classification (industry_id per index code)
+--    stats.sec_composition (stock_num → pool_size classification)
+--
+--  POPULATION
+--    analyze.industry_sentiments.etf_contribution (internal step
+--    run_etf_contribution, invoked from __main__ after attributions).
+--    Depends on analysis.sec_alloc_perf_attribution being populated first.
+--    Truncate-then-recompute on every run.
+--
+--  Register in analysis.analysis_identity (name='industry_etf_contribution').
+-- ============================================================================
+DROP TABLE IF EXISTS analysis.industry_etf_contribution;
+
+CREATE TABLE IF NOT EXISTS analysis.industry_etf_contribution (
+    date                      DATE          NOT NULL,
+    industry_id               TEXT          NOT NULL,
+    pool_size                 TEXT          NOT NULL,  -- 'small' | 'mid' | 'large' | 'all'
+
+    -- Display label (denormalized)
+    industry_label            TEXT          NOT NULL DEFAULT '',
+
+    -- Number of member indices with non-NULL code_etf_trading_amount
+    -- contributing to this (date, industry_id, pool_size) slice.
+    industry_etf_count         INTEGER,
+
+    -- SUM of code_etf_trading_amount across member indices in this
+    -- pool_size slice on this date (yuan). NULL when no member index has
+    -- ETF trading amount data.
+    industry_etf_trading_amount     NUMERIC(24,4),
+
+    -- 5-trading-day moving average of industry_etf_trading_amount.
+    -- Populated by analyze.industry_sentiments.etf_contribution via
+    -- pandas rolling(5).mean() per (industry_id, pool_size) group.
+    industry_etf_trading_amount_ma5 NUMERIC(24,4),
+
+    -- 20-trading-day moving average of industry_etf_trading_amount.
+    -- Populated by analyze.industry_sentiments.etf_contribution via
+    -- pandas rolling(20).mean() per (industry_id, pool_size) group.
+    industry_etf_trading_amount_ma20 NUMERIC(24,4),
+
+    CONSTRAINT pk_industry_etf_contribution PRIMARY KEY (date, industry_id, pool_size),
+    CONSTRAINT chk_industry_etf_contribution_pool
+        CHECK (pool_size IN ('small', 'mid', 'large', 'all'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_industry_etf_contribution_industry_pool_date
+    ON analysis.industry_etf_contribution (industry_id, pool_size, date);
+CREATE INDEX IF NOT EXISTS idx_industry_etf_contribution_date_industry
+    ON analysis.industry_etf_contribution (date, industry_id);
+
+COMMENT ON TABLE  analysis.industry_etf_contribution                        IS 'Per-(date, industry_id, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(code_etf_trading_amount) across member indices from analysis.sec_alloc_perf_attribution (sec_type=''index''). industry_etf_count = COUNT of member indices with non-NULL ETF amount. Each member index contributes its aggregate ETF turnover (precomputed in stats.index_exts). pool_size: small (stock_num<51), mid (51-180), large (>180), all. Built by analyze.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.';
+COMMENT ON COLUMN analysis.industry_etf_contribution.pool_size              IS 'Pool-size slice: small (stock_num<51), mid (51-180), large (>180), all (every member). Classification source: stats.sec_composition (LATEST snapshot per code).';
+COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_count     IS 'Number of distinct member indices with non-NULL code_etf_trading_amount contributing to this (date, industry_id, pool_size) slice on this date.';
+COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount     IS 'SUM(code_etf_trading_amount) across member indices in this pool_size slice on this date. Source: analysis.sec_alloc_perf_attribution (sec_type=''index'', code_etf_trading_amount = aggregate ETF turnover tracking the member index, precomputed in stats.index_exts). NULL when no member index has ETF trading amount data on this date.';
+COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount_ma5 IS '5-trading-day moving average of industry_etf_trading_amount. Populated by analyze.industry_sentiments.etf_contribution via pandas rolling(5).mean() per (industry_id, pool_size) group (min_periods=1). NULL when the underlying value is NULL for the entire trailing 5-day window.';
+COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount_ma20 IS '20-trading-day moving average of industry_etf_trading_amount. Populated by analyze.industry_sentiments.etf_contribution via pandas rolling(20).mean() per (industry_id, pool_size) group (min_periods=1). NULL when the underlying value is NULL for the entire trailing 20-day window. Longer-window smoother than MA5, exposed by the UI "Trading Amt" MA selector.';
+
+-- ----------------------------------------------------------------------------
+--  Register in analysis.analysis_identity
+-- ----------------------------------------------------------------------------
+INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
+    ('industry_etf_contribution', 'industry_etf_contribution', NULL, NOW(),
+     'Per-(date, industry_id, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(code_etf_trading_amount) across member indices from analysis.sec_alloc_perf_attribution (sec_type=''index''). industry_etf_count = COUNT of member indices with non-NULL ETF amount. pool_size: small (stock_num<51), mid (51-180), large (>180), all. industry_etf_trading_amount_ma5 = 5-day MA, industry_etf_trading_amount_ma20 = 20-day MA. Built by analyze.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

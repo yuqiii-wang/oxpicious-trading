@@ -128,11 +128,15 @@ def load_yesterday_top_traded_stocks(
     n: int = 300,
 ) -> List[Tuple[str, str]]:
     """Return [(bare_code, name), ...] for the top-N SZSE stocks by
-    ``trading_amount`` on the most recent trading day in
-    ``stats.stock_basic_stats``.
+    ``trading_amount`` on the most recent trading day.
 
-    "Yesterday" is resolved as MAX(date) in stock_basic_stats for SZSE codes,
-    which is the last completed trading day — robust to weekends/holidays.
+    "Yesterday" is resolved as MAX(date) in ``stats.stock_basic_stats`` for
+    SZSE codes (the authoritative source of real OHLC trading days — robust
+    to weekends/holidays and immune to placeholder rows with 0 amount that
+    streaming may insert into ``stock_liquidity_margin`` ahead of the next
+    OHLCV build). The trading amount itself is read from
+    ``stats.stock_liquidity_margin`` (where trading_shares/trading_amount
+    were migrated from stock_basic_stats — see 06_stock_baseline.sql).
 
     Used by stream_szse_price.py hourly mode: during trading hours the
     streamer samples the top-300 most-traded SZSE stocks each hour instead
@@ -144,15 +148,15 @@ def load_yesterday_top_traded_stocks(
               FROM stats.stock_basic_stats
              WHERE code LIKE '%%.SZ'
         )
-        SELECT sbs.code, si.name
-          FROM stats.stock_basic_stats sbs
+        SELECT slm.code, si.name
+          FROM stats.stock_liquidity_margin slm
           CROSS JOIN latest l
           LEFT JOIN stats.stock_identity si
-            ON si.code = sbs.code AND si.date = sbs.date
-         WHERE sbs.date = l.d
-           AND sbs.code LIKE '%%.SZ'
-           AND sbs.trading_amount IS NOT NULL
-         ORDER BY sbs.trading_amount DESC
+            ON si.code = slm.code AND si.date = slm.date
+         WHERE slm.date = l.d
+           AND slm.code LIKE '%%.SZ'
+           AND slm.trading_amount > 0
+         ORDER BY slm.trading_amount DESC
          LIMIT %s
     """
     with conn.cursor() as cur:

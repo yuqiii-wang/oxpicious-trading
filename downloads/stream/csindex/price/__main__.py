@@ -89,6 +89,18 @@ TRADING_END = time(15, 5)
 SSE_HEAD_START_MIN = 10
 CSINDEX_START_TIME = time(9, 30 + SSE_HEAD_START_MIN)  # 09:40
 
+# Bond indices (name contains '债') are skipped in CSIndex streaming — they
+# typically lack meaningful intraday tick data on csindex.com.cn.
+BOND_NAME_KEYWORD = "债"
+
+# Index codes empirically observed to return "no ticks available" from the
+# csindex.com.cn intraday API. Hard-skipped to avoid wasting anti-bot sleep
+# budget (each fetch otherwise costs ~15-30s).
+CSINDEX_NO_TICK_CODES = {
+    "931265", "931407", "931528", "931688",
+    "931786", "931800", "H11014",
+}
+
 
 # ---------------------------------------------------------------------------
 # DB: load SSE-streamed codes (codes with bars today — exclude from CSIndex)
@@ -115,6 +127,89 @@ def load_sse_streamed_codes(conn, today: date) -> set:
     except Exception as e:  # noqa: BLE001
         logger.warning("Failed to load SSE-streamed codes for %s: %s", today, e)
         return set()
+
+
+# ---------------------------------------------------------------------------
+# DB: load index→industry mapping (for industry-first download ordering)
+# ---------------------------------------------------------------------------
+
+def load_index_industry_map(conn) -> Dict[str, str]:
+    """Return ``{code: industry_id}`` for every index in ``sec_classification``.
+
+    Used to order the CSIndex download list so EVERY industry gets at least
+    one index fetched FIRST. Without this reordering, a partial sweep
+    (killed by Ctrl-C, anti-bot block, or network failure mid-loop) would
+    only cover the alphabetically-first codes — and CSIndex-published codes
+    cluster by theme (930050-930100 = BROAD_CSI, 9307xx = sector themes,
+    9308xx = ADVMFG, ...), so an alphabetical run covers only a handful of
+    industries before being interrupted.
+
+    Loaded ONCE per biz day (industry classification is set by
+    ``build_classification.py`` and does not change intraday).
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT code, COALESCE(industry_id, 'OTHER') AS industry_id
+                  FROM stats.sec_classification
+                 WHERE type = 'index'
+                """
+            )
+            return {r[0]: r[1] for r in cur.fetchall()}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to load index→industry map: %s", e)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Ordering: every industry gets one index first, then the rest
+# ---------------------------------------------------------------------------
+
+def order_codes_by_industry_coverage(
+    codes: List[Tuple[str, str]],
+    industry_map: Dict[str, str],
+) -> List[Tuple[str, str]]:
+    """Reorder ``codes`` so every industry gets at least one index FIRST.
+
+    Two passes over the input (which is already ``ORDER BY ls.code`` from
+    ``load_missing_or_stale_codes`` — alphabetical by code):
+
+      Pass 1 (head): pick ONE representative per industry — the first code
+        encountered for that industry. The head thus spans every industry
+        present in ``codes`` exactly once. If the loop is killed after only
+        the head is fetched, every industry still has fresh data.
+
+      Pass 2 (tail): append the remaining codes in their original order.
+
+    Codes absent from ``industry_map`` fall back to ``industry_id='OTHER'``
+    and share a single slot in the head.
+
+    Args:
+        codes: ``[(code, name), ...]`` — typically the output of
+            ``load_missing_or_stale_codes``.
+        industry_map: ``{code: industry_id}`` — typically the output of
+            ``load_index_industry_map``.
+
+    Returns:
+        ``[(code, name), ...]`` — same items as ``codes``, reordered.
+    """
+    if not codes:
+        return []
+
+    seen_industries: set = set()
+    head: List[Tuple[str, str]] = []
+    tail: List[Tuple[str, str]] = []
+
+    for code, name in codes:
+        ind = industry_map.get(code, "OTHER")
+        if ind not in seen_industries:
+            seen_industries.add(ind)
+            head.append((code, name))
+        else:
+            tail.append((code, name))
+
+    return head + tail
 
 
 # ---------------------------------------------------------------------------
@@ -197,11 +292,31 @@ def load_missing_or_stale_codes(
             cur.execute(query, (today,))
             rows = cur.fetchall()
 
-    # Filter out CSINDEX_SKIP_CODES (handled by SZSE streamer) and
+    # Filter out CSINDEX_SKIP_CODES (handled by SZSE streamer),
     # exclude_codes (handled by SSE streamer — CSIndex only downloads
-    # indices that SSE does NOT cover).
-    excluded = CSINDEX_SKIP_CODES | (exclude_codes or set())
-    result = [(r[0], r[1]) for r in rows if r[0] not in excluded]
+    # indices that SSE does NOT cover), CSINDEX_NO_TICK_CODES (empirically
+    # return no intraday ticks), and bond indices (name contains '债' —
+    # typically lack intraday tick data on csindex.com.cn).
+    excluded = (
+        CSINDEX_SKIP_CODES
+        | CSINDEX_NO_TICK_CODES
+        | (exclude_codes or set())
+    )
+    result: List[Tuple[str, str]] = []
+    n_bond_skipped = 0
+    for r in rows:
+        code, name = r[0], r[1] or ""
+        if code in excluded:
+            continue
+        if BOND_NAME_KEYWORD in name:
+            n_bond_skipped += 1
+            continue
+        result.append((code, name))
+    if n_bond_skipped:
+        logger.info(
+            "Skipped %d bond indices (name contains '%s').",
+            n_bond_skipped, BOND_NAME_KEYWORD,
+        )
     return result
 
 
@@ -444,6 +559,11 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
     # (after the 10-min SSE head start).
     current_biz_day = None
     sse_streamed_codes: set = set()
+    # index→industry mapping for industry-first download ordering (refreshed
+    # per biz day alongside sse_streamed_codes). Defaults to empty so the
+    # variable is bound even on non-trading days (where the biz-day block
+    # is skipped via `continue`).
+    index_industry_map: Dict[str, str] = {}
 
     try:
         while True:
@@ -496,34 +616,57 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                 # Query which codes have bars today — those are SSE-streamed.
                 current_biz_day = today
                 sse_streamed_codes = load_sse_streamed_codes(conn, today)
+                # Also refresh the index→industry map (cheap indexed SELECT;
+                # classification doesn't change intraday, but rebuilding once
+                # per biz day keeps it in sync if build_classification.py ran
+                # overnight).
+                index_industry_map = load_index_industry_map(conn)
                 logger.info(
                     "Anchored to biz day %s: %d codes already streamed by SSE/SZSE "
-                    "(excluded from CSIndex download).",
+                    "(excluded from CSIndex download); loaded index→industry map "
+                    "(%d codes across %d industries).",
                     today, len(sse_streamed_codes),
+                    len(index_industry_map),
+                    len(set(index_industry_map.values())),
                 )
 
             # Find missing/stale codes, EXCLUDING SSE-streamed codes.
             codes = load_missing_or_stale_codes(
                 conn, today, exclude_codes=sse_streamed_codes,
             )
+            # Reorder so EVERY industry gets at least one index fetched FIRST.
+            # Without this, a partial sweep (Ctrl-C / anti-bot block mid-loop)
+            # would only cover the alphabetically-first codes, which cluster
+            # by theme — leaving most industries without fresh data.
+            ordered_codes = order_codes_by_industry_coverage(
+                codes, index_industry_map,
+            )
+            n_industries = (
+                len({index_industry_map.get(c, "OTHER") for c, _ in ordered_codes})
+                if ordered_codes else 0
+            )
+            n_head = min(len(ordered_codes), n_industries)  # one rep per industry
             logger.info(
-                "=== loop @ %s biz=%s: %d codes to fetch (trading_hours=%s, "
-                "excluded=%d sse-streamed) ===",
-                datetime.now().strftime("%H:%M:%S"), today, len(codes),
+                "=== loop @ %s biz=%s: %d codes to fetch across %d industries "
+                "(trading_hours=%s, excluded=%d sse-streamed); "
+                "industry-first: head=%d (1 per industry) + tail=%d ===",
+                datetime.now().strftime("%H:%M:%S"), today, len(ordered_codes),
+                n_industries,
                 TRADING_START <= now_time <= TRADING_END,
                 len(sse_streamed_codes),
+                n_head, len(ordered_codes) - n_head,
             )
 
-            if not codes:
+            if not ordered_codes:
                 logger.info("No missing/stale codes; all indices up to date.")
             else:
                 n_total_bars = 0
                 n_ok = 0
                 n_fail = 0
-                for i, (code, name) in enumerate(codes):
+                for i, (code, name) in enumerate(ordered_codes):
                     if proxy.is_blocked(CSINDEX_BASE):
                         logger.warning("csindex.com.cn blocked; stopping this loop (%d/%d done)",
-                                       i, len(codes))
+                                       i, len(ordered_codes))
                         break
 
                     n_bars, _ = fetch_and_upsert_one(
@@ -538,13 +681,13 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                     # Anti-bot sleep between fetches (already applied by proxy
                     # inside fetch_intraday, but add explicit sleep for
                     # consistency with SSE/SZSE streamers).
-                    if i < len(codes) - 1:
+                    if i < len(ordered_codes) - 1:
                         random_sleep(DEFAULT_SLEEP_SEC)
 
                 loop_elapsed = _time.time() - loop_start
                 logger.info(
                     "=== loop done: %d/%d codes fetched, %d failed, %d total bars in %.1fs ===",
-                    n_ok, len(codes), n_fail, n_total_bars, loop_elapsed,
+                    n_ok, len(ordered_codes), n_fail, n_total_bars, loop_elapsed,
                 )
 
             if once:

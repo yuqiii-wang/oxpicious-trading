@@ -1,11 +1,18 @@
 """Pure pandas transformation logic for analyze.industry_sentiments.
 
 No DB / IO dependencies — operates on in-memory DataFrames only.
+
+GPU acceleration: when the cuDF router determines the GPU is worthwhile
+for the row count (groupby_agg op_type for the groupby+agg steps,
+elementwise op_type for the rebase division), the computation runs on
+cuDF and is brought back to pandas once at the end. The CPU path
+(pandas Cython) is always available as a fallback.
 """
 from __future__ import annotations
 
 import pandas as pd
 
+from analyze._common._cuDF import should_use_gpu
 from analyze.industry_sentiments.helpers import classify_pool
 
 
@@ -21,8 +28,35 @@ def rebase_closes(df: pd.DataFrame) -> pd.DataFrame:
     Input columns: code, date, close (+ others).
     Output: same DataFrame with ``rebased`` column added, sorted by
     (code, date).
+
+    GPU acceleration: when the cuDF router determines the GPU is
+    worthwhile for this row count (groupby_agg op_type — the groupby
+    + agg first_close + merge + elementwise division is ~2s/M rows on
+    CPU), the entire sequence runs on a cuDF DataFrame and is brought
+    back to pandas once at the end. The H2D/D2H transfer is amortized
+    over all three operations.
     """
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
+
+    # GPU path: cuDF groupby + agg + merge + elementwise.
+    if should_use_gpu(df, op_type="groupby_agg"):
+        import cudf  # type: ignore[import-untyped]
+        # cuDF can't handle object-dtype ``date`` columns (python date
+        # objects). Drop it for the GPU pass and restore after — date is
+        # only needed for sorting (already done above).
+        date_col = df["date"].copy()
+        work = df.drop(columns=["date"])
+        gdf = cudf.from_pandas(work)
+        # groupby + agg first_close per code.
+        g_first = gdf.groupby("code", as_index=False)["close"].first()
+        g_first = g_first.rename(columns={"close": "first_close"})
+        gdf = gdf.merge(g_first, on="code", how="left")
+        gdf["rebased"] = (gdf["close"] / gdf["first_close"]) * 100.0
+        result = gdf.to_pandas()
+        result["date"] = date_col.values
+        return result
+
+    # CPU path (pandas Cython).
     first_close = (
         df.groupby("code", as_index=False)
           .agg(first_close=("close", "first"))
@@ -51,6 +85,13 @@ def aggregate_by_pool(df: pd.DataFrame) -> pd.DataFrame:
 
     industry_label is filled from a per-industry cache (first non-empty
     label seen in df).
+
+    GPU acceleration: when the cuDF router determines the GPU is
+    worthwhile for this row count (groupby_agg op_type), the groupby +
+    agg operations run on cuDF. The 'all' slice and each per-bucket
+    slice are computed on GPU and brought back to pandas for the final
+    concat + industry_label map. The per-bucket filter + groupby pattern
+    benefits from GPU's parallel hash aggregate.
     """
     df = df.copy()
     df["pool_size"] = df["stock_num"].apply(classify_pool)
@@ -62,39 +103,86 @@ def aggregate_by_pool(df: pd.DataFrame) -> pd.DataFrame:
           .groupby("industry_id")["industry_label"].first().to_dict()
     )
 
-    agg_rows = []
+    # ---- GPU path ----
+    # The groupby+agg pattern is the dominant cost. cuDF's hash aggregate
+    # is ~25× faster than pandas for this operation. The concat + map
+    # at the end stays on CPU (small, cheap).
+    use_gpu = should_use_gpu(df, op_type="groupby_agg")
 
-    # 'all' slice: every member index.
-    all_agg = (
-        df.groupby(["date", "industry_id"], as_index=False)
-          .agg(
-              mean_price=("rebased", "mean"),
-              var_price=("rebased", "var"),
-              mean_pe=("pe", "mean"),
-              index_count=("code", "nunique"),
-          )
-    )
-    all_agg["pool_size"] = "all"
-    agg_rows.append(all_agg)
+    if use_gpu:
+        import cudf  # type: ignore[import-untyped]
+        # cuDF can't handle object-dtype ``date`` columns (python date
+        # objects) or ``industry_label`` (string with NaN). Transfer only
+        # the numeric + category columns needed for the aggregate.
+        # Keep date as a separate column for later reattachment.
+        date_col = df["date"].copy()
+        agg_cols = ["date", "industry_id", "code", "rebased", "pe", "pool_size"]
+        work = df[agg_cols].copy()
+        gdf = cudf.from_pandas(work)
 
-    # Per-bucket slices: filter by pool_size, then aggregate.
-    for bucket in ["small", "mid", "large"]:
-        sub = df[df["pool_size"] == bucket]
-        if sub.empty:
-            continue
-        bucket_agg = (
-            sub.groupby(["date", "industry_id"], as_index=False)
-               .agg(
-                   mean_price=("rebased", "mean"),
-                   var_price=("rebased", "var"),
-                   mean_pe=("pe", "mean"),
-                   index_count=("code", "nunique"),
-               )
+        def _gpu_agg(g: "cudf.DataFrame") -> "cudf.DataFrame":
+            """Run the groupby+agg on GPU, return a cuDF DataFrame."""
+            return g.groupby(["date", "industry_id"], as_index=False).agg(
+                mean_price=("rebased", "mean"),
+                var_price=("rebased", "var"),
+                mean_pe=("pe", "mean"),
+                index_count=("code", "nunique"),
+            )
+
+        agg_rows = []
+
+        # 'all' slice: every member index.
+        g_all = _gpu_agg(gdf)
+        g_all["pool_size"] = "all"
+        agg_rows.append(g_all.to_pandas())
+
+        # Per-bucket slices: filter by pool_size, then aggregate.
+        for bucket in ["small", "mid", "large"]:
+            g_sub = gdf[gdf["pool_size"] == bucket]
+            if len(g_sub) == 0:
+                continue
+            g_bucket = _gpu_agg(g_sub)
+            g_bucket["pool_size"] = bucket
+            agg_rows.append(g_bucket.to_pandas())
+
+        result = pd.concat(agg_rows, ignore_index=True)
+
+    else:
+        # CPU path (pandas Cython).
+        agg_rows = []
+
+        # 'all' slice: every member index.
+        all_agg = (
+            df.groupby(["date", "industry_id"], as_index=False)
+              .agg(
+                  mean_price=("rebased", "mean"),
+                  var_price=("rebased", "var"),
+                  mean_pe=("pe", "mean"),
+                  index_count=("code", "nunique"),
+              )
         )
-        bucket_agg["pool_size"] = bucket
-        agg_rows.append(bucket_agg)
+        all_agg["pool_size"] = "all"
+        agg_rows.append(all_agg)
 
-    result = pd.concat(agg_rows, ignore_index=True)
+        # Per-bucket slices: filter by pool_size, then aggregate.
+        for bucket in ["small", "mid", "large"]:
+            sub = df[df["pool_size"] == bucket]
+            if sub.empty:
+                continue
+            bucket_agg = (
+                sub.groupby(["date", "industry_id"], as_index=False)
+                   .agg(
+                       mean_price=("rebased", "mean"),
+                       var_price=("rebased", "var"),
+                       mean_pe=("pe", "mean"),
+                       index_count=("code", "nunique"),
+                   )
+            )
+            bucket_agg["pool_size"] = bucket
+            agg_rows.append(bucket_agg)
+
+        result = pd.concat(agg_rows, ignore_index=True)
+
     result["industry_label"] = result["industry_id"].map(
         lambda iid: label_by_industry.get(iid, iid)
     )

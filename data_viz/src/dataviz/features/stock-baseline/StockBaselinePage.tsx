@@ -8,7 +8,7 @@
  *   • Stack of StockPanel cards (one per stock, full width) — OHLC +
  *     MA5/MA20/MA60/MA120 (computed client-side) + PE ratio on twin axis
  *     (when available — only SZSE stocks publish PE).
- *   • Pagination — 2 stocks per page.
+ *   • Pagination — 1 stock per page.
  *
  * MA values are computed client-side because v_stock_baseline only exposes
  * OHLC + pct_change + PE (no precomputed MA columns).
@@ -31,7 +31,7 @@ import type {
   StockCombinedResponse,
 } from "../../../../shared/types";
 
-const PAGE_SIZE = 2;
+const PAGE_SIZE = 1;
 
 export default function StockBaselinePage() {
   const [sectors, setSectors] = useState<SectorNode[]>([]);

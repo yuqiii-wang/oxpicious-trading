@@ -53,10 +53,10 @@ interface Props {
   selectedIndustrySlugs?: string[];
   onMultiIndustryChange?: (slugs: string[]) => void;
   /** Optional L3 security-level row (Row 3). When set, renders one chip per
-   *  individual Index/ETF under the active industry (or all items in the
-   *  active sector when industry="All"), paginated 10 per page. Clicking a
-   *  chip narrows the parent page to display ONLY that security. */
-  itemKind?: "Index" | "ETF";
+   *  individual Index/ETF/Stock under the active industry (or all items in
+   *  the active sector when industry="All"), paginated 10 per page. Clicking
+   *  a chip narrows the parent page to display ONLY that security. */
+  itemKind?: "Index" | "ETF" | "Stock";
   /** Currently active security code (null = browsing mode). When set, the
    *  matching chip in Row 3 renders as selected and the "All" chip is
    *  de-emphasized. */

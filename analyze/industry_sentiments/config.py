@@ -17,7 +17,7 @@ AGGREGATES PER (date, industry_id, pool_size):
   mean_price        = AVG(rebased_to_100 close)
   var_price         = VARIANCE(rebased_to_100 close)
   mean_pe           = AVG(raw PE) (NULL PE excluded)
-  total_trading_amount = SUM(stock_basic_stats.trading_amount) across the
+  total_trading_amount = SUM(stock_liquidity_margin.trading_amount) across the
                       UNION of stocks from all member indices' active
                       compositions (each stock counted once).
 """
@@ -31,7 +31,7 @@ ANALYSIS_DESCRIPTION = (
     "in the named pool_size slice. Indices WITHOUT composition data are "
     "excluded entirely. mean_price/var_price: rebased-to-100 at each index's "
     "first available close (history start). mean_pe: raw PE from "
-    "stats.index_valuation. total_trading_amount: SUM of stock_basic_stats.trading_amount "
+    "stats.index_valuation. total_trading_amount: SUM of stock_liquidity_margin.trading_amount "
     "across the UNION of stocks from member indices' compositions (LATEST "
     "snapshot per code, no temporal filter — same stock universe for all "
     "dates; yuan). pool_size: small (stock_num < 51), mid (51-180), large "

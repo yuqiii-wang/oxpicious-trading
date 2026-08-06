@@ -7,6 +7,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from analyze._common._cuDF import should_use_gpu
+from analyze._common.rolling import grouped_rolling_agg
 from analyze.mov_ave_spread.config import MA_WINDOWS, NUMERIC_MAX_ABS
 
 
@@ -63,9 +65,38 @@ def compute_slopes_curvatures(df: pd.DataFrame) -> pd.DataFrame:
 
     Adds columns price_slope / price_curvature (from ``price``) and
     ma{W}_slope / ma{W}_curvature for W in MA_WINDOWS (from ``ma{W}``).
+
+    GPU acceleration: when the cuDF router determines the GPU is
+    worthwhile for this row count (groupby_diff op_type), the entire
+    diff() sequence runs on a cuDF DataFrame and is brought back to
+    pandas once at the end. This amortizes the H2D/D2H transfer over
+    12 diff() operations (6 slopes + 6 curvatures).
     """
     df = df.sort_values(["sec_type", "code", "date"]).reset_index(drop=True)
     grp_keys = ["sec_type", "code"]
+
+    if should_use_gpu(df, op_type="groupby_diff"):
+        import cudf  # type: ignore[import-untyped]
+        # cuDF can't handle object-dtype ``date`` columns (python date
+        # objects). The date column is only used for sorting above (already
+        # done), so drop it for the GPU pass and restore it after.
+        date_col = df["date"].copy()
+        work = df.drop(columns=["date"])
+        gdf = cudf.from_pandas(work)
+        # Price 1st + 2nd derivative.
+        gdf["price_slope"] = gdf.groupby(grp_keys, sort=False)["price"].diff()
+        gdf["price_curvature"] = gdf.groupby(grp_keys, sort=False)["price_slope"].diff()
+        for w in MA_WINDOWS:
+            ma_col = f"ma{w}"
+            slope_col = f"ma{w}_slope"
+            curv_col = f"ma{w}_curvature"
+            gdf[slope_col] = gdf.groupby(grp_keys, sort=False)[ma_col].diff()
+            gdf[curv_col] = gdf.groupby(grp_keys, sort=False)[slope_col].diff()
+        result = gdf.to_pandas()
+        result["date"] = date_col.values
+        return result
+
+    # CPU path (pandas Cython).
     # Price 1st + 2nd derivative.
     df["price_slope"] = df.groupby(grp_keys, sort=False)["price"].diff()
     df["price_curvature"] = df.groupby(grp_keys, sort=False)["price_slope"].diff()
@@ -99,17 +130,25 @@ def compute_rolling_stds(df: pd.DataFrame) -> pd.DataFrame:
     because σ ≤ max(|price - mean|) ≤ price range).
 
     Adds columns: std_5days, std_20days, std_60days, std_120days, std_255days.
+
+    Implementation: uses the shared ``grouped_rolling_agg`` helper
+    (Cython-compiled ``groupby().rolling().std()``) instead of
+    ``transform(lambda s: ...)``. The lambda wrapper forced pandas to
+    call back into Python once per group (~5000+ groups × 5 windows =
+    25K+ Python callbacks on the 8M-row DataFrame), which dominated
+    runtime. The shared helper keeps the entire rolling-std computation
+    inside Cython and is cuDF-compatible.
     """
     df = df.sort_values(["sec_type", "code", "date"]).reset_index(drop=True)
     grp_keys = ["sec_type", "code"]
-    grp = df.groupby(grp_keys, sort=False)["price"]
     for w in MA_WINDOWS:
         col = f"std_{w}days"
         # min_periods=W ensures NULL until the window is fully populated —
         # matches the SQL COMMENT and avoids misleading early-window σ
         # values that would be computed from fewer than W observations.
-        df[col] = grp.transform(
-            lambda s: s.rolling(w, min_periods=w).std(ddof=0)
+        df[col] = grouped_rolling_agg(
+            df, grp_keys, "price", window=w,
+            min_periods=w, agg="std", ddof=0,
         )
     return df
 

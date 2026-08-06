@@ -45,6 +45,7 @@ import type {
   StockCombinedResponse,
   SectorNode,
   IndustryNode,
+  StockDividend,
 } from "../../shared/types.js";
 
 interface DbStockRow extends QueryResultRow {
@@ -60,6 +61,14 @@ interface DbStockRow extends QueryResultRow {
   pe: number | null;
   is_pe_estimated: boolean | null;
   has_intraday_5mins: boolean | null;
+  // Liquidity + margin columns (from stock_liquidity_margin via v_stock_baseline)
+  trading_shares: number | null;
+  trading_amount: number | null;
+  rz_balance: number | null;
+  rz_buy: number | null;
+  rq_balance_qty: number | null;
+  rq_balance_amt: number | null;
+  total_balance: number | null;
 }
 
 interface DbStockMetaRow extends QueryResultRow {
@@ -80,6 +89,77 @@ interface DbStockMetaRow extends QueryResultRow {
 
 const SUFFIX_RE = /\.(SZ|SS|BJ)$/;
 
+// ----------------------------------------------------------------------------
+//  Dividend fetch helper — reads stats.stock_dividends for one or many codes.
+//
+//  Source: stats.stock_dividends (PK: code, ex_dividend_date) populated by
+//  builds.stock.dividends from {code}_dividend.csv files (SSE
+//  commonQuery.do, sqlId COMMON_SSE_CP_GPJCTPZ_GPLB_LRFP_FH_L).
+//
+//  Uses idx_stock_dividends_code_exdate when filtering by single code (code=$1)
+//  and idx_stock_dividends_exdate otherwise. NULL/empty result is normal —
+//  most stocks have only a handful of dividend events; some have none.
+// ----------------------------------------------------------------------------
+interface DbStockDividendRow extends QueryResultRow {
+  code: string;
+  ex_dividend_date: string;
+  record_date: string | null;
+  dividend_per_share_pre_tax: number | null;
+  dividend_per_share_post_tax: number | null;
+  total_dividend_wan: number | null;
+  pre_close_price: number | null;
+  open_price: number | null;
+}
+
+const DIVIDEND_SELECT_SQL = `
+  SELECT code, ex_dividend_date, record_date,
+         dividend_per_share_pre_tax, dividend_per_share_post_tax,
+         total_dividend_wan, pre_close_price, open_price
+    FROM stats.stock_dividends
+`;
+
+function mapDividendRow(r: DbStockDividendRow): StockDividend {
+  return {
+    ex_dividend_date: formatDate(r.ex_dividend_date),
+    record_date: r.record_date ? formatDate(r.record_date) : null,
+    dividend_per_share_pre_tax: toNum(r.dividend_per_share_pre_tax),
+    dividend_per_share_post_tax: toNum(r.dividend_per_share_post_tax),
+    total_dividend_wan: toNum(r.total_dividend_wan),
+    pre_close_price: toNum(r.pre_close_price),
+    open_price: toNum(r.open_price),
+  };
+}
+
+/** Fetch dividends for a single code (accepts both suffixed and bare forms,
+ *  mirroring getStockBaseline's convention). Returns [] when no dividends
+ *  exist or the table has no row for this code. */
+export async function getStockDividends(codeParam: string): Promise<StockDividend[]> {
+  const code = codeParam.trim();
+  if (!code) return [];
+  const hasSuffix = SUFFIX_RE.test(code);
+  // Match suffixed code directly; for bare codes, strip suffix in DB.
+  const predicate = hasSuffix ? "code = $1" : "REGEXP_REPLACE(code, '\\.(SZ|SS|BJ)$', '') = $1";
+  const sql = `${DIVIDEND_SELECT_SQL} WHERE ${predicate} ORDER BY ex_dividend_date ASC`;
+  const rows = await queryRows<DbStockDividendRow>(sql, [code]);
+  return rows.map(mapDividendRow);
+}
+
+/** Fetch dividends for many codes at once (used by getStocksCombined).
+ *  Returns a Map keyed by suffixed code (e.g. "600008.SS"). Codes with no
+ *  dividends are absent from the map (caller should default to []). */
+export async function getStockDividendsBatch(codes: string[]): Promise<Map<string, StockDividend[]>> {
+  const out = new Map<string, StockDividend[]>();
+  if (codes.length === 0) return out;
+  const sql = `${DIVIDEND_SELECT_SQL} WHERE code = ANY($1::text[]) ORDER BY code, ex_dividend_date ASC`;
+  const rows = await queryRows<DbStockDividendRow>(sql, [codes]);
+  for (const r of rows) {
+    const code = r.code;
+    if (!out.has(code)) out.set(code, []);
+    out.get(code)!.push(mapDividendRow(r));
+  }
+  return out;
+}
+
 export async function getStockBaseline(
   codeParam: string,
   startDate?: string,
@@ -87,7 +167,7 @@ export async function getStockBaseline(
 ): Promise<StockBaselineResponse> {
   const code = codeParam.trim();
   if (!code) {
-    return { code: codeParam, name: "", dates: [], rows: [] };
+    return { code: codeParam, name: "", dates: [], rows: [], dividends: [] };
   }
 
   // Use exact match when the input already carries an exchange suffix
@@ -115,7 +195,9 @@ export async function getStockBaseline(
 
   const sql = `
     SELECT date, code, name, prev_close, open, high, low, close,
-           pct_change, pe, is_pe_estimated, has_intraday_5mins
+           pct_change, pe, is_pe_estimated, has_intraday_5mins,
+           trading_shares, trading_amount,
+           rz_balance, rz_buy, rq_balance_qty, rq_balance_amt, total_balance
       FROM stats.v_stock_baseline
      WHERE ${whereParts.join(" AND ")}
      ORDER BY date ASC
@@ -153,7 +235,21 @@ export async function getStockBaseline(
       pe: toNum(r.pe),
       is_pe_estimated: r.is_pe_estimated === true,
       has_intraday_5mins: r.has_intraday_5mins === true,
+      trading_shares: toNum(r.trading_shares) ?? 0,
+      trading_amount: toNum(r.trading_amount) ?? 0,
+      // Margin fields preserve NULL (no data) so the chart can break the line
+      // instead of interpolating across missing/zero samples.
+      rz_balance: toNum(r.rz_balance),
+      rz_buy: toNum(r.rz_buy),
+      rq_balance_qty: toNum(r.rq_balance_qty),
+      rq_balance_amt: toNum(r.rq_balance_amt),
+      total_balance: toNum(r.total_balance),
     })),
+    // Dividend events are not windowed by start/end_date — they are stock-
+    // lifetime events and may predate the OHLC window (e.g. dividend from
+    // 2022 when the OHLC view starts in 2024). The frontend filters to the
+    // visible window when rendering markers.
+    dividends: await getStockDividends(code),
   };
 }
 
@@ -395,7 +491,9 @@ export async function getStocksCombined(
 
   const sql = `
     SELECT code, date, name, prev_close, open, high, low, close,
-           pct_change, pe, is_pe_estimated, has_intraday_5mins
+           pct_change, pe, is_pe_estimated, has_intraday_5mins,
+           trading_shares, trading_amount,
+           rz_balance, rz_buy, rq_balance_qty, rq_balance_amt, total_balance
       FROM stats.v_stock_baseline
      WHERE ${whereParts.join(" AND ")}
      ORDER BY code, date ASC
@@ -421,6 +519,13 @@ export async function getStocksCombined(
       pe: toNum(r.pe),
       is_pe_estimated: r.is_pe_estimated === true,
       has_intraday_5mins: r.has_intraday_5mins === true,
+      trading_shares: toNum(r.trading_shares) ?? 0,
+      trading_amount: toNum(r.trading_amount) ?? 0,
+      rz_balance: toNum(r.rz_balance),
+      rz_buy: toNum(r.rz_buy),
+      rq_balance_qty: toNum(r.rq_balance_qty),
+      rq_balance_amt: toNum(r.rq_balance_amt),
+      total_balance: toNum(r.total_balance),
     });
     if (r.name) {
       if (!nameCounts.has(r.code)) nameCounts.set(r.code, new Map());
@@ -442,7 +547,11 @@ export async function getStocksCombined(
     if (best) nameByCode.set(code, best);
   }
 
-  // 4. Build bundles — use the suffixed code as the canonical identifier
+  // 4. Build bundles — use the suffixed code as the canonical identifier.
+  //    Batch-fetch dividends for all pageCodes in one query (small N — usually
+  //    1-2 codes per page — so this is essentially free).
+  const dividendsByCode = await getStockDividendsBatch(pageCodes);
+
   const stocks: StockBundle[] = [];
   for (const code of pageCodes) {
     const rows = byCode.get(code) ?? [];
@@ -456,6 +565,7 @@ export async function getStocksCombined(
       industry_id: m.industry_id,
       industry_label: m.industry_label,
       rows,
+      dividends: dividendsByCode.get(code) ?? [],
     });
   }
 

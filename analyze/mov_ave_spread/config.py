@@ -1,21 +1,20 @@
 """Configuration constants for analyze.mov_ave_spread.
 
-Moving-Average Spread Analysis (ETF + Index).
+Moving-Average Spread Analysis (ETF + Index + Stock).
 
-Loads every business date's MA-gap values for every ETF and every index
-into the wide-format detail table analysis.mov_ave_spreads_detail.
+Loads every business date's MA-gap values for every ETF, every index, and
+every stock into the wide-format detail table analysis.mov_ave_spreads_detail.
 
 The ``sec_type`` column discriminates the source universe. The schema
-CHECK allows three values ('etf' | 'index' | 'stock'); this script
-currently computes only 'etf' and 'index' (stock requires
-stats.stock_tech_stats, which does not yet exist):
+CHECK allows three values ('etf' | 'index' | 'stock'):
   - ETF   - price = COALESCE(stats.etf_adjustment.adj_close,
                              stats.etf_basic_stats.close);
             MAs from stats.etf_tech_stats.
   - Index - price = stats.index_basic_stats.close (indices have no
             adjustment table); MAs from stats.index_tech_stats.
-  - Stock - (reserved) price = stats.stock_basic_stats.close; MAs would
-            come from stats.stock_tech_stats once that table is created.
+  - Stock - price = stats.stock_basic_stats.close (no adjustment table);
+            MAs from stats.stock_tech_stats (populated by
+            builds.stock.tech_stats).
 
 9 gap pairs (canonical order):
   - 5 Price-vs-MA pairs:  gap = (price - maX) / maX,  X in {5,20,60,120,255}
@@ -23,25 +22,27 @@ stats.stock_tech_stats, which does not yet exist):
 """
 ANALYSIS_NAME = "mov_ave_spread"
 DETAIL_TABLE = "analysis.mov_ave_spreads_detail"
+PEAKS_AND_FLOORS_TABLE = "analysis.mov_ave_peaks_and_floors"
+LARGE_SWINGS_TABLE = "analysis.mov_ave_large_swings"
 
 DESCRIPTION = (
-    "Moving-average spread analysis (ETF + Index). For each security (ETF or "
-    "index) and business date, computes 9 gap pairs (5 Price/MA + 4 MA5/MA) "
-    "as gap_value = (short_value - long_value) / long_value, plus 1st "
-    "derivative (slope) and 2nd derivative (curvature) of price and each MA "
-    "(ma5 / ma20 / ma60 / ma120 / ma255) computed per code ordered by date, "
-    "plus 5 rolling population σ columns (std_5days / std_20days / "
-    "std_60days / std_120days / std_255days) used for Bollinger-style "
-    "envelopes (MA ± k×σ) around each Price/MA pair chart. The sec_type "
-    "column discriminates the source universe; the schema CHECK allows "
-    "'etf' | 'index' | 'stock', but this script currently computes only "
-    "'etf' and 'index' (stock requires stats.stock_tech_stats, which does "
-    "not yet exist). 'etf' uses COALESCE(etf_adjustment.adj_close, "
-    "etf_basic_stats.close) for price and etf_tech_stats for MAs; 'index' "
-    "uses index_basic_stats.close for price and index_tech_stats for MAs. "
-    "Detail table stores one wide row per (sec_type, code, date) with all "
-    "9 gap values + 12 slope/curvature columns (price + 5 MAs x slope/curv) "
-    "+ 5 rolling σ columns."
+    "Moving-average spread analysis (ETF + Index + Stock). For each security "
+    "(ETF, index, or stock) and business date, computes 9 gap pairs (5 "
+    "Price/MA + 4 MA5/MA) as gap_value = (short_value - long_value) / "
+    "long_value, plus 1st derivative (slope) and 2nd derivative (curvature) "
+    "of price and each MA (ma5 / ma20 / ma60 / ma120 / ma255) computed per "
+    "code ordered by date, plus 5 rolling population σ columns (std_5days / "
+    "std_20days / std_60days / std_120days / std_255days) used for "
+    "Bollinger-style envelopes (MA ± k×σ) around each Price/MA pair chart. "
+    "The sec_type column discriminates the source universe; the schema "
+    "CHECK allows 'etf' | 'index' | 'stock'. 'etf' uses "
+    "COALESCE(etf_adjustment.adj_close, etf_basic_stats.close) for price "
+    "and etf_tech_stats for MAs; 'index' uses index_basic_stats.close for "
+    "price and index_tech_stats for MAs; 'stock' uses stock_basic_stats.close "
+    "for price and stock_tech_stats for MAs. Detail table stores one wide "
+    "row per (sec_type, code, date) with all 9 gap values + 12 "
+    "slope/curvature columns (price + 5 MAs x slope/curv) + 5 rolling σ "
+    "columns."
 )
 
 # stats.*_tech_stats column names by MA window (identical for etf and index).
@@ -75,11 +76,11 @@ PAIRS = [
 ]
 
 # Security types computed by this script. The DB schema CHECK on
-# analysis.mov_ave_spreads_detail.sec_type allows ('etf', 'index', 'stock'),
-# but 'stock' is not yet computed here because stats.stock_tech_stats (the
-# MA source table) does not exist. Add 'stock' to this tuple once that table
-# is created and fetch.fetch_source_data gains a 'stock' branch.
-SEC_TYPES = ("etf", "index")
+# analysis.mov_ave_spreads_detail.sec_type allows ('etf', 'index', 'stock').
+# Stock MAs come from stats.stock_tech_stats (populated by
+# builds.stock.tech_stats); stock prices use stats.stock_basic_stats.close
+# (no adjustment table for stocks).
+SEC_TYPES = ("etf", "index", "stock")
 
 # Identity table per sec_type - used by the recent-data pre-filter
 # (fetch_codes_with_recent_data_async) to find codes with at least one row
@@ -89,6 +90,7 @@ SEC_TYPES = ("etf", "index")
 SEC_TYPE_IDENTITY_TABLE = {
     "etf":   "stats.etf_identity",
     "index": "stats.index_identity",
+    "stock": "stats.stock_identity",
 }
 
 # Every numeric column in analysis.mov_ave_spreads_detail is declared

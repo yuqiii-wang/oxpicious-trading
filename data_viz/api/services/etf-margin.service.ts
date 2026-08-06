@@ -165,6 +165,37 @@ const META_SQL = `
 `;
 
 // ----------------------------------------------------------------------------
+//  Code-lookup query — used for exact-code search (the CodeSearchBar).
+//
+//  Unlike META_SQL, this does NOT apply the `HAVING COUNT(v.date) >= 40`
+//  threshold. Newly-listed ETFs (e.g. 159066 with ~20 trading days) must be
+//  findable by exact code even before they accumulate 40 days of history.
+//  The EtfMarginPanel still shows an "Insufficient data" info alert for < 40
+//  rows, so the browse-list threshold (META_SQL) and the search path are
+//  intentionally decoupled.
+// ----------------------------------------------------------------------------
+const META_SQL_FOR_CODE = `
+  SELECT v.code,
+         MAX(v.name) AS name,
+         COALESCE(MAX(m.selectivity_rank_score), 0) AS score,
+         COALESCE(MAX(m.sector_id),       'OTHER')  AS sector_id,
+         COALESCE(MAX(m.sector_label),    '其他')   AS sector_label,
+         COALESCE(MAX(m.industry_id),     'OTHER')  AS industry_id,
+         COALESCE(MAX(m.industry_label),  '未分类')  AS industry_label,
+         COALESCE(MAX(m.industry_slug),   'other')  AS industry_slug,
+         COALESCE(MAX(m.parent_index_code), '')     AS index_code,
+         COALESCE(MAX(mi.name), '')                  AS index_name,
+         COALESCE(MAX(m.exchange), '')               AS exchange,
+         COALESCE(BOOL_OR(m.has_margin), FALSE)      AS has_margin,
+         COUNT(v.date)                               AS n_days
+    FROM stats.v_etf_margin v
+    LEFT JOIN stats.sec_classification m ON v.code = m.code AND m.type = 'etf'
+    LEFT JOIN stats.sec_classification mi ON mi.code = m.parent_index_code AND mi.type = 'index'
+   WHERE REGEXP_REPLACE(v.code, '\\.(SZ|SS|SH)$', '') = $1
+   GROUP BY v.code
+`;
+
+// ----------------------------------------------------------------------------
 //  Themes — build the two-level L1 sector → L2 industry → ETFs tree from
 //  the precomputed classification columns in stats.sec_classification.
 // ----------------------------------------------------------------------------
@@ -237,7 +268,15 @@ export async function getEtfMarginCombined(
 
   // 1. Fetch all distinct (code, name) + classification, ordered by has_margin
   //    DESC, n_days DESC, score DESC (see META_SQL).
-  const metaRows = await queryRows<DbEtfMetaRow>(META_SQL);
+  //
+  //    For exact-code search, use META_SQL_FOR_CODE instead — it fetches only
+  //    the requested code WITHOUT the `HAVING COUNT(v.date) >= 40` threshold
+  //    so newly-listed ETFs (< 40 trading days) are still searchable. The
+  //    browse-list threshold remains in place for listThemes() to keep the
+  //    dropdown free of one-day / delisted entries.
+  const metaRows = codeFilter
+    ? await queryRows<DbEtfMetaRow>(META_SQL_FOR_CODE, [codeFilter])
+    : await queryRows<DbEtfMetaRow>(META_SQL);
 
   // 2. Filter by sector + industry + exchange (or by exact code when codeFilter is set).
   //    metaRows are already ordered by has_margin DESC, n_days DESC, score DESC

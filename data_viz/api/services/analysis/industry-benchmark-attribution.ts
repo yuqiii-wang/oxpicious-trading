@@ -145,9 +145,12 @@ export async function getIndustryBenchmarkAttribution(
 //  benchmark codes that appear in analysis.industry_attributions, enriched
 //  with display name (from stats.index_identity) and is_broad_market flag.
 //
-//  Only 宽基 (broad-market) benchmarks are returned — the analyze py script
-//  only materializes broad-market benchmarks (via stats.sec_index_tags.
-//  is_broad_market = TRUE), so the dropdown is restricted to match.
+//  Only 宽基 (broad-market) benchmarks are returned — the dropdown drives
+//  the 1st plot (benchmark price chart), which should only offer broad-market
+//  indices. Member-index benchmarks (each industry's own indices) are also
+//  materialized in industry_attributions but are NOT offered in this
+//  dropdown — they appear automatically as bars in the per-industry
+//  attribution chart (via getIndustryBenchmarkAttribution).
 //
 //  Drives the benchmark dropdown on the Industry Sentiments page in
 //  "Benchmark Attribution" mode — the selected benchmark's close price series

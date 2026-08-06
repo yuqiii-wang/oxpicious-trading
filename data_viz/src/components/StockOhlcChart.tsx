@@ -13,17 +13,28 @@
  * drawn as a faint series). Falls back to a close line when OHLC components
  * are sparse. OHLC + MAs are rebased to % change from the first valid close
  * in "percentage" mode (the default).
+ *
+ * Margin + liquidity overlays (mirror EtfMarginPanel):
+ *   • RZ (融资 cash borrow) green fill UP from middle on a hidden twin axis.
+ *   • RQ (融券 sec borrow) red fill DOWN from middle on the same hidden axis.
+ *   • Trading-turnover bars (成交金额, 亿元) on a visible right axis, colored
+ *     by price-up/down.
+ *
+ * Dividend events (利润分配/分红) from stats.stock_dividends are overlaid as
+ * gold diamond markPoints on the ex-dividend date. The dividend amount is
+ * shown in the axis tooltip when the user hovers the event day.
  */
 import { useMemo } from "react";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
-import { breakArraysAtGaps, fmtNum, safeMa } from "@/lib/series";
+import { breakArraysAtGaps, fmtNum, fmtMil, safeMa } from "@/lib/series";
 import {
   ohlcSeries,
   rebasePriceArrays,
   formatPriceValue,
   type OhlcMode,
 } from "@/lib/ohlc";
+import { computeMarginScores } from "@/lib/margin-score";
 import {
   MA5_COLOR,
   MA20_COLOR,
@@ -31,11 +42,14 @@ import {
   MA120_COLOR,
   MUTED_PALETTE,
   PE_COLOR,
+  DIVIDEND_COLOR,
+  UP_COLOR,
+  DOWN_COLOR,
   axisColors,
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
-import type { StockBaselineRow } from "../../shared/types";
+import type { StockBaselineRow, StockDividend } from "../../shared/types";
 import type { EChartsOption } from "echarts";
 
 interface Props {
@@ -46,9 +60,13 @@ interface Props {
   ohlcMode: OhlcMode;
   /** Chart height in px. Defaults to 250 (matches StockPanel). */
   height?: number;
+  /** Dividend events for this stock (all dates — not windowed). When
+   *  provided, gold diamond markers are drawn on ex-dividend dates that fall
+   *  inside the visible rows. Defaults to [] (no markers). */
+  dividends?: StockDividend[];
 }
 
-export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) {
+export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = [] }: Props) {
   const themeMode = useStore((s) => s.themeMode);
 
   const option = useMemo<EChartsOption>(() => {
@@ -60,6 +78,8 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
     const close = rows.map((r) => r.close);
     const pe = rows.map((r) => r.pe);
     const isPeEstimatedNum = rows.map((r) => (r.is_pe_estimated ? 1 : 0));
+    // Liquidity + margin data (from stock_liquidity_margin via v_stock_baseline)
+    const tradingAmount = rows.map((r) => r.trading_amount);
     // Compute MA client-side — the stock baseline view does not carry
     // precomputed MA columns (only OHLC + pct_change + PE).
     const ma5 = safeMa(close, 5);
@@ -80,6 +100,11 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
     // PE is rendered only when at least one non-null, non-zero sample exists
     // (0 is treated as a placeholder, not a real PE).
     const hasPe = rows.some((r) => r.pe != null && r.pe !== 0);
+
+    // Margin availability — any row with non-null, non-zero rz_balance.
+    const hasMargin = rows.some(
+      (r) => r.rz_balance != null && r.rz_balance !== 0,
+    );
 
     // Rebase price-derived arrays (OHLC + MAs) to % change in percentage mode.
     // pe and isPeEstimatedNum are NOT price-derived — kept in absolute units.
@@ -103,6 +128,89 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
       broken.arrays[1][i],
     ]);
 
+    // --- Margin scores (RZ up, RQ down) ---------------------------------
+    const marginRows = rows.map((r) => ({
+      date: r.date,
+      rz_balance: r.rz_balance,
+      rq_balance_amt: r.rq_balance_amt,
+    }));
+    const marginScores = computeMarginScores(marginRows);
+    const rzScore = marginScores.map((m) => m.rz_score);
+    const rqScore = marginScores.map((m) => m.rq_score);
+
+    // Date → raw balance (yuan) lookups for tooltip display. The plotted
+    // series values are shifted/clipped scores (not raw yuan), so the tooltip
+    // must re-resolve the actual balance by date to show a meaningful figure.
+    const rzByDate = new Map<string, number | null>(
+      rows.map((r) => [r.date, r.rz_balance]),
+    );
+    const rqByDate = new Map<string, number | null>(
+      rows.map((r) => [r.date, r.rq_balance_amt]),
+    );
+
+    // Dynamic axis limits for hidden margin axis — matches Python's
+    // ax_rzrq.set_ylim(-max_of * 1.15, max_of * 1.15)
+    const marginVals = [...rzScore, ...rqScore].filter(
+      (v): v is number => v != null && Number.isFinite(v),
+    );
+    const maxAbs = marginVals.length > 0 ? Math.max(...marginVals.map(Math.abs)) : 0;
+    const marginAxisRange = Math.max(1e-6, maxAbs) * 1.15;
+
+    // --- Trading-turnover bars (亿元) -----------------------------------
+    // trading_amount is stored in yuan — convert to 亿元 (/1e8) for display.
+    // Bar color: green when close >= open (price-up), red otherwise.
+    const amtData = tradingAmount.map((v, i) => {
+      const o = open[i];
+      const cl = close[i];
+      const up = o != null && cl != null && cl >= o;
+      return {
+        value: v / 1e8,
+        itemStyle: { color: up ? UP_COLOR : DOWN_COLOR, opacity: 0.4 },
+      };
+    });
+
+    // --- Dividend event markers ------------------------------------------
+    // Build a date → rebased-close lookup so we can place each marker at the
+    // close price of the ex-dividend day. Markers ride on the MA20 line series
+    // (the custom OHLC renderItem cannot host markPoint). Only dividends whose
+    // ex_dividend_date falls inside the visible window are drawn.
+    const dateToCloseIdx = new Map<string, number>();
+    broken.dates.forEach((d, i) => dateToCloseIdx.set(d, i));
+    const dividendMarkPointData: Array<{
+      name: string;
+      coord: [string, number];
+      itemStyle: { color: string };
+      symbol: string;
+      symbolSize: number;
+    }> = [];
+    const dividendByDate = new Map<string, StockDividend>();
+    for (const d of dividends) {
+      const idx = dateToCloseIdx.get(d.ex_dividend_date);
+      if (idx === undefined) continue; // ex-div date not in visible window
+      const y = broken.arrays[3][idx]; // rebased close (arrays[3] = close)
+      if (y == null || !Number.isFinite(y)) continue;
+      dividendMarkPointData.push({
+        name: "Dividend",
+        coord: [d.ex_dividend_date, y],
+        itemStyle: { color: DIVIDEND_COLOR },
+        symbol: "diamond",
+        symbolSize: 11,
+      });
+      dividendByDate.set(d.ex_dividend_date, d);
+    }
+    const dividendMarkPoint = dividendMarkPointData.length
+      ? { data: dividendMarkPointData, label: { show: false } }
+      : undefined;
+
+    // --- Y axes ----------------------------------------------------------
+    // Axis layout (index → role):
+    //   0  left     price (% or yuan)
+    //   1  hidden   margin scores (RZ ≥0 up, RQ ≤0 down) — only when hasMargin
+    //   2  right    trading amount (亿元) — always present (0 when no data)
+    //   3  right    PE (offset) — only when hasPe
+    //
+    // When margin is absent the hidden axis is omitted so indices shift down
+    // by one. The series yAxisIndex values below account for this.
     const yAxis: EChartsOption["yAxis"] = [
       {
         type: "value",
@@ -118,7 +226,37 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
     ];
+    // Hidden margin axis (index 1 when present)
+    let marginAxisIdx = -1;
+    if (hasMargin) {
+      marginAxisIdx = (yAxis as Array<unknown>).length;
+      (yAxis as Array<unknown>).push({
+        type: "value",
+        scale: true,
+        show: false,
+        min: -marginAxisRange,
+        max: marginAxisRange,
+      });
+    }
+    // Trading-amount axis (right, visible). Index = 1 when no margin, else 2.
+    const amtAxisIdx = (yAxis as Array<unknown>).length;
+    (yAxis as Array<unknown>).push({
+      type: "value",
+      scale: true,
+      name: "Amt (亿)",
+      nameTextStyle: { color: c.textColor, fontSize: 9 },
+      axisLine: { lineStyle: { color: c.axisLineColor } },
+      axisLabel: {
+        color: c.textColor,
+        fontSize: 9,
+        formatter: (v: number) => fmtNum(v) + " 亿",
+      },
+      splitLine: { show: false },
+    });
+    // PE axis (right, offset). Index follows amount axis.
+    let peAxisIdx = -1;
     if (hasPe) {
+      peAxisIdx = (yAxis as Array<unknown>).length;
       (yAxis as Array<unknown>).push({
         type: "value",
         scale: true,
@@ -154,6 +292,9 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
         lineStyle: { color: MA5_COLOR, width: 0.8 },
         z: 4,
       },
+      // MA20 carries the dividend markPoint — the custom OHLC series cannot
+      // host markPoint, so a standard line series must carry it. MA20 is a
+      // good visual anchor (always present, sits near the price).
       {
         type: "line",
         name: "MA20",
@@ -163,6 +304,7 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
         symbol: "none",
         lineStyle: { color: MA20_COLOR, width: 0.9 },
         z: 4,
+        markPoint: dividendMarkPoint,
       },
       {
         type: "line",
@@ -185,7 +327,45 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
         z: 4,
       },
     ];
-    if (hasPe) {
+
+    // --- Margin fills (RZ up green, RQ down red) ------------------------
+    if (hasMargin && marginAxisIdx >= 0) {
+      const brokenM = breakArraysAtGaps(dates, [rzScore, rqScore]);
+      series.push({
+        type: "line",
+        name: "cash borrow balance",
+        yAxisIndex: marginAxisIdx,
+        data: brokenM.arrays[0],
+        smooth: false,
+        symbol: "none",
+        lineStyle: { color: UP_COLOR, width: 0.6, opacity: 0.7 },
+        areaStyle: { color: UP_COLOR, opacity: 0.36 },
+        z: 3,
+      });
+      series.push({
+        type: "line",
+        name: "sec borrow balance",
+        yAxisIndex: marginAxisIdx,
+        data: brokenM.arrays[1],
+        smooth: false,
+        symbol: "none",
+        lineStyle: { color: DOWN_COLOR, width: 0.6, opacity: 0.7 },
+        areaStyle: { color: DOWN_COLOR, opacity: 0.36 },
+        z: 3,
+      });
+    }
+
+    // --- Trading-turnover bars (visible right axis) ---------------------
+    series.push({
+      type: "bar",
+      name: "Amount",
+      yAxisIndex: amtAxisIdx,
+      data: amtData,
+      barWidth: "90%",
+      z: 1,
+    });
+
+    if (hasPe && peAxisIdx >= 0) {
       // Separate PE into actual (solid) and estimated (faint) series. Null or
       // 0 values are suppressed so missing/placeholder PE samples do not
       // render on the chart.
@@ -198,7 +378,7 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
       series.push({
         type: "line",
         name: "PE",
-        yAxisIndex: 1,
+        yAxisIndex: peAxisIdx,
         data: peActual,
         smooth: false,
         symbol: "none",
@@ -208,7 +388,7 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
       series.push({
         type: "line",
         name: "PE (est)",
-        yAxisIndex: 1,
+        yAxisIndex: peAxisIdx,
         data: peEstimated,
         smooth: false,
         symbol: "none",
@@ -238,6 +418,16 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
           if (arr.length === 0) return "";
           const dateStr = (arr[0].axisValue as string) || "";
           let html = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
+          // Dividend event on the hovered day — shown above the OHLC/PE rows.
+          const div = dividendByDate.get(dateStr);
+          if (div) {
+            const dps = div.dividend_per_share_pre_tax;
+            const dpsStr = dps != null ? `¥${fmtNum(dps, 4)}/share` : "n/a";
+            const totStr = div.total_dividend_wan != null
+              ? ` · ¥${fmtNum(div.total_dividend_wan, 0)}万 total`
+              : "";
+            html += `<div style="margin-bottom:4px"><span style="color:${DIVIDEND_COLOR}">◆</span> <b style="color:${DIVIDEND_COLOR}">Dividend</b> · ${dpsStr}${totStr}</div>`;
+          }
           const isPriceSeries = (name: string) =>
             name === "OHLC" || name === "Close" || name.startsWith("MA");
           for (const p of arr) {
@@ -250,9 +440,24 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
             } else {
               const v = p.value as number;
               if (!Number.isFinite(v)) continue;
-              const vstr = isPriceSeries(name)
-                ? formatPriceValue(v, ohlcMode)
-                : name === "PE" || name === "PE (est)" ? fmtNum(v, 2) : fmtNum(v);
+              let vstr: string;
+              if (name === "Amount") {
+                vstr = fmtNum(v) + " 亿";
+              } else if (name === "cash borrow balance") {
+                vstr = fmtMil(rzByDate.get(dateStr) ?? null);
+              } else if (name === "sec borrow balance") {
+                vstr = fmtMil(rqByDate.get(dateStr) ?? null);
+              } else if (name.includes("remained")) {
+                vstr = fmtMil(v);
+              } else if (name.includes("RZ") || name.includes("RQ")) {
+                vstr = fmtNum(v);
+              } else if (isPriceSeries(name)) {
+                vstr = formatPriceValue(v, ohlcMode);
+              } else if (name === "PE" || name === "PE (est)") {
+                vstr = fmtNum(v, 2);
+              } else {
+                vstr = formatPriceValue(v, ohlcMode);
+              }
               html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}</b></div>`;
             }
           }
@@ -275,7 +480,7 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250 }: Props) 
       yAxis,
       series,
     };
-  }, [rows, themeMode, ohlcMode]);
+  }, [rows, themeMode, ohlcMode, dividends]);
 
   return <EChart option={option} height={height} />;
 }

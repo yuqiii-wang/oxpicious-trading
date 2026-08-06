@@ -2,7 +2,7 @@
  * Live Data — Stock page.
  *
  * Shows 5-minute intraday OHLC + volume bars for A-share stocks, filtered by
- * L1 sector + L2 industry + exchange, paginated 2 per page. A date selector
+ * L1 sector + L2 industry + exchange, paginated 1 per page. A date selector
  * at the top picks which trading day's bars to display (defaults to the most
  * recent available date).
  *
@@ -36,7 +36,7 @@ import type {
   LiveDataCombinedResponse,
 } from "../../../shared/types";
 
-const PAGE_SIZE = 2;
+const PAGE_SIZE = 1;
 const SEC_TYPE = "stock" as const;
 /** Stock intraday table has a `volume` column (per-bar shares traded). */
 const HAS_VOLUME = true;

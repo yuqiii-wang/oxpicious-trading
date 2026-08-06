@@ -3,14 +3,16 @@
 Run via ``python -m analyze.industry_sentiments``.
 
 Pipeline
-  1. Load all (date, code, industry_id, close, pe, stock_num) from
+  1. Load (date, code, industry_id, close, pe, stock_num) from
      index_basic_stats LEFT JOIN index_valuation JOIN sec_classification
      (compositioned indices only), stock_num via LATERAL sec_composition
-     latest-snapshot (no date filter — temporal extrapolation).
+     latest-snapshot (no date filter — temporal extrapolation). In
+     incremental mode, filters to target_dates PLUS one first-close row
+     per code (rebase anchor); in force mode, loads full history.
   2. Rebase each code's close to 100 at its first available close.
   3. Classify pool_size from stock_num (small/mid/large; NULL -> 'all').
   4. Aggregate mean_price/var_price/mean_pe per (date, industry_id, pool).
-  5. SEPARATE SQL: total_trading_amount = SUM(stock_basic_stats.trading_amount)
+  5. SEPARATE SQL: total_trading_amount = SUM(stock_liquidity_margin.trading_amount)
      across the UNION of stocks from member indices' compositions.
   6. Merge + upsert analysis.industry_sentiments.
   7. INTERNAL STEP: run pairwise rolling correlations of industries'
@@ -24,15 +26,21 @@ Pipeline
      (see attributions.py). Reuses the same DB connection. Depends on
      analysis.sec_alloc_perf_attribution being populated first (by
      analyze.sec_alloc_perf_attribution); exits gracefully if empty.
+  9. INTERNAL STEP: aggregate code_etf_trading_amount to the industry
+     level -> analysis.industry_etf_contribution (see etf_contribution.py).
+     Reuses the same DB connection. Depends on
+     analysis.sec_alloc_perf_attribution being populated first; exits
+     gracefully if no index rows have non-NULL code_etf_trading_amount.
 
 Default (incremental) mode:
   Only dates present in stats.index_identity but NOT yet in
-  analysis.industry_sentiments are (re)computed and upserted. The rebase
-  step still loads full per-code history (needed to find each code's first
-  close) but only target-date rows are aggregated and inserted. The
-  internal correlations + attributions steps receive the same target_dates
-  and similarly compute only for those dates (rolling-correlation context
-  is read from the already-populated sentiments table).
+  analysis.industry_sentiments are (re)computed and upserted. Step 1 loads
+  only target-date rows PLUS one first-close row per code (the rebase
+  anchor) — full per-code history is NOT loaded, which saves ~99% of rows
+  when target_dates is small. The internal correlations + attributions +
+  etf_contribution steps receive the same target_dates and similarly
+  compute only for those dates (rolling-correlation context is read from
+  the already-populated sentiments table).
 
 --force mode:
   Truncate analysis.industry_sentiments (and the downstream
@@ -66,6 +74,7 @@ from utils.build_commons import (  # noqa: E402
     print_build_header,
     print_wall_time,
     find_missing_analysis_dates,
+    filter_rows_to_missing_dates_async,
     add_force_arg,
 )
 
@@ -73,6 +82,10 @@ setup_utf8_stdout()
 
 import pandas as pd  # noqa: E402
 
+from analyze._common import (  # noqa: E402
+    sanitize_for_db_insert,
+    upsert_analysis_identity,
+)
 from analyze.industry_sentiments.config import (  # noqa: E402
     TABLE,
     ANALYSIS_NAME,
@@ -90,6 +103,11 @@ from analyze.industry_sentiments.attributions import (  # noqa: E402
     run_attributions,
     TABLE as ATTRIBUTIONS_TABLE,
 )
+from analyze.industry_sentiments.etf_contribution import (  # noqa: E402
+    run_etf_contribution,
+    TABLE as ETF_CONTRIBUTION_TABLE,
+)
+
 
 
 # ---------------------------------------------------------------------------
@@ -101,14 +119,27 @@ from analyze.industry_sentiments.attributions import (  # noqa: E402
 # stock_num is looked up via LATERAL latest-snapshot per code (no date
 # filter — temporal extrapolation: the current pool_size classification
 # is used as a proxy for historical membership).
-LOAD_INDEX_DATA_SQL = """
+#
+# Two variants share a common template:
+#   * FULL          — every (date, code) row. Used in --force mode so the
+#                     full rebase + aggregate runs over the complete history.
+#   * INCREMENTAL   — only target_dates PLUS each code's FIRST available
+#                     close (the rebase anchor). rebase_closes only needs
+#                     each code's first close to compute
+#                     rebased = (close / first_close) * 100 — intermediate
+#                     dates are not needed. Saves ~99% of rows when
+#                     target_dates is small. The first_close CTE filters
+#                     close > 0 to match pandas' post-load filter
+#                     (df = df[df["close"] > 0]) so the anchor matches the
+#                     row pandas would pick as "first" after sorting.
+_LOAD_INDEX_DATA_SQL_TEMPLATE = """
     WITH stock_counts AS (
         SELECT code,
                COUNT(DISTINCT stock_code) AS stock_num
         FROM stats.sec_composition
         WHERE source_type = 'index'
         GROUP BY code
-    )
+    ){first_close_cte}
     SELECT
         ib.date,
         ib.code,
@@ -127,7 +158,7 @@ LOAD_INDEX_DATA_SQL = """
         FROM stock_counts sc2
         WHERE sc2.code = ib.code
         LIMIT 1
-    ) latest ON true
+    ) latest ON true{first_close_join}
     WHERE sc.industry_id IS NOT NULL
       AND sc.industry_id <> ''
       AND ib.close IS NOT NULL
@@ -135,9 +166,29 @@ LOAD_INDEX_DATA_SQL = """
           SELECT 1 FROM stats.sec_composition sc3
           WHERE sc3.code = ib.code
             AND sc3.source_type = 'index'
-      )
+      ){date_filter}
     ORDER BY ib.code, ib.date
 """
+
+LOAD_INDEX_DATA_SQL_FULL = _LOAD_INDEX_DATA_SQL_TEMPLATE.format(
+    first_close_cte="",
+    first_close_join="",
+    date_filter="",
+)
+
+LOAD_INDEX_DATA_SQL_INCREMENTAL = _LOAD_INDEX_DATA_SQL_TEMPLATE.format(
+    first_close_cte=""",
+    first_close AS (
+        SELECT code, MIN(date) AS first_date
+        FROM stats.index_basic_stats
+        WHERE close IS NOT NULL AND close > 0
+        GROUP BY code
+    )""",
+    first_close_join="""
+    JOIN first_close fc ON fc.code = ib.code""",
+    date_filter="""
+      AND (ib.date = ANY($1::date[]) OR ib.date = fc.first_date)""",
+)
 
 # Step 5a — materialize the per-pool union of stocks (latest snapshot per
 # index code, no temporal filter) into a temp table. Each (industry, pool,
@@ -182,38 +233,41 @@ POOL_UNION_TEMP_SQL = """
     FROM index_stocks WHERE stock_num > 180
 """
 
-# Step 5b — final aggregation join: _pu x stock_basic_stats, GROUP BY
+# Step 5b — final aggregation join: _pu x stock_liquidity_margin, GROUP BY
 # (date, industry_id, pool_size) -> SUM(trading_amount). Each stock
 # counted once (union, not sum-per-index). In incremental mode the date
-# filter ``AND sbs.date = ANY($1::date[])`` is appended so only target
+# filter ``AND slm.date = ANY($1::date[])`` is appended so only target
 # dates are aggregated (the _pu temp table is date-independent).
+#
+# NOTE: trading_amount was moved from stock_basic_stats to stock_liquidity_margin
+# (mirrors etf_liquidity_margin). The JOIN target changed accordingly.
 _POOL_AMOUNT_JOIN_SQL_FULL = """
     SELECT
-        sbs.date,
+        slm.date,
         pu.industry_id,
         pu.industry_label,
         pu.pool_size,
-        SUM(sbs.trading_amount) AS total_trading_amount
+        SUM(slm.trading_amount) AS total_trading_amount
     FROM _pu pu
-    JOIN stats.stock_basic_stats sbs
-        ON sbs.code = pu.stock_code
-    WHERE sbs.trading_amount IS NOT NULL
-    GROUP BY sbs.date, pu.industry_id, pu.industry_label, pu.pool_size
+    JOIN stats.stock_liquidity_margin slm
+        ON slm.code = pu.stock_code
+    WHERE slm.trading_amount IS NOT NULL
+    GROUP BY slm.date, pu.industry_id, pu.industry_label, pu.pool_size
 """
 
 _POOL_AMOUNT_JOIN_SQL_INCREMENTAL = """
     SELECT
-        sbs.date,
+        slm.date,
         pu.industry_id,
         pu.industry_label,
         pu.pool_size,
-        SUM(sbs.trading_amount) AS total_trading_amount
+        SUM(slm.trading_amount) AS total_trading_amount
     FROM _pu pu
-    JOIN stats.stock_basic_stats sbs
-        ON sbs.code = pu.stock_code
-    WHERE sbs.trading_amount IS NOT NULL
-      AND sbs.date = ANY($1::date[])
-    GROUP BY sbs.date, pu.industry_id, pu.industry_label, pu.pool_size
+    JOIN stats.stock_liquidity_margin slm
+        ON slm.code = pu.stock_code
+    WHERE slm.trading_amount IS NOT NULL
+      AND slm.date = ANY($1::date[])
+    GROUP BY slm.date, pu.industry_id, pu.industry_label, pu.pool_size
 """
 
 
@@ -255,20 +309,45 @@ async def main() -> None:
             print(f"    -> {len(target_dates)} dates missing from {TABLE}",
                   flush=True)
             if not target_dates:
-                print("    -> DB is up to date; nothing to do.", flush=True)
+                # Even when sentiments is up to date, the attributions
+                # table might need a rolling-column backfill — e.g., after
+                # adding benchmark_non_this_industry_rolling_* columns via
+                # ALTER TABLE. The incremental Step 5 date filter would
+                # miss historical dates, so trigger a FULL backfill.
+                if await needs_rolling_backfill(conn):
+                    print("    -> sentiments up to date, but "
+                          "industry_attributions needs rolling-column "
+                          "backfill — running attributions backfill...",
+                          flush=True)
+                    await run_attributions(conn, backfill=True)
+                else:
+                    print("    -> DB is up to date; nothing to do.",
+                          flush=True)
                 print_wall_time(t0)
                 return
 
-        # ---- Step 1: load all (date, code, industry_id, close) ------------
-        # Full history is always loaded — rebase_closes needs each code's
-        # FIRST available close. In incremental mode the filtering to
-        # target_dates happens AFTER rebase + aggregate.
-        print("\n[1/6] Loading (date, code, industry_id, close, pe, "
-              "stock_num) from index_basic_stats LEFT JOIN index_valuation "
-              "JOIN sec_classification (compositioned indices only), stock_num "
-              "via LATERAL sec_composition latest-snapshot (no date filter)...",
-              flush=True)
-        rows = await conn.fetch(LOAD_INDEX_DATA_SQL)
+        # ---- Step 1: load (date, code, industry_id, close) ---------------
+        # In incremental mode, only target_dates + each code's first-close
+        # row are loaded (rebase anchor) — full history is NOT loaded
+        # because rebase_closes only needs the first close per code. In
+        # force mode, full history is loaded for a complete recompute.
+        incremental = (target_dates is not None and len(target_dates) > 0)
+        if incremental:
+            sorted_dates = sorted(target_dates)
+            print(f"\n[1/6] Loading (date, code, industry_id, close, pe, "
+                  f"stock_num) — INCREMENTAL: {len(sorted_dates)} target "
+                  f"dates + first-close row per code (rebase anchor)...",
+                  flush=True)
+            rows = await conn.fetch(
+                LOAD_INDEX_DATA_SQL_INCREMENTAL, sorted_dates
+            )
+        else:
+            print("\n[1/6] Loading (date, code, industry_id, close, pe, "
+                  "stock_num) from index_basic_stats LEFT JOIN index_valuation "
+                  "JOIN sec_classification (compositioned indices only), stock_num "
+                  "via LATERAL sec_composition latest-snapshot (no date filter)...",
+                  flush=True)
+            rows = await conn.fetch(LOAD_INDEX_DATA_SQL_FULL)
         print(f"    -> {len(rows):,} rows across "
               f"{len(set((r['industry_id'], r['code']) for r in rows))} "
               f"(industry, code) pairs", flush=True)
@@ -333,7 +412,7 @@ async def main() -> None:
         t_pool = time.time()
         await conn.execute("DROP TABLE IF EXISTS pg_temp._pu")
         await conn.execute(POOL_UNION_TEMP_SQL)
-        # Index for the join on stock_code (lookup into stock_basic_stats)
+        # Index for the join on stock_code (lookup into stock_liquidity_margin)
         await conn.execute(
             "CREATE INDEX _pu_stock ON _pu (stock_code)"
         )
@@ -342,7 +421,7 @@ async def main() -> None:
         print(f"    [5a] _pu temp table: {n_pu:,} rows "
               f"({time.time() - t_pool:.1f}s)", flush=True)
 
-        # 5b. Final aggregation join — direct _pu x stock_basic_stats.
+        # 5b. Final aggregation join — direct _pu x stock_liquidity_margin.
         # In incremental mode, filter to target_dates so the SQL only
         # aggregates stock amounts for the dates we actually need.
         t_final = time.time()
@@ -378,32 +457,54 @@ async def main() -> None:
         # ---- Step 6: merge + upsert ---------------------------------------
         print(f"\n[6/6] Merging index-level + stock-level aggregates, "
               f"upserting into {TABLE}...", flush=True)
-        result = result.merge(
-            amt_df, on=["date", "industry_id", "pool_size"], how="left"
-        )
-        # Rows without stock amount data get NULL total_trading_amount
-        result["total_trading_amount"] = result["total_trading_amount"].where(
-            result["total_trading_amount"].notna(), other=None
-        )
+        if amt_df.empty:
+            # No stock trading_amount data at all — skip the merge (an empty
+            # amt_df would have float64 dtypes for date/industry_id/pool_size
+            # because pandas defaults empty columns to float64, which then
+            # clashes with result's object dtypes and aborts the merge).
+            # Just attach a NULL total_trading_amount column to result.
+            result["total_trading_amount"] = None
+        else:
+            # Normalize both `date` columns to object dtype with
+            # datetime.date elements to match asyncpg's return type.
+            result["date"] = pd.to_datetime(result["date"]).dt.date
+            amt_df["date"] = pd.to_datetime(amt_df["date"]).dt.date
+            result = result.merge(
+                amt_df, on=["date", "industry_id", "pool_size"], how="left"
+            )
+            # Rows without stock amount data get NULL total_trading_amount
+            result["total_trading_amount"] = result["total_trading_amount"].where(
+                result["total_trading_amount"].notna(), other=None
+            )
         n_with_amt = result["total_trading_amount"].notna().sum()
         print(f"    -> {len(result):,} total rows | "
               f"{n_with_amt:,} with total_trading_amount | "
               f"{len(result) - n_with_amt:,} without (NULL)", flush=True)
 
-        data = [
-            {
-                "date": r["date"],
-                "industry_id": r["industry_id"],
-                "pool_size": r["pool_size"],
-                "industry_label": r["industry_label"],
-                "index_count": int(r["index_count"]) if pd.notna(r["index_count"]) else None,
-                "mean_price": float(r["mean_price"]) if pd.notna(r["mean_price"]) else None,
-                "var_price": float(r["var_price"]) if pd.notna(r["var_price"]) else None,
-                "mean_pe": float(r["mean_pe"]) if pd.notna(r["mean_pe"]) else None,
-                "total_trading_amount": float(r["total_trading_amount"]) if pd.notna(r["total_trading_amount"]) else None,
-            }
-            for _, r in result.iterrows()
-        ]
+        # Sanitize the aggregated result for asyncpg upsert. Replaces the
+        # per-row iterrows dict construction (with manual float()/int()
+        # casts + NaN->None) with a single vectorized pass: round (skipped),
+        # inf->NaN, NaN->None, to_dict. The non-numeric columns
+        # (date, industry_id, pool_size, industry_label) pass through
+        # unchanged.
+        data = sanitize_for_db_insert(
+            result,
+            numeric_cols=[
+                "index_count", "mean_price", "var_price",
+                "mean_pe", "total_trading_amount",
+            ],
+        )
+
+        # Pre-check: skip already-present dates (safety net — the
+        # find_missing_analysis_dates pre-check in Step 0 already filters
+        # target_dates, but this catches any edge cases).
+        n_before = len(data)
+        data = await filter_rows_to_missing_dates_async(conn, TABLE, data)
+        n_skipped = n_before - len(data)
+        if n_skipped > 0:
+            print(f"    -> skip check: {n_skipped:,} of {n_before:,} rows "
+                  f"already present (skipped)", flush=True)
+
         n = await bulk_upsert_async(
             conn, TABLE, data,
             key_columns=["date", "industry_id", "pool_size"],
@@ -412,18 +513,12 @@ async def main() -> None:
         print(f"    -> upserted {n:,} rows", flush=True)
 
         # ---- Register in analysis.analysis_identity -----------------------
-        await conn.execute("""
-            INSERT INTO analysis.analysis_identity
-                (name, detail_name, summary_name, last_run_datetime, description)
-            VALUES ($1, $2, NULL, NOW(), $3)
-            ON CONFLICT (name) DO UPDATE SET
-                detail_name       = EXCLUDED.detail_name,
-                summary_name      = EXCLUDED.summary_name,
-                last_run_datetime = NOW(),
-                description       = EXCLUDED.description
-        """, ANALYSIS_NAME, ANALYSIS_NAME, ANALYSIS_DESCRIPTION)
-        print(f"    -> upserted analysis_identity (name='{ANALYSIS_NAME}')",
-              flush=True)
+        await upsert_analysis_identity(
+            conn,
+            name=ANALYSIS_NAME,
+            detail_name=ANALYSIS_NAME,
+            description=ANALYSIS_DESCRIPTION,
+        )
 
         # ---- Step 7: INTERNAL correlations step --------------------------
         # Pairwise rolling Pearson correlation of industries' mean_price
@@ -441,6 +536,15 @@ async def main() -> None:
         # gracefully if sec_alloc_perf_attribution is empty.
         await run_attributions(conn, target_dates=target_dates,
                                force=args.force)
+
+        # ---- Step 9: INTERNAL etf_contribution step ---------------------
+        # Aggregate analysis.sec_alloc_perf_attribution.code_etf_trading_amount
+        # to the industry level -> analysis.industry_etf_contribution. Reuses
+        # this same connection. See etf_contribution.py for the full pipeline.
+        # Exits gracefully if sec_alloc_perf_attribution has no index rows
+        # with non-NULL code_etf_trading_amount.
+        await run_etf_contribution(conn, target_dates=target_dates,
+                                   force=args.force)
 
         print_wall_time(t0)
     finally:

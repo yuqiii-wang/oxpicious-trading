@@ -157,7 +157,12 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
       height={360}
     >
       <Box sx={{ width: "100%" }}>
-        <StockOhlcChart rows={filteredRows} ohlcMode={ohlcMode} height={250} />
+        <StockOhlcChart
+          rows={filteredRows}
+          ohlcMode={ohlcMode}
+          height={250}
+          dividends={stock.dividends}
+        />
         {maxIdx > 0 && (
           <Box sx={{ px: 1, mt: 0.25 }}>
             <Slider

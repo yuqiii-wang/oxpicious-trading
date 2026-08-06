@@ -244,7 +244,7 @@ COMMENT ON VIEW stats.v_index_baseline IS 'Reconstructed index_baseline view: JO
 -- ----------------------------------------------------------------------------
 -- View: v_stock_baseline
 --   Reconstructs stock daily data via JOIN on (date, code)
---   Mirrors v_etf_margin structure (identity + basic_stats).
+--   Mirrors v_etf_margin structure (identity + basic_stats + liquidity_margin).
 --   DROP first (see v_etf_margin note re: column insertion).
 -- ----------------------------------------------------------------------------
 DROP VIEW IF EXISTS stats.v_stock_baseline;
@@ -263,11 +263,21 @@ SELECT
     b.has_intraday_5mins,
     -- Stock-specific valuation
     b.pe,
-    b.is_pe_estimated
+    b.is_pe_estimated,
+    -- Liquidity & margin (mirrors etf_liquidity_margin)
+    lm.trading_shares,
+    lm.trading_amount,
+    lm.rz_buy,
+    lm.rz_balance,
+    lm.rq_sell_qty,
+    lm.rq_balance_qty,
+    lm.rq_balance_amt,
+    lm.total_balance
 FROM stats.stock_identity i
-LEFT JOIN stats.stock_basic_stats b ON i.date = b.date AND i.code = b.code;
+LEFT JOIN stats.stock_basic_stats b ON i.date = b.date AND i.code = b.code
+LEFT JOIN stats.stock_liquidity_margin lm ON i.date = lm.date AND i.code = lm.code;
 
-COMMENT ON VIEW stats.v_stock_baseline IS 'Reconstructed stock_baseline view: JOIN of stock_identity + stock_basic_stats. Mirrors v_etf_margin structure.';
+COMMENT ON VIEW stats.v_stock_baseline IS 'Reconstructed stock_baseline view: JOIN of stock_identity + stock_basic_stats + stock_liquidity_margin. Mirrors v_etf_margin structure.';
 
 
 -- ============================================================================

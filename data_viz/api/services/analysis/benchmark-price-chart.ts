@@ -23,6 +23,7 @@ interface DbBenchmarkPriceRow extends QueryResultRow {
   date: Date | string;
   close: number | null;
   daily_return: number | null;
+  trading_amount: number | null;
 }
 
 export async function getBenchmarkPriceChart(
@@ -36,6 +37,7 @@ export async function getBenchmarkPriceChart(
       `SELECT
         ib.date,
         ib.close,
+        ib.trading_amount,
         CASE
           WHEN pb.close IS NOT NULL AND pb.close != 0
           THEN (ib.close - pb.close) / pb.close
@@ -65,6 +67,7 @@ export async function getBenchmarkPriceChart(
       date: formatDate(r.date),
       close: toNum(r.close),
       daily_return: toNum(r.daily_return),
+      trading_amount: toNum(r.trading_amount),
     })),
   };
 }
@@ -82,13 +85,21 @@ export async function getBenchmarkPriceChart(
 //  (computed by the attributions step). For non-broad benchmarks the rows
 //  still contain benchmark_close + benchmark_rolling so the chart can render
 //  the benchmark line alone.
+//
+//  The 5 rolling_Xdays_price columns (5/20/60/255/500) are returned as-is;
+//  the frontend dropdown picks which one drives the shade overlay.
 // ----------------------------------------------------------------------------
 interface DbAttributionPriceRow extends QueryResultRow {
   date: Date | string;
   benchmark_close: number | null;
   benchmark_rolling: number | null;
   non_this_industry_price: number | null;
-  non_this_industry_rolling_price: number | null;
+  non_this_industry_rolling_5days_price: number | null;
+  non_this_industry_rolling_20days_price: number | null;
+  non_this_industry_rolling_60days_price: number | null;
+  non_this_industry_rolling_255days_price: number | null;
+  non_this_industry_rolling_500days_price: number | null;
+  benchmark_shared_weight: number | null;
   industry_label: string | null;
   benchmark_name: string | null;
   is_broad_market: boolean | null;
@@ -113,7 +124,7 @@ export async function getIndustryAttributionPriceSeries(
         ia.date,
         ib.close AS benchmark_close,
         -- Rebase benchmark close to 100 at the first date in the partition
-        -- so it's comparable to non_this_industry_rolling_price (also 100-based).
+        -- so it's comparable to non_this_industry_rolling_*_price (also 100-based).
         100.0 * ib.close / NULLIF(
           FIRST_VALUE(ib.close) OVER (
             PARTITION BY ia.benchmark_code
@@ -121,8 +132,13 @@ export async function getIndustryAttributionPriceSeries(
             ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
           ), 0
         ) AS benchmark_rolling,
-        ia.benchmark_non_this_industry_price      AS non_this_industry_price,
-        ia.benchmark_non_this_industry_rolling_price AS non_this_industry_rolling_price,
+        ia.benchmark_non_this_industry_price                    AS non_this_industry_price,
+        ia.benchmark_non_this_industry_rolling_5days_price      AS non_this_industry_rolling_5days_price,
+        ia.benchmark_non_this_industry_rolling_20days_price      AS non_this_industry_rolling_20days_price,
+        ia.benchmark_non_this_industry_rolling_60days_price      AS non_this_industry_rolling_60days_price,
+        ia.benchmark_non_this_industry_rolling_255days_price     AS non_this_industry_rolling_255days_price,
+        ia.benchmark_non_this_industry_rolling_500days_price    AS non_this_industry_rolling_500days_price,
+        ia.benchmark_shared_weight,
         sc.industry_label,
         ii.name AS benchmark_name,
         sit.is_broad_market
@@ -165,7 +181,12 @@ export async function getIndustryAttributionPriceSeries(
       benchmark_close: toNum(r.benchmark_close),
       benchmark_rolling: toNum(r.benchmark_rolling),
       non_this_industry_price: toNum(r.non_this_industry_price),
-      non_this_industry_rolling_price: toNum(r.non_this_industry_rolling_price),
+      non_this_industry_rolling_5days_price: toNum(r.non_this_industry_rolling_5days_price),
+      non_this_industry_rolling_20days_price: toNum(r.non_this_industry_rolling_20days_price),
+      non_this_industry_rolling_60days_price: toNum(r.non_this_industry_rolling_60days_price),
+      non_this_industry_rolling_255days_price: toNum(r.non_this_industry_rolling_255days_price),
+      non_this_industry_rolling_500days_price: toNum(r.non_this_industry_rolling_500days_price),
+      benchmark_shared_weight: toNum(r.benchmark_shared_weight),
     })),
   };
 }

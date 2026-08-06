@@ -10,6 +10,8 @@ import LiveDataIndexPage from "@/live/pages/LiveDataIndexPage";
 import LiveDataEtfPage from "@/live/pages/LiveDataEtfPage";
 import LiveDataStockPage from "@/live/pages/LiveDataStockPage";
 import CommonsPage from "@/analysis/pages/CommonsPage";
+import DerivativesPage from "@/analysis/pages/DerivativesPage";
+import CompositesPage from "@/analysis/pages/CompositesPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import PerfAttrPage from "@/analysis/pages/PerfAttrPage";
 import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
@@ -36,6 +38,13 @@ export default function App() {
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
           <Route path="/analysis/commons/perf-attr" element={<PerfAttrPage />} />
           <Route path="/analysis/commons/industry-sentiments" element={<IndustrySentimentsPage />} />
+          <Route path="/analysis/derivatives" element={<DerivativesPage />} />
+          <Route path="/analysis/composites" element={<CompositesPage />} />
+          <Route path="/strategy" element={<Navigate to="/strategy/commons" replace />} />
+          <Route
+            path="/strategy/commons"
+            element={<Box sx={{ p: 4, color: "text.secondary" }}>Strategy Commons — coming soon.</Box>}
+          />
         </Routes>
       </Box>
     </Router>

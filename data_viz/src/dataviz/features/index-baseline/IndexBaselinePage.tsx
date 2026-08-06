@@ -8,7 +8,7 @@
  *     MA5/MA20/MA60/MA120 + volume bars + PE ratio + composition pie chart.
  *     Clicking a date point that has 5-min intraday bars (gold-ringed marker on
  *     the close line) expands a closeable intraday OHLC chart below.
- *   • Pagination — 2 indices per page.
+ *   • Pagination — 1 index per page.
  */
 import { useEffect, useState } from "react";
 import {
@@ -30,7 +30,7 @@ import type {
   IndexCombinedResponse,
 } from "../../../../shared/types";
 
-const PAGE_SIZE = 2;
+const PAGE_SIZE = 1;
 
 export default function IndexBaselinePage() {
   const themeMode = useStore((s) => s.themeMode);

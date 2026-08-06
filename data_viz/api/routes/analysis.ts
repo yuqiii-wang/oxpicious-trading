@@ -32,6 +32,8 @@ import {
   getIndustryAttributionPriceSeries,
   getAllIndustriesAttribution,
   getMemberIndexAttribution,
+  getIndustryEtfPriceSeries,
+  getIndustryEtfContributionBars,
 } from "../services/analysis/index.js";
 import type { PerfAttrSecType } from "../../shared/types.js";
 
@@ -295,9 +297,10 @@ router.get("/industry-attribution/benchmark-price", async (req: Request, res: Re
 //   GET /api/analysis/industry-attribution/non-this-industry-price
 //     ?industry_id=BANKS&benchmark_code=000300
 //   Returns IndustryAttributionPriceSeriesResponse: benchmark close +
-//   benchmark_rolling + non_this_industry_price + non_this_industry_rolling_price
-//   for ONE (industry_id, benchmark_code) pair. Drives the green/red shade
-//   overlay on the BenchmarkPriceChart.
+//   benchmark_rolling + non_this_industry_price + 5 rolling_Xdays_price
+//   columns (5/20/60/255/500) for ONE (industry_id, benchmark_code) pair.
+//   Drives the green/red shade overlay on the BenchmarkPriceChart. The
+//   frontend dropdown picks which rolling window drives the shade.
 router.get("/industry-attribution/non-this-industry-price", async (req: Request, res: Response) => {
   try {
     const industryId = typeof req.query.industry_id === "string"
@@ -363,6 +366,51 @@ router.get("/industry-attribution/member-indices", async (req: Request, res: Res
     res.json(await getMemberIndexAttribution(industryId, benchmarkCode, date || null));
   } catch (err) {
     console.error("[analysis/industry-attribution/member-indices] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Industry ETF Contribution — mirrors "Benchmark Attribution" but with
+//      ETFs as the unit of analysis instead of benchmark indices. Drives the
+//      "ETF Contribution" view on the Industry Sentiments page.
+//   GET /api/analysis/industry-etf-contribution/etf-price?industry_ids=BANKS,AI
+//     Returns IndustryEtfPriceSeriesResponse: daily close series for ALL ETFs
+//     tracking member indices of the selected industries. The frontend
+//     rebases each ETF to 100 at its own first date (cascading so later ETFs
+//     start at the mean of already-active ETFs). Drives the 1st plot.
+//   GET /api/analysis/industry-etf-contribution/etf-bars
+//     ?industry_id=BANKS&date=YYYY-MM-DD (date optional → latest)
+//     Returns IndustryEtfContributionBarsResponse: one row per ETF with
+//     trading_amount + etf_return, plus the industry aggregate from
+//     analysis.industry_etf_contribution. Drives the 2nd+ plots.
+router.get("/industry-etf-contribution/etf-price", async (req: Request, res: Response) => {
+  try {
+    const raw = typeof req.query.industry_ids === "string" ? req.query.industry_ids : "";
+    const industryIds = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (industryIds.length === 0) {
+      res.status(400).json({ error: "Missing 'industry_ids' parameter (comma-separated)" });
+      return;
+    }
+    res.json(await getIndustryEtfPriceSeries(industryIds));
+  } catch (err) {
+    console.error("[analysis/industry-etf-contribution/etf-price] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/industry-etf-contribution/etf-bars", async (req: Request, res: Response) => {
+  try {
+    const industryId = typeof req.query.industry_id === "string"
+      ? req.query.industry_id.trim() : "";
+    if (!industryId) {
+      res.status(400).json({ error: "Missing 'industry_id' parameter" });
+      return;
+    }
+    const rawDate = typeof req.query.date === "string" ? req.query.date.trim() : "";
+    const date = rawDate || null;
+    res.json(await getIndustryEtfContributionBars(industryId, date));
+  } catch (err) {
+    console.error("[analysis/industry-etf-contribution/etf-bars] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

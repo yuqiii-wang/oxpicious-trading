@@ -58,7 +58,10 @@ export function buildIndustryBenchmarkAttributionOption(
   const ctx: AttributionBarContext = {
     selectedCode: selectedBenchmarkCode,
     themeMode,
-    // All materialized benchmarks are broad-market — keep them all visible.
+    // Both broad-market AND member-index benchmarks are materialized — keep
+    // them all visible. Broad-market bars are dimmed (lower opacity) by
+    // buildContributionBarData/buildSharedWtBarData; member-index bars are
+    // shown at full opacity (they are the industry's own indices).
     showBroadMarket: true,
   };
 

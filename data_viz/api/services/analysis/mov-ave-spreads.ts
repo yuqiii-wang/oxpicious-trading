@@ -14,6 +14,7 @@ import type {
   MovAveSpreadDetailRow,
   MovAveSpreadPairSeries,
   MovAveSpreadLatestGap,
+  MovAveSpreadValleyLow,
   SectorNode,
   IndustryNode,
 } from "../../../shared/types.js";
@@ -75,6 +76,10 @@ interface DbCodeRow extends QueryResultRow {
 interface DbChartRow extends QueryResultRow {
   date: Date | string;
   price: number | null;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  trading_amount: number | null;
   ma5: number | null;
   ma20: number | null;
   ma60: number | null;
@@ -186,6 +191,14 @@ interface SecSource {
   chartFromClause: string;
   /** SQL expression for the per-row price column. */
   priceExpr: string;
+  /** SQL expression for the open column. */
+  openExpr: string;
+  /** SQL expression for the high column. */
+  highExpr: string;
+  /** SQL expression for the low column. */
+  lowExpr: string;
+  /** SQL expression for the trading_amount column. */
+  tradingAmtExpr: string;
 }
 
 const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
@@ -195,8 +208,13 @@ const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
       "FROM analysis.mov_ave_spreads_detail d\n" +
       "  JOIN stats.etf_basic_stats   b ON b.date = d.date AND b.code = d.code\n" +
       "  LEFT JOIN stats.etf_adjustment a ON a.date = d.date AND a.code = d.code\n" +
+      "  LEFT JOIN stats.etf_liquidity_margin lm ON lm.date = d.date AND lm.code = d.code\n" +
       "  LEFT JOIN stats.etf_tech_stats  t ON t.date = d.date AND t.code = d.code",
     priceExpr: "COALESCE(a.adj_close, b.close)",
+    openExpr: "COALESCE(a.adj_open, b.open)",
+    highExpr: "COALESCE(a.adj_high, b.high)",
+    lowExpr: "COALESCE(a.adj_low, b.low)",
+    tradingAmtExpr: "lm.trading_amount",
   },
   index: {
     identityTable: "stats.index_identity",
@@ -205,14 +223,11 @@ const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
       "  JOIN stats.index_basic_stats b ON b.date = d.date AND b.code = d.code\n" +
       "  LEFT JOIN stats.index_tech_stats t ON t.date = d.date AND t.code = d.code",
     priceExpr: "b.close",
+    openExpr: "b.open",
+    highExpr: "b.high",
+    lowExpr: "b.low",
+    tradingAmtExpr: "b.trading_amount",
   },
-  // Stock is registered so the codes endpoint (which only touches
-  // mov_ave_spreads_detail + stock_identity, both of which exist) returns an
-  // empty list gracefully. The chart endpoint references stock_tech_stats
-  // (which does NOT yet exist) and will fail with 500 if called directly —
-  // but the UI never calls it for stock because codes returns empty (no
-  // stock rows are populated by the build script yet). Replace this branch
-  // with a real stock_tech_stats JOIN once that table is created.
   stock: {
     identityTable: "stats.stock_identity",
     chartFromClause:
@@ -220,6 +235,10 @@ const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
       "  JOIN stats.stock_basic_stats b ON b.date = d.date AND b.code = d.code\n" +
       "  LEFT JOIN stats.stock_tech_stats t ON t.date = d.date AND t.code = d.code",
     priceExpr: "b.close",
+    openExpr: "b.open",
+    highExpr: "b.high",
+    lowExpr: "b.low",
+    tradingAmtExpr: "b.trading_amount",
   },
 };
 
@@ -337,6 +356,10 @@ function buildChartSql(secType: MaSpreadSecType): string {
     SELECT
       d.date,
       ${src.priceExpr} AS price,
+      ${src.openExpr} AS open,
+      ${src.highExpr} AS high,
+      ${src.lowExpr} AS low,
+      ${src.tradingAmtExpr} AS trading_amount,
       t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
       d.price_vs_ma5, d.price_vs_ma20, d.price_vs_ma60,
       d.price_vs_ma120, d.price_vs_ma255,
@@ -347,9 +370,34 @@ function buildChartSql(secType: MaSpreadSecType): string {
       d.std_5days, d.std_20days, d.std_60days, d.std_120days, d.std_255days
     ${src.chartFromClause}
     WHERE d.sec_type = $2
-      AND REGEXP_REPLACE(d.code, '\\.(SZ|SS|SH)$', '') = $1::text
+      AND REGEXP_REPLACE(d.code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
     ORDER BY d.date ASC
   `;
+}
+
+// ----------------------------------------------------------------------------
+//  Valley-low query — fetch peaks_and_floors rows directly by (sec_type, code)
+//  so each mov_ave_peaks_and_floors.date is plotted ONCE on the chart. The
+//  previous implementation JOINed peaks_and_floors to mov_ave_spreads_detail
+//  via d.peaks_and_floors_date (the "nearest preceding extreme" mapping),
+//  which smeared each extreme's extreme_val across every detail date that
+//  mapped to it — producing a marker on essentially every detail row. This
+//  direct query avoids that smearing entirely.
+// ----------------------------------------------------------------------------
+function buildValleyLowsSql(): string {
+  return `
+    SELECT date, extreme_val, nearby_extreme_date
+    FROM analysis.mov_ave_peaks_and_floors
+    WHERE sec_type = $2
+      AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+    ORDER BY date ASC
+  `;
+}
+
+interface DbValleyLowRow extends QueryResultRow {
+  date: Date | string;
+  extreme_val: number | null;
+  nearby_extreme_date: Date | string | null;
 }
 
 function buildNameSql(secType: MaSpreadSecType): string {
@@ -357,7 +405,7 @@ function buildNameSql(secType: MaSpreadSecType): string {
   return `
     SELECT DISTINCT ON (code) code, name
     FROM ${src.identityTable}
-    WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1::text
+    WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
     ORDER BY code, date DESC
   `;
 }
@@ -369,10 +417,11 @@ export async function getMovAveSpreadChart(
   const secType = normalizeSecType(rawSecType);
   const target = stripped(rawCode);
 
-  // Fetch chart rows + name in parallel.
-  const [chartRows, nameRows] = await Promise.all([
+  // Fetch chart rows + name + valley lows in parallel.
+  const [chartRows, nameRows, valleyLowRows] = await Promise.all([
     queryRows<DbChartRow>(buildChartSql(secType), [target, secType]),
     queryRows<{ name: string | null }>(buildNameSql(secType), [target]),
+    queryRows<DbValleyLowRow>(buildValleyLowsSql(), [target, secType]),
   ]);
 
   const name = nameRows[0]?.name ?? "";
@@ -394,6 +443,10 @@ export async function getMovAveSpreadChart(
     const dateStr = formatDate(r.date);
     const price = toNum(r.price);
     const ma5 = toNum(r.ma5);
+    const open = toNum(r.open);
+    const high = toNum(r.high);
+    const low = toNum(r.low);
+    const tradingAmount = toNum(r.trading_amount);
     for (const [maShort, maLong, gapCol] of PAIR_ORDER) {
       const series = byPair.get(`${maShort}/${maLong}`);
       if (!series) continue;
@@ -414,15 +467,33 @@ export async function getMovAveSpreadChart(
         long_slope: pickSlope(r, maLong),
         long_curvature: pickCurvature(r, maLong),
         long_std: pickStd(r, maLong),
+        open,
+        high,
+        low,
+        trading_amount: tradingAmount,
       };
       series.rows.push(row);
     }
   }
 
+  // Valley lows: one entry per peaks_and_floors row for this code. Plotted
+  // directly by the frontend as red down-triangle markers — no per-detail-row
+  // smearing.
+  const valley_lows: MovAveSpreadValleyLow[] = valleyLowRows
+    .map((r) => ({
+      date: formatDate(r.date),
+      extreme_val: toNum(r.extreme_val) ?? 0,
+      nearby_extreme_date: r.nearby_extreme_date != null
+        ? formatDate(r.nearby_extreme_date)
+        : null,
+    }))
+    .filter((v) => Number.isFinite(v.extreme_val));
+
   return {
     code: target,
     name,
     pairs: PAIR_ORDER.map(([ms, ml]) => byPair.get(`${ms}/${ml}`)!),
+    valley_lows,
   };
 }
 
@@ -439,8 +510,7 @@ export async function getMovAveSpreadChart(
 // ----------------------------------------------------------------------------
 
 /** Whitelisted sec_type → sec_classification type discriminator (safe for
- *  string interpolation in the SQL). Stock support is included for parity,
- *  though it currently has no rows in mov_ave_spreads_detail. */
+ *  string interpolation in the SQL). */
 const MA_SPREAD_META_TYPE: Record<MaSpreadSecType, string> = {
   etf: "etf",
   index: "index",

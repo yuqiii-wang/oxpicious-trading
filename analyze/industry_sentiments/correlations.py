@@ -46,6 +46,11 @@ from utils.build_commons import (
     bulk_upsert_async,
     truncate_table_async,
 )
+from analyze._common import (
+    sanitize_for_db_insert,
+    upsert_analysis_identity,
+)
+from analyze._common._cuDF import should_use_gpu
 
 
 # ---------------------------------------------------------------------------
@@ -90,9 +95,35 @@ def rolling_corr(a: np.ndarray, b: np.ndarray, window: int) -> np.ndarray:
     Uses pandas' ``rolling.corr`` which is vectorized and handles NaN
     pairs correctly (NaN values are excluded pairwise — they don't
     reduce the effective window).
+
+    GPU acceleration: when the cuDF router determines the GPU is
+    worthwhile for this series length (rolling_corr op_type — the
+    slowest pandas rolling op, ~8s/M rows), the computation runs on a
+    cuDF Series pair. cuDF's ``rolling().corr()`` is ~53× faster than
+    pandas on the RTX 5090. The H2D/D2H transfer is amortized over the
+    full series length (not per-window), so GPU wins for long series.
+    For short series (below breakeven), the CPU path is faster.
     """
     if len(a) != len(b):
         raise ValueError(f"length mismatch: {len(a)} vs {len(b)}")
+
+    # Build a 2-column DataFrame so the router can estimate VRAM from
+    # numeric column count (2) and row count (len(a)). The op_type
+    # "rolling_corr" maps to the slowest pandas rolling profile, so the
+    # breakeven is the lowest (~40K rows conservative) — long industry
+    # history (5+ years × ~250 trading days = ~1250 rows) is well below
+    # breakeven, so GPU will only kick in for very long series. This is
+    # the correct behavior: short series stay on CPU.
+    router_df = pd.DataFrame({"a": a, "b": b})
+    if should_use_gpu(router_df, op_type="rolling_corr"):
+        import cudf  # type: ignore[import-untyped]
+        gdf = cudf.from_pandas(router_df)
+        g_result = gdf["a"].rolling(window=window, min_periods=2).corr(
+            gdf["b"]
+        )
+        return g_result.to_numpy()
+
+    # CPU path (pandas Cython).
     s_a = pd.Series(a)
     s_b = pd.Series(b)
     return s_a.rolling(window=window, min_periods=2).corr(s_b).to_numpy()
@@ -213,7 +244,13 @@ async def run_correlations(
     print("\n[c3/4] Computing pairwise rolling correlations "
           f"(windows={WINDOWS})...", flush=True)
 
-    out_rows: list[dict] = []
+    # Vectorized row construction: collect per-(pair, pool) DataFrames
+    # and concat at the end, then convert to list-of-dicts in ONE pass.
+    # The previous implementation iterated per date with Python dict
+    # construction (up to ~190 pairs × 4 pools × ~1700 dates = ~1.3M
+    # Python iterations). The vectorized path replaces that with ~760
+    # DataFrame operations + a single to_dict call.
+    out_frames: list[pd.DataFrame] = []
     n_pairs_total = 0
     n_pairs_with_data = 0
     for a_id, b_id in combinations(industry_ids, 2):
@@ -241,44 +278,48 @@ async def run_correlations(
             n_pairs_with_data += 1
             a_vals = merged["mean_price_a"].to_numpy(dtype=np.float64)
             b_vals = merged["mean_price_b"].to_numpy(dtype=np.float64)
-            dates = merged["date"].to_numpy()
 
-            # Compute rolling correlations for each window.
-            corr_cols = {}
+            # Build a per-(pair, pool) DataFrame with all 4 corr columns
+            # at once. Replaces the per-date Python dict construction.
+            pair_df = pd.DataFrame({
+                "industry_id": a_id,
+                "benchmark_industry_id": b_id,
+                "pool_size": pool,
+                "date": merged["date"].to_numpy(),
+            })
             for w in WINDOWS:
-                c = rolling_corr(a_vals, b_vals, w)
                 # min_periods=2 means rolling.corr returns NaN when
                 # fewer than 2 valid pairs in window. Additionally,
                 # rolling.corr returns NaN when either series has zero
                 # variance in the window (correlation undefined).
-                corr_cols[f"industry_mean_corr_{w}d"] = c
+                pair_df[f"industry_mean_corr_{w}d"] = rolling_corr(
+                    a_vals, b_vals, w
+                )
 
-            for i, d in enumerate(dates):
-                # In incremental mode, skip dates not in target_dates.
-                # The rolling correlation is computed over the full
-                # history (so the window is correct) but only target
-                # dates are emitted for upsert.
-                if incremental and d not in target_dates:
-                    continue
+            # Incremental filter at the DataFrame level (vectorized isin
+            # replaces the per-date `if d not in target_dates` check).
+            # The rolling correlation is still computed over the FULL
+            # history (so the window is correct) — only the emitted
+            # rows are filtered.
+            if incremental:
+                pair_df = pair_df[pair_df["date"].isin(target_dates)]
 
-                row = {
-                    "industry_id": a_id,
-                    "benchmark_industry_id": b_id,
-                    "pool_size": pool,
-                    "date": d,
-                }
-                for w in WINDOWS:
-                    v = corr_cols[f"industry_mean_corr_{w}d"][i]
-                    # NaN -> None (NULL in DB). Also guard against
-                    # inf/-inf which can theoretically occur.
-                    if v is None or not np.isfinite(v):
-                        row[f"industry_mean_corr_{w}d"] = None
-                    else:
-                        # Round to NUMERIC(8,4) precision.
-                        row[f"industry_mean_corr_{w}d"] = float(
-                            round(float(v), 4)
-                        )
-                out_rows.append(row)
+            if not pair_df.empty:
+                out_frames.append(pair_df)
+
+    # Concat all per-(pair, pool) frames into one large DataFrame, then
+    # sanitize via the shared helper: round to NUMERIC(8,4) precision,
+    # replace inf/-inf with NaN, then NaN -> None so asyncpg serializes
+    # them as SQL NULL. The non-numeric columns (industry_id,
+    # benchmark_industry_id, pool_size, date) pass through unchanged.
+    corr_col_names = [f"industry_mean_corr_{w}d" for w in WINDOWS]
+    if out_frames:
+        out_df = pd.concat(out_frames, ignore_index=True)
+        out_rows = sanitize_for_db_insert(
+            out_df, numeric_cols=corr_col_names, round_to=4,
+        )
+    else:
+        out_rows = []
 
     print(f"      -> {n_pairs_total} industry pairs x up to 4 pools "
           f"= up to {n_pairs_total * 4} (pair, pool) combinations; "
@@ -315,18 +356,12 @@ async def run_correlations(
     print(f"      -> upserted {n:,} rows", flush=True)
 
     # ---- Register in analysis.analysis_identity ----------------------
-    await conn.execute("""
-        INSERT INTO analysis.analysis_identity
-            (name, detail_name, summary_name, last_run_datetime, description)
-        VALUES ($1, $2, NULL, NOW(), $3)
-        ON CONFLICT (name) DO UPDATE SET
-            detail_name       = EXCLUDED.detail_name,
-            summary_name      = EXCLUDED.summary_name,
-            last_run_datetime = NOW(),
-            description       = EXCLUDED.description
-    """, ANALYSIS_NAME, ANALYSIS_NAME, ANALYSIS_DESCRIPTION)
-    print(f"      -> upserted analysis_identity "
-          f"(name='{ANALYSIS_NAME}')", flush=True)
+    await upsert_analysis_identity(
+        conn,
+        name=ANALYSIS_NAME,
+        detail_name=ANALYSIS_NAME,
+        description=ANALYSIS_DESCRIPTION,
+    )
 
     # Sanity summary: row count by pool_size.
     summary = await conn.fetch("""

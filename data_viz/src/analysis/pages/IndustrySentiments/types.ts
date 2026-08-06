@@ -13,6 +13,14 @@ export type PoolSize = "all" | "small" | "mid" | "large";
 /** Rolling-correlation window selector. */
 export type CorrWindow = "5d" | "20d" | "60d" | "255d";
 
+/** Rolling-days selector for the BenchmarkPriceChart shade overlay.
+ *  Each value picks one of the 5 pre-materialized
+ *  benchmark_non_this_industry_rolling_{N}days_price columns from
+ *  analysis.industry_attributions. The dropdown lets the user pick which
+ *  trailing window (5 / 20 / 60 / 255 / 500 trading days) drives the
+ *  non-this-industry shade. */
+export type RollingDays = 5 | 20 | 60 | 255 | 500;
+
 /**
  * One industry's precomputed aggregation set, used to render a per-industry
  * mean curve in multi-industry "Mean only" mode.
@@ -75,5 +83,31 @@ export interface BenchmarkPriceChartProps {
 export interface CorrelationChartProps {
   industryIds: string[];
   poolSize: PoolSize;
+  themeMode: ThemeMode;
+}
+
+/** Props for the IndustryEtfPriceChart component (1st plot in ETF Contribution mode). */
+export interface IndustryEtfPriceChartProps {
+  /** Selected industry IDs — ETFs tracking member indices of these industries
+   *  are fetched and plotted. */
+  industryIds: string[];
+  themeMode: ThemeMode;
+  /** Currently selected date (markLine position). Null → latest date. */
+  selectedDate: string | null;
+  /** Callback fired when the user clicks a date on the chart. */
+  onDateSelect: (date: string) => void;
+}
+
+/** Props for the IndustryEtfContributionChart component (2nd+ plots). */
+export interface IndustryEtfContributionChartProps {
+  industryId: string;
+  industryLabel: string;
+  /** As-of date for the bars ("" or null → latest available). */
+  date: string | null;
+  themeMode: ThemeMode;
+}
+
+/** Props for the MarketTrendChart component (sole plot in "Market Trend" mode). */
+export interface MarketTrendChartProps {
   themeMode: ThemeMode;
 }

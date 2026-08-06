@@ -2,19 +2,24 @@
  * MaSpreadPanel — one card per code: pair chips + two-curve chart with
  * green/red fill between them + date-range slider + Bollinger envelope.
  *
- * Each panel renders:
- *   1. 9 pair chips (Price/MA5 … MA5/MA255); clicking one selects the pair
- *      shown in the chart below.
- *   2. Date-range slider above the chart.
- *   3. Two-curve chart (short + long MA) with green fill when short > long
+ * Each panel renders (top → bottom):
+ *   1. 9 pair chips arranged as a 2-row grid aligned by long MA — the Price
+ *      row (Price/MA5 … Price/MA255) above the MA5 row (MA5/MA20 …
+ *      MA5/MA255, with the MA5 column empty). A "Trend Study" column header
+ *      sits above the MA60 column (shared by Price/MA60 and MA5/MA60) and
+ *      highlights when either MA60 pair is active. Clicking a chip selects
+ *      the pair shown in the chart below.
+ *   2. Two-curve chart (short + long MA) with green fill when short > long
  *      (growth) and red fill when short < long (decline). The tooltip shows
  *      each series' slope (1st derivative) and curvature (2nd derivative)
  *      — including price's own slope/curvature for Price/MA pairs.
- *   4. Bollinger envelope (Price/MA pairs only): ±k×σ dashed lines around
+ *   3. Bollinger envelope (Price/MA pairs only): ±k×σ dashed lines around
  *      the long MA, with a faint fill between them. k is selected from a
  *      dropdown in the card's top-right corner (0 = hidden, 2 = standard
  *      Bollinger, max 3, step 0.5). MA5/MA pairs do not show the envelope
  *      (σ is of price, not of an MA-of-MA) and the dropdown is hidden.
+ *   4. Date-range slider at the bottom of the plot — drives all 9 pairs
+ *      (they share one date axis).
  *
  * Fetches its own chart data on mount via fetchMovAveSpreadChart(code, secType).
  */
@@ -32,16 +37,30 @@ import {
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
+import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { UP_COLOR } from "@/theme/chart-palette";
 import { fmtNum, fmtPct } from "@/lib/series";
 import { fetchMovAveSpreadChart } from "@/lib/api-client";
-import type { MovAveSpreadChartResponse } from "../../../../shared/types";
+import type { OhlcMode } from "@/lib/ohlc";
+import type {
+  MovAveSpreadChartResponse,
+  MovAveSpreadPairSeries,
+} from "../../../../shared/types";
 import type { PanelProps } from "./types";
-import { buildPairOption } from "./chartOption";
+import { buildPairOption, type TradingAmtMode } from "./chartOption";
 
 /** Bollinger multiplier options for the top-right dropdown (0.0 … 3.0, step 0.5).
  *  0.0 = band hidden; 2.0 = standard Bollinger. */
 const BOLL_K_OPTIONS = [0, 0.5, 1, 1.5, 2, 2.5, 3];
+
+/**
+ * Long-MA column order used to lay out the 9 pair chips as a 2-row grid
+ * aligned by long MA (so Price/MA60 and MA5/MA60 share one column). The
+ * MA5 row leaves the MA5 column empty (no MA5/MA5 pair exists).
+ */
+const LONG_MA_ORDER = [5, 20, 60, 120, 255] as const;
+/** Column index of MA60 in LONG_MA_ORDER — gets the "Trend Study" header. */
+const TREND_STUDY_COL = 2;
 
 export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // ---- Chart data ---------------------------------------------------------
@@ -63,6 +82,14 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // MA5/MA pairs don't get the envelope and the dropdown is hidden.
   // Options: 0, 0.5, 1, 1.5, 2, 2.5, 3 (step 0.5).
   const [bollingerK, setBollingerK] = useState(2);
+
+  // Trading amount display mode: off / lowkey / highlight.
+  // Defaults to "lowkey" — shows subtle bars by default.
+  const [tradingAmtMode, setTradingAmtMode] = useState<TradingAmtMode>("lowkey");
+
+  // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
+  // from the first valid close; "absolute" shows raw prices.
+  const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
   // Fetch chart data on mount and whenever the code/sec_type changes.
   useEffect(() => {
@@ -98,9 +125,20 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     }));
   }, [chartData, range]);
 
+  // Lookup from `${ma_short}-${ma_long}` → index in filteredPairs, used to
+  // place each pair chip in its long-MA column of the 2-row pair grid.
+  const pairIndexMap = useMemo(() => {
+    const m = new Map<string, number>();
+    filteredPairs.forEach((p, i) => m.set(`${p.ma_short}-${p.ma_long}`, i));
+    return m;
+  }, [filteredPairs]);
+
   // Clamp selectedPairIdx to valid range.
   const safePairIdx = Math.min(selectedPairIdx, Math.max(0, filteredPairs.length - 1));
   const selectedPair = filteredPairs[safePairIdx];
+  // True when the active pair is a Price/MA60 or MA5/MA60 "trend study" pair —
+  // highlights the Trend Study column header.
+  const trendStudyActive = selectedPair?.ma_long === 60;
 
   // Optional secondary stat row from the latest snapshot of all 9 pairs —
   // surfaced as a small caption so the user can scan the page quickly.
@@ -113,40 +151,90 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
         : "")
     : `${code} · ${name || "—"}`;
 
-  // Bollinger dropdown shown in the card header's top-right corner. Only
-  // rendered for Price/MA pairs (ma_short === 0). For MA5/MA pairs the
-  // envelope doesn't apply (σ is of price, not of an MA-of-MA), so the
-  // dropdown is hidden entirely.
-  const bollAction = !loading && !error && selectedPair && selectedPair.ma_short === 0 ? (
-    <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mr: 0.5 }}>
-      <Typography
-        variant="caption"
-        color="text.secondary"
-        sx={{ fontSize: "0.7rem", whiteSpace: "nowrap" }}
-      >
-        Bollinger
-      </Typography>
-      <Select
-        size="small"
-        value={bollingerK}
-        onChange={(e) => setBollingerK(e.target.value as number)}
-        sx={{
-          height: 26,
-          fontSize: "0.75rem",
-          "& .MuiSelect-select": { py: 0.25, px: 1, fontSize: "0.75rem" },
-        }}
-        renderValue={(v) =>
-          v === 0 ? "Off" : `${Number(v).toFixed(1)}σ`
-        }
-      >
-        {BOLL_K_OPTIONS.map((k) => (
-          <MenuItem key={k} value={k} sx={{ fontSize: "0.75rem", py: 0.25 }}>
-            {k === 0 ? "Off (0.0)" : `${k.toFixed(1)}σ`}
-          </MenuItem>
-        ))}
-      </Select>
+  // Bollinger dropdown + Trading Amt toggle shown in the card header's top-right corner.
+  const bollAction = !loading && !error && selectedPair ? (
+    <Stack direction="row" alignItems="center" spacing={1} sx={{ mr: 0.5 }}>
+      {selectedPair.ma_short === 0 && (
+        <Stack direction="row" alignItems="center" spacing={0.5}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ fontSize: "0.7rem", whiteSpace: "nowrap" }}
+          >
+            Bollinger
+          </Typography>
+          <Select
+            size="small"
+            value={bollingerK}
+            onChange={(e) => setBollingerK(e.target.value as number)}
+            sx={{
+              height: 26,
+              fontSize: "0.75rem",
+              "& .MuiSelect-select": { py: 0.25, px: 1, fontSize: "0.75rem" },
+            }}
+            renderValue={(v) =>
+              v === 0 ? "Off" : `${Number(v).toFixed(1)}σ`
+            }
+          >
+            {BOLL_K_OPTIONS.map((k) => (
+              <MenuItem key={k} value={k} sx={{ fontSize: "0.75rem", py: 0.25 }}>
+                {k === 0 ? "Off (0.0)" : `${k.toFixed(1)}σ`}
+              </MenuItem>
+            ))}
+          </Select>
+        </Stack>
+      )}
+      <Stack direction="row" alignItems="center" spacing={0.5}>
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ fontSize: "0.7rem", whiteSpace: "nowrap" }}
+        >
+          Amt
+        </Typography>
+        <Chip
+          label={tradingAmtMode === "off" ? "Off" : tradingAmtMode === "lowkey" ? "Low" : "High"}
+          size="small"
+          clickable
+          color={tradingAmtMode === "off" ? "default" : "primary"}
+          variant={tradingAmtMode === "highlight" ? "filled" : "outlined"}
+          onClick={() => {
+            const next: TradingAmtMode =
+              tradingAmtMode === "off" ? "lowkey"
+              : tradingAmtMode === "lowkey" ? "highlight"
+              : "off";
+            setTradingAmtMode(next);
+          }}
+          sx={{ fontSize: "0.7rem", height: 22 }}
+        />
+      </Stack>
+      <OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />
     </Stack>
   ) : undefined;
+
+  // Render a single pair chip (used in the 2-row pair grid). The chip fills
+  // its grid column: display:flex overrides MUI's default inline-flex so
+  // width:100% takes effect, and the label is centered within.
+  const renderPairChip = (pair: MovAveSpreadPairSeries, idx: number) => {
+    const active = idx === safePairIdx;
+    return (
+      <Chip
+        label={pair.pair_label}
+        clickable
+        size="small"
+        color={active ? "primary" : "default"}
+        variant={active ? "filled" : "outlined"}
+        onClick={() => setSelectedPairIdx(idx)}
+        sx={{
+          fontSize: "0.7rem",
+          height: 24,
+          width: "100%",
+          display: "flex",
+          justifyContent: "center",
+        }}
+      />
+    );
+  };
 
   return (
     <ChartCard
@@ -161,32 +249,90 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
       )}
       {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
 
-      {!loading && !error && firstPairRows.length > 0 && maxIdx > 0 && (
-        <Box sx={{ px: 1, py: 0.5 }}>
-          <Slider
-            value={range}
-            onChange={(_, v) => setRange(v as [number, number])}
-            min={0}
-            max={maxIdx}
-            size="small"
-            valueLabelDisplay="auto"
-            valueLabelFormat={(idx) => firstPairRows[idx]?.date ?? ""}
-            sx={{ mt: 0.5, "& .MuiSlider-valueLabel": { fontSize: "0.7rem" } }}
-          />
-          <Stack direction="row" justifyContent="space-between" sx={{ mt: -0.5 }}>
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-              {firstPairRows[range[0]]?.date ?? "—"}
-            </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-              {firstPairRows[range[1]]?.date ?? "—"}
-            </Typography>
-          </Stack>
+      {/* Pair chips — two rows aligned by long MA (Price row + MA5 row),
+          with a "Trend Study" column header above the MA60 column. Moved to
+          the top of the card so the time slider can sit at the bottom. */}
+      {!loading && !error && filteredPairs.length > 0 && (
+        <Box sx={{ mt: 1, mb: 0.5 }}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ mb: 0.5, display: "block", fontSize: "0.7rem" }}
+          >
+            Pairs — click to switch
+          </Typography>
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+              gap: 0.75,
+              alignItems: "center",
+            }}
+          >
+            {/* Header row: "Trend Study" label above the MA60 column. */}
+            {LONG_MA_ORDER.map((maLong, col) => (
+              <Box
+                key={`hdr-${maLong}`}
+                sx={{ gridColumn: col + 1, textAlign: "center", minHeight: 18 }}
+              >
+                {col === TREND_STUDY_COL && (
+                  <Typography
+                    variant="caption"
+                    component="span"
+                    sx={{
+                      fontSize: "0.65rem",
+                      fontWeight: 700,
+                      px: 1,
+                      py: 0.25,
+                      borderRadius: 1,
+                      display: "inline-block",
+                      color: trendStudyActive ? "#fff" : "#B71C1C",
+                      bgcolor: trendStudyActive
+                        ? "rgba(229, 57, 53, 0.85)"
+                        : "rgba(229, 57, 53, 0.10)",
+                      border: "1px solid rgba(229, 57, 53, 0.35)",
+                    }}
+                  >
+                    Trend Study
+                  </Typography>
+                )}
+              </Box>
+            ))}
+            {/* Price row (ma_short = 0): one chip per long-MA column. */}
+            {LONG_MA_ORDER.map((maLong, col) => {
+              const idx = pairIndexMap.get(`0-${maLong}`);
+              return (
+                <Box key={`price-${col}`} sx={{ gridColumn: col + 1 }}>
+                  {idx != null && renderPairChip(filteredPairs[idx], idx)}
+                </Box>
+              );
+            })}
+            {/* MA5 row (ma_short = 5): no MA5/MA5 pair — col 0 left empty. */}
+            {LONG_MA_ORDER.map((maLong, col) => {
+              if (maLong === 5) {
+                return <Box key={`ma5-empty-${col}`} sx={{ gridColumn: col + 1 }} />;
+              }
+              const idx = pairIndexMap.get(`5-${maLong}`);
+              return (
+                <Box key={`ma5-${col}`} sx={{ gridColumn: col + 1 }}>
+                  {idx != null && renderPairChip(filteredPairs[idx], idx)}
+                </Box>
+              );
+            })}
+          </Box>
         </Box>
       )}
 
       {!loading && !error && selectedPair && selectedPair.rows.length > 0 && (
         <EChart
-          option={buildPairOption({ pair: selectedPair, themeMode, bollingerK })}
+          option={buildPairOption({
+            pair: selectedPair,
+            themeMode,
+            bollingerK,
+            tradingAmtMode,
+            valleyLows: chartData?.valley_lows,
+            ohlcMode,
+          })}
           height={420}
         />
       )}
@@ -222,33 +368,28 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
         </Typography>
       )}
 
-      {/* Pair chips row — click to switch the pair shown above. */}
-      {!loading && !error && filteredPairs.length > 0 && (
-        <Box sx={{ mt: 1 }}>
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{ mb: 0.5, display: "block", fontSize: "0.7rem" }}
-          >
-            Pairs — click to switch
-          </Typography>
-          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
-            {filteredPairs.map((pair, idx) => {
-              const active = idx === safePairIdx;
-              return (
-                <Chip
-                  key={pair.pair_label}
-                  label={pair.pair_label}
-                  clickable
-                  size="small"
-                  color={active ? "primary" : "default"}
-                  variant={active ? "filled" : "outlined"}
-                  onClick={() => setSelectedPairIdx(idx)}
-                  sx={{ fontSize: "0.75rem" }}
-                />
-              );
-            })}
-          </Box>
+      {/* Date-range slider — moved to the bottom of the plot. Drives all
+          9 pairs (they share one date axis). */}
+      {!loading && !error && firstPairRows.length > 0 && maxIdx > 0 && (
+        <Box sx={{ px: 1, py: 0.5, mt: 0.5 }}>
+          <Slider
+            value={range}
+            onChange={(_, v) => setRange(v as [number, number])}
+            min={0}
+            max={maxIdx}
+            size="small"
+            valueLabelDisplay="auto"
+            valueLabelFormat={(idx) => firstPairRows[idx]?.date ?? ""}
+            sx={{ mt: 0.5, "& .MuiSlider-valueLabel": { fontSize: "0.7rem" } }}
+          />
+          <Stack direction="row" justifyContent="space-between" sx={{ mt: -0.5 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
+              {firstPairRows[range[0]]?.date ?? "—"}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
+              {firstPairRows[range[1]]?.date ?? "—"}
+            </Typography>
+          </Stack>
         </Box>
       )}
     </ChartCard>

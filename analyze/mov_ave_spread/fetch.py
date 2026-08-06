@@ -48,8 +48,8 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
     Indices JOIN index_identity + index_basic_stats + JOIN index_tech_stats
     (no adjustment table — indices have no corporate actions).
 
-    Stock is not yet supported (no stats.stock_tech_stats table); add a
-    'stock' branch here once that table exists.
+    Stocks JOIN stock_identity + stock_basic_stats + JOIN stock_tech_stats
+    (no adjustment table — stocks use raw close as price).
     """
     if sec_type == "etf":
         return """
@@ -57,6 +57,9 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 i.code,
                 i.date,
                 COALESCE(a.adj_close, b.close) AS price,
+                COALESCE(a.adj_open, b.open)   AS open,
+                COALESCE(a.adj_low, b.low)     AS low,
+                COALESCE(a.adj_high, b.high)   AS high,
                 t.ma5, t.ma20, t.ma60, t.ma120, t.ma255
             FROM stats.etf_identity i
             JOIN stats.etf_basic_stats b ON b.date = i.date AND b.code = i.code
@@ -71,11 +74,31 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 i.code,
                 i.date,
                 b.close AS price,
+                b.open  AS open,
+                b.low   AS low,
+                b.high  AS high,
                 t.ma5, t.ma20, t.ma60, t.ma120, t.ma255
             FROM stats.index_identity i
             JOIN stats.index_basic_stats b ON b.date = i.date AND b.code = i.code
             JOIN stats.index_tech_stats  t ON t.date = i.date AND t.code = i.code
             WHERE i.code = ANY($1::text[])
+            ORDER BY i.code, i.date ASC
+        """
+    if sec_type == "stock":
+        return """
+            SELECT
+                i.code,
+                i.date,
+                b.close AS price,
+                b.open  AS open,
+                b.low   AS low,
+                b.high  AS high,
+                t.ma5, t.ma20, t.ma60, t.ma120, t.ma255
+            FROM stats.stock_identity i
+            JOIN stats.stock_basic_stats b ON b.date = i.date AND b.code = i.code
+            JOIN stats.stock_tech_stats  t ON t.date = i.date AND t.code = i.code
+            WHERE i.code = ANY($1::text[])
+              AND b.close IS NOT NULL
             ORDER BY i.code, i.date ASC
         """
     raise ValueError(f"Unknown sec_type: {sec_type!r}")
@@ -88,8 +111,8 @@ async def fetch_source_data(
     target_dates: Optional[Set[datetime.date]] = None,
 ) -> pd.DataFrame:
     """Fetch per-(code, date) price + MAs from the stats schema for the
-    given sec_type ('etf' or 'index'), then compute per-(code) slope and
-    curvature for each MA window.
+    given sec_type ('etf', 'index', or 'stock'), then compute per-(code)
+    slope and curvature for each MA window.
 
     Pre-filter: only codes with at least one identity-table row in the last
     RECENT_TRADING_DAYS trading days are loaded. A code with no recent data
@@ -138,12 +161,14 @@ async def fetch_source_data(
           f"(cutoff={cutoff.isoformat()})", flush=True)
     if not active_codes:
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
+                                     "open", "low", "high",
                                      "ma5", "ma20", "ma60", "ma120", "ma255"])
 
     sql = _fetch_sql_for_sec_type(sec_type)
     rows = await conn.fetch(sql, sorted(active_codes))
     if not rows:
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
+                                     "open", "low", "high",
                                      "ma5", "ma20", "ma60", "ma120", "ma255"])
     # asyncpg.Record -> dict so pandas picks up column names (not integer indices).
     df = pd.DataFrame([dict(r) for r in rows])
@@ -160,7 +185,7 @@ async def fetch_source_data(
     # Ensure date column is python date (not datetime) for clean serialization
     df["date"] = pd.to_datetime(df["date"]).dt.date
     # Coerce numeric columns to float (asyncpg returns Decimal for NUMERIC)
-    for col in ("price", "ma5", "ma20", "ma60", "ma120", "ma255"):
+    for col in ("price", "open", "low", "high", "ma5", "ma20", "ma60", "ma120", "ma255"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     # Compute slope (1st derivative) and curvature (2nd derivative) per code.
     # This is computed over the FULL per-code history so the diff() values
@@ -181,7 +206,7 @@ async def fetch_source_data(
               flush=True)
 
     # Reorder columns for readability.
-    df = df[["sec_type", "code", "date", "price",
+    df = df[["sec_type", "code", "date", "price", "open", "low", "high",
              "ma5", "ma20", "ma60", "ma120", "ma255",
              "price_slope", "price_curvature",
              "ma5_slope", "ma20_slope", "ma60_slope", "ma120_slope", "ma255_slope",

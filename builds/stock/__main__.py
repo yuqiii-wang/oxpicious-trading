@@ -58,12 +58,14 @@ Usage:
   python build_szse_sse_bse_stocks.py --force
 """
 import os
+import re
 import sys
 import time
 import argparse
 import bisect
 import datetime
 from collections import Counter, defaultdict
+from pathlib import Path
 from dateutil.relativedelta import relativedelta
 
 import warnings
@@ -72,13 +74,13 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 
-from downloads._common.core import add_exchange_suffix
+from downloads._common.core import add_exchange_suffix, read_csv_preferred
 from utils.build_commons import (
     setup_utf8_stdout, add_common_build_args, get_db_or_exit,
     find_missing_dates, glob_source_files, ymd_from_filename, ymd_to_date,
     filter_source_files_by_missing_dates, select_source_files_in_range,
     print_build_header, print_wall_time, PROJECT_ROOT, TODAY_STR,
-    bulk_upsert_async, truncate_table_async,
+    bulk_upsert_async, truncate_table_async, parse_num,
 )
 
 setup_utf8_stdout()
@@ -95,6 +97,19 @@ BSE_TREND_DIR     = os.path.join(PROJECT_ROOT, "temps", "bse_trend")
 # SSE PE files are per-stock ({code}_pe.csv) in the sse_archive dir, separate
 # from the daily trend CSVs (SSE dayk endpoint does not publish PE).
 SSE_PE_DIR        = os.path.join(PROJECT_ROOT, "temps", "sse_archive")
+# Margin detail CSVs (per-security 融资融券). SSE margin detail contains BOTH
+# ETFs (510xxx/511xxx/...) and stocks (600xxx/601xxx/...); SZSE margin detail
+# contains both ETFs (159xxx/150xxx) and stocks (000xxx/001xxx/...). The
+# stock builder filters to STOCK codes only (excludes ETF prefixes) so it
+# doesn't double-count ETF margin rows that builds/etf already loads.
+SZSE_MARGIN_DIR   = os.path.join(PROJECT_ROOT, "temps", "szse_margin")
+SSE_MARGIN_DIR    = os.path.join(PROJECT_ROOT, "temps", "sse_margin")
+
+# ETF code prefixes — used to EXCLUDE ETF rows from margin CSVs (those are
+# loaded by builds/etf into etf_liquidity_margin). Mirrors the ETF prefix
+# lists in builds/etf/__main__.py.
+SZSE_ETF_PREFIXES = ("15", "16")
+SSE_ETF_PREFIXES  = ("510", "511", "512", "513", "515", "516", "518", "56")
 
 COL_MAP = {
     "交易日期":     "date",
@@ -451,6 +466,226 @@ def _read_sse_archive_trend_files(start_date=None, end_date=None, limit=None):
 
 
 # ============================================================================
+# Stock margin (融资融券) — read SZSE + SSE margin detail CSVs, filter to stocks
+# ============================================================================
+# Mirrors builds/etf/_scan_margin_dir + build_margin_df, but filters to STOCK
+# codes (excludes ETF prefixes). The margin CSVs contain one row per security
+# per date; for stocks we keep rows whose 6-digit code does NOT start with an
+# ETF prefix (15/16 for SZSE, 510/511/512/513/515/516/518/56 for SSE).
+#
+# Column differences between SZSE and SSE detail CSVs:
+#   SSE:  信用交易日期, 证券代码, 证券简称, 融资余额(元), 融资买入额(元),
+#         融资偿还额(元), 融券余量(股/份), 融券卖出量(股/份), 融券偿还量(股/份)
+#         → NO 融券余额(元), NO 融资融券余额(元)
+#   SZSE: 证券代码, 证券简称, 融资买入额(元), 融资余额(元), 融券卖出量(股/份),
+#         融券余量(股/份), 融券余额(元), 融资融券余额(元)
+#         → NO 信用交易日期 (date from filename), NO 融资偿还额(元),
+#           NO 融券偿还量(股/份)
+# Missing columns are treated as 0 via parse_num(r.get(...)) — SSE stocks get
+# rq_balance_amt=0 and total_balance=0; SZSE stocks get the actual values.
+def _scan_stock_margin_dir(scan_dir, file_prefix, market, verbose=True, files=None):
+    """Read margin detail CSVs from one directory, filtering to stock codes.
+
+    Args:
+        scan_dir: directory containing {file_prefix}*.csv files
+        file_prefix: e.g. "szse_margin_detail_" or "sse_margin_detail_"
+        market: "深圳" for SZSE (codes get .SZ suffix) or "上海" for SSE (.SS)
+        verbose: print per-directory stats
+        files: optional list of file paths (incremental mode); if None, glob all
+
+    Returns (rows, n_files_with_data, n_empty_files).
+    """
+    if files is None:
+        files = glob_source_files(scan_dir, f"{file_prefix}*.csv")
+    else:
+        files = [f for f in files if os.path.basename(f).startswith(file_prefix)]
+    if verbose:
+        print(f"    [STOCK-MARGIN-{market}] reading {len(files)} {file_prefix}*.csv files",
+              flush=True)
+
+    rows = []
+    n_empty = 0
+    n_ok = 0
+    for path in files:
+        ymd = ymd_from_filename(path, file_prefix)
+        if not ymd:
+            continue
+        xlsx_path = str(Path(path).with_suffix(".xlsx"))
+        try:
+            df = read_csv_preferred(xlsx_path, dtype={"证券代码": str, "证券简称": str})
+        except Exception:
+            continue
+        if df is None or len(df) == 0:
+            n_empty += 1
+            continue
+        first_cell = str(df.iloc[0, 0]) if len(df) else ""
+        if "没有找到" in first_cell or "无数据" in first_cell:
+            n_empty += 1
+            continue
+        if "证券代码" not in df.columns:
+            continue
+
+        # Normalize code to bare 6-digit string (strip any .SS/.SZ suffix
+        # already present in SSE detail CSVs).
+        df["_code"] = df["证券代码"].astype(str).str.strip()
+        df["_code"] = df["_code"].apply(
+            lambda s: str(int(float(s))).zfill(6) if re.fullmatch(r"\d+(\.0+)?", s or "") else s
+        )
+        df["_code_base"] = df["_code"].str.split(".").str[0]
+
+        # Filter to STOCK codes — exclude ETF prefixes.
+        if market == "深圳":
+            is_etf = df["_code_base"].str.startswith(SZSE_ETF_PREFIXES) & (df["_code_base"].str.len() == 6)
+            default_suffix = ".SZ"
+        else:
+            is_etf = df["_code_base"].str.startswith(SSE_ETF_PREFIXES) & (df["_code_base"].str.len() == 6)
+            default_suffix = ".SS"
+        df = df[~is_etf].copy()
+        # Also require the code to be 6-digit numeric (filters out header
+        # echoes, totals rows, or other non-security rows).
+        df = df[df["_code_base"].str.fullmatch(r"\d{6}")].copy()
+        if len(df) == 0:
+            continue
+
+        date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
+        for _, r in df.iterrows():
+            code = r["_code"]
+            code_with_suffix = code if "." in code else f"{code}{default_suffix}"
+            rows.append({
+                "date":           date_str,
+                "code":           code_with_suffix,
+                "rz_buy":         parse_num(r.get("融资买入额(元)")),
+                "rz_balance":     parse_num(r.get("融资余额(元)")),
+                "rq_sell_qty":    parse_num(r.get("融券卖出量(股/份)")),
+                "rq_balance_qty": parse_num(r.get("融券余量(股/份)")),
+                "rq_balance_amt": parse_num(r.get("融券余额(元)")),
+                "total_balance":  parse_num(r.get("融资融券余额(元)")),
+            })
+        n_ok += 1
+    if verbose:
+        print(f"    [STOCK-MARGIN-{market}] {n_ok} files with data, {n_empty} empty, "
+              f"{len(rows)} stock rows", flush=True)
+    return rows, n_ok, n_empty
+
+
+def build_stock_margin_df(verbose=True, margin_files=None):
+    """Read margin CSVs from SZSE + SSE dirs and return a long DataFrame.
+
+    Args:
+        verbose: print stats
+        margin_files: optional dict {"szse": [...], "sse": [...]} for incremental
+                      mode (only read these files). If None, glob all files.
+    """
+    all_rows = []
+    n_ok_total = 0
+    n_empty_total = 0
+
+    if margin_files is not None:
+        if margin_files.get("szse"):
+            rows_szse, ok_szse, empty_szse = _scan_stock_margin_dir(
+                SZSE_MARGIN_DIR, "szse_margin_detail_", "深圳", verbose,
+                files=margin_files["szse"])
+            all_rows.extend(rows_szse)
+            n_ok_total += ok_szse
+            n_empty_total += empty_szse
+        if margin_files.get("sse"):
+            rows_sse, ok_sse, empty_sse = _scan_stock_margin_dir(
+                SSE_MARGIN_DIR, "sse_margin_detail_", "上海", verbose,
+                files=margin_files["sse"])
+            all_rows.extend(rows_sse)
+            n_ok_total += ok_sse
+            n_empty_total += empty_sse
+    else:
+        if os.path.isdir(SZSE_MARGIN_DIR):
+            rows_szse, ok_szse, empty_szse = _scan_stock_margin_dir(
+                SZSE_MARGIN_DIR, "szse_margin_detail_", "深圳", verbose)
+            all_rows.extend(rows_szse)
+            n_ok_total += ok_szse
+            n_empty_total += empty_szse
+        if os.path.isdir(SSE_MARGIN_DIR):
+            rows_sse, ok_sse, empty_sse = _scan_stock_margin_dir(
+                SSE_MARGIN_DIR, "sse_margin_detail_", "上海", verbose)
+            all_rows.extend(rows_sse)
+            n_ok_total += ok_sse
+            n_empty_total += empty_sse
+
+    if not all_rows:
+        if verbose:
+            print(f"    [STOCK-MARGIN] total: {n_ok_total} files with data, "
+                  f"{n_empty_total} empty, {len(all_rows)} rows", flush=True)
+        return pd.DataFrame()
+
+    out = pd.DataFrame(all_rows)
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out = out.dropna(subset=["date"])
+
+    margin_cols = ["rz_buy", "rz_balance", "rq_sell_qty", "rq_balance_qty",
+                   "rq_balance_amt", "total_balance"]
+    for c in margin_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
+
+    n_before = len(out)
+    # Sum duplicate (date, code) rows — a stock could appear twice in one
+    # day's detail file (rare, but possible). Keep first code's identity.
+    out = out.groupby(["date", "code"], as_index=False)[margin_cols].sum()
+    n_after = len(out)
+    n_merged = n_before - n_after
+
+    if verbose:
+        print(f"    [STOCK-MARGIN] total: {n_ok_total} files with data, "
+              f"{n_empty_total} empty, {n_before} raw rows → {n_after} merged rows "
+              f"({n_merged} duplicates handled)", flush=True)
+
+    out = out.sort_values(["code", "date"]).reset_index(drop=True)
+    return out
+
+
+def merge_stock_margin(combined, margin_df, verbose=True):
+    """Merge margin data into the combined OHLCV+PE DataFrame by (date, code).
+
+    LEFT JOIN: every row in `combined` is preserved. Rows with no matching
+    margin row (most stocks most days — only margin-eligible stocks appear in
+    the margin CSVs) get 0 for all 6 margin columns. This matches the
+    etf_liquidity_margin convention (NOT NULL DEFAULT 0).
+
+    Args:
+        combined: main OHLCV+PE DataFrame (must have date, code columns)
+        margin_df: DataFrame from build_stock_margin_df() with margin columns
+        verbose: print merge stats
+
+    Returns:
+        combined with 6 margin columns added (rz_buy, rz_balance, rq_sell_qty,
+        rq_balance_qty, rq_balance_amt, total_balance), all non-null (0 when
+        no margin data).
+    """
+    margin_cols = ["rz_buy", "rz_balance", "rq_sell_qty", "rq_balance_qty",
+                   "rq_balance_amt", "total_balance"]
+    if margin_df is None or margin_df.empty:
+        if verbose:
+            print("    [MARGIN-MERGE] No stock margin data — all margin cols set to 0",
+                  flush=True)
+        for c in margin_cols:
+            combined[c] = 0.0
+        return combined
+
+    before_n_rows = len(combined)
+    merged = combined.merge(
+        margin_df[["date", "code"] + margin_cols],
+        on=["date", "code"],
+        how="left",
+    )
+    # Fill NaN margin values with 0 (NOT NULL DEFAULT 0 convention).
+    for c in margin_cols:
+        merged[c] = merged[c].fillna(0.0)
+
+    n_with_margin = (merged["rz_balance"] > 0).sum()
+    if verbose:
+        print(f"    [MARGIN-MERGE] {n_with_margin:,} / {before_n_rows:,} rows have "
+              f"non-zero rz_balance (margin-eligible stocks)", flush=True)
+    return merged
+
+
+# ============================================================================
 # PE estimation — fill missing PE from last actual PE (constant-EPS assumption)
 # ============================================================================
 async def estimate_missing_pe_async(conn, missing_pe_rows,
@@ -674,6 +909,15 @@ async def main():
                     break
     print(f"    → {len(available_dates)} unique dates available in source files", flush=True)
 
+    # Discover margin detail CSVs (SZSE + SSE). These are read ONLY for
+    # dates in `missing_dates` (computed below) so we don't re-parse margin
+    # files for dates already loaded. In --force mode all margin files are
+    # read (stock_identity is truncated, so all dates are "missing").
+    szse_margin_files_all = glob_source_files(SZSE_MARGIN_DIR, "szse_margin_detail_*.csv")
+    sse_margin_files_all  = glob_source_files(SSE_MARGIN_DIR, "sse_margin_detail_*.csv")
+    print(f"    → Margin: {len(szse_margin_files_all)} szse + {len(sse_margin_files_all)} sse files",
+          flush=True)
+
     # Date range of the source history — used to bound the PE-estimation
     # query so it only fetches baselines within the history window (e.g.,
     # if history starts from 2020, don't use 2019 DB baselines).
@@ -692,6 +936,11 @@ async def main():
     try:
         if args.force:
             print("    [DB] Force mode: truncating existing tables", flush=True)
+            # Truncate child tables first (FK order), then identity (parent).
+            # truncate_table_async uses CASCADE, so truncating stock_identity
+            # would cascade to all children — but explicit truncates make
+            # the intent clear and avoid surprising cascade behavior.
+            await truncate_table_async(conn, "stats.stock_liquidity_margin")
             await truncate_table_async(conn, "stats.stock_basic_stats")
             await truncate_table_async(conn, "stats.stock_identity")
             missing_dates = available_dates  # all dates are missing after truncate
@@ -828,10 +1077,236 @@ async def main():
             if history_end is None or combined_max > history_end:
                 history_end = combined_max
 
-        if len(combined) == 0:
+        # ------------------------------------------------------------------
+        # 3c. Load stock margin (融资融券) from SZSE + SSE margin detail CSVs
+        # ------------------------------------------------------------------
+        # Margin target dates = dates that need margin data loaded:
+        #   - missing_dates: new OHLCV dates being loaded (margin loaded
+        #     alongside OHLCV)
+        #   - missing_margin_dates: dates already in stock_liquidity_margin
+        #     but with ALL margin cols = 0 (margin data not yet loaded from
+        #     CSVs). This covers the post-migration case where
+        #     stock_liquidity_margin was populated by copying
+        #     trading_shares/trading_amount from stock_basic_stats, but the
+        #     6 margin cols (rz_*, rq_*, total_balance) are still 0.
+        #     Detection: GROUP BY date HAVING MAX(rz_balance)=0 AND ... —
+        #     if NO stock on that date has any margin activity, the margin
+        #     CSV hasn't been processed yet (SSE/SZSE detail files always
+        #     contain hundreds of margin-eligible stocks with non-zero
+        #     balances, so MAX=0 reliably identifies un-loaded dates).
+        #
+        # For the backfill case, OHLCV source CSVs are re-read for those
+        # dates to recover trading_shares/trading_amount (which now live in
+        # stock_liquidity_margin, not stock_basic_stats). OHLCV upsert into
+        # stock_basic_stats is idempotent, so re-inserting is harmless.
+        margin_available_dates = set()
+        for f in szse_margin_files_all + sse_margin_files_all:
+            for prefix in ("szse_margin_detail_", "sse_margin_detail_"):
+                ymd = ymd_from_filename(f, prefix)
+                if ymd:
+                    d = ymd_to_date(ymd)
+                    if d:
+                        margin_available_dates.add(d)
+                        break
+
+        if args.force:
+            margin_target_dates = set(missing_dates)  # = all available_dates
+        else:
+            # Find dates where margin/liquidity data needs backfill. Three cases:
+            #
+            # (a) Dates IN stock_liquidity_margin but with ALL margin cols = 0
+            #     (post-migration: trading_shares/trading_amount were copied
+            #     from stock_basic_stats, but the 6 margin cols are still 0).
+            #     Detection: GROUP BY date HAVING MAX(rz_balance)=0 AND ... —
+            #     if NO stock on that date has any margin activity, the margin
+            #     CSV hasn't been processed yet.
+            #
+            # (b) Dates IN stock_identity but NOT in stock_liquidity_margin
+            #     at all (e.g., OHLCV loaded after the migration, or dates
+            #     where stock_basic_stats had NULL trading_shares/trading_amount
+            #     so the migration didn't copy them). These need BOTH
+            #     liquidity AND margin loaded.
+            #
+            # (c) Dates IN stock_liquidity_margin with margin data but
+            #     trading_shares=0 AND trading_amount=0 (margin was loaded
+            #     via margin-only path but OHLCV source wasn't available at
+            #     the time). These need OHLCV re-read to recover liquidity.
+            if margin_available_dates:
+                margin_backfill_rows = await conn.fetch(
+                    """
+                    SELECT slm.date
+                    FROM stats.stock_liquidity_margin slm
+                    WHERE slm.date = ANY($1::date[])
+                    GROUP BY slm.date
+                    HAVING MAX(slm.rz_balance) = 0
+                       AND MAX(slm.rz_buy) = 0
+                       AND MAX(slm.rq_sell_qty) = 0
+                       AND MAX(slm.rq_balance_qty) = 0
+                       AND MAX(slm.rq_balance_amt) = 0
+                       AND MAX(slm.total_balance) = 0
+                    """,
+                    sorted(margin_available_dates),
+                )
+                missing_margin_dates = {r["date"] for r in margin_backfill_rows}
+
+                # (b) Dates in stock_identity but NOT in stock_liquidity_margin
+                missing_liq_rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT si.date
+                    FROM stats.stock_identity si
+                    LEFT JOIN stats.stock_liquidity_margin slm
+                      ON si.date = slm.date
+                    WHERE si.date = ANY($1::date[])
+                      AND slm.date IS NULL
+                    """,
+                    sorted(margin_available_dates),
+                )
+                missing_liq_dates = {r["date"] for r in missing_liq_rows}
+
+                # (c) Dates in stock_liquidity_margin with margin data but
+                #     no liquidity (trading_shares=0 AND trading_amount=0).
+                #     These were loaded via margin-only upsert without OHLCV.
+                missing_liquidity_rows = await conn.fetch(
+                    """
+                    SELECT slm.date
+                    FROM stats.stock_liquidity_margin slm
+                    WHERE slm.date = ANY($1::date[])
+                      AND slm.trading_shares = 0
+                      AND slm.trading_amount = 0
+                      AND slm.rz_balance > 0
+                    GROUP BY slm.date
+                    """,
+                    sorted(margin_available_dates),
+                )
+                missing_liquidity_dates = {
+                    r["date"] for r in missing_liquidity_rows
+                }
+            else:
+                missing_margin_dates = set()
+                missing_liq_dates = set()
+                missing_liquidity_dates = set()
+            margin_target_dates = (
+                set(missing_dates)
+                | set(missing_margin_dates)
+                | set(missing_liq_dates)
+                | set(missing_liquidity_dates)
+            )
+            if missing_margin_dates:
+                print(f"    [MARGIN] {len(missing_margin_dates)} dates need "
+                      f"margin backfill (all margin cols = 0 in "
+                      f"stock_liquidity_margin)", flush=True)
+            if missing_liq_dates:
+                print(f"    [MARGIN] {len(missing_liq_dates)} dates need "
+                      f"liquidity + margin (in stock_identity but NOT in "
+                      f"stock_liquidity_margin)", flush=True)
+            if missing_liquidity_dates:
+                print(f"    [MARGIN] {len(missing_liquidity_dates)} dates need "
+                      f"liquidity backfill (margin loaded but "
+                      f"trading_shares/amount = 0)", flush=True)
+
+        # If combined has no OHLCV rows (empty or PE-only with NULL close)
+        # but margin backfill is needed, re-read OHLCV source CSVs for the
+        # margin target dates to recover trading_shares/trading_amount.
+        # Without this, margin rows would have 0 for trading_shares/
+        # trading_amount (NOT NULL DEFAULT 0), losing the liquidity data
+        # that belongs in stock_liquidity_margin.
+        #
+        # The condition checks close.notna().any() because combined may
+        # contain PE-only rows (NULL OHLCV from the SSE PE merge) which
+        # don't help with liquidity — we need actual OHLCV rows.
+        #
+        # NOTE: margin_target_dates may include dates OUTSIDE the
+        # --start-date/--end-date range (e.g., old dates that need margin
+        # backfill). all_files is filtered to the date range, so we glob
+        # ALL source files here (unfiltered) to cover those dates.
+        has_ohlcv = (
+            len(combined) > 0
+            and "close" in combined.columns
+            and combined["close"].notna().any()
+        )
+        if not has_ohlcv and margin_target_dates:
+            print(f"\n    [MARGIN-BACKFILL] Loading OHLCV source CSVs for "
+                  f"{len(margin_target_dates)} margin target dates …",
+                  flush=True)
+            # Glob ALL source files (not just date-range-filtered) so we
+            # can recover OHLCV for margin target dates outside the range.
+            all_source_files = discover_source_files()
+            backfill_file_pairs = []
+            for path, market in all_source_files:
+                for _dir, _pat, prefix, _mkt in SOURCE_FILE_SETS:
+                    ymd = ymd_from_filename(path, prefix)
+                    if ymd:
+                        d = ymd_to_date(ymd)
+                        if d and d in margin_target_dates:
+                            backfill_file_pairs.append((path, market))
+                            break
+            print(f"    → {len(backfill_file_pairs)} source CSV files to read "
+                  f"for margin backfill", flush=True)
+            ohlcv_backfill = build_missing_rows(backfill_file_pairs, verbose=True)
+            if len(ohlcv_backfill) > 0:
+                # Concat with existing combined (may have PE-only rows).
+                # Dedupe by (date, code) keeping the row with non-NULL close
+                # (OHLCV rows win over PE-only rows).
+                if len(combined) > 0:
+                    combined = pd.concat(
+                        [combined, ohlcv_backfill], ignore_index=True
+                    )
+                    combined["date"] = pd.to_datetime(
+                        combined["date"], errors="coerce"
+                    )
+                    # Sort so OHLCV rows (non-NULL close) come last →
+                    # drop_duplicates(keep="last") keeps them over PE-only.
+                    combined = combined.sort_values(
+                        ["date", "code", "close"], na_position="first"
+                    ).reset_index(drop=True)
+                    combined = combined.drop_duplicates(
+                        subset=["date", "code"], keep="last"
+                    ).reset_index(drop=True)
+                else:
+                    combined = ohlcv_backfill
+
+        if len(combined) == 0 and not margin_target_dates:
             print("    [INFO] No new rows to insert", flush=True)
             print_wall_time(t0)
             return
+
+        # Build margin DataFrame for target dates (filtered from the globbed
+        # margin file lists). In --force mode, all margin files are read.
+        if margin_target_dates:
+            print(f"\n    Loading stock margin from SZSE + SSE detail CSVs "
+                  f"({len(margin_target_dates)} target dates) …", flush=True)
+            if args.force:
+                margin_file_sets = {
+                    "szse": szse_margin_files_all,
+                    "sse":  sse_margin_files_all,
+                }
+            else:
+                missing_szse_margin = [
+                    f for f in szse_margin_files_all
+                    if ymd_from_filename(f, "szse_margin_detail_")
+                    and ymd_to_date(ymd_from_filename(f, "szse_margin_detail_"))
+                    in margin_target_dates
+                ]
+                missing_sse_margin = [
+                    f for f in sse_margin_files_all
+                    if ymd_from_filename(f, "sse_margin_detail_")
+                    and ymd_to_date(ymd_from_filename(f, "sse_margin_detail_"))
+                    in margin_target_dates
+                ]
+                margin_file_sets = {
+                    "szse": missing_szse_margin,
+                    "sse":  missing_sse_margin,
+                }
+            margin_df = build_stock_margin_df(
+                verbose=True, margin_files=margin_file_sets
+            )
+        else:
+            margin_df = None
+
+        # Merge margin cols into combined OHLCV+PE DataFrame (LEFT JOIN —
+        # every OHLCV row is preserved; rows with no margin data get 0 for
+        # all 6 margin cols, matching the NOT NULL DEFAULT 0 convention).
+        combined = merge_stock_margin(combined, margin_df, verbose=True)
 
         # ------------------------------------------------------------------
         # 4. Insert into database (two-pass: actual PE first, then estimated)
@@ -937,8 +1412,6 @@ async def main():
                 "pe": _to_db(row.get("pe")),
                 "is_pe_estimated": False,
                 "is_close_estimated": bool(row.get("is_close_estimated", False)),
-                "trading_shares": _to_db(row.get("trading_shares")),
-                "trading_amount": _to_db(row.get("trading_amount")),
             }
             if close_val is None:
                 pe_only_actual_rows.append(entry)
@@ -1028,8 +1501,6 @@ async def main():
                     # rows with no prior actual PE get NULL pe and false.
                     "is_pe_estimated": est_pe is not None,
                     "is_close_estimated": bool(row.get("is_close_estimated", False)),
-                    "trading_shares": _to_db(row.get("trading_shares")),
-                    "trading_amount": _to_db(row.get("trading_amount")),
                 })
 
             if estimated_basic_stats_rows:
@@ -1044,6 +1515,178 @@ async def main():
                       flush=True)
         else:
             print(f"    [DB] No missing-PE rows to estimate", flush=True)
+
+        # --- 4d. Insert liquidity + margin rows into stock_liquidity_margin --
+        # Two insert paths:
+        #
+        # (1) FULL rows (from combined_db): rows with OHLCV data get all 8
+        #     cols (trading_shares, trading_amount + 6 margin cols). This
+        #     handles new OHLCV dates where both OHLCV and margin are loaded
+        #     together. Rows with NULL close (PE-only from merge_sse_pe) are
+        #     excluded — they have no OHLCV and semantically don't belong in
+        #     this table.
+        #
+        # (2) MARGIN-ONLY rows (from margin_df): for backfill dates where
+        #     OHLCV source CSVs don't exist (e.g., old SSE dates without
+        #     date-grouped files), margin data would be lost in the LEFT
+        #     JOIN of merge_stock_margin. This second insert updates ONLY
+        #     the 6 margin cols, preserving existing trading_shares/
+        #     trading_amount (migrated from stock_basic_stats or loaded in
+        #     path 1). Filtered against stock_identity to avoid FK
+        #     violations for delisted stocks not in the OHLCV source.
+        liq_rows = []
+        for _, row in combined_db.iterrows():
+            close_val = _to_db(row.get("close"))
+            if close_val is None:
+                continue  # PE-only row — no OHLCV, skip
+            liq_rows.append({
+                "date":             row["date"],
+                "code":             str(row["code"]),
+                "trading_shares":   _to_db(row.get("trading_shares")) or 0,
+                "trading_amount":   _to_db(row.get("trading_amount")) or 0,
+                "rz_buy":           _to_db(row.get("rz_buy")) or 0,
+                "rz_balance":       _to_db(row.get("rz_balance")) or 0,
+                "rq_sell_qty":      _to_db(row.get("rq_sell_qty")) or 0,
+                "rq_balance_qty":   _to_db(row.get("rq_balance_qty")) or 0,
+                "rq_balance_amt":   _to_db(row.get("rq_balance_amt")) or 0,
+                "total_balance":    _to_db(row.get("total_balance")) or 0,
+            })
+
+        if liq_rows:
+            inserted = await bulk_upsert_async(
+                conn, "stats.stock_liquidity_margin", liq_rows, ["date", "code"]
+            )
+            n_with_margin = sum(
+                1 for r in liq_rows if (r.get("rz_balance") or 0) > 0
+            )
+            print(f"    [DB] Inserted {inserted:,} rows into "
+                  f"stats.stock_liquidity_margin ({n_with_margin:,} with "
+                  f"non-zero rz_balance)", flush=True)
+        else:
+            print(f"    [DB] No OHLCV rows to insert into "
+                  f"stats.stock_liquidity_margin", flush=True)
+
+        # (2) Margin-only backfill: update 6 margin cols for rows NOT
+        # already covered by the OHLCV insert above. This catches margin
+        # rows for dates where OHLCV source CSVs don't exist (old SSE
+        # dates) or stocks not in the OHLCV source but present in
+        # stock_identity. trading_shares/trading_amount are NOT in the
+        # row dict, so existing values are preserved (ON CONFLICT DO
+        # UPDATE SET only updates the 6 margin cols).
+        #
+        # FK safety: stock_liquidity_margin has FK (date, code) →
+        # stock_identity. Margin CSVs may contain delisted stocks not in
+        # stock_identity. Instead of loading millions of identity pairs
+        # into Python for filtering, we use a server-side temp table +
+        # JOIN approach: insert margin rows into a temp table, then
+        # INSERT ... SELECT ... JOIN stock_identity (invalid pairs are
+        # dropped by the INNER JOIN). This is efficient for 4M+ rows.
+        if margin_df is not None and len(margin_df) > 0:
+            # Convert margin_df dates to datetime.date for asyncpg.
+            margin_df_db = margin_df.copy()
+            margin_df_db["date"] = pd.to_datetime(
+                margin_df_db["date"]
+            ).dt.date
+
+            # Build the set of (date, code) pairs already inserted in
+            # path (1) so we don't re-upsert them (redundant, not wrong).
+            ohlcv_keys = {
+                (r["date"], r["code"]) for r in liq_rows
+            }
+
+            margin_only_rows = []
+            for _, row in margin_df_db.iterrows():
+                key = (row["date"], str(row["code"]))
+                if key in ohlcv_keys:
+                    continue  # already inserted with full 8 cols
+                margin_only_rows.append({
+                    "date":            row["date"],
+                    "code":            str(row["code"]),
+                    "rz_buy":          _to_db(row.get("rz_buy")) or 0,
+                    "rz_balance":      _to_db(row.get("rz_balance")) or 0,
+                    "rq_sell_qty":     _to_db(row.get("rq_sell_qty")) or 0,
+                    "rq_balance_qty":  _to_db(row.get("rq_balance_qty")) or 0,
+                    "rq_balance_amt":  _to_db(row.get("rq_balance_amt")) or 0,
+                    "total_balance":   _to_db(row.get("total_balance")) or 0,
+                })
+
+            if margin_only_rows:
+                # Server-side FK filtering via temp table + INNER JOIN
+                # with stock_identity. This avoids loading millions of
+                # identity pairs into Python.
+                print(f"    [DB] Preparing {len(margin_only_rows):,} "
+                      f"margin-only rows for upsert (FK filtering via "
+                      f"temp table)…", flush=True)
+                async with conn.transaction():
+                    await conn.execute(
+                        "CREATE TEMP TABLE _margin_upsert ("
+                        "  date DATE, code TEXT, "
+                        "  rz_buy NUMERIC(24,4), rz_balance NUMERIC(24,4), "
+                        "  rq_sell_qty NUMERIC(24,4), "
+                        "  rq_balance_qty NUMERIC(24,4), "
+                        "  rq_balance_amt NUMERIC(24,4), "
+                        "  total_balance NUMERIC(24,4)"
+                        ") ON COMMIT DROP"
+                    )
+                    # Batch-insert margin rows into temp table
+                    temp_values = [
+                        (r["date"], r["code"],
+                         r["rz_buy"], r["rz_balance"],
+                         r["rq_sell_qty"], r["rq_balance_qty"],
+                         r["rq_balance_amt"], r["total_balance"])
+                        for r in margin_only_rows
+                    ]
+                    insert_query = (
+                        "INSERT INTO _margin_upsert "
+                        "(date, code, rz_buy, rz_balance, rq_sell_qty, "
+                        " rq_balance_qty, rq_balance_amt, total_balance) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+                    )
+                    for i in range(0, len(temp_values), 1000):
+                        await conn.executemany(
+                            insert_query, temp_values[i:i + 1000]
+                        )
+
+                    # Upsert from temp table, INNER JOIN stock_identity
+                    # to filter out FK-violating rows. Only updates the 6
+                    # margin cols (trading_shares/trading_amount NOT in
+                    # the SELECT, so existing values are preserved).
+                    result = await conn.execute(
+                        "INSERT INTO stats.stock_liquidity_margin "
+                        "(date, code, rz_buy, rz_balance, rq_sell_qty, "
+                        " rq_balance_qty, rq_balance_amt, total_balance) "
+                        "SELECT t.date, t.code, t.rz_buy, t.rz_balance, "
+                        "       t.rq_sell_qty, t.rq_balance_qty, "
+                        "       t.rq_balance_amt, t.total_balance "
+                        "FROM _margin_upsert t "
+                        "INNER JOIN stats.stock_identity si "
+                        "  ON si.date = t.date AND si.code = t.code "
+                        "ON CONFLICT (date, code) DO UPDATE SET "
+                        "  rz_buy = EXCLUDED.rz_buy, "
+                        "  rz_balance = EXCLUDED.rz_balance, "
+                        "  rq_sell_qty = EXCLUDED.rq_sell_qty, "
+                        "  rq_balance_qty = EXCLUDED.rq_balance_qty, "
+                        "  rq_balance_amt = EXCLUDED.rq_balance_amt, "
+                        "  total_balance = EXCLUDED.total_balance"
+                    )
+                    # result is like "INSERT 0 1234567"
+                    parts = result.split()
+                    inserted_count = int(parts[-1]) if parts else 0
+
+                # Count rows with non-zero rz_balance (for logging)
+                n_with_margin = sum(
+                    1 for r in margin_only_rows
+                    if (r.get("rz_balance") or 0) > 0
+                )
+                print(f"    [DB] Upserted {inserted_count:,} margin-only "
+                      f"rows into stats.stock_liquidity_margin (6 margin "
+                      f"cols, trading_shares/amount preserved; "
+                      f"{n_with_margin:,} with non-zero rz_balance)",
+                      flush=True)
+            else:
+                print(f"    [DB] No margin-only backfill rows to insert "
+                      f"(all margin rows already covered by OHLCV insert)",
+                      flush=True)
 
     finally:
         await conn.close()

@@ -62,7 +62,7 @@ CREATE TABLE analysis.sec_alloc_perf_attribution (
     code_sec_shared_weight         NUMERIC(8,4),  -- Σ w_subject   on shared stocks
     benchmark_sec_shared_weight    NUMERIC(8,4),  -- Σ w_benchmark on shared stocks
 
-    -- ETF-market turnover aggregated across ALL ETFs tracking the benchmark
+    -- ETF-market trading amount aggregated across ALL ETFs tracking the benchmark
     -- index (via stats.sec_classification.parent_index_code). NULL when no
     -- ETF tracks the benchmark (e.g. broad indices like 上证指数 000001).
     benchmark_etf_trading_amount               NUMERIC(16,2),  -- Σ etf trading_amount for ETFs tracking benchmark_code
@@ -76,7 +76,7 @@ CREATE TABLE analysis.sec_alloc_perf_attribution (
                   OR benchmark_etf_trading_amount = 0 OR code_etf_trading_amount = 0
                 THEN NULL
                 -- Cap at NUMERIC(10,4) max (|ratio| < 10^6). Ratios
-                -- exceeding this (tiny subject ETF turnover vs a large
+                -- exceeding this (tiny subject ETF trading amount vs a large
                 -- benchmark) are NULL'd to avoid overflow — see the
                 -- matching cap in analyze_sec_alloc_perf_attribution.py.
                 WHEN ABS(benchmark_etf_trading_amount / code_etf_trading_amount) >= 1000000

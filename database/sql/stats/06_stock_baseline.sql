@@ -1,13 +1,15 @@
 -- ============================================================================
 --  Stock Baseline - Split Tables
 --  Source: build_szse_sse_bse_stocks.py (from SZSE archive/trend + SSE trend + BSE trend CSVs)
---  Split into: stock_identity, stock_basic_stats
+--  Split into: stock_identity, stock_basic_stats, stock_liquidity_margin
 --  Reconstruct via: v_stock_baseline view (see 99_reconstruct_views.sql)
 --
 --  Schema mirrors the ETF family (02_etf_margin.sql) for symmetry:
---    stock_identity  ~  etf_identity   (date, code, name)
---    stock_basic_stats ~ etf_basic_stats (date, code, prev_close, open,
---                                          high, low, close, pct_change)
+--    stock_identity          ~  etf_identity          (date, code, name)
+--    stock_basic_stats       ~  etf_basic_stats       (date, code, prev_close, open,
+--                                                      high, low, close, pct_change)
+--    stock_liquidity_margin  ~  etf_liquidity_margin  (trading_shares, trading_amount,
+--                                                      rz_*, rq_*, total_balance)
 --  stock_basic_stats additionally keeps `pe` (stock-specific valuation).
 -- ============================================================================
 
@@ -50,19 +52,13 @@ CREATE TABLE IF NOT EXISTS stats.stock_basic_stats (
     is_pe_estimated           BOOLEAN       NOT NULL DEFAULT FALSE,
     is_close_estimated        BOOLEAN       NOT NULL DEFAULT FALSE,
     has_intraday_5mins        BOOLEAN       NOT NULL DEFAULT FALSE,
-    -- Trading shares and trading_amount. Source CSV stores 成交量(万股) and 成交金额(万元);
-    -- converted to shares and yuan for cross-table comparability (e.g. industry
-    -- sentiment aggregation sums stock trading_amount to derive total industry capital
-    -- flow in yuan).
-    trading_shares            NUMERIC(24,4),
-    trading_amount            NUMERIC(24,4),
 
     CONSTRAINT pk_stock_basic_stats PRIMARY KEY (date, code),
     CONSTRAINT fk_stock_basic_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.stock_identity(date, code)
 );
 
 
-COMMENT ON TABLE  stats.stock_basic_stats             IS 'Stock daily OHLC + pct_change + pe + trading_shares/trading_amount. Source: SZSE archive/trend + SSE trend + SSE PE CSVs. Volume in shares, trading_amount in yuan.';
+COMMENT ON TABLE  stats.stock_basic_stats             IS 'Stock daily OHLC + pct_change + pe. Source: SZSE archive/trend + SSE trend + SSE PE CSVs. trading_shares/trading_amount moved to stats.stock_liquidity_margin (mirrors etf_liquidity_margin split).';
 COMMENT ON COLUMN stats.stock_basic_stats.prev_close  IS 'Previous closing price (yuan). 前收 from source CSV.';
 COMMENT ON COLUMN stats.stock_basic_stats.open        IS 'Opening price (yuan). 开盘 from source CSV.';
 COMMENT ON COLUMN stats.stock_basic_stats.high        IS 'High price (yuan). 最高 from source CSV.';
@@ -73,8 +69,13 @@ COMMENT ON COLUMN stats.stock_basic_stats.pe          IS 'Price-to-earnings rati
 COMMENT ON COLUMN stats.stock_basic_stats.is_pe_estimated IS 'TRUE when pe was estimated from the last actual PE row using constant-EPS assumption: estimated_pe = today_close * last_pe / last_close. FALSE when pe comes directly from the source CSV (actual), or when pe is NULL because no prior actual PE exists to estimate from.';
 COMMENT ON COLUMN stats.stock_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index (highest composition shared weight > 60%). If no proxy index qualifies, prev_close is carried forward.';
 COMMENT ON COLUMN stats.stock_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future stock intraday support).';
-COMMENT ON COLUMN stats.stock_basic_stats.trading_shares      IS 'Trading volume in SHARES. Source CSV stores 成交量(万股); converted to shares (× 10000) to match stats.index_basic_stats.trading_shares convention. NULL for PE-only rows (no OHLCV source).';
-COMMENT ON COLUMN stats.stock_basic_stats.trading_amount IS 'Trading turnover in yuan. Source CSV stores 成交金额(万元); converted to yuan (× 10000). Used by analyze_industry_sentiments.py to compute total industry capital flow (SUM across union of member-index stocks).';
+
+-- NOTE: trading_shares / trading_amount previously lived on stock_basic_stats.
+-- They have been moved to stats.stock_liquidity_margin (below) to mirror the
+-- ETF family pattern (etf_liquidity_margin). The migration is performed by
+-- the DO block at the BOTTOM of this file: it (1) creates the new table,
+-- (2) copies existing values from stock_basic_stats, then (3) drops the
+-- legacy columns. The migration is idempotent (safe to re-run).
 
 -- ----------------------------------------------------------------------------
 -- Indexes for stock_identity
@@ -104,6 +105,39 @@ CREATE INDEX IF NOT EXISTS idx_stock_identity_suffix_code_date
 
 CREATE INDEX IF NOT EXISTS idx_stock_basic_stats_code_date
     ON stats.stock_basic_stats (code, date);
+
+-- ----------------------------------------------------------------------------
+-- Table: stock_tech_stats
+--   ← Technical indicators (moving averages) for individual stocks.
+--   Mirrors stats.index_tech_stats / stats.etf_tech_stats. MAs are computed
+--   from stats.stock_basic_stats.close by builds/stock/__main__.py (and a
+--   one-time backfill via build_stock_tech_stats.py for existing rows).
+--   Consumed by analyze.mov_ave_spread for the 'stock' sec_type branch.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stats.stock_tech_stats (
+    date                      DATE          NOT NULL,
+    code                      TEXT          NOT NULL,
+    ma5                       NUMERIC(18,4),
+    ma5_ratio                 NUMERIC(10,6),
+    ma20                      NUMERIC(18,4),
+    ma60                      NUMERIC(18,4),
+    ma120                     NUMERIC(18,4),
+    ma255                     NUMERIC(18,4),
+
+    CONSTRAINT pk_stock_tech_stats PRIMARY KEY (date, code),
+    CONSTRAINT fk_stock_tech_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.stock_identity(date, code)
+);
+
+COMMENT ON TABLE  stats.stock_tech_stats                    IS 'Stock technical indicators (moving averages), computed from stats.stock_basic_stats.close.';
+COMMENT ON COLUMN stats.stock_tech_stats.ma5                IS '5-day moving average of close.';
+COMMENT ON COLUMN stats.stock_tech_stats.ma5_ratio          IS 'Close / MA5 - 1 (ratio of price to 5-day MA).';
+COMMENT ON COLUMN stats.stock_tech_stats.ma20               IS '20-day moving average of close.';
+COMMENT ON COLUMN stats.stock_tech_stats.ma60               IS '60-day moving average of close.';
+COMMENT ON COLUMN stats.stock_tech_stats.ma120              IS '120-day moving average of close.';
+COMMENT ON COLUMN stats.stock_tech_stats.ma255              IS '255-day moving average of close.';
+
+CREATE INDEX IF NOT EXISTS idx_stock_tech_stats_code_date
+    ON stats.stock_tech_stats (code, date);
 
 -- ----------------------------------------------------------------------------
 -- Table: stock_intraday_5min
@@ -146,3 +180,90 @@ CREATE INDEX IF NOT EXISTS idx_stock_intraday_5min_code_date
     ON stats.stock_intraday_5min (code, date);
 CREATE INDEX IF NOT EXISTS idx_stock_intraday_5min_code
     ON stats.stock_intraday_5min (code);
+
+-- ----------------------------------------------------------------------------
+-- Table: stock_liquidity_margin
+--   ← Liquidity (trading_shares/trading_amount) + margin balances (融资融券).
+--   Mirrors stats.etf_liquidity_margin. trading_shares/trading_amount
+--   previously lived on stock_basic_stats; they were moved here so the stock
+--   family mirrors the ETF family split (basic_stats = OHLCV+PE only;
+--   liquidity_margin = liquidity + margin).
+--
+--   Source: builds/stock/__main__.py reads SZSE + SSE margin detail CSVs
+--   (temps/{szse,sse}_margin/{szse,sse}_margin_detail_YYYYMMDD.csv), filtering
+--   to STOCK codes (excludes ETF prefixes 510xxx/511xxx/.../159xxx/150xxx).
+--   SSE margin detail CSVs contain BOTH ETFs and stocks (the underlying API
+--   returns all SSE-listed margin-eligible securities); the filter keeps only
+--   the stock rows. SZSE margin detail CSVs likewise contain only stocks
+--   (SZSE ETFs are not margin-eligible, so they don't appear there).
+--
+--   margin columns are 0 (not NULL) for stocks with no margin data on a given
+--   date — most stocks have no margin activity most days, so the table is
+--   sparse-but-non-NULL. trading_shares/trading_amount are populated from the
+--   OHLCV source CSVs (szse_archive / szse_trend / sse_trend / bse_trend) and
+--   are 0 only when the source row was PE-only (NULL OHLCV).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stats.stock_liquidity_margin (
+    date                      DATE          NOT NULL,
+    code                      TEXT          NOT NULL,
+    trading_shares            NUMERIC(24,4) NOT NULL DEFAULT 0,
+    trading_amount            NUMERIC(24,4) NOT NULL DEFAULT 0,
+    rz_buy                    NUMERIC(24,4) NOT NULL DEFAULT 0,
+    rz_balance                NUMERIC(24,4) NOT NULL DEFAULT 0,
+    rq_sell_qty               NUMERIC(24,4) NOT NULL DEFAULT 0,
+    rq_balance_qty            NUMERIC(24,4) NOT NULL DEFAULT 0,
+    rq_balance_amt            NUMERIC(24,4) NOT NULL DEFAULT 0,
+    total_balance             NUMERIC(24,4) NOT NULL DEFAULT 0,
+
+    CONSTRAINT pk_stock_liquidity_margin PRIMARY KEY (date, code),
+    CONSTRAINT fk_stock_liquidity_margin_date_code FOREIGN KEY (date, code) REFERENCES stats.stock_identity(date, code)
+);
+
+COMMENT ON TABLE  stats.stock_liquidity_margin                   IS 'Stock liquidity (trading_shares/trading_amount) + margin balances. Mirrors stats.etf_liquidity_margin.';
+COMMENT ON COLUMN stats.stock_liquidity_margin.trading_shares    IS 'Stock trading volume in SHARES. Source CSV stores 成交量(万股); converted to shares (× 10000) in builds/stock/__main__.py. NULL for PE-only rows (no OHLCV source) — those rows are NOT inserted into this table.';
+COMMENT ON COLUMN stats.stock_liquidity_margin.trading_amount    IS 'Stock trading turnover in yuan. Source CSV stores 成交金额(万元); converted to yuan (× 10000). Used by analyze_industry_sentiments.py to compute total industry capital flow (SUM across union of member-index stocks).';
+COMMENT ON COLUMN stats.stock_liquidity_margin.rz_balance        IS '融资余额 (yuan) — borrowed cash to buy the stock; always non-negative. Source: SZSE + SSE margin detail CSVs.';
+COMMENT ON COLUMN stats.stock_liquidity_margin.rq_balance_amt    IS '融券余额 (yuan) — borrowed stock value outstanding. SSE detail CSV does NOT publish this column (only 融券余量 qty); it is 0 for SSE stocks. SZSE detail CSV publishes it directly.';
+COMMENT ON COLUMN stats.stock_liquidity_margin.total_balance     IS 'rz_balance + rq_balance_amt — total margin outstanding. SSE detail CSV does NOT publish this column; it is rz_balance + 0 for SSE stocks. SZSE detail CSV publishes it directly.';
+
+CREATE INDEX IF NOT EXISTS idx_stock_liquidity_margin_code_date
+    ON stats.stock_liquidity_margin (code, date);
+
+-- ----------------------------------------------------------------------------
+-- Migration: move trading_shares/trading_amount from stock_basic_stats (legacy
+-- location) to stock_liquidity_margin, then drop the legacy columns.
+-- Idempotent: safe to re-run (the DO block checks for the column's existence
+-- before copying/dropping). The migration preserves existing data so a
+-- production DB can be upgraded without re-running the full build.
+-- ----------------------------------------------------------------------------
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'stats'
+          AND table_name   = 'stock_basic_stats'
+          AND column_name  = 'trading_shares'
+    ) THEN
+        -- Copy existing liquidity data into stock_liquidity_margin. Margin
+        -- columns default to 0 (the legacy stock_basic_stats had no margin
+        -- data; margin is populated by re-running builds/stock after this
+        -- migration, which reads the margin CSVs and upserts).
+        INSERT INTO stats.stock_liquidity_margin
+            (date, code, trading_shares, trading_amount,
+             rz_buy, rz_balance, rq_sell_qty, rq_balance_qty,
+             rq_balance_amt, total_balance)
+        SELECT
+            date, code,
+            COALESCE(trading_shares, 0),
+            COALESCE(trading_amount, 0),
+            0, 0, 0, 0, 0, 0
+        FROM stats.stock_basic_stats
+        WHERE trading_shares IS NOT NULL OR trading_amount IS NOT NULL
+        ON CONFLICT (date, code) DO UPDATE SET
+            trading_shares = EXCLUDED.trading_shares,
+            trading_amount = EXCLUDED.trading_amount;
+
+        ALTER TABLE stats.stock_basic_stats DROP COLUMN trading_shares;
+        ALTER TABLE stats.stock_basic_stats DROP COLUMN trading_amount;
+    END IF;
+END $$;

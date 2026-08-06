@@ -8,7 +8,6 @@ for m in \
   downloads.etf.sse.trend \
   downloads.margin.szse \
   downloads.margin.sse \
-  downloads.index.csindex.quote \
   downloads.bond.shibor \
   downloads.bond.chinabond \
   downloads.macro.pboc.repo_news \
@@ -18,9 +17,18 @@ do
   python -m "$m"
 done
 
+# download, run daily
+for m in \
+  downloads.index.csindex.quote \
+  downloads.macro.zhihu.news
+do
+  python -m "$m"
+done
+
 # build combined CSVs
 for m in \
   builds.stock \
+  builds.stock.tech_stats \
   builds.etf \
   builds.index.composition \
   builds.index.baseline \
@@ -47,6 +55,12 @@ python -m downloads.etf.szse.composition
 python -m downloads.index.csindex.composition
 python -m downloads.index.szse.composition
 python -m downloads.etf.csindex.linked_etf
+
+# run quarterly
+python -m downloads.stock.sse.dividend
+python -m downloads.stock.szse.dividend
+python -m builds.stock.dividends
+
 
 # download, run once
 python -m downloads.stock.szse.archive

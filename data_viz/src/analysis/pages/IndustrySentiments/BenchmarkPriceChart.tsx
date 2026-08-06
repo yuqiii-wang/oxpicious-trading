@@ -8,8 +8,15 @@
  *
  * A toggle (Today / Rolling) switches between:
  *   • Today    — raw close vs non_this_industry_price (daily snapshot).
- *   • Rolling  — 100-rebased benchmark vs non_this_industry_rolling_price
- *                (cumulative performance from the benchmark's first close).
+ *   • Rolling  — 100-rebased benchmark vs the selected rolling_Xdays_price
+ *                column (cumulative performance over the trailing X-day
+ *                window).
+ *
+ * A rolling-days DROPDOWN lets the user pick which trailing window
+ * (5 / 20 / 60 / 255 / 500 trading days) drives the shade overlay. Each
+ * option selects one of the 5 pre-materialized
+ * benchmark_non_this_industry_rolling_{N}days_price columns from
+ * analysis.industry_attributions. Defaults to 255 days (~1 year).
  *
  * The chart is CLICKABLE — clicking anywhere inside the plot grid selects the
  * nearest date (via onCanvasClick), which flows up to the parent and updates
@@ -27,6 +34,9 @@ import {
   Alert,
   Box,
   CircularProgress,
+  FormControl,
+  MenuItem,
+  Select,
   Slider,
   Stack,
   ToggleButton,
@@ -43,7 +53,13 @@ import type {
   BenchmarkPriceChartResponse,
   IndustryAttributionPriceSeriesResponse,
 } from "../../../../shared/types";
-import type { BenchmarkPriceChartProps } from "./types";
+import type { BenchmarkPriceChartProps, RollingDays } from "./types";
+import {
+  ROLLING_DAYS,
+  DEFAULT_ROLLING_DAYS,
+  ROLLING_DAYS_LABELS,
+  ROLLING_DAYS_FIELD,
+} from "./constants";
 import { buildBenchmarkPriceOption, type IndustryShadeData } from "./benchmarkPriceOption";
 
 type PriceMode = "rolling" | "today";
@@ -68,6 +84,18 @@ export function BenchmarkPriceChart({
   // Price mode toggle: "rolling" (Percentage — 100-based, rebased to visible
   // window start) vs "today" (Absolute — raw prices).
   const [priceMode, setPriceMode] = useState<PriceMode>("rolling");
+
+  // Trading-amount bar overlay toggle. When ON, renders a bar per date on
+  // the right y-axis (yAxis 1). The bar's TOTAL = benchmark trading amount;
+  // each selected industry's `benchmark_shared_weight` proportion is
+  // highlighted at the bottom of the bar in the industry's color.
+  const [showTradingAmt, setShowTradingAmt] = useState<boolean>(false);
+
+  // Rolling-days dropdown: which trailing window (5/20/60/255/500) drives the
+  // shade overlay. Selects one of the 5 pre-materialized
+  // non_this_industry_rolling_{N}days_price columns from the API response.
+  // Defaults to 255 days (~1 year).
+  const [rollingDays, setRollingDays] = useState<RollingDays>(DEFAULT_ROLLING_DAYS);
 
   // Time slider: [startIdx, endIdx] controls the visible range of the chart.
   // Initialized to full range when data loads; reset when benchmark changes.
@@ -135,26 +163,39 @@ export function BenchmarkPriceChart({
   }, [benchmarkCode, industryIdsKey]);
 
   // Build the aligned industry shade data for the option builder.
-  // ALWAYS passes non_this_industry_rolling_price (the 100-based cumulative
-  // non-industry return factor) — the option builder scales it to the
-  // benchmark's price level as `benchmark_close × rolling / 100` so the
-  // industry curve is "src benchmark price + cumulative non-industry changes".
+  // Passes the SELECTED rolling_Xdays_price column (100-based cumulative
+  // non-industry return factor over the trailing X-day window) — the option
+  // builder scales it to the benchmark's price level as
+  // `benchmark_close × rolling / 100` so the industry curve is
+  // "src benchmark price + non-industry changes over the last X days".
   // This makes the gap consistent across Absolute and Percentage modes (both
   // use the SAME formula; Percentage just rebases both to 100 at first_close).
+  //
+  // Also passes the industry's `benchmark_shared_weight` per date — drives
+  // the trading-amount bar overlay (highlighted portion = trading_amt ×
+  // shared_weight / 100, anchored on the benchmark's full trading amount).
   const industryShades = useMemo<IndustryShadeData[]>(() => {
     if (!data || selectedIndustries.length === 0) return [];
     const benchmarkDates = data.rows.map((r) => r.date);
+    // Resolve the row field name for the selected rolling window ONCE so the
+    // inner loop doesn't re-evaluate the lookup per row.
+    const fieldKey = ROLLING_DAYS_FIELD[rollingDays];
 
     const shades: IndustryShadeData[] = [];
     for (const sel of selectedIndustries) {
       const series = industrySeries[sel.id];
       if (!series || series.rows.length === 0) continue;
 
-      // Build a date → rolling_price lookup. Always use rolling_price — the
-      // option builder scales it to benchmark price level in BOTH modes.
+      // Build a date → rolling_Xdays_price lookup. Uses the column selected
+      // by the dropdown — the option builder scales it to benchmark price
+      // level in BOTH modes.
       const valueByDate = new Map<string, number | null>();
+      // And a date → benchmark_shared_weight lookup for the trading-amount
+      // bar overlay.
+      const sharedWeightByDate = new Map<string, number | null>();
       for (const r of series.rows) {
-        valueByDate.set(r.date, r.non_this_industry_rolling_price);
+        valueByDate.set(r.date, r[fieldKey as keyof typeof r] as number | null);
+        sharedWeightByDate.set(r.date, r.benchmark_shared_weight);
       }
 
       // Align industry values to benchmark dates (full axis — option builder
@@ -163,15 +204,20 @@ export function BenchmarkPriceChart({
         const v = valueByDate.get(dt);
         return v ?? null;
       });
+      const shared_weights: Array<number | null> = benchmarkDates.map((dt) => {
+        const v = sharedWeightByDate.get(dt);
+        return v ?? null;
+      });
 
       shades.push({
         industry_id: sel.id,
         industry_label: sel.label,
         values,
+        shared_weights,
       });
     }
     return shades;
-  }, [data, selectedIndustries, industrySeries]);
+  }, [data, selectedIndustries, industrySeries, rollingDays]);
 
   // Check if the benchmark is broad-market (shades only available for broad).
   const isBroadMarket = useMemo(() => {
@@ -193,9 +239,10 @@ export function BenchmarkPriceChart({
             showToggle ? industryShades : [],
             showToggle ? priceMode : "today",
             range,
+            showTradingAmt,
           )
         : null,
-    [data, themeMode, selectedDate, industryShades, priceMode, showToggle, range],
+    [data, themeMode, selectedDate, industryShades, priceMode, showToggle, range, showTradingAmt],
   );
 
   // Stable callback for onCanvasClick — converts the x-axis category index
@@ -215,8 +262,11 @@ export function BenchmarkPriceChart({
     ? `${data.name} (${data.code}) — click any date to set the as-of date${selectedDate ? ` · selected: ${selectedDate}` : ""}` +
       (hasIndustries
         ? shadesAvailable
-          ? ` · ${industryShades.length} industr${industryShades.length === 1 ? "y" : "ies"} shaded`
+          ? ` · ${industryShades.length} industr${industryShades.length === 1 ? "y" : "ies"} shaded · window: ${ROLLING_DAYS_LABELS[rollingDays]}`
           : " · shades require broad-market (★) benchmark"
+        : "") +
+      (showTradingAmt
+        ? ` · trading amt bars${hasIndustries && shadesAvailable ? " (industry shared portion highlighted)" : ""}`
         : "")
     : "Select a benchmark to see its price chart";
 
@@ -246,8 +296,23 @@ export function BenchmarkPriceChart({
       )}
       {!loading && !error && data && data.rows.length > 0 && option && (
         <Stack spacing={1}>
-          {showToggle && (
-            <Box sx={{ display: "flex", justifyContent: "flex-end" }}>
+          <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+            {showToggle && (
+              <FormControl size="small" sx={{ minWidth: 150 }}>
+                <Select
+                  size="small"
+                  value={rollingDays}
+                  onChange={(e) => setRollingDays(Number(e.target.value) as RollingDays)}
+                  sx={{ "& .MuiSelect-select": { py: 0.25, fontSize: "0.8rem" } }}
+                  inputProps={{ "aria-label": "Rolling days window" }}
+                >
+                  {ROLLING_DAYS.map((d) => (
+                    <MenuItem key={d} value={d}>{ROLLING_DAYS_LABELS[d]}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+            {showToggle && (
               <ToggleButtonGroup
                 value={priceMode}
                 exclusive
@@ -259,8 +324,17 @@ export function BenchmarkPriceChart({
                 <ToggleButton value="rolling">Percentage</ToggleButton>
                 <ToggleButton value="today">Absolute</ToggleButton>
               </ToggleButtonGroup>
-            </Box>
-          )}
+            )}
+            <ToggleButtonGroup
+              value={showTradingAmt ? ["on"] : []}
+              size="small"
+              onChange={(_, v: string[]) => {
+                setShowTradingAmt(v.includes("on"));
+              }}
+            >
+              <ToggleButton value="on">Trading Amt</ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
           {hasIndustries && !shadesAvailable && industrySeries !== undefined && Object.keys(industrySeries).length > 0 && (
             <Alert severity="info" sx={{ py: 0.5 }}>
               Non-industry shades are only available for broad-market (★) benchmarks.
