@@ -37,13 +37,13 @@ import {
   FormControl,
   MenuItem,
   Select,
-  Slider,
   Stack,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
+import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import {
   fetchBenchmarkPriceChart,
@@ -351,28 +351,12 @@ export function BenchmarkPriceChart({
             height={400}
             onCanvasClick={handleCanvasClick}
           />
-          {maxIdx > 0 && (
-            <Box sx={{ px: 1, mt: 0.5 }}>
-              <Slider
-                value={range}
-                onChange={(_, v) => setRange(v as [number, number])}
-                min={0}
-                max={maxIdx}
-                size="small"
-                valueLabelDisplay="auto"
-                valueLabelFormat={(idx) => allDates[idx] ?? ""}
-                sx={{ mt: 0.5, "& .MuiSlider-valueLabel": { fontSize: "0.7rem" } }}
-              />
-              <Stack direction="row" justifyContent="space-between" sx={{ mt: -0.5 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                  {allDates[range[0]] ?? "—"}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                  {allDates[range[1]] ?? "—"}
-                </Typography>
-              </Stack>
-            </Box>
-          )}
+          <DateRangeSlider
+            value={range}
+            onChange={setRange}
+            max={maxIdx}
+            dates={allDates}
+          />
         </Stack>
       )}
       {!loading && !error && data && data.rows.length === 0 && (

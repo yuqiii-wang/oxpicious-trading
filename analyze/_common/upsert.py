@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 
-from utils.build_commons import bulk_upsert_async
+from _common.build_commons import bulk_upsert_async
 
 
 # Default target rows per upsert chunk. ~8.2M detail rows / ~1700 dates

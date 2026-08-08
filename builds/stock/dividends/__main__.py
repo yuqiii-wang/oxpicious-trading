@@ -56,7 +56,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from utils.build_commons import (
+from _common.build_commons import (
     setup_utf8_stdout, get_db_or_exit,
     bulk_upsert_async, truncate_table_async,
     print_build_header, print_wall_time, PROJECT_ROOT,

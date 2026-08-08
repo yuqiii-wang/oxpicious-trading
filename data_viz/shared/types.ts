@@ -198,7 +198,7 @@ export interface IndustryNode {
   industry_label: string;
   industry_slug: string;
   count: number;
-  items: Array<{ code: string; name: string }>;
+  items: Array<{ code: string; name: string; is_dummy?: boolean }>;
 }
 
 /** L1 sector node — top level of the two-level selector. */
@@ -208,6 +208,32 @@ export interface SectorNode {
   count: number;
   industries: IndustryNode[];
 }
+
+// ----------------------------------------------------------------------------
+// Parallel strategy classification (RIGHT column of the two-column selector).
+// A security carries BOTH an industry classification (sector → industry, LEFT
+// column) AND a strategy classification (sector → industry, RIGHT column) —
+// BOTH use the same (sector_id, industry_id) column pair on sec_classification.
+// is_industry_not_strategy on sec_classification determines which is PRIMARY:
+//   TRUE  → sector_id/industry_id hold the INDUSTRY classification
+//           (FIN/BANKS, TECH/SEMI, …). These rows feed the LEFT column tree.
+//   FALSE → sector_id/industry_id hold the STRATEGY classification
+//           (BROAD/BROAD_CSI, DIV/DIV_SOE, …). These rows feed the RIGHT
+//           column tree.
+// There is NO separate strategy_id/theme_id column — strategy IS a sector and
+// a theme IS an industry in the unified column model. The RIGHT column tree
+// therefore has the SAME shape as the LEFT column tree (SectorNode), just
+// filtered to is_industry_not_strategy=FALSE rows.
+// ----------------------------------------------------------------------------
+
+/** L2 industry node within a strategy (RIGHT column). Same shape as
+ *  IndustryNode — strategy rows reuse the (sector_id, industry_id) columns. */
+export type ThemeNode = IndustryNode;
+
+/** L1 strategy node — top of the parallel strategy selector (RIGHT column).
+ *  Same shape as SectorNode — the only difference is the row filter
+ *  (is_industry_not_strategy=FALSE). */
+export type StrategyNode = SectorNode;
 
 export interface EtfMarginCombinedResponse {
   theme_slug: string;
@@ -275,10 +301,19 @@ export interface IndexTag {
 export interface IndexBundle {
   code: string;
   name: string;
+  /** L1 classification id. When is_industry_not_strategy=TRUE: industry
+   *  sector (FIN, TECH, …). When FALSE: strategy id (BROAD, DIV, …). */
   sector_id: string;
   sector_label: string;
+  /** L2 classification id. When is_industry_not_strategy=TRUE: industry
+   *  id (BANKS, SEMI, …). When FALSE: theme id (BROAD_CSI, DIV_SOE, …). */
   industry_id: string;
   industry_label: string;
+  /** TRUE → sector_id/industry_id hold INDUSTRY (LEFT column).
+   *  FALSE → they hold STRATEGY (RIGHT column). */
+  is_industry_not_strategy: boolean;
+  /** TRUE for synthetic industry dummy indices (no OHLC data). */
+  is_dummy?: boolean;
   /** All classification tags for this index (primary first). Empty/absent
    *  when the index only carries the single (sector_id, industry_id) pair. */
   tags?: IndexTag[];
@@ -387,6 +422,42 @@ export interface LinkedEtfsResponse {
   /** Latest date (YYYY-MM-DD) of the index_exts row used for total_etf_trading_amount.
    *  "" when the index has no index_exts row. */
   total_etf_trading_amount_date: string;
+}
+
+// ----------------------------------------------------------------------------
+// Similar Indices — top-3 similar codes + top-3 similar/dissimilar
+// industry-classified peer codes by mutual shared composition weight.
+// Source: stats.sec_similars (built by builds.index.exts._sec_similars).
+// `date` is the index COMPOSITION snapshot_date (quarterly), looked up via
+// latest-snapshot-<=today. Sharing weight is MUTUAL/symmetric:
+//   (SUM(A.weight_pct) + SUM(B.weight_pct)) / 2 over shared constituents.
+// All three categories store SEC CODES (index codes), not industry_ids.
+// "industry" means the peer pool is filtered to is_industry_not_strategy=true.
+// ----------------------------------------------------------------------------
+export interface SimilarIndexRow {
+  /** Rank 1 (most similar) .. 5. */
+  rank: 1 | 2 | 3 | 4 | 5;
+  /** Similar index code (e.g. "000906"). */
+  code: string;
+  /** Index display name from stats.sec_classification (type='index'). */
+  name: string;
+  /** Mutual sharing weight pct (0..100, may slightly exceed 100 due to
+   *  source-data rounding). NULL when not computed. */
+  sharing_weight_pct: number | null;
+}
+
+export interface SimilarIndicesResponse {
+  /** The requested subject index code (echoed back, suffix-stripped). */
+  index_code: string;
+  /** Composition snapshot_date (YYYY-MM-DD) of the sec_similars row used.
+   *  "" when the index has no composition snapshot / no similars. */
+  snapshot_date: string;
+  /** Up to 5 similar indices from ALL peers, rank 1..5. */
+  similars: SimilarIndexRow[];
+  /** Up to 5 similar indices from industry-classified peers only, rank 1..5. */
+  similar_industries: SimilarIndexRow[];
+  /** Up to 5 dissimilar indices from industry-classified peers only, rank 1..5. */
+  dissimilar_industries: SimilarIndexRow[];
 }
 
 // ----------------------------------------------------------------------------
@@ -570,9 +641,46 @@ export interface MovAveSpreadDetailRow {
   low: number | null;
   /** Trading amount in yuan on this date (from basic_stats.trading_amount). */
   trading_amount: number | null;
+  /**
+   * The biz date of the most recent local turning point (high/low) detected
+   * by price_slope sign change (from analysis.mov_ave_rsi). Carried forward
+   * from each turning point until the next one. NULL when no preceding
+   * turning point exists (early history before the first turn) or when no
+   * mov_ave_rsi row exists for this date.
+   *
+   * Shared across all 9 pairs for a given date — describes the price curve,
+   * not a specific MA pair. The frontend plots a small green up-triangle
+   * marker at each unique extreme date and surfaces this in the tooltip.
+   */
+  date_of_last_extreme: string | null;
+  /**
+   * Signed fractional gap from the most recent local turning point:
+   * (price[t] - extreme_price) / extreme_price (from analysis.mov_ave_rsi).
+   * Sign indicates the type of the last extreme: positive = last extreme was
+   * a local MIN (price rebounded upward), negative = last extreme was a
+   * local MAX (price fell). NULL when no preceding turning point exists.
+   */
+  gap_since_last_extreme: number | null;
+  /**
+   * Trading days since the most recent local turning point (from
+   * analysis.mov_ave_rsi). 0 on the extreme row itself. NULL when no
+   * preceding turning point exists.
+   */
+  days_since_last_extreme: number | null;
+  /**
+   * Wilder Relative Strength Index over 6 trading days (alpha=1/6, ewm
+   * adjust=False, min_periods=6). 0..100. NULL until 6 consecutive
+   * gain/loss observations. From analysis.mov_ave_rsi. Surfaced in the
+   * chart tooltip as part of the per-date RSI info.
+   */
+  rsi_6days: number | null;
+  /** Wilder RSI over 10 trading days. 0..100. NULL until 10 periods. */
+  rsi_10days: number | null;
+  /** Wilder RSI over 14 trading days — the classic Wilder window. 0..100. */
+  rsi_14days: number | null;
+  /** Wilder RSI over 20 trading days. 0..100. */
+  rsi_20days: number | null;
 }
-
-/** One pair's full time series. */
 export interface MovAveSpreadPairSeries {
   ma_short: number;
   ma_long: number;

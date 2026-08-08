@@ -20,7 +20,7 @@ from downloads._common.core import (
     random_sleep,
     setup_logger,
 )
-from utils.db_commons import check_stock_intraday_exists
+from _common.db_commons import check_stock_intraday_exists
 
 from ._aggregation import aggregate_5min, aggregate_index_5min
 from ._akshare_source import MinuteSample, fetch_akshare_minute

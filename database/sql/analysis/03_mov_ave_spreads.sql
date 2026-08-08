@@ -33,8 +33,11 @@
 -- has an FK to peaks_and_floors; CASCADE handles both orderings safely.
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_detail CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_peaks_and_floors CASCADE;
+DROP TABLE IF EXISTS analysis.mov_ave_large_swings CASCADE;
+DROP TABLE IF EXISTS analysis.mov_ave_rsi CASCADE;
 DROP TABLE IF EXISTS analysis.etf_mov_ave_spreads_detail;
 DELETE FROM analysis.analysis_identity WHERE name = 'etf_mov_ave_spread';
+DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rsi';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_spreads_detail  (WIDE format)
@@ -111,10 +114,14 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
         CHECK (sec_type IN ('etf', 'index', 'stock'))
 );
 
-CREATE INDEX idx_mov_ave_spreads_detail_sec_type_code_date
-    ON analysis.mov_ave_spreads_detail (sec_type, code, date);
--- Index for the FK lookups + monthly group-by queries (e.g. "all detail rows
--- belonging to a given peaks_and_floors row").
+-- NOTE: no separate (sec_type, code, date) index — the PK already covers
+-- that lookup. A duplicate index was previously created here and dropped
+-- because it doubled index-maintenance cost on every INSERT for zero
+-- benefit (PK B-tree already serves equality + range scans on the
+-- (sec_type, code, date) prefix).
+--
+-- Index for the FK lookups + monthly group-by queries (e.g. "all detail
+-- rows belonging to a given peaks_and_floors row").
 CREATE INDEX idx_mov_ave_spreads_detail_pf_date
     ON analysis.mov_ave_spreads_detail (sec_type, code, peaks_and_floors_date);
 
@@ -207,22 +214,75 @@ COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.date        IS 'Extreme biz 
 COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.extreme_val  IS 'The local min or max close price observed on `date`. Currently only minima (valley lows) are detected via continuous-belt logic (close < MA60 − 2σ, or close < MA60 for > 20 days, with < 5 day interruption bridging; overlapping belts merged into trends, one extreme per trend). Valley_lows are then deduplicated: no two surviving extremes within ±30 trading days (min kept).';
 COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.nearby_extreme_date IS 'The furthest date within ±30 trading days of `date` (the valley_low_date) whose OHLC low is strictly lower than the valley_low''s OHLC high. NULL when no qualifying date exists in the ±30 trading-day window. Computed by analyze.mov_ave_spread.peaks_and_floors._compute_nearby_extreme_date.';
 
+-- ----------------------------------------------------------------------------
+--  Table: analysis.mov_ave_rsi  (per-asset+date Wilder RSI + short-term gaps)
+--    One row per (sec_type, code, date). Stores Wilder's Relative Strength
+--    Index for 4 windows (6/10/14/20 days) and 2 short-term price-gap
+--    (N-day return) columns (2/3 days).
+--
+--  RSI formula (Wilder's smoothing — EWM with alpha = 1/N, adjust=False):
+--    delta[t]   = price[t] - price[t-1]                      (per code)
+--    gain[t]    = max(delta, 0);  loss[t] = max(-delta, 0)
+--    avg_gain   = gain.ewm(alpha=1/N, adjust=False, min_periods=N).mean()
+--    avg_loss   = loss.ewm(alpha=1/N, adjust=False, min_periods=N).mean()
+--    RS         = avg_gain / avg_loss
+--    RSI        = 100 - 100 / (1 + RS)
+--      RSI = 100  when avg_loss = 0 and avg_gain > 0  (pure uptrend)
+--      RSI = 0    when avg_gain = 0 and avg_loss > 0  (pure downtrend)
+--      RSI = NULL when avg_gain = 0 and avg_loss = 0  (flat / undefined)
+--    NULL until N consecutive gain/loss observations are available
+--    (min_periods=N). Range: 0..100.
+--
+--  Gap formula (N-day price return):
+--    gap_Ndays[t] = (price[t] - price[t-N]) / price[t-N]   (per code)
+--    NULL until N prior rows exist (first N rows per code are NULL).
+--    Signed fractional ratio (e.g. 0.05 = +5%).
+--
+--  Source prices match mov_ave_spreads_detail: ETF uses
+--  COALESCE(etf_adjustment.adj_close, etf_basic_stats.close); index uses
+--  index_basic_stats.close; stock uses stock_basic_stats.close.
+--
+--  Populated by `analyze.mov_ave_spread` (internal RSI step in rsi.py;
+--  incremental upsert by missing dates; --force truncates first). No FK to
+--  mov_ave_spreads_detail — data integrity is guaranteed by INNER JOINs on
+--  basic_stats in the build script.
+-- ----------------------------------------------------------------------------
+CREATE TABLE analysis.mov_ave_rsi (
+    sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
+    code            TEXT         NOT NULL,
+    date            DATE         NOT NULL,
 
-CREATE TABLE analysis.mov_ave_large_swings (
-    sec_type          TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
-    code              TEXT         NOT NULL,
-    date              DATE         NOT NULL,  -- extreme biz date (NOT month-start)
+    -- 4 Wilder RSI columns (0..100, NULL until N periods)
+    rsi_6days       NUMERIC(10,6),
+    rsi_10days      NUMERIC(10,6),
+    rsi_14days      NUMERIC(10,6),
+    rsi_20days      NUMERIC(10,6),
 
-    price_ma3_slope             NUMERIC(10,6)         NOT NULL,
-    today_high_low_gap_pct      NUMERIC(9,6)          NOT NULL, -- based on yesterday's close, how today swing is measured in percentage
-    today_open_close_gap_pct    NUMERIC(9,6)          NOT NULL, -- based on yesterday's close, how today swing is measured in percentage
-    is_likely_trading_curbed    BOOLEAN               NOT NULL, -- is today a trading day or not； always generated as >9.5% today_open_close_gap_pct, include positive or negative
-    is_3day_consistent_trend    BOOLEAN               NOT NULL, -- is today a consistent trend or not； always generated as today slope keeps the same sign as last two day and slope is >1
-    is_4day_consistent_trend    BOOLEAN               NOT NULL, -- is today a consistent trend or not； always generated as today slope keeps the same sign as last three day and slope is >1
-    is_5day_consistent_trend    BOOLEAN               NOT NULL, -- is today a consistent trend or not； always generated as today slope keeps the same sign as last four day and slope is >1 
-    is_big_turn                 BOOLEAN               NOT NULL, -- is today a big turn or not； always generated as opposite sign of yesterday's slope AND any of (is_3,4,5day_consistent_trend is true) AND today_open_close_gap_pct > 5% 
+    -- 2 short-term price-gap (N-day return) columns
+    gap_2days       NUMERIC(10,6), -- sign indicates last extreme is max or min
+    gap_3days       NUMERIC(10,6), -- sign indicates last extreme is max or min 
+    gap_since_last_extreme NUMERIC(10,6), -- sign indicates last extreme is max or min
+    days_since_last_extreme NUMERIC(10,6),
+    date_of_last_extreme DATE,
 
-    CONSTRAINT pk_mov_ave_large_swings PRIMARY KEY (sec_type, code, date),
-    CONSTRAINT chk_mov_ave_large_swings_sec_type
+    CONSTRAINT pk_mov_ave_rsi PRIMARY KEY (sec_type, code, date),
+    CONSTRAINT chk_mov_ave_rsi_sec_type
         CHECK (sec_type IN ('etf', 'index', 'stock'))
 );
+
+CREATE INDEX idx_mov_ave_rsi_sec_type_code_date
+    ON analysis.mov_ave_rsi (sec_type, code, date);
+
+COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (6/10/14/20 days) + short-term price gaps (2/3 day returns). One row per (sec_type, code, date). sec_type ∈ {etf, index, stock}.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_rsi.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN analysis.mov_ave_rsi.date        IS 'Business date (trading day).';
+COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_6days   IS 'Wilder RSI over 6 trading days (alpha=1/6, ewm adjust=False, min_periods=6). 0..100. NULL until 6 consecutive gain/loss observations.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_10days  IS 'Wilder RSI over 10 trading days (alpha=1/10, ewm adjust=False, min_periods=10). 0..100. NULL until 10 periods.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_14days  IS 'Wilder RSI over 14 trading days (alpha=1/14, ewm adjust=False, min_periods=14) — the classic Wilder window. 0..100. NULL until 14 periods.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_20days  IS 'Wilder RSI over 20 trading days (alpha=1/20, ewm adjust=False, min_periods=20). 0..100. NULL until 20 periods.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.gap_2days   IS '2-day price return: (price[t] - price[t-2]) / price[t-2]. Signed fractional ratio. NULL for the first 2 rows of each code.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.gap_3days   IS '3-day price return: (price[t] - price[t-3]) / price[t-3]. Signed fractional ratio. NULL for the first 3 rows of each code.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.gap_since_last_extreme IS 'Signed fractional gap from the most recent local turning point (high/low) detected by price_slope sign change: (price[t] - extreme_price) / extreme_price. Sign indicates the type of the last extreme: positive = last extreme was a local MIN (price rebounded upward since the trough), negative = last extreme was a local MAX (price fell since the peak). NULL when no preceding turning point exists for the code (early history before the first turn).';
+COMMENT ON COLUMN analysis.mov_ave_rsi.days_since_last_extreme IS 'Trading days since the most recent local turning point (high/low) detected by price_slope sign change. 0 on the extreme row itself. NULL when no preceding turning point exists for the code.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.date_of_last_extreme IS 'The biz date of the most recent local turning point (high/low) detected by price_slope sign change — i.e. the date on which the extreme_price referenced by gap_since_last_extreme was observed. Carried forward (forward-filled) from each turning point until the next one. NULL when no preceding turning point exists for the code (early history before the first turn).';

@@ -16,7 +16,7 @@ from downloads._common.core import (
     resolve_out_dir,
     setup_logger,
 )
-from utils.db_commons import (
+from _common.db_commons import (
     bulk_upsert,
     get_db_connection,
 )

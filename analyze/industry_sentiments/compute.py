@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from analyze._common._cuDF import should_use_gpu
+from _common.df_utils import should_use_gpu
 from analyze.industry_sentiments.helpers import classify_pool
 
 

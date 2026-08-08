@@ -23,12 +23,14 @@ import type {
   OptionsUnderlying,
   EtfOhlcvResponse,
   SectorNode,
+  StrategyNode,
   EtfMarginCombinedResponse,
   IndexInfo,
   IndexCombinedResponse,
   IndexIntraday5minResponse,
   SecCompositionResponse,
   LinkedEtfsResponse,
+  SimilarIndicesResponse,
   StockBaselineResponse,
   StockCombinedResponse,
   MovAveSpreadCodesResponse,
@@ -119,6 +121,7 @@ function mapUrlToSource(url: string): keyof LatestDatesResponse | null {
   if (url.startsWith("/api/stock-baseline/combined"))     return "stock_baseline";
   // No date in response — TTL only:
   // /api/etf-margin/themes, /api/szse-options/underlyings,
+  // /api/index-baseline/themes, /api/index-baseline/strategy-themes,
   // /api/index-baseline/intraday-5min, /api/stock-baseline/themes
   return null;
 }
@@ -315,6 +318,10 @@ export function fetchThemes(): Promise<SectorNode[]> {
   return fetchJson<SectorNode[]>(`/api/etf-margin/themes`);
 }
 
+export function fetchEtfStrategyThemes(): Promise<StrategyNode[]> {
+  return fetchJson<StrategyNode[]>(`/api/etf-margin/strategy-themes`);
+}
+
 export function fetchEtfMarginCombined(
   sector?: string | null,
   industry?: string | null,
@@ -325,6 +332,8 @@ export function fetchEtfMarginCombined(
   pageSize?: number,
   code?: string | null,
   exchange?: string | null,
+  strategy?: string | null,
+  theme?: string | null,
 ): Promise<EtfMarginCombinedResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
@@ -336,6 +345,8 @@ export function fetchEtfMarginCombined(
   if (page) params.set("page", String(page));
   if (pageSize) params.set("page_size", String(pageSize));
   if (exchange) params.set("exchange", exchange);
+  if (strategy) params.set("strategy", strategy);
+  if (theme) params.set("theme", theme);
   const qs = params.toString();
   return fetchJson<EtfMarginCombinedResponse>(`/api/etf-margin/combined${qs ? `?${qs}` : ""}`);
 }
@@ -348,6 +359,12 @@ export function fetchIndexThemes(): Promise<SectorNode[]> {
   return fetchJson<SectorNode[]>(`/api/index-baseline/themes`);
 }
 
+/** Fetch the parallel strategy → theme tree (RIGHT column of the two-column
+ *  selector).  Returns strategy-primary indices only. */
+export function fetchIndexStrategyThemes(): Promise<StrategyNode[]> {
+  return fetchJson<StrategyNode[]>(`/api/index-baseline/strategy-themes`);
+}
+
 export function fetchIndicesCombined(
   sector?: string | null,
   industry?: string | null,
@@ -357,11 +374,19 @@ export function fetchIndicesCombined(
   pageSize?: number,
   code?: string | null,
   exchange?: string | null,
+  /** Strategy filter (RIGHT column). When set (and sector is not), filters by
+   *  sector_id on rows where is_industry_not_strategy=FALSE (strategy-primary). */
+  strategy?: string | null,
+  /** Theme filter (RIGHT column). When set, filters by industry_id/industry_slug
+   *  on strategy-primary rows. */
+  theme?: string | null,
 ): Promise<IndexCombinedResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
   if (sector) params.set("sector", sector);
   if (industry) params.set("industry", industry);
+  if (strategy) params.set("strategy", strategy);
+  if (theme) params.set("theme", theme);
   if (startDate) params.set("start_date", startDate);
   if (endDate) params.set("end_date", endDate);
   if (page) params.set("page", String(page));
@@ -398,6 +423,16 @@ export function fetchLinkedEtfs(code: string): Promise<LinkedEtfsResponse> {
   return fetchJson<LinkedEtfsResponse>(`/api/sec-composition/linked-etfs${qs ? `?${qs}` : ""}`);
 }
 
+/** Fetch the top-3 similar indices by mutual shared composition weight for
+ *  the given index (from stats.sec_similars, sec_type='index', latest snapshot <= today).
+ *  TTL-only cache (composition snapshot dates move infrequently). */
+export function fetchSimilarIndices(code: string): Promise<SimilarIndicesResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  const qs = params.toString();
+  return fetchJson<SimilarIndicesResponse>(`/api/sec-composition/similar-indices${qs ? `?${qs}` : ""}`);
+}
+
 export function fetchStockBaseline(
   code: string,
   startDate?: string | null,
@@ -415,6 +450,10 @@ export function fetchStockThemes(): Promise<SectorNode[]> {
   return fetchJson<SectorNode[]>(`/api/stock-baseline/themes`);
 }
 
+export function fetchStockStrategyThemes(): Promise<StrategyNode[]> {
+  return fetchJson<StrategyNode[]>(`/api/stock-baseline/strategy-themes`);
+}
+
 export function fetchStocksCombined(
   sector?: string | null,
   industry?: string | null,
@@ -424,6 +463,8 @@ export function fetchStocksCombined(
   pageSize?: number,
   code?: string | null,
   exchange?: string | null,
+  strategy?: string | null,
+  theme?: string | null,
 ): Promise<StockCombinedResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
@@ -434,6 +475,8 @@ export function fetchStocksCombined(
   if (page) params.set("page", String(page));
   if (pageSize) params.set("page_size", String(pageSize));
   if (exchange) params.set("exchange", exchange);
+  if (strategy) params.set("strategy", strategy);
+  if (theme) params.set("theme", theme);
   const qs = params.toString();
   return fetchJson<StockCombinedResponse>(`/api/stock-baseline/combined${qs ? `?${qs}` : ""}`);
 }
@@ -465,6 +508,17 @@ export function fetchMovAveSpreadThemes(
   const qs = params.toString();
   return fetchJson<SectorNode[]>(
     `/api/analysis/mov-ave-spread/themes${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchMovAveSpreadStrategyThemes(
+  secType: MaSpreadSecType,
+): Promise<StrategyNode[]> {
+  const params = new URLSearchParams();
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<StrategyNode[]>(
+    `/api/analysis/mov-ave-spread/strategy-themes${qs ? `?${qs}` : ""}`,
   );
 }
 
@@ -500,6 +554,14 @@ export function fetchPerfAttrThemes(
 ): Promise<SectorNode[]> {
   return fetchJson<SectorNode[]>(
     `/api/analysis/perf-attr/themes?sec_type=${secType}`,
+  );
+}
+
+export function fetchPerfAttrStrategyThemes(
+  secType: PerfAttrSecType = "etf",
+): Promise<StrategyNode[]> {
+  return fetchJson<StrategyNode[]>(
+    `/api/analysis/perf-attr/strategy-themes?sec_type=${secType}`,
   );
 }
 
@@ -550,6 +612,12 @@ export function fetchIndustrySentimentsThemes(): Promise<SectorNode[]> {
   );
 }
 
+export function fetchIndustrySentimentsStrategyThemes(): Promise<StrategyNode[]> {
+  return fetchJson<StrategyNode[]>(
+    `/api/analysis/industry-sentiments/strategy-themes`,
+  );
+}
+
 /**
  * Fetch per-index close time series for ONE industry. Returns one entry per
  * member index in the industry, each with its raw daily close series from
@@ -564,6 +632,19 @@ export function fetchIndustrySentimentsChart(
   const qs = params.toString();
   return fetchJson<IndustrySentimentsChartResponse>(
     `/api/analysis/industry-sentiments/chart?${qs}`,
+  );
+}
+
+/** Fetch chart data (close series) for a single index code. Used when an
+ *  L3 index chip is clicked under a strategy/theme — strategy-primary
+ *  indices may not have an industry_id classification. */
+export function fetchIndustrySentimentsChartByCode(
+  code: string,
+): Promise<IndustrySentimentsChartResponse> {
+  const params = new URLSearchParams();
+  params.set("code", code);
+  return fetchJson<IndustrySentimentsChartResponse>(
+    `/api/analysis/industry-sentiments/chart-by-code?${params.toString()}`,
   );
 }
 
@@ -762,6 +843,16 @@ export function fetchLiveDataThemes(
   );
 }
 
+export function fetchLiveDataStrategyThemes(
+  secType: LiveDataSecType,
+): Promise<StrategyNode[]> {
+  const params = new URLSearchParams();
+  params.set("type", secType);
+  return fetchJson<StrategyNode[]>(
+    `/api/live-data/strategy-themes?${params.toString()}`,
+  );
+}
+
 /** Paginated list of codes with their intraday bars for one date. */
 export function fetchLiveDataCombined(
   secType: LiveDataSecType,
@@ -772,6 +863,8 @@ export function fetchLiveDataCombined(
   page?: number,
   pageSize?: number,
   code?: string | null,
+  strategy?: string | null,
+  theme?: string | null,
 ): Promise<LiveDataCombinedResponse> {
   const params = new URLSearchParams();
   params.set("type", secType);
@@ -782,6 +875,8 @@ export function fetchLiveDataCombined(
   if (page) params.set("page", String(page));
   if (pageSize) params.set("page_size", String(pageSize));
   if (code) params.set("code", code);
+  if (strategy) params.set("strategy", strategy);
+  if (theme) params.set("theme", theme);
   return fetchJson<LiveDataCombinedResponse>(
     `/api/live-data/combined?${params.toString()}`,
   );

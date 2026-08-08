@@ -4,6 +4,7 @@
 import { Router, type Request, type Response } from "express";
 import {
   listThemes,
+  listStrategyThemes,
   getEtfMarginCombined,
 } from "../services/etf-margin.service.js";
 
@@ -18,17 +19,25 @@ router.get("/themes", async (_req: Request, res: Response) => {
   }
 });
 
+/** GET /api/etf-margin/strategy-themes — parallel L1 strategy → L2 theme tree */
+router.get("/strategy-themes", async (_req: Request, res: Response) => {
+  try {
+    res.json(await listStrategyThemes());
+  } catch (err) {
+    console.error("[etf-margin/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 router.get("/combined", async (req: Request, res: Response) => {
   try {
     const query = {
       sector: typeof req.query.sector === "string" ? req.query.sector : undefined,
       industry: typeof req.query.industry === "string" ? req.query.industry : undefined,
+      strategy: typeof req.query.strategy === "string" ? req.query.strategy : undefined,
+      theme: typeof req.query.theme === "string" ? req.query.theme : undefined,
       code: typeof req.query.code === "string" ? req.query.code : undefined,
       exchange: typeof req.query.exchange === "string" ? req.query.exchange : undefined,
-      // Backward-compat: old 'theme' query param is treated as 'industry' slug.
-      ...(typeof req.query.theme === "string" && !req.query.industry
-        ? { industry: req.query.theme as string }
-        : {}),
       start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
       end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
       limit_per_theme:

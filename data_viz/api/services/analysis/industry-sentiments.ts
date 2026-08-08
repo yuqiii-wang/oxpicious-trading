@@ -4,6 +4,8 @@
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
+import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
+import { stripExchangeSuffix } from "../../lib/classify-etf.js";
 import type {
   SectorNode,
   IndustryNode,
@@ -11,6 +13,7 @@ import type {
   IndustrySentimentsIndex,
   IndustrySentimentsAggRow,
   IndustrySentimentsChartResponse,
+  StrategyNode,
 } from "../../../shared/types.js";
 
 // ============================================================================
@@ -54,53 +57,25 @@ import type {
 //       daily close series AND stock_num (for pool_size classification +
 //       tooltip display). Indices with no index_basic_stats rows are omitted.
 // ============================================================================
-interface DbIndustrySentimentsThemeRow extends QueryResultRow {
-  industry_id: string;
-  sector_id: string;
-  sector_label: string;
-  industry_label: string;
-  industry_slug: string;
-  /** Count of member indices (stats.sec_classification type='index') in this
-   *  industry. Drives the per-industry chip count on the ThemeSelector. */
-  member_count: number;
-}
-
 export async function listIndustrySentimentsThemes(): Promise<SectorNode[]> {
-  // Build the L1 sector → L2 industry tree directly from sec_classification
-  // (type='index'). No analysis-table intermediary — every classified index
-  // contributes its (sector_id, industry_id) tag. Per-industry count = number
-  // of member indices.
-  //
-  // COMPOSITION-ONLY FILTER: only indices with at least one sec_composition
-  // snapshot (source_type='index') are counted. Industries whose indices ALL
-  // lack composition data do not appear in the tree at all.
-  const sql = `
-    SELECT
-      industry_id,
-      COALESCE(NULLIF(sector_id, ''),      'OTHER')  AS sector_id,
-      COALESCE(NULLIF(sector_label, ''),   '其他')   AS sector_label,
-      COALESCE(NULLIF(industry_label, ''), industry_id) AS industry_label,
-      COALESCE(NULLIF(industry_slug, ''),  LOWER(industry_id)) AS industry_slug,
-      COUNT(*) AS member_count
-    FROM stats.sec_classification sc
-    WHERE type = 'index'
-      AND industry_id IS NOT NULL
-      AND industry_id <> ''
-      AND COALESCE(sector_id, '') <> 'DEBT'
-      AND EXISTS (
-          SELECT 1 FROM stats.sec_composition sc2
-          WHERE sc2.code = sc.code AND sc2.source_type = 'index'
-      )
-    GROUP BY industry_id, sector_id, sector_label, industry_label, industry_slug
-  `;
-  const rows = await queryRows<DbIndustrySentimentsThemeRow>(sql, []);
+  // Build the L1 sector → L2 industry → items tree from per-code meta rows.
+  // Uses INDUSTRY_SENTIMENTS_META_SQL (which already applies the composition-
+  // only filter) and groups by sector/industry, pushing each index code into
+  // its industry's items[] array. This populates the L3 security-level chips
+  // in the SecClassificationNav so the user can pick an individual index.
+  const rows = await queryRows<DbIndustrySentimentsMetaRow>(
+    INDUSTRY_SENTIMENTS_META_SQL,
+    [],
+  );
 
   const sectorMap = new Map<string, {
     sector_label: string;
-    industries: Map<string, IndustryNode & { member_count: number }>;
+    industries: Map<string, IndustryNode>;
   }>();
 
   for (const r of rows) {
+    // LEFT column: only industry-primary securities.
+    if (!r.is_industry_not_strategy) continue;
     if (!sectorMap.has(r.sector_id)) {
       sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
     }
@@ -110,11 +85,13 @@ export async function listIndustrySentimentsThemes(): Promise<SectorNode[]> {
         industry_id: r.industry_id,
         industry_label: r.industry_label,
         industry_slug: r.industry_slug,
-        count: Number(r.member_count) || 0,
+        count: 0,
         items: [],
-        member_count: Number(r.member_count) || 0,
       });
     }
+    const ind = sector.industries.get(r.industry_id)!;
+    ind.items.push({ code: r.code, name: r.name ?? "" });
+    ind.count++;
   }
 
   const sectors: SectorNode[] = [];
@@ -122,13 +99,13 @@ export async function listIndustrySentimentsThemes(): Promise<SectorNode[]> {
     const industries = Array.from(sector.industries.values()).sort((a, b) => {
       if (a.industry_id === "OTHER") return 1;
       if (b.industry_id === "OTHER") return -1;
-      return b.member_count - a.member_count;
+      return b.count - a.count;
     });
     sectors.push({
       sector_id,
       sector_label: sector.sector_label,
-      count: industries.reduce((sum, i) => sum + i.member_count, 0),
-      industries: industries.map(({ ...rest }) => rest),
+      count: industries.reduce((sum, i) => sum + i.count, 0),
+      industries,
     });
   }
   sectors.sort((a, b) => {
@@ -137,6 +114,73 @@ export async function listIndustrySentimentsThemes(): Promise<SectorNode[]> {
     return b.count - a.count;
   });
   return sectors;
+}
+
+// ----------------------------------------------------------------------------
+//  Per-code meta query — one row per classified index (type='index') that has
+//  at least one stats.sec_composition snapshot. Used by
+//  listIndustrySentimentsStrategyThemes() (RIGHT column strategy/theme tree)
+//  and by getIndustrySentimentsChart() for classification filtering.
+//  is_industry_not_strategy distinguishes industry-primary (TRUE) from
+//  strategy-primary (FALSE) rows; for strategy-primary rows sector_id/
+//  industry_id carry the STRATEGY/theme classification.
+// ----------------------------------------------------------------------------
+interface DbIndustrySentimentsMetaRow extends QueryResultRow {
+  code: string;
+  name: string;
+  sector_id: string;
+  sector_label: string;
+  industry_id: string;
+  industry_label: string;
+  industry_slug: string;
+  is_industry_not_strategy: boolean;
+}
+
+const INDUSTRY_SENTIMENTS_META_SQL = `
+  SELECT sc.code,
+         COALESCE(sc.name, '')             AS name,
+         COALESCE(sc.sector_id,       'OTHER')  AS sector_id,
+         COALESCE(sc.sector_label,    '其他')   AS sector_label,
+         COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
+         COALESCE(sc.industry_label,  '未分类')  AS industry_label,
+         COALESCE(sc.industry_slug,   'other')  AS industry_slug,
+         COALESCE(sc.is_industry_not_strategy, TRUE) AS is_industry_not_strategy
+    FROM stats.sec_classification sc
+   WHERE sc.type = 'index'
+     AND sc.is_active = TRUE
+     AND sc.industry_id IS NOT NULL
+     AND sc.industry_id <> ''
+     AND COALESCE(sc.sector_id, '') <> 'DEBT'
+     AND EXISTS (
+         SELECT 1 FROM stats.sec_composition sc2
+         WHERE sc2.code = sc.code AND sc2.source_type = 'index'
+     )
+`;
+
+// ----------------------------------------------------------------------------
+//  listIndustrySentimentsStrategyThemes — parallel L1 strategy → L2 theme →
+//  items tree built from INDUSTRY_SENTIMENTS_META_SQL but using the
+//  strategy-primary rows (is_industry_not_strategy=FALSE). sector_id/
+//  industry_id on those rows carry the strategy/theme classification.
+//  Tree-building is delegated to the shared buildStrategyThemesFromRows helper
+//  to avoid duplicating the grouping/sorting logic. Index codes are already
+//  bare (e.g. "000300"), so no exchange-suffix stripping is needed.
+// ----------------------------------------------------------------------------
+export async function listIndustrySentimentsStrategyThemes(): Promise<StrategyNode[]> {
+  const rows = await queryRows<DbIndustrySentimentsMetaRow>(INDUSTRY_SENTIMENTS_META_SQL, []);
+
+  const mappedRows = rows.map((r) => ({
+    code: r.code,
+    name: r.name,
+    sector_id: r.sector_id,
+    sector_label: r.sector_label,
+    industry_id: r.industry_id,
+    industry_label: r.industry_label,
+    industry_slug: r.industry_slug,
+    is_industry_not_strategy: r.is_industry_not_strategy,
+  }));
+
+  return buildStrategyThemesFromRows(mappedRows);
 }
 
 // ----------------------------------------------------------------------------
@@ -195,9 +239,18 @@ const INDUSTRY_SENTIMENTS_BENCHMARKS = [
  */
 export async function getIndustrySentimentsChart(
   rawIndustryId: string,
+  sector?: string | null,
+  industry?: string | null,
+  strategy?: string | null,
+  theme?: string | null,
 ): Promise<IndustrySentimentsChartResponse> {
   const industryId = (rawIndustryId ?? "").trim();
   if (!industryId) throw new Error("Missing 'industry_id' parameter");
+  const sectorFilter = (sector ?? "").trim();
+  const industryFilter = (industry ?? "").trim();
+  const strategyFilter = (strategy ?? "").trim();
+  const themeFilter = (theme ?? "").trim();
+  const hasClassFilter = !!(sectorFilter || industryFilter || strategyFilter || themeFilter);
 
   // Single query: member indices' classification JOINed with their daily
   // closes AND a LATERAL lookup for stock_num from the latest sec_composition
@@ -235,6 +288,7 @@ export async function getIndustrySentimentsChart(
         LIMIT 1
     ) latest ON true
     WHERE sc.type = 'index'
+      AND sc.is_active = TRUE
       AND sc.industry_id = $1::text
       AND EXISTS (
           SELECT 1 FROM stats.sec_composition sc3
@@ -325,11 +379,137 @@ export async function getIndustrySentimentsChart(
     });
   }
 
+  // When a classification filter is active, fetch the per-code meta rows and
+  // filter member indices via matchesClassification(). Industry and strategy
+  // filters are mutually exclusive (handled by matchesClassification). Index
+  // codes are already bare, so they map directly to the meta rows.
+  let indices = Array.from(byCode.values());
+  if (hasClassFilter) {
+    const metaRows = await queryRows<DbIndustrySentimentsMetaRow>(INDUSTRY_SENTIMENTS_META_SQL, []);
+    const classMap = new Map<string, DbIndustrySentimentsMetaRow>();
+    for (const m of metaRows) {
+      classMap.set(m.code, m);
+    }
+    indices = indices.filter((idx) => {
+      const meta = classMap.get(idx.code);
+      if (!meta) return false;
+      return matchesClassification(meta, sectorFilter, industryFilter, strategyFilter, themeFilter);
+    });
+  }
+
   return {
     industry_id: industryId,
     industry_label: labelRows[0]?.industry_label ?? "",
-    indices: Array.from(byCode.values()),
+    indices,
     aggregation,
+    benchmarks,
+  };
+}
+
+/**
+ * Fetch chart data (close series + stock_num) for a SINGLE index code.
+ * Used when the user clicks an L3 index chip under a strategy/theme —
+ * strategy-primary indices may not have an industry_id, so the standard
+ * industry-based chart endpoint can't find them.
+ *
+ * Returns an IndustrySentimentsChartResponse with at most one index in
+ * `indices` (empty if the code has no index_basic_stats rows). Aggregation
+ * is always empty (no precomputed mean/var for a single index). Benchmarks
+ * are included so the dropdown still works.
+ */
+export async function getIndustrySentimentsChartByCode(
+  rawCode: string,
+): Promise<IndustrySentimentsChartResponse> {
+  const code = stripExchangeSuffix((rawCode ?? "").trim());
+  if (!code) throw new Error("Missing 'code' parameter");
+
+  const chartSql = `
+    WITH stock_counts AS (
+        SELECT code, snapshot_date,
+               COUNT(DISTINCT stock_code) AS stock_num
+        FROM stats.sec_composition
+        WHERE source_type = 'index'
+        GROUP BY code, snapshot_date
+    )
+    SELECT
+      sc.code,
+      COALESCE(sc.name, '') AS name,
+      sc.exchange,
+      ib.date,
+      ib.close,
+      latest.stock_num
+    FROM stats.sec_classification sc
+    JOIN stats.index_basic_stats ib
+      ON ib.code = sc.code
+    LEFT JOIN LATERAL (
+        SELECT stock_num
+        FROM stock_counts sc2
+        WHERE sc2.code = ib.code
+        ORDER BY snapshot_date DESC
+        LIMIT 1
+    ) latest ON true
+    WHERE sc.type = 'index'
+      AND sc.code = $1::text
+    ORDER BY ib.date ASC
+  `;
+  const benchmarkCodes = INDUSTRY_SENTIMENTS_BENCHMARKS.map((b) => b.code);
+  const [chartRows, benchmarkRows] = await Promise.all([
+    queryRows<DbIndustrySentimentsChartRow>(chartSql, [code]),
+    queryRows<{ code: string; date: Date | string; close: number | null }>(
+      `SELECT code, date, close FROM stats.index_basic_stats
+       WHERE code = ANY($1::text[]) ORDER BY code, date ASC`,
+      [benchmarkCodes],
+    ),
+  ]);
+
+  // Build the single index entry (if any rows found).
+  const indices: IndustrySentimentsIndex[] = [];
+  if (chartRows.length > 0) {
+    const r0 = chartRows[0];
+    const idx: IndustrySentimentsIndex = {
+      code: r0.code,
+      name: r0.name ?? "",
+      exchange: r0.exchange ?? null,
+      rows: chartRows.map((r) => ({
+        date: formatDate(r.date),
+        close: toNum(r.close),
+        stock_num: r.stock_num == null ? null : Number(r.stock_num),
+      })),
+    };
+    indices.push(idx);
+  }
+
+  // Build benchmarks (same logic as getIndustrySentimentsChart).
+  const benchmarks: IndustrySentimentsIndex[] = [];
+  const benchRowsByCode = new Map<string, { date: Date | string; close: number | null }[]>();
+  for (const r of benchmarkRows) {
+    let arr = benchRowsByCode.get(r.code);
+    if (!arr) {
+      arr = [];
+      benchRowsByCode.set(r.code, arr);
+    }
+    arr.push({ date: r.date, close: r.close });
+  }
+  for (const b of INDUSTRY_SENTIMENTS_BENCHMARKS) {
+    const rows = benchRowsByCode.get(b.code);
+    if (!rows || rows.length === 0) continue;
+    benchmarks.push({
+      code: b.code,
+      name: `${b.name} (benchmark)`,
+      exchange: null,
+      rows: rows.map((r) => ({
+        date: formatDate(r.date),
+        close: toNum(r.close),
+        stock_num: b.stockNum,
+      })),
+    });
+  }
+
+  return {
+    industry_id: code,
+    industry_label: indices[0]?.name ?? code,
+    indices,
+    aggregation: [],
     benchmarks,
   };
 }

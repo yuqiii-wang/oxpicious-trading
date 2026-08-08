@@ -12,7 +12,7 @@
 import { useState, type KeyboardEvent } from "react";
 import { Box, Chip, InputAdornment, TextField } from "@mui/material";
 import { Search, Clear } from "@mui/icons-material";
-import type { SectorNode } from "../../shared/types";
+import type { SectorNode, StrategyNode } from "../../shared/types";
 
 interface Props {
   /** Currently active search code (null = browsing mode). */
@@ -107,6 +107,34 @@ export function findCodeInThemes(
       );
       if (hit) {
         return { sectorId: s.sector_id, industrySlug: ind.industry_slug, name: hit.name };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Look up a code in the strategy tree (RIGHT column) and return the strategy
+ * id + theme slug that contain it.  Parallel to findCodeInThemes but for the
+ * RIGHT column of the two-column selector.
+ *
+ * Returns null when the code is not found in any strategy/industry.
+ */
+export function findCodeInStrategyThemes(
+  strategies: StrategyNode[],
+  rawCode: string,
+): { strategyId: string; themeSlug: string; name: string } | null {
+  const normalized = rawCode.trim().toUpperCase().replace(/\.(SS|SZ|SH|BJ|HK)$/i, "");
+  if (!normalized) return null;
+  const stripSuffix = (c: string) => c.toUpperCase().replace(/\.(SS|SZ|SH|BJ|HK)$/i, "");
+  for (const s of strategies) {
+    for (const th of s.industries) {
+      const hit = th.items.find(
+        (it) => it.code.toUpperCase() === normalized
+          || stripSuffix(it.code) === normalized,
+      );
+      if (hit) {
+        return { strategyId: s.sector_id, themeSlug: th.industry_slug, name: hit.name };
       }
     }
   }

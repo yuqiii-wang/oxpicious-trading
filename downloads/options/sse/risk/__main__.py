@@ -22,7 +22,7 @@ from typing import Optional, Set
 
 import requests
 
-from utils.db_commons import check_identity
+from _common.pre_check_and_load import check_identity
 from downloads._common.core import (
     DEFAULT_START_DATE,
     DEFAULT_TIMEOUT,

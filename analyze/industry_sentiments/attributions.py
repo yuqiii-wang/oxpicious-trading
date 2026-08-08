@@ -85,7 +85,7 @@ import gc
 import time
 from typing import Optional, Set
 
-from utils.build_commons import (
+from _common.build_commons import (
     truncate_table_async,
 )
 from analyze._common import upsert_analysis_identity
@@ -152,6 +152,7 @@ PREVIEW_DIMENSIONS_SQL = """
         WHERE type = 'index'
           AND industry_id IS NOT NULL
           AND industry_id <> ''
+          AND is_active = TRUE
     ) cls ON cls.code = sa.code
     WHERE sa.sec_type = 'index'
       AND sa.code_sec_shared_weight IS NOT NULL
@@ -199,6 +200,7 @@ industry_stocks AS (
         ON cls.code = h.code AND cls.type = 'index'
     WHERE cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
+      AND cls.is_active = TRUE
       {industry_filter}
 ),
 benchmark_shared AS (
@@ -251,6 +253,7 @@ industry_shared AS (
         WHERE cls.type = 'index'
           AND cls.industry_id IS NOT NULL
           AND cls.industry_id <> ''
+          AND cls.is_active = TRUE
           {industry_filter}
     ) cls ON cls.code = sa.code
     WHERE sa.sec_type = 'index'
@@ -692,6 +695,7 @@ member_indices AS (
         ON cls.code = h.code AND cls.type = 'index'
     WHERE cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
+      AND cls.is_active = TRUE
       {industry_filter}
       AND h.code NOT IN (SELECT code FROM broad_codes)
 ),
@@ -709,6 +713,7 @@ industry_stock_weights AS (
         ON cls.code = h.code AND cls.type = 'index'
     WHERE cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
+      AND cls.is_active = TRUE
       {industry_filter}
     GROUP BY cls.industry_id, h.stock_code
 ),
@@ -730,6 +735,7 @@ member_industry_shared AS (
        AND isw.stock_code = m.stock_code
     WHERE cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
+      AND cls.is_active = TRUE
       {industry_filter}
       AND m.code NOT IN (SELECT code FROM broad_codes)
     GROUP BY cls.industry_id, m.code
@@ -864,6 +870,7 @@ PREVIEW_MEMBER_DIMENSIONS_SQL = """
       AND sc.stock_code IS NOT NULL
       AND cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
+      AND cls.is_active = TRUE
       AND sc.code NOT IN (
           SELECT code FROM stats.sec_index_tags WHERE is_broad_market = TRUE
       )
@@ -879,6 +886,7 @@ COUNT_MEMBER_INDICES_SQL = """
       AND sc.stock_code IS NOT NULL
       AND cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
+      AND cls.is_active = TRUE
       AND sc.code NOT IN (
           SELECT code FROM stats.sec_index_tags WHERE is_broad_market = TRUE
       )
@@ -898,6 +906,7 @@ LIST_INDUSTRY_IDS_SQL = """
             WHERE type = 'index'
               AND industry_id IS NOT NULL
               AND industry_id <> ''
+              AND is_active = TRUE
         ) cls ON cls.code = sa.code
         WHERE sa.sec_type = 'index'
           AND sa.code_sec_shared_weight IS NOT NULL
@@ -914,6 +923,7 @@ LIST_INDUSTRY_IDS_SQL = """
           AND sc.stock_code IS NOT NULL
           AND cls.industry_id IS NOT NULL
           AND cls.industry_id <> ''
+          AND cls.is_active = TRUE
     ) u
     ORDER BY industry_id
 """

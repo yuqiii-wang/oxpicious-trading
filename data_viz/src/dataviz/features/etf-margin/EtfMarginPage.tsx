@@ -18,15 +18,16 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import ThemeSelector from "@/components/ThemeSelector";
-import CodeSearchBar, { findCodeInThemes } from "@/components/CodeSearchBar";
+import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
+import CodeSearchBar, { findCodeInThemes, findCodeInStrategyThemes } from "@/components/CodeSearchBar";
 import RefreshButton from "@/components/RefreshButton";
 import EtfMarginPanel from "@/dataviz/features/etf-margin/EtfMarginPanel";
-import { fetchEtfMarginCombined, fetchThemes, invalidateCacheForPrefix } from "@/lib/api-client";
+import { fetchEtfMarginCombined, fetchEtfStrategyThemes, fetchThemes, invalidateCacheForPrefix } from "@/lib/api-client";
 import { useStore } from "@/store/filters";
 import type {
   EtfMarginCombinedResponse,
   SectorNode,
+  StrategyNode,
 } from "../../../../shared/types";
 
 const PAGE_SIZE = 1;
@@ -40,6 +41,12 @@ export default function EtfMarginPage() {
   const setExchange = useStore((s) => s.setExchange);
 
   const [sectors, setSectors] = useState<SectorNode[]>([]);
+  // Parallel strategy → theme state (RIGHT column of the two-column selector).
+  // Mutually exclusive with sector/industry: when strategyId is set, sectorId
+  // is null and vice versa.
+  const [strategies, setStrategies] = useState<StrategyNode[]>([]);
+  const [strategyId, setStrategyId] = useState<string | null>(null);
+  const [themeSlug, setThemeSlug] = useState<string | null>(null);
   const [data, setData] = useState<EtfMarginCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,28 +61,34 @@ export default function EtfMarginPage() {
   // panel's CompositionPieChart has its own plot-level refresh button.
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Load themes (two-level taxonomy tree) once, and on refresh
+  // Load themes (two-level taxonomy tree) once, and on refresh.
+  // Fetches BOTH the industry tree (LEFT column) and the parallel strategy
+  // tree (RIGHT column) in parallel.
   useEffect(() => {
-    fetchThemes()
-      .then(setSectors)
+    Promise.all([fetchThemes(), fetchEtfStrategyThemes()])
+      .then(([sectorList, strategyList]) => {
+        setSectors(sectorList);
+        setStrategies(strategyList);
+      })
       .catch((e: Error) => setError(e.message));
   }, [refreshKey]);
 
-  // Reset to page 1 whenever sector, industry, or exchange changes
+  // Reset to page 1 whenever sector, industry, strategy, theme, or exchange changes
   useEffect(() => {
     setPage(1);
-  }, [sectorId, industrySlug, exchange]);
+  }, [sectorId, industrySlug, strategyId, themeSlug, exchange]);
 
-  // Load ETF data whenever sector/industry/exchange, page, or search code changes.
-  // When searchCode is set, fetch only that one ETF (bypassing sector/pagination).
+  // Load ETF data whenever sector/industry OR strategy/theme OR exchange,
+  // page, or search code changes. When searchCode is set, fetch only that one
+  // ETF (bypassing all filters/pagination).
   useEffect(() => {
     let cancelled = false;
-    if (!sectorId && !searchCode) return;
+    if (!sectorId && !strategyId && !searchCode) return;
     setLoading(true);
     setError(null);
     const promise = searchCode
       ? fetchEtfMarginCombined(null, null, null, null, undefined, 1, 1, searchCode)
-      : fetchEtfMarginCombined(sectorId, industrySlug, null, null, undefined, page, PAGE_SIZE, undefined, exchange);
+      : fetchEtfMarginCombined(sectorId, industrySlug, null, null, undefined, page, PAGE_SIZE, undefined, exchange, strategyId, themeSlug);
     promise
       .then((d) => {
         if (cancelled) return;
@@ -90,7 +103,7 @@ export default function EtfMarginPage() {
     return () => {
       cancelled = true;
     };
-  }, [sectorId, industrySlug, exchange, page, searchCode, refreshKey]);
+  }, [sectorId, industrySlug, strategyId, themeSlug, exchange, page, searchCode, refreshKey]);
 
   const handleRefresh = () => {
     // Both endpoints share the "/api/etf-margin/" prefix:
@@ -100,25 +113,45 @@ export default function EtfMarginPage() {
     setRefreshKey((k) => k + 1);
   };
 
-  // Resolve a searched code against the themes tree: update sector/industry
-  // highlights + activate single-result mode.
+  // Resolve a searched code against BOTH the industry tree (LEFT column) and
+  // the strategy tree (RIGHT column). If found in the industry tree, sector/
+  // industry highlights are set; if found in the strategy tree, strategy/
+  // theme highlights are set.
   //
   // The themes tree (listThemes) applies a `HAVING COUNT(v.date) >= 40`
   // threshold, so newly-listed ETFs (< 40 trading days) are absent from it.
-  // When findCodeInThemes returns null we still activate single-result mode
+  // When the code is in neither tree we still activate single-result mode
   // — the /combined API uses a threshold-free code-lookup query, so the ETF
   // is returned directly from the DB if it exists. If the API also finds
   // nothing, the "No data available for ETF code" warning (rendered below)
   // surfaces the not-found state.
   const handleSearch = (code: string) => {
-    const found = findCodeInThemes(sectors, code);
-    setError(null);
-    if (found) {
-      setSectorId(found.sectorId);
-      setIndustrySlug(found.industrySlug);
+    const foundIndustry = findCodeInThemes(sectors, code);
+    if (foundIndustry) {
+      setError(null);
+      setStrategyId(null);
+      setThemeSlug(null);
+      setSectorId(foundIndustry.sectorId);
+      setIndustrySlug(foundIndustry.industrySlug);
+      setSearchCode(code);
+      setPage(1);
+      return;
     }
-    // found is null for newly-listed ETFs not in the themes tree — still
-    // search by code so the threshold-free API path is taken.
+    const foundStrategy = findCodeInStrategyThemes(strategies, code);
+    if (foundStrategy) {
+      setError(null);
+      setSectorId(null);
+      setIndustrySlug(null);
+      setStrategyId(foundStrategy.strategyId);
+      setThemeSlug(foundStrategy.themeSlug);
+      setSearchCode(code);
+      setPage(1);
+      return;
+    }
+    // Not found in either tree — still search by code so the threshold-free
+    // API path is taken (newly-listed ETFs < 40 trading days are absent from
+    // the themes tree).
+    setError(null);
     setSearchCode(code);
     setPage(1);
   };
@@ -140,13 +173,32 @@ export default function EtfMarginPage() {
   };
 
   // Clicking a sector/industry chip exits search mode and browses normally.
+  // Mutual exclusivity: selecting in the LEFT column clears the RIGHT column.
   const handleSectorChange = (id: string | null) => {
     setSearchCode(null);
     setSectorId(id);
+    if (id) {
+      setStrategyId(null);
+      setThemeSlug(null);
+    }
   };
   const handleIndustryChange = (slug: string | null) => {
     setSearchCode(null);
     setIndustrySlug(slug);
+  };
+  // Clicking a strategy/theme chip exits search mode and browses normally.
+  // Mutual exclusivity: selecting in the RIGHT column clears the LEFT column.
+  const handleStrategyChange = (id: string | null) => {
+    setSearchCode(null);
+    setStrategyId(id);
+    if (id) {
+      setSectorId(null);
+      setIndustrySlug(null);
+    }
+  };
+  const handleThemeChange = (slug: string | null) => {
+    setSearchCode(null);
+    setThemeSlug(slug);
   };
   const handleExchangeChange = (ex: string | null) => {
     setSearchCode(null);
@@ -209,7 +261,7 @@ export default function EtfMarginPage() {
         </Box>
       </Box>
 
-      <ThemeSelector
+      <SecClassificationNav
         sectors={sectors}
         sectorId={sectorId}
         industrySlug={industrySlug}
@@ -217,6 +269,11 @@ export default function EtfMarginPage() {
         onSectorChange={handleSectorChange}
         onIndustryChange={handleIndustryChange}
         onExchangeChange={handleExchangeChange}
+        strategies={strategies}
+        strategyId={strategyId}
+        themeSlug={themeSlug}
+        onStrategyChange={handleStrategyChange}
+        onThemeChange={handleThemeChange}
         itemKind="ETF"
         selectedItemCode={searchCode}
         onItemSelected={handleItemSelected}

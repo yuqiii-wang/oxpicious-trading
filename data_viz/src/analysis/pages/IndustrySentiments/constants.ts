@@ -2,6 +2,7 @@
  * Shared constants for the Industry Sentiments analysis page sub-modules.
  */
 import type { PoolSize, CorrWindow, RollingDays } from "./types";
+import { GROUP_MAJOR_COLORS } from "@/theme/chart-palette";
 
 /**
  * ECharts group name for cross-chart tooltip + axisPointer sync. All three
@@ -28,20 +29,13 @@ export const BENCHMARK_COLORS: Record<string, string> = {
 
 /**
  * Distinct colors for per-industry mean curves in multi-industry "Mean only"
- * mode. ColorBrewer Set1 — high contrast and colorblind-friendly. Each
- * industry's mean line + ±1σ band reuses the same color so the user can
+ * mode. Alias of the shared `GROUP_MAJOR_COLORS` (ColorBrewer Set1 — high
+ * contrast and colorblind-friendly) so per-industry mean lines use the SAME
+ * major color as that industry's member-index variants on the price chart.
+ * Each industry's mean line + ±1σ band reuses the same color so the user can
  * visually pair a mean curve with its dispersion band.
  */
-export const MEAN_PALETTE = [
-  "#e41a1c", // red
-  "#377eb8", // blue
-  "#4daf4a", // green
-  "#984ea3", // purple
-  "#ff7f00", // orange
-  "#a65628", // brown
-  "#f781bf", // pink
-  "#999999", // grey
-];
+export const MEAN_PALETTE = GROUP_MAJOR_COLORS;
 
 /** Colors per pool_size slice (used by the aggregate charts). */
 export const POOL_COLORS: Record<PoolSize, string> = {

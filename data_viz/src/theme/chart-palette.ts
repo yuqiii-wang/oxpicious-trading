@@ -58,6 +58,22 @@ export const DIVIDEND_COLOR = cssVar("--chart-dividend", "#f1c40f"); // gold —
 export const SPLIT_COLOR = cssVar("--chart-split", "#16a085"); // teal — split/conversion marker
 
 // ----------------------------------------------------------------------------
+// Group major-color palette (ColorBrewer Set1) — one major color per GROUP
+// (e.g. per industry_id). Curves in the same group render as VARIANT shades
+// of their major color. See theme/group-colors.ts for the variant generator.
+// ----------------------------------------------------------------------------
+export const GROUP_MAJOR_COLORS = [
+  cssVar("--chart-group-1", "#e41a1c"), // red
+  cssVar("--chart-group-2", "#377eb8"), // blue
+  cssVar("--chart-group-3", "#4daf4a"), // green
+  cssVar("--chart-group-4", "#984ea3"), // purple
+  cssVar("--chart-group-5", "#ff7f00"), // orange
+  cssVar("--chart-group-6", "#a65628"), // brown
+  cssVar("--chart-group-7", "#f781bf"), // pink
+  cssVar("--chart-group-8", "#999999"), // grey
+];
+
+// ----------------------------------------------------------------------------
 // Muted multi-series palette (Tableau-10 desaturated — for multi-expiry/date)
 // ----------------------------------------------------------------------------
 export const MUTED_PALETTE = [

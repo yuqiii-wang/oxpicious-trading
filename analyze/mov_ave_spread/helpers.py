@@ -1,14 +1,13 @@
 """Pure helpers for analyze.mov_ave_spread.
 
-No DB / IO dependencies — safe to unit-test in isolation.
+No DB / IO dependencies - safe to unit-test in isolation.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from analyze._common._cuDF import should_use_gpu
-from analyze._common.rolling import grouped_rolling_agg
+from _common.df_utils import grouped_diff, grouped_rolling_agg
 from analyze.mov_ave_spread.config import MA_WINDOWS, NUMERIC_MAX_ABS
 
 
@@ -66,46 +65,34 @@ def compute_slopes_curvatures(df: pd.DataFrame) -> pd.DataFrame:
     Adds columns price_slope / price_curvature (from ``price``) and
     ma{W}_slope / ma{W}_curvature for W in MA_WINDOWS (from ``ma{W}``).
 
-    GPU acceleration: when the cuDF router determines the GPU is
-    worthwhile for this row count (groupby_diff op_type), the entire
-    diff() sequence runs on a cuDF DataFrame and is brought back to
-    pandas once at the end. This amortizes the H2D/D2H transfer over
-    12 diff() operations (6 slopes + 6 curvatures).
+    GPU acceleration: uses the shared ``grouped_diff`` helper, which
+    routes to cuDF when the row count exceeds the ``groupby_diff``
+    breakeven (~320K rows conservative). Two batched calls cover all
+    12 diff() operations: one for the 6 slopes, one for the 6
+    curvatures (diff-of-diff). Each batch runs on a single cuDF
+    transfer of only the needed columns (group_keys + input cols),
+    avoiding the cost of transferring the full wide source frame.
     """
     df = df.sort_values(["sec_type", "code", "date"]).reset_index(drop=True)
     grp_keys = ["sec_type", "code"]
 
-    if should_use_gpu(df, op_type="groupby_diff"):
-        import cudf  # type: ignore[import-untyped]
-        # cuDF can't handle object-dtype ``date`` columns (python date
-        # objects). The date column is only used for sorting above (already
-        # done), so drop it for the GPU pass and restore it after.
-        date_col = df["date"].copy()
-        work = df.drop(columns=["date"])
-        gdf = cudf.from_pandas(work)
-        # Price 1st + 2nd derivative.
-        gdf["price_slope"] = gdf.groupby(grp_keys, sort=False)["price"].diff()
-        gdf["price_curvature"] = gdf.groupby(grp_keys, sort=False)["price_slope"].diff()
-        for w in MA_WINDOWS:
-            ma_col = f"ma{w}"
-            slope_col = f"ma{w}_slope"
-            curv_col = f"ma{w}_curvature"
-            gdf[slope_col] = gdf.groupby(grp_keys, sort=False)[ma_col].diff()
-            gdf[curv_col] = gdf.groupby(grp_keys, sort=False)[slope_col].diff()
-        result = gdf.to_pandas()
-        result["date"] = date_col.values
-        return result
+    # Slopes: 1st derivative of price + each MA window (6 columns).
+    slope_cols = ["price"] + [f"ma{w}" for w in MA_WINDOWS]
+    slope_out = ["price_slope"] + [f"ma{w}_slope" for w in MA_WINDOWS]
+    grouped_diff(
+        df, grp_keys,
+        cols=slope_cols, out_names=slope_out,
+        sort=False,  # df already sorted above
+    )
 
-    # CPU path (pandas Cython).
-    # Price 1st + 2nd derivative.
-    df["price_slope"] = df.groupby(grp_keys, sort=False)["price"].diff()
-    df["price_curvature"] = df.groupby(grp_keys, sort=False)["price_slope"].diff()
-    for w in MA_WINDOWS:
-        ma_col = f"ma{w}"
-        slope_col = f"ma{w}_slope"
-        curv_col = f"ma{w}_curvature"
-        df[slope_col] = df.groupby(grp_keys, sort=False)[ma_col].diff()
-        df[curv_col] = df.groupby(grp_keys, sort=False)[slope_col].diff()
+    # Curvatures: 2nd derivative = diff of slope (6 columns).
+    curv_out = ["price_curvature"] + [f"ma{w}_curvature" for w in MA_WINDOWS]
+    grouped_diff(
+        df, grp_keys,
+        cols=slope_out, out_names=curv_out,
+        sort=False,
+    )
+
     return df
 
 

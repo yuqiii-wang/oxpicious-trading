@@ -45,7 +45,7 @@ warnings.filterwarnings("ignore")
 
 import pandas as pd
 
-from utils.build_commons import (
+from _common.build_commons import (
     setup_utf8_stdout, add_common_build_args, get_db_or_exit,
     bulk_upsert_async,
     print_build_header, print_wall_time,

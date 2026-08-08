@@ -9,7 +9,6 @@ import {
   Chip,
   Checkbox,
   Collapse,
-  Slider,
   Stack,
   TextField,
   ToggleButton,
@@ -17,7 +16,9 @@ import {
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
+import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
+import { buildGroupColorScheme } from "@/theme/group-colors";
 import type { PoolSize, PerIndustryAggregation, PlotProps } from "./types";
 import { CHART_GROUP, BENCHMARK_COLORS } from "./constants";
 import { classifyPoolSize } from "./helpers";
@@ -64,6 +65,35 @@ export function IndustrySentimentsPlot({
         industry_label: d.industry_label,
         aggregation: d.aggregation,
       }));
+  }, [multiIndustry, chartDataList]);
+
+  // ---- Group color scheme (one MAJOR color per industry) ----
+  // Shared across the price chart + aggregate charts so an industry keeps the
+  // same major color everywhere. In multi-industry mode the group set is the
+  // list of selected industries; in single-industry mode it's just the one
+  // industry (all member indices render as variants of a single major color).
+  // Assignment is stable (sorted distinct keys → palette), so re-running with
+  // the same industry set always yields the same colors.
+  const industryColorFor = useMemo(() => {
+    const ids = multiIndustry
+      ? chartDataList.map((d) => d.industry_id)
+      : [data.industry_id];
+    const scheme = buildGroupColorScheme(ids);
+    return (industryId: string) => scheme.majorColor(industryId);
+  }, [multiIndustry, chartDataList, data.industry_id]);
+
+  // Map each member-index code → its source industry_id (the curve's GROUP
+  // key). Only needed in multi-industry mode, where the merged `data.indices`
+  // is a flat array and would otherwise lose per-index industry attribution.
+  // Built from the un-merged `chartDataList`. Undefined in single-industry
+  // mode → the chart falls back to `data.industry_id` for every index.
+  const indexGroupKey = useMemo(() => {
+    if (!multiIndustry) return undefined;
+    const m = new Map<string, string>();
+    for (const d of chartDataList) {
+      for (const idx of d.indices) m.set(idx.code, d.industry_id);
+    }
+    return m;
   }, [multiIndustry, chartDataList]);
 
   // Whether the "Mean only" toggle should be enabled. In single-industry
@@ -250,32 +280,18 @@ export function IndustrySentimentsPlot({
               hideHK,
               showAggOverlay,
               perIndustryAggregations,
+              industryColorFor,
+              indexGroupKey,
             )}
             height={460}
             group={CHART_GROUP}
           />
-          {maxIdx > 0 && (
-            <Box sx={{ px: 1, mt: 0.5 }}>
-              <Slider
-                value={range}
-                onChange={(_, v) => setRange(v as [number, number])}
-                min={0}
-                max={maxIdx}
-                size="small"
-                valueLabelDisplay="auto"
-                valueLabelFormat={(idx) => allDates[idx] ?? ""}
-                sx={{ mt: 0.5, "& .MuiSlider-valueLabel": { fontSize: "0.7rem" } }}
-              />
-              <Stack direction="row" justifyContent="space-between" sx={{ mt: -0.5 }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                  {allDates[range[0]] ?? "—"}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                  {allDates[range[1]] ?? "—"}
-                </Typography>
-              </Stack>
-            </Box>
-          )}
+          <DateRangeSlider
+            value={range}
+            onChange={setRange}
+            max={maxIdx}
+            dates={allDates}
+          />
         </>
       )}
       {hasPeData && (
@@ -295,6 +311,7 @@ export function IndustrySentimentsPlot({
               multiIndustry,
               "mean_pe",
               "PE",
+              industryColorFor,
             )}
             height={200}
             group={CHART_GROUP}
@@ -318,6 +335,7 @@ export function IndustrySentimentsPlot({
               multiIndustry,
               "total_trading_amount",
               "成交额 (亿元)",
+              industryColorFor,
             )}
             height={200}
             group={CHART_GROUP}

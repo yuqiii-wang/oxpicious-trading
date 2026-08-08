@@ -15,9 +15,10 @@
  * Return badges shown in the panel header.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Box, Chip, Slider, Stack, Typography } from "@mui/material";
+import { Alert, Box, Chip, Stack } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import CompositionPieChart from "@/components/CompositionPieChart";
+import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { useStore } from "@/store/filters";
@@ -568,28 +569,12 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }
     >
       <Box sx={{ width: "100%" }}>
         <EChart option={option} height={250} />
-        {maxIdx > 0 && (
-          <Box sx={{ px: 1, mt: 0.25 }}>
-            <Slider
-              value={range}
-              onChange={(_, v) => setRange(v as [number, number])}
-              min={0}
-              max={maxIdx}
-              size="small"
-              valueLabelDisplay="auto"
-              valueLabelFormat={(idx) => allRows[idx]?.date ?? ""}
-              sx={{ mt: 0.5, "& .MuiSlider-valueLabel": { fontSize: "0.7rem" } }}
-            />
-            <Stack direction="row" justifyContent="space-between" sx={{ mt: -0.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                {allRows[range[0]]?.date ?? "—"}
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                {allRows[range[1]]?.date ?? "—"}
-              </Typography>
-            </Stack>
-          </Box>
-        )}
+        <DateRangeSlider
+          value={range}
+          onChange={setRange}
+          max={maxIdx}
+          dates={allRows.map((r) => r.date)}
+        />
         <CompositionPieChart
           code={etf.code}
           open={compositionOpen}

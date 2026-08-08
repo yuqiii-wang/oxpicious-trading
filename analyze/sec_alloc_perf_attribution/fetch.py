@@ -147,6 +147,7 @@ async def fetch_index_closes(conn) -> pd.DataFrame:
             JOIN stats.sec_classification sc
                 ON sc.code = b.code AND sc.type = 'index'
             WHERE sc.sector_id = 'BROAD'
+              AND sc.is_active = TRUE
         ),
         non_broad_ranked AS (
             -- Non-broad, non-debt indices ranked WITHIN each industry
@@ -164,6 +165,7 @@ async def fetch_index_closes(conn) -> pd.DataFrame:
             LEFT JOIN stats.index_exts ie
                 ON ie.code = b.code
             WHERE sc.sector_id NOT IN ('BROAD', 'DEBT')
+              AND sc.is_active = TRUE
             GROUP BY b.code, sc.industry_id
         ),
         top_non_broad AS (

@@ -74,20 +74,21 @@ import numpy as np
 import pandas as pd
 
 from downloads._common.core import read_csv_preferred, strip_exchange_suffix
-from utils.study_select_etf import ETF_THEMES
+from _common.study_select_etf import ETF_THEMES
 # Derive ETF_THEME_RULES (list of (theme_id, label, slug, keywords) tuples)
 # from ETF_THEMES OrderedDict for the keyword-based classify_etf_theme below.
 ETF_THEME_RULES = [
     (tid, cfg.get("theme_label", tid), cfg.get("slug", tid), cfg.get("kw", []))
     for tid, cfg in ETF_THEMES.items()
 ]
-from utils.build_commons import (
+from _common.build_commons import (
     setup_utf8_stdout, add_common_build_args, get_db_or_exit,
     parse_num, parse_date, ymd_from_filename, ymd_to_date, in_range,
     glob_source_files, print_build_header, print_wall_time,
     PROJECT_ROOT, TODAY_STR,
     get_existing_keys_async, bulk_upsert_async, truncate_table_async,
 )
+from _common.df_utils import compute_moving_averages
 
 setup_utf8_stdout()
 
@@ -1046,22 +1047,12 @@ async def main():
 
         # Compute MAs (needs full per-code history)
         merged = merged.sort_values(["code", "date"]).reset_index(drop=True)
-        merged["ma5"] = merged.groupby("code", sort=False)["adj_close"].transform(
-            lambda x: x.rolling(window=5, min_periods=1).mean()
-        ).round(6)
-        merged["ma5_ratio"] = ((merged["adj_close"] / merged["ma5"]) - 1.0).round(6)
-        merged["ma20"] = merged.groupby("code", sort=False)["adj_close"].transform(
-            lambda x: x.rolling(window=20, min_periods=1).mean()
-        ).round(6)
-        merged["ma60"] = merged.groupby("code", sort=False)["adj_close"].transform(
-            lambda x: x.rolling(window=60, min_periods=1).mean()
-        ).round(6)
-        merged["ma120"] = merged.groupby("code", sort=False)["adj_close"].transform(
-            lambda x: x.rolling(window=120, min_periods=1).mean()
-        ).round(6)
-        merged["ma255"] = merged.groupby("code", sort=False)["adj_close"].transform(
-            lambda x: x.rolling(window=255, min_periods=1).mean()
-        ).round(6)
+        compute_moving_averages(
+            merged,
+            group_key="code",
+            value_col="adj_close",
+            windows=[5, 20, 60, 120, 255],
+        )
         print(f"    → MA columns added: ma5, ma5_ratio, ma20, ma60, ma120, ma255", flush=True)
 
         # ------------------------------------------------------------------

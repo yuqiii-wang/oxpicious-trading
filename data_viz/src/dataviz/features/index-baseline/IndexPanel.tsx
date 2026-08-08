@@ -11,11 +11,12 @@
  *     so the pie chart stays inside the parent box.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Box, Button, Slider, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button } from "@mui/material";
 import { PieChart as PieChartIcon } from "@mui/icons-material";
 import { Link as LinkIcon } from "@mui/icons-material";
 import ChartCard from "@/components/ChartCard";
 import CompositionPieChart from "@/components/CompositionPieChart";
+import DateRangeSlider from "@/components/DateRangeSlider";
 import LinkedEtfsList from "@/components/LinkedEtfsList";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import RefreshButton from "@/components/RefreshButton";
@@ -418,6 +419,22 @@ export default function IndexPanel({ index, themeMode }: Props) {
     ? `${index.sector_label} / ${index.industry_label} · OHLC${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120 · Volume · PE`
     : `${index.sector_label} / ${index.industry_label} · Close${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120 · Volume · PE`;
 
+  // Dummy indices have no OHLC data — show a "No data" placeholder instead
+  // of rendering an empty chart.
+  if (index.is_dummy) {
+    return (
+      <ChartCard
+        title={`${index.code} · ${index.name}`}
+        subtitle={`${index.sector_label} / ${index.industry_label} · Dummy Index`}
+        height={120}
+      >
+        <Alert severity="info" sx={{ mt: 1 }} icon={false}>
+          No data — this is a synthetic dummy index for {index.industry_label} industry ETFs.
+        </Alert>
+      </ChartCard>
+    );
+  }
+
   // Dynamic card height (used as minHeight — ChartCard grows to fit content).
   // Reserve a baseline when collapsed; expand when any side panel opens;
   // expand further when the per-stock OHLC is open.
@@ -435,28 +452,12 @@ export default function IndexPanel({ index, themeMode }: Props) {
     >
       <Box sx={{ width: "100%" }}>
         <EChart option={option} height={250} onReady={handleReady} />
-        {maxIdx > 0 && (
-          <Box sx={{ px: 1, mt: 0.25 }}>
-            <Slider
-              value={range}
-              onChange={(_, v) => setRange(v as [number, number])}
-              min={0}
-              max={maxIdx}
-              size="small"
-              valueLabelDisplay="auto"
-              valueLabelFormat={(idx) => allRows[idx]?.date ?? ""}
-              sx={{ mt: 0.5, "& .MuiSlider-valueLabel": { fontSize: "0.7rem" } }}
-            />
-            <Stack direction="row" justifyContent="space-between" sx={{ mt: -0.5 }}>
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                {allRows[range[0]]?.date ?? "—"}
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                {allRows[range[1]]?.date ?? "—"}
-              </Typography>
-            </Stack>
-          </Box>
-        )}
+        <DateRangeSlider
+          value={range}
+          onChange={setRange}
+          max={maxIdx}
+          dates={allRows.map((r) => r.date)}
+        />
 
         {/* Intraday 5-min expansion */}
         {intradayDate && (

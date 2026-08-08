@@ -30,6 +30,11 @@ export function buildAggregateChartOption(
   multiIndustry: boolean,
   column: "mean_pe" | "total_trading_amount",
   yAxisName: string,
+  /** Resolve an industry_id to its MAJOR group color (multi-industry mode
+   *  only). When omitted, falls back to MEAN_PALETTE by index. Passed by the
+   *  page so the per-industry aggregate lines match the major colors used on
+   *  the price chart. */
+  industryColorFor?: (industryId: string) => string,
 ): EChartsOption {
   const c = axisColors(themeMode);
   const visibleDates = allDates.slice(visibleLo, visibleHi + 1);
@@ -66,7 +71,9 @@ export function buildAggregateChartOption(
   } else {
     // Multi-industry: one line per industry, filtered to selected pool_size.
     perIndustryAggregations.forEach((agg, i) => {
-      const color = MEAN_PALETTE[i % MEAN_PALETTE.length];
+      const color = industryColorFor
+        ? industryColorFor(agg.industry_id)
+        : MEAN_PALETTE[i % MEAN_PALETTE.length];
       const shortLabel = (agg.industry_label || agg.industry_id).split("  ")[0] || agg.industry_id;
       const aggByDate = new Map<string, number | null>();
       for (const a of agg.aggregation) {
@@ -125,9 +132,16 @@ export function buildAggregateChartOption(
               return fmtNum(x, column === "mean_pe" ? 2 : 1) + unit;
             };
             const color = (p.seriesName && (multiIndustry
-              ? MEAN_PALETTE[perIndustryAggregations.findIndex(a =>
-                (a.industry_label || a.industry_id).split("  ")[0] === p.seriesName
-                || a.industry_id === p.seriesName) % MEAN_PALETTE.length]
+              ? (industryColorFor
+                  ? industryColorFor(
+                      perIndustryAggregations.find(a =>
+                        (a.industry_label || a.industry_id).split("  ")[0] === p.seriesName
+                        || a.industry_id === p.seriesName,
+                      )?.industry_id ?? "",
+                    )
+                  : MEAN_PALETTE[perIndustryAggregations.findIndex(a =>
+                    (a.industry_label || a.industry_id).split("  ")[0] === p.seriesName
+                    || a.industry_id === p.seriesName) % MEAN_PALETTE.length])
               : POOL_COLORS[(p.seriesName as PoolSize) ?? "all"])) ?? "#424242";
             return `<div style="display:flex;justify-content:space-between;gap:12px">
               <span style="color:${color}">━</span>

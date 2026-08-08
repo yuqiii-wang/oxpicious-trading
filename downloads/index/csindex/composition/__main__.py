@@ -91,7 +91,7 @@ SLEEP_SEC = DEFAULT_SLEEP_SEC
 
 # SZSE indices that must NOT be downloaded from csindex.com.cn
 # (they are covered by SZSE-specific downloaders)
-CSINDEX_SKIP_CODES = {"399001", "399006", "399237"}
+CSINDEX_SKIP_CODES = {"399001", "399006", "399237", "399348", "399346"}
 
 # Bond market indices track bonds (not stocks), so they don't have meaningful
 # composition (closeweight) data. They are tracked via daily index OHLCV

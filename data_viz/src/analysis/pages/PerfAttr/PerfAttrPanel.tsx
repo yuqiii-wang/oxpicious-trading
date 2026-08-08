@@ -22,7 +22,6 @@ import {
   Box,
   CircularProgress,
   Popover,
-  Slider,
   Stack,
   ToggleButton,
   ToggleButtonGroup,
@@ -30,6 +29,7 @@ import {
 } from "@mui/material";
 import * as echarts from "echarts";
 import ChartCard from "@/components/ChartCard";
+import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import {
   fetchPerfAttrAttribution,
@@ -431,28 +431,12 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
                   group={`perf-attr-${code}-${selectedBenchmark.code}`}
                 />
               </Box>
-              {maxIdx > 0 && (
-                <Box sx={{ px: 1, mt: 0.5 }}>
-                  <Slider
-                    value={range}
-                    onChange={(_, v) => setRange(v as [number, number])}
-                    min={0}
-                    max={maxIdx}
-                    size="small"
-                    valueLabelDisplay="auto"
-                    valueLabelFormat={(idx) => chartData?.rows[idx]?.date ?? ""}
-                    sx={{ mt: 0.5, "& .MuiSlider-valueLabel": { fontSize: "0.7rem" } }}
-                  />
-                  <Stack direction="row" justifyContent="space-between" sx={{ mt: -0.5 }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                      {chartData?.rows[range[0]]?.date ?? "—"}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                      {chartData?.rows[range[1]]?.date ?? "—"}
-                    </Typography>
-                  </Stack>
-                </Box>
-              )}
+              <DateRangeSlider
+                value={range}
+                onChange={setRange}
+                max={maxIdx}
+                dates={chartData?.rows.map((r) => r.date) ?? []}
+              />
             </>
           )}
           {selectedBenchmark && !chartLoading && !chartError && filteredChartData && filteredChartData.rows.length === 0 && (

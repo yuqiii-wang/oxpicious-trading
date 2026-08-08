@@ -22,6 +22,7 @@ import { Router, type Request, type Response } from "express";
 import {
   listLiveDataDates,
   listLiveDataThemes,
+  listStrategyThemes,
   getLiveDataCombined,
   type LiveDataSecType,
 } from "../services/live-data.service.js";
@@ -54,6 +55,17 @@ router.get("/themes", async (req: Request, res: Response) => {
   }
 });
 
+/** GET /api/live-data/strategy-themes?type=index — parallel strategy → theme tree */
+router.get("/strategy-themes", async (req: Request, res: Response) => {
+  try {
+    const secType = parseSecType(req.query.type);
+    res.json(await listStrategyThemes(secType));
+  } catch (err) {
+    console.error("[live-data/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 /** GET /api/live-data/combined?type=index&date=&sector=&industry=... */
 router.get("/combined", async (req: Request, res: Response) => {
   try {
@@ -61,6 +73,8 @@ router.get("/combined", async (req: Request, res: Response) => {
     const query = {
       sector: typeof req.query.sector === "string" ? req.query.sector : undefined,
       industry: typeof req.query.industry === "string" ? req.query.industry : undefined,
+      strategy: typeof req.query.strategy === "string" ? req.query.strategy : undefined,
+      theme: typeof req.query.theme === "string" ? req.query.theme : undefined,
       code: typeof req.query.code === "string" ? req.query.code : undefined,
       exchange: typeof req.query.exchange === "string" ? req.query.exchange : undefined,
       date: typeof req.query.date === "string" ? req.query.date : undefined,

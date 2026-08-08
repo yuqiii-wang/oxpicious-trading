@@ -696,9 +696,9 @@ def _get_latest_db_lpr_date() -> Optional[date]:
     in the database.
     """
     try:
-        from utils.db_commons import get_db_connection
+        from _common.db_commons import get_db_connection
     except Exception as e:  # pragma: no cover - import guard
-        logger.debug("[lpr] cannot import utils.db_commons: %s", e)
+        logger.debug("[lpr] cannot import _common.db_commons: %s", e)
         return None
     try:
         conn = get_db_connection()

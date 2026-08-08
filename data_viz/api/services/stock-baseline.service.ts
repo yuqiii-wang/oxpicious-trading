@@ -37,7 +37,8 @@
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { matchesExchange } from "../lib/classify-etf.js";
+import { matchesExchange, stripExchangeSuffix } from "../lib/classify-etf.js";
+import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
 import type {
   StockBaselineResponse,
   StockBaselineRow,
@@ -46,6 +47,7 @@ import type {
   SectorNode,
   IndustryNode,
   StockDividend,
+  StrategyNode,
 } from "../../shared/types.js";
 
 interface DbStockRow extends QueryResultRow {
@@ -84,6 +86,10 @@ interface DbStockMetaRow extends QueryResultRow {
   industry_id: string;
   industry_label: string;
   industry_slug: string;
+  /** When TRUE, sector_id/industry_id hold INDUSTRY classification (industry-
+   *  primary row). When FALSE, they hold STRATEGY classification (strategy-
+   *  primary row). Used by the parallel strategy/theme selector. */
+  is_industry_not_strategy: boolean;
   exchange: string;
 }
 
@@ -301,11 +307,13 @@ const STOCK_META_SQL = `
          COALESCE(MAX(sc.industry_id),      'OTHER')    AS industry_id,
          COALESCE(MAX(sc.industry_label),   '未分类')    AS industry_label,
          COALESCE(MAX(sc.industry_slug),    'other')    AS industry_slug,
+         COALESCE(BOOL_OR(sc.is_industry_not_strategy), TRUE) AS is_industry_not_strategy,
          COALESCE(MAX(sc.exchange), '')                 AS exchange
     FROM ohlc_rows o
     LEFT JOIN LATERAL (
       SELECT sc.sector_id, sc.sector_label, sc.industry_id, sc.industry_label,
-             sc.industry_slug, sc.exchange
+             sc.industry_slug, sc.is_industry_not_strategy, sc.exchange,
+             sc.is_active
         FROM stats.sec_classification sc
        WHERE sc.code = o.code AND sc.type = 'stock'
        ORDER BY sc.parent_index_weight DESC NULLS LAST, sc.parent_index_code
@@ -313,6 +321,7 @@ const STOCK_META_SQL = `
     ) sc ON true
    GROUP BY o.code
   HAVING COUNT(*) >= ${MIN_DAYS}
+     AND COALESCE(BOOL_OR(sc.is_active), TRUE)
    ORDER BY n_days DESC, o.code
 `;
 
@@ -329,6 +338,10 @@ export async function listStockThemes(): Promise<SectorNode[]> {
   }>();
 
   for (const r of rows) {
+    // LEFT column: only industry-primary securities. Strategy-primary rows
+    // (is_industry_not_strategy=FALSE) carry strategy/theme in
+    // sector_id/industry_id and belong in the RIGHT column only.
+    if (!r.is_industry_not_strategy) continue;
     // Use the SUFFIXED code (e.g. "000001.SZ") as the canonical identifier
     // — this matches what stock_identity, sec_classification, and
     // v_stock_baseline all use.  CodeSearchBar uses partial matching, so
@@ -375,6 +388,36 @@ export async function listStockThemes(): Promise<SectorNode[]> {
 }
 
 // ----------------------------------------------------------------------------
+//  Strategy themes — parallel L1 strategy → L2 theme → stocks tree built from
+//  the same STOCK_META_SQL but using the strategy-primary rows
+//  (is_industry_not_strategy=FALSE).  sector_id/industry_id on those rows
+//  carry the strategy/theme classification.  Tree-building is delegated to
+//  the shared buildStrategyThemesFromRows helper to avoid duplicating the
+//  grouping/sorting logic across services.
+//
+//  Note: codes here are stripped of their exchange suffix (e.g. "000001.SZ"
+//  → "000001") so the helper's tree keys match what the strategy selector
+//  uses.  This differs from listStockThemes() which uses the suffixed code
+//  as the canonical identifier.
+// ----------------------------------------------------------------------------
+export async function listStrategyThemes(): Promise<StrategyNode[]> {
+  const rows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
+
+  const mappedRows = rows.map((r) => ({
+    code: stripExchangeSuffix(r.code),
+    name: r.name,
+    sector_id: r.sector_id,
+    sector_label: r.sector_label,
+    industry_id: r.industry_id,
+    industry_label: r.industry_label,
+    industry_slug: r.industry_slug,
+    is_industry_not_strategy: r.is_industry_not_strategy,
+  }));
+
+  return buildStrategyThemesFromRows(mappedRows);
+}
+
+// ----------------------------------------------------------------------------
 //  Combined stock data with sector/industry filter + pagination
 // ----------------------------------------------------------------------------
 export interface StockCombinedQuery {
@@ -389,6 +432,12 @@ export interface StockCombinedQuery {
   exchange?: string;
   start_date?: string;
   end_date?: string;
+  /** L1 strategy id (parallel to sector, e.g. "BROAD", "DIV") — when set,
+   *  only strategy-primary stocks are returned. */
+  strategy?: string;
+  /** L2 theme slug (parallel to industry, e.g. "broad_csi300") — paired
+   *  with `strategy`. */
+  theme?: string;
   page?: number;
   page_size?: number;
 }
@@ -398,6 +447,8 @@ export async function getStocksCombined(
 ): Promise<StockCombinedResponse> {
   const sectorFilter = (q.sector ?? "").trim();
   const industryFilter = (q.industry ?? "").trim();
+  const strategyFilter = (q.strategy ?? "").trim();
+  const themeFilter = (q.theme ?? "").trim();
   const exchangeFilter = (q.exchange ?? "").trim() || null;
   // Normalize the code search: strip any suffix so we can match against both
   // the suffixed ("000001.SZ") and stripped ("000001") forms in metaRows.
@@ -410,15 +461,18 @@ export async function getStocksCombined(
   // 1. Fetch all stocks with classification, ordered by n_days DESC.
   const metaRows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
 
-  // 2. Filter by sector + industry + exchange (or by exact code when codeFilter is set).
-  // metaRows are already ordered by n_days DESC; preserve that order so
-  // pagination returns the most-liquid stocks first.
+  // 2. Filter by sector/industry/strategy/theme + exchange (or by exact
+  //    code when codeFilter is set).  metaRows are already ordered by
+  //    n_days DESC; preserve that order so pagination returns the most-
+  //    liquid stocks first.
   const meta = new Map<string, {
     name: string;
     sector_id: string;
     sector_label: string;
     industry_id: string;
     industry_label: string;
+    industry_slug: string;
+    is_industry_not_strategy: boolean;
   }>();
   const wantedCodes: string[] = [];
   for (const r of metaRows) {
@@ -428,6 +482,8 @@ export async function getStocksCombined(
       sector_label: r.sector_label,
       industry_id: r.industry_id,
       industry_label: r.industry_label,
+      industry_slug: r.industry_slug,
+      is_industry_not_strategy: r.is_industry_not_strategy,
     });
     if (codeFilterBare) {
       // Exact code search — ignore sector/industry/exchange filters.
@@ -440,12 +496,17 @@ export async function getStocksCombined(
       if (matches) wantedCodes.push(r.code);
       continue;
     }
-    const sectorOk = !sectorFilter || r.sector_id === sectorFilter;
-    const industryOk = !industryFilter
-      || r.industry_slug === industryFilter
-      || r.industry_id === industryFilter;
+    // Classification filter (sector/industry OR strategy/theme — mutually
+    // exclusive, handled by matchesClassification) + exchange filter.
+    const classOk = matchesClassification(
+      r,
+      sectorFilter,
+      industryFilter,
+      strategyFilter,
+      themeFilter,
+    );
     const exchangeOk = matchesExchange(r.exchange, exchangeFilter);
-    if (sectorOk && industryOk && exchangeOk) wantedCodes.push(r.code);
+    if (classOk && exchangeOk) wantedCodes.push(r.code);
   }
 
   const totalStocks = wantedCodes.length;

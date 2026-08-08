@@ -44,13 +44,13 @@ from typing import Optional, Set
 import numpy as np
 import pandas as pd
 
-from utils.build_commons import bulk_upsert_async, find_missing_dates
+from _common.build_commons import bulk_upsert_async, find_missing_dates
 
 from analyze._common import (
     grouped_rolling_agg,
     sanitize_for_db_insert,
 )
-from analyze._common._cuDF import should_use_gpu
+from _common.df_utils import should_use_gpu
 from analyze.sec_alloc_perf_attribution.config import (
     CORR_WINDOWS,
     RATIO_CAP,

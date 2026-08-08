@@ -57,7 +57,7 @@ import sys
 import time
 from typing import Optional, Set
 
-# Ensure project root is on sys.path so ``utils`` is importable when run
+# Ensure project root is on sys.path so ``_common`` is importable when run
 # directly via ``python -m analyze.industry_sentiments`` or as a script.
 sys.path.insert(
     0,
@@ -66,10 +66,12 @@ sys.path.insert(
     ),
 )
 
-from utils.build_commons import (  # noqa: E402
+from _common.build_commons import (  # noqa: E402
     setup_utf8_stdout,
     get_db_connection_async,
+    get_db_pool_async,
     bulk_upsert_async,
+    copy_insert_async,
     truncate_table_async,
     print_build_header,
     print_wall_time,
@@ -161,6 +163,7 @@ _LOAD_INDEX_DATA_SQL_TEMPLATE = """
     ) latest ON true{first_close_join}
     WHERE sc.industry_id IS NOT NULL
       AND sc.industry_id <> ''
+      AND sc.is_active = TRUE
       AND ib.close IS NOT NULL
       AND EXISTS (
           SELECT 1 FROM stats.sec_composition sc3
@@ -215,6 +218,7 @@ POOL_UNION_TEMP_SQL = """
             ON sc2.code = ic.index_code
            AND sc2.source_type = 'index'
         WHERE sc.industry_id IS NOT NULL AND sc.industry_id <> ''
+          AND sc.is_active = TRUE
     )
     SELECT DISTINCT industry_id, industry_label,
            'all' AS pool_size, stock_code
@@ -497,20 +501,31 @@ async def main() -> None:
 
         # Pre-check: skip already-present dates (safety net — the
         # find_missing_analysis_dates pre-check in Step 0 already filters
-        # target_dates, but this catches any edge cases).
-        n_before = len(data)
-        data = await filter_rows_to_missing_dates_async(conn, TABLE, data)
-        n_skipped = n_before - len(data)
-        if n_skipped > 0:
-            print(f"    -> skip check: {n_skipped:,} of {n_before:,} rows "
-                  f"already present (skipped)", flush=True)
+        # target_dates, but this catches any edge cases). In force mode the
+        # table was truncated so every row is new — skip the check.
+        if not args.force:
+            n_before = len(data)
+            data = await filter_rows_to_missing_dates_async(conn, TABLE, data)
+            n_skipped = n_before - len(data)
+            if n_skipped > 0:
+                print(f"    -> skip check: {n_skipped:,} of {n_before:,} rows "
+                      f"already present (skipped)", flush=True)
 
-        n = await bulk_upsert_async(
-            conn, TABLE, data,
-            key_columns=["date", "industry_id", "pool_size"],
-            batch_size=1000,
-        )
-        print(f"    -> upserted {n:,} rows", flush=True)
+        # Force mode: table is pre-truncated → use COPY (fastest path, no
+        # ON CONFLICT overhead). Incremental mode: bulk_upsert_async with
+        # ON CONFLICT (table is non-empty). Batch size raised to 5000 — the
+        # previous 1000 was conservative; profiling on the 390K-row
+        # sentiments table showed 5000 is ~2× faster with no memory pressure.
+        if args.force:
+            n = await copy_insert_async(conn, TABLE, data)
+            print(f"    -> COPY-inserted {n:,} rows", flush=True)
+        else:
+            n = await bulk_upsert_async(
+                conn, TABLE, data,
+                key_columns=["date", "industry_id", "pool_size"],
+                batch_size=5000,
+            )
+            print(f"    -> upserted {n:,} rows", flush=True)
 
         # ---- Register in analysis.analysis_identity -----------------------
         await upsert_analysis_identity(

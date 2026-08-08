@@ -1,97 +1,80 @@
-"""Download SZSE ETF/fund (tab2) archive market data day by day.
+"""SZSE ETF archive entry point.
 
-Uses CATALOGID=1815_stock, TABKEY=tab2 from
-https://www.szse.cn/market/trend/archive/index.html. Writes
-``szse_etf_{YYYYMMDD}.xlsx/.csv`` under ``temps/sse_archive/``.
+Dispatches to sub-commands:
 
-DB-first mode: queries ``stats.etf_identity`` (code_suffix='SZ').
+  python -m downloads.etf.szse.archive              # market data (default)
+  python -m downloads.etf.szse.archive market       # market data (explicit)
+  python -m downloads.etf.szse.archive reports      # quarterly reports + CSV extraction
+
+The default (no args) preserves backwards compatibility with main.sh which
+calls ``python -m downloads.etf.szse.archive`` for the daily market archive.
 """
 from __future__ import annotations
 
-import random
-from datetime import date
-from pathlib import Path
-from typing import Dict, Optional
-
-import requests
-
-from downloads._common.core import DEFAULT_START_DATE
-from downloads._common.szse_runner import (
-    REFERER_ARCHIVE,
-    build_headers,
-    run_szse_download,
-)
+import argparse
+import sys
 
 
-ETF_EXTRA_PARAMS: Dict[str, Optional[str]] = {
-    "txtHistoryMaxDate": None,
-    "radioClass": "15,16,18,38,55,56,58,65,MF",
-    "txtSite": "all",
-}
-
-SECURITY_CFGS: Dict[str, Dict[str, object]] = {
-    "etf": {
-        "catalogid": "1815_stock",
-        "tabkey": "tab2",
-        "prefix": "szse_etf",
-        "extra": ETF_EXTRA_PARAMS,
-    },
-}
-
-DB_TABLE_BY_TYPE: Dict[str, str] = {
-    "etf": "stats.etf_identity",
-}
-
-ARCHIVE_HEADERS = build_headers(REFERER_ARCHIVE)
-
-
-def _build_archive_params(security_type: str, trade_date: date) -> Dict[str, object]:
-    cfg = SECURITY_CFGS[security_type]
-    date_str = trade_date.strftime("%Y-%m-%d")
-    params: Dict[str, object] = {
-        "SHOWTYPE": "xlsx",
-        "CATALOGID": cfg["catalogid"],
-        "TABKEY": cfg["tabkey"],
-        "txtBeginDate": date_str,
-        "random": random.random(),
-    }
-    extra = cfg["extra"]
-    if extra:
-        for k, v in extra.items():
-            params[k] = date_str if v is None else v
-    return params
-
-
-def _archive_log_tag(security_type: str, ymd: str) -> str:
-    return f"[{security_type} {ymd}]"
-
-
-def download_szse_archive_etf(
-    out_root: Optional[str] = None,
-    end_date: Optional[str] = None,
-    start_date: str = DEFAULT_START_DATE,
-    sleep_sec: float = 5.0,
-    session: Optional[requests.Session] = None,
-) -> dict:
-    return run_szse_download(
-        caller_file=str(Path(__file__).resolve()),
-        out_dirname="szse_archive",
-        banner_label="archive-etf",
-        security_cfgs=SECURITY_CFGS,
-        headers=ARCHIVE_HEADERS,
-        params_builder=_build_archive_params,
-        log_tag_fn=_archive_log_tag,
-        out_root=out_root,
-        end_date=end_date,
-        start_date=start_date,
-        security_types=["etf"],
-        sleep_sec=sleep_sec,
-        session=session,
-        code_suffix=".SZ",
-        db_table_by_type=DB_TABLE_BY_TYPE,
-        db_code_suffix="SZ",
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        prog="downloads.etf.szse.archive",
+        description="SZSE ETF archive: market data and quarterly reports.",
     )
+    ap.add_argument(
+        "subcommand",
+        nargs="?",
+        default="market",
+        choices=["market", "reports"],
+        help="Sub-command to run (default: market).",
+    )
+    # Market sub-command options
+    ap.add_argument("--start-date", type=str, default="2020-01-01",
+                    help="Market: start date (default: 2020-01-01)")
+    ap.add_argument("--end-date", type=str, default=None,
+                    help="Market: end date (default: today)")
+    ap.add_argument("--out-root", type=str, default=None,
+                    help="Override output root directory")
+    ap.add_argument("--sleep-sec", type=float, default=None,
+                    help="Override sleep seconds between requests")
+    # Reports sub-command options
+    ap.add_argument("--etf-code", type=str, action="append", default=None,
+                    help="Reports: process only this ETF code (bare 6-digit). "
+                         "Repeatable. Default: all SZ ETFs from DB.")
+    ap.add_argument("--max-etfs", type=int, default=None,
+                    help="Reports: limit to N ETFs (dev/testing)")
+    ap.add_argument("--no-extract", action="store_true", default=False,
+                    help="Reports: skip PDF->CSV extraction")
+    ap.add_argument("--no-other-only", action="store_true", default=False,
+                    help="Reports: disable the default OTHER-classification "
+                         "pre-filter (download ALL SZ ETFs, not just "
+                         "sector_id='OTHER'). Ignored when --etf-code is given.")
+    args = ap.parse_args()
+
+    if args.subcommand == "market":
+        from downloads.etf.szse.archive.market import download_szse_archive_etf
+        sleep = args.sleep_sec if args.sleep_sec is not None else 5.0
+        result = download_szse_archive_etf(
+            out_root=args.out_root,
+            end_date=args.end_date,
+            start_date=args.start_date,
+            sleep_sec=sleep,
+        )
+        print(result)
+    elif args.subcommand == "reports":
+        from downloads._common.core import LONG_SLEEP_INTERVAL
+        from downloads.etf.szse.archive.reports import download_szse_etf_reports
+        sleep = args.sleep_sec if args.sleep_sec is not None else LONG_SLEEP_INTERVAL
+        result = download_szse_etf_reports(
+            out_root=args.out_root,
+            etf_codes=args.etf_code,
+            sleep_sec=sleep,
+            extract=not args.no_extract,
+            max_etfs=args.max_etfs,
+            other_only=not args.no_other_only,
+            start_date=args.start_date,
+        )
+        print(result)
 
 
 if __name__ == "__main__":
-    print(download_szse_archive_etf())
+    main()

@@ -171,6 +171,7 @@ export async function getMemberIndexAttribution(
     FROM analysis.sec_alloc_perf_attribution sa
     JOIN stats.sec_classification sc
       ON sc.code = sa.code AND sc.type = 'index'
+      AND sc.is_active = TRUE
       AND sc.industry_id = $1::text
     CROSS JOIN target_date ld
     LEFT JOIN LATERAL (

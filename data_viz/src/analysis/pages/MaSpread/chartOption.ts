@@ -297,6 +297,17 @@ export interface BuildPairOptionArgs {
    */
   valleyLows?: MovAveSpreadValleyLow[];
   /**
+   * Index into pair.rows of the currently hovered date (driven by the
+   * ECharts `updateAxisPointer` event in MaSpreadPanel). When set, a single
+   * small lowkey triangle is drawn at the hovered date's
+   * `date_of_last_extreme` position on the short series — pointing UP if the
+   * price has been rising since the last extreme (gap_since_last_extreme ≥ 0,
+   * i.e. last extreme was a MIN) or DOWN if falling (gap < 0, last was a MAX).
+   * Only ONE triangle is shown at a time (the one for the hovered date);
+   * no triangles are drawn when nothing is hovered.
+   */
+  hoveredIdx?: number | null;
+  /**
    * Display mode for price-derived series.
    * - "absolute": show raw values (default — backward compatible).
    * - "percentage": only the y-axis labels and tooltip values are converted
@@ -319,6 +330,7 @@ export function buildPairOption({
   bollingerK = 2,
   tradingAmtMode = "lowkey",
   valleyLows = [],
+  hoveredIdx = null,
   ohlcMode = "absolute",
 }: BuildPairOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
@@ -341,6 +353,17 @@ export function buildPairOption({
   const highs = rows.map((r) => r.high);
   const lows = rows.map((r) => r.low);
   const tradingAmts = rows.map((r) => r.trading_amount);
+  // Last-extreme arrays (from analysis.mov_ave_rsi, shared across all 9 pairs
+  // for a given date). Used for the green up-triangle markers + tooltip.
+  const dateOfLastExtreme = rows.map((r) => r.date_of_last_extreme ?? null);
+  const gapSinceLastExtreme = rows.map((r) => r.gap_since_last_extreme ?? null);
+  const daysSinceLastExtreme = rows.map((r) => r.days_since_last_extreme ?? null);
+  // Wilder RSI arrays (6/10/14/20 days) from analysis.mov_ave_rsi — shared
+  // across all 9 pairs for a given date. Surfaced in the tooltip.
+  const rsi6 = rows.map((r) => r.rsi_6days ?? null);
+  const rsi10 = rows.map((r) => r.rsi_10days ?? null);
+  const rsi14 = rows.map((r) => r.rsi_14days ?? null);
+  const rsi20 = rows.map((r) => r.rsi_20days ?? null);
 
   // ---- Valley-low markers (red down triangles) --------------------------
   // Sourced DIRECTLY from analysis.mov_ave_peaks_and_floors (one row per
@@ -376,6 +399,42 @@ export function buildPairOption({
     }
   }
   const hasValleyLows = valleyLowData.some((v) => v != null);
+
+  // ---- Last-extreme hover marker (single small lowkey triangle) -----------
+  // analysis.mov_ave_rsi.date_of_last_extreme gives the biz date of the most
+  // recent local turning point (high/low) detected by price_slope sign change.
+  // We show only ONE triangle at a time — placed at the HOVERED date's
+  // position (mov_ave_rsi.date, i.e. the current row's date) on the short
+  // series, indicating the date_of_last_extreme that applies to that row.
+  // Points UP (green) if price has been rising since the last extreme
+  // (gap_since_last_extreme ≥ 0 ⇒ last extreme was a MIN) or DOWN (red) if
+  // falling (gap < 0 ⇒ last was a MAX). Small + lowkey so it doesn't compete
+  // with the valley-low markers. The tooltip surfaces the full
+  // date_of_last_extreme + gap_since_last_extreme + days_since_last_extreme.
+  const lastExtremeData: Array<number | null> = new Array(n).fill(null);
+  let lastExtremeRising = true; // default up; flipped per hovered row below
+  if (
+    hoveredIdx != null
+    && hoveredIdx >= 0
+    && hoveredIdx < n
+    && dateOfLastExtreme.some((d) => d != null)
+  ) {
+    const ed = dateOfLastExtreme[hoveredIdx];
+    if (ed != null) {
+      // Place the triangle at the HOVERED date's index (mov_ave_rsi.date),
+      // on the short series value at that date — the triangle "points to"
+      // the date_of_last_extreme that applies to this hovered row.
+      const sv = shorts[hoveredIdx];
+      if (sv != null && Number.isFinite(sv)) {
+        lastExtremeData[hoveredIdx] = sv;
+      }
+      // Direction: gap ≥ 0 → rising since a MIN → up triangle;
+      // gap < 0 → falling since a MAX → down triangle.
+      const gap = gapSinceLastExtreme[hoveredIdx];
+      lastExtremeRising = !(gap != null && Number.isFinite(gap) && gap < 0);
+    }
+  }
+  const hasLastExtreme = lastExtremeData.some((v) => v != null);
 
   // ---- Nearby-extreme bands (light-red horizontal bands) ----------------
   // For each valley low that has a nearby_extreme_date, draw a horizontal
@@ -548,6 +607,9 @@ export function buildPairOption({
   if (hasValleyLows) {
     legendData.push("Valley Low");
   }
+  // Note: "Last Extreme" is intentionally NOT added to the legend — the
+  // triangle is a transient hover-driven marker (one at a time), not a
+  // togglable series the user can show/hide.
   if (hasNearbyBands) {
     legendData.push("Nearby Extreme");
   }
@@ -703,6 +765,41 @@ export function buildPairOption({
             },
           }
         : {}),
+    });
+  }
+
+  // ---- Last-extreme hover marker (single small lowkey triangle) -----------
+  // Only ONE triangle is drawn at a time — at the hovered date's
+  // date_of_last_extreme position on the short series. Points UP (green) when
+  // price has been rising since the last extreme (gap ≥ 0, last was a MIN) or
+  // DOWN (red) when falling (gap < 0, last was a MAX). Small + semi-transparent
+  // so it stays lowkey next to the valley-low markers. Hovering any date
+  // surfaces date_of_last_extreme + gap_since_last_extreme +
+  // days_since_last_extreme in the tooltip (see formatter below), colored to
+  // match the triangle (green MIN / red MAX).
+  if (hasLastExtreme) {
+    // green for MIN (rising), red for MAX (falling) — matches tooltip color.
+    const leColor = lastExtremeRising
+      ? { rgb: "67, 160, 71", hex: "#43A047" }   // green
+      : { rgb: "229, 57, 53", hex: "#E53935" };  // red
+    echartsSeries.push({
+      type: "scatter",
+      name: "Last Extreme",
+      data: lastExtremeData,
+      symbol: "triangle",
+      symbolSize: 7,
+      // ECharts rotates the triangle symbol clockwise. The default triangle
+      // points UP; rotate 180° to point DOWN.
+      symbolRotate: lastExtremeRising ? 0 : 180,
+      itemStyle: {
+        color: `rgba(${leColor.rgb}, 0.55)`, // lowkey (semi-transparent)
+        borderColor: leColor.hex,
+        borderWidth: 0.5,
+      },
+      z: 19,
+      // Keep the marker out of the tooltip's series list — the tooltip
+      // already surfaces the last-extreme info explicitly below.
+      tooltip: { show: false },
     });
   }
 
@@ -887,6 +984,57 @@ export function buildPairOption({
           const vl = valleyLowData[idx];
           if (vl != null) {
             html += `<div style="margin-top:2px;color:#E53935;font-weight:600">▼ Valley Low: ${fmtPrice(vl)}</div>`;
+          }
+
+          // Wilder RSI (6/10/14/20 days) from analysis.mov_ave_rsi — shared
+          // across all 9 pairs for a given date. Values 0..100 (NULL until N
+          // periods). Colored amber when overbought (≥70) or green when
+          // oversold (≤30) on the classic 14-day window; otherwise neutral.
+          const r6 = rsi6[idx], r10 = rsi10[idx], r14 = rsi14[idx], r20 = rsi20[idx];
+          if (r6 != null || r10 != null || r14 != null || r20 != null) {
+            const fmtRsi = (v: number | null | undefined): string =>
+              v != null && Number.isFinite(v) ? v.toFixed(1) : "—";
+            const ref = r14 ?? r10 ?? r6 ?? r20;
+            let rsiColor = "#9E9E9E"; // neutral grey
+            if (ref != null && Number.isFinite(ref)) {
+              if (ref >= 70) rsiColor = "#FB8C00"; // amber — overbought
+              else if (ref <= 30) rsiColor = "#43A047"; // green — oversold
+            }
+            html += `<div style="margin-top:2px;color:${rsiColor};opacity:0.9">` +
+              `RSI: 6d ${fmtRsi(r6)} · 10d ${fmtRsi(r10)} · 14d ${fmtRsi(r14)} · 20d ${fmtRsi(r20)}` +
+              `</div>`;
+          }
+
+          // Last-extreme (turning point) info from analysis.mov_ave_rsi.
+          // date_of_last_extreme is the biz date of the most recent local
+          // high/low; gap_since_last_extreme sign indicates max vs min
+          // (positive = last was a MIN → green up triangle; negative = last
+          // was a MAX → red down triangle); days_since_last_extreme is the
+          // trading-day gap. Tooltip color matches the in-plot triangle.
+          const leDate = dateOfLastExtreme[idx];
+          if (leDate != null) {
+            const leGap = gapSinceLastExtreme[idx];
+            const leDays = daysSinceLastExtreme[idx];
+            const isMin = !(leGap != null && Number.isFinite(leGap) && leGap < 0);
+            const leHex = isMin ? "#43A047" : "#E53935"; // green MIN / red MAX
+            // The triangle marker is at the hovered date (mov_ave_rsi.date);
+            // report the extreme PRICE by looking up the short value at the
+            // date_of_last_extreme (the actual turning-point bar).
+            const leMarkIdx = dates.indexOf(leDate);
+            const leMark = leMarkIdx >= 0 ? shorts[leMarkIdx] : null;
+            const arrow = leGap != null && Number.isFinite(leGap)
+              ? (isMin ? "▲ MIN" : "▼ MAX")
+              : "▲";
+            html += `<div style="margin-top:2px;color:${leHex};font-weight:600">Last Extreme: ${leDate} (${arrow}` +
+              (leDays != null && Number.isFinite(leDays) ? `, ${Math.round(leDays)}d` : "") +
+              `)</div>`;
+            html += `<div style="color:${leHex};opacity:0.9">` +
+              `gap_since_last_extreme: ${leGap != null && Number.isFinite(leGap) ? fmtPct(leGap * 100, 2) : "—"} · ` +
+              `days_since_last_extreme: ${leDays != null && Number.isFinite(leDays) ? Math.round(leDays) : "—"}` +
+              `</div>`;
+            if (leMark != null && Number.isFinite(leMark)) {
+              html += `<div style="color:${leHex};opacity:0.9">extreme ${sName}: ${fmtPrice(leMark)}</div>`;
+            }
           }
 
           // Nearby-extreme band info

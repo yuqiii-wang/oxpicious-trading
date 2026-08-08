@@ -60,13 +60,14 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 
-from utils.build_commons import (
+from _common.build_commons import (
     setup_utf8_stdout, add_common_build_args, get_db_or_exit,
     parse_num, parse_date,
     print_build_header, print_wall_time,
     PROJECT_ROOT, TODAY_STR,
     get_existing_keys_async, bulk_upsert_async, truncate_table_async,
 )
+from _common.df_utils import compute_moving_averages
 
 setup_utf8_stdout()
 
@@ -497,22 +498,12 @@ def build_daily_df(existing_keys: set, shared_weights: dict = None,
         combined = _fill_missing_closes(combined, shared_weights, verbose=verbose)
 
     # Compute MAs over full per-code history (must use ALL rows, not just missing)
-    combined["ma5"] = combined.groupby("code", sort=False)["close"].transform(
-        lambda x: x.rolling(window=5, min_periods=1).mean()
-    ).round(6)
-    combined["ma5_ratio"] = ((combined["close"] / combined["ma5"]) - 1.0).round(6)
-    combined["ma20"] = combined.groupby("code", sort=False)["close"].transform(
-        lambda x: x.rolling(window=20, min_periods=1).mean()
-    ).round(6)
-    combined["ma60"] = combined.groupby("code", sort=False)["close"].transform(
-        lambda x: x.rolling(window=60, min_periods=1).mean()
-    ).round(6)
-    combined["ma120"] = combined.groupby("code", sort=False)["close"].transform(
-        lambda x: x.rolling(window=120, min_periods=1).mean()
-    ).round(6)
-    combined["ma255"] = combined.groupby("code", sort=False)["close"].transform(
-        lambda x: x.rolling(window=255, min_periods=1).mean()
-    ).round(6)
+    compute_moving_averages(
+        combined,
+        group_key="code",
+        value_col="close",
+        windows=[5, 20, 60, 120, 255],
+    )
 
     # Filter to missing (date, code) pairs only — this is the key optimization
     mask = combined.apply(lambda r: (r["date"], r["code"]) not in existing_keys, axis=1)

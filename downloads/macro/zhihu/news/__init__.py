@@ -43,7 +43,7 @@ Usage::
 Anti-bot behaviour (browser-fingerprint rotation, ``random`` query param,
 host-blocking detection, sleep cadence) is provided by the shared
 ``AntiBotProxy`` from ``downloads._common.core``. Trading days are enumerated
-via ``utils._holidays_and_weekdays`` so holidays and weekends are skipped.
+via ``_common._holidays_and_weekdays`` so holidays and weekends are skipped.
 API credentials are read from ``ZHIHU_API_KEY`` in the project-root ``.env``.
 """
 from __future__ import annotations
@@ -77,7 +77,7 @@ from downloads._common.core import (  # noqa: E402
     resolve_out_dir,
     setup_logger,
 )
-from utils._holidays_and_weekdays import (  # noqa: E402
+from _common._holidays_and_weekdays import (  # noqa: E402
     business_days,
     is_trading_day,
     last_business_day,
@@ -431,7 +431,7 @@ def _build_targets(
 
     Each target is ``{"date": date, "path": Path, "force": bool}`` where
     ``date`` is the biz date embedded in the query and ``path`` is the output
-    JSON path. Holidays/weekends are skipped via ``utils._holidays_and_weekdays``.
+    JSON path. Holidays/weekends are skipped via ``_common._holidays_and_weekdays``.
 
     Targets (in execution order):
       1. **Tomorrow** — the next trading day strictly after today. The query

@@ -65,8 +65,8 @@ from downloads.index.csindex.quote.__main__ import (
     CSINDEX_SKIP_CODES,
     fetch_intraday,
 )
-from utils.db_commons import bulk_upsert, get_db_connection
-from utils._holidays_and_weekdays import is_trading_day
+from _common.db_commons import bulk_upsert, get_db_connection
+from _common._holidays_and_weekdays import is_trading_day
 
 logger = setup_logger("csindex_stream")
 

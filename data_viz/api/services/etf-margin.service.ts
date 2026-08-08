@@ -13,12 +13,14 @@
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, matchesExchange } from "../lib/classify-etf.js";
+import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
 import type {
   EtfMarginRow,
   EtfBundle,
   EtfMarginCombinedResponse,
   SectorNode,
   IndustryNode,
+  StrategyNode,
 } from "../../shared/types.js";
 
 export interface EtfMarginQuery {
@@ -39,6 +41,12 @@ export interface EtfMarginQuery {
   page?: number;
   /** Number of ETFs per page (default 2). */
   page_size?: number;
+  /** L1 strategy id (parallel to sector, e.g. "BROAD", "DIV") — when set,
+   *  only strategy-primary ETFs are returned. */
+  strategy?: string;
+  /** L2 theme slug (parallel to industry, e.g. "broad_csi300") — paired
+   *  with `strategy`. */
+  theme?: string;
 }
 
 // ----------------------------------------------------------------------------
@@ -53,6 +61,10 @@ interface DbEtfMetaRow extends QueryResultRow {
   industry_id: string;
   industry_label: string;
   industry_slug: string;
+  /** When TRUE, sector_id/industry_id hold INDUSTRY classification (industry-
+   *  primary row). When FALSE, they hold STRATEGY classification (strategy-
+   *  primary row). Used by the parallel strategy/theme selector. */
+  is_industry_not_strategy: boolean;
   index_code: string;
   index_name: string;
   exchange: string;
@@ -151,6 +163,7 @@ const META_SQL = `
          COALESCE(MAX(m.industry_id),     'OTHER')  AS industry_id,
          COALESCE(MAX(m.industry_label),  '未分类')  AS industry_label,
          COALESCE(MAX(m.industry_slug),   'other')  AS industry_slug,
+         COALESCE(BOOL_OR(m.is_industry_not_strategy), TRUE) AS is_industry_not_strategy,
          COALESCE(MAX(m.parent_index_code), '')     AS index_code,
          COALESCE(MAX(mi.name), '')                  AS index_name,
          COALESCE(MAX(m.exchange), '')               AS exchange,
@@ -161,6 +174,7 @@ const META_SQL = `
     LEFT JOIN stats.sec_classification mi ON mi.code = m.parent_index_code AND mi.type = 'index'
    GROUP BY v.code
   HAVING COUNT(v.date) >= 40
+     AND COALESCE(BOOL_OR(m.is_active), TRUE)
    ORDER BY has_margin DESC, n_days DESC, score DESC, v.code
 `;
 
@@ -183,6 +197,7 @@ const META_SQL_FOR_CODE = `
          COALESCE(MAX(m.industry_id),     'OTHER')  AS industry_id,
          COALESCE(MAX(m.industry_label),  '未分类')  AS industry_label,
          COALESCE(MAX(m.industry_slug),   'other')  AS industry_slug,
+         COALESCE(BOOL_OR(m.is_industry_not_strategy), TRUE) AS is_industry_not_strategy,
          COALESCE(MAX(m.parent_index_code), '')     AS index_code,
          COALESCE(MAX(mi.name), '')                  AS index_name,
          COALESCE(MAX(m.exchange), '')               AS exchange,
@@ -209,6 +224,10 @@ export async function listThemes(): Promise<SectorNode[]> {
   }>();
 
   for (const r of rows) {
+    // LEFT column: only industry-primary ETFs. Strategy-primary rows
+    // (is_industry_not_strategy=FALSE) carry strategy/theme in
+    // sector_id/industry_id and belong in the RIGHT column only.
+    if (!r.is_industry_not_strategy) continue;
     const code = stripExchangeSuffix(r.code);
     if (!code) continue;
     const etf = { code, name: r.name ?? "" };
@@ -255,6 +274,31 @@ export async function listThemes(): Promise<SectorNode[]> {
 }
 
 // ----------------------------------------------------------------------------
+//  Strategy themes — parallel L1 strategy → L2 theme → ETFs tree built from
+//  the same META_SQL but using the strategy-primary rows
+//  (is_industry_not_strategy=FALSE).  sector_id/industry_id on those rows
+//  carry the strategy/theme classification.  Tree-building is delegated to
+//  the shared buildStrategyThemesFromRows helper to avoid duplicating the
+//  grouping/sorting logic across services.
+// ----------------------------------------------------------------------------
+export async function listStrategyThemes(): Promise<StrategyNode[]> {
+  const rows = await queryRows<DbEtfMetaRow>(META_SQL);
+
+  const mappedRows = rows.map((r) => ({
+    code: stripExchangeSuffix(r.code),
+    name: r.name,
+    sector_id: r.sector_id,
+    sector_label: r.sector_label,
+    industry_id: r.industry_id,
+    industry_label: r.industry_label,
+    industry_slug: r.industry_slug,
+    is_industry_not_strategy: r.is_industry_not_strategy,
+  }));
+
+  return buildStrategyThemesFromRows(mappedRows);
+}
+
+// ----------------------------------------------------------------------------
 //  Combined ETF + margin data with sector/industry filter + pagination
 // ----------------------------------------------------------------------------
 export async function getEtfMarginCombined(
@@ -262,6 +306,8 @@ export async function getEtfMarginCombined(
 ): Promise<EtfMarginCombinedResponse> {
   const sectorFilter = (q.sector ?? "").trim();
   const industryFilter = (q.industry ?? "").trim();
+  const strategyFilter = (q.strategy ?? "").trim();
+  const themeFilter = (q.theme ?? "").trim();
   const exchangeFilter = (q.exchange ?? "").trim() || null;
   // When a code filter is provided, sector/industry/pagination are bypassed.
   const codeFilter = stripExchangeSuffix((q.code ?? "").trim());
@@ -282,7 +328,17 @@ export async function getEtfMarginCombined(
   //    metaRows are already ordered by has_margin DESC, n_days DESC, score DESC
   //    (see META_SQL); preserve that order so pagination returns ETFs with
   //    margin data + longer history first.
-  const meta = new Map<string, { name: string; sector_id: string; sector_label: string; industry_id: string; industry_label: string; index_code: string; index_name: string }>();
+  const meta = new Map<string, {
+    name: string;
+    sector_id: string;
+    sector_label: string;
+    industry_id: string;
+    industry_label: string;
+    industry_slug: string;
+    is_industry_not_strategy: boolean;
+    index_code: string;
+    index_name: string;
+  }>();
   const wantedCodes: string[] = [];
   for (const r of metaRows) {
     const code = stripExchangeSuffix(r.code);
@@ -293,6 +349,8 @@ export async function getEtfMarginCombined(
       sector_label: r.sector_label,
       industry_id: r.industry_id,
       industry_label: r.industry_label,
+      industry_slug: r.industry_slug,
+      is_industry_not_strategy: r.is_industry_not_strategy,
       index_code: r.index_code ?? "",
       index_name: r.index_name ?? "",
     });
@@ -301,12 +359,17 @@ export async function getEtfMarginCombined(
       if (code.toUpperCase() === codeFilter.toUpperCase()) wantedCodes.push(code);
       continue;
     }
-    const sectorOk = !sectorFilter || r.sector_id === sectorFilter;
-    // industry filter matches either the industry_slug (URL-friendly) or the
-    // industry_id (canonical).  Both are unique per industry.
-    const industryOk = !industryFilter || r.industry_slug === industryFilter || r.industry_id === industryFilter;
+    // Classification filter (sector/industry OR strategy/theme — mutually
+    // exclusive, handled by matchesClassification) + exchange filter.
+    const classOk = matchesClassification(
+      r,
+      sectorFilter,
+      industryFilter,
+      strategyFilter,
+      themeFilter,
+    );
     const exchangeOk = matchesExchange(r.exchange, exchangeFilter);
-    if (sectorOk && industryOk && exchangeOk) wantedCodes.push(code);
+    if (classOk && exchangeOk) wantedCodes.push(code);
   }
 
   // 3. Optional cap per theme (legacy dev param)

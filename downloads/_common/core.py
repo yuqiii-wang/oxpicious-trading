@@ -18,17 +18,17 @@ warnings.filterwarnings("ignore", message="Workbook contains no default style")
 
 
 # ---------------------------------------------------------------------------
-# Trading-day calendar — migrated to utils/_holidays_and_weekdays
+# Trading-day calendar — migrated to _common/_holidays_and_weekdays
 # ---------------------------------------------------------------------------
 # The holiday table (CN_HOLIDAYS / CN_ADJUSTED_WORKDAYS) and trading-day
 # helpers (is_trading_day, last_business_day, next_business_day,
 # business_days, count_weekdays, date_range_backward, date_range_forward,
-# parse_date_window) now live in utils/_holidays_and_weekdays.py.
+# parse_date_window) now live in _common/_holidays_and_weekdays.py.
 #
 # We re-export them here for backward compatibility so existing
 # `from _download_commons import is_trading_day` imports keep working.
 # ---------------------------------------------------------------------------
-from utils._holidays_and_weekdays import (  # noqa: E402
+from _common._holidays_and_weekdays import (  # noqa: E402
     CN_ADJUSTED_WORKDAYS,
     CN_HOLIDAYS,
     business_days,
@@ -55,6 +55,8 @@ DEFAULT_SHORT_SLEEP_SEC=8.0
 # when called at quarterly cadence). 90s between requests makes a full ETF-held
 # sweep take ~hours but is the safest cadence for sites that block on volume.
 LONG_SLEEP_INTERVAL = 90.0
+VERY_LONG_SLEEP_INTERVAL = 300.0
+SUPER_LONG_SLEEP_INTERVAL = 600.0
 
 # Shared default start date for all downloaders. Centralized here so the
 # project's historical backfill horizon can be changed in one place.
@@ -346,7 +348,7 @@ def resolve_out_dir(
 
 # is_trading_day / last_business_day / next_business_day / business_days /
 # count_weekdays / date_range_backward / date_range_forward / parse_date_window
-# are re-exported from utils._holidays_and_weekdays at the top of this module.
+# are re-exported from _common._holidays_and_weekdays at the top of this module.
 
 
 def is_valid_file(path: Path, *, min_bytes: int = MIN_VALID_BYTES) -> bool:
@@ -936,8 +938,8 @@ def scan_present_dates_with_pattern(
 # ---------------------------------------------------------------------------
 # DB-based scan helpers — DEPRECATED
 # ---------------------------------------------------------------------------
-# These thin wrappers delegate to _db_commons.check_identity() /
-# _db_commons.check_identity_years() and are kept only for backward
+# These thin wrappers delegate to _common.pre_check_and_load.check_identity() /
+# check_identity_years() and are kept only for backward
 # compatibility. New code should call check_identity / check_identity_years
 # directly.
 # ---------------------------------------------------------------------------
@@ -949,7 +951,7 @@ def get_existing_dates_from_db(
     """Query the database for existing dates in a table (sync, DEPRECATED).
 
     .. deprecated::
-        Use :func:`_db_commons.check_identity` instead, which returns the
+        Use :func:`_common.pre_check_and_load.check_identity` instead, which returns the
         complementary set (missing dates) and properly skips holidays and
         weekends. This wrapper queries the raw present-date set without any
         holiday awareness.
@@ -962,7 +964,7 @@ def get_existing_dates_from_db(
     Returns:
         Set of ``datetime.date`` objects present in the table.
     """
-    from utils.db_commons import get_db_connection, _build_identity_where_clause, _build_identity_params
+    from _common.db_commons import get_db_connection, _build_identity_where_clause, _build_identity_params
     conn = get_db_connection()
     try:
         schema, table = _parse_table_name_local(table_name)
@@ -998,7 +1000,7 @@ def get_existing_years_from_db(
     """Query the database for years that have at least one row in a table (DEPRECATED).
 
     .. deprecated::
-        Use :func:`_db_commons.check_identity_years` instead.
+        Use :func:`_common.pre_check_and_load.check_identity_years` instead.
 
     Args:
         table_name: table name with optional schema prefix.
@@ -1007,7 +1009,7 @@ def get_existing_years_from_db(
     Returns:
         Set of years (int) that have data in the table.
     """
-    from utils.db_commons import get_db_connection
+    from _common.db_commons import get_db_connection
     from psycopg import sql
     conn = get_db_connection()
     schema, table = _parse_table_name_local(table_name)
@@ -1137,7 +1139,7 @@ def strip_exchange_suffix(stock_code: str) -> str:
 # Classification JSON loader — replacement for _classification.ICONIC_INDEXES
 # ---------------------------------------------------------------------------
 
-_CLASSIFICATION_JSON_PATH = Path(__file__).resolve().parents[2] / "utils" / "sec_classification.json"
+_CLASSIFICATION_JSON_PATH = Path(__file__).resolve().parents[2] / "_common" / "sec_statics" / "sec_classification.json"
 
 
 def load_classification_indices() -> Dict[str, Dict[str, Any]]:
@@ -1224,8 +1226,8 @@ def build_day_download_plan(
     """Build a per-day download plan.
 
     When *db_table* is provided, missing trading days are computed via
-    :func:`_db_commons.check_identity` (which skips holidays and weekends
-    via ``utils._holidays_and_weekdays``) instead of scanning the local
+    :func:`_common.pre_check_and_load.check_identity` (which skips holidays and weekends
+    via ``_common._holidays_and_weekdays``) instead of scanning the local
     filesystem.  All types share the same DB-derived missing-date set —
     a date missing from the DB is queued for download for every type.
 
@@ -1261,7 +1263,7 @@ def build_day_download_plan(
         # NOT in the identity table; the present set is the complement within
         # all_dates. skip_holidays matches the weekdays_only filter so the
         # expected-date generation matches all_dates.
-        from utils.db_commons import check_identity
+        from _common.pre_check_and_load import check_identity
         missing_dates = check_identity(
             db_table, start_date, end_date,
             date_column=db_date_column,
@@ -1347,7 +1349,7 @@ def build_year_download_plan(
 
     When *db_table* is provided, years with NO row in the DB table within
     [start_date, end_date] are computed via
-    :func:`_db_commons.check_identity_years` instead of scanning the local
+    :func:`_common.pre_check_and_load.check_identity_years` instead of scanning the local
     filesystem. A year is "present" if it has at least one row.
     """
     type_keys = list(type_configs.keys())
@@ -1357,7 +1359,7 @@ def build_year_download_plan(
     years = list(range(start_date.year, end_date.year + 1))
 
     if db_table:
-        from utils.db_commons import check_identity_years
+        from _common.pre_check_and_load import check_identity_years
         missing_years = check_identity_years(
             db_table, start_date, end_date,
             date_column=db_date_column,
@@ -1421,7 +1423,7 @@ def build_chunk_download_plan(
 
     When *db_table* is provided, a chunk is considered "present" if its end
     date exists in the DB table. Missing chunk-end dates are computed via
-    :func:`_db_commons.check_identity` with ``skip_holidays=False`` (chunk
+    :func:`_common.pre_check_and_load.check_identity` with ``skip_holidays=False`` (chunk
     end dates may fall on non-trading days). A chunk is "missing" if its
     end date is in the missing set.
 
@@ -1439,7 +1441,7 @@ def build_chunk_download_plan(
         if all_chunks_flat:
             min_cs = min(c[0] for c in all_chunks_flat)
             max_ce = max(c[1] for c in all_chunks_flat)
-            from utils.db_commons import check_identity
+            from _common.pre_check_and_load import check_identity
             # skip_holidays=False because chunk end dates may be weekends/holidays
             missing_dates = check_identity(
                 db_table, min_cs, max_ce,

@@ -19,12 +19,16 @@ import {
   listMovAveSpreadCodes,
   getMovAveSpreadChart,
   listMovAveSpreadThemes,
+  listMovAveSpreadStrategyThemes,
   listPerfAttrCodes,
   getPerfAttrChart,
   getPerfAttrAttribution,
   listPerfAttrThemes,
+  listPerfAttrStrategyThemes,
   getIndustrySentimentsChart,
+  getIndustrySentimentsChartByCode,
   listIndustrySentimentsThemes,
+  listIndustrySentimentsStrategyThemes,
   getIndustryCorrelations,
   getIndustryBenchmarkAttribution,
   listIndustryAttributionBenchmarks,
@@ -87,6 +91,16 @@ router.get("/mov-ave-spread/themes", async (req: Request, res: Response) => {
   }
 });
 
+/** GET /api/analysis/mov-ave-spread/strategy-themes?sec_type=etf */
+router.get("/mov-ave-spread/strategy-themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listMovAveSpreadStrategyThemes(parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/mov-ave-spread/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ---- Performance Attribution (ETF/Index × Index) -------------------------
 const VALID_PERF_ATTR_SEC_TYPES = new Set(["etf", "index"]);
 
@@ -112,6 +126,16 @@ router.get("/perf-attr/themes", async (req: Request, res: Response) => {
     res.json(await listPerfAttrThemes(parsePerfAttrSecType(req)));
   } catch (err) {
     console.error("[analysis/perf-attr/themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/analysis/perf-attr/strategy-themes?sec_type=etf */
+router.get("/perf-attr/strategy-themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listPerfAttrStrategyThemes(parsePerfAttrSecType(req)));
+  } catch (err) {
+    console.error("[analysis/perf-attr/strategy-themes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
@@ -181,6 +205,16 @@ router.get("/industry-sentiments/themes", async (_req: Request, res: Response) =
   }
 });
 
+/** GET /api/analysis/industry-sentiments/strategy-themes */
+router.get("/industry-sentiments/strategy-themes", async (_req: Request, res: Response) => {
+  try {
+    res.json(await listIndustrySentimentsStrategyThemes());
+  } catch (err) {
+    console.error("[analysis/industry-sentiments/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 router.get("/industry-sentiments/chart", async (req: Request, res: Response) => {
   try {
     const industryId = typeof req.query.industry_id === "string"
@@ -193,6 +227,24 @@ router.get("/industry-sentiments/chart", async (req: Request, res: Response) => 
     res.json(await getIndustrySentimentsChart(industryId));
   } catch (err) {
     console.error("[analysis/industry-sentiments/chart] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/analysis/industry-sentiments/chart-by-code?code=931696
+ *  Returns chart data (close series + stock_num) for a single index code.
+ *  Used when an L3 index chip is clicked under a strategy/theme —
+ *  strategy-primary indices may lack an industry_id classification. */
+router.get("/industry-sentiments/chart-by-code", async (req: Request, res: Response) => {
+  try {
+    const code = typeof req.query.code === "string" ? req.query.code.trim() : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getIndustrySentimentsChartByCode(code));
+  } catch (err) {
+    console.error("[analysis/industry-sentiments/chart-by-code] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

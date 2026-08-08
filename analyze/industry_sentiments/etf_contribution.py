@@ -57,7 +57,7 @@ from typing import Optional, Set
 
 import pandas as pd
 
-from utils.build_commons import (
+from _common.build_commons import (
     truncate_table_async,
     bulk_upsert_async,
 )
@@ -146,6 +146,7 @@ index_info AS (
         SELECT DISTINCT code, industry_id, industry_label
         FROM stats.sec_classification
         WHERE type = 'index'
+          AND is_active = TRUE
           AND industry_id IS NOT NULL
           AND industry_id <> ''
     ) cls

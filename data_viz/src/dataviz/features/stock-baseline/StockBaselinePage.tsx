@@ -22,13 +22,14 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import CodeSearchBar, { findCodeInThemes } from "@/components/CodeSearchBar";
-import ThemeSelector from "@/components/ThemeSelector";
+import CodeSearchBar, { findCodeInThemes, findCodeInStrategyThemes } from "@/components/CodeSearchBar";
+import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import StockPanel from "@/dataviz/features/stock-baseline/StockPanel";
-import { fetchStocksCombined, fetchStockThemes } from "@/lib/api-client";
+import { fetchStocksCombined, fetchStockStrategyThemes, fetchStockThemes } from "@/lib/api-client";
 import type {
   SectorNode,
   StockCombinedResponse,
+  StrategyNode,
 } from "../../../../shared/types";
 
 const PAGE_SIZE = 1;
@@ -37,6 +38,12 @@ export default function StockBaselinePage() {
   const [sectors, setSectors] = useState<SectorNode[]>([]);
   const [sectorId, setSectorId] = useState<string | null>(null);
   const [industrySlug, setIndustrySlug] = useState<string | null>(null);
+  // Parallel strategy → theme state (RIGHT column of the two-column selector).
+  // Mutually exclusive with sector/industry: when strategyId is set, sectorId
+  // is null and vice versa.
+  const [strategies, setStrategies] = useState<StrategyNode[]>([]);
+  const [strategyId, setStrategyId] = useState<string | null>(null);
+  const [themeSlug, setThemeSlug] = useState<string | null>(null);
   const [exchange, setExchange] = useState<string | null>(null);
   const [data, setData] = useState<StockCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -47,36 +54,43 @@ export default function StockBaselinePage() {
   // highlighted to show where the code belongs.
   const [searchCode, setSearchCode] = useState<string | null>(null);
 
-  // Load themes (two-level taxonomy tree) once
+  // Load themes (two-level taxonomy tree) once, and on refresh.
+  // Fetches BOTH the industry tree (LEFT column) and the parallel strategy
+  // tree (RIGHT column) in parallel.
   useEffect(() => {
-    fetchStockThemes()
-      .then((list) => {
+    Promise.all([fetchStockThemes(), fetchStockStrategyThemes()])
+      .then(([list, strategyList]) => {
         setSectors(list);
-        // Default to BROAD sector (broad-based index stocks) if available,
-        // else fall back to the first sector (highest count).
-        if (list.length > 0) {
-          const broad = list.find((s) => s.sector_id === "BROAD");
-          setSectorId(broad ? broad.sector_id : list[0].sector_id);
+        setStrategies(strategyList);
+        // BROAD is a STRATEGY (is_industry_not_strategy=FALSE), so it lives in
+        // the RIGHT column (strategyList). Default to BROAD there if present;
+        // else fall back to the first sector in the LEFT column.
+        const broad = strategyList.find((s) => s.sector_id === "BROAD");
+        if (broad) {
+          setStrategyId(broad.sector_id);
+        } else if (list.length > 0) {
+          setSectorId(list[0].sector_id);
         }
       })
       .catch((e: Error) => setError(e.message));
   }, []);
 
-  // Reset to page 1 whenever sector, industry, or exchange changes
+  // Reset to page 1 whenever sector, industry, strategy, theme, or exchange changes
   useEffect(() => {
     setPage(1);
-  }, [sectorId, industrySlug, exchange]);
+  }, [sectorId, industrySlug, strategyId, themeSlug, exchange]);
 
-  // Load stock data whenever sector/industry/exchange, page, or search code changes.
-  // When searchCode is set, fetch only that one stock (bypassing sector/pagination).
+  // Load stock data whenever sector/industry OR strategy/theme OR exchange,
+  // page, or search code changes. When searchCode is set, fetch only that one
+  // stock (bypassing all filters/pagination).
   useEffect(() => {
     let cancelled = false;
-    if (!sectorId && !searchCode) return;
+    if (!sectorId && !strategyId && !searchCode) return;
     setLoading(true);
     setError(null);
     const promise = searchCode
       ? fetchStocksCombined(null, null, null, null, 1, 1, searchCode)
-      : fetchStocksCombined(sectorId, industrySlug, null, null, page, PAGE_SIZE, undefined, exchange);
+      : fetchStocksCombined(sectorId, industrySlug, null, null, page, PAGE_SIZE, undefined, exchange, strategyId, themeSlug);
     promise
       .then((d) => {
         if (cancelled) return;
@@ -91,22 +105,37 @@ export default function StockBaselinePage() {
     return () => {
       cancelled = true;
     };
-  }, [sectorId, industrySlug, exchange, page, searchCode]);
+  }, [sectorId, industrySlug, strategyId, themeSlug, exchange, page, searchCode]);
 
-  // Resolve a searched code against the themes tree: update sector/industry
-  // highlights + activate single-result mode. Shows an error if not found.
+  // Resolve a searched code against BOTH the industry tree (LEFT column) and
+  // the strategy tree (RIGHT column). If found in the industry tree, sector/
+  // industry highlights are set; if found in the strategy tree, strategy/
+  // theme highlights are set. Shows an error if not found in either tree.
   const handleSearch = (code: string) => {
-    const found = findCodeInThemes(sectors, code);
-    if (!found) {
-      setError(`Stock code not found: ${code}`);
-      setSearchCode(null);
+    const foundIndustry = findCodeInThemes(sectors, code);
+    if (foundIndustry) {
+      setError(null);
+      setStrategyId(null);
+      setThemeSlug(null);
+      setSectorId(foundIndustry.sectorId);
+      setIndustrySlug(foundIndustry.industrySlug);
+      setSearchCode(code);
+      setPage(1);
       return;
     }
-    setError(null);
-    setSectorId(found.sectorId);
-    setIndustrySlug(found.industrySlug);
-    setSearchCode(code);
-    setPage(1);
+    const foundStrategy = findCodeInStrategyThemes(strategies, code);
+    if (foundStrategy) {
+      setError(null);
+      setSectorId(null);
+      setIndustrySlug(null);
+      setStrategyId(foundStrategy.strategyId);
+      setThemeSlug(foundStrategy.themeSlug);
+      setSearchCode(code);
+      setPage(1);
+      return;
+    }
+    setError(`Stock code not found: ${code}`);
+    setSearchCode(null);
   };
 
   // Clearing the search returns to the normal paginated view for the
@@ -116,13 +145,32 @@ export default function StockBaselinePage() {
   };
 
   // Clicking a sector/industry chip exits search mode and browses normally.
+  // Mutual exclusivity: selecting in the LEFT column clears the RIGHT column.
   const handleSectorChange = (id: string | null) => {
     setSearchCode(null);
     setSectorId(id);
+    if (id) {
+      setStrategyId(null);
+      setThemeSlug(null);
+    }
   };
   const handleIndustryChange = (slug: string | null) => {
     setSearchCode(null);
     setIndustrySlug(slug);
+  };
+  // Clicking a strategy/theme chip exits search mode and browses normally.
+  // Mutual exclusivity: selecting in the RIGHT column clears the LEFT column.
+  const handleStrategyChange = (id: string | null) => {
+    setSearchCode(null);
+    setStrategyId(id);
+    if (id) {
+      setSectorId(null);
+      setIndustrySlug(null);
+    }
+  };
+  const handleThemeChange = (slug: string | null) => {
+    setSearchCode(null);
+    setThemeSlug(slug);
   };
   const handleExchangeChange = (ex: string | null) => {
     setSearchCode(null);
@@ -177,7 +225,7 @@ export default function StockBaselinePage() {
         />
       </Box>
 
-      <ThemeSelector
+      <SecClassificationNav
         sectors={sectors}
         sectorId={sectorId}
         industrySlug={industrySlug}
@@ -185,6 +233,11 @@ export default function StockBaselinePage() {
         onSectorChange={handleSectorChange}
         onIndustryChange={handleIndustryChange}
         onExchangeChange={handleExchangeChange}
+        strategies={strategies}
+        strategyId={strategyId}
+        themeSlug={themeSlug}
+        onStrategyChange={handleStrategyChange}
+        onThemeChange={handleThemeChange}
       />
 
       {loading && (

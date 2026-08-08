@@ -14,7 +14,8 @@
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { matchesExchange } from "../lib/classify-etf.js";
+import { matchesExchange, stripExchangeSuffix } from "../lib/classify-etf.js";
+import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
 import type {
   LiveDataIntradayBar,
   LiveDataBundle,
@@ -22,6 +23,7 @@ import type {
   LiveDataDatesResponse,
   SectorNode,
   IndustryNode,
+  StrategyNode,
 } from "../../shared/types.js";
 
 // ----------------------------------------------------------------------------
@@ -35,6 +37,10 @@ interface DbLiveMetaRow extends QueryResultRow {
   industry_id: string;
   industry_label: string;
   industry_slug: string;
+  /** When TRUE, sector_id/industry_id hold INDUSTRY classification (industry-
+   *  primary row). When FALSE, they hold STRATEGY classification (strategy-
+   *  primary row). Used by the parallel strategy/theme selector. */
+  is_industry_not_strategy: boolean;
   exchange: string;
   /** Number of distinct dates with intraday bars (for sorting / display). */
   n_dates: number;
@@ -96,6 +102,7 @@ function buildMetaSql(secType: LiveDataSecType): string {
            COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
            COALESCE(sc.industry_label,  '未分类')  AS industry_label,
            COALESCE(sc.industry_slug,   'other')  AS industry_slug,
+           COALESCE(sc.is_industry_not_strategy, TRUE) AS is_industry_not_strategy,
            COALESCE(sc.exchange, '')               AS exchange,
            x.n_dates,
            x.first_date,
@@ -110,9 +117,11 @@ function buildMetaSql(secType: LiveDataSecType): string {
       ) x
       JOIN LATERAL (
         SELECT sc.code, sc.name, sc.sector_id, sc.sector_label,
-               sc.industry_id, sc.industry_label, sc.industry_slug, sc.exchange
+               sc.industry_id, sc.industry_label, sc.industry_slug,
+               sc.is_industry_not_strategy, sc.exchange
           FROM stats.sec_classification sc
          WHERE sc.code = x.code AND sc.type = $1
+           AND sc.is_active = TRUE
          ORDER BY sc.parent_index_is_primary DESC NULLS LAST,
                   sc.parent_index_weight DESC NULLS LAST,
                   sc.parent_index_code
@@ -158,6 +167,10 @@ export async function listLiveDataThemes(
   }>();
 
   for (const r of rows) {
+    // LEFT column: only industry-primary securities. Strategy-primary rows
+    // (is_industry_not_strategy=FALSE) carry strategy/theme in
+    // sector_id/industry_id and belong in the RIGHT column only.
+    if (!r.is_industry_not_strategy) continue;
     const item = { code: r.code, name: r.name ?? "" };
     if (!sectorMap.has(r.sector_id)) {
       sectorMap.set(r.sector_id, {
@@ -203,6 +216,38 @@ export async function listLiveDataThemes(
 }
 
 // ----------------------------------------------------------------------------
+//  Strategy themes — parallel L1 strategy → L2 theme → codes tree built from
+//  the same meta SQL (buildMetaSql) but using the strategy-primary rows
+//  (is_industry_not_strategy=FALSE).  sector_id/industry_id on those rows
+//  carry the strategy/theme classification.  Tree-building is delegated to
+//  the shared buildStrategyThemesFromRows helper to avoid duplicating the
+//  grouping/sorting logic across services.
+//
+//  Codes are stripped of any exchange suffix (no-op for bare index codes like
+//  "000300"; strips ".SZ"/".SS" from stock codes like "000001.SZ").
+// ----------------------------------------------------------------------------
+export async function listStrategyThemes(
+  secType: LiveDataSecType,
+): Promise<StrategyNode[]> {
+  const rows = await queryRows<DbLiveMetaRow>(buildMetaSql(secType), [
+    secType,
+  ]);
+
+  const mappedRows = rows.map((r) => ({
+    code: stripExchangeSuffix(r.code),
+    name: r.name,
+    sector_id: r.sector_id,
+    sector_label: r.sector_label,
+    industry_id: r.industry_id,
+    industry_label: r.industry_label,
+    industry_slug: r.industry_slug,
+    is_industry_not_strategy: r.is_industry_not_strategy,
+  }));
+
+  return buildStrategyThemesFromRows(mappedRows);
+}
+
+// ----------------------------------------------------------------------------
 //  Combined intraday data — paginated list of (code) intraday bars for ONE
 //  selected date, filtered by L1 sector + L2 industry + exchange.
 //  Mirrors getIndicesCombined but reads the intraday_5min tables instead of
@@ -217,6 +262,12 @@ export interface LiveDataCombinedQuery {
   exchange?: string;
   /** Trading day (YYYY-MM-DD). When omitted, uses the latest available date. */
   date?: string;
+  /** L1 strategy id (parallel to sector, e.g. "BROAD", "DIV") — when set,
+   *  only strategy-primary codes are returned. */
+  strategy?: string;
+  /** L2 theme slug (parallel to industry, e.g. "broad_csi300") — paired
+   *  with `strategy`. */
+  theme?: string;
   page?: number;
   page_size?: number;
 }
@@ -228,6 +279,8 @@ export async function getLiveDataCombined(
   const cfg = TABLES[secType];
   const sectorFilter = (q.sector ?? "").trim();
   const industryFilter = (q.industry ?? "").trim();
+  const strategyFilter = (q.strategy ?? "").trim();
+  const themeFilter = (q.theme ?? "").trim();
   const exchangeFilter = (q.exchange ?? "").trim() || null;
   const codeFilter = (q.code ?? "").trim().toUpperCase();
 
@@ -247,8 +300,17 @@ export async function getLiveDataCombined(
     dateParam = dateRows.length > 0 ? dateRows[0].date : null;
   }
 
-  // 3. Filter meta by sector/industry/exchange (or by exact code when set).
-  const meta = new Map<string, { name: string; sector_id: string; sector_label: string; industry_id: string; industry_label: string }>();
+  // 3. Filter meta by sector/industry/strategy/theme + exchange (or by exact
+  //    code when set).
+  const meta = new Map<string, {
+    name: string;
+    sector_id: string;
+    sector_label: string;
+    industry_id: string;
+    industry_label: string;
+    industry_slug: string;
+    is_industry_not_strategy: boolean;
+  }>();
   const wantedCodes: string[] = [];
   for (const r of metaRows) {
     meta.set(r.code, {
@@ -257,6 +319,8 @@ export async function getLiveDataCombined(
       sector_label: r.sector_label,
       industry_id: r.industry_id,
       industry_label: r.industry_label,
+      industry_slug: r.industry_slug,
+      is_industry_not_strategy: r.is_industry_not_strategy,
     });
     if (codeFilter) {
       // Match with or without exchange suffix (e.g. "000001.SZ" or "000001").
@@ -266,13 +330,17 @@ export async function getLiveDataCombined(
       }
       continue;
     }
-    const sectorOk = !sectorFilter || r.sector_id === sectorFilter;
-    const industryOk =
-      !industryFilter ||
-      r.industry_slug === industryFilter ||
-      r.industry_id === industryFilter;
+    // Classification filter (sector/industry OR strategy/theme — mutually
+    // exclusive, handled by matchesClassification) + exchange filter.
+    const classOk = matchesClassification(
+      r,
+      sectorFilter,
+      industryFilter,
+      strategyFilter,
+      themeFilter,
+    );
     const exchangeOk = matchesExchange(r.exchange, exchangeFilter);
-    if (sectorOk && industryOk && exchangeOk) wantedCodes.push(r.code);
+    if (classOk && exchangeOk) wantedCodes.push(r.code);
   }
 
   const totalCodes = wantedCodes.length;

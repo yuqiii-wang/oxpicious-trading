@@ -72,8 +72,8 @@ from downloads._common.core import (
     setup_logger,
 )
 from downloads.stock.sse._common.list_endpoint import SSE_HEADERS
-from utils.db_commons import get_db_connection
-from utils.study_and_select_stocks import (
+from _common.db_commons import get_db_connection
+from _common.study_and_select_stocks import (
     ETF_WEIGHT_THRESHOLD,
     load_etf_member_codes,
 )

@@ -23,7 +23,6 @@ CHECK allows three values ('etf' | 'index' | 'stock'):
 ANALYSIS_NAME = "mov_ave_spread"
 DETAIL_TABLE = "analysis.mov_ave_spreads_detail"
 PEAKS_AND_FLOORS_TABLE = "analysis.mov_ave_peaks_and_floors"
-LARGE_SWINGS_TABLE = "analysis.mov_ave_large_swings"
 
 DESCRIPTION = (
     "Moving-average spread analysis (ETF + Index + Stock). For each security "

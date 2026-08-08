@@ -40,7 +40,10 @@ done
 
 # analyze, run daily. industry_correlations is now an internal step of
 # industry_sentiments (runs automatically after the sentiments table is
-# repopulated, reusing the same DB connection).
+# repopulated, reusing the same DB connection). mov_ave_rsi is now an
+# internal step of mov_ave_spread (runs automatically after the detail +
+# peaks_and_floors tables are repopulated, reusing the same DB connection
+# and source price DataFrame).
 for m in \
   analyze.industry_sentiments \
   analyze.mov_ave_spread \
@@ -59,8 +62,8 @@ python -m downloads.etf.csindex.linked_etf
 # run quarterly
 python -m downloads.stock.sse.dividend
 python -m downloads.stock.szse.dividend
+python -m downloads.etf.szse.archive reports
 python -m builds.stock.dividends
-
 
 # download, run once
 python -m downloads.stock.szse.archive
@@ -74,4 +77,4 @@ python -m builds.classification
 # always run
 python -m downloads.stream.sse.price
 python -m downloads.stream.szse.price
-python -m downloads.stream.csindex.price   
+python -m downloads.stream.csindex.price

@@ -21,18 +21,20 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import CodeSearchBar, { findCodeInThemes } from "@/components/CodeSearchBar";
-import ThemeSelector from "@/components/ThemeSelector";
+import CodeSearchBar, { findCodeInThemes, findCodeInStrategyThemes } from "@/components/CodeSearchBar";
+import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import RefreshButton from "@/components/RefreshButton";
 import IntradayPanel from "@/live/features/IntradayPanel";
 import {
   fetchLiveDataCombined,
   fetchLiveDataDates,
+  fetchLiveDataStrategyThemes,
   fetchLiveDataThemes,
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
 import type {
   SectorNode,
+  StrategyNode,
   LiveDataCombinedResponse,
 } from "../../../shared/types";
 
@@ -45,6 +47,12 @@ export default function StockPage() {
   const [sectors, setSectors] = useState<SectorNode[]>([]);
   const [sectorId, setSectorId] = useState<string | null>(null);
   const [industrySlug, setIndustrySlug] = useState<string | null>(null);
+  // Parallel strategy → theme state (RIGHT column of the two-column selector).
+  // Mutually exclusive with sector/industry: when strategyId is set, sectorId
+  // is null and vice versa.
+  const [strategies, setStrategies] = useState<StrategyNode[]>([]);
+  const [strategyId, setStrategyId] = useState<string | null>(null);
+  const [themeSlug, setThemeSlug] = useState<string | null>(null);
   const [exchange, setExchange] = useState<string | null>(null);
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>("");
@@ -56,31 +64,43 @@ export default function StockPage() {
   const [refreshKey, setRefreshKey] = useState(0);
 
   // Load themes + available dates on mount and on refresh.
+  // Fetches BOTH the industry tree (LEFT column) and the parallel strategy
+  // tree (RIGHT column) in parallel, plus the available dates.
   useEffect(() => {
-    Promise.all([fetchLiveDataThemes(SEC_TYPE), fetchLiveDataDates(SEC_TYPE)])
-      .then(([list, dateResp]) => {
+    Promise.all([
+      fetchLiveDataThemes(SEC_TYPE),
+      fetchLiveDataStrategyThemes(SEC_TYPE),
+      fetchLiveDataDates(SEC_TYPE),
+    ])
+      .then(([list, strategyList, dateResp]) => {
         setSectors(list);
+        setStrategies(strategyList);
         setDates(dateResp.dates);
         if (dateResp.dates.length > 0 && !selectedDate) {
           setSelectedDate(dateResp.dates[0]);
         }
-        if (list.length > 0) {
-          const broad = list.find((s) => s.sector_id === "BROAD");
-          setSectorId((prev) => prev ?? (broad ? broad.sector_id : list[0].sector_id));
+        // BROAD is a STRATEGY (is_industry_not_strategy=FALSE), so it lives in
+        // the RIGHT column (strategyList). Default to BROAD there if present;
+        // else fall back to the first sector in the LEFT column.
+        const broad = strategyList.find((s) => s.sector_id === "BROAD");
+        if (broad) {
+          setStrategyId((prev) => prev ?? broad.sector_id);
+        } else if (list.length > 0) {
+          setSectorId((prev) => prev ?? list[0].sector_id);
         }
       })
       .catch((e: Error) => setError(e.message));
   }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Reset to page 1 whenever sector / industry / exchange / date / search changes.
+  // Reset to page 1 whenever sector / industry / strategy / theme / exchange / date / search changes.
   useEffect(() => {
     setPage(1);
-  }, [sectorId, industrySlug, exchange, selectedDate, searchCode]);
+  }, [sectorId, industrySlug, strategyId, themeSlug, exchange, selectedDate, searchCode]);
 
   // Load combined data on filter / date / page / search / refresh change.
   useEffect(() => {
     let cancelled = false;
-    if (!sectorId && !searchCode) return;
+    if (!sectorId && !strategyId && !searchCode) return;
     if (!selectedDate) return;
     setLoading(true);
     setError(null);
@@ -90,7 +110,7 @@ export default function StockPage() {
         )
       : fetchLiveDataCombined(
           SEC_TYPE, selectedDate, sectorId, industrySlug, exchange,
-          page, PAGE_SIZE,
+          page, PAGE_SIZE, undefined, strategyId, themeSlug,
         );
     promise
       .then((d) => {
@@ -106,36 +126,73 @@ export default function StockPage() {
     return () => {
       cancelled = true;
     };
-  }, [sectorId, industrySlug, exchange, selectedDate, page, searchCode, refreshKey]);
+  }, [sectorId, industrySlug, strategyId, themeSlug, exchange, selectedDate, page, searchCode, refreshKey]);
 
   const handleRefresh = () => {
     invalidateCacheForPrefix("/api/live-data/");
     setRefreshKey((k) => k + 1);
   };
 
+  // Resolve a searched code against BOTH the industry tree (LEFT column) and
+  // the strategy tree (RIGHT column). If found in the industry tree, sector/
+  // industry highlights are set; if found in the strategy tree, strategy/
+  // theme highlights are set. Shows an error if not found in either tree.
   const handleSearch = (code: string) => {
-    const found = findCodeInThemes(sectors, code);
-    if (!found) {
-      setError(`Stock code not found: ${code}`);
-      setSearchCode(null);
+    const foundIndustry = findCodeInThemes(sectors, code);
+    if (foundIndustry) {
+      setError(null);
+      setStrategyId(null);
+      setThemeSlug(null);
+      setSectorId(foundIndustry.sectorId);
+      setIndustrySlug(foundIndustry.industrySlug);
+      setSearchCode(code);
+      setPage(1);
       return;
     }
-    setError(null);
-    setSectorId(found.sectorId);
-    setIndustrySlug(found.industrySlug);
-    setSearchCode(code);
-    setPage(1);
+    const foundStrategy = findCodeInStrategyThemes(strategies, code);
+    if (foundStrategy) {
+      setError(null);
+      setSectorId(null);
+      setIndustrySlug(null);
+      setStrategyId(foundStrategy.strategyId);
+      setThemeSlug(foundStrategy.themeSlug);
+      setSearchCode(code);
+      setPage(1);
+      return;
+    }
+    setError(`Stock code not found: ${code}`);
+    setSearchCode(null);
   };
 
   const handleClearSearch = () => setSearchCode(null);
 
+  // Clicking a sector/industry chip exits search mode and browses normally.
+  // Mutual exclusivity: selecting in the LEFT column clears the RIGHT column.
   const handleSectorChange = (id: string | null) => {
     setSearchCode(null);
     setSectorId(id);
+    if (id) {
+      setStrategyId(null);
+      setThemeSlug(null);
+    }
   };
   const handleIndustryChange = (slug: string | null) => {
     setSearchCode(null);
     setIndustrySlug(slug);
+  };
+  // Clicking a strategy/theme chip exits search mode and browses normally.
+  // Mutual exclusivity: selecting in the RIGHT column clears the LEFT column.
+  const handleStrategyChange = (id: string | null) => {
+    setSearchCode(null);
+    setStrategyId(id);
+    if (id) {
+      setSectorId(null);
+      setIndustrySlug(null);
+    }
+  };
+  const handleThemeChange = (slug: string | null) => {
+    setSearchCode(null);
+    setThemeSlug(slug);
   };
   const handleExchangeChange = (ex: string | null) => {
     setSearchCode(null);
@@ -195,7 +252,7 @@ export default function StockPage() {
         </Box>
       </Box>
 
-      <ThemeSelector
+      <SecClassificationNav
         sectors={sectors}
         sectorId={sectorId}
         industrySlug={industrySlug}
@@ -203,6 +260,11 @@ export default function StockPage() {
         onSectorChange={handleSectorChange}
         onIndustryChange={handleIndustryChange}
         onExchangeChange={handleExchangeChange}
+        strategies={strategies}
+        strategyId={strategyId}
+        themeSlug={themeSlug}
+        onStrategyChange={handleStrategyChange}
+        onThemeChange={handleThemeChange}
       />
 
       {loading && (

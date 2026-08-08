@@ -8,8 +8,9 @@
  * Mirrors plot_annual_sentiment() in plot_szse_options.py.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Box, Slider, Stack, Typography } from "@mui/material";
+import { Alert, Stack } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
+import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { useStore } from "@/store/filters";
@@ -428,28 +429,12 @@ export default function AnnualSentimentPanel({ rows, ohlcv }: Props) {
           <Alert severity="info">No ETF OHLCV data available for this underlying.</Alert>
         )}
       </ChartCard>
-      {maxIdx > 0 && (
-        <Box sx={{ px: 1, mt: 0.25 }}>
-          <Slider
-            value={range}
-            onChange={(_, v) => setRange(v as [number, number])}
-            min={0}
-            max={maxIdx}
-            size="small"
-            valueLabelDisplay="auto"
-            valueLabelFormat={(idx) => daily[idx]?.date ?? ""}
-            sx={{ mt: 0.5, "& .MuiSlider-valueLabel": { fontSize: "0.7rem" } }}
-          />
-          <Stack direction="row" justifyContent="space-between" sx={{ mt: -0.5 }}>
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-              {daily[range[0]]?.date ?? "—"}
-            </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-              {daily[range[1]]?.date ?? "—"}
-            </Typography>
-          </Stack>
-        </Box>
-      )}
+      <DateRangeSlider
+        value={range}
+        onChange={setRange}
+        max={maxIdx}
+        dates={daily.map((d) => d.date)}
+      />
     </Stack>
   );
 }

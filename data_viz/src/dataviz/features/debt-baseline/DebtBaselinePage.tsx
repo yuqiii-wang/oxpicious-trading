@@ -16,9 +16,10 @@
  * instead of dense vertical markLines.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Alert, Accordion, AccordionDetails, AccordionSummary, Box, Chip, CircularProgress, Link, Slider, Stack, Typography } from "@mui/material";
+import { Alert, Accordion, AccordionDetails, AccordionSummary, Box, Chip, CircularProgress, Link, Stack, Typography } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ChartCard from "@/components/ChartCard";
+import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import RefreshButton from "@/components/RefreshButton";
 import { fetchDebtBaseline, fetchPbocOmaAnnouncements, invalidateCacheForUrl } from "@/lib/api-client";
@@ -902,28 +903,12 @@ export default function DebtBaselinePage() {
               <Typography variant="caption" color="text.secondary">
                 {data.rows.length} trading days · {data.dates[0]} → {data.dates[data.dates.length - 1]}
               </Typography>
-              {maxIdx > 0 && (
-                <Box sx={{ px: 1 }}>
-                  <Slider
-                    value={range}
-                    onChange={(_, v) => setRange(v as [number, number])}
-                    min={0}
-                    max={maxIdx}
-                    size="small"
-                    valueLabelDisplay="auto"
-                    valueLabelFormat={(idx) => allDates[idx] ?? ""}
-                    sx={{ "& .MuiSlider-valueLabel": { fontSize: "0.7rem" } }}
-                  />
-                  <Stack direction="row" justifyContent="space-between" sx={{ mt: -0.5 }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                      {allDates[range[0]] ?? "—"}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-                      {allDates[range[1]] ?? "—"}
-                    </Typography>
-                  </Stack>
-                </Box>
-              )}
+              <DateRangeSlider
+                value={range}
+                onChange={setRange}
+                max={maxIdx}
+                dates={allDates}
+              />
               <OutrightRepoPanel data={data} markerMap={markerMap} />
               <OmoPanel data={data} markerMap={markerMap} />
               <ShiborPanel data={data} markerMap={markerMap} />

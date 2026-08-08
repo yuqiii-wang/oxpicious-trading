@@ -73,6 +73,7 @@ export async function getIndustryEtfPriceSeries(
       SELECT DISTINCT code, industry_id, industry_label
       FROM stats.sec_classification
       WHERE type = 'index'
+        AND is_active = TRUE
         AND industry_id = ANY($1::text[])
         AND industry_id IS NOT NULL
         AND industry_id <> ''
@@ -87,8 +88,9 @@ export async function getIndustryEtfPriceSeries(
       FROM stats.sec_classification sc
       JOIN member_indices mi ON mi.code = sc.parent_index_code
       WHERE sc.type = 'etf'
+        AND sc.is_active = TRUE
         AND sc.parent_index_code <> ''
-    )
+    ),
     SELECT
       el.etf_code,
       el.etf_name,
@@ -183,7 +185,7 @@ export async function getIndustryEtfContributionBars(
     member_indices AS (
       SELECT DISTINCT code
       FROM stats.sec_classification
-      WHERE type = 'index' AND industry_id = $1::text
+      WHERE type = 'index' AND is_active = TRUE AND industry_id = $1::text
     ),
     etf_codes AS (
       SELECT DISTINCT
@@ -192,7 +194,7 @@ export async function getIndustryEtfContributionBars(
         sc.parent_index_code
       FROM stats.sec_classification sc
       JOIN member_indices mi ON mi.code = sc.parent_index_code
-      WHERE sc.type = 'etf' AND sc.parent_index_code <> ''
+      WHERE sc.type = 'etf' AND sc.is_active = TRUE AND sc.parent_index_code <> ''
     )
     SELECT
       ec.etf_code,

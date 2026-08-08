@@ -10,6 +10,7 @@ from downloads._common.core import (
     MIN_VALID_BYTES,
     EMPTY_HTML_MAX_BYTES,
     DEFAULT_TIMEOUT,
+    DEFAULT_SLEEP_SEC,
     COMMON_BASE_HEADERS,
     AntiBotProxy,
     AntiBotConfig,
@@ -47,6 +48,47 @@ ParamsBuilder = Callable[[str, date], Dict[str, object]]
 LogTagFn = Callable[[str, str], str]
 
 
+def _csv_has_data(csv_path: Path) -> bool:
+    """Check if a CSV file has actual data rows (not just a header or a
+    "no data" placeholder).
+
+    Used to detect header-only xlsx exports that the SZSE server returns
+    as valid xlsx (>= 1024 bytes) but contain no actual data rows — only
+    the column header, or a single row with "没有找到符合条件的数据！" (no
+    matching data found). Without this check, such files are treated as
+    "already downloaded" and block re-downloading on subsequent runs.
+    """
+    try:
+        if not csv_path.exists() or not csv_path.is_file():
+            return False
+        with open(csv_path, "r", encoding="utf-8-sig", errors="replace") as f:
+            lines = f.readlines()
+        if len(lines) < 2:
+            return False
+        # Check each non-header row for actual data. A real data row has
+        # multiple non-empty fields (e.g. date + code + OHLC). The SZSE
+        # "no data" placeholder has only one field filled ("没有找到符合条件的数据！").
+        for line in lines[1:]:
+            parts = line.split(",")
+            # Count non-empty fields (stripped)
+            non_empty = sum(1 for p in parts if p.strip())
+            # A real data row has at least 3 non-empty fields (date, code, name)
+            # The "no data" message has only 1 non-empty field
+            if non_empty >= 3:
+                return True
+        return False
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _write_empty_markers(out_file: Path) -> None:
+    """Write 0-byte xlsx and csv markers so the date is skipped on next run."""
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    out_file.write_bytes(b"")
+    csv_marker = out_file.with_suffix(".csv")
+    csv_marker.write_bytes(b"")
+
+
 def download_xlsx_once(
     session: requests.Session,
     params: Dict[str, object],
@@ -68,10 +110,22 @@ def download_xlsx_once(
                 out_file, logger=logger, log_tag=log_tag,
                 code_suffix=code_suffix, code_filter=code_filter,
             )
+        # Detect header-only xlsx (valid ZIP, no data rows). The SZSE
+        # archive endpoint returns such xlsx for dates it has no data for.
+        # Treat as empty so the caller can try a fallback source.
+        if not _csv_has_data(csv_file):
+            logger.warning(
+                "%s xlsx has header only (no data rows), treating as empty",
+                log_tag,
+            )
+            out_file.unlink(missing_ok=True)
+            csv_file.unlink(missing_ok=True)
+            _write_empty_markers(out_file)
+            return None
         return out_file
 
     if proxy is None:
-        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
+        proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
 
     resp = proxy.get(
         session,
@@ -96,13 +150,7 @@ def download_xlsx_once(
             "%s got html response (no data? length=%d), writing empty marker",
             log_tag, len(resp.content),
         )
-        out_file.parent.mkdir(parents=True, exist_ok=True)
-        out_file.write_bytes(b"")
-        # Also write an empty CSV marker so filesystem scans checking *.csv
-        # (including empty markers via skip_empty_markers=True) can skip
-        # this date on the next run without re-downloading.
-        csv_marker = out_file.with_suffix(".csv")
-        csv_marker.write_bytes(b"")
+        _write_empty_markers(out_file)
         return None
 
     saved = safe_write_bytes(
@@ -115,6 +163,19 @@ def download_xlsx_once(
             out_file, logger=logger, log_tag=log_tag,
             code_suffix=code_suffix, code_filter=code_filter,
         )
+    if saved:
+        # Detect header-only xlsx after fresh download (same as above).
+        csv_file = out_file.with_suffix(".csv")
+        if not _csv_has_data(csv_file):
+            logger.warning(
+                "%s downloaded xlsx has header only (no data rows), "
+                "treating as empty",
+                log_tag,
+            )
+            out_file.unlink(missing_ok=True)
+            csv_file.unlink(missing_ok=True)
+            _write_empty_markers(out_file)
+            return None
     return out_file if saved else None
 
 
@@ -131,7 +192,7 @@ def run_szse_download(
     end_date: Optional[str] = None,
     start_date: str,
     security_types: Optional[List[str]] = None,
-    sleep_sec: float = 5.0,
+    sleep_sec: float = DEFAULT_SLEEP_SEC,
     session: Optional[requests.Session] = None,
     proxy: Optional[AntiBotProxy] = None,
     code_suffix: str = "",
@@ -141,6 +202,8 @@ def run_szse_download(
     db_code_suffix: Optional[str] = None,
     code_filter_by_type: Optional[Dict[str, List[str]]] = None,
     skip_empty_markers: bool = False,
+    fallback_params_builder: Optional[ParamsBuilder] = None,
+    fallback_headers: Optional[Dict[str, str]] = None,
 ) -> dict:
     """Run a SZSE download loop.
 
@@ -168,6 +231,13 @@ def run_szse_download(
     excluded from the download plan, preventing re-downloading dates
     already confirmed to have no data. Works in both DB-first and
     filesystem-scan modes.
+
+    *fallback_params_builder* / *fallback_headers* — when the primary
+    download returns no data (header-only xlsx or HTML error), the loop
+    retries with the fallback params/headers. Used by the archive script
+    to fall back to the trend endpoint when the archive endpoint has no
+    data for a given date. Files/markers from the primary attempt are
+    cleaned up before the fallback runs.
     """
     out_dir = resolve_out_dir(caller_file, out_dirname, out_root)
 
@@ -265,16 +335,20 @@ def run_szse_download(
             )
 
             if is_valid_file(out_file, min_bytes=MIN_VALID_BYTES):
-                stats.skipped_cached += 1
                 csv_file = out_file.with_suffix(".csv")
-                if is_valid_file(csv_file, min_bytes=MIN_VALID_BYTES):
-                    logger.info("%s csv already converted, skipping", tag)
-                else:
+                if not is_valid_file(csv_file, min_bytes=MIN_VALID_BYTES):
                     convert_xlsx_to_csv(
                         out_file, logger=logger, log_tag=tag,
                         code_suffix=code_suffix, code_filter=code_filter,
                     )
-                continue
+                if _csv_has_data(csv_file):
+                    stats.skipped_cached += 1
+                    continue
+                # Header-only xlsx — clean up and fall through to re-download
+                # (or try fallback if configured).
+                logger.info("%s cached xlsx has no data rows, will re-download", tag)
+                out_file.unlink(missing_ok=True)
+                csv_file.unlink(missing_ok=True)
 
             # Skip dates previously confirmed to have no data (empty marker)
             if out_file.exists():
@@ -286,6 +360,22 @@ def run_szse_download(
                 sess, params, headers, out_file, tag,
                 proxy=proxy, code_suffix=code_suffix, code_filter=code_filter,
             )
+            if path is None and fallback_params_builder is not None:
+                # Primary returned no data — clean up any markers/files and
+                # try the fallback source (e.g. trend endpoint when archive
+                # has no data for this date).
+                out_file.unlink(missing_ok=True)
+                out_file.with_suffix(".csv").unlink(missing_ok=True)
+                fb_params = fallback_params_builder(item.type_key, item.day)
+                fb_tag = f"{tag}[fallback]"
+                logger.info("%s primary no data, trying fallback", tag)
+                path = download_xlsx_once(
+                    sess, fb_params,
+                    fallback_headers if fallback_headers is not None else headers,
+                    out_file, fb_tag,
+                    proxy=proxy, code_suffix=code_suffix, code_filter=code_filter,
+                )
+
             if path is not None:
                 stats.downloaded += 1
                 stats.files.append(str(path))

@@ -20,6 +20,8 @@ import type {
   IndexCombinedResponse,
   SectorNode,
   IndustryNode,
+  StrategyNode,
+  ThemeNode,
 } from "../../shared/types.js";
 
 interface DbIndexMetaRow extends QueryResultRow {
@@ -33,7 +35,9 @@ interface DbIndexMetaRow extends QueryResultRow {
   industry_id: string;
   industry_label: string;
   industry_slug: string;
+  is_industry_not_strategy: boolean;
   exchange: string;
+  is_dummy: boolean;
 }
 
 interface DbIndexRow extends QueryResultRow {
@@ -163,9 +167,12 @@ export async function getIndexBaseline(
 //  are suppressed from the data-viz list (matches the "Insufficient data"
 //  alert threshold in IndexPanel).
 //
+//  sector_id/industry_id carry EITHER industry OR strategy classification,
+//  depending on is_industry_not_strategy:
+//    TRUE  → industry (LEFT column: sector/industry tree)
+//    FALSE → strategy (RIGHT column: strategy/theme tree)
 //  Labels (sector_label, industry_label, industry_slug) are DENORMALIZED
-//  onto sec_classification by build_classification.py — no JOIN to a
-//  catalog table is needed.
+//  onto sec_classification by build_classification.py.
 // ----------------------------------------------------------------------------
 const INDEX_META_SQL = `
   SELECT sc.code,
@@ -178,16 +185,24 @@ const INDEX_META_SQL = `
          COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
          COALESCE(sc.industry_label,  '未分类')  AS industry_label,
          COALESCE(sc.industry_slug,   'other')  AS industry_slug,
-         COALESCE(sc.exchange, '')               AS exchange
+         COALESCE(sc.is_industry_not_strategy, TRUE) AS is_industry_not_strategy,
+         COALESCE(sc.exchange, '')               AS exchange,
+         COALESCE(sc.is_dummy, false)             AS is_dummy
     FROM stats.sec_classification sc
    WHERE sc.type = 'index'
-     AND sc.n_days >= 40
+     AND sc.is_active = TRUE
+     AND (sc.n_days >= 40 OR sc.is_dummy = true)
    ORDER BY sc.n_days DESC, sc.code
 `;
 
 // ----------------------------------------------------------------------------
 //  Index themes — build the two-level L1 sector → L2 industry → indices tree
 //  from the precomputed classification columns in stats.sec_classification.
+//
+//  Only includes industry-PRIMARY indices (is_industry_not_strategy = TRUE) —
+//  these are indices whose industry classification matched (e.g. 中证银行 →
+//  FIN/BANKS).  Strategy-primary indices (沪深300 → BROAD/BROAD_CSI) appear
+//  in the parallel strategy tree from listStrategyThemes().
 // ----------------------------------------------------------------------------
 export async function listIndexThemes(): Promise<SectorNode[]> {
   const rows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
@@ -198,7 +213,9 @@ export async function listIndexThemes(): Promise<SectorNode[]> {
   }>();
 
   for (const r of rows) {
-    const item = { code: r.code, name: r.name ?? "" };
+    // LEFT column: only industry-primary securities.
+    if (!r.is_industry_not_strategy) continue;
+    const item = { code: r.code, name: r.name ?? "", is_dummy: r.is_dummy };
     if (!sectorMap.has(r.sector_id)) {
       sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
     }
@@ -240,13 +257,85 @@ export async function listIndexThemes(): Promise<SectorNode[]> {
 }
 
 // ----------------------------------------------------------------------------
-//  Combined index data with sector/industry filter + pagination
+//  Strategy themes — build the parallel L1 sector → L2 industry → indices tree
+//  restricted to strategy-PRIMARY indices (is_industry_not_strategy = FALSE).
+//  For these, sector_id/industry_id carry the STRATEGY classification
+//  (e.g. 沪深300 → BROAD/BROAD_CSI, 中证红利 → DIV/DIV_GENERAL).
+//  Industry-primary indices appear in listIndexThemes().
+//
+//  There is no separate strategy_id/theme_id column — strategy IS a sector
+//  and a theme IS an industry in the unified column model. The returned
+//  tree uses the SAME field names (sector_id/industry_id) as the industry
+//  tree; the difference is only the row filter (is_industry_not_strategy).
+// ----------------------------------------------------------------------------
+export async function listStrategyThemes(): Promise<StrategyNode[]> {
+  const rows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
+
+  const sectorMap = new Map<string, {
+    sector_label: string;
+    industries: Map<string, ThemeNode>;
+  }>();
+
+  for (const r of rows) {
+    // RIGHT column: only strategy-primary securities.
+    if (r.is_industry_not_strategy) continue;
+    const item = { code: r.code, name: r.name ?? "", is_dummy: r.is_dummy };
+    // sector_id/industry_id carry strategy/theme when is_ind=FALSE
+    if (!sectorMap.has(r.sector_id)) {
+      sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
+    }
+    const sector = sectorMap.get(r.sector_id)!;
+    if (!sector.industries.has(r.industry_id)) {
+      sector.industries.set(r.industry_id, {
+        industry_id: r.industry_id,
+        industry_label: r.industry_label,
+        industry_slug: r.industry_slug,
+        count: 0,
+        items: [],
+      });
+    }
+    const ind = sector.industries.get(r.industry_id)!;
+    ind.items.push(item);
+    ind.count++;
+  }
+
+  const strategies: StrategyNode[] = [];
+  for (const [sector_id, sector] of sectorMap) {
+    const industries = Array.from(sector.industries.values()).sort((a, b) => {
+      if (a.industry_id === "OTHER") return 1;
+      if (b.industry_id === "OTHER") return -1;
+      return b.count - a.count;
+    });
+    strategies.push({
+      sector_id,
+      sector_label: sector.sector_label,
+      count: industries.reduce((sum, t) => sum + t.count, 0),
+      industries,
+    });
+  }
+  strategies.sort((a, b) => {
+    if (a.sector_id === "OTHER") return 1;
+    if (b.sector_id === "OTHER") return -1;
+    return b.count - a.count;
+  });
+  return strategies;
+}
+
+// ----------------------------------------------------------------------------
+//  Combined index data with sector/industry OR strategy/theme filter + pagination
 // ----------------------------------------------------------------------------
 export interface IndexCombinedQuery {
   sector?: string;
   industry?: string;
-  /** Exact index code (e.g. "000300", "H30007"). When set, sector/industry
-   *  filters and pagination are bypassed — only the matching index is returned. */
+  /** Strategy filter (RIGHT column). When set, filters by sector_id on rows
+   *  where is_industry_not_strategy=FALSE (strategy-primary).
+   *  Mutually exclusive with sector/industry — if both are set, sector wins. */
+  strategy?: string;
+  /** Theme filter (RIGHT column). When set, filters by industry_id or
+   *  industry_slug on strategy-primary rows. */
+  theme?: string;
+  /** Exact index code (e.g. "000300", "H30007"). When set, all filters and
+   *  pagination are bypassed — only the matching index is returned. */
   code?: string;
   /** Exchange filter: 'SS' (SSE+STAR), 'SZ' (SZSE+GEM), 'BJ' (BSE). */
   exchange?: string;
@@ -261,15 +350,29 @@ export async function getIndicesCombined(
 ): Promise<IndexCombinedResponse> {
   const sectorFilter = (q.sector ?? "").trim();
   const industryFilter = (q.industry ?? "").trim();
+  const strategyFilter = (q.strategy ?? "").trim();
+  const themeFilter = (q.theme ?? "").trim();
   const exchangeFilter = (q.exchange ?? "").trim() || null;
-  // When a code filter is provided, sector/industry/pagination are bypassed.
+  // When a code filter is provided, all filters and pagination are bypassed.
   const codeFilter = (q.code ?? "").trim().toUpperCase();
 
   // 1. Fetch all indices with classification, ordered by n_days DESC.
   const metaRows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
 
-  // 2. Filter by sector + industry + exchange (or by exact code when codeFilter is set).
-  const meta = new Map<string, { name: string; sector_id: string; sector_label: string; industry_id: string; industry_label: string }>();
+  // 2. Filter by sector+industry OR strategy+theme + exchange (or by exact code).
+  //    When sectorFilter is set, industry filtering applies (LEFT column).
+  //    When strategyFilter is set (and no sectorFilter), theme filtering applies
+  //    (RIGHT column).
+  const useStrategyFilter = !sectorFilter && !!strategyFilter;
+  const meta = new Map<string, {
+    name: string;
+    sector_id: string;
+    sector_label: string;
+    industry_id: string;
+    industry_label: string;
+    is_industry_not_strategy: boolean;
+    is_dummy: boolean;
+  }>();
   const wantedCodes: string[] = [];
   for (const r of metaRows) {
     meta.set(r.code, {
@@ -278,16 +381,33 @@ export async function getIndicesCombined(
       sector_label: r.sector_label,
       industry_id: r.industry_id,
       industry_label: r.industry_label,
+      is_industry_not_strategy: r.is_industry_not_strategy,
+      is_dummy: r.is_dummy,
     });
     if (codeFilter) {
-      // Exact code search — ignore sector/industry/exchange filters.
+      // Exact code search — ignore all filters.
       if (r.code.toUpperCase() === codeFilter) wantedCodes.push(r.code);
       continue;
     }
-    const sectorOk = !sectorFilter || r.sector_id === sectorFilter;
-    const industryOk = !industryFilter || r.industry_slug === industryFilter || r.industry_id === industryFilter;
     const exchangeOk = matchesExchange(r.exchange, exchangeFilter);
-    if (sectorOk && industryOk && exchangeOk) wantedCodes.push(r.code);
+    if (useStrategyFilter) {
+      // RIGHT column filter: strategy + theme.
+      // Only include strategy-PRIMARY indices (is_industry_not_strategy=FALSE)
+      // to maintain mutual exclusivity with the LEFT column.
+      // sector_id/industry_id carry strategy/theme when is_ind=FALSE.
+      if (r.is_industry_not_strategy) continue;
+      const stratOk = r.sector_id === strategyFilter;
+      const themeOk = !themeFilter || r.industry_slug === themeFilter || r.industry_id === themeFilter;
+      if (stratOk && themeOk && exchangeOk) wantedCodes.push(r.code);
+    } else {
+      // LEFT column filter: sector + industry (default).
+      // Only include industry-PRIMARY indices (is_industry_not_strategy=TRUE)
+      // to maintain mutual exclusivity with the RIGHT column.
+      if (!r.is_industry_not_strategy) continue;
+      const sectorOk = !sectorFilter || r.sector_id === sectorFilter;
+      const industryOk = !industryFilter || r.industry_slug === industryFilter || r.industry_id === industryFilter;
+      if (sectorOk && industryOk && exchangeOk) wantedCodes.push(r.code);
+    }
   }
 
   const totalIndices = wantedCodes.length;
@@ -341,12 +461,16 @@ export async function getIndicesCombined(
     byCode.get(r.code)!.push(transformRow(r));
   }
 
-  // 4. Build bundles
+  // 4. Build bundles — sector_id/industry_id carry the PRIMARY classification
+  //    (industry when is_ind=TRUE, strategy when is_ind=FALSE).
+  //    Dummy indices (is_dummy=true) are included even with 0 rows so they
+  //    appear in the selector; IndexPanel shows "No data" for them.
   const indices: IndexBundle[] = [];
   for (const code of pageCodes) {
+    const m = meta.get(code);
+    if (!m) continue;
     const rows = byCode.get(code) ?? [];
-    if (rows.length === 0) continue;
-    const m = meta.get(code)!;
+    if (rows.length === 0 && !m.is_dummy) continue;
     indices.push({
       code,
       name: m.name,
@@ -354,6 +478,8 @@ export async function getIndicesCombined(
       sector_label: m.sector_label,
       industry_id: m.industry_id,
       industry_label: m.industry_label,
+      is_industry_not_strategy: m.is_industry_not_strategy,
+      is_dummy: m.is_dummy,
       rows,
     });
   }

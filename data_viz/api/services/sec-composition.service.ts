@@ -26,6 +26,8 @@ import type {
   SecCompositionHolding,
   LinkedEtfsResponse,
   LinkedEtfRow,
+  SimilarIndicesResponse,
+  SimilarIndexRow,
 } from "../../shared/types.js";
 
 interface DbCompositionRow extends QueryResultRow {
@@ -338,5 +340,151 @@ export async function getLinkedEtfs(
     total_etf_trading_amount: toNum(ext?.total_etf_trading_amount),
     total_etf_trading_amount_ma5: toNum(ext?.total_etf_trading_amount_ma5),
     total_etf_trading_amount_date: ext?.date ?? "",
+  };
+}
+
+// ----------------------------------------------------------------------------
+//  Similar Indices — top-5 similar codes + top-5 similar/dissimilar
+//  industry-classified peer codes by MUTUAL shared composition weight for a
+//  given subject index. Reads stats.sec_similars (sec_type='index', built by
+//  builds.index.exts._sec_similars from stats.sec_composition +
+//  stats.sec_classification).
+//
+//  `date` in sec_similars is the COMPOSITION snapshot_date (quarterly,
+//  NOT a trading day). To get the currently-effective similars, we pick the
+//  latest row with date <= CURRENT_DATE for the requested code (same
+//  carry-forward pattern as index_exts.stock_num).
+//
+//  All three categories store SEC CODES (index codes), not industry_ids.
+//  "industry" means the peer pool is filtered to is_industry_not_strategy=true.
+//  Each category is stored as 5 pairs of columns; we fetch the latest row,
+//  then run three small unpivot queries (reusing the same SQL template with
+//  column-name substitution) to expand each into up to 5 ranked rows. Each
+//  row JOINs sec_classification (type='index') to resolve the display name.
+// ----------------------------------------------------------------------------
+interface DbSimilarCodeRow extends QueryResultRow {
+  rank: number;
+  code: string;
+  name: string | null;
+  sharing_weight_pct: number | null;
+}
+interface DbLatestRow extends QueryResultRow {
+  date: string;
+}
+
+export async function getSimilarIndices(
+  indexCodeParam: string,
+): Promise<SimilarIndicesResponse> {
+  const indexCode = indexCodeParam.replace(SUFFIX_RE, "").trim();
+  const empty: SimilarIndicesResponse = {
+    index_code: indexCodeParam,
+    snapshot_date: "",
+    similars: [],
+    similar_industries: [],
+    dissimilar_industries: [],
+  };
+  if (!indexCode) return empty;
+
+  // --- Fetch the latest sec_similars row (date <= today) -------------
+  const latestSql = `
+    SELECT date::text
+      FROM stats.sec_similars
+     WHERE code = $1
+       AND sec_type = 'index'
+       AND date <= CURRENT_DATE
+     ORDER BY date DESC
+     LIMIT 1
+  `;
+  const latest = await queryRows<DbLatestRow>(latestSql, [indexCode]);
+  if (!latest.length) return empty;
+  const snapshotDate = formatDate(latest[0].date);
+
+  // --- Similar codes (unpivot 5 column-pairs into rows) -------------
+  const codesSql = `
+    SELECT u.rank,
+           u.code,
+           sc.name,
+           u.sharing_weight_pct
+      FROM (
+        SELECT 1 AS rank,
+               similar_1st_code_by_sharing_weights AS code,
+               similar_1st_code_sharing_weight_pct AS sharing_weight_pct
+          FROM stats.sec_similars
+         WHERE code = $1 AND sec_type = 'index' AND date = $2
+        UNION ALL
+        SELECT 2, similar_2nd_code_by_sharing_weights,
+               similar_2nd_code_sharing_weight_pct
+          FROM stats.sec_similars
+         WHERE code = $1 AND sec_type = 'index' AND date = $2
+        UNION ALL
+        SELECT 3, similar_3rd_code_by_sharing_weights,
+               similar_3rd_code_sharing_weight_pct
+          FROM stats.sec_similars
+         WHERE code = $1 AND sec_type = 'index' AND date = $2
+        UNION ALL
+        SELECT 4, similar_4th_code_by_sharing_weights,
+               similar_4th_code_sharing_weight_pct
+          FROM stats.sec_similars
+         WHERE code = $1 AND sec_type = 'index' AND date = $2
+        UNION ALL
+        SELECT 5, similar_5th_code_by_sharing_weights,
+               similar_5th_code_sharing_weight_pct
+          FROM stats.sec_similars
+         WHERE code = $1 AND sec_type = 'index' AND date = $2
+      ) u
+      LEFT JOIN LATERAL (
+        SELECT name
+          FROM stats.sec_classification sc
+         WHERE sc.code = u.code AND sc.type = 'index'
+         LIMIT 1
+      ) sc ON true
+     WHERE u.code IS NOT NULL AND u.code <> ''
+     ORDER BY u.rank
+  `;
+  const codeRows = await queryRows<DbSimilarCodeRow>(codesSql, [indexCode, latest[0].date]);
+  const similars: SimilarIndexRow[] = codeRows.map((r) => ({
+    rank: r.rank as 1 | 2 | 3 | 4 | 5,
+    code: r.code,
+    name: r.name ?? "",
+    sharing_weight_pct: toNum(r.sharing_weight_pct),
+  }));
+
+  // --- Similar industry-classified peers (same structure, industry_* cols) ---
+  // These columns store SEC CODES (index codes), not industry_ids. The only
+  // difference from the codes query is the column name prefix. We reuse the
+  // same LATERAL JOIN to resolve the index display name.
+  const indSql = codesSql
+    .replace(/similar_(\d)(st|nd|rd|th)_code_by_sharing_weights/g,
+      "similar_$1$2_industry_code_by_sharing_weights")
+    .replace(/similar_(\d)(st|nd|rd|th)_code_sharing_weight_pct/g,
+      "similar_$1$2_industry_code_sharing_weight_pct");
+  const indRows = await queryRows<DbSimilarCodeRow>(indSql, [indexCode, latest[0].date]);
+  const similar_industries: SimilarIndexRow[] = indRows.map((r) => ({
+    rank: r.rank as 1 | 2 | 3 | 4 | 5,
+    code: r.code,
+    name: r.name ?? "",
+    sharing_weight_pct: toNum(r.sharing_weight_pct),
+  }));
+
+  // --- Dissimilar industry-classified peers (dissimilar_* cols) --------
+  const dissSql = codesSql
+    .replace(/similar_(\d)(st|nd|rd|th)_code_by_sharing_weights/g,
+      "dissimilar_$1$2_industry_code_by_sharing_weights")
+    .replace(/similar_(\d)(st|nd|rd|th)_code_sharing_weight_pct/g,
+      "dissimilar_$1$2_industry_code_sharing_weight_pct");
+  const dissRows = await queryRows<DbSimilarCodeRow>(dissSql, [indexCode, latest[0].date]);
+  const dissimilar_industries: SimilarIndexRow[] = dissRows.map((r) => ({
+    rank: r.rank as 1 | 2 | 3 | 4 | 5,
+    code: r.code,
+    name: r.name ?? "",
+    sharing_weight_pct: toNum(r.sharing_weight_pct),
+  }));
+
+  return {
+    index_code: indexCode,
+    snapshot_date: snapshotDate,
+    similars,
+    similar_industries,
+    dissimilar_industries,
   };
 }

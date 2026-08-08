@@ -33,7 +33,7 @@ import sys
 import time
 from typing import Optional, Set
 
-# Ensure project root is on sys.path so ``utils`` is importable when run
+# Ensure project root is on sys.path so ``_common`` is importable when run
 # directly via ``python -m analyze.sec_alloc_perf_attribution`` or as a script.
 sys.path.insert(
     0,
@@ -42,7 +42,7 @@ sys.path.insert(
     ),
 )
 
-from utils.build_commons import (  # noqa: E402
+from _common.build_commons import (  # noqa: E402
     setup_utf8_stdout,
     get_db_connection_async,
     truncate_table_async,

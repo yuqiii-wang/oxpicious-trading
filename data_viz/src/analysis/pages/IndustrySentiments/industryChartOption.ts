@@ -19,15 +19,11 @@
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import type { IndustrySentimentsChartResponse } from "../../../../shared/types";
-import {
-  MUTED_PALETTE,
-  axisColors,
-  commonLegend,
-  commonGrid,
-} from "@/theme/chart-palette";
+import { axisColors, commonLegend, commonGrid } from "@/theme/chart-palette";
+import { variantColorOf } from "@/theme/group-colors";
 import { fmtNum } from "@/lib/series";
 import type { PoolSize, PerIndustryAggregation } from "./types";
-import { BENCHMARK_COLORS, MEAN_PALETTE } from "./constants";
+import { BENCHMARK_COLORS } from "./constants";
 import { classifyPoolSize, rebaseTo100 } from "./helpers";
 
 export function buildIndustryChartOption(
@@ -45,12 +41,35 @@ export function buildIndustryChartOption(
   showAggOverlay: boolean,
   /** Per-industry aggregation sets for multi-industry mean overlay. When
    *  non-empty AND meanOnly is true, one mean curve (with ±1σ band) is
-   *  rendered per industry, each in a distinct MEAN_PALETTE color. Empty
+   *  rendered per industry, each in that industry's MAJOR color. Empty
    *  in single-industry mode. */
   perIndustryAggregations: PerIndustryAggregation[] = [],
+  /** Resolve a group key (industry_id) to its MAJOR color. Curves in the same
+   *  group render as VARIANT shades of this major color. Built once by the
+   *  page from the shared `buildGroupColorScheme` so colors stay consistent
+   *  across the price + aggregate charts. */
+  industryColorFor: (industryId: string) => string,
+  /** Map from member-index code → industry_id (the curve's GROUP key).
+   *  Required in multi-industry mode so each index resolves to its industry;
+   *  when omitted (single-industry mode) every index falls back to
+   *  `data.industry_id` — i.e. all curves share one major color. */
+  indexGroupKey?: Map<string, string>,
 ): EChartsOption {
   const c = axisColors(themeMode);
   const visibleDates = allDates.slice(visibleLo, visibleHi + 1);
+
+  // ---- Per-index VARIANT colors (same industry → same major color) ----
+  // Each member index is colored as a variant shade of its industry's MAJOR
+  // color. The first index of an industry gets the pure major color; later
+  // indices diverge symmetrically (lighter / darker) so they stay in the same
+  // color family while remaining distinguishable.
+  const groupCounters = new Map<string, number>();
+  const indexColors = data.indices.map((idx) => {
+    const gid = indexGroupKey?.get(idx.code) ?? data.industry_id;
+    const n = groupCounters.get(gid) ?? 0;
+    groupCounters.set(gid, n + 1);
+    return variantColorOf(industryColorFor(gid), n);
+  });
 
   // ALL indices are always rendered (when not meanOnly). Two independent
   // dim/highlight layers compose:
@@ -93,7 +112,7 @@ export function buildIndustryChartOption(
       const rebased = rebaseTo100(closesAligned, visibleLo, visibleHi);
       rawClosesPerIdx.push(closesAligned.slice(visibleLo, visibleHi + 1));
       const visibleData = rebased.slice(visibleLo, visibleHi + 1);
-      const color = MUTED_PALETTE[i % MUTED_PALETTE.length];
+      const color = indexColors[i];
       series.push({
         name: idx.name || idx.code,
         type: "line",
@@ -227,8 +246,9 @@ export function buildIndustryChartOption(
   // ---- Per-industry mean curves (multi-industry "Mean only" mode) ----
   // When multiple industries are merged AND meanOnly is ON, render ONE mean
   // curve PER industry (each filtered by the selected pool_size), each in a
-  // distinct MEAN_PALETTE color with a matching ±1σ band. This lets the user
-  // compare industry-level sentiment trends on a common rebased-to-100 scale.
+  // distinct MAJOR color (its industry's group color) with a matching ±1σ
+  // band. This lets the user compare industry-level sentiment trends on a
+  // common rebased-to-100 scale.
   // Anchored at HISTORY START (same as single-industry overlay) — the slider
   // narrows the visible slice but does NOT re-rebase the means.
   //
@@ -237,7 +257,7 @@ export function buildIndustryChartOption(
   // per-index lines are shown (no mean overlay).
   if (perIndustryAggregations.length > 0 && meanOnly) {
     perIndustryAggregations.forEach((agg, i) => {
-      const color = MEAN_PALETTE[i % MEAN_PALETTE.length];
+      const color = industryColorFor(agg.industry_id);
       const shortLabel = (agg.industry_label || agg.industry_id).split("  ")[0] || agg.industry_id;
       const aggByDate = new Map<string, { mean: number | null; var: number | null }>();
       for (const a of agg.aggregation) {
@@ -385,7 +405,7 @@ export function buildIndustryChartOption(
                       || a.industry_id === shortLabel,
                   );
                   if (matchIdx >= 0) {
-                    meanColor = MEAN_PALETTE[matchIdx % MEAN_PALETTE.length];
+                    meanColor = industryColorFor(perIndustryAggregations[matchIdx].industry_id);
                     const aggRow = perIndustryAggregations[matchIdx].aggregation.find(
                       (a) => a.date === dateStr && a.pool_size === poolSize,
                     );
@@ -420,7 +440,7 @@ export function buildIndustryChartOption(
               const pct = v - 100;
               return (pct >= 0 ? "+" : "") + fmtNum(pct, 2) + "%";
             };
-            const color = MUTED_PALETTE[sIdx % MUTED_PALETTE.length];
+            const color = indexColors[sIdx];
             const stockNumStr = sn == null ? "" : ` · ${sn} stocks`;
             return `<div style="display:flex;justify-content:space-between;gap:12px">
               <span style="color:${color}">●</span>

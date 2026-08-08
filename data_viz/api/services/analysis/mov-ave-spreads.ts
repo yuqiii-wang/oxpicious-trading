@@ -6,6 +6,7 @@ import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix } from "../../lib/classify-etf.js";
 import { stripped } from "./_shared.js";
+import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
 import type {
   MaSpreadSecType,
   MovAveSpreadCodeRow,
@@ -17,6 +18,7 @@ import type {
   MovAveSpreadValleyLow,
   SectorNode,
   IndustryNode,
+  StrategyNode,
 } from "../../../shared/types.js";
 
 // ----------------------------------------------------------------------------
@@ -114,6 +116,17 @@ interface DbChartRow extends QueryResultRow {
   std_60days: number | null;
   std_120days: number | null;
   std_255days: number | null;
+  // Last-extreme columns from analysis.mov_ave_rsi (joined on
+  // sec_type + code + date). date_of_last_extreme is a DATE column.
+  date_of_last_extreme: Date | string | null;
+  gap_since_last_extreme: number | null;
+  days_since_last_extreme: number | null;
+  // Wilder RSI columns (0..100, NULL until N periods) from
+  // analysis.mov_ave_rsi — surfaced in the chart tooltip.
+  rsi_6days: number | null;
+  rsi_10days: number | null;
+  rsi_14days: number | null;
+  rsi_20days: number | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -312,10 +325,45 @@ function buildCodesSql(secType: MaSpreadSecType): string {
 
 export async function listMovAveSpreadCodes(
   rawSecType: string | undefined | null,
+  sector?: string | null,
+  industry?: string | null,
+  strategy?: string | null,
+  theme?: string | null,
 ): Promise<MovAveSpreadCodesResponse> {
   const secType = normalizeSecType(rawSecType);
+  const sectorFilter = (sector ?? "").trim();
+  const industryFilter = (industry ?? "").trim();
+  const strategyFilter = (strategy ?? "").trim();
+  const themeFilter = (theme ?? "").trim();
+  const hasClassFilter = !!(sectorFilter || industryFilter || strategyFilter || themeFilter);
+
   const rows = await queryRows<DbCodeRow>(buildCodesSql(secType), [secType]);
-  const codes: MovAveSpreadCodeRow[] = rows.map((r) => {
+
+  // When a classification filter is active, fetch the meta rows (same query as
+  // listMovAveSpreadThemes) and build a code → classification map so
+  // matchesClassification() can decide which codes to include. Industry and
+  // strategy filters are mutually exclusive (handled by matchesClassification).
+  let classMap: Map<string, DbMaSpreadMetaRow> | null = null;
+  if (hasClassFilter) {
+    const metaType = MA_SPREAD_META_TYPE[secType];
+    const metaRows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL, [secType, metaType]);
+    classMap = new Map<string, DbMaSpreadMetaRow>();
+    for (const m of metaRows) {
+      const code = stripExchangeSuffix(m.code);
+      if (!code) continue;
+      classMap.set(code, m);
+    }
+  }
+
+  const codes: MovAveSpreadCodeRow[] = [];
+  for (const r of rows) {
+    const code = stripped(r.code);
+    if (classMap) {
+      const meta = classMap.get(code);
+      if (!meta || !matchesClassification(meta, sectorFilter, industryFilter, strategyFilter, themeFilter)) {
+        continue;
+      }
+    }
     // Build the latest_gaps array from the 9 wide gap columns.
     const latestGaps: MovAveSpreadLatestGap[] = PAIR_ORDER.map(
       ([maShort, maLong, gapCol]) => ({
@@ -324,8 +372,8 @@ export async function listMovAveSpreadCodes(
         gap_value: toNum(r[gapCol as keyof DbCodeRow]),
       }),
     );
-    return {
-      code: stripped(r.code),
+    codes.push({
+      code,
       name: r.name ?? "",
       first_date: formatDate(r.first_date),
       last_date: formatDate(r.last_date),
@@ -334,8 +382,8 @@ export async function listMovAveSpreadCodes(
       max_gain: toNum(r.max_gain),
       max_loss: toNum(r.max_loss),
       max_spread: toNum(r.max_spread),
-    };
-  });
+    });
+  }
   return { codes };
 }
 
@@ -367,8 +415,14 @@ function buildChartSql(secType: MaSpreadSecType): string {
       d.price_slope, d.ma5_slope, d.ma20_slope, d.ma60_slope, d.ma120_slope, d.ma255_slope,
       d.price_curvature, d.ma5_curvature, d.ma20_curvature, d.ma60_curvature,
       d.ma120_curvature, d.ma255_curvature,
-      d.std_5days, d.std_20days, d.std_60days, d.std_120days, d.std_255days
+      d.std_5days, d.std_20days, d.std_60days, d.std_120days, d.std_255days,
+      rsi.date_of_last_extreme,
+      rsi.gap_since_last_extreme,
+      rsi.days_since_last_extreme,
+      rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days
     ${src.chartFromClause}
+    LEFT JOIN analysis.mov_ave_rsi rsi
+      ON rsi.sec_type = d.sec_type AND rsi.code = d.code AND rsi.date = d.date
     WHERE d.sec_type = $2
       AND REGEXP_REPLACE(d.code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
     ORDER BY d.date ASC
@@ -447,6 +501,19 @@ export async function getMovAveSpreadChart(
     const high = toNum(r.high);
     const low = toNum(r.low);
     const tradingAmount = toNum(r.trading_amount);
+    // Last-extreme fields (from analysis.mov_ave_rsi) — shared across all 9
+    // pairs for a given date. date_of_last_extreme is a DATE column.
+    const dateOfLastExtreme = r.date_of_last_extreme != null
+      ? formatDate(r.date_of_last_extreme)
+      : null;
+    const gapSinceLastExtreme = toNum(r.gap_since_last_extreme);
+    const daysSinceLastExtreme = toNum(r.days_since_last_extreme);
+    // Wilder RSI (6/10/14/20 days) — shared across all 9 pairs for a given
+    // date (describes the price curve, not a specific MA pair).
+    const rsi6 = toNum(r.rsi_6days);
+    const rsi10 = toNum(r.rsi_10days);
+    const rsi14 = toNum(r.rsi_14days);
+    const rsi20 = toNum(r.rsi_20days);
     for (const [maShort, maLong, gapCol] of PAIR_ORDER) {
       const series = byPair.get(`${maShort}/${maLong}`);
       if (!series) continue;
@@ -471,6 +538,13 @@ export async function getMovAveSpreadChart(
         high,
         low,
         trading_amount: tradingAmount,
+        date_of_last_extreme: dateOfLastExtreme,
+        gap_since_last_extreme: gapSinceLastExtreme,
+        days_since_last_extreme: daysSinceLastExtreme,
+        rsi_6days: rsi6,
+        rsi_10days: rsi10,
+        rsi_14days: rsi14,
+        rsi_20days: rsi20,
       };
       series.rows.push(row);
     }
@@ -525,31 +599,44 @@ interface DbMaSpreadMetaRow extends QueryResultRow {
   industry_id: string;
   industry_label: string;
   industry_slug: string;
+  /** When TRUE, sector_id/industry_id hold INDUSTRY classification (industry-
+   *  primary row). When FALSE, they hold STRATEGY classification (strategy-
+   *  primary row). Used by the parallel strategy/theme selector. */
+  is_industry_not_strategy: boolean;
 }
+
+/** Meta SQL shared by listMovAveSpreadThemes() and
+ *  listMovAveSpreadStrategyThemes(). Returns one row per code in
+ *  analysis.mov_ave_spreads_detail (filtered by sec_type) with its
+ *  precomputed L1/L2 classification from stats.sec_classification.
+ *  is_industry_not_strategy distinguishes industry-primary (TRUE) from
+ *  strategy-primary (FALSE) rows. */
+const MA_SPREAD_META_SQL = `
+  WITH spread_codes AS (
+    SELECT DISTINCT code
+    FROM analysis.mov_ave_spreads_detail
+    WHERE sec_type = $1::text
+  )
+  SELECT
+    sc.code,
+    COALESCE(m.name, '')             AS name,
+    COALESCE(m.sector_id,       'OTHER')  AS sector_id,
+    COALESCE(m.sector_label,    '其他')   AS sector_label,
+    COALESCE(m.industry_id,     'OTHER')  AS industry_id,
+    COALESCE(m.industry_label,  '未分类') AS industry_label,
+    COALESCE(m.industry_slug,   'other')  AS industry_slug,
+    COALESCE(m.is_industry_not_strategy, TRUE) AS is_industry_not_strategy
+  FROM spread_codes sc
+  LEFT JOIN stats.sec_classification m ON m.code = sc.code AND m.type = $2::text
+  WHERE COALESCE(m.is_active, TRUE) = TRUE
+`;
 
 export async function listMovAveSpreadThemes(
   rawSecType: string | undefined | null,
 ): Promise<SectorNode[]> {
   const secType = normalizeSecType(rawSecType);
   const metaType = MA_SPREAD_META_TYPE[secType];
-  const sql = `
-    WITH spread_codes AS (
-      SELECT DISTINCT code
-      FROM analysis.mov_ave_spreads_detail
-      WHERE sec_type = $1::text
-    )
-    SELECT
-      sc.code,
-      COALESCE(m.name, '')             AS name,
-      COALESCE(m.sector_id,       'OTHER')  AS sector_id,
-      COALESCE(m.sector_label,    '其他')   AS sector_label,
-      COALESCE(m.industry_id,     'OTHER')  AS industry_id,
-      COALESCE(m.industry_label,  '未分类') AS industry_label,
-      COALESCE(m.industry_slug,   'other')  AS industry_slug
-    FROM spread_codes sc
-    LEFT JOIN stats.sec_classification m ON m.code = sc.code AND m.type = $2::text
-  `;
-  const rows = await queryRows<DbMaSpreadMetaRow>(sql, [secType, metaType]);
+  const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL, [secType, metaType]);
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -557,6 +644,10 @@ export async function listMovAveSpreadThemes(
   }>();
 
   for (const r of rows) {
+    // LEFT column: only industry-primary securities. Strategy-primary rows
+    // (is_industry_not_strategy=FALSE) carry strategy/theme in
+    // sector_id/industry_id and belong in the RIGHT column only.
+    if (!r.is_industry_not_strategy) continue;
     // Strip exchange suffix so item codes match the codes returned by
     // listMovAveSpreadCodes (which also strips the suffix).
     const code = stripExchangeSuffix(r.code);
@@ -601,4 +692,33 @@ export async function listMovAveSpreadThemes(
     return b.count - a.count;
   });
   return sectors;
+}
+
+// ----------------------------------------------------------------------------
+//  listMovAveSpreadStrategyThemes — parallel L1 strategy → L2 theme → items
+//  tree built from the same MA_SPREAD_META_SQL but using the strategy-primary
+//  rows (is_industry_not_strategy=FALSE). sector_id/industry_id on those rows
+//  carry the strategy/theme classification. Tree-building is delegated to the
+//  shared buildStrategyThemesFromRows helper to avoid duplicating the
+//  grouping/sorting logic.
+// ----------------------------------------------------------------------------
+export async function listMovAveSpreadStrategyThemes(
+  rawSecType: string | undefined | null,
+): Promise<StrategyNode[]> {
+  const secType = normalizeSecType(rawSecType);
+  const metaType = MA_SPREAD_META_TYPE[secType];
+  const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL, [secType, metaType]);
+
+  const mappedRows = rows.map((r) => ({
+    code: stripExchangeSuffix(r.code),
+    name: r.name,
+    sector_id: r.sector_id,
+    sector_label: r.sector_label,
+    industry_id: r.industry_id,
+    industry_label: r.industry_label,
+    industry_slug: r.industry_slug,
+    is_industry_not_strategy: r.is_industry_not_strategy,
+  }));
+
+  return buildStrategyThemesFromRows(mappedRows);
 }

@@ -456,7 +456,7 @@ def download_sse_dividends(
         # load_target_stocks lives in the archive module's __main__ namespace
         # — import lazily so the dividend module can be used without the
         # archive module's full import side-effects.
-        from utils.db_commons import get_db_connection
+        from _common.db_commons import get_db_connection
         from downloads.stock.sse.archive.__main__ import load_target_stocks
         db_conn = get_db_connection()
         try:

@@ -4,23 +4,26 @@ Builds the wide-format detail rows (one row per sec_type, code, date)
 with 9 gap columns + 12 slope/curvature columns + peaks_and_floors_date FK.
 
 Broken into smaller, cuDF-friendly steps:
-  - _compute_pf_date_mapping: merge_asof for nearest-preceding extreme
+  - _compute_pf_date_mapping: nearest-preceding extreme via sort + concat
+    + groupby.ffill (decomposition of merge_asof backward into cuDF-native
+    primitives — cuDF lacks merge_asof)
   - _assemble_detail_columns: vectorized gap + slope/curv + std assembly
   - _null_overflow_columns: NUMERIC(10,6) overflow guard
   - build_detail_rows: orchestrates the steps + sanitizes for DB insert
 
 GPU acceleration: when the cuDF router determines the GPU is worthwhile
-for the row count, the merge_asof in _compute_pf_date_mapping runs on
-cuDF (op_type='merge' — cuDF's hash merge_asof is ~13× faster than
-pandas on the 8M-row mov_ave_spread source). The CPU path (pandas
-Cython) is always available as a fallback.
+for the row count, the sort + concat + groupby.ffill + filter steps in
+_compute_pf_date_mapping run on cuDF. All four ops are cuDF-native
+(cuDF lacks pandas.merge_asof, so the merge_asof backward join is
+decomposed into the equivalent sort + concat + forward-fill pipeline).
+The CPU path (pandas) is always available as a fallback.
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
-from analyze._common._cuDF import should_use_gpu
+from _common.df_utils import should_use_gpu
 from analyze._common.sanitize import sanitize_for_db_insert
 from analyze.mov_ave_spread.helpers import gap_col, null_if_overflow
 
@@ -28,75 +31,110 @@ from analyze.mov_ave_spread.helpers import gap_col, null_if_overflow
 def _compute_pf_date_mapping(
     df: pd.DataFrame, pf_rows: list[dict] | None
 ) -> np.ndarray:
-    """Compute peaks_and_floors_date for each row via merge_asof.
+    """Compute peaks_and_floors_date for each detail row.
 
-    For each detail row, finds the nearest preceding extreme date
-    (largest extreme date <= detail.date) using pd.merge_asof with
-    direction="backward".
+    For each detail row, finds the largest peaks_and_floors date <= the
+    detail row's date (the "nearest preceding extreme") within the same
+    (sec_type, code) group.
 
     Returns an array of date objects (or None) aligned to df's rows.
 
+    Implementation — sort + concat + forward-fill decomposition:
+      cuDF has no ``merge_asof``, so the backward asof-join is decomposed
+      into four cuDF-native primitives:
+
+        1. Build a "detail stub" frame: (sec_type, code, date, _orig_idx,
+           _kind=1). _kind=1 so detail rows sort AFTER pf rows on the
+           same date (the detail row on the extreme date itself should
+           map to that same extreme).
+        2. Build a "pf stub" frame: (sec_type, code, date=pf_date,
+           pf_date, _kind=0). _kind=0 so pf rows sort BEFORE detail rows
+           on the same date.
+        3. Concat the two stubs into one timeline per (sec_type, code).
+        4. Sort by (sec_type, code, date, _kind) — pf rows precede
+           detail rows on the same date so the forward-fill picks them up.
+        5. Forward-fill pf_date within each (sec_type, code) group. After
+           this step, every detail row's pf_date is the largest extreme
+           date <= its own date (NULL for detail rows before the first
+           extreme in their group).
+        6. Filter back to detail rows, sort by _orig_idx to restore the
+           original df order, extract pf_date as python date objects.
+
+      This decomposition is semantically equivalent to
+      ``pd.merge_asof(df, pf_df, on="date", by=[...], direction="backward")``
+      and uses only ``concat``, ``sort_values``, ``groupby.ffill`` and
+      boolean indexing — all first-class cuDF operations.
+
     GPU acceleration: when the cuDF router determines the GPU is
-    worthwhile for the left DataFrame size (merge op_type — cuDF's
-    sorted merge_asof is ~13× faster than pandas on 8M+ rows), the
-    merge runs on cuDF. The left DataFrame (df_keyed, 8M+ rows) is the
-    dominant input; the right (pf_df, typically <50K rows) is small.
-    The router checks the larger input. The H2D/D2H transfer is
-    amortized over the full merge.
+    worthwhile for the combined frame size (the dominant input is
+    df_keyed, ~df rows; pf_df is typically <50K rows), the concat +
+    sort + ffill + filter steps run on cuDF. Only the minimal column
+    subset (sec_type, code, date, _orig_idx, _kind, pf_date) is
+    transferred to VRAM. The H2D/D2H transfer is amortized over the
+    full pipeline.
     """
     if not pf_rows or len(pf_rows) == 0:
         return np.array([None] * len(df), dtype=object)
 
+    # Step 1: detail stub. _kind=1 so detail sorts AFTER pf on same date.
+    df_keyed = df[["sec_type", "code", "date"]].copy()
+    df_keyed["_orig_idx"] = np.arange(len(df_keyed))
+    df_keyed["date"] = pd.to_datetime(df_keyed["date"])
+    df_keyed["_kind"] = 1
+
+    # Step 2: peaks_and_floors stub. _kind=0 so pf sorts BEFORE detail
+    # on same date (the detail row on the extreme date itself maps to
+    # that same extreme — forward-fill picks up the pf row first).
     pf_df = pd.DataFrame(pf_rows)[["sec_type", "code", "date"]].copy()
     pf_df = pf_df.drop_duplicates(subset=["sec_type", "code", "date"])
     pf_df["date"] = pd.to_datetime(pf_df["date"])
     pf_df["pf_date"] = pf_df["date"]
+    pf_df["_kind"] = 0
 
-    df_keyed = df[["sec_type", "code", "date"]].copy()
-    df_keyed["_orig_idx"] = np.arange(len(df_keyed))
-    df_keyed["date"] = pd.to_datetime(df_keyed["date"])
-
-    # merge_asof requires the on-key to be globally monotonic even when
-    # `by` is used. Sort by date (with sec_type/code as tiebreakers).
-    pf_df = pf_df.sort_values(["date", "sec_type", "code"]).reset_index(drop=True)
-    df_keyed = df_keyed.sort_values(["date", "sec_type", "code"])
-
-    # GPU path: cuDF merge_asof. The left frame (df_keyed) is the
-    # dominant input — the router checks its row count against the
-    # merge breakeven (~520K rows conservative).
+    # Decision is based on df_keyed — the dominant input. The combined
+    # frame is only marginally larger (pf_df is tiny relative to df),
+    # so df_keyed's row count is an accurate size estimate for the
+    # VRAM check.
     if should_use_gpu(df_keyed, op_type="merge"):
         import cudf  # type: ignore[import-untyped]
-        # cuDF merge_asof requires both frames as cuDF DataFrames with
-        # datetime64[ns] on-key. Both are already pd.to_datetime'd above.
-        # Transfer only the needed columns: sec_type, code, date, pf_date
-        # (right) / _orig_idx (left). This avoids transferring the full
-        # 30+ column source DataFrame.
-        g_left = cudf.from_pandas(
-            df_keyed[["sec_type", "code", "date", "_orig_idx"]]
+        # Step 3: concat both stubs into one timeline per
+        # (sec_type, code). Transfer only the minimal column subset.
+        g_detail = cudf.from_pandas(df_keyed)
+        g_pf = cudf.from_pandas(pf_df)
+        combined = cudf.concat([g_detail, g_pf], ignore_index=True)
+        # Step 4: sort — (sec_type, code, date, _kind). pf (_kind=0)
+        # precedes detail (_kind=1) on the same date.
+        combined = combined.sort_values(
+            ["sec_type", "code", "date", "_kind"]
         )
-        g_right = cudf.from_pandas(
-            pf_df[["sec_type", "code", "date", "pf_date"]]
-        )
-        # cuDF requires both frames sorted by the on-key for merge_asof.
-        g_left = g_left.sort_values("date")
-        g_right = g_right.sort_values("date")
-        g_merged = cudf.merge_asof(
-            g_left, g_right,
-            on="date", by=["sec_type", "code"], direction="backward",
-        )
-        merged = g_merged.to_pandas()
+        # Step 5: forward-fill pf_date within each (sec_type, code)
+        # group. After this, every detail row's pf_date is the largest
+        # extreme date <= its own date (NaN for rows before the first
+        # extreme in their group).
+        combined["pf_date"] = combined.groupby(
+            ["sec_type", "code"], sort=False
+        )["pf_date"].ffill()
+        # Step 6: filter back to detail rows + restore original order.
+        result = combined[combined["_kind"] == 1]
+        result = result.sort_values("_orig_idx").reset_index(drop=True)
+        merged = result.to_pandas()
     else:
-        # CPU path (pandas Cython).
-        merged = pd.merge_asof(
-            df_keyed, pf_df,
-            on="date", by=["sec_type", "code"], direction="backward",
+        # CPU path (pandas).
+        combined = pd.concat([df_keyed, pf_df], ignore_index=True)
+        combined = combined.sort_values(
+            ["sec_type", "code", "date", "_kind"]
         )
+        combined["pf_date"] = combined.groupby(
+            ["sec_type", "code"], sort=False
+        )["pf_date"].ffill()
+        result = combined[combined["_kind"] == 1]
+        merged = result.sort_values("_orig_idx").reset_index(drop=True)
 
-    merged = merged.sort_values("_orig_idx").reset_index(drop=True)
     pf_dates = merged["pf_date"].dt.date.values
-    # merge_asof returns NaT for unmatched rows (no preceding extreme).
-    # Convert NaT to None so asyncpg encodes them as SQL NULL (NaT is not
-    # a valid datetime.date and would raise on encode).
+    # Forward-fill leaves NaN/NaT for rows with no preceding extreme
+    # (detail rows before the first peaks_and_floors row in their group).
+    # Convert NaT to None so asyncpg encodes them as SQL NULL (NaT is
+    # not a valid datetime.date and would raise on encode).
     na_mask = pd.isna(pf_dates)
     if na_mask.any():
         pf_dates = pf_dates.copy()

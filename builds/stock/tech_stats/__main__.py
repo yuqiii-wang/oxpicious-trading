@@ -33,7 +33,7 @@ import os
 import sys
 import time
 
-# Ensure project root is on sys.path so ``utils`` is importable when run
+# Ensure project root is on sys.path so ``_common`` is importable when run
 # directly via ``python -m builds.stock.tech_stats`` or as a script.
 sys.path.insert(
     0,
@@ -42,7 +42,7 @@ sys.path.insert(
     ),
 )
 
-from utils.build_commons import (  # noqa: E402
+from _common.build_commons import (  # noqa: E402
     setup_utf8_stdout,
     get_db_or_exit,
     bulk_upsert_async,
@@ -52,6 +52,7 @@ from utils.build_commons import (  # noqa: E402
     print_wall_time,
     add_force_arg,
 )
+from _common.df_utils import compute_moving_averages  # noqa: E402
 
 setup_utf8_stdout()
 
@@ -99,21 +100,16 @@ async def _load_close_history(conn, codes: list[str]) -> pd.DataFrame:
 def _compute_mas(df: pd.DataFrame) -> pd.DataFrame:
     """Compute ma5 / ma20 / ma60 / ma120 / ma255 + ma5_ratio per code.
 
-    Uses rolling(window=W, min_periods=1).mean() so the first W-1 rows of
-    each code get a partial MA (matching the index/etf build convention).
+    Delegates to the shared ``compute_moving_averages`` helper which
+    uses cuDF when the data volume is above the GPU breakeven threshold
+    and pandas otherwise.
     """
-    if df.empty:
-        for col in ("ma5", "ma20", "ma60", "ma120", "ma255", "ma5_ratio"):
-            df[col] = pd.Series(dtype="float64")
-        return df
-    g = df.groupby("code", sort=False)["close"]
-    df["ma5"] = g.transform(lambda x: x.rolling(window=5, min_periods=1).mean()).round(6)
-    df["ma20"] = g.transform(lambda x: x.rolling(window=20, min_periods=1).mean()).round(6)
-    df["ma60"] = g.transform(lambda x: x.rolling(window=60, min_periods=1).mean()).round(6)
-    df["ma120"] = g.transform(lambda x: x.rolling(window=120, min_periods=1).mean()).round(6)
-    df["ma255"] = g.transform(lambda x: x.rolling(window=255, min_periods=1).mean()).round(6)
-    df["ma5_ratio"] = ((df["close"] / df["ma5"]) - 1.0).round(6)
-    return df
+    return compute_moving_averages(
+        df,
+        group_key="code",
+        value_col="close",
+        windows=[5, 20, 60, 120, 255],
+    )
 
 
 async def main() -> None:

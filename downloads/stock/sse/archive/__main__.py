@@ -120,7 +120,7 @@ from downloads.stock.sse._common.list_endpoint import (
     _parse_jsonp,
     _write_rows,
 )
-from utils.db_commons import get_db_connection
+from _common.db_commons import get_db_connection
 
 
 # --- History (dayk) constants ----------------------------------------------

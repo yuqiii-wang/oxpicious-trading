@@ -12,8 +12,13 @@ Pipeline
   4. Compute 9 wide gap columns + 12 slope/curvature columns per row
      (filtered to target_dates in incremental mode).
   5. Upsert detail.
-  6. Compute + upsert large_swings (rebased-to-100 MA3 slope + swing flags).
-  7. Upsert analysis_identity.
+  6. Upsert analysis_identity.
+  7. INTERNAL STEP: compute Wilder RSI (6/10/14/20d) + price gaps (2/3d)
+     from the SAME source price data already loaded in Step 1 ->
+     analysis.mov_ave_rsi (see rsi.py). Reuses the same DB connection +
+     source DataFrame. This step used to be a standalone
+     analyze.mov_ave_rsi package; it is now an internal step because it
+     shares the same source price data and active-universe pre-filter.
 
 Default (incremental) mode:
   Only dates present in source identity tables (stats.etf_identity +
@@ -29,7 +34,7 @@ Default (incremental) mode:
   sec_type A already had it.
 
 --force mode:
-  Truncate peaks_and_floors + detail + large_swings, then recompute and
+  Truncate peaks_and_floors + detail, then recompute and
   insert all rows for the active universe.
 
 --sec-type mode:
@@ -43,7 +48,7 @@ import os
 import sys
 import time
 
-# Ensure project root is on sys.path so ``utils`` is importable when run
+# Ensure project root is on sys.path so ``_common`` is importable when run
 # directly via ``python -m analyze.mov_ave_spread`` or as a script.
 sys.path.insert(
     0,
@@ -52,7 +57,7 @@ sys.path.insert(
     ),
 )
 
-from utils.build_commons import (  # noqa: E402
+from _common.build_commons import (  # noqa: E402
     setup_utf8_stdout,
     get_db_connection_async,
     get_db_pool_async,
@@ -76,7 +81,6 @@ from analyze.mov_ave_spread.config import (  # noqa: E402
     ANALYSIS_NAME,
     DETAIL_TABLE,
     PEAKS_AND_FLOORS_TABLE,
-    LARGE_SWINGS_TABLE,
     DESCRIPTION,
     PAIRS,
     SEC_TYPES,
@@ -87,9 +91,7 @@ from analyze.mov_ave_spread.compute import build_detail_rows  # noqa: E402
 from analyze.mov_ave_spread.peaks_and_floors import (  # noqa: E402
     compute_peaks_and_floors,
 )
-from analyze.mov_ave_spread.large_swings import (  # noqa: E402
-    compute_large_swings,
-)
+from analyze.mov_ave_spread.rsi import run_rsi  # noqa: E402
 
 
 async def _filter_per_sec_type_async(conn, table, rows):
@@ -126,9 +128,18 @@ async def main() -> None:
         "--sec-type", choices=("etf", "index", "stock"), default=None,
         help="Process only this sec_type (for testing). Default: all.",
     )
+    ap.add_argument(
+        "--max-concurrent", type=int, default=20,
+        help="Maximum parallel upsert chunks. Each chunk acquires one "
+             "Postgres backend connection from the pool, so this also "
+             "sets the pool's max_size. Local dev DB has "
+             "max_connections=100 with ~2 in use, so 20 is safe. "
+             "Reduce if you see 'too many clients' errors. Default: 20.",
+    )
     args = ap.parse_args()
 
     sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
+    max_concurrent = max(1, args.max_concurrent)
 
     t0 = time.time()
     print_build_header(
@@ -140,29 +151,28 @@ async def main() -> None:
     )
 
     conn = await get_db_connection_async()
-    # Pool for parallel upsert chunks. max_size=4 matches DEFAULT_MAX_CONCURRENT
-    # in batched_upsert_by_date. Each connection is a Postgres backend process,
-    # so keep small to avoid starving other clients.
-    pool = await get_db_pool_async(min_size=1, max_size=4)
+    # Pool for parallel upsert chunks. Each connection is a Postgres backend
+    # process; max_size matches --max-concurrent (default 20). Local dev DB
+    # has max_connections=100 with ~2 in use, so 20 leaves comfortable
+    # headroom. More concurrent chunks = faster upserts, but WAL flushing
+    # becomes the bottleneck past ~8-12 on a single SSD.
+    pool = await get_db_pool_async(min_size=1, max_size=max_concurrent)
     try:
         # ---- Step 0: determine target dates (per-sec_type) --------------
         if args.force:
-            print("\n[0/5] Force mode: truncating detail + peaks_and_floors "
-                  "+ large_swings tables...", flush=True)
+            print("\n[0/4] Force mode: truncating detail + peaks_and_floors "
+                  "tables...", flush=True)
             # TRUNCATE detail FIRST (it has FK to peaks_and_floors), then
-            # peaks_and_floors, then large_swings.
+            # peaks_and_floors.
             await truncate_table_async(conn, DETAIL_TABLE)
             await truncate_table_async(conn, PEAKS_AND_FLOORS_TABLE)
-            await truncate_table_async(conn, LARGE_SWINGS_TABLE)
             # target_dates_per_st is None in force mode → no incremental
             # filter applied to detail rows (full recompute).
             target_dates_per_st = None
             target_dates_union = None
-            ls_target_dates_per_st = None
-            ls_target_dates_union = None
             print("    -> truncated; will recompute all rows", flush=True)
         else:
-            print("\n[0/5] Detecting missing dates PER-sec_type "
+            print("\n[0/4] Detecting missing dates PER-sec_type "
                   "(etf_identity vs detail[etf], index_identity vs "
                   "detail[index], stock_identity vs detail[stock])...",
                   flush=True)
@@ -171,41 +181,24 @@ async def main() -> None:
             # missing for index/stock because the existing-date query
             # spans all sec_types.
             target_dates_per_st: dict = {}
-            ls_target_dates_per_st: dict = {}
             for st in sec_types:
                 src_tbl = SEC_TYPE_IDENTITY_TABLE[st]
                 td_st = await find_missing_analysis_dates(
                     conn, DETAIL_TABLE, [src_tbl], sec_type=st,
                 )
                 target_dates_per_st[st] = td_st
-                # Also check large_swings missing dates independently —
-                # the table may lag behind detail if it was added later.
-                ls_td_st = await find_missing_analysis_dates(
-                    conn, LARGE_SWINGS_TABLE, [src_tbl], sec_type=st,
-                )
-                ls_target_dates_per_st[st] = ls_td_st
-                print(f"    -> {st}: detail {len(td_st)} missing, "
-                      f"large_swings {len(ls_td_st)} missing dates",
+                print(f"    -> {st}: detail {len(td_st)} missing dates",
                       flush=True)
             # Union across sec_types — used to filter the concatenated
             # source DataFrame before computing detail rows. A date is
             # "to do" if ANY sec_type is missing it.
             target_dates_union = set()
-            ls_target_dates_union = set()
             for s in target_dates_per_st.values():
                 target_dates_union |= s
-            for s in ls_target_dates_per_st.values():
-                ls_target_dates_union |= s
-            # The fetch needs to cover the union of BOTH detail and
-            # large_swings missing dates — either table may need a date
-            # the other already has.
-            fetch_dates_union = target_dates_union | ls_target_dates_union
             print(f"    -> union across sec_types: "
-                  f"detail {len(target_dates_union)}, "
-                  f"large_swings {len(ls_target_dates_union)}, "
-                  f"combined {len(fetch_dates_union)} dates to (re)compute",
+                  f"{len(target_dates_union)} dates to (re)compute",
                   flush=True)
-            if not fetch_dates_union:
+            if not target_dates_union:
                 print("    -> DB is up to date; nothing to do.", flush=True)
                 print_wall_time(t0)
                 return
@@ -215,7 +208,7 @@ async def main() -> None:
         # detection for peaks_and_floors works correctly across month
         # boundaries. The target_dates filter is applied AFTER
         # peaks_and_floors computation (Step 3 below) for the detail rows.
-        print("\n[1/5] Fetching FULL per-(sec_type, code, date) price + MAs "
+        print("\n[1/4] Fetching FULL per-(sec_type, code, date) price + MAs "
               "from stats schema (needed for belt detection)...",
               flush=True)
         frames = []
@@ -234,7 +227,7 @@ async def main() -> None:
             return
 
         # ---- Step 2: compute + upsert peaks_and_floors -------------------
-        print("\n[2/5] Computing peaks_and_floors (per-extreme-date "
+        print("\n[2/4] Computing peaks_and_floors (per-extreme-date "
               "detection from full history)...", flush=True)
         pf_rows = compute_peaks_and_floors(df)
         print(f"    -> {len(pf_rows):,} peaks_and_floors rows "
@@ -271,11 +264,12 @@ async def main() -> None:
             key_columns=["sec_type", "code", "date"],
             label="peaks_and_floors",
             pool=pool,
+            max_concurrent=max_concurrent,
         )
         print(f"    -> upserted {n_pf:,} peaks_and_floors rows", flush=True)
 
         # ---- Step 3: build detail rows (filtered to target_dates) --------
-        print("\n[3/5] Computing 9 wide gap columns + 12 slope/curvature "
+        print("\n[3/4] Computing 9 wide gap columns + 12 slope/curvature "
               "columns per (sec_type, code, date)...", flush=True)
         detail_df = df
         if target_dates_union is not None and len(target_dates_union) > 0:
@@ -291,7 +285,7 @@ async def main() -> None:
         del detail_df
 
         # ---- Step 4: upsert detail ---------------------------------------
-        print(f"\n[4/5] Upserting {len(detail):,} detail rows into "
+        print(f"\n[4/4] Upserting {len(detail):,} detail rows into "
               f"{DETAIL_TABLE} (chunked by date to bound memory)...",
               flush=True)
 
@@ -316,41 +310,9 @@ async def main() -> None:
             key_columns=["sec_type", "code", "date"],
             label="detail",
             pool=pool,
+            max_concurrent=max_concurrent,
         )
         print(f"    -> upserted {n_detail:,} rows", flush=True)
-
-        # ---- Step 5: compute + upsert large_swings -----------------------
-        print("\n[5/5] Computing large_swings (rebased-to-100 MA3 slope + "
-              "swing/trend flags)...", flush=True)
-        ls_df = df
-        if ls_target_dates_union is not None and len(ls_target_dates_union) > 0:
-            n_before = len(ls_df)
-            ls_df = ls_df[
-                ls_df["date"].isin(ls_target_dates_union)
-            ].reset_index(drop=True)
-            print(f"    -> incremental filter: {len(ls_df):,} of "
-                  f"{n_before:,} rows are in ls_target_dates_union",
-                  flush=True)
-        large_swings = compute_large_swings(ls_df)
-        print(f"    -> {len(large_swings):,} large_swings rows", flush=True)
-
-        # Free the source DataFrame now that both detail and large_swings
-        # rows are built — the full history is no longer needed and
-        # holding it alongside the dict lists doubles peak memory.
-        del df, ls_df
-
-        # Pre-check: skip already-present dates, scoped per-sec_type.
-        large_swings = await _filter_per_sec_type_async(
-            conn, LARGE_SWINGS_TABLE, large_swings,
-        )
-
-        n_ls = await batched_upsert_by_date(
-            conn, LARGE_SWINGS_TABLE, large_swings,
-            key_columns=["sec_type", "code", "date"],
-            label="large_swings",
-            pool=pool,
-        )
-        print(f"    -> upserted {n_ls:,} large_swings rows", flush=True)
 
         # ---- Upsert analysis_identity ------------------------------------
         print(f"    -> Upserting analysis.analysis_identity registry...",
@@ -361,6 +323,20 @@ async def main() -> None:
             detail_name="mov_ave_spreads_detail",
             description=DESCRIPTION,
         )
+
+        # ---- Step 5: INTERNAL rsi step -----------------------------------
+        # Compute Wilder RSI (6/10/14/20d) + short-term price gaps (2/3d)
+        # from the SAME source price data already loaded in Step 1 ->
+        # analysis.mov_ave_rsi. Reuses the same DB connection + pool.
+        # See rsi.py for the full pipeline. The source DataFrame ``df``
+        # (full per-code history) is passed so the RSI step can reuse the
+        # price column without a second DB fetch.
+        await run_rsi(conn, df, force=args.force, pool=pool,
+                      max_concurrent=max_concurrent)
+
+        # Free the source DataFrame now that detail + RSI rows are built —
+        # the full history is no longer needed.
+        del df
 
         print_wall_time(t0)
     finally:

@@ -97,8 +97,8 @@ from downloads._common.core import (
     is_trading_day,
     setup_logger,
 )
-from utils.db_commons import get_db_connection
-from utils.study_and_select_stocks import (
+from _common.db_commons import get_db_connection
+from _common.study_and_select_stocks import (
     load_target_stocks,
     load_yesterday_top_traded_stocks,
 )

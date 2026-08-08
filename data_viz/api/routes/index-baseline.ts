@@ -6,6 +6,7 @@ import {
   listIndices,
   getIndexIntraday5min,
   listIndexThemes,
+  listStrategyThemes,
   getIndicesCombined,
 } from "../services/index-baseline.service.js";
 
@@ -21,7 +22,8 @@ router.get("/list", async (_req: Request, res: Response) => {
   }
 });
 
-/** GET /api/index-baseline/themes — two-level L1 sector → L2 industry tree */
+/** GET /api/index-baseline/themes — two-level L1 sector → L2 industry tree
+ *  (LEFT column: industry-primary indices only). */
 router.get("/themes", async (_req: Request, res: Response) => {
   try {
     res.json(await listIndexThemes());
@@ -31,13 +33,28 @@ router.get("/themes", async (_req: Request, res: Response) => {
   }
 });
 
-/** GET /api/index-baseline/combined?sector=&industry=&page=&page_size=
- *  Paginated indices filtered by L1 sector + L2 industry. */
+/** GET /api/index-baseline/strategy-themes — parallel L1 strategy → L2 theme
+ *  tree (RIGHT column: strategy-primary indices only). */
+router.get("/strategy-themes", async (_req: Request, res: Response) => {
+  try {
+    res.json(await listStrategyThemes());
+  } catch (err) {
+    console.error("[index-baseline/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/index-baseline/combined?sector=&industry=&strategy=&theme=&page=&page_size=
+ *  Paginated indices filtered by L1 sector + L2 industry (LEFT column) OR
+ *  L1 strategy + L2 theme (RIGHT column). When `strategy` is set (and
+ *  `sector` is not), strategy/theme filtering applies. */
 router.get("/combined", async (req: Request, res: Response) => {
   try {
     const query = {
       sector: typeof req.query.sector === "string" ? req.query.sector : undefined,
       industry: typeof req.query.industry === "string" ? req.query.industry : undefined,
+      strategy: typeof req.query.strategy === "string" ? req.query.strategy : undefined,
+      theme: typeof req.query.theme === "string" ? req.query.theme : undefined,
       code: typeof req.query.code === "string" ? req.query.code : undefined,
       exchange: typeof req.query.exchange === "string" ? req.query.exchange : undefined,
       start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,

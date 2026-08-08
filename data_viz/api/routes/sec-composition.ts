@@ -2,7 +2,7 @@
  * Sec Composition API routes.
  */
 import { Router, type Request, type Response } from "express";
-import { getSecComposition, getLinkedEtfs } from "../services/sec-composition.service.js";
+import { getSecComposition, getLinkedEtfs, getSimilarIndices } from "../services/sec-composition.service.js";
 
 const router = Router();
 
@@ -34,6 +34,23 @@ router.get("/linked-etfs", async (req: Request, res: Response) => {
     res.json(await getLinkedEtfs(code));
   } catch (err) {
     console.error("[sec-composition/linked-etfs] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/sec-composition/similar-indices?code=000300
+ *  Returns the top-3 similar indices by mutual shared composition weight for
+ *  the given index, from stats.sec_similars (sec_type='index', latest snapshot <= today). */
+router.get("/similar-indices", async (req: Request, res: Response) => {
+  try {
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getSimilarIndices(code));
+  } catch (err) {
+    console.error("[sec-composition/similar-indices] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

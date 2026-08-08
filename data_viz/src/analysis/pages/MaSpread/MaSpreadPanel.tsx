@@ -23,7 +23,7 @@
  *
  * Fetches its own chart data on mount via fetchMovAveSpreadChart(code, secType).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -31,11 +31,11 @@ import {
   CircularProgress,
   MenuItem,
   Select,
-  Slider,
   Stack,
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
+import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { UP_COLOR } from "@/theme/chart-palette";
@@ -91,6 +91,12 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // from the first valid close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
+  // Hovered date index (into the filtered/sliced rows of the selected pair).
+  // Drives the single last-extreme triangle marker shown on hover. Reset
+  // whenever the data window changes (range / code / secType) since indices
+  // shift across slices.
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+
   // Fetch chart data on mount and whenever the code/sec_type changes.
   useEffect(() => {
     let cancelled = false;
@@ -103,6 +109,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
         const m = Math.max(0, (d.pairs[0]?.rows.length ?? 1) - 1);
         setRange([0, m]);
         setSelectedPairIdx(0);
+        setHoveredIdx(null);
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -115,6 +122,40 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
       cancelled = true;
     };
   }, [code, secType]);
+
+  // Clear the hover marker when the date-range slider moves (the hovered index
+  // is relative to the sliced window and may no longer be valid).
+  useEffect(() => {
+    setHoveredIdx(null);
+  }, [range]);
+
+  // Track the hovered date index via ECharts' `updateAxisPointer` event so we
+  // can draw a single last-extreme triangle at the hovered date's
+  // date_of_last_extreme. Fires only when the axis pointer snaps to a new
+  // category (date), not on every pixel move — low overhead.
+  const handleAxisPointer = useCallback((params: unknown) => {
+    const p = params as {
+      axesInfo?: Array<{
+        seriesDataIndices?: Array<{ dataIndex: number }>;
+      }>;
+    };
+    const axes = p?.axesInfo;
+    if (!axes || axes.length === 0) {
+      setHoveredIdx(null);
+      return;
+    }
+    const indices = axes[0]?.seriesDataIndices;
+    if (!indices || indices.length === 0) {
+      setHoveredIdx(null);
+      return;
+    }
+    setHoveredIdx(indices[0].dataIndex);
+  }, []);
+
+  const chartEvents = useMemo(
+    () => ({ updateAxisPointer: handleAxisPointer }),
+    [handleAxisPointer],
+  );
 
   // Slice each pair's rows to the selected date window.
   const filteredPairs = useMemo(() => {
@@ -331,9 +372,11 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
             bollingerK,
             tradingAmtMode,
             valleyLows: chartData?.valley_lows,
+            hoveredIdx,
             ohlcMode,
           })}
           height={420}
+          onEvents={chartEvents}
         />
       )}
 
@@ -370,27 +413,13 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
 
       {/* Date-range slider — moved to the bottom of the plot. Drives all
           9 pairs (they share one date axis). */}
-      {!loading && !error && firstPairRows.length > 0 && maxIdx > 0 && (
-        <Box sx={{ px: 1, py: 0.5, mt: 0.5 }}>
-          <Slider
-            value={range}
-            onChange={(_, v) => setRange(v as [number, number])}
-            min={0}
-            max={maxIdx}
-            size="small"
-            valueLabelDisplay="auto"
-            valueLabelFormat={(idx) => firstPairRows[idx]?.date ?? ""}
-            sx={{ mt: 0.5, "& .MuiSlider-valueLabel": { fontSize: "0.7rem" } }}
-          />
-          <Stack direction="row" justifyContent="space-between" sx={{ mt: -0.5 }}>
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-              {firstPairRows[range[0]]?.date ?? "—"}
-            </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem" }}>
-              {firstPairRows[range[1]]?.date ?? "—"}
-            </Typography>
-          </Stack>
-        </Box>
+      {!loading && !error && (
+        <DateRangeSlider
+          value={range}
+          onChange={setRange}
+          max={maxIdx}
+          dates={firstPairRows.map((r) => r.date)}
+        />
       )}
     </ChartCard>
   );

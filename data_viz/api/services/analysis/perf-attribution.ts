@@ -6,6 +6,7 @@ import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix } from "../../lib/classify-etf.js";
 import { stripped } from "./_shared.js";
+import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
 import type {
   PerfAttrSecType,
   PerfAttrCodeRow,
@@ -15,6 +16,7 @@ import type {
   PerfAttrChartResponse,
   SectorNode,
   IndustryNode,
+  StrategyNode,
 } from "../../../shared/types.js";
 
 // ============================================================================
@@ -40,8 +42,17 @@ interface DbPerfAttrCodeRow extends QueryResultRow {
 
 export async function listPerfAttrCodes(
   secType: PerfAttrSecType,
+  sector?: string | null,
+  industry?: string | null,
+  strategy?: string | null,
+  theme?: string | null,
 ): Promise<PerfAttrCodesResponse> {
   const nameTable = PERF_ATTR_NAME_TABLE[secType] ?? PERF_ATTR_NAME_TABLE.etf;
+  const sectorFilter = (sector ?? "").trim();
+  const industryFilter = (industry ?? "").trim();
+  const strategyFilter = (strategy ?? "").trim();
+  const themeFilter = (theme ?? "").trim();
+  const hasClassFilter = !!(sectorFilter || industryFilter || strategyFilter || themeFilter);
   const sql = `
     WITH latest_name AS (
       SELECT DISTINCT ON (code) code, name
@@ -77,14 +88,42 @@ export async function listPerfAttrCodes(
     ORDER BY cs.n_dates DESC NULLS LAST, cs.code
   `;
   const rows = await queryRows<DbPerfAttrCodeRow>(sql, [secType]);
-  const codes: PerfAttrCodeRow[] = rows.map((r) => ({
-    code: stripped(r.code),
-    name: r.name ?? "",
-    first_date: formatDate(r.first_date),
-    last_date: formatDate(r.last_date),
-    n_dates: Number(r.n_dates) || 0,
-    benchmarks: Array.isArray(r.benchmarks) ? r.benchmarks : [],
-  }));
+
+  // When a classification filter is active, fetch the meta rows (same query as
+  // listPerfAttrThemes) and build a code → classification map so
+  // matchesClassification() can decide which codes to include. Industry and
+  // strategy filters are mutually exclusive (handled by matchesClassification).
+  let classMap: Map<string, DbPerfAttrMetaRow> | null = null;
+  if (hasClassFilter) {
+    const metaTable = PERF_ATTR_META_TABLE[secType] ?? PERF_ATTR_META_TABLE.etf;
+    const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
+    const metaRows = await queryRows<DbPerfAttrMetaRow>(buildPerfAttrMetaSql(metaTable), [secType, metaType]);
+    classMap = new Map<string, DbPerfAttrMetaRow>();
+    for (const m of metaRows) {
+      const code = stripExchangeSuffix(m.code);
+      if (!code) continue;
+      classMap.set(code, m);
+    }
+  }
+
+  const codes: PerfAttrCodeRow[] = [];
+  for (const r of rows) {
+    const code = stripped(r.code);
+    if (classMap) {
+      const meta = classMap.get(code);
+      if (!meta || !matchesClassification(meta, sectorFilter, industryFilter, strategyFilter, themeFilter)) {
+        continue;
+      }
+    }
+    codes.push({
+      code,
+      name: r.name ?? "",
+      first_date: formatDate(r.first_date),
+      last_date: formatDate(r.last_date),
+      n_dates: Number(r.n_dates) || 0,
+      benchmarks: Array.isArray(r.benchmarks) ? r.benchmarks : [],
+    });
+  }
   return { sec_type: secType, codes };
 }
 
@@ -258,18 +297,19 @@ interface DbPerfAttrMetaRow extends QueryResultRow {
   industry_id: string;
   industry_label: string;
   industry_slug: string;
+  /** When TRUE, sector_id/industry_id hold INDUSTRY classification (industry-
+   *  primary row). When FALSE, they hold STRATEGY classification (strategy-
+   *  primary row). Used by the parallel strategy/theme selector. */
+  is_industry_not_strategy: boolean;
 }
 
-export async function listPerfAttrThemes(
-  secType: PerfAttrSecType,
-): Promise<SectorNode[]> {
-  const metaTable = PERF_ATTR_META_TABLE[secType] ?? PERF_ATTR_META_TABLE.etf;
-  const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
-  // Select distinct codes that have perf-attr rows, then join with the
-  // classification meta table (sec_classification filtered by type) to recover
-  // sector/industry classification. Labels are denormalized onto
-  // sec_classification — no JOIN to a catalog table is needed.
-  const sql = `
+/** Meta SQL shared by listPerfAttrThemes() and listPerfAttrStrategyThemes().
+ *  Returns one row per code in analysis.sec_alloc_perf_attribution (filtered
+ *  by sec_type) with its precomputed L1/L2 classification from
+ *  stats.sec_classification. is_industry_not_strategy distinguishes
+ *  industry-primary (TRUE) from strategy-primary (FALSE) rows. */
+function buildPerfAttrMetaSql(metaTable: string): string {
+  return `
     WITH perf_codes AS (
       SELECT DISTINCT code
       FROM analysis.sec_alloc_perf_attribution
@@ -282,11 +322,19 @@ export async function listPerfAttrThemes(
       COALESCE(m.sector_label,    '其他')   AS sector_label,
       COALESCE(m.industry_id,     'OTHER')  AS industry_id,
       COALESCE(m.industry_label,  '未分类') AS industry_label,
-      COALESCE(m.industry_slug,   'other')  AS industry_slug
+      COALESCE(m.industry_slug,   'other')  AS industry_slug,
+      COALESCE(m.is_industry_not_strategy, TRUE) AS is_industry_not_strategy
     FROM perf_codes pc
     LEFT JOIN ${metaTable} m ON m.code = pc.code AND m.type = $2::text
   `;
-  const rows = await queryRows<DbPerfAttrMetaRow>(sql, [secType, metaType]);
+}
+
+export async function listPerfAttrThemes(
+  secType: PerfAttrSecType,
+): Promise<SectorNode[]> {
+  const metaTable = PERF_ATTR_META_TABLE[secType] ?? PERF_ATTR_META_TABLE.etf;
+  const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
+  const rows = await queryRows<DbPerfAttrMetaRow>(buildPerfAttrMetaSql(metaTable), [secType, metaType]);
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -294,6 +342,10 @@ export async function listPerfAttrThemes(
   }>();
 
   for (const r of rows) {
+    // LEFT column: only industry-primary securities. Strategy-primary rows
+    // (is_industry_not_strategy=FALSE) carry strategy/theme in
+    // sector_id/industry_id and belong in the RIGHT column only.
+    if (!r.is_industry_not_strategy) continue;
     // Strip exchange suffix so the items[] codes match the codes returned by
     // listPerfAttrCodes (which also strips the suffix).
     const code = stripExchangeSuffix(r.code);
@@ -338,6 +390,35 @@ export async function listPerfAttrThemes(
     return b.count - a.count;
   });
   return sectors;
+}
+
+// ----------------------------------------------------------------------------
+//  listPerfAttrStrategyThemes — parallel L1 strategy → L2 theme → items tree
+//  built from the same meta SQL but using the strategy-primary rows
+//  (is_industry_not_strategy=FALSE). sector_id/industry_id on those rows
+//  carry the strategy/theme classification. Tree-building is delegated to the
+//  shared buildStrategyThemesFromRows helper to avoid duplicating the
+//  grouping/sorting logic.
+// ----------------------------------------------------------------------------
+export async function listPerfAttrStrategyThemes(
+  secType: PerfAttrSecType,
+): Promise<StrategyNode[]> {
+  const metaTable = PERF_ATTR_META_TABLE[secType] ?? PERF_ATTR_META_TABLE.etf;
+  const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
+  const rows = await queryRows<DbPerfAttrMetaRow>(buildPerfAttrMetaSql(metaTable), [secType, metaType]);
+
+  const mappedRows = rows.map((r) => ({
+    code: stripExchangeSuffix(r.code),
+    name: r.name,
+    sector_id: r.sector_id,
+    sector_label: r.sector_label,
+    industry_id: r.industry_id,
+    industry_label: r.industry_label,
+    industry_slug: r.industry_slug,
+    is_industry_not_strategy: r.is_industry_not_strategy,
+  }));
+
+  return buildStrategyThemesFromRows(mappedRows);
 }
 
 // ----------------------------------------------------------------------------
@@ -425,7 +506,7 @@ export async function getPerfAttrChart(
     // ETFs tracking the benchmark index (parent_index_code = benchmark_code).
     queryRows<{ code: string; name: string | null }>(
       `SELECT code, name FROM stats.sec_classification
-       WHERE type = 'etf' AND parent_index_code = $1::text
+       WHERE type = 'etf' AND is_active = TRUE AND parent_index_code = $1::text
        ORDER BY name NULLS LAST, code`,
       [benchmarkCode],
     ),
@@ -433,7 +514,7 @@ export async function getPerfAttrChart(
     // subjects (sec_type='etf') this returns nothing — the subject IS the ETF.
     queryRows<{ code: string; name: string | null }>(
       `SELECT code, name FROM stats.sec_classification
-       WHERE type = 'etf' AND parent_index_code = $1::text
+       WHERE type = 'etf' AND is_active = TRUE AND parent_index_code = $1::text
        ORDER BY name NULLS LAST, code`,
       [target],
     ),

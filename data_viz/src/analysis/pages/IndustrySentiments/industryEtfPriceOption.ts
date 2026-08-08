@@ -28,14 +28,11 @@ import type { ThemeMode } from "@/store/filters";
 import type { IndustryEtfPriceSeriesResponse } from "../../../../shared/types";
 import {
   UP_COLOR,
-  MUTED_PALETTE,
-  PALETTE_HI,
-  MA5_COLOR,
-  MA20_COLOR,
   axisColors,
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
+import { buildItemGroupColors } from "@/theme/group-colors";
 import { fmtNum } from "@/lib/series";
 
 /** Which layer is prominent. The other layer is rendered lowkey (low opacity)
@@ -206,6 +203,16 @@ export function buildIndustryEtfPriceOption(
   // ---- Compute cascading rebased series ----
   const seriesData = computeCascadingRebased(data, allDates);
 
+  // ---- Per-ETF group colors (same industry → same major color) ----
+  // ETFs tracking member indices of the SAME industry share a major color;
+  // individual ETFs within an industry render as variant shades of that
+  // major. Built from `seriesData` (sorted by ETF first-date) so the color
+  // array aligns 1:1 with the ETF loops below.
+  const { scheme: etfGroupScheme, colors: etfColors } = buildItemGroupColors(
+    seriesData,
+    (s) => s.industry_id,
+  );
+
   // ---- Per-industry per-date TOTAL ETF trading amount + its MA ----
   // Computed PER INDUSTRY (sum across that industry's ETFs only), so when the
   // user selects multiple industries the chart shows one MA curve per
@@ -216,9 +223,8 @@ export function buildIndustryEtfPriceOption(
   // partial windows allowed, null days skipped.
   //
   // Industry order = first appearance in seriesData (which is sorted by ETF
-  // first-date). Each industry gets a distinct MA color cycled from
-  // MUTED_PALETTE, with the first industry using the MA-mode color
-  // (MA5_COLOR / MA20_COLOR) for at-a-glance mode recognition.
+  // first-date). Each industry's MA line uses that industry's MAJOR group
+  // color, so it visually pairs with that industry's ETF price lines.
   const industryOrder: string[] = [];
   const industryLabelById = new Map<string, string>();
   for (const s of seriesData) {
@@ -261,12 +267,11 @@ export function buildIndustryEtfPriceOption(
     }
     return line;
   });
-  // Per-industry MA color: first industry uses the MA-mode color, the rest
-  // cycle through MUTED_PALETTE.
-  const industryMaColors: string[] = industryOrder.map((_, ii) => {
-    if (ii === 0) return maMode === "ma20" ? MA20_COLOR : MA5_COLOR;
-    return MUTED_PALETTE[(ii - 1) % MUTED_PALETTE.length];
-  });
+  // Per-industry MA color: each industry's MA line uses that industry's
+  // MAJOR group color (matching its ETF price lines).
+  const industryMaColors: string[] = industryOrder.map((id) =>
+    etfGroupScheme.majorColor(id),
+  );
   // Also keep the cross-industry grand total for the tooltip header + the
   // per-ETF % share denominator.
   const totalAmts: Array<number | null> = new Array(totalN).fill(null);
@@ -317,7 +322,7 @@ export function buildIndustryEtfPriceOption(
   for (let i = 0; i < seriesData.length; i++) {
     const s = seriesData[i];
     const slicedAmts = s.rawAmts.slice(startIdx, endIdx + 1);
-    const color = i === 0 ? PALETTE_HI : MUTED_PALETTE[(i - 1) % MUTED_PALETTE.length];
+    const color = etfColors[i];
     echartsSeries.push({
       name: `${s.etf_name} (amt)`,
       type: "bar",
@@ -356,7 +361,7 @@ export function buildIndustryEtfPriceOption(
   for (let i = 0; i < seriesData.length; i++) {
     const s = seriesData[i];
     const slicedValues = s.values.slice(startIdx, endIdx + 1);
-    const color = i === 0 ? PALETTE_HI : MUTED_PALETTE[(i - 1) % MUTED_PALETTE.length];
+    const color = etfColors[i];
     const lw = i === 0 ? priceLineWidthMain : priceLineWidthOther;
 
     echartsSeries.push({

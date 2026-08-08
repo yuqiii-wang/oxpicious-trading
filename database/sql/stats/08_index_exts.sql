@@ -31,14 +31,8 @@ CREATE TABLE IF NOT EXISTS stats.index_exts (
 
     CONSTRAINT pk_index_exts PRIMARY KEY (date, code),
     CONSTRAINT fk_index_exts_date_code FOREIGN KEY (date, code) REFERENCES stats.index_identity(date, code)
-);
 
--- Add columns to existing tables (no-op if already present). CREATE TABLE IF
--- NOT EXISTS cannot add columns to an already-existing table, so the ALTERs
--- below migrate pre-existing installs.
-ALTER TABLE stats.index_exts ADD COLUMN IF NOT EXISTS total_etf_trading_amount     NUMERIC(18,4);
-ALTER TABLE stats.index_exts ADD COLUMN IF NOT EXISTS total_etf_trading_amount_ma5 NUMERIC(18,4);
-ALTER TABLE stats.index_exts ADD COLUMN IF NOT EXISTS stock_num         INTEGER;
+);
 
 COMMENT ON TABLE  stats.index_exts                  IS 'Index extension metrics: one row per (date, index_code). Stores etf_num (count of ETFs tracking this index), total_etf_trading_amount (Σ ETF turnover tracking this index, yuan), total_etf_trading_amount_ma5 (5-day MA of total_etf_trading_amount), and stock_num (count of constituent stocks from the latest composition snapshot ≤ date). Sourced via stats.sec_classification.parent_index_code = code (ETF metrics) and stats.sec_composition (stock_num).';
 COMMENT ON COLUMN stats.index_exts.etf_num          IS 'Number of ETFs tracking this index on this date. Source: COUNT(DISTINCT etf_liquidity_margin.code) where the ETF''s stats.sec_classification.parent_index_code = this index code. NULL when no ETF tracks the index (e.g. 000001 上证指数 has no direct ETF).';
