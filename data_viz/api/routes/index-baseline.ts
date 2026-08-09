@@ -24,9 +24,10 @@ router.get("/list", async (_req: Request, res: Response) => {
 
 /** GET /api/index-baseline/themes — two-level L1 sector → L2 industry tree
  *  (LEFT column: industry-primary indices only). */
-router.get("/themes", async (_req: Request, res: Response) => {
+router.get("/themes", async (req: Request, res: Response) => {
   try {
-    res.json(await listIndexThemes());
+    const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
+    res.json(await listIndexThemes(exchange));
   } catch (err) {
     console.error("[index-baseline/themes] error:", err);
     res.status(500).json({ error: String(err) });
@@ -35,9 +36,10 @@ router.get("/themes", async (_req: Request, res: Response) => {
 
 /** GET /api/index-baseline/strategy-themes — parallel L1 strategy → L2 theme
  *  tree (RIGHT column: strategy-primary indices only). */
-router.get("/strategy-themes", async (_req: Request, res: Response) => {
+router.get("/strategy-themes", async (req: Request, res: Response) => {
   try {
-    res.json(await listStrategyThemes());
+    const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
+    res.json(await listStrategyThemes(exchange));
   } catch (err) {
     console.error("[index-baseline/strategy-themes] error:", err);
     res.status(500).json({ error: String(err) });

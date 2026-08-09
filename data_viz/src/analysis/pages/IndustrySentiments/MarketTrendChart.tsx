@@ -18,10 +18,10 @@ import {
   Box,
   CircularProgress,
   Stack,
+  ToggleButton,
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
-import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import { fetchIndicesCombined } from "@/lib/api-client";
 import type { IndexBaselineRow } from "../../../../shared/types";
@@ -44,8 +44,9 @@ export function MarketTrendChart({ themeMode }: MarketTrendChartProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Shared date window — [startIdx, endIdx] indexes into allDates.
-  const [range, setRange] = useState<[number, number]>([0, 0]);
+  // Lowkey toggle: show/hide the embedded trading-amount stacked bars.
+  // Default ON to preserve the prior combined-view behavior.
+  const [showAmt, setShowAmt] = useState(true);
 
   // Fetch all four indices' OHLC series in parallel via the index-baseline
   // combined endpoint (one request per index, returns full OHLC + MAs +
@@ -93,47 +94,29 @@ export function MarketTrendChart({ themeMode }: MarketTrendChartProps) {
     return Array.from(set).sort();
   }, [datasets]);
 
-  useEffect(() => {
-    setRange([0, Math.max(0, allDates.length - 1)]);
-  }, [allDates]);
-
-  const maxIdx = Math.max(0, allDates.length - 1);
-
-  // Window each index's rows to the shared date range.
-  const windowedDatasets = useMemo(() => {
-    if (allDates.length === 0) return [];
-    const loDate = allDates[range[0]];
-    const hiDate = allDates[range[1]];
-    return datasets.map((ds) => ({
-      ...ds,
-      rows: ds.rows.filter((r) => r.date >= loDate && r.date <= hiDate),
-    }));
-  }, [datasets, allDates, range]);
-
-  const windowedAllDates = useMemo(() => {
-    if (allDates.length === 0) return [];
-    return allDates.slice(range[0], range[1] + 1);
-  }, [allDates, range]);
-
-  // Combined overview chart option (close lines + embedded trading amount).
+  // Combined overview chart option (close lines + embedded trading amount
+  // when `showAmt` is ON). Passes the FULL allDates + datasets — the chart's
+  // in-chart dataZoom handles viewport control.
   const trendOption = useMemo(
     () =>
-      windowedDatasets.length > 0 && windowedAllDates.length > 0
+      datasets.length > 0 && allDates.length > 0
         ? buildMarketTrendOption(
-            windowedAllDates,
-            windowedDatasets.map((d) => toIndexSeriesData(d.code, d.rows)),
+            allDates,
+            datasets.map((d) => toIndexSeriesData(d.code, d.rows)),
             MARKET_TREND_INDICES.map((m) => m.code),
             themeMode,
+            showAmt,
           )
         : null,
-    [windowedDatasets, windowedAllDates, themeMode],
+    [datasets, allDates, themeMode, showAmt],
   );
 
   const loadedCount = datasets.filter((d) => d.rows.length > 0).length;
 
   const subtitle = loading
     ? "Loading market indices…"
-    : `${loadedCount} of ${MARKET_TREND_INDICES.length} indices loaded · combined overview with embedded trading amount` +
+    : `${loadedCount} of ${MARKET_TREND_INDICES.length} indices loaded · combined overview` +
+      (showAmt ? " with embedded trading amount" : "") +
       (loadedCount < MARKET_TREND_INDICES.length
         ? ` · ${MARKET_TREND_INDICES.length - loadedCount} with no data (skipped)`
         : "");
@@ -158,23 +141,40 @@ export function MarketTrendChart({ themeMode }: MarketTrendChartProps) {
           {/* --- Combined close + embedded trading amount --- */}
           {trendOption && (
             <Box>
-              <Typography
-                variant="caption"
-                sx={{ fontSize: "0.72rem", fontWeight: 600, px: 0.5, display: "block", mb: -0.5 }}
+              <Box
+                sx={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 1,
+                  mb: -0.5,
+                  px: 0.5,
+                }}
               >
-                Close (rebased = 100) + Trading Amount (stacked)
-              </Typography>
+                <Typography
+                  variant="caption"
+                  sx={{ fontSize: "0.72rem", fontWeight: 600, display: "block" }}
+                >
+                  Close (rebased = 100){showAmt ? " + Trading Amount (stacked)" : ""}
+                </Typography>
+                <ToggleButton
+                  size="small"
+                  value="showAmt"
+                  selected={showAmt}
+                  onClick={() => setShowAmt((v) => !v)}
+                  sx={{
+                    height: 20,
+                    px: 0.75,
+                    "& .MuiToggleButton-label": { fontSize: "0.7rem" },
+                    textTransform: "none",
+                  }}
+                >
+                  Trading Amt
+                </ToggleButton>
+              </Box>
               <EChart option={trendOption} height={300} />
             </Box>
           )}
-
-          {/* Shared date-range slider — windows the chart. */}
-          <DateRangeSlider
-            value={range}
-            onChange={setRange}
-            max={maxIdx}
-            dates={allDates}
-          />
         </Stack>
       )}
     </ChartCard>

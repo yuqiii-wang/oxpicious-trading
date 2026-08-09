@@ -29,7 +29,6 @@ import {
 } from "@mui/material";
 import * as echarts from "echarts";
 import ChartCard from "@/components/ChartCard";
-import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import {
   fetchPerfAttrAttribution,
@@ -58,9 +57,6 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
   const [chartData, setChartData] = useState<PerfAttrChartResponse | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState<string | null>(null);
-
-  // Date range slider state — two indices into the chart data rows array.
-  const [range, setRange] = useState<[number, number]>([0, 0]);
 
   // Comparison chart display mode: "percentage" rebases both curves to 0% at
   // the first common date (best for relative-performance trend comparison);
@@ -165,7 +161,6 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
     setSelectedBenchmark(null);
     setChartData(null);
     setChartError(null);
-    setRange([0, 0]);
   }, [code, secType]);
 
   // Fetch the time-series chart data whenever the selected benchmark changes.
@@ -173,7 +168,6 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
     if (!selectedBenchmark) {
       setChartData(null);
       setChartError(null);
-      setRange([0, 0]);
       return;
     }
     let cancelled = false;
@@ -183,8 +177,6 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
       .then((d) => {
         if (cancelled) return;
         setChartData(d);
-        const maxIdx = Math.max(0, d.rows.length - 1);
-        setRange([0, maxIdx]);
         setChartLoading(false);
       })
       .catch((e: Error) => {
@@ -196,14 +188,6 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
       cancelled = true;
     };
   }, [selectedBenchmark, code, secType]);
-
-  // Slice chart rows to the selected date window.
-  const filteredChartData = useMemo<PerfAttrChartResponse | null>(() => {
-    if (!chartData) return null;
-    const [lo, hi] = range;
-    const rows = chartData.rows.slice(lo, hi + 1);
-    return { ...chartData, rows };
-  }, [chartData, range]);
 
   // Wire up cross-chart tooltip sync via echarts.connect() — the two
   // charts share one group so hovering either shows the tooltip on both.
@@ -217,8 +201,6 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
     echarts.connect(chartGroup);
     connectedGroupsRef.current.add(chartGroup);
   }, [chartGroup]);
-
-  const maxIdx = chartData ? Math.max(0, chartData.rows.length - 1) : 0;
 
   const subtitle = data
     ? `${data.code} · ${data.name || name || "—"} · ${data.latest_date || "—"}`
@@ -312,7 +294,7 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
               {chartError}
             </Alert>
           )}
-          {selectedBenchmark && !chartLoading && !chartError && filteredChartData && filteredChartData.rows.length > 0 && (
+          {selectedBenchmark && !chartLoading && !chartError && chartData && chartData.rows.length > 0 && (
             <>
               <Box sx={{ mt: 1 }}>
                 {/* Expanded charts header: selected benchmark label + %/Abs toggle */}
@@ -379,14 +361,14 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
                     transformOrigin={{ vertical: "top", horizontal: "left" }}
                     PaperProps={{ sx: { maxWidth: 360, p: 1.25 } }}
                   >
-                    {filteredChartData && (
+                    {chartData && (
                       <Box sx={{ fontSize: "0.75rem" }}>
                         <Typography variant="caption" sx={{ fontWeight: 600, display: "block", mb: 0.5 }}>
-                          Benchmark: {filteredChartData.benchmark_name || filteredChartData.benchmark_code}
+                          Benchmark: {chartData.benchmark_name || chartData.benchmark_code}
                         </Typography>
-                        {filteredChartData.benchmark_linked_etfs.length > 0 ? (
+                        {chartData.benchmark_linked_etfs.length > 0 ? (
                           <Box component="ul" sx={{ m: 0, pl: 1.5, mb: 1 }}>
-                            {filteredChartData.benchmark_linked_etfs.map((etf) => (
+                            {chartData.benchmark_linked_etfs.map((etf) => (
                               <li key={etf.code}>
                                 {etf.name} <span style={{ opacity: 0.5 }}>({etf.code})</span>
                               </li>
@@ -398,11 +380,11 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
                           </Typography>
                         )}
                         <Typography variant="caption" sx={{ fontWeight: 600, display: "block", mb: 0.5 }}>
-                          Subject: {filteredChartData.name || filteredChartData.code}
+                          Subject: {chartData.name || chartData.code}
                         </Typography>
-                        {filteredChartData.code_linked_etfs.length > 0 ? (
+                        {chartData.code_linked_etfs.length > 0 ? (
                           <Box component="ul" sx={{ m: 0, pl: 1.5 }}>
-                            {filteredChartData.code_linked_etfs.map((etf) => (
+                            {chartData.code_linked_etfs.map((etf) => (
                               <li key={etf.code}>
                                 {etf.name} <span style={{ opacity: 0.5 }}>({etf.code})</span>
                               </li>
@@ -418,7 +400,7 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
                   </Popover>
                 </Box>
                 <EChart
-                  option={buildAmountContributionOption(filteredChartData, themeMode, chartMode)}
+                  option={buildAmountContributionOption(chartData, themeMode, chartMode)}
                   height={170}
                   group={`perf-attr-${code}-${selectedBenchmark.code}`}
                 />
@@ -426,20 +408,14 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
                   Close price history trend (subject vs benchmark)
                 </Typography>
                 <EChart
-                  option={buildComparisonOption(filteredChartData, themeMode, chartMode)}
+                  option={buildComparisonOption(chartData, themeMode, chartMode)}
                   height={200}
                   group={`perf-attr-${code}-${selectedBenchmark.code}`}
                 />
               </Box>
-              <DateRangeSlider
-                value={range}
-                onChange={setRange}
-                max={maxIdx}
-                dates={chartData?.rows.map((r) => r.date) ?? []}
-              />
             </>
           )}
-          {selectedBenchmark && !chartLoading && !chartError && filteredChartData && filteredChartData.rows.length === 0 && (
+          {selectedBenchmark && !chartLoading && !chartError && chartData && chartData.rows.length === 0 && (
             <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
               <Typography variant="body2" color="text.secondary">
                 No data in the selected date range.

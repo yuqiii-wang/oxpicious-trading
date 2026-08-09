@@ -1,23 +1,22 @@
 /**
- * StockPanel — single stock chart + slider.
+ * StockPanel — single stock chart + dataZoom.
  *
  * Layout (mirrors IndexPanel + StockOhlcExpansionChart but without intraday
  * expansion — 5-min intraday bars are not yet collected for stocks):
  *   • Daily OHLC + MA5/MA20/MA60/MA120 (computed client-side from close) +
  *     PE ratio on a twin axis (when available — only SZSE stocks publish PE
  *     via the source endpoint).
- *   • Date range slider (windowing) per panel.
+ *   • In-chart dataZoom (windowing) per panel.
  *
  * The OHLC chart itself is the shared `StockOhlcChart` component, reused by
  * the composition pie expansion (StockOhlcExpansionChart) so the two render
- * identically. This file owns only the ChartCard chrome, the slider, and the
- * return badges; `hasOhlc`/`hasPe` are computed here only to drive the
+ * identically. This file owns only the ChartCard chrome, the dataZoom window,
+ * and the return badges; `hasOhlc`/`hasPe` are computed here only to drive the
  * subtitle (the chart recomputes them internally).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Alert, Box, Chip, Stack } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
-import DateRangeSlider from "@/components/DateRangeSlider";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import StockOhlcChart from "@/components/StockOhlcChart";
 import { fmtPct } from "@/lib/series";
@@ -27,8 +26,8 @@ import type { StockBundle } from "../../../../shared/types";
 
 interface Props {
   stock: StockBundle;
-  /** Optional default slider window (inclusive date strings). When provided
-   *  the slider initializes to the indices covering [defaultStartDate,
+  /** Optional default window (inclusive date strings). When provided
+   *  the dataZoom initializes to the range covering [defaultStartDate,
    *  defaultEndDate] inside this stock's rows — used to align multiple panels
    *  to the shortest common time range. */
   defaultStartDate?: string;
@@ -83,17 +82,15 @@ function ReturnBadges({ stock }: { stock: StockBundle }) {
 
 export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: Props) {
   const allRows = stock.rows;
-  const maxIdx = allRows.length - 1;
-  const [range, setRange] = useState<[number, number]>([0, maxIdx]);
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
-  // Reset slider when data changes (e.g., sector switch or page change).
-  // When defaultStartDate/defaultEndDate are provided (aligned to the
-  // shortest common time range across sibling panels), the slider
-  // initializes to the indices covering that window inside this stock's rows.
-  useEffect(() => {
+  // Initial dataZoom window. When defaultStartDate/defaultEndDate are
+  // provided (aligned to the shortest common time range across sibling
+  // panels), the dataZoom initializes to the percentage covering that window
+  // inside this stock's full rows; otherwise the full range is shown.
+  const dataZoomRange = useMemo<{ start: number; end: number }>(() => {
     let startIdx = 0;
     let endIdx = allRows.length - 1;
     if (defaultStartDate) {
@@ -112,38 +109,32 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
       startIdx = 0;
       endIdx = allRows.length - 1;
     }
-    setRange([startIdx, endIdx]);
-  }, [stock.code, allRows.length, defaultStartDate, defaultEndDate]);
-
-  // Filter rows to the selected date window
-  const filteredRows = useMemo(
-    () => allRows.slice(range[0], range[1] + 1),
-    [allRows, range],
-  );
+    const n = allRows.length;
+    if (n <= 1) return { start: 0, end: 100 };
+    return {
+      start: (startIdx / (n - 1)) * 100,
+      end: (endIdx / (n - 1)) * 100,
+    };
+  }, [allRows, defaultStartDate, defaultEndDate]);
 
   // Detect whether OHLC is available — when most rows have all four
   // components, render an OHLC chart; otherwise fall back to a close line.
   const hasOhlc = useMemo(() => {
-    if (filteredRows.length === 0) return false;
-    const ohlcCount = filteredRows.filter(
+    if (allRows.length === 0) return false;
+    const ohlcCount = allRows.filter(
       (r) => r.open != null && r.high != null && r.low != null && r.close != null,
     ).length;
-    return ohlcCount > 0 && ohlcCount >= filteredRows.length * 0.5;
-  }, [filteredRows]);
+    return ohlcCount > 0 && ohlcCount >= allRows.length * 0.5;
+  }, [allRows]);
 
   const hasPe = useMemo(() => {
-    if (filteredRows.length === 0) return false;
-    return filteredRows.some((r) => r.pe != null && r.pe !== 0);
-  }, [filteredRows]);
+    if (allRows.length === 0) return false;
+    return allRows.some((r) => r.pe != null && r.pe !== 0);
+  }, [allRows]);
 
   const subtitle = hasOhlc
     ? `${stock.sector_label} / ${stock.industry_label} · OHLC${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120${hasPe ? " · PE" : ""}`
     : `${stock.sector_label} / ${stock.industry_label} · Close${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120${hasPe ? " · PE" : ""}`;
-
-  const filteredStock: StockBundle = useMemo(
-    () => ({ ...stock, rows: filteredRows }),
-    [stock, filteredRows],
-  );
 
   return (
     <ChartCard
@@ -152,27 +143,23 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
       action={
         <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
           <OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />
-          <ReturnBadges stock={filteredStock} />
+          <ReturnBadges stock={stock} />
         </Stack>
       }
       height={360}
     >
       <Box sx={{ width: "100%" }}>
         <StockOhlcChart
-          rows={filteredRows}
+          rows={allRows}
           ohlcMode={ohlcMode}
           height={250}
           dividends={stock.dividends}
+          dataZoomStart={dataZoomRange.start}
+          dataZoomEnd={dataZoomRange.end}
         />
-        <DateRangeSlider
-          value={range}
-          onChange={setRange}
-          max={maxIdx}
-          dates={allRows.map((r) => r.date)}
-        />
-        {filteredRows.length < 40 && (
+        {allRows.length < 40 && (
           <Alert severity="info" sx={{ mt: 0.5, py: 0.25 }} icon={false}>
-            Insufficient data ({filteredRows.length} rows).
+            Insufficient data ({allRows.length} rows).
           </Alert>
         )}
       </Box>

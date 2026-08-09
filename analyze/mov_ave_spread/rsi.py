@@ -53,11 +53,10 @@ import pandas as pd
 from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
-    filter_rows_to_missing_dates_async,
 )
 from _common.df_utils import grouped_diff, grouped_shift
 from analyze._common import (
-    batched_upsert_by_date,
+    build_and_insert_chunked,
     upsert_analysis_identity,
     sanitize_for_db_insert,
 )
@@ -416,27 +415,6 @@ def _compute_since_last_extreme(df: pd.DataFrame) -> pd.DataFrame:
 #  Pipeline (internal step — invoked from mov_ave_spread.__main__)
 # ---------------------------------------------------------------------------
 
-async def _filter_per_sec_type_async(conn, table, rows):
-    """Filter rows to missing dates, scoped per-sec_type.
-
-    The mov_ave_rsi PK is (sec_type, code, date). Without per-sec_type
-    scoping, a date already populated for one sec_type would mask the same
-    date being missing for another sec_type.
-    """
-    if not rows:
-        return []
-    by_st: dict = {}
-    for r in rows:
-        by_st.setdefault(r.get("sec_type"), []).append(r)
-    out: list = []
-    for st, group in by_st.items():
-        filtered = await filter_rows_to_missing_dates_async(
-            conn, table, group, sec_type=st,
-        )
-        out.extend(filtered)
-    return out
-
-
 async def run_rsi(
     conn,
     df: pd.DataFrame,
@@ -544,34 +522,30 @@ async def run_rsi(
         print(f"    -> incremental filter: {len(rsi_df):,} of {n_before:,} "
               f"rows are in target_dates_union", flush=True)
 
-    rows = sanitize_rsi_rows(rsi_df)
-    print(f"    -> {len(rows):,} mov_ave_rsi rows", flush=True)
-    del rsi_df
-
-    if not rows:
+    if rsi_df.empty:
         print("    -> no rows to upsert; skipping RSI upsert.", flush=True)
         return
 
-    # ---- Step 2: upsert ---------------------------------------------
-    print(f"\n[r2/3] Upserting {len(rows):,} rows into {RSI_TABLE} "
-          f"(chunked by date to bound memory)...", flush=True)
-
-    # Per-sec_type skip-filter (safety net for edge cases).
-    n_before = len(rows)
-    rows = await _filter_per_sec_type_async(conn, RSI_TABLE, rows)
-    n_skipped = n_before - len(rows)
-    if n_skipped > 0:
-        print(f"    -> skip check (per-sec_type): {n_skipped:,} of "
-              f"{n_before:,} rows already present (skipped)", flush=True)
-
-    n = await batched_upsert_by_date(
-        conn, RSI_TABLE, rows,
+    # ---- Step 2: build + insert (chunked by date) -------------------
+    # sanitize_rsi_rows materializes one Python dict per row; for the full
+    # stock universe (6.7M rows) that is multi-GB and OOMs. Build + insert
+    # per date-chunk so peak memory is bounded to one chunk's dicts
+    # (~100K rows). Mirrors the parent mov_ave_spread detail step.
+    print(f"\n[r2/3] Building + inserting {len(rsi_df):,} mov_ave_rsi rows "
+          f"in date-bounded chunks ({'COPY' if force else 'upsert'} per "
+          f"chunk)...", flush=True)
+    n = await build_and_insert_chunked(
+        conn, pool, rsi_df,
+        sanitize_rsi_rows,
+        table_name=RSI_TABLE,
         key_columns=["sec_type", "code", "date"],
-        label="mov_ave_rsi",
-        pool=pool,
+        force=force,
+        sec_types=sec_types,
         max_concurrent=max_concurrent,
+        label="mov_ave_rsi",
     )
-    print(f"    -> upserted {n:,} rows", flush=True)
+    del rsi_df
+    print(f"    -> inserted {n:,} rows", flush=True)
 
     # ---- Step 3: register in analysis_identity ----------------------
     print(f"\n[r3/3] Upserting analysis.analysis_identity registry...",

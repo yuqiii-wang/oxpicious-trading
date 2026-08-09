@@ -48,7 +48,8 @@ router.get("/dates", async (req: Request, res: Response) => {
 router.get("/themes", async (req: Request, res: Response) => {
   try {
     const secType = parseSecType(req.query.type);
-    res.json(await listLiveDataThemes(secType));
+    const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
+    res.json(await listLiveDataThemes(secType, exchange));
   } catch (err) {
     console.error("[live-data/themes] error:", err);
     res.status(500).json({ error: String(err) });
@@ -59,7 +60,8 @@ router.get("/themes", async (req: Request, res: Response) => {
 router.get("/strategy-themes", async (req: Request, res: Response) => {
   try {
     const secType = parseSecType(req.query.type);
-    res.json(await listStrategyThemes(secType));
+    const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
+    res.json(await listStrategyThemes(secType, exchange));
   } catch (err) {
     console.error("[live-data/strategy-themes] error:", err);
     res.status(500).json({ error: String(err) });

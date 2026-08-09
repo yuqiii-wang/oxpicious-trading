@@ -680,12 +680,70 @@ export interface MovAveSpreadDetailRow {
   rsi_14days: number | null;
   /** Wilder RSI over 20 trading days. 0..100. */
   rsi_20days: number | null;
+  /**
+   * 5-trading-day moving average of trading_amount (yuan) from
+   * analysis.mov_ave_spreads_detail.trading_amt_ma5. NULL until 5
+   * consecutive rows. Used for the Trading Amt/MA envelope chart.
+   */
+  trading_amt_ma5: number | null;
+  /** 20-trading-day MA of trading_amount (yuan). NULL until 20 rows. */
+  trading_amt_ma20: number | null;
+  /** 60-trading-day MA of trading_amount (yuan). NULL until 60 rows. */
+  trading_amt_ma60: number | null;
+  /** 120-trading-day MA of trading_amount (yuan). NULL until 120 rows. */
+  trading_amt_ma120: number | null;
+  /** 255-trading-day MA of trading_amount (yuan). NULL until 255 rows. */
+  trading_amt_ma255: number | null;
+  /**
+   * Fractional daily change of trading_amt_ma5: (ma5[t] - ma5[t-1]) / ma5[t-1].
+   * Signed ratio (e.g. 0.02 = +2%). NULL on first date or when ma is NULL/<=0.
+   * Surfaced in the chart tooltip when trading-amt display is enabled.
+   */
+  trading_amt_ma5_slope: number | null;
+  /** Fractional daily change of trading_amt_ma20 (see trading_amt_ma5_slope). */
+  trading_amt_ma20_slope: number | null;
+  /** Fractional daily change of trading_amt_ma60 (see trading_amt_ma5_slope). */
+  trading_amt_ma60_slope: number | null;
+  /** Fractional daily change of trading_amt_ma120 (see trading_amt_ma5_slope). */
+  trading_amt_ma120_slope: number | null;
+  /** Fractional daily change of trading_amt_ma255 (see trading_amt_ma5_slope). */
+  trading_amt_ma255_slope: number | null;
+  /**
+   * 5-trading-day moving average of trading_amt_market_share (dimensionless
+   * ratio 0..1). market_share = trading_amount / denominator, where
+   * denominator = SUM(stats.exchange_trading_amt.total_trading_amount) across
+   * primary exchanges. Surfaced in the chart tooltip as a percentage when
+   * trading-amt display is enabled.
+   */
+  trading_amt_market_share_ma5: number | null;
+  /** 20-trading-day MA of trading_amt_market_share (see trading_amt_market_share_ma5). */
+  trading_amt_market_share_ma20: number | null;
+  /** 60-trading-day MA of trading_amt_market_share (see trading_amt_market_share_ma5). */
+  trading_amt_market_share_ma60: number | null;
+  /** 120-trading-day MA of trading_amt_market_share (see trading_amt_market_share_ma5). */
+  trading_amt_market_share_ma120: number | null;
+  /** 255-trading-day MA of trading_amt_market_share (see trading_amt_market_share_ma5). */
+  trading_amt_market_share_ma255: number | null;
 }
+
+/** Kind of pair: price-based (default, backward-compatible) or amt-based. */
+export type MovAveSpreadPairKind = "price" | "amt";
+
 export interface MovAveSpreadPairSeries {
   ma_short: number;
   ma_long: number;
-  /** Display label, e.g. "Price/MA5" or "MA5/MA20". */
+  /** Display label, e.g. "Price/MA5" or "MA5/MA20" or "Amt/MA20". */
   pair_label: string;
+  /**
+   * "price" = the 9 original pairs (short=price or ma5, long=maW).
+   * "amt" = the 5 trading-amount pairs (short=trading_amount,
+   *        long=trading_amt_maW). When an amt pair is selected, the chart
+   *        switches to "amt envelope" mode: OHLC + price MAs are shown
+   *        lowkey (dimmed), and the trading amount + all 5 trading_amt_ma
+   *        lines form a prominent envelope on the secondary y-axis.
+   * Defaults to "price" for backward compatibility.
+   */
+  kind?: MovAveSpreadPairKind;
   rows: MovAveSpreadDetailRow[];
 }
 
@@ -727,32 +785,41 @@ export interface MovAveSpreadChartResponse {
   /** 9 pair time series (5 price-vs-MA + 4 ma5-vs-MA). */
   pairs: MovAveSpreadPairSeries[];
   /**
-   * Per-extreme-date valley-low rows from
-   * analysis.mov_ave_peaks_and_floors (filtered by sec_type + code). Each
-   * row's `date` is the actual biz date of a local min close observed
-   * within a continuous belt; `extreme_val` is that min close price.
-   * The frontend plots one red down-triangle marker per row directly
-   * from this array — it does NOT derive valley lows from the per-date
-   * detail series (which would smear each extreme across every detail
-   * date that maps to it via peaks_and_floors_date).
+   * Per-extreme-date rows from analysis.mov_ave_peaks_and_floors (filtered
+   * by sec_type + code). Each row's `date` is the actual biz date of a
+   * local min (floor) or max (peak) close observed within a continuous
+   * belt; `extreme_val` is that min/max close price. The frontend plots
+   * one marker per row directly from this array — red down-triangle for
+   * floors (is_extreme_peak_not_floor=false) and green up-triangle for
+   * peaks (is_extreme_peak_not_floor=true). It does NOT derive extremes
+   * from the per-date detail series (which would smear each extreme
+   * across every detail date that maps to it via peaks_and_floors_date).
    */
   valley_lows: MovAveSpreadValleyLow[];
 }
 
 /** One row of analysis.mov_ave_peaks_and_floors for the requested code. */
 export interface MovAveSpreadValleyLow {
-  /** Extreme biz date (local min close within a continuous belt). */
+  /** Extreme biz date (local min or max close within a continuous belt). */
   date: string;
-  /** Min close price observed on `date`. */
+  /** Min (floor) or max (peak) close price observed on `date`. */
   extreme_val: number;
   /**
    * The furthest date within ±30 trading days of `date` whose OHLC low is
    * strictly lower than the valley_low's OHLC high. NULL when no qualifying
-   * date exists. The frontend draws a light-red horizontal band linking
-   * `date` and `nearby_extreme_date`, with upper/lower bounds from the two
-   * days' OHLC highs/lows.
+   * date exists, and NULL for peaks (only floors compute it). The frontend
+   * draws a light-red horizontal band linking `date` and
+   * `nearby_extreme_date`, with upper/lower bounds from the two days' OHLC
+   * highs/lows.
    */
   nearby_extreme_date?: string | null;
+  /**
+   * TRUE when this extreme is a local MAX (peak — upward trend). FALSE
+   * when this extreme is a local MIN (valley low / floor — downward
+   * trend). The frontend renders up-triangles (green) for peaks and
+   * down-triangles (red) for floors based on this flag.
+   */
+  is_extreme_peak_not_floor: boolean;
 }
 
 // ----------------------------------------------------------------------------
@@ -1417,4 +1484,120 @@ export interface LiveDataCombinedResponse {
 export interface LiveDataDatesResponse {
   type: LiveDataSecType;
   dates: string[];
+}
+
+// ----------------------------------------------------------------------------
+//  Strategy — MA-spread crossover backtest
+//  GET /api/strategy/ma-spread/backtest?sec_type=index&code=000970
+//  Runs an ephemeral backtest (no DB write) and returns OHLC + trading amount
+//  + trade decisions + total return for immediate chart rendering.
+// ----------------------------------------------------------------------------
+export interface StrategyDecision {
+  decision_no: number;
+  side: "BUY" | "SELL";
+  signal_date: string;
+  exec_date: string;
+  qty: number;
+  fill_price: number;
+  gross_value: number;
+  commission: number;
+  fees: number;
+  position_before: number;
+  position_after: number;
+  cash_before: number;
+  cash_after: number;
+  realized_pnl: number;
+  signal_value: number | null;
+  signal_reason: string;
+}
+
+export interface StrategyOhlcRow {
+  date: string;
+  open: number | null;
+  close: number | null;
+  high: number | null;
+  low: number | null;
+  trading_amount: number | null;
+  ma5: number | null;
+  ma60: number | null;
+}
+
+export interface StrategyBacktestResponse {
+  code: string;
+  name: string;
+  sec_type: MaSpreadSecType;
+  ohlc: StrategyOhlcRow[];
+  decisions: StrategyDecision[];
+  summary: {
+    n_buys: number;
+    n_sells: number;
+    realized_pnl: number;
+    final_cash: number;
+    total_return_pct: number;
+    total_buy_cost: number;
+  };
+}
+
+// ----------------------------------------------------------------------------
+//  Strategy — internal risk metrics
+//  GET /api/strategy/ma-spread/risks?sec_type=index&code=000970
+//  Reads pre-computed risk metrics from strategy.strategy_risk_seq +
+//  strategy.strategy_risk_period (computed by python -m strategy._risks).
+// ----------------------------------------------------------------------------
+export type StrategyRiskGrade = "LOW" | "MODERATE" | "ELEVATED" | "HIGH";
+export type StrategyPeriodType = "year" | "season" | "month";
+
+export interface StrategyRiskSeq {
+  seq_id: number;
+  code: string;
+  total_realized_pnl: number;
+  total_abs_pnl: number;
+  n_sells: number;
+  n_buys: number;
+  top_gain_pnl: number | null;
+  top_gain_exec_date: string | null;
+  top_gain_signal_reason: string | null;
+  top_loss_pnl: number | null;
+  top_loss_exec_date: string | null;
+  top_loss_signal_reason: string | null;
+  max_30d_abs_pnl: number | null;
+  concentration_ratio: number | null;
+  concentration_window_start: string | null;
+  concentration_window_end: string | null;
+  max_drawdown: number | null;
+  risk_score: number | null;
+  risk_grade: StrategyRiskGrade | null;
+  /** Worst close-price peak-to-trough drawdown (fractional ratio <= 0) while position > 0. */
+  deepest_drop_since_unzero_pos: number | null;
+  deepest_drop_since_unzero_pos_peak_date: string | null;
+  deepest_drop_since_unzero_pos_trough_date: string | null;
+  /** Worst close-price drawdown (fractional ratio <= 0) from a BUY entry (seed = fill_price) to next decision. */
+  deepest_drop_since_last_buy: number | null;
+  deepest_drop_since_last_buy_peak_date: string | null;
+  deepest_drop_since_last_buy_trough_date: string | null;
+}
+
+export interface StrategyRiskPeriod {
+  seq_id: number;
+  code: string;
+  period_type: StrategyPeriodType;
+  period_value: string;
+  n_sells: number;
+  n_buys: number;
+  realized_pnl: number;
+  abs_pnl: number;
+  period_share: number | null;
+  top_gain_pnl: number | null;
+  top_gain_exec_date: string | null;
+  top_loss_pnl: number | null;
+  top_loss_exec_date: string | null;
+  is_concentration_hotspot: boolean;
+  is_counter_trend: boolean;
+}
+
+export interface StrategyRiskResponse {
+  code: string;
+  sec_type: MaSpreadSecType;
+  risk_seq: StrategyRiskSeq | null;
+  periods: StrategyRiskPeriod[];
 }

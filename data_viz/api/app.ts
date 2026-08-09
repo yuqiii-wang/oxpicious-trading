@@ -18,6 +18,7 @@ import secCompositionRoutes from "./routes/sec-composition.js";
 import stockBaselineRoutes from "./routes/stock-baseline.js";
 import liveDataRoutes from "./routes/live-data.js";
 import analysisRoutes from "./routes/analysis.js";
+import strategyRoutes from "./routes/strategy.js";
 import cacheRoutes from "./routes/cache.js";
 
 const app: express.Application = express();
@@ -37,6 +38,7 @@ app.use("/api/sec-composition", secCompositionRoutes);
 app.use("/api/stock-baseline", stockBaselineRoutes);
 app.use("/api/live-data", liveDataRoutes);
 app.use("/api/analysis", analysisRoutes);
+app.use("/api/strategy", strategyRoutes);
 app.use("/api/cache", cacheRoutes);
 
 /**

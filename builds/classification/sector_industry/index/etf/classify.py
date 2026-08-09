@@ -26,7 +26,7 @@ from _common.sec_statics.classification import (
     classify_etf_strategy_by_name,
 )
 
-from builds.classification.sector_industry.exchange import _is_hk_name
+from builds.classification.sector_industry.exchange import _is_hk_name, _is_overseas_name
 from builds.classification.sector_industry.owners import (
     clean_etf_name_for_index_match,
     match_etf_owner,
@@ -109,13 +109,6 @@ def classify_etfs(
                     industry_id = strat_industry
                     is_ind = False
                     n_name_classified += 1
-        # Override exchange to 'HK' when the ETF's underlying is HK-listed,
-        # detected via ETF name or parent index name.  This applies even when
-        # the ETF itself is listed on SH/SZ (e.g. 513050.SS tracking 港股通互联).
-        if exchange != "HK":
-            idx_name = idx["name"] if idx is not None else r.get("index_name", "")
-            if _is_hk_name(etf_name) or _is_hk_name(idx_name):
-                exchange = "HK"
 
         # Owner: match via CSV `管理人` full-name (preferred) or ETF-name alias.
         owner_id, matched_alias = match_etf_owner(
@@ -145,6 +138,26 @@ def classify_etfs(
             is_ind = ow_idx.get("is_industry_not_strategy", sector_id != DEFAULT_SECTOR_ID)
             is_primary = True  # cleaned == matched index name by definition
             n_overwritten += 1
+            # Refresh idx reference so the exchange override below uses the
+            # overwritten parent's name/exchange.
+            idx = ow_idx
+
+        # Override exchange to 'HK' or 'OVERSEAS' when the ETF's underlying
+        # tracks HK or non-Greater-China markets.  Detected via ETF name or
+        # parent index name (HK keywords: 港股通/恒生/沪港深/SHS; overseas
+        # keywords: 标普/纳斯达克/日经/德国/...) OR sector_id OVERSEAS.
+        # Applies even when the ETF itself is listed on SH/SZ (e.g. 513050.SS
+        # tracking 港股通互联, 159612.SZ 标普500ETF, 159502.SZ 标普生物科技).
+        # Runs AFTER the OVERWRITE RULE so the final parent is used.
+        idx_name = idx["name"] if idx is not None else r.get("index_name", "")
+        if exchange != "HK" and (_is_hk_name(etf_name) or _is_hk_name(idx_name)):
+            exchange = "HK"
+        if exchange not in ("HK", "OVERSEAS") and (
+            sector_id == "OVERSEAS"
+            or _is_overseas_name(etf_name)
+            or _is_overseas_name(idx_name)
+        ):
+            exchange = "OVERSEAS"
 
         if is_primary:
             n_primary += 1

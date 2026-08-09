@@ -19,7 +19,7 @@
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import type { IndustrySentimentsChartResponse } from "../../../../shared/types";
-import { axisColors, commonLegend, commonGrid } from "@/theme/chart-palette";
+import { axisColors, commonLegend, commonGrid, commonDataZoom } from "@/theme/chart-palette";
 import { variantColorOf } from "@/theme/group-colors";
 import { fmtNum } from "@/lib/series";
 import type { PoolSize, PerIndustryAggregation } from "./types";
@@ -35,7 +35,6 @@ export function buildIndustryChartOption(
   themeMode: ThemeMode,
   selectedBenchmarkCodes: string[],
   meanOnly: boolean,
-  hideHK: boolean,
   /** Single-industry overlay: render the merged mean + ±1σ band from
    *  data.aggregation. False in multi-industry mode. */
   showAggOverlay: boolean,
@@ -71,12 +70,9 @@ export function buildIndustryChartOption(
     return variantColorOf(industryColorFor(gid), n);
   });
 
-  // ALL indices are always rendered (when not meanOnly). Two independent
-  // dim/highlight layers compose:
-  //   1. pool_size toggle — highlights selected pool, dims others
-  //   2. hideHK — when ON, dims indices with exchange='HK'
-  // An index is HIGHLIGHTED only if ALL active layers agree it should be.
-  // Dimmed indices are rendered at ~15% opacity (still visible for context).
+  // ALL indices are always rendered (when not meanOnly). The pool_size toggle
+  // highlights the selected pool and dims the others. Dimmed indices are
+  // rendered at ~15% opacity (still visible for context).
   //
   // NOTE: the API only returns compositioned indices (every member has a
   // stock_num), so there is no longer a "no composition" case to handle here.
@@ -92,14 +88,12 @@ export function buildIndustryChartOption(
         null,
       );
 
-      // Layer 1: pool_size highlight
+      // pool_size highlight
       const poolHighlighted =
         poolSize === "all" ||
         idx.rows.some((r) => classifyPoolSize(r.stock_num) === poolSize);
-      // Layer 2: HK (hideHK dims indices with exchange='HK')
-      const hkHidden = hideHK && idx.exchange === "HK";
 
-      const isHighlighted = poolHighlighted && !hkHidden;
+      const isHighlighted = poolHighlighted;
 
       const closeByDate = new Map<string, number | null>();
       for (const r of idx.rows) {
@@ -326,7 +320,8 @@ export function buildIndustryChartOption(
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: commonGrid({ left: 56, right: 24, bottom: 32 }),
+    grid: commonGrid({ left: 56, right: 24, bottom: 50 }),
+    dataZoom: commonDataZoom(),
     legend: commonLegend(themeMode, {
       data: series.map((s) => s.name as string),
     }),
@@ -461,8 +456,7 @@ export function buildIndustryChartOption(
           const poolHighlighted =
             poolSize === "all" ||
             idx.rows.some((r) => classifyPoolSize(r.stock_num) === poolSize);
-          const hkHidden = hideHK && idx.exchange === "HK";
-          if (!poolHighlighted || hkHidden) continue;
+          if (!poolHighlighted) continue;
           const raw = rawClosesPerIdx[i]?.[idx0] ?? null;
           const rebasedVal = series[i] && Array.isArray((series[i] as Record<string, unknown>).data)
             ? ((series[i] as Record<string, unknown>).data as Array<number | null>)[idx0] ?? null

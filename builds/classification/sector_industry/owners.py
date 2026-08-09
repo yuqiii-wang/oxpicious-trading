@@ -18,16 +18,16 @@ name (plus the standard legal suffix) to test whether the cleaned name
 exactly equals the parent index name — that equality is the criterion for
 parent_index_is_primary = TRUE for ETFs.
 
-``upsert_owners`` rebuilds stats.sec_owners from the curated JSON each run
-so the table stays in sync with hand edits.
+NOTE: The DB upsert of stats.sec_owners has been MOVED to builds.sec_info
+(``builds.sec_info.upsert.upsert_owners``).  This module now contains only
+the in-memory loaders + matchers used by builds.classification to populate
+the logical ``sec_classification.owner_id`` reference — no DB writes.
 """
 from __future__ import annotations
 
 import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
-
-from _common.build_commons import bulk_upsert_async, truncate_table_async
 
 from builds.classification.sector_industry.paths import OWNERS_JSON_PATH
 
@@ -172,30 +172,7 @@ def clean_etf_name_for_index_match(
     return s.strip()
 
 
-async def upsert_owners(
-    conn,
-    owners: List[Dict[str, Any]],
-    verbose: bool = True,
-) -> None:
-    """Rebuild stats.sec_owners from the curated sec_owners.json each run.
-
-    Must run BEFORE sec_classification so the logical owner_id reference is
-    always valid.  Truncate + rebuild keeps the table in sync with the curated
-    JSON (stale entries removed when JSON is edited).
-    """
-    owner_rows: List[Dict[str, Any]] = []
-    for o in owners:
-        owner_rows.append({
-            "owner_id": o["owner_id"],
-            "name": o.get("name", ""),
-            "type": o.get("type"),
-            "aliases": list(o.get("aliases", [])),
-            "full_names": list(o.get("full_names", [])),
-        })
-    if owner_rows:
-        await truncate_table_async(conn, "stats.sec_owners")
-        inserted = await bulk_upsert_async(
-            conn, "stats.sec_owners", owner_rows, ["owner_id"])
-        if verbose:
-            print(f"    [DB] Inserted {inserted:,} owner rows into "
-                  f"stats.sec_owners", flush=True)
+# NOTE: upsert_owners() has been MOVED to builds.sec_info.upsert.
+# builds.classification no longer writes stats.sec_owners — it only uses the
+# in-memory matchers above to populate the logical sec_classification.owner_id
+# reference.  Run `python -m builds.sec_info` to (re)build stats.sec_owners.

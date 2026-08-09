@@ -40,7 +40,7 @@ interface AppState {
   industrySlug: string | null;
   setIndustrySlug: (slug: string | null) => void;
 
-  /** Exchange filter — 'SS' (SSE), 'SZ' (SZSE), 'BJ' (BSE), or null (All). */
+  /** Exchange filter — 'PRIMARY' (default, all Greater-China), 'SS' (SSE), 'SZ' (SZSE), 'BJ' (BSE), 'HK', 'OVERSEAS', or null (no filter). */
   exchange: string | null;
   setExchange: (ex: string | null) => void;
 
@@ -87,7 +87,7 @@ export const useStore = create<AppState>((set) => ({
   industrySlug: null,
   setIndustrySlug: (slug) => set({ industrySlug: slug }),
 
-  exchange: null,
+  exchange: "PRIMARY",
   setExchange: (ex) => set({ exchange: ex }),
 
   themeSlug: null,

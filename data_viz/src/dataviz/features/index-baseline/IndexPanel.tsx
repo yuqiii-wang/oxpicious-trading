@@ -4,7 +4,7 @@
  * Layout (mirrors EtfMarginPanel):
  *   • OHLC (or close line fallback) + MA5/MA20/MA60/MA120 +
  *     volume bars + PE ratio (twin axis).
- *   • Date range slider (windowing) per panel.
+ *   • In-chart dataZoom (windowing) per panel.
  *   • Clicking a date point that has 5-min intraday bars (gold-ringed marker
  *     on the close line) expands a closeable intraday OHLC chart below.
  *   • CompositionPieChart toggle — lifted open state expands the card height
@@ -16,7 +16,6 @@ import { PieChart as PieChartIcon } from "@mui/icons-material";
 import { Link as LinkIcon } from "@mui/icons-material";
 import ChartCard from "@/components/ChartCard";
 import CompositionPieChart from "@/components/CompositionPieChart";
-import DateRangeSlider from "@/components/DateRangeSlider";
 import LinkedEtfsList from "@/components/LinkedEtfsList";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import RefreshButton from "@/components/RefreshButton";
@@ -41,6 +40,7 @@ import {
   axisColors,
   commonLegend,
   commonGrid,
+  commonDataZoom,
 } from "@/theme/chart-palette";
 import type {
   IndexBundle,
@@ -57,8 +57,6 @@ interface Props {
 
 export default function IndexPanel({ index, themeMode }: Props) {
   const allRows = index.rows;
-  const maxIdx = allRows.length - 1;
-  const [range, setRange] = useState<[number, number]>([0, maxIdx]);
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
@@ -97,9 +95,8 @@ export default function IndexPanel({ index, themeMode }: Props) {
     setLinkedEtfsRefreshKey((k) => k + 1);
   };
 
-  // Reset slider when data changes.
+  // Reset intraday + side-panel state when data changes.
   useEffect(() => {
-    setRange([0, allRows.length - 1]);
     setIntradayDate(null);
     setIntradayData(null);
     setIntradayError(null);
@@ -107,12 +104,6 @@ export default function IndexPanel({ index, themeMode }: Props) {
     setStockOhlcOpen(false);
     setLinkedEtfsOpen(false);
   }, [index.code, allRows.length]);
-
-  // Filter rows to the selected date window
-  const filteredRows = useMemo(
-    () => allRows.slice(range[0], range[1] + 1),
-    [allRows, range],
-  );
 
   // Fetch intraday 5-min bars when a date is selected.
   useEffect(() => {
@@ -140,21 +131,21 @@ export default function IndexPanel({ index, themeMode }: Props) {
   // (registered once on mount) always see current values.
   const datesRef = useRef<string[]>([]);
   const intradaySetRef = useRef<Set<string>>(new Set());
-  datesRef.current = filteredRows.map((r) => r.date);
+  datesRef.current = allRows.map((r) => r.date);
   intradaySetRef.current = new Set(
-    filteredRows.filter((r) => r.has_intraday_5mins).map((r) => r.date),
+    allRows.filter((r) => r.has_intraday_5mins).map((r) => r.date),
   );
 
   const handleDateClick = useCallback(
     (date: string) => {
-      const row = filteredRows.find((r) => r.date === date);
+      const row = allRows.find((r) => r.date === date);
       if (row?.has_intraday_5mins) {
         setIntradayDate(date);
         setIntradayData(null);
         setIntradayError(null);
       }
     },
-    [filteredRows],
+    [allRows],
   );
 
   const clickCbRef = useRef<(date: string) => void>(() => {});
@@ -193,16 +184,16 @@ export default function IndexPanel({ index, themeMode }: Props) {
   // Detect whether OHLC is available — when most rows have all four
   // components, render an OHLC chart; otherwise fall back to a close line.
   const hasOhlc = useMemo(() => {
-    if (filteredRows.length === 0) return false;
-    const ohlcCount = filteredRows.filter(
+    if (allRows.length === 0) return false;
+    const ohlcCount = allRows.filter(
       (r) => r.open != null && r.high != null && r.low != null && r.close != null,
     ).length;
-    return ohlcCount > 0 && ohlcCount >= filteredRows.length * 0.5;
-  }, [filteredRows]);
+    return ohlcCount > 0 && ohlcCount >= allRows.length * 0.5;
+  }, [allRows]);
 
   const option = useMemo<EChartsOption>(() => {
     const c = axisColors(themeMode);
-    const rows = filteredRows;
+    const rows = allRows;
     const dates = rows.map((r) => r.date);
     const open = rows.map((r) => r.open);
     const high = rows.map((r) => r.high);
@@ -248,7 +239,8 @@ export default function IndexPanel({ index, themeMode }: Props) {
     return {
       backgroundColor: "transparent",
       animation: false,
-      grid: commonGrid({ left: 50, right: 50, bottom: 28 }),
+      grid: commonGrid({ left: 50, right: 50, bottom: 50 }),
+      dataZoom: commonDataZoom(),
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "cross", snap: true },
@@ -413,7 +405,7 @@ export default function IndexPanel({ index, themeMode }: Props) {
         },
       ],
     };
-  }, [filteredRows, themeMode, hasOhlc, ohlcMode]);
+  }, [allRows, themeMode, hasOhlc, ohlcMode]);
 
   const subtitle = hasOhlc
     ? `${index.sector_label} / ${index.industry_label} · OHLC${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120 · Volume · PE`
@@ -452,12 +444,6 @@ export default function IndexPanel({ index, themeMode }: Props) {
     >
       <Box sx={{ width: "100%" }}>
         <EChart option={option} height={250} onReady={handleReady} />
-        <DateRangeSlider
-          value={range}
-          onChange={setRange}
-          max={maxIdx}
-          dates={allRows.map((r) => r.date)}
-        />
 
         {/* Intraday 5-min expansion */}
         {intradayDate && (
@@ -537,9 +523,9 @@ export default function IndexPanel({ index, themeMode }: Props) {
           onLoadingChange={setLinkedEtfsLoading}
         />
 
-        {filteredRows.length < 40 && (
+        {allRows.length < 40 && (
           <Alert severity="info" sx={{ mt: 0.5, py: 0.25 }} icon={false}>
-            Insufficient data ({filteredRows.length} rows).
+            Insufficient data ({allRows.length} rows).
           </Alert>
         )}
       </Box>

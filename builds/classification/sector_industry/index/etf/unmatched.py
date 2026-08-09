@@ -29,6 +29,12 @@ from _common.sec_statics.classification import (
     classify_index_strategy,
 )
 
+from builds.classification.sector_industry.exchange import (
+    _exchange_from_code,
+    _is_hk_name,
+    _is_overseas_name,
+)
+
 # Standalone numeric codes in fund names (e.g. '鹏华300LOF' → '300') that
 # should map to broad-market CSI series.  These are too generic for the main
 # INDUSTRY_RULES (would false-match stock names containing 300/500), but are
@@ -146,12 +152,18 @@ def classify_unmatched_funds(
         else:
             n_other += 1
 
-        # Determine exchange from code suffix.
-        exchange = ""
-        if code.endswith(".SZ"):
-            exchange = "SZ"
-        elif code.endswith((".SS", ".SH")):
-            exchange = "SS"
+        # Determine exchange from code suffix, then override to HK/OVERSEAS
+        # when the fund name indicates a HK or non-Greater-China underlying
+        # (e.g. 港股通LOF, 纳指LOF, 标普500).  The sector_id check (done above)
+        # is the primary signal for OVERSEAS; the name check is a fallback
+        # for funds whose classification fell through to OTHER.
+        exchange = _exchange_from_code(code) or ""
+        if sector_id == "OVERSEAS":
+            exchange = "OVERSEAS"
+        elif _is_hk_name(name):
+            exchange = "HK"
+        elif _is_overseas_name(name):
+            exchange = "OVERSEAS"
 
         etfs[code] = {
             "name": name,

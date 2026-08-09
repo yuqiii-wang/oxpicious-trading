@@ -60,8 +60,9 @@ const APPS: Record<AppKey, AppConfig> = {
   },
   strategy: {
     label: "Strategy",
-    defaultPath: "/strategy/commons",
+    defaultPath: "/strategy/ma-spread",
     tabs: [
+      { label: "MA-Spread", path: "/strategy/ma-spread" },
       { label: "Commons", path: "/strategy/commons" },
     ],
   },

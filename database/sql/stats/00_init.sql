@@ -12,4 +12,5 @@
 \ir 06_stock_baseline.sql
 \ir 07_sec_classification.sql
 \ir 09_sec_map.sql
+\ir 11_sec_info.sql
 \ir 99_reconstruct_views.sql

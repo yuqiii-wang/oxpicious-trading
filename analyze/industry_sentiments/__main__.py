@@ -21,16 +21,24 @@ Pipeline
      be a standalone analyze.industry_correlations package; it is now an
      internal step because it strictly depends on industry_sentiments
      being populated first.
-  8. INTERNAL STEP: aggregate analysis.sec_alloc_perf_attribution
+  8. INTERNAL STEP: populate analysis.sec_alloc_perf_attribution (see
+     sec_alloc_perf_attribution.run.run_perf_attribution). Reuses the
+     same DB connection. This step used to be a standalone
+     analyze.sec_alloc_perf_attribution package; it is now an internal
+     step because steps 9 + 10 below READ from this table. It manages
+     its OWN target_dates (missing from sec_alloc_perf_attribution vs
+     stats.index_identity) since its missing dates can differ from
+     industry_sentiments' missing dates.
+  9. INTERNAL STEP: aggregate analysis.sec_alloc_perf_attribution
      shared_weight to the industry level -> analysis.industry_attributions
      (see attributions.py). Reuses the same DB connection. Depends on
-     analysis.sec_alloc_perf_attribution being populated first (by
-     analyze.sec_alloc_perf_attribution); exits gracefully if empty.
-  9. INTERNAL STEP: aggregate code_etf_trading_amount to the industry
-     level -> analysis.industry_etf_contribution (see etf_contribution.py).
-     Reuses the same DB connection. Depends on
-     analysis.sec_alloc_perf_attribution being populated first; exits
-     gracefully if no index rows have non-NULL code_etf_trading_amount.
+     step 8 (sec_alloc_perf_attribution) being populated first; exits
+     gracefully if empty.
+  10. INTERNAL STEP: aggregate code_etf_trading_amount to the industry
+      level -> analysis.industry_etf_contribution (see etf_contribution.py).
+      Reuses the same DB connection. Depends on step 8
+      (sec_alloc_perf_attribution) being populated first; exits
+      gracefully if no index rows have non-NULL code_etf_trading_amount.
 
 Default (incremental) mode:
   Only dates present in stats.index_identity but NOT yet in
@@ -103,11 +111,15 @@ from analyze.industry_sentiments.correlations import (  # noqa: E402
 )
 from analyze.industry_sentiments.attributions import (  # noqa: E402
     run_attributions,
+    needs_rolling_backfill,
     TABLE as ATTRIBUTIONS_TABLE,
 )
 from analyze.industry_sentiments.etf_contribution import (  # noqa: E402
     run_etf_contribution,
     TABLE as ETF_CONTRIBUTION_TABLE,
+)
+from analyze.sec_alloc_perf_attribution.run import (  # noqa: E402
+    run_perf_attribution,
 )
 
 
@@ -313,11 +325,16 @@ async def main() -> None:
             print(f"    -> {len(target_dates)} dates missing from {TABLE}",
                   flush=True)
             if not target_dates:
-                # Even when sentiments is up to date, the attributions
-                # table might need a rolling-column backfill — e.g., after
-                # adding benchmark_non_this_industry_rolling_* columns via
-                # ALTER TABLE. The incremental Step 5 date filter would
-                # miss historical dates, so trigger a FULL backfill.
+                # Even when sentiments is up to date, sec_alloc_perf_attribution
+                # (an independent producer sourcing from index_identity +
+                # sec_composition + index_exts) may have missing dates, and the
+                # attributions table might need a rolling-column backfill —
+                # e.g., after adding benchmark_non_this_industry_rolling_*
+                # columns via ALTER TABLE. The incremental Step 5 date filter
+                # would miss historical dates, so trigger a FULL backfill.
+                # Run perf_attribution FIRST so the backfill + downstream
+                # aggregations read a current sec_alloc_perf_attribution.
+                await run_perf_attribution(conn, force=False)
                 if await needs_rolling_backfill(conn):
                     print("    -> sentiments up to date, but "
                           "industry_attributions needs rolling-column "
@@ -544,7 +561,18 @@ async def main() -> None:
         await run_correlations(conn, target_dates=target_dates,
                                force=args.force)
 
-        # ---- Step 8: INTERNAL attributions step -------------------------
+        # ---- Step 8: INTERNAL sec_alloc_perf_attribution producer --------
+        # Populate analysis.sec_alloc_perf_attribution (composition overlap
+        # + ETF-market liquidity + rolling close correlations, Index x Index).
+        # Reuses this same connection. This used to be a standalone
+        # analyze.sec_alloc_perf_attribution package; it is now an internal
+        # step because steps 9 + 10 below READ from this table. It manages
+        # its OWN target_dates (its missing dates can differ from
+        # industry_sentiments' missing dates). Force flag cascades from the
+        # parent (force mode truncates + fully recomputes).
+        await run_perf_attribution(conn, force=args.force)
+
+        # ---- Step 9: INTERNAL attributions step -------------------------
         # Aggregate analysis.sec_alloc_perf_attribution shared_weight to the
         # industry level -> analysis.industry_attributions. Reuses this same
         # connection. See attributions.py for the full pipeline. Exits
@@ -552,7 +580,7 @@ async def main() -> None:
         await run_attributions(conn, target_dates=target_dates,
                                force=args.force)
 
-        # ---- Step 9: INTERNAL etf_contribution step ---------------------
+        # ---- Step 10: INTERNAL etf_contribution step --------------------
         # Aggregate analysis.sec_alloc_perf_attribution.code_etf_trading_amount
         # to the industry level -> analysis.industry_etf_contribution. Reuses
         # this same connection. See etf_contribution.py for the full pipeline.
@@ -563,9 +591,12 @@ async def main() -> None:
 
         print_wall_time(t0)
     finally:
+        # Close with a timeout — after heavy bulk inserts the PostgreSQL
+        # server can be saturated with WAL checkpoint I/O, making
+        # conn.close() stall on the Terminate message + TCP teardown.
         try:
-            await conn.close()
-        except Exception:
+            await asyncio.wait_for(conn.close(), timeout=10)
+        except (asyncio.TimeoutError, Exception):
             pass
 
 

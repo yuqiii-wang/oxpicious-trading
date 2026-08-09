@@ -156,10 +156,12 @@ export async function listLiveDataDates(
 // ----------------------------------------------------------------------------
 export async function listLiveDataThemes(
   secType: LiveDataSecType,
+  exchange?: string | null,
 ): Promise<SectorNode[]> {
   const rows = await queryRows<DbLiveMetaRow>(buildMetaSql(secType), [
     secType,
   ]);
+  const exFilter = (exchange ?? "").trim() || null;
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -171,6 +173,7 @@ export async function listLiveDataThemes(
     // (is_industry_not_strategy=FALSE) carry strategy/theme in
     // sector_id/industry_id and belong in the RIGHT column only.
     if (!r.is_industry_not_strategy) continue;
+    if (exFilter && !matchesExchange(r.exchange, exFilter)) continue;
     const item = { code: r.code, name: r.name ?? "" };
     if (!sectorMap.has(r.sector_id)) {
       sectorMap.set(r.sector_id, {
@@ -228,21 +231,25 @@ export async function listLiveDataThemes(
 // ----------------------------------------------------------------------------
 export async function listStrategyThemes(
   secType: LiveDataSecType,
+  exchange?: string | null,
 ): Promise<StrategyNode[]> {
   const rows = await queryRows<DbLiveMetaRow>(buildMetaSql(secType), [
     secType,
   ]);
+  const exFilter = (exchange ?? "").trim() || null;
 
-  const mappedRows = rows.map((r) => ({
-    code: stripExchangeSuffix(r.code),
-    name: r.name,
-    sector_id: r.sector_id,
-    sector_label: r.sector_label,
-    industry_id: r.industry_id,
-    industry_label: r.industry_label,
-    industry_slug: r.industry_slug,
-    is_industry_not_strategy: r.is_industry_not_strategy,
-  }));
+  const mappedRows = rows
+    .filter((r) => !exFilter || matchesExchange(r.exchange, exFilter))
+    .map((r) => ({
+      code: stripExchangeSuffix(r.code),
+      name: r.name,
+      sector_id: r.sector_id,
+      sector_label: r.sector_label,
+      industry_id: r.industry_id,
+      industry_label: r.industry_label,
+      industry_slug: r.industry_slug,
+      is_industry_not_strategy: r.is_industry_not_strategy,
+    }));
 
   return buildStrategyThemesFromRows(mappedRows);
 }

@@ -4,3 +4,4 @@ __pycache__
 .trae
 
 .env
+temp_scripts/*

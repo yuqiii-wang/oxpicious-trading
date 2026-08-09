@@ -34,6 +34,10 @@ Notes:
     the script on the same data is safe.
   • Empty dividend CSVs (stocks with no dividend history) are silently
     skipped — they don't contribute any rows to the DB.
+  • In all-stocks mode, only stocks whose ``stats.sec_classification``
+    row has ``is_active=TRUE`` (>=1 record in ``stock_identity`` within
+    the trailing 365 days) are loaded. Delisted / dead stocks are
+    skipped. Single-stock ``--code`` mode bypasses this filter.
 
 Usage:
   python -m builds.stock.dividends                    # all SSE + SZSE stocks
@@ -61,6 +65,7 @@ from _common.build_commons import (
     bulk_upsert_async, truncate_table_async,
     print_build_header, print_wall_time, PROJECT_ROOT,
 )
+from _common.db_commons import get_db_connection
 
 setup_utf8_stdout()
 
@@ -271,6 +276,32 @@ def _find_latest_for_code(archive_dir: str, bare_code: str) -> Optional[str]:
     return latest.get(bare_code)
 
 
+def _fetch_active_stock_codes() -> Optional[set]:
+    """Return the set of active stock codes (with .SS/.SZ suffix) from
+    ``stats.sec_classification`` (type='stock', is_active=TRUE), or None
+    if the table has no rows (e.g. classification not yet built).
+
+    A security is marked active iff it has >=1 record in
+    ``stats.stock_identity`` within the trailing 365 days (see
+    ``builds.classification.sector_industry.upsert._update_is_active``).
+    Used to filter dividend CSV files so we don't read / upsert data for
+    delisted stocks (whose dividend history is no longer relevant).
+    """
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT code FROM stats.sec_classification "
+                "WHERE type = 'stock' AND is_active = TRUE"
+            )
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return None
+    return {r[0] for r in rows}
+
+
 # ============================================================================
 # Main pipeline
 # ============================================================================
@@ -335,6 +366,38 @@ async def main() -> None:
               "`python -m downloads.stock.sse.dividend` and/or "
               "`python -m downloads.stock.szse.dividend` first.", flush=True)
         sys.exit(1)
+
+    # Filter to active stocks (sec_classification.is_active=TRUE). Skip in
+    # single-stock mode (explicit --code is always processed). If
+    # sec_classification has no stock rows yet (classification not built),
+    # skip the filter to avoid dropping all data.
+    if not args.code:
+        active_codes = _fetch_active_stock_codes()
+        if active_codes is not None:
+            filtered: List[Tuple[str, str, str]] = []
+            n_dropped = 0
+            for path, suffix, source in file_specs:
+                result = _extract_code_date(path)
+                if result is None:
+                    continue
+                bare_code = result[0]
+                full_code = f"{bare_code}{suffix}"
+                if full_code in active_codes:
+                    filtered.append((path, suffix, source))
+                else:
+                    n_dropped += 1
+            print(f"    → is_active filter: kept {len(filtered)}, "
+                  f"dropped {n_dropped} (delisted / no recent identity "
+                  f"records) out of {len(file_specs)}", flush=True)
+            file_specs = filtered
+            if not file_specs:
+                print("    [INFO] No active stock dividend CSV files "
+                      "to process.", flush=True)
+                print_wall_time(t0)
+                return
+        else:
+            print("    → sec_classification empty, skipping is_active "
+                  "filter", flush=True)
 
     # ------------------------------------------------------------------
     # 2. Read all CSVs into DB rows

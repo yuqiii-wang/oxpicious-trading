@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "built_at": "2026-08-08T23:08:49.034048",
-  "csv_source": "temps/csindex_linked_etf/etf_index_map_all_2026-07-30.csv",
+  "built_at": "2026-08-09T16:22:24.556914",
+  "csv_source": "temps\\csindex_linked_etf\\etf_index_map_all_2026-07-30.csv",
   "catalog": {
     "OTHER": {
       "label": "其他",
@@ -616,7 +616,7 @@
   "indices": {
     "932456": {
       "name": "科创创业AI",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "AI",
       "tags": [
@@ -636,7 +636,7 @@
     },
     "H30192": {
       "name": "食品",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "CONS",
       "industry_id": "FOOD_BEV",
       "tags": [
@@ -652,7 +652,7 @@
     },
     "932315": {
       "name": "中证红利质量",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_QUALITY",
       "tags": [
@@ -680,7 +680,7 @@
     },
     "H30199": {
       "name": "电力指数",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "ENG",
       "industry_id": "POWER_GRID",
       "tags": [
@@ -716,7 +716,7 @@
     },
     "H11059": {
       "name": "工业有色",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "MAT",
       "industry_id": "METALS",
       "tags": [
@@ -732,7 +732,7 @@
     },
     "950180": {
       "name": "科创AI",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "AI",
       "tags": [
@@ -752,7 +752,7 @@
     },
     "930632": {
       "name": "CS稀金属",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "RARE_METALS",
       "tags": [
@@ -768,7 +768,7 @@
     },
     "931495": {
       "name": "工业互联",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "IOT",
       "tags": [
@@ -788,7 +788,7 @@
     },
     "931752": {
       "name": "工程机械主题",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "ENG_MACHINERY",
       "tags": [
@@ -828,7 +828,7 @@
     },
     "H30269": {
       "name": "红利低波",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "DIV",
       "industry_id": "DIV_LOW_VOL",
       "tags": [
@@ -852,7 +852,7 @@
     },
     "950162": {
       "name": "科创芯片设计",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -872,7 +872,7 @@
     },
     "930903": {
       "name": "中证A股",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_CSI_A",
       "tags": [
@@ -888,7 +888,7 @@
     },
     "399986": {
       "name": "中证银行",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "FIN",
       "industry_id": "BANKS",
       "tags": [
@@ -908,7 +908,7 @@
     },
     "932366": {
       "name": "300现金流",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_CASHFLOW",
       "tags": [
@@ -924,7 +924,7 @@
     },
     "931946": {
       "name": "畜牧养殖",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "LIVESTOCK",
       "tags": [
@@ -940,7 +940,7 @@
     },
     "H30202": {
       "name": "软件指数",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "TECH",
       "industry_id": "SOFTWARE",
       "tags": [
@@ -956,7 +956,7 @@
     },
     "930955": {
       "name": "红利低波100",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_LOW_VOL",
       "tags": [
@@ -980,7 +980,7 @@
     },
     "930713": {
       "name": "CS人工智",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "AI",
       "tags": [
@@ -996,7 +996,7 @@
     },
     "000001": {
       "name": "上证指数",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_SSE",
       "tags": [
@@ -1012,7 +1012,7 @@
     },
     "931892": {
       "name": "有色矿业",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "METALS",
       "tags": [
@@ -1028,7 +1028,7 @@
     },
     "000688": {
       "name": "科创50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_STAR",
       "tags": [
@@ -1068,7 +1068,7 @@
     },
     "932094": {
       "name": "软件开发",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SOFTWARE",
       "tags": [
@@ -1084,7 +1084,7 @@
     },
     "H30217": {
       "name": "医疗器械",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "HC",
       "industry_id": "MED_DEVICES",
       "tags": [
@@ -1104,7 +1104,7 @@
     },
     "000949": {
       "name": "中证农业",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "AGRI",
       "tags": [
@@ -1124,7 +1124,7 @@
     },
     "000699": {
       "name": "科创200",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_STAR",
       "tags": [
@@ -1156,7 +1156,7 @@
     },
     "930601": {
       "name": "中证软件",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SOFTWARE",
       "tags": [
@@ -1176,7 +1176,7 @@
     },
     "931719": {
       "name": "CS电池",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "BATTERY",
       "tags": [
@@ -1192,7 +1192,7 @@
     },
     "931643": {
       "name": "科创创业50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_GEM",
       "tags": [
@@ -1208,7 +1208,7 @@
     },
     "931008": {
       "name": "汽车指数",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "AUTO",
       "tags": [
@@ -1224,7 +1224,7 @@
     },
     "931412": {
       "name": "证券公司30",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "FIN",
       "industry_id": "BROKERS",
       "tags": [
@@ -1260,7 +1260,7 @@
     },
     "930697": {
       "name": "家用电器",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "DISCRETIONARY",
       "tags": [
@@ -1276,7 +1276,7 @@
     },
     "000811": {
       "name": "细分有色",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "METALS",
       "tags": [
@@ -1292,7 +1292,7 @@
     },
     "931241": {
       "name": "家居家电",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "DISCRETIONARY",
       "tags": [
@@ -1308,7 +1308,7 @@
     },
     "931021": {
       "name": "家电龙头",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "DISCRETIONARY",
       "tags": [
@@ -1324,7 +1324,7 @@
     },
     "399975": {
       "name": "证券公司",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "FIN",
       "industry_id": "BROKERS",
       "tags": [
@@ -1340,7 +1340,7 @@
     },
     "000698": {
       "name": "科创100",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_STAR",
       "tags": [
@@ -1356,7 +1356,7 @@
     },
     "932690": {
       "name": "精选市场稳健",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_THEMED",
       "tags": [
@@ -1372,7 +1372,7 @@
     },
     "930910": {
       "name": "农牧渔",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "AGRI",
       "tags": [
@@ -1408,7 +1408,7 @@
     },
     "399976": {
       "name": "CS新能车",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "NEV",
       "industry_id": "EV",
       "tags": [
@@ -1428,7 +1428,7 @@
     },
     "931151": {
       "name": "光伏产业",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "PV",
       "tags": [
@@ -1444,7 +1444,7 @@
     },
     "931696": {
       "name": "科技50策略",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "TECH_GENERAL",
       "tags": [
@@ -1464,7 +1464,7 @@
     },
     "000995": {
       "name": "全指公用",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "INFRA",
       "industry_id": "INFRA_UTIL",
       "tags": [
@@ -1480,7 +1480,7 @@
     },
     "000510": {
       "name": "中证A500",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_CSI_A",
       "tags": [
@@ -1496,7 +1496,7 @@
     },
     "932420": {
       "name": "智选船舶产业",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "TRANSPORT",
       "tags": [
@@ -1512,7 +1512,7 @@
     },
     "000685": {
       "name": "科创芯片",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -1532,7 +1532,7 @@
     },
     "931855": {
       "name": "通用航空",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "AERO",
       "industry_id": "AERO_AVIATION",
       "tags": [
@@ -1572,7 +1572,7 @@
     },
     "931594": {
       "name": "卫星产业",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "AERO",
       "industry_id": "AERO_SPACE",
       "tags": [
@@ -1588,7 +1588,7 @@
     },
     "930050": {
       "name": "中证A50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_CSI_A",
       "tags": [
@@ -1604,7 +1604,7 @@
     },
     "H11136": {
       "name": "中国互联网",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "TECH",
       "industry_id": "INTERNET",
       "tags": [
@@ -1628,7 +1628,7 @@
     },
     "931785": {
       "name": "智选沪深港科技50",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "TECH",
       "industry_id": "TECH_GENERAL",
       "tags": [
@@ -1648,7 +1648,7 @@
     },
     "932431": {
       "name": "300质量",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_FACTOR",
       "tags": [
@@ -1688,7 +1688,7 @@
     },
     "932422": {
       "name": "A500红利低波",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_LOW_VOL",
       "tags": [
@@ -1712,7 +1712,7 @@
     },
     "000813": {
       "name": "细分化工",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "CHEM",
       "tags": [
@@ -1728,7 +1728,7 @@
     },
     "932368": {
       "name": "800现金流",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_CASHFLOW",
       "tags": [
@@ -1744,7 +1744,7 @@
     },
     "930986": {
       "name": "金融科技",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "FIN",
       "industry_id": "FINTECH",
       "tags": [
@@ -1772,7 +1772,7 @@
     },
     "932088": {
       "name": "全指航空",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "AERO",
       "industry_id": "AERO_AVIATION",
       "tags": [
@@ -1788,7 +1788,7 @@
     },
     "931848": {
       "name": "800红利低波",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_LOW_VOL",
       "tags": [
@@ -1828,7 +1828,7 @@
     },
     "000905": {
       "name": "中证500",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_CSI500",
       "tags": [
@@ -1844,7 +1844,7 @@
     },
     "000010": {
       "name": "上证180",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_SSE180",
       "tags": [
@@ -1860,7 +1860,7 @@
     },
     "950580": {
       "name": "上证580",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_SSE",
       "tags": [
@@ -1876,7 +1876,7 @@
     },
     "931265": {
       "name": "民企300",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "SOE",
       "industry_id": "SOE_THEME",
       "tags": [
@@ -1892,7 +1892,7 @@
     },
     "000824": {
       "name": "国企红利",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_SOE",
       "tags": [
@@ -1916,7 +1916,7 @@
     },
     "000009": {
       "name": "上证380",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_SSE380",
       "tags": [
@@ -1932,7 +1932,7 @@
     },
     "932160": {
       "name": "AAA科创债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_CORP",
       "tags": [
@@ -1956,7 +1956,7 @@
     },
     "950167": {
       "name": "沪AAA科创债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_CORP",
       "tags": [
@@ -1980,7 +1980,7 @@
     },
     "950161": {
       "name": "科创新药",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "INNO_DRUG",
       "tags": [
@@ -2000,7 +2000,7 @@
     },
     "000692": {
       "name": "科创新能",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "NEV_GENERAL",
       "tags": [
@@ -2020,7 +2020,7 @@
     },
     "950125": {
       "name": "科创半导体材料设备",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -2044,7 +2044,7 @@
     },
     "H30590": {
       "name": "机器人",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "IND",
       "industry_id": "ROBOTICS",
       "tags": [
@@ -2092,7 +2092,7 @@
     },
     "932365": {
       "name": "中证现金流",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_CASHFLOW",
       "tags": [
@@ -2112,7 +2112,7 @@
     },
     "000681": {
       "name": "科创价格",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_STAR",
       "tags": [
@@ -2148,7 +2148,7 @@
     },
     "932367": {
       "name": "500现金流",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_CASHFLOW",
       "tags": [
@@ -2164,7 +2164,7 @@
     },
     "950228": {
       "name": "智选科创价值50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_VALUE",
       "tags": [
@@ -2184,7 +2184,7 @@
     },
     "000903": {
       "name": "中证A100",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_CSI_A",
       "tags": [
@@ -2200,7 +2200,7 @@
     },
     "931582": {
       "name": "数字经济",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "DIGITAL",
       "tags": [
@@ -2236,7 +2236,7 @@
     },
     "932217": {
       "name": "制药指数",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -2252,7 +2252,7 @@
     },
     "000689": {
       "name": "科创材料",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "MAT_GENERAL",
       "tags": [
@@ -2272,7 +2272,7 @@
     },
     "931529": {
       "name": "国企数字经济",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "DIGITAL",
       "tags": [
@@ -2292,7 +2292,7 @@
     },
     "000690": {
       "name": "科创成长",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_GROWTH",
       "tags": [
@@ -2312,7 +2312,7 @@
     },
     "000683": {
       "name": "科创生物",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "BIOTECH",
       "tags": [
@@ -2332,7 +2332,7 @@
     },
     "931823": {
       "name": "国资央企50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "SOE",
       "industry_id": "SOE_THEME",
       "tags": [
@@ -2348,7 +2348,7 @@
     },
     "000693": {
       "name": "科创机械",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "ENG_MACHINERY",
       "tags": [
@@ -2368,7 +2368,7 @@
     },
     "H30270": {
       "name": "红利价值",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "DIV",
       "industry_id": "DIV_VALUE",
       "tags": [
@@ -2392,7 +2392,7 @@
     },
     "000300": {
       "name": "沪深300",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_CSI300",
       "tags": [
@@ -2408,7 +2408,7 @@
     },
     "000680": {
       "name": "科创综指",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_STAR",
       "tags": [
@@ -2424,7 +2424,7 @@
     },
     "000922": {
       "name": "中证红利",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_GENERAL",
       "tags": [
@@ -2444,7 +2444,7 @@
     },
     "932305": {
       "name": "智选高股息",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_VALUE",
       "tags": [
@@ -2460,7 +2460,7 @@
     },
     "950333": {
       "name": "智选创新价值",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_VALUE",
       "tags": [
@@ -2476,7 +2476,7 @@
     },
     "000682": {
       "name": "科创信息",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "COMPUTER",
       "tags": [
@@ -2496,7 +2496,7 @@
     },
     "931132": {
       "name": "诚通央企红利",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_SOE",
       "tags": [
@@ -2520,7 +2520,7 @@
     },
     "950245": {
       "name": "沪做市公司债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_CORP",
       "tags": [
@@ -2540,7 +2540,7 @@
     },
     "931552": {
       "name": "1-3年国债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_TREASURY",
       "tags": [
@@ -2560,7 +2560,7 @@
     },
     "931243": {
       "name": "诚通央企ESG",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "ESG_GENERAL",
       "tags": [
@@ -2580,7 +2580,7 @@
     },
     "000016": {
       "name": "上证50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_SSE50",
       "tags": [
@@ -2596,7 +2596,7 @@
     },
     "932066": {
       "name": "半导体行业精选",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -2612,7 +2612,7 @@
     },
     "000151": {
       "name": "上国红利",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_GENERAL",
       "tags": [
@@ -2628,7 +2628,7 @@
     },
     "H30198": {
       "name": "油气产业",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "ENG",
       "industry_id": "OIL_GAS",
       "tags": [
@@ -2644,7 +2644,7 @@
     },
     "931994": {
       "name": "电网设备主题",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ENG",
       "industry_id": "POWER_GRID",
       "tags": [
@@ -2660,7 +2660,7 @@
     },
     "932052": {
       "name": "央企科技创新",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "TECH_GENERAL",
       "tags": [
@@ -2684,7 +2684,7 @@
     },
     "931743": {
       "name": "半导体材料设备",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -2704,7 +2704,7 @@
     },
     "000825": {
       "name": "央企红利",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_SOE",
       "tags": [
@@ -2760,7 +2760,7 @@
     },
     "931271": {
       "name": "通信设备主题",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "COMMS",
       "tags": [
@@ -2776,7 +2776,7 @@
     },
     "000906": {
       "name": "中证800",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_CSI800",
       "tags": [
@@ -2792,7 +2792,7 @@
     },
     "931238": {
       "name": "SSH黄金股票",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "PRECIOUS",
       "tags": [
@@ -2808,7 +2808,7 @@
     },
     "931248": {
       "name": "油气资源",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ENG",
       "industry_id": "OIL_GAS",
       "tags": [
@@ -2828,7 +2828,7 @@
     },
     "932000": {
       "name": "中证2000",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_CSI2000",
       "tags": [
@@ -2844,7 +2844,7 @@
     },
     "399974": {
       "name": "国企改革",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_THEMED",
       "tags": [
@@ -2864,7 +2864,7 @@
     },
     "H30366": {
       "name": "高息策略",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "DIV",
       "industry_id": "DIV_VALUE",
       "tags": [
@@ -2880,7 +2880,7 @@
     },
     "931230": {
       "name": "汽车零部件",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "AUTO",
       "tags": [
@@ -2896,7 +2896,7 @@
     },
     "930939": {
       "name": "500质量成长",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_GROWTH",
       "tags": [
@@ -2916,7 +2916,7 @@
     },
     "931247": {
       "name": "中证信创",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "INFO_SEC",
       "tags": [
@@ -2936,7 +2936,7 @@
     },
     "H30007": {
       "name": "芯片产业",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -2952,7 +2952,7 @@
     },
     "932087": {
       "name": "集成电路",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -2968,7 +2968,7 @@
     },
     "931865": {
       "name": "中证半导",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -2988,7 +2988,7 @@
     },
     "931235": {
       "name": "中证电信",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "COMMS",
       "tags": [
@@ -3008,7 +3008,7 @@
     },
     "000993": {
       "name": "全指信息",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "COMPUTER",
       "tags": [
@@ -3024,7 +3024,7 @@
     },
     "950175": {
       "name": "沪30年国债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_TREASURY",
       "tags": [
@@ -3044,7 +3044,7 @@
     },
     "000989": {
       "name": "全指可选",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "DISCRETIONARY",
       "tags": [
@@ -3060,7 +3060,7 @@
     },
     "H30182": {
       "name": "计算机",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "TECH",
       "industry_id": "COMPUTER",
       "tags": [
@@ -3076,7 +3076,7 @@
     },
     "930851": {
       "name": "云计算",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "CLOUD",
       "tags": [
@@ -3092,7 +3092,7 @@
     },
     "950243": {
       "name": "沪做市国债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_TREASURY",
       "tags": [
@@ -3112,7 +3112,7 @@
     },
     "000015": {
       "name": "红利指数",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_GENERAL",
       "tags": [
@@ -3148,7 +3148,7 @@
     },
     "000852": {
       "name": "中证1000",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_CSI1000",
       "tags": [
@@ -3164,7 +3164,7 @@
     },
     "931068": {
       "name": "消费龙头",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "CONS_GENERAL",
       "tags": [
@@ -3180,7 +3180,7 @@
     },
     "399989": {
       "name": "中证医疗",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -3200,7 +3200,7 @@
     },
     "931589": {
       "name": "300成长创新",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_GROWTH",
       "tags": [
@@ -3216,7 +3216,7 @@
     },
     "H11153": {
       "name": "内地国有",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "SOE",
       "industry_id": "SOE_THEME",
       "tags": [
@@ -3232,7 +3232,7 @@
     },
     "931586": {
       "name": "300价值稳健",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_VALUE",
       "tags": [
@@ -3248,7 +3248,7 @@
     },
     "000936": {
       "name": "800通信",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "COMMS",
       "tags": [
@@ -3264,7 +3264,7 @@
     },
     "932037": {
       "name": "央企现代能源",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ENG",
       "industry_id": "ENG_GENERAL",
       "tags": [
@@ -3284,7 +3284,7 @@
     },
     "932038": {
       "name": "央企科技引领",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "TECH_GENERAL",
       "tags": [
@@ -3308,7 +3308,7 @@
     },
     "H30356": {
       "name": "800价值",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_VALUE",
       "tags": [
@@ -3324,7 +3324,7 @@
     },
     "399994": {
       "name": "信息安全",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "TECH",
       "industry_id": "INFO_SEC",
       "tags": [
@@ -3344,7 +3344,7 @@
     },
     "932039": {
       "name": "央企股东回报",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_GENERAL",
       "tags": [
@@ -3364,7 +3364,7 @@
     },
     "000919": {
       "name": "300价值",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_VALUE",
       "tags": [
@@ -3396,7 +3396,7 @@
     },
     "931139": {
       "name": "CS消费50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "CONS_GENERAL",
       "tags": [
@@ -3412,7 +3412,7 @@
     },
     "931463": {
       "name": "300 ESG",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "ESG_GENERAL",
       "tags": [
@@ -3428,7 +3428,7 @@
     },
     "H30352": {
       "name": "500价值",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_VALUE",
       "tags": [
@@ -3460,7 +3460,7 @@
     },
     "931897": {
       "name": "绿色电力",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "CARBON",
       "tags": [
@@ -3508,7 +3508,7 @@
     },
     "000932": {
       "name": "800消费",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "CONS_GENERAL",
       "tags": [
@@ -3524,7 +3524,7 @@
     },
     "931992": {
       "name": "疫苗生物",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "VACCINE",
       "tags": [
@@ -3544,7 +3544,7 @@
     },
     "399997": {
       "name": "中证白酒",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "CONS",
       "industry_id": "BAIJIU",
       "tags": [
@@ -3568,7 +3568,7 @@
     },
     "H30171": {
       "name": "运输指数",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "IND",
       "industry_id": "TRANSPORT",
       "tags": [
@@ -3584,7 +3584,7 @@
     },
     "000918": {
       "name": "300成长",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_GROWTH",
       "tags": [
@@ -3620,7 +3620,7 @@
     },
     "931733": {
       "name": "绿色能源",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ENG",
       "industry_id": "ENG_GENERAL",
       "tags": [
@@ -3640,7 +3640,7 @@
     },
     "000945": {
       "name": "内地运输",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "TRANSPORT",
       "tags": [
@@ -3656,7 +3656,7 @@
     },
     "931798": {
       "name": "光伏龙头30",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "PV",
       "tags": [
@@ -3672,7 +3672,7 @@
     },
     "931790": {
       "name": "中韩半导体",
-      "exchange": null,
+      "exchange": "OVERSEAS",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -3688,7 +3688,7 @@
     },
     "931866": {
       "name": "中证机床",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "MACHINE_TOOL",
       "tags": [
@@ -3708,7 +3708,7 @@
     },
     "930641": {
       "name": "中证中药",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "TCM",
       "tags": [
@@ -3728,7 +3728,7 @@
     },
     "932200": {
       "name": "国债及政金债0-3",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_POLICY",
       "tags": [
@@ -3752,7 +3752,7 @@
     },
     "931695": {
       "name": "成渝经济圈",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "REGION",
       "industry_id": "REGION_CN",
       "tags": [
@@ -3768,7 +3768,7 @@
     },
     "931521": {
       "name": "高装细分50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "ADVMFG",
       "tags": [
@@ -3784,7 +3784,7 @@
     },
     "931588": {
       "name": "1000价值稳健",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_VALUE",
       "tags": [
@@ -3804,7 +3804,7 @@
     },
     "931778": {
       "name": "农牧主题",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "AGRI",
       "tags": [
@@ -3820,7 +3820,7 @@
     },
     "931590": {
       "name": "500成长创新",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_GROWTH",
       "tags": [
@@ -3836,7 +3836,7 @@
     },
     "931755": {
       "name": "SEEE碳中和",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "CARBON",
       "tags": [
@@ -3852,7 +3852,7 @@
     },
     "930796": {
       "name": "全球中国互联网",
-      "exchange": null,
+      "exchange": "OVERSEAS",
       "sector_id": "TECH",
       "industry_id": "INTERNET",
       "tags": [
@@ -3896,7 +3896,7 @@
     },
     "930608": {
       "name": "中证基建",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "INFRA",
       "industry_id": "INFRA_CONSTR",
       "tags": [
@@ -3916,7 +3916,7 @@
     },
     "931447": {
       "name": "科技先锋",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "TECH_GENERAL",
       "tags": [
@@ -3936,7 +3936,7 @@
     },
     "931587": {
       "name": "500价值稳健",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_VALUE",
       "tags": [
@@ -3952,7 +3952,7 @@
     },
     "931152": {
       "name": "CS创新药",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "INNO_DRUG",
       "tags": [
@@ -4008,7 +4008,7 @@
     },
     "931039": {
       "name": "银行AH",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "FIN",
       "industry_id": "BANKS",
       "tags": [
@@ -4044,7 +4044,7 @@
     },
     "931591": {
       "name": "1000成长创新",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_GROWTH",
       "tags": [
@@ -4084,7 +4084,7 @@
     },
     "931009": {
       "name": "建筑材料",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "BLDG_STEEL",
       "tags": [
@@ -4128,7 +4128,7 @@
     },
     "930721": {
       "name": "CS智汽车",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "AUTO",
       "tags": [
@@ -4144,7 +4144,7 @@
     },
     "000948": {
       "name": "内地地产",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "RE",
       "industry_id": "RE_REAL_ESTATE",
       "tags": [
@@ -4184,7 +4184,7 @@
     },
     "931494": {
       "name": "消费电子",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "CONSUMER_ELEC",
       "tags": [
@@ -4204,7 +4204,7 @@
     },
     "930716": {
       "name": "CS物流",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "TRANSPORT",
       "tags": [
@@ -4220,7 +4220,7 @@
     },
     "H11054": {
       "name": "装备产业",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "IND",
       "industry_id": "ADVMFG",
       "tags": [
@@ -4236,7 +4236,7 @@
     },
     "931393": {
       "name": "湖北指数",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "REGION",
       "industry_id": "REGION_CN",
       "tags": [
@@ -4252,7 +4252,7 @@
     },
     "930633": {
       "name": "中证旅游",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "TOURISM",
       "tags": [
@@ -4272,7 +4272,7 @@
     },
     "000977": {
       "name": "内地低碳",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "CARBON",
       "tags": [
@@ -4288,7 +4288,7 @@
     },
     "931468": {
       "name": "红利质量",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_QUALITY",
       "tags": [
@@ -4312,7 +4312,7 @@
     },
     "930712": {
       "name": "CS物联网",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "IOT",
       "tags": [
@@ -4328,7 +4328,7 @@
     },
     "930662": {
       "name": "CS现代农",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "AGRI",
       "tags": [
@@ -4344,7 +4344,7 @@
     },
     "H11057": {
       "name": "石化产业",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "ENG",
       "industry_id": "PETROCHEM",
       "tags": [
@@ -4360,7 +4360,7 @@
     },
     "931554": {
       "name": "长江保护",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "ESG_GENERAL",
       "tags": [
@@ -4396,7 +4396,7 @@
     },
     "930604": {
       "name": "中国互联网30",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "INTERNET",
       "tags": [
@@ -4420,7 +4420,7 @@
     },
     "H30597": {
       "name": "新材料",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "MAT",
       "industry_id": "NEW_MAT",
       "tags": [
@@ -4472,7 +4472,7 @@
     },
     "399965": {
       "name": "800地产",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "RE",
       "industry_id": "RE_REAL_ESTATE",
       "tags": [
@@ -4488,7 +4488,7 @@
     },
     "000815": {
       "name": "细分食品",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "FOOD_BEV",
       "tags": [
@@ -4504,7 +4504,7 @@
     },
     "H30178": {
       "name": "医疗保健",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -4520,7 +4520,7 @@
     },
     "930781": {
       "name": "中证影视",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "MEDIA",
       "tags": [
@@ -4576,7 +4576,7 @@
     },
     "931403": {
       "name": "品牌工程",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "CONS_GENERAL",
       "tags": [
@@ -4596,7 +4596,7 @@
     },
     "950049": {
       "name": "G60成指",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "REGION",
       "industry_id": "REGION_CN",
       "tags": [
@@ -4632,7 +4632,7 @@
     },
     "H30365": {
       "name": "文娱传媒",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "CONS",
       "industry_id": "MEDIA",
       "tags": [
@@ -4648,7 +4648,7 @@
     },
     "930653": {
       "name": "CS食品饮",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "FOOD_BEV",
       "tags": [
@@ -4664,7 +4664,7 @@
     },
     "399812": {
       "name": "养老产业",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "HC",
       "industry_id": "ELDER_CARE",
       "tags": [
@@ -4680,7 +4680,7 @@
     },
     "930598": {
       "name": "稀土产业",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "REE",
       "tags": [
@@ -4696,7 +4696,7 @@
     },
     "399808": {
       "name": "中证新能",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "NEV",
       "industry_id": "NEV_GENERAL",
       "tags": [
@@ -4716,7 +4716,7 @@
     },
     "931469": {
       "name": "云计算50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "CLOUD",
       "tags": [
@@ -4732,7 +4732,7 @@
     },
     "930743": {
       "name": "中证生科",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "BIOTECH",
       "tags": [
@@ -4788,7 +4788,7 @@
     },
     "930821": {
       "name": "中证VR",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "VR",
       "tags": [
@@ -4808,7 +4808,7 @@
     },
     "931140": {
       "name": "医药50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -4824,7 +4824,7 @@
     },
     "931476": {
       "name": "ESG 120策略",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "ESG_GENERAL",
       "tags": [
@@ -4840,7 +4840,7 @@
     },
     "000941": {
       "name": "新能源",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "NEV_GENERAL",
       "tags": [
@@ -4860,7 +4860,7 @@
     },
     "H11052": {
       "name": "智能电车",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "NEV",
       "industry_id": "EV",
       "tags": [
@@ -4876,7 +4876,7 @@
     },
     "399995": {
       "name": "基建工程",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "INFRA",
       "industry_id": "INFRA_CONSTR",
       "tags": [
@@ -4892,7 +4892,7 @@
     },
     "931088": {
       "name": "180 ESG",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "ESG_GENERAL",
       "tags": [
@@ -4928,7 +4928,7 @@
     },
     "930708": {
       "name": "中证有色",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "METALS",
       "tags": [
@@ -4948,7 +4948,7 @@
     },
     "931526": {
       "name": "企业核心竞争力50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_FACTOR",
       "tags": [
@@ -4964,7 +4964,7 @@
     },
     "930725": {
       "name": "CS车联网",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "IOT",
       "tags": [
@@ -4980,7 +4980,7 @@
     },
     "931402": {
       "name": "证券先锋",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "FIN",
       "industry_id": "BROKERS",
       "tags": [
@@ -4996,7 +4996,7 @@
     },
     "931480": {
       "name": "线上消费",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "CONS_GENERAL",
       "tags": [
@@ -5012,7 +5012,7 @@
     },
     "931484": {
       "name": "CS医药创新",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -5028,7 +5028,7 @@
     },
     "931456": {
       "name": "中国教育",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "EDU",
       "tags": [
@@ -5048,7 +5048,7 @@
     },
     "930997": {
       "name": "新能源车",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "NEV_GENERAL",
       "tags": [
@@ -5072,7 +5072,7 @@
     },
     "H30022": {
       "name": "800银行",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "FIN",
       "industry_id": "BANKS",
       "tags": [
@@ -5088,7 +5088,7 @@
     },
     "930902": {
       "name": "中证数据",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "DIGITAL",
       "tags": [
@@ -5108,7 +5108,7 @@
     },
     "000807": {
       "name": "食品饮料",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "FOOD_BEV",
       "tags": [
@@ -5124,7 +5124,7 @@
     },
     "000812": {
       "name": "细分机械",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "ENG_MACHINERY",
       "tags": [
@@ -5140,7 +5140,7 @@
     },
     "H30015": {
       "name": "800汽车",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "IND",
       "industry_id": "AUTO",
       "tags": [
@@ -5156,7 +5156,7 @@
     },
     "399814": {
       "name": "大农业",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "CONS",
       "industry_id": "AGRI",
       "tags": [
@@ -5172,7 +5172,7 @@
     },
     "931380": {
       "name": "科技50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "TECH_GENERAL",
       "tags": [
@@ -5192,7 +5192,7 @@
     },
     "930614": {
       "name": "环保50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "GREEN",
       "tags": [
@@ -5208,7 +5208,7 @@
     },
     "930707": {
       "name": "中证畜牧",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "LIVESTOCK",
       "tags": [
@@ -5228,7 +5228,7 @@
     },
     "931382": {
       "name": "智选300 ESG领先",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "ESG_GENERAL",
       "tags": [
@@ -5244,7 +5244,7 @@
     },
     "930901": {
       "name": "动漫游戏",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "GAMES",
       "tags": [
@@ -5264,7 +5264,7 @@
     },
     "000806": {
       "name": "消费服务",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "CONS_GENERAL",
       "tags": [
@@ -5280,7 +5280,7 @@
     },
     "930850": {
       "name": "智能制造",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "ADVMFG",
       "tags": [
@@ -5296,7 +5296,7 @@
     },
     "931087": {
       "name": "科技龙头",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "TECH_GENERAL",
       "tags": [
@@ -5316,7 +5316,7 @@
     },
     "930648": {
       "name": "CS智消费",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "CONS_GENERAL",
       "tags": [
@@ -5332,7 +5332,7 @@
     },
     "931461": {
       "name": "电子50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "CONSUMER_ELEC",
       "tags": [
@@ -5348,7 +5348,7 @@
     },
     "931079": {
       "name": "5G通信",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "COMMS",
       "tags": [
@@ -5364,7 +5364,7 @@
     },
     "931372": {
       "name": "浙江国资",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "SOE",
       "industry_id": "SOE_THEME",
       "tags": [
@@ -5396,7 +5396,7 @@
     },
     "H11014": {
       "name": "中证短融",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "DEBT",
       "industry_id": "DEBT_CORP",
       "tags": [
@@ -5416,7 +5416,7 @@
     },
     "931161": {
       "name": "0-4年地债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_LOCAL",
       "tags": [
@@ -5436,7 +5436,7 @@
     },
     "950041": {
       "name": "上证投资级转债及可交换债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_CONVERTIBLE",
       "tags": [
@@ -5460,7 +5460,7 @@
     },
     "931166": {
       "name": "医药健康100",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "HEALTH",
       "tags": [
@@ -5480,7 +5480,7 @@
     },
     "950105": {
       "name": "上证证券",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "FIN",
       "industry_id": "BROKERS",
       "tags": [
@@ -5500,7 +5500,7 @@
     },
     "931406": {
       "name": "5G 50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "COMMS",
       "tags": [
@@ -5516,7 +5516,7 @@
     },
     "930651": {
       "name": "CS计算机",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "COMPUTER",
       "tags": [
@@ -5552,7 +5552,7 @@
     },
     "931078": {
       "name": "中证转债及可交换债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_CONVERTIBLE",
       "tags": [
@@ -5576,7 +5576,7 @@
     },
     "399971": {
       "name": "中证传媒",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "CONS",
       "industry_id": "MEDIA",
       "tags": [
@@ -5596,7 +5596,7 @@
     },
     "399966": {
       "name": "800证保",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "FIN",
       "industry_id": "BROKERS",
       "tags": [
@@ -5612,7 +5612,7 @@
     },
     "930652": {
       "name": "CS电子",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "CONSUMER_ELEC",
       "tags": [
@@ -5628,7 +5628,7 @@
     },
     "930606": {
       "name": "中证钢铁",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "BLDG_STEEL",
       "tags": [
@@ -5648,7 +5648,7 @@
     },
     "399998": {
       "name": "中证煤炭",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "ENG",
       "industry_id": "COAL",
       "tags": [
@@ -5668,7 +5668,7 @@
     },
     "931268": {
       "name": "持续发展",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "ESG_GENERAL",
       "tags": [
@@ -5684,7 +5684,7 @@
     },
     "931071": {
       "name": "人工智能",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "AI",
       "tags": [
@@ -5700,7 +5700,7 @@
     },
     "931775": {
       "name": "房地产",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "RE",
       "industry_id": "RE_REAL_ESTATE",
       "tags": [
@@ -5716,7 +5716,7 @@
     },
     "931186": {
       "name": "中证科技",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "TECH_GENERAL",
       "tags": [
@@ -5736,7 +5736,7 @@
     },
     "000982": {
       "name": "500等权",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_FACTOR",
       "tags": [
@@ -5752,7 +5752,7 @@
     },
     "950045": {
       "name": "上证5年期地债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_LOCAL",
       "tags": [
@@ -5776,7 +5776,7 @@
     },
     "000859": {
       "name": "国企一带一路",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_THEMED",
       "tags": [
@@ -5796,7 +5796,7 @@
     },
     "931159": {
       "name": "创新100",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "BROAD",
       "industry_id": "BROAD_TECH_INNOV",
       "tags": [
@@ -5812,7 +5812,7 @@
     },
     "931187": {
       "name": "科技100",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "TECH_GENERAL",
       "tags": [
@@ -5832,7 +5832,7 @@
     },
     "931165": {
       "name": "新兴科技100",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "TECH_GENERAL",
       "tags": [
@@ -5852,7 +5852,7 @@
     },
     "931000": {
       "name": "大湾区",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "REGION",
       "industry_id": "REGION_CN",
       "tags": [
@@ -5868,7 +5868,7 @@
     },
     "000861": {
       "name": "央企创新",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "SOE",
       "industry_id": "SOE_THEME",
       "tags": [
@@ -5884,7 +5884,7 @@
     },
     "930865": {
       "name": "5年地债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_LOCAL",
       "tags": [
@@ -5904,7 +5904,7 @@
     },
     "000821": {
       "name": "300红利",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_GENERAL",
       "tags": [
@@ -5920,7 +5920,7 @@
     },
     "931160": {
       "name": "通信设备",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "COMMS",
       "tags": [
@@ -5936,7 +5936,7 @@
     },
     "930740": {
       "name": "300红利低波",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DIV",
       "industry_id": "DIV_LOW_VOL",
       "tags": [
@@ -5960,7 +5960,7 @@
     },
     "930758": {
       "name": "凤凰50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_THEMED",
       "tags": [
@@ -5976,7 +5976,7 @@
     },
     "931141": {
       "name": "CS长三角",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "REGION",
       "industry_id": "REGION_CN",
       "tags": [
@@ -5992,7 +5992,7 @@
     },
     "931066": {
       "name": "军工龙头",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MIL",
       "industry_id": "MIL_DEFENSE",
       "tags": [
@@ -6008,7 +6008,7 @@
     },
     "399973": {
       "name": "中证国防",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "MIL",
       "industry_id": "MIL_DEFENSE",
       "tags": [
@@ -6028,7 +6028,7 @@
     },
     "000925": {
       "name": "基本面50",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_FUNDAMENTAL",
       "tags": [
@@ -6044,7 +6044,7 @@
     },
     "990001": {
       "name": "中华半导体芯片",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -6064,7 +6064,7 @@
     },
     "H30184": {
       "name": "半导体",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -6080,7 +6080,7 @@
     },
     "930726": {
       "name": "CS生医",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "BIOTECH",
       "tags": [
@@ -6096,7 +6096,7 @@
     },
     "399987": {
       "name": "中证酒",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "CONS",
       "industry_id": "FOOD_BEV",
       "tags": [
@@ -6116,7 +6116,7 @@
     },
     "931018": {
       "name": "中证5-10年国债活跃券",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_TREASURY",
       "tags": [
@@ -6140,7 +6140,7 @@
     },
     "931033": {
       "name": "杭州湾区",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "REGION",
       "industry_id": "REGION_CN",
       "tags": [
@@ -6156,7 +6156,7 @@
     },
     "930782": {
       "name": "500SNLV",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_FACTOR",
       "tags": [
@@ -6172,7 +6172,7 @@
     },
     "931052": {
       "name": "国信价值",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_VALUE",
       "tags": [
@@ -6188,7 +6188,7 @@
     },
     "000860": {
       "name": "结构调整",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_THEMED",
       "tags": [
@@ -6204,7 +6204,7 @@
     },
     "950109": {
       "name": "上证10年地债",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_LOCAL",
       "tags": [
@@ -6228,7 +6228,7 @@
     },
     "000171": {
       "name": "新兴成指",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_THEMED",
       "tags": [
@@ -6260,7 +6260,7 @@
     },
     "930928": {
       "name": "CR新动能",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_FACTOR",
       "tags": [
@@ -6276,7 +6276,7 @@
     },
     "930927": {
       "name": "CR基石",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_FACTOR",
       "tags": [
@@ -6292,7 +6292,7 @@
     },
     "H11077": {
       "name": "10年国债",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "DEBT",
       "industry_id": "DEBT_TREASURY",
       "tags": [
@@ -6312,7 +6312,7 @@
     },
     "000819": {
       "name": "有色金属",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "METALS",
       "tags": [
@@ -6328,7 +6328,7 @@
     },
     "399967": {
       "name": "中证军工",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "MIL",
       "industry_id": "MIL_DEFENSE",
       "tags": [
@@ -6348,7 +6348,7 @@
     },
     "000827": {
       "name": "中证环保",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "GREEN",
       "tags": [
@@ -6368,7 +6368,7 @@
     },
     "H30533": {
       "name": "中国互联网50",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "TECH",
       "industry_id": "INTERNET",
       "tags": [
@@ -6392,7 +6392,7 @@
     },
     "950096": {
       "name": "上海国企",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "SOE",
       "industry_id": "SOE_THEME",
       "tags": [
@@ -6408,7 +6408,7 @@
     },
     "H30257": {
       "name": "500信息",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "TECH",
       "industry_id": "COMPUTER",
       "tags": [
@@ -6424,7 +6424,7 @@
     },
     "000987": {
       "name": "全指材料",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "MAT_GENERAL",
       "tags": [
@@ -6440,7 +6440,7 @@
     },
     "000986": {
       "name": "全指能源",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ENG",
       "industry_id": "ENG_GENERAL",
       "tags": [
@@ -6456,7 +6456,7 @@
     },
     "H30083": {
       "name": "300反向",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "STRATEGY",
       "industry_id": "LEVERAGED",
       "tags": [
@@ -6472,7 +6472,7 @@
     },
     "H30082": {
       "name": "300两倍",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "STRATEGY",
       "industry_id": "LEVERAGED",
       "tags": [
@@ -6488,7 +6488,7 @@
     },
     "H30403": {
       "name": "300日报酬两倍",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "STRATEGY",
       "industry_id": "LEVERAGED",
       "tags": [
@@ -6504,7 +6504,7 @@
     },
     "H30404": {
       "name": "300日报酬反向",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "STRATEGY",
       "industry_id": "LEVERAGED",
       "tags": [
@@ -6520,7 +6520,7 @@
     },
     "000992": {
       "name": "金融地产",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "FIN",
       "industry_id": "FIN_GENERAL",
       "tags": [
@@ -6540,7 +6540,7 @@
     },
     "000991": {
       "name": "全指医药",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -6556,7 +6556,7 @@
     },
     "H11098": {
       "name": "沪城投债",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "DEBT",
       "industry_id": "DEBT_CORP",
       "tags": [
@@ -6576,7 +6576,7 @@
     },
     "H50045": {
       "name": "180两倍",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "STRATEGY",
       "industry_id": "LEVERAGED",
       "tags": [
@@ -6592,7 +6592,7 @@
     },
     "H50046": {
       "name": "180反向",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "STRATEGY",
       "industry_id": "LEVERAGED",
       "tags": [
@@ -6608,7 +6608,7 @@
     },
     "H30318": {
       "name": "科技传媒通信150",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "TECH",
       "industry_id": "COMMS",
       "tags": [
@@ -6636,7 +6636,7 @@
     },
     "H30035": {
       "name": "300非银",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "FIN",
       "industry_id": "FIN_GENERAL",
       "tags": [
@@ -6652,7 +6652,7 @@
     },
     "000934": {
       "name": "800金地",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "FIN",
       "industry_id": "FIN_GENERAL",
       "tags": [
@@ -6668,7 +6668,7 @@
     },
     "000814": {
       "name": "细分医药",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -6684,7 +6684,7 @@
     },
     "000913": {
       "name": "300医药",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -6700,7 +6700,7 @@
     },
     "000914": {
       "name": "300金融",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "FIN",
       "industry_id": "FIN_GENERAL",
       "tags": [
@@ -6716,7 +6716,7 @@
     },
     "000933": {
       "name": "800医卫",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -6732,7 +6732,7 @@
     },
     "000928": {
       "name": "800能源",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ENG",
       "industry_id": "ENG_GENERAL",
       "tags": [
@@ -6748,7 +6748,7 @@
     },
     "000038": {
       "name": "上证金融",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "FIN",
       "industry_id": "FIN_GENERAL",
       "tags": [
@@ -6768,7 +6768,7 @@
     },
     "000037": {
       "name": "上证医药",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -6788,7 +6788,7 @@
     },
     "000036": {
       "name": "上证消费",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "CONS_GENERAL",
       "tags": [
@@ -6808,7 +6808,7 @@
     },
     "H00140": {
       "name": "5年国债(全)",
-      "exchange": null,
+      "exchange": "HK",
       "sector_id": "DEBT",
       "industry_id": "DEBT_TREASURY",
       "tags": [
@@ -6828,7 +6828,7 @@
     },
     "000068": {
       "name": "上证资源",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ENG",
       "industry_id": "ENG_GENERAL",
       "tags": [
@@ -6872,7 +6872,7 @@
     },
     "399701": {
       "name": "深证F60",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_LARGE",
       "tags": [
@@ -6892,7 +6892,7 @@
     },
     "399702": {
       "name": "深证F120",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_MID_SMALL",
       "tags": [
@@ -6912,7 +6912,7 @@
     },
     "000056": {
       "name": "上证国企",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "SOE",
       "industry_id": "SOE_THEME",
       "tags": [
@@ -6932,7 +6932,7 @@
     },
     "000018": {
       "name": "180金融",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "FIN",
       "industry_id": "FIN_GENERAL",
       "tags": [
@@ -6948,7 +6948,7 @@
     },
     "000069": {
       "name": "消费80",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "CONS_GENERAL",
       "tags": [
@@ -6964,7 +6964,7 @@
     },
     "000066": {
       "name": "上证商品",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ENG",
       "industry_id": "ENG_GENERAL",
       "tags": [
@@ -6984,7 +6984,7 @@
     },
     "000901": {
       "name": "小康指数",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_THEMED",
       "tags": [
@@ -7000,7 +7000,7 @@
     },
     "000048": {
       "name": "责任指数",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "ESG_RESPONSIBILITY",
       "tags": [
@@ -7016,7 +7016,7 @@
     },
     "000029": {
       "name": "180价值",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_VALUE",
       "tags": [
@@ -7032,7 +7032,7 @@
     },
     "000044": {
       "name": "上证中盘",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_MID_SMALL",
       "tags": [
@@ -7052,7 +7052,7 @@
     },
     "000043": {
       "name": "超大盘",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_LARGE",
       "tags": [
@@ -7068,7 +7068,7 @@
     },
     "000021": {
       "name": "180治理",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_FACTOR",
       "tags": [
@@ -7084,7 +7084,7 @@
     },
     "000042": {
       "name": "上证央企",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "SOE",
       "industry_id": "SOE_THEME",
       "tags": [
@@ -7120,7 +7120,7 @@
     },
     "000007": {
       "name": "公用指数",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "INFRA",
       "industry_id": "INFRA_UTIL",
       "tags": [
@@ -7136,7 +7136,7 @@
     },
     "000012": {
       "name": "国债指数",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_TREASURY",
       "tags": [
@@ -7156,7 +7156,7 @@
     },
     "000013": {
       "name": "企债指数",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "DEBT",
       "industry_id": "DEBT_CORP",
       "tags": [
@@ -7176,7 +7176,7 @@
     },
     "000045": {
       "name": "上证小盘",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "STRATEGY",
       "industry_id": "STRAT_MID_SMALL",
       "tags": [
@@ -7196,7 +7196,7 @@
     },
     "000097": {
       "name": "高端装备",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "ADVMFG",
       "tags": [
@@ -7212,7 +7212,7 @@
     },
     "000808": {
       "name": "医药生物",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "BIOTECH",
       "tags": [
@@ -7232,7 +7232,7 @@
     },
     "000912": {
       "name": "300消费",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "CONS",
       "industry_id": "CONS_GENERAL",
       "tags": [
@@ -7248,7 +7248,7 @@
     },
     "000970": {
       "name": "中证ESG40",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "ESG_GENERAL",
       "tags": [
@@ -7268,7 +7268,7 @@
     },
     "000978": {
       "name": "医药100",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "HC",
       "industry_id": "PHARMA_BROAD",
       "tags": [
@@ -7284,7 +7284,7 @@
     },
     "000998": {
       "name": "中证TMT",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "TMT",
       "tags": [
@@ -7304,7 +7304,7 @@
     },
     "399001": {
       "name": "深证成指",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "BROAD",
       "industry_id": "BROAD_SZSE",
       "tags": [
@@ -7320,7 +7320,7 @@
     },
     "399006": {
       "name": "创业板指",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "BROAD",
       "industry_id": "BROAD_GEM",
       "tags": [
@@ -7336,7 +7336,7 @@
     },
     "399237": {
       "name": "运输指数",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "IND",
       "industry_id": "TRANSPORT",
       "tags": [
@@ -7352,7 +7352,7 @@
     },
     "399803": {
       "name": "工业4.0",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "IND",
       "industry_id": "ADVMFG",
       "tags": [
@@ -7368,7 +7368,7 @@
     },
     "399804": {
       "name": "中证体育",
-      "exchange": null,
+      "exchange": "SZ",
       "sector_id": "CONS",
       "industry_id": "SPORTS",
       "tags": [
@@ -7388,7 +7388,7 @@
     },
     "899050": {
       "name": "北证50",
-      "exchange": null,
+      "exchange": "BJ",
       "sector_id": "BROAD",
       "industry_id": "BROAD_BSE",
       "tags": [
@@ -7404,7 +7404,7 @@
     },
     "931407": {
       "name": "全球金矿",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "MAT",
       "industry_id": "PRECIOUS",
       "tags": [
@@ -7420,7 +7420,7 @@
     },
     "931528": {
       "name": "光伏设备行业",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "PV",
       "tags": [
@@ -7436,7 +7436,7 @@
     },
     "931688": {
       "name": "中证算力",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "COMPUTE",
       "tags": [
@@ -7456,7 +7456,7 @@
     },
     "931746": {
       "name": "储能产业",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "NEV",
       "industry_id": "BATTERY",
       "tags": [
@@ -7472,7 +7472,7 @@
     },
     "931786": {
       "name": "中证半导体",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "TECH",
       "industry_id": "SEMI",
       "tags": [
@@ -7492,7 +7492,7 @@
     },
     "931800": {
       "name": "绿色生态",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "ESG",
       "industry_id": "GREEN",
       "tags": [
@@ -7508,7 +7508,7 @@
     },
     "932056": {
       "name": "海洋经济",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "REGION",
       "industry_id": "REGION_CN",
       "tags": [
@@ -7524,7 +7524,7 @@
     },
     "932076": {
       "name": "全指地产",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "RE",
       "industry_id": "RE_REAL_ESTATE",
       "tags": [
@@ -7540,7 +7540,7 @@
     },
     "932536": {
       "name": "航运发展",
-      "exchange": null,
+      "exchange": "SS",
       "sector_id": "IND",
       "industry_id": "TRANSPORT",
       "tags": [

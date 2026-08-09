@@ -31,6 +31,7 @@ import {
   MUTED_PALETTE,
   SUBTITLE_COLOR,
   axisColors,
+  commonDataZoom,
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
@@ -137,7 +138,8 @@ export function buildAmountContributionOption(
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: commonGrid({ left: 56, right: 56, bottom: 32 }),
+    grid: commonGrid({ left: 56, right: 56, bottom: 50 }),
+    dataZoom: commonDataZoom(),
     // Watermark shown when neither the benchmark nor the subject index has
     // any tracking ETF — the "Index Trading Amt contribution" concept is
     // meaningless for this pair.

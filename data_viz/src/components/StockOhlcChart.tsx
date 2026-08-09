@@ -48,6 +48,7 @@ import {
   axisColors,
   commonLegend,
   commonGrid,
+  commonDataZoom,
 } from "@/theme/chart-palette";
 import type { StockBaselineRow, StockDividend } from "../../shared/types";
 import type { EChartsOption } from "echarts";
@@ -64,13 +65,21 @@ interface Props {
    *  provided, gold diamond markers are drawn on ex-dividend dates that fall
    *  inside the visible rows. Defaults to [] (no markers). */
   dividends?: StockDividend[];
+  /** Initial dataZoom start % (0–100). When provided, an in-chart dataZoom
+   *  (inside + slider) is rendered and `rows` should be the FULL history (the
+   *  dataZoom owns windowing). When omitted, no dataZoom is rendered and the
+   *  caller owns windowing (e.g. StockOhlcExpansionChart). */
+  dataZoomStart?: number;
+  /** Initial dataZoom end % (0–100). Defaults to 100 when dataZoomStart is set. */
+  dataZoomEnd?: number;
 }
 
-export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = [] }: Props) {
+export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = [], dataZoomStart, dataZoomEnd }: Props) {
   const themeMode = useStore((s) => s.themeMode);
 
   const option = useMemo<EChartsOption>(() => {
     const c = axisColors(themeMode);
+    const enableDataZoom = dataZoomStart !== undefined;
     const dates = rows.map((r) => r.date);
     const open = rows.map((r) => r.open);
     const high = rows.map((r) => r.high);
@@ -401,7 +410,8 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
     return {
       backgroundColor: "transparent",
       animation: false,
-      grid: commonGrid({ left: 50, right: hasPe ? 60 : 50, bottom: 28 }),
+      grid: commonGrid({ left: 50, right: hasPe ? 60 : 50, bottom: enableDataZoom ? 50 : 28 }),
+      dataZoom: enableDataZoom ? commonDataZoom({}, dataZoomStart, dataZoomEnd ?? 100) : undefined,
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "cross", snap: true },
@@ -480,7 +490,7 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
       yAxis,
       series,
     };
-  }, [rows, themeMode, ohlcMode, dividends]);
+  }, [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd]);
 
   return <EChart option={option} height={height} />;
 }

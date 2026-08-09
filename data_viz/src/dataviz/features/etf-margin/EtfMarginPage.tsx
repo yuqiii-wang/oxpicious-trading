@@ -61,17 +61,29 @@ export default function EtfMarginPage() {
   // panel's CompositionPieChart has its own plot-level refresh button.
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Load themes (two-level taxonomy tree) once, and on refresh.
-  // Fetches BOTH the industry tree (LEFT column) and the parallel strategy
-  // tree (RIGHT column) in parallel.
+  // Load themes (two-level taxonomy tree), refetching whenever the exchange
+  // filter changes so the nav tree (sector chips + L3 item chips) respects
+  // the exchange filter — e.g. cross-border ETFs (HK/OVERSEAS) are excluded
+  // when "All (primary)" is selected.
   useEffect(() => {
-    Promise.all([fetchThemes(), fetchEtfStrategyThemes()])
+    Promise.all([fetchThemes(exchange), fetchEtfStrategyThemes(exchange)])
       .then(([sectorList, strategyList]) => {
         setSectors(sectorList);
         setStrategies(strategyList);
+        // When the exchange filter changes, the stale sector/strategy
+        // selection may not exist in the new (filtered) tree — clear it
+        // so the user picks a fresh sector from the filtered chips.
+        if (sectorId && !sectorList.some((s) => s.sector_id === sectorId)) {
+          setSectorId(null);
+          setIndustrySlug(null);
+        }
+        if (strategyId && !strategyList.some((s) => s.sector_id === strategyId)) {
+          setStrategyId(null);
+          setThemeSlug(null);
+        }
       })
       .catch((e: Error) => setError(e.message));
-  }, [refreshKey]);
+  }, [refreshKey, exchange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset to page 1 whenever sector, industry, strategy, theme, or exchange changes
   useEffect(() => {

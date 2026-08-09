@@ -1,8 +1,8 @@
 """
 build_index_exts — Build stats.index_exts + stats.etf_trading_amt +
-stats.sec_similars (sec_type='index').
+stats.exchange_trading_amt + stats.sec_similars (sec_type='index').
 
-This package is split into two independent build steps, each with its own
+This package is split into three independent build steps, each with its own
 missing-data detection and own date granularity:
 
   builds.index.exts._index_exts.build_index_exts(conn, force)
@@ -12,13 +12,20 @@ missing-data detection and own date granularity:
     turnover grouped by industry_id.
     Driven by stats.etf_liquidity_margin dates (daily).
 
+  builds.index.exts._exchange_trading_amt.build_exchange_trading_amt(conn, force)
+    stats.exchange_trading_amt (per-(date, exchange)): total_trading_amount
+    proxied by ONE representative broad-market index per exchange
+    (SZ->399001, SS->000001). Driven by stats.index_basic_stats dates
+    (daily); own skip check so it runs even when index_exts had nothing
+    to do.
+
   builds.index.exts._sec_similars.build_sec_similars(conn, force)
     stats.sec_similars (per-(composition-snapshot-date, code, sec_type)):
     top-5 similar codes + top-5 similar/dissimilar industries by mutual
     shared composition weight.
     Driven by stats.sec_composition snapshot dates (quarterly).
 
-The two steps are independent (different sources, different date grains,
+The steps are independent (different sources, different date grains,
 different skip checks) so they can be re-run safely at any cadence.
 
 Incremental mode (default): each step only (re)computes the dates it is
@@ -44,13 +51,14 @@ from _common.build_commons import (  # noqa: E402
 setup_utf8_stdout()
 
 from builds.index.exts._index_exts import build_index_exts  # noqa: E402
+from builds.index.exts._exchange_trading_amt import build_exchange_trading_amt  # noqa: E402
 from builds.index.exts._sec_similars import build_sec_similars  # noqa: E402
 
 
 async def main():
     ap = argparse.ArgumentParser(
         description="Build stats.index_exts + stats.etf_trading_amt "
-                    "+ stats.sec_similars "
+                    "+ stats.exchange_trading_amt + stats.sec_similars "
                     "(missing dates only, or --force for full recompute)."
     )
     add_force_arg(ap)
@@ -58,8 +66,8 @@ async def main():
 
     t0 = time.time()
     print_build_header(
-        "BUILD INDEX EXTS + ETF TRADING AMT + SEC SIMILARS "
-        "(index / industry aggregation + composition similars)",
+        "BUILD INDEX EXTS + ETF/EXCHANGE TRADING AMT + SEC SIMILARS "
+        "(index / industry / exchange aggregation + composition similars)",
         mode="FORCE (full recompute)" if args.force
              else "incremental (missing dates only)",
     )
@@ -70,7 +78,13 @@ async def main():
         # Independent of sec_similars — driven by etf_liquidity_margin.
         await build_index_exts(conn, force=args.force)
 
-        # Step B: per-(composition-date, code) top-5 similar codes +
+        # Step B: per-(date, exchange) trading amount proxied by a
+        # representative broad-market index per exchange (SZ->399001,
+        # SS->000001). Driven by index_basic_stats; own skip check, so it
+        # runs even when index_exts had nothing to do.
+        await build_exchange_trading_amt(conn, force=args.force)
+
+        # Step C: per-(composition-date, code) top-5 similar codes +
         # similar/dissimilar industries.
         # Driven by sec_composition snapshot dates; own skip check, so it
         # runs even when index_exts had nothing to do.

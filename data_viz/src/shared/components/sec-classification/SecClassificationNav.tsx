@@ -22,7 +22,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Box, Chip, Pagination, Stack, Typography, type SxProps } from "@mui/material";
 import type { SectorNode, StrategyNode } from "../../../../shared/types";
-import { EXCHANGE_OPTIONS } from "../../utils/classify";
+import { PRIMARY_EXCHANGE_OPTIONS, SECONDARY_EXCHANGE_OPTIONS } from "../../utils/classify";
 import SimilarIndicesList from "./SimilarIndicesList";
 
 // ---------------------------------------------------------------------------
@@ -104,9 +104,11 @@ interface ChipRowProps {
   label: string;
   chipSize: "small" | "medium";
   children: ReactNode;
+  /** Optional element rendered immediately after the label (e.g. expand/collapse triangle). */
+  labelAdornment?: ReactNode;
 }
 
-function ChipRow({ label, chipSize, children }: ChipRowProps) {
+function ChipRow({ label, chipSize, children, labelAdornment }: ChipRowProps) {
   return (
     <Box sx={{ display: "flex", gap: 0.5, flexWrap: "wrap", alignItems: "center" }}>
       <Typography
@@ -115,6 +117,7 @@ function ChipRow({ label, chipSize, children }: ChipRowProps) {
       >
         {label}
       </Typography>
+      {labelAdornment}
       {children}
     </Box>
   );
@@ -168,6 +171,12 @@ export default function SecClassificationNav({
   useEffect(() => {
     setItemPage(1);
   }, [sectorId, industrySlug, strategyId, themeSlug]);
+
+  // Cross-Border exchange row (HK / Overseas) — hidden by default. The user
+  // expands it via the ▼ triangle next to the "Exchange" label. Cross-border
+  // securities are excluded from the default "All (primary)" filter, so this
+  // row is opt-in.
+  const [showCrossBorder, setShowCrossBorder] = useState(false);
 
   const activeItems = useMemo(() => {
     // Helper: collect strategy-theme items (de-duplicated by code).
@@ -645,21 +654,70 @@ export default function SecClassificationNav({
         ...sx,
       }}
     >
-      {/* Exchange filter row */}
+      {/* Exchange filter — TWO rows mirroring the DB-derived
+          `is_primary_exchange` flag (see classify.ts).
+            Row 1 (primary, is_primary_exchange=TRUE):  All (primary) / SSE / SZSE / BSE
+            Row 2 (cross-border, is_primary_exchange=FALSE): HK / Overseas  [hidden by default]
+          Row 2 is hidden by default — click the ▼ triangle next to "Exchange"
+          to expand. Indented under row 1 to indicate hierarchy. Both rows
+          drive the same single `exchange` filter state. "All (primary)" is the
+          DEFAULT (value="PRIMARY") — matches SS/STAR/SZ/GEM/BJ, excluding
+          cross-border so HK/Overseas securities are opt-in. */}
       {showExchange && (
-        <ChipRow label="Exchange" chipSize={chipSize}>
-          {EXCHANGE_OPTIONS.map((opt) => (
-            <Chip
-              key={opt.label}
-              label={opt.label}
-              size={chipSize}
-              color={exchange === opt.value ? "primary" : "default"}
-              variant={exchange === opt.value ? "filled" : "outlined"}
-              onClick={() => onExchangeChange(opt.value)}
-              sx={{ fontSize: chipFontSize }}
-            />
-          ))}
-        </ChipRow>
+        <>
+          <ChipRow
+            label="Exchange"
+            chipSize={chipSize}
+            labelAdornment={
+              <Box
+                component="span"
+                onClick={() => setShowCrossBorder((v) => !v)}
+                title={showCrossBorder ? "Hide cross-border exchanges" : "Show cross-border exchanges (HK / Overseas)"}
+                sx={{
+                  cursor: "pointer",
+                  ml: 0.25,
+                  fontSize: chipSize === "small" ? "0.6rem" : "0.7rem",
+                  lineHeight: 1,
+                  userSelect: "none",
+                  color: "text.secondary",
+                  display: "inline-flex",
+                  alignItems: "center",
+                }}
+              >
+                {showCrossBorder ? "▼" : "▶"}
+              </Box>
+            }
+          >
+            {PRIMARY_EXCHANGE_OPTIONS.map((opt) => (
+              <Chip
+                key={opt.label}
+                label={opt.label}
+                size={chipSize}
+                color={exchange === opt.value ? "primary" : "default"}
+                variant={exchange === opt.value ? "filled" : "outlined"}
+                onClick={() => onExchangeChange(opt.value)}
+                sx={{ fontSize: chipFontSize }}
+              />
+            ))}
+          </ChipRow>
+          {showCrossBorder && (
+            <Box sx={{ pl: 3.5 }}>
+              <ChipRow label="Cross-Border" chipSize={chipSize}>
+                {SECONDARY_EXCHANGE_OPTIONS.map((opt) => (
+                  <Chip
+                    key={opt.label}
+                    label={opt.label}
+                    size={chipSize}
+                    color={exchange === opt.value ? "primary" : "default"}
+                    variant={exchange === opt.value ? "filled" : "outlined"}
+                    onClick={() => onExchangeChange(opt.value)}
+                    sx={{ fontSize: chipFontSize }}
+                  />
+                ))}
+              </ChipRow>
+            </Box>
+          )}
+        </>
       )}
 
       {/* Classification columns */}

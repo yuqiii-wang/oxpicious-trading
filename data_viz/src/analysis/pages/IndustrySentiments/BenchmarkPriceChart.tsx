@@ -43,7 +43,6 @@ import {
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
-import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import {
   fetchBenchmarkPriceChart,
@@ -97,10 +96,6 @@ export function BenchmarkPriceChart({
   // Defaults to 255 days (~1 year).
   const [rollingDays, setRollingDays] = useState<RollingDays>(DEFAULT_ROLLING_DAYS);
 
-  // Time slider: [startIdx, endIdx] controls the visible range of the chart.
-  // Initialized to full range when data loads; reset when benchmark changes.
-  const [range, setRange] = useState<[number, number]>([0, 0]);
-
   // Fetch benchmark price when benchmarkCode changes.
   useEffect(() => {
     if (!benchmarkCode) {
@@ -114,8 +109,6 @@ export function BenchmarkPriceChart({
       .then((resp) => {
         if (cancelled) return;
         setData(resp);
-        // Reset slider to full range when new data arrives.
-        setRange([0, Math.max(0, resp.rows.length - 1)]);
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -198,8 +191,8 @@ export function BenchmarkPriceChart({
         sharedWeightByDate.set(r.date, r.benchmark_shared_weight);
       }
 
-      // Align industry values to benchmark dates (full axis — option builder
-      // will slice to the visible range).
+      // Align industry values to benchmark dates (full axis — the chart's
+      // in-chart dataZoom handles viewport control).
       const values: Array<number | null> = benchmarkDates.map((dt) => {
         const v = valueByDate.get(dt);
         return v ?? null;
@@ -238,25 +231,22 @@ export function BenchmarkPriceChart({
             selectedDate,
             showToggle ? industryShades : [],
             showToggle ? priceMode : "today",
-            range,
+            undefined,
             showTradingAmt,
           )
         : null,
-    [data, themeMode, selectedDate, industryShades, priceMode, showToggle, range, showTradingAmt],
+    [data, themeMode, selectedDate, industryShades, priceMode, showToggle, showTradingAmt],
   );
 
   // Stable callback for onCanvasClick — converts the x-axis category index
-  // (relative to the VISIBLE slice) to a full-data date string.
+  // (full data, since the chart now uses an in-chart dataZoom) to a date string.
   const handleCanvasClick = useMemo(() => {
     if (!data || data.rows.length === 0) return undefined;
     return (dataIndex: number) => {
-      // dataIndex is relative to the visible slice. Add range[0] to get the
-      // full-data index, then look up the date.
-      const fullIdx = dataIndex + range[0];
-      const row = data.rows[fullIdx];
+      const row = data.rows[dataIndex];
       if (row) onDateSelect(row.date);
     };
-  }, [data, onDateSelect, range]);
+  }, [data, onDateSelect]);
 
   const subtitle = data
     ? `${data.name} (${data.code}) — click any date to set the as-of date${selectedDate ? ` · selected: ${selectedDate}` : ""}` +
@@ -269,10 +259,6 @@ export function BenchmarkPriceChart({
         ? ` · trading amt bars${hasIndustries && shadesAvailable ? " (industry shared portion highlighted)" : ""}`
         : "")
     : "Select a benchmark to see its price chart";
-
-  // All dates for the slider labels.
-  const allDates = data?.rows.map((r) => r.date) ?? [];
-  const maxIdx = allDates.length - 1;
 
   return (
     <ChartCard
@@ -350,12 +336,6 @@ export function BenchmarkPriceChart({
             option={option}
             height={400}
             onCanvasClick={handleCanvasClick}
-          />
-          <DateRangeSlider
-            value={range}
-            onChange={setRange}
-            max={maxIdx}
-            dates={allDates}
           />
         </Stack>
       )}

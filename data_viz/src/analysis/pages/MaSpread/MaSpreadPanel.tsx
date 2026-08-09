@@ -35,7 +35,6 @@ import {
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
-import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { UP_COLOR } from "@/theme/chart-palette";
@@ -47,7 +46,7 @@ import type {
   MovAveSpreadPairSeries,
 } from "../../../../shared/types";
 import type { PanelProps } from "./types";
-import { buildPairOption, type TradingAmtMode } from "./chartOption";
+import { buildPairOption, buildAmtEnvelopeOption, type TradingAmtMode } from "./chartOption";
 
 /** Bollinger multiplier options for the top-right dropdown (0.0 … 3.0, step 0.5).
  *  0.0 = band hidden; 2.0 = standard Bollinger. */
@@ -71,11 +70,9 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // Which of the 9 pairs is shown in the single plot (default 0 = Price/MA5).
   const [selectedPairIdx, setSelectedPairIdx] = useState(0);
 
-  // Date-range slider state — two indices into the first pair's rows array.
-  // The slider drives ALL pairs (they share the same date axis).
+  // The first pair's rows — used for the card subtitle (date range + bar count)
+  // and as the x-axis dates for the chart (all pairs share one date axis).
   const firstPairRows = chartData?.pairs[0]?.rows ?? [];
-  const maxIdx = firstPairRows.length - 1;
-  const [range, setRange] = useState<[number, number]>([0, maxIdx]);
 
   // Bollinger multiplier k in MA ± k×σ. Default 2 (standard Bollinger).
   // 0 hides the envelope. Only affects Price/MA pairs (ma_short === 0);
@@ -83,7 +80,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // Options: 0, 0.5, 1, 1.5, 2, 2.5, 3 (step 0.5).
   const [bollingerK, setBollingerK] = useState(2);
 
-  // Trading amount display mode: off / lowkey / highlight.
+  // Trading amount display toggle: "lowkey" (on) shows subtle bars, "off" hides them.
   // Defaults to "lowkey" — shows subtle bars by default.
   const [tradingAmtMode, setTradingAmtMode] = useState<TradingAmtMode>("lowkey");
 
@@ -91,10 +88,10 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // from the first valid close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
-  // Hovered date index (into the filtered/sliced rows of the selected pair).
-  // Drives the single last-extreme triangle marker shown on hover. Reset
-  // whenever the data window changes (range / code / secType) since indices
-  // shift across slices.
+  // Hovered date index (into the full rows of the selected pair — the chart's
+  // x-axis is now the full data, with an in-chart dataZoom slider for
+  // viewport control). Drives the single last-extreme triangle marker shown
+  // on hover.
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   // Fetch chart data on mount and whenever the code/sec_type changes.
@@ -106,8 +103,6 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
       .then((d) => {
         if (cancelled) return;
         setChartData(d);
-        const m = Math.max(0, (d.pairs[0]?.rows.length ?? 1) - 1);
-        setRange([0, m]);
         setSelectedPairIdx(0);
         setHoveredIdx(null);
         setLoading(false);
@@ -122,12 +117,6 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
       cancelled = true;
     };
   }, [code, secType]);
-
-  // Clear the hover marker when the date-range slider moves (the hovered index
-  // is relative to the sliced window and may no longer be valid).
-  useEffect(() => {
-    setHoveredIdx(null);
-  }, [range]);
 
   // Track the hovered date index via ECharts' `updateAxisPointer` event so we
   // can draw a single last-extreme triangle at the hovered date's
@@ -157,29 +146,36 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     [handleAxisPointer],
   );
 
-  // Slice each pair's rows to the selected date window.
-  const filteredPairs = useMemo(() => {
-    if (!chartData) return [];
-    return chartData.pairs.map((p) => ({
-      ...p,
-      rows: p.rows.slice(range[0], range[1] + 1),
-    }));
-  }, [chartData, range]);
+  // The full pairs list (no slicing — the chart's in-chart dataZoom handles
+  // viewport control). Used for the pair chips, the pair index lookup, and the
+  // chart option builder.
+  const pairs = chartData?.pairs ?? [];
 
-  // Lookup from `${ma_short}-${ma_long}` → index in filteredPairs, used to
+  // Lookup from `${ma_short}-${ma_long}` → index in pairs, used to
   // place each pair chip in its long-MA column of the 2-row pair grid.
   const pairIndexMap = useMemo(() => {
     const m = new Map<string, number>();
-    filteredPairs.forEach((p, i) => m.set(`${p.ma_short}-${p.ma_long}`, i));
+    pairs.forEach((p, i) => m.set(`${p.ma_short}-${p.ma_long}`, i));
     return m;
-  }, [filteredPairs]);
+  }, [pairs]);
 
   // Clamp selectedPairIdx to valid range.
-  const safePairIdx = Math.min(selectedPairIdx, Math.max(0, filteredPairs.length - 1));
-  const selectedPair = filteredPairs[safePairIdx];
+  const safePairIdx = Math.min(selectedPairIdx, Math.max(0, pairs.length - 1));
+  const selectedPair = pairs[safePairIdx];
   // True when the active pair is a Price/MA60 or MA5/MA60 "trend study" pair —
   // highlights the Trend Study column header.
-  const trendStudyActive = selectedPair?.ma_long === 60;
+  const trendStudyActive = selectedPair?.ma_long === 60 && selectedPair?.kind !== "amt";
+  // True when an Amt/MA pair is selected — price chips are frozen (disabled).
+  const amtPairSelected = selectedPair?.kind === "amt";
+
+  // When tradingAmtMode is toggled off while an Amt/MA pair is selected,
+  // reset to Price/MA5 (pair index 0) so the chart doesn't stay stuck on an
+  // amt pair whose chips are now hidden.
+  useEffect(() => {
+    if (tradingAmtMode === "off" && amtPairSelected) {
+      setSelectedPairIdx(0);
+    }
+  }, [tradingAmtMode, amtPairSelected]);
 
   // Optional secondary stat row from the latest snapshot of all 9 pairs —
   // surfaced as a small caption so the user can scan the page quickly.
@@ -234,17 +230,13 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
           Amt
         </Typography>
         <Chip
-          label={tradingAmtMode === "off" ? "Off" : tradingAmtMode === "lowkey" ? "Low" : "High"}
+          label={tradingAmtMode === "off" ? "Off" : "On"}
           size="small"
           clickable
           color={tradingAmtMode === "off" ? "default" : "primary"}
-          variant={tradingAmtMode === "highlight" ? "filled" : "outlined"}
+          variant={tradingAmtMode === "off" ? "outlined" : "filled"}
           onClick={() => {
-            const next: TradingAmtMode =
-              tradingAmtMode === "off" ? "lowkey"
-              : tradingAmtMode === "lowkey" ? "highlight"
-              : "off";
-            setTradingAmtMode(next);
+            setTradingAmtMode(tradingAmtMode === "off" ? "lowkey" : "off");
           }}
           sx={{ fontSize: "0.7rem", height: 22 }}
         />
@@ -256,8 +248,17 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // Render a single pair chip (used in the 2-row pair grid). The chip fills
   // its grid column: display:flex overrides MUI's default inline-flex so
   // width:100% takes effect, and the label is centered within.
-  const renderPairChip = (pair: MovAveSpreadPairSeries, idx: number) => {
+  // Price and Amt chips are ALWAYS clickable. Clicking an already-active
+  // Amt/MA chip toggles it off ("unclick") and recovers the normal OHLC
+  // price style by falling back to Price/MA5 (pair index 0). Clicking an
+  // Amt chip switches the chart to the amt-envelope style with a lowkey
+  // OHLC reference.
+  const renderPairChip = (
+    pair: MovAveSpreadPairSeries,
+    idx: number,
+  ) => {
     const active = idx === safePairIdx;
+    const isAmt = pair.kind === "amt";
     return (
       <Chip
         label={pair.pair_label}
@@ -265,7 +266,14 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
         size="small"
         color={active ? "primary" : "default"}
         variant={active ? "filled" : "outlined"}
-        onClick={() => setSelectedPairIdx(idx)}
+        onClick={() => {
+          // Toggle off an active Amt/MA chip → recover OHLC price style.
+          if (active && isAmt) {
+            setSelectedPairIdx(0);
+          } else {
+            setSelectedPairIdx(idx);
+          }
+        }}
         sx={{
           fontSize: "0.7rem",
           height: 24,
@@ -293,7 +301,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
       {/* Pair chips — two rows aligned by long MA (Price row + MA5 row),
           with a "Trend Study" column header above the MA60 column. Moved to
           the top of the card so the time slider can sit at the bottom. */}
-      {!loading && !error && filteredPairs.length > 0 && (
+      {!loading && !error && pairs.length > 0 && (
         <Box sx={{ mt: 1, mb: 0.5 }}>
           <Typography
             variant="caption"
@@ -339,16 +347,19 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                 )}
               </Box>
             ))}
-            {/* Price row (ma_short = 0): one chip per long-MA column. */}
+            {/* Price row (ma_short = 0): one chip per long-MA column.
+                Always clickable — selecting one recovers the normal OHLC
+                price style (exits the amt-envelope view). */}
             {LONG_MA_ORDER.map((maLong, col) => {
               const idx = pairIndexMap.get(`0-${maLong}`);
               return (
                 <Box key={`price-${col}`} sx={{ gridColumn: col + 1 }}>
-                  {idx != null && renderPairChip(filteredPairs[idx], idx)}
+                  {idx != null && renderPairChip(pairs[idx], idx)}
                 </Box>
               );
             })}
-            {/* MA5 row (ma_short = 5): no MA5/MA5 pair — col 0 left empty. */}
+            {/* MA5 row (ma_short = 5): no MA5/MA5 pair — col 0 left empty.
+                Always clickable. */}
             {LONG_MA_ORDER.map((maLong, col) => {
               if (maLong === 5) {
                 return <Box key={`ma5-empty-${col}`} sx={{ gridColumn: col + 1 }} />;
@@ -356,25 +367,65 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
               const idx = pairIndexMap.get(`5-${maLong}`);
               return (
                 <Box key={`ma5-${col}`} sx={{ gridColumn: col + 1 }}>
-                  {idx != null && renderPairChip(filteredPairs[idx], idx)}
+                  {idx != null && renderPairChip(pairs[idx], idx)}
                 </Box>
               );
             })}
+            {/* Trading Amt/MA row (ma_short = -1): 5 chips, one per long-MA
+                column. Only shown when the trading-amt toggle is ON. Clicking
+                an Amt/MA chip switches the chart to "amt envelope" mode
+                (trading-amount bars + a slim envelope of 5 trading_amt_ma
+                lines, with a lowkey OHLC/price reference). Clicking the active
+                Amt/MA chip again ("unclick") recovers the OHLC price style. */}
+            {tradingAmtMode !== "off" && (
+              <>
+                {/* Row label */}
+                <Box sx={{ gridColumn: "1 / -1", mt: 0.5 }}>
+                  <Typography
+                    variant="caption"
+                    component="span"
+                    sx={{
+                      fontSize: "0.65rem",
+                      color: amtPairSelected ? "primary.main" : "text.secondary",
+                      fontWeight: amtPairSelected ? 700 : 400,
+                    }}
+                  >
+                    Trading Amt/MA
+                  </Typography>
+                </Box>
+                {LONG_MA_ORDER.map((maLong, col) => {
+                  const idx = pairIndexMap.get(`-1-${maLong}`);
+                  return (
+                    <Box key={`amt-${col}`} sx={{ gridColumn: col + 1 }}>
+                      {idx != null && renderPairChip(pairs[idx], idx)}
+                    </Box>
+                  );
+                })}
+              </>
+            )}
           </Box>
         </Box>
       )}
 
       {!loading && !error && selectedPair && selectedPair.rows.length > 0 && (
         <EChart
-          option={buildPairOption({
-            pair: selectedPair,
-            themeMode,
-            bollingerK,
-            tradingAmtMode,
-            valleyLows: chartData?.valley_lows,
-            hoveredIdx,
-            ohlcMode,
-          })}
+          option={
+            amtPairSelected
+              ? buildAmtEnvelopeOption({
+                  pair: selectedPair,
+                  themeMode,
+                  ohlcMode,
+                })
+              : buildPairOption({
+                  pair: selectedPair,
+                  themeMode,
+                  bollingerK,
+                  tradingAmtMode,
+                  valleyLows: chartData?.valley_lows,
+                  hoveredIdx,
+                  ohlcMode,
+                })
+          }
           height={420}
           onEvents={chartEvents}
         />
@@ -409,17 +460,6 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
               : fmtPct(latestSummary.gap_value * 100, 2)}
           </Box>
         </Typography>
-      )}
-
-      {/* Date-range slider — moved to the bottom of the plot. Drives all
-          9 pairs (they share one date axis). */}
-      {!loading && !error && (
-        <DateRangeSlider
-          value={range}
-          onChange={setRange}
-          max={maxIdx}
-          dates={firstPairRows.map((r) => r.date)}
-        />
       )}
     </ChartCard>
   );

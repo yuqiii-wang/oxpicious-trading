@@ -82,13 +82,14 @@ async def classify_stocks(
                     sector_id = DEFAULT_SECTOR_ID
                     industry_id = DEFAULT_INDUSTRY_ID
                     is_ind = True
-                # Inherit HK exchange from parent index when the stock is held
-                # by a HK-themed index (港股通, 恒生, etc.).  HK-listed stocks
-                # lack the .SZ/.SS/.BJ suffix so _exchange_from_code returns
-                # None; this override ensures they are labelled correctly.
+                # Stock exchange comes from the stock code's .SZ/.SS/.BJ
+                # suffix ONLY — A-share stocks held by HK/overseas-themed
+                # indices keep their own exchange (they are still A-share
+                # listed, e.g. 000063.SZ 中兴通讯 held by SHS科技100 is a
+                # SZ-listed A-share, NOT an HK stock).  Actual HK-listed
+                # stocks carry a .HK suffix and are handled by
+                # _exchange_from_code directly.
                 stock_exchange = exchange
-                if idx is not None and idx.get("exchange") == "HK":
-                    stock_exchange = "HK"
                 is_primary = (not primary_assigned) and (idx_weight == max_weight)
                 if is_primary:
                     primary_assigned = True

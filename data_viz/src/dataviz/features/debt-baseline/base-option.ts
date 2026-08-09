@@ -6,7 +6,7 @@
  */
 import type { EChartsOption, SeriesOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import { axisColors, MUTED_PALETTE, commonLegend, commonGrid } from "@/theme/chart-palette";
+import { axisColors, MUTED_PALETTE, commonDataZoom, commonLegend, commonGrid } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 
 export type AxisColors = ReturnType<typeof axisColors>;
@@ -128,6 +128,7 @@ export function buildBaseOption(
       },
     ],
     legend: commonLegend(mode, { left: "right", itemWidth: 14, itemHeight: 8 }),
+    dataZoom: commonDataZoom(),
     ...extra,
   };
 }

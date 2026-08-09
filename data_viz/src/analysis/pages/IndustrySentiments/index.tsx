@@ -73,6 +73,7 @@ import { IndustryBenchmarkAttributionChart } from "./IndustryBenchmarkAttributio
 import { IndustryEtfPriceChart } from "./IndustryEtfPriceChart";
 import { IndustryEtfContributionChart } from "./IndustryEtfContributionChart";
 import { MarketTrendChart } from "./MarketTrendChart";
+import { IndexAllocationView } from "./IndexAllocationView";
 
 export default function IndustrySentimentsPage() {
   const navigate = useNavigate();
@@ -83,7 +84,7 @@ export default function IndustrySentimentsPage() {
   // Multi-select: list of selected industry slugs. Persists across sector
   // switches so the user can pick industries from multiple sectors.
   const [selectedIndustrySlugs, setSelectedIndustrySlugs] = useState<string[]>([]);
-  const [exchange, setExchange] = useState<string | null>(null);
+  const [exchange, setExchange] = useState<string | null>("PRIMARY");
   // Parallel strategy → theme state (RIGHT column of the two-column selector).
   // Mutually exclusive with sector/industry: when strategyId is set, the
   // industry multi-select is cleared and vice versa.
@@ -111,7 +112,7 @@ export default function IndustrySentimentsPage() {
   // swaps them for a benchmark price chart (1st plot, clickable to pick a
   // date) + one per-industry attribution bar chart per selected industry
   // (2nd plot onward — sourced from analysis.industry_attributions).
-  const [viewMode, setViewMode] = useState<"correlation" | "attribution" | "etf_contribution" | "market_trend">("correlation");
+  const [viewMode, setViewMode] = useState<"correlation" | "attribution" | "etf_contribution" | "market_trend" | "index_allocation">("correlation");
   // Benchmark dropdown list (fetched once when entering attribution mode).
   const [attributionBenchmarks, setAttributionBenchmarks] = useState<IndustryAttributionBenchmarkEntry[]>([]);
   // The selected benchmark code (drives the 1st plot). Defaults to 000300
@@ -415,6 +416,9 @@ export default function IndustrySentimentsPage() {
     invalidateCacheForPrefix("/api/analysis/industry-benchmark-attribution");
     invalidateCacheForPrefix("/api/analysis/industry-attribution-bars");
     invalidateCacheForPrefix("/api/analysis/industry-etf-contribution");
+    // Index Allocation view fetches per-code attribution + charts from the
+    // perf-attr endpoints — invalidate those too so Refresh covers all modes.
+    invalidateCacheForPrefix("/api/analysis/perf-attr/");
     setRefreshKey((k) => k + 1);
   };
 
@@ -642,7 +646,7 @@ export default function IndustrySentimentsPage() {
               value={viewMode}
               exclusive
               size="small"
-              onChange={(_, v: "correlation" | "attribution" | "etf_contribution" | "market_trend" | null) => {
+              onChange={(_, v: "correlation" | "attribution" | "etf_contribution" | "market_trend" | "index_allocation" | null) => {
                 if (v) setViewMode(v);
               }}
             >
@@ -650,6 +654,7 @@ export default function IndustrySentimentsPage() {
               <ToggleButton value="attribution">Benchmark Attribution</ToggleButton>
               <ToggleButton value="etf_contribution">ETF Contribution</ToggleButton>
               <ToggleButton value="market_trend">Market Trend</ToggleButton>
+              <ToggleButton value="index_allocation">Index Allocation</ToggleButton>
             </ToggleButtonGroup>
             {viewMode === "attribution" && (
               <Autocomplete
@@ -786,6 +791,14 @@ export default function IndustrySentimentsPage() {
 
           {viewMode === "market_trend" && (
             <MarketTrendChart themeMode={themeMode} />
+          )}
+
+          {viewMode === "index_allocation" && (
+            <IndexAllocationView
+              themeMode={themeMode}
+              chartDataList={chartDataList}
+              selectedItemCodes={selectedItemCodes}
+            />
           )}
         </>
       )}

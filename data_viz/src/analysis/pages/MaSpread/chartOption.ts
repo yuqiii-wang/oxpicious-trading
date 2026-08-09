@@ -25,7 +25,11 @@
 import { fmtNum, fmtPct, fmtYi } from "@/lib/series";
 import { ohlcSeries, type OhlcMode } from "@/lib/ohlc";
 import {
+  MA5_COLOR,
+  MA20_COLOR,
+  MA60_COLOR,
   MA120_COLOR,
+  MA255_COLOR,
   UP_COLOR,
   DOWN_COLOR,
   SPOT_COLOR,
@@ -34,6 +38,7 @@ import {
   axisColors,
   commonLegend,
   commonGrid,
+  commonDataZoom,
 } from "@/theme/chart-palette";
 import type { ThemeMode } from "@/store/filters";
 import type { EChartsOption } from "echarts";
@@ -267,7 +272,7 @@ export function shortLabel(maShort: number): string {
   return maShort === 0 ? "Price" : `MA${maShort}`;
 }
 
-export type TradingAmtMode = "off" | "lowkey" | "highlight";
+export type TradingAmtMode = "off" | "lowkey";
 
 export interface BuildPairOptionArgs {
   /** The pair's full time series. */
@@ -284,16 +289,16 @@ export interface BuildPairOptionArgs {
    * Trading amount display mode.
    * - "off": hide trading amount bars entirely.
    * - "lowkey": show bars with low opacity (subtle background reference).
-   * - "highlight": show bars with strong opacity (prominent visual weight).
    * Defaults to "lowkey".
    */
   tradingAmtMode?: TradingAmtMode;
   /**
-   * Per-extreme-date valley-low rows from analysis.mov_ave_peaks_and_floors
-   * (one row per mov_ave_peaks_and_floors.date for the selected code).
-   * Each entry places a single red down-triangle marker at (date,
-   * extreme_val). Sourced directly from the peaks_and_floors table — NOT
-   * derived from the per-date detail series.
+   * Per-extreme-date rows from analysis.mov_ave_peaks_and_floors (one row
+   * per mov_ave_peaks_and_floors.date for the selected code). Each entry
+   * places a single triangle marker at (date, extreme_val) — green
+   * up-triangle for peaks (is_extreme_peak_not_floor=true), red
+   * down-triangle for floors. Sourced directly from the peaks_and_floors
+   * table — NOT derived from the per-date detail series.
    */
   valleyLows?: MovAveSpreadValleyLow[];
   /**
@@ -364,17 +369,51 @@ export function buildPairOption({
   const rsi10 = rows.map((r) => r.rsi_10days ?? null);
   const rsi14 = rows.map((r) => r.rsi_14days ?? null);
   const rsi20 = rows.map((r) => r.rsi_20days ?? null);
+  // Trading-amount MA SLOPE for the selected pair's long MA window — the
+  // fractional daily change of trading_amt_ma{ma_long}. Surfaced in the
+  // tooltip when trading-amt display is enabled.
+  const amtMaSlopeOfLong = rows.map((r) => {
+    switch (pair.ma_long) {
+      case 5:   return r.trading_amt_ma5_slope ?? null;
+      case 20:  return r.trading_amt_ma20_slope ?? null;
+      case 60:  return r.trading_amt_ma60_slope ?? null;
+      case 120: return r.trading_amt_ma120_slope ?? null;
+      case 255: return r.trading_amt_ma255_slope ?? null;
+      default:  return null;
+    }
+  });
+  // Trading-amount MARKET-SHARE MA for the selected pair's long MA window —
+  // the W-day MA of (trading_amount / total-market-turnover). Dimensionless
+  // ratio 0..1. Surfaced in the tooltip as a percentage when trading-amt
+  // display is enabled.
+  const amtMarketShareOfLong = rows.map((r) => {
+    switch (pair.ma_long) {
+      case 5:   return r.trading_amt_market_share_ma5 ?? null;
+      case 20:  return r.trading_amt_market_share_ma20 ?? null;
+      case 60:  return r.trading_amt_market_share_ma60 ?? null;
+      case 120: return r.trading_amt_market_share_ma120 ?? null;
+      case 255: return r.trading_amt_market_share_ma255 ?? null;
+      default:  return null;
+    }
+  });
 
-  // ---- Valley-low markers (red down triangles) --------------------------
+  // ---- Valley-low / peak markers (red down / green up triangles) --------
   // Sourced DIRECTLY from analysis.mov_ave_peaks_and_floors (one row per
   // extreme date for this code). Each mov_ave_peaks_and_floors.date is
   // plotted exactly once — we do NOT derive markers from the per-date
   // detail series (which would smear each extreme across every detail
-  // date that maps to it via peaks_and_floors_date).
-  const extremeMap = new Map<string, number>(); // dateStr -> extreme_val
+  // date that maps to it via peaks_and_floors_date). Peaks
+  // (is_extreme_peak_not_floor=true) render as green up-triangles; floors
+  // render as red down-triangles.
+  const floorMap = new Map<string, number>(); // dateStr -> extreme_val (floor)
+  const peakMap = new Map<string, number>();  // dateStr -> extreme_val (peak)
   for (const v of valleyLows) {
     if (v.extreme_val != null && Number.isFinite(v.extreme_val)) {
-      extremeMap.set(v.date, v.extreme_val);
+      if (v.is_extreme_peak_not_floor) {
+        peakMap.set(v.date, v.extreme_val);
+      } else {
+        floorMap.set(v.date, v.extreme_val);
+      }
     }
   }
 
@@ -387,18 +426,20 @@ export function buildPairOption({
   const trendBands = isMA60Pair ? computeTrendBands(shorts, longs, longSlopes, longStds) : [];
   const hasTrendBands = trendBands.length > 0;
 
-  // Build scatter data: one red down-triangle per unique extreme date,
-  // placed at (date, extreme_val) on the chart.
+  // Build scatter data: one marker per unique extreme date, placed at
+  // (date, extreme_val) on the chart. Floors → red down-triangle; peaks →
+  // green up-triangle. Split into two arrays so each kind gets its own
+  // scatter series with the correct symbol rotation + color.
   const valleyLowData: Array<number | null> = new Array(n).fill(null);
-  if (extremeMap.size > 0) {
-    for (let i = 0; i < n; i++) {
-      const ev = extremeMap.get(dates[i]);
-      if (ev != null) {
-        valleyLowData[i] = ev;
-      }
-    }
+  const peakData: Array<number | null> = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const fv = floorMap.get(dates[i]);
+    if (fv != null) valleyLowData[i] = fv;
+    const pv = peakMap.get(dates[i]);
+    if (pv != null) peakData[i] = pv;
   }
   const hasValleyLows = valleyLowData.some((v) => v != null);
+  const hasPeaks = peakData.some((v) => v != null);
 
   // ---- Last-extreme hover marker (single small lowkey triangle) -----------
   // analysis.mov_ave_rsi.date_of_last_extreme gives the biz date of the most
@@ -734,6 +775,29 @@ export function buildPairOption({
     });
   }
 
+  // ---- Peak markers (green up triangles) ---------------------------------
+  // Plotted on the primary (price) y-axis at (peak_date, peak_val).
+  // Local maxima detected by the peaks_and_floors algorithm (close >
+  // MA60 + 2σ upper Bollinger band, or close > MA60 for > 20 days;
+  // continuous belt with < 5 day interruptions). Peaks have
+  // nearby_extreme_date = NULL, so no markArea band is attached.
+  if (hasPeaks) {
+    echartsSeries.push({
+      type: "scatter",
+      name: "Peak",
+      data: peakData,
+      symbol: "triangle",
+      symbolSize: 12,
+      symbolRotate: 0, // point up
+      itemStyle: {
+        color: "#43A047", // green
+        borderColor: "#1B5E20",
+        borderWidth: 0.5,
+      },
+      z: 20,
+    });
+  }
+
   // ---- Valley-low markers (red down triangles) ---------------------------
   // Plotted on the primary (price) y-axis at (valley_low_date, valley_low).
   // Shown on all pair charts as a visual reference for the monthly valley
@@ -843,9 +907,8 @@ export function buildPairOption({
 
   // ---- Trading amount bars on secondary y-axis (up/down colored) ----
   if (tradingAmtMode !== "off") {
-    const isHighlight = tradingAmtMode === "highlight";
-    const barOpacity = isHighlight ? 0.6 : 0.15;
-    const barWidth = isHighlight ? "70%" : "50%";
+    const barOpacity = 0.15;
+    const barWidth = "50%";
 
     // Split into up (green) and down (red) series for OHLC-based coloring.
     // For Price/MA pairs, direction = close >= open.
@@ -896,12 +959,13 @@ export function buildPairOption({
   }
 
   // Grid with more right margin for the secondary axis label
-  const grid = commonGrid({ left: 55, right: 55, bottom: 30 });
+  const grid = commonGrid({ left: 55, right: 55, bottom: 50 });
 
   return {
     backgroundColor: "transparent",
     animation: false,
     grid,
+    dataZoom: commonDataZoom(),
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "line", snap: true },
@@ -949,6 +1013,31 @@ export function buildPairOption({
             html += `<div style="margin-top:2px;opacity:0.85">Trading Amt: ${fmtAmtYi(amt)}</div>`;
           }
 
+          // Trading-amount MA slope + exchange market share (only when
+          // trading-amt display is enabled). Shows the selected pair's long
+          // MA window — e.g. Price/MA60 surfaces trading_amt_ma60_slope and
+          // trading_amt_market_share_ma60. The slope is a fractional daily
+          // change (signed ratio, shown as %); the market share is a
+          // dimensionless ratio 0..1 (shown as % of total-market turnover).
+          if (tradingAmtMode !== "off") {
+            const aSlope = amtMaSlopeOfLong[idx];
+            const aShare = amtMarketShareOfLong[idx];
+            if (aSlope != null || aShare != null) {
+              const slopeStr = aSlope != null
+                ? fmtPct(aSlope * 100, 2)
+                : "—";
+              const shareStr = aShare != null
+                ? fmtPct(aShare * 100, 4)
+                : "—";
+              const slopeColor = aSlope != null && aSlope < 0
+                ? DOWN_COLOR
+                : UP_COLOR;
+              html += `<div style="opacity:0.85">Amt MA${pair.ma_long} slope: ` +
+                `<span style="color:${slopeColor};font-weight:600">${slopeStr}</span>` +
+                ` · mkt share: ${shareStr}</div>`;
+            }
+          }
+
           // slope + curvature.
           // In percentage mode, slope (1st derivative) and curvature (2nd
           // derivative) are rebased to 100 by scaling with 100/baseVal — i.e.,
@@ -980,8 +1069,12 @@ export function buildPairOption({
             html += `<div style="opacity:0.85">σ${pair.ma_long}d: ${fmtSlope(sd)} · band width: ${fmtSlope(bw)}${rebasedTag}</div>`;
           }
 
-          // Valley low marker info
+          // Peak / valley-low marker info
+          const pk = peakData[idx];
           const vl = valleyLowData[idx];
+          if (pk != null) {
+            html += `<div style="margin-top:2px;color:#43A047;font-weight:600">▲ Peak: ${fmtPrice(pk)}</div>`;
+          }
           if (vl != null) {
             html += `<div style="margin-top:2px;color:#E53935;font-weight:600">▼ Valley Low: ${fmtPrice(vl)}</div>`;
           }
@@ -1104,6 +1197,387 @@ export function buildPairOption({
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
       // Right axis: trading amount in 亿元
+      {
+        type: "value" as const,
+        scale: true,
+        name: "Amt (亿)",
+        nameTextStyle: { color: c.textColor, fontSize: 9 },
+        axisLine: { lineStyle: { color: c.axisLineColor } },
+        axisLabel: {
+          color: c.textColor,
+          fontSize: 9,
+          formatter: (v: number) => fmtNum(v / 1e8, 1),
+        },
+        splitLine: { show: false },
+      },
+    ],
+    series: echartsSeries,
+  };
+}
+
+// ============================================================================
+//  Amt Envelope chart — rendered when an Amt/MA pair is selected.
+//  Shows trading_amount BARS + a slim envelope of all 5 trading_amt_ma lines
+//  on the right y-axis (yuan), with the OHLC/price curve shown lowkey
+//  (dimmed) on the left y-axis (price). Bars are up/down colored against
+//  the SELECTED MA (above-MA = heavy/green, below-MA = light/red) so the
+//  focused pair drives the heavy/light split. The 5 MA lines form the
+//  envelope band; the selected one is a touch thicker + brighter, the
+//  other 4 are thin and faint. A faint fill between max/min of the 5 MAs
+//  shows the envelope range.
+// ============================================================================
+
+/** Trading-amount MA windows in canonical order (matches LONG_MA_ORDER). */
+const AMT_MA_WINDOWS = [5, 20, 60, 120, 255] as const;
+
+/** Color for each trading_amt_ma window — reuses the price MA palette so
+ *  the envelope lines are visually consistent with the price MA lines. */
+const AMT_MA_COLORS: Record<number, string> = {
+  5:   MA5_COLOR,
+  20:  MA20_COLOR,
+  60:  MA60_COLOR,
+  120: MA120_COLOR,
+  255: MA255_COLOR,
+};
+
+export interface BuildAmtEnvelopeOptionArgs {
+  /** The selected Amt/MA pair's full time series.
+   *  pair.ma_long = W (the selected MA window: 5/20/60/120/255).
+   *  pair.rows[].short_value = trading_amount (yuan).
+   *  pair.rows[].long_value  = trading_amt_maW (yuan).
+   *  pair.rows[].trading_amt_ma{5,20,60,120,255} = all 5 MA values (for
+   *  the envelope). */
+  pair: MovAveSpreadPairSeries;
+  /** Current theme mode (light / dark). */
+  themeMode: ThemeMode;
+  /** Display mode for the lowkey price series (absolute / percentage). */
+  ohlcMode?: OhlcMode;
+}
+
+/** Build the ECharts option for the Amt Envelope chart.
+ *
+ *  Layout:
+ *    Left y-axis (price, LOWKEY):
+ *      - High-low band (faint area, opacity 0.08) + close-proxy line
+ *        (opacity 0.2) — the OHLC curve shown lowkey as a price reference.
+ *    Right y-axis (amount, PROMINENT):
+ *      - Trading amount BARS (up/down colored vs the SELECTED MA,
+ *        opacity 0.42, barWidth 60%) — the main visual.
+ *      - 5 trading_amt_ma lines (the envelope curves):
+ *          Selected MA (pair.ma_long): width 1.5, opacity 0.85
+ *          Other 4 MAs: width 0.8, opacity 0.4
+ *      - Fill between max/min of all 5 MAs: faint band (envelope range).
+ *    Tooltip: date + trading_amount + all 5 MAs + selected pair's gap +
+ *      H/L.
+ */
+export function buildAmtEnvelopeOption({
+  pair,
+  themeMode,
+  ohlcMode = "absolute",
+}: BuildAmtEnvelopeOptionArgs): EChartsOption {
+  const c = axisColors(themeMode);
+  const rows = pair.rows;
+  const n = rows.length;
+  const selectedWindow = pair.ma_long;
+
+  const dates = rows.map((r) => r.date);
+  // Amt pair rows carry open/high/low (price OHLC) + trading_amount (as
+  // short_value) + all 5 trading_amt_ma{5,20,60,120,255}. Close is NOT
+  // stored on amt pair rows (short_value = trading_amount), so the lowkey
+  // price reference uses (high + low) / 2 as a close proxy.
+  const highs = rows.map((r) => r.high);
+  const lows = rows.map((r) => r.low);
+  const tradingAmts = rows.map((r) => r.trading_amount);
+
+  // 5 trading-amount MA arrays for the envelope.
+  const amtMaArrays: Record<number, Array<number | null>> = {
+    5:   rows.map((r) => r.trading_amt_ma5),
+    20:  rows.map((r) => r.trading_amt_ma20),
+    60:  rows.map((r) => r.trading_amt_ma60),
+    120: rows.map((r) => r.trading_amt_ma120),
+    255: rows.map((r) => r.trading_amt_ma255),
+  };
+  // 5 trading-amount MA SLOPE arrays (fractional daily change) for the
+  // tooltip — surfaces the day-over-day % change of each Amt MA line.
+  const amtMaSlopeArrays: Record<number, Array<number | null>> = {
+    5:   rows.map((r) => r.trading_amt_ma5_slope),
+    20:  rows.map((r) => r.trading_amt_ma20_slope),
+    60:  rows.map((r) => r.trading_amt_ma60_slope),
+    120: rows.map((r) => r.trading_amt_ma120_slope),
+    255: rows.map((r) => r.trading_amt_ma255_slope),
+  };
+  // 5 trading-amount MARKET-SHARE MA arrays (ratio 0..1) for the tooltip —
+  // surfaces the W-day MA market share as a percentage.
+  const amtMarketShareArrays: Record<number, Array<number | null>> = {
+    5:   rows.map((r) => r.trading_amt_market_share_ma5),
+    20:  rows.map((r) => r.trading_amt_market_share_ma20),
+    60:  rows.map((r) => r.trading_amt_market_share_ma60),
+    120: rows.map((r) => r.trading_amt_market_share_ma120),
+    255: rows.map((r) => r.trading_amt_market_share_ma255),
+  };
+
+  // Envelope band: max and min of all 5 MAs per date.
+  const envUpper: Array<number | null> = new Array(n).fill(null);
+  const envLower: Array<number | null> = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const vals: number[] = [];
+    for (const w of AMT_MA_WINDOWS) {
+      const v = amtMaArrays[w][i];
+      if (v != null && Number.isFinite(v)) vals.push(v);
+    }
+    if (vals.length > 0) {
+      envUpper[i] = Math.max(...vals);
+      envLower[i] = Math.min(...vals);
+    }
+  }
+
+  // ---- Percentage mode base for price labels ----
+  let baseVal: number | null = null;
+  for (let i = 0; i < n; i++) {
+    const v = highs[i];
+    if (v != null && Number.isFinite(v) && Math.abs(v) >= 1e-9) {
+      baseVal = v;
+      break;
+    }
+  }
+  const hasBase = baseVal != null && Number.isFinite(baseVal);
+  const fmtPctFromBase = (v: number | null | undefined): string => {
+    if (v == null || !Number.isFinite(v) || !hasBase || baseVal == null) return "—";
+    return fmtPct((v / baseVal - 1) * 100, 2);
+  };
+  const fmtPrice = (v: number | null | undefined): string =>
+    ohlcMode === "percentage" ? fmtPctFromBase(v) : fmtNum(v);
+
+  // ---- Build series ----
+  const echartsSeries: NonNullable<EChartsOption["series"]> = [];
+
+  // 1) Lowkey high-low band (price reference). Faint stacked area between
+  //    low and high gives a sense of the price range without OHLC bars.
+  const hlBase: Array<number | null> = lows.slice();
+  const hlDelta: Array<number | null> = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const h = highs[i];
+    const l = lows[i];
+    if (h != null && l != null) {
+      hlDelta[i] = h - l;
+    }
+  }
+  echartsSeries.push({
+    type: "line",
+    name: "_hlBase",
+    data: hlBase,
+    stack: "hlBand",
+    symbol: "none",
+    lineStyle: { opacity: 0 },
+    yAxisIndex: 0,
+    z: 0,
+  });
+  echartsSeries.push({
+    type: "line",
+    name: "_hlDelta",
+    data: hlDelta,
+    stack: "hlBand",
+    symbol: "none",
+    lineStyle: { opacity: 0 },
+    areaStyle: { color: SPOT_COLOR, opacity: 0.08 },
+    yAxisIndex: 0,
+    z: 0,
+  });
+
+  // 2) Lowkey price line (close proxy = (high+low)/2).
+  const closeProxy: Array<number | null> = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const h = highs[i];
+    const l = lows[i];
+    if (h != null && l != null) {
+      closeProxy[i] = (h + l) / 2;
+    }
+  }
+  echartsSeries.push({
+    type: "line",
+    name: "Price",
+    data: closeProxy,
+    symbol: "none",
+    lineStyle: { color: SPOT_COLOR, width: 1, opacity: 0.25 },
+    yAxisIndex: 0,
+    z: 1,
+  });
+
+  // 3) Envelope fill band (max - min of all 5 trading_amt_ma lines).
+  echartsSeries.push({
+    type: "line",
+    name: "_envBase",
+    data: envLower,
+    stack: "envBand",
+    symbol: "none",
+    lineStyle: { opacity: 0 },
+    yAxisIndex: 1,
+    z: 2,
+  });
+  echartsSeries.push({
+    type: "line",
+    name: "_envDelta",
+    data: envUpper.map((u, i) => {
+      const l = envLower[i];
+      return u != null && l != null ? u - l : null;
+    }),
+    stack: "envBand",
+    symbol: "none",
+    lineStyle: { opacity: 0 },
+    areaStyle: { color: BOLL_BAND_FILL, opacity: 0.10 },
+    yAxisIndex: 1,
+    z: 2,
+  });
+
+  // 4) Trading amount bars (up/down colored by amt vs the SELECTED MA).
+  //    Bars above the selected MA → "heavy" (UP green); below → "light"
+  //    (DOWN red). This ties the bar coloring to the focused pair so the
+  //    user can spot above/below-average volume days at a glance. Stacked
+  //    under the same "amt" stack so up/down never overlap (only one is
+  //    non-null per day).
+  const selectedAmtMa = amtMaArrays[selectedWindow];
+  const amtUpData: Array<number | null> = new Array(n).fill(null);
+  const amtDownData: Array<number | null> = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const amt = tradingAmts[i];
+    const ma = selectedAmtMa[i];
+    if (amt == null || !Number.isFinite(amt)) continue;
+    const isUp = ma != null && Number.isFinite(ma) ? amt >= ma : true;
+    if (isUp) amtUpData[i] = amt;
+    else amtDownData[i] = amt;
+  }
+  echartsSeries.push({
+    type: "bar",
+    name: "Amt Above",
+    data: amtUpData,
+    yAxisIndex: 1,
+    barWidth: "60%",
+    stack: "amt",
+    itemStyle: { color: UP_COLOR, opacity: 0.42 },
+    z: 3,
+  });
+  echartsSeries.push({
+    type: "bar",
+    name: "Amt Below",
+    data: amtDownData,
+    yAxisIndex: 1,
+    barWidth: "60%",
+    stack: "amt",
+    itemStyle: { color: DOWN_COLOR, opacity: 0.42 },
+    z: 3,
+  });
+
+  // 5) 5 trading_amt_ma lines — the envelope curves. Selected one is a
+  //    touch thicker + brighter; the other 4 are thin and faint so they
+  //    read as a band rather than competing lines. Kept slim to fit the
+  //    trading-amt style (no thick curves).
+  for (const w of AMT_MA_WINDOWS) {
+    const isSelected = w === selectedWindow;
+    echartsSeries.push({
+      type: "line",
+      name: `Amt MA${w}`,
+      data: amtMaArrays[w],
+      symbol: "none",
+      smooth: 0.2,
+      lineStyle: {
+        color: AMT_MA_COLORS[w],
+        width: isSelected ? 1.5 : 0.8,
+        opacity: isSelected ? 0.85 : 0.4,
+      },
+      yAxisIndex: 1,
+      z: isSelected ? 7 : 5,
+    });
+  }
+
+  // ---- Legend ----
+  const legendData: string[] = ["Price", "Amt Above", "Amt Below"];
+  for (const w of AMT_MA_WINDOWS) {
+    legendData.push(`Amt MA${w}`);
+  }
+
+  const grid = commonGrid({ left: 55, right: 65, bottom: 50 });
+
+  return {
+    backgroundColor: "transparent",
+    animation: false,
+    grid,
+    dataZoom: commonDataZoom(),
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "line", snap: true },
+      backgroundColor: c.tooltipBg,
+      borderColor: c.splitLineColor,
+      textStyle: { color: c.textColor, fontSize: 11 },
+      formatter: (params: unknown) => {
+        const arr = (Array.isArray(params) ? params : [params]) as Array<{
+          axisValue?: string;
+        }>;
+        if (arr.length === 0) return "";
+        const dateStr = (arr[0].axisValue as string) || "";
+        let html = `<div style="font-weight:600;margin-bottom:2px">${dateStr}</div>`;
+        const idx = dates.indexOf(dateStr);
+        if (idx >= 0) {
+          const amt = tradingAmts[idx];
+          html += `<div style="margin-top:2px">Trading Amt: ${fmtAmtYi(amt)}</div>`;
+          for (const w of AMT_MA_WINDOWS) {
+            const v = amtMaArrays[w][idx];
+            const marker = w === selectedWindow ? " ●" : "";
+            html += `<div style="opacity:${w === selectedWindow ? 1 : 0.7}">Amt MA${w}: ${fmtAmtYi(v)}${marker}</div>`;
+          }
+          const sv = tradingAmts[idx];
+          const lv = amtMaArrays[selectedWindow][idx];
+          if (sv != null && lv != null && lv !== 0) {
+            const gap = (sv - lv) / lv;
+            const gapColor = gap >= 0 ? UP_COLOR : DOWN_COLOR;
+            html += `<div style="margin-top:2px;color:${gapColor};font-weight:600">gap (Amt vs MA${selectedWindow}): ${fmtPct(gap * 100, 3)}</div>`;
+          }
+          // Slope + market share for the SELECTED MA window — the day-over-
+          // day % change of trading_amt_ma{selectedWindow} and its W-day MA
+          // market share. Shown on the amt envelope chart (this tooltip).
+          const sl = amtMaSlopeArrays[selectedWindow][idx];
+          const sh = amtMarketShareArrays[selectedWindow][idx];
+          if (sl != null || sh != null) {
+            const slopeStr = sl != null ? fmtPct(sl * 100, 2) : "—";
+            const shareStr = sh != null ? fmtPct(sh * 100, 4) : "—";
+            const slopeColor = sl != null && sl < 0 ? DOWN_COLOR : UP_COLOR;
+            html += `<div style="margin-top:2px;opacity:0.85">Amt MA${selectedWindow} slope: ` +
+              `<span style="color:${slopeColor};font-weight:600">${slopeStr}</span>` +
+              ` · mkt share: ${shareStr}</div>`;
+          }
+          const h = highs[idx];
+          const l = lows[idx];
+          html += `<div style="margin-top:2px;opacity:0.5">H: ${fmtPrice(h)} · L: ${fmtPrice(l)}</div>`;
+        }
+        return html;
+      },
+    },
+    legend: commonLegend(themeMode, { itemWidth: 12, itemHeight: 7, data: legendData }),
+    xAxis: {
+      type: "category",
+      data: dates,
+      axisLine: { lineStyle: { color: c.axisLineColor } },
+      axisLabel: {
+        color: c.textColor,
+        fontSize: 9,
+        formatter: (v: string) => v.slice(0, 7),
+        interval: Math.max(1, Math.floor(n / 6)),
+      },
+      splitLine: { show: false },
+    },
+    yAxis: [
+      {
+        type: "value",
+        scale: true,
+        name: ohlcMode === "percentage" ? "%" : "Price",
+        nameTextStyle: { color: c.textColor, fontSize: 9 },
+        axisLine: { lineStyle: { color: c.axisLineColor } },
+        axisLabel: {
+          color: c.textColor,
+          fontSize: 9,
+          formatter: (v: number) => fmtPrice(v),
+        },
+        splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.3 } },
+      },
       {
         type: "value" as const,
         scale: true,

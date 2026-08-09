@@ -111,3 +111,17 @@ export interface IndustryEtfContributionChartProps {
 export interface MarketTrendChartProps {
   themeMode: ThemeMode;
 }
+
+/** Props for the IndexAllocationView component (the "Index Allocation" mode —
+ *  migrated from the standalone "Sec Allocation Perf Attribution" commons
+ *  analysis). Reuses the Industry Sentiments classification-nav selection. */
+export interface IndexAllocationViewProps {
+  themeMode: ThemeMode;
+  /** Per-industry chart responses already fetched by the Industry Sentiments
+   *  page (one per selected industry, including strategy-only codes fetched
+   *  by code). The view resolves its target index set from these. */
+  chartDataList: IndustrySentimentsChartResponse[];
+  /** L3-selected index codes (empty → use ALL member indices of the selected
+   *  industries). */
+  selectedItemCodes: string[];
+}

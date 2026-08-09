@@ -18,7 +18,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert, Box, Chip, Stack } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import CompositionPieChart from "@/components/CompositionPieChart";
-import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { useStore } from "@/store/filters";
@@ -36,6 +35,7 @@ import {
   axisColors,
   commonLegend,
   commonGrid,
+  commonDataZoom,
 } from "@/theme/chart-palette";
 import { breakArraysAtGaps, fmtNum, fmtPct, fmtMil, safeMa } from "@/lib/series";
 import {
@@ -49,8 +49,8 @@ import type { EChartsOption } from "echarts";
 
 interface Props {
   etf: EtfBundle;
-  /** Optional default slider window (inclusive date strings). When provided
-   *  the slider initializes to the indices covering [defaultStartDate,
+  /** Optional default window (inclusive date strings). When provided
+   *  the dataZoom initializes to the range covering [defaultStartDate,
    *  defaultEndDate] inside this ETF's rows — used to align multiple panels
    *  to the shortest common time range. */
   defaultStartDate?: string;
@@ -69,6 +69,8 @@ function buildOption(
   etf: EtfBundle,
   themeMode: "light" | "dark",
   ohlcMode: OhlcMode,
+  dataZoomStart = 0,
+  dataZoomEnd = 100,
 ): EChartsOption {
   const c = axisColors(themeMode);
   const rows = etf.rows;
@@ -344,7 +346,8 @@ function buildOption(
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: commonGrid({ left: 50, right: 50, bottom: 28 }),
+    grid: commonGrid({ left: 50, right: 50, bottom: 50 }),
+    dataZoom: commonDataZoom({}, dataZoomStart, dataZoomEnd),
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross", snap: true },
@@ -494,8 +497,6 @@ function ReturnBadges({ etf }: { etf: EtfBundle }) {
 export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }: Props) {
   const themeMode = useStore((s) => s.themeMode);
   const allRows = etf.rows;
-  const maxIdx = allRows.length - 1;
-  const [range, setRange] = useState<[number, number]>([0, maxIdx]);
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
@@ -506,11 +507,11 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }
   // further to fit the stock chart below the pie charts.
   const [stockOhlcOpen, setStockOhlcOpen] = useState(false);
 
-  // Reset slider when data changes (e.g., theme switch or page change).
-  // When defaultStartDate/defaultEndDate are provided (aligned to the
-  // shortest common time range across sibling panels), the slider
-  // initializes to the indices covering that window inside this ETF's rows.
-  useEffect(() => {
+  // Initial dataZoom window. When defaultStartDate/defaultEndDate are
+  // provided (aligned to the shortest common time range across sibling
+  // panels), the dataZoom initializes to the percentage covering that window
+  // inside this ETF's full rows; otherwise the full range is shown.
+  const dataZoomRange = useMemo<{ start: number; end: number }>(() => {
     let startIdx = 0;
     let endIdx = allRows.length - 1;
     if (defaultStartDate) {
@@ -529,23 +530,24 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }
       startIdx = 0;
       endIdx = allRows.length - 1;
     }
-    setRange([startIdx, endIdx]);
+    const n = allRows.length;
+    if (n <= 1) return { start: 0, end: 100 };
+    return {
+      start: (startIdx / (n - 1)) * 100,
+      end: (endIdx / (n - 1)) * 100,
+    };
+  }, [allRows, defaultStartDate, defaultEndDate]);
+
+  // Collapse the composition / stock-OHLC expansion panels when the data
+  // changes (e.g., ETF switch or page change).
+  useEffect(() => {
     setCompositionOpen(false);
     setStockOhlcOpen(false);
   }, [etf.code, allRows.length, defaultStartDate, defaultEndDate]);
 
-  // Filter rows to the selected date window
-  const filteredRows = useMemo(
-    () => allRows.slice(range[0], range[1] + 1),
-    [allRows, range],
-  );
-  const filteredEtf: EtfBundle = useMemo(
-    () => ({ ...etf, rows: filteredRows }),
-    [etf, filteredRows],
-  );
   const option = useMemo(
-    () => buildOption(filteredEtf, themeMode, ohlcMode),
-    [filteredEtf, themeMode, ohlcMode],
+    () => buildOption(etf, themeMode, ohlcMode, dataZoomRange.start, dataZoomRange.end),
+    [etf, themeMode, ohlcMode, dataZoomRange],
   );
 
   // Dynamic card height: expand when composition panel is open so the pie
@@ -562,28 +564,22 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }
       action={
         <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
           <OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />
-          <ReturnBadges etf={filteredEtf} />
+          <ReturnBadges etf={etf} />
         </Stack>
       }
       height={cardHeight}
     >
       <Box sx={{ width: "100%" }}>
         <EChart option={option} height={250} />
-        <DateRangeSlider
-          value={range}
-          onChange={setRange}
-          max={maxIdx}
-          dates={allRows.map((r) => r.date)}
-        />
         <CompositionPieChart
           code={etf.code}
           open={compositionOpen}
           onToggle={() => setCompositionOpen(!compositionOpen)}
           onStockOhlcOpenChange={setStockOhlcOpen}
         />
-        {filteredRows.length < 40 && (
+        {allRows.length < 40 && (
           <Alert severity="info" sx={{ mt: 0.5, py: 0.25 }} icon={false}>
-            Insufficient data ({filteredRows.length} rows).
+            Insufficient data ({allRows.length} rows).
           </Alert>
         )}
       </Box>

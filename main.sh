@@ -38,16 +38,17 @@ do
   python -m "$m"
 done
 
-# analyze, run daily. industry_correlations is now an internal step of
-# industry_sentiments (runs automatically after the sentiments table is
-# repopulated, reusing the same DB connection). mov_ave_rsi is now an
-# internal step of mov_ave_spread (runs automatically after the detail +
-# peaks_and_floors tables are repopulated, reusing the same DB connection
-# and source price DataFrame).
+# analyze, run daily. industry_correlations + sec_alloc_perf_attribution +
+# industry_attributions + industry_etf_contribution are now internal steps of
+# industry_sentiments (run automatically after the sentiments table is
+# repopulated, reusing the same DB connection; sec_alloc_perf_attribution is
+# the producer that the attributions + etf_contribution aggregations read
+# from). mov_ave_rsi is now an internal step of mov_ave_spread (runs
+# automatically after the detail + peaks_and_floors tables are repopulated,
+# reusing the same DB connection and source price DataFrame).
 for m in \
   analyze.industry_sentiments \
-  analyze.mov_ave_spread \
-  analyze.sec_alloc_perf_attribution
+  analyze.mov_ave_spread
 do
   python -m "$m"
 done
@@ -73,8 +74,13 @@ python -m downloads.stock.sse.archive
 
 # build, run once
 python -m builds.classification
+python -m builds.sec_info
 
 # always run
 python -m downloads.stream.sse.price
 python -m downloads.stream.szse.price
 python -m downloads.stream.csindex.price
+
+# for strategy — discover all available secs in analysis.mov_ave_spreads_detail,
+# backtest them, then compute internal risk metrics for every run.
+python -m strategy.ma_spread_trading

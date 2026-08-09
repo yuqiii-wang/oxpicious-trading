@@ -75,6 +75,7 @@ import pandas as pd  # noqa: E402
 
 from analyze._common import (  # noqa: E402
     batched_upsert_by_date,
+    build_and_insert_chunked,
     upsert_analysis_identity,
 )
 from analyze.mov_ave_spread.config import (  # noqa: E402
@@ -268,9 +269,23 @@ async def main() -> None:
         )
         print(f"    -> upserted {n_pf:,} peaks_and_floors rows", flush=True)
 
-        # ---- Step 3: build detail rows (filtered to target_dates) --------
-        print("\n[3/4] Computing 9 wide gap columns + 12 slope/curvature "
-              "columns per (sec_type, code, date)...", flush=True)
+        # ---- Step 3+4: build + insert detail (chunked by date) -----------
+        # Build detail rows in date-bounded chunks and insert each chunk
+        # immediately, so the full dict list is never materialized at
+        # once. sanitize_for_db_insert converts each numeric column to
+        # object dtype (~4x float64) and to_dict creates one Python dict
+        # per row (~1.6 KB for a 45-key dict); for the full stock universe
+        # (6.7M rows) that is ~10+ GB of dicts alone and OOMs. Chunking
+        # bounds peak memory to one chunk's dicts (~100K rows ≈ 160 MB).
+        #
+        # The full all_pf_rows is passed to every chunk (via the build_fn
+        # closure) so _compute_pf_date_mapping's nearest-preceding-extreme
+        # asof picks up ALL extremes, not just the chunk's dates — the
+        # chunk's sub-frame + the full pf_df in the combined timeline
+        # forward-fills the correct extreme per detail row.
+        print("\n[3/4] Computing + inserting detail rows in date-bounded "
+              "chunks (9 gap cols + 12 slope/curv cols per row)...",
+              flush=True)
         detail_df = df
         if target_dates_union is not None and len(target_dates_union) > 0:
             n_before = len(detail_df)
@@ -279,40 +294,23 @@ async def main() -> None:
             ].reset_index(drop=True)
             print(f"    -> incremental filter: {len(detail_df):,} of "
                   f"{n_before:,} rows are in target_dates_union", flush=True)
-        detail = build_detail_rows(detail_df, pf_rows=all_pf_rows)
-        print(f"    -> {len(detail):,} detail rows", flush=True)
-
-        del detail_df
-
-        # ---- Step 4: upsert detail ---------------------------------------
-        print(f"\n[4/4] Upserting {len(detail):,} detail rows into "
-              f"{DETAIL_TABLE} (chunked by date to bound memory)...",
+        print(f"    -> building {len(detail_df):,} detail rows "
+              f"({'COPY' if args.force else 'upsert'} per chunk)",
               flush=True)
 
-        # Pre-check: skip already-present dates, scoped per-sec_type.
-        # Redundant with the find_missing_analysis_dates pre-check in
-        # Step 0, but serves as a safety net for edge cases (e.g.
-        # partial-date population). Per-sec_type scoping prevents a date
-        # populated for one sec_type from masking another sec_type.
-        n_detail_before = len(detail)
-        detail = await _filter_per_sec_type_async(
-            conn, DETAIL_TABLE, detail,
-        )
-        n_detail_skipped = n_detail_before - len(detail)
-        if n_detail_skipped > 0:
-            print(f"    -> skip check (per-sec_type): {n_detail_skipped:,} "
-                  f"of {n_detail_before:,} detail rows already present "
-                  f"(skipped)",
-                  flush=True)
-
-        n_detail = await batched_upsert_by_date(
-            conn, DETAIL_TABLE, detail,
+        n_detail = await build_and_insert_chunked(
+            conn, pool, detail_df,
+            lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows),
+            table_name=DETAIL_TABLE,
             key_columns=["sec_type", "code", "date"],
-            label="detail",
-            pool=pool,
+            force=args.force,
+            sec_types=sec_types,
             max_concurrent=max_concurrent,
+            label="detail",
         )
-        print(f"    -> upserted {n_detail:,} rows", flush=True)
+        print(f"    -> inserted {n_detail:,} detail rows", flush=True)
+
+        del detail_df
 
         # ---- Upsert analysis_identity ------------------------------------
         print(f"    -> Upserting analysis.analysis_identity registry...",
@@ -340,14 +338,19 @@ async def main() -> None:
 
         print_wall_time(t0)
     finally:
+        # Close with a timeout — after heavy parallel bulk inserts the
+        # PostgreSQL server can be saturated with WAL checkpoint I/O,
+        # making conn.close() / pool.close() stall on the Terminate
+        # message + TCP teardown. Without a timeout this hangs forever.
         try:
-            await conn.close()
-        except Exception:
+            await asyncio.wait_for(conn.close(), timeout=10)
+        except (asyncio.TimeoutError, Exception):
             pass
         try:
-            await pool.close()
-        except Exception:
-            pass
+            await asyncio.wait_for(pool.close(), timeout=10)
+        except (asyncio.TimeoutError, Exception):
+            # Graceful close timed out — force-terminate all connections.
+            pool.terminate()
 
 
 if __name__ == "__main__":

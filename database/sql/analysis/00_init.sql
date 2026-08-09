@@ -10,3 +10,4 @@
 \ir 04_sec_alloc_perf_attribution.sql
 \ir 05_industry_sentiments.sql
 \ir 06_industry_member_index_map.sql
+\ir 07_basic_analysis.sql

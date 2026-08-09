@@ -15,6 +15,7 @@ import {
   axisColors,
   commonLegend,
   commonGrid,
+  commonDataZoom,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { MARKET_TREND_INDICES } from "./constants";
@@ -31,21 +32,26 @@ interface IndexSeriesData {
  * Build the combined Market Trend overview chart (sole plot).
  *
  * Close lines (rebased to 100 at visible-window start, left axis) for each
- * selected index + trading amount stacked bars (right axis, bottom). The
- * stack height is the sum of the selected indices' trading amounts (亿元);
- * each coloured segment shows that index's proportional contribution.
+ * selected index + trading amount stacked bars (right axis, bottom) when
+ * `showAmt` is true. The stack height is the sum of the selected indices'
+ * trading amounts (亿元); each coloured segment shows that index's
+ * proportional contribution.
  *
  * @param allDates     Sorted union of all indices' dates.
  * @param datasets     One IndexSeriesData per index (rows aligned inside).
  * @param visibleCodes Codes to actually draw. Indices not in this list are
  *                     omitted from both the close lines and the stacked bars.
  * @param themeMode    Current theme.
+ * @param showAmt      When false, the trading amount stacked bars (and their
+ *                     right y-axis / tooltip rows / legend entries) are
+ *                     omitted, leaving only the close lines.
  */
 export function buildMarketTrendOption(
   allDates: string[],
   datasets: IndexSeriesData[],
   visibleCodes: string[],
   themeMode: ThemeMode,
+  showAmt: boolean = true,
 ): EChartsOption {
   const c = axisColors(themeMode);
   const visible = datasets.filter((ds) => visibleCodes.includes(ds.code));
@@ -76,16 +82,20 @@ export function buildMarketTrendOption(
   });
 
   // --- Trading amount stacked bars (proportional aggregation) ----------
-  // Per-index trading amount (亿元) aligned to allDates.
-  const amtLookups = visible.map((ds) => {
-    const m = new Map<string, number>();
-    for (const r of ds.rows) {
-      if (r.trading_amount != null && Number.isFinite(r.trading_amount)) {
-        m.set(r.date, r.trading_amount / 1e8);
-      }
-    }
-    return m;
-  });
+  // Per-index trading amount (亿元) aligned to allDates. Only built when
+  // `showAmt` is true; otherwise the bar series, right y-axis, tooltip
+  // amount rows, and legend entries are all omitted.
+  const amtLookups = showAmt
+    ? visible.map((ds) => {
+        const m = new Map<string, number>();
+        for (const r of ds.rows) {
+          if (r.trading_amount != null && Number.isFinite(r.trading_amount)) {
+            m.set(r.date, r.trading_amount / 1e8);
+          }
+        }
+        return m;
+      })
+    : [];
   const amtSeriesData = amtLookups.map((lookup) =>
     allDates.map((d) => {
       const v = lookup.get(d);
@@ -93,9 +103,11 @@ export function buildMarketTrendOption(
     }),
   );
   // Per-date total for tooltip.
-  const totalsByDate = allDates.map((_, i) =>
-    amtSeriesData.reduce((sum, arr) => sum + (arr[i] ?? 0), 0),
-  );
+  const totalsByDate = showAmt
+    ? allDates.map((_, i) =>
+        amtSeriesData.reduce((sum, arr) => sum + (arr[i] ?? 0), 0),
+      )
+    : allDates.map(() => 0);
 
   // --- X-axis: year-month ticks (3-month interval) --------------------
   const displayMonths = new Set<string>();
@@ -128,17 +140,20 @@ export function buildMarketTrendOption(
   // --- Series: stacked bars first (z=1), then close lines (z=3) -------
   const series: EChartsOption["series"] = [
     // Trading amount stacked bars (one bar series per visible index).
-    ...visible.map((ds, di) => ({
-      name: `${ds.name} Amt`,
-      type: "bar" as const,
-      stack: "market_trend_amt",
-      yAxisIndex: 1,
-      data: amtSeriesData[di],
-      itemStyle: { color: ds.color, opacity: 0.35 },
-      emphasis: { focus: "series" as const },
-      barWidth: "90%",
-      z: 1 + di,
-    })),
+    // Omitted entirely when `showAmt` is false.
+    ...(showAmt
+      ? visible.map((ds, di) => ({
+          name: `${ds.name} Amt`,
+          type: "bar" as const,
+          stack: "market_trend_amt",
+          yAxisIndex: 1,
+          data: amtSeriesData[di],
+          itemStyle: { color: ds.color, opacity: 0.35 },
+          emphasis: { focus: "series" as const },
+          barWidth: "90%",
+          z: 1 + di,
+        }))
+      : []),
     // Close lines (rebased to 100).
     ...closeSeries.map((s, i) => ({
       name: s.name,
@@ -156,7 +171,8 @@ export function buildMarketTrendOption(
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: commonGrid({ left: 56, right: 56, bottom: 32, top: 32 }),
+    grid: commonGrid({ left: 56, right: 56, bottom: 50, top: 32 }),
+    dataZoom: commonDataZoom(),
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross", snap: true },
@@ -177,7 +193,7 @@ export function buildMarketTrendOption(
         if (!dateStr) return "";
         const total = totalsByDate[idx0] ?? 0;
         let html = `<div style="font-weight:600">${dateStr}</div>`;
-        if (total > 0) {
+        if (showAmt && total > 0) {
           html += `<div style="margin-top:2px;opacity:0.7">Total Amt: ${fmtNum(total)} 亿</div>`;
         }
         // Separate close-line entries from amount-bar entries.
@@ -200,14 +216,14 @@ export function buildMarketTrendOption(
           }
         }
         if (closeRows.length) html += `<div style="margin-top:4px">${closeRows.join("")}</div>`;
-        if (amtRows.length) html += `<div style="margin-top:4px;opacity:0.85">${amtRows.join("")}</div>`;
+        if (showAmt && amtRows.length) html += `<div style="margin-top:4px;opacity:0.85">${amtRows.join("")}</div>`;
         return html;
       },
     },
     legend: commonLegend(themeMode, {
       data: [
         ...closeSeries.map((s) => s.name),
-        ...visible.map((ds) => `${ds.name} Amt`),
+        ...(showAmt ? visible.map((ds) => `${ds.name} Amt`) : []),
       ],
     }),
     xAxis: {
@@ -238,15 +254,18 @@ export function buildMarketTrendOption(
         },
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
-      {
-        type: "value",
-        scale: true,
-        name: "Trading Amt (亿)",
-        nameTextStyle: { color: c.textColor, fontSize: 9 },
-        axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: number) => fmtNum(v) },
-        splitLine: { show: false },
-      },
+      // Right axis only included when trading amount bars are shown.
+      ...(showAmt
+        ? [{
+            type: "value" as const,
+            scale: true,
+            name: "Trading Amt (亿)",
+            nameTextStyle: { color: c.textColor, fontSize: 9 },
+            axisLine: { lineStyle: { color: c.axisLineColor } },
+            axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: number) => fmtNum(v) },
+            splitLine: { show: false },
+          }]
+        : []),
     ],
     series,
   };

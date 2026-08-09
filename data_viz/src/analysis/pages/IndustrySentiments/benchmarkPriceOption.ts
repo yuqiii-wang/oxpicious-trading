@@ -57,6 +57,7 @@ import {
   axisColors,
   commonLegend,
   commonGrid,
+  commonDataZoom,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 
@@ -430,7 +431,8 @@ export function buildBenchmarkPriceOption(
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: commonGrid({ left: 64, right: showTradingAmt ? 56 : 24, bottom: 48, top: 32 }),
+    grid: commonGrid({ left: 64, right: showTradingAmt ? 56 : 24, bottom: 50, top: 32 }),
+    dataZoom: commonDataZoom(),
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross" },

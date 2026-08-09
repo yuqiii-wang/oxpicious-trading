@@ -204,8 +204,9 @@ const INDEX_META_SQL = `
 //  FIN/BANKS).  Strategy-primary indices (沪深300 → BROAD/BROAD_CSI) appear
 //  in the parallel strategy tree from listStrategyThemes().
 // ----------------------------------------------------------------------------
-export async function listIndexThemes(): Promise<SectorNode[]> {
+export async function listIndexThemes(exchange?: string | null): Promise<SectorNode[]> {
   const rows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
+  const exFilter = (exchange ?? "").trim() || null;
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -215,6 +216,10 @@ export async function listIndexThemes(): Promise<SectorNode[]> {
   for (const r of rows) {
     // LEFT column: only industry-primary securities.
     if (!r.is_industry_not_strategy) continue;
+    // Apply exchange filter so the nav tree respects the selected exchange
+    // (e.g. HK indices like 港股通50/恒生 are excluded when "All (primary)"
+    // is selected).
+    if (exFilter && !matchesExchange(r.exchange, exFilter)) continue;
     const item = { code: r.code, name: r.name ?? "", is_dummy: r.is_dummy };
     if (!sectorMap.has(r.sector_id)) {
       sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
@@ -268,8 +273,9 @@ export async function listIndexThemes(): Promise<SectorNode[]> {
 //  tree uses the SAME field names (sector_id/industry_id) as the industry
 //  tree; the difference is only the row filter (is_industry_not_strategy).
 // ----------------------------------------------------------------------------
-export async function listStrategyThemes(): Promise<StrategyNode[]> {
+export async function listStrategyThemes(exchange?: string | null): Promise<StrategyNode[]> {
   const rows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
+  const exFilter = (exchange ?? "").trim() || null;
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -279,6 +285,7 @@ export async function listStrategyThemes(): Promise<StrategyNode[]> {
   for (const r of rows) {
     // RIGHT column: only strategy-primary securities.
     if (r.is_industry_not_strategy) continue;
+    if (exFilter && !matchesExchange(r.exchange, exFilter)) continue;
     const item = { code: r.code, name: r.name ?? "", is_dummy: r.is_dummy };
     // sector_id/industry_id carry strategy/theme when is_ind=FALSE
     if (!sectorMap.has(r.sector_id)) {

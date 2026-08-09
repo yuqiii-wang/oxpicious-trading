@@ -20,7 +20,7 @@ from _common.sec_statics.classification import (
     classify_index_both,
 )
 
-from builds.classification.sector_industry.exchange import _is_hk_name
+from builds.classification.sector_industry.exchange import _exchange_from_index_code
 from builds.classification.sector_industry.index.db import fetch_index_meta
 
 
@@ -112,7 +112,7 @@ async def classify_indices(
                 n_new_classified += 1
         indices[code] = {
             "name": name,
-            "exchange": "HK" if _is_hk_name(name) else None,
+            "exchange": _exchange_from_index_code(code, name, sector_id, tags),
             "sector_id": sector_id,
             "industry_id": industry_id,
             "tags": tags,
@@ -150,6 +150,12 @@ async def classify_indices(
             ):
                 all_tags = classify_index_all_tags(prev.get("name", ""))
                 prev["tags"] = [{"sector_id": t[0], "industry_id": t[2]} for t in all_tags]
+            # Re-derive exchange from code + name + classification so manually
+            # added JSON-only indices pick up the same SS/SZ/BJ/HK/OVERSEAS
+            # logic as CSV/DB-discovered indices.
+            prev["exchange"] = _exchange_from_index_code(
+                code, prev.get("name", ""),
+                prev.get("sector_id"), prev.get("tags"))
             indices[code] = prev
             n_from_json += 1
 

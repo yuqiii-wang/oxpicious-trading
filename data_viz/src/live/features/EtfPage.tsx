@@ -51,7 +51,7 @@ export default function EtfPage() {
   const [strategies, setStrategies] = useState<StrategyNode[]>([]);
   const [strategyId, setStrategyId] = useState<string | null>(null);
   const [themeSlug, setThemeSlug] = useState<string | null>(null);
-  const [exchange, setExchange] = useState<string | null>(null);
+  const [exchange, setExchange] = useState<string | null>("PRIMARY");
   const [data, setData] = useState<EtfMarginCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,11 +59,11 @@ export default function EtfPage() {
   const [searchCode, setSearchCode] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Load themes on mount and on refresh.
-  // Fetches BOTH the industry tree (LEFT column) and the parallel strategy
-  // tree (RIGHT column) in parallel.
+  // Load themes on mount, on refresh, and when the exchange filter changes
+  // (so the nav tree respects the exchange filter — cross-border ETFs are
+  // excluded when "All (primary)" is selected).
   useEffect(() => {
-    Promise.all([fetchThemes(), fetchEtfStrategyThemes()])
+    Promise.all([fetchThemes(exchange), fetchEtfStrategyThemes(exchange)])
       .then(([list, strategyList]) => {
         setSectors(list);
         setStrategies(strategyList);
@@ -78,7 +78,7 @@ export default function EtfPage() {
         }
       })
       .catch((e: Error) => setError(e.message));
-  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [refreshKey, exchange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset to page 1 whenever sector / industry / strategy / theme / exchange / search changes.
   useEffect(() => {

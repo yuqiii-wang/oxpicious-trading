@@ -213,19 +213,37 @@ class QuarterlyReport:
 # ETF universe (DB)
 # ---------------------------------------------------------------------------
 
-def fetch_sz_etf_codes(other_only: bool = True) -> List[Tuple[str, str]]:
+def fetch_sz_etf_codes(
+    other_only: bool = True,
+    include_lof: bool = True,
+) -> List[Tuple[str, str]]:
     """Return distinct (code, name) for SZ ETFs.
 
     *code* is returned as the bare 6-digit string (suffix stripped) so it
     can be passed directly to the annList API. *name* is the most recent
     non-empty name for that code.
 
-    When *other_only* is True (default), only ETFs whose
-    ``stats.sec_classification.sector_id = 'OTHER'`` are returned — i.e.
-    ETFs not yet assigned to a specific sector/industry. This avoids
-    downloading quarterly reports for ETFs that are already well-classified
-    (BROAD, TECH, FIN, …) and focuses the download on the "unclassified"
-    set whose reports are most useful for classification.
+    Both branches filter to ETFs whose ``stats.sec_classification.is_active``
+    is TRUE — i.e. ETFs with >=1 record in ``stats.etf_identity`` within the
+    trailing 365 days. Delisted ETFs (no recent identity records) are
+    skipped, avoiding wasteful annList API calls + 90s anti-bot sleeps
+    for funds that no longer publish quarterly reports.
+
+    When *other_only* is True (default), the universe is additionally
+    restricted to ETFs whose ``sec_classification.sector_id = 'OTHER'``
+    — i.e. ETFs not yet assigned to a specific sector/industry. This
+    avoids downloading quarterly reports for ETFs that are already
+    well-classified (BROAD, TECH, FIN, …) and focuses the download on
+    the "unclassified" set whose reports are most useful for
+    classification.
+
+    When *include_lof* is True (default), all active SZSE LOFs (codes
+    matching ``16____.SZ`` — Listed Open-End Funds) are added to the
+    universe regardless of *other_only*. LOF quarterly reports publish
+    the same holdings sections as ETF reports, so they are always worth
+    downloading even when the LOF has already been sector-classified
+    (e.g. BROAD/TECH). Has no effect when *other_only* is False (the
+    non-OTHER branch already returns all active SZ ETFs, including LOFs).
     """
     from _common.db_commons import get_db_connection
 
@@ -233,28 +251,62 @@ def fetch_sz_etf_codes(other_only: bool = True) -> List[Tuple[str, str]]:
     try:
         with conn.cursor() as cur:
             if other_only:
-                # JOIN sec_classification to restrict to sector_id='OTHER'.
-                # Use DISTINCT ON (code) because an ETF may have multiple
-                # rows in sec_classification (one per parent_index_code);
-                # pick the primary parent when available.
+                # JOIN sec_classification to restrict to sector_id='OTHER'
+                # AND is_active=TRUE (skip delisted ETFs). Use DISTINCT ON
+                # (code) because an ETF may have multiple rows in
+                # sec_classification (one per parent_index_code); pick the
+                # primary parent when available.
+                #
+                # When include_lof=True, additionally include all active
+                # LOFs (16xxxx.SZ codes) regardless of their sector_id —
+                # LOF holdings are useful across all sectors, not just
+                # OTHER. Implemented as an OR inside the LATERAL WHERE so
+                # a single round-trip returns the merged universe.
+                if include_lof:
+                    cur.execute(
+                        "SELECT i.code, i.name FROM stats.etf_identity i "
+                        "JOIN LATERAL ("
+                        "  SELECT code FROM stats.sec_classification c"
+                        "  WHERE c.code = i.code"
+                        "    AND c.type = 'etf'"
+                        "    AND c.is_active = TRUE"
+                        "    AND (c.sector_id = 'OTHER'"
+                        "         OR i.code LIKE '16____.SZ')"
+                        "  ORDER BY c.parent_index_is_primary DESC"
+                        "  LIMIT 1"
+                        ") sc ON TRUE "
+                        "WHERE i.code_suffix = 'SZ' "
+                        "ORDER BY i.code DESC"
+                    )
+                else:
+                    cur.execute(
+                        "SELECT i.code, i.name FROM stats.etf_identity i "
+                        "JOIN LATERAL ("
+                        "  SELECT code FROM stats.sec_classification c"
+                        "  WHERE c.code = i.code"
+                        "    AND c.type = 'etf'"
+                        "    AND c.sector_id = 'OTHER'"
+                        "    AND c.is_active = TRUE"
+                        "  ORDER BY c.parent_index_is_primary DESC"
+                        "  LIMIT 1"
+                        ") sc ON TRUE "
+                        "WHERE i.code_suffix = 'SZ' "
+                        "ORDER BY i.code DESC"
+                    )
+            else:
+                # Filter to active ETFs only (skip delisted / dead funds).
+                # LOFs are already included here regardless of include_lof
+                # since this branch returns ALL active SZ ETFs.
                 cur.execute(
                     "SELECT i.code, i.name FROM stats.etf_identity i "
-                    "JOIN LATERAL ("
-                    "  SELECT code FROM stats.sec_classification c"
-                    "  WHERE c.code = i.code"
-                    "    AND c.type = 'etf'"
-                    "    AND c.sector_id = 'OTHER'"
-                    "  ORDER BY c.parent_index_is_primary DESC"
-                    "  LIMIT 1"
-                    ") sc ON TRUE "
                     "WHERE i.code_suffix = 'SZ' "
+                    "  AND EXISTS ("
+                    "    SELECT 1 FROM stats.sec_classification c"
+                    "    WHERE c.code = i.code"
+                    "      AND c.type = 'etf'"
+                    "      AND c.is_active = TRUE"
+                    "  ) "
                     "ORDER BY i.code DESC"
-                )
-            else:
-                cur.execute(
-                    "SELECT code, name FROM stats.etf_identity "
-                    "WHERE code_suffix = 'SZ' "
-                    "ORDER BY code DESC"
                 )
             rows = cur.fetchall()
     finally:
@@ -539,6 +591,7 @@ def download_szse_etf_reports(
     extract: bool = True,
     max_etfs: Optional[int] = None,
     other_only: bool = True,
+    include_lof: bool = True,
     start_date: str = DEFAULT_START_DATE,
 ) -> dict:
     """Download SZSE ETF quarterly reports and extract holdings CSVs.
@@ -547,7 +600,7 @@ def download_szse_etf_reports(
         out_root: Override output root (default: temps/szse_etf_reports/).
         etf_codes: Optional list of bare 6-digit codes to process. If None,
             the SZ ETF universe is built from the DB. Explicit codes bypass
-            the *other_only* filter.
+            the *other_only* and *include_lof* filters.
         sleep_sec: Sleep between HTTP requests (default: LONG_SLEEP_INTERVAL=90s).
         extract: If True, extract the 3 target sections to CSV after each PDF
             download.
@@ -556,6 +609,12 @@ def download_szse_etf_reports(
             ETF universe to those with ``sec_classification.sector_id='OTHER'``
             — i.e. unclassified ETFs whose quarterly reports are most useful
             for classification. Ignored when *etf_codes* is given.
+        include_lof: When True (default) and *etf_codes* is None, also include
+            all active SZSE LOFs (codes matching ``16____.SZ``) in the
+            universe regardless of *other_only*. LOF holdings are useful
+            across all sectors, not just OTHER. Ignored when *etf_codes* is
+            given or when *other_only* is False (the all-active branch
+            already contains LOFs).
         start_date: Only download reports at or after this date
             (default: DEFAULT_START_DATE = 2020-01-01). Reports with
             (year, quarter) before the cutoff are skipped, and pagination
@@ -564,18 +623,21 @@ def download_szse_etf_reports(
     out_dir = resolve_out_dir(__file__, "szse_etf_reports", out_root)
     cutoff_year, cutoff_quarter = _parse_start_cutoff(start_date)
 
-    # Build the ETF universe. Explicit --etf-code always bypasses other_only.
+    # Build the ETF universe. Explicit --etf-code always bypasses other_only
+    # and include_lof.
     if etf_codes is not None:
         universe: List[Tuple[str, str]] = [(c, "") for c in etf_codes]
     else:
-        universe = fetch_sz_etf_codes(other_only=other_only)
+        universe = fetch_sz_etf_codes(other_only=other_only, include_lof=include_lof)
     if max_etfs is not None and max_etfs > 0:
         universe = universe[:max_etfs]
 
     logger.info(
         "Starting SZSE ETF quarterly-report download: %d ETFs "
-        "(other_only=%s), sleep=%.1fs, out=%s, start_date=%s",
-        len(universe), other_only if etf_codes is None else "bypassed",
+        "(other_only=%s, include_lof=%s), sleep=%.1fs, out=%s, start_date=%s",
+        len(universe),
+        other_only if etf_codes is None else "bypassed",
+        include_lof if etf_codes is None else "bypassed",
         sleep_sec, out_dir, start_date,
     )
 

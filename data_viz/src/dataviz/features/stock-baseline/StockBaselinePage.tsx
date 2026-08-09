@@ -44,7 +44,7 @@ export default function StockBaselinePage() {
   const [strategies, setStrategies] = useState<StrategyNode[]>([]);
   const [strategyId, setStrategyId] = useState<string | null>(null);
   const [themeSlug, setThemeSlug] = useState<string | null>(null);
-  const [exchange, setExchange] = useState<string | null>(null);
+  const [exchange, setExchange] = useState<string | null>("PRIMARY");
   const [data, setData] = useState<StockCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,26 +54,34 @@ export default function StockBaselinePage() {
   // highlighted to show where the code belongs.
   const [searchCode, setSearchCode] = useState<string | null>(null);
 
-  // Load themes (two-level taxonomy tree) once, and on refresh.
-  // Fetches BOTH the industry tree (LEFT column) and the parallel strategy
-  // tree (RIGHT column) in parallel.
+  // Load themes (two-level taxonomy tree), refetching whenever the exchange
+  // filter changes so the nav tree respects the exchange filter.
   useEffect(() => {
-    Promise.all([fetchStockThemes(), fetchStockStrategyThemes()])
+    Promise.all([fetchStockThemes(exchange), fetchStockStrategyThemes(exchange)])
       .then(([list, strategyList]) => {
         setSectors(list);
         setStrategies(strategyList);
+        // Clear stale sector/strategy selection if not in the filtered tree.
+        if (sectorId && !list.some((s) => s.sector_id === sectorId)) {
+          setSectorId(null);
+          setIndustrySlug(null);
+        }
+        if (strategyId && !strategyList.some((s) => s.sector_id === strategyId)) {
+          setStrategyId(null);
+          setThemeSlug(null);
+        }
         // BROAD is a STRATEGY (is_industry_not_strategy=FALSE), so it lives in
         // the RIGHT column (strategyList). Default to BROAD there if present;
         // else fall back to the first sector in the LEFT column.
         const broad = strategyList.find((s) => s.sector_id === "BROAD");
         if (broad) {
-          setStrategyId(broad.sector_id);
+          setStrategyId((prev) => prev ?? broad.sector_id);
         } else if (list.length > 0) {
-          setSectorId(list[0].sector_id);
+          setSectorId((prev) => prev ?? list[0].sector_id);
         }
       })
       .catch((e: Error) => setError(e.message));
-  }, []);
+  }, [exchange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset to page 1 whenever sector, industry, strategy, theme, or exchange changes
   useEffect(() => {

@@ -55,9 +55,19 @@ function parseCode(req: Request): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 
+/** Parse the optional `exchange` query param (PRIMARY/SS/SZ/BJ/HK/OVERSEAS). */
+function parseExchange(req: Request): string | null {
+  const v = req.query.exchange;
+  return typeof v === "string" && v.length > 0 ? v : null;
+}
+
 router.get("/mov-ave-spread/codes", async (req: Request, res: Response) => {
   try {
-    res.json(await listMovAveSpreadCodes(parseSecType(req)));
+    res.json(await listMovAveSpreadCodes(
+      parseSecType(req),
+      undefined, undefined, undefined, undefined,
+      parseExchange(req),
+    ));
   } catch (err) {
     console.error("[analysis/mov-ave-spread/codes] error:", err);
     res.status(500).json({ error: String(err) });
@@ -84,7 +94,7 @@ router.get("/mov-ave-spread/chart", async (req: Request, res: Response) => {
 // by the ThemeSelector on the MA-Spread page.
 router.get("/mov-ave-spread/themes", async (req: Request, res: Response) => {
   try {
-    res.json(await listMovAveSpreadThemes(parseSecType(req)));
+    res.json(await listMovAveSpreadThemes(parseSecType(req), parseExchange(req)));
   } catch (err) {
     console.error("[analysis/mov-ave-spread/themes] error:", err);
     res.status(500).json({ error: String(err) });
@@ -94,7 +104,7 @@ router.get("/mov-ave-spread/themes", async (req: Request, res: Response) => {
 /** GET /api/analysis/mov-ave-spread/strategy-themes?sec_type=etf */
 router.get("/mov-ave-spread/strategy-themes", async (req: Request, res: Response) => {
   try {
-    res.json(await listMovAveSpreadStrategyThemes(parseSecType(req)));
+    res.json(await listMovAveSpreadStrategyThemes(parseSecType(req), parseExchange(req)));
   } catch (err) {
     console.error("[analysis/mov-ave-spread/strategy-themes] error:", err);
     res.status(500).json({ error: String(err) });

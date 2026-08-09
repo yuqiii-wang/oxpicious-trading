@@ -72,6 +72,38 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
     -- detail in any order within a single transaction.
     peaks_and_floors_date DATE,
 
+    -- 5 trading-amount moving-average columns (yuan, NUMERIC(24,4) — matches
+    -- the source column precision stats.{etf_liquidity_margin,index_basic_stats,
+    -- stock_liquidity_margin}.trading_amount which is NUMERIC(24,4). Daily
+    -- turnover for broad indices like SSE Composite can reach 10^13+ yuan,
+    -- which would overflow NUMERIC(16,4) (cap 10^12)). Source: per (sec_type,
+    -- code) ordered by date with min_periods=W so NULL until W consecutive
+    -- rows are available. Used to gauge liquidity trend / capital-flow
+    -- strength alongside the price-based gap columns.
+    trading_amt_ma5     NUMERIC(24,4),
+    trading_amt_ma20    NUMERIC(24,4),
+    trading_amt_ma60    NUMERIC(24,4),
+    trading_amt_ma120   NUMERIC(24,4),
+    trading_amt_ma255   NUMERIC(24,4),
+
+    trading_amt_market_share_ma5     NUMERIC(10,4),
+    trading_amt_market_share_ma20    NUMERIC(10,4),
+    trading_amt_market_share_ma60    NUMERIC(10,4),
+    trading_amt_market_share_ma120   NUMERIC(10,4),
+    trading_amt_market_share_ma255   NUMERIC(10,4),
+
+    trading_amt_ma5_slope     NUMERIC(10,4),
+    trading_amt_ma20_slope    NUMERIC(10,4),
+    trading_amt_ma60_slope    NUMERIC(10,4),
+    trading_amt_ma120_slope   NUMERIC(10,4),
+    trading_amt_ma255_slope   NUMERIC(10,4),
+
+    trading_amt_market_share_vs_ma5     NUMERIC(10,4),
+    trading_amt_market_share_vs_ma20    NUMERIC(10,4),
+    trading_amt_market_share_vs_ma60    NUMERIC(10,4),
+    trading_amt_market_share_vs_ma120   NUMERIC(10,4),
+    trading_amt_market_share_vs_ma255   NUMERIC(10,4),
+
     -- 5 Price-vs-MA gap columns
     price_vs_ma5      NUMERIC(10,6),
     price_vs_ma20     NUMERIC(10,6),
@@ -114,6 +146,44 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
         CHECK (sec_type IN ('etf', 'index', 'stock'))
 );
 
+-- Migrate: add trading_amt_market_share_ma{5,20,60,120,255} columns to
+-- pre-existing installs (CREATE TABLE IF NOT EXISTS does not retro-fit
+-- columns to an already-existing table). Each column is NUMERIC(24,4) —
+-- matches trading_amt_ma* precision; market_share is a ratio (0..1 in
+-- practice) but uses the wide type for schema symmetry with trading_amt_ma*.
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_ma5     NUMERIC(24,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_ma20    NUMERIC(24,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_ma60    NUMERIC(24,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_ma120   NUMERIC(24,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_ma255   NUMERIC(24,4);
+
+-- Migrate: add trading_amt_ma{5,20,60,120,255}_slope columns. Each is a
+-- RATIO (fractional daily change) = (ma[t] - ma[t-1]) / ma[t-1], NOT a raw
+-- difference — so NUMERIC(10,4) (cap ~10^6) is sufficient since typical MA
+-- daily changes are 0.001-0.05. NULL when ma[t] or ma[t-1] is NULL or
+-- ma[t-1] <= 0 (denominator guard). Built by analyze.mov_ave_spread.
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_ma5_slope     NUMERIC(10,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_ma20_slope    NUMERIC(10,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_ma60_slope    NUMERIC(10,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_ma120_slope   NUMERIC(10,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_ma255_slope   NUMERIC(10,4);
+
+-- Migrate: add trading_amt_market_share_vs_ma{5,20,60,120,255} columns.
+-- Each is a signed fractional ratio:
+--   (market_share[t] - market_share_ma{W}[t]) / market_share_ma{W}[t]
+-- where market_share[t] = trading_amount[t] / denominator[t] (denominator =
+-- SUM of primary-exchange total_trading_amount on date t). Positive = the
+-- security's current market share is ABOVE its W-day average (gaining
+-- relative liquidity); negative = BELOW (losing relative liquidity).
+-- NUMERIC(10,4) is sufficient — typical |ratio| < 1.0. NULL when
+-- market_share or market_share_ma{W} is NULL or market_share_ma{W} <= 0.
+-- Built by analyze.mov_ave_spread.
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_vs_ma5     NUMERIC(10,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_vs_ma20    NUMERIC(10,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_vs_ma60    NUMERIC(10,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_vs_ma120   NUMERIC(10,4);
+ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_vs_ma255   NUMERIC(10,4);
+
 -- NOTE: no separate (sec_type, code, date) index — the PK already covers
 -- that lookup. A duplicate index was previously created here and dropped
 -- because it doubled index-maintenance cost on every INSERT for zero
@@ -129,6 +199,26 @@ COMMENT ON TABLE  analysis.mov_ave_spreads_detail              IS 'MA-spread det
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.date         IS 'Business date (trading day).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma5    IS '5-trading-day moving average of trading_amount (yuan) per (sec_type, code). NUMERIC(24,4) matches source precision (stats.{etf_liquidity_margin,index_basic_stats,stock_liquidity_margin}.trading_amount) so broad-index daily turnover up to 10^20 yuan fits without overflow. NULL until 5 rows. NULL trading_amount values are treated as 0 (zero turnover) in the rolling sum but still counted in the W-row denominator, so a single NULL date no longer creates a W-day NaN gap.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma20   IS '20-trading-day moving average of trading_amount (yuan). NULL until 20 rows. NULL trading_amount treated as 0 in sum, counted in denominator (see trading_amt_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma60   IS '60-trading-day moving average of trading_amount (yuan). NULL until 60 rows. NULL trading_amount treated as 0 in sum, counted in denominator (see trading_amt_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma120  IS '120-trading-day moving average of trading_amount (yuan). NULL until 120 rows. NULL trading_amount treated as 0 in sum, counted in denominator (see trading_amt_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma255  IS '255-trading-day moving average of trading_amount (yuan). NULL until 255 rows. NULL trading_amount treated as 0 in sum, counted in denominator (see trading_amt_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma5    IS '5-trading-day moving average of trading_amt_market_share (dimensionless ratio 0..1). market_share[date,code] = trading_amount[date,code] / denominator[date], where denominator = SUM(stats.exchange_trading_amt.total_trading_amount) across exchanges whose stats.sec_classification.is_primary_exchange = TRUE on that date. NULL until 5 rows. NULL market_share treated as 0 in rolling mean, counted in W-row denominator (same pattern as trading_amt_ma5). Built by analyze.mov_ave_spread.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma20   IS '20-trading-day moving average of trading_amt_market_share. NULL until 20 rows. NULL market_share treated as 0 in rolling mean, counted in denominator (see trading_amt_market_share_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma60   IS '60-trading-day moving average of trading_amt_market_share. NULL until 60 rows. NULL market_share treated as 0 in rolling mean, counted in denominator (see trading_amt_market_share_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma120  IS '120-trading-day moving average of trading_amt_market_share. NULL until 120 rows. NULL market_share treated as 0 in rolling mean, counted in denominator (see trading_amt_market_share_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_ma255  IS '255-trading-day moving average of trading_amt_market_share. NULL until 255 rows. NULL market_share treated as 0 in rolling mean, counted in denominator (see trading_amt_market_share_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma5_slope    IS 'Fractional daily change of trading_amt_ma5: (ma5[t] - ma5[t-1]) / ma5[t-1]. Signed ratio (e.g. 0.02 = +2% day-over-day change in the 5-day trading-amount MA). NULL on the first date of each code (no prior row) or when ma5[t]/ma5[t-1] is NULL or ma5[t-1] <= 0. NUMERIC(10,4) — ratio values are small (typical |slope| < 0.1). Built by analyze.mov_ave_spread.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma20_slope   IS 'Fractional daily change of trading_amt_ma20: (ma20[t] - ma20[t-1]) / ma20[t-1]. NULL on first date or when ma is NULL/<=0 (see trading_amt_ma5_slope).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma60_slope   IS 'Fractional daily change of trading_amt_ma60: (ma60[t] - ma60[t-1]) / ma60[t-1]. NULL on first date or when ma is NULL/<=0 (see trading_amt_ma5_slope).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma120_slope  IS 'Fractional daily change of trading_amt_ma120: (ma120[t] - ma120[t-1]) / ma120[t-1]. NULL on first date or when ma is NULL/<=0 (see trading_amt_ma5_slope).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_ma255_slope  IS 'Fractional daily change of trading_amt_ma255: (ma255[t] - ma255[t-1]) / ma255[t-1]. NULL on first date or when ma is NULL/<=0 (see trading_amt_ma5_slope).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_vs_ma5    IS 'Signed fractional gap between current market_share and its 5-day MA: (market_share - trading_amt_market_share_ma5) / trading_amt_market_share_ma5. market_share[date,code] = trading_amount[date,code] / denominator[date], where denominator = SUM(stats.exchange_trading_amt.total_trading_amount) across exchanges whose stats.sec_classification.is_primary_exchange = TRUE on that date. Positive = security is gaining relative liquidity (above its 5-day average market share); negative = losing. NULL when market_share or market_share_ma5 is NULL or market_share_ma5 <= 0. Built by analyze.mov_ave_spread.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_vs_ma20   IS 'Signed fractional gap between current market_share and its 20-day MA: (market_share - trading_amt_market_share_ma20) / trading_amt_market_share_ma20. NULL when market_share or market_share_ma20 is NULL or <= 0 (see trading_amt_market_share_vs_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_vs_ma60   IS 'Signed fractional gap between current market_share and its 60-day MA: (market_share - trading_amt_market_share_ma60) / trading_amt_market_share_ma60. NULL when market_share or market_share_ma60 is NULL or <= 0 (see trading_amt_market_share_vs_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_vs_ma120  IS 'Signed fractional gap between current market_share and its 120-day MA: (market_share - trading_amt_market_share_ma120) / trading_amt_market_share_ma120. NULL when market_share or market_share_ma120 is NULL or <= 0 (see trading_amt_market_share_vs_ma5).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail.trading_amt_market_share_vs_ma255  IS 'Signed fractional gap between current market_share and its 255-day MA: (market_share - trading_amt_market_share_ma255) / trading_amt_market_share_ma255. NULL when market_share or market_share_ma255 is NULL or <= 0 (see trading_amt_market_share_vs_ma5).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.price_vs_ma5 IS '(price - ma5) / ma5 — signed fractional gap (NULL when either is NULL/invalid).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.price_vs_ma20 IS '(price - ma20) / ma20.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.price_vs_ma60 IS '(price - ma60) / ma60.';
@@ -173,23 +263,29 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_255days IS 'Rolling popula
 --                            extreme biz date (NOT a month-start).
 --    extreme_val           — the local min or max close price observed on
 --                            `date`. Always NOT NULL (every row is an
---                            extreme). Currently only minima (valley lows)
---                            are detected; maxima will be added later.
---    nearby_extreme_date   — the furthest date within ±30 trading days of
---                            `date` (the valley_low_date) whose OHLC low is
---                            strictly lower than the valley_low's OHLC high.
---                            NULL when no qualifying date exists in the
---                            ±30 trading-day window.
+--                            extreme). Both minima (valley lows / floors)
+--                            and maxima (peaks) are detected.
+--    nearby_extreme_date   — (floors only) the furthest date within ±30
+--                            trading days of `date` whose OHLC low is
+--                            strictly lower than the valley_low's OHLC
+--                            high. NULL when no qualifying date exists,
+--                            and NULL for peaks (only floors compute it).
+--    is_extreme_peak_not_floor — TRUE when this extreme is a local MAX
+--                            (peak — upward trend). FALSE when this
+--                            extreme is a local MIN (valley low / floor
+--                            — downward trend). NOT NULL.
 --
 --  Cadence: ONE row per detected extreme (trend). The build script detects
---  continuous belts (close < MA60 − 2σ, or close < MA60 for > 20 days,
---  both with < 5 day interruption bridging), merges overlapping belts into
---  trends, and emits one row per trend — the day with the min close price
---  in that trend's span. Valley_lows are then deduplicated: no two
---  surviving extremes may be within ±30 trading days of each other (the
---  min is kept when multiple fall within the window). Non-extreme dates
---  have no peaks_and_floors row; detail.peaks_and_floors_date is NULL for
---  them.
+--  continuous belts in BOTH directions (downward: close < MA60 − 2σ, or
+--  close < MA60 for > 20 days; upward: close > MA60 + 2σ, or close > MA60
+--  for > 20 days; both with < 5 day interruption bridging), merges
+--  overlapping belts into trends, and emits one row per trend — the day
+--  with the min (floor) or max (peak) close price in that trend's span.
+--  Extremes within ±30 trading days are deduplicated (min kept for floors,
+--  max kept for peaks). Cross-kind clusters where peaks and floors
+--  alternate within ±5 trading days are dropped entirely (oscillating/
+--  flat region). Non-extreme dates have no peaks_and_floors row; detail
+--  .peaks_and_floors_date is NULL for them.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_peaks_and_floors (
     sec_type          TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
@@ -198,6 +294,7 @@ CREATE TABLE analysis.mov_ave_peaks_and_floors (
 
     extreme_val        NUMERIC(18,6)         NOT NULL,
     nearby_extreme_date DATE,
+    is_extreme_peak_not_floor BOOLEAN         NOT NULL,
 
     CONSTRAINT pk_mov_ave_peaks_and_floors PRIMARY KEY (sec_type, code, date),
     CONSTRAINT chk_mov_ave_peaks_and_floors_sec_type
@@ -211,8 +308,9 @@ COMMENT ON TABLE  analysis.mov_ave_peaks_and_floors             IS 'Peaks-and-fl
 COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.date        IS 'Extreme biz date — the actual trading day on which a local min/max close was observed within a continuous belt. PK column referenced by mov_ave_spreads_detail.peaks_and_floors_date.';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.extreme_val  IS 'The local min or max close price observed on `date`. Currently only minima (valley lows) are detected via continuous-belt logic (close < MA60 − 2σ, or close < MA60 for > 20 days, with < 5 day interruption bridging; overlapping belts merged into trends, one extreme per trend). Valley_lows are then deduplicated: no two surviving extremes within ±30 trading days (min kept).';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.nearby_extreme_date IS 'The furthest date within ±30 trading days of `date` (the valley_low_date) whose OHLC low is strictly lower than the valley_low''s OHLC high. NULL when no qualifying date exists in the ±30 trading-day window. Computed by analyze.mov_ave_spread.peaks_and_floors._compute_nearby_extreme_date.';
+COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.extreme_val  IS 'The local min or max close price observed on `date`. Both minima (valley lows) and maxima (peaks) are detected via continuous-belt logic (2σ Bollinger band OR MA60 deviation for > 20 days, with < 5 day interruption bridging; overlapping belts merged into trends, one extreme per trend). Extremes within ±30 trading days are deduplicated (min kept for floors, max kept for peaks). Cross-kind clusters where peaks and floors alternate within ±5 trading days are dropped entirely (oscillating/flat region).';
+COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.nearby_extreme_date IS 'The furthest date within ±30 trading days of `date` (the valley_low_date) whose OHLC low is strictly lower than the valley_low''s OHLC high. NULL when no qualifying date exists in the ±30 trading-day window, and NULL for peaks (only floors compute nearby_extreme_date). Computed by analyze.mov_ave_spread.peaks_and_floors._compute_nearby_extreme_date.';
+COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.is_extreme_peak_not_floor IS 'TRUE when this extreme is a local MAX (peak — upward trend, close > MA60 + 2σ or close > MA60 for > 20 days). FALSE when this extreme is a local MIN (valley low / floor — downward trend). The frontend uses this to render up-triangles (green) for peaks and down-triangles (red) for floors.';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_rsi  (per-asset+date Wilder RSI + short-term gaps)

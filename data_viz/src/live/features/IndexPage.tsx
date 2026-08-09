@@ -54,7 +54,7 @@ export default function IndexPage() {
   const [strategies, setStrategies] = useState<StrategyNode[]>([]);
   const [strategyId, setStrategyId] = useState<string | null>(null);
   const [themeSlug, setThemeSlug] = useState<string | null>(null);
-  const [exchange, setExchange] = useState<string | null>(null);
+  const [exchange, setExchange] = useState<string | null>("PRIMARY");
   const [dates, setDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [data, setData] = useState<LiveDataCombinedResponse | null>(null);
@@ -64,13 +64,12 @@ export default function IndexPage() {
   const [searchCode, setSearchCode] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Load themes + available dates on mount and on refresh.
-  // Fetches BOTH the industry tree (LEFT column) and the parallel strategy
-  // tree (RIGHT column) in parallel, plus the available dates.
+  // Load themes + available dates on mount, on refresh, and when exchange
+  // changes (so the nav tree respects the exchange filter).
   useEffect(() => {
     Promise.all([
-      fetchLiveDataThemes(SEC_TYPE),
-      fetchLiveDataStrategyThemes(SEC_TYPE),
+      fetchLiveDataThemes(SEC_TYPE, exchange),
+      fetchLiveDataStrategyThemes(SEC_TYPE, exchange),
       fetchLiveDataDates(SEC_TYPE),
     ])
       .then(([list, strategyList, dateResp]) => {
@@ -80,6 +79,15 @@ export default function IndexPage() {
         // Default to the latest available date (first entry — descending).
         if (dateResp.dates.length > 0 && !selectedDate) {
           setSelectedDate(dateResp.dates[0]);
+        }
+        // Clear stale sector/strategy selection if not in the filtered tree.
+        if (sectorId && !list.some((s) => s.sector_id === sectorId)) {
+          setSectorId(null);
+          setIndustrySlug(null);
+        }
+        if (strategyId && !strategyList.some((s) => s.sector_id === strategyId)) {
+          setStrategyId(null);
+          setThemeSlug(null);
         }
         // BROAD is a STRATEGY (is_industry_not_strategy=FALSE), so it lives in
         // the RIGHT column (strategyList). Default to BROAD there if present;
@@ -92,7 +100,7 @@ export default function IndexPage() {
         }
       })
       .catch((e: Error) => setError(e.message));
-  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [refreshKey, exchange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset to page 1 whenever sector / industry / strategy / theme / exchange / date / search changes.
   useEffect(() => {

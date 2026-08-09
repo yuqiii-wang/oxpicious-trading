@@ -28,6 +28,10 @@ from analyze.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
 from analyze.mov_ave_spread.helpers import (
     compute_slopes_curvatures,
     compute_rolling_stds,
+    compute_trading_amt_mas,
+    compute_trading_amt_market_share_mas,
+    compute_trading_amt_ma_slopes,
+    compute_trading_amt_market_share_vs_mas,
 )
 
 
@@ -43,13 +47,16 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
     (``WHERE i.code = ANY($1::text[])``).
 
     ETFs JOIN etf_identity + etf_basic_stats + LEFT JOIN etf_adjustment
-    (for adj_close) + JOIN etf_tech_stats.
+    (for adj_close) + JOIN etf_tech_stats + JOIN etf_liquidity_margin
+    (for trading_amount — used to compute trading_amt_ma{5,20,60,120,255}).
 
-    Indices JOIN index_identity + index_basic_stats + JOIN index_tech_stats
-    (no adjustment table — indices have no corporate actions).
+    Indices JOIN index_identity + index_basic_stats (close + trading_amount)
+    + JOIN index_tech_stats (no adjustment table — indices have no
+    corporate actions).
 
     Stocks JOIN stock_identity + stock_basic_stats + JOIN stock_tech_stats
-    (no adjustment table — stocks use raw close as price).
+    + JOIN stock_liquidity_margin (for trading_amount) (no adjustment
+    table — stocks use raw close as price).
     """
     if sec_type == "etf":
         return """
@@ -60,11 +67,13 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 COALESCE(a.adj_open, b.open)   AS open,
                 COALESCE(a.adj_low, b.low)     AS low,
                 COALESCE(a.adj_high, b.high)   AS high,
-                t.ma5, t.ma20, t.ma60, t.ma120, t.ma255
+                t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
+                m.trading_amount
             FROM stats.etf_identity i
             JOIN stats.etf_basic_stats b ON b.date = i.date AND b.code = i.code
             LEFT JOIN stats.etf_adjustment a ON a.date = i.date AND a.code = i.code
             JOIN stats.etf_tech_stats t   ON t.date = i.date AND t.code = i.code
+            JOIN stats.etf_liquidity_margin m ON m.date = i.date AND m.code = i.code
             WHERE i.code = ANY($1::text[])
             ORDER BY i.code, i.date ASC
         """
@@ -77,7 +86,8 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 b.open  AS open,
                 b.low   AS low,
                 b.high  AS high,
-                t.ma5, t.ma20, t.ma60, t.ma120, t.ma255
+                t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
+                b.trading_amount
             FROM stats.index_identity i
             JOIN stats.index_basic_stats b ON b.date = i.date AND b.code = i.code
             JOIN stats.index_tech_stats  t ON t.date = i.date AND t.code = i.code
@@ -93,15 +103,58 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 b.open  AS open,
                 b.low   AS low,
                 b.high  AS high,
-                t.ma5, t.ma20, t.ma60, t.ma120, t.ma255
+                t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
+                m.trading_amount
             FROM stats.stock_identity i
             JOIN stats.stock_basic_stats b ON b.date = i.date AND b.code = i.code
             JOIN stats.stock_tech_stats  t ON t.date = i.date AND t.code = i.code
+            JOIN stats.stock_liquidity_margin m ON m.date = i.date AND m.code = i.code
             WHERE i.code = ANY($1::text[])
               AND b.close IS NOT NULL
             ORDER BY i.code, i.date ASC
         """
     raise ValueError(f"Unknown sec_type: {sec_type!r}")
+
+
+# SQL for the market-share denominator: per-date SUM of
+# stats.exchange_trading_amt.total_trading_amount across exchanges whose
+# stats.sec_classification.is_primary_exchange = TRUE (SS/STAR/SZ/GEM/BJ).
+# The subquery derives the primary-exchange set from sec_classification at
+# query time so changes to the is_primary_exchange flag are picked up
+# without an analyze-script redeploy.
+_MARKET_SHARE_DENOMINATOR_SQL = """
+    SELECT date, SUM(total_trading_amount) AS denominator
+    FROM stats.exchange_trading_amt
+    WHERE exchange IN (
+        SELECT DISTINCT exchange
+        FROM stats.sec_classification
+        WHERE is_primary_exchange = TRUE
+          AND exchange IS NOT NULL
+    )
+    GROUP BY date
+"""
+
+
+async def _fetch_market_share_denominator(conn) -> dict:
+    """Fetch the per-date market-share denominator from
+    stats.exchange_trading_amt.
+
+    The denominator for a given date = SUM(total_trading_amount) across
+    exchanges whose stats.sec_classification.is_primary_exchange = TRUE
+    (currently SZ via 399001 + SS via 000001; BJ will be included once a
+    representative BJ index is added to exchange_trading_amt).
+
+    Returns a {date: float} dict. Dates with no primary-exchange data
+    in exchange_trading_amt are absent from the dict, so callers using
+    Series.map will get NaN for those dates (the market-share MA helper
+    nulls those rows).
+    """
+    rows = await conn.fetch(_MARKET_SHARE_DENOMINATOR_SQL)
+    out = {}
+    for r in rows:
+        if r["date"] is not None and r["denominator"] is not None:
+            out[r["date"]] = float(r["denominator"])
+    return out
 
 
 async def fetch_source_data(
@@ -140,11 +193,23 @@ async def fetch_source_data(
 
     Returns a DataFrame with columns:
         sec_type, code, date, price, ma5, ma20, ma60, ma120, ma255,
+        trading_amount,
         price_slope, price_curvature,
         ma5_slope, ma20_slope, ma60_slope, ma120_slope, ma255_slope,
         ma5_curvature, ma20_curvature, ma60_curvature, ma120_curvature,
         ma255_curvature,
-        std_5days, std_20days, std_60days, std_120days, std_255days
+        std_5days, std_20days, std_60days, std_120days, std_255days,
+        trading_amt_ma5, trading_amt_ma20, trading_amt_ma60,
+        trading_amt_ma120, trading_amt_ma255,
+        trading_amt_market_share_ma5, trading_amt_market_share_ma20,
+        trading_amt_market_share_ma60, trading_amt_market_share_ma120,
+        trading_amt_market_share_ma255,
+        trading_amt_ma5_slope, trading_amt_ma20_slope,
+        trading_amt_ma60_slope, trading_amt_ma120_slope,
+        trading_amt_ma255_slope,
+        trading_amt_market_share_vs_ma5, trading_amt_market_share_vs_ma20,
+        trading_amt_market_share_vs_ma60, trading_amt_market_share_vs_ma120,
+        trading_amt_market_share_vs_ma255
 
     Uses INNER JOINs on both basic_stats and tech_stats so the resulting
     rows satisfy the detail table's data-integrity expectation (every row
@@ -162,14 +227,53 @@ async def fetch_source_data(
     if not active_codes:
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",
-                                     "ma5", "ma20", "ma60", "ma120", "ma255"])
+                                     "ma5", "ma20", "ma60", "ma120", "ma255",
+                                     "trading_amount",
+                                     "trading_amt_market_share_ma5",
+                                     "trading_amt_market_share_ma20",
+                                     "trading_amt_market_share_ma60",
+                                     "trading_amt_market_share_ma120",
+                                     "trading_amt_market_share_ma255",
+                                     "trading_amt_ma5_slope",
+                                     "trading_amt_ma20_slope",
+                                     "trading_amt_ma60_slope",
+                                     "trading_amt_ma120_slope",
+                                     "trading_amt_ma255_slope",
+                                     "trading_amt_market_share_vs_ma5",
+                                     "trading_amt_market_share_vs_ma20",
+                                     "trading_amt_market_share_vs_ma60",
+                                     "trading_amt_market_share_vs_ma120",
+                                     "trading_amt_market_share_vs_ma255"])
+
+    # Fetch the per-date market-share denominator (SUM of primary-exchange
+    # representative-index trading amounts from stats.exchange_trading_amt).
+    # Same dict for all sec_types — denominator is market-wide, not per-code.
+    denominator_by_date = await _fetch_market_share_denominator(conn)
+    print(f"      market-share denominator: {len(denominator_by_date):,} "
+          f"dates", flush=True)
 
     sql = _fetch_sql_for_sec_type(sec_type)
     rows = await conn.fetch(sql, sorted(active_codes))
     if not rows:
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",
-                                     "ma5", "ma20", "ma60", "ma120", "ma255"])
+                                     "ma5", "ma20", "ma60", "ma120", "ma255",
+                                     "trading_amount",
+                                     "trading_amt_market_share_ma5",
+                                     "trading_amt_market_share_ma20",
+                                     "trading_amt_market_share_ma60",
+                                     "trading_amt_market_share_ma120",
+                                     "trading_amt_market_share_ma255",
+                                     "trading_amt_ma5_slope",
+                                     "trading_amt_ma20_slope",
+                                     "trading_amt_ma60_slope",
+                                     "trading_amt_ma120_slope",
+                                     "trading_amt_ma255_slope",
+                                     "trading_amt_market_share_vs_ma5",
+                                     "trading_amt_market_share_vs_ma20",
+                                     "trading_amt_market_share_vs_ma60",
+                                     "trading_amt_market_share_vs_ma120",
+                                     "trading_amt_market_share_vs_ma255"])
     # asyncpg.Record -> dict so pandas picks up column names (not integer indices).
     df = pd.DataFrame([dict(r) for r in rows])
     n_loaded_codes = df["code"].nunique() if "code" in df.columns else 0
@@ -185,7 +289,8 @@ async def fetch_source_data(
     # Ensure date column is python date (not datetime) for clean serialization
     df["date"] = pd.to_datetime(df["date"]).dt.date
     # Coerce numeric columns to float (asyncpg returns Decimal for NUMERIC)
-    for col in ("price", "open", "low", "high", "ma5", "ma20", "ma60", "ma120", "ma255"):
+    for col in ("price", "open", "low", "high", "ma5", "ma20", "ma60",
+                "ma120", "ma255", "trading_amount"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     # Compute slope (1st derivative) and curvature (2nd derivative) per code.
     # This is computed over the FULL per-code history so the diff() values
@@ -196,6 +301,30 @@ async def fetch_source_data(
     # rolling window needs up to 255 prior rows to populate σ_255days, so we
     # compute over the full history then filter to target_dates below.
     df = compute_rolling_stds(df)
+    # Compute trading-amount moving averages (trading_amt_ma{5,20,60,120,
+    # 255}) per code over the FULL per-code history. Same incremental-mode
+    # reasoning as slopes/rolling-stds: needs up to 255 prior rows to
+    # populate trading_amt_ma255.
+    df = compute_trading_amt_mas(df)
+    # Compute trading-amount MARKET-SHARE moving averages
+    # (trading_amt_market_share_ma{5,20,60,120,255}) per code over the FULL
+    # per-code history. Same incremental-mode reasoning as trading_amt_mas:
+    # needs up to 255 prior rows.
+    df = compute_trading_amt_market_share_mas(df, denominator_by_date)
+    # Compute trading-amount MA SLOPES (trading_amt_ma{5,20,60,120,255}_slope)
+    # — fractional daily change (ma[t]-ma[t-1])/ma[t-1] per code. Must run
+    # AFTER compute_trading_amt_mas (reads the ma columns). Same incremental-
+    # mode reasoning: needs 1 prior row (not 255), but computed over the
+    # full history for consistency.
+    df = compute_trading_amt_ma_slopes(df)
+    # Compute trading-amount MARKET-SHARE-vs-MA gaps
+    # (trading_amt_market_share_vs_ma{5,20,60,120,255}) — signed fractional
+    # ratio (market_share - market_share_ma{W}) / market_share_ma{W} per code.
+    # Must run AFTER compute_trading_amt_market_share_mas (reads the ma
+    # columns). Same incremental-mode reasoning: no extra lookback rows
+    # needed (gap is computed from same-row values), but computed over the
+    # full history for consistency.
+    df = compute_trading_amt_market_share_vs_mas(df, denominator_by_date)
 
     # ---- Incremental filter: keep only target_dates rows ----------------
     if target_dates is not None and len(target_dates) > 0:
@@ -207,10 +336,23 @@ async def fetch_source_data(
 
     # Reorder columns for readability.
     df = df[["sec_type", "code", "date", "price", "open", "low", "high",
-             "ma5", "ma20", "ma60", "ma120", "ma255",
+             "ma5", "ma20", "ma60", "ma120", "ma255", "trading_amount",
              "price_slope", "price_curvature",
              "ma5_slope", "ma20_slope", "ma60_slope", "ma120_slope", "ma255_slope",
              "ma5_curvature", "ma20_curvature", "ma60_curvature",
              "ma120_curvature", "ma255_curvature",
-             "std_5days", "std_20days", "std_60days", "std_120days", "std_255days"]]
+             "std_5days", "std_20days", "std_60days", "std_120days", "std_255days",
+             "trading_amt_ma5", "trading_amt_ma20", "trading_amt_ma60",
+             "trading_amt_ma120", "trading_amt_ma255",
+             "trading_amt_market_share_ma5", "trading_amt_market_share_ma20",
+             "trading_amt_market_share_ma60", "trading_amt_market_share_ma120",
+             "trading_amt_market_share_ma255",
+             "trading_amt_ma5_slope", "trading_amt_ma20_slope",
+             "trading_amt_ma60_slope", "trading_amt_ma120_slope",
+             "trading_amt_ma255_slope",
+             "trading_amt_market_share_vs_ma5",
+             "trading_amt_market_share_vs_ma20",
+             "trading_amt_market_share_vs_ma60",
+             "trading_amt_market_share_vs_ma120",
+             "trading_amt_market_share_vs_ma255"]]
     return df

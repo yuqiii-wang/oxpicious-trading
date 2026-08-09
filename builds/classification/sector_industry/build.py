@@ -24,6 +24,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from _common.build_commons import PROJECT_ROOT
+from _common.sec_statics.classification import DEFAULT_SECTOR_ID
 
 from builds.classification.sector_industry.catalog import build_catalog
 from builds.classification.sector_industry.csv_loader import find_latest_csv
@@ -32,6 +33,8 @@ from builds.classification.sector_industry.index.classify import classify_indice
 from builds.classification.sector_industry.index.etf.classify import classify_etfs
 from builds.classification.sector_industry.index.etf.unmatched import (
     fetch_unmatched_funds, classify_unmatched_funds)
+from builds.classification.sector_industry.index.etf.sec_info_fallback import (
+    fetch_sec_info_names, reclassify_other_etfs)
 from builds.classification.sector_industry.index.dummy import create_dummy_indices
 from builds.classification.sector_industry.index.stock.classify import classify_stocks
 
@@ -82,6 +85,19 @@ async def build_classification(
     # as '未分类' on the UI.
     all_funds = await fetch_unmatched_funds(conn)
     etfs = classify_unmatched_funds(all_funds, etfs, verbose)
+
+    # --- 2b.5. Re-classify OTHER ETFs using the official sec_info.name ---
+    # ETFs whose CSV/v_etf_margin name was an opaque trading abbreviation
+    # (e.g. '瑞和远见', '保证金') may still be at OTHER.  stats.sec_info
+    # stores the OFFICIAL fund name (基金简称) from SZSE quarterly reports,
+    # which embeds the tracking index/theme verbatim — retry classification
+    # with it.  Runs BEFORE create_dummy_indices so re-classified ETFs join
+    # their proper industry's dummy group instead of DUMMY_OTHER.
+    other_codes = [c for c, v in etfs.items()
+                   if v.get("sector_id", DEFAULT_SECTOR_ID) == DEFAULT_SECTOR_ID]
+    if other_codes:
+        sec_info_names = await fetch_sec_info_names(conn, other_codes)
+        reclassify_other_etfs(etfs, sec_info_names, verbose)
 
     # --- 2c. Create industry dummy indices for orphan ETFs ---
     # ETFs with no parent_index_code (not in CSV, or unmatched funds) get

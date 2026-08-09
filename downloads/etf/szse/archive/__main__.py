@@ -48,6 +48,14 @@ def main() -> None:
                     help="Reports: disable the default OTHER-classification "
                          "pre-filter (download ALL SZ ETFs, not just "
                          "sector_id='OTHER'). Ignored when --etf-code is given.")
+    ap.add_argument("--no-lof", action="store_true", default=False,
+                    help="Reports: do NOT add SZSE LOFs (16xxxx.SZ) to the "
+                         "download universe. By default all active LOFs are "
+                         "included even when --no-other-only is unset, since "
+                         "LOF quarterly reports publish the same holdings "
+                         "sections as ETF reports. Ignored when --etf-code "
+                         "is given or when --no-other-only is set (the "
+                         "all-active branch already contains LOFs).")
     args = ap.parse_args()
 
     if args.subcommand == "market":
@@ -71,6 +79,7 @@ def main() -> None:
             extract=not args.no_extract,
             max_etfs=args.max_etfs,
             other_only=not args.no_other_only,
+            include_lof=not args.no_lof,
             start_date=args.start_date,
         )
         print(result)

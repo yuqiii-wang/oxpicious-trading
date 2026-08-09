@@ -152,6 +152,64 @@ export function commonGrid(
 }
 
 /**
+ * Shared dataZoom config — the in-chart time slider used by every chart that
+ * needs date-range viewport control. Replaces the old MUI DateRangeSlider
+ * (external slider that sliced data before passing to the chart).
+ *
+ * Returns a pair: an "inside" zoom (mouse-wheel / drag-to-pan) + a "slider"
+ * (visible draggable bar at the bottom). Both default to showing the full
+ * range; callers can override `start`/`end` (percentages 0–100).
+ *
+ * @param overrides merged into every dataZoom entry (e.g. xAxisIndex)
+ * @param start     initial start % (default 0 = full history)
+ * @param end       initial end %   (default 100 = full history)
+ */
+export function commonDataZoom(
+  overrides: Partial<import("echarts").DataZoomComponentOption> = {},
+  start = 0,
+  end = 100,
+): import("echarts").DataZoomComponentOption[] {
+  return [
+    {
+      type: "inside",
+      xAxisIndex: 0,
+      start,
+      end,
+      filterMode: "none",
+      zoomOnMouseWheel: true,
+      moveOnMouseWheel: false,
+      moveOnMouseMove: true,
+      ...overrides,
+    },
+    {
+      type: "slider",
+      xAxisIndex: 0,
+      start,
+      end,
+      filterMode: "none",
+      bottom: 6,
+      height: 18,
+      borderColor: "transparent",
+      fillerColor: "rgba(120,144,156,0.18)",
+      selectedDataBackground: {
+        lineStyle: { color: "#888" },
+        areaStyle: { color: "rgba(120,144,156,0.12)" },
+      },
+      dataBackground: {
+        lineStyle: { color: "rgba(120,144,156,0.3)" },
+        areaStyle: { color: "rgba(120,144,156,0.08)" },
+      },
+      labelFormatter: (val: string | number) => {
+        // Show YYYY-MM-DD (short) for category-axis date strings
+        const s = String(val);
+        return s.length > 10 ? s.slice(0, 10) : s;
+      },
+      ...overrides,
+    },
+  ];
+}
+
+/**
  * Resolve the axis/grid/tooltip color set for the given theme mode. Replaces
  * the `axisColors()` / `getAxisColors()` helpers that were duplicated across
  * ~8 chart components.

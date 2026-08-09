@@ -90,7 +90,7 @@ export async function getIndustryEtfPriceSeries(
       WHERE sc.type = 'etf'
         AND sc.is_active = TRUE
         AND sc.parent_index_code <> ''
-    ),
+    )
     SELECT
       el.etf_code,
       el.etf_name,

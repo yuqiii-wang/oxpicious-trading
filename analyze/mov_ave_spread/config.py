@@ -103,3 +103,82 @@ SEC_TYPE_IDENTITY_TABLE = {
 # before insert by _null_if_overflow rather than dropped, so the row is
 # still written with its other (valid) columns.
 NUMERIC_MAX_ABS = 10000.0
+
+# Wider bound for trading_amt_ma{5,20,60,120,255} columns, declared
+# NUMERIC(24,4) — |value| < 10^(24-4) = 10^20 after rounding to 4 dp.
+# Matches the source column precision (stats.{etf_liquidity_margin,
+# index_basic_stats,stock_liquidity_margin}.trading_amount is NUMERIC(24,4))
+# so broad-index daily turnover up to 10^20 yuan fits without overflow.
+# Daily trading_amount for broad indices (e.g. SSE Composite) can reach
+# 10^13+ yuan on busy days; NUMERIC(16,4) (cap 10^12) was found too tight
+# and ~15% of index rows were overflow-nulled under that bound. Used by
+# helpers.null_if_overflow when max_abs is overridden per-column.
+NUMERIC_WIDE_MAX_ABS = 10**20
+
+# Trading-amount MA column names (in canonical window order). Source:
+# stats.{etf_liquidity_margin,index_basic_stats,stock_liquidity_margin}
+# .trading_amount. Computed per (sec_type, code) ordered by date with
+# min_periods=W (NULL until W rows). NULL trading_amount values are
+# treated as 0 (zero turnover) in the rolling sum but still counted in
+# the W-row denominator — see helpers.compute_trading_amt_mas for the
+# rationale. Used by helpers.compute_trading_amt_mas and
+# compute._assemble_detail_columns.
+TRADING_AMT_MA_COLUMNS = (
+    "trading_amt_ma5",
+    "trading_amt_ma20",
+    "trading_amt_ma60",
+    "trading_amt_ma120",
+    "trading_amt_ma255",
+)
+
+# Trading-amount MARKET-SHARE MA column names (in canonical window order).
+# market_share[date, code] = trading_amount[date, code] / denominator[date]
+# where denominator = SUM(stats.exchange_trading_amt.total_trading_amount)
+# across exchanges whose stats.sec_classification.is_primary_exchange = TRUE.
+# Then trading_amt_market_share_ma{W} = W-day MA of market_share per
+# (sec_type, code) ordered by date with min_periods=W. NULL market_share
+# treated as 0 in rolling mean, counted in denominator (same pattern as
+# TRADING_AMT_MA_COLUMNS). Used by helpers.compute_trading_amt_market_share_mas
+# and compute._assemble_detail_columns.
+TRADING_AMT_MARKET_SHARE_MA_COLUMNS = (
+    "trading_amt_market_share_ma5",
+    "trading_amt_market_share_ma20",
+    "trading_amt_market_share_ma60",
+    "trading_amt_market_share_ma120",
+    "trading_amt_market_share_ma255",
+)
+
+# Trading-amount MA SLOPE column names (in canonical window order). Each is
+# a RATIO (fractional daily change) = (ma[t] - ma[t-1]) / ma[t-1], NOT a raw
+# difference — so NUMERIC(10,4) is sufficient (typical |slope| < 0.1). NULL on
+# the first date of each code (no prior row) or when ma[t]/ma[t-1] is NULL
+# or ma[t-1] <= 0. Used by helpers.compute_trading_amt_ma_slopes and
+# compute._assemble_detail_columns.
+TRADING_AMT_MA_SLOPE_COLUMNS = (
+    "trading_amt_ma5_slope",
+    "trading_amt_ma20_slope",
+    "trading_amt_ma60_slope",
+    "trading_amt_ma120_slope",
+    "trading_amt_ma255_slope",
+)
+
+# Trading-amount MARKET-SHARE-vs-MA gap column names (in canonical window
+# order). Each is a signed fractional ratio:
+#   trading_amt_market_share_vs_ma{W}[t] =
+#       (market_share[t] - market_share_ma{W}[t]) / market_share_ma{W}[t]
+# where market_share[t] = trading_amount[t] / denominator[t] (denominator =
+# SUM of primary-exchange total_trading_amount on date t). Positive = the
+# security's current market share is ABOVE its W-day average (gaining
+# relative liquidity); negative = BELOW (losing relative liquidity).
+# NUMERIC(10,4) is sufficient — typical |ratio| < 1.0. NULL when
+# market_share or market_share_ma{W} is NULL or market_share_ma{W} <= 0.
+# Used by helpers.compute_trading_amt_market_share_vs_mas and
+# compute._assemble_detail_columns. Must be called AFTER
+# compute_trading_amt_market_share_mas (reads the ma columns).
+TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS = (
+    "trading_amt_market_share_vs_ma5",
+    "trading_amt_market_share_vs_ma20",
+    "trading_amt_market_share_vs_ma60",
+    "trading_amt_market_share_vs_ma120",
+    "trading_amt_market_share_vs_ma255",
+)

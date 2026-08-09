@@ -329,8 +329,9 @@ const STOCK_META_SQL = `
 //  Stock themes — build the two-level L1 sector → L2 industry → stocks tree
 //  from the precomputed classification columns in sec_classification.
 // ----------------------------------------------------------------------------
-export async function listStockThemes(): Promise<SectorNode[]> {
+export async function listStockThemes(exchange?: string | null): Promise<SectorNode[]> {
   const rows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
+  const exFilter = (exchange ?? "").trim() || null;
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -342,6 +343,7 @@ export async function listStockThemes(): Promise<SectorNode[]> {
     // (is_industry_not_strategy=FALSE) carry strategy/theme in
     // sector_id/industry_id and belong in the RIGHT column only.
     if (!r.is_industry_not_strategy) continue;
+    if (exFilter && !matchesExchange(r.exchange, exFilter)) continue;
     // Use the SUFFIXED code (e.g. "000001.SZ") as the canonical identifier
     // — this matches what stock_identity, sec_classification, and
     // v_stock_baseline all use.  CodeSearchBar uses partial matching, so
@@ -400,19 +402,22 @@ export async function listStockThemes(): Promise<SectorNode[]> {
 //  uses.  This differs from listStockThemes() which uses the suffixed code
 //  as the canonical identifier.
 // ----------------------------------------------------------------------------
-export async function listStrategyThemes(): Promise<StrategyNode[]> {
+export async function listStrategyThemes(exchange?: string | null): Promise<StrategyNode[]> {
   const rows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
+  const exFilter = (exchange ?? "").trim() || null;
 
-  const mappedRows = rows.map((r) => ({
-    code: stripExchangeSuffix(r.code),
-    name: r.name,
-    sector_id: r.sector_id,
-    sector_label: r.sector_label,
-    industry_id: r.industry_id,
-    industry_label: r.industry_label,
-    industry_slug: r.industry_slug,
-    is_industry_not_strategy: r.is_industry_not_strategy,
-  }));
+  const mappedRows = rows
+    .filter((r) => !exFilter || matchesExchange(r.exchange, exFilter))
+    .map((r) => ({
+      code: stripExchangeSuffix(r.code),
+      name: r.name,
+      sector_id: r.sector_id,
+      sector_label: r.sector_label,
+      industry_id: r.industry_id,
+      industry_label: r.industry_label,
+      industry_slug: r.industry_slug,
+      is_industry_not_strategy: r.is_industry_not_strategy,
+    }));
 
   return buildStrategyThemesFromRows(mappedRows);
 }

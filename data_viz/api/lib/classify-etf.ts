@@ -11,4 +11,6 @@ export {
   stripExchangeSuffix,
   matchesExchange,
   EXCHANGE_OPTIONS,
+  PRIMARY_EXCHANGE_OPTIONS,
+  SECONDARY_EXCHANGE_OPTIONS,
 } from "../../src/shared/utils/classify.js";

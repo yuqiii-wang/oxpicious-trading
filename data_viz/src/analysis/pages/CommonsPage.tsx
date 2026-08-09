@@ -34,18 +34,6 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
     tags: ["ETF", "Index", "Stock", "MA spread", "2-curve + fill"],
   },
   {
-    slug: "perf-attr",
-    title: "Sec Allocation Perf Attribution",
-    description:
-      "Shared-weight contribution + composition overlap + ETF-market liquidity + " +
-      "rolling close correlations: Index subjects vs benchmark indices. " +
-      "Fluctuation Attribution chart (contribution = fractional return × overlap) " +
-      "plus two time-series charts per panel. Returns computed on-the-fly " +
-      "(not stored in DB). Broad-market benchmarks sourced from sec_index_tags. " +
-      "Backed by analysis.sec_alloc_perf_attribution.",
-    tags: ["Index", "shared-weight contribution", "composition overlap", "ETF liquidity", "rolling correlation"],
-  },
-  {
     slug: "industry-sentiments",
     title: "Industry Sentiments",
     description:

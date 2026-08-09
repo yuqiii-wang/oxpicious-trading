@@ -19,7 +19,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, Accordion, AccordionDetails, AccordionSummary, Box, Chip, CircularProgress, Link, Stack, Typography } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ChartCard from "@/components/ChartCard";
-import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import RefreshButton from "@/components/RefreshButton";
 import { fetchDebtBaseline, fetchPbocOmaAnnouncements, invalidateCacheForUrl } from "@/lib/api-client";
@@ -801,7 +800,6 @@ export default function DebtBaselinePage() {
   const [fullData, setFullData] = useState<DebtBaselineResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [range, setRange] = useState<[number, number]>([0, 0]);
   // Page-level refresh key — bumped by the page-header refresh button to
   // force a cache bypass + refetch of fetchDebtBaseline (drives the 5 main
   // panels: OutrightRepo / OMO / SHIBOR / ChinaBond / LPR). OmaNewsPanel
@@ -817,7 +815,6 @@ export default function DebtBaselinePage() {
       .then((d) => {
         if (cancelled) return;
         setFullData(d);
-        setRange([0, d.rows.length - 1]);
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -840,23 +837,11 @@ export default function DebtBaselinePage() {
     setRefreshKey((k) => k + 1);
   }, []);
 
-  // Filter data to slider window
-  const data = useMemo<DebtBaselineResponse | null>(() => {
-    if (!fullData || fullData.rows.length === 0) return fullData;
-    const [s, e] = range;
-    const rows = fullData.rows.slice(s, e + 1);
-    const dates = rows.map((r) => r.date);
-    return { dates, rows, minDate: fullData.minDate, maxDate: fullData.maxDate };
-  }, [fullData, range]);
-
   // Build marker map from ALL rows (so hover shows ops even if outside window)
   const markerMap = useMemo(() => {
     if (!fullData) return new Map<string, string[]>();
     return buildMarkerMap(fullData.rows);
   }, [fullData]);
-
-  const maxIdx = fullData ? fullData.rows.length - 1 : 0;
-  const allDates = fullData?.rows.map((r) => r.date) ?? [];
 
   return (
     <Stack spacing={2}>
@@ -894,26 +879,20 @@ export default function DebtBaselinePage() {
           Failed to load debt baseline: {error}
         </Alert>
       )}
-      {!loading && !error && data && (
+      {!loading && !error && fullData && (
         <>
-          {data.rows.length === 0 ? (
+          {fullData.rows.length === 0 ? (
             <Alert severity="warning">No data available.</Alert>
           ) : (
             <>
               <Typography variant="caption" color="text.secondary">
-                {data.rows.length} trading days · {data.dates[0]} → {data.dates[data.dates.length - 1]}
+                {fullData.rows.length} trading days · {fullData.dates[0]} → {fullData.dates[fullData.dates.length - 1]}
               </Typography>
-              <DateRangeSlider
-                value={range}
-                onChange={setRange}
-                max={maxIdx}
-                dates={allDates}
-              />
-              <OutrightRepoPanel data={data} markerMap={markerMap} />
-              <OmoPanel data={data} markerMap={markerMap} />
-              <ShiborPanel data={data} markerMap={markerMap} />
-              <ChinaBondPanel data={data} markerMap={markerMap} />
-              <LprPanel data={data} markerMap={markerMap} />
+              <OutrightRepoPanel data={fullData} markerMap={markerMap} />
+              <OmoPanel data={fullData} markerMap={markerMap} />
+              <ShiborPanel data={fullData} markerMap={markerMap} />
+              <ChinaBondPanel data={fullData} markerMap={markerMap} />
+              <LprPanel data={fullData} markerMap={markerMap} />
             </>
           )}
         </>

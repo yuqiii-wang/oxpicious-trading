@@ -53,6 +53,8 @@ import type {
   LiveDataSecType,
   LiveDataDatesResponse,
   LiveDataCombinedResponse,
+  StrategyBacktestResponse,
+  StrategyRiskResponse,
 } from "../../shared/types";
 
 // Module-level cache singleton: 100 entries, 10-minute TTL (safety net).
@@ -314,12 +316,18 @@ export function fetchEtfOhlcv(
   return fetchJson<EtfOhlcvResponse>(`/api/szse-options/etf-ohlcv${qs ? `?${qs}` : ""}`);
 }
 
-export function fetchThemes(): Promise<SectorNode[]> {
-  return fetchJson<SectorNode[]>(`/api/etf-margin/themes`);
+export function fetchThemes(exchange?: string | null): Promise<SectorNode[]> {
+  const params = new URLSearchParams();
+  if (exchange) params.set("exchange", exchange);
+  const qs = params.toString();
+  return fetchJson<SectorNode[]>(`/api/etf-margin/themes${qs ? `?${qs}` : ""}`);
 }
 
-export function fetchEtfStrategyThemes(): Promise<StrategyNode[]> {
-  return fetchJson<StrategyNode[]>(`/api/etf-margin/strategy-themes`);
+export function fetchEtfStrategyThemes(exchange?: string | null): Promise<StrategyNode[]> {
+  const params = new URLSearchParams();
+  if (exchange) params.set("exchange", exchange);
+  const qs = params.toString();
+  return fetchJson<StrategyNode[]>(`/api/etf-margin/strategy-themes${qs ? `?${qs}` : ""}`);
 }
 
 export function fetchEtfMarginCombined(
@@ -355,14 +363,20 @@ export function fetchIndexList(): Promise<IndexInfo[]> {
   return fetchJson<IndexInfo[]>(`/api/index-baseline/list`);
 }
 
-export function fetchIndexThemes(): Promise<SectorNode[]> {
-  return fetchJson<SectorNode[]>(`/api/index-baseline/themes`);
+export function fetchIndexThemes(exchange?: string | null): Promise<SectorNode[]> {
+  const params = new URLSearchParams();
+  if (exchange) params.set("exchange", exchange);
+  const qs = params.toString();
+  return fetchJson<SectorNode[]>(`/api/index-baseline/themes${qs ? `?${qs}` : ""}`);
 }
 
 /** Fetch the parallel strategy → theme tree (RIGHT column of the two-column
  *  selector).  Returns strategy-primary indices only. */
-export function fetchIndexStrategyThemes(): Promise<StrategyNode[]> {
-  return fetchJson<StrategyNode[]>(`/api/index-baseline/strategy-themes`);
+export function fetchIndexStrategyThemes(exchange?: string | null): Promise<StrategyNode[]> {
+  const params = new URLSearchParams();
+  if (exchange) params.set("exchange", exchange);
+  const qs = params.toString();
+  return fetchJson<StrategyNode[]>(`/api/index-baseline/strategy-themes${qs ? `?${qs}` : ""}`);
 }
 
 export function fetchIndicesCombined(
@@ -446,12 +460,18 @@ export function fetchStockBaseline(
   return fetchJson<StockBaselineResponse>(`/api/stock-baseline${qs ? `?${qs}` : ""}`);
 }
 
-export function fetchStockThemes(): Promise<SectorNode[]> {
-  return fetchJson<SectorNode[]>(`/api/stock-baseline/themes`);
+export function fetchStockThemes(exchange?: string | null): Promise<SectorNode[]> {
+  const params = new URLSearchParams();
+  if (exchange) params.set("exchange", exchange);
+  const qs = params.toString();
+  return fetchJson<SectorNode[]>(`/api/stock-baseline/themes${qs ? `?${qs}` : ""}`);
 }
 
-export function fetchStockStrategyThemes(): Promise<StrategyNode[]> {
-  return fetchJson<StrategyNode[]>(`/api/stock-baseline/strategy-themes`);
+export function fetchStockStrategyThemes(exchange?: string | null): Promise<StrategyNode[]> {
+  const params = new URLSearchParams();
+  if (exchange) params.set("exchange", exchange);
+  const qs = params.toString();
+  return fetchJson<StrategyNode[]>(`/api/stock-baseline/strategy-themes${qs ? `?${qs}` : ""}`);
 }
 
 export function fetchStocksCombined(
@@ -489,9 +509,11 @@ export function fetchStocksCombined(
 // ---------------------------------------------------------------------------
 export function fetchMovAveSpreadCodes(
   secType: MaSpreadSecType,
+  exchange?: string | null,
 ): Promise<MovAveSpreadCodesResponse> {
   const params = new URLSearchParams();
   if (secType) params.set("sec_type", secType);
+  if (exchange) params.set("exchange", exchange);
   const qs = params.toString();
   return fetchJson<MovAveSpreadCodesResponse>(
     `/api/analysis/mov-ave-spread/codes${qs ? `?${qs}` : ""}`,
@@ -499,12 +521,17 @@ export function fetchMovAveSpreadCodes(
 }
 
 /** Themes tree (L1 sector → L2 industry → items) for the ThemeSelector.
- *  Only includes codes that have rows in analysis.mov_ave_spreads_detail. */
+ *  Only includes codes that have rows in analysis.mov_ave_spreads_detail.
+ *  When `exchange` is set, the tree is filtered at the backend via
+ *  matchesExchange() so cross-border securities (HK/Overseas) are excluded
+ *  unless explicitly selected. */
 export function fetchMovAveSpreadThemes(
   secType: MaSpreadSecType,
+  exchange?: string | null,
 ): Promise<SectorNode[]> {
   const params = new URLSearchParams();
   if (secType) params.set("sec_type", secType);
+  if (exchange) params.set("exchange", exchange);
   const qs = params.toString();
   return fetchJson<SectorNode[]>(
     `/api/analysis/mov-ave-spread/themes${qs ? `?${qs}` : ""}`,
@@ -513,9 +540,11 @@ export function fetchMovAveSpreadThemes(
 
 export function fetchMovAveSpreadStrategyThemes(
   secType: MaSpreadSecType,
+  exchange?: string | null,
 ): Promise<StrategyNode[]> {
   const params = new URLSearchParams();
   if (secType) params.set("sec_type", secType);
+  if (exchange) params.set("exchange", exchange);
   const qs = params.toString();
   return fetchJson<StrategyNode[]>(
     `/api/analysis/mov-ave-spread/strategy-themes${qs ? `?${qs}` : ""}`,
@@ -835,9 +864,11 @@ export function fetchLiveDataDates(
 /** L1 sector → L2 industry tree restricted to codes with intraday data. */
 export function fetchLiveDataThemes(
   secType: LiveDataSecType,
+  exchange?: string | null,
 ): Promise<SectorNode[]> {
   const params = new URLSearchParams();
   params.set("type", secType);
+  if (exchange) params.set("exchange", exchange);
   return fetchJson<SectorNode[]>(
     `/api/live-data/themes?${params.toString()}`,
   );
@@ -845,9 +876,11 @@ export function fetchLiveDataThemes(
 
 export function fetchLiveDataStrategyThemes(
   secType: LiveDataSecType,
+  exchange?: string | null,
 ): Promise<StrategyNode[]> {
   const params = new URLSearchParams();
   params.set("type", secType);
+  if (exchange) params.set("exchange", exchange);
   return fetchJson<StrategyNode[]>(
     `/api/live-data/strategy-themes?${params.toString()}`,
   );
@@ -879,5 +912,35 @@ export function fetchLiveDataCombined(
   if (theme) params.set("theme", theme);
   return fetchJson<LiveDataCombinedResponse>(
     `/api/live-data/combined?${params.toString()}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Strategy — MA-spread crossover backtest
+//  TTL-only cache (ephemeral backtest, no DB write).
+// ---------------------------------------------------------------------------
+export function fetchMaSpreadBacktest(
+  code: string,
+  secType: MaSpreadSecType,
+): Promise<StrategyBacktestResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<StrategyBacktestResponse>(
+    `/api/strategy/ma-spread/backtest${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchMaSpreadRisks(
+  code: string,
+  secType: MaSpreadSecType,
+): Promise<StrategyRiskResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<StrategyRiskResponse>(
+    `/api/strategy/ma-spread/risks${qs ? `?${qs}` : ""}`,
   );
 }

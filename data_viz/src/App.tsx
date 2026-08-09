@@ -13,8 +13,8 @@ import CommonsPage from "@/analysis/pages/CommonsPage";
 import DerivativesPage from "@/analysis/pages/DerivativesPage";
 import CompositesPage from "@/analysis/pages/CompositesPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
-import PerfAttrPage from "@/analysis/pages/PerfAttrPage";
 import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
+import MaSpreadStrategyPage from "@/strategy/MaSpreadStrategyPage";
 
 export default function App() {
   return (
@@ -36,15 +36,15 @@ export default function App() {
           <Route path="/analysis" element={<Navigate to="/analysis/commons" replace />} />
           <Route path="/analysis/commons" element={<CommonsPage />} />
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
-          <Route path="/analysis/commons/perf-attr" element={<PerfAttrPage />} />
           <Route path="/analysis/commons/industry-sentiments" element={<IndustrySentimentsPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/composites" element={<CompositesPage />} />
-          <Route path="/strategy" element={<Navigate to="/strategy/commons" replace />} />
+          <Route path="/strategy" element={<Navigate to="/strategy/ma-spread" replace />} />
           <Route
             path="/strategy/commons"
             element={<Box sx={{ p: 4, color: "text.secondary" }}>Strategy Commons — coming soon.</Box>}
           />
+          <Route path="/strategy/ma-spread" element={<MaSpreadStrategyPage />} />
         </Routes>
       </Box>
     </Router>

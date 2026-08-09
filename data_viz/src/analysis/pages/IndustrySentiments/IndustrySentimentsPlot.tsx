@@ -2,7 +2,7 @@
  * Industry Sentiments plot card — multi-line chart + pool-size toggle +
  * benchmark dropdown + mean-only toggle + date-range slider.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Autocomplete,
   Box,
@@ -16,7 +16,6 @@ import {
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
-import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import { buildGroupColorScheme } from "@/theme/group-colors";
 import type { PoolSize, PerIndustryAggregation, PlotProps } from "./types";
@@ -34,11 +33,9 @@ export function IndustrySentimentsPlot({
   chartDataList,
   selectedIndustryIds,
 }: PlotProps) {
-  const [range, setRange] = useState<[number, number]>([0, 0]);
   const [poolSize, setPoolSize] = useState<PoolSize>("all");
   const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([]);
   const [meanOnly, setMeanOnly] = useState(false);
-  const [hideHK, setHideHK] = useState(false);
 
   // ---- Correlation expandable section ----
   // Auto-expands when 2+ industries are selected. The parent ChartCard
@@ -133,18 +130,13 @@ export function IndustrySentimentsPlot({
     return Array.from(set).sort();
   }, [data]);
 
-  useEffect(() => {
-    setRange([0, Math.max(0, allDates.length - 1)]);
-  }, [allDates]);
-
-  const maxIdx = Math.max(0, allDates.length - 1);
-  // Count indices in each pool bucket + HK (for toggle labels). The API only
+  const lastIdx = Math.max(0, allDates.length - 1);
+  // Count indices in each pool bucket (for toggle labels). The API only
   // returns compositioned indices, so every member has a stock_num — there is
   // no "null composition" bucket anymore.
   const poolCounts = useMemo(() => {
-    const counts = { all: data.indices.length, small: 0, mid: 0, large: 0, hk: 0 };
+    const counts = { all: data.indices.length, small: 0, mid: 0, large: 0 };
     for (const idx of data.indices) {
-      if (idx.exchange === "HK") counts.hk++;
       const ps = idx.rows.reduce<PoolSize | null>(
         (acc, r) => (r.stock_num != null ? classifyPoolSize(r.stock_num) : acc),
         null,
@@ -249,14 +241,6 @@ export function IndustrySentimentsPlot({
           >
             Mean only{multiIndustry && meanToggleEnabled ? ` (${perIndustryAggregations.length})` : ""}
           </ToggleButton>
-          <ToggleButton
-            size="small"
-            value="hideHK"
-            selected={hideHK}
-            onClick={() => setHideHK((v) => !v)}
-          >
-            Hide HK ({poolCounts.hk})
-          </ToggleButton>
         </Box>
       </Box>
       {data.indices.length === 0 || allDates.length === 0 ? (
@@ -271,13 +255,12 @@ export function IndustrySentimentsPlot({
             option={buildIndustryChartOption(
               data,
               allDates,
-              range[0],
-              range[1],
+              0,
+              lastIdx,
               poolSize,
               themeMode,
               selectedBenchmarks,
               meanOnly,
-              hideHK,
               showAggOverlay,
               perIndustryAggregations,
               industryColorFor,
@@ -285,12 +268,6 @@ export function IndustrySentimentsPlot({
             )}
             height={460}
             group={CHART_GROUP}
-          />
-          <DateRangeSlider
-            value={range}
-            onChange={setRange}
-            max={maxIdx}
-            dates={allDates}
           />
         </>
       )}
@@ -304,8 +281,8 @@ export function IndustrySentimentsPlot({
               data,
               perIndustryAggregations,
               allDates,
-              range[0],
-              range[1],
+              0,
+              lastIdx,
               poolSize,
               themeMode,
               multiIndustry,
@@ -328,8 +305,8 @@ export function IndustrySentimentsPlot({
               data,
               perIndustryAggregations,
               allDates,
-              range[0],
-              range[1],
+              0,
+              lastIdx,
               poolSize,
               themeMode,
               multiIndustry,

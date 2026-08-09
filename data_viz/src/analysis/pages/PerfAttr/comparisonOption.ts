@@ -28,6 +28,7 @@ import {
   DOWN_COLOR,
   MUTED_PALETTE,
   axisColors,
+  commonDataZoom,
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
@@ -161,7 +162,8 @@ export function buildComparisonOption(
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: commonGrid({ left: 56, right: 56, bottom: 32 }),
+    grid: commonGrid({ left: 56, right: 56, bottom: 50 }),
+    dataZoom: commonDataZoom(),
     tooltip: {
       trigger: "axis",
       backgroundColor: c.tooltipBg,

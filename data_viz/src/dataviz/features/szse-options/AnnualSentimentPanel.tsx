@@ -7,10 +7,9 @@
  *
  * Mirrors plot_annual_sentiment() in plot_szse_options.py.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Alert, Stack } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
-import DateRangeSlider from "@/components/DateRangeSlider";
 import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { useStore } from "@/store/filters";
@@ -25,6 +24,7 @@ import {
   MA20_COLOR,
   UP_COLOR,
   axisColors,
+  commonDataZoom,
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
@@ -81,7 +81,8 @@ function buildPcRatioOption(dates: string[], pcRatio: number[], themeMode: "ligh
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: commonGrid({ left: 50, right: 20, bottom: 40 }),
+    grid: commonGrid({ left: 50, right: 20, bottom: 50 }),
+    dataZoom: commonDataZoom(),
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross", snap: true },
@@ -169,7 +170,8 @@ function buildOiTrendOption(dates: string[], callOi: number[], putOi: number[], 
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: commonGrid({ left: 56, right: 20, bottom: 40 }),
+    grid: commonGrid({ left: 56, right: 20, bottom: 50 }),
+    dataZoom: commonDataZoom(),
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross", snap: true },
@@ -273,7 +275,8 @@ function buildOhlcOption(
   return {
     backgroundColor: "transparent",
     animation: false,
-    grid: commonGrid({ left: 56, right: 56, bottom: 40 }),
+    grid: commonGrid({ left: 56, right: 56, bottom: 50 }),
+    dataZoom: commonDataZoom(),
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross", snap: true },
@@ -358,33 +361,9 @@ function buildOhlcOption(
 export default function AnnualSentimentPanel({ rows, ohlcv }: Props) {
   const themeMode = useStore((s) => s.themeMode);
   const daily = useMemo(() => buildDailyOi(rows), [rows]);
-  const maxIdx = daily.length - 1;
-  const [range, setRange] = useState<[number, number]>([0, maxIdx]);
   // OHLC display mode — "percentage" (default) rebases ETF OHLC to % change
   // from the first close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
-
-  // Reset slider when underlying changes (new daily data arrives)
-  useEffect(() => {
-    setRange([0, daily.length - 1]);
-  }, [daily]);
-
-  // Slice daily data to the selected slider range
-  const filteredDaily = useMemo(
-    () => daily.slice(range[0], range[1] + 1),
-    [daily, range],
-  );
-
-  // Filter ohlcv rows to the selected date window (dates from the daily array)
-  const filteredOhlcv = useMemo(() => {
-    if (!ohlcv || ohlcv.rows.length === 0) return null;
-    const startDate = daily[range[0]]?.date ?? "";
-    const endDate = daily[range[1]]?.date ?? "";
-    const filteredRows = ohlcv.rows.filter(
-      (r) => r.date >= startDate && r.date <= endDate,
-    );
-    return { ...ohlcv, rows: filteredRows };
-  }, [ohlcv, daily, range]);
 
   if (daily.length === 0) {
     return (
@@ -394,10 +373,10 @@ export default function AnnualSentimentPanel({ rows, ohlcv }: Props) {
     );
   }
 
-  const dates = filteredDaily.map((d) => d.date);
-  const pcRatio = filteredDaily.map((d) => d.pcRatio);
-  const callOi = filteredDaily.map((d) => d.callOi);
-  const putOi = filteredDaily.map((d) => d.putOi);
+  const dates = daily.map((d) => d.date);
+  const pcRatio = daily.map((d) => d.pcRatio);
+  const callOi = daily.map((d) => d.callOi);
+  const putOi = daily.map((d) => d.putOi);
 
   return (
     <Stack spacing={2}>
@@ -423,18 +402,12 @@ export default function AnnualSentimentPanel({ rows, ohlcv }: Props) {
         height={360}
         action={<OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />}
       >
-        {filteredOhlcv && filteredOhlcv.rows.length > 0 ? (
-          <EChart option={buildOhlcOption(filteredOhlcv, themeMode, ohlcMode)} height={340} group={CHART_GROUP} />
+        {ohlcv && ohlcv.rows.length > 0 ? (
+          <EChart option={buildOhlcOption(ohlcv, themeMode, ohlcMode)} height={340} group={CHART_GROUP} />
         ) : (
           <Alert severity="info">No ETF OHLCV data available for this underlying.</Alert>
         )}
       </ChartCard>
-      <DateRangeSlider
-        value={range}
-        onChange={setRange}
-        max={maxIdx}
-        dates={daily.map((d) => d.date)}
-      />
     </Stack>
   );
 }

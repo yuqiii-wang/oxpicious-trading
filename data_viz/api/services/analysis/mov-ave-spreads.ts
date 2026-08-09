@@ -4,7 +4,7 @@
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { stripExchangeSuffix } from "../../lib/classify-etf.js";
+import { stripExchangeSuffix, matchesExchange } from "../../lib/classify-etf.js";
 import { stripped } from "./_shared.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
 import type {
@@ -14,6 +14,7 @@ import type {
   MovAveSpreadChartResponse,
   MovAveSpreadDetailRow,
   MovAveSpreadPairSeries,
+  MovAveSpreadPairKind,
   MovAveSpreadLatestGap,
   MovAveSpreadValleyLow,
   SectorNode,
@@ -22,9 +23,17 @@ import type {
 } from "../../../shared/types.js";
 
 // ----------------------------------------------------------------------------
-//  Pair configuration — canonical 9 pairs in display order.
-//  ma_short = 0 is the price sentinel; ma_short = 5 uses ma5.
+//  Pair configuration — canonical 9 price pairs + 5 amt pairs.
+//  Price pairs: ma_short = 0 is the price sentinel; ma_short = 5 uses ma5.
 //  gap_column is the detail-table column holding this pair's gap_value.
+//
+//  Amt pairs: ma_short = -1 is the trading-amount sentinel; ma_long = W
+//  selects trading_amt_maW. There is NO pre-computed gap_column for amt
+//  pairs — the gap (trading_amount vs trading_amt_maW) is computed
+//  client-side at response-build time (simple division). The 5 amt pairs
+//  mirror the Price/MA row (5 columns: Amt/MA5 … Amt/MA255) and are
+//  shown as a separate row of chips beneath the 9 price pairs when the
+//  trading-amt toggle is ON.
 // ----------------------------------------------------------------------------
 type PairSpec = [ma_short: number, ma_long: number, gap_column: string];
 
@@ -38,6 +47,17 @@ const PAIR_ORDER: PairSpec[] = [
   [5, 60,  "ma5_vs_ma60"],
   [5, 120, "ma5_vs_ma120"],
   [5, 255, "ma5_vs_ma255"],
+];
+
+/** 5 trading-amount pairs (Amt/MA5 … Amt/MA255). ma_short = -1 is the
+ *  trading-amount sentinel. gap_column is "" — amt-pair gap_value is
+ *  computed at response-build time, not read from a detail column. */
+const AMT_PAIR_ORDER: PairSpec[] = [
+  [-1, 5,   ""],
+  [-1, 20,  ""],
+  [-1, 60,  ""],
+  [-1, 120, ""],
+  [-1, 255, ""],
 ];
 
 const VALID_SEC_TYPES: ReadonlySet<MaSpreadSecType> = new Set(["etf", "index", "stock"]);
@@ -127,15 +147,43 @@ interface DbChartRow extends QueryResultRow {
   rsi_10days: number | null;
   rsi_14days: number | null;
   rsi_20days: number | null;
+  // 5 trading-amount MA columns (yuan, NUMERIC(24,4)) from the detail row.
+  // Used to render the trading-amt envelope when an Amt/MA pair is selected.
+  trading_amt_ma5: number | null;
+  trading_amt_ma20: number | null;
+  trading_amt_ma60: number | null;
+  trading_amt_ma120: number | null;
+  trading_amt_ma255: number | null;
+  // 5 trading-amount MA SLOPE columns (fractional daily change, NUMERIC(10,4))
+  // from the detail row. Surfaced in the chart tooltip when trading-amt
+  // display is enabled.
+  trading_amt_ma5_slope: number | null;
+  trading_amt_ma20_slope: number | null;
+  trading_amt_ma60_slope: number | null;
+  trading_amt_ma120_slope: number | null;
+  trading_amt_ma255_slope: number | null;
+  // 5 trading-amount MARKET-SHARE MA columns (dimensionless ratio 0..1,
+  // NUMERIC(24,4)) from the detail row. Surfaced in the chart tooltip as a
+  // percentage when trading-amt display is enabled.
+  trading_amt_market_share_ma5: number | null;
+  trading_amt_market_share_ma20: number | null;
+  trading_amt_market_share_ma60: number | null;
+  trading_amt_market_share_ma120: number | null;
+  trading_amt_market_share_ma255: number | null;
 }
 
 // ----------------------------------------------------------------------------
 //  Helpers
 // ----------------------------------------------------------------------------
 
-/** Build the display label for a (ma_short, ma_long) pair. */
+/** Build the display label for a (ma_short, ma_long) pair.
+ *  ma_short = 0 → "Price/MA{long}" (price pair)
+ *  ma_short = -1 → "Amt/MA{long}" (trading-amount pair)
+ *  else → "MA{short}/MA{long}" (MA/MA pair) */
 function pairLabel(maShort: number, maLong: number): string {
-  return maShort === 0 ? `Price/MA${maLong}` : `MA${maShort}/MA${maLong}`;
+  if (maShort === 0) return `Price/MA${maLong}`;
+  if (maShort === -1) return `Amt/MA${maLong}`;
+  return `MA${maShort}/MA${maLong}`;
 }
 
 /** Pick the long-MA value for a chart row given the ma_long window. */
@@ -185,6 +233,49 @@ function pickStd(r: DbChartRow, window: number): number | null {
     case 60:  return toNum(r.std_60days);
     case 120: return toNum(r.std_120days);
     case 255: return toNum(r.std_255days);
+    default:  return null;
+  }
+}
+
+/** Pick the trading-amount MA value for the given window from a chart row.
+ *  The columns are stored on the detail row as trading_amt_ma{W}.
+ *  Used to render the trading-amt envelope (5 MA lines forming a band
+ *  around trading_amount) when an Amt/MA pair is selected. */
+function pickTradingAmtMa(r: DbChartRow, window: number): number | null {
+  switch (window) {
+    case 5:   return toNum(r.trading_amt_ma5);
+    case 20:  return toNum(r.trading_amt_ma20);
+    case 60:  return toNum(r.trading_amt_ma60);
+    case 120: return toNum(r.trading_amt_ma120);
+    case 255: return toNum(r.trading_amt_ma255);
+    default:  return null;
+  }
+}
+
+/** Pick the SLOPE (fractional daily change) of trading_amt_ma{window} from
+ *  a chart row. Surfaced in the chart tooltip when trading-amt display is
+ *  enabled. */
+function pickTradingAmtMaSlope(r: DbChartRow, window: number): number | null {
+  switch (window) {
+    case 5:   return toNum(r.trading_amt_ma5_slope);
+    case 20:  return toNum(r.trading_amt_ma20_slope);
+    case 60:  return toNum(r.trading_amt_ma60_slope);
+    case 120: return toNum(r.trading_amt_ma120_slope);
+    case 255: return toNum(r.trading_amt_ma255_slope);
+    default:  return null;
+  }
+}
+
+/** Pick the MARKET-SHARE MA (dimensionless ratio 0..1) for the given
+ *  window from a chart row. Surfaced in the chart tooltip as a percentage
+ *  when trading-amt display is enabled. */
+function pickTradingAmtMarketShare(r: DbChartRow, window: number): number | null {
+  switch (window) {
+    case 5:   return toNum(r.trading_amt_market_share_ma5);
+    case 20:  return toNum(r.trading_amt_market_share_ma20);
+    case 60:  return toNum(r.trading_amt_market_share_ma60);
+    case 120: return toNum(r.trading_amt_market_share_ma120);
+    case 255: return toNum(r.trading_amt_market_share_ma255);
     default:  return null;
   }
 }
@@ -329,6 +420,7 @@ export async function listMovAveSpreadCodes(
   industry?: string | null,
   strategy?: string | null,
   theme?: string | null,
+  rawExchange?: string | null,
 ): Promise<MovAveSpreadCodesResponse> {
   const secType = normalizeSecType(rawSecType);
   const sectorFilter = (sector ?? "").trim();
@@ -336,6 +428,10 @@ export async function listMovAveSpreadCodes(
   const strategyFilter = (strategy ?? "").trim();
   const themeFilter = (theme ?? "").trim();
   const hasClassFilter = !!(sectorFilter || industryFilter || strategyFilter || themeFilter);
+  const exFilter = (rawExchange ?? "").trim() || null;
+  // Build the meta map when EITHER a classification filter or an exchange
+  // filter is active — both need the sec_classification row to decide.
+  const needMeta = hasClassFilter || !!exFilter;
 
   const rows = await queryRows<DbCodeRow>(buildCodesSql(secType), [secType]);
 
@@ -344,7 +440,7 @@ export async function listMovAveSpreadCodes(
   // matchesClassification() can decide which codes to include. Industry and
   // strategy filters are mutually exclusive (handled by matchesClassification).
   let classMap: Map<string, DbMaSpreadMetaRow> | null = null;
-  if (hasClassFilter) {
+  if (needMeta) {
     const metaType = MA_SPREAD_META_TYPE[secType];
     const metaRows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL, [secType, metaType]);
     classMap = new Map<string, DbMaSpreadMetaRow>();
@@ -360,7 +456,13 @@ export async function listMovAveSpreadCodes(
     const code = stripped(r.code);
     if (classMap) {
       const meta = classMap.get(code);
-      if (!meta || !matchesClassification(meta, sectorFilter, industryFilter, strategyFilter, themeFilter)) {
+      if (hasClassFilter && (!meta || !matchesClassification(meta, sectorFilter, industryFilter, strategyFilter, themeFilter))) {
+        continue;
+      }
+      // Exchange filter: codes without a sec_classification row (meta is null)
+      // have no exchange info and are excluded when a filter is active — same
+      // behavior as listIndexThemes (COALESCE(exchange, '') fails the match).
+      if (exFilter && (!meta || !matchesExchange(meta.exchange, exFilter))) {
         continue;
       }
     }
@@ -416,6 +518,13 @@ function buildChartSql(secType: MaSpreadSecType): string {
       d.price_curvature, d.ma5_curvature, d.ma20_curvature, d.ma60_curvature,
       d.ma120_curvature, d.ma255_curvature,
       d.std_5days, d.std_20days, d.std_60days, d.std_120days, d.std_255days,
+      d.trading_amt_ma5, d.trading_amt_ma20, d.trading_amt_ma60,
+      d.trading_amt_ma120, d.trading_amt_ma255,
+      d.trading_amt_ma5_slope, d.trading_amt_ma20_slope, d.trading_amt_ma60_slope,
+      d.trading_amt_ma120_slope, d.trading_amt_ma255_slope,
+      d.trading_amt_market_share_ma5, d.trading_amt_market_share_ma20,
+      d.trading_amt_market_share_ma60, d.trading_amt_market_share_ma120,
+      d.trading_amt_market_share_ma255,
       rsi.date_of_last_extreme,
       rsi.gap_since_last_extreme,
       rsi.days_since_last_extreme,
@@ -440,7 +549,7 @@ function buildChartSql(secType: MaSpreadSecType): string {
 // ----------------------------------------------------------------------------
 function buildValleyLowsSql(): string {
   return `
-    SELECT date, extreme_val, nearby_extreme_date
+    SELECT date, extreme_val, nearby_extreme_date, is_extreme_peak_not_floor
     FROM analysis.mov_ave_peaks_and_floors
     WHERE sec_type = $2
       AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
@@ -452,6 +561,7 @@ interface DbValleyLowRow extends QueryResultRow {
   date: Date | string;
   extreme_val: number | null;
   nearby_extreme_date: Date | string | null;
+  is_extreme_peak_not_floor: boolean | null;
 }
 
 function buildNameSql(secType: MaSpreadSecType): string {
@@ -480,7 +590,7 @@ export async function getMovAveSpreadChart(
 
   const name = nameRows[0]?.name ?? "";
 
-  // Initialize the 9 pair series in canonical order.
+  // Initialize the 9 price pair series + 5 amt pair series in canonical order.
   const byPair = new Map<string, MovAveSpreadPairSeries>();
   for (const [ms, ml] of PAIR_ORDER) {
     const key = `${ms}/${ml}`;
@@ -488,11 +598,22 @@ export async function getMovAveSpreadChart(
       ma_short: ms,
       ma_long: ml,
       pair_label: pairLabel(ms, ml),
+      kind: "price" as MovAveSpreadPairKind,
+      rows: [],
+    });
+  }
+  for (const [ms, ml] of AMT_PAIR_ORDER) {
+    const key = `${ms}/${ml}`;
+    byPair.set(key, {
+      ma_short: ms,
+      ma_long: ml,
+      pair_label: pairLabel(ms, ml),
+      kind: "amt" as MovAveSpreadPairKind,
       rows: [],
     });
   }
 
-  // Fan each chart row out into 9 pair entries.
+  // Fan each chart row out into 9 price pair entries + 5 amt pair entries.
   for (const r of chartRows) {
     const dateStr = formatDate(r.date);
     const price = toNum(r.price);
@@ -501,6 +622,29 @@ export async function getMovAveSpreadChart(
     const high = toNum(r.high);
     const low = toNum(r.low);
     const tradingAmount = toNum(r.trading_amount);
+    // 5 trading-amount MA values — shared across all 5 amt pairs for a given
+    // date. Used by the frontend to render the amt envelope (all 5 MA lines
+    // form a band around trading_amount).
+    const amtMa5   = pickTradingAmtMa(r, 5);
+    const amtMa20  = pickTradingAmtMa(r, 20);
+    const amtMa60  = pickTradingAmtMa(r, 60);
+    const amtMa120 = pickTradingAmtMa(r, 120);
+    const amtMa255 = pickTradingAmtMa(r, 255);
+    // 5 trading-amount MA SLOPE values (fractional daily change) — shared
+    // across all pairs for a given date. Surfaced in the chart tooltip when
+    // trading-amt display is enabled.
+    const amtSlope5   = pickTradingAmtMaSlope(r, 5);
+    const amtSlope20  = pickTradingAmtMaSlope(r, 20);
+    const amtSlope60  = pickTradingAmtMaSlope(r, 60);
+    const amtSlope120 = pickTradingAmtMaSlope(r, 120);
+    const amtSlope255 = pickTradingAmtMaSlope(r, 255);
+    // 5 trading-amount MARKET-SHARE MA values (ratio 0..1) — shared across
+    // all pairs for a given date. Surfaced in the chart tooltip as a pct.
+    const amtShare5   = pickTradingAmtMarketShare(r, 5);
+    const amtShare20  = pickTradingAmtMarketShare(r, 20);
+    const amtShare60  = pickTradingAmtMarketShare(r, 60);
+    const amtShare120 = pickTradingAmtMarketShare(r, 120);
+    const amtShare255 = pickTradingAmtMarketShare(r, 255);
     // Last-extreme fields (from analysis.mov_ave_rsi) — shared across all 9
     // pairs for a given date. date_of_last_extreme is a DATE column.
     const dateOfLastExtreme = r.date_of_last_extreme != null
@@ -514,6 +658,8 @@ export async function getMovAveSpreadChart(
     const rsi10 = toNum(r.rsi_10days);
     const rsi14 = toNum(r.rsi_14days);
     const rsi20 = toNum(r.rsi_20days);
+
+    // ---- 9 price pairs ----
     for (const [maShort, maLong, gapCol] of PAIR_ORDER) {
       const series = byPair.get(`${maShort}/${maLong}`);
       if (!series) continue;
@@ -545,6 +691,76 @@ export async function getMovAveSpreadChart(
         rsi_10days: rsi10,
         rsi_14days: rsi14,
         rsi_20days: rsi20,
+        trading_amt_ma5: amtMa5,
+        trading_amt_ma20: amtMa20,
+        trading_amt_ma60: amtMa60,
+        trading_amt_ma120: amtMa120,
+        trading_amt_ma255: amtMa255,
+        trading_amt_ma5_slope: amtSlope5,
+        trading_amt_ma20_slope: amtSlope20,
+        trading_amt_ma60_slope: amtSlope60,
+        trading_amt_ma120_slope: amtSlope120,
+        trading_amt_ma255_slope: amtSlope255,
+        trading_amt_market_share_ma5: amtShare5,
+        trading_amt_market_share_ma20: amtShare20,
+        trading_amt_market_share_ma60: amtShare60,
+        trading_amt_market_share_ma120: amtShare120,
+        trading_amt_market_share_ma255: amtShare255,
+      };
+      series.rows.push(row);
+    }
+
+    // ---- 5 amt pairs (short = trading_amount, long = trading_amt_maW) ----
+    // gap_value = (trading_amount - trading_amt_maW) / trading_amt_maW
+    //   (computed here since there is no pre-computed gap column for amt
+    //   pairs in the detail table). slope/curvature/std are NULL for amt
+    //   pairs (the envelope chart doesn't use them — it renders all 5 MA
+    //   lines directly).
+    for (const [maShort, maLong] of AMT_PAIR_ORDER) {
+      const series = byPair.get(`${maShort}/${maLong}`);
+      if (!series) continue;
+      const shortVal = tradingAmount;
+      const longVal = pickTradingAmtMa(r, maLong);
+      const gapVal =
+        shortVal != null && longVal != null && longVal !== 0
+          ? (shortVal - longVal) / longVal
+          : null;
+      const row: MovAveSpreadDetailRow = {
+        date: dateStr,
+        short_value: shortVal,
+        long_value: longVal,
+        gap_value: gapVal,
+        short_slope: null,
+        short_curvature: null,
+        long_slope: null,
+        long_curvature: null,
+        long_std: null,
+        open,
+        high,
+        low,
+        trading_amount: tradingAmount,
+        date_of_last_extreme: dateOfLastExtreme,
+        gap_since_last_extreme: gapSinceLastExtreme,
+        days_since_last_extreme: daysSinceLastExtreme,
+        rsi_6days: rsi6,
+        rsi_10days: rsi10,
+        rsi_14days: rsi14,
+        rsi_20days: rsi20,
+        trading_amt_ma5: amtMa5,
+        trading_amt_ma20: amtMa20,
+        trading_amt_ma60: amtMa60,
+        trading_amt_ma120: amtMa120,
+        trading_amt_ma255: amtMa255,
+        trading_amt_ma5_slope: amtSlope5,
+        trading_amt_ma20_slope: amtSlope20,
+        trading_amt_ma60_slope: amtSlope60,
+        trading_amt_ma120_slope: amtSlope120,
+        trading_amt_ma255_slope: amtSlope255,
+        trading_amt_market_share_ma5: amtShare5,
+        trading_amt_market_share_ma20: amtShare20,
+        trading_amt_market_share_ma60: amtShare60,
+        trading_amt_market_share_ma120: amtShare120,
+        trading_amt_market_share_ma255: amtShare255,
       };
       series.rows.push(row);
     }
@@ -560,13 +776,17 @@ export async function getMovAveSpreadChart(
       nearby_extreme_date: r.nearby_extreme_date != null
         ? formatDate(r.nearby_extreme_date)
         : null,
+      is_extreme_peak_not_floor: r.is_extreme_peak_not_floor === true,
     }))
     .filter((v) => Number.isFinite(v.extreme_val));
 
   return {
     code: target,
     name,
-    pairs: PAIR_ORDER.map(([ms, ml]) => byPair.get(`${ms}/${ml}`)!),
+    pairs: [
+      ...PAIR_ORDER.map(([ms, ml]) => byPair.get(`${ms}/${ml}`)!),
+      ...AMT_PAIR_ORDER.map(([ms, ml]) => byPair.get(`${ms}/${ml}`)!),
+    ],
     valley_lows,
   };
 }
@@ -603,6 +823,9 @@ interface DbMaSpreadMetaRow extends QueryResultRow {
    *  primary row). When FALSE, they hold STRATEGY classification (strategy-
    *  primary row). Used by the parallel strategy/theme selector. */
   is_industry_not_strategy: boolean;
+  /** Exchange code from stats.sec_classification (SS/STAR/SZ/GEM/BJ/HK/OVERSEAS).
+   *  Used by matchesExchange() to filter the tree by the UI exchange filter. */
+  exchange: string;
 }
 
 /** Meta SQL shared by listMovAveSpreadThemes() and
@@ -625,7 +848,8 @@ const MA_SPREAD_META_SQL = `
     COALESCE(m.industry_id,     'OTHER')  AS industry_id,
     COALESCE(m.industry_label,  '未分类') AS industry_label,
     COALESCE(m.industry_slug,   'other')  AS industry_slug,
-    COALESCE(m.is_industry_not_strategy, TRUE) AS is_industry_not_strategy
+    COALESCE(m.is_industry_not_strategy, TRUE) AS is_industry_not_strategy,
+    COALESCE(m.exchange, '')               AS exchange
   FROM spread_codes sc
   LEFT JOIN stats.sec_classification m ON m.code = sc.code AND m.type = $2::text
   WHERE COALESCE(m.is_active, TRUE) = TRUE
@@ -633,8 +857,10 @@ const MA_SPREAD_META_SQL = `
 
 export async function listMovAveSpreadThemes(
   rawSecType: string | undefined | null,
+  rawExchange?: string | null,
 ): Promise<SectorNode[]> {
   const secType = normalizeSecType(rawSecType);
+  const exFilter = (rawExchange ?? "").trim() || null;
   const metaType = MA_SPREAD_META_TYPE[secType];
   const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL, [secType, metaType]);
 
@@ -648,6 +874,9 @@ export async function listMovAveSpreadThemes(
     // (is_industry_not_strategy=FALSE) carry strategy/theme in
     // sector_id/industry_id and belong in the RIGHT column only.
     if (!r.is_industry_not_strategy) continue;
+    // Apply exchange filter so the nav tree respects the selected exchange
+    // (e.g. HK indices are excluded when "All (primary)" is selected).
+    if (exFilter && !matchesExchange(r.exchange, exFilter)) continue;
     // Strip exchange suffix so item codes match the codes returned by
     // listMovAveSpreadCodes (which also strips the suffix).
     const code = stripExchangeSuffix(r.code);
@@ -704,12 +933,21 @@ export async function listMovAveSpreadThemes(
 // ----------------------------------------------------------------------------
 export async function listMovAveSpreadStrategyThemes(
   rawSecType: string | undefined | null,
+  rawExchange?: string | null,
 ): Promise<StrategyNode[]> {
   const secType = normalizeSecType(rawSecType);
+  const exFilter = (rawExchange ?? "").trim() || null;
   const metaType = MA_SPREAD_META_TYPE[secType];
   const rows = await queryRows<DbMaSpreadMetaRow>(MA_SPREAD_META_SQL, [secType, metaType]);
 
-  const mappedRows = rows.map((r) => ({
+  // Filter by exchange BEFORE building the strategy tree so cross-border
+  // securities are excluded when "All (primary)" is selected (same behavior
+  // as listMovAveSpreadThemes and listIndexThemes).
+  const filteredRows = exFilter
+    ? rows.filter((r) => matchesExchange(r.exchange, exFilter))
+    : rows;
+
+  const mappedRows = filteredRows.map((r) => ({
     code: stripExchangeSuffix(r.code),
     name: r.name,
     sector_id: r.sector_id,

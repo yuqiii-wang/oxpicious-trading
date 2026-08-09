@@ -214,8 +214,9 @@ const META_SQL_FOR_CODE = `
 //  Themes — build the two-level L1 sector → L2 industry → ETFs tree from
 //  the precomputed classification columns in stats.sec_classification.
 // ----------------------------------------------------------------------------
-export async function listThemes(): Promise<SectorNode[]> {
+export async function listThemes(exchange?: string | null): Promise<SectorNode[]> {
   const rows = await queryRows<DbEtfMetaRow>(META_SQL);
+  const exFilter = (exchange ?? "").trim() || null;
 
   // Group ETFs by (sector_id) → (industry_id)
   const sectorMap = new Map<string, {
@@ -228,6 +229,11 @@ export async function listThemes(): Promise<SectorNode[]> {
     // (is_industry_not_strategy=FALSE) carry strategy/theme in
     // sector_id/industry_id and belong in the RIGHT column only.
     if (!r.is_industry_not_strategy) continue;
+    // Apply exchange filter so the nav tree (sector chips + L3 item chips)
+    // respects the selected exchange. Without this, cross-border ETFs
+    // (HK/OVERSEAS) would appear in the tree even when "All (primary)" is
+    // selected — e.g. 161128 标普科技 (OVERSEAS) leaking into TECH sector.
+    if (exFilter && !matchesExchange(r.exchange, exFilter)) continue;
     const code = stripExchangeSuffix(r.code);
     if (!code) continue;
     const etf = { code, name: r.name ?? "" };
@@ -281,19 +287,22 @@ export async function listThemes(): Promise<SectorNode[]> {
 //  the shared buildStrategyThemesFromRows helper to avoid duplicating the
 //  grouping/sorting logic across services.
 // ----------------------------------------------------------------------------
-export async function listStrategyThemes(): Promise<StrategyNode[]> {
+export async function listStrategyThemes(exchange?: string | null): Promise<StrategyNode[]> {
   const rows = await queryRows<DbEtfMetaRow>(META_SQL);
+  const exFilter = (exchange ?? "").trim() || null;
 
-  const mappedRows = rows.map((r) => ({
-    code: stripExchangeSuffix(r.code),
-    name: r.name,
-    sector_id: r.sector_id,
-    sector_label: r.sector_label,
-    industry_id: r.industry_id,
-    industry_label: r.industry_label,
-    industry_slug: r.industry_slug,
-    is_industry_not_strategy: r.is_industry_not_strategy,
-  }));
+  const mappedRows = rows
+    .filter((r) => !exFilter || matchesExchange(r.exchange, exFilter))
+    .map((r) => ({
+      code: stripExchangeSuffix(r.code),
+      name: r.name,
+      sector_id: r.sector_id,
+      sector_label: r.sector_label,
+      industry_id: r.industry_id,
+      industry_label: r.industry_label,
+      industry_slug: r.industry_slug,
+      is_industry_not_strategy: r.is_industry_not_strategy,
+    }));
 
   return buildStrategyThemesFromRows(mappedRows);
 }

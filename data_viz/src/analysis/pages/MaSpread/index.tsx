@@ -66,7 +66,7 @@ export default function MaSpreadPage() {
   // sector_id would not map cleanly between ETF and Index themes).
   const [sectorId, setSectorId] = useState<string | null>(null);
   const [industrySlug, setIndustrySlug] = useState<string | null>(null);
-  const [exchange, setExchange] = useState<string | null>(null);
+  const [exchange, setExchange] = useState<string | null>("PRIMARY");
   // Parallel strategy → theme state (RIGHT column of the two-column selector).
   // Mutually exclusive with sector/industry: when strategyId is set, sectorId
   // is null and vice versa.
@@ -92,7 +92,7 @@ export default function MaSpreadPage() {
     setError(null);
     setSectorId(null);
     setIndustrySlug(null);
-    setExchange(null);
+    setExchange("PRIMARY");
     setStrategies([]);
     setStrategyId(null);
     setThemeSlug(null);
@@ -100,23 +100,36 @@ export default function MaSpreadPage() {
     setPage(1);
   }, [secType]);
 
-  // ---- Load themes + codes whenever secType changes or refresh is bumped --
-  // Fetches BOTH the industry tree (LEFT column) and the parallel strategy
-  // tree (RIGHT column) in parallel.
+  // ---- Load themes + codes whenever secType/exchange changes or refresh is
+  //      bumped. Fetches BOTH the industry tree (LEFT column) and the parallel
+  //      strategy tree (RIGHT column) in parallel. The exchange filter is
+  //      applied at the backend (via matchesExchange) so the nav tree respects
+  //      the selected exchange — e.g. HK indices are excluded when "All
+  //      (primary)" is selected, matching the IndexBaseline/EtfMargin pattern.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     Promise.all([
-      fetchMovAveSpreadThemes(secType),
-      fetchMovAveSpreadCodes(secType),
-      fetchMovAveSpreadStrategyThemes(secType),
+      fetchMovAveSpreadThemes(secType, exchange),
+      fetchMovAveSpreadCodes(secType, exchange),
+      fetchMovAveSpreadStrategyThemes(secType, exchange),
     ])
       .then(([t, c, st]) => {
         if (cancelled) return;
         setSectors(t);
         setCodesData(c);
         setStrategies(st);
+        // Clear stale sector/strategy selection if not in the filtered tree
+        // (e.g. switching exchange may drop the active sector's codes).
+        if (sectorId && !t.some((s) => s.sector_id === sectorId)) {
+          setSectorId(null);
+          setIndustrySlug(null);
+        }
+        if (strategyId && !st.some((s) => s.sector_id === strategyId)) {
+          setStrategyId(null);
+          setThemeSlug(null);
+        }
         // BROAD is a STRATEGY (is_industry_not_strategy=FALSE), so it lives in
         // the RIGHT column (strategy tree). Default to BROAD there if present;
         // else fall back to the first sector in the LEFT column.
@@ -139,7 +152,7 @@ export default function MaSpreadPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secType, refreshKey]);
+  }, [secType, exchange, refreshKey]);
 
   // Reset to page 1 whenever sector, industry, strategy, theme, or exchange changes.
   useEffect(() => {
@@ -256,26 +269,23 @@ export default function MaSpreadPage() {
     // to the selected sector/industry in the themes tree, then preserve the
     // order from `all` (which is already sorted by max_spread DESC NULLS LAST,
     // code by the codes endpoint).
+    // NOTE: exchange filtering is applied at the BACKEND (both the themes tree
+    // and the codes list are filtered via matchesExchange), so no client-side
+    // exchange filtering is needed here — `ind.items` already contains only
+    // exchange-appropriate codes.
     const wantedSet = new Set<string>();
     for (const s of sectors) {
       if (sectorId && s.sector_id !== sectorId) continue;
       for (const ind of s.industries) {
         if (industrySlug && ind.industry_slug !== industrySlug) continue;
         for (const item of ind.items) {
-          // Exchange filter: match by code suffix (.SS, .SZ, .BJ).
-          // Indices have bare codes (no suffix) — they won't match a specific
-          // exchange filter, which is correct (indices are cross-market).
-          if (exchange) {
-            const suffix = `.${exchange}`;
-            if (!item.code.toUpperCase().endsWith(suffix)) continue;
-          }
           wantedSet.add(item.code);
         }
       }
     }
     const wanted = all.filter((c) => wantedSet.has(c.code));
     return { pageCodes: wanted, totalCodes: wanted.length };
-  }, [codesData, sectors, strategies, sectorId, industrySlug, strategyId, themeSlug, exchange, searchCode]);
+  }, [codesData, sectors, strategies, sectorId, industrySlug, strategyId, themeSlug, searchCode]);
 
   const totalPages = Math.max(1, Math.ceil(totalCodes / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);

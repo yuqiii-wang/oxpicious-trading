@@ -10,9 +10,10 @@ import {
 
 const router = Router();
 
-router.get("/themes", async (_req: Request, res: Response) => {
+router.get("/themes", async (req: Request, res: Response) => {
   try {
-    res.json(await listThemes());
+    const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
+    res.json(await listThemes(exchange));
   } catch (err) {
     console.error("[etf-margin/themes] error:", err);
     res.status(500).json({ error: String(err) });
@@ -20,9 +21,10 @@ router.get("/themes", async (_req: Request, res: Response) => {
 });
 
 /** GET /api/etf-margin/strategy-themes — parallel L1 strategy → L2 theme tree */
-router.get("/strategy-themes", async (_req: Request, res: Response) => {
+router.get("/strategy-themes", async (req: Request, res: Response) => {
   try {
-    res.json(await listStrategyThemes());
+    const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
+    res.json(await listStrategyThemes(exchange));
   } catch (err) {
     console.error("[etf-margin/strategy-themes] error:", err);
     res.status(500).json({ error: String(err) });

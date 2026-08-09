@@ -34,7 +34,10 @@ from __future__ import annotations
 
 import asyncio
 
-from _common.build_commons import bulk_upsert_async
+from _common.build_commons import bulk_upsert_async, copy_insert_async
+from _common.pre_check_and_load.missing_dates import (
+    filter_rows_to_missing_dates_async,
+)
 
 
 # Default target rows per upsert chunk. ~8.2M detail rows / ~1700 dates
@@ -216,3 +219,295 @@ async def batched_upsert_by_date(
     ]
     results = await asyncio.gather(*tasks)
     return sum(results)
+
+
+# ============================================================================
+#  batched_copy_by_date — parallel COPY for force-mode (truncated-table) loads
+# ============================================================================
+
+async def _copy_chunk_sequential(
+    conn, table_name, chunk, chunk_idx, n_chunks, label, total_counter,
+) -> int:
+    """COPY one chunk using the shared connection (sequential)."""
+    n = await copy_insert_async(conn, table_name, chunk)
+    total_counter[0] += n
+    prefix = f"      {label} " if label else "      "
+    print(f"{prefix}chunk {chunk_idx}/{n_chunks}: COPY {n:,} rows "
+          f"(cumulative {total_counter[0]:,})", flush=True)
+    return n
+
+
+async def _copy_chunk_parallel(
+    pool, table_name, chunk, chunk_idx, n_chunks, label, total_counter, lock,
+) -> int:
+    """COPY one chunk using a connection borrowed from the pool.
+
+    Each parallel task runs in its own transaction (inside
+    ``copy_insert_async``). The pool guarantees connection isolation.
+    """
+    async with pool.acquire() as conn:
+        n = await copy_insert_async(conn, table_name, chunk)
+    async with lock:
+        total_counter[0] += n
+        so_far = total_counter[0]
+    prefix = f"      {label} " if label else "      "
+    print(f"{prefix}chunk {chunk_idx}/{n_chunks} done: COPY {n:,} rows "
+          f"(cumulative {so_far:,})", flush=True)
+    return n
+
+
+async def batched_copy_by_date(
+    conn,
+    table_name: str,
+    rows: list[dict],
+    *,
+    chunk_target_rows: int = DEFAULT_CHUNK_TARGET_ROWS,
+    label: str = "",
+    pool=None,
+    max_concurrent: int = DEFAULT_MAX_CONCURRENT,
+) -> int:
+    """Bulk-insert rows via PostgreSQL COPY, chunked by date.
+
+    Sibling of :func:`batched_upsert_by_date` for the **force-mode /
+    truncated-table** path. Uses :func:`copy_insert_async` (asyncpg
+    ``copy_records_to_table``) per chunk instead of
+    ``INSERT ... ON CONFLICT``. On multi-million-row loads COPY is
+    typically 5-10× faster than ``executemany`` upsert because it
+    bypasses per-row conflict arbitration, extended-query parsing, and
+    writes WAL in bulk.
+
+    SAFE ONLY when the target table has been TRUNCATEd (or is otherwise
+    guaranteed conflict-free) before this call. COPY has no
+    ``ON CONFLICT`` handling — a PK violation on ANY row aborts the whole
+    chunk's transaction. The caller is responsible for truncating first
+    (force mode does this). For incremental upsert into a non-empty
+    table, use :func:`batched_upsert_by_date` instead.
+
+    Parallel safety: identical to ``batched_upsert_by_date``. Chunks are
+    grouped by ``date`` and the detail table's PK includes date, so two
+    chunks never share a date → no PK conflict even when chunks run
+    concurrently on separate connections into the same (truncated) table.
+
+    Args:
+        conn: asyncpg connection. Used when ``pool`` is None (sequential).
+            When ``pool`` is provided, ``conn`` is not used.
+        table_name: target table (schema-qualified, e.g.
+            "analysis.mov_ave_spreads_detail").
+        rows: list of row dicts (same shape as ``batched_upsert_by_date``).
+        chunk_target_rows: flush a chunk when it reaches this many rows.
+        label: optional label for progress messages (e.g. "detail" or
+            "mov_ave_rsi").
+        pool: optional asyncpg connection pool. When supplied, chunks run
+            in parallel (bounded by ``max_concurrent``).
+        max_concurrent: maximum parallel chunk tasks (only used when
+            ``pool`` is provided). MUST be ≤ the pool's ``max_size``.
+
+    Returns:
+        Total rows COPY-inserted.
+    """
+    if not rows:
+        return 0
+    date_groups = _group_rows_by_date(rows)
+    chunks = _build_chunks(date_groups, chunk_target_rows)
+    n_chunks = len(chunks)
+
+    total_counter = [0]
+    prefix = f"      {label} " if label else "      "
+
+    if pool is None or max_concurrent <= 1 or n_chunks <= 1:
+        # ---- Sequential mode ----
+        for i, chunk in enumerate(chunks, start=1):
+            await _copy_chunk_sequential(
+                conn, table_name, chunk, i, n_chunks, label, total_counter,
+            )
+        return total_counter[0]
+
+    # ---- Parallel mode (pool required) ----
+    pool_max = getattr(pool, "_maxsize", max_concurrent)
+    concurrency = max(1, min(max_concurrent, n_chunks, pool_max))
+    sem = asyncio.Semaphore(concurrency)
+    lock = asyncio.Lock()
+
+    print(f"{prefix}parallel COPY: {n_chunks} chunks, "
+          f"{concurrency} concurrent (pool max_size={pool_max})",
+          flush=True)
+
+    async def _task(chunk_idx, chunk):
+        async with sem:
+            return await _copy_chunk_parallel(
+                pool, table_name, chunk, chunk_idx, n_chunks,
+                label, total_counter, lock,
+            )
+
+    tasks = [_task(i, chunk) for i, chunk in enumerate(chunks, start=1)]
+    results = await asyncio.gather(*tasks)
+    return sum(results)
+
+
+# ============================================================================
+#  build_and_insert_chunked — memory-bounded build + insert for huge universes
+# ============================================================================
+#
+#  batched_upsert_by_date / batched_copy_by_date expect the FULL list of row
+#  dicts to be materialized upfront. That list is the dominant memory cost:
+#  sanitize_for_db_insert converts each numeric column to object dtype
+#  (~4x float64 footprint) and to_dict(orient="records") creates one Python
+#  dict per row (a 45-key dict is ~1.6 KB; 6.7M stock rows ≈ 10+ GB of
+#  dicts alone). On large universes (stock: 6.7M rows) this OOMs even with
+#  22 GB RAM.
+#
+#  build_and_insert_chunked splits the source DataFrame into date-bounded
+#  sub-frames (~chunk_target_rows each), calls the caller-supplied build_fn
+#  (which assembles + sanitizes into row dicts) PER sub-frame, and inserts
+#  each chunk immediately. Peak memory is bounded to one chunk's dicts
+#  (~100K rows ≈ 160 MB) instead of the full universe.
+#
+#  Date boundaries are respected (a single date is never split across
+#  chunks) so the (sec_type, code, date) PK invariant is preserved — two
+#  chunks never share a date.
+#
+#  The build_fn receives the full peaks_and_floors context (via closure)
+#  so the nearest-preceding-extreme asof mapping picks up ALL extremes,
+#  not just the chunk's dates.
+# ============================================================================
+
+
+def group_df_by_date_chunks(
+    df, chunk_target_rows: int = DEFAULT_CHUNK_TARGET_ROWS
+) -> list:
+    """Split a DataFrame into date-bounded sub-frames of ~chunk_target_rows.
+
+    Date boundaries are always respected — a single date's rows are never
+    split across sub-frames. Returns a list of sub-DataFrames (views /
+    boolean-indexed slices of ``df``), sorted by date ascending.
+
+    Used by build_and_insert_chunked to bound peak memory: each sub-frame
+    is built + sanitized + inserted independently, so the full dict list
+    is never materialized at once.
+    """
+    if df.empty:
+        return []
+    # Per-date row counts, sorted by date ascending.
+    date_sizes = df.groupby("date", sort=True).size()
+    date_groups: list = []
+    current: list = []
+    current_rows = 0
+    for d, size in date_sizes.items():
+        if current and current_rows + size > chunk_target_rows:
+            date_groups.append(current)
+            current = [d]
+            current_rows = size
+        else:
+            current.append(d)
+            current_rows += size
+    if current:
+        date_groups.append(current)
+    # Materialize sub-frames via boolean indexing (one pass per chunk).
+    return [df[df["date"].isin(dates)] for dates in date_groups]
+
+
+async def _filter_per_sec_type_chunk(conn, table_name, rows, sec_types):
+    """Per-sec_type skip-filter for a single chunk's rows.
+
+    Splits ``rows`` by sec_type and drops dates already present in the
+    target table, scoped per-sec_type so a date populated for one
+    sec_type doesn't mask the same date being missing for another.
+    In force mode the table is truncated so this is a no-op (returns
+    all rows); kept as a safety net for incremental edge cases.
+    """
+    if not rows:
+        return []
+    by_st: dict = {}
+    for r in rows:
+        by_st.setdefault(r.get("sec_type"), []).append(r)
+    out: list = []
+    for st, group in by_st.items():
+        if st not in sec_types:
+            out.extend(group)
+            continue
+        filtered = await filter_rows_to_missing_dates_async(
+            conn, table_name, group, sec_type=st,
+        )
+        out.extend(filtered)
+    return out
+
+
+async def build_and_insert_chunked(
+    conn,
+    pool,
+    df,
+    build_fn,
+    *,
+    table_name: str,
+    key_columns: list[str],
+    force: bool,
+    sec_types,
+    chunk_target_rows: int = DEFAULT_CHUNK_TARGET_ROWS,
+    max_concurrent: int = DEFAULT_MAX_CONCURRENT,
+    label: str = "",
+):
+    """Build row dicts per date-chunk and insert each chunk immediately.
+
+    Bounds peak memory by never materializing the full dict list — each
+    date-chunk is built (via ``build_fn``), skip-filtered, and inserted
+    before the next chunk is built.
+
+    Args:
+        conn: asyncpg connection (used for skip-filter + sequential insert).
+        pool: connection pool (reserved for future parallel-batch use;
+            currently the insert runs sequentially on ``conn`` for memory
+            safety — parallel insert would require holding multiple
+            chunks' dicts simultaneously).
+        df: source DataFrame (already filtered to target dates by the
+            caller). Must have a ``date`` column and a ``sec_type`` column.
+        build_fn: callable(sub_df) -> list[dict]. Assembles + sanitizes
+            one chunk's rows. For mov_ave_spreads_detail this is
+            ``lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows)``;
+            for mov_ave_rsi it is ``sanitize_rsi_rows``.
+        table_name: target table (schema-qualified).
+        key_columns: PK columns for ON CONFLICT (incremental upsert).
+        force: when True, use COPY (table pre-truncated); else upsert.
+        sec_types: iterable of sec_type values for the per-sec_type
+            skip-filter.
+        chunk_target_rows: target rows per date-chunk (date boundaries
+            respected).
+        max_concurrent: reserved (sequential insert currently).
+        label: progress-message prefix.
+
+    Returns:
+        Total rows inserted.
+    """
+    if df.empty:
+        return 0
+    sub_frames = group_df_by_date_chunks(df, chunk_target_rows)
+    n_chunks = len(sub_frames)
+    prefix = f"      {label} " if label else "      "
+    print(f"{prefix}build+insert: {n_chunks} date-chunks "
+          f"(~{chunk_target_rows:,} rows/chunk), sequential "
+          f"({'COPY' if force else 'upsert'})", flush=True)
+
+    sec_types_set = set(sec_types)
+    total = 0
+    for i, sub in enumerate(sub_frames, start=1):
+        # Build this chunk's row dicts (assembled + sanitized).
+        rows = build_fn(sub)
+        if not rows:
+            continue
+        # Per-sec_type skip-filter (safety net; no-op in force mode).
+        rows = await _filter_per_sec_type_chunk(
+            conn, table_name, rows, sec_types_set,
+        )
+        if not rows:
+            continue
+        # Insert this chunk immediately, then let its dicts go out of
+        # scope so memory is reclaimed before the next chunk is built.
+        if force:
+            n = await copy_insert_async(conn, table_name, rows)
+        else:
+            n = await bulk_upsert_async(
+                conn, table_name, rows, key_columns=key_columns,
+            )
+        total += n
+        print(f"{prefix}chunk {i}/{n_chunks}: inserted {n:,} rows "
+              f"(cumulative {total:,})", flush=True)
+    return total
