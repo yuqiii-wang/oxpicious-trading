@@ -118,6 +118,10 @@ from analyze.industry_sentiments.etf_contribution import (  # noqa: E402
     run_etf_contribution,
     TABLE as ETF_CONTRIBUTION_TABLE,
 )
+from analyze.industry_sentiments.hypes_and_drains import (  # noqa: E402
+    run_hypes_and_drains,
+    TABLE as HYPES_DRAINS_TABLE,
+)
 from analyze.sec_alloc_perf_attribution.run import (  # noqa: E402
     run_perf_attribution,
 )
@@ -313,6 +317,7 @@ async def main() -> None:
             await truncate_table_async(conn, TABLE)
             await truncate_table_async(conn, CORRELATIONS_TABLE)
             await truncate_table_async(conn, ATTRIBUTIONS_TABLE)
+            await truncate_table_async(conn, HYPES_DRAINS_TABLE)
             target_dates: Optional[Set[datetime.date]] = None
             print("    -> truncated; will recompute all rows", flush=True)
         else:
@@ -341,9 +346,24 @@ async def main() -> None:
                           "backfill — running attributions backfill...",
                           flush=True)
                     await run_attributions(conn, backfill=True)
+                    # Backfill just refreshed the rolling price columns (incl.
+                    # 120d) — recompute hypes_and_drains so rankings reflect
+                    # the new data.
+                    await run_hypes_and_drains(conn, force=True)
                 else:
-                    print("    -> DB is up to date; nothing to do.",
-                          flush=True)
+                    # Even when sentiments + attributions are up to date, the
+                    # hypes_and_drains table might be empty (first run after
+                    # the SQL migration). Populate it if empty.
+                    n_hd = await conn.fetchval(
+                        "SELECT COUNT(*) FROM analysis.industry_hypes_and_drains"
+                    )
+                    if not n_hd:
+                        print("    -> hypes_and_drains table empty — "
+                              "populating...", flush=True)
+                        await run_hypes_and_drains(conn, force=True)
+                    else:
+                        print("    -> DB is up to date; nothing to do.",
+                              flush=True)
                 print_wall_time(t0)
                 return
 
@@ -588,6 +608,16 @@ async def main() -> None:
         # with non-NULL code_etf_trading_amount.
         await run_etf_contribution(conn, target_dates=target_dates,
                                    force=args.force)
+
+        # ---- Step 11: INTERNAL hypes_and_drains step --------------------
+        # Pre-compute top-5 (HYPE) + bottom-5 (DRAIN) industries ranked by
+        # attribution contribution to composite broad-market benchmarks
+        # (MAIN=SS+SZ, INNOV=GEM+STAR) -> analysis.industry_hypes_and_drains.
+        # Reuses this same connection. See hypes_and_drains.py. Depends on
+        # step 9 (attributions, incl. the 120d column) being populated first.
+        # Always runs full recompute (truncate-then-recompute) — the table
+        # is small (~245K rows max) and rankings shift when any date changes.
+        await run_hypes_and_drains(conn, force=True)
 
         print_wall_time(t0)
     finally:

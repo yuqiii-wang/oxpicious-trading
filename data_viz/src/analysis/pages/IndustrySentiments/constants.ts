@@ -51,18 +51,20 @@ export const CORR_WINDOWS: CorrWindow[] = ["5d", "20d", "60d", "255d"];
 /** Available rolling-days selector values for the BenchmarkPriceChart shade
  *  overlay. Each value N corresponds to the pre-materialized column
  *  benchmark_non_this_industry_rolling_{N}days_price in
- *  analysis.industry_attributions. */
-export const ROLLING_DAYS: RollingDays[] = [5, 20, 60, 255, 500];
+ *  analysis.industry_attributions. 120d (~6 months) is the default. */
+export const ROLLING_DAYS: RollingDays[] = [5, 20, 60, 120, 255, 500];
 
 /** Default rolling-days window for the BenchmarkPriceChart shade overlay.
- *  255 trading days ≈ 1 year — the most common medium-term window. */
-export const DEFAULT_ROLLING_DAYS: RollingDays = 255;
+ *  120 trading days ≈ 6 months — the default for the shade overlay AND for
+ *  analysis.industry_hypes_and_drains. */
+export const DEFAULT_ROLLING_DAYS: RollingDays = 120;
 
 /** Human-readable label for each rolling-days option (shown in the dropdown). */
 export const ROLLING_DAYS_LABELS: Record<RollingDays, string> = {
   5: "5 days",
   20: "20 days",
   60: "60 days",
+  120: "120 days (~6m)",
   255: "255 days (~1y)",
   500: "500 days (~2y)",
 };
@@ -74,6 +76,7 @@ export const ROLLING_DAYS_FIELD: Record<RollingDays, string> = {
   5: "non_this_industry_rolling_5days_price",
   20: "non_this_industry_rolling_20days_price",
   60: "non_this_industry_rolling_60days_price",
+  120: "non_this_industry_rolling_120days_price",
   255: "non_this_industry_rolling_255days_price",
   500: "non_this_industry_rolling_500days_price",
 };

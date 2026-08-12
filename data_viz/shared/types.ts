@@ -1251,6 +1251,10 @@ export interface IndustryAttributionPriceSeriesRow {
   non_this_industry_rolling_20days_price: number | null;
   /** Same as above over the trailing 60-trading-day window. */
   non_this_industry_rolling_60days_price: number | null;
+  /** Same as above over the trailing 120-trading-day window (~6 months).
+   *  This is the DEFAULT rolling window for the BenchmarkPriceChart shade
+   *  overlay AND for analysis.industry_hypes_and_drains. */
+  non_this_industry_rolling_120days_price: number | null;
   /** Same as above over the trailing 255-trading-day window (~1 year). */
   non_this_industry_rolling_255days_price: number | null;
   /** Same as above over the trailing 500-trading-day window (~2 years). */
@@ -1277,6 +1281,116 @@ export interface IndustryAttributionPriceSeriesResponse {
    *  frontend shows a placeholder message. */
   is_broad_market: boolean | null;
   rows: IndustryAttributionPriceSeriesRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Industry Hypes & Drains — pre-computed top-5 (HYPE) + bottom-5 (DRAIN)
+//  industries ranked by attribution contribution to a COMPOSITE broad-market
+//  benchmark. Drives the "Hypes & Drains" sub-toggle in "Market Trend" mode
+//  on the Industry Sentiments page.
+//
+//  GET /api/analysis/industry-hypes-and-drains
+//    ?benchmark_code=000300&period_days=120&date=YYYY-MM-DD
+// ----------------------------------------------------------------------------
+
+/** One ranked industry in the hypes_and_drains response. */
+export interface IndustryHypesAndDrainsRow {
+  rank_side: "HYPE" | "DRAIN";
+  rank: number;
+  industry_id: string;
+  industry_label: string;
+  /** Signed attribution contribution = benchmark_return_Nd
+   *  minus non_industry_return_Nd. Positive = HYPE, negative =
+   *  DRAIN. NULL when no overlap. */
+  metric_value: number | null;
+  /** Benchmark N-day return (signed). */
+  benchmark_return_nd: number | null;
+  /** Non-this-industry N-day return (signed). */
+  non_industry_return_nd: number | null;
+  /** Industry's benchmark_shared_weight (latest snapshot, percent 0-100). */
+  benchmark_shared_weight: number | null;
+}
+
+/** One date row in the benchmark price series. */
+export interface HypesDrainsBenchmarkRow {
+  date: string;
+  /** Raw benchmark close. */
+  close: number | null;
+  /** Fractional daily return = (close_t - close_{t-1}) / close_{t-1}. */
+  daily_return: number | null;
+  /** Benchmark trading amount (yuan). */
+  trading_amount: number | null;
+}
+
+/** One date row in an industry's non-this-industry rolling price series
+ *  (from analysis.industry_attributions, benchmark_non_this_industry_rolling_{N}days_price).
+ *  100-based cumulative non-industry return factor over the trailing N-day
+ *  window. The frontend uses this + benchmark_shared_weight to derive the
+ *  industry's OWN return via the identity:
+ *    ind_return = (bench_return - (1-swf) × non_ind_return) / swf
+ *  and plots 100 × (1 + ind_return) as the industry curve. */
+export interface HypesDrainsIndustrySeriesRow {
+  date: string;
+  /** benchmark_non_this_industry_rolling_{N}days_price (100-based factor). */
+  rolling: number | null;
+  /** benchmark_shared_weight (percent 0-100) on this date. Used as swf
+   *  in the industry return formula. */
+  benchmark_shared_weight: number | null;
+}
+
+/** One industry's full rolling price series (daily). The industry's
+ *  seasonal ranking info is in SeasonalRankingRow[] — this interface
+ *  only carries the daily price data. */
+export interface HypesDrainsIndustrySeries {
+  industry_id: string;
+  industry_label: string;
+  rows: HypesDrainsIndustrySeriesRow[];
+}
+
+/** One seasonal (monthly) ranking row: which industry is rank 1-5
+ *  HYPE or DRAIN for a given month. */
+export interface SeasonalRankingRow {
+  /** Month key, e.g. "2026-08". */
+  season_qkey: string;
+  rank_side: "HYPE" | "DRAIN";
+  /** Rank within the rank_side bucket (1-5). */
+  rank: number;
+  industry_id: string;
+  industry_label: string;
+  /** Peak attribution contribution within the month.
+   *  HYPE = MAX of daily metric_value, DRAIN = MIN. */
+  peak_metric_value: number | null;
+}
+
+/** One calendar month with its date boundaries. */
+export interface SeasonInfo {
+  /** Month key, e.g. "2026-08". */
+  season_qkey: string;
+  /** Inclusive start date (YYYY-MM-DD). */
+  season_start: string;
+  /** Inclusive end date (YYYY-MM-DD). */
+  season_end: string;
+}
+
+/** Response for GET /api/analysis/industry-hypes-and-drains. */
+export interface IndustryHypesAndDrainsResponse {
+  benchmark_code: string;
+  benchmark_name: string;
+  period_days: number;
+  /** Weighting method: 'equal' (raw attribution contribution) or 'amt'
+   *  (contribution × shared_trading_amt — absolute yuan impact). */
+  weighting: "equal" | "amt";
+  /** Full benchmark price series (close + daily_return + trading_amount). */
+  benchmark_series: HypesDrainsBenchmarkRow[];
+  /** All seasonal (monthly) rankings — which industry is top/bottom 5
+   *  per month. Drives the ACTIVE/FADING/HIDDEN state machine. */
+  seasonal_rankings: SeasonalRankingRow[];
+  /** All calendar months that have rankings, with date boundaries. */
+  seasons: SeasonInfo[];
+  /** Rolling price series for ALL industries that appear in ANY season's
+   *  ranking. Each industry's daily curve is plotted; opacity is determined
+   *  by the seasonal state machine. */
+  industry_series: HypesDrainsIndustrySeries[];
 }
 
 // ----------------------------------------------------------------------------
@@ -1489,24 +1603,45 @@ export interface LiveDataDatesResponse {
 // ----------------------------------------------------------------------------
 //  Strategy — MA-spread crossover backtest
 //  GET /api/strategy/ma-spread/backtest?sec_type=index&code=000970
-//  Runs an ephemeral backtest (no DB write) and returns OHLC + trading amount
-//  + trade decisions + total return for immediate chart rendering.
+//  Reads PRE-COMPUTED backtest results from strategy.strategy_identity +
+//  strategy.strategy_results (1:1 results) + strategy.trade_decision. Each
+//  decision carries normalized_fill_price (base = 100 at the first BUY fill),
+//  and summary.first_buy_fill_price is the chart's normalization anchor.
 // ----------------------------------------------------------------------------
 export interface StrategyDecision {
   decision_no: number;
   side: "BUY" | "SELL";
-  signal_date: string;
   exec_date: string;
   qty: number;
   fill_price: number;
-  gross_value: number;
-  commission: number;
-  fees: number;
+  /** fill_price rebased to 100 at the first BUY fill (= fill_price /
+   *  summary.first_buy_fill_price * 100). First BUY = 100; later fills read
+   *  as % change from entry (105 = +5%, 94 = -6%). */
+  normalized_fill_price: number;
+  /** Weighted-avg BUY normalized_fill_price across all historical BUYs still
+   *  in the remaining position (the cost basis realized_pnl is computed
+   *  against). For BUY: the post-BUY value (new weighted average including
+   *  this BUY). For SELL: the pre-SELL value used to compute realized_pnl
+   *  (= qty_sold × (sell_norm - this_value)); stays constant across partial
+   *  SELLs and is the last cost basis before reset to 0 when shares reach 0. */
+  normalized_mean_buy_price: number;
   position_before: number;
   position_after: number;
   cash_before: number;
   cash_after: number;
+  /** Cumulative quantity (in qty/confidence units, NOT /100) before/after
+   *  this decision. BUY adds qty (= confidence); SELL subtracts qty_sold
+   *  (= (confidence/100) * total_qty_before). */
+  total_qty_before: number;
+  total_qty_after: number;
   realized_pnl: number;
+  /** Slippage = |fill_price - close| / 100: how far the worst-case OHLC fill
+   *  deviates from the day's close, normalized to per-100-shares scale.
+   *  ≥ 0 for both BUY and SELL. */
+  slippage: number | null;
+  /** Fee = 0.2% of BUY notional (normalized money). BUY only; 0 for SELL.
+   *  Deducted from cash_after on BUY. */
+  fee: number | null;
   signal_value: number | null;
   signal_reason: string;
 }
@@ -1522,12 +1657,43 @@ export interface StrategyOhlcRow {
   ma60: number | null;
 }
 
+/** Daily portfolio state (one row per trading day from first BUY to end).
+ *  unrealized_pnl = (total_qty/100) * (normalized_close - cost_basis_norm)
+ *  — P&L if all remaining position were sold at the day's close.
+ *  normalized_mean_buy_period = weighted-avg BUY period (calendar days since
+ *  first BUY), weighted on remaining qty; mean holding time =
+ *  (trade_date − first_buy_date).days − normalized_mean_buy_period.
+ *  return_rate = ANNUALIZED return on capital = (total_pnl / capital_deployed
+ *  / max(mean_holding_days, 1)) × 255. 0 when total_qty = 0 or
+ *  mean_holding_days <= 0. */
+export interface StrategyDailyRow {
+  trade_date: string;
+  unrealized_pnl: number;
+  total_pnl: number;
+  realized_pnl_cum: number;
+  total_qty: number;
+  position_value: number;
+  normalized_mean_buy_period: number;
+  /** ANNUALIZED return on capital = (total_pnl / ((total_qty/100) *
+   *  normalized_mean_buy_price) / max(mean_holding_days, 1)) × 255. 0 when
+   *  total_qty = 0 (no capital at risk) or mean_holding_days <= 0. */
+  return_rate: number;
+  /** Annualized Sharpe ratio (×√255, rf=0) of daily Δtotal_pnl over ALL
+   *  history up to this trade_date. 0 when < 2 deltas or σ = 0. */
+  sharpe_ratio: number;
+  /** Annualized Sharpe ratio over a rolling 255-trading-day window (~1 year). */
+  sharpe_ratio_255d: number;
+  /** Annualized Sharpe ratio over a rolling 500-trading-day window (~2 years). */
+  sharpe_ratio_500d: number;
+}
+
 export interface StrategyBacktestResponse {
   code: string;
   name: string;
   sec_type: MaSpreadSecType;
   ohlc: StrategyOhlcRow[];
   decisions: StrategyDecision[];
+  daily: StrategyDailyRow[];
   summary: {
     n_buys: number;
     n_sells: number;
@@ -1535,13 +1701,20 @@ export interface StrategyBacktestResponse {
     final_cash: number;
     total_return_pct: number;
     total_buy_cost: number;
+    /** exec_date of the FIRST BUY decision — the normalization anchor date
+     *  (null if no BUY). */
+    first_buy_date: string | null;
+    /** fill_price of the FIRST BUY decision — the normalization anchor. The
+     *  chart rebases OHLC/MA series off this so the first BUY sits at y=100.
+     *  null if no BUY. */
+    first_buy_fill_price: number | null;
   };
 }
 
 // ----------------------------------------------------------------------------
 //  Strategy — internal risk metrics
 //  GET /api/strategy/ma-spread/risks?sec_type=index&code=000970
-//  Reads pre-computed risk metrics from strategy.strategy_risk_seq +
+//  Reads pre-computed risk metrics from strategy.strategy_risks +
 //  strategy.strategy_risk_period (computed by python -m strategy._risks).
 // ----------------------------------------------------------------------------
 export type StrategyRiskGrade = "LOW" | "MODERATE" | "ELEVATED" | "HIGH";
@@ -1554,6 +1727,19 @@ export interface StrategyRiskSeq {
   total_abs_pnl: number;
   n_sells: number;
   n_buys: number;
+  /** decision_no of the 1st/2nd/3rd-largest gain SELLs (FK → trade_decision). null if fewer trades. */
+  pnl_gain_1st_decision_no: number | null;
+  pnl_gain_2nd_decision_no: number | null;
+  pnl_gain_3rd_decision_no: number | null;
+  /** decision_no of the 1st/2nd/3rd-largest loss SELLs (FK → trade_decision). null if fewer trades. */
+  pnl_loss_1st_decision_no: number | null;
+  pnl_loss_2nd_decision_no: number | null;
+  pnl_loss_3rd_decision_no: number | null;
+  /** decision_no of the 1st/2nd/3rd-highest-confidence BUYs (by qty desc). FK → trade_decision. null if fewer BUYs. */
+  confidence_buy_1st_decision_no: number | null;
+  confidence_buy_2nd_decision_no: number | null;
+  confidence_buy_3rd_decision_no: number | null;
+  // Derived via LEFT JOIN to trade_decision (1st gain / 1st loss details)
   top_gain_pnl: number | null;
   top_gain_exec_date: string | null;
   top_gain_signal_reason: string | null;
@@ -1564,7 +1750,18 @@ export interface StrategyRiskSeq {
   concentration_ratio: number | null;
   concentration_window_start: string | null;
   concentration_window_end: string | null;
-  max_drawdown: number | null;
+  /** Trough date (SELL exec_date where cumulative realized P&L bottomed) of the
+   *  WORST peak-to-trough drawdown in cumulative realized P&L. null if no
+   *  drawdown episode. */
+  drawdown_1st_date: string | null;
+  drawdown_2nd_date: string | null;
+  drawdown_3rd_date: string | null;
+  /** Per-episode drawdown magnitude (trough_cum_pnl - peak_cum_pnl, signed <= 0).
+   *  1st == max_drawdown magnitude used transiently for risk_score. null if
+   *  no episode for that slot. */
+  drawdown_1st_val: number | null;
+  drawdown_2nd_val: number | null;
+  drawdown_3rd_val: number | null;
   risk_score: number | null;
   risk_grade: StrategyRiskGrade | null;
   /** Worst close-price peak-to-trough drawdown (fractional ratio <= 0) while position > 0. */
@@ -1585,12 +1782,18 @@ export interface StrategyRiskPeriod {
   n_sells: number;
   n_buys: number;
   realized_pnl: number;
+  /** Mark-to-market change in unrealized_pnl during this period =
+   *  unrealized_pnl(end of period) - unrealized_pnl(end of previous period).
+   *  From strategy_daily. Realized + unrealized = total economic P&L for the period. */
+  unrealized_pnl: number;
+  /** Peak (max) daily unrealized_pnl within this period (intra-period high
+   *  watermark of paper P&L). UI draws a transparent bar for this. */
+  max_unrealized_pnl: number;
+  /** Unrealized_pnl at the LAST trading day of this period (absolute level,
+   *  not a change). UI draws the period-end bar for this. */
+  end_unrealized_pnl: number;
   abs_pnl: number;
   period_share: number | null;
-  top_gain_pnl: number | null;
-  top_gain_exec_date: string | null;
-  top_loss_pnl: number | null;
-  top_loss_exec_date: string | null;
   is_concentration_hotspot: boolean;
   is_counter_trend: boolean;
 }

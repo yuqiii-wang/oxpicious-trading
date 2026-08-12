@@ -38,6 +38,7 @@ import {
   getMemberIndexAttribution,
   getIndustryEtfPriceSeries,
   getIndustryEtfContributionBars,
+  getIndustryHypesAndDrains,
 } from "../services/analysis/index.js";
 import type { PerfAttrSecType } from "../../shared/types.js";
 
@@ -206,9 +207,10 @@ router.get("/perf-attr/chart", async (req: Request, res: Response) => {
 //     Returns per-index close time series for ONE industry. One entry per
 //     member index, each with its raw daily close series. The frontend
 //     rebases each to 100 at the start of the visible (zoom) window.
-router.get("/industry-sentiments/themes", async (_req: Request, res: Response) => {
+router.get("/industry-sentiments/themes", async (req: Request, res: Response) => {
   try {
-    res.json(await listIndustrySentimentsThemes());
+    const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
+    res.json(await listIndustrySentimentsThemes(exchange));
   } catch (err) {
     console.error("[analysis/industry-sentiments/themes] error:", err);
     res.status(500).json({ error: String(err) });
@@ -216,9 +218,10 @@ router.get("/industry-sentiments/themes", async (_req: Request, res: Response) =
 });
 
 /** GET /api/analysis/industry-sentiments/strategy-themes */
-router.get("/industry-sentiments/strategy-themes", async (_req: Request, res: Response) => {
+router.get("/industry-sentiments/strategy-themes", async (req: Request, res: Response) => {
   try {
-    res.json(await listIndustrySentimentsStrategyThemes());
+    const exchange = typeof req.query.exchange === "string" ? req.query.exchange : undefined;
+    res.json(await listIndustrySentimentsStrategyThemes(exchange));
   } catch (err) {
     console.error("[analysis/industry-sentiments/strategy-themes] error:", err);
     res.status(500).json({ error: String(err) });
@@ -401,6 +404,32 @@ router.get("/industry-attribution/all-industries", async (req: Request, res: Res
     res.json(await getAllIndustriesAttribution(benchmarkCode, date || null));
   } catch (err) {
     console.error("[analysis/industry-attribution/all-industries] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Industry Hypes & Drains — pre-computed top-5 (HYPE) + bottom-5
+//      (DRAIN) industries ranked by attribution contribution to a COMPOSITE
+//      broad-market benchmark (MAIN=SS+SZ, INNOV=GEM+STAR). Drives the
+//      "Hypes & Drains" sub-toggle in "Market Trend" mode on the Industry
+//      Sentiments page.
+//   GET /api/analysis/industry-hypes-and-drains
+//     ?benchmark_code=000300&period_days=120&weighting=equal
+//     Returns ALL seasonal (monthly) rankings + benchmark price series
+//     + each ranked industry's full daily rolling price series.
+//     weighting: 'equal' (raw attribution contribution) or 'amt'
+//     (contribution × shared_trading_amt). Default: 'equal'.
+router.get("/industry-hypes-and-drains", async (req: Request, res: Response) => {
+  try {
+    const benchmarkCode = typeof req.query.benchmark_code === "string"
+      ? req.query.benchmark_code.trim() : "";
+    const periodDays = typeof req.query.period_days === "string"
+      ? req.query.period_days.trim() : "120";
+    const weighting = typeof req.query.weighting === "string"
+      ? req.query.weighting.trim() : "equal";
+    res.json(await getIndustryHypesAndDrains(benchmarkCode, periodDays, weighting));
+  } catch (err) {
+    console.error("[analysis/industry-hypes-and-drains] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

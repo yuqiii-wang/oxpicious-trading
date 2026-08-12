@@ -581,7 +581,26 @@ async def copy_insert_async(conn, table_name, rows, columns=None):
     schema, table = _parse_table_name(table_name)
     # asyncpg's copy_records_to_table takes the bare table name positionally;
     # records / columns / schema_name are keyword-only.
-    records = [tuple(row[c] for c in columns) for row in rows]
+    #
+    # Sanitize pandas NaT/NaN → None in bulk via pandas vectorized ops.
+    # COPY's binary protocol encodes dates via toordinal(), which NaT
+    # doesn't support (raises ValueError). The executemany path
+    # (bulk_upsert_async) handles NaT implicitly because asyncpg's codec
+    # falls back to None for unknown types, but COPY's fast-path date
+    # encoder doesn't.
+    #
+    # Two-step vectorized conversion (no per-row Python branching):
+    #   1. astype(object) — widens every column to object dtype so it can
+    #      hold real Python None (typed dtypes like datetime64 silently
+    #      coerce None back to NaT, defeating the replacement).
+    #   2. where(notna(df), None) — single C-level pass replacing every
+    #      NaN/NaT with None; valid values pass through untouched.
+    import pandas as _pd
+    df = _pd.DataFrame(rows, columns=columns).astype(object)
+    df = df.where(_pd.notna(df), None)
+    # itertuples returns plain tuples (no index, no name) — exactly what
+    # copy_records_to_table expects.
+    records = df.itertuples(index=False, name=None)
     async with conn.transaction():
         await conn.copy_records_to_table(
             table,

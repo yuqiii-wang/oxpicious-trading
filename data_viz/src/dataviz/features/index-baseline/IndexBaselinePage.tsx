@@ -48,6 +48,11 @@ export default function IndexBaselinePage() {
   const [exchange, setExchange] = useState<string | null>("PRIMARY");
   const [data, setData] = useState<IndexCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  // Separate loading flag for the classification NAV tree (sectors/strategies)
+  // so the nav can show its inline spinner during a themes refetch (e.g. when
+  // the exchange filter changes) without interfering with the content-area
+  // loading state below.
+  const [navLoading, setNavLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   // Active exact-code search (null = browsing mode). When set, only the
@@ -65,6 +70,7 @@ export default function IndexBaselinePage() {
   // filter changes so the nav tree respects the exchange filter (e.g. HK
   // indices like 港股通50/恒生 are excluded when "All (primary)" is selected).
   useEffect(() => {
+    setNavLoading(true);
     Promise.all([fetchIndexThemes(exchange), fetchIndexStrategyThemes(exchange)])
       .then(([sectorList, strategyList]) => {
         setSectors(sectorList);
@@ -87,8 +93,12 @@ export default function IndexBaselinePage() {
         } else if (sectorList.length > 0) {
           setSectorId((prev) => prev ?? sectorList[0].sector_id);
         }
+        setNavLoading(false);
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => {
+        setError(e.message);
+        setNavLoading(false);
+      });
   }, [refreshKey, exchange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset to page 1 whenever sector, industry, strategy, theme, or exchange changes
@@ -280,6 +290,7 @@ export default function IndexBaselinePage() {
         selectedItemCode={searchCode}
         onItemSelected={handleItemSelected}
         onClearItemSelection={handleClearSearch}
+        loading={navLoading}
       />
 
       {loading && (

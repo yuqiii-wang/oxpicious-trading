@@ -207,26 +207,51 @@ export default function IndustrySentimentsPage() {
   }, [selectedIndustryIds, slugToIndustryId, slugToIndustryLabel, selectedStrategyThemeIds, strategyThemeIdToLabel]);
 
   // Load themes (LEFT column — industry taxonomy tree) and the parallel
-  // strategy tree (RIGHT column) once, and on refresh. Both are fetched in
-  // parallel.
+  // strategy tree (RIGHT column) on mount, on refresh, AND when the exchange
+  // filter changes — so the WHOLE classification nav (sector/industry/
+  // strategy/theme chips + L3 item chips) refreshes to respect the selected
+  // exchange (e.g. HK indices are excluded when "All (primary)" is selected).
+  // Both are fetched in parallel.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     Promise.all([
-      fetchIndustrySentimentsThemes(),
-      fetchIndustrySentimentsStrategyThemes(),
+      fetchIndustrySentimentsThemes(exchange),
+      fetchIndustrySentimentsStrategyThemes(exchange),
     ])
       .then(([t, st]) => {
         if (cancelled) return;
         setSectors(t);
         setStrategies(st);
-        if (t.length > 0 && sectorId == null) {
+        // Prune stale multi-select industries that no longer exist in the
+        // filtered tree (e.g. switching to HK drops mainland-only industries).
+        const sectorIds = new Set(t.map((s) => s.sector_id));
+        const validSlugs = new Set<string>();
+        for (const s of t) {
+          for (const ind of s.industries) validSlugs.add(ind.industry_slug);
+        }
+        if (sectorId && !sectorIds.has(sectorId)) {
+          setSectorId(null);
+        }
+        setSelectedIndustrySlugs((prev) => {
+          const next = prev.filter((slug) => validSlugs.has(slug));
+          return next.length === prev.length ? prev : next;
+        });
+        // Clear stale strategy/theme selection if not in the filtered tree.
+        if (strategyId && !st.some((s) => s.sector_id === strategyId)) {
+          setStrategyId(null);
+          setThemeSlug(null);
+        }
+        // Seed the multi-select with the first industry of the first sector
+        // so the page shows data immediately on FIRST load only (sectorId ==
+        // null AND no prior selection). On subsequent exchange changes the
+        // pruned selection above is kept (the user may have picked cross-
+        // border industries deliberately).
+        if (t.length > 0 && sectorId == null && selectedIndustrySlugs.length === 0) {
           setSectorId(t[0].sector_id);
-          // Seed the multi-select with the first industry of the first sector
-          // so the page shows data immediately on first load.
           const firstSlug = t[0].industries[0]?.industry_slug ?? null;
-          setSelectedIndustrySlugs(firstSlug ? [firstSlug] : []);
+          if (firstSlug) setSelectedIndustrySlugs([firstSlug]);
         }
         setLoading(false);
       })
@@ -237,7 +262,7 @@ export default function IndustrySentimentsPage() {
       });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
+  }, [refreshKey, exchange]);
 
   // Combined set of industry IDs to fetch: selected industries (LEFT column)
   // PLUS selected strategy theme IDs (RIGHT column). Strategy themes are
@@ -606,6 +631,7 @@ export default function IndustrySentimentsPage() {
         onMultiItemSelected={setSelectedItemCodes}
         showAllIndustryChips
         mutuallyExclusive={false}
+        loading={loading}
       />
 
       {loading && (

@@ -14,12 +14,12 @@ export type PoolSize = "all" | "small" | "mid" | "large";
 export type CorrWindow = "5d" | "20d" | "60d" | "255d";
 
 /** Rolling-days selector for the BenchmarkPriceChart shade overlay.
- *  Each value picks one of the 5 pre-materialized
+ *  Each value picks one of the 6 pre-materialized
  *  benchmark_non_this_industry_rolling_{N}days_price columns from
  *  analysis.industry_attributions. The dropdown lets the user pick which
- *  trailing window (5 / 20 / 60 / 255 / 500 trading days) drives the
- *  non-this-industry shade. */
-export type RollingDays = 5 | 20 | 60 | 255 | 500;
+ *  trailing window (5 / 20 / 60 / 120 / 255 / 500 trading days) drives the
+ *  non-this-industry shade. 120d (~6 months) is the default. */
+export type RollingDays = 5 | 20 | 60 | 120 | 255 | 500;
 
 /**
  * One industry's precomputed aggregation set, used to render a per-industry
@@ -109,6 +109,13 @@ export interface IndustryEtfContributionChartProps {
 
 /** Props for the MarketTrendChart component (sole plot in "Market Trend" mode). */
 export interface MarketTrendChartProps {
+  themeMode: ThemeMode;
+}
+
+/** Props for the HypesAndDrainsChart component (sub-view of "Market Trend" mode). */
+export interface HypesAndDrainsChartProps {
+  /** Selected broad-market benchmark code (e.g. 000300). */
+  benchmarkCode: string;
   themeMode: ThemeMode;
 }
 

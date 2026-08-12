@@ -47,6 +47,11 @@ export default function StockBaselinePage() {
   const [exchange, setExchange] = useState<string | null>("PRIMARY");
   const [data, setData] = useState<StockCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  // Separate loading flag for the classification NAV tree (sectors/strategies)
+  // so the nav can show its inline spinner during a themes refetch (e.g. when
+  // the exchange filter changes) without interfering with the content-area
+  // loading state below.
+  const [navLoading, setNavLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   // Active exact-code search (null = browsing mode). When set, only the
@@ -57,6 +62,7 @@ export default function StockBaselinePage() {
   // Load themes (two-level taxonomy tree), refetching whenever the exchange
   // filter changes so the nav tree respects the exchange filter.
   useEffect(() => {
+    setNavLoading(true);
     Promise.all([fetchStockThemes(exchange), fetchStockStrategyThemes(exchange)])
       .then(([list, strategyList]) => {
         setSectors(list);
@@ -79,8 +85,12 @@ export default function StockBaselinePage() {
         } else if (list.length > 0) {
           setSectorId((prev) => prev ?? list[0].sector_id);
         }
+        setNavLoading(false);
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => {
+        setError(e.message);
+        setNavLoading(false);
+      });
   }, [exchange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset to page 1 whenever sector, industry, strategy, theme, or exchange changes
@@ -246,6 +256,7 @@ export default function StockBaselinePage() {
         themeSlug={themeSlug}
         onStrategyChange={handleStrategyChange}
         onThemeChange={handleThemeChange}
+        loading={navLoading}
       />
 
       {loading && (

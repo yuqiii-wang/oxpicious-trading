@@ -22,7 +22,7 @@ Anti-bot (two layers):
      blocking detection). Same configuration as the SSE dividend module:
      ``rotate_browser_profile=True``, ``add_random_param=True``,
      ``enable_host_tracking=True``, ``sleep_jitter=0.3``, base sleep
-     ``VERY_LONG_SLEEP_INTERVAL`` (90s).
+     ``SUPER_LONG_SLEEP_INTERVAL`` (600s).
 
 Response fields (cninfo p_sysapi1139 record):
   F018D — 实施方案公告日期     (announcement date, YYYY-MM-DD)
@@ -91,7 +91,7 @@ from dateutil.relativedelta import relativedelta
 
 from downloads._common.core import (
     DEFAULT_TIMEOUT,
-    VERY_LONG_SLEEP_INTERVAL,
+    SUPER_LONG_SLEEP_INTERVAL,
     MIN_VALID_BYTES,
     AntiBotConfig,
     AntiBotProxy,
@@ -419,7 +419,7 @@ def _load_all_szse_stocks_from_db(conn) -> List[Tuple[str, str]]:
 def download_szse_dividends(
     out_root: Optional[str] = None,
     *,
-    sleep_sec: float = VERY_LONG_SLEEP_INTERVAL,
+    sleep_sec: float = SUPER_LONG_SLEEP_INTERVAL,
     force: bool = False,
     session: Optional[requests.Session] = None,
     etf_filter: bool = True,

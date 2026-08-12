@@ -422,6 +422,7 @@ async def run_rsi(
     force: bool = False,
     pool=None,
     max_concurrent: int = 20,
+    sec_type: str | None = None,
 ) -> None:
     """Run the Wilder RSI + gaps pipeline against the source price data
     already loaded by the parent mov_ave_spread.
@@ -448,6 +449,9 @@ async def run_rsi(
       force: when True, truncate analysis.mov_ave_rsi first and recompute
              all rows.
       pool: optional connection pool for parallel upsert chunks.
+      sec_type: when provided, process only this sec_type (parent loop
+                passes one sec_type at a time to bound memory). When
+                None, infers sec_types from the DataFrame.
     """
     t0 = time.time()
     print("\n" + "=" * 78, flush=True)
@@ -474,9 +478,12 @@ async def run_rsi(
         print("    -> no source data; skipping RSI step.", flush=True)
         return
 
-    # Infer sec_types from the DataFrame (parent may have been invoked
-    # with --sec-type to process only one).
-    sec_types = tuple(sorted(rsi_df["sec_type"].unique()))
+    # Use the sec_type passed by the parent (per-sec_type loop) or infer
+    # from the DataFrame for backward compatibility.
+    if sec_type is not None:
+        sec_types = (sec_type,)
+    else:
+        sec_types = tuple(sorted(rsi_df["sec_type"].unique()))
 
     # ---- Step 0: determine target dates (per-sec_type) --------------
     if force:

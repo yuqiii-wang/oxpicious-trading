@@ -70,6 +70,7 @@ def classify_etfs(
     n_owner_matched = 0
     n_primary = 0
     n_overwritten = 0
+    n_overseas_reclassified = 0
     for r in etf_rows:
         bare_code = r["etf_code"]
         exchange = r["exchange"]
@@ -159,6 +160,24 @@ def classify_etfs(
         ):
             exchange = "OVERSEAS"
 
+        # When the exchange is overridden to OVERSEAS, reclassify the
+        # sector_id/industry_id to OVERSEAS using the strategy rules.
+        # This ensures cross-border ETFs (标普, 纳斯达克, 日经, ...) are
+        # classified under their OVERSEAS sub-industry (e.g., 标普 →
+        # OVERSEAS_US), NOT under the themed domestic industry inherited
+        # from the parent index (e.g., 标普生物科技ETF → OVERSEAS_US, not
+        # HC/BIOTECH).  Only applies when the strategy rules match an
+        # OVERSEAS sector — ETFs without a specific OVERSEAS rule (e.g.,
+        # 中概互联) keep their themed industry classification.
+        if exchange == "OVERSEAS" and sector_id != "OVERSEAS":
+            strat_sector, _, strat_industry, _ = classify_etf_strategy_by_name(
+                etf_name, idx_name)
+            if strat_sector == "OVERSEAS":
+                sector_id = strat_sector
+                industry_id = strat_industry
+                is_ind = False
+                n_overseas_reclassified += 1
+
         if is_primary:
             n_primary += 1
 
@@ -181,9 +200,11 @@ def classify_etfs(
         n_other = sum(1 for v in etfs.values()
                       if v["sector_id"] == DEFAULT_SECTOR_ID)
         ow_note = f", {n_overwritten} overwritten" if n_overwritten else ""
+        os_note = f", {n_overseas_reclassified} → OVERSEAS" if n_overseas_reclassified else ""
         print(f"    [ETF] {len(etfs)} ETFs mapped "
               f"({n_with_index} with classified parent index, "
-              f"{n_name_classified} by name rules{ow_note}, {n_other} → OTHER, "
+              f"{n_name_classified} by name rules{ow_note}{os_note}, "
+              f"{n_other} → OTHER, "
               f"{n_owner_matched} owner-matched, {n_primary} primary)",
               flush=True)
 

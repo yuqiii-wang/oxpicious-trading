@@ -265,27 +265,29 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_255days IS 'Rolling popula
 --                            `date`. Always NOT NULL (every row is an
 --                            extreme). Both minima (valley lows / floors)
 --                            and maxima (peaks) are detected.
---    nearby_extreme_date   — (floors only) the furthest date within ±30
---                            trading days of `date` whose OHLC low is
---                            strictly lower than the valley_low's OHLC
---                            high. NULL when no qualifying date exists,
---                            and NULL for peaks (only floors compute it).
+--    nearby_extreme_date   — (floors only) the furthest date within the
+--                            PREVIOUS 30 trading days of `date` whose
+--                            OHLC low is strictly lower than the
+--                            valley_low's OHLC high. NULL when no
+--                            qualifying date exists, and NULL for peaks
+--                            (only floors compute it). Backward-only
+--                            (causal — no future data).
 --    is_extreme_peak_not_floor — TRUE when this extreme is a local MAX
 --                            (peak — upward trend). FALSE when this
 --                            extreme is a local MIN (valley low / floor
 --                            — downward trend). NOT NULL.
 --
---  Cadence: ONE row per detected extreme (trend). The build script detects
---  continuous belts in BOTH directions (downward: close < MA60 − 2σ, or
---  close < MA60 for > 20 days; upward: close > MA60 + 2σ, or close > MA60
---  for > 20 days; both with < 5 day interruption bridging), merges
---  overlapping belts into trends, and emits one row per trend — the day
---  with the min (floor) or max (peak) close price in that trend's span.
---  Extremes within ±30 trading days are deduplicated (min kept for floors,
---  max kept for peaks). Cross-kind clusters where peaks and floors
---  alternate within ±5 trading days are dropped entirely (oscillating/
---  flat region). Non-extreme dates have no peaks_and_floors row; detail
---  .peaks_and_floors_date is NULL for them.
+--  Cadence: ONE row per detected extreme. CAUSAL algorithm (no future
+--  data used for the peak/floor judgement). A day D is a floor candidate
+--  when its close is the trailing 60-day MINIMUM (lowest in [D-59, D])
+--  AND D is inside a downward belt (close < MA60 − 2σ, OR close < MA60
+--  for a causally-bridged run > 20 days; interruptions < 5 days bridged,
+--  >= 5 break). Peak candidates are symmetric (trailing 60-day MAX +
+--  upward belt). Cross-kind candidates within 5 PREVIOUS trading days
+--  are dropped (oscillating/flat region). Same-kind candidates within
+--  30 trading days are clustered, keeping the most extreme per cluster
+--  (min for floors, max for peaks). Non-extreme dates have no
+--  peaks_and_floors row; detail.peaks_and_floors_date is NULL for them.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_peaks_and_floors (
     sec_type          TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
@@ -307,10 +309,10 @@ CREATE INDEX idx_mov_ave_peaks_and_floors_sec_type_code_date
 COMMENT ON TABLE  analysis.mov_ave_peaks_and_floors             IS 'Peaks-and-floors analysis: one row per (sec_type, code, extreme_date). `date` is the extreme biz date (local min/max close); detail.mov_ave_spreads_detail.peaks_and_floors_date FK references this table (NULL for non-extreme dates).';
 COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.date        IS 'Extreme biz date — the actual trading day on which a local min/max close was observed within a continuous belt. PK column referenced by mov_ave_spreads_detail.peaks_and_floors_date.';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.extreme_val  IS 'The local min or max close price observed on `date`. Both minima (valley lows) and maxima (peaks) are detected via continuous-belt logic (2σ Bollinger band OR MA60 deviation for > 20 days, with < 5 day interruption bridging; overlapping belts merged into trends, one extreme per trend). Extremes within ±30 trading days are deduplicated (min kept for floors, max kept for peaks). Cross-kind clusters where peaks and floors alternate within ±5 trading days are dropped entirely (oscillating/flat region).';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.nearby_extreme_date IS 'The furthest date within ±30 trading days of `date` (the valley_low_date) whose OHLC low is strictly lower than the valley_low''s OHLC high. NULL when no qualifying date exists in the ±30 trading-day window, and NULL for peaks (only floors compute nearby_extreme_date). Computed by analyze.mov_ave_spread.peaks_and_floors._compute_nearby_extreme_date.';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.is_extreme_peak_not_floor IS 'TRUE when this extreme is a local MAX (peak — upward trend, close > MA60 + 2σ or close > MA60 for > 20 days). FALSE when this extreme is a local MIN (valley low / floor — downward trend). The frontend uses this to render up-triangles (green) for peaks and down-triangles (red) for floors.';
+COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.date        IS 'Extreme biz date — the actual trading day on which a trailing-60-day local min/max close was observed inside a belt. PK column referenced by mov_ave_spreads_detail.peaks_and_floors_date.';
+COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.extreme_val  IS 'The close price observed on `date` (a trailing-60-day min for floors / max for peaks). CAUSAL detection: a day qualifies as a floor candidate when its close is the lowest in the trailing 60 trading days AND it is inside a downward belt (close < MA60 − 2σ, OR close < MA60 for a causally-bridged run > 20 days, interruptions < 5 days bridged). Peaks are symmetric (trailing 60-day max + upward belt). Cross-kind candidates within 5 PREVIOUS trading days are dropped (oscillating region). Same-kind candidates within 30 trading days are clustered, keeping the most extreme per cluster (min for floors, max for peaks).';
+COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.nearby_extreme_date IS 'The furthest date within the PREVIOUS 30 trading days of `date` (the valley_low_date) whose OHLC low is strictly lower than the valley_low''s OHLC high. NULL when no qualifying date exists in the backward 30 trading-day window, and NULL for peaks (only floors compute nearby_extreme_date). Backward-only (causal — no future data). Computed by analyze.mov_ave_spread.peaks_and_floors._compute_nearby_extreme_date.';
+COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.is_extreme_peak_not_floor IS 'TRUE when this extreme is a local MAX (peak — trailing-60-day high inside an upward belt). FALSE when this extreme is a local MIN (valley low / floor — trailing-60-day low inside a downward belt). The frontend uses this to render up-triangles (green) for peaks and down-triangles (red) for floors.';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_rsi  (per-asset+date Wilder RSI + short-term gaps)
@@ -368,8 +370,11 @@ CREATE TABLE analysis.mov_ave_rsi (
         CHECK (sec_type IN ('etf', 'index', 'stock'))
 );
 
-CREATE INDEX idx_mov_ave_rsi_sec_type_code_date
-    ON analysis.mov_ave_rsi (sec_type, code, date);
+-- NOTE: no separate (sec_type, code, date) index — the PK already covers
+-- that lookup (same rationale as mov_ave_spreads_detail above). A duplicate
+-- index was previously created here and dropped because it doubled index-
+-- maintenance cost on every INSERT for zero benefit (PK B-tree already
+-- serves equality + range scans on the (sec_type, code, date) prefix).
 
 COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (6/10/14/20 days) + short-term price gaps (2/3 day returns). One row per (sec_type, code, date). sec_type ∈ {etf, index, stock}.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';

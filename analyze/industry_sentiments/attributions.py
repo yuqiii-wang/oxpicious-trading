@@ -100,7 +100,13 @@ ANALYSIS_NAME = "industry_attributions"
 ANALYSIS_DESCRIPTION = (
     "Composition overlap between each industry (group of member indices) "
     "and each benchmark index. One row per (date, industry_id, "
-    "benchmark_code). TWO benchmark classes are materialized: "
+    "benchmark_code, attribution_type). TWO attribution variants are "
+    "materialized: 'trading_amt' (industry_shared_weight = SUM across "
+    "member indices, can exceed 100) and 'equal' (industry_shared_weight "
+    "= AVG = SUM / N, N = active member index count). "
+    "benchmark_shared_weight is UNDIVIDED (same for both variants), so "
+    "all non_this_industry_* columns are identical between variants. "
+    "TWO benchmark classes are materialized: "
     "(1) BROAD-MARKET benchmarks — HYBRID aggregation: "
     "industry_shared_weight = SUM(code_sec_shared_weight) across member "
     "indices from analysis.sec_alloc_perf_attribution (own-weight on "
@@ -153,6 +159,7 @@ PREVIEW_DIMENSIONS_SQL = """
           AND industry_id IS NOT NULL
           AND industry_id <> ''
           AND is_active = TRUE
+          AND is_industry_not_strategy = TRUE
     ) cls ON cls.code = sa.code
     WHERE sa.sec_type = 'index'
       AND sa.code_sec_shared_weight IS NOT NULL
@@ -201,6 +208,7 @@ industry_stocks AS (
     WHERE cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
       AND cls.is_active = TRUE
+      AND cls.is_industry_not_strategy = TRUE
       {industry_filter}
 ),
 benchmark_shared AS (
@@ -254,6 +262,7 @@ industry_shared AS (
           AND cls.industry_id IS NOT NULL
           AND cls.industry_id <> ''
           AND cls.is_active = TRUE
+          AND cls.is_industry_not_strategy = TRUE
           {industry_filter}
     ) cls ON cls.code = sa.code
     WHERE sa.sec_type = 'index'
@@ -263,12 +272,13 @@ industry_shared AS (
     HAVING SUM(sa.code_sec_shared_weight) IS NOT NULL
 )
 INSERT INTO analysis.industry_attributions
-    (industry_id, benchmark_code, date,
+    (industry_id, benchmark_code, date, attribution_type,
      industry_shared_weight, benchmark_shared_weight)
 SELECT
     isw.industry_id,
     isw.benchmark_code,
     isw.date,
+    'trading_amt' AS attribution_type,
     ROUND(isw.industry_shared_weight, 4) AS industry_shared_weight,
     COALESCE(ROUND(bsw.benchmark_shared_weight, 4), 0) AS benchmark_shared_weight
 FROM industry_shared isw
@@ -312,7 +322,7 @@ INSERT_SELECT_SQL_FULL = _build_broad_market_sql()
 INSERT_SELECT_SQL_INCREMENTAL = _build_broad_market_sql(
     date_filter="AND sa.date = ANY($1::date[])",
     on_conflict="""
-ON CONFLICT (date, industry_id, benchmark_code) DO UPDATE SET
+ON CONFLICT (industry_id, benchmark_code, date, attribution_type) DO UPDATE SET
     industry_shared_weight  = EXCLUDED.industry_shared_weight,
     benchmark_shared_weight = EXCLUDED.benchmark_shared_weight
 """,
@@ -328,7 +338,7 @@ BROAD_MARKET_INSERT_PER_INDUSTRY_INCREMENTAL = _build_broad_market_sql(
     date_filter="AND sa.date = ANY($1::date[])",
     industry_filter="AND cls.industry_id = $2::text",
     on_conflict="""
-ON CONFLICT (date, industry_id, benchmark_code) DO UPDATE SET
+ON CONFLICT (industry_id, benchmark_code, date, attribution_type) DO UPDATE SET
     industry_shared_weight  = EXCLUDED.industry_shared_weight,
     benchmark_shared_weight = EXCLUDED.benchmark_shared_weight
 """,
@@ -338,6 +348,35 @@ ON CONFLICT (date, industry_id, benchmark_code) DO UPDATE SET
 # rows doesn't spill to disk excessively. Session-scoped (restored on
 # reconnect; this step owns the connection for its duration).
 SET_WORK_MEM_SQL = "SET work_mem = '512MB'"
+
+# Bump maintenance_work_mem for CREATE INDEX (512MB lets the index builds
+# use a large in-memory sort instead of spilling to disk). Session-scoped
+# (the connection is in autocommit mode, so SET LOCAL would not persist
+# past the single SET statement).
+SET_MAINTENANCE_WORK_MEM_SQL = "SET maintenance_work_mem = '512MB'"
+
+# Secondary indexes on analysis.industry_attributions. In force mode these
+# are DROPPED before the bulk INSERT and RECREATED after, so the INSERT
+# (with the non_this_industry computation merged into it) doesn't pay index
+# maintenance. The PK (industry_id, benchmark_code, date, attribution_type)
+# is KEPT for dedup safety. Only force mode drops/recreates; incremental
+# mode (ON CONFLICT DO UPDATE) needs the indexes for the upsert.
+#
+# PK (industry_id, benchmark_code, date, attribution_type) serves the most
+# common pattern: WHERE industry_id = ... AND benchmark_code = ...
+# The single secondary index serves benchmark-first queries.
+_SECONDARY_INDEXES = [
+    "idx_industry_attributions_bench_date_industry",
+]
+
+# DDL to recreate the secondary indexes (must match database/sql/analysis/
+# 05_industry_sentiments.sql exactly).
+_CREATE_SECONDARY_INDEX_DDL = [
+    "CREATE INDEX IF NOT EXISTS idx_industry_attributions_bench_date_industry "
+    "ON analysis.industry_attributions (benchmark_code, date, industry_id)",
+]
+
+ANALYZE_TABLE_SQL = "ANALYZE analysis.industry_attributions"
 
 # ---------------------------------------------------------------------------
 #  Non-this-industry price / rolling_Xdays_price / trading_amt computation.
@@ -370,7 +409,10 @@ SET_WORK_MEM_SQL = "SET work_mem = '512MB'"
 #  Rolling windows (in trading days). Each window W produces a column
 #  benchmark_non_this_industry_rolling_{W}days_price computed as
 #  100 × exp(sum(ln(1+r))) over ROWS BETWEEN (W-1) PRECEDING AND CURRENT ROW.
-ROLLING_WINDOWS = [5, 20, 60, 255, 500]
+#  120d (~6 months) is the UI DEFAULT for the BenchmarkPriceChart shade
+#  overlay AND for analysis.industry_hypes_and_drains. Added in tandem with
+#  the industry_hypes_and_drains feature.
+ROLLING_WINDOWS = [5, 20, 60, 120, 255, 500]
 
 
 def _rolling_price_expr(window: int) -> str:
@@ -567,6 +609,7 @@ FROM computed c
 WHERE ia.industry_id = c.industry_id
   AND ia.benchmark_code = c.benchmark_code
   AND ia.date = c.date
+  AND ia.attribution_type = 'trading_amt'
   {date_filter}
 """
 
@@ -615,6 +658,262 @@ NON_THIS_INDUSTRY_SQL_PER_INDUSTRY_INCREMENTAL = _build_non_this_industry_sql(
     date_filter="AND ia.date = ANY($1::date[])",
     industry_filter="AND cls.industry_id = $2::text",
 )
+
+
+# ---------------------------------------------------------------------------
+#  Merged broad-market INSERT (force mode only).
+#
+#  Combines the weight INSERT (Step 4: industry_shared_weight +
+#  benchmark_shared_weight) with the non_this_industry computation
+#  (Step 5: price, rolling_*_price, trading_amt) into a SINGLE
+#  INSERT...SELECT that populates ALL columns in one pass.
+#
+#  This eliminates:
+#    * The per-industry loop (61 separate INSERTs) — runs all-at-once.
+#    * The 2M-row UPDATE pass — non_this_industry_* are computed in the
+#      same CTE chain and written at INSERT time.
+#
+#  Used ONLY in force mode, with the 2 secondary indexes DROPPED so the
+#  INSERT pays zero index maintenance. The PK is kept for dedup safety.
+#  Incremental mode keeps the per-industry INSERT + UPDATE path (it needs
+#  the indexes for ON CONFLICT DO UPDATE).
+#
+#  The CTE chain is the union of _CTE_PREFIX's chain (composition_ctes,
+#  broad_codes, industry_shared) and _NON_THIS_INDUSTRY_UPDATE_SQL's chain
+#  (shared_stocks ... computed). Both share composition_ctes (computed
+#  once) and broad_codes. The final SELECT LEFT JOINs industry_shared ->
+#  benchmark_shared -> computed, so rows without benchmark price data get
+#  NULL non_this_industry_* (matching the old INSERT-then-UPDATE behavior,
+#  where the UPDATE's INNER JOIN to computed left non-matching rows NULL).
+_MERGED_BROAD_MARKET_INSERT_SQL_TEMPLATE = """
+WITH {composition_ctes},
+broad_codes AS (
+    SELECT DISTINCT code
+    FROM stats.sec_index_tags
+    WHERE is_broad_market = TRUE
+),
+industry_shared AS (
+    SELECT
+        cls.industry_id,
+        sa.benchmark_code,
+        sa.date,
+        SUM(sa.code_sec_shared_weight) AS industry_shared_weight
+    FROM analysis.sec_alloc_perf_attribution sa
+    JOIN (
+        SELECT DISTINCT code, industry_id
+        FROM stats.sec_classification cls
+        WHERE cls.type = 'index'
+          AND cls.industry_id IS NOT NULL
+          AND cls.industry_id <> ''
+          AND cls.is_active = TRUE
+          AND cls.is_industry_not_strategy = TRUE
+          {industry_filter}
+    ) cls ON cls.code = sa.code
+    WHERE sa.sec_type = 'index'
+      AND sa.benchmark_code IN (SELECT code FROM broad_codes)
+    {date_filter}
+    GROUP BY cls.industry_id, sa.benchmark_code, sa.date
+    HAVING SUM(sa.code_sec_shared_weight) IS NOT NULL
+),
+-- Non-this-industry computation (merged from _NON_THIS_INDUSTRY_UPDATE_SQL).
+-- CTE names match the UPDATE so the logic is identical; only the final
+-- statement changes (INSERT ... SELECT ... LEFT JOIN computed instead of
+-- UPDATE ... FROM computed).
+shared_stocks AS (
+    SELECT DISTINCT
+        ist.industry_id,
+        h.code AS benchmark_code,
+        h.stock_code,
+        h.weight_pct
+    FROM industry_stocks ist
+    JOIN holdings h ON h.stock_code = ist.stock_code
+    WHERE h.code IN (SELECT code FROM broad_codes)
+),
+unique_stock_codes AS (
+    SELECT DISTINCT stock_code FROM shared_stocks
+),
+stock_daily AS (
+    SELECT
+        usc.stock_code,
+        sbs.date,
+        sbs.close,
+        slm.trading_amount,
+        LAG(sbs.close) OVER w AS prev_close
+    FROM unique_stock_codes usc
+    JOIN stats.stock_basic_stats sbs ON sbs.code = usc.stock_code
+    LEFT JOIN stats.stock_liquidity_margin slm
+        ON slm.date = sbs.date AND slm.code = sbs.code
+    WHERE sbs.close IS NOT NULL
+    WINDOW w AS (PARTITION BY usc.stock_code ORDER BY sbs.date)
+),
+stock_returns AS (
+    SELECT
+        stock_code,
+        date,
+        trading_amount,
+        CASE
+            WHEN prev_close IS NOT NULL AND prev_close != 0
+            THEN (close - prev_close) / prev_close
+            ELSE NULL
+        END AS stock_return
+    FROM stock_daily
+),
+bench_daily AS (
+    SELECT
+        code AS benchmark_code,
+        date,
+        close,
+        trading_amount,
+        LAG(close) OVER w AS prev_close
+    FROM stats.index_basic_stats
+    WHERE code IN (SELECT code FROM broad_codes)
+      AND close IS NOT NULL
+    WINDOW w AS (PARTITION BY code ORDER BY date)
+),
+bench_returns AS (
+    SELECT
+        benchmark_code,
+        date,
+        close,
+        prev_close,
+        trading_amount,
+        CASE
+            WHEN prev_close IS NOT NULL AND prev_close != 0
+            THEN (close - prev_close) / prev_close
+            ELSE NULL
+        END AS bench_return
+    FROM bench_daily
+),
+shared_portfolio AS (
+    SELECT
+        ss.industry_id,
+        ss.benchmark_code,
+        sr.date,
+        SUM(ss.weight_pct * sr.stock_return)
+            / NULLIF(SUM(ss.weight_pct) FILTER (WHERE sr.stock_return IS NOT NULL), 0)
+            AS shared_return,
+        SUM(sr.trading_amount) AS shared_trading_amt
+    FROM shared_stocks ss
+    JOIN stock_returns sr ON sr.stock_code = ss.stock_code
+    GROUP BY ss.industry_id, ss.benchmark_code, sr.date
+),
+non_industry_returns AS (
+    SELECT
+        br.benchmark_code,
+        bsw.industry_id,
+        br.date,
+        br.prev_close AS bench_prev_close,
+        br.trading_amount AS bench_trading_amt,
+        sp.shared_return,
+        sp.shared_trading_amt,
+        bsw.benchmark_shared_weight,
+        CASE
+            WHEN br.prev_close IS NULL OR br.prev_close = 0 THEN NULL
+            WHEN bsw.benchmark_shared_weight IS NULL THEN NULL
+            WHEN bsw.benchmark_shared_weight >= 95 THEN NULL
+            WHEN bsw.benchmark_shared_weight = 0 OR sp.shared_return IS NULL THEN
+                (br.close - br.prev_close) / br.prev_close
+            ELSE
+                (
+                    (br.close - br.prev_close) / br.prev_close
+                    - (bsw.benchmark_shared_weight / 100.0) * sp.shared_return
+                ) / (1.0 - bsw.benchmark_shared_weight / 100.0)
+        END AS non_industry_return
+    FROM bench_returns br
+    JOIN benchmark_shared bsw
+        ON bsw.benchmark_code = br.benchmark_code
+    LEFT JOIN shared_portfolio sp
+        ON sp.benchmark_code = br.benchmark_code
+       AND sp.industry_id = bsw.industry_id
+       AND sp.date = br.date
+),
+computed AS (
+    SELECT
+        nir.industry_id,
+        nir.benchmark_code,
+        nir.date,
+        CASE
+            WHEN nir.bench_prev_close IS NOT NULL
+                 AND nir.non_industry_return IS NOT NULL
+                 AND abs(nir.non_industry_return) <= 0.5
+            THEN nir.bench_prev_close * (1 + nir.non_industry_return)
+            ELSE NULL
+        END AS non_this_industry_price,
+{rolling_select},
+        CASE
+            WHEN nir.bench_trading_amt IS NOT NULL
+                 AND nir.shared_trading_amt IS NOT NULL
+            THEN nir.bench_trading_amt - nir.shared_trading_amt
+            ELSE NULL
+        END AS non_this_industry_trading_amt
+    FROM non_industry_returns nir
+)
+INSERT INTO analysis.industry_attributions
+    (industry_id, benchmark_code, date, attribution_type,
+     industry_shared_weight, benchmark_shared_weight,
+     benchmark_non_this_industry_price,
+{rolling_cols},
+     benchmark_non_this_industry_trading_amt)
+SELECT
+    isw.industry_id,
+    isw.benchmark_code,
+    isw.date,
+    'trading_amt' AS attribution_type,
+    ROUND(isw.industry_shared_weight, 4) AS industry_shared_weight,
+    COALESCE(ROUND(bsw.benchmark_shared_weight, 4), 0) AS benchmark_shared_weight,
+    c.non_this_industry_price,
+{rolling_select_cols},
+    c.non_this_industry_trading_amt
+FROM industry_shared isw
+LEFT JOIN benchmark_shared bsw
+    ON bsw.industry_id = isw.industry_id
+   AND bsw.benchmark_code = isw.benchmark_code
+LEFT JOIN computed c
+    ON c.industry_id = isw.industry_id
+   AND c.benchmark_code = isw.benchmark_code
+   AND c.date = isw.date
+{on_conflict}
+"""
+
+
+def _build_merged_broad_market_insert_sql(
+    date_filter: str = "",
+    industry_filter: str = "",
+    on_conflict: str = "",
+) -> str:
+    """Build a merged broad-market INSERT that populates ALL columns in one pass.
+
+    Combines the weight INSERT (industry_shared_weight +
+    benchmark_shared_weight) with the non_this_industry computation (price,
+    rolling prices, trading_amt) into a single INSERT...SELECT. Used in
+    force mode with secondary indexes dropped to avoid paying index
+    maintenance twice (INSERT + UPDATE).
+    """
+    rolling_select = ",\n        ".join(
+        _rolling_price_expr(w) for w in ROLLING_WINDOWS
+    )
+    rolling_cols = ",\n".join(
+        f"     benchmark_non_this_industry_rolling_{w}days_price"
+        for w in ROLLING_WINDOWS
+    )
+    rolling_select_cols = ",\n".join(
+        f"    c.non_this_industry_rolling_{w}days_price"
+        for w in ROLLING_WINDOWS
+    )
+    return _MERGED_BROAD_MARKET_INSERT_SQL_TEMPLATE.format(
+        composition_ctes=_format_composition_ctes(industry_filter),
+        date_filter=date_filter,
+        industry_filter=industry_filter,
+        rolling_select=rolling_select,
+        rolling_cols=rolling_cols,
+        rolling_select_cols=rolling_select_cols,
+        on_conflict=on_conflict,
+    )
+
+
+# Force mode (all industries at once, plain INSERT after TRUNCATE).
+# Secondary indexes are dropped before this runs and recreated after.
+MERGED_BROAD_MARKET_INSERT_SQL_FULL = _build_merged_broad_market_insert_sql()
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +995,7 @@ member_indices AS (
     WHERE cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
       AND cls.is_active = TRUE
+      AND cls.is_industry_not_strategy = TRUE
       {industry_filter}
       AND h.code NOT IN (SELECT code FROM broad_codes)
 ),
@@ -714,6 +1014,7 @@ industry_stock_weights AS (
     WHERE cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
       AND cls.is_active = TRUE
+      AND cls.is_industry_not_strategy = TRUE
       {industry_filter}
     GROUP BY cls.industry_id, h.stock_code
 ),
@@ -736,6 +1037,7 @@ member_industry_shared AS (
     WHERE cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
       AND cls.is_active = TRUE
+      AND cls.is_industry_not_strategy = TRUE
       {industry_filter}
       AND m.code NOT IN (SELECT code FROM broad_codes)
     GROUP BY cls.industry_id, m.code
@@ -799,12 +1101,13 @@ MEMBER_INDEX_MAP_POPULATE_PER_INDUSTRY_SQL = _build_member_index_map_sql(
 # makes this fast.
 _MEMBER_INDEX_INSERT_BASE = """
 INSERT INTO analysis.industry_attributions
-    (industry_id, benchmark_code, date,
+    (industry_id, benchmark_code, date, attribution_type,
      industry_shared_weight, benchmark_shared_weight)
 SELECT
     m.industry_id,
     m.benchmark_code,
     ibs.date,
+    'trading_amt' AS attribution_type,
     m.industry_shared_weight,
     m.benchmark_shared_weight
 FROM {map_table} m
@@ -836,7 +1139,7 @@ MEMBER_INDEX_INSERT_SQL_FULL = _build_member_index_insert_sql()
 MEMBER_INDEX_INSERT_SQL_INCREMENTAL = _build_member_index_insert_sql(
     date_filter="AND ibs.date = ANY($1::date[])",
     on_conflict="""
-ON CONFLICT (date, industry_id, benchmark_code) DO UPDATE SET
+ON CONFLICT (industry_id, benchmark_code, date, attribution_type) DO UPDATE SET
     industry_shared_weight  = EXCLUDED.industry_shared_weight,
     benchmark_shared_weight = EXCLUDED.benchmark_shared_weight
 """,
@@ -852,10 +1155,121 @@ MEMBER_INDEX_INSERT_PER_INDUSTRY_INCREMENTAL = _build_member_index_insert_sql(
     date_filter="AND ibs.date = ANY($1::date[])",
     industry_filter="AND m.industry_id = $2::text",
     on_conflict="""
-ON CONFLICT (date, industry_id, benchmark_code) DO UPDATE SET
+ON CONFLICT (industry_id, benchmark_code, date, attribution_type) DO UPDATE SET
     industry_shared_weight  = EXCLUDED.industry_shared_weight,
     benchmark_shared_weight = EXCLUDED.benchmark_shared_weight
 """,
+)
+
+
+# ---------------------------------------------------------------------------
+#  Equal-variant INSERT.
+#
+#  Copies ALL trading_amt rows to equal rows, dividing industry_shared_weight
+#  by N (active member index count from stats.sec_classification).
+#  benchmark_shared_weight and ALL non_this_industry_* columns are copied
+#  UNCHANGED — they are identical between variants because they depend on
+#  benchmark_shared_weight (undivided), NOT industry_shared_weight.
+#
+#  Runs AFTER both the broad-market INSERT + non_this_industry UPDATE and
+#  the member-index INSERT, so the equal rows inherit the populated
+#  non_this_industry_* values from the trading_amt rows.
+#
+#  Three variants:
+#    FULL        — no date filter, plain INSERT (force mode, after TRUNCATE).
+#    INCREMENTAL — date filter + ON CONFLICT DO UPDATE.
+#    BACKFILL    — no date filter + ON CONFLICT DO UPDATE (refreshes equal
+#                  rows' non_this_industry_* columns after a backfill UPDATE).
+_EQUAL_INSERT_SQL_TEMPLATE = """
+INSERT INTO analysis.industry_attributions
+    (industry_id, benchmark_code, date, attribution_type,
+     industry_shared_weight, benchmark_shared_weight,
+     benchmark_non_this_industry_price,
+{rolling_cols},
+     benchmark_non_this_industry_trading_amt)
+SELECT
+    ia.industry_id,
+    ia.benchmark_code,
+    ia.date,
+    'equal' AS attribution_type,
+    CASE
+        WHEN mc.n > 0 THEN ROUND(ia.industry_shared_weight / mc.n, 4)
+        ELSE ia.industry_shared_weight
+    END AS industry_shared_weight,
+    ia.benchmark_shared_weight,
+    ia.benchmark_non_this_industry_price,
+{rolling_select},
+    ia.benchmark_non_this_industry_trading_amt
+FROM analysis.industry_attributions ia
+CROSS JOIN LATERAL (
+    SELECT COUNT(DISTINCT cls2.code) AS n
+    FROM stats.sec_classification cls2
+    WHERE cls2.industry_id = ia.industry_id
+      AND cls2.type = 'index'
+      AND cls2.is_active = TRUE
+      AND cls2.is_industry_not_strategy = TRUE
+) AS mc
+WHERE ia.attribution_type = 'trading_amt'
+  {date_filter}
+"""
+
+
+def _build_equal_insert_sql(
+    date_filter: str = "",
+    on_conflict: str = "",
+) -> str:
+    """Build an equal-variant INSERT.
+
+    Args:
+      date_filter: e.g. "" for full, "AND ia.date = ANY($1::date[])" for
+        incremental.
+      on_conflict: e.g. "" for plain INSERT (after TRUNCATE), or the ON
+        CONFLICT DO UPDATE clause for incremental/backfill.
+    """
+    rolling_cols = ",\n".join(
+        f"     benchmark_non_this_industry_rolling_{w}days_price"
+        for w in ROLLING_WINDOWS
+    )
+    rolling_select = ",\n".join(
+        f"    ia.benchmark_non_this_industry_rolling_{w}days_price"
+        for w in ROLLING_WINDOWS
+    )
+    return _EQUAL_INSERT_SQL_TEMPLATE.format(
+        rolling_cols=rolling_cols,
+        rolling_select=rolling_select,
+        date_filter=date_filter,
+    ) + on_conflict
+
+
+def _equal_on_conflict() -> str:
+    """Build the ON CONFLICT clause for the equal-variant INSERT."""
+    rolling_set = ",\n".join(
+        f"    benchmark_non_this_industry_rolling_{w}days_price = EXCLUDED.benchmark_non_this_industry_rolling_{w}days_price"
+        for w in ROLLING_WINDOWS
+    )
+    return f"""
+ON CONFLICT (industry_id, benchmark_code, date, attribution_type) DO UPDATE SET
+    industry_shared_weight  = EXCLUDED.industry_shared_weight,
+    benchmark_shared_weight = EXCLUDED.benchmark_shared_weight,
+    benchmark_non_this_industry_price = EXCLUDED.benchmark_non_this_industry_price,
+{rolling_set},
+    benchmark_non_this_industry_trading_amt = EXCLUDED.benchmark_non_this_industry_trading_amt
+"""
+
+
+# Full recompute (force mode, after TRUNCATE — plain INSERT).
+EQUAL_INSERT_SQL_FULL = _build_equal_insert_sql()
+
+# Incremental (date filter + ON CONFLICT DO UPDATE).
+EQUAL_INSERT_SQL_INCREMENTAL = _build_equal_insert_sql(
+    date_filter="AND ia.date = ANY($1::date[])",
+    on_conflict=_equal_on_conflict(),
+)
+
+# Backfill (no date filter + ON CONFLICT DO UPDATE — refreshes existing
+# equal rows' non_this_industry_* columns after a backfill UPDATE).
+EQUAL_INSERT_SQL_BACKFILL = _build_equal_insert_sql(
+    on_conflict=_equal_on_conflict(),
 )
 
 # Preview: count distinct industries + member indices that will appear.
@@ -871,6 +1285,7 @@ PREVIEW_MEMBER_DIMENSIONS_SQL = """
       AND cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
       AND cls.is_active = TRUE
+      AND cls.is_industry_not_strategy = TRUE
       AND sc.code NOT IN (
           SELECT code FROM stats.sec_index_tags WHERE is_broad_market = TRUE
       )
@@ -887,6 +1302,7 @@ COUNT_MEMBER_INDICES_SQL = """
       AND cls.industry_id IS NOT NULL
       AND cls.industry_id <> ''
       AND cls.is_active = TRUE
+      AND cls.is_industry_not_strategy = TRUE
       AND sc.code NOT IN (
           SELECT code FROM stats.sec_index_tags WHERE is_broad_market = TRUE
       )
@@ -907,6 +1323,7 @@ LIST_INDUSTRY_IDS_SQL = """
               AND industry_id IS NOT NULL
               AND industry_id <> ''
               AND is_active = TRUE
+              AND is_industry_not_strategy = TRUE
         ) cls ON cls.code = sa.code
         WHERE sa.sec_type = 'index'
           AND sa.code_sec_shared_weight IS NOT NULL
@@ -924,6 +1341,7 @@ LIST_INDUSTRY_IDS_SQL = """
           AND cls.industry_id IS NOT NULL
           AND cls.industry_id <> ''
           AND cls.is_active = TRUE
+          AND cls.is_industry_not_strategy = TRUE
     ) u
     ORDER BY industry_id
 """
@@ -946,11 +1364,24 @@ _ROLLING_BACKFILL_CHECK_SQL = """
     SELECT EXISTS (
         SELECT 1
         FROM analysis.industry_attributions
-        WHERE benchmark_code IN (
+        WHERE attribution_type = 'trading_amt'
+          AND benchmark_code IN (
             SELECT code FROM stats.sec_index_tags
             WHERE is_broad_market = TRUE
         )
-        AND benchmark_non_this_industry_rolling_255days_price IS NULL
+        AND (
+            -- 255d is the long-established column; NULL here means a prior
+            -- force run never completed (or the table was ALTER'd with a
+            -- schema change). Triggers a FULL backfill.
+            benchmark_non_this_industry_rolling_255days_price IS NULL
+            -- 120d is the newest column (added with the
+            -- industry_hypes_and_drains feature). After ALTER TABLE ADD
+            -- COLUMN, ALL existing rows have NULL 120d — the incremental
+            -- UPDATE's date filter would only fix target dates, leaving
+            -- historical dates NULL. Detect this and trigger a FULL
+            -- backfill so 120d is populated for every historical date.
+            OR benchmark_non_this_industry_rolling_120days_price IS NULL
+        )
         AND benchmark_shared_weight > 0
     ) AS needs_backfill
 """
@@ -996,21 +1427,43 @@ async def run_attributions(
     chain (window functions over full stock/benchmark history) is too
     expensive to recompute per-industry.
 
+    FORCE-MODE INDEX OPTIMIZATION: in force mode, the 2 secondary indexes
+    are DROPPED before the per-industry INSERT loop (step 4) so the INSERT
+    pays zero index maintenance (~10x faster, benchmark-confirmed). The
+    indexes are RECREATED after the INSERT but BEFORE the UPDATE (step 5),
+    because the UPDATE's join between ia and the computed CTE needs the
+    index on (industry_id, benchmark_code, attribution_type, date) for an
+    efficient plan — without it, a hash join spills to disk on 2M rows.
+    The UPDATE only sets non_this_industry_* columns (NOT indexed), so it
+    pays no index maintenance (HOT updates). The PK is kept throughout for
+    dedup safety. maintenance_work_mem is bumped to 512MB for CREATE INDEX.
+    Incremental mode keeps indexes (needed for ON CONFLICT DO UPDATE).
+
     Pipeline
       1. Guard: if BOTH sec_alloc_perf_attribution is empty AND there are
          no member indices with composition data, exit gracefully.
       2. Preview: report distinct industries x benchmarks + member indices.
-      3. Force mode: TRUNCATE analysis.industry_attributions +
-         industry_member_index_map. Incremental mode: no truncate.
+      3. Force mode: TRUNCATE + DROP secondary indexes (PK kept) +
+         SET maintenance_work_mem=512MB. Incremental mode: no truncate.
       4. Broad-market INSERT (per-industry, memory-aware): inserts each
-         industry's broad-market benchmark rows one industry at a time.
+         industry's broad-market benchmark rows (attribution_type='trading_amt')
+         one industry at a time. Force mode: indexes dropped (~10x faster).
+      4b. Force mode: RECREATE secondary indexes (for the UPDATE join).
       5. Non-this-industry UPDATE (all-at-once): computes
-         benchmark_non_this_industry_* columns for broad-market benchmarks.
+         benchmark_non_this_industry_* columns for broad-market benchmarks
+         (trading_amt rows only — equal rows inherit values via step 6b).
+         UPDATE only touches non-indexed columns (HOT updates, no index
+         maintenance).
       6. Member-index INSERT (per-industry, memory-aware): populates the
-         mapping table + expands to per-date rows, one industry at a time.
+         mapping table + expands to per-date rows (attribution_type='trading_amt'),
+         one industry at a time.
+      6b. Equal-variant INSERT (all-at-once): copies ALL trading_amt rows to
+         equal rows, dividing industry_shared_weight by N (active member
+         index count). non_this_industry_* columns copied unchanged.
+      6c. Force mode: ANALYZE (refresh planner stats).
       7. Upsert analysis.analysis_identity (name='industry_attributions'
          + name='industry_member_index_map').
-      8. Sanity summary by benchmark_code (broad-market + member-index).
+      8. Sanity summary by (benchmark_code, attribution_type).
 
     Args:
       target_dates: when non-empty (and force=False), only rows whose date
@@ -1063,6 +1516,18 @@ async def run_attributions(
         del status_ni
         gc.collect()
 
+        # Refresh equal-variant rows: copy the updated non_this_industry_*
+        # columns from trading_amt rows (dividing industry_shared_weight by N).
+        t_eq = time.time()
+        print("\n[a5b/6] Equal-variant INSERT (backfill, copy from "
+              "trading_amt)...", flush=True)
+        status_eq = await conn.execute(EQUAL_INSERT_SQL_BACKFILL)
+        n_eq = _parse_insert_count(status_eq)
+        print(f"      -> {status_eq} | {n_eq:,} equal rows refreshed "
+              f"({time.time() - t_eq:.1f}s)", flush=True)
+        del status_eq
+        gc.collect()
+
         # Step 7: upsert analysis_identity
         await upsert_analysis_identity(
             conn,
@@ -1108,75 +1573,84 @@ async def run_attributions(
     # ---- Step 3: truncate (full recompute only) ----------------------
     # Full recompute (force OR no target_dates) requires truncate first.
     # Incremental mode skips truncate and relies on ON CONFLICT DO UPDATE.
+    #
+    # FORCE-MODE OPTIMIZATION: drop the 2 secondary indexes BEFORE the bulk
+    # INSERT so the INSERT (and the non_this_industry computation merged
+    # into it) pays zero index maintenance. The PK is kept for dedup
+    # safety. Indexes are recreated after all INSERTs complete (Step 6b).
+    # Benchmark showed INSERT-without-indexes is ~10x faster. Also bump
+    # maintenance_work_mem for the later CREATE INDEX phase.
     if not incremental:
         print(f"\n[a3/6] Truncating {TABLE} + {MAP_TABLE} (full recompute)...",
               flush=True)
         await truncate_table_async(conn, TABLE)
         await truncate_table_async(conn, MAP_TABLE)
+        print(f"      Dropping {len(_SECONDARY_INDEXES)} secondary indexes "
+              f"(force-mode optimization, PK kept)...", flush=True)
+        for idx_name in _SECONDARY_INDEXES:
+            await conn.execute(f"DROP INDEX IF EXISTS analysis.{idx_name}")
+        await conn.execute(SET_MAINTENANCE_WORK_MEM_SQL)
     else:
         print(f"\n[a3/6] Incremental mode — no truncate "
               f"(ON CONFLICT DO UPDATE handles dedup).", flush=True)
 
-    # ---- Step 4: broad-market INSERT (per-industry, memory-aware) ----
-    # Process ONE industry at a time to keep server-side INSERT memory
-    # bounded. Each iteration INSERTs only this industry's rows (~30K
-    # per industry vs 2.6M all-at-once). Result objects are explicitly
-    # del'd and gc.collect() runs every 10 industries.
+    # ---- Steps 4+5: broad-market INSERT + non_this_industry -----------
+    # FORCE MODE: uses the MERGED INSERT — a single INSERT...SELECT that
+    #   computes ALL columns (weights + non_this_industry_*) in one pass.
+    #   Secondary indexes are DROPPED (Step 3) so the INSERT pays zero
+    #   index maintenance. The PK is kept for dedup safety. This eliminates
+    #   both the per-industry loop (61 INSERTs) and the 2M-row UPDATE.
+    #   Indexes are recreated after ALL INSERTs complete (after Step 6b).
+    # INCREMENTAL MODE: keeps the per-industry INSERT + UPDATE path
+    #   (needs indexes for ON CONFLICT DO UPDATE).
     industry_rows = await conn.fetch(LIST_INDUSTRY_IDS_SQL)
     n_industries_total = len(industry_rows)
     await conn.execute(SET_WORK_MEM_SQL)
     sorted_dates = sorted(target_dates) if incremental else []
-    t_loop = time.time()
     n_total_broad = 0
     n_total_member = 0
     n_total_map = 0
 
-    print(f"\n[a4/6] Broad-market INSERT (per-industry, {n_industries_total} "
-          f"industries, memory-aware)...", flush=True)
-    for i, irow in enumerate(industry_rows, 1):
-        industry_id = irow["industry_id"]
-        t_ind = time.time()
-        if n_src:
-            if incremental:
-                status = await conn.execute(
-                    BROAD_MARKET_INSERT_PER_INDUSTRY_INCREMENTAL,
-                    sorted_dates, industry_id,
-                )
-            else:
-                status = await conn.execute(
-                    BROAD_MARKET_INSERT_PER_INDUSTRY_FULL, industry_id
-                )
+    if not incremental and n_src:
+        # ---- Step 4 (force): MERGED broad-market INSERT (all-at-once) ----
+        # Single INSERT...SELECT that computes weights AND non_this_industry_*
+        # in one CTE pass. No per-industry loop, no separate UPDATE.
+        t_merged = time.time()
+        print(f"\n[a4-5/6] MERGED broad-market INSERT (all-at-once, "
+              f"indexes dropped, PK kept)...", flush=True)
+        status = await conn.execute(MERGED_BROAD_MARKET_INSERT_SQL_FULL)
+        n_total_broad = _parse_insert_count(status)
+        print(f"        -> {status} | {n_total_broad:,} rows inserted "
+              f"({time.time() - t_merged:.1f}s)", flush=True)
+        del status
+        gc.collect()
+    elif n_src:
+        # ---- Step 4 (incremental): per-industry INSERT (weights only) ----
+        t_loop = time.time()
+        print(f"\n[a4/6] Broad-market INSERT (per-industry, "
+              f"{n_industries_total} industries, incremental)...",
+              flush=True)
+        for i, irow in enumerate(industry_rows, 1):
+            industry_id = irow["industry_id"]
+            t_ind = time.time()
+            status = await conn.execute(
+                BROAD_MARKET_INSERT_PER_INDUSTRY_INCREMENTAL,
+                sorted_dates, industry_id,
+            )
             n_broad = _parse_insert_count(status)
             n_total_broad += n_broad
             del status
-        else:
-            n_broad = 0
-        print(f"  [{i:>3}/{n_industries_total}] {industry_id:20s}: "
-              f"broad={n_broad:>7,} ({time.time() - t_ind:.1f}s)", flush=True)
-        del industry_id, n_broad, t_ind
-        if i % 10 == 0:
-            gc.collect()
-    gc.collect()
-    print(f"  broad-market total: {n_total_broad:,} rows "
-          f"in {time.time() - t_loop:.1f}s", flush=True)
+            print(f"  [{i:>3}/{n_industries_total}] {industry_id:20s}: "
+                  f"broad={n_broad:>7,} ({time.time() - t_ind:.1f}s)", flush=True)
+            del industry_id, n_broad, t_ind
+            if i % 10 == 0:
+                gc.collect()
+        gc.collect()
+        print(f"  broad-market total: {n_total_broad:,} rows "
+              f"in {time.time() - t_loop:.1f}s", flush=True)
 
-    # ---- Step 5: non-this-industry UPDATE (all-at-once) --------------
-    # This is an UPDATE (not INSERT), so memory is not the concern. The
-    # CTE chain (holdings, stock_daily, bench_daily with window functions)
-    # is too expensive to recompute per-industry (84x overhead), so it
-    # runs once for all industries. The {date_filter} limits which rows
-    # are touched in incremental mode.
-    #
-    # AUTO-BACKFILL: in incremental mode, if existing rows have NULL
-    # rolling price columns (e.g., after ALTER TABLE ADD COLUMN), the
-    # date-filtered UPDATE would only fix target dates — historical
-    # dates would stay NULL. Detect this and fall back to FULL mode so
-    # ALL dates get rolling prices in a single pass.
-    t_non_ind = time.time()
-    if not n_src:
-        print("\n[a5/6] SKIPPED (no broad-market rows to update).",
-              flush=True)
-    elif incremental:
+        # ---- Step 5 (incremental): non-this-industry UPDATE ----
+        t_non_ind = time.time()
         rolling_backfill = await conn.fetchval(_ROLLING_BACKFILL_CHECK_SQL)
         if rolling_backfill:
             print(f"\n[a5/6] Non-this-industry UPDATE (FULL backfill — "
@@ -1194,15 +1668,9 @@ async def run_attributions(
         print(f"      -> {status_ni} | {n_updated:,} rows updated "
               f"({time.time() - t_non_ind:.1f}s)", flush=True)
         del status_ni
+        gc.collect()
     else:
-        print("\n[a5/6] Non-this-industry UPDATE (full, broad-market "
-              "only)...", flush=True)
-        status_ni = await conn.execute(NON_THIS_INDUSTRY_SQL_FULL)
-        n_updated = _parse_update_count(status_ni)
-        print(f"      -> {status_ni} | {n_updated:,} rows updated "
-              f"({time.time() - t_non_ind:.1f}s)", flush=True)
-        del status_ni
-    gc.collect()
+        print("\n[a4-5/6] SKIPPED (no broad-market source data).", flush=True)
 
     # ---- Step 6: member-index (per-industry, memory-aware) -----------
     # Per-industry INSERT to keep memory bounded. Phase 1 populates the
@@ -1247,6 +1715,51 @@ async def run_attributions(
     print(f"  member-index total: {n_total_member:,} rows (map={n_total_map}) "
           f"in {time.time() - t_member:.1f}s", flush=True)
 
+    # ---- Step 6b: equal-variant INSERT (all-at-once) ----------------
+    # Copies ALL trading_amt rows (broad-market + member-index) to equal
+    # rows, dividing industry_shared_weight by N (active member index
+    # count). benchmark_shared_weight and all non_this_industry_* columns
+    # are copied unchanged (identical between variants). Runs AFTER the
+    # non_this_industry UPDATE (step 5) and the member-index INSERT (step
+    # 6) so the equal rows inherit the populated non_this_industry_*
+    # values from the trading_amt rows.
+    t_eq = time.time()
+    if incremental:
+        print(f"\n[a6b/6] Equal-variant INSERT (incremental, "
+              f"{len(sorted_dates)} target dates)...", flush=True)
+        status_eq = await conn.execute(
+            EQUAL_INSERT_SQL_INCREMENTAL, sorted_dates
+        )
+    else:
+        print("\n[a6b/6] Equal-variant INSERT (full, copy from "
+              "trading_amt)...", flush=True)
+        status_eq = await conn.execute(EQUAL_INSERT_SQL_FULL)
+    n_eq = _parse_insert_count(status_eq)
+    print(f"      -> {status_eq} | {n_eq:,} equal rows inserted "
+          f"({time.time() - t_eq:.1f}s)", flush=True)
+    del status_eq
+    gc.collect()
+
+    # ---- Recreate secondary indexes + ANALYZE (force mode only) ------
+    # Secondary indexes were DROPPED in Step 3 so ALL INSERTs (Steps 4-5,
+    # 6, 6b) paid zero index maintenance. Now recreate them in a single
+    # bulk build (much faster than per-row maintenance during INSERT).
+    # ANALYZE refreshes planner stats so queries use the right plans.
+    if not incremental:
+        t_idx = time.time()
+        print(f"\n      Recreating {len(_SECONDARY_INDEXES)} secondary "
+              f"indexes (bulk build, maintenance_work_mem=512MB)...",
+              flush=True)
+        for idx_ddl in _CREATE_SECONDARY_INDEX_DDL:
+            await conn.execute(idx_ddl)
+        print(f"      indexes rebuilt in {time.time() - t_idx:.1f}s",
+              flush=True)
+        gc.collect()
+
+        await conn.execute(ANALYZE_TABLE_SQL)
+        print(f"      ANALYZE {TABLE} done", flush=True)
+        gc.collect()
+
     # Upsert analysis_identity for the mapping table.
     await upsert_analysis_identity(
         conn,
@@ -1271,6 +1784,7 @@ async def run_attributions(
     # ---- Step 8: sanity summary --------------------------------------
     summary = await conn.fetch("""
         SELECT ia.benchmark_code,
+               ia.attribution_type,
                BOOL_OR(sit.is_broad_market) AS is_broad,
                COUNT(*) AS n_rows,
                COUNT(DISTINCT ia.industry_id) AS n_industries,
@@ -1283,15 +1797,16 @@ async def run_attributions(
                    AS n_zero_overlap
         FROM analysis.industry_attributions ia
         LEFT JOIN stats.sec_index_tags sit ON sit.code = ia.benchmark_code
-        GROUP BY ia.benchmark_code
-        ORDER BY is_broad DESC, n_rows DESC
-        LIMIT 20
+        GROUP BY ia.benchmark_code, ia.attribution_type
+        ORDER BY is_broad DESC, ia.benchmark_code, ia.attribution_type
+        LIMIT 40
     """)
-    print("\n      Summary by benchmark_code (top 20, broad-market first):",
-          flush=True)
+    print("\n      Summary by (benchmark_code, attribution_type) "
+          "[top 40, broad-market first]:", flush=True)
     for r in summary:
         tag = "BROAD" if r["is_broad"] else "MEMBER"
-        print(f"        {r['benchmark_code']:8s} [{tag}]: "
+        print(f"        {r['benchmark_code']:8s} [{tag}] "
+              f"{r['attribution_type']:11s}: "
               f"{r['n_rows']:>9,} rows . {r['n_industries']:>3} ind . "
               f"{r['first_date']} -> {r['last_date']} . "
               f"avg_isw={r['avg_isw']} avg_bsw={r['avg_bsw']} . "

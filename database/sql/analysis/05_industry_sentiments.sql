@@ -242,7 +242,23 @@ COMMENT ON COLUMN analysis.industry_correlations.industry_mean_corr_255d    IS '
 --  industry level.
 --
 --  Table: analysis.industry_attributions
---    PK: (date, industry_id, benchmark_code)
+--    PK: (date, industry_id, benchmark_code, attribution_type)
+--
+--  TWO ATTRIBUTION VARIANTS (attribution_type column)
+--    'trading_amt' — industry_shared_weight = SUM(code_sec_shared_weight)
+--                    across member indices (current behavior; can exceed 100).
+--    'equal'       — industry_shared_weight = AVG(code_sec_shared_weight) =
+--                    SUM / N (N = number of active member indices in the
+--                    industry from stats.sec_classification). Each member
+--                    gets an equal share of the total overlap weight.
+--
+--    benchmark_shared_weight is UNDIVIDED (same for both variants) — it is a
+--    property of the benchmark's composition on the industry's stock union,
+--    NOT of the industry's member count. Consequently the swf =
+--    benchmark_shared_weight / 100 is identical for both variants, so ALL
+--    non_this_industry_* columns (price, rolling_*, trading_amt) are IDENTICAL
+--    between 'equal' and 'trading_amt'. The ONLY difference is the
+--    industry_shared_weight column.
 --
 --  HYBRID AGGREGATION (avoids double-counting; see decision log)
 --    industry_shared_weight  = SUM(code_sec_shared_weight) across member
@@ -315,6 +331,16 @@ CREATE TABLE IF NOT EXISTS analysis.industry_attributions (
     benchmark_code                    TEXT          NOT NULL,
     date                              DATE          NOT NULL,
 
+     -- 'equal' or 'trading_amt'. For 'trading_amt' (default), industry_shared_weight
+     -- = SUM(code_sec_shared_weight) across member indices (can exceed 100). For
+     -- 'equal', industry_shared_weight = AVG = SUM / N (N = active member index
+     -- count from stats.sec_classification). benchmark_shared_weight is UNDIVIDED
+     -- (same for both variants — it is a property of the benchmark's composition,
+     -- not the industry's member count). Consequently ALL non_this_industry_*
+     -- columns are IDENTICAL between the two variants.
+    attribution_type                  TEXT          NOT NULL,
+
+
     -- SUM w_subject on shared stocks, summed across member indices in the
     -- industry (from analysis.sec_alloc_perf_attribution.code_sec_shared_weight).
     -- Can exceed 100 (sum of multiple member portfolios). NULL when the
@@ -370,22 +396,26 @@ CREATE TABLE IF NOT EXISTS analysis.industry_attributions (
     benchmark_non_this_industry_trading_amt NUMERIC(20,4),
 
     CONSTRAINT pk_industry_attributions PRIMARY KEY
-        (date, industry_id, benchmark_code)
+        (industry_id, benchmark_code, date, attribution_type)
 );
 
 -- Indexes:
---   1. Per-industry + benchmark time series (drives the chart).
---   2. Per-date snapshot (drives the latest-date industry list).
-CREATE INDEX IF NOT EXISTS idx_industry_attributions_industry_bench_date
-    ON analysis.industry_attributions (industry_id, benchmark_code, date);
-CREATE INDEX IF NOT EXISTS idx_industry_attributions_date
-    ON analysis.industry_attributions (date);
+--   1. PK (industry_id, benchmark_code, date, attribution_type) serves the
+--      most common query pattern: WHERE industry_id = ... AND benchmark_code = ...
+--      (HD pipeline, industry attribution). Also serves industry_id-only
+--      queries via index scan.
+--   2. Secondary (benchmark_code, date, industry_id) serves benchmark-first
+--      queries: WHERE benchmark_code = ... AND date = ... (attribution bars,
+--      benchmark price chart, HD pipeline source query).
+CREATE INDEX IF NOT EXISTS idx_industry_attributions_bench_date_industry
+    ON analysis.industry_attributions (benchmark_code, date, industry_id);
 
-COMMENT ON TABLE  analysis.industry_attributions                  IS 'Composition overlap between each industry (group of member indices) and each benchmark index. One row per (date, industry_id, benchmark_code). HYBRID aggregation: industry_shared_weight = SUM(code_sec_shared_weight) across member indices from analysis.sec_alloc_perf_attribution (each member contributes its OWN weight on shared stocks; can exceed 100; self-pairs excluded). benchmark_shared_weight = benchmark weight on the UNION of industry member stocks from stats.sec_composition (latest snapshot; bounded [0, 100] (percent); no double-counting). Recomputed from sec_composition (NOT summed from sec_alloc_perf_attribution) because a naive SUM of benchmark_sec_shared_weight across members would double-count stocks held by multiple members. Both columns use the LATEST sec_composition snapshot for all dates (temporal extrapolation). Built by analyze.industry_sentiments.attributions (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.';
+COMMENT ON TABLE  analysis.industry_attributions                  IS 'Composition overlap between each industry (group of member indices) and each benchmark index. One row per (date, industry_id, benchmark_code, attribution_type). TWO attribution variants: attribution_type=''trading_amt'' -> industry_shared_weight = SUM(code_sec_shared_weight) across member indices (can exceed 100); attribution_type=''equal'' -> industry_shared_weight = AVG = SUM / N (N = active member index count from stats.sec_classification). benchmark_shared_weight is UNDIVIDED (same for both variants — property of the benchmark composition, not member count), so ALL non_this_industry_* columns are IDENTICAL between variants. HYBRID aggregation: industry_shared_weight = SUM(code_sec_shared_weight) across member indices from analysis.sec_alloc_perf_attribution (each member contributes its OWN weight on shared stocks; can exceed 100; self-pairs excluded). benchmark_shared_weight = benchmark weight on the UNION of industry member stocks from stats.sec_composition (latest snapshot; bounded [0, 100] (percent); no double-counting). Recomputed from sec_composition (NOT summed from sec_alloc_perf_attribution) because a naive SUM of benchmark_sec_shared_weight across members would double-count stocks held by multiple members. Both columns use the LATEST sec_composition snapshot for all dates (temporal extrapolation). Built by analyze.industry_sentiments.attributions (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.';
 COMMENT ON COLUMN analysis.industry_attributions.industry_id           IS 'Subject industry_id (from stats.sec_classification type=''index''). The industry whose member indices'' overlap with the benchmark is aggregated.';
 COMMENT ON COLUMN analysis.industry_attributions.benchmark_code        IS 'Benchmark index code (typically one of the 6 broad-market indices: 000300, 000001, 000852, 399001, 399006, 000688, plus per-industry top-N non-broad indices). Inherited from analysis.sec_alloc_perf_attribution.benchmark_code.';
 COMMENT ON COLUMN analysis.industry_attributions.date                  IS 'Trading date. Inherited from analysis.sec_alloc_perf_attribution (dates where at least one member index has a row for the benchmark). Shared-weight values are constant per (industry_id, benchmark_code) across dates, but the sum can vary when member indices have unequal history lengths.';
-COMMENT ON COLUMN analysis.industry_attributions.industry_shared_weight  IS 'SUM(code_sec_shared_weight) across member indices in the industry, from analysis.sec_alloc_perf_attribution (sec_type=''index''). Each member contributes its OWN weight on stocks shared with the benchmark. Can exceed 100 (sum of multiple member portfolios — expected, NOT double-counting). Self-pairs (member == benchmark) excluded by sec_alloc_perf_attribution. NULL when the benchmark has no composition data (all members'' code_sec_shared_weight are NULL).';
+COMMENT ON COLUMN analysis.industry_attributions.attribution_type       IS 'Attribution variant. ''trading_amt'': industry_shared_weight = SUM(code_sec_shared_weight) across member indices (can exceed 100). ''equal'': industry_shared_weight = AVG = SUM / N (N = active member index count from stats.sec_classification). benchmark_shared_weight is UNDIVIDED (same for both variants), so all non_this_industry_* columns are identical between variants.';
+COMMENT ON COLUMN analysis.industry_attributions.industry_shared_weight  IS 'For attribution_type=''trading_amt'': SUM(code_sec_shared_weight) across member indices in the industry, from analysis.sec_alloc_perf_attribution (sec_type=''index''). Each member contributes its OWN weight on stocks shared with the benchmark. Can exceed 100 (sum of multiple member portfolios — expected, NOT double-counting). Self-pairs (member == benchmark) excluded by sec_alloc_perf_attribution. NULL when the benchmark has no composition data (all members'' code_sec_shared_weight are NULL). For attribution_type=''equal'': the same SUM divided by N (active member index count) = AVG(code_sec_shared_weight).';
 COMMENT ON COLUMN analysis.industry_attributions.benchmark_shared_weight IS 'SUM(benchmark weight_pct) on the UNION of stocks held by ANY industry member (latest stats.sec_composition snapshot, source_type=''index''). Each stock counted ONCE (union) -> no double-counting. Bounded [0, 100] (weight_pct is stored as a percent, 0-100, not a fraction): fraction of the benchmark''s weight in the industry''s stock union. NULL when the benchmark has no composition data; 0 when the benchmark has composition but no overlap with the industry''s stocks. Recomputed from sec_composition (NOT summed from sec_alloc_perf_attribution) to avoid double-counting stocks held by multiple members.';
 COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_price IS 'Benchmark close on the date with industry-shared stocks removed (today snapshot). Computed ONLY for broad-market benchmarks (is_broad_market=TRUE); NULL otherwise. Return-based decomposition: non_industry_return = (bench_return - swf × shared_portfolio_return) / (1 - swf), where swf = benchmark_shared_weight/100. price = bench_prev_close × (1 + non_industry_return). Shows what today''s close would be if only non-shared stocks moved today.';
 COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_rolling_5days_price IS 'Non-industry benchmark price rebased to 100, computed over the trailing 5-trading-day window ending on `date`. Computed ONLY for broad-market benchmarks (is_broad_market=TRUE); NULL otherwise. = 100 × cumprod(1 + non_industry_return) over the last 5 trading days. Returns outside [-0.5, 0.5] are treated as 0 to prevent compounding artifacts. Shows the short-term cumulative performance of the benchmark''s non-shared portion. The BenchmarkPriceChart dropdown lets the user pick which window (5/20/60/255/500) to overlay.';
@@ -400,7 +430,7 @@ COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_tra
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('industry_attributions', 'industry_attributions', NULL, NOW(),
-     'Composition overlap between each industry (group of member indices) and each benchmark index. One row per (date, industry_id, benchmark_code). HYBRID aggregation: industry_shared_weight = SUM(code_sec_shared_weight) across member indices from analysis.sec_alloc_perf_attribution (own-weight on shared stocks in percent, can exceed 100, self-pairs excluded); benchmark_shared_weight = benchmark weight on the UNION of industry member stocks from stats.sec_composition (latest snapshot, in percent 0-100, no double-counting, recomputed from compositions to avoid double-counting stocks held by multiple members). Both use LATEST snapshot for all dates. Built by analyze.industry_sentiments.attributions (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.')
+     'Composition overlap between each industry (group of member indices) and each benchmark index. One row per (date, industry_id, benchmark_code, attribution_type). TWO attribution variants: trading_amt -> industry_shared_weight = SUM(code_sec_shared_weight) across member indices (can exceed 100); equal -> industry_shared_weight = AVG = SUM / N (N = active member index count). benchmark_shared_weight is UNDIVIDED (same for both variants), so all non_this_industry_* columns are identical between variants. HYBRID aggregation: industry_shared_weight = SUM(code_sec_shared_weight) across member indices from analysis.sec_alloc_perf_attribution (own-weight on shared stocks in percent, can exceed 100, self-pairs excluded); benchmark_shared_weight = benchmark weight on the UNION of industry member stocks from stats.sec_composition (latest snapshot, in percent 0-100, no double-counting, recomputed from compositions to avoid double-counting stocks held by multiple members). Both use LATEST snapshot for all dates. Built by analyze.industry_sentiments.attributions (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

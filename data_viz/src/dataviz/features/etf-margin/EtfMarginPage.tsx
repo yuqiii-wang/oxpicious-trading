@@ -49,6 +49,11 @@ export default function EtfMarginPage() {
   const [themeSlug, setThemeSlug] = useState<string | null>(null);
   const [data, setData] = useState<EtfMarginCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  // Separate loading flag for the classification NAV tree (sectors/strategies)
+  // so the nav can show its inline spinner during a themes refetch (e.g. when
+  // the exchange filter changes) without interfering with the content-area
+  // loading state below.
+  const [navLoading, setNavLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   // Active exact-code search (null = browsing mode). When set, only the
@@ -66,6 +71,7 @@ export default function EtfMarginPage() {
   // the exchange filter — e.g. cross-border ETFs (HK/OVERSEAS) are excluded
   // when "All (primary)" is selected.
   useEffect(() => {
+    setNavLoading(true);
     Promise.all([fetchThemes(exchange), fetchEtfStrategyThemes(exchange)])
       .then(([sectorList, strategyList]) => {
         setSectors(sectorList);
@@ -81,8 +87,12 @@ export default function EtfMarginPage() {
           setStrategyId(null);
           setThemeSlug(null);
         }
+        setNavLoading(false);
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => {
+        setError(e.message);
+        setNavLoading(false);
+      });
   }, [refreshKey, exchange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset to page 1 whenever sector, industry, strategy, theme, or exchange changes
@@ -290,6 +300,7 @@ export default function EtfMarginPage() {
         selectedItemCode={searchCode}
         onItemSelected={handleItemSelected}
         onClearItemSelection={handleClearSearch}
+        loading={navLoading}
       />
 
       {loading && (

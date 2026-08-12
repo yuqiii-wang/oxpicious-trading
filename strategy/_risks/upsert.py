@@ -1,8 +1,8 @@
 """DB upsert for the risk-specific tables.
 
-Both ``strategy.strategy_risk_seq`` and ``strategy.strategy_risk_period``
+Both ``strategy.strategy_risks`` and ``strategy.strategy_risk_period``
 are written only by this package — they are not shared with the backtest
-pipeline (which writes ``strategy_seq`` + ``trade_decision`` via
+pipeline (which writes ``strategy_identity`` + ``trade_decision`` via
 ``strategy._common.upsert``). The functions here are thin wrappers over
 ``bulk_upsert_async`` that pin the correct conflict-key columns.
 """
@@ -15,7 +15,7 @@ from strategy._risks.constants import RISK_SEQ_TABLE, RISK_PERIOD_TABLE
 
 
 async def upsert_risk_seq(conn, rows: List[Dict[str, Any]]) -> int:
-    """Upsert strategy_risk_seq rows (key: seq_id + code)."""
+    """Upsert strategy_risks rows (key: seq_id + code)."""
     if not rows:
         return 0
     return await bulk_upsert_async(

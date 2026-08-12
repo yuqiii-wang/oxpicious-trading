@@ -7,14 +7,17 @@ A strategy package provides two callables:
 and this runner handles the rest:
   - discovering all codes (when --codes omitted / --all given)
   - batching large code sets (BATCH_SIZE) to bound peak memory
-  - inserting ONE strategy_seq PER CODE (each carrying total_buy_cost — the
-    accumulated cost of all BUYs for that code, NOT a fixed capital budget)
-  - bulk-inserting that code's decisions under its own seq_id
+  - inserting ONE strategy_seq PER CODE (pure identity row) + its 1:1
+    strategy_results row (run RESULTS: dates, total_buy_cost, first-buy
+    normalization anchor, P&L summary)
+  - bulk-inserting that code's decisions under its own seq_id (each decision
+    carries normalized_fill_price, base = 100 at the first BUY fill)
   - consistent logging
 
-No fixed capital: each BUY deploys (confidence/100) * buy_notional, cash
-starts at 0 (goes negative on BUY), and total_buy_cost = sum of all BUY
-costs. Total Return = final_cash / total_buy_cost.
+No fixed capital: all metrics in normalized units (base=100 at first BUY).
+Money uses shares = total_qty / 100; cash = cumulative (qty/100) × norm_price;
+total_buy_cost = peak capital deployed = (max(total_qty_after)/100) ×
+normalized_mean_buy_price. Total Return = final_cash / total_buy_cost.
 """
 from __future__ import annotations
 
@@ -26,19 +29,60 @@ from strategy._common.constants import BATCH_SIZE
 from strategy._common.db import print_build_header, print_wall_time
 from strategy._common.fetch import discover_available_codes
 from strategy._common.upsert import (
-    resolve_seq_no, insert_strategy_seq, insert_decisions,
+    resolve_seq_no, insert_strategy_seq, insert_strategy_results, insert_decisions,
+    insert_daily_rows,
 )
 
 
 def _compute_total_buy_cost(decisions: List[Dict[str, Any]]) -> float:
-    """Sum (gross_value + commission + fees) across all BUY decisions."""
-    return sum(
-        (d.get("gross_value") or 0.0)
-        + (d.get("commission") or 0.0)
-        + (d.get("fees") or 0.0)
-        for d in decisions
-        if d["side"] == "BUY"
+    """Peak capital deployed = (max(total_qty_after) / 100) ×
+    normalized_mean_buy_price at that decision.
+
+    Money uses shares = total_qty / 100 (normalized share count). All metrics
+    are in normalized units (base=100 at first BUY).
+    Total Return = final_cash / total_buy_cost.
+    """
+    if not decisions:
+        return 0.0
+    max_d = max(decisions, key=lambda d: d.get("total_qty_after") or 0.0)
+    return (max_d.get("total_qty_after") or 0.0) / 100.0 * \
+           (max_d.get("normalized_mean_buy_price") or 0.0)
+
+
+def _compute_info_fields(
+    code_decisions: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Derive the strategy_results row fields from one code's decisions.
+
+    Returns a dict with: start_date, end_date, total_buy_cost,
+    first_buy_date, first_buy_fill_price, total_realized_pnl,
+    total_abs_pnl, n_sells, n_buys.
+
+    The first BUY is the normalization anchor (first_buy_fill_price);
+    trade_decision.normalized_fill_price = fill_price / this * 100, so the
+    first BUY reads as 100. By construction every code with decisions has
+    ≥1 BUY (SELLs need a prior BUY), so first_buy_* are populated; they're
+    left None in the degenerate no-BUY case (strategy_results allows NULL).
+    """
+    first_buy = next(
+        (d for d in code_decisions if d.get("side") == "BUY"), None,
     )
+    sells = [d for d in code_decisions if d.get("side") == "SELL"]
+    return {
+        "start_date": min(d["exec_date"] for d in code_decisions),
+        "end_date": max(d["exec_date"] for d in code_decisions),
+        "total_buy_cost": _compute_total_buy_cost(code_decisions),
+        "first_buy_date": first_buy["exec_date"] if first_buy else None,
+        "first_buy_fill_price": (
+            float(first_buy["fill_price"]) if first_buy else None
+        ),
+        "total_realized_pnl": round(
+            sum(d.get("realized_pnl") or 0.0 for d in sells), 4),
+        "total_abs_pnl": round(
+            sum(abs(d.get("realized_pnl") or 0.0) for d in sells), 4),
+        "n_sells": len(sells),
+        "n_buys": sum(1 for d in code_decisions if d.get("side") == "BUY"),
+    }
 
 
 async def run_one_sec_type(
@@ -50,6 +94,7 @@ async def run_one_sec_type(
     params: dict,
     fetch_signal_fn: Callable,
     backtest_fn: Callable,
+    daily_fn: Optional[Callable] = None,
     force: bool,
     seq_no: Optional[int],
     dry_run: bool,
@@ -79,6 +124,9 @@ async def run_one_sec_type(
     # ---- 1-2. Fetch + backtest (batched for large code sets) --------
     # Group decisions by code so we can write one seq per code.
     decisions_by_code: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    # Save each code's OHLC df for daily-row computation (needed after
+    # decisions are numbered). Only retained when daily_fn is provided.
+    df_by_code: Dict[str, Any] = {} if daily_fn is not None else None
     min_date = None
     max_date = None
 
@@ -103,6 +151,11 @@ async def run_one_sec_type(
         else:
             print(f"    -> {len(df):,} rows, {df['code'].nunique()} code(s), "
                   f"{df['date'].min()} .. {df['date'].max()}", flush=True)
+
+        # Save per-code OHLC slices for daily-row computation.
+        if df_by_code is not None:
+            for code, code_df in df.groupby("code", sort=False):
+                df_by_code[code] = code_df
 
         print(f"\n[2/4] Backtest{' batch ' + str(bi+1) if n_batches > 1 else ''}...",
               flush=True)
@@ -137,9 +190,9 @@ async def run_one_sec_type(
     print(f"\n    -> TOTAL: {sum(len(v) for v in decisions_by_code.values())} "
           f"decisions across {len(decisions_by_code)} codes "
           f"({total_n_buys} BUY, {total_n_sells} SELL)", flush=True)
-    print(f"    -> total buy cost (all codes): {total_buy_cost_all:,.2f} yuan",
+    print(f"    -> total buy cost (all codes): {total_buy_cost_all:,.2f} (normalized)",
           flush=True)
-    print(f"    -> realized P&L (sum across codes): {total_realized:,.2f} yuan",
+    print(f"    -> realized P&L (sum across codes): {total_realized:,.2f} (normalized)",
           flush=True)
 
     if dry_run:
@@ -154,8 +207,8 @@ async def run_one_sec_type(
                   flush=True)
         return
 
-    # ---- 3-4. Write to DB: one strategy_seq per code ----------------
-    print(f"\n[3/4] Inserting one strategy_seq per code "
+    # ---- 3-4. Write to DB: one strategy_seq + strategy_results per code -
+    print(f"\n[3/4] Inserting one strategy_identity + strategy_results per code "
           f"({len(decisions_by_code)} codes)...", flush=True)
     # Resolve ONE seq_no for the whole --all run (auto if not given).
     # Multiple codes share this seq_no but get distinct seq_ids.
@@ -165,6 +218,7 @@ async def run_one_sec_type(
 
     n_seqs_inserted = 0
     n_decisions_inserted = 0
+    n_daily_inserted = 0
     for code, code_decisions in decisions_by_code.items():
         if shared_seq_no is None:
             sn = await resolve_seq_no(
@@ -174,21 +228,45 @@ async def run_one_sec_type(
             sn = await resolve_seq_no(
                 conn, strategy_name, sec_type, code, force, shared_seq_no,
             )
-        # Per-code min/max date for the seq's start_date / end_date.
-        code_min = min(d["exec_date"] for d in code_decisions)
-        code_max = max(d["exec_date"] for d in code_decisions)
-        # Compute total_buy_cost for this code (sum of all BUY costs).
-        total_buy_cost = _compute_total_buy_cost(code_decisions)
+        # strategy_seq = pure identity row.
         seq_id = await insert_strategy_seq(
-            conn, strategy_name, sn, sec_type, code,
-            code_min, code_max, total_buy_cost, params,
+            conn, strategy_name, sn, sec_type, code, params,
         )
+        # strategy_results = 1:1 results row (dates, total_buy_cost, first-buy
+        # anchor, P&L summary), all derived from this code's decisions.
+        info = _compute_info_fields(code_decisions)
+        await insert_strategy_results(
+            conn, seq_id, sec_type, code,
+            start_date=info["start_date"],
+            end_date=info["end_date"],
+            total_buy_cost=info["total_buy_cost"],
+            first_buy_date=info["first_buy_date"],
+            first_buy_fill_price=info["first_buy_fill_price"],
+            total_realized_pnl=info["total_realized_pnl"],
+            total_abs_pnl=info["total_abs_pnl"],
+            n_sells=info["n_sells"],
+            n_buys=info["n_buys"],
+        )
+        # insert_decisions calls assign_decision_no in place, so code_decisions
+        # now carries decision_no — needed for daily-row linkage.
         n_ins = await insert_decisions(conn, seq_id, code_decisions)
+
+        # Compute + insert daily portfolio state (unrealized_pnl = P&L if all
+        # remaining position sold at the day's close). Requires the code's
+        # OHLC df + the numbered decisions + the first-buy anchor price.
+        if daily_fn is not None and df_by_code is not None and code in df_by_code:
+            anchor_price = info["first_buy_fill_price"]
+            daily_rows = daily_fn(df_by_code[code], code_decisions, anchor_price)
+            n_daily = await insert_daily_rows(conn, seq_id, daily_rows)
+            n_daily_inserted += n_daily
+
         n_seqs_inserted += 1
         n_decisions_inserted += n_ins
 
-    print(f"\n[4/4] Inserted {n_seqs_inserted} strategy_seq rows + "
-          f"{n_decisions_inserted:,} trade_decision rows", flush=True)
+    print(f"\n[4/4] Inserted {n_seqs_inserted} strategy_identity + strategy_results "
+          f"rows + {n_decisions_inserted:,} trade_decision rows"
+          + (f" + {n_daily_inserted:,} strategy_daily rows" if daily_fn else ""),
+          flush=True)
 
 
 async def discover_and_run(
@@ -200,6 +278,7 @@ async def discover_and_run(
     params: dict,
     fetch_signal_fn: Callable,
     backtest_fn: Callable,
+    daily_fn: Optional[Callable] = None,
     force: bool,
     seq_no: Optional[int],
     dry_run: bool,
@@ -232,6 +311,7 @@ async def discover_and_run(
             params=params,
             fetch_signal_fn=fetch_signal_fn,
             backtest_fn=backtest_fn,
+            daily_fn=daily_fn,
             force=force,
             seq_no=seq_no,
             dry_run=dry_run,

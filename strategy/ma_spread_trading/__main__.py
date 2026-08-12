@@ -9,8 +9,10 @@ sec_type, then computes internal risk metrics for every run. Use --sec-type /
 discovery mode (the default when --codes is omitted).
 
 The batched fetch→backtest→upsert loop lives in strategy._common.runner; this
-module only supplies the MA-spread-specific fetch_signal_data + run_backtest
-callables, parses CLI args, and invokes the risk pipeline post-backtest.
+module supplies the MA-spread run_backtest callable (which wires the
+signal layer strategy._signal → the execution layer strategy._trading),
+the signal layer's fetch_signal_data, parses CLI args, and invokes the
+risk pipeline post-backtest.
 """
 from __future__ import annotations
 
@@ -30,7 +32,7 @@ from strategy._common.db import (  # noqa: E402
     setup_utf8_stdout, get_db_or_exit, print_wall_time,
 )
 from strategy._common.constants import (  # noqa: E402
-    ALL_SEC_TYPES, DEFAULT_SEC_TYPE, DEFAULT_CODES, DEFAULT_BUY_NOTIONAL,
+    ALL_SEC_TYPES, DEFAULT_CODES, DEFAULT_BUY_NOTIONAL,
 )
 from strategy._common.runner import discover_and_run  # noqa: E402
 
@@ -39,8 +41,8 @@ setup_utf8_stdout()
 from strategy.ma_spread_trading.config import (  # noqa: E402
     STRATEGY_NAME, STRATEGY_PARAMS,
 )
-from strategy.ma_spread_trading.fetch import fetch_signal_data  # noqa: E402
-from strategy.ma_spread_trading.backtest import run_backtest  # noqa: E402
+from strategy._signal import fetch_signal_data  # noqa: E402
+from strategy.ma_spread_trading.backtest import run_backtest, compute_daily_rows  # noqa: E402
 from strategy._risks import compute_and_upsert_risks  # noqa: E402
 
 
@@ -76,10 +78,13 @@ async def main() -> None:
     discovery = args.all or not args.codes
     sec_types = (args.sec_type,) if args.sec_type else ALL_SEC_TYPES
 
-    # Explicit codes: only run the specified sec_type(s).
-    if args.codes and not args.all:
-        sec_types = (args.sec_type or DEFAULT_SEC_TYPE,)
-        codes_by_st = {sec_types[0]: list(args.codes)}
+    # Explicit codes: require --sec-type (no silent default to a single
+    # sec_type — that was the old DEFAULT_SEC_TYPE='index' skip logic that
+    # prevented etf/stock from being backtested when callers forgot to pass
+    # --sec-type). When --codes is given without --sec-type, fall through to
+    # discovery mode for ALL sec_types so every universe is considered.
+    if args.codes and not args.all and args.sec_type:
+        codes_by_st = {args.sec_type: list(args.codes)}
     else:
         codes_by_st = None  # discovered per sec_type below
 
@@ -97,6 +102,7 @@ async def main() -> None:
             params=params,
             fetch_signal_fn=fetch_signal_data,
             backtest_fn=run_backtest,
+            daily_fn=compute_daily_rows,
             force=args.force,
             seq_no=args.seq_no,
             dry_run=args.dry_run,

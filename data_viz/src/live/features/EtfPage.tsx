@@ -54,6 +54,11 @@ export default function EtfPage() {
   const [exchange, setExchange] = useState<string | null>("PRIMARY");
   const [data, setData] = useState<EtfMarginCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  // Separate loading flag for the classification NAV tree (sectors/strategies)
+  // so the nav can show its inline spinner during a themes refetch (e.g. when
+  // the exchange filter changes) without interfering with the content-area
+  // loading state below.
+  const [navLoading, setNavLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [searchCode, setSearchCode] = useState<string | null>(null);
@@ -63,6 +68,7 @@ export default function EtfPage() {
   // (so the nav tree respects the exchange filter — cross-border ETFs are
   // excluded when "All (primary)" is selected).
   useEffect(() => {
+    setNavLoading(true);
     Promise.all([fetchThemes(exchange), fetchEtfStrategyThemes(exchange)])
       .then(([list, strategyList]) => {
         setSectors(list);
@@ -76,8 +82,12 @@ export default function EtfPage() {
         } else if (list.length > 0) {
           setSectorId((prev) => prev ?? list[0].sector_id);
         }
+        setNavLoading(false);
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => {
+        setError(e.message);
+        setNavLoading(false);
+      });
   }, [refreshKey, exchange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset to page 1 whenever sector / industry / strategy / theme / exchange / search changes.
@@ -275,6 +285,7 @@ export default function EtfPage() {
         selectedItemCode={searchCode}
         onItemSelected={handleItemSelected}
         onClearItemSelection={handleClearSearch}
+        loading={navLoading}
       />
 
       <Alert severity="info" sx={{ my: 1, py: 0.5 }} icon={false}>

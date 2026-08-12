@@ -62,7 +62,7 @@ INDUSTRY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("FIN", "金融", "BROKERS", "证券", ["证券", "证保", "券商"]),
     ("FIN", "金融", "INSURANCE", "保险", ["保险"]),
     ("FIN", "金融", "FINTECH", "金融科技", ["金融科技"]),
-    ("FIN", "金融", "FIN_GENERAL", "金融", ["金融", "非银", "金地"]),
+    ("FIN", "金融", "FIN_GENERAL", "金融", ["金融", "非银", "金地", "期货", "信托"]),
 
     # --- HC (医药) ---
     ("HC", "医药", "INNO_DRUG", "创新药", ["创新药"]),
@@ -75,7 +75,7 @@ INDUSTRY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     # not PHARMA_BROAD).  Catches health-themed ETFs/stocks (健康A/B, 申万健康,
     # 泰康公卫健康, 美年健康, 卫宁健康, …).
     ("HC", "医药", "HEALTH", "健康", ["健康"]),
-    ("HC", "医药", "PHARMA_BROAD", "医药", ["医药", "制药", "医疗", "医卫"]),
+    ("HC", "医药", "PHARMA_BROAD", "医药", ["医药", "制药", "医疗", "医卫", "药业"]),
     ("HC", "医药", "ELDER_CARE", "养老产业", ["养老"]),
 
     # --- TECH (科技) ---
@@ -114,7 +114,7 @@ INDUSTRY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("ENG", "能源", "PETROCHEM", "石化", ["石化"]),
     ("ENG", "能源", "NAT_GAS", "天然气", ["天然气"]),
     ("ENG", "能源", "POWER_GRID", "电力/电网", ["电力", "电网"]),
-    ("ENG", "能源", "ENG_GENERAL", "能源", ["能源", "资源", "商品"]),
+    ("ENG", "能源", "ENG_GENERAL", "能源", ["能源", "资源", "商品", "矿业"]),
 
     # --- MIL (军工) — defense only; aerospace moved to separate AERO sector ---
     ("MIL", "军工", "MIL_DEFENSE", "国防装备", ["军工龙头", "军工", "国防"]),
@@ -128,13 +128,15 @@ INDUSTRY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("CONS", "消费", "FOOD_BEV", "食品饮料", ["食品", "酒", "饮料"]),
     ("CONS", "消费", "AGRI", "农业", ["农业", "农牧", "现代农", "粮食", "豆粕"]),
     ("CONS", "消费", "LIVESTOCK", "畜牧", ["畜牧"]),
-    ("CONS", "消费", "TOURISM", "旅游", ["旅游"]),
+    ("CONS", "消费", "TOURISM", "旅游", ["旅游", "文旅"]),
     ("CONS", "消费", "SPORTS", "体育", ["体育"]),
     ("CONS", "消费", "GAMES", "游戏", ["游戏"]),
     ("CONS", "消费", "MEDIA", "传媒", ["传媒", "影视", "动漫"]),
     ("CONS", "消费", "DISCRETIONARY", "可选消费", ["可选", "家电", "家用电器"]),
     ("CONS", "消费", "EDU", "教育", ["教育"]),
     ("CONS", "消费", "CONS_GENERAL", "消费", ["消费", "品牌"]),
+    ("CONS", "消费", "RETAIL", "百货/零售", ["百货", "零售", "超市", "商业"]),
+    ("CONS", "消费", "HOTEL", "酒店", ["酒店", "饭店"]),
 
     # --- MAT (材料) ---
     ("MAT", "材料", "RARE_METALS", "稀有金属", ["稀金属", "稀有金属"]),
@@ -149,17 +151,29 @@ INDUSTRY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     # --- IND (工业) ---
     ("IND", "工业", "AUTO", "汽车", ["汽车"]),
     ("IND", "工业", "ROBOTICS", "机器人", ["机器人"]),
-    ("IND", "工业", "ENG_MACHINERY", "工程机械", ["工程机械", "机械"]),
+    ("IND", "工业", "ENG_MACHINERY", "工程机械", ["工程机械", "机械", "重工"]),
     ("IND", "工业", "MACHINE_TOOL", "机床", ["机床"]),
     ("IND", "工业", "TRANSPORT", "运输/物流", ["运输", "船舶", "航运", "物流", "高铁", "铁路", "交运"]),
     ("IND", "工业", "ADVMFG", "高端制造", ["智能制造", "高端制造", "高端装备", "高装", "装备产业", "工业4"]),
+    # EXPRESSWAY (高速公路) — placed AFTER TRANSPORT so "高铁"/"铁路" wins for
+    # high-speed-rail names; "高速"/"公路" catches expressway toll-road operators
+    # (中原高速, 福建高速, 山东高速, 宁沪高速, …) and highway-themed indices.
+    ("IND", "工业", "EXPRESSWAY", "高速公路", ["高速", "公路"]),
+    ("IND", "工业", "ELEC_EQUIP", "电气设备", ["电气"]),
+    ("IND", "工业", "PORT", "港口", ["港口"]),
+    ("IND", "工业", "AIRPORT", "机场", ["机场"]),
+    ("IND", "工业", "TEXTILE", "纺织服装", ["纺织", "服饰", "服装"]),
+    ("IND", "工业", "PAPER", "造纸", ["纸业"]),
+    ("IND", "工业", "PRINTING", "印刷", ["印刷"]),
 
     # --- INFRA (基建) ---
-    ("INFRA", "基建", "INFRA_CONSTR", "建筑/基建", ["基建", "建筑"]),
+    ("INFRA", "基建", "INFRA_CONSTR", "建筑/基建", ["基建", "建筑", "建工", "建设"]),
     ("INFRA", "基建", "INFRA_UTIL", "公用事业", ["公用"]),
+    ("INFRA", "基建", "WATER", "水务", ["水务"]),
+    ("INFRA", "基建", "GAS", "燃气", ["燃气"]),
 
     # --- RE (地产) ---
-    ("RE", "地产", "RE_REAL_ESTATE", "地产", ["地产", "REIT"]),
+    ("RE", "地产", "RE_REAL_ESTATE", "地产", ["地产", "REIT", "置业"]),
 
     # --- ESG (ESG · Green · Responsibility) ---
     ("ESG", "ESG", "ESG_GENERAL", "ESG", ["ESG", "可持续", "持续发展", "长江保护", "气候"]),
@@ -207,7 +221,7 @@ STRATEGY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("BROAD", "宽基", "BROAD_CSI300", "沪深300", ["沪深300"]),
     ("BROAD", "宽基", "BROAD_CSI500", "中证500", ["中证500"]),
     ("BROAD", "宽基", "BROAD_CSI800", "中证800", ["中证800"]),
-    ("BROAD", "宽基", "BROAD_CSI1000", "中证1000", ["中证1000", "1000"]),
+    ("BROAD", "宽基", "BROAD_CSI1000", "中证1000", ["中证1000"]),
     ("BROAD", "宽基", "BROAD_CSI2000", "中证2000", ["中证2000"]),
     # CSI A-series (中证A股 / A50 / A100 / A500) — newer broad benchmarks
     ("BROAD", "宽基", "BROAD_CSI_A", "中证A系列",
@@ -237,8 +251,10 @@ STRATEGY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("BROAD", "宽基", "BROAD_BSE", "北证", ["北证"]),
 
     # CNI (国证) — China National Index (国证指数有限公司), a separate index
-    # provider from CSI (中证).  No real index data ingested yet; ETFs
-    # tracking 国证 indices (e.g. 国证2000) fall back to DUMMY_BROAD_CNI.
+    # provider from CSI (中证).  Real index data is ingested from cnindex.com.cn
+    # (国证2000 399303, 国证A50 399310, 国证1000 399311); ETFs tracking 国证
+    # indices inherit from the real index.  Orphan ETFs (no CSV parent) fall
+    # back to DUMMY_BROAD_CNI only when no real 国证 index matches their name.
     ("BROAD", "宽基", "BROAD_CNI", "国证", ["国证"]),
 
     # --- DIV (红利) — dividend-themed indices ---

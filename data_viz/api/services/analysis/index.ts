@@ -10,3 +10,4 @@ export { getBenchmarkPriceChart, getIndustryAttributionPriceSeries } from "./ben
 export { getAllIndustriesAttribution, getMemberIndexAttribution } from "./industry-attribution-bars.js";
 export { getIndustryBenchmarkAttribution, listIndustryAttributionBenchmarks } from "./industry-benchmark-attribution.js";
 export { getIndustryEtfPriceSeries, getIndustryEtfContributionBars } from "./industry-etf-contribution.js";
+export { getIndustryHypesAndDrains } from "./industry-hypes-and-drains.js";

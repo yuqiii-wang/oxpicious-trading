@@ -50,6 +50,7 @@ import type {
   MemberIndexAttributionResponse,
   IndustryEtfPriceSeriesResponse,
   IndustryEtfContributionBarsResponse,
+  IndustryHypesAndDrainsResponse,
   LiveDataSecType,
   LiveDataDatesResponse,
   LiveDataCombinedResponse,
@@ -634,16 +635,29 @@ export function fetchPerfAttrChart(
 // ---------------------------------------------------------------------------
 /** Themes tree (L1 sector → L2 industry) for the ThemeSelector.
  *  Built directly from stats.sec_classification (type='index'). Each
- *  industry's chip count = number of member indices in that industry. */
-export function fetchIndustrySentimentsThemes(): Promise<SectorNode[]> {
+ *  industry's chip count = number of member indices in that industry.
+ *  The optional `exchange` filter narrows the tree to the selected exchange
+ *  group (PRIMARY/SS/SZ/BJ/HK/OVERSEAS) — mirroring the index-baseline themes
+ *  endpoint. */
+export function fetchIndustrySentimentsThemes(
+  exchange?: string | null,
+): Promise<SectorNode[]> {
+  const params = new URLSearchParams();
+  if (exchange) params.set("exchange", exchange);
+  const qs = params.toString();
   return fetchJson<SectorNode[]>(
-    `/api/analysis/industry-sentiments/themes`,
+    `/api/analysis/industry-sentiments/themes${qs ? `?${qs}` : ""}`,
   );
 }
 
-export function fetchIndustrySentimentsStrategyThemes(): Promise<StrategyNode[]> {
+export function fetchIndustrySentimentsStrategyThemes(
+  exchange?: string | null,
+): Promise<StrategyNode[]> {
+  const params = new URLSearchParams();
+  if (exchange) params.set("exchange", exchange);
+  const qs = params.toString();
   return fetchJson<StrategyNode[]>(
-    `/api/analysis/industry-sentiments/strategy-themes`,
+    `/api/analysis/industry-sentiments/strategy-themes${qs ? `?${qs}` : ""}`,
   );
 }
 
@@ -784,6 +798,27 @@ export function fetchAllIndustriesAttribution(
   if (date) params.set("date", date);
   return fetchJson<AllIndustriesAttributionResponse>(
     `/api/analysis/industry-attribution/all-industries?${params.toString()}`,
+  );
+}
+
+/** Fetch pre-computed top-5 (HYPE) + bottom-5 (DRAIN) industries ranked by
+ *  attribution contribution to a COMPOSITE broad-market benchmark (MAIN or
+ *  INNOV). Returns the 10 ranked industries + composite benchmark price series
+ *  + each industry's mean_price series. Drives the "Hypes & Drains" sub-toggle
+ *  in "Market Trend" mode.
+ *  weighting: 'equal' (raw attribution contribution) or 'amt'
+ *  (contribution × shared_trading_amt). Default: 'equal'. */
+export function fetchIndustryHypesAndDrains(
+  benchmarkCode: string,
+  periodDays: number,
+  weighting: "equal" | "amt" = "equal",
+): Promise<IndustryHypesAndDrainsResponse> {
+  const params = new URLSearchParams();
+  params.set("benchmark_code", benchmarkCode);
+  params.set("period_days", String(periodDays));
+  params.set("weighting", weighting);
+  return fetchJson<IndustryHypesAndDrainsResponse>(
+    `/api/analysis/industry-hypes-and-drains?${params.toString()}`,
   );
 }
 
@@ -943,4 +978,36 @@ export function fetchMaSpreadRisks(
   return fetchJson<StrategyRiskResponse>(
     `/api/strategy/ma-spread/risks${qs ? `?${qs}` : ""}`,
   );
+}
+
+/** Result of POST /api/strategy/ma-spread/run. */
+export interface RunStrategyResult {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+/**
+ * Run the MA-spread backtest + risk computation for one (code, secType) by
+ * spawning the Python scripts via the backend. Returns when both processes
+ * exit. NOT cached (always a fresh POST).
+ */
+export async function runMaSpreadStrategy(
+  code: string,
+  secType: MaSpreadSecType,
+): Promise<RunStrategyResult> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  const res = await fetch(
+    `/api/strategy/ma-spread/run${qs ? `?${qs}` : ""}`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`HTTP ${res.status}: ${text}`);
+  }
+  return (await res.json()) as RunStrategyResult;
 }

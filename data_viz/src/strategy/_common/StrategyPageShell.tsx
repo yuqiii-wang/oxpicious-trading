@@ -127,6 +127,7 @@ export default function StrategyPageShell({
         selectedItemCode={nav.searchCode}
         onItemSelected={nav.onItemSelected}
         onClearItemSelection={nav.onClearItemSelection}
+        loading={nav.loading}
       />
 
       {nav.loading && (

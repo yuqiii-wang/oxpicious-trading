@@ -2,8 +2,12 @@
 
 Entry: MA5/MA60 golden cross confirmed by price>MA60, RSI not overbought,
 and rising turnover. Exit: death cross, RSI overbought (take-profit), or
-stop-loss below MA60. Fills at next bar's open (no look-ahead).
+stop-loss below MA60. Fills same-day at a worst-case OHLC price (no
+look-ahead).
 
-See config.STRATEGY_PARAMS for the tunable parameters and
-config.HISTORY_AWARENESS for which analysis columns are used vs excluded.
+The signal layer (data read + MA algo + consolidated b/s confidence)
+lives in ``strategy._signal``; the execution layer (fills, slippage,
+fees, portfolio accounting) lives in ``strategy._trading``. This package
+wires them together and holds the trading params (see config.STRATEGY_PARAMS)
+plus the CLI entry point.
 """

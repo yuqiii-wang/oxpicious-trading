@@ -147,6 +147,7 @@ index_info AS (
         FROM stats.sec_classification
         WHERE type = 'index'
           AND is_active = TRUE
+          AND is_industry_not_strategy = TRUE
           AND industry_id IS NOT NULL
           AND industry_id <> ''
     ) cls

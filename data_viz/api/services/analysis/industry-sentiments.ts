@@ -5,7 +5,7 @@
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
-import { stripExchangeSuffix } from "../../lib/classify-etf.js";
+import { stripExchangeSuffix, matchesExchange } from "../../lib/classify-etf.js";
 import type {
   SectorNode,
   IndustryNode,
@@ -57,12 +57,18 @@ import type {
 //       daily close series AND stock_num (for pool_size classification +
 //       tooltip display). Indices with no index_basic_stats rows are omitted.
 // ============================================================================
-export async function listIndustrySentimentsThemes(): Promise<SectorNode[]> {
+export async function listIndustrySentimentsThemes(
+  exchange?: string | null,
+): Promise<SectorNode[]> {
   // Build the L1 sector → L2 industry → items tree from per-code meta rows.
   // Uses INDUSTRY_SENTIMENTS_META_SQL (which already applies the composition-
   // only filter) and groups by sector/industry, pushing each index code into
   // its industry's items[] array. This populates the L3 security-level chips
   // in the SecClassificationNav so the user can pick an individual index.
+  // The exchange filter is applied in TS (via matchesExchange) so the nav
+  // tree respects the selected exchange — e.g. HK indices are excluded when
+  // "All (primary)" is selected, mirroring the index-baseline themes endpoint.
+  const exFilter = (exchange ?? "").trim() || null;
   const rows = await queryRows<DbIndustrySentimentsMetaRow>(
     INDUSTRY_SENTIMENTS_META_SQL,
     [],
@@ -76,6 +82,7 @@ export async function listIndustrySentimentsThemes(): Promise<SectorNode[]> {
   for (const r of rows) {
     // LEFT column: only industry-primary securities.
     if (!r.is_industry_not_strategy) continue;
+    if (exFilter && !matchesExchange(r.exchange, exFilter)) continue;
     if (!sectorMap.has(r.sector_id)) {
       sectorMap.set(r.sector_id, { sector_label: r.sector_label, industries: new Map() });
     }
@@ -128,6 +135,7 @@ export async function listIndustrySentimentsThemes(): Promise<SectorNode[]> {
 interface DbIndustrySentimentsMetaRow extends QueryResultRow {
   code: string;
   name: string;
+  exchange: string | null;
   sector_id: string;
   sector_label: string;
   industry_id: string;
@@ -139,6 +147,7 @@ interface DbIndustrySentimentsMetaRow extends QueryResultRow {
 const INDUSTRY_SENTIMENTS_META_SQL = `
   SELECT sc.code,
          COALESCE(sc.name, '')             AS name,
+         sc.exchange                       AS exchange,
          COALESCE(sc.sector_id,       'OTHER')  AS sector_id,
          COALESCE(sc.sector_label,    '其他')   AS sector_label,
          COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
@@ -166,19 +175,29 @@ const INDUSTRY_SENTIMENTS_META_SQL = `
 //  to avoid duplicating the grouping/sorting logic. Index codes are already
 //  bare (e.g. "000300"), so no exchange-suffix stripping is needed.
 // ----------------------------------------------------------------------------
-export async function listIndustrySentimentsStrategyThemes(): Promise<StrategyNode[]> {
+export async function listIndustrySentimentsStrategyThemes(
+  exchange?: string | null,
+): Promise<StrategyNode[]> {
+  const exFilter = (exchange ?? "").trim() || null;
   const rows = await queryRows<DbIndustrySentimentsMetaRow>(INDUSTRY_SENTIMENTS_META_SQL, []);
 
-  const mappedRows = rows.map((r) => ({
-    code: r.code,
-    name: r.name,
-    sector_id: r.sector_id,
-    sector_label: r.sector_label,
-    industry_id: r.industry_id,
-    industry_label: r.industry_label,
-    industry_slug: r.industry_slug,
-    is_industry_not_strategy: r.is_industry_not_strategy,
-  }));
+  const mappedRows = rows
+    .filter((r) => {
+      // RIGHT column: only strategy-primary securities, then apply exchange.
+      if (r.is_industry_not_strategy) return false;
+      if (exFilter && !matchesExchange(r.exchange, exFilter)) return false;
+      return true;
+    })
+    .map((r) => ({
+      code: r.code,
+      name: r.name,
+      sector_id: r.sector_id,
+      sector_label: r.sector_label,
+      industry_id: r.industry_id,
+      industry_label: r.industry_label,
+      industry_slug: r.industry_slug,
+      is_industry_not_strategy: r.is_industry_not_strategy,
+    }));
 
   return buildStrategyThemesFromRows(mappedRows);
 }

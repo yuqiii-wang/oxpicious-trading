@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from strategy._common.db import print_build_header
 from strategy._common.fetch import (
     fetch_strategy_seqs, fetch_decisions, fetch_close_prices,
+    fetch_daily_unrealized, fetch_total_buy_cost,
 )
 
 # Re-export the public compute + upsert surface so callers can import
@@ -86,7 +87,7 @@ async def compute_and_upsert_risks(
         # Include position_after so the price-drawdown computation can detect
         # unzero holding periods; default fetch_decisions omits it.
         decision_cols = (
-            "decision_no, side, signal_date, exec_date, qty, fill_price, "
+            "decision_no, side, exec_date, qty, fill_price, "
             "position_after, realized_pnl, signal_reason"
         )
         risk_seq_rows: List[Dict[str, Any]] = []
@@ -103,18 +104,36 @@ async def compute_and_upsert_risks(
                 close_prices = await fetch_close_prices(
                     conn, st, code, min(exec_dates), max(exec_dates),
                 )
-            rs = compute_risk_seq(seq_id, code, decisions, close_prices)
+            # Daily unrealized_pnl series — fetched ONCE here and reused for
+            # both the exponential risk score's unrealized-loss component (in
+            # compute_risk_seq) and the per-period MTM change (in
+            # compute_risk_periods).
+            daily_rows = await fetch_daily_unrealized(conn, seq_id)
+            # total_buy_cost (peak capital deployed) — the stable "% of
+            # capital" denominator for the risk score's loss_fraction.
+            total_buy_cost = await fetch_total_buy_cost(conn, seq_id)
+            rs = compute_risk_seq(
+                seq_id, code, decisions, close_prices, daily_rows,
+                total_buy_cost,
+            )
             if rs is None:
                 continue
             risk_seq_rows.append(rs)
+            # total_realized_pnl / total_abs_pnl are carried on rs with a
+            # leading underscore (they were MOVED to strategy_results and are no
+            # longer strategy_risk_seq columns). Use them for the per-period
+            # rollup, then strip the underscore keys before upsert.
             rp = compute_risk_periods(
                 seq_id, code, decisions,
-                rs["total_abs_pnl"], rs["total_realized_pnl"],
+                rs["_total_abs_pnl"], rs["_total_realized_pnl"],
+                daily_rows,
             )
             risk_period_rows.extend(rp)
+            dd1 = rs['drawdown_1st_date']
+            dd1v = rs['drawdown_1st_val']
             print(f"    -> seq={seq_id} code={code}: "
                   f"concentration={rs['concentration_ratio']:.4f} "
-                  f"max_dd={rs['max_drawdown']:.2f} "
+                  f"dd1={dd1} val={dd1v} "
                   f"drop_unzero={rs['deepest_drop_since_unzero_pos']:.4f} "
                   f"drop_buy={rs['deepest_drop_since_last_buy']:.4f} "
                   f"risk_score={rs['risk_score']:.2f} "
@@ -128,12 +147,18 @@ async def compute_and_upsert_risks(
                     seq_id, code,
                 )
                 await conn.execute(
-                    "DELETE FROM strategy.strategy_risk_seq "
+                    "DELETE FROM strategy.strategy_risks "
                     "WHERE seq_id = $1 AND code = $2",
                     seq_id, code,
                 )
 
-        n_seq = await upsert_risk_seq(conn, risk_seq_rows)
+        # Strip the underscore-prefixed helper keys (totals carried for the
+        # per-period rollup) — they are NOT strategy_risks columns.
+        upsert_rows = [
+            {k: v for k, v in row.items() if not k.startswith("_")}
+            for row in risk_seq_rows
+        ]
+        n_seq = await upsert_risk_seq(conn, upsert_rows)
         n_per = await upsert_risk_periods(conn, risk_period_rows)
         total_seq += n_seq
         total_per += n_per

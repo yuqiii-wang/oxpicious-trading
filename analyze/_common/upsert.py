@@ -452,12 +452,31 @@ async def build_and_insert_chunked(
     date-chunk is built (via ``build_fn``), skip-filtered, and inserted
     before the next chunk is built.
 
+    Insert strategy: COPY is used in BOTH force and incremental modes.
+    In incremental mode the per-sec_type skip-filter (called below)
+    removes every date that already has rows in the target table, so the
+    remaining rows are guaranteed conflict-free — COPY bypasses the
+    per-row ON CONFLICT arbiter check and is typically 5-10× faster than
+    ``INSERT ... ON CONFLICT`` on multi-million-row loads.
+
+    Parallelism (producer-consumer):
+      - The build loop (build_fn) is CPU/GPU-bound (pandas merge, sanitize)
+        and runs sequentially — it cannot be parallelized.
+      - COPY is I/O-bound (network + WAL flush) and CAN run in parallel
+        across pool connections.
+      - This function overlaps the two: while chunk N's COPY runs on a
+        pool connection, the build loop builds chunk N+1 on the CPU. A
+        semaphore bounds how many chunks can be in-flight, bounding peak
+        memory to ``max_concurrent`` chunks' dicts (~160 MB each).
+      - Chunks are date-bounded and the target table PK includes date, so
+        two chunks never share a date → no PK conflict even when COPYs
+        run concurrently into the same table.
+
     Args:
-        conn: asyncpg connection (used for skip-filter + sequential insert).
-        pool: connection pool (reserved for future parallel-batch use;
-            currently the insert runs sequentially on ``conn`` for memory
-            safety — parallel insert would require holding multiple
-            chunks' dicts simultaneously).
+        conn: asyncpg connection (used for skip-filter; used for COPY
+            when ``pool`` is None or ``max_concurrent <= 1``).
+        pool: connection pool for parallel COPY. When None or when
+            ``max_concurrent <= 1``, COPY runs sequentially on ``conn``.
         df: source DataFrame (already filtered to target dates by the
             caller). Must have a ``date`` column and a ``sec_type`` column.
         build_fn: callable(sub_df) -> list[dict]. Assembles + sanitizes
@@ -465,13 +484,15 @@ async def build_and_insert_chunked(
             ``lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows)``;
             for mov_ave_rsi it is ``sanitize_rsi_rows``.
         table_name: target table (schema-qualified).
-        key_columns: PK columns for ON CONFLICT (incremental upsert).
-        force: when True, use COPY (table pre-truncated); else upsert.
+        key_columns: PK columns (used by the skip-filter; COPY itself
+            doesn't need them).
+        force: when True, table is pre-truncated (skip-filter is a no-op).
         sec_types: iterable of sec_type values for the per-sec_type
             skip-filter.
         chunk_target_rows: target rows per date-chunk (date boundaries
             respected).
-        max_concurrent: reserved (sequential insert currently).
+        max_concurrent: maximum parallel COPY tasks. Each acquires one
+            pool connection. MUST be ≤ the pool's ``max_size``.
         label: progress-message prefix.
 
     Returns:
@@ -482,32 +503,106 @@ async def build_and_insert_chunked(
     sub_frames = group_df_by_date_chunks(df, chunk_target_rows)
     n_chunks = len(sub_frames)
     prefix = f"      {label} " if label else "      "
-    print(f"{prefix}build+insert: {n_chunks} date-chunks "
-          f"(~{chunk_target_rows:,} rows/chunk), sequential "
-          f"({'COPY' if force else 'upsert'})", flush=True)
 
     sec_types_set = set(sec_types)
+
+    # Decide parallel vs sequential. Parallel requires a pool, >1 chunk,
+    # and >1 max_concurrent. Otherwise sequential on conn is simpler and
+    # avoids pool-acquire overhead for tiny loads.
+    use_parallel = (
+        pool is not None
+        and max_concurrent > 1
+        and n_chunks > 1
+    )
+
+    if use_parallel:
+        pool_max = getattr(pool, "_maxsize", max_concurrent)
+        concurrency = max(1, min(max_concurrent, n_chunks, pool_max))
+        print(f"{prefix}build+insert: {n_chunks} date-chunks "
+              f"(~{chunk_target_rows:,} rows/chunk), parallel COPY "
+              f"({concurrency} concurrent, pool max_size={pool_max})",
+              flush=True)
+        return await _build_and_insert_parallel(
+            conn, pool, sub_frames, build_fn, table_name,
+            sec_types_set, concurrency, n_chunks, prefix,
+        )
+    else:
+        print(f"{prefix}build+insert: {n_chunks} date-chunks "
+              f"(~{chunk_target_rows:,} rows/chunk), sequential (COPY)",
+              flush=True)
+        return await _build_and_insert_sequential(
+            conn, sub_frames, build_fn, table_name,
+            sec_types_set, n_chunks, prefix,
+        )
+
+
+async def _build_and_insert_sequential(
+    conn, sub_frames, build_fn, table_name,
+    sec_types_set, n_chunks, prefix,
+):
+    """Sequential build + COPY on a single connection."""
     total = 0
     for i, sub in enumerate(sub_frames, start=1):
-        # Build this chunk's row dicts (assembled + sanitized).
         rows = build_fn(sub)
         if not rows:
             continue
-        # Per-sec_type skip-filter (safety net; no-op in force mode).
         rows = await _filter_per_sec_type_chunk(
             conn, table_name, rows, sec_types_set,
         )
         if not rows:
             continue
-        # Insert this chunk immediately, then let its dicts go out of
-        # scope so memory is reclaimed before the next chunk is built.
-        if force:
-            n = await copy_insert_async(conn, table_name, rows)
-        else:
-            n = await bulk_upsert_async(
-                conn, table_name, rows, key_columns=key_columns,
-            )
+        n = await copy_insert_async(conn, table_name, rows)
         total += n
-        print(f"{prefix}chunk {i}/{n_chunks}: inserted {n:,} rows "
+        print(f"{prefix}chunk {i}/{n_chunks}: COPY {n:,} rows "
               f"(cumulative {total:,})", flush=True)
     return total
+
+
+async def _build_and_insert_parallel(
+    conn, pool, sub_frames, build_fn, table_name,
+    sec_types_set, concurrency, n_chunks, prefix,
+):
+    """Parallel build + COPY: build sequentially, COPY in parallel.
+
+    The build loop (CPU/GPU-bound) runs sequentially — each chunk's dicts
+    are built via ``build_fn`` and skip-filtered on ``conn`` before being
+    submitted to a parallel COPY worker. The COPY (I/O-bound) runs on a
+    pool connection, overlapping with the next chunk's build.
+
+    A semaphore bounds how many chunks can be in-flight (built but not
+    yet COPY'd), bounding peak memory to ``concurrency`` chunks' dicts.
+    """
+    sem = asyncio.Semaphore(concurrency)
+    lock = asyncio.Lock()
+    total_counter = [0]
+    copy_tasks: list = []
+
+    async def _copy_worker(chunk_idx, rows):
+        async with sem:
+            async with pool.acquire() as pool_conn:
+                n = await copy_insert_async(pool_conn, table_name, rows)
+            async with lock:
+                total_counter[0] += n
+                so_far = total_counter[0]
+            print(f"{prefix}chunk {chunk_idx}/{n_chunks}: COPY {n:,} rows "
+                  f"(cumulative {so_far:,})", flush=True)
+            return n
+
+    for i, sub in enumerate(sub_frames, start=1):
+        # Build sequentially (CPU/GPU-bound — cannot parallelize).
+        rows = build_fn(sub)
+        if not rows:
+            continue
+        # Skip-filter on main conn (fast single SQL per sec_type).
+        rows = await _filter_per_sec_type_chunk(
+            conn, table_name, rows, sec_types_set,
+        )
+        if not rows:
+            continue
+        # Submit to a parallel COPY worker. The semaphore blocks if too
+        # many chunks are already in-flight, bounding peak memory.
+        task = asyncio.create_task(_copy_worker(i, rows))
+        copy_tasks.append(task)
+
+    results = await asyncio.gather(*copy_tasks)
+    return sum(results)

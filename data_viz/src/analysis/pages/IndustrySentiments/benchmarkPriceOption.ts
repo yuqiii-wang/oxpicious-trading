@@ -327,32 +327,25 @@ export function buildBenchmarkPriceOption(
       }
     }
 
-    // Industry visible line (on top, no stack)
+    // Layered shade only (base + pos + neg stacked area series). The top
+    // edge of the shade traces the industry curve — no separate dashed
+    // line is rendered on top. All three layers share the industry label so
+    // the legend item toggles the entire shade.
     series.push({
       name: ind.industry_label,
-      type: "line",
-      data: indDisplayValues,
-      showSymbol: false,
-      lineStyle: { color: indColor, width: 1.2, type: "dashed" },
-      itemStyle: { color: indColor },
-      z: 8,
-    });
-
-    // Base (invisible) — stack layer
-    series.push({
-      name: `_base_${i}`,
       type: "line",
       data: baseData,
       stack: stackId,
       symbol: "none",
       lineStyle: { opacity: 0 },
+      itemStyle: { color: indColor },
       z: 1,
       tooltip: { show: false },
     });
 
     // Positive delta (green shade) — stack layer
     series.push({
-      name: `_pos_${i}`,
+      name: ind.industry_label,
       type: "line",
       data: posData,
       stack: stackId,
@@ -365,7 +358,7 @@ export function buildBenchmarkPriceOption(
 
     // Negative delta (red shade) — stack layer
     series.push({
-      name: `_neg_${i}`,
+      name: ind.industry_label,
       type: "line",
       data: negData,
       stack: stackId,
@@ -414,8 +407,8 @@ export function buildBenchmarkPriceOption(
     }
   }
 
-  // ---- Legend: benchmark + industry labels (skip internal _base/_pos/_neg
-  // and _indAmtRemainder_*). When trading-amount bars are shown, also list
+  // ---- Legend: benchmark + industry labels (each industry's label toggles
+  // its three-layer shade). When trading-amount bars are shown, also list
   // "Trading Amt" and each industry's "(shared)" bar. ----
   const legendData: string[] = [benchmarkName];
   if (showTradingAmt) {

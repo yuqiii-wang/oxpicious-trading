@@ -58,6 +58,11 @@ export default function StockPage() {
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [data, setData] = useState<LiveDataCombinedResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  // Separate loading flag for the classification NAV tree (sectors/strategies)
+  // so the nav can show its inline spinner during a themes refetch (e.g. when
+  // the exchange filter changes) without interfering with the content-area
+  // loading state below.
+  const [navLoading, setNavLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [searchCode, setSearchCode] = useState<string | null>(null);
@@ -66,6 +71,7 @@ export default function StockPage() {
   // Load themes + available dates on mount, on refresh, and when exchange
   // changes (so the nav tree respects the exchange filter).
   useEffect(() => {
+    setNavLoading(true);
     Promise.all([
       fetchLiveDataThemes(SEC_TYPE, exchange),
       fetchLiveDataStrategyThemes(SEC_TYPE, exchange),
@@ -96,8 +102,12 @@ export default function StockPage() {
         } else if (list.length > 0) {
           setSectorId((prev) => prev ?? list[0].sector_id);
         }
+        setNavLoading(false);
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => {
+        setError(e.message);
+        setNavLoading(false);
+      });
   }, [refreshKey, exchange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset to page 1 whenever sector / industry / strategy / theme / exchange / date / search changes.
@@ -273,6 +283,7 @@ export default function StockPage() {
         themeSlug={themeSlug}
         onStrategyChange={handleStrategyChange}
         onThemeChange={handleThemeChange}
+        loading={navLoading}
       />
 
       {loading && (

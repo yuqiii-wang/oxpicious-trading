@@ -106,7 +106,7 @@ async def build_classification(
     indices = create_dummy_indices(etfs, indices, catalog, verbose)
 
     # --- 3. Map stocks to indices (all qualifying, weight > 2%, excl. strategy-only) ---
-    stocks = await classify_stocks(conn, indices, verbose)
+    stocks = await classify_stocks(conn, indices, catalog, verbose)
 
     return {
         "version": 1,

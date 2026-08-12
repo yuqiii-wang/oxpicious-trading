@@ -1,7 +1,7 @@
 /**
  * Express API server for the data_viz dashboard.
  * Queries the PostgreSQL database (stats schema) via the shared db service.
- * See lib/db.ts for connection-pool setup and database/.env for config.
+ * See services/db.service.ts for connection-pool setup and database/.env for config.
  */
 import express, {
   type Request,

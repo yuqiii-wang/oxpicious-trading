@@ -1,4 +1,8 @@
-# download, run daily
+# download, run on every biz date 19:00 (A-share trading day AND hour >= 19).
+# Set FORCE_DOWNLOADS=1 to bypass the guard for manual/test runs.
+_is_biz_date=$(python -c "from _common._holidays_and_weekdays import is_trading_day; from datetime import date; print(int(is_trading_day(date.today())))")
+_cur_hm=$(date +%H%M)
+if [ "${FORCE_DOWNLOADS:-0}" = "1" ] || { [ "$_is_biz_date" = "1" ] && [ "$_cur_hm" -ge 1900 ]; }; then
 for m in \
   downloads.stock.szse.trend \
   downloads.etf.szse.trend \
@@ -12,15 +16,15 @@ for m in \
   downloads.bond.chinabond \
   downloads.macro.pboc.repo_news \
   downloads.options.sse.price \
-  downloads.macro.pboc.lpr_news
+  downloads.macro.pboc.lpr_news \
+  downloads.macro.zhihu.news \
 do
   python -m "$m"
 done
 
-# download, run daily
+# download, run on every biz date 19:00 (cont.)
 for m in \
-  downloads.index.csindex.quote \
-  downloads.macro.zhihu.news
+  downloads.index.csindex.quote
 do
   python -m "$m"
 done
@@ -52,6 +56,7 @@ for m in \
 do
   python -m "$m"
 done
+fi
 
 # on monthly start date
 python -m downloads.etf.sse.composition
@@ -71,6 +76,7 @@ python -m downloads.stock.szse.archive
 python -m downloads.etf.szse.archive
 python -m downloads.index.szse.archive
 python -m downloads.stock.sse.archive
+python -m downloads.index.cnindex.archive
 
 # build, run once
 python -m builds.classification
@@ -80,6 +86,7 @@ python -m builds.sec_info
 python -m downloads.stream.sse.price
 python -m downloads.stream.szse.price
 python -m downloads.stream.csindex.price
+python -m downloads.stream.cnindex.price
 
 # for strategy — discover all available secs in analysis.mov_ave_spreads_detail,
 # backtest them, then compute internal risk metrics for every run.

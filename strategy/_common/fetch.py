@@ -57,8 +57,8 @@ async def fetch_strategy_seqs(
     """Return [(seq_id, code), ...] for the given sec_type, optionally
     filtered by a code list.
 
-    strategy_seq is per-code (one row per (strategy, code) run), so this
-    reads directly from strategy_seq — no JOIN to trade_decision needed.
+    strategy_identity is per-code (one row per (strategy, code) run), so this
+    reads directly from strategy_identity — no JOIN to trade_decision needed.
 
     If ``codes`` is empty/None, returns ALL (seq_id, code) pairs for the
     sec_type. Used by the risk pipeline to know which seqs to compute risk
@@ -67,7 +67,7 @@ async def fetch_strategy_seqs(
     if codes:
         rows = await conn.fetch(
             "SELECT seq_id, code "
-            "FROM strategy.strategy_seq "
+            "FROM strategy.strategy_identity "
             "WHERE sec_type = $1 AND code = ANY($2::text[]) "
             "ORDER BY seq_id, code",
             sec_type, sorted(codes),
@@ -75,7 +75,7 @@ async def fetch_strategy_seqs(
     else:
         rows = await conn.fetch(
             "SELECT seq_id, code "
-            "FROM strategy.strategy_seq "
+            "FROM strategy.strategy_identity "
             "WHERE sec_type = $1 "
             "ORDER BY seq_id, code",
             sec_type,
@@ -89,7 +89,7 @@ async def fetch_strategy_seqs(
 async def fetch_decisions(
     conn,
     seq_id: int,
-    columns: str = "decision_no, side, signal_date, exec_date, qty, fill_price, "
+    columns: str = "decision_no, side, exec_date, qty, fill_price, "
                    "realized_pnl, signal_reason",
 ) -> List[Dict[str, Any]]:
     """Fetch trade_decision rows for a seq_id, ordered chronologically.
@@ -140,3 +140,52 @@ async def fetch_close_prices(
     )
     return [{"date": r["date"], "close_price": float(r["close_price"])}
             for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# strategy_daily reads — used by the risk pipeline to compute the per-period
+# mark-to-market change in unrealized_pnl (unrealized_pnl(end of period) -
+# unrealized_pnl(end of previous period)). strategy_daily is written by the
+# backtest runner BEFORE risks are computed, so it is available here.
+# ---------------------------------------------------------------------------
+async def fetch_daily_unrealized(
+    conn,
+    seq_id: int,
+) -> List[Dict[str, Any]]:
+    """Fetch the daily unrealized_pnl series for a seq_id, sorted by date.
+
+    Returns rows as dicts ``{"trade_date": date, "unrealized_pnl": float}``.
+    Used by the risk pipeline's per-period MTM-change computation.
+    """
+    rows = await conn.fetch(
+        "SELECT trade_date, unrealized_pnl "
+        "FROM strategy.strategy_daily "
+        "WHERE seq_id = $1 "
+        "ORDER BY trade_date ASC",
+        seq_id,
+    )
+    return [{"trade_date": r["trade_date"],
+             "unrealized_pnl": float(r["unrealized_pnl"])}
+            for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# strategy_results reads — total_buy_cost (peak capital deployed) is the
+# stable denominator for the risk score's loss_fraction. Reads from the 1:1
+# strategy_results row written by the backtest runner.
+# ---------------------------------------------------------------------------
+async def fetch_total_buy_cost(conn, seq_id: int) -> float:
+    """Return total_buy_cost (peak normalized capital deployed) for a seq_id.
+
+    Used by the risk pipeline as the denominator for loss_fraction
+    (|window loss| / total_buy_cost) — the standard "% of capital" basis.
+    Returns 0.0 when the row is missing.
+    """
+    row = await conn.fetchrow(
+        "SELECT total_buy_cost FROM strategy.strategy_results "
+        "WHERE seq_id = $1",
+        seq_id,
+    )
+    if row is None or row["total_buy_cost"] is None:
+        return 0.0
+    return float(row["total_buy_cost"])

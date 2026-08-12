@@ -1,0 +1,545 @@
+/**
+ * Build the ECharts option for the Industry Hypes & Drains SEASONAL chart.
+ *
+ * PLOT STYLE
+ *   Benchmark line (rebased to 100) with each industry's OWN return curve
+ *   overlaid. Green shade = curve above benchmark (HYPE), red shade =
+ *   curve below benchmark (DRAIN).
+ *
+ * INDUSTRY CURVE FORMULA (industry's own return, NOT ex-industry benchmark)
+ *   Given the identity: bench_return = swf × ind_return + (1-swf) × non_ind_return
+ *   Solve for ind_return:
+ *     ind_return = (bench_return - (1-swf) × non_ind_return) / swf
+ *   where swf = benchmark_shared_weight / 100 (0..1)
+ *         non_ind_return = rolling / 100 - 1  (from the non-this-industry
+ *                        rolling price column, which is a 100-based factor)
+ *   The curve is rebased to 100:  curve(t) = 100 × (1 + ind_return(t))
+ *
+ *   With this formula, HYPE industries (ind_return > bench_return) plot
+ *   ABOVE the benchmark, and DRAIN industries plot BELOW — intuitive.
+ *
+ * SEASONAL STATE MACHINE
+ *   Industries are ranked per CALENDAR MONTH. The plot is daily, but WHICH
+ *   industries appear and at what OPACITY depends on the seasonal ranking:
+ *
+ *   ACTIVE  — industry is in the current month's top/bottom 5.
+ *             Full opacity line + shade.
+ *   FADING  — was ranked in a past month, NOT in the current month, but
+ *             the curve is still on the SAME side of the benchmark (HYPE:
+ *             above, DRAIN: below). Very light transparent line, no shade.
+ *   HIDDEN  — curve has CROSSED the benchmark (flipped sides), or the
+ *             industry was never ranked. Null (not rendered).
+ *
+ *   Once HIDDEN, the industry can only reappear as ACTIVE (when it returns
+ *   to the top/bottom 5 in a future month). It CANNOT go HIDDEN → FADING.
+ */
+import type { EChartsOption } from "echarts";
+import type { ThemeMode } from "@/store/filters";
+import type {
+  IndustryHypesAndDrainsResponse,
+  SeasonalRankingRow,
+} from "../../../../shared/types";
+import {
+  UP_COLOR,
+  DOWN_COLOR,
+  PALETTE_HI,
+  MUTED_PALETTE,
+  axisColors,
+  commonLegend,
+  commonGrid,
+  commonDataZoom,
+} from "@/theme/chart-palette";
+import { fmtNum } from "@/lib/series";
+
+// ----------------------------------------------------------------------------
+//  Types
+// ----------------------------------------------------------------------------
+
+/** Per-date visual state for an industry curve. */
+const ACTIVE = 2;
+const FADING = 1;
+const HIDDEN = 0;
+
+/** One industry's computed state + display data, ready for ECharts series. */
+interface IndustryComputed {
+  industry_id: string;
+  industry_label: string;
+  rank_side: "HYPE" | "DRAIN";
+  /** Latest season's rank (1-3), for the legend label. */
+  latest_rank: number;
+  /** Per-date state: ACTIVE / FADING / HIDDEN (aligned to benchmark dates). */
+  states: Uint8Array;
+  /** Per-date display values (rebased to 100), aligned to benchmark dates. */
+  displayValues: Array<number | null>;
+  /** Per-date industry return (fractional, for tooltip). */
+  industryReturns: Array<number | null>;
+}
+
+// ----------------------------------------------------------------------------
+//  Helpers
+// ----------------------------------------------------------------------------
+
+/** Convert a YYYY-MM-DD date string to a season key like "2026-08". */
+function dateToSeason(date: string): string {
+  return date.slice(0, 7);
+}
+
+/** Format a fractional value as a signed percentage string. */
+function fmtPctSigned(v: number | null, digits = 2): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return (v >= 0 ? "+" : "") + fmtNum(v * 100, digits) + "%";
+}
+
+// ----------------------------------------------------------------------------
+//  State machine: compute per-date ACTIVE/FADING/HIDDEN for one industry
+// ----------------------------------------------------------------------------
+
+/**
+ * Build a map: season_qkey → { rank_side, rank } for the given industry.
+ * If an industry is ranked as BOTH HYPE and DRAIN in the same season, pick
+ * the one with the higher |peak_metric_value|.
+ */
+function buildSeasonMap(
+  rankings: SeasonalRankingRow[],
+  industryId: string,
+): Map<string, { rank_side: "HYPE" | "DRAIN"; rank: number }> {
+  const map = new Map<string, { rank_side: "HYPE" | "DRAIN"; rank: number }>();
+  for (const r of rankings) {
+    if (r.industry_id !== industryId) continue;
+    const existing = map.get(r.season_qkey);
+    if (existing) {
+      // Pick the one with higher |peak_metric_value|
+      const existingRankings = rankings.filter(
+        (x) => x.industry_id === industryId && x.season_qkey === r.season_qkey,
+      );
+      const hypeEntry = existingRankings.find((x) => x.rank_side === "HYPE");
+      const drainEntry = existingRankings.find((x) => x.rank_side === "DRAIN");
+      if (hypeEntry && drainEntry) {
+        if (
+          Math.abs(hypeEntry.peak_metric_value ?? 0) >=
+          Math.abs(drainEntry.peak_metric_value ?? 0)
+        ) {
+          map.set(r.season_qkey, {
+            rank_side: "HYPE",
+            rank: hypeEntry.rank,
+          });
+        } else {
+          map.set(r.season_qkey, {
+            rank_side: "DRAIN",
+            rank: drainEntry.rank,
+          });
+        }
+      }
+    } else {
+      map.set(r.season_qkey, {
+        rank_side: r.rank_side,
+        rank: r.rank,
+      });
+    }
+  }
+  return map;
+}
+
+/**
+ * Compute per-date state for one industry using the state machine.
+ *
+ * With the industry-own-return curve:
+ *   HYPE: curve ABOVE benchmark (displayValue > 100) → FADING while above
+ *   DRAIN: curve BELOW benchmark (displayValue < 100) → FADING while below
+ *
+ * @param dates          Benchmark dates (chronological).
+ * @param displayValues  Industry's own-return curve (rebased to 100, aligned to dates).
+ * @param seasonMap      season_qkey → { rank_side, rank } for this industry.
+ * @returns Uint8Array of ACTIVE/FADING/HIDDEN per date.
+ */
+function computeStates(
+  dates: string[],
+  displayValues: Array<number | null>,
+  seasonMap: Map<string, { rank_side: "HYPE" | "DRAIN"; rank: number }>,
+): { states: Uint8Array; lastRankSide: "HYPE" | "DRAIN" } {
+  const n = dates.length;
+  const states = new Uint8Array(n);
+  let currentState = HIDDEN;
+  let currentRankSide: "HYPE" | "DRAIN" | null = null;
+
+  for (let i = 0; i < n; i++) {
+    const season = dateToSeason(dates[i]);
+    const ranked = seasonMap.get(season);
+    const dv = displayValues[i];
+
+    if (ranked) {
+      // Industry is ranked in this season → ACTIVE
+      currentState = ACTIVE;
+      currentRankSide = ranked.rank_side;
+      states[i] = ACTIVE;
+    } else {
+      // Not ranked in this season
+      if (currentState === HIDDEN || currentRankSide === null) {
+        states[i] = HIDDEN;
+      } else {
+        if (dv == null) {
+          currentState = HIDDEN;
+          states[i] = HIDDEN;
+        } else if (currentRankSide === "HYPE") {
+          // HYPE: curve should be ABOVE benchmark (dv >= 100)
+          if (dv >= 100) {
+            currentState = FADING;
+            states[i] = FADING;
+          } else {
+            // Crossed below benchmark → HIDDEN
+            currentState = HIDDEN;
+            states[i] = HIDDEN;
+          }
+        } else {
+          // DRAIN: curve should be BELOW benchmark (dv <= 100)
+          if (dv <= 100) {
+            currentState = FADING;
+            states[i] = FADING;
+          } else {
+            // Crossed above benchmark → HIDDEN
+            currentState = HIDDEN;
+            states[i] = HIDDEN;
+          }
+        }
+      }
+    }
+  }
+
+  return { states, lastRankSide: currentRankSide ?? "HYPE" };
+}
+
+// ----------------------------------------------------------------------------
+//  Main option builder
+// ----------------------------------------------------------------------------
+
+export function buildHypesAndDrainsOption(
+  data: IndustryHypesAndDrainsResponse,
+  themeMode: ThemeMode,
+  selectedDate?: string | null,
+): EChartsOption {
+  const c = axisColors(themeMode);
+  const allDates = data.benchmark_series.map((r) => r.date);
+  const allCloses = data.benchmark_series.map((r) => r.close);
+  const allReturns = data.benchmark_series.map((r) => r.daily_return);
+  const totalN = allDates.length;
+
+  if (totalN === 0) {
+    return { backgroundColor: "transparent", animation: false };
+  }
+
+  // ---- Compute benchmark values (rebase to 100 at first non-null close) ----
+  const firstClose = allCloses.find((v) => v != null && v !== 0) ?? null;
+  const benchmarkValues: Array<number | null> = firstClose
+    ? allCloses.map((v) => (v != null ? (v / firstClose) * 100 : null))
+    : allCloses.map(() => null);
+
+  // ---- Compute benchmark N-day return for each date (for industry return formula) ----
+  // The industry's own return is derived from the identity:
+  //   bench_return = swf × ind_return + (1-swf) × non_ind_return
+  // We compute bench_return from closes: close(t) / close(t-N) - 1
+  // where N = data.period_days.
+  const n = totalN;
+  const dates = allDates;
+  const closes = allCloses;
+  const returns = allReturns;
+
+  // ---- Compute each industry's state + display values ----
+  const computed: IndustryComputed[] = [];
+
+  for (const ind of data.industry_series) {
+    // Build rolling + shared_weight lookup aligned to benchmark dates
+    const rollingByDate = new Map<string, number | null>();
+    const swByDate = new Map<string, number | null>();
+    for (const r of ind.rows) {
+      rollingByDate.set(r.date, r.rolling);
+      swByDate.set(r.date, r.benchmark_shared_weight);
+    }
+
+    // Build season map for this industry
+    const seasonMap = buildSeasonMap(data.seasonal_rankings, ind.industry_id);
+    if (seasonMap.size === 0) continue; // industry has no rankings — skip
+
+    // Compute industry's own return for each date using the identity:
+    //   bench_return = swf × ind_return + (1-swf) × non_ind_return
+    //   → ind_return = (bench_return - (1-swf) × non_ind_return) / swf
+    //   displayValue = 100 × (1 + ind_return)
+    const periodDays = data.period_days;
+
+    const displayValues: Array<number | null> = new Array(n).fill(null);
+    const industryReturns: Array<number | null> = new Array(n).fill(null);
+
+    for (let i = 0; i < n; i++) {
+      const rolling = rollingByDate.get(dates[i]) ?? null;
+      const sw = swByDate.get(dates[i]) ?? null;
+      const close = closes[i];
+      if (rolling == null || sw == null || close == null || sw <= 0 || sw >= 95) continue;
+
+      // Compute benchmark N-day return: close(i) / close(i - periodDays) - 1
+      const lookbackIdx = i - periodDays;
+      if (lookbackIdx < 0) continue;
+      const closeNago = closes[lookbackIdx];
+      if (closeNago == null || closeNago === 0) continue;
+
+      const benchRet = close / closeNago - 1;
+      const nonIndRet = rolling / 100 - 1;
+      const swf = sw / 100;
+
+      // Industry return: (benchRet - (1-swf) × nonIndRet) / swf
+      const indRet = (benchRet - (1 - swf) * nonIndRet) / swf;
+      industryReturns[i] = indRet;
+      displayValues[i] = 100 * (1 + indRet);
+    }
+
+    // Compute states
+    const { states, lastRankSide } = computeStates(dates, displayValues, seasonMap);
+
+    // Find latest season's rank for the legend label
+    const sortedSeasons = Array.from(seasonMap.keys()).sort();
+    const latestSeason = sortedSeasons[sortedSeasons.length - 1];
+    const latestInfo = seasonMap.get(latestSeason);
+    const latest_rank = latestInfo?.rank ?? 1;
+
+    computed.push({
+      industry_id: ind.industry_id,
+      industry_label: ind.industry_label,
+      rank_side: lastRankSide,
+      latest_rank,
+      states,
+      displayValues,
+      industryReturns,
+    });
+  }
+
+  // ---- Build series array ----
+  const series: EChartsOption["series"] = [];
+
+  // 1. Benchmark line
+  const benchmarkName = `${data.benchmark_name} (100-based)`;
+  series.push({
+    name: benchmarkName,
+    type: "line",
+    data: benchmarkValues,
+    showSymbol: false,
+    lineStyle: { color: PALETTE_HI, width: 1.5 },
+    itemStyle: { color: PALETTE_HI },
+    z: 10,
+    // Vertical markLine at the user-clicked date — visual indicator for
+    // which month the detail table below is reflecting.
+    markLine: selectedDate
+      ? {
+          symbol: "none",
+          silent: true,
+          label: { show: false },
+          lineStyle: { color: c.textColor, type: "dashed", width: 1, opacity: 0.5 },
+          data: [{ xAxis: selectedDate }],
+        }
+      : undefined,
+  });
+
+  // 2. Per-industry series
+  const legendData: string[] = [benchmarkName];
+  const indReturnsForTooltip: Array<Array<number | null>> = [];
+  const indDisplayForTooltip: Array<Array<number | null>> = [];
+  const indStatesForTooltip: Array<Uint8Array> = [];
+  const indLabelsForTooltip: Array<{ label: string; rank_side: string }> = [];
+
+  for (let idx = 0; idx < computed.length; idx++) {
+    const ind = computed[idx];
+    const indColor = MUTED_PALETTE[idx % MUTED_PALETTE.length];
+    const stackId = `hdShade_${idx}`;
+
+    // Build data arrays for the layered shade (ACTIVE only).
+    // The expanded dashed curve (FADING + ACTIVE lines) has been removed —
+    // only the layered shade remains, whose top edge traces the industry
+    // curve during ACTIVE periods.
+    const baseData: Array<number | null> = new Array(n).fill(null);
+    const posData: Array<number | null> = new Array(n).fill(null);
+    const negData: Array<number | null> = new Array(n).fill(null);
+
+    for (let i = 0; i < n; i++) {
+      const state = ind.states[i];
+      const dv = ind.displayValues[i];
+      if (dv == null) continue;
+
+      if (state === ACTIVE) {
+        // Shade (only for ACTIVE)
+        const bv = benchmarkValues[i];
+        if (bv != null) {
+          const diff = dv - bv;
+          baseData[i] = Math.min(bv, dv);
+          if (diff >= 0) {
+            // Curve above benchmark → HYPE → green shade
+            posData[i] = diff;
+            negData[i] = 0;
+          } else {
+            // Curve below benchmark → DRAIN → red shade
+            posData[i] = 0;
+            negData[i] = -diff;
+          }
+        }
+      }
+    }
+
+    // Legend label includes rank_side prefix + latest rank
+    const labelPrefix = ind.rank_side === "HYPE" ? "▲" : "▼";
+    const legendLabel = `${labelPrefix} #${ind.latest_rank} ${ind.industry_label}`;
+    legendData.push(legendLabel);
+
+    // Store for tooltip
+    indReturnsForTooltip.push(ind.industryReturns);
+    indDisplayForTooltip.push(ind.displayValues);
+    indStatesForTooltip.push(ind.states);
+    indLabelsForTooltip.push({ label: legendLabel, rank_side: ind.rank_side });
+
+    // Layered shade only (base + pos + neg stacked area series). The top
+    // edge of the shade traces the industry curve during ACTIVE periods —
+    // no separate dashed line is rendered on top.
+    series.push({
+      name: legendLabel,
+      type: "line",
+      data: baseData,
+      stack: stackId,
+      symbol: "none",
+      lineStyle: { opacity: 0 },
+      z: 4,
+      tooltip: { show: false },
+    });
+
+    // ACTIVE shade pos (green — curve above benchmark = HYPE)
+    series.push({
+      name: legendLabel,
+      type: "line",
+      data: posData,
+      stack: stackId,
+      symbol: "none",
+      lineStyle: { opacity: 0 },
+      areaStyle: { color: UP_COLOR, opacity: 0.35 },
+      z: 5,
+      tooltip: { show: false },
+    });
+
+    // ACTIVE shade neg (red — curve below benchmark = DRAIN)
+    series.push({
+      name: legendLabel,
+      type: "line",
+      data: negData,
+      stack: stackId,
+      symbol: "none",
+      lineStyle: { opacity: 0 },
+      areaStyle: { color: DOWN_COLOR, opacity: 0.35 },
+      z: 5,
+      tooltip: { show: false },
+    });
+  }
+
+  // ---- X-axis: year-month ticks at 3-month interval ----
+  const displayMonths = new Set<string>();
+  {
+    const orderedMonths: string[] = [];
+    const seen = new Set<string>();
+    for (const d of dates) {
+      const ym = d.slice(0, 7);
+      if (!seen.has(ym)) {
+        seen.add(ym);
+        orderedMonths.push(ym);
+      }
+    }
+    for (let i = 0; i < orderedMonths.length; i += 3) {
+      displayMonths.add(orderedMonths[i]);
+    }
+  }
+  const firstDateOfMonth = new Set<string>();
+  {
+    let prev = "";
+    for (const d of dates) {
+      const ym = d.slice(0, 7);
+      if (ym !== prev) {
+        firstDateOfMonth.add(d);
+        prev = ym;
+      }
+    }
+  }
+
+  // ---- Tooltip ----
+  const tooltipFormatter = (params: unknown): string => {
+    const arr = (Array.isArray(params) ? params : [params]) as Array<{
+      dataIndex?: number;
+    }>;
+    if (arr.length === 0) return "";
+    const idx = arr[0].dataIndex ?? 0;
+    const dt = dates[idx] ?? "—";
+    const bv = benchmarkValues[idx];
+    const rt = returns[idx];
+    const rsign = rt == null ? "" : rt >= 0 ? "▲ " : "▼ ";
+    let html = `
+      <div style="font-weight:600">${data.benchmark_name} (${data.benchmark_code})</div>
+      <div style="margin-top:2px">${dt}</div>
+      <div>Rebased: <b>${bv == null ? "—" : fmtNum(bv, 2)}</b></div>
+      <div>${rsign}Daily Return: <b style="color:${rt == null ? c.textColor : rt >= 0 ? UP_COLOR : DOWN_COLOR}">${fmtPctSigned(rt, 2)}</b></div>
+    `;
+    // Append each industry's value + state
+    for (let i = 0; i < indLabelsForTooltip.length; i++) {
+      const { label } = indLabelsForTooltip[i];
+      const state = indStatesForTooltip[i][idx];
+      const indRet = indReturnsForTooltip[i]?.[idx] ?? null;
+      const iv = indDisplayForTooltip[i]?.[idx] ?? null;
+      if (indRet == null || iv == null) {
+        continue; // skip industries with no data on this date
+      }
+      const stateLabel = state === ACTIVE ? "●" : state === FADING ? "○" : "✕";
+      const stateColor = state === ACTIVE ? c.textColor : state === FADING ? "#999" : "#ccc";
+      const retColor = indRet >= 0 ? UP_COLOR : DOWN_COLOR;
+      const retSign = indRet >= 0 ? "▲ " : "▼ ";
+      html += `<div style="opacity:${state === ACTIVE ? 1 : state === FADING ? 0.5 : 0.3}"><span style="color:${stateColor}">${stateLabel}</span> ${label}: <b>${fmtNum(iv, 2)}</b> <span style="opacity:0.7">${retSign}ret: <b style="color:${retColor}">${fmtPctSigned(indRet, 2)}</b></span></div>`;
+    }
+    return html;
+  };
+
+  return {
+    backgroundColor: "transparent",
+    animation: false,
+    grid: commonGrid({ left: 64, right: 24, bottom: 50, top: 32 }),
+    dataZoom: commonDataZoom(),
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "cross" },
+      backgroundColor: c.tooltipBg,
+      borderColor: c.splitLineColor,
+      textStyle: { color: c.textColor, fontSize: 11 },
+      formatter: tooltipFormatter,
+    },
+    legend: commonLegend(themeMode, {
+      itemWidth: 12,
+      itemHeight: 7,
+      data: legendData,
+    }),
+    xAxis: {
+      type: "category",
+      data: dates,
+      boundaryGap: true,
+      axisLine: { lineStyle: { color: c.axisLineColor } },
+      axisLabel: {
+        color: c.textColor,
+        fontSize: 9,
+        interval: (_idx: number, value: string) =>
+          displayMonths.has(value.slice(0, 7)) && firstDateOfMonth.has(value),
+        formatter: (v: string) => v.slice(0, 7),
+      },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      scale: true,
+      name: "Rebased (100)",
+      nameTextStyle: { color: c.textColor, fontSize: 9 },
+      axisLine: { lineStyle: { color: c.axisLineColor } },
+      axisLabel: {
+        color: c.textColor,
+        fontSize: 9,
+        formatter: (v: number) => fmtNum(v, 0),
+      },
+      splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
+    },
+    series,
+  };
+}

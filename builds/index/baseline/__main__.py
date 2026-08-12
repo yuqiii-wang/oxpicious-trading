@@ -79,6 +79,7 @@ import asyncio
 CSINDEX_DIR = os.path.join(PROJECT_ROOT, "temps", "csindex")
 SZSE_ARCHIVE_DIR = os.path.join(PROJECT_ROOT, "temps", "szse_archive")
 SZSE_TREND_DIR = os.path.join(PROJECT_ROOT, "temps", "szse_trend")
+CNINDEX_DIR = os.path.join(PROJECT_ROOT, "temps", "cnindex_archive")
 
 # SZSE broad-market benchmarks to load from szse_archive/szse_trend index CSVs.
 # These supplement the CSIndex history files with SZSE-only indexes.
@@ -404,6 +405,72 @@ def _load_szse_index_history(verbose: bool = True) -> list:
 
 
 # ============================================================================
+# Load CNINDEX (国证指数) daily CSVs → CSIndex schema
+# ============================================================================
+def _load_cnindex_history(verbose: bool = True) -> list:
+    """Load CNINDEX daily history CSVs and map to CSIndex schema.
+
+    Scans ``temps/cnindex_archive`` for ``{code}_history.csv`` files produced
+    by ``temps/convert_cnindex_xls.py`` (converted from the CNINDEX website's
+    xls export).  These cover CNINDEX-published indices (国证2000 399303,
+    国证A50 399310, 国证1000 399311) that are NOT available on csindex.com.cn
+    or the SZSE trend endpoint.
+
+    The CSVs already use the CSIndex history schema (date, indexCode,
+    indexName, open, high, low, close, trading_shares, trading_amount, change,
+    changePct, pe, consNumber), so only minimal normalization is needed:
+    trading_amount is already in yuan, trading_shares already in shares.
+
+    Returns a list of per-code DataFrames, each with a ``code`` column added.
+    Returns an empty list if no files are found.
+    """
+    history_files = sorted(glob.glob(os.path.join(CNINDEX_DIR, "*_history.csv")))
+    if verbose:
+        print(f"    [CNINDEX] {len(history_files)} history CSVs in {CNINDEX_DIR}",
+              flush=True)
+    if not history_files:
+        return []
+
+    dfs = []
+    for path in history_files:
+        try:
+            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
+        except Exception:
+            continue
+        if df is None or len(df) == 0:
+            continue
+
+        code = os.path.basename(path).replace("_history.csv", "")
+        if not VALID_CODE_RE.match(code):
+            continue
+        df["code"] = code
+
+        for col in ["open", "high", "low", "close", "trading_shares",
+                     "trading_amount", "change", "changePct", "pe", "consNumber"]:
+            if col in df.columns:
+                df[col] = df[col].apply(parse_num)
+
+        df["date"] = df["date"].apply(parse_date)
+        df = df.dropna(subset=["date"])
+
+        dfs.append(df)
+
+    if not dfs:
+        if verbose:
+            print(f"    [CNINDEX] No valid index data loaded", flush=True)
+        return []
+
+    if verbose:
+        for df in dfs:
+            code = df["code"].iloc[0]
+            name = df["indexName"].iloc[0] if "indexName" in df.columns and len(df) else ""
+            print(f"    [CNINDEX] {code} {name}: {len(df)} dates "
+                  f"({df['date'].min()} → {df['date'].max()})", flush=True)
+
+    return dfs
+
+
+# ============================================================================
 # Build daily history DataFrame (full per-code history for MA correctness)
 # ============================================================================
 def build_daily_df(existing_keys: set, shared_weights: dict = None,
@@ -474,6 +541,18 @@ def build_daily_df(existing_keys: set, shared_weights: dict = None,
     for df in szse_dfs:
         code = df["code"].iloc[0]
         # Skip if ALL its (date, code) pairs are already in DB
+        file_keys = {(d, code) for d in df["date"]}
+        if not file_keys:
+            continue
+        if file_keys.issubset(existing_keys):
+            n_skipped_files += 1
+            continue
+        dfs.append(df)
+
+    # Also load CNINDEX (国证指数) history for 399303 / 399310 / 399311
+    cnindex_dfs = _load_cnindex_history(verbose=verbose)
+    for df in cnindex_dfs:
+        code = df["code"].iloc[0]
         file_keys = {(d, code) for d in df["date"]}
         if not file_keys:
             continue

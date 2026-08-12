@@ -397,6 +397,7 @@ export default function MaSpreadPage() {
           setPage(1);
         }}
         onClearItemSelection={handleClearSearch}
+        loading={loading}
       />
 
       {loading && (

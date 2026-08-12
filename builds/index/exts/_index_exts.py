@@ -107,6 +107,7 @@ async def build_index_exts(conn, force: bool = False) -> None:
             JOIN stats.sec_classification sc
                 ON sc.code = l.code AND sc.type = 'etf'
             WHERE sc.parent_index_code <> ''
+              AND sc.is_primary_exchange = TRUE
             GROUP BY sc.parent_index_code, l.date
         ),
         etf_with_ma AS (
@@ -235,6 +236,7 @@ async def build_index_exts(conn, force: bool = False) -> None:
                 ON sc_idx.code = sc_etf.parent_index_code
                AND sc_idx.type = 'index'
             WHERE sc_etf.parent_index_code <> ''
+              AND sc_etf.is_primary_exchange = TRUE
             GROUP BY sc_idx.industry_id, l.date
         ),
         etf_ind_with_ma AS (

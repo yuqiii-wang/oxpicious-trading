@@ -20,7 +20,7 @@
  * per individual Index/ETF/Stock under the active industry/theme, paginated.
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Box, Chip, Pagination, Stack, Typography, type SxProps } from "@mui/material";
+import { Box, Chip, CircularProgress, Pagination, Stack, Typography, type SxProps } from "@mui/material";
 import type { SectorNode, StrategyNode } from "../../../../shared/types";
 import { PRIMARY_EXCHANGE_OPTIONS, SECONDARY_EXCHANGE_OPTIONS } from "../../utils/classify";
 import SimilarIndicesList from "./SimilarIndicesList";
@@ -83,6 +83,12 @@ interface Props {
   density?: "compact" | "comfortable";
   /** Show/hide the exchange filter row (default true). */
   showExchange?: boolean;
+
+  /** When TRUE, shows a small inline spinner at the right end of the Exchange
+   *  row to indicate the classification tree (sectors/strategies) is being
+   *  (re)fetched — e.g. on initial mount or when the exchange filter changes.
+   *  Consumers should drive this from their themes-fetch loading state. */
+  loading?: boolean;
 
   /** When TRUE (default), the LEFT (industry) and RIGHT (strategy) columns
    *  are mutually exclusive — selecting in one clears the other. When FALSE,
@@ -155,6 +161,7 @@ export default function SecClassificationNav({
   density = "compact",
   showExchange = true,
   mutuallyExclusive = true,
+  loading = false,
 }: Props) {
   const hasStrategyColumn = !!strategies && strategies.length > 0;
   const activeSector = sectors.find((s) => s.sector_id === sectorId) ?? null;
@@ -699,6 +706,14 @@ export default function SecClassificationNav({
                 sx={{ fontSize: chipFontSize }}
               />
             ))}
+            {/* Inline loading spinner — shown while the classification tree
+                is (re)fetched (initial mount or exchange change). Pushed to
+                the right end of the row so it sits after all exchange chips. */}
+            {loading && (
+              <Box sx={{ display: "inline-flex", alignItems: "center", ml: "auto", pl: 1 }}>
+                <CircularProgress size={14} sx={{ color: "text.secondary" }} />
+              </Box>
+            )}
           </ChipRow>
           {showCrossBorder && (
             <Box sx={{ pl: 3.5 }}>

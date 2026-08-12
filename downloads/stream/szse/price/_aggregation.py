@@ -13,6 +13,39 @@ from downloads._common.core import add_exchange_suffix
 
 from ._akshare_source import MinuteSample
 
+# 15:00 (market close) expressed as minutes-of-day. Once the wall-clock
+# reaches this, every window up to and including 15:00 is complete (the
+# market has closed) regardless of whether more bars can arrive.
+CLOSE_MINUTE_OF_DAY = 15 * 60  # 900
+
+
+def _emission_cutoff_minute(last_bar_minute: int) -> int:
+    """5-min rounding cutoff for window emission.
+
+    Discards the tail window whose end minute has not been reached by a
+    COMPLETE minute. Each 1-min source bar is timestamped at its START (the
+    bar at 14:35 covers 14:34:00-14:35:00) and the SZSE/AkShare sources return
+    real-time "close(now)", so a bar whose minute == the current wall-clock
+    minute may still be in progress. Round such bars down to the previous 5-min
+    window end so the in-progress tail is discarded.
+
+    A bar from a PAST minute is already complete (the wall-clock moved past
+    it), so no rounding is applied — this also correctly handles halted stocks
+    whose last bar is hours old. Once the wall-clock reaches 15:00 the market
+    is closed and every window up to and including 15:00 is emitted.
+
+    Returns the latest minute-of-day whose windows are safe to emit (always
+    <= last_bar_minute, so windows without data are still skipped).
+    """
+    now = datetime.now()
+    now_minute = now.hour * 60 + now.minute
+    if last_bar_minute < now_minute or now_minute >= CLOSE_MINUTE_OF_DAY:
+        # Latest bar is from a past minute (complete) or market has closed.
+        return last_bar_minute
+    # Latest bar falls on the current wall-clock minute — may be in progress.
+    # Round down to the previous 5-min window-end boundary.
+    return ((last_bar_minute - 1) // 5) * 5
+
 
 def _window_end_minute(bar_dt: datetime) -> time:
     """Return the end time of the 5-minute window a 1-minute bar falls into.
@@ -38,9 +71,9 @@ def aggregate_5min(
     Samples whose date does not match ``trade_date`` are dropped — this guards
     against AkShare handing back the previous day's bars before today's session
     opens (which would otherwise make a stock look "finished" at 15:00 of the
-    wrong day). Emits a window when its end time is at or before the latest
-    available bar (so the window is fully populated) and it has not been
-    emitted before.
+    wrong day). Emits a window when its end time is at or before the 5-min
+    rounding cutoff (``_emission_cutoff_minute``) — so the in-progress tail
+    window is discarded — and it has not been emitted before.
 
     Args:
         emitted: mutable set of already-emitted window-end ``time`` objects
@@ -73,13 +106,18 @@ def aggregate_5min(
     last_bar_minute = max(s[0].hour * 60 + s[0].minute for s in in_day)
     latest_time = time(last_bar_minute // 60, last_bar_minute % 60)
 
+    # 5-min rounding: discard the tail window whose end minute has not been
+    # reached by a COMPLETE minute (the current wall-clock minute may still
+    # be in progress — sources return real-time "close(now)").
+    cutoff_minute = _emission_cutoff_minute(last_bar_minute)
+
     identity_rows: List[dict] = []
     bar_rows: List[dict] = []
     for wend, pts in sorted(windows.items(), key=lambda kv: kv[0]):
         wend_minute = wend.hour * 60 + wend.minute
-        # Skip the window that is still in progress (its end time is after
-        # the latest bar we received -> more bars may still arrive).
-        if wend_minute > last_bar_minute:
+        # Skip windows whose end is past the cutoff (still in progress or
+        # the source has not yet returned enough bars to complete them).
+        if wend_minute > cutoff_minute:
             continue
         if wend in emitted:
             continue
@@ -153,11 +191,14 @@ def aggregate_index_5min(
     last_bar_minute = max(s[0].hour * 60 + s[0].minute for s in in_day)
     latest_time = time(last_bar_minute // 60, last_bar_minute % 60)
 
+    # 5-min rounding: discard the in-progress tail window (same as stocks).
+    cutoff_minute = _emission_cutoff_minute(last_bar_minute)
+
     identity_rows: List[dict] = []
     bar_rows: List[dict] = []
     for wend, pts in sorted(windows.items(), key=lambda kv: kv[0]):
         wend_minute = wend.hour * 60 + wend.minute
-        if wend_minute > last_bar_minute:
+        if wend_minute > cutoff_minute:
             continue
         if wend in emitted:
             continue

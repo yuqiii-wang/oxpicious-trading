@@ -28,8 +28,10 @@ BATCH_SIZE = 500
 # DB tables — the strategy schema is shared across all strategies.
 # Each strategy run writes one strategy_seq row + N trade_decision rows.
 # ---------------------------------------------------------------------------
-SEQ_TABLE = "strategy.strategy_seq"
+SEQ_TABLE = "strategy.strategy_identity"
+INFO_TABLE = "strategy.strategy_results"
 DECISION_TABLE = "strategy.trade_decision"
+DAILY_TABLE = "strategy.strategy_daily"
 
 # stats basic_stats table per sec_type — source of open/close for fill prices.
 # Indices use bare codes (e.g. "000970"); ETF/stock use suffixed codes

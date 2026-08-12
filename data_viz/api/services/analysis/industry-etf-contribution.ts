@@ -89,6 +89,7 @@ export async function getIndustryEtfPriceSeries(
       JOIN member_indices mi ON mi.code = sc.parent_index_code
       WHERE sc.type = 'etf'
         AND sc.is_active = TRUE
+        AND sc.is_primary_exchange = TRUE
         AND sc.parent_index_code <> ''
     )
     SELECT
@@ -194,7 +195,10 @@ export async function getIndustryEtfContributionBars(
         sc.parent_index_code
       FROM stats.sec_classification sc
       JOIN member_indices mi ON mi.code = sc.parent_index_code
-      WHERE sc.type = 'etf' AND sc.is_active = TRUE AND sc.parent_index_code <> ''
+      WHERE sc.type = 'etf'
+        AND sc.is_active = TRUE
+        AND sc.is_primary_exchange = TRUE
+        AND sc.parent_index_code <> ''
     )
     SELECT
       ec.etf_code,

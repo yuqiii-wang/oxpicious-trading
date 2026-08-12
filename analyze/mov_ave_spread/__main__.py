@@ -71,8 +71,6 @@ from _common.build_commons import (  # noqa: E402
 
 setup_utf8_stdout()
 
-import pandas as pd  # noqa: E402
-
 from analyze._common import (  # noqa: E402
     batched_upsert_by_date,
     build_and_insert_chunked,
@@ -120,6 +118,117 @@ async def _filter_per_sec_type_async(conn, table, rows):
     return out
 
 
+async def _process_one_sec_type(
+    conn, pool, st, target_dates_st, force, max_concurrent, t0,
+):
+    """Process a single sec_type end-to-end.
+
+    Fetches the FULL per-code history for ``st`` (needed for belt
+    detection), computes peaks_and_floors, upserts them, then builds +
+    inserts detail rows (filtered to ``target_dates_st`` in incremental
+    mode), then runs the RSI step on the same source data. The source
+    DataFrame is freed before returning so the caller can process the
+    next sec_type without cumulative memory growth.
+
+    Splitting per-sec_type is essential for the stock universe: 11K+
+    codes × 1.6K dates = ~17M rows (~6 GB in pandas). Loading all 3
+    sec_types at once (18.5M rows) OOMs the host; processing one sec_type
+    at a time bounds peak memory to a single sec_type's data.
+    """
+    # ---- Fetch FULL source data for this sec_type ----------------------
+    # Always fetch the FULL per-code history (target_dates=None) so belt
+    # detection for peaks_and_floors works correctly across month
+    # boundaries. The target_dates filter is applied AFTER
+    # peaks_and_floors computation for the detail rows.
+    print(f"\n  [{st}] Fetching FULL per-(code, date) price + MAs "
+          f"from stats schema (needed for belt detection)...", flush=True)
+    df = await fetch_source_data(conn, st, target_dates=None)
+    print(f"  [{st}]   {len(df):,} (code, date) source rows", flush=True)
+    if df.empty:
+        print(f"  [{st}]   no source data; skipping.", flush=True)
+        return 0, 0
+
+    # ---- Compute + upsert peaks_and_floors -----------------------------
+    print(f"\n  [{st}] Computing peaks_and_floors (per-extreme-date "
+          f"detection from full history)...", flush=True)
+    pf_rows = compute_peaks_and_floors(df)
+    print(f"  [{st}]   {len(pf_rows):,} peaks_and_floors rows",
+          flush=True)
+
+    # Save the FULL list of peaks_and_floors rows for the detail FK
+    # mapping (nearest-preceding-extreme). Must be saved BEFORE the
+    # incremental skip-filter so detail rows can map to ALL extremes,
+    # not just newly-added ones.
+    all_pf_rows = pf_rows
+
+    print(f"  [{st}]   Upserting {len(pf_rows):,} peaks_and_floors rows "
+          f"into {PEAKS_AND_FLOORS_TABLE} "
+          f"(chunked by date to bound memory)...", flush=True)
+
+    # Pre-check: skip already-present extreme dates, scoped per-sec_type.
+    n_pf_before = len(pf_rows)
+    pf_rows = await _filter_per_sec_type_async(
+        conn, PEAKS_AND_FLOORS_TABLE, pf_rows,
+    )
+    n_pf_skipped = n_pf_before - len(pf_rows)
+    if n_pf_skipped > 0:
+        print(f"  [{st}]   skip check (per-sec_type): {n_pf_skipped:,} of "
+              f"{n_pf_before:,} peaks_and_floors rows already present "
+              f"(skipped)",
+              flush=True)
+
+    n_pf = await batched_upsert_by_date(
+        conn, PEAKS_AND_FLOORS_TABLE, pf_rows,
+        key_columns=["sec_type", "code", "date"],
+        label=f"peaks_and_floors[{st}]",
+        pool=pool,
+        max_concurrent=max_concurrent,
+    )
+    print(f"  [{st}]   upserted {n_pf:,} peaks_and_floors rows", flush=True)
+
+    # Free the filtered pf_rows list (all_pf_rows is retained for detail).
+    del pf_rows
+
+    # ---- Build + insert detail (chunked by date) -----------------------
+    print(f"\n  [{st}] Computing + inserting detail rows in date-bounded "
+          f"chunks (9 gap cols + 12 slope/curv cols per row)...",
+          flush=True)
+    detail_df = df
+    if target_dates_st is not None and len(target_dates_st) > 0:
+        n_before = len(detail_df)
+        detail_df = detail_df[
+            detail_df["date"].isin(target_dates_st)
+        ].reset_index(drop=True)
+        print(f"  [{st}]   incremental filter: {len(detail_df):,} of "
+              f"{n_before:,} rows are in target_dates", flush=True)
+    print(f"  [{st}]   building {len(detail_df):,} detail rows "
+          f"(COPY per chunk)", flush=True)
+
+    n_detail = await build_and_insert_chunked(
+        conn, pool, detail_df,
+        lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows),
+        table_name=DETAIL_TABLE,
+        key_columns=["sec_type", "code", "date"],
+        force=force,
+        sec_types=(st,),
+        max_concurrent=max_concurrent,
+        label=f"detail[{st}]",
+    )
+    print(f"  [{st}]   inserted {n_detail:,} detail rows", flush=True)
+
+    del detail_df
+
+    # ---- RSI step (reuses same source DataFrame) -----------------------
+    await run_rsi(conn, df, force=force, pool=pool,
+                  max_concurrent=max_concurrent, sec_type=st)
+
+    # Free the source DataFrame — full history no longer needed.
+    del df
+    del all_pf_rows
+
+    return n_pf, n_detail
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(
         description="Moving-average spread analysis (ETF + Index + Stock)."
@@ -152,35 +261,21 @@ async def main() -> None:
     )
 
     conn = await get_db_connection_async()
-    # Pool for parallel upsert chunks. Each connection is a Postgres backend
-    # process; max_size matches --max-concurrent (default 20). Local dev DB
-    # has max_connections=100 with ~2 in use, so 20 leaves comfortable
-    # headroom. More concurrent chunks = faster upserts, but WAL flushing
-    # becomes the bottleneck past ~8-12 on a single SSD.
     pool = await get_db_pool_async(min_size=1, max_size=max_concurrent)
     try:
         # ---- Step 0: determine target dates (per-sec_type) --------------
         if args.force:
             print("\n[0/4] Force mode: truncating detail + peaks_and_floors "
                   "tables...", flush=True)
-            # TRUNCATE detail FIRST (it has FK to peaks_and_floors), then
-            # peaks_and_floors.
             await truncate_table_async(conn, DETAIL_TABLE)
             await truncate_table_async(conn, PEAKS_AND_FLOORS_TABLE)
-            # target_dates_per_st is None in force mode → no incremental
-            # filter applied to detail rows (full recompute).
-            target_dates_per_st = None
-            target_dates_union = None
+            target_dates_per_st = {st: None for st in sec_types}
             print("    -> truncated; will recompute all rows", flush=True)
         else:
             print("\n[0/4] Detecting missing dates PER-sec_type "
                   "(etf_identity vs detail[etf], index_identity vs "
                   "detail[index], stock_identity vs detail[stock])...",
                   flush=True)
-            # Per-sec_type missing-date check. Without per-sec_type scoping,
-            # a date populated for ETF would mask the same date being
-            # missing for index/stock because the existing-date query
-            # spans all sec_types.
             target_dates_per_st: dict = {}
             for st in sec_types:
                 src_tbl = SEC_TYPE_IDENTITY_TABLE[st]
@@ -190,130 +285,35 @@ async def main() -> None:
                 target_dates_per_st[st] = td_st
                 print(f"    -> {st}: detail {len(td_st)} missing dates",
                       flush=True)
-            # Union across sec_types — used to filter the concatenated
-            # source DataFrame before computing detail rows. A date is
-            # "to do" if ANY sec_type is missing it.
-            target_dates_union = set()
-            for s in target_dates_per_st.values():
-                target_dates_union |= s
-            print(f"    -> union across sec_types: "
-                  f"{len(target_dates_union)} dates to (re)compute",
-                  flush=True)
-            if not target_dates_union:
+            total_missing = sum(
+                len(s) for s in target_dates_per_st.values()
+            )
+            if total_missing == 0:
                 print("    -> DB is up to date; nothing to do.", flush=True)
                 print_wall_time(t0)
                 return
 
-        # ---- Step 1: fetch FULL source data for every sec_type -----------
-        # Always fetch the FULL per-code history (target_dates=None) so belt
-        # detection for peaks_and_floors works correctly across month
-        # boundaries. The target_dates filter is applied AFTER
-        # peaks_and_floors computation (Step 3 below) for the detail rows.
-        print("\n[1/4] Fetching FULL per-(sec_type, code, date) price + MAs "
-              "from stats schema (needed for belt detection)...",
-              flush=True)
-        frames = []
-        for at in sec_types:
-            print(f"    -> fetching {at}...", flush=True)
-            df_at = await fetch_source_data(conn, at, target_dates=None)
-            print(f"      {len(df_at):,} {at} (code, date) source rows",
-                  flush=True)
-            if not df_at.empty:
-                frames.append(df_at)
-        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-        print(f"    -> {len(df):,} total (sec_type, code, date) source rows",
-              flush=True)
-        if df.empty:
-            print("    -> no source data; exiting.", flush=True)
-            return
-
-        # ---- Step 2: compute + upsert peaks_and_floors -------------------
-        print("\n[2/4] Computing peaks_and_floors (per-extreme-date "
-              "detection from full history)...", flush=True)
-        pf_rows = compute_peaks_and_floors(df)
-        print(f"    -> {len(pf_rows):,} peaks_and_floors rows "
-              f"(one per detected extreme/trend)",
-              flush=True)
-
-        # Save the FULL list of peaks_and_floors rows for the detail FK
-        # mapping (nearest-preceding-extreme). Must be saved BEFORE the
-        # incremental skip-filter so detail rows can map to ALL extremes,
-        # not just newly-added ones.
-        all_pf_rows = pf_rows
-
-        print(f"    -> Upserting {len(pf_rows):,} peaks_and_floors rows "
-              f"into {PEAKS_AND_FLOORS_TABLE} "
-              f"(chunked by date to bound memory)...", flush=True)
-
-        # Pre-check: skip already-present extreme dates, scoped per-sec_type
-        # so an ETF extreme date doesn't mask the same date being missing
-        # for index/stock. In incremental mode, most extreme dates are
-        # already populated.
-        n_pf_before = len(pf_rows)
-        pf_rows = await _filter_per_sec_type_async(
-            conn, PEAKS_AND_FLOORS_TABLE, pf_rows,
-        )
-        n_pf_skipped = n_pf_before - len(pf_rows)
-        if n_pf_skipped > 0:
-            print(f"    -> skip check (per-sec_type): {n_pf_skipped:,} of "
-                  f"{n_pf_before:,} peaks_and_floors rows already present "
-                  f"(skipped)",
-                  flush=True)
-
-        n_pf = await batched_upsert_by_date(
-            conn, PEAKS_AND_FLOORS_TABLE, pf_rows,
-            key_columns=["sec_type", "code", "date"],
-            label="peaks_and_floors",
-            pool=pool,
-            max_concurrent=max_concurrent,
-        )
-        print(f"    -> upserted {n_pf:,} peaks_and_floors rows", flush=True)
-
-        # ---- Step 3+4: build + insert detail (chunked by date) -----------
-        # Build detail rows in date-bounded chunks and insert each chunk
-        # immediately, so the full dict list is never materialized at
-        # once. sanitize_for_db_insert converts each numeric column to
-        # object dtype (~4x float64) and to_dict creates one Python dict
-        # per row (~1.6 KB for a 45-key dict); for the full stock universe
-        # (6.7M rows) that is ~10+ GB of dicts alone and OOMs. Chunking
-        # bounds peak memory to one chunk's dicts (~100K rows ≈ 160 MB).
-        #
-        # The full all_pf_rows is passed to every chunk (via the build_fn
-        # closure) so _compute_pf_date_mapping's nearest-preceding-extreme
-        # asof picks up ALL extremes, not just the chunk's dates — the
-        # chunk's sub-frame + the full pf_df in the combined timeline
-        # forward-fills the correct extreme per detail row.
-        print("\n[3/4] Computing + inserting detail rows in date-bounded "
-              "chunks (9 gap cols + 12 slope/curv cols per row)...",
-              flush=True)
-        detail_df = df
-        if target_dates_union is not None and len(target_dates_union) > 0:
-            n_before = len(detail_df)
-            detail_df = detail_df[
-                detail_df["date"].isin(target_dates_union)
-            ].reset_index(drop=True)
-            print(f"    -> incremental filter: {len(detail_df):,} of "
-                  f"{n_before:,} rows are in target_dates_union", flush=True)
-        print(f"    -> building {len(detail_df):,} detail rows "
-              f"({'COPY' if args.force else 'upsert'} per chunk)",
-              flush=True)
-
-        n_detail = await build_and_insert_chunked(
-            conn, pool, detail_df,
-            lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows),
-            table_name=DETAIL_TABLE,
-            key_columns=["sec_type", "code", "date"],
-            force=args.force,
-            sec_types=sec_types,
-            max_concurrent=max_concurrent,
-            label="detail",
-        )
-        print(f"    -> inserted {n_detail:,} detail rows", flush=True)
-
-        del detail_df
+        # ---- Steps 1-5: process each sec_type independently -------------
+        # Each sec_type is processed end-to-end (fetch → compute → insert →
+        # RSI → free memory) before the next starts. This bounds peak
+        # memory to a single sec_type's data — critical for the stock
+        # universe (11K+ codes × 1.6K dates ≈ 17M rows / ~6 GB in pandas).
+        # Loading all 3 sec_types at once (18.5M rows) OOMs the host.
+        total_pf = 0
+        total_detail = 0
+        for st in sec_types:
+            td_st = target_dates_per_st.get(st) if target_dates_per_st else None
+            if td_st is not None and len(td_st) == 0 and not args.force:
+                print(f"\n  [{st}] up to date; skipping.", flush=True)
+                continue
+            n_pf, n_detail = await _process_one_sec_type(
+                conn, pool, st, td_st, args.force, max_concurrent, t0,
+            )
+            total_pf += n_pf
+            total_detail += n_detail
 
         # ---- Upsert analysis_identity ------------------------------------
-        print(f"    -> Upserting analysis.analysis_identity registry...",
+        print(f"\n  -> Upserting analysis.analysis_identity registry...",
               flush=True)
         await upsert_analysis_identity(
             conn,
@@ -322,26 +322,10 @@ async def main() -> None:
             description=DESCRIPTION,
         )
 
-        # ---- Step 5: INTERNAL rsi step -----------------------------------
-        # Compute Wilder RSI (6/10/14/20d) + short-term price gaps (2/3d)
-        # from the SAME source price data already loaded in Step 1 ->
-        # analysis.mov_ave_rsi. Reuses the same DB connection + pool.
-        # See rsi.py for the full pipeline. The source DataFrame ``df``
-        # (full per-code history) is passed so the RSI step can reuse the
-        # price column without a second DB fetch.
-        await run_rsi(conn, df, force=args.force, pool=pool,
-                      max_concurrent=max_concurrent)
-
-        # Free the source DataFrame now that detail + RSI rows are built —
-        # the full history is no longer needed.
-        del df
-
+        print(f"\n  TOTAL: {total_pf:,} peaks_and_floors + "
+              f"{total_detail:,} detail rows inserted", flush=True)
         print_wall_time(t0)
     finally:
-        # Close with a timeout — after heavy parallel bulk inserts the
-        # PostgreSQL server can be saturated with WAL checkpoint I/O,
-        # making conn.close() / pool.close() stall on the Terminate
-        # message + TCP teardown. Without a timeout this hangs forever.
         try:
             await asyncio.wait_for(conn.close(), timeout=10)
         except (asyncio.TimeoutError, Exception):
@@ -349,7 +333,6 @@ async def main() -> None:
         try:
             await asyncio.wait_for(pool.close(), timeout=10)
         except (asyncio.TimeoutError, Exception):
-            # Graceful close timed out — force-terminate all connections.
             pool.terminate()
 
 

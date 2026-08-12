@@ -165,6 +165,18 @@ def classify_unmatched_funds(
         elif _is_overseas_name(name):
             exchange = "OVERSEAS"
 
+        # When exchange is OVERSEAS, reclassify sector_id/industry_id to
+        # OVERSEAS using strategy rules.  Same logic as classify.py: ensures
+        # cross-border funds (标普LOF, 纳指LOF, ...) are classified under
+        # their OVERSEAS sub-industry, not under the themed domestic industry
+        # that matched first (e.g., 标普医药 → OVERSEAS_US, not HC/PHARMA_BROAD).
+        if exchange == "OVERSEAS" and sector_id != "OVERSEAS":
+            strat_sector, _, strat_industry, _ = classify_index_strategy(clean_name)
+            if strat_sector == "OVERSEAS":
+                sector_id = strat_sector
+                industry_id = strat_industry
+                is_ind = False
+
         etfs[code] = {
             "name": name,
             "exchange": exchange,
