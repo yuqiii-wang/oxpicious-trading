@@ -78,19 +78,108 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_identity (
     sec_type              TEXT          NOT NULL DEFAULT 'index'
         CHECK (sec_type IN ('index', 'etf', 'stock')),
     code                  TEXT          NOT NULL,
+    -- start_date / end_date: the OHLC period the strategy is run over
+    -- (df.date.min() .. df.date.max()). These are part of the NATURAL
+    -- business key so a re-run over the SAME period is idempotent (skip
+    -- via find_seq_id), while a run over a DIFFERENT period gets its own
+    -- seq. end_date NULL = open-ended (rare; the engine normally pins the
+    -- last OHLC date). Mirrors strategy_results.start/end_date but those
+    -- are the OUTPUT (min/max exec_date); these are the INPUT period.
+    start_date            DATE          NOT NULL,
+    end_date              DATE,
     params                JSONB         NOT NULL DEFAULT '{}'::jsonb,
     status                TEXT          NOT NULL DEFAULT 'completed'
         CHECK (status IN ('running', 'completed', 'stopped', 'error')),
     created_at            TIMESTAMPTZ   NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_strategy_identity PRIMARY KEY (seq_id),
-    CONSTRAINT uq_strategy_identity_name_no_type_code
-        UNIQUE (strategy_name, seq_no, sec_type, code)
+    -- Natural business key (PK/FK-aligned uniqueness): one seq per
+    -- (strategy_name, sec_type, code, period, scenario). seq_no is a
+    -- display counter only — NOT part of uniqueness — so re-running an
+    -- algo over the same period is idempotent (skip) and a new period
+    -- just inserts a new seq.
+    CONSTRAINT uq_strategy_identity_natural
+        UNIQUE (strategy_name, sec_type, code, start_date, end_date)
 );
+
+-- Idempotent migration: add parent_seq_id + scenario for forecast child seqs.
+-- Each forecast scenario (mir_255d_std_scale, flip_255d_std_scale, ...) gets its own child seq that
+-- carries a full copy of the parent's actual decisions + that scenario's
+-- forecast sells, enabling per-scenario risk + return + decision table.
+ALTER TABLE strategy.strategy_identity
+    ADD COLUMN IF NOT EXISTS parent_seq_id BIGINT;
+
+ALTER TABLE strategy.strategy_identity
+    ADD COLUMN IF NOT EXISTS scenario TEXT;
+
+ALTER TABLE strategy.strategy_identity
+    DROP CONSTRAINT IF EXISTS fk_strategy_identity_parent;
+
+ALTER TABLE strategy.strategy_identity
+    ADD CONSTRAINT fk_strategy_identity_parent
+        FOREIGN KEY (parent_seq_id)
+        REFERENCES strategy.strategy_identity(seq_id)
+        ON DELETE CASCADE;
+
+CREATE INDEX IF NOT EXISTS idx_strategy_identity_parent
+    ON strategy.strategy_identity(parent_seq_id)
+    WHERE parent_seq_id IS NOT NULL;
+
+-- Idempotent migration: add start_date / end_date to strategy_identity for
+-- existing DBs (the columns are already in the CREATE TABLE above for fresh
+-- DBs). start_date/end_date are the OHLC period the strategy is run over
+-- (input); they are part of the natural business key so the "skip if already
+-- found" check maps 1:1 to the unique constraint.
+ALTER TABLE strategy.strategy_identity
+    ADD COLUMN IF NOT EXISTS start_date DATE;
+ALTER TABLE strategy.strategy_identity
+    ADD COLUMN IF NOT EXISTS end_date DATE;
+
+-- Backfill start_date/end_date from strategy_results for existing seqs
+-- (strategy_results already carries the run period as min/max exec_date).
+-- The first_buy_date is used as the start_date fallback (defensive: every
+-- seq with decisions has a first BUY). Rows with neither stay NULL and are
+-- dropped by the NOT NULL step below (they are degenerate/empty runs).
+UPDATE strategy.strategy_identity s
+SET start_date = COALESCE(r.start_date, r.first_buy_date),
+    end_date   = r.end_date
+FROM strategy.strategy_results r
+WHERE r.seq_id = s.seq_id
+  AND s.start_date IS NULL;
+
+-- Drop any degenerate rows that still have NULL start_date (no results row
+-- and no first_buy_date) — they cannot satisfy the NOT NULL constraint and
+-- carry no useful data.
+DELETE FROM strategy.strategy_identity
+WHERE start_date IS NULL;
+
+ALTER TABLE strategy.strategy_identity
+    ALTER COLUMN start_date SET NOT NULL;
+
+-- Replace the (strategy_name, seq_no, sec_type, code) unique constraint with
+-- the NATURAL business key: (strategy_name, sec_type, code, start_date,
+-- end_date, COALESCE(scenario, '')). seq_no is now a display counter only.
+-- This makes the "skip if already found in strategy_identity" check (used
+-- by the async multi-algo runner) align 1:1 with the unique constraint, and
+-- lets forecast child seqs (non-NULL scenario) coexist with the parent.
+ALTER TABLE strategy.strategy_identity
+    DROP CONSTRAINT IF EXISTS uq_strategy_identity_name_no_type_code;
+ALTER TABLE strategy.strategy_identity
+    DROP CONSTRAINT IF EXISTS uq_strategy_identity_natural;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_identity_natural
+    ON strategy.strategy_identity
+    (strategy_name, sec_type, code, start_date, end_date, COALESCE(scenario, ''));
+
+COMMENT ON COLUMN strategy.strategy_identity.start_date IS 'OHLC period start (df.date.min()) — the date the strategy is run FROM. Part of the natural business key (with end_date) so re-running over the same period is idempotent. Mirrors strategy_results.start_date but that is the OUTPUT (min exec_date); this is the INPUT period.';
+COMMENT ON COLUMN strategy.strategy_identity.end_date IS 'OHLC period end (df.date.max()) — the date the strategy is run TO. NULL = open-ended (rare). Part of the natural business key with start_date.';
+
+COMMENT ON COLUMN strategy.strategy_identity.parent_seq_id IS 'NULL for actual backtest seqs. For forecast child seqs: points to the parent actual backtest seq. Child seqs carry a full copy of actual decisions + scenario-specific forecast sells.';
+COMMENT ON COLUMN strategy.strategy_identity.scenario IS 'NULL for actual backtest seqs. For forecast child seqs: the scenario name (mir_255d_std_scale, flip_255d_std_scale, mir_255d_std_half_scale, flip_255d_std_half_scale, mir_20d_std_scale, flip_20d_std_scale, rand, rand_opp).';
 
 COMMENT ON TABLE  strategy.strategy_identity              IS 'One row per strategy execution on ONE code. Pure identity table — run results live on strategy_results (1:1).';
 COMMENT ON COLUMN strategy.strategy_identity.seq_id       IS 'Surrogate primary key (IDENTITY). Identifies a single (strategy, code) run; also the PK/FK of the 1:1 strategy_results row.';
-COMMENT ON COLUMN strategy.strategy_identity.strategy_name IS 'Strategy identifier, e.g. "ma_spread_trading".';
+COMMENT ON COLUMN strategy.strategy_identity.strategy_name IS 'Strategy identifier, e.g. "singleton_trading".';
 COMMENT ON COLUMN strategy.strategy_identity.seq_no       IS 'Run/sequence number within a strategy_name (1, 2, 3, ...). Multiple codes can share a seq_no within one --all run; they get distinct seq_ids but the same seq_no.';
 COMMENT ON COLUMN strategy.strategy_identity.sec_type     IS 'Security universe: index / etf / stock.';
 COMMENT ON COLUMN strategy.strategy_identity.code         IS 'Security code this run backtested (e.g. "000970", "159007.SZ"). One seq = one code.';
@@ -524,9 +613,10 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_risks (
 
     -- Risk grade (derived from the absolute risk_score on the new
     --   exponential scale, k = ln 2 ⇒ one window at threshold = 1.0):
+    --   LITTLE = criteria-based (almost no losses + stable gains + profitable)
     --   < 1.0 = LOW, 1.0–3.0 = MODERATE, 3.0–6.0 = ELEVATED, > 6.0 = HIGH
     risk_grade                    TEXT
-        CHECK (risk_grade IN ('LOW', 'MODERATE', 'ELEVATED', 'HIGH')),
+        CHECK (risk_grade IN ('LITTLE', 'LOW', 'MODERATE', 'ELEVATED', 'HIGH')),
 
     computed_at                   TIMESTAMPTZ   NOT NULL DEFAULT now(),
 
@@ -588,6 +678,12 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_risks (
 --   the v_strategy_risk_full view no longer references it.
 -- ----------------------------------------------------------------------------
 ALTER TABLE strategy.strategy_risks DROP CONSTRAINT IF EXISTS chk_risk_drawdown;
+-- Drop the legacy CHECK constraint left over from when this table was named
+-- strategy_risk_seq (it only allowed LOW/MODERATE/ELEVATED/HIGH, missing the
+-- LITTLE grade). The current column-level CHECK (strategy_risks_risk_grade_check)
+-- already covers all 5 grades correctly, so this stale duplicate must be removed
+-- or both checks must pass simultaneously — which fails for LITTLE rows.
+ALTER TABLE strategy.strategy_risks DROP CONSTRAINT IF EXISTS strategy_risk_seq_risk_grade_check;
 ALTER TABLE strategy.strategy_risks ADD COLUMN IF NOT EXISTS drawdown_1st_date DATE;
 ALTER TABLE strategy.strategy_risks ADD COLUMN IF NOT EXISTS drawdown_2nd_date DATE;
 ALTER TABLE strategy.strategy_risks ADD COLUMN IF NOT EXISTS drawdown_3rd_date DATE;
@@ -627,7 +723,7 @@ COMMENT ON COLUMN strategy.strategy_risks.drawdown_1st_val IS 'Magnitude (trough
 COMMENT ON COLUMN strategy.strategy_risks.drawdown_2nd_val IS 'Magnitude (trough_cum_pnl - peak_cum_pnl, signed <= 0) of the 2nd-worst cumulative-P&L drawdown. NULL if fewer than 2 drawdown episodes.';
 COMMENT ON COLUMN strategy.strategy_risks.drawdown_3rd_val IS 'Magnitude (trough_cum_pnl - peak_cum_pnl, signed <= 0) of the 3rd-worst cumulative-P&L drawdown. NULL if fewer than 3 drawdown episodes.';
 COMMENT ON COLUMN strategy.strategy_risks.risk_score       IS 'Exponential rolling-window risk score. For each window W in {1d,30d,90d,365d}, the worst W-day rolling LOSS (realized + unrealized MTM dip + window-end residual) contributes exp(k * loss_fraction / threshold_W) - 1, where loss_fraction = |loss|/total_abs_pnl (LOSSES ONLY), threshold_W is a log-curve fit through (month=25%, season=50%, year=75% of total_abs_pnl), k = ln 2. Unrealized weighted at 30% vs realized. Higher = more dangerous.';
-COMMENT ON COLUMN strategy.strategy_risks.risk_grade       IS 'LOW / MODERATE / ELEVATED / HIGH — derived from the absolute risk_score: <1.0 LOW, <3.0 MODERATE, <6.0 ELEVATED, else HIGH.';
+COMMENT ON COLUMN strategy.strategy_risks.risk_grade       IS 'LITTLE / LOW / MODERATE / ELEVATED / HIGH — LITTLE is criteria-based (almost no losses + stable gains + profitable); otherwise derived from risk_score: <1.0 LOW, <3.0 MODERATE, <6.0 ELEVATED, else HIGH.';
 COMMENT ON COLUMN strategy.strategy_risks.deepest_drop_since_unzero_pos IS 'Worst close-price peak-to-trough drawdown (signed fractional ratio, <= 0) observed during any maximal span where position > 0. Captures the worst paper-loss endured while holding. 0 = price only rose while holding.';
 COMMENT ON COLUMN strategy.strategy_risks.deepest_drop_since_unzero_pos_peak_date   IS 'Biz date of the peak (running max close) from which the worst unzero-position drop was measured.';
 COMMENT ON COLUMN strategy.strategy_risks.deepest_drop_since_unzero_pos_trough_date IS 'Biz date of the trough (lowest close) reached in the worst unzero-position drop.';
@@ -659,10 +755,14 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_risk_period (
     -- unrealized_pnl(end of period) - unrealized_pnl(end of previous period).
     -- From strategy_daily. Realized + unrealized = total economic P&L for the period.
     unrealized_pnl                NUMERIC(24,4) NOT NULL DEFAULT 0,
-    -- Peak (max) daily unrealized_pnl within this period (intra-period high
-    -- watermark of paper P&L). From strategy_daily. Used by the UI to draw
-    -- a transparent "max" bar alongside the period-end bar.
-    max_unrealized_pnl            NUMERIC(24,4) NOT NULL DEFAULT 0,
+    -- Worst (min, most negative) daily unrealized_pnl within this period —
+    -- the deepest intra-period MTM loss (maximum unrealized loss). From
+    -- strategy_daily. UI draws a transparent red bar for this.
+    max_loss_unrealized_pnl       NUMERIC(24,4) NOT NULL DEFAULT 0,
+    -- Peak (max, most positive) daily unrealized_pnl within this period —
+    -- the highest intra-period MTM gain (maximum unrealized gain). From
+    -- strategy_daily. UI draws a transparent green bar for this.
+    max_gain_unrealized_pnl       NUMERIC(24,4) NOT NULL DEFAULT 0,
     -- Unrealized_pnl at the LAST trading day of this period (absolute level,
     -- not a change). From strategy_daily. Used by the UI to draw the
     -- period-end bar.
@@ -689,7 +789,8 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_risk_period (
 --   below (COMMENT ON COLUMN requires the column to exist on pre-existing
 --   DBs where CREATE TABLE IF NOT EXISTS is a no-op).
 ALTER TABLE strategy.strategy_risk_period ADD COLUMN IF NOT EXISTS unrealized_pnl NUMERIC(24,4) NOT NULL DEFAULT 0;
-ALTER TABLE strategy.strategy_risk_period ADD COLUMN IF NOT EXISTS max_unrealized_pnl NUMERIC(24,4) NOT NULL DEFAULT 0;
+ALTER TABLE strategy.strategy_risk_period ADD COLUMN IF NOT EXISTS max_loss_unrealized_pnl NUMERIC(24,4) NOT NULL DEFAULT 0;
+ALTER TABLE strategy.strategy_risk_period ADD COLUMN IF NOT EXISTS max_gain_unrealized_pnl NUMERIC(24,4) NOT NULL DEFAULT 0;
 ALTER TABLE strategy.strategy_risk_period ADD COLUMN IF NOT EXISTS end_unrealized_pnl NUMERIC(24,4) NOT NULL DEFAULT 0;
 
 COMMENT ON TABLE  strategy.strategy_risk_period                  IS 'Per-period (year/season/month) gain/loss aggregations with top trades and concentration flags.';
@@ -699,7 +800,8 @@ COMMENT ON COLUMN strategy.strategy_risk_period.period_type      IS 'year / seas
 COMMENT ON COLUMN strategy.strategy_risk_period.period_value     IS 'Period label: YYYY (year), YYYY-Qn (season), YYYY-MM (month).';
 COMMENT ON COLUMN strategy.strategy_risk_period.realized_pnl     IS 'Sum of realized_pnl across SELLs in this period.';
 COMMENT ON COLUMN strategy.strategy_risk_period.unrealized_pnl   IS 'Mark-to-market change in unrealized_pnl during this period = unrealized_pnl(end of period) - unrealized_pnl(end of previous period). From strategy_daily. Realized + unrealized = total economic P&L for the period.';
-COMMENT ON COLUMN strategy.strategy_risk_period.max_unrealized_pnl IS 'Peak (max) daily unrealized_pnl within this period (intra-period high watermark of paper P&L). From strategy_daily. UI draws a transparent bar for this.';
+COMMENT ON COLUMN strategy.strategy_risk_period.max_loss_unrealized_pnl IS 'Worst (min, most negative) daily unrealized_pnl within this period — the deepest intra-period MTM loss (maximum unrealized loss). From strategy_daily. UI draws a transparent red bar for this.';
+COMMENT ON COLUMN strategy.strategy_risk_period.max_gain_unrealized_pnl IS 'Peak (max, most positive) daily unrealized_pnl within this period — the highest intra-period MTM gain (maximum unrealized gain). From strategy_daily. UI draws a transparent green bar for this.';
 COMMENT ON COLUMN strategy.strategy_risk_period.end_unrealized_pnl IS 'Unrealized_pnl at the LAST trading day of this period (absolute level, not a change). From strategy_daily. UI draws the period-end bar for this.';
 COMMENT ON COLUMN strategy.strategy_risk_period.abs_pnl          IS 'Sum of |realized_pnl| across SELLs in this period.';
 COMMENT ON COLUMN strategy.strategy_risk_period.period_share     IS 'abs_pnl / total_abs_pnl (total_abs_pnl on strategy_results) for the run. High share = concentrated activity in this period.';

@@ -4,7 +4,7 @@ Computes risk metrics (chronological concentration, exponential risk score,
 per-period gain/loss distributions) from strategy.trade_decision history.
 
 Public entry point: ``compute_and_upsert_risks()``. Called by
-``strategy.ma_spread_trading`` after each backtest run so risks are always
+``strategy.singleton_trading`` after each backtest run so risks are always
 fresh — there is no standalone ``python -m strategy._risks`` entry point.
 
 Risk philosophy:
@@ -43,7 +43,7 @@ from strategy._risks.upsert import (  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
-#  Public orchestrator — called by strategy.ma_spread_trading after backtest
+#  Public orchestrator — called by strategy.singleton_trading after backtest
 # ---------------------------------------------------------------------------
 async def compute_and_upsert_risks(
     conn,
@@ -51,6 +51,7 @@ async def compute_and_upsert_risks(
     sec_types: list,
     codes_by_st: Optional[Dict[str, list]] = None,
     force: bool = False,
+    strategy_name: Optional[str] = None,
 ) -> None:
     """Compute + upsert risk metrics for the given sec_types.
 
@@ -58,6 +59,11 @@ async def compute_and_upsert_risks(
       - If ``codes_by_st`` is None or the sec_type is absent from it, ALL
         (seq_id, code) pairs in trade_decision for that sec_type are processed.
       - Otherwise only the listed codes are processed.
+
+    ``strategy_name`` scopes the recomputed seqs to one algo (e.g.
+    'bollinger_bands' / 'macd') so a run for one algo doesn't recompute risks
+    for another algo's seqs. When None, all strategies' seqs for the matched
+    (sec_type, code) pairs are processed (legacy behavior).
 
     With ``force=True``, existing risk rows for the matched (seq_id, code)
     pairs are deleted before re-inserting (idempotent recompute).
@@ -77,7 +83,7 @@ async def compute_and_upsert_risks(
     total_per = 0
     for st in sec_types:
         codes = (codes_by_st or {}).get(st, [])  # empty = all
-        pairs = await fetch_strategy_seqs(conn, st, codes or None)
+        pairs = await fetch_strategy_seqs(conn, st, codes or None, strategy_name)
         if not pairs:
             print(f"\n[{st}] no trade_decision data found; skipping.", flush=True)
             continue

@@ -8,6 +8,7 @@ for m in \
   downloads.etf.szse.trend \
   downloads.options.szse.trend \
   downloads.index.szse.trend \
+  downloads.index.sse.trend \
   downloads.stock.sse.trend \
   downloads.etf.sse.trend \
   downloads.margin.szse \
@@ -17,7 +18,7 @@ for m in \
   downloads.macro.pboc.repo_news \
   downloads.options.sse.price \
   downloads.macro.pboc.lpr_news \
-  downloads.macro.zhihu.news \
+  downloads.macro.zhihu.news
 do
   python -m "$m"
 done
@@ -77,6 +78,7 @@ python -m downloads.etf.szse.archive
 python -m downloads.index.szse.archive
 python -m downloads.stock.sse.archive
 python -m downloads.index.cnindex.archive
+python -m downloads.macro.gov.news
 
 # build, run once
 python -m builds.classification
@@ -90,4 +92,4 @@ python -m downloads.stream.cnindex.price
 
 # for strategy — discover all available secs in analysis.mov_ave_spreads_detail,
 # backtest them, then compute internal risk metrics for every run.
-python -m strategy.ma_spread_trading
+python -m strategy.singleton_trading

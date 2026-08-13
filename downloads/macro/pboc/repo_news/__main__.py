@@ -994,6 +994,13 @@ def fetch_list_page(
 
     soup = BeautifulSoup(html, "html.parser")
 
+    # The list-page URL itself (e.g. .../125475/index.html or
+    # .../5492845/index.html) matches RE_DETAIL_SLUG because the category
+    # directory is 5+ digits. Exclude it so the list page is never fetched
+    # as a detail page (which would capture pagination text instead of an
+    # announcement body).
+    list_page_self_url = list_page_url(category, 1)
+
     items: List[AnnouncementItem] = []
     for a in soup.find_all("a", href=True):
         href = a["href"]
@@ -1006,13 +1013,17 @@ def fetch_list_page(
                 base = CATEGORY_CONFIGS[category]["list_base"]
                 href = base + href
             href = PBOC_BASE + href
+        # Skip the list page itself (breadcrumb / nav self-link)
+        if href == list_page_self_url:
+            continue
         text = a.get_text(strip=True)
         text = text.strip('"“”').strip()
         if not text:
             continue
         if "公告" not in text and "通知" not in text and "结果" not in text:
             continue
-        if text in {"公告信息", "公开市场业务交易公告", "公开市场业务公告", "中国人民银行", "货币政策司"}:
+        if text in {"公告信息", "公开市场业务交易公告", "公开市场业务公告",
+                     "公开市场买断式逆回购业务公告", "中国人民银行", "货币政策司"}:
             continue
         if not RE_DETAIL_SLUG.search(href):
             continue
@@ -1340,7 +1351,14 @@ def download_pboc_repo_news(
                         if ty > _end.year:
                             skipped_oob += 1
                             continue
-                        if ty in cached_years and ty != _start.year:
+                        # Skip detail fetches for FULLY PAST years already
+                        # covered by cache. The condition `ty < _end.year`
+                        # ensures the current (partial) year is never skipped
+                        # — without it, new announcements in a year that has
+                        # ANY cached date (e.g. 2026 cached up to 07-15) would
+                        # all be skipped, freezing the dataset at the last
+                        # cached date.
+                        if ty in cached_years and ty < _end.year and ty != _start.year:
                             stats.skipped_cached += 1
                             page_in_range_count += 1
                             continue

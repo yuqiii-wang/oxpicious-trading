@@ -525,6 +525,11 @@ def download_zhihu_news(
     ))
     downloaded = skipped_cached = failed = 0
     accepted_total = rejected_total = 0
+    # Cached skips are buffered silently and summarized as a single count
+    # before the next real download, instead of one log line per skip — keeps
+    # long backfill runs readable while still showing progress between real
+    # downloads.
+    cached_since_last_real = 0
     try:
         for i, t in enumerate(targets, 1):
             if proxy.is_blocked(ZHIHU_SEARCH_URL):
@@ -536,8 +541,18 @@ def download_zhihu_news(
             force_this = t["force"] or force
             if not force_this and is_cached(out_path):
                 skipped_cached += 1
-                logger.info("[%d/%d] %s cached, skip", i, len(targets), out_path.name)
+                cached_since_last_real += 1
                 continue
+
+            # About to perform a real download — flush any buffered cached
+            # skips so the user sees what was skipped between this and the
+            # previous real download.
+            if cached_since_last_real > 0:
+                logger.info(
+                    "[%d/%d] %d cached file(s) skipped since last download",
+                    i, len(targets), cached_since_last_real,
+                )
+                cached_since_last_real = 0
 
             query = build_query(target_date)
             logger.info("[%d/%d] %s query=%s", i, len(targets), target_date, query)

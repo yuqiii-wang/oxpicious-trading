@@ -2,7 +2,8 @@
 
 Recomputes the weighted-avg BUY normalized_fill_price (cost basis) for every
 trade_decision row whose normalized_mean_buy_price is NULL, mirroring the
-exact logic in strategy.ma_spread_trading.backtest.backtest_single_code:
+exact logic in strategy._trading.engine.run_backtest (the shared execution
+engine used by every algo in strategy.factors_and_algos):
 
   - total_qty is the cumulative quantity in qty/confidence units (NOT /100);
     BUY adds qty (= confidence); SELL subtracts qty_sold =

@@ -1,9 +1,10 @@
 """Generic portfolio backtest engine.
 
 Strategy-agnostic: iterates a code's date series chronologically and emits
-trade_decision rows. The signal layer (e.g. ``strategy._signal``) is
-responsible for adding a single consolidated ``signal_confidence`` column
-to the fetched DataFrame BEFORE the engine runs:
+trade_decision rows. The signal layer (the algo_signal_collector, surfaced
+via ``strategy.factors_and_algos``) is responsible for adding a single
+consolidated ``signal_confidence`` column to the fetched DataFrame BEFORE
+the engine runs:
 
   - ``signal_confidence`` ∈ [-100, 100] — the singular b/s confidence:
       > 0  → BUY signal,  value = buy confidence
@@ -60,10 +61,24 @@ from strategy._trading.constants import TRADING_DAYS_PER_YEAR
 #  Rounding helpers (NUMERIC(18,6) / NUMERIC(12,4) column safety)
 # ---------------------------------------------------------------------------
 def _round6(x: float) -> float:
-    """Round to 6 dp so NUMERIC(18,6) / NUMERIC(18,4) columns don't overflow."""
+    """Round to 6 dp so NUMERIC(18,6) / NUMERIC(18,4) columns don't overflow.
+
+    Also clamps the magnitude to just under 10^12 (the NUMERIC(18,6) limit)
+    as a safety net against edge-case blow-ups (e.g. Sharpe with tiny σ,
+    annualized return with tiny holding period) that slip past the per-formula
+    guards. A value at this scale is already meaningless; clamping prevents a
+    hard DB error that aborts the entire bulk upsert.
+    """
     if x is None or (isinstance(x, float) and (x != x)):
         return None
-    return round(float(x), 6)
+    v = round(float(x), 6)
+    # NUMERIC(18,6) max absolute value = 999,999,999,999.999999 ≈ 10^12 - 1e-6
+    _LIMIT = 999_999_999_999.999999
+    if v > _LIMIT:
+        return _LIMIT
+    if v < -_LIMIT:
+        return -_LIMIT
+    return v
 
 
 def _round2(x: float) -> float:
@@ -204,6 +219,13 @@ def backtest_single_code(
             position_before = F.position_value(total_qty, norm_price)
             qty_sold = F.sell_qty(confidence, total_qty)
 
+            # Skip dust SELLs: qty_sold below 0.01 confidence-units (~10 yuan
+            # on a 100K notional) is execution noise from fractional positions
+            # — meaningless trades that would be stored as qty=0.0000 (the
+            # NUMERIC(12,4) column rounds _round2's 2dp output to zero).
+            if qty_sold < 0.01:
+                continue
+
             realized = F.realized_pnl(qty_sold, norm_price, cost_basis_norm)
             # Capture the cost basis used to compute realized_pnl BEFORE any
             # reset to 0 (total_qty_after <= 0 case). Exposed as a column so
@@ -243,8 +265,12 @@ def backtest_single_code(
             cash = cash_after
             total_qty = total_qty_after
 
-    # ---- Final liquidation: sell all remaining total_qty on the last day
-    if total_qty > 0 and n > 0 and anchor_price is not None:
+    # ---- Final liquidation: sell all remaining total_qty on the last day.
+    # Skipped when params["skip_final_liquidation"] is True — the position
+    # stays open and the 1-month forecast module (_1m_forcast) takes over
+    # the sell schedule over the 20 forecast days.
+    skip_final_liq = bool(params.get("skip_final_liquidation", False))
+    if total_qty > 0 and n > 0 and anchor_price is not None and not skip_final_liq:
         last_row = cd.iloc[n - 1]
         last_date = last_row["date"]
         last_high = last_row.get("high_price")
@@ -306,10 +332,11 @@ def run_backtest(
     """Run the backtest across all codes.
 
     ``df`` must ALREADY carry the consolidated ``signal_confidence`` column
-    (the signal layer — e.g. ``strategy._signal.apply_signals`` — is applied
-    by the caller BEFORE invoking the engine). The engine reads only
-    ``signal_confidence`` (+ ``signal_value``); it never reaches into
-    strategy-specific signal columns.
+    (the signal layer — the algo_signal_collector via
+    ``strategy.factors_and_algos`` — is applied by the caller BEFORE
+    invoking the engine). The engine reads only ``signal_confidence``
+    (+ ``signal_value``); it never reaches into strategy-specific signal
+    columns.
 
     All decisions are concatenated and returned UNSORTED (the caller assigns
     decision_no after sorting by exec_date).
@@ -372,10 +399,17 @@ def _compute_sharpe_ratios(daily_rows: List[Dict[str, Any]]) -> None:
     deltas = total_pnl.diff()  # deltas[0] = NaN (no previous day)
     sqrt_255 = math.sqrt(TRADING_DAYS_PER_YEAR)
 
+    # Cap Sharpe at ±1e6 to prevent NUMERIC(18,6) overflow (max ~10^12)
+    # when std is extremely small but nonzero. A Sharpe > 1e6 is meaningless
+    # (a Sharpe of 3 is already excellent); this is a safety clamp, not a
+    # meaningful threshold.
+    SHARPE_CAP = 1e6
+
     def _sharpe(mean: pd.Series, std: pd.Series) -> pd.Series:
-        """mean / std × √255, guarded against 0/NaN/inf."""
+        """mean / std × √255, guarded against 0/NaN/inf + capped at ±1e6."""
         ratio = (mean / std * sqrt_255)
-        return ratio.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
+        ratio = ratio.replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
+        return ratio.clip(-SHARPE_CAP, SHARPE_CAP)
 
     sharpe_full = _sharpe(
         deltas.expanding(min_periods=2).mean(),

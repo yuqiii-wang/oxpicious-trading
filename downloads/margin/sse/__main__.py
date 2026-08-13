@@ -234,7 +234,7 @@ def _download_summary(
     ymd = trade_date.strftime("%Y%m%d")
     out_file = out_dir / f"sse_margin_summary_{ymd}.csv"
     if is_valid_file(out_file, min_bytes=64):
-        logger.info("[summary %s] already exists, skipping", ymd)
+        logger.debug("[summary %s] already exists, skipping", ymd)
         return out_file, -1
 
     payload = _fetch_page(
@@ -273,7 +273,7 @@ def _download_detail(
     ymd = trade_date.strftime("%Y%m%d")
     out_file = out_dir / f"sse_margin_detail_{ymd}.csv"
     if is_valid_file(out_file, min_bytes=64):
-        logger.info("[detail %s] already exists, skipping", ymd)
+        logger.debug("[detail %s] already exists, skipping", ymd)
         return out_file, -1
 
     all_rows: List[Dict[str, Any]] = []
@@ -434,6 +434,33 @@ def download_sse_margin(
         "end_date": str(effective_end_date),
     }
 
+    # Track consecutive cache-skip dates per report type. Instead of logging
+    # each skipped file individually, accumulate a streak and emit a single
+    # consolidated line when an actual download (or failure) interrupts the
+    # run, or once at loop end.
+    skip_streak: Dict[str, List[date]] = {rt: [] for rt in report_types}
+
+    def _flush_skip_streak() -> None:
+        parts: List[str] = []
+        total_files = 0
+        for rt in report_types:
+            dates = skip_streak[rt]
+            if not dates:
+                continue
+            # days are iterated newest-first, so dates[0] is the newest
+            newest = dates[0].strftime("%Y%m%d")
+            oldest = dates[-1].strftime("%Y%m%d")
+            n = len(dates)
+            total_files += n
+            rng = newest if newest == oldest else f"{newest}->{oldest}"
+            parts.append(f"{rt} {rng} ({n})")
+            dates.clear()
+        if parts:
+            logger.info(
+                "[cache] skipped %d file(s): %s",
+                total_files, ", ".join(parts),
+            )
+
     try:
         for d in days:
             if proxy.is_blocked(SSE_QUERY_URL):
@@ -443,26 +470,34 @@ def download_sse_margin(
             if "summary" in report_types:
                 path, n = _download_summary(sess, d, out_dir, proxy, sleep_sec)
                 if n == -1:
+                    skip_streak["summary"].append(d)
                     stats["skipped_summary"] += 1
-                elif path is None:
-                    stats["failed_summary"] += 1
-                elif n == 0:
-                    stats["empty_summary"] += 1
                 else:
-                    stats["downloaded_summary"] += 1
+                    _flush_skip_streak()
+                    if path is None:
+                        stats["failed_summary"] += 1
+                    elif n == 0:
+                        stats["empty_summary"] += 1
+                    else:
+                        stats["downloaded_summary"] += 1
 
             if "detail" in report_types:
                 path, n = _download_detail(sess, d, out_dir, proxy, sleep_sec)
                 if n == -1:
+                    skip_streak["detail"].append(d)
                     stats["skipped_detail"] += 1
-                elif path is None:
-                    stats["failed_detail"] += 1
-                elif n == 0:
-                    stats["empty_detail"] += 1
                 else:
-                    stats["downloaded_detail"] += 1
+                    _flush_skip_streak()
+                    if path is None:
+                        stats["failed_detail"] += 1
+                    elif n == 0:
+                        stats["empty_detail"] += 1
+                    else:
+                        stats["downloaded_detail"] += 1
     except KeyboardInterrupt:
         logger.warning("Interrupted by user")
+
+    _flush_skip_streak()
 
     logger.info(
         "Done SSE margin. summary: dl=%d skip=%d fail=%d empty=%d | detail: dl=%d skip=%d fail=%d empty=%d out=%s",

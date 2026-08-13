@@ -59,7 +59,7 @@ from downloads._common.core import (
     setup_logger,
     random_sleep,
 )
-from downloads.index.csindex.quote.__main__ import (
+from downloads.index.csindex.quote import (
     CSINDEX_BASE,
     CSINDEX_HEADERS,
     CSINDEX_SKIP_CODES,
@@ -99,6 +99,9 @@ BOND_NAME_KEYWORD = "债"
 CSINDEX_NO_TICK_CODES = {
     "931265", "931407", "931528", "931688",
     "931786", "931800", "H11014",
+    # SZSE-published 399xxx indices that csindex.com.cn intraday API
+    # returns "no ticks available" for.
+    "399303", "399310", "399311",
 }
 
 

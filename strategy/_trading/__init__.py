@@ -5,8 +5,8 @@ populated a single consolidated ``signal_confidence`` column (signed
 [-100, 100]; >0 BUY, <0 SELL rising-edge, 0 none) plus the auxiliary
 ``signal_value`` magnitude, and one strategy callback
 (``signal_reason_fn``) for the human-readable reason text. All financial
-math lives here; a strategy package (e.g. ``ma_spread_trading``) supplies
-only the signal layer (now in ``strategy._signal``).
+math lives here; a strategy package (e.g. ``singleton_trading``) supplies
+only the signal layer.
 
 Public entry points (re-exported below):
   - :func:`run_backtest`        — full run across codes

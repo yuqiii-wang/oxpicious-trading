@@ -56,6 +56,8 @@ import type {
   LiveDataCombinedResponse,
   StrategyBacktestResponse,
   StrategyRiskResponse,
+  StrategyForecast1mResponse,
+  StrategyDecision,
 } from "../../shared/types";
 
 // Module-level cache singleton: 100 entries, 10-minute TTL (safety net).
@@ -951,36 +953,186 @@ export function fetchLiveDataCombined(
 }
 
 // ---------------------------------------------------------------------------
-//  Strategy — MA-spread crossover backtest
+//  Strategy — singleton backtest
 //  TTL-only cache (ephemeral backtest, no DB write).
+//
+//  Algo selection: the user picks a WEIGHT per algo (0.0-1.0, summing to 1.0).
+//  Binary mode (one algo at 1.0, rest 0): strategy_name = algo name (e.g.
+//  "macd"). Mixed mode (multiple non-zero weights): strategy_name =
+//  "portfolio:bb*0.5+macd*0.5" (built by portfolioName(), mirrors the Python
+//  portfolio_name() in strategy/factors_and_algos/portfolio.py).
+//
+//  The resolved strategy_name drives the DATA load (backtest/risks/forecast
+//  SQL-filter on strategy_name). The Run button passes the SERIALIZED
+//  selection ("bollinger_bands:0.5,macd:0.5") to Python's --algo arg, which
+//  the Python _parse_algo_arg already understands.
+//
+//  Default: { bollinger_bands: 0, macd: 1.0, ma_spread: 0 } — binary MACD.
 // ---------------------------------------------------------------------------
-export function fetchMaSpreadBacktest(
+export type StrategyAlgo = "bollinger_bands" | "macd" | "ma_spread";
+export const STRATEGY_ALGOS: StrategyAlgo[] = ["bollinger_bands", "macd", "ma_spread"];
+
+/** Per-algo weight selection. Weights are 0.0-1.0 and SHOULD sum to 1.0. */
+export type StrategySelection = Record<StrategyAlgo, number>;
+
+/** Default selection: MACD-only (binary). User can mix from there. */
+export const DEFAULT_STRATEGY_SELECTION: StrategySelection = {
+  bollinger_bands: 0,
+  macd: 1.0,
+  ma_spread: 0,
+};
+
+/** Human-readable label for an algo (for the weight menu UI). */
+export const ALGO_LABELS: Record<StrategyAlgo, string> = {
+  bollinger_bands: "Bollinger Bands",
+  macd: "MACD",
+  ma_spread: "MA Spread",
+};
+
+/** Abbreviation used in portfolio strategy_name (mirrors Python _ABBR). */
+const ALGO_ABBR: Record<StrategyAlgo, string> = {
+  bollinger_bands: "bb",
+  macd: "macd",
+  ma_spread: "ma",
+};
+
+/** Build the portfolio strategy_name from a selection (mirrors Python
+ *  portfolio_name() in strategy/factors_and_algos/portfolio.py).
+ *  - Binary (one algo non-zero): returns the algo name (e.g. "macd").
+ *  - Mixed (multiple non-zero): returns "portfolio:bb*0.5+macd*0.5".
+ *  - All zero: returns "" (invalid — caller should guard). */
+export function selectionToStrategyName(selection: StrategySelection): string {
+  const active = STRATEGY_ALGOS.filter((a) => selection[a] > 0);
+  if (active.length === 0) return "";
+  // Binary: one algo at any non-zero weight — treat as that algo's binary run.
+  // (Python normalizes a single-algo selection to weight 1.0 regardless.)
+  if (active.length === 1) return active[0];
+  // Mixed: build portfolio:name*weight+...
+  const parts = active.map((a) => `${ALGO_ABBR[a]}*${selection[a]}`);
+  return "portfolio:" + parts.join("+");
+}
+
+/** Serialize a selection for the Python --algo CLI arg.
+ *  Format: "bollinger_bands:0.5,macd:0.5" (understood by _parse_algo_arg). */
+export function serializeSelection(selection: StrategySelection): string {
+  return STRATEGY_ALGOS
+    .filter((a) => selection[a] > 0)
+    .map((a) => `${a}:${selection[a]}`)
+    .join(",");
+}
+
+/** True when exactly one algo has a non-zero weight (binary mode). */
+export function isBinarySelection(selection: StrategySelection): boolean {
+  return STRATEGY_ALGOS.filter((a) => selection[a] > 0).length === 1;
+}
+
+/** Sum of all weights (should be 1.0 for a valid selection). */
+export function selectionSum(selection: StrategySelection): number {
+  return STRATEGY_ALGOS.reduce((s, a) => s + (selection[a] || 0), 0);
+}
+
+/** Build a short label for the selection (for the menu button).
+ *  "MACD 100%" or "BB 50% + MACD 50%" or "Invalid (sum=0.8)". */
+export function selectionLabel(selection: StrategySelection): string {
+  const active = STRATEGY_ALGOS.filter((a) => selection[a] > 0);
+  if (active.length === 0) return "No algo";
+  return active
+    .map((a) => `${ALGO_ABBR[a]} ${Math.round(selection[a] * 100)}%`)
+    .join(" + ");
+}
+
+export function fetchSingletonBacktest(
   code: string,
   secType: MaSpreadSecType,
+  scenario: string | null = null,
+  selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
 ): Promise<StrategyBacktestResponse> {
+  const strategyName = selectionToStrategyName(selection);
   const params = new URLSearchParams();
   if (code) params.set("code", code);
   if (secType) params.set("sec_type", secType);
+  if (scenario) params.set("scenario", scenario);
+  params.set("strategy_name", strategyName);
   const qs = params.toString();
   return fetchJson<StrategyBacktestResponse>(
-    `/api/strategy/ma-spread/backtest${qs ? `?${qs}` : ""}`,
+    `/api/strategy/singleton/backtest${qs ? `?${qs}` : ""}`,
   );
 }
 
-export function fetchMaSpreadRisks(
+export function fetchSingletonRisks(
   code: string,
   secType: MaSpreadSecType,
+  scenario: string | null = null,
+  selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
 ): Promise<StrategyRiskResponse> {
+  const strategyName = selectionToStrategyName(selection);
   const params = new URLSearchParams();
   if (code) params.set("code", code);
   if (secType) params.set("sec_type", secType);
+  if (scenario) params.set("scenario", scenario);
+  params.set("strategy_name", strategyName);
   const qs = params.toString();
   return fetchJson<StrategyRiskResponse>(
-    `/api/strategy/ma-spread/risks${qs ? `?${qs}` : ""}`,
+    `/api/strategy/singleton/risks${qs ? `?${qs}` : ""}`,
   );
 }
 
-/** Result of POST /api/strategy/ma-spread/run. */
+/** 1-month forward sell-confidence forecast (7 sigma scenarios + mean). */
+export function fetchSingletonForecast1m(
+  code: string,
+  secType: MaSpreadSecType,
+  selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
+): Promise<StrategyForecast1mResponse> {
+  const strategyName = selectionToStrategyName(selection);
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  params.set("strategy_name", strategyName);
+  const qs = params.toString();
+  return fetchJson<StrategyForecast1mResponse>(
+    `/api/strategy/singleton/forecast${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Lightweight forecast-only decisions for a scenario (20 SELL rows + summary).
+ *  Used when switching forecast scenarios to avoid reloading the entire
+ *  parent backtest (OHLC + actual decisions + daily are reused from cache). */
+export interface ForecastScenarioResponse {
+  code: string;
+  sec_type: string;
+  scenario: string;
+  forecast_decisions: StrategyDecision[];
+  summary: {
+    n_buys: number;
+    n_sells: number;
+    realized_pnl: number;
+    final_cash: number;
+    total_return_pct: number;
+    total_buy_cost: number;
+    first_buy_date: string | null;
+    first_buy_fill_price: number | null;
+  };
+}
+
+export function fetchForecastScenarioDecisions(
+  code: string,
+  secType: MaSpreadSecType,
+  scenario: string,
+  selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
+): Promise<ForecastScenarioResponse> {
+  const strategyName = selectionToStrategyName(selection);
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  if (scenario) params.set("scenario", scenario);
+  params.set("strategy_name", strategyName);
+  const qs = params.toString();
+  return fetchJson<ForecastScenarioResponse>(
+    `/api/strategy/singleton/forecast-decisions${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Result of POST /api/strategy/singleton/run. */
 export interface RunStrategyResult {
   success: boolean;
   stdout: string;
@@ -989,20 +1141,27 @@ export interface RunStrategyResult {
 }
 
 /**
- * Run the MA-spread backtest + risk computation for one (code, secType) by
+ * Run the singleton backtest + risk computation for one (code, secType) by
  * spawning the Python scripts via the backend. Returns when both processes
  * exit. NOT cached (always a fresh POST).
- */
-export async function runMaSpreadStrategy(
+ *
+ * The selection is serialized as "bollinger_bands:0.5,macd:0.5" and passed
+ * to Python's --algo arg (which _parse_algo_arg understands). */
+export async function runSingletonStrategy(
   code: string,
   secType: MaSpreadSecType,
+  forecast: boolean = true,
+  selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
 ): Promise<RunStrategyResult> {
+  const serialized = serializeSelection(selection);
   const params = new URLSearchParams();
   if (code) params.set("code", code);
   if (secType) params.set("sec_type", secType);
+  params.set("forecast", String(forecast));
+  params.set("algo", serialized);
   const qs = params.toString();
   const res = await fetch(
-    `/api/strategy/ma-spread/run${qs ? `?${qs}` : ""}`,
+    `/api/strategy/singleton/run${qs ? `?${qs}` : ""}`,
     { method: "POST" },
   );
   if (!res.ok) {

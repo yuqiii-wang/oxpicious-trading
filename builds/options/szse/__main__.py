@@ -55,7 +55,6 @@ warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
-import QuantLib as ql
 
 from downloads._common.core import read_csv_preferred
 from _common.build_commons import (
@@ -326,6 +325,13 @@ OPT_SCALE = 10000.0
 
 def compute_iv_and_greeks(df):
     """Compute implied volatility and Greeks using QuantLib's BlackCalculator."""
+    try:
+        import QuantLib as ql
+    except ImportError as e:
+        raise ImportError(
+            "QuantLib is required to compute IV and Greeks. Install it with: "
+            "conda install -c conda-forge quantlib"
+        ) from e
     from scipy.optimize import brentq
 
     S = df["underlying_close"].values / PRICE_SCALE

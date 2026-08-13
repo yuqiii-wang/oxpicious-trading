@@ -14,7 +14,7 @@ import DerivativesPage from "@/analysis/pages/DerivativesPage";
 import CompositesPage from "@/analysis/pages/CompositesPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
-import MaSpreadStrategyPage from "@/strategy/MaSpreadStrategyPage";
+import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
 
 export default function App() {
   return (
@@ -39,12 +39,12 @@ export default function App() {
           <Route path="/analysis/commons/industry-sentiments" element={<IndustrySentimentsPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/composites" element={<CompositesPage />} />
-          <Route path="/strategy" element={<Navigate to="/strategy/ma-spread" replace />} />
+          <Route path="/strategy" element={<Navigate to="/strategy/singleton" replace />} />
           <Route
             path="/strategy/commons"
             element={<Box sx={{ p: 4, color: "text.secondary" }}>Strategy Commons — coming soon.</Box>}
           />
-          <Route path="/strategy/ma-spread" element={<MaSpreadStrategyPage />} />
+          <Route path="/strategy/singleton" element={<SingletonStrategyPage />} />
         </Routes>
       </Box>
     </Router>

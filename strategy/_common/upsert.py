@@ -1,11 +1,14 @@
 """DB upsert for the strategy schema (shared across all strategies).
 
 Writes three targets:
-  1. strategy.strategy_identity — one IDENTITY row per (strategy, code) run.
-     PURE IDENTITY table (run results live on strategy_results). Resolves the
-     next seq_no for the strategy_name unless --seq-no is given. With --force,
-     an existing (strategy_name, seq_no, sec_type, code) is deleted (CASCADE
-     removes its strategy_results + decisions + risk rows) before re-inserting.
+  1. strategy.strategy_identity — one IDENTITY row per (strategy, code, period)
+     run. PURE IDENTITY table (run results live on strategy_results). The
+     NATURAL business key is (strategy_name, sec_type, code, start_date,
+     end_date, scenario); ``upsert_strategy_seq`` is the skip/force-aware entry:
+     existing+no-force → return None (SKIP, reused by the async multi-algo
+     runner); existing+--force → CASCADE-delete + re-insert; new → insert.
+     ``find_seq_id`` is the pure skip-check probe. seq_no is a display counter
+     only (compute_next_seq_no).
   2. strategy.strategy_results  — 1:1 with strategy_identity (seq_id is PK + FK).
      Holds run RESULTS: start/end_date, total_buy_cost, the first-buy
      normalization anchor (first_buy_date / first_buy_fill_price), and the
@@ -17,7 +20,7 @@ Writes three targets:
 All functions are strategy-agnostic: they operate purely on the strategy_identity
 / strategy_results / trade_decision tables and don't know anything about MA
 crosses, RSI, or any other strategy-specific signal logic. A future strategy
-(mean-reversion, momentum, etc.) would call the same insert_strategy_seq() +
+(mean-reversion, momentum, etc.) would call the same upsert_strategy_seq() +
 insert_strategy_results() + insert_decisions() triple with its own decisions list.
 """
 from __future__ import annotations
@@ -53,52 +56,49 @@ DECISION_COLUMNS = [
 ]
 
 
-async def resolve_seq_no(
-    conn,
-    strategy_name: str,
-    sec_type: str,
-    code: str,
-    force: bool,
-    seq_no: Optional[int],
-) -> int:
-    """Determine the seq_no to use for this (strategy, sec_type, code) run.
+async def compute_next_seq_no(conn, strategy_name: str) -> int:
+    """Return the next display seq_no for a strategy_name (max(seq_no)+1, or 1).
 
-    - If ``seq_no`` is given: with --force, delete the existing
-      (strategy_name, seq_no, sec_type, code) row (CASCADE drops its
-      strategy_results + decisions + risk rows); without --force, raise if it
-      already exists.
-    - If ``seq_no`` is None: use max(existing seq_no)+1 for the strategy_name
-      (or 1 if none). Multiple codes in one --all run share the same seq_no;
-      they get distinct seq_ids but the same seq_no.
+    seq_no is now a DISPLAY COUNTER ONLY — it is NOT part of the uniqueness
+    key (the natural key is strategy_name/sec_type/code/start_date/end_date/
+    scenario). It exists purely so UIs can label runs sequentially within a
+    strategy. Multiple codes in one --all run share the same seq_no.
     """
-    if seq_no is not None:
-        existing_id = await conn.fetchval(
-            f"SELECT seq_id FROM {SEQ_TABLE} "
-            "WHERE strategy_name=$1 AND seq_no=$2 "
-            "  AND sec_type=$3 AND code=$4",
-            strategy_name, seq_no, sec_type, code,
-        )
-        if existing_id is not None:
-            if not force:
-                raise RuntimeError(
-                    f"strategy_seq({strategy_name},{seq_no},"
-                    f"{sec_type},{code}) already exists "
-                    f"(seq_id={existing_id}). Use --force to overwrite."
-                )
-            # CASCADE removes the seq's strategy_results + trade_decision +
-            # strategy_risk_seq + strategy_risk_period rows.
-            await conn.execute(
-                f"DELETE FROM {SEQ_TABLE} WHERE seq_id=$1",
-                existing_id,
-            )
-        return seq_no
-
     max_no = await conn.fetchval(
         f"SELECT COALESCE(MAX(seq_no), 0) FROM {SEQ_TABLE} "
         "WHERE strategy_name=$1",
         strategy_name,
     )
     return int(max_no) + 1
+
+
+async def find_seq_id(
+    conn,
+    strategy_name: str,
+    sec_type: str,
+    code: str,
+    start_date: datetime.date,
+    end_date: Optional[datetime.date],
+    scenario: Optional[str] = None,
+) -> Optional[int]:
+    """Skip check: return the existing seq_id for the natural business key
+    (strategy_name, sec_type, code, start_date, end_date, scenario), or None.
+
+    This is the "skip if already found in strategy_identity" probe used by the
+    async multi-algo runner: if an algo has already been backtested over the
+    same OHLC period for the same security, its seq is reused (not recomputed).
+    NULL end_date matches NULL end_date (IS NOT DISTINCT FROM).
+    """
+    return await conn.fetchval(
+        f"""
+        SELECT seq_id FROM {SEQ_TABLE}
+        WHERE strategy_name=$1 AND sec_type=$2 AND code=$3
+          AND start_date=$4
+          AND end_date IS NOT DISTINCT FROM $5
+          AND scenario IS NOT DISTINCT FROM $6
+        """,
+        strategy_name, sec_type, code, start_date, end_date, scenario,
+    )
 
 
 async def insert_strategy_seq(
@@ -108,6 +108,11 @@ async def insert_strategy_seq(
     sec_type: str,
     code: str,
     params: dict,
+    *,
+    start_date: datetime.date,
+    end_date: Optional[datetime.date] = None,
+    scenario: Optional[str] = None,
+    parent_seq_id: Optional[int] = None,
     status: str = "completed",
 ) -> int:
     """Insert a strategy_seq row (one code per seq) and return its seq_id.
@@ -115,20 +120,76 @@ async def insert_strategy_seq(
     strategy_seq is now a PURE IDENTITY table — run results (dates,
     total_buy_cost, first-buy anchor, P&L summary) are written separately to
     strategy_results via insert_strategy_results(). Call that right after this.
+
+    ``start_date``/``end_date`` are the OHLC period the strategy is run over
+    (input); they form the natural business key with strategy_name/sec_type/
+    code/scenario. ``scenario``/``parent_seq_id`` tag forecast child seqs.
     """
     params_json = json.dumps(params, default=str)
     # Use RETURNING to get the IDENTITY-generated seq_id.
     seq_id = await conn.fetchval(
         f"""
         INSERT INTO {SEQ_TABLE}
-            (strategy_name, seq_no, sec_type, code, params, status)
-        VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+            (strategy_name, seq_no, sec_type, code, start_date, end_date,
+             params, status, scenario, parent_seq_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
         RETURNING seq_id
         """,
-        strategy_name, seq_no, sec_type, code,
-        params_json, status,
+        strategy_name, seq_no, sec_type, code, start_date, end_date,
+        params_json, status, scenario, parent_seq_id,
     )
     return int(seq_id)
+
+
+async def upsert_strategy_seq(
+    conn,
+    *,
+    strategy_name: str,
+    sec_type: str,
+    code: str,
+    start_date: datetime.date,
+    end_date: Optional[datetime.date],
+    params: dict,
+    scenario: Optional[str] = None,
+    parent_seq_id: Optional[int] = None,
+    force: bool = False,
+    seq_no: Optional[int] = None,
+) -> Optional[int]:
+    """Insert (or skip/replace) a strategy_identity row on the natural key.
+
+    Natural key = (strategy_name, sec_type, code, start_date, end_date, scenario).
+
+      - Existing + not --force  → return None (SKIP signal). The caller should
+        skip writing decisions/results for this code (the seq is already
+        complete from a prior run). This is the "skip if already found"
+        behavior for the async multi-algo runner.
+      - Existing + --force      → DELETE (CASCADE drops results/decisions/
+        risks/daily) then INSERT a fresh row with a new seq_id.
+      - Not existing             → INSERT a new row.
+
+    ``seq_no`` is a display counter (computed as max+1 when None). It is NOT
+    part of uniqueness. Returns the seq_id (new or existing-on-force), or None
+    when skipped.
+    """
+    existing = await find_seq_id(
+        conn, strategy_name, sec_type, code, start_date, end_date, scenario,
+    )
+    if existing is not None:
+        if not force:
+            return None  # skip — already backtested over this period
+        # CASCADE removes the seq's strategy_results + trade_decision +
+        # strategy_risks + strategy_risk_period + strategy_daily rows.
+        await conn.execute(
+            f"DELETE FROM {SEQ_TABLE} WHERE seq_id=$1", existing,
+        )
+
+    if seq_no is None:
+        seq_no = await compute_next_seq_no(conn, strategy_name)
+    return await insert_strategy_seq(
+        conn, strategy_name, seq_no, sec_type, code, params,
+        start_date=start_date, end_date=end_date,
+        scenario=scenario, parent_seq_id=parent_seq_id,
+    )
 
 
 async def insert_strategy_results(
@@ -212,17 +273,23 @@ async def insert_decisions(
     conn,
     seq_id: int,
     decisions: List[Dict[str, Any]],
+    *,
+    assign_no: bool = True,
 ) -> int:
     """Bulk-insert trade_decision rows for the given seq_id.
 
     ``decisions`` is a list of dicts whose keys include the columns in
-    DECISION_COLUMNS. Missing keys default to None. ``decision_no`` is
-    assigned here via assign_decision_no() after sorting. Each row must
+    DECISION_COLUMNS. Missing keys default to None. By default
+    ``decision_no`` is assigned here via assign_decision_no() after sorting.
+    Pass ``assign_no=False`` to use the ``decision_no`` already set on each
+    row (e.g. when appending forecast decisions that continue numbering
+    from the existing actual decisions in the same seq). Each row must
     carry ``normalized_fill_price`` (attached by the backtest).
     """
     if not decisions:
         return 0
-    decisions = assign_decision_no(decisions)
+    if assign_no:
+        decisions = assign_decision_no(decisions)
     rows = []
     for d in decisions:
         r = {"seq_id": seq_id}

@@ -19,7 +19,7 @@
  * Optional L3 security-level row: when `itemKind` is set, renders one chip
  * per individual Index/ETF/Stock under the active industry/theme, paginated.
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Box, Chip, CircularProgress, Pagination, Stack, Typography, type SxProps } from "@mui/material";
 import type { SectorNode, StrategyNode } from "../../../../shared/types";
 import { PRIMARY_EXCHANGE_OPTIONS, SECONDARY_EXCHANGE_OPTIONS } from "../../utils/classify";
@@ -103,6 +103,14 @@ interface Props {
 // ---------------------------------------------------------------------------
 const ITEMS_PAGE_SIZE = 16;
 
+/** Default selection for Index sec_type: 宽基(BROAD) → 上证(broad_sse) → 上证指数(000001).
+ *  Applied ONCE on initial mount when the classification tree has loaded and
+ *  no prior user selection exists. Centralised here so every page using the
+ *  nav gets the same default without per-page boilerplate. */
+const DEFAULT_INDEX_SECTOR_ID = "BROAD";
+const DEFAULT_INDEX_INDUSTRY_SLUG = "broad_sse";
+const DEFAULT_INDEX_ITEM_CODE = "000001";
+
 // ---------------------------------------------------------------------------
 // Sub-component: a labeled row of chips
 // ---------------------------------------------------------------------------
@@ -178,6 +186,68 @@ export default function SecClassificationNav({
   useEffect(() => {
     setItemPage(1);
   }, [sectorId, industrySlug, strategyId, themeSlug]);
+
+  // --- Default selection for Index sec_type ---
+  // On initial mount, when the classification tree has loaded, auto-select
+  // 宽基(BROAD) → 上证(broad_sse) → 上证指数(000001). Applied ONCE via a ref
+  // guard so subsequent tree reloads (e.g. exchange filter changes) do not
+  // override the user's selection. Skipped in multi-select mode.
+  //
+  // Handles two scenarios:
+  //  1. Clean slate — no sector/strategy selected (page has no default logic):
+  //     set the full default (sector/strategy + industry/theme + code).
+  //  2. Page already set BROAD as the sector/strategy but didn't drill down:
+  //     complete the selection with the industry/theme + code.
+  const defaultAppliedRef = useRef(false);
+  useEffect(() => {
+    if (defaultAppliedRef.current) return;
+    if (itemKind !== "Index") return;
+    if (multiSelect || multiSelectItems) return;
+
+    const hasTree = sectors.length > 0 || (!!strategies && strategies.length > 0);
+    if (!hasTree) return;
+
+    // Mark as applied on the first tree load — the default only runs once.
+    defaultAppliedRef.current = true;
+
+    // BROAD is a strategy (is_industry_not_strategy=FALSE) for index 000001,
+    // so it normally lives in the RIGHT column. Fall back to LEFT column.
+    const broadStrategy = strategies?.find((s) => s.sector_id === DEFAULT_INDEX_SECTOR_ID);
+    const broadSector = sectors.find((s) => s.sector_id === DEFAULT_INDEX_SECTOR_ID);
+    const broadNode = broadStrategy ?? broadSector;
+    if (!broadNode) return;
+
+    const sseIndustry = broadNode.industries.find(
+      (i) => i.industry_slug === DEFAULT_INDEX_INDUSTRY_SLUG,
+    );
+    if (!sseIndustry) return;
+    if (!sseIndustry.items.some((it) => it.code === DEFAULT_INDEX_ITEM_CODE)) return;
+
+    const isStrategy = !!broadStrategy;
+
+    if (isStrategy) {
+      // BROAD is in the RIGHT column (strategy → theme)
+      if (!sectorId && !strategyId) {
+        onStrategyChange?.(DEFAULT_INDEX_SECTOR_ID);
+        onThemeChange?.(DEFAULT_INDEX_INDUSTRY_SLUG);
+        onItemSelected?.(DEFAULT_INDEX_ITEM_CODE);
+      } else if (strategyId === DEFAULT_INDEX_SECTOR_ID && !themeSlug && !selectedItemCode) {
+        onThemeChange?.(DEFAULT_INDEX_INDUSTRY_SLUG);
+        onItemSelected?.(DEFAULT_INDEX_ITEM_CODE);
+      }
+    } else {
+      // BROAD is in the LEFT column (sector → industry)
+      if (!sectorId && !strategyId) {
+        onSectorChange(DEFAULT_INDEX_SECTOR_ID);
+        onIndustryChange(DEFAULT_INDEX_INDUSTRY_SLUG);
+        onItemSelected?.(DEFAULT_INDEX_ITEM_CODE);
+      } else if (sectorId === DEFAULT_INDEX_SECTOR_ID && !industrySlug && !selectedItemCode) {
+        onIndustryChange(DEFAULT_INDEX_INDUSTRY_SLUG);
+        onItemSelected?.(DEFAULT_INDEX_ITEM_CODE);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemKind, sectors, strategies, sectorId, strategyId, themeSlug, industrySlug, selectedItemCode]);
 
   // Cross-Border exchange row (HK / Overseas) — hidden by default. The user
   // expands it via the ▼ triangle next to the "Exchange" label. Cross-border

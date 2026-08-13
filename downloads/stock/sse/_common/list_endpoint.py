@@ -35,6 +35,8 @@ SSE_LIST_URL = "https://yunhq.sse.com.cn:32042/v1/sh1/list/exchange/equity"
 # Fund (ETF/LOF) tab — same JSONP schema as the equity endpoint, only the
 # path suffix differs (/exchange/fund vs /exchange/equity).
 SSE_FUND_LIST_URL = SSE_LIST_URL.replace("/equity", "/fund")
+# Index (指数) tab — same JSONP schema, path suffix /exchange/index.
+SSE_INDEX_LIST_URL = SSE_LIST_URL.replace("/equity", "/index")
 SSE_REFERER = "https://www.sse.com.cn/market/price/trends/"
 
 # --- JSONP / pagination ----------------------------------------------------
@@ -127,6 +129,7 @@ def _write_rows(
 __all__ = [
     "SSE_LIST_URL",
     "SSE_FUND_LIST_URL",
+    "SSE_INDEX_LIST_URL",
     "SSE_REFERER",
     "JSONP_CALLBACK",
     "PAGE_SIZE",

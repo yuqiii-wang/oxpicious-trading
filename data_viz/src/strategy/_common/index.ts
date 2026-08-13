@@ -1,3 +1,4 @@
+export { default as AlgoWeightMenu } from "./AlgoWeightMenu";
 export { default as DecisionTable } from "./DecisionTable";
 export { default as RiskPanel } from "./RiskPanel";
 export { default as SummaryChip } from "./SummaryChip";

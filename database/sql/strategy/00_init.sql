@@ -5,3 +5,5 @@
 -- ============================================================================
 
 \ir 01_trade_decision_seqs.sql
+\ir 03_forecast_1m.sql
+\ir 04_factors_and_algos.sql

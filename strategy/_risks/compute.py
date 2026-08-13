@@ -19,10 +19,11 @@ Risk philosophy:
     LOSSES ONLY — gain windows contribute 0. A consecutive losing-month
     STREAK component is added on top (``_streak_contribution``) so a
     sustained multi-month bleed grows the score exponentially. A PER-PERIOD
-    OVERRIDE component (``_period_override_risk``) adds three rule-based
-    signals — monthly additional unrealized loss (>10% of capital), monthly
-    gain (>50%), seasonal gain (>80%) — each scaled so hitting its threshold
-    contributes 6.0 (pushes grade to HIGH on its own).
+    STATISTICAL DISTRIBUTION component (``_period_override_risk``) adds two
+    self-calibrating signals per period type (month/season/year) —
+    distribution asymmetry (losses dominate gains in variance or mean) and
+    tail loss (any period's loss exceeding 2σ/3σ from the loss mean) — each
+    scaled so at-threshold contributes 6.0 (pushes grade to HIGH on its own).
   - ``compute_risk_periods`` rolls P&L up per year/season/month for the UI
     chart and flags periods that dominate (hotspot) or move against the run
     total (counter-trend).
@@ -41,8 +42,9 @@ from strategy._risks.constants import (
     RISK_EXP_K, MAX_LOSS_RATIO, UNREALIZED_WEIGHT,
     LOSING_STREAK_MIN, LOSING_STREAK_THRESHOLD_MONTHS,
     RISK_GRADE_LOW_BOUND, RISK_GRADE_MODERATE_BOUND, RISK_GRADE_ELEVATED_BOUND,
-    MONTHLY_UNREALIZED_LOSS_HIGH_THRESHOLD,
-    MONTHLY_GAIN_HIGH_THRESHOLD, SEASONAL_GAIN_HIGH_THRESHOLD,
+    LOSS_TAIL_2STD_TRIGGER,
+    LOSS_DOMINANCE_RATIO_HIGH, MIN_PERIODS_FOR_STATS,
+    LITTLE_LOSS_RATIO, LITTLE_GAIN_CV_MAX,
 )
 from strategy._risks.periods import period_value
 
@@ -298,17 +300,59 @@ def _compute_price_drawdowns(
 
 
 # ---------------------------------------------------------------------------
-#  Risk grade — LOW / MODERATE / ELEVATED / HIGH
+#  Risk grade — LITTLE / LOW / MODERATE / ELEVATED / HIGH
 # ---------------------------------------------------------------------------
-def _risk_grade(risk_score: float) -> str:
+def _is_little_risk(
+    sells: pd.DataFrame,
+    total_realized: float,
+) -> bool:
+    """Check if a strategy qualifies for the LITTLE risk grade.
+
+    LITTLE is a STRUCTURAL grade for the safest strategies: almost no
+    losing trades AND stable gains (low gain coefficient of variation) AND
+    net profitable. Checked BEFORE score-based grades — if the criteria
+    are met, the strategy is LITTLE regardless of score (the criteria
+    guarantee safety).
+    """
+    if total_realized <= 0:
+        return False
+    pnls = sells["realized_pnl"].to_numpy()
+    n_sells = len(pnls)
+    if n_sells < MIN_PERIODS_FOR_STATS:
+        return False
+    losses = pnls[pnls < 0]
+    gains = pnls[pnls > 0]
+    n_losses = len(losses)
+    n_gains = len(gains)
+    if n_gains < MIN_PERIODS_FOR_STATS:
+        return False
+    # Criterion 1: almost no losses
+    loss_ratio = n_losses / n_sells
+    if loss_ratio >= LITTLE_LOSS_RATIO:
+        return False
+    # Criterion 2: stable gains (low coefficient of variation)
+    gain_mean = float(gains.mean())
+    if gain_mean <= 0:
+        return False
+    gain_std = float(gains.std())  # sample std (ddof=1)
+    gain_cv = gain_std / gain_mean
+    if gain_cv >= LITTLE_GAIN_CV_MAX:
+        return False
+    return True
+
+
+def _risk_grade(risk_score: float, is_little: bool = False) -> str:
     """Map the (absolute) exponential rolling-window risk_score to a grade.
 
-    Boundaries on the new scale (k = ln 2 ⇒ one window at threshold = 1.0):
+    LITTLE is criteria-based (checked first): almost no losses + stable
+    gains + profitable. Otherwise score-based:
         < 1.0  → LOW       (no window reaches its loss threshold)
         < 3.0  → MODERATE  (one window past threshold, or several near it)
         < 6.0  → ELEVATED  (multiple windows past threshold)
         else   → HIGH
     """
+    if is_little:
+        return "LITTLE"
     if risk_score < RISK_GRADE_LOW_BOUND:
         return "LOW"
     if risk_score < RISK_GRADE_MODERATE_BOUND:
@@ -435,119 +479,190 @@ def _rolling_unrealized_loss(
 
 
 # ---------------------------------------------------------------------------
-#  Per-period HIGH-risk override components
+#  Per-period statistical distribution risk components
 # ---------------------------------------------------------------------------
-# Three components based on per-period P&L as a fraction of capital_base
-# (total_buy_cost). Each is scaled by RISK_GRADE_ELEVATED_BOUND (6.0) so
-# that hitting its threshold contributes 6.0 to the score — enough to push
-# the grade to HIGH on its own. Below threshold the contribution is
-# exponential (proportional), so a near-threshold period still raises the
-# score meaningfully without dominating it.
+# Replaces the old three fixed-percentage rules (10%/50%/80% of capital)
+# with a SELF-CALIBRATING statistical approach. For each period type
+# (month/season/year) the per-period Total P&L (realized + MTM change) is
+# split into gains (>0) and losses (<0); mean/var/std of each distribution
+# drive two signals:
 #
-# The three rules (per spec):
-#   1. Monthly additional unrealized loss: month-over-month MTM change in
-#      unrealized_pnl < -10% of capital → HIGH.
-#   2. Monthly gain: realized_pnl + max intra-month unrealized_pnl >
-#      50% of capital → HIGH.
-#   3. Seasonal gain: realized_pnl + max intra-season unrealized_pnl >
-#      80% of capital → HIGH.
+#   A. Distribution asymmetry — if loss_var > gain_var OR loss_mean_abs >
+#     gain_mean, losses dominate gains. The dominance ratio (loss/gain)
+#     drives the exponential contribution. At ratio = 2.0 (losses 2x
+#     gains) → contributes 6.0 (HIGH on its own).
+#   B. Tail loss — any single period whose loss z-score exceeds 2σ is a
+#     "significant loss" event. At 3σ → contributes 6.0 (HIGH on its own).
+#     The WORST period drives the signal.
+#
+# Both use ``scale * (exp(k · ratio) - 1)`` with scale = 6.0, k = ln 2,
+# capped at MAX_LOSS_RATIO. SUMMED across the three period types and
+# added to the rolling-window + streak components. NOT a grade override —
+# the grade is derived from the total score via the boundary logic.
+
+
+def _variance(values: List[float], mean_val: float) -> float:
+    """Sample variance (denominator = n - 1). Returns 0 for < 2 values."""
+    n = len(values)
+    if n < MIN_PERIODS_FOR_STATS:
+        return 0.0
+    return sum((v - mean_val) ** 2 for v in values) / (n - 1)
+
+
+def _period_total_pnls(
+    sells: pd.DataFrame,
+    daily_df: pd.DataFrame,
+    period_type: str,
+) -> List[float]:
+    """Per-period Total P&L (realized + MTM change) for the given period type.
+
+    Returns a chronologically ordered list of floats (positive = gain,
+    negative = loss). Realized P&L comes from SELLs in the period; the MTM
+    change is end-of-period unrealized_pnl minus end-of-previous-period
+    unrealized_pnl (first period bases off 0 — no open position before the
+    first BUY). Periods with no daily MTM data carry forward the last known
+    end-of-period unrealized (MTM change = 0 for that period).
+    """
+    realized: Dict[str, float] = {}
+    if not sells.empty:
+        s = sells[["exec_date", "realized_pnl"]].copy()
+        s["period"] = s["exec_date"].apply(
+            lambda d: period_value(d, period_type)
+        )
+        realized = s.groupby("period")["realized_pnl"].sum().to_dict()
+
+    end_unreal: Dict[str, float] = {}
+    if not daily_df.empty:
+        d = daily_df[["trade_date", "unrealized_pnl"]].copy()
+        d["period"] = d["trade_date"].apply(
+            lambda x: period_value(x, period_type)
+        )
+        d = d.sort_values("trade_date")
+        ends = d.groupby("period", as_index=False).last()
+        end_unreal = dict(zip(ends["period"], ends["unrealized_pnl"]))
+
+    all_periods = sorted(set(realized) | set(end_unreal))
+    pnls: List[float] = []
+    prev_end = 0.0
+    for pv in all_periods:
+        r = float(realized.get(pv, 0.0))
+        cur_end = float(end_unreal.get(pv, prev_end))
+        mtm_change = cur_end - prev_end
+        prev_end = cur_end
+        pnls.append(r + mtm_change)
+    return pnls
+
+
+def _period_realized_pnls(
+    sells: pd.DataFrame,
+    period_type: str,
+) -> List[float]:
+    """Per-period REALIZED-only P&L for the given period type.
+
+    Returns a chronologically ordered list of floats (positive = gain,
+    negative = loss). Only SELL realized_pnl is summed per period — NO MTM
+    change. Used by the period_override risk signals (tail loss + dominance)
+    to avoid double-counting unrealized MTM, which is already captured by
+    the rolling-window unrealized component (weighted at 30%).
+    """
+    if sells.empty:
+        return []
+    s = sells[["exec_date", "realized_pnl"]].copy()
+    s["period"] = s["exec_date"].apply(
+        lambda d: period_value(d, period_type)
+    )
+    monthly = s.groupby("period")["realized_pnl"].sum().sort_index()
+    return [float(v) for v in monthly]
+
+
 def _period_override_risk(
     sells: pd.DataFrame,
     daily_df: pd.DataFrame,
     capital_base: float,
 ) -> float:
-    """Per-period HIGH-risk override component for the risk_score.
+    """Statistical distribution-based per-period risk component.
 
-    Returns the summed contribution of the three override rules. Each rule
-    uses ``scale * (exp(k · min(ratio, MAX_LOSS_RATIO)) - 1)`` where
-    ``scale = RISK_GRADE_ELEVATED_BOUND`` (6.0) so that at-threshold
-    (ratio = 1) the contribution is exactly 6.0 — pushing the total score
-    to HIGH on its own. Gains/losses below their thresholds contribute
-    proportionally (exponential), so a near-threshold period still raises
-    the score without dominating it.
+    For each period type P ∈ {month, season, year}:
+      1. Compute per-period REALIZED P&L (SELL realized_pnl summed per
+         period — NO MTM change). MTM volatility is already captured by
+         the rolling-window unrealized component (weighted at 30%), so
+         including it here would double-count.
+      2. Split into gains (>0) and losses (<0); compute mean/var/std of each.
+      3. SIGNAL A — Distribution asymmetry: if loss_var > gain_var OR
+         loss_mean_abs > gain_mean, losses dominate gains. The dominance
+         ratio = max(loss_var/gain_var, loss_mean_abs/gain_mean). At ratio
+         = LOSS_DOMINANCE_RATIO_HIGH (2.0) → contributes 6.0 (HIGH).
+      4. SIGNAL B — Tail loss: the worst single period's loss z-score
+         (|loss| - loss_mean_abs) / loss_std beyond 2σ drives the
+         contribution. At 3σ (ratio = 1) → contributes 6.0 (HIGH).
 
-    ``capital_base`` = total_buy_cost (peak capital deployed), the same
-    "% of capital" denominator used by the rolling-window loss_fraction.
+    Both signals use ``scale * (exp(k · ratio) - 1)`` with
+    ``scale = RISK_GRADE_ELEVATED_BOUND`` (6.0) and ``k = ln 2``, capped at
+    MAX_LOSS_RATIO. Signals are summed across the three period types.
+
+    ``capital_base`` and ``daily_df`` are retained in the signature for
+    caller compatibility but ``daily_df`` is NOT used — the signals use
+    realized-only P&L. Thresholds are purely statistical (self-calibrating
+    from the strategy's own P&L distribution, not fixed capital fractions).
     """
-    if capital_base <= 0:
-        return 0.0
     scale = RISK_GRADE_ELEVATED_BOUND  # 6.0 — at-threshold contribution
     score = 0.0
 
-    # ---- Component 1: Monthly additional unrealized loss (MTM delta) ----
-    # The "additional" unrealized loss in a month = the MTM change for that
-    # month = end-of-month unrealized_pnl minus end-of-previous-month
-    # unrealized_pnl. The first month bases off 0 (no open position before
-    # the first BUY). Only the WORST (most negative) monthly delta drives
-    # the component — a single bad month is the signal.
-    if not daily_df.empty:
-        d = daily_df[["trade_date", "unrealized_pnl"]].copy()
-        d["month"] = d["trade_date"].apply(lambda x: period_value(x, "month"))
-        d = d.sort_values("trade_date")
-        # End-of-month unrealized_pnl (last trading day in each month).
-        ends = d.groupby("month", as_index=False).last()
-        ends["mtm_change"] = ends["unrealized_pnl"].diff().fillna(
-            ends["unrealized_pnl"].iloc[0]
-        )
-        worst_delta = float(ends["mtm_change"].min())
-        if worst_delta < 0:
-            threshold_val = MONTHLY_UNREALIZED_LOSS_HIGH_THRESHOLD * capital_base
-            ratio = min(abs(worst_delta) / threshold_val, MAX_LOSS_RATIO)
+    for period_type in ("month", "season", "year"):
+        # Use REALIZED-only P&L (no MTM) to avoid double-counting unrealized
+        # losses that are already captured by the rolling-window unrealized
+        # component (weighted at 30%). MTM swings that recover into realized
+        # gains should not trigger the tail-loss signal.
+        pnls = _period_realized_pnls(sells, period_type)
+        if not pnls:
+            continue
+
+        gains = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+
+        gain_mean = sum(gains) / len(gains) if gains else 0.0
+        loss_mean = sum(losses) / len(losses) if losses else 0.0
+        loss_mean_abs = abs(loss_mean)
+        gain_var = _variance(gains, gain_mean)
+        loss_var = _variance(losses, loss_mean)
+        loss_std = math.sqrt(loss_var)
+
+        # ---- Signal A: Distribution asymmetry ----------------------------
+        # loss_var > gain_var OR loss_mean_abs > gain_mean → losses dominate.
+        # dominance ratio: 1.0 = balanced, 2.0 = losses 2x gains (HIGH).
+        var_ratio = 1.0  # neutral (both degenerate or gains dominate)
+        if gain_var > 0 and loss_var > 0:
+            var_ratio = loss_var / gain_var
+        elif gain_var == 0 and loss_var > 0:
+            # Losses have variance where gains have none → losses dominate.
+            var_ratio = LOSS_DOMINANCE_RATIO_HIGH
+
+        mean_ratio = 1.0  # neutral
+        if gain_mean > 0 and loss_mean_abs > 0:
+            mean_ratio = loss_mean_abs / gain_mean
+        elif gain_mean == 0 and loss_mean_abs > 0:
+            # No gains at all → losses dominate unconditionally.
+            mean_ratio = LOSS_DOMINANCE_RATIO_HIGH
+
+        dom_ratio = max(var_ratio, mean_ratio)
+        if dom_ratio > 1.0:
+            ratio = min(dom_ratio - 1.0, MAX_LOSS_RATIO)
             score += scale * (math.exp(RISK_EXP_K * ratio) - 1.0)
 
-    # ---- Components 2 & 3: Monthly / seasonal gain -----------------------
-    # Gain basis = realized_pnl + max intra-period unrealized_pnl (raw sum,
-    # matches the UI "Total P&L" bar). Only the BEST (largest) per-period
-    # gain drives each component — a single outsized-gain period is the
-    # signal. Realized comes from SELLs; max unrealized from the daily
-    # series. Periods with no SELLs contribute 0 realized (but may still
-    # have a max unrealized gain from an open position).
-    if not sells.empty or not daily_df.empty:
-        # Per-period realized_pnl sums (SELLs only; 0 for periods with no SELLs).
-        monthly_realized: Dict[str, float] = {}
-        seasonal_realized: Dict[str, float] = {}
-        if not sells.empty:
-            s = sells[["exec_date", "realized_pnl"]].copy()
-            s["month"] = s["exec_date"].apply(lambda d: period_value(d, "month"))
-            s["season"] = s["exec_date"].apply(lambda d: period_value(d, "season"))
-            monthly_realized = s.groupby("month")["realized_pnl"].sum().to_dict()
-            seasonal_realized = s.groupby("season")["realized_pnl"].sum().to_dict()
-
-        # Per-period max intra-period unrealized_pnl (peak MTM).
-        max_monthly_unreal: Dict[str, float] = {}
-        max_seasonal_unreal: Dict[str, float] = {}
-        if not daily_df.empty:
-            d2 = daily_df[["trade_date", "unrealized_pnl"]].copy()
-            d2["month"] = d2["trade_date"].apply(lambda x: period_value(x, "month"))
-            d2["season"] = d2["trade_date"].apply(lambda x: period_value(x, "season"))
-            max_monthly_unreal = d2.groupby("month")["unrealized_pnl"].max().to_dict()
-            max_seasonal_unreal = d2.groupby("season")["unrealized_pnl"].max().to_dict()
-
-        # Monthly gain = realized + max intra-month unrealized (raw sum).
-        all_months = set(monthly_realized) | set(max_monthly_unreal)
-        best_month_gain = 0.0
-        for m in all_months:
-            gain = float(monthly_realized.get(m, 0.0)) + \
-                float(max_monthly_unreal.get(m, 0.0))
-            if gain > best_month_gain:
-                best_month_gain = gain
-        if best_month_gain > 0:
-            threshold_val = MONTHLY_GAIN_HIGH_THRESHOLD * capital_base
-            ratio = min(best_month_gain / threshold_val, MAX_LOSS_RATIO)
-            score += scale * (math.exp(RISK_EXP_K * ratio) - 1.0)
-
-        # Seasonal gain = realized + max intra-season unrealized (raw sum).
-        all_seasons = set(seasonal_realized) | set(max_seasonal_unreal)
-        best_season_gain = 0.0
-        for sz in all_seasons:
-            gain = float(seasonal_realized.get(sz, 0.0)) + \
-                float(max_seasonal_unreal.get(sz, 0.0))
-            if gain > best_season_gain:
-                best_season_gain = gain
-        if best_season_gain > 0:
-            threshold_val = SEASONAL_GAIN_HIGH_THRESHOLD * capital_base
-            ratio = min(best_season_gain / threshold_val, MAX_LOSS_RATIO)
-            score += scale * (math.exp(RISK_EXP_K * ratio) - 1.0)
+        # ---- Signal B: Tail loss (2σ / 3σ exceedance) --------------------
+        # Only when we have a loss distribution with non-zero std (≥ 2
+        # losses with different magnitudes). The WORST (highest-z) period
+        # drives the signal — "any significant loss" = the single worst
+        # outlier, not a sum over all tail events.
+        if loss_std > 0 and losses:
+            worst_z = max(
+                (abs(L) - loss_mean_abs) / loss_std for L in losses
+            )
+            if worst_z > LOSS_TAIL_2STD_TRIGGER:
+                ratio = min(
+                    worst_z - LOSS_TAIL_2STD_TRIGGER, MAX_LOSS_RATIO
+                )
+                score += scale * (math.exp(RISK_EXP_K * ratio) - 1.0)
 
     return score
 
@@ -576,17 +691,26 @@ def _compute_risk_score(
     so a sustained multi-month bleed pushes the grade up exponentially
     even when each individual month's loss is below the window thresholds.
 
-    A PER-PERIOD OVERRIDE component (``_period_override_risk``) is added at
-    full weight on top: three rules — monthly additional unrealized loss
-    (>10% of capital), monthly gain (>50%), seasonal gain (>80%) — each
-    scaled so that hitting its threshold contributes 6.0 (RISK_GRADE_
-    ELEVATED_BOUND) to the score, pushing the grade to HIGH on its own.
-    Below threshold the contribution is exponential (proportional).
+    A PER-PERIOD STATISTICAL DISTRIBUTION component (``_period_override_risk``)
+    is added at full weight on top: for each period type (month/season/year)
+    the per-period Total P&L is split into gains/losses and mean/var/std are
+    computed. Two signals fire — distribution asymmetry (losses dominate
+    gains in variance or mean; at 2x dominance → 6.0) and tail loss (any
+    period whose loss z-score exceeds 2σ; at 3σ → 6.0) — each scaled by
+    RISK_GRADE_ELEVATED_BOUND so at-threshold contributes 6.0, pushing the
+    grade to HIGH on its own. Below threshold the contribution is
+    exponential (proportional). Thresholds are self-calibrating from the
+    strategy's own P&L distribution, NOT fixed capital fractions.
     """
     if capital_base <= 0:
         return 0.0
     realized_risk = 0.0
-    unrealized_risk = 0.0
+    # Unrealized: collect per-window contributions, then take the MAX (not
+    # sum) across windows. A single MTM dip event is captured by ALL window
+    # lengths (the dip falls within every rolling window), so summing would
+    # quadruple-count it. Taking the max represents "the worst single-window
+    # MTM dip risk" without double-counting.
+    unrealized_window_contribs: List[float] = []
     for w in RISK_WINDOW_DAYS:
         threshold = _loss_threshold(w)
         # Realized loss
@@ -594,14 +718,17 @@ def _compute_risk_score(
         if r_loss < 0:
             realized_risk += _exp_contribution(
                 abs(r_loss) / capital_base, threshold)
-        # Unrealized max dip + end residual
+        # Unrealized max dip + end residual — collect for max-across-windows
         u_max, u_end = _rolling_unrealized_loss(daily_df, w)
+        w_unreal = 0.0
         if u_max < 0:
-            unrealized_risk += _exp_contribution(
+            w_unreal += _exp_contribution(
                 abs(u_max) / capital_base, threshold)
         if u_end < 0:
-            unrealized_risk += _exp_contribution(
+            w_unreal += _exp_contribution(
                 abs(u_end) / capital_base, threshold)
+        unrealized_window_contribs.append(w_unreal)
+    unrealized_risk = max(unrealized_window_contribs) if unrealized_window_contribs else 0.0
     streak_risk = _streak_contribution(_longest_losing_streak(sells))
     period_risk = _period_override_risk(sells, daily_df, capital_base)
     return (realized_risk
@@ -701,7 +828,8 @@ def compute_risk_seq(
     # capital" basis); falls back to total_abs_pnl when total_buy_cost is 0.
     capital_base = total_buy_cost if total_buy_cost > 0 else total_abs
     risk_score = _compute_risk_score(sells, daily_df, capital_base)
-    grade = _risk_grade(risk_score)
+    is_little = _is_little_risk(sells, total_realized)
+    grade = _risk_grade(risk_score, is_little=is_little)
 
     return {
         "seq_id": seq_id,
@@ -761,6 +889,11 @@ def compute_risk_periods(
 ) -> List[Dict[str, Any]]:
     """Compute strategy_risk_period rows (year/season/month) for one (seq, code).
 
+    ALL periods in the strategy's active date range are included — not just
+    periods with SELL activity. Months with no trade decisions show
+    realized_pnl=0, n_sells=0, n_buys=0, but still carry unrealized_pnl (MTM
+    change) from the daily series.
+
     ``daily_rows`` (optional) is the strategy_daily series
     ``[{"trade_date": date, "unrealized_pnl": float}, ...]`` used to compute
     the per-period mark-to-market change in unrealized_pnl
@@ -774,13 +907,11 @@ def compute_risk_periods(
     df = df.sort_values("exec_date").reset_index(drop=True)
     sells = df[df["side"] == "SELL"].copy()
     if sells.empty:
-        return []
-    sells["realized_pnl"] = pd.to_numeric(sells["realized_pnl"], errors="coerce").fillna(0.0)
-    sells["abs_pnl"] = sells["realized_pnl"].abs()
+        sells = pd.DataFrame(columns=df.columns)
+    else:
+        sells["realized_pnl"] = pd.to_numeric(sells["realized_pnl"], errors="coerce").fillna(0.0)
+        sells["abs_pnl"] = sells["realized_pnl"].abs()
 
-    # Per-period end-of-period unrealized_pnl from the daily series. For each
-    # period_type, map every daily row to its period_value and keep the
-    # unrealized_pnl of the LAST trading day in each period.
     daily_df = pd.DataFrame()
     if daily_rows:
         daily_df = pd.DataFrame(daily_rows)
@@ -788,6 +919,29 @@ def compute_risk_periods(
         daily_df = daily_df.sort_values("trade_date").reset_index(drop=True)
         daily_df["unrealized_pnl"] = pd.to_numeric(
             daily_df["unrealized_pnl"], errors="coerce").fillna(0.0)
+
+    # Determine the full date range of the strategy's active period.
+    # Prefer daily_df (covers all trading days); fall back to decisions.
+    if not daily_df.empty:
+        range_start = daily_df["trade_date"].min()
+        range_end = daily_df["trade_date"].max()
+    elif not df.empty:
+        range_start = df["exec_date"].min()
+        range_end = df["exec_date"].max()
+    else:
+        return []
+
+    def _all_period_values(period_type: str) -> List[str]:
+        """All period labels in [range_start, range_end], sorted."""
+        if period_type == "month":
+            rng = pd.date_range(range_start, range_end, freq="MS")
+        elif period_type == "season":
+            rng = pd.date_range(range_start, range_end, freq="MS")
+        elif period_type == "year":
+            rng = pd.date_range(range_start, range_end, freq="YS")
+        else:
+            return []
+        return sorted(set(period_value(d, period_type) for d in rng))
 
     def _end_unrealized_by_period(period_type: str) -> Dict[str, float]:
         """{period_value: unrealized_pnl at the last trading day in that period}."""
@@ -797,64 +951,72 @@ def compute_risk_periods(
             lambda d: period_value(d, period_type)
         )
         tmp = daily_df.assign(period_value=pv_series)
-        # last row per period (daily_df is sorted by trade_date)
         ends = tmp.groupby("period_value", as_index=False).last()
         return dict(zip(ends["period_value"], ends["unrealized_pnl"]))
 
-    def _max_unrealized_by_period(period_type: str) -> Dict[str, float]:
-        """{period_value: max daily unrealized_pnl within that period}."""
+    def _extreme_unrealized_by_period(period_type: str) -> tuple:
+        """Return (worst_loss, peak_gain) dicts for daily unrealized_pnl.
+
+        worst_loss[pv] = min unrealized_pnl in that period (most negative —
+            deepest intra-period MTM loss). 0 if no day was negative.
+        peak_gain[pv]  = max unrealized_pnl in that period (most positive —
+            highest intra-period MTM gain). 0 if no day was positive.
+        """
         if daily_df.empty:
-            return {}
+            return {}, {}
         pv_series = daily_df["trade_date"].apply(
             lambda d: period_value(d, period_type)
         )
         tmp = daily_df.assign(period_value=pv_series)
-        maxs = tmp.groupby("period_value", as_index=False)["unrealized_pnl"].max()
-        return dict(zip(maxs["period_value"], maxs["unrealized_pnl"]))
+        aggs = tmp.groupby("period_value")["unrealized_pnl"].agg(["min", "max"])
+        worst_loss = {pv: float(v) for pv, v in aggs["min"].items() if v < 0}
+        peak_gain = {pv: float(v) for pv, v in aggs["max"].items() if v > 0}
+        return worst_loss, peak_gain
 
     rows: List[Dict[str, Any]] = []
     for period_type in ("year", "season", "month"):
-        sells = sells.copy()
-        sells["period_value"] = sells["exec_date"].apply(
-            lambda d: period_value(d, period_type)
-        )
-        end_unreal = _end_unrealized_by_period(period_type)
-        max_unreal = _max_unrealized_by_period(period_type)
-        # SELL periods in chronological order — the MTM change for each is its
-        # end-of-period unrealized minus the previous SELL period's end. The
-        # first SELL period bases off 0 (no open position before the first BUY).
-        ordered_pvs = sorted(sells["period_value"].unique())
+        if not sells.empty:
+            sells_pt = sells.copy()
+            sells_pt["period_value"] = sells_pt["exec_date"].apply(
+                lambda d: period_value(d, period_type)
+            )
+        else:
+            sells_pt = pd.DataFrame(columns=["period_value", "realized_pnl", "abs_pnl"])
+        end_unrealized = _end_unrealized_by_period(period_type)
+        worst_loss_map, peak_gain_map = _extreme_unrealized_by_period(period_type)
+        # ALL periods in the date range (not just SELL periods). Periods
+        # with no SELLs show realized_pnl=0, n_sells=0.
+        all_pvs = _all_period_values(period_type)
         prev_end = 0.0
-        for pv in ordered_pvs:
-            grp = sells[sells["period_value"] == pv]
-            grp_pnl = float(grp["realized_pnl"].sum())
-            grp_abs = float(grp["abs_pnl"].sum())
+        for pv in all_pvs:
+            grp = sells_pt[sells_pt["period_value"] == pv] if not sells_pt.empty else pd.DataFrame()
+            grp_pnl = float(grp["realized_pnl"].sum()) if not grp.empty else 0.0
+            grp_abs = float(grp["abs_pnl"].sum()) if not grp.empty else 0.0
             share = grp_abs / total_abs_pnl if total_abs_pnl > 0 else 0.0
             n_buys = int(((df["side"] == "BUY") &
                           (df["exec_date"].apply(
-                              lambda d: period_value(d, period_type)) == pv)).sum())
+                              lambda d: period_value(d, period_type)) == pv)).sum()) if not df.empty else 0
             is_hotspot = share >= HOTSPOT_SHARE_THRESHOLD
-            # counter-trend: period P&L sign differs from run total
-            is_counter = (grp_pnl > 0 and total_realized_pnl < 0) or \
-                         (grp_pnl < 0 and total_realized_pnl > 0)
-            cur_end = float(end_unreal.get(pv, 0.0))
-            cur_max = float(max_unreal.get(pv, 0.0))
-            unreal = cur_end - prev_end
+            cur_end = float(end_unrealized.get(pv, prev_end))
+            cur_worst_loss = float(worst_loss_map.get(pv, 0.0))
+            cur_peak_gain = float(peak_gain_map.get(pv, 0.0))
+            unrealized = cur_end - prev_end
             prev_end = cur_end
             rows.append({
                 "seq_id": seq_id,
                 "code": code,
                 "period_type": period_type,
                 "period_value": pv,
-                "n_sells": int(len(grp)),
+                "n_sells": int(len(grp)) if not grp.empty else 0,
                 "n_buys": n_buys,
                 "realized_pnl": round(grp_pnl, 4),
-                "unrealized_pnl": round(unreal, 4),
-                "max_unrealized_pnl": round(cur_max, 4),
+                "unrealized_pnl": round(unrealized, 4),
+                "max_loss_unrealized_pnl": round(cur_worst_loss, 4),
+                "max_gain_unrealized_pnl": round(cur_peak_gain, 4),
                 "end_unrealized_pnl": round(cur_end, 4),
                 "abs_pnl": round(grp_abs, 4),
                 "period_share": round(share, 6),
                 "is_concentration_hotspot": is_hotspot,
-                "is_counter_trend": is_counter,
+                "is_counter_trend": False,
             })
     return rows

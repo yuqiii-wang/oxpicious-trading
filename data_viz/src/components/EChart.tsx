@@ -30,8 +30,10 @@ interface EChartProps {
    *  chart's plot grid (not just on data points / line segments). The
    *  callback receives the x-axis category index of the clicked position.
    *  Useful for "click any date to select it" interactions on line/area
-   *  charts where showSymbol is false. */
-  onCanvasClick?: (dataIndex: number) => void;
+   *  charts where showSymbol is false.
+   *  Also receives the raw pixel [x, y] coordinates so callers can
+   *  determine WHICH series was clicked by comparing y-positions. */
+  onCanvasClick?: (dataIndex: number, pixel?: [number, number]) => void;
 }
 
 export default function EChart({ option, height = 320, minHeight = 200, group, onReady, onEvents, onCanvasClick }: EChartProps) {
@@ -113,7 +115,7 @@ export default function EChart({ option, height = 320, minHeight = 200, group, o
       const idx = chart.convertFromPixel({ xAxisIndex: 0 }, x);
       const dataIdx = Math.round(idx);
       if (dataIdx < 0) return;
-      cb(dataIdx);
+      cb(dataIdx, [x, y]);
     };
     zr.on("click", handler);
     return () => {

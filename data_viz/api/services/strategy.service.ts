@@ -2,7 +2,7 @@
  * Strategy service — reads MA-spread backtest results from the DB.
  *
  * The backtest itself is run by the Python package
- * `strategy.ma_spread_trading` (python -m strategy.ma_spread_trading), which
+ * `strategy.singleton_trading` (python -m strategy.singleton_trading), which
  * writes results to:
  *   - strategy.strategy_identity (pure identity: one row per (strategy, code) run)
  *   - strategy.strategy_results  (1:1 with strategy_identity: run RESULTS — dates,
@@ -29,6 +29,9 @@ import type {
   StrategyRiskPeriod,
   StrategyRiskResponse,
   StrategyDailyRow,
+  StrategyForecast1mRow,
+  StrategyForecast1mStats,
+  StrategyForecast1mResponse,
 } from "../../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -163,10 +166,23 @@ interface DailyRow {
 //  summary) live on the 1:1 strategy_results row. Then all trade_decision rows in
 //  that seq (no code filter needed — the seq is already per-code).
 // ---------------------------------------------------------------------------
+// Algos registered in strategy.factors_and_algos (must match the Python
+// ALGO_REGISTRY). The DB strategy_name is EITHER an algo name (binary mode:
+// bollinger_bands / macd / ma_spread) OR a portfolio name (mixed mode:
+// portfolio:bb*0.5+macd*0.5). Default: macd (binary).
+export const STRATEGY_ALGOS = ["bollinger_bands", "macd", "ma_spread"] as const;
+export type StrategyAlgo = (typeof STRATEGY_ALGOS)[number];
+export const DEFAULT_STRATEGY_NAME = "macd";
+
+// When scenario is NULL → return the PARENT seq (parent_seq_id IS NULL).
+// When scenario is provided → return the CHILD seq for that scenario.
+// $4 = strategy_name (algo name for binary mode, or portfolio:bb*0.5+macd*0.5 for mixed).
 const SEQ_SQL = `
   SELECT seq_id
   FROM strategy.strategy_identity
-  WHERE sec_type = $1 AND code = $2
+  WHERE sec_type = $1 AND code = $2 AND strategy_name = $4
+    AND (($3::text IS NULL AND parent_seq_id IS NULL)
+         OR ($3::text IS NOT NULL AND scenario = $3))
   ORDER BY seq_no DESC
   LIMIT 1
 `;
@@ -254,9 +270,11 @@ function mapDaily(r: DailyRow): StrategyDailyRow {
 // ---------------------------------------------------------------------------
 //  Main entry — reads pre-computed backtest from DB + OHLC from mov-ave-spreads
 // ---------------------------------------------------------------------------
-export async function runMaSpreadBacktest(
+export async function runSingletonBacktest(
   rawCode: string,
   rawSecType: string | undefined | null,
+  scenario: string | undefined | null = null,
+  strategyName: string = DEFAULT_STRATEGY_NAME,
 ): Promise<StrategyBacktestResponse> {
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
 
@@ -283,7 +301,9 @@ export async function runMaSpreadBacktest(
   }));
 
   // 2. Fetch the latest strategy_seq for this (sec_type, code) from the DB.
-  const seqRows = await queryRows<SeqRow>(SEQ_SQL, [secType, rawCode]);
+  //    When scenario is provided, fetch the child seq for that scenario;
+  //    otherwise fetch the parent seq (parent_seq_id IS NULL).
+  const seqRows = await queryRows<SeqRow>(SEQ_SQL, [secType, rawCode, scenario, strategyName]);
 
   // No backtest run found — return chart-only response with empty decisions.
   if (seqRows.length === 0) {
@@ -335,11 +355,18 @@ export async function runMaSpreadBacktest(
   const finalCash = decisions.length > 0
     ? decisions[decisions.length - 1].cash_after
     : 0;
-  // Total Return = final_cash / total_buy_cost (percentage return on total
-  // invested). When all positions are closed (final liquidation), final_cash
-  // = realized_pnl, so this equals realized_pnl / total_buy_cost.
+  // MTM equity = final_cash + position_value of any open position at the
+  // last close. When fully closed (total_qty_after = 0), position_value = 0
+  // so equity = final_cash = realized_pnl. When open, equity reflects the
+  // unrealized MTM gain/loss — the true portfolio value.
+  const lastPositionValue = daily.length > 0
+    ? daily[daily.length - 1].position_value
+    : 0;
+  const finalEquity = finalCash + lastPositionValue;
+  // Total Return = MTM equity / total_buy_cost (percentage return on peak
+  // capital deployed).
   const totalReturnPct = totalBuyCost > 0
-    ? (finalCash / totalBuyCost) * 100
+    ? (finalEquity / totalBuyCost) * 100
     : 0;
 
   return {
@@ -353,7 +380,7 @@ export async function runMaSpreadBacktest(
       n_buys: nBuys,
       n_sells: nSells,
       realized_pnl: Math.round(realizedPnl * 100) / 100,
-      final_cash: Math.round(finalCash * 100) / 100,
+      final_cash: Math.round(finalEquity * 100) / 100,
       total_return_pct: Math.round(totalReturnPct * 100) / 100,
       total_buy_cost: Math.round(totalBuyCost * 100) / 100,
       first_buy_date: firstBuyDate,
@@ -419,7 +446,8 @@ interface RiskPeriodRow {
   n_buys: number;
   realized_pnl: string | number;
   unrealized_pnl: string | number;
-  max_unrealized_pnl: string | number;
+  max_loss_unrealized_pnl: string | number;
+  max_gain_unrealized_pnl: string | number;
   end_unrealized_pnl: string | number;
   abs_pnl: string | number;
   period_share: string | number | null;
@@ -427,6 +455,8 @@ interface RiskPeriodRow {
   is_counter_trend: boolean;
 }
 
+// When scenario is NULL → return the PARENT seq's risks.
+// When scenario is provided → return the CHILD seq's risks for that scenario.
 const RISK_SEQ_SQL = `
   SELECT r.seq_id, r.code,
          i.total_realized_pnl, i.total_abs_pnl, i.n_sells, i.n_buys,
@@ -457,7 +487,9 @@ const RISK_SEQ_SQL = `
     ON g1.seq_id = r.seq_id AND g1.decision_no = r.pnl_gain_1st_decision_no
   LEFT JOIN strategy.trade_decision l1
     ON l1.seq_id = r.seq_id AND l1.decision_no = r.pnl_loss_1st_decision_no
-  WHERE s.sec_type = $1 AND r.code = $2
+  WHERE s.sec_type = $1 AND r.code = $2 AND s.strategy_name = $4
+    AND (($3::text IS NULL AND s.parent_seq_id IS NULL)
+         OR ($3::text IS NOT NULL AND s.scenario = $3))
   ORDER BY s.seq_no DESC
   LIMIT 1
 `;
@@ -465,7 +497,7 @@ const RISK_SEQ_SQL = `
 const RISK_PERIODS_SQL = `
   SELECT p.seq_id, p.code, p.period_type, p.period_value,
          p.n_sells, p.n_buys, p.realized_pnl, p.unrealized_pnl,
-         p.max_unrealized_pnl, p.end_unrealized_pnl,
+         p.max_loss_unrealized_pnl, p.max_gain_unrealized_pnl, p.end_unrealized_pnl,
          p.abs_pnl, p.period_share,
          p.is_concentration_hotspot, p.is_counter_trend
   FROM strategy.strategy_risk_period p
@@ -529,7 +561,8 @@ function mapRiskPeriod(r: RiskPeriodRow): StrategyRiskPeriod {
     n_buys: r.n_buys,
     realized_pnl: toNum(r.realized_pnl) ?? 0,
     unrealized_pnl: toNum(r.unrealized_pnl) ?? 0,
-    max_unrealized_pnl: toNum(r.max_unrealized_pnl) ?? 0,
+    max_loss_unrealized_pnl: toNum(r.max_loss_unrealized_pnl) ?? 0,
+    max_gain_unrealized_pnl: toNum(r.max_gain_unrealized_pnl) ?? 0,
     end_unrealized_pnl: toNum(r.end_unrealized_pnl) ?? 0,
     abs_pnl: toNum(r.abs_pnl) ?? 0,
     period_share: toNum(r.period_share),
@@ -541,11 +574,15 @@ function mapRiskPeriod(r: RiskPeriodRow): StrategyRiskPeriod {
 export async function fetchStrategyRisks(
   rawCode: string,
   rawSecType: string | undefined | null,
+  scenario: string | undefined | null = null,
+  strategyName: string = DEFAULT_STRATEGY_NAME,
 ): Promise<StrategyRiskResponse> {
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
 
   // 1. Fetch the latest risk_seq row for this (sec_type, code).
-  const seqRows = await queryRows<RiskSeqRow>(RISK_SEQ_SQL, [secType, rawCode]);
+  //    When scenario is provided, fetch the child seq's risks; otherwise
+  //    fetch the parent seq's risks.
+  const seqRows = await queryRows<RiskSeqRow>(RISK_SEQ_SQL, [secType, rawCode, scenario, strategyName]);
 
   if (seqRows.length === 0) {
     return { code: rawCode, sec_type: secType, risk_seq: null, periods: [] };
@@ -568,6 +605,97 @@ export async function fetchStrategyRisks(
 }
 
 // ===========================================================================
+//  Forecast-only decisions — lightweight endpoint for scenario switching.
+//  Returns ONLY the 20 forecast SELL decisions from the child seq + the
+//  child's summary (total_realized_pnl, n_sells, etc.). The UI merges these
+//  with the CACHED parent backtest (OHLC + actual decisions + actual daily)
+//  to avoid a full reload when switching forecast scenarios.
+// ===========================================================================
+
+// Fetch ONLY forecast SELL decisions (signal_reason LIKE 'FORECAST SELL%')
+// from the child seq for the given scenario. Skips actual decisions (which
+// are identical to the parent's and already cached on the client).
+const FC_DECISIONS_SQL = `
+  SELECT decision_no, side, exec_date,
+         qty, fill_price, normalized_fill_price, normalized_mean_buy_price,
+         position_before, position_after, cash_before, cash_after,
+         total_qty_before, total_qty_after,
+         realized_pnl, slippage, fee, signal_value, signal_reason
+  FROM strategy.trade_decision
+  WHERE seq_id = $1 AND signal_reason LIKE 'FORECAST SELL%'
+  ORDER BY decision_no ASC
+`;
+
+export interface ForecastScenarioResponse {
+  code: string;
+  sec_type: MaSpreadSecType;
+  scenario: string;
+  /** 20 forecast SELL decisions from the child seq. */
+  forecast_decisions: StrategyDecision[];
+  /** Child seq summary (for the summary chips). */
+  summary: {
+    n_buys: number;
+    n_sells: number;
+    realized_pnl: number;
+    final_cash: number;
+    total_return_pct: number;
+    total_buy_cost: number;
+    first_buy_date: string | null;
+    first_buy_fill_price: number | null;
+  };
+}
+
+export async function fetchForecastScenarioDecisions(
+  rawCode: string,
+  rawSecType: string | undefined | null,
+  scenario: string,
+  strategyName: string = DEFAULT_STRATEGY_NAME,
+): Promise<ForecastScenarioResponse | null> {
+  const secType = (rawSecType as MaSpreadSecType) ?? "index";
+
+  // Find the child seq for this scenario.
+  const seqRows = await queryRows<SeqRow>(SEQ_SQL, [secType, rawCode, scenario, strategyName]);
+  if (seqRows.length === 0) return null;
+
+  const { seq_id } = seqRows[0];
+
+  const [infoRows, decisionRows] = await Promise.all([
+    queryRows<InfoRow>(INFO_SQL, [seq_id]),
+    queryRows<TradeDecisionRow>(FC_DECISIONS_SQL, [seq_id]),
+  ]);
+  const info = infoRows[0];
+  const forecastDecisions = decisionRows.map(mapDecision);
+
+  const totalBuyCost = toNum(info?.total_buy_cost) ?? 0;
+  const firstBuyDate = info?.first_buy_date ? formatDate(info.first_buy_date) : null;
+  const firstBuyFillPrice = toNum(info?.first_buy_fill_price);
+  const nBuys = info?.n_buys ?? 0;
+  const nSells = info?.n_sells ?? 0;
+  const realizedPnl = toNum(info?.total_realized_pnl) ?? 0;
+  const finalCash = forecastDecisions.length > 0
+    ? forecastDecisions[forecastDecisions.length - 1].cash_after
+    : 0;
+  const totalReturnPct = totalBuyCost > 0 ? (finalCash / totalBuyCost) * 100 : 0;
+
+  return {
+    code: rawCode,
+    sec_type: secType,
+    scenario,
+    forecast_decisions: forecastDecisions,
+    summary: {
+      n_buys: nBuys,
+      n_sells: nSells,
+      realized_pnl: Math.round(realizedPnl * 100) / 100,
+      final_cash: Math.round(finalCash * 100) / 100,
+      total_return_pct: Math.round(totalReturnPct * 100) / 100,
+      total_buy_cost: Math.round(totalBuyCost * 100) / 100,
+      first_buy_date: firstBuyDate,
+      first_buy_fill_price: firstBuyFillPrice,
+    },
+  };
+}
+
+// ===========================================================================
 //  Run strategy script — spawns the Python backtest via the shared py-runner
 //  service and waits for it to exit. The frontend calls this when the user
 //  clicks "Run Strategy", then reloads data from DB on success.
@@ -577,7 +705,7 @@ export async function fetchStrategyRisks(
 export type RunStrategyResult = RunScriptResult;
 
 /**
- * Run the MA-spread backtest (`strategy.ma_spread_trading`) for one
+ * Run the backtest (`strategy.singleton_trading`) for one
  * (sec_type, code). The backtest script also computes + upserts risk metrics
  * internally (via `strategy._risks.compute_and_upsert_risks`), so no separate
  * risk command is needed. Runs with --force so existing seq rows are replaced.
@@ -588,9 +716,156 @@ export type RunStrategyResult = RunScriptResult;
 export async function runStrategyScript(
   rawCode: string,
   rawSecType: string | undefined | null,
+  forecast: boolean = true,
+  serializedAlgo: string = DEFAULT_STRATEGY_NAME,
 ): Promise<RunStrategyResult> {
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
   const code = rawCode.trim();
-  const args = ["--sec-type", secType, "--codes", code, "--force"];
-  return runPythonModule("strategy.ma_spread_trading", args);
+  // serializedAlgo is either an algo name ("macd") or a serialized selection
+  // ("bollinger_bands:0.5,macd:0.5") — both are understood by Python's
+  // _parse_algo_arg in strategy/singleton_trading/__main__.py.
+  const args = ["--algo", serializedAlgo, "--sec-type", secType, "--codes", code, "--force"];
+  if (!forecast) args.push("--no-forecast");
+  return runPythonModule("strategy.singleton_trading", args);
+}
+
+// ===========================================================================
+//  1-month forward sell-confidence forecast — reads pre-computed rows from
+//  strategy.forecast_1m + forecast_1m_stats (computed by
+//  `python -m strategy._1m_forcast`). The forecast replaces the single
+//  last-day FINAL LIQUIDATION SELL with a 20-trading-day SELL confidence
+//  schedule (8 mirror/flip/random curves + 1 computed mean that drives the
+//  persisted trade_decision rows).
+// ===========================================================================
+
+interface Forecast1mDbRow {
+  scenario: string;
+  forecast_day: number;
+  open_price: string | number;
+  high_price: string | number;
+  low_price: string | number;
+  close_price: string | number;
+  daily_return: string | number;
+  trading_amt: string | number | null;
+  rsi: string | number | null;
+  sell_fraction: string | number;
+  sell_confidence: string | number;
+  realized_pnl_forecast: string | number;
+  scenario_weight: string | number | null;
+}
+
+interface Forecast1mStatsDbRow {
+  forecast_date: string | Date;
+  sigma_daily: string | number;
+  sigma_255d: string | number;
+  oc_gap_mean: string | number;
+  oc_gap_std: string | number;
+  hl_gap_mean: string | number;
+  hl_gap_std: string | number;
+  amt_mean: string | number | null;
+  amt_std: string | number | null;
+  amt_hl_corr: string | number | null;
+  rsi_6: string | number | null;
+  rsi_10: string | number | null;
+  rsi_14: string | number | null;
+  rsi_20: string | number | null;
+  anchor_close: string | number;
+  first_buy_fill_price: string | number | null;
+  last_total_pnl: string | number;
+}
+
+const FORECAST_1M_SQL = `
+  SELECT scenario, forecast_day,
+         open_price, high_price, low_price, close_price, daily_return,
+         trading_amt, rsi,
+         sell_fraction, sell_confidence, realized_pnl_forecast, scenario_weight
+  FROM strategy.forecast_1m
+  WHERE seq_id = $1
+  ORDER BY scenario, forecast_day
+`;
+
+const FORECAST_1M_STATS_SQL = `
+  SELECT forecast_date, sigma_daily, sigma_255d,
+         oc_gap_mean, oc_gap_std, hl_gap_mean, hl_gap_std,
+         amt_mean, amt_std, amt_hl_corr,
+         rsi_6, rsi_10, rsi_14, rsi_20,
+         anchor_close, first_buy_fill_price, last_total_pnl
+  FROM strategy.forecast_1m_stats
+  WHERE seq_id = $1
+`;
+
+function mapForecastRow(r: Forecast1mDbRow): StrategyForecast1mRow {
+  return {
+    scenario: r.scenario as StrategyForecast1mRow["scenario"],
+    forecast_day: r.forecast_day,
+    open_price: toNum(r.open_price) ?? 0,
+    high_price: toNum(r.high_price) ?? 0,
+    low_price: toNum(r.low_price) ?? 0,
+    close_price: toNum(r.close_price) ?? 0,
+    daily_return: toNum(r.daily_return) ?? 0,
+    trading_amt: toNum(r.trading_amt),
+    rsi: toNum(r.rsi),
+    sell_fraction: toNum(r.sell_fraction) ?? 0,
+    sell_confidence: toNum(r.sell_confidence) ?? 0,
+    realized_pnl_forecast: toNum(r.realized_pnl_forecast) ?? 0,
+    scenario_weight: toNum(r.scenario_weight),
+  };
+}
+
+function mapForecastStats(r: Forecast1mStatsDbRow): StrategyForecast1mStats {
+  return {
+    forecast_date: formatDate(r.forecast_date),
+    sigma_daily: toNum(r.sigma_daily) ?? 0,
+    sigma_255d: toNum(r.sigma_255d) ?? 0,
+    oc_gap_mean: toNum(r.oc_gap_mean) ?? 0,
+    oc_gap_std: toNum(r.oc_gap_std) ?? 0,
+    hl_gap_mean: toNum(r.hl_gap_mean) ?? 0,
+    hl_gap_std: toNum(r.hl_gap_std) ?? 0,
+    amt_mean: toNum(r.amt_mean),
+    amt_std: toNum(r.amt_std),
+    amt_hl_corr: toNum(r.amt_hl_corr),
+    rsi_6: toNum(r.rsi_6),
+    rsi_10: toNum(r.rsi_10),
+    rsi_14: toNum(r.rsi_14),
+    rsi_20: toNum(r.rsi_20),
+    anchor_close: toNum(r.anchor_close) ?? 0,
+    first_buy_fill_price: toNum(r.first_buy_fill_price),
+    last_total_pnl: toNum(r.last_total_pnl) ?? 0,
+  };
+}
+
+/**
+ * Read the 1-month forward forecast for the latest singleton_trading run of
+ * (code, sec_type). Returns null-typed fields (empty rows + null stats) when
+ * no forecast exists for the run — the UI then hides the forecast overlay.
+ */
+export async function fetchStrategyForecast1m(
+  rawCode: string,
+  rawSecType: string | undefined | null,
+  strategyName: string = DEFAULT_STRATEGY_NAME,
+): Promise<StrategyForecast1mResponse> {
+  const secType = (rawSecType as MaSpreadSecType) ?? "index";
+  const code = rawCode.trim();
+
+  // Reuse the same SEQ_SQL to find the latest PARENT run for this code
+  // (forecast_1m rows are attached to the parent seq, not child seqs).
+  const seqRows = await queryRows<SeqRow>(SEQ_SQL, [secType, code, null, strategyName]);
+  if (seqRows.length === 0) {
+    return { code, sec_type: secType, seq_id: 0, forecast_date: "", rows: [], stats: null };
+  }
+  const { seq_id } = seqRows[0];
+
+  const [forecastRows, statsRows] = await Promise.all([
+    queryRows<Forecast1mDbRow>(FORECAST_1M_SQL, [seq_id]),
+    queryRows<Forecast1mStatsDbRow>(FORECAST_1M_STATS_SQL, [seq_id]),
+  ]);
+
+  return {
+    code,
+    sec_type: secType,
+    seq_id,
+    forecast_date: statsRows[0] ? formatDate(statsRows[0].forecast_date) : "",
+    rows: forecastRows.map(mapForecastRow),
+    stats: statsRows[0] ? mapForecastStats(statsRows[0]) : null,
+  };
 }

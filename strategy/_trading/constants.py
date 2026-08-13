@@ -2,7 +2,7 @@
 
 Strategy-agnostic: these describe the worst-case fill model, transaction
 costs, and the normalized-space conventions used by every strategy's
-backtest engine. A strategy package (e.g. ma_spread_trading) supplies the
+backtest engine. A strategy package (e.g. singleton_trading) supplies the
 signal layer; this package supplies the execution layer.
 
 Normalized-space model (ALL money metrics in base-100 units):

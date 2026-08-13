@@ -9,7 +9,7 @@
  *
  * Usage:
  *   import { runPythonModule } from "./py-runner.service.js";
- *   const result = await runPythonModule("strategy.ma_spread_trading",
+ *   const result = await runPythonModule("strategy.singleton_trading",
  *     ["--sec-type", "index", "--codes", "000970", "--force"]);
  */
 import { spawn } from "child_process";
@@ -57,7 +57,7 @@ const WSL_PREAMBLE =
  * errors are captured as `{ code: -1, stderr: <error message> }` so callers
  * can handle all failure modes uniformly via `success === false`.
  *
- * @param module  Python module path (e.g. "strategy.ma_spread_trading")
+ * @param module  Python module path (e.g. "strategy.singleton_trading")
  * @param args    CLI args to pass after `python -m <module>`
  */
 export function runPythonModule(

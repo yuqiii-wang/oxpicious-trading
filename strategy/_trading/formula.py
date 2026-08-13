@@ -211,15 +211,19 @@ def annualized_return(
 ) -> float:
     """Annualized return on capital.
 
-        return_rate = (total_pnl / capital_deployed / mean_holding_days)
+        return_rate = (total_pnl / capital_deployed / max(mean_holding_days, 1))
                       × TRADING_DAYS_PER_YEAR
 
     Returns 0 when ``capital_deployed`` ≤ 0 (no capital at risk) or
-    ``mean_holding_days`` ≤ 0 (no elapsed holding time).
+    ``mean_holding_days`` ≤ 0 (no elapsed holding time). The ``max(..., 1)``
+    clamp prevents division by a tiny positive fraction (e.g. 0.001 when a
+    late large-qty BUY pulls mean_buy_period close to the current day count),
+    which would otherwise inflate return_rate to NUMERIC(18,6)-overflowing
+    magnitudes.
     """
     if capital_deployed > 0 and mean_holding_days > 0:
         return (
-            total_pnl / capital_deployed / mean_holding_days
+            total_pnl / capital_deployed / max(mean_holding_days, 1.0)
             * TRADING_DAYS_PER_YEAR
         )
     return 0.0

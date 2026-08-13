@@ -29,7 +29,7 @@ from strategy._common.constants import BATCH_SIZE
 from strategy._common.db import print_build_header, print_wall_time
 from strategy._common.fetch import discover_available_codes
 from strategy._common.upsert import (
-    resolve_seq_no, insert_strategy_seq, insert_strategy_results, insert_decisions,
+    upsert_strategy_seq, insert_strategy_results, insert_decisions,
     insert_daily_rows,
 )
 
@@ -124,11 +124,10 @@ async def run_one_sec_type(
     # ---- 1-2. Fetch + backtest (batched for large code sets) --------
     # Group decisions by code so we can write one seq per code.
     decisions_by_code: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    # Save each code's OHLC df for daily-row computation (needed after
-    # decisions are numbered). Only retained when daily_fn is provided.
-    df_by_code: Dict[str, Any] = {} if daily_fn is not None else None
-    min_date = None
-    max_date = None
+    # Save each code's OHLC df for BOTH the per-code date range (needed for
+    # strategy_identity.start_date/end_date = the OHLC period the strategy
+    # is run over) AND the daily-row computation (after decisions numbered).
+    df_by_code: Dict[str, Any] = {}
 
     for bi in range(n_batches):
         batch_codes = codes[bi * BATCH_SIZE : (bi + 1) * BATCH_SIZE]
@@ -141,10 +140,6 @@ async def run_one_sec_type(
         if df.empty:
             print(f"    -> batch {bi+1}: no data; skipping.", flush=True)
             continue
-        if min_date is None or df["date"].min() < min_date:
-            min_date = df["date"].min()
-        if max_date is None or df["date"].max() > max_date:
-            max_date = df["date"].max()
         if n_batches > 1:
             print(f"    -> batch {bi+1}: {len(df):,} rows, "
                   f"{df['code'].nunique()} code(s)", flush=True)
@@ -152,10 +147,10 @@ async def run_one_sec_type(
             print(f"    -> {len(df):,} rows, {df['code'].nunique()} code(s), "
                   f"{df['date'].min()} .. {df['date'].max()}", flush=True)
 
-        # Save per-code OHLC slices for daily-row computation.
-        if df_by_code is not None:
-            for code, code_df in df.groupby("code", sort=False):
-                df_by_code[code] = code_df
+        # Save per-code OHLC slices for the per-code date range (seq
+        # start_date/end_date) AND the daily-row computation.
+        for code, code_df in df.groupby("code", sort=False):
+            df_by_code[code] = code_df
 
         print(f"\n[2/4] Backtest{' batch ' + str(bi+1) if n_batches > 1 else ''}...",
               flush=True)
@@ -210,28 +205,35 @@ async def run_one_sec_type(
     # ---- 3-4. Write to DB: one strategy_seq + strategy_results per code -
     print(f"\n[3/4] Inserting one strategy_identity + strategy_results per code "
           f"({len(decisions_by_code)} codes)...", flush=True)
-    # Resolve ONE seq_no for the whole --all run (auto if not given).
-    # Multiple codes share this seq_no but get distinct seq_ids.
-    shared_seq_no = None
-    if seq_no is not None:
-        shared_seq_no = seq_no
+    # seq_no is a display counter shared across codes in one run when given
+    # via --seq-no; otherwise auto-computed per strategy_name inside
+    # upsert_strategy_seq. The natural key (with the OHLC period) decides
+    # skip/insert — NOT seq_no.
 
     n_seqs_inserted = 0
+    n_seqs_skipped = 0
     n_decisions_inserted = 0
     n_daily_inserted = 0
     for code, code_decisions in decisions_by_code.items():
-        if shared_seq_no is None:
-            sn = await resolve_seq_no(
-                conn, strategy_name, sec_type, code, force, None,
-            )
-        else:
-            sn = await resolve_seq_no(
-                conn, strategy_name, sec_type, code, force, shared_seq_no,
-            )
-        # strategy_seq = pure identity row.
-        seq_id = await insert_strategy_seq(
-            conn, strategy_name, sn, sec_type, code, params,
+        # Per-code OHLC period = the date range the strategy is run over.
+        code_df = df_by_code.get(code)
+        if code_df is None or code_df.empty:
+            continue  # no OHLC slice (shouldn't happen — decisions came from it)
+        code_start = code_df["date"].min()
+        code_end = code_df["date"].max()
+
+        # strategy_seq = pure identity row on the natural key. Returns None
+        # when this (strategy, sec_type, code, period) was already backtested
+        # (skip-if-already-found); with --force the existing row is replaced.
+        seq_id = await upsert_strategy_seq(
+            conn, strategy_name=strategy_name, sec_type=sec_type, code=code,
+            start_date=code_start, end_date=code_end, params=params,
+            force=force, seq_no=seq_no,
         )
+        if seq_id is None:
+            n_seqs_skipped += 1
+            continue
+
         # strategy_results = 1:1 results row (dates, total_buy_cost, first-buy
         # anchor, P&L summary), all derived from this code's decisions.
         info = _compute_info_fields(code_decisions)
@@ -254,7 +256,7 @@ async def run_one_sec_type(
         # Compute + insert daily portfolio state (unrealized_pnl = P&L if all
         # remaining position sold at the day's close). Requires the code's
         # OHLC df + the numbered decisions + the first-buy anchor price.
-        if daily_fn is not None and df_by_code is not None and code in df_by_code:
+        if daily_fn is not None and code in df_by_code:
             anchor_price = info["first_buy_fill_price"]
             daily_rows = daily_fn(df_by_code[code], code_decisions, anchor_price)
             n_daily = await insert_daily_rows(conn, seq_id, daily_rows)
@@ -263,9 +265,11 @@ async def run_one_sec_type(
         n_seqs_inserted += 1
         n_decisions_inserted += n_ins
 
+    skip_msg = f" (skipped {n_seqs_skipped} already-present)" if n_seqs_skipped else ""
     print(f"\n[4/4] Inserted {n_seqs_inserted} strategy_identity + strategy_results "
           f"rows + {n_decisions_inserted:,} trade_decision rows"
-          + (f" + {n_daily_inserted:,} strategy_daily rows" if daily_fn else ""),
+          + (f" + {n_daily_inserted:,} strategy_daily rows" if daily_fn else "")
+          + skip_msg,
           flush=True)
 
 

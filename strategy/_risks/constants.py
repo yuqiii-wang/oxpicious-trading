@@ -116,28 +116,54 @@ RISK_GRADE_ELEVATED_BOUND = 6.0  # < 6.0 → ELEVATED; else HIGH
 
 
 # ---------------------------------------------------------------------------
-#  Per-period HIGH-risk override components
+#  LITTLE risk grade — criteria-based, below LOW
 # ---------------------------------------------------------------------------
-# Three additional risk_score components based on per-period P&L as a
-# fraction of total_buy_cost (peak capital deployed). Each is scaled so
-# that hitting its threshold contributes RISK_GRADE_ELEVATED_BOUND (6.0)
-# to the score — enough to push the grade to HIGH on its own. Below the
-# threshold the contribution is exponential (proportional), so a
-# near-threshold period still meaningfully raises the score without
-# dominating it. These are added to the rolling-window + streak components
-# inside _compute_risk_score (NOT a grade override — the grade is still
-# derived from the total score via the boundary logic above).
+# LITTLE is a STRUCTURAL grade for the safest strategies: almost no losing
+# trades AND stable gains (low gain coefficient of variation) AND net
+# profitable. Checked BEFORE score-based grades — if the criteria are met,
+# the strategy is LITTLE regardless of score (the criteria guarantee safety).
 #
-#   1. Monthly additional unrealized loss: the month-over-month MTM change
-#      in unrealized_pnl (end-of-month minus end-of-previous-month; first
-#      month bases off 0). If any month's MTM delta is more negative than
-#      -MONTHLY_UNREALIZED_LOSS_HIGH_THRESHOLD * capital → HIGH.
-#   2. Monthly gain: realized_pnl + max intra-month unrealized_pnl (raw
-#      sum, matches the UI "Total P&L" bar). If any month's gain >
-#      MONTHLY_GAIN_HIGH_THRESHOLD * capital → HIGH.
-#   3. Seasonal gain: realized_pnl + max intra-season unrealized_pnl. If
-#      any season's gain > SEASONAL_GAIN_HIGH_THRESHOLD * capital → HIGH.
-MONTHLY_UNREALIZED_LOSS_HIGH_THRESHOLD = 0.10   # month MTM delta < -10% of capital
-MONTHLY_GAIN_HIGH_THRESHOLD = 0.50              # month gain > 50% of capital
-SEASONAL_GAIN_HIGH_THRESHOLD = 0.80             # season gain > 80% of capital
+# Criteria (ALL must hold):
+#   1. loss_ratio = n_losses / n_sells < LITTLE_LOSS_RATIO  (< 10% losing)
+#   2. gain_cv = gain_std / gain_mean < LITTLE_GAIN_CV_MAX  (gains stable)
+#   3. total_realized_pnl > 0  (net profitable)
+LITTLE_LOSS_RATIO = 0.10       # max fraction of losing trades for LITTLE
+LITTLE_GAIN_CV_MAX = 1.5       # max gain coefficient of variation (std/mean)
+
+
+# ---------------------------------------------------------------------------
+#  Per-period statistical distribution risk components
+# ---------------------------------------------------------------------------
+# Replaces the old fixed-percentage rules (10%/50%/80% of capital) with a
+# SELF-CALIBRATING statistical approach: thresholds come from the strategy's
+# own period P&L distribution rather than fixed capital fractions.
+#
+# For each period type (month/season/year) the per-period Total P&L
+# (realized + MTM change) is split into gains (>0) and losses (<0). Mean,
+# variance, and std are computed for each distribution. Two signals drive
+# the contribution:
+#
+#   A. Distribution asymmetry: if loss_var > gain_var OR loss_mean_abs >
+#      gain_mean, losses dominate gains (dangerous regime). The dominance
+#      ratio = max(loss_var/gain_var, loss_mean_abs/gain_mean). At ratio
+#      = LOSS_DOMINANCE_RATIO_HIGH (2.0, losses 2x gains) the contribution
+#      is RISK_GRADE_ELEVATED_BOUND (6.0) — HIGH on its own.
+#
+#   B. Tail loss: any single period whose loss z-score (|loss| vs the loss
+#      distribution mean/std) exceeds LOSS_TAIL_2STD_TRIGGER (2σ) is a
+#      "significant loss" event. The exceedance beyond 2σ drives the
+#      exponential contribution. At LOSS_TAIL_3STD_HIGH (3σ, one std
+#      beyond the 2σ trigger) the contribution is 6.0 — HIGH on its own.
+#      The WORST (highest-z) period drives the signal.
+#
+# Both signals use exp(k · ratio) - 1 (k = ln 2) with the MAX_LOSS_RATIO
+# cap, scaled by RISK_GRADE_ELEVATED_BOUND. They are SUMMED across the
+# three period types and added to the rolling-window + streak components
+# inside _compute_risk_score. NOT a grade override — the grade is still
+# derived from the total score via the boundary logic above.
+
+LOSS_TAIL_2STD_TRIGGER = 2.0        # z-score: "significant loss" threshold (2σ)
+LOSS_TAIL_3STD_HIGH = 3.0           # z-score: "HIGH on its own" (3σ) — ratio = 1.0
+LOSS_DOMINANCE_RATIO_HIGH = 2.0     # loss/gain ratio: "HIGH on its own" (ratio - 1 = 1.0)
+MIN_PERIODS_FOR_STATS = 2           # need ≥ 2 data points to compute variance/std
 

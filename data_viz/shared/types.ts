@@ -1601,8 +1601,8 @@ export interface LiveDataDatesResponse {
 }
 
 // ----------------------------------------------------------------------------
-//  Strategy — MA-spread crossover backtest
-//  GET /api/strategy/ma-spread/backtest?sec_type=index&code=000970
+//  Strategy — singleton backtest
+//  GET /api/strategy/singleton/backtest?sec_type=index&code=000970
 //  Reads PRE-COMPUTED backtest results from strategy.strategy_identity +
 //  strategy.strategy_results (1:1 results) + strategy.trade_decision. Each
 //  decision carries normalized_fill_price (base = 100 at the first BUY fill),
@@ -1713,11 +1713,11 @@ export interface StrategyBacktestResponse {
 
 // ----------------------------------------------------------------------------
 //  Strategy — internal risk metrics
-//  GET /api/strategy/ma-spread/risks?sec_type=index&code=000970
+//  GET /api/strategy/singleton/risks?sec_type=index&code=000970
 //  Reads pre-computed risk metrics from strategy.strategy_risks +
 //  strategy.strategy_risk_period (computed by python -m strategy._risks).
 // ----------------------------------------------------------------------------
-export type StrategyRiskGrade = "LOW" | "MODERATE" | "ELEVATED" | "HIGH";
+export type StrategyRiskGrade = "LITTLE" | "LOW" | "MODERATE" | "ELEVATED" | "HIGH";
 export type StrategyPeriodType = "year" | "season" | "month";
 
 export interface StrategyRiskSeq {
@@ -1786,9 +1786,12 @@ export interface StrategyRiskPeriod {
    *  unrealized_pnl(end of period) - unrealized_pnl(end of previous period).
    *  From strategy_daily. Realized + unrealized = total economic P&L for the period. */
   unrealized_pnl: number;
-  /** Peak (max) daily unrealized_pnl within this period (intra-period high
-   *  watermark of paper P&L). UI draws a transparent bar for this. */
-  max_unrealized_pnl: number;
+  /** Worst (min, most negative) daily unrealized_pnl within this period —
+   *  the deepest intra-period MTM loss. UI draws a transparent red bar. */
+  max_loss_unrealized_pnl: number;
+  /** Peak (max, most positive) daily unrealized_pnl within this period —
+   *  the highest intra-period MTM gain. UI draws a transparent green bar. */
+  max_gain_unrealized_pnl: number;
   /** Unrealized_pnl at the LAST trading day of this period (absolute level,
    *  not a change). UI draws the period-end bar for this. */
   end_unrealized_pnl: number;
@@ -1803,4 +1806,67 @@ export interface StrategyRiskResponse {
   sec_type: MaSpreadSecType;
   risk_seq: StrategyRiskSeq | null;
   periods: StrategyRiskPeriod[];
+}
+
+// ===========================================================================
+//  1-month forward sell-confidence forecast (strategy.forecast_1m +
+//  forecast_1m_stats). Computed by `python -m strategy._1m_forcast`.
+// ===========================================================================
+
+/** One row of strategy.forecast_1m (one scenario × one forecast day).
+ *  8 display scenarios + 1 computed mean:
+ *    mir_255d_std_scale/flip_255d_std_scale         — 255d/20d std ratio: mirror + flip
+ *    mir_255d_std_half_scale/flip_255d_std_half_scale — 0.5*255d/20d ratio: mirror + flip
+ *    mir_20d_std_scale/flip_20d_std_scale           — 1:1 (20d baseline) ratio: mirror + flip
+ *    mir_255d_max_std_scale/flip_255d_max_std_scale — peak 1y 255d std / 20d ratio: mirror + flip
+ *    rand/rand_opp                                  — 0.5σ random walk + opposite trend
+ *    mean                                           — average of all 8 per day (drives the sell schedule) */
+export interface StrategyForecast1mRow {
+  scenario: "mir_255d_std_scale" | "flip_255d_std_scale"
+          | "mir_255d_std_half_scale" | "flip_255d_std_half_scale"
+          | "mir_20d_std_scale" | "flip_20d_std_scale"
+          | "mir_255d_max_std_scale" | "flip_255d_max_std_scale"
+          | "rand" | "rand_opp" | "mean";
+  forecast_day: number;       // 1..20
+  open_price: number;         // synthetic OHLC (base=100 at forecast_date close)
+  high_price: number;
+  low_price: number;
+  close_price: number;
+  daily_return: number;
+  trading_amt: number | null; // NULL when underlying has no trading_amount col
+  rsi: number | null;         // simulated RSI (0-100)
+  sell_fraction: number;      // of ORIGINAL position; sums to 1.0 per scenario
+  sell_confidence: number;    // 0-100 fraction of REMAINING; day 20 = 100
+  realized_pnl_forecast: number; // cumulative realized P&L (backtest-norm money, starts at last_total_pnl)
+  scenario_weight: number | null; // always NULL in mirror/flip model
+}
+
+/** The 1:1 strategy.forecast_1m_stats row (20d + 255d historical context). */
+export interface StrategyForecast1mStats {
+  forecast_date: string;
+  sigma_daily: number;        // 20d daily log-return std
+  sigma_255d: number;         // 255d daily log-return std (for mirror/flip scale ratios)
+  oc_gap_mean: number;
+  oc_gap_std: number;
+  hl_gap_mean: number;
+  hl_gap_std: number;
+  amt_mean: number | null;
+  amt_std: number | null;
+  amt_hl_corr: number | null;
+  rsi_6: number | null;
+  rsi_10: number | null;
+  rsi_14: number | null;
+  rsi_20: number | null;
+  anchor_close: number;
+  first_buy_fill_price: number | null;
+  last_total_pnl: number;     // backtest's final total_pnl (P&L forecast offset)
+}
+
+export interface StrategyForecast1mResponse {
+  code: string;
+  sec_type: MaSpreadSecType;
+  seq_id: number;
+  forecast_date: string;
+  rows: StrategyForecast1mRow[];
+  stats: StrategyForecast1mStats | null;
 }

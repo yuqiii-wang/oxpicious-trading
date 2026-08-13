@@ -17,16 +17,12 @@ already have daily history for is streamed.
 from __future__ import annotations
 
 from downloads._common.core import setup_logger
-from downloads.stock.sse._common.list_endpoint import SSE_LIST_URL
+from downloads.stock.sse._common.list_endpoint import SSE_INDEX_LIST_URL
 
 from ._io import _prepopulate_finished_codes
 from ._model import AssetStream
 
 logger = setup_logger("stream_sse")
-
-# SSE index list endpoint: same JSONP schema as the equity endpoint, only the
-# path suffix differs (/exchange/index vs /exchange/equity).
-SSE_INDEX_LIST_URL = SSE_LIST_URL.replace("/equity", "/index")
 
 
 def build_index_asset(allowed_codes: set) -> AssetStream:

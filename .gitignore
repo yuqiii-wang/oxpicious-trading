@@ -5,3 +5,5 @@ __pycache__
 
 .env
 temp_scripts/*
+
+.backup_staging
