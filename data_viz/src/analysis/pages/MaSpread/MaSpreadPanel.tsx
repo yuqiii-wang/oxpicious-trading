@@ -204,7 +204,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // Bollinger dropdown + Trading Amt toggle shown in the card header's top-right corner.
   const bollAction = !loading && !error && selectedPair ? (
     <Stack direction="row" alignItems="center" spacing={1} sx={{ mr: 0.5 }}>
-      {selectedPair.ma_short === 0 && (
+      {(selectedPair.ma_short === 0 || selectedPair.kind === "amt") && (
         <Stack direction="row" alignItems="center" spacing={0.5}>
           <Typography
             variant="caption"
@@ -473,6 +473,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                   pair: selectedPair,
                   themeMode,
                   ohlcMode,
+                  bollingerK,
                 })
               : buildPairOption({
                   pair: selectedPair,

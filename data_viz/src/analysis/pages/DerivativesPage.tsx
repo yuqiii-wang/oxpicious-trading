@@ -28,6 +28,13 @@ const DERIVATIVES_ANALYSES: DerivativesAnalysis[] = [
       "Per-security RONGZI (融资 / cash-borrow) margin flows: baseline price chart with daily margin balance + buy, ma5/ma20/ma60, and slope. ETF + Stock only (indices have no margin data).",
     tags: ["rongzi", "margin", "etf", "stock", "ma", "slope"],
   },
+  {
+    slug: "futures",
+    title: "Futures Basis Analysis",
+    description:
+      "CFFEX futures vs underlying analysis: 1st plot replicates the Data Viz price curves with gap_price_vs_underlying added to tooltip; 2nd plot shows 20-day rolling correlation between futures and underlying.",
+    tags: ["futures", "basis", "gap", "correlation", "cffex"],
+  },
 ];
 
 export default function DerivativesPage() {

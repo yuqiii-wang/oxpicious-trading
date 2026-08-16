@@ -20,6 +20,7 @@ import StatTable from "@/components/StatTable";
 import RefreshButton from "@/components/RefreshButton";
 import VolSmilePanel from "@/dataviz/features/szse-options/VolSmilePanel";
 import MarketInterestWallPanel from "@/dataviz/features/szse-options/MarketInterestWallPanel";
+import ExpiryOiBandsPanel from "@/dataviz/features/szse-options/ExpiryOiBandsPanel";
 import AnnualSentimentPanel from "@/dataviz/features/szse-options/AnnualSentimentPanel";
 import {
   fetchEtfOhlcv,
@@ -38,6 +39,8 @@ import { computeSnapshotStats } from "@/lib/options-stats";
 
 export default function SzseOptionsPage() {
   const underlyingCode = useStore((s) => s.underlyingCode);
+  const setUnderlyingCode = useStore((s) => s.setUnderlyingCode);
+  const optionsTargetType = useStore((s) => s.optionsTargetType);
   const snapshotDates = useStore((s) => s.snapshotDates);
   const setSnapshotDates = useStore((s) => s.setSnapshotDates);
 
@@ -56,12 +59,20 @@ export default function SzseOptionsPage() {
   // user expects a fully refreshed page after clicking the button.
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Load underlyings list once (and on refresh)
+  // Load underlyings list once (and on refresh / target-type change).
+  // Falls back to the first available underlying when the current selection
+  // has no options in the newly selected target type (e.g. 399006 has no
+  // CFFEX index options).
   useEffect(() => {
-    fetchUnderlyings()
-      .then(setUnderlyings)
+    fetchUnderlyings(optionsTargetType)
+      .then((list) => {
+        setUnderlyings(list);
+        if (list.length > 0 && !list.some((u) => u.code === underlyingCode)) {
+          setUnderlyingCode(list[0].code);
+        }
+      })
       .catch((e: Error) => setError(e.message));
-  }, [refreshKey]);
+  }, [optionsTargetType, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load ALL options + OHLCV data (no date filter — trend plots need full history)
   useEffect(() => {
@@ -69,8 +80,8 @@ export default function SzseOptionsPage() {
     setLoading(true);
     setError(null);
     Promise.all([
-      fetchOptionsCombined(underlyingCode, null, null),
-      fetchEtfOhlcv(underlyingCode, null, null),
+      fetchOptionsCombined(underlyingCode, null, null, optionsTargetType),
+      fetchEtfOhlcv(underlyingCode, null, null, optionsTargetType),
     ])
       .then(([opts, ohlc]) => {
         if (cancelled) return;
@@ -88,7 +99,7 @@ export default function SzseOptionsPage() {
     return () => {
       cancelled = true;
     };
-  }, [underlyingCode, refreshKey]);
+  }, [underlyingCode, optionsTargetType, refreshKey]);
 
   const handleRefresh = () => {
     // All three endpoints share the "/api/szse-options/" prefix:
@@ -131,10 +142,12 @@ export default function SzseOptionsPage() {
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 2, flexWrap: "wrap" }}>
         <Box>
           <Typography variant="h5" sx={{ fontWeight: 700 }}>
-            SZSE ETF Options
+            Options
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            {underlyingName} ({underlyingCode}) — interactive mirror of plot_szse_options.py
+            {underlyingName} ({underlyingCode}) —{" "}
+            {optionsTargetType === "INDEX" ? "CFFEX index options" : "SZSE ETF options"} analytics
+            dashboard
           </Typography>
         </Box>
         <RefreshButton
@@ -180,6 +193,7 @@ export default function SzseOptionsPage() {
 
               <VolSmilePanel rows={optionsData.rows} selectedDate={selectedDate} />
               <MarketInterestWallPanel rows={optionsData.rows} selectedDate={selectedDate} />
+              <ExpiryOiBandsPanel rows={optionsData.rows} />
               <AnnualSentimentPanel rows={optionsData.rows} ohlcv={ohlcv} />
             </>
           )}

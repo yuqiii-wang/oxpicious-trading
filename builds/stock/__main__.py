@@ -128,24 +128,24 @@ PE_ESTIMATE_MAX_MONTHS = 3
 # ============================================================================
 # Each entry: (directory, glob_pattern, filename_prefix, market_label)
 SOURCE_FILE_SETS = [
-    (SZSE_ARCHIVE_DIR, "szse_stock_*.csv",        "szse_stock_",        "深圳"),
-    (SZSE_TREND_DIR,   "szse_trend_stock_*.csv",  "szse_trend_stock_",  "深圳"),
-    (SSE_TREND_DIR,    "sse_trend_stock_*.csv",   "sse_trend_stock_",   "上海"),
-    (BSE_TREND_DIR,    "bse_trend_stock_*.csv",   "bse_trend_stock_",   "北京"),
+    (SZSE_ARCHIVE_DIR, "szse_stock_*.csv",        "szse_stock_",        "深圳", ".SZ"),
+    (SZSE_TREND_DIR,   "szse_trend_stock_*.csv",  "szse_trend_stock_",  "深圳", ".SZ"),
+    (SSE_TREND_DIR,    "sse_trend_stock_*.csv",   "sse_trend_stock_",   "上海", ".SS"),
+    (BSE_TREND_DIR,    "bse_trend_stock_*.csv",   "bse_trend_stock_",   "北京", ".BJ"),
 ]
 
 
 def discover_source_files(start_date=None, end_date=None):
     """Glob all source CSV files across the 4 directories, filtered by date range.
 
-    Returns a list of (path, market) tuples.
+    Returns a list of (path, market, suffix) tuples.
     """
     out = []
-    for scan_dir, pattern, prefix, market in SOURCE_FILE_SETS:
+    for scan_dir, pattern, prefix, market, suffix in SOURCE_FILE_SETS:
         files = glob_source_files(scan_dir, pattern)
         files = select_source_files_in_range(files, prefix, start_date, end_date)
         for f in files:
-            out.append((f, market))
+            out.append((f, market, suffix))
     return out
 
 
@@ -890,8 +890,8 @@ async def main():
 
     # Extract available dates from filenames (for missing-date detection)
     available_dates = set()
-    for path, _market in all_files:
-        for _dir, _pat, prefix, _mkt in SOURCE_FILE_SETS:
+    for path, _market, _suffix in all_files:
+        for _dir, _pat, prefix, _mkt, _sfx in SOURCE_FILE_SETS:
             ymd = ymd_from_filename(path, prefix)
             if ymd:
                 d = ymd_to_date(ymd)
@@ -948,20 +948,64 @@ async def main():
         # Date-grouped source files (SZSE archive/trend + SSE trend + BSE trend)
         # are loaded only for dates missing at the DATE level. SSE historical
         # OHLCV is loaded separately from per-stock archive files below.
+        #
+        # CRITICAL: missing-date detection MUST be done PER-SUFFIX, not
+        # globally. If SSE stocks have all dates, the global check would
+        # mark no dates as missing and skip ALL SZSE/BSE files — even
+        # though those suffixes have no data at all. See `find_missing_dates`
+        # `code_suffix` parameter for details.
         combined = pd.DataFrame()
         if missing_dates:
             print(f"\n[3/4] Reading source CSVs for {len(missing_dates)} missing dates …", flush=True)
-            missing_file_pairs = []
-            for path, market in all_files:
-                for _dir, _pat, prefix, _mkt in SOURCE_FILE_SETS:
-                    ymd = ymd_from_filename(path, prefix)
-                    if ymd:
-                        d = ymd_to_date(ymd)
-                        if d and d in missing_dates:
-                            missing_file_pairs.append((path, market))
-                            break
 
-            print(f"    → {len(missing_file_pairs)} source CSV files to read", flush=True)
+            # Group files by suffix for per-suffix missing-date detection
+            files_by_suffix: dict[str, list[tuple]] = {".SZ": [], ".SS": [], ".BJ": []}
+            for item in all_files:
+                path, market, suffix = item
+                files_by_suffix.setdefault(suffix, []).append((path, market))
+
+            missing_file_pairs: list[tuple] = []
+            for suffix, suffix_files in files_by_suffix.items():
+                if not suffix_files:
+                    continue
+                # Extract dates available in this suffix's files
+                suffix_dates = set()
+                for path, _mkt in suffix_files:
+                    for _dir, _pat, prefix, _mkt2, _sfx in SOURCE_FILE_SETS:
+                        ymd = ymd_from_filename(path, prefix)
+                        if ymd:
+                            d = ymd_to_date(ymd)
+                            if d:
+                                suffix_dates.add(d)
+                                break
+
+                # Per-suffix missing-date detection
+                suffix_missing = await find_missing_dates(
+                    conn, "stats.stock_identity", suffix_dates,
+                    code_suffix=suffix,
+                )
+                if not suffix_missing:
+                    print(f"    [{suffix}] No dates missing (all {len(suffix_dates)} dates already loaded)", flush=True)
+                    continue
+
+                # Filter suffix files to only missing dates
+                for path, market in suffix_files:
+                    for _dir, _pat, prefix, _mkt, _sfx in SOURCE_FILE_SETS:
+                        ymd = ymd_from_filename(path, prefix)
+                        if ymd:
+                            d = ymd_to_date(ymd)
+                            if d and d in suffix_missing:
+                                missing_file_pairs.append((path, market))
+                                break
+
+                print(f"    [{suffix}] {len(suffix_missing)} dates missing, "
+                      f"{len(suffix_files)} files available, "
+                      f"{sum(1 for p, _ in missing_file_pairs if any(ymd_from_filename(p, pr) for _, _, pr, _, _ in SOURCE_FILE_SETS))} files to read so far",
+                      flush=True)
+
+            # Actually count files per suffix for the summary
+            total_files_to_read = len(missing_file_pairs)
+            print(f"    → {total_files_to_read} source CSV files to read (all suffixes)", flush=True)
             combined = build_missing_rows(missing_file_pairs, verbose=True)
 
         # ------------------------------------------------------------------
@@ -1223,8 +1267,8 @@ async def main():
             # can recover OHLCV for margin target dates outside the range.
             all_source_files = discover_source_files()
             backfill_file_pairs = []
-            for path, market in all_source_files:
-                for _dir, _pat, prefix, _mkt in SOURCE_FILE_SETS:
+            for path, market, _suffix in all_source_files:
+                for _dir, _pat, prefix, _mkt, _sfx in SOURCE_FILE_SETS:
                     ymd = ymd_from_filename(path, prefix)
                     if ymd:
                         d = ymd_to_date(ymd)

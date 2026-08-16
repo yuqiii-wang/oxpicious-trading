@@ -49,6 +49,11 @@ export {
 } from "./stock-baseline";
 
 export {
+  fetchFuturesProducts,
+  fetchFuturesCombined,
+} from "./futures";
+
+export {
   fetchMovAveSpreadCodes,
   fetchMovAveSpreadThemes,
   fetchMovAveSpreadStrategyThemes,
@@ -78,6 +83,8 @@ export {
   fetchMarginIndustryCorrelation,
   fetchMarginTrends,
 } from "./analysis-margin-trends";
+
+export { fetchFuturesExt } from "./analysis-futures";
 
 export {
   fetchPerfAttrCodes,

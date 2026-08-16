@@ -158,6 +158,11 @@ def compute_ema_vs_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     if should_use_gpu(df[needed], op_type="merge"):
         import cudf  # type: ignore[import-untyped]
+        # cuDF cannot handle object dtype (Python date objects) — convert
+        # date column to datetime64 before the GPU transfer, then restore
+        # the original dtype after the computation.
+        orig_date_dtype = df["date"].dtype
+        df["date"] = pd.to_datetime(df["date"])
         # Transfer only the minimal column subset to VRAM. All 9 ratios
         # run on-device; results are brought back in one to_pandas() call.
         gdf = cudf.from_pandas(df[needed])
@@ -175,6 +180,8 @@ def compute_ema_vs_columns(df: pd.DataFrame) -> pd.DataFrame:
         result = gdf[out_cols].to_pandas()
         for col in out_cols:
             df[col] = result[col].values
+        # Restore original date dtype (object for Python date objects)
+        df["date"] = df["date"].astype(orig_date_dtype)
     else:
         # CPU path — use the shared gap_col helper (vectorized pandas).
         from analyze.mov_ave_spread.helpers import gap_col

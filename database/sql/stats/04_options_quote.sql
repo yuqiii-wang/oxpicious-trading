@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS stats.options_terms (
     contract_code             TEXT          NOT NULL,
     underlying_code           TEXT          NOT NULL,
     underlying_name           TEXT          NOT NULL,
+    underlying_target_type      TEXT          NOT NULL
+        CHECK (underlying_target_type IN ('ETF','INDEX')),
+    exchange                  TEXT          NOT NULL
+        CHECK (exchange IN ('SZSE','SSE','CFFEX')),
+
     option_type               TEXT          NOT NULL
         CHECK (option_type IN ('CALL','PUT')),
     expiry_month              TEXT          NOT NULL,
@@ -41,7 +46,7 @@ CREATE TABLE IF NOT EXISTS stats.options_terms (
 );
 
 COMMENT ON TABLE  stats.options_terms                 IS 'Options underlying and contract terms.';
-COMMENT ON COLUMN stats.options_terms.underlying_code IS 'Underlying ETF code WITHOUT exchange suffix (e.g. "159901").';
+COMMENT ON COLUMN stats.options_terms.underlying_code IS 'Underlying index code (e.g. "000300") or ETF code (e.g. "159901") — unified scheme for SZSE and CFFEX.';
 COMMENT ON COLUMN stats.options_terms.option_type     IS 'CALL = 认购 (right to buy); PUT = 认沽 (right to sell).';
 COMMENT ON COLUMN stats.options_terms.expiry_month    IS 'Chinese month label from contract name (e.g. "12月"); for display only — use expiry_date for date math.';
 

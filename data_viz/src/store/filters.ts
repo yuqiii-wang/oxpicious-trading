@@ -23,11 +23,15 @@ interface AppState {
   setEndDate: (d: string | null) => void;
   setDateRange: (start: string | null, end: string | null) => void;
 
-  /** SZSE Options — currently selected underlying. */
+  /** Options — currently selected underlying. */
   underlyingCode: string;
   setUnderlyingCode: (code: string) => void;
 
-  /** SZSE Options — 4 snapshot dates (Q4 start / last quarter / last month / latest). */
+  /** Options — underlying target type toggle: 'ETF' (SZSE) or 'INDEX' (CFFEX). */
+  optionsTargetType: "ETF" | "INDEX";
+  setOptionsTargetType: (t: "ETF" | "INDEX") => void;
+
+  /** Options — 4 snapshot dates (Q4 start / last quarter / last month / latest). */
   snapshotDates: SnapshotDate[];
   setSnapshotDate: (idx: number, date: string) => void;
   setSnapshotDates: (dates: SnapshotDate[]) => void;
@@ -68,8 +72,11 @@ export const useStore = create<AppState>((set) => ({
   setEndDate: (d) => set({ endDate: d }),
   setDateRange: (start, end) => set({ startDate: start, endDate: end }),
 
-  underlyingCode: "159919",
+  underlyingCode: "000300",
   setUnderlyingCode: (code) => set({ underlyingCode: code }),
+
+  optionsTargetType: "ETF",
+  setOptionsTargetType: (t) => set({ optionsTargetType: t }),
 
   snapshotDates: DEFAULT_SNAPSHOTS,
   setSnapshotDate: (idx, date) =>

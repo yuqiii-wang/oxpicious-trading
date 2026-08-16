@@ -44,10 +44,11 @@ const APPS: Record<AppKey, AppConfig> = {
     defaultPath: "/dataviz/debt-baseline",
     tabs: [
       { label: "Debt Baseline", path: "/dataviz/debt-baseline" },
-      { label: "SZSE Options", path: "/dataviz/szse-options" },
+      { label: "Options", path: "/dataviz/szse-options" },
       { label: "ETF + Margin", path: "/dataviz/etf-margin" },
       { label: "Index", path: "/dataviz/index-baseline" },
       { label: "Stock", path: "/dataviz/stock-baseline" },
+      { label: "Futures", path: "/dataviz/futures" },
     ],
   },
   analysis: {

@@ -6,7 +6,6 @@ if [ "${FORCE_DOWNLOADS:-0}" = "1" ] || { [ "$_is_biz_date" = "1" ] && [ "$_cur_
 for m in \
   downloads.stock.szse.trend \
   downloads.etf.szse.trend \
-  downloads.options.szse.trend \
   downloads.index.szse.trend \
   downloads.index.sse.trend \
   downloads.stock.sse.trend \
@@ -17,6 +16,7 @@ for m in \
   downloads.bond.chinabond \
   downloads.macro.pboc.repo_news \
   downloads.options.sse.price \
+  downloads.options.szse.trend \
   downloads.macro.pboc.lpr_news \
   downloads.macro.zhihu.news
 do
@@ -39,7 +39,8 @@ for m in \
   builds.etf \
   builds.index \
   builds.bond \
-  builds.options.szse
+  builds.options \
+  builds.futures
 do
   python -m "$m"
 done
@@ -56,7 +57,8 @@ for m in \
   analyze.industry_sentiments \
   analyze.mov_ave_spread \
   analyze.pe_and_dividends \
-  analyze.margins
+  analyze.margins \
+  analyze.futures
 do
   python -m "$m"
 done
@@ -92,6 +94,7 @@ python -m downloads.index.szse.archive
 python -m downloads.stock.sse.archive
 python -m downloads.index.cnindex.archive
 python -m downloads.macro.gov.news
+python -m downloads.futures.cffex.archive
 
 # build, run once
 python -m builds.classification

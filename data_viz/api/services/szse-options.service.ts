@@ -19,6 +19,8 @@ export interface OptionsQuery {
   underlying?: string;
   start_date?: string;
   end_date?: string;
+  /** 'ETF' (SZSE ETF options) or 'INDEX' (CFFEX index options). */
+  target_type?: string;
 }
 
 // ----------------------------------------------------------------------------
@@ -51,6 +53,15 @@ interface DbOptionsRow extends QueryResultRow {
 interface DbUnderlyingRow extends QueryResultRow {
   underlying_code: string;
   underlying_name: string;
+}
+
+interface DbIndexOhlcvRow extends QueryResultRow {
+  date: Date | string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  trading_shares: number | null;
 }
 
 interface DbEtfOhlcvRow extends QueryResultRow {
@@ -105,19 +116,42 @@ const OPTIONS_COLUMNS = `
 `;
 
 // ----------------------------------------------------------------------------
+//  ETF code ↔ index code mapping (kept in sync with builds/options/szse/__main__.py)
+// ----------------------------------------------------------------------------
+
+const INDEX_TO_ETF: Record<string, { etfCode: string; etfName: string; indexName: string }> = {
+  "000300": { etfCode: "159919", etfName: "沪深300ETF", indexName: "沪深300" },
+  "000905": { etfCode: "159922", etfName: "中证500ETF", indexName: "中证500" },
+  "399330": { etfCode: "159901", etfName: "深证100ETF", indexName: "深证100" },
+  "399006": { etfCode: "159915", etfName: "创业板ETF", indexName: "创业板" },
+};
+
+const ETF_TO_INDEX: Record<string, string> = {};
+for (const [idxCode, { etfCode }] of Object.entries(INDEX_TO_ETF)) {
+  ETF_TO_INDEX[etfCode] = idxCode;
+}
+
+// ----------------------------------------------------------------------------
 //  List underlyings — SELECT DISTINCT from v_options_quote
 // ----------------------------------------------------------------------------
-export async function listUnderlyings(): Promise<OptionsUnderlying[]> {
-  const rows = await queryRows<DbUnderlyingRow>(`
+export async function listUnderlyings(targetType?: string): Promise<OptionsUnderlying[]> {
+  const t = (targetType ?? "").trim().toUpperCase();
+  const sql = `
     SELECT DISTINCT underlying_code, underlying_name
     FROM stats.v_options_quote
     WHERE underlying_code IS NOT NULL AND underlying_code != ''
+      ${t === "ETF" || t === "INDEX" ? "AND underlying_target_type = $1" : ""}
     ORDER BY underlying_code
-  `);
-  return rows.map((r) => ({
-    code: r.underlying_code,
-    name: r.underlying_name,
-  }));
+  `;
+  const rows = await queryRows<DbUnderlyingRow>(sql, t === "ETF" || t === "INDEX" ? [t] : []);
+  return rows.map((r) => {
+    const code = r.underlying_code;
+    const info = INDEX_TO_ETF[code];
+    return {
+      code,
+      name: info ? info.indexName : r.underlying_name,
+    };
+  });
 }
 
 // ----------------------------------------------------------------------------
@@ -127,11 +161,16 @@ export async function getOptionsCombined(
   q: OptionsQuery,
 ): Promise<OptionsCombinedResponse> {
   const underlying = (q.underlying ?? "").trim();
+  const targetType = (q.target_type ?? "").trim().toUpperCase();
 
   const params: unknown[] = [];
   const where: string[] = [];
   let i = 1;
 
+  if (targetType === "ETF" || targetType === "INDEX") {
+    where.push(`underlying_target_type = $${i++}`);
+    params.push(targetType);
+  }
   if (underlying) {
     where.push(`underlying_code = $${i++}`);
     params.push(underlying);
@@ -163,15 +202,59 @@ export async function getOptionsCombined(
 }
 
 // ----------------------------------------------------------------------------
-//  Get ETF OHLCV from v_etf_margin for the annual-sentiment panel.
-//  Uses split-adjusted prices when available.
+//  Get underlying OHLCV for the annual-sentiment panel.
+//    • ETF mode   — stats.v_etf_margin via INDEX_TO_ETF mapping
+//                   (split-adjusted prices when available)
+//    • INDEX mode — stats.v_index_baseline directly (code = index code)
 // ----------------------------------------------------------------------------
 export async function getEtfOhlcv(
   code: string,
   startDate?: string,
   endDate?: string,
+  targetType?: string,
 ): Promise<EtfOhlcvResponse> {
-  const targetCode = stripExchangeSuffix(code).trim();
+  const cleanedCode = stripExchangeSuffix(code).trim();
+  const t = (targetType ?? "").trim().toUpperCase();
+  const sd = toDateParam(startDate);
+  const ed = toDateParam(endDate);
+
+  // ---- INDEX mode: query v_index_baseline with the raw index code ----
+  if (t === "INDEX") {
+    const params: unknown[] = [cleanedCode];
+    const where: string[] = [`code = $1`];
+    let i = 2;
+    if (sd) {
+      where.push(`date >= $${i++}::date`);
+      params.push(sd);
+    }
+    if (ed) {
+      where.push(`date <= $${i++}::date`);
+      params.push(ed);
+    }
+    const rows = await queryRows<DbIndexOhlcvRow>(`
+      SELECT date, open, high, low, close, trading_shares
+      FROM stats.v_index_baseline
+      WHERE ${where.join(" AND ")}
+      ORDER BY date ASC
+    `, params);
+    const transformed = rows.map((r) => ({
+      date: formatDate(r.date),
+      open: toNum(r.open) ?? 0,
+      high: toNum(r.high) ?? 0,
+      low: toNum(r.low) ?? 0,
+      close: toNum(r.close) ?? 0,
+      volume: toNum(r.trading_shares) ?? 0,
+    }));
+    return {
+      dates: transformed.map((r) => r.date),
+      code: cleanedCode,
+      rows: transformed,
+    };
+  }
+
+  // ---- ETF mode (default): v_etf_margin via ETF mapping ----
+  const etfCode = INDEX_TO_ETF[cleanedCode]?.etfCode ?? cleanedCode;
+  const targetCode = etfCode;
 
   const params: unknown[] = [];
   const where: string[] = [
@@ -180,8 +263,6 @@ export async function getEtfOhlcv(
   params.push(targetCode);
   let i = 2;
 
-  const sd = toDateParam(startDate);
-  const ed = toDateParam(endDate);
   if (sd) {
     where.push(`date >= $${i++}::date`);
     params.push(sd);
@@ -221,7 +302,7 @@ export async function getEtfOhlcv(
 
   return {
     dates: transformed.map((r) => r.date),
-    code: targetCode,
+    code: cleanedCode,
     rows: transformed,
   };
 }

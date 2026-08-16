@@ -62,7 +62,7 @@ from _common.build_commons import (
     parse_num, parse_date, ymd_from_filename, ymd_to_date,
     glob_source_files,
     print_build_header, print_wall_time, PROJECT_ROOT, TODAY_STR,
-    bulk_upsert_async, truncate_table_async,
+    truncate_table_async,
 )
 
 setup_utf8_stdout()
@@ -142,6 +142,29 @@ def parse_underlying_code(underlying_str):
     return name, code
 
 
+# ETF code → (index_code, index_name) mapping.
+# SZSE ETF options track the corresponding index. We normalize to the
+# underlying index code so SZSE and CFFEX options appear under the same
+# underlying (e.g. both 159919 ETF options and IO index options map to 000300).
+_ETF_TO_INDEX = {
+    "159919": ("000300", "沪深300"),
+    "159922": ("000905", "中证500"),
+    "159901": ("399330", "深证100"),
+    "159915": ("399006", "创业板"),
+}
+
+
+def etf_to_index(etf_code: str):
+    """Convert an ETF code to (index_code, index_name) if a mapping exists.
+
+    Returns (etf_code, etf_name) unchanged if no mapping is found.
+    """
+    mapping = _ETF_TO_INDEX.get(str(etf_code).strip())
+    if mapping:
+        return mapping
+    return None, None
+
+
 def compute_expiry_date(trade_date, expiry_month):
     """Compute the expiration date for a given trade date and expiry month.
 
@@ -215,6 +238,13 @@ def build_options_df(files, verbose=True):
             if underlying_code is None:
                 n_parse_fail += 1
                 continue
+
+            # Normalize ETF code → index code so SZSE and CFFEX options
+            # share the same underlying_code (e.g. 159919 → 000300).
+            index_code, index_name = etf_to_index(underlying_code)
+            if index_code:
+                underlying_code = index_code
+                underlying_name = index_name
 
             expiry_dt = compute_expiry_date(trade_date_dt, parsed["expiry_month"])
             days_to_expiry = max(0, (expiry_dt - trade_date_dt).days)
@@ -316,81 +346,10 @@ def load_etf_ohlcv(files, verbose=True):
 
 
 # ============================================================================
-# Black-Scholes Greeks
+# Black-Scholes Greeks (vectorized, CPU/GPU-routed —
+# see _common/df_utils/black_scholes.py)
 # ============================================================================
-RISK_FREE_RATE = 0.02
-PRICE_SCALE = 1000.0
-OPT_SCALE = 10000.0
-
-
-def compute_iv_and_greeks(df):
-    """Compute implied volatility and Greeks using QuantLib's BlackCalculator."""
-    try:
-        import QuantLib as ql
-    except ImportError as e:
-        raise ImportError(
-            "QuantLib is required to compute IV and Greeks. Install it with: "
-            "conda install -c conda-forge quantlib"
-        ) from e
-    from scipy.optimize import brentq
-
-    S = df["underlying_close"].values / PRICE_SCALE
-    K = df["strike_price"].values / PRICE_SCALE
-    price = df["settle"].values / OPT_SCALE
-    T = df["days_to_expiry"].values / 365.0
-    is_call = df["option_type"].values == "CALL"
-    r = RISK_FREE_RATE
-
-    mask = (T > 0) & (price > 0) & (S > 0) & (K > 0)
-
-    iv = np.full(len(df), np.nan)
-    delta = np.full(len(df), np.nan)
-    gamma = np.full(len(df), np.nan)
-    theta = np.full(len(df), np.nan)
-    vega = np.full(len(df), np.nan)
-    rho = np.full(len(df), np.nan)
-
-    def compute_single(idx):
-        if not mask[idx]:
-            return np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
-
-        s = float(S[idx])
-        k = float(K[idx])
-        p = float(price[idx])
-        t = float(T[idx])
-        call = bool(is_call[idx])
-
-        try:
-            payoff_type = ql.Option.Call if call else ql.Option.Put
-            payoff = ql.PlainVanillaPayoff(payoff_type, k)
-
-            F = s * np.exp(r * t)
-            discount = np.exp(-r * t)
-
-            def objective(sigma):
-                std_dev = sigma * np.sqrt(t)
-                calc = ql.BlackCalculator(payoff, F, std_dev, discount)
-                return calc.value() - p
-
-            vol = brentq(objective, 1e-6, 5.0, xtol=1e-8, rtol=1e-8, maxiter=200)
-
-            std_dev = vol * np.sqrt(t)
-            calc = ql.BlackCalculator(payoff, F, std_dev, discount)
-
-            d = calc.delta(s)
-            g = calc.gamma(s)
-            th = calc.thetaPerDay(s, t)
-            ve = calc.vega(t) * 0.01
-            rh = calc.rho(t) * 0.01
-
-            return vol, d, th, g, ve, rh
-        except Exception:
-            return np.nan, np.nan, np.nan, np.nan, np.nan, np.nan
-
-    for i in range(len(df)):
-        iv[i], delta[i], theta[i], gamma[i], vega[i], rho[i] = compute_single(i)
-
-    return iv, delta, theta, gamma, vega, rho
+from _common.df_utils import compute_iv_and_greeks  # noqa: F401
 
 
 # ============================================================================
@@ -484,6 +443,36 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
     return df
 
 
+# SZSE option contract codes are 6-digit numeric codes that do NOT
+# start with CFFEX product prefixes (IO, HO, MO, CO).
+_CFFEX_PREFIXES = ["IO%", "HO%", "MO%", "CO%"]
+
+
+async def find_missing_szse_dates(
+    conn,
+    source_dates,
+):
+    """Find dates from source_dates that do NOT already have SZSE options data.
+
+    Unlike the generic find_missing_dates (which checks for ANY data in the
+    table), this function only checks for rows whose contract_code does NOT
+    start with a CFFEX option product prefix. This prevents CFFEX options
+    data from masking dates that still need SZSE data.
+    """
+    if not source_dates:
+        return set()
+
+    n = len(_CFFEX_PREFIXES)
+    conditions = " AND ".join(
+        [f'contract_code NOT LIKE ${i+1}' for i in range(n)]
+    )
+    sql = f'SELECT DISTINCT date FROM stats.options_identity WHERE {conditions}'
+    existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES)
+    existing_dates = {r["date"] for r in existing_rows if r["date"] is not None}
+
+    return source_dates - existing_dates
+
+
 # ============================================================================
 # Main pipeline
 # ============================================================================
@@ -554,11 +543,10 @@ async def main():
                 await truncate_table_async(conn, tbl)
             missing_dates = available_dates
         else:
-            # Query DISTINCT dates from options_identity (one row per date, not
-            # one per contract — much smaller result set).
-            rows = await conn.fetch("SELECT DISTINCT date FROM stats.options_identity")
-            existing_dates = {r["date"] for r in rows}
-            missing_dates = available_dates - existing_dates
+            # Query DISTINCT dates from options_identity for SZSE-specific
+            # contracts (excluding CFFEX prefixes). This ensures CFFEX data
+            # doesn't mask dates that still need SZSE data.
+            missing_dates = await find_missing_szse_dates(conn, available_dates)
 
         print(f"    [DB] {len(missing_dates)} dates missing from stats.options_identity "
               f"(out of {len(available_dates)} available)", flush=True)
@@ -609,104 +597,18 @@ async def main():
         options_db["date"] = options_db["date"].dt.date
         options_db["expiry_date"] = options_db["expiry_date"].dt.date
 
-        # Dedupe within the batch to avoid "ON CONFLICT DO UPDATE cannot
-        # affect row a second time" (multiple files may produce the same
-        # (date, contract_code)).
+        # Dedupe within the batch to avoid duplicate (date, contract_code)
+        # PKs (multiple files may produce the same contract row).
         options_db = options_db.drop_duplicates(subset=["date", "contract_code"], keep="last")
 
-        # Build rows for each split table. Since we already filtered to
-        # missing dates, all rows should be new — no existing_keys check
-        # needed here.
-        identity_rows, terms_rows, strike_rows, settlement_rows = [], [], [], []
-        greeks_rows, volume_oi_rows, aggregate_rows = [], [], []
-        for _, row in options_db.iterrows():
-            identity_rows.append({
-                "date": row["date"],
-                "contract_code": row["contract_code"],
-                "contract_name": row["contract_name"],
-            })
-            terms_rows.append({
-                "date": row["date"],
-                "contract_code": row["contract_code"],
-                "underlying_code": row["underlying_code"],
-                "underlying_name": row["underlying_name"],
-                "option_type": row["option_type"],
-                "expiry_month": row["expiry_month"],
-                "expiry_date": row["expiry_date"],
-                "days_to_expiry": int(row["days_to_expiry"]),
-            })
-            strike_rows.append({
-                "date": row["date"],
-                "contract_code": row["contract_code"],
-                "strike_str": row.get("strike_str"),
-                "strike_price_raw": row.get("strike_price_raw"),
-                "strike_price": row["strike_price"],
-                "has_a_suffix": int(row["has_a_suffix"]),
-            })
-            settlement_rows.append({
-                "date": row["date"],
-                "contract_code": row["contract_code"],
-                "prev_settle": row.get("prev_settle"),
-                "close": row.get("close"),
-                "settle": row.get("settle"),
-                "pct_change": row.get("pct_change"),
-                "prev_settle_norm": row.get("prev_settle_norm"),
-                "close_norm": row.get("close_norm"),
-                "settle_norm": row.get("settle_norm"),
-                "underlying_close": row.get("underlying_close", 0),
-                "moneyness_ratio": row.get("moneyness_ratio"),
-            })
-            greeks_rows.append({
-                "date": row["date"],
-                "contract_code": row["contract_code"],
-                "implied_vol": row.get("implied_vol"),
-                "delta": row.get("delta"),
-                "theta": row.get("theta"),
-                "gamma": row.get("gamma"),
-                "vega": row.get("vega"),
-                "rho": row.get("rho"),
-            })
-            volume_oi_rows.append({
-                "date": row["date"],
-                "contract_code": row["contract_code"],
-                "volume": row["volume"],
-                "volume_wan": row["volume_wan"],
-                "open_interest": row["open_interest"],
-                "open_interest_wan": row["open_interest_wan"],
-            })
-            aggregate_rows.append({
-                "date": row["date"],
-                "contract_code": row["contract_code"],
-                "total_volume_underlying": row.get("total_volume_underlying"),
-                "total_oi_underlying": row.get("total_oi_underlying"),
-                "volume_pct": row.get("volume_pct"),
-                "open_interest_pct": row.get("open_interest_pct"),
-                "oi_call_put_ratio": row.get("oi_call_put_ratio"),
-                "vol_call_put_ratio": row.get("vol_call_put_ratio"),
-                "open_interest_call": row.get("open_interest_call"),
-                "open_interest_put": row.get("open_interest_put"),
-                "volume_call": row.get("volume_call"),
-                "volume_put": row.get("volume_put"),
-                "oi_total_call_put_ratio": row.get("oi_total_call_put_ratio"),
-            })
+        # Split into the 7 options_* tables and COPY-insert (rows are
+        # PK-checked missing dates only, so COPY is conflict-free).
+        from builds.options.tables import build_split_tables, insert_split_tables
 
-        # Insert identity first (FK parent), then sub-tables
-        pk_cols = ["date", "contract_code"]
-        split_tables = [
-            ("stats.options_identity",  identity_rows),
-            ("stats.options_terms",     terms_rows),
-            ("stats.options_strike",    strike_rows),
-            ("stats.options_settlement",settlement_rows),
-            ("stats.options_greeks",    greeks_rows),
-            ("stats.options_volume_oi", volume_oi_rows),
-            ("stats.options_aggregate", aggregate_rows),
-        ]
-        for tbl, rows in split_tables:
-            if rows:
-                inserted = await bulk_upsert_async(conn, tbl, rows, pk_cols)
-                print(f"    [DB] Inserted {inserted:,} rows into {tbl}", flush=True)
-            else:
-                print(f"    [DB] No new rows to insert into {tbl}", flush=True)
+        tables = build_split_tables(
+            options_db, underlying_target_type="ETF", exchange="SZSE",
+        )
+        await insert_split_tables(conn, tables)
 
     finally:
         await conn.close()

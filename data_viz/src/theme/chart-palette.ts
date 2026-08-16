@@ -266,8 +266,33 @@ export const LPR_SERIES = [
 export const MAX_PAIN_COLOR = MA60_COLOR;
 export const OI_WEIGHTED_COLOR = MA20_COLOR;
 
+// ----------------------------------------------------------------------------
+// Futures chart colors
+// ----------------------------------------------------------------------------
+/** Darkest blue for front-month active contracts */
+export const FUTURES_BLUE_NEAR = cssVar("--futures-blue-near", "#08306b");
+/** Lightest blue for farthest-maturity active contracts */
+export const FUTURES_BLUE_FAR = cssVar("--futures-blue-far", "#c6dbef");
+/** Darkest grey for most recently matured contracts */
+export const FUTURES_GREY_DARK = cssVar("--futures-grey-dark", "#333333");
+/** Lightest grey for oldest matured contracts */
+export const FUTURES_GREY_LIGHT = cssVar("--futures-grey-light", "#aaaaaa");
+/** Spot price warm orange */
+export const FUTURES_SPOT = cssVar("--futures-spot", "#d95f0e");
+/** Ghost opacity for matured contracts in future mode */
+export const FUTURES_GHOST_OPACITY = parseFloat(cssVar("--futures-ghost-opacity", "0.25"));
+/** Closer opacity for matured contracts in history mode */
+export const FUTURES_HISTORY_OPACITY = parseFloat(cssVar("--futures-history-opacity", "0.90"));
+
 // Underlying display names (for options dashboard)
+// Now unified: both SZSE ETF options and CFFEX index options share index codes
 export const UNDERLYING_LABELS: Record<string, string> = {
+  "000016": "上证50",
+  "000300": "沪深300",
+  "000852": "中证1000",
+  "000905": "中证500",
+  "399006": "创业板",
+  "399330": "深证100",
   "159901": "深证100ETF",
   "159915": "创业板ETF",
   "159919": "沪深300ETF",

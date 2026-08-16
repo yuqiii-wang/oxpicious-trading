@@ -42,6 +42,8 @@ async def find_missing_dates(
     conn,
     table: str,
     source_dates: Iterable[datetime.date],
+    *,
+    code_suffix: Optional[str] = None,
 ) -> Set[datetime.date]:
     """Return the subset of ``source_dates`` not already present in ``table``.
 
@@ -51,13 +53,35 @@ async def find_missing_dates(
     Returns an empty set if ``source_dates`` is empty or all dates are
     already in the DB. This is the date-only variant; for (date, code)
     tables use find_missing_keys().
+
+    Args:
+        conn: asyncpg connection.
+        table: schema-qualified table name (e.g. "stats.stock_identity").
+        source_dates: iterable of datetime.date values to check.
+        code_suffix: optional suffix filter (e.g. ".SZ", ".SS", ".BJ").
+            When provided, only checks rows whose ``code`` column ends
+            with that suffix. This prevents a date populated for one
+            suffix from masking the same date being missing for another
+            suffix (e.g. SSE loading masking SZSE dates in stock_identity).
     """
     source_set = set(source_dates)
     if not source_set:
         return set()
-    existing = await get_existing_keys_async(conn, table, ["date"])
-    # existing is a set of 1-tuples like {(date,), ...}
-    existing_dates = {t[0] for t in existing}
+    schema, tbl = _parse_table_name(table)
+    from_clause = f'"{schema}"."{tbl}"' if schema else f'"{tbl}"'
+
+    if code_suffix is not None:
+        existing_rows = await conn.fetch(
+            f'SELECT DISTINCT date FROM {from_clause} WHERE code LIKE $1',
+            f'%{code_suffix}',
+        )
+    else:
+        existing_rows = await conn.fetch(
+            f'SELECT DISTINCT date FROM {from_clause}'
+        )
+    existing_dates = {
+        r["date"] for r in existing_rows if r["date"] is not None
+    }
     return source_set - existing_dates
 
 

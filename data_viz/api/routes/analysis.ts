@@ -54,6 +54,7 @@ import {
   getFourierFreqsSpectrum,
   listFourierFreqsThemes,
   listFourierFreqsStrategyThemes,
+  getFuturesExt,
 } from "../services/analysis/index.js";
 import type { PerfAttrSecType } from "../../shared/types.js";
 
@@ -773,6 +774,43 @@ router.get("/fourier-freqs/strategy-themes", async (req: Request, res: Response)
     res.json(await listFourierFreqsStrategyThemes(parseSecType(req), parseExchange(req)));
   } catch (err) {
     console.error("[analysis/fourier-freqs/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Futures Analysis — basis + correlation per (date, code) for a product
+//   analysis.futures_ext JOIN stats.futures_identity on product_code
+//
+//   GET /api/analysis/futures/ext?product=IF
+//     Returns FuturesExtResponse: gapByCodeDate (for 1st plot tooltip),
+//     corrByCodeDate (for 2nd plot correlation chart), and flat rows.
+router.get("/futures/ext", async (req: Request, res: Response) => {
+  try {
+    const product = (req.query.product as string | undefined) ?? "";
+    if (!product.trim()) {
+      res.status(400).json({ error: "Missing 'product' parameter" });
+      return;
+    }
+    const ext = await getFuturesExt(product);
+    // Serialize Maps to plain objects for JSON
+    const gapObj: Record<string, Record<string, number | null>> = {};
+    ext.gapByCodeDate.forEach((dateMap, code) => {
+      gapObj[code] = {};
+      dateMap.forEach((val, date) => { gapObj[code][date] = val; });
+    });
+    const corrObj: Record<string, Record<string, number | null>> = {};
+    ext.corrByCodeDate.forEach((dateMap, code) => {
+      corrObj[code] = {};
+      dateMap.forEach((val, date) => { corrObj[code][date] = val; });
+    });
+    res.json({
+      product: ext.product,
+      gapByCodeDate: gapObj,
+      corrByCodeDate: corrObj,
+      rows: ext.rows,
+    });
+  } catch (err) {
+    console.error("[analysis/futures/ext] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

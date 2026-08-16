@@ -116,4 +116,17 @@
   --mui-divider-dark: #2A3146;
   --mui-appbar-bg-dark: #0A1124;
   --mui-appbar-text-dark: #E6EAF2;
+
+  /* ---- Futures chart colors --------------------------------------------- */
+  /* Blue gradient for active qualifying contracts (nearer = darker) */
+  --futures-blue-near: #08306b;
+  --futures-blue-far: #c6dbef;
+  /* Grey gradient for matured contracts (recently matured = darker) */
+  --futures-grey-dark: #333333;
+  --futures-grey-light: #aaaaaa;
+  /* Spot price color (warm orange) */
+  --futures-spot: #d95f0e;
+  /* Opacity tokens */
+  --futures-ghost-opacity: 0.25;
+  --futures-history-opacity: 0.90;
 }

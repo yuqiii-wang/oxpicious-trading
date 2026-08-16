@@ -10,9 +10,11 @@ import {
 
 const router = Router();
 
-router.get("/underlyings", async (_req: Request, res: Response) => {
+router.get("/underlyings", async (req: Request, res: Response) => {
   try {
-    res.json(await listUnderlyings());
+    const targetType =
+      typeof req.query.target_type === "string" ? req.query.target_type : undefined;
+    res.json(await listUnderlyings(targetType));
   } catch (err) {
     console.error("[szse-options/underlyings] error:", err);
     res.status(500).json({ error: String(err) });
@@ -25,6 +27,7 @@ router.get("/combined", async (req: Request, res: Response) => {
       underlying: typeof req.query.underlying === "string" ? req.query.underlying : undefined,
       start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
       end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+      target_type: typeof req.query.target_type === "string" ? req.query.target_type : undefined,
     };
     res.json(await getOptionsCombined(query));
   } catch (err) {
@@ -44,6 +47,7 @@ router.get("/etf-ohlcv", async (req: Request, res: Response) => {
       code,
       typeof req.query.start_date === "string" ? req.query.start_date : undefined,
       typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+      typeof req.query.target_type === "string" ? req.query.target_type : undefined,
     );
     res.json(data);
   } catch (err) {

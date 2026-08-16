@@ -1,5 +1,5 @@
 /**
- * Underlying ETF selector + Snapshot Date picker for SZSE Options page.
+ * Underlying selector + Snapshot Date picker for the Options page.
  *
  * The snapshot date controls only the Volatility Smile + Market Interest Wall
  * panels — trend plots (Annual Sentiment) use the full data range.
@@ -12,6 +12,8 @@ import {
   MenuItem,
   Select,
   Stack,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
@@ -80,6 +82,8 @@ export function autoDeriveSnapshots(dates: string[]): { label: string; date: str
 export default function SnapshotControls({ underlyings, dates, selectedDate, onSelectedDateChange }: Props) {
   const underlyingCode = useStore((s) => s.underlyingCode);
   const setUnderlyingCode = useStore((s) => s.setUnderlyingCode);
+  const optionsTargetType = useStore((s) => s.optionsTargetType);
+  const setOptionsTargetType = useStore((s) => s.setOptionsTargetType);
 
   const minDate = dates.length > 0 ? dayjs(dates[0]) : undefined;
   const maxDate = dates.length > 0 ? dayjs(dates[dates.length - 1]) : undefined;
@@ -100,11 +104,27 @@ export default function SnapshotControls({ underlyings, dates, selectedDate, onS
         borderRadius: 1.5,
       }}
     >
+      <ToggleButtonGroup
+        size="small"
+        exclusive
+        value={optionsTargetType}
+        onChange={(_, v) => {
+          if (v) setOptionsTargetType(v as "ETF" | "INDEX");
+        }}
+      >
+        <ToggleButton value="ETF" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
+          ETF · SZSE
+        </ToggleButton>
+        <ToggleButton value="INDEX" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
+          Index · CFFEX
+        </ToggleButton>
+      </ToggleButtonGroup>
+
       <FormControl size="small" sx={{ minWidth: 220 }}>
-        <InputLabel>Underlying ETF</InputLabel>
+        <InputLabel>Underlying</InputLabel>
         <Select
           value={underlyingCode}
-          label="Underlying ETF"
+          label="Underlying"
           onChange={(e) => setUnderlyingCode(e.target.value)}
         >
           {underlyings.map((u) => (

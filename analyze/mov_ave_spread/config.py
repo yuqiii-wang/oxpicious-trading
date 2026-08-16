@@ -174,6 +174,46 @@ TRADING_AMT_MA_SLOPE_COLUMNS = (
     "trading_amt_ma255_slope",
 )
 
+# Trading-amount RAW (no-MA) SLOPE column. Fractional daily change of
+# raw trading_amount: slope[t] = (ta[t] - ta[t-1]) / ta[t-1]. Same
+# formula as TRADING_AMT_MA_SLOPE_COLUMNS but on the raw value instead
+# of an MA. NUMERIC(10,4) — typical |slope| < 0.5 for broad indices.
+# NULL on first date of each code or when ta[t]/ta[t-1] is NULL or ta[t-1] <= 0.
+# Used by trading_amt.compute_trading_amt_slope.
+TRADING_AMT_RAW_SLOPE_COLUMN = "trading_amt_slope"
+
+# Trading-amount SLOPE vs PRICE SLOPE RATIO column names (6 columns).
+# Each is an elasticity-like ratio = trading_amt_slope / price_slope.
+#   col[0] = trading_amt_slope / price_slope (raw vs raw)
+#   col[1] = trading_amt_ma5_slope / ma5_slope
+#   col[2] = trading_amt_ma5_slope / ma20_slope
+#   col[3] = trading_amt_ma5_slope / ma60_slope
+#   col[4] = trading_amt_ma5_slope / ma120_slope
+#   col[5] = trading_amt_ma5_slope / ma255_slope
+# Interpretation: how much capital (trading-amount change) pushes price
+#   by one unit — a liquidity-impact proxy. NUMERIC(10,4). NULL when
+#   numerator or denominator is NULL or denominator is exactly 0.
+# Used by trading_amt.compute_trading_amt_slope_vs_price_ratios.
+TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS = (
+    "trading_amt_slope_vs_price_slope_ratio",
+    "trading_amt_ma5_slope_vs_price_ma5_slope_ratio",
+    "trading_amt_ma5_slope_vs_price_ma20_slope_ratio",
+    "trading_amt_ma5_slope_vs_price_ma60_slope_ratio",
+    "trading_amt_ma5_slope_vs_price_ma120_slope_ratio",
+    "trading_amt_ma5_slope_vs_price_ma255_slope_ratio",
+)
+
+# Source price-slope column names needed by the ratio computation.
+# These come from compute_slopes_curvatures in the parent pipeline.
+TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS = (
+    "price_slope",
+    "ma5_slope",
+    "ma20_slope",
+    "ma60_slope",
+    "ma120_slope",
+    "ma255_slope",
+)
+
 # Trading-amount MARKET-SHARE-vs-MA gap column names (in canonical window
 # order). Each is a signed fractional ratio:
 #   trading_amt_market_share_vs_ma{W}[t] =
@@ -280,4 +320,134 @@ EMA_STD_COLUMNS = (
     "std_60days",
     "std_120days",
     "std_255days",
+)
+
+
+# ============================================================================
+#  OHLC detail (analysis.mov_ave_spreads_detail_ohlc)
+#  — Rolling OHLC summary per window. Internal step of the parent
+#  mov_ave_spread pipeline (see ohlc.py).
+# ============================================================================
+
+OHLC_TABLE = "analysis.mov_ave_spreads_detail_ohlc"
+OHLC_ANALYSIS_NAME = "mov_ave_spread_ohlc"
+
+# OHLC windows (trading days). Each window W produces 3 columns:
+#   open_Wd  — open price on the W-th trading day before `date`
+#   high_Wd  — max high over the W trading days ending on `date`
+#   low_Wd   — min low over the W trading days ending on `date`
+OHLC_WINDOWS = (20, 60, 120, 255, 500, 750)
+
+# All output column names in the order they appear in the table.
+OHLC_COLUMNS = (
+    "today_close",
+    "open_20d",  "high_20d",  "low_20d",
+    "open_60d",  "high_60d",  "low_60d",
+    "open_120d", "high_120d", "low_120d",
+    "open_255d", "high_255d", "low_255d",
+    "open_500d", "high_500d", "low_500d",
+    "open_750d", "high_750d", "low_750d",
+)
+
+OHLC_DESCRIPTION = (
+    "OHLC detail analysis (ETF + Index + Stock). For each security and "
+    "business date, stores today_close plus rolling open/high/low over "
+    "6 windows (20/60/120/255/500/750 trading days). open_Wd is the "
+    "open price on the W-th trading day before date; high_Wd is the max "
+    "high over the W trading days ending on date; low_Wd is the min low "
+    "over the same window. NULL when not enough history. Source: same "
+    "DataFrame as the mov_ave_spread parent pipeline (no second DB "
+    "round-trip). The sec_type column discriminates the source universe "
+    "('etf' | 'index' | 'stock')."
+)
+
+
+# ============================================================================
+#  Trading-amount detail (analysis.mov_ave_trading_amt)
+#  — Trading-amount metrics extracted from mov_ave_spreads_detail plus
+#  new rolling max/min and ratio columns. Internal step of the parent
+#  mov_ave_spread pipeline (see trading_amt.py).
+# ============================================================================
+
+TRADING_AMT_TABLE = "analysis.mov_ave_trading_amt"
+TRADING_AMT_ANALYSIS_NAME = "mov_ave_trading_amt"
+
+TRADING_AMT_DESCRIPTION = (
+    "Trading-amount analysis (ETF + Index + Stock). For each security "
+    "and business date, computes 5 trading-amount MA columns "
+    "(trading_amt_ma{5,20,60,120,255}), 5 trading-amount Bollinger band σ "
+    "columns (trading_amt_std{5,20,60,120,255} — rolling population std of "
+    "trading_amt_maW over W days, used for Bollinger-style envelopes), "
+    "5 market-share MA columns, 5 trading-amount MA slope columns, "
+    "and 5 market-share-vs-MA gap columns. Source: same DataFrame "
+    "as the mov_ave_spread parent pipeline (no second DB round-trip). "
+    "The sec_type column discriminates the source universe "
+    "('etf' | 'index' | 'stock')."
+)
+
+# Trading-amount Bollinger band σ column names (rolling population std of
+# trading_amt_maW over W days, ddof=0). Used for Bollinger-style envelopes
+# (MA ± k×σ) around each trading-amount MA line. NUMERIC(24,4) matches the
+# MA column precision (yuan units). Computed per (sec_type, code) ordered
+# by date with min_periods=W (NULL until W consecutive rows).
+TRADING_AMT_STD_COLUMNS = (
+    "trading_amt_std5",
+    "trading_amt_std20",
+    "trading_amt_std60",
+    "trading_amt_std120",
+    "trading_amt_std255",
+)
+
+# All output column names in the order they appear in the table.
+TRADING_AMT_COLUMNS = (
+    ("sec_type", "code", "date")
+    + TRADING_AMT_MA_COLUMNS
+    + TRADING_AMT_STD_COLUMNS
+    + TRADING_AMT_MARKET_SHARE_MA_COLUMNS
+    + TRADING_AMT_MA_SLOPE_COLUMNS
+    + (TRADING_AMT_RAW_SLOPE_COLUMN,)
+    + TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS
+    + TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS
+)
+
+
+# ============================================================================
+#  Rebounds (analysis.mov_ave_rebounds)
+#  — Double-top / shoulder pattern detection. Internal step of the parent
+#  mov_ave_spread pipeline (see rebounds.py).
+# ============================================================================
+
+REBOUNDS_TABLE = "analysis.mov_ave_rebounds"
+REBOUNDS_ANALYSIS_NAME = "mov_ave_rebounds"
+
+REBOUNDS_DESCRIPTION = (
+    "Double-top (rebound) detection analysis (ETF + Index + Stock). "
+    "For each security and business date, detects a rebound pattern "
+    "(2nd max close after the top max within trailing windows of "
+    "{20,60,120,255} trading days). For each window W: finds the "
+    "close-price maximum in [D-W+1, D] (top max), then finds the next "
+    "close-price maximum after the top max date within the same window "
+    "(2nd max = rebound). Emits 4 columns per window: rebound_date_{W}days "
+    "(date of 2nd max), rebound_close_price_{W}days (close at 2nd max), "
+    "rebound_gap_days_{W}days (trading days between top max and 2nd max), "
+    "rebound_trading_amt_{W}days (SUM of trading_amount during the rebound "
+    "period). All NULL when the top max is today or no 2nd max exists. "
+    "Source: same DataFrame as the mov_ave_spread parent pipeline "
+    "(price + trading_amount columns)."
+)
+
+# Windows for rebound detection (trading days).
+REBOUNDS_WINDOWS = (20, 60, 120, 255)
+
+# All rebounds column names in order.
+REBOUNDS_COLUMNS = (
+    "sec_type", "code", "date",
+    "rebound_date_20days",   "rebound_close_price_20days",
+    "rebound_gap_days_20days",   "rebound_trading_amt_20days",
+    "rebound_date_60days",   "rebound_close_price_60days",
+    "rebound_gap_days_60days",   "rebound_trading_amt_60days",
+    "rebound_date_120days",  "rebound_close_price_120days",
+    "rebound_gap_days_120days",  "rebound_trading_amt_120days",
+    "rebound_date_255days",  "rebound_close_price_255days",
+    "rebound_gap_days_255days",  "rebound_trading_amt_255days",
 )

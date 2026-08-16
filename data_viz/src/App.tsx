@@ -6,6 +6,7 @@ import SzseOptionsPage from "@/dataviz/pages/SzseOptionsPage";
 import EtfMarginPage from "@/dataviz/pages/EtfMarginPage";
 import IndexBaselinePage from "@/dataviz/pages/IndexBaselinePage";
 import StockBaselinePage from "@/dataviz/pages/StockBaselinePage";
+import FuturesPage from "@/dataviz/pages/FuturesPage";
 import LiveDataIndexPage from "@/live/pages/LiveDataIndexPage";
 import LiveDataEtfPage from "@/live/pages/LiveDataEtfPage";
 import LiveDataStockPage from "@/live/pages/LiveDataStockPage";
@@ -18,6 +19,7 @@ import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
 import PeAndDividendPage from "@/analysis/pages/PeAndDividendPage";
 import FourierFreqsPage from "@/analysis/pages/FourierFreqsPage";
 import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
+import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
 import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
 
 export default function App() {
@@ -38,6 +40,7 @@ export default function App() {
           <Route path="/dataviz/etf-margin" element={<EtfMarginPage />} />
           <Route path="/dataviz/index-baseline" element={<IndexBaselinePage />} />
           <Route path="/dataviz/stock-baseline" element={<StockBaselinePage />} />
+          <Route path="/dataviz/futures" element={<FuturesPage />} />
           <Route path="/analysis" element={<Navigate to="/analysis/commons" replace />} />
           <Route path="/analysis/commons" element={<CommonsPage />} />
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
@@ -46,6 +49,7 @@ export default function App() {
           <Route path="/analysis/commons/fourier-freqs" element={<FourierFreqsPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/derivatives/margin-trends" element={<MarginTrendsPage />} />
+          <Route path="/analysis/derivatives/futures" element={<FuturesAnalysisPage />} />
           <Route path="/analysis/composites" element={<CompositesPage />} />
           <Route path="/strategy" element={<Navigate to="/strategy/singleton" replace />} />
           <Route

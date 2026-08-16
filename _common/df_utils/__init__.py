@@ -126,6 +126,11 @@ from _common.df_utils.groupby import (
     grouped_diff,
     grouped_shift,
 )
+from _common.df_utils.black_scholes import (
+    bs_price_greeks,
+    solve_iv_newton,
+    compute_iv_and_greeks,
+)
 
 __all__ = [
     # Detector
@@ -151,4 +156,8 @@ __all__ = [
     # Grouped diff / shift helpers
     "grouped_diff",
     "grouped_shift",
+    # Black-Scholes IV + Greeks (vectorized, CPU/GPU routed)
+    "bs_price_greeks",
+    "solve_iv_newton",
+    "compute_iv_and_greeks",
 ]

@@ -187,6 +187,15 @@ interface DbChartRow extends QueryResultRow {
   trading_amt_market_share_ma60: number | null;
   trading_amt_market_share_ma120: number | null;
   trading_amt_market_share_ma255: number | null;
+  // 5 trading-amount Bollinger band σ columns (yuan, NUMERIC(24,4)) from
+  // analysis.mov_ave_trading_amt. Rolling population σ (ddof=0) of
+  // trading_amt_maW over W days. Used to draw Bollinger-style envelopes
+  // (MA ± k×σ) around each trading-amount MA line on Amt/MA pair charts.
+  trading_amt_std5: number | null;
+  trading_amt_std20: number | null;
+  trading_amt_std60: number | null;
+  trading_amt_std120: number | null;
+  trading_amt_std255: number | null;
   // 5 EMA value columns from stats.{sec_type}_tech_stats (alias `t`).
   // Used to render EMA pair charts (short=price/ema6, long=emaW).
   ema6: number | null;
@@ -227,6 +236,26 @@ interface DbChartRow extends QueryResultRow {
   ema_std_60days: number | null;
   ema_std_120days: number | null;
   ema_std_255days: number | null;
+  // Rolling OHLC columns from analysis.mov_ave_spreads_detail_ohlc (alias ohlc).
+  // Shows the Open, High, Low for the selected MA's window.
+  open_20d: number | null;
+  high_20d: number | null;
+  low_20d: number | null;
+  open_60d: number | null;
+  high_60d: number | null;
+  low_60d: number | null;
+  open_120d: number | null;
+  high_120d: number | null;
+  low_120d: number | null;
+  open_255d: number | null;
+  high_255d: number | null;
+  low_255d: number | null;
+  open_500d: number | null;
+  high_500d: number | null;
+  low_500d: number | null;
+  open_750d: number | null;
+  high_750d: number | null;
+  low_750d: number | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -338,6 +367,21 @@ function pickTradingAmtMarketShare(r: DbChartRow, window: number): number | null
     case 60:  return toNum(r.trading_amt_market_share_ma60);
     case 120: return toNum(r.trading_amt_market_share_ma120);
     case 255: return toNum(r.trading_amt_market_share_ma255);
+    default:  return null;
+  }
+}
+
+/** Pick the trading-amt Bollinger band σ for the given window from a
+ *  chart row. Columns come from analysis.mov_ave_trading_amt (aliased
+ *  as `ta` in the chart SQL). Used to set long_std on Amt/MA pair
+ *  rows for Bollinger-style envelopes (MA ± k×σ). */
+function pickTradingAmtStd(r: DbChartRow, window: number): number | null {
+  switch (window) {
+    case 5:   return toNum(r.trading_amt_std5);
+    case 20:  return toNum(r.trading_amt_std20);
+    case 60:  return toNum(r.trading_amt_std60);
+    case 120: return toNum(r.trading_amt_std120);
+    case 255: return toNum(r.trading_amt_std255);
     default:  return null;
   }
 }
@@ -648,6 +692,8 @@ function buildChartSql(secType: MaSpreadSecType): string {
       d.trading_amt_market_share_ma5, d.trading_amt_market_share_ma20,
       d.trading_amt_market_share_ma60, d.trading_amt_market_share_ma120,
       d.trading_amt_market_share_ma255,
+      ta.trading_amt_std5, ta.trading_amt_std20, ta.trading_amt_std60,
+      ta.trading_amt_std120, ta.trading_amt_std255,
       ema.price_vs_ema6, ema.price_vs_ema20, ema.price_vs_ema60,
       ema.price_vs_ema120, ema.price_vs_ema255,
       ema.ema6_vs_ema20, ema.ema6_vs_ema60, ema.ema6_vs_ema120, ema.ema6_vs_ema255,
@@ -660,12 +706,22 @@ function buildChartSql(secType: MaSpreadSecType): string {
       rsi.date_of_last_extreme,
       rsi.gap_since_last_extreme,
       rsi.days_since_last_extreme,
-      rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days
+      rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days,
+      ohlc.open_20d, ohlc.high_20d, ohlc.low_20d,
+      ohlc.open_60d, ohlc.high_60d, ohlc.low_60d,
+      ohlc.open_120d, ohlc.high_120d, ohlc.low_120d,
+      ohlc.open_255d, ohlc.high_255d, ohlc.low_255d,
+      ohlc.open_500d, ohlc.high_500d, ohlc.low_500d,
+      ohlc.open_750d, ohlc.high_750d, ohlc.low_750d
     ${src.chartFromClause}
+    LEFT JOIN analysis.mov_ave_trading_amt ta
+      ON ta.sec_type = d.sec_type AND ta.code = d.code AND ta.date = d.date
     LEFT JOIN analysis.mov_ave_spreads_detail_ema ema
       ON ema.sec_type = d.sec_type AND ema.code = d.code AND ema.date = d.date
     LEFT JOIN analysis.mov_ave_rsi rsi
       ON rsi.sec_type = d.sec_type AND rsi.code = d.code AND rsi.date = d.date
+    LEFT JOIN analysis.mov_ave_spreads_detail_ohlc ohlc
+      ON ohlc.sec_type = d.sec_type AND ohlc.code = d.code AND ohlc.date = d.date
     WHERE d.sec_type = $2
       AND REGEXP_REPLACE(d.code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
     ORDER BY d.date ASC
@@ -790,6 +846,12 @@ export async function getMovAveSpreadChart(
     const amtShare60  = pickTradingAmtMarketShare(r, 60);
     const amtShare120 = pickTradingAmtMarketShare(r, 120);
     const amtShare255 = pickTradingAmtMarketShare(r, 255);
+    // 5 trading-amount Bollinger band σ values — shared across all pairs.
+    const amtStd5   = pickTradingAmtStd(r, 5);
+    const amtStd20  = pickTradingAmtStd(r, 20);
+    const amtStd60  = pickTradingAmtStd(r, 60);
+    const amtStd120 = pickTradingAmtStd(r, 120);
+    const amtStd255 = pickTradingAmtStd(r, 255);
     // Last-extreme fields (from analysis.mov_ave_rsi) — shared across all 9
     // pairs for a given date. date_of_last_extreme is a DATE column.
     const dateOfLastExtreme = r.date_of_last_extreme != null
@@ -803,6 +865,27 @@ export async function getMovAveSpreadChart(
     const rsi10 = toNum(r.rsi_10days);
     const rsi14 = toNum(r.rsi_14days);
     const rsi20 = toNum(r.rsi_20days);
+    // Rolling OHLC columns from analysis.mov_ave_spreads_detail_ohlc — shared
+    // across all pairs for a given date. Shows the Open, High, Low for each
+    // MA window (e.g., high_60d = max high over last 60 days).
+    const ohlcOpen20 = toNum(r.open_20d);
+    const ohlcHigh20 = toNum(r.high_20d);
+    const ohlcLow20 = toNum(r.low_20d);
+    const ohlcOpen60 = toNum(r.open_60d);
+    const ohlcHigh60 = toNum(r.high_60d);
+    const ohlcLow60 = toNum(r.low_60d);
+    const ohlcOpen120 = toNum(r.open_120d);
+    const ohlcHigh120 = toNum(r.high_120d);
+    const ohlcLow120 = toNum(r.low_120d);
+    const ohlcOpen255 = toNum(r.open_255d);
+    const ohlcHigh255 = toNum(r.high_255d);
+    const ohlcLow255 = toNum(r.low_255d);
+    const ohlcOpen500 = toNum(r.open_500d);
+    const ohlcHigh500 = toNum(r.high_500d);
+    const ohlcLow500 = toNum(r.low_500d);
+    const ohlcOpen750 = toNum(r.open_750d);
+    const ohlcHigh750 = toNum(r.high_750d);
+    const ohlcLow750 = toNum(r.low_750d);
 
     // ---- 9 price (Simple MA) pairs ----
     for (const [maShort, maLong, gapCol] of PAIR_ORDER) {
@@ -851,6 +934,29 @@ export async function getMovAveSpreadChart(
         trading_amt_market_share_ma60: amtShare60,
         trading_amt_market_share_ma120: amtShare120,
         trading_amt_market_share_ma255: amtShare255,
+        trading_amt_std5: amtStd5,
+        trading_amt_std20: amtStd20,
+        trading_amt_std60: amtStd60,
+        trading_amt_std120: amtStd120,
+        trading_amt_std255: amtStd255,
+        open_20d: ohlcOpen20,
+        high_20d: ohlcHigh20,
+        low_20d: ohlcLow20,
+        open_60d: ohlcOpen60,
+        high_60d: ohlcHigh60,
+        low_60d: ohlcLow60,
+        open_120d: ohlcOpen120,
+        high_120d: ohlcHigh120,
+        low_120d: ohlcLow120,
+        open_255d: ohlcOpen255,
+        high_255d: ohlcHigh255,
+        low_255d: ohlcLow255,
+        open_500d: ohlcOpen500,
+        high_500d: ohlcHigh500,
+        low_500d: ohlcLow500,
+        open_750d: ohlcOpen750,
+        high_750d: ohlcHigh750,
+        low_750d: ohlcLow750,
       };
       series.rows.push(row);
     }
@@ -908,6 +1014,29 @@ export async function getMovAveSpreadChart(
         trading_amt_market_share_ma60: amtShare60,
         trading_amt_market_share_ma120: amtShare120,
         trading_amt_market_share_ma255: amtShare255,
+        trading_amt_std5: amtStd5,
+        trading_amt_std20: amtStd20,
+        trading_amt_std60: amtStd60,
+        trading_amt_std120: amtStd120,
+        trading_amt_std255: amtStd255,
+        open_20d: ohlcOpen20,
+        high_20d: ohlcHigh20,
+        low_20d: ohlcLow20,
+        open_60d: ohlcOpen60,
+        high_60d: ohlcHigh60,
+        low_60d: ohlcLow60,
+        open_120d: ohlcOpen120,
+        high_120d: ohlcHigh120,
+        low_120d: ohlcLow120,
+        open_255d: ohlcOpen255,
+        high_255d: ohlcHigh255,
+        low_255d: ohlcLow255,
+        open_500d: ohlcOpen500,
+        high_500d: ohlcHigh500,
+        low_500d: ohlcLow500,
+        open_750d: ohlcOpen750,
+        high_750d: ohlcHigh750,
+        low_750d: ohlcLow750,
       };
       series.rows.push(row);
     }
@@ -915,9 +1044,9 @@ export async function getMovAveSpreadChart(
     // ---- 5 amt pairs (short = trading_amount, long = trading_amt_maW) ----
     // gap_value = (trading_amount - trading_amt_maW) / trading_amt_maW
     //   (computed here since there is no pre-computed gap column for amt
-    //   pairs in the detail table). slope/curvature/std are NULL for amt
-    //   pairs (the envelope chart doesn't use them — it renders all 5 MA
-    //   lines directly).
+    //   pairs in the detail table). long_std is set from the Bollinger band
+    //   σ column (trading_amt_stdW) so the frontend can draw Bollinger
+    //   envelopes around the selected trading-amount MA line.
     for (const [maShort, maLong] of AMT_PAIR_ORDER) {
       const series = byPair.get(`amt-${maShort}/${maLong}`);
       if (!series) continue;
@@ -936,7 +1065,7 @@ export async function getMovAveSpreadChart(
         short_curvature: null,
         long_slope: null,
         long_curvature: null,
-        long_std: null,
+        long_std: pickTradingAmtStd(r, maLong),
         open,
         high,
         low,
@@ -963,6 +1092,29 @@ export async function getMovAveSpreadChart(
         trading_amt_market_share_ma60: amtShare60,
         trading_amt_market_share_ma120: amtShare120,
         trading_amt_market_share_ma255: amtShare255,
+        trading_amt_std5: amtStd5,
+        trading_amt_std20: amtStd20,
+        trading_amt_std60: amtStd60,
+        trading_amt_std120: amtStd120,
+        trading_amt_std255: amtStd255,
+        open_20d: ohlcOpen20,
+        high_20d: ohlcHigh20,
+        low_20d: ohlcLow20,
+        open_60d: ohlcOpen60,
+        high_60d: ohlcHigh60,
+        low_60d: ohlcLow60,
+        open_120d: ohlcOpen120,
+        high_120d: ohlcHigh120,
+        low_120d: ohlcLow120,
+        open_255d: ohlcOpen255,
+        high_255d: ohlcHigh255,
+        low_255d: ohlcLow255,
+        open_500d: ohlcOpen500,
+        high_500d: ohlcHigh500,
+        low_500d: ohlcLow500,
+        open_750d: ohlcOpen750,
+        high_750d: ohlcHigh750,
+        low_750d: ohlcLow750,
       };
       series.rows.push(row);
     }

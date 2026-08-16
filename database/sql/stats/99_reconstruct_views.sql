@@ -148,7 +148,9 @@ COMMENT ON VIEW stats.v_etf_margin IS 'Reconstructed etf_margin view: JOIN of et
 -- ----------------------------------------------------------------------------
 -- View: v_options_quote
 --   Reconstructs original options_quote table via JOIN on (date, contract_code)
+--   DROP first (see v_etf_margin note re: column insertion).
 -- ----------------------------------------------------------------------------
+DROP VIEW IF EXISTS stats.v_options_quote;
 CREATE OR REPLACE VIEW stats.v_options_quote AS
 SELECT
     i.date,
@@ -157,6 +159,8 @@ SELECT
     -- Terms
     t.underlying_code,
     t.underlying_name,
+    t.underlying_target_type,
+    t.exchange,
     t.option_type,
     t.expiry_month,
     t.expiry_date,
@@ -306,6 +310,44 @@ LEFT JOIN stats.stock_tech_stats t ON i.date = t.date AND i.code = t.code
 LEFT JOIN stats.stock_liquidity_margin lm ON i.date = lm.date AND i.code = lm.code;
 
 COMMENT ON VIEW stats.v_stock_baseline IS 'Reconstructed stock_baseline view: JOIN of stock_identity + stock_basic_stats + stock_tech_stats + stock_liquidity_margin. Mirrors v_etf_margin structure.';
+
+-- ----------------------------------------------------------------------------
+-- View: v_futures_baseline
+--   Reconstructs futures baseline via JOIN on (date, code)
+--   DROP first (see v_etf_margin note re: column insertion).
+-- ----------------------------------------------------------------------------
+DROP VIEW IF EXISTS stats.v_futures_baseline;
+CREATE OR REPLACE VIEW stats.v_futures_baseline AS
+SELECT
+    i.date,
+    i.code,
+    i.product_code,
+    i.contract_month,
+    i.contract_year_month,
+    i.contract_type,
+    i.name,
+    -- Underlying mapping
+    i.underlying_code,
+    i.underlying_name,
+    i.days_to_expiry,
+    -- Basic stats
+    b.open,
+    b.high,
+    b.low,
+    b.close,
+    b.settlement_price,
+    b.prev_settlement,
+    b.change,
+    b.change_pct,
+    b.trading_shares,
+    b.trading_amount,
+    b.open_interest,
+    b.open_interest_change,
+    b.delta
+FROM stats.futures_identity i
+LEFT JOIN stats.futures_basic_stats b ON i.date = b.date AND i.code = b.code;
+
+COMMENT ON VIEW stats.v_futures_baseline IS 'Reconstructed futures_baseline view: JOIN of futures_identity + futures_basic_stats. Includes underlying_code/underlying_name for cross-asset mapping (e.g. IF→000300 for CSI300).';
 
 
 -- ============================================================================

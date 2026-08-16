@@ -33,3 +33,4 @@ export {
   listFourierFreqsThemes,
   listFourierFreqsStrategyThemes,
 } from "./fourier-freqs.js";
+export { getFuturesExt } from "./analysis-futures.service.js";

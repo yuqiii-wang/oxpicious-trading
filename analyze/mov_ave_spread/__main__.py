@@ -24,6 +24,10 @@ Pipeline
      pre-computed EMA slopes/curvatures already in the parent DataFrame)
      -> analysis.mov_ave_spreads_detail_ema (see ema.py). Reuses the
      same DB connection + source DataFrame.
+  9. INTERNAL STEP: compute rolling OHLC detail (today_close +
+     open/high/low over 6 windows: 20/60/120/255/500/750 trading days)
+     from the SAME source data -> analysis.mov_ave_spreads_detail_ohlc
+     (see ohlc.py). Reuses the same DB connection + source DataFrame.
 
 Default (incremental) mode:
   Only dates present in source identity tables (stats.etf_identity +
@@ -89,6 +93,8 @@ from analyze.mov_ave_spread.config import (  # noqa: E402
     PAIRS,
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
+    TRADING_AMT_ANALYSIS_NAME,
+    TRADING_AMT_TABLE,
 )
 from analyze.mov_ave_spread.fetch import fetch_source_data  # noqa: E402
 from analyze.mov_ave_spread.compute import build_detail_rows  # noqa: E402
@@ -97,6 +103,9 @@ from analyze.mov_ave_spread.peaks_and_floors import (  # noqa: E402
 )
 from analyze.mov_ave_spread.rsi import run_rsi  # noqa: E402
 from analyze.mov_ave_spread.ema import run_ema  # noqa: E402
+from analyze.mov_ave_spread.ohlc import run_ohlc  # noqa: E402
+from analyze.mov_ave_spread.trading_amt import run_trading_amt  # noqa: E402
+from analyze.mov_ave_spread.rebounds import run_rebounds  # noqa: E402
 
 
 async def _filter_per_sec_type_async(conn, table, rows):
@@ -196,33 +205,56 @@ async def _process_one_sec_type(
     del pf_rows
 
     # ---- Build + insert detail (chunked by date) -----------------------
-    print(f"\n  [{st}] Computing + inserting detail rows in date-bounded "
-          f"chunks (9 gap cols + 12 slope/curv cols per row)...",
-          flush=True)
-    detail_df = df
-    if target_dates_st is not None and len(target_dates_st) > 0:
-        n_before = len(detail_df)
-        detail_df = detail_df[
-            detail_df["date"].isin(target_dates_st)
-        ].reset_index(drop=True)
-        print(f"  [{st}]   incremental filter: {len(detail_df):,} of "
-              f"{n_before:,} rows are in target_dates", flush=True)
-    print(f"  [{st}]   building {len(detail_df):,} detail rows "
-          f"(COPY per chunk)", flush=True)
+    if target_dates_st is not None and len(target_dates_st) == 0:
+        # Empty set means force mode — compute ALL dates (no filtering).
+        print(f"\n  [{st}] Computing + inserting detail rows (FORCE mode, all dates)...",
+              flush=True)
+        detail_df = df
+        n_detail = await build_and_insert_chunked(
+            conn, pool, detail_df,
+            lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows),
+            table_name=DETAIL_TABLE,
+            key_columns=["sec_type", "code", "date"],
+            force=force,
+            sec_types=(st,),
+            max_concurrent=max_concurrent,
+            label=f"detail[{st}]",
+        )
+        print(f"  [{st}]   inserted {n_detail:,} detail rows", flush=True)
+        del detail_df
+    elif target_dates_st is None:
+        print(f"\n  [{st}] Detail up-to-date; skipping detail "
+              f"computation.", flush=True)
+        n_detail = 0
+        return n_pf, n_detail
+    else:
+        print(f"\n  [{st}] Computing + inserting detail rows in date-bounded "
+              f"chunks (9 gap cols + 12 slope/curv cols per row)...",
+              flush=True)
+        detail_df = df
+        if len(target_dates_st) > 0:
+            n_before = len(detail_df)
+            detail_df = detail_df[
+                detail_df["date"].isin(target_dates_st)
+            ].reset_index(drop=True)
+            print(f"  [{st}]   incremental filter: {len(detail_df):,} of "
+                  f"{n_before:,} rows are in target_dates", flush=True)
+        print(f"  [{st}]   building {len(detail_df):,} detail rows "
+              f"(COPY per chunk)", flush=True)
 
-    n_detail = await build_and_insert_chunked(
-        conn, pool, detail_df,
-        lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows),
-        table_name=DETAIL_TABLE,
-        key_columns=["sec_type", "code", "date"],
-        force=force,
-        sec_types=(st,),
-        max_concurrent=max_concurrent,
-        label=f"detail[{st}]",
-    )
-    print(f"  [{st}]   inserted {n_detail:,} detail rows", flush=True)
+        n_detail = await build_and_insert_chunked(
+            conn, pool, detail_df,
+            lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows),
+            table_name=DETAIL_TABLE,
+            key_columns=["sec_type", "code", "date"],
+            force=force,
+            sec_types=(st,),
+            max_concurrent=max_concurrent,
+            label=f"detail[{st}]",
+        )
+        print(f"  [{st}]   inserted {n_detail:,} detail rows", flush=True)
 
-    del detail_df
+        del detail_df
 
     # ---- RSI step (reuses same source DataFrame) -----------------------
     await run_rsi(conn, df, force=force, pool=pool,
@@ -237,6 +269,31 @@ async def _process_one_sec_type(
     # needs no second DB fetch.
     await run_ema(conn, df, force=force, pool=pool,
                   max_concurrent=max_concurrent, sec_type=st)
+
+    # ---- OHLC detail step (reuses same source DataFrame) -------------
+    # Computes today_close + rolling open/high/low over 6 windows
+    # (20/60/120/255/500/750 trading days) into analysis.mov_ave_spreads_
+    # detail_ohlc (see ohlc.py). The price/open/high/low columns are
+    # already in the parent DataFrame, so this step needs no second
+    # DB fetch.
+    await run_ohlc(conn, df, force=force, pool=pool,
+                   max_concurrent=max_concurrent, sec_type=st)
+
+    # ---- Trading-amount detail step (reuses same source DataFrame) ---
+    # Computes rolling max/min of trading_amt_ma5 + ratio columns into
+    # analysis.mov_ave_trading_amt (see trading_amt.py). The trading_amt_*
+    # columns are already computed by the parent fetch step (helpers),
+    # so this step only adds the new max/min + ratio columns.
+    await run_trading_amt(conn, df, force=force, pool=pool,
+                          max_concurrent=max_concurrent, sec_type=st)
+
+    # ---- Rebounds step (reuses same source DataFrame) ---------------
+    # Computes double-top (rebound) detection metrics into
+    # analysis.mov_ave_rebounds (see rebounds.py). The price and
+    # trading_amount columns are already in the parent DataFrame,
+    # so this step needs no second DB fetch.
+    await run_rebounds(conn, df, force=force, pool=pool,
+                       max_concurrent=max_concurrent, sec_type=st)
 
     # Free the source DataFrame — full history no longer needed.
     del df
@@ -285,7 +342,11 @@ async def main() -> None:
                   "tables...", flush=True)
             await truncate_table_async(conn, DETAIL_TABLE)
             await truncate_table_async(conn, PEAKS_AND_FLOORS_TABLE)
-            target_dates_per_st = {st: None for st in sec_types}
+            await truncate_table_async(conn, TRADING_AMT_TABLE)
+            # Use empty set (not None) so _process_one_sec_type knows to
+            # compute ALL dates (no filtering) in force mode.
+            target_dates_per_st = {st: set() for st in sec_types}
+            ta_missing_per_st = {}
             print("    -> truncated; will recompute all rows", flush=True)
         else:
             print("\n[0/4] Detecting missing dates PER-sec_type "
@@ -293,6 +354,7 @@ async def main() -> None:
                   "detail[index], stock_identity vs detail[stock])...",
                   flush=True)
             target_dates_per_st: dict = {}
+            ta_missing_per_st: dict = {}
             for st in sec_types:
                 src_tbl = SEC_TYPE_IDENTITY_TABLE[st]
                 td_st = await find_missing_analysis_dates(
@@ -301,13 +363,30 @@ async def main() -> None:
                 target_dates_per_st[st] = td_st
                 print(f"    -> {st}: detail {len(td_st)} missing dates",
                       flush=True)
+                # Also check trading_amt table independently
+                td_ta = await find_missing_analysis_dates(
+                    conn, TRADING_AMT_TABLE, [src_tbl], sec_type=st,
+                )
+                ta_missing_per_st[st] = td_ta
+                if td_ta:
+                    print(f"    -> {st}: trading_amt {len(td_ta)} missing dates",
+                          flush=True)
             total_missing = sum(
                 len(s) for s in target_dates_per_st.values()
             )
-            if total_missing == 0:
+            total_ta_missing = sum(
+                len(s) for s in ta_missing_per_st.values()
+            )
+            if total_missing == 0 and total_ta_missing == 0:
                 print("    -> DB is up to date; nothing to do.", flush=True)
                 print_wall_time(t0)
                 return
+            # For sec_types where only trading_amt needs updates,
+            # set target_dates to None so detail step is skipped but
+            # internal steps (which have their own checks) still run.
+            for st in sec_types:
+                if not target_dates_per_st.get(st) and ta_missing_per_st.get(st):
+                    target_dates_per_st[st] = None
 
         # ---- Steps 1-5: process each sec_type independently -------------
         # Each sec_type is processed end-to-end (fetch → compute → insert →
@@ -319,9 +398,11 @@ async def main() -> None:
         total_detail = 0
         for st in sec_types:
             td_st = target_dates_per_st.get(st) if target_dates_per_st else None
+            ta_st = ta_missing_per_st.get(st) if ta_missing_per_st else None
             if td_st is not None and len(td_st) == 0 and not args.force:
-                print(f"\n  [{st}] up to date; skipping.", flush=True)
-                continue
+                if not ta_st:
+                    print(f"\n  [{st}] up to date; skipping.", flush=True)
+                    continue
             n_pf, n_detail = await _process_one_sec_type(
                 conn, pool, st, td_st, args.force, max_concurrent, t0,
             )

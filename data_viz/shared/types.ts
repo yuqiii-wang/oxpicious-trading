@@ -733,6 +733,44 @@ export interface MovAveSpreadDetailRow {
   trading_amt_market_share_ma120: number | null;
   /** 255-trading-day MA of trading_amt_market_share (see trading_amt_market_share_ma5). */
   trading_amt_market_share_ma255: number | null;
+
+  /**
+   * 5-trading-day rolling population σ (ddof=0) of trading_amt_ma5
+   *  (yuan). Bollinger band width for trading-amount MA5 envelope.
+   *  Used with long_std on Amt/MA pair rows to draw Bollinger bands.
+   */
+  trading_amt_std5: number | null;
+  /** 20-trading-day σ of trading_amt_ma20 (see trading_amt_std5). */
+  trading_amt_std20: number | null;
+  /** 60-trading-day σ of trading_amt_ma60 (see trading_amt_std5). */
+  trading_amt_std60: number | null;
+  /** 120-trading-day σ of trading_amt_ma120 (see trading_amt_std5). */
+  trading_amt_std120: number | null;
+  /** 255-trading-day σ of trading_amt_ma255 (see trading_amt_std5). */
+  trading_amt_std255: number | null;
+
+  // Rolling OHLC columns from analysis.mov_ave_spreads_detail_ohlc.
+  // These show the Open, High, Low for the selected MA's window.
+  // E.g., when MA60 is selected, open_60d shows the open 60 days ago,
+  // high_60d shows the max high over the last 60 days, etc.
+  open_20d: number | null;
+  high_20d: number | null;
+  low_20d: number | null;
+  open_60d: number | null;
+  high_60d: number | null;
+  low_60d: number | null;
+  open_120d: number | null;
+  high_120d: number | null;
+  low_120d: number | null;
+  open_255d: number | null;
+  high_255d: number | null;
+  low_255d: number | null;
+  open_500d: number | null;
+  high_500d: number | null;
+  low_500d: number | null;
+  open_750d: number | null;
+  high_750d: number | null;
+  low_750d: number | null;
 }
 
 /** Kind of pair: price-based (Simple MA, default, backward-compatible),
@@ -2262,4 +2300,63 @@ export interface StrategyForecast1mResponse {
   forecast_date: string;
   rows: StrategyForecast1mRow[];
   stats: StrategyForecast1mStats | null;
+}
+
+// ----------------------------------------------------------------------------
+//  Futures Baseline — CFFEX futures curves (v_futures_baseline view)
+//  One product at a time (IC/IF/IH/IM index or T/TF/TL/TS bond).
+//  Frontend plots one curve per contract code; blue gradient for active
+//  (farther maturity = lighter blue); grey for matured.
+// ----------------------------------------------------------------------------
+export type FuturesProductType = "index" | "bond";
+
+/** One CFFEX product available for the Futures tab selector. */
+export interface FuturesProduct {
+  product_code: string;
+  name: string;
+  contract_type: FuturesProductType;
+  underlying_code: string;
+  underlying_name: string;
+}
+
+/** Meta info per contract (computed server-side, not a DB column). */
+export interface FuturesContractMeta {
+  code: string;
+  contract_year_month: string;
+  /** First trading date in product's calendar. */
+  first_date: string;
+  /** Last trading date in product's calendar. */
+  last_date: string;
+  /** TRUE if contract is still active on the product's latest date. */
+  is_alive: boolean;
+  /** TRUE if trading_amount > 0 on every trading day between first_date
+   *  and last_date (continuity filter for "sufficient trading amt" rule). */
+  is_continuous: boolean;
+}
+
+/** One daily row of a futures contract (from v_futures_baseline). */
+export interface FuturesRow {
+  date: string;
+  code: string;
+  settlement_price: number | null;
+  close: number | null;
+  trading_amount: number | null;
+  open_interest: number | null;
+  days_to_expiry: number | null;
+}
+
+/** Response for GET /api/futures/combined?product=IF */
+export interface FuturesCombinedResponse {
+  product: string;
+  product_name: string;
+  contract_type: FuturesProductType;
+  underlying_code: string;
+  underlying_name: string;
+  /** Unified product trading-date calendar (union of all contract dates). */
+  dates: string[];
+  contracts: FuturesContractMeta[];
+  rows: FuturesRow[];
+  /** Daily close price of the underlying (index) or null for bond futures.
+   *  Array length matches dates[]; null where spot unavailable. */
+  spot_price: (number | null)[] | null;
 }

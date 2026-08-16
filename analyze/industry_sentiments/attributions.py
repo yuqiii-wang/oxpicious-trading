@@ -659,6 +659,104 @@ NON_THIS_INDUSTRY_SQL_PER_INDUSTRY_INCREMENTAL = _build_non_this_industry_sql(
     industry_filter="AND cls.industry_id = $2::text",
 )
 
+# ---------------------------------------------------------------------------
+#  Temp-table-based backfill: compute CTE chain ONCE for ALL industries,
+#  store in a temp table, then chunk the UPDATE. Eliminates the 67×
+#  redundant CTE recomputation of the per-industry loop.
+# ---------------------------------------------------------------------------
+
+# SQL template: creates a temp table holding all computed non_this_industry_*
+# values for ALL industries. Reuses the EXACT same CTE chain as the UPDATE
+# variant but writes to a temp table instead of modifying the target table.
+def _build_non_this_industry_temp_compute_sql() -> str:
+    """Build SQL to compute non_this_industry values into a temp table (ALL
+    industries, one CTE chain pass).
+
+    Takes the CTE chain from _NON_THIS_INDUSTRY_UPDATE_SQL (unchanged) and
+    appends a clean SELECT from the computed CTE — no target-table references.
+    The ia.* WHERE clause from the UPDATE is NOT included; PK filtering is
+    done later in the chunked UPDATE step.
+    """
+    rolling_select = ",\n        ".join(
+        _rolling_price_expr(w) for w in ROLLING_WINDOWS
+    )
+
+    # Build the full UPDATE SQL to extract the CTE chain
+    full_sql = _NON_THIS_INDUSTRY_UPDATE_SQL.format(
+        composition_ctes=_format_composition_ctes(""),
+        date_filter="",
+        rolling_select=rolling_select,
+        rolling_set="",  # we only need the CTE part
+    )
+
+    # Split: everything before "UPDATE analysis.industry_attributions" is the
+    # CTE chain (WITH ... computed AS (...))
+    update_marker = "UPDATE analysis.industry_attributions"
+    update_idx = full_sql.find(update_marker)
+    if update_idx == -1:
+        raise ValueError("Could not find UPDATE clause in SQL template")
+    cte_chain = full_sql[:update_idx]
+
+    # Build a clean SELECT from the computed CTE, selecting all output columns
+    select_cols = (
+        "c.industry_id,\n"
+        "        c.benchmark_code,\n"
+        "        c.date,\n"
+        "        c.non_this_industry_price,\n"
+        + ",\n".join(
+            f"        c.non_this_industry_rolling_{w}days_price"
+            for w in ROLLING_WINDOWS
+        )
+        + ",\n"
+        "        c.non_this_industry_trading_amt"
+    )
+
+    return (
+        f"CREATE TEMP TABLE _temp_non_this_industry AS\n"
+        f"{cte_chain}"
+        f"SELECT\n"
+        f"    {select_cols}\n"
+        f"FROM computed c"
+    )
+
+# SQL to index the temp table for efficient JOIN in the chunked UPDATE
+TEMP_TABLE_INDEX_SQL = """
+CREATE INDEX _temp_non_this_industry_idx
+    ON _temp_non_this_industry (industry_id, benchmark_code, date)
+"""
+
+# SQL to update industry_attributions FROM the temp table, chunked by date
+# $1 = start_date, $2 = end_date (inclusive) for the chunk
+TEMP_TABLE_UPDATE_SQL = """
+UPDATE analysis.industry_attributions ia
+SET
+    benchmark_non_this_industry_price = t.non_this_industry_price,
+    benchmark_non_this_industry_rolling_5days_price  = t.non_this_industry_rolling_5days_price,
+    benchmark_non_this_industry_rolling_20days_price = t.non_this_industry_rolling_20days_price,
+    benchmark_non_this_industry_rolling_60days_price = t.non_this_industry_rolling_60days_price,
+    benchmark_non_this_industry_rolling_120days_price = t.non_this_industry_rolling_120days_price,
+    benchmark_non_this_industry_rolling_255days_price = t.non_this_industry_rolling_255days_price,
+    benchmark_non_this_industry_rolling_500days_price = t.non_this_industry_rolling_500days_price,
+    benchmark_non_this_industry_trading_amt = t.non_this_industry_trading_amt
+FROM _temp_non_this_industry t
+WHERE ia.industry_id = t.industry_id
+  AND ia.benchmark_code = t.benchmark_code
+  AND ia.date = t.date
+  AND ia.attribution_type = 'trading_amt'
+  AND ia.date >= $1::date
+  AND ia.date <= $2::date
+"""
+
+# SQL to get the date range for chunking
+TEMP_TABLE_DATE_RANGE_SQL = """
+SELECT MIN(date) AS min_date, MAX(date) AS max_date
+FROM _temp_non_this_industry
+"""
+
+# SQL to get distinct dates from temp table for chunked processing
+TEMP_TABLE_DISTINCT_DATES_SQL = """
+SELECT DISTINCT date FROM _temp_non_this_industry ORDER BY date
+"""
 
 # ---------------------------------------------------------------------------
 #  Merged broad-market INSERT (force mode only).
@@ -1211,12 +1309,14 @@ CROSS JOIN LATERAL (
 ) AS mc
 WHERE ia.attribution_type = 'trading_amt'
   {date_filter}
+  {industry_filter}
 """
 
 
 def _build_equal_insert_sql(
     date_filter: str = "",
     on_conflict: str = "",
+    industry_filter: str = "",
 ) -> str:
     """Build an equal-variant INSERT.
 
@@ -1225,6 +1325,8 @@ def _build_equal_insert_sql(
         incremental.
       on_conflict: e.g. "" for plain INSERT (after TRUNCATE), or the ON
         CONFLICT DO UPDATE clause for incremental/backfill.
+      industry_filter: e.g. "" for all industries, "AND ia.industry_id =
+        $N::text" for per-industry (used by per-industry loops).
     """
     rolling_cols = ",\n".join(
         f"     benchmark_non_this_industry_rolling_{w}days_price"
@@ -1238,6 +1340,7 @@ def _build_equal_insert_sql(
         rolling_cols=rolling_cols,
         rolling_select=rolling_select,
         date_filter=date_filter,
+        industry_filter=industry_filter,
     ) + on_conflict
 
 
@@ -1270,6 +1373,13 @@ EQUAL_INSERT_SQL_INCREMENTAL = _build_equal_insert_sql(
 # equal rows' non_this_industry_* columns after a backfill UPDATE).
 EQUAL_INSERT_SQL_BACKFILL = _build_equal_insert_sql(
     on_conflict=_equal_on_conflict(),
+)
+
+# Backfill per-industry (used by the per-industry loop to keep memory bounded).
+# $1 = industry_id
+EQUAL_INSERT_SQL_BACKFILL_PER_INDUSTRY = _build_equal_insert_sql(
+    on_conflict=_equal_on_conflict(),
+    industry_filter="AND ia.industry_id = $1::text",
 )
 
 # Preview: count distinct industries + member indices that will appear.
@@ -1506,27 +1616,85 @@ async def run_attributions(
                   "nothing to backfill.", flush=True)
             return
         await conn.execute(SET_WORK_MEM_SQL)
-        t_non_ind = time.time()
-        print("\n[a5/6] Non-this-industry UPDATE (FULL backfill, "
-              "broad-market only)...", flush=True)
-        status_ni = await conn.execute(NON_THIS_INDUSTRY_SQL_FULL)
-        n_updated = _parse_update_count(status_ni)
-        print(f"      -> {status_ni} | {n_updated:,} rows updated "
-              f"({time.time() - t_non_ind:.1f}s)", flush=True)
-        del status_ni
-        gc.collect()
 
-        # Refresh equal-variant rows: copy the updated non_this_industry_*
-        # columns from trading_amt rows (dividing industry_shared_weight by N).
+        # ---- Step a: Drop secondary index (avoids index maintenance) ----
+        print("\n[a3/6] Dropping secondary index (backfill optimization)...",
+              flush=True)
+        for idx_name in _SECONDARY_INDEXES:
+            await conn.execute(f"DROP INDEX IF EXISTS analysis.{idx_name}")
+        await conn.execute(SET_MAINTENANCE_WORK_MEM_SQL)
+
+        # ---- Step b: Compute CTE chain ONCE into temp table (ALL industries) ----
+        t_compute = time.time()
+        print("\n[a5/6] Computing non-this-industry values into temp table "
+              "(ALL industries, one CTE chain pass)...", flush=True)
+        temp_sql = _build_non_this_industry_temp_compute_sql()
+        await conn.execute(temp_sql)
+        n_temp = await conn.fetchval(
+            "SELECT COUNT(*) FROM _temp_non_this_industry"
+        )
+        print(f"      -> {n_temp:,} rows computed "
+              f"({time.time() - t_compute:.1f}s)", flush=True)
+
+        # ---- Step c: Create index on temp table for fast JOIN ----
+        print("      Creating index on temp table...", flush=True)
+        await conn.execute(TEMP_TABLE_INDEX_SQL)
+
+        # ---- Step d: Chunked UPDATE by date ----
+        t_non_ind = time.time()
+        n_total_updated = 0
+        print("\n[a5b/6] Chunked UPDATE from temp table "
+              "(by date, per-chunk)...", flush=True)
+
+        # Get distinct dates and chunk them
+        all_dates = await conn.fetch(TEMP_TABLE_DISTINCT_DATES_SQL)
+        date_list = [row["date"] for row in all_dates]
+        print(f"      {len(date_list)} distinct dates to update", flush=True)
+
+        chunk_dates = []
+        chunk_size = 200  # ~200 trading days per chunk
+        for d in date_list:
+            if not chunk_dates or len(chunk_dates[-1]) >= chunk_size:
+                chunk_dates.append([d])
+            else:
+                chunk_dates[-1].append(d)
+
+        for ci, chunk in enumerate(chunk_dates, 1):
+            start_date = chunk[0]
+            end_date = chunk[-1]
+            status_ni = await conn.execute(
+                TEMP_TABLE_UPDATE_SQL, start_date, end_date
+            )
+            n_updated = _parse_update_count(status_ni)
+            n_total_updated += n_updated
+            del status_ni
+            print(f"      chunk {ci}/{len(chunk_dates)}: "
+                  f"{start_date} to {end_date} "
+                  f"-> {n_updated:>7,} rows "
+                  f"(cumulative {n_total_updated:,})",
+                  flush=True)
+        print(f"      -> {n_total_updated:,} rows updated total "
+              f"({time.time() - t_non_ind:.1f}s)", flush=True)
+
+        # ---- Step e: Equal-variant INSERT (all-at-once, no per-industry) ----
         t_eq = time.time()
-        print("\n[a5b/6] Equal-variant INSERT (backfill, copy from "
-              "trading_amt)...", flush=True)
+        print("\n[a5c/6] Equal-variant INSERT (all-at-once, "
+              "copy from trading_amt)...", flush=True)
         status_eq = await conn.execute(EQUAL_INSERT_SQL_BACKFILL)
-        n_eq = _parse_insert_count(status_eq)
-        print(f"      -> {status_eq} | {n_eq:,} equal rows refreshed "
+        n_total_eq = _parse_insert_count(status_eq)
+        print(f"      -> {status_eq} | {n_total_eq:,} equal rows "
               f"({time.time() - t_eq:.1f}s)", flush=True)
         del status_eq
-        gc.collect()
+
+        # ---- Step f: Recreate secondary index ----
+        print("\n[a3b/6] Recreating secondary index...", flush=True)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_industry_attributions_bench_date_industry "
+            "ON analysis.industry_attributions (benchmark_code, date, industry_id)"
+        )
+
+        # ---- Step g: Drop temp table ----
+        await conn.execute("DROP TABLE IF EXISTS _temp_non_this_industry")
 
         # Step 7: upsert analysis_identity
         await upsert_analysis_identity(
@@ -1655,8 +1823,54 @@ async def run_attributions(
         if rolling_backfill:
             print(f"\n[a5/6] Non-this-industry UPDATE (FULL backfill — "
                   f"existing rows have NULL rolling prices, "
-                  f"broad-market only)...", flush=True)
-            status_ni = await conn.execute(NON_THIS_INDUSTRY_SQL_FULL)
+                  f"all-at-once with temp table)...",
+                  flush=True)
+            # Use the same temp-table-based approach as the backfill path
+            # Drop secondary index first
+            for idx_name in _SECONDARY_INDEXES:
+                await conn.execute(f"DROP INDEX IF EXISTS analysis.{idx_name}")
+
+            # Compute CTE chain ONCE into temp table
+            t_compute_rb = time.time()
+            temp_sql = _build_non_this_industry_temp_compute_sql()
+            await conn.execute(temp_sql)
+            n_temp_rb = await conn.fetchval(
+                "SELECT COUNT(*) FROM _temp_non_this_industry"
+            )
+            print(f"      computed {n_temp_rb:,} rows "
+                  f"({time.time() - t_compute_rb:.1f}s)", flush=True)
+
+            # Create index on temp table
+            await conn.execute(TEMP_TABLE_INDEX_SQL)
+
+            # Chunked UPDATE by date
+            all_dates_rb = await conn.fetch(TEMP_TABLE_DISTINCT_DATES_SQL)
+            date_list_rb = [row["date"] for row in all_dates_rb]
+            chunk_dates_rb = []
+            for d in date_list_rb:
+                if not chunk_dates_rb or len(chunk_dates_rb[-1]) >= 200:
+                    chunk_dates_rb.append([d])
+                else:
+                    chunk_dates_rb[-1].append(d)
+            n_total_updated = 0
+            for ci, chunk in enumerate(chunk_dates_rb, 1):
+                status_ni = await conn.execute(
+                    TEMP_TABLE_UPDATE_SQL, chunk[0], chunk[-1]
+                )
+                n_updated = _parse_update_count(status_ni)
+                n_total_updated += n_updated
+                del status_ni
+            print(f"      -> {n_total_updated:,} rows updated total "
+                  f"({time.time() - t_non_ind:.1f}s)", flush=True)
+
+            # Drop temp table
+            await conn.execute("DROP TABLE IF EXISTS _temp_non_this_industry")
+
+            # Recreate secondary index
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_industry_attributions_bench_date_industry "
+                "ON analysis.industry_attributions (benchmark_code, date, industry_id)"
+            )
         else:
             print(f"\n[a5/6] Non-this-industry UPDATE (incremental, "
                   f"{len(sorted_dates)} target dates, "
@@ -1664,10 +1878,10 @@ async def run_attributions(
             status_ni = await conn.execute(
                 NON_THIS_INDUSTRY_SQL_INCREMENTAL, sorted_dates
             )
-        n_updated = _parse_update_count(status_ni)
-        print(f"      -> {status_ni} | {n_updated:,} rows updated "
-              f"({time.time() - t_non_ind:.1f}s)", flush=True)
-        del status_ni
+            n_updated = _parse_update_count(status_ni)
+            print(f"      -> {status_ni} | {n_updated:,} rows updated "
+                  f"({time.time() - t_non_ind:.1f}s)", flush=True)
+            del status_ni
         gc.collect()
     else:
         print("\n[a4-5/6] SKIPPED (no broad-market source data).", flush=True)
