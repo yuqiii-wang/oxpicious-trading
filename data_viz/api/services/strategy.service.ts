@@ -28,6 +28,7 @@ import type {
   StrategyRiskSeq,
   StrategyRiskPeriod,
   StrategyRiskResponse,
+  StrategyRiskFactor,
   StrategyDailyRow,
   StrategyForecast1mRow,
   StrategyForecast1mStats,
@@ -70,6 +71,12 @@ export interface StrategyDecision {
   fee: number | null;
   signal_value: number | null;
   signal_reason: string;
+  /** FT stressed confidence when OHLC moved UP. NULL = no FT applied.
+   *  0 = trade would be removed under UP stress. >0 = stressed magnitude. */
+  ft_stressed_conf_up: number | null;
+  /** FT stressed confidence when OHLC moved DOWN. NULL = no FT applied.
+   *  0 = trade would be removed under DOWN stress. >0 = stressed magnitude. */
+  ft_stressed_conf_down: number | null;
 }
 
 export interface StrategyOhlcRow {
@@ -105,6 +112,8 @@ export interface StrategyBacktestResponse {
      *  null if no BUY. */
     first_buy_fill_price: number | null;
   };
+  /** Fault tolerance percentage (0-20) applied to this run. 0 = baseline. */
+  fault_tolerance: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,10 +138,13 @@ interface TradeDecisionRow {
   fee: string | number | null;
   signal_value: string | number | null;
   signal_reason: string | null;
+  ft_stressed_conf_up: string | number | null;
+  ft_stressed_conf_down: string | number | null;
 }
 
 interface SeqRow {
   seq_id: number;
+  fault_tolerance: string | number | null;
 }
 
 interface InfoRow {
@@ -178,7 +190,7 @@ export const DEFAULT_STRATEGY_NAME = "macd";
 // When scenario is provided → return the CHILD seq for that scenario.
 // $4 = strategy_name (algo name for binary mode, or portfolio:bb*0.5+macd*0.5 for mixed).
 const SEQ_SQL = `
-  SELECT seq_id
+  SELECT seq_id, fault_tolerance
   FROM strategy.strategy_identity
   WHERE sec_type = $1 AND code = $2 AND strategy_name = $4
     AND (($3::text IS NULL AND parent_seq_id IS NULL)
@@ -204,7 +216,8 @@ const DECISIONS_SQL = `
          qty, fill_price, normalized_fill_price, normalized_mean_buy_price,
          position_before, position_after, cash_before, cash_after,
          total_qty_before, total_qty_after,
-         realized_pnl, slippage, fee, signal_value, signal_reason
+         realized_pnl, slippage, fee, signal_value, signal_reason,
+         ft_stressed_conf_up, ft_stressed_conf_down
   FROM strategy.trade_decision
   WHERE seq_id = $1
   ORDER BY decision_no ASC
@@ -248,6 +261,10 @@ function mapDecision(r: TradeDecisionRow): StrategyDecision {
     fee: toNum(r.fee),
     signal_value: toNum(r.signal_value),
     signal_reason: r.signal_reason ?? "",
+    ft_stressed_conf_up: r.ft_stressed_conf_up !== null && r.ft_stressed_conf_up !== undefined
+      ? toNum(r.ft_stressed_conf_up) : null,
+    ft_stressed_conf_down: r.ft_stressed_conf_down !== null && r.ft_stressed_conf_down !== undefined
+      ? toNum(r.ft_stressed_conf_down) : null,
   };
 }
 
@@ -319,10 +336,12 @@ export async function runSingletonBacktest(
         final_cash: 0, total_return_pct: 0, total_buy_cost: 0,
         first_buy_date: null, first_buy_fill_price: null,
       },
+      fault_tolerance: 0,
     };
   }
 
-  const { seq_id } = seqRows[0];
+  const { seq_id, fault_tolerance: ftRaw } = seqRows[0];
+  const faultTolerance = toNum(ftRaw) ?? 0;
 
   // 3. Fetch the 1:1 strategy_results row (run RESULTS: total_buy_cost, first-
   //    buy normalization anchor, P&L summary). The summary is sourced from
@@ -386,6 +405,7 @@ export async function runSingletonBacktest(
       first_buy_date: firstBuyDate,
       first_buy_fill_price: firstBuyFillPrice,
     },
+    fault_tolerance: faultTolerance,
   };
 }
 
@@ -429,6 +449,7 @@ interface RiskSeqRow {
   drawdown_3rd_val: string | number | null;
   risk_score: string | number | null;
   risk_grade: string | null;
+  ft_amplified_total_pnl: string | number | null;
   deepest_drop_since_unzero_pos: string | number | null;
   deepest_drop_since_unzero_pos_peak_date: string | null;
   deepest_drop_since_unzero_pos_trough_date: string | null;
@@ -445,6 +466,7 @@ interface RiskPeriodRow {
   n_sells: number;
   n_buys: number;
   realized_pnl: string | number;
+  ft_amplified_pnl: string | number;
   unrealized_pnl: string | number;
   max_loss_unrealized_pnl: string | number;
   max_gain_unrealized_pnl: string | number;
@@ -474,6 +496,7 @@ const RISK_SEQ_SQL = `
          r.drawdown_1st_date, r.drawdown_2nd_date, r.drawdown_3rd_date,
          r.drawdown_1st_val, r.drawdown_2nd_val, r.drawdown_3rd_val,
          r.risk_score, r.risk_grade,
+         r.ft_amplified_total_pnl,
          r.deepest_drop_since_unzero_pos,
          r.deepest_drop_since_unzero_pos_peak_date,
          r.deepest_drop_since_unzero_pos_trough_date,
@@ -496,7 +519,7 @@ const RISK_SEQ_SQL = `
 
 const RISK_PERIODS_SQL = `
   SELECT p.seq_id, p.code, p.period_type, p.period_value,
-         p.n_sells, p.n_buys, p.realized_pnl, p.unrealized_pnl,
+         p.n_sells, p.n_buys, p.realized_pnl, p.ft_amplified_pnl, p.unrealized_pnl,
          p.max_loss_unrealized_pnl, p.max_gain_unrealized_pnl, p.end_unrealized_pnl,
          p.abs_pnl, p.period_share,
          p.is_concentration_hotspot, p.is_counter_trend
@@ -504,6 +527,35 @@ const RISK_PERIODS_SQL = `
   JOIN strategy.strategy_identity s ON s.seq_id = p.seq_id
   WHERE s.sec_type = $1 AND p.code = $2 AND s.seq_id = $3
   ORDER BY p.period_type, p.period_value
+`;
+
+interface RiskFactorRow {
+  seq_id: number;
+  code: string;
+  component: string;
+  label: string;
+  sub_key: string;
+  contribution: string | number;
+  raw_value: string | number | null;
+  threshold: string | number | null;
+  ratio: string | number | null;
+}
+
+const RISK_FACTORS_SQL = `
+  SELECT f.seq_id, f.code, f.component, f.label, f.sub_key,
+         f.contribution, f.raw_value, f.threshold, f.ratio
+  FROM strategy.strategy_risk_factors f
+  WHERE f.seq_id = $1 AND f.code = $2
+  ORDER BY
+    CASE f.component
+      WHEN 'realized' THEN 1
+      WHEN 'unrealized' THEN 2
+      WHEN 'streak' THEN 3
+      WHEN 'period_asymmetry' THEN 4
+      WHEN 'period_tail' THEN 5
+      ELSE 9
+    END,
+    f.sub_key
 `;
 
 function mapRiskSeq(r: RiskSeqRow): StrategyRiskSeq {
@@ -542,6 +594,7 @@ function mapRiskSeq(r: RiskSeqRow): StrategyRiskSeq {
     drawdown_3rd_val: toNum(r.drawdown_3rd_val),
     risk_score: toNum(r.risk_score),
     risk_grade: (r.risk_grade as StrategyRiskSeq["risk_grade"]) ?? null,
+    ft_amplified_total_pnl: toNum(r.ft_amplified_total_pnl),
     deepest_drop_since_unzero_pos: toNum(r.deepest_drop_since_unzero_pos),
     deepest_drop_since_unzero_pos_peak_date: r.deepest_drop_since_unzero_pos_peak_date ? formatDate(r.deepest_drop_since_unzero_pos_peak_date) : null,
     deepest_drop_since_unzero_pos_trough_date: r.deepest_drop_since_unzero_pos_trough_date ? formatDate(r.deepest_drop_since_unzero_pos_trough_date) : null,
@@ -560,6 +613,7 @@ function mapRiskPeriod(r: RiskPeriodRow): StrategyRiskPeriod {
     n_sells: r.n_sells,
     n_buys: r.n_buys,
     realized_pnl: toNum(r.realized_pnl) ?? 0,
+    ft_amplified_pnl: toNum(r.ft_amplified_pnl) ?? 0,
     unrealized_pnl: toNum(r.unrealized_pnl) ?? 0,
     max_loss_unrealized_pnl: toNum(r.max_loss_unrealized_pnl) ?? 0,
     max_gain_unrealized_pnl: toNum(r.max_gain_unrealized_pnl) ?? 0,
@@ -568,6 +622,20 @@ function mapRiskPeriod(r: RiskPeriodRow): StrategyRiskPeriod {
     period_share: toNum(r.period_share),
     is_concentration_hotspot: r.is_concentration_hotspot,
     is_counter_trend: r.is_counter_trend,
+  };
+}
+
+function mapRiskFactor(r: RiskFactorRow): StrategyRiskFactor {
+  return {
+    seq_id: r.seq_id,
+    code: r.code,
+    component: r.component as StrategyRiskFactor["component"],
+    label: r.label,
+    sub_key: r.sub_key,
+    contribution: toNum(r.contribution) ?? 0,
+    raw_value: toNum(r.raw_value),
+    threshold: toNum(r.threshold),
+    ratio: toNum(r.ratio),
   };
 }
 
@@ -585,7 +653,7 @@ export async function fetchStrategyRisks(
   const seqRows = await queryRows<RiskSeqRow>(RISK_SEQ_SQL, [secType, rawCode, scenario, strategyName]);
 
   if (seqRows.length === 0) {
-    return { code: rawCode, sec_type: secType, risk_seq: null, periods: [] };
+    return { code: rawCode, sec_type: secType, risk_seq: null, periods: [], risk_factors: [] };
   }
 
   const riskSeq = mapRiskSeq(seqRows[0]);
@@ -596,11 +664,18 @@ export async function fetchStrategyRisks(
   );
   const periods = periodRows.map(mapRiskPeriod);
 
+  // 3. Fetch risk score contribution factors for the same seq_id.
+  const factorRows = await queryRows<RiskFactorRow>(
+    RISK_FACTORS_SQL, [riskSeq.seq_id, rawCode],
+  );
+  const riskFactors = factorRows.map(mapRiskFactor);
+
   return {
     code: rawCode,
     sec_type: secType,
     risk_seq: riskSeq,
     periods,
+    risk_factors: riskFactors,
   };
 }
 
@@ -710,6 +785,13 @@ export type RunStrategyResult = RunScriptResult;
  * internally (via `strategy._risks.compute_and_upsert_risks`), so no separate
  * risk command is needed. Runs with --force so existing seq rows are replaced.
  *
+ * When `faultTolerance` is in (0, 20], passes `--fault-tolerance <ft>` to
+ * Python, which runs a two-pass stress test: baseline run finds decision
+ * dates, then OHLC is adversely perturbed on those dates (BUY up, SELL down)
+ * by `ft%` of `|delta_close|`, indicators are recomputed, and the algo
+ * re-runs on stressed data. The strategy_name gets an `_ft{N}` suffix so
+ * the FT variant is a distinct strategy in the DB.
+ *
  * Returns after the process exits. The frontend then invalidates cache and
  * reloads from DB to pick up the fresh results.
  */
@@ -718,6 +800,7 @@ export async function runStrategyScript(
   rawSecType: string | undefined | null,
   forecast: boolean = true,
   serializedAlgo: string = DEFAULT_STRATEGY_NAME,
+  faultTolerance: number = 0,
 ): Promise<RunStrategyResult> {
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
   const code = rawCode.trim();
@@ -726,6 +809,11 @@ export async function runStrategyScript(
   // _parse_algo_arg in strategy/singleton_trading/__main__.py.
   const args = ["--algo", serializedAlgo, "--sec-type", secType, "--codes", code, "--force"];
   if (!forecast) args.push("--no-forecast");
+  if (faultTolerance && faultTolerance > 0) {
+    // Clamp to the supported range (0-20) for safety.
+    const ft = Math.max(0, Math.min(20, Number(faultTolerance) || 0));
+    if (ft > 0) args.push("--fault-tolerance", String(ft));
+  }
   return runPythonModule("strategy.singleton_trading", args);
 }
 

@@ -32,6 +32,10 @@ interface Props {
    *  to the shortest common time range. */
   defaultStartDate?: string;
   defaultEndDate?: string;
+  /** Optional callback fired when the user clicks any date on the chart.
+   *  Used by the PE & Dividend analysis page to highlight the matching
+   *  month-end row in the stats table. */
+  onDateClick?: (date: string) => void;
 }
 
 function retBadge(values: Array<number | null>, idxFromEnd: number): number | null {
@@ -80,7 +84,7 @@ function ReturnBadges({ stock }: { stock: StockBundle }) {
   );
 }
 
-export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: Props) {
+export default function StockPanel({ stock, defaultStartDate, defaultEndDate, onDateClick }: Props) {
   const allRows = stock.rows;
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
@@ -156,6 +160,7 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate }: 
           dividends={stock.dividends}
           dataZoomStart={dataZoomRange.start}
           dataZoomEnd={dataZoomRange.end}
+          onDateClick={onDateClick}
         />
         {allRows.length < 40 && (
           <Alert severity="info" sx={{ mt: 0.5, py: 0.25 }} icon={false}>

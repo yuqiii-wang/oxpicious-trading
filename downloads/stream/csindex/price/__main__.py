@@ -23,7 +23,16 @@ Loop cadence: 30 minutes. Each loop:
   2. Fetches intraday ticks (~15s granularity) for each code via csindex API.
   3. Aggregates ticks into 5-minute OHLC bars (ceiling convention, same as
      SSE/SZSE — see ``_window_end_5min``).
-  4. Upserts bars into ``stats.index_intraday_5min`` (+ ``stats.index_identity``).
+  4. Archives bars to CSV (temps/csindex_intraday/) BEFORE DB upsert so
+     DB failures don't lose data.
+  5. Upserts bars into ``stats.index_intraday_5min`` (+ ``stats.index_identity``).
+
+CSV backfill
+------------
+At startup and every 5 minutes outside trading hours, the streamer scans
+``temps/csindex_intraday/`` for archived CSV files and upserts them to DB.
+This recovers data lost to DB connection failures mid-sweep. Idempotent
+via ON CONFLICT.
 
 Anti-bot: reuses ``AntiBotProxy`` with ``DEFAULT_SLEEP_SEC`` (20s jittered)
 per request — same pattern as the SSE/SZSE streamers and the existing
@@ -37,12 +46,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 import time as _time
-from datetime import date, datetime, time, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, Optional
 
 # Ensure project root is on sys.path when run via -m
 _PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -56,481 +64,42 @@ from downloads._common.core import (
     HostStatusTracker,
     build_default_session,
     merge_browser_profile,
-    setup_logger,
     random_sleep,
+    setup_logger,
 )
-from downloads.index.csindex.quote import (
-    CSINDEX_BASE,
-    CSINDEX_HEADERS,
-    CSINDEX_SKIP_CODES,
-    fetch_intraday,
-)
-from _common.db_commons import bulk_upsert, get_db_connection
+from downloads.index.csindex.quote import CSINDEX_BASE, CSINDEX_HEADERS
+from _common.db_commons import get_db_connection
 from _common._holidays_and_weekdays import is_trading_day
+
+from ._constants import (
+    BACKFILL_INTERVAL_SEC,
+    CSINDEX_START_TIME,
+    LOOP_INTERVAL_SEC,
+)
+from ._csv_io import backfill_csvs
+from ._db import (
+    load_index_industry_map,
+    load_missing_or_stale_codes,
+    load_sse_streamed_codes,
+    order_codes_by_industry_coverage,
+)
+from ._fetch import fetch_and_upsert_one
 
 logger = setup_logger("csindex_stream")
 
-# Loop cadence: 30 minutes between full sweeps.
-LOOP_INTERVAL_SEC = 30 * 60  # 1800s
-
-# A code is "stale" if its latest intraday bar is older than this many minutes
-# behind the current time (during trading hours). Triggers a re-fetch.
-STALE_THRESHOLD_MIN = 30
-
-# Trading hours for stale-checking (don't re-fetch outside trading hours
-# unless completely missing).
-TRADING_START = time(9, 25)
-TRADING_END = time(15, 5)
-
-# CSIndex starts 10 minutes after SSE so SSE has already produced its first
-# 2 bars (09:35, 09:40) by the time CSIndex queries which codes SSE is
-# streaming. CSIndex then excludes those codes from its download list,
-# downloading only indices that SSE does NOT cover.
-SSE_HEAD_START_MIN = 10
-CSINDEX_START_TIME = time(9, 30 + SSE_HEAD_START_MIN)  # 09:40
-
-# Bond indices (name contains '债') are skipped in CSIndex streaming — they
-# typically lack meaningful intraday tick data on csindex.com.cn.
-BOND_NAME_KEYWORD = "债"
-
-# Index codes empirically observed to return "no ticks available" from the
-# csindex.com.cn intraday API. Hard-skipped to avoid wasting anti-bot sleep
-# budget (each fetch otherwise costs ~15-30s).
-CSINDEX_NO_TICK_CODES = {
-    "931265", "931407", "931528", "931688",
-    "931786", "931800", "H11014",
-    # SZSE-published 399xxx indices that csindex.com.cn intraday API
-    # returns "no ticks available" for.
-    "399303", "399310", "399311",
-}
-
-
-# ---------------------------------------------------------------------------
-# DB: load SSE-streamed codes (codes with bars today — exclude from CSIndex)
-# ---------------------------------------------------------------------------
-
-def load_sse_streamed_codes(conn, today: date) -> set:
-    """Return the set of index codes that already have bars in
-    ``stats.index_intraday_5min`` for ``today``.
-
-    These are codes being actively streamed by SSE (and SZSE). CSIndex
-    excludes them from its download list to avoid redundant fetches —
-    CSIndex only downloads indices that SSE does NOT cover.
-
-    Called at the start of each trading day, AFTER the 10-minute SSE head
-    start, so SSE has already written its first bars.
-    """
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT DISTINCT code FROM stats.index_intraday_5min WHERE date = %s",
-                (today,),
-            )
-            return {r[0] for r in cur.fetchall()}
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Failed to load SSE-streamed codes for %s: %s", today, e)
-        return set()
-
-
-# ---------------------------------------------------------------------------
-# DB: load index→industry mapping (for industry-first download ordering)
-# ---------------------------------------------------------------------------
-
-def load_index_industry_map(conn) -> Dict[str, str]:
-    """Return ``{code: industry_id}`` for every index in ``sec_classification``.
-
-    Used to order the CSIndex download list so EVERY industry gets at least
-    one index fetched FIRST. Without this reordering, a partial sweep
-    (killed by Ctrl-C, anti-bot block, or network failure mid-loop) would
-    only cover the alphabetically-first codes — and CSIndex-published codes
-    cluster by theme (930050-930100 = BROAD_CSI, 9307xx = sector themes,
-    9308xx = ADVMFG, ...), so an alphabetical run covers only a handful of
-    industries before being interrupted.
-
-    Loaded ONCE per biz day (industry classification is set by
-    ``build_classification.py`` and does not change intraday).
-    """
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT code, COALESCE(industry_id, 'OTHER') AS industry_id
-                  FROM stats.sec_classification
-                 WHERE type = 'index'
-                """
-            )
-            return {r[0]: r[1] for r in cur.fetchall()}
-    except Exception as e:  # noqa: BLE001
-        logger.warning("Failed to load index→industry map: %s", e)
-        return {}
-
-
-# ---------------------------------------------------------------------------
-# Ordering: every industry gets one index first, then the rest
-# ---------------------------------------------------------------------------
-
-def order_codes_by_industry_coverage(
-    codes: List[Tuple[str, str]],
-    industry_map: Dict[str, str],
-) -> List[Tuple[str, str]]:
-    """Reorder ``codes`` so every industry gets at least one index FIRST.
-
-    Two passes over the input (which is already ``ORDER BY ls.code`` from
-    ``load_missing_or_stale_codes`` — alphabetical by code):
-
-      Pass 1 (head): pick ONE representative per industry — the first code
-        encountered for that industry. The head thus spans every industry
-        present in ``codes`` exactly once. If the loop is killed after only
-        the head is fetched, every industry still has fresh data.
-
-      Pass 2 (tail): append the remaining codes in their original order.
-
-    Codes absent from ``industry_map`` fall back to ``industry_id='OTHER'``
-    and share a single slot in the head.
-
-    Args:
-        codes: ``[(code, name), ...]`` — typically the output of
-            ``load_missing_or_stale_codes``.
-        industry_map: ``{code: industry_id}`` — typically the output of
-            ``load_index_industry_map``.
-
-    Returns:
-        ``[(code, name), ...]`` — same items as ``codes``, reordered.
-    """
-    if not codes:
-        return []
-
-    seen_industries: set = set()
-    head: List[Tuple[str, str]] = []
-    tail: List[Tuple[str, str]] = []
-
-    for code, name in codes:
-        ind = industry_map.get(code, "OTHER")
-        if ind not in seen_industries:
-            seen_industries.add(ind)
-            head.append((code, name))
-        else:
-            tail.append((code, name))
-
-    return head + tail
-
-
-# ---------------------------------------------------------------------------
-# DB: find missing / stale index codes
-# ---------------------------------------------------------------------------
-
-def load_missing_or_stale_codes(
-    conn, today: date, exclude_codes: Optional[set] = None,
-) -> List[Tuple[str, str]]:
-    """Return ``[(code, name), ...]`` for indices that are either missing
-    from ``index_intraday_5min`` for ``today`` or have stale bars.
-
-    "Missing" = code exists in ``index_basic_stats`` (latest date) but has
-    no rows in ``index_intraday_5min`` for ``today``.
-
-    "Stale" = latest bar time in ``index_intraday_5min`` for ``today`` is
-    more than ``STALE_THRESHOLD_MIN`` minutes behind current time, and we
-    are within trading hours.
-
-    Args:
-        exclude_codes: set of codes to EXCLUDE from the result (codes being
-            streamed by SSE/SZSE). CSIndex only downloads indices that SSE
-            does NOT cover, so SSE-streamed codes are excluded.
-    """
-    now = datetime.now()
-    now_time = now.time()
-    in_trading = TRADING_START <= now_time <= TRADING_END
-
-    if in_trading:
-        # Missing OR stale: latest bar < now - 30 min
-        stale_cutoff = (now - timedelta(minutes=STALE_THRESHOLD_MIN)).time()
-        query = """
-            WITH latest_stats AS (
-                SELECT code, MAX(date) AS max_date
-                  FROM stats.index_basic_stats
-                 GROUP BY code
-            ),
-            today_bars AS (
-                SELECT code, MAX(time) AS latest_time
-                  FROM stats.index_intraday_5min
-                 WHERE date = %s
-                 GROUP BY code
-            )
-            SELECT DISTINCT ls.code, COALESCE(sc.name, ls.code) AS name
-              FROM latest_stats ls
-              LEFT JOIN today_bars tb ON tb.code = ls.code
-              LEFT JOIN stats.sec_classification sc
-                ON sc.code = ls.code AND sc.type = 'index'
-             WHERE tb.code IS NULL              -- missing entirely
-                OR tb.latest_time < %s          -- stale (latest bar too old)
-             ORDER BY ls.code
-        """
-        with conn.cursor() as cur:
-            cur.execute(query, (today, stale_cutoff))
-            rows = cur.fetchall()
-    else:
-        # Outside trading hours: only fetch codes that are completely missing
-        # for today (no stale check — market is closed).
-        query = """
-            WITH latest_stats AS (
-                SELECT code, MAX(date) AS max_date
-                  FROM stats.index_basic_stats
-                 GROUP BY code
-            ),
-            today_bars AS (
-                SELECT code
-                  FROM stats.index_intraday_5min
-                 WHERE date = %s
-                 GROUP BY code
-            )
-            SELECT DISTINCT ls.code, COALESCE(sc.name, ls.code) AS name
-              FROM latest_stats ls
-              LEFT JOIN today_bars tb ON tb.code = ls.code
-              LEFT JOIN stats.sec_classification sc
-                ON sc.code = ls.code AND sc.type = 'index'
-             WHERE tb.code IS NULL
-             ORDER BY ls.code
-        """
-        with conn.cursor() as cur:
-            cur.execute(query, (today,))
-            rows = cur.fetchall()
-
-    # Filter out CSINDEX_SKIP_CODES (handled by SZSE streamer),
-    # exclude_codes (handled by SSE streamer — CSIndex only downloads
-    # indices that SSE does NOT cover), CSINDEX_NO_TICK_CODES (empirically
-    # return no intraday ticks), and bond indices (name contains '债' —
-    # typically lack intraday tick data on csindex.com.cn).
-    excluded = (
-        CSINDEX_SKIP_CODES
-        | CSINDEX_NO_TICK_CODES
-        | (exclude_codes or set())
-    )
-    result: List[Tuple[str, str]] = []
-    n_bond_skipped = 0
-    for r in rows:
-        code, name = r[0], r[1] or ""
-        if code in excluded:
-            continue
-        if BOND_NAME_KEYWORD in name:
-            n_bond_skipped += 1
-            continue
-        result.append((code, name))
-    if n_bond_skipped:
-        logger.info(
-            "Skipped %d bond indices (name contains '%s').",
-            n_bond_skipped, BOND_NAME_KEYWORD,
-        )
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Aggregation: ~15s ticks -> 5-min OHLC bars
-# ---------------------------------------------------------------------------
-
-def _parse_trade_time(time_str: str) -> Optional[time]:
-    """Parse 'HH:MM:SS' or 'HH:MM' into a datetime.time."""
-    for fmt in ("%H:%M:%S", "%H:%M"):
-        try:
-            return datetime.strptime(time_str.strip(), fmt).time()
-        except ValueError:
-            continue
-    return None
-
-
-def _window_end_5min(t: time) -> time:
-    """Return the 5-minute window END time for a given tick time (ceiling).
-
-    Uses the SAME ceiling convention as SSE (ceiling_5min) and SZSE
-    (_window_end_minute): a tick at 09:35 closes the 09:35 bar (NOT 09:40).
-    This keeps all three streamers on the identical 5-min grid
-    (09:35, 09:40, ..., 15:00).
-
-    09:30 -> 09:30, 09:31-09:35 -> 09:35, 09:36-09:40 -> 09:40, ...
-    """
-    minute = t.hour * 60 + t.minute
-    wend_minute = ((minute - 1) // 5 + 1) * 5
-    h, m = divmod(wend_minute, 60)
-    return time(h, m)
-
-
-def aggregate_ticks_to_5min(
-    code: str,
-    name: str,
-    ticks: List[Dict[str, Any]],
-    trade_date: date,
-) -> Tuple[List[dict], List[dict], Optional[time]]:
-    """Aggregate ~15s intraday ticks into 5-minute OHLC bars.
-
-    Uses the ``current`` field (real-time price at each tick) for OHLC.
-    The API's ``high``/``low`` fields are cumulative day running values
-    (NOT per-tick), so they are NOT used for bar high/low.
-
-    Returns (identity_rows, bar_rows, latest_bar_time).
-    """
-    if not ticks:
-        return [], [], None
-
-    # Group ticks by 5-min window end time
-    windows: Dict[time, List[float]] = {}
-    for tick in ticks:
-        time_str = tick.get("tradeTime") or ""
-        t = _parse_trade_time(str(time_str))
-        if t is None:
-            continue
-        try:
-            price = float(tick.get("current") or 0)
-        except (ValueError, TypeError):
-            continue
-        if price <= 0:
-            continue
-        wend = _window_end_5min(t)
-        windows.setdefault(wend, []).append(price)
-
-    if not windows:
-        return [], [], None
-
-    latest_bar_time = max(windows.keys())
-
-    identity_rows: List[dict] = []
-    bar_rows: List[dict] = []
-    for wend, prices in sorted(windows.items()):
-        o = prices[0]
-        h = max(prices)
-        low = min(prices)
-        c = prices[-1]
-        change = round(c - o, 4)
-        change_pct = round((c - o) / o * 100, 4) if o else None
-
-        bar_rows.append({
-            "date": trade_date,
-            "code": code,
-            "time": wend,
-            "open": o,
-            "high": h,
-            "low": low,
-            "close": c,
-            "change": change,
-            "change_pct": change_pct,
-        })
-
-    identity_rows.append({
-        "date": trade_date,
-        "code": code,
-        "name": name,
-    })
-
-    return identity_rows, bar_rows, latest_bar_time
-
-
-# ---------------------------------------------------------------------------
-# DB: upsert bars
-# ---------------------------------------------------------------------------
-
-def upsert_index_bars(
-    conn,
-    identity_rows: List[dict],
-    bar_rows: List[dict],
-) -> None:
-    """Upsert index identity rows (FK parent) then intraday bars."""
-    if identity_rows:
-        # Deduplicate by (date, code)
-        seen = set()
-        uniq: List[dict] = []
-        for r in identity_rows:
-            k = (r["date"], r["code"])
-            if k in seen:
-                continue
-            seen.add(k)
-            uniq.append(r)
-        bulk_upsert(conn, "stats.index_identity", uniq, ["date", "code"])
-    if bar_rows:
-        bulk_upsert(conn, "stats.index_intraday_5min", bar_rows, ["date", "code", "time"])
-
-
-# ---------------------------------------------------------------------------
-# Fetch + process one index code
-# ---------------------------------------------------------------------------
-
-def fetch_and_upsert_one(
-    session,
-    code: str,
-    name: str,
-    proxy: AntiBotProxy,
-    host_tracker: HostStatusTracker,
-    conn,
-) -> Tuple[int, Optional[time]]:
-    """Fetch intraday ticks for one index code from csindex.com.cn,
-    aggregate into 5-min bars, and upsert to DB.
-
-    Returns (n_bars_upserted, latest_bar_time).
-    """
-    if proxy.is_blocked(CSINDEX_BASE):
-        logger.warning("  [csindex-stream] %s: csindex.com.cn is blocked, skipping", code)
-        return 0, None
-
-    t0 = _time.time()
-    data = fetch_intraday(session, code, proxy)
-    elapsed = _time.time() - t0
-
-    if data is None:
-        logger.info("  [csindex-stream] %s: NO DATA in %.1fs", code, elapsed)
-        return 0, None
-
-    header = data.get("intraDayHeader") or {}
-    tick_list = data.get("intraDayPerfList") or []
-    if not tick_list:
-        logger.info("  [csindex-stream] %s: no ticks available in %.1fs", code, elapsed)
-        return 0, None
-
-    # Parse trade date from header or first tick
-    trade_date_raw = (header.get("tradeDate") or "").strip()
-    if not trade_date_raw and tick_list:
-        trade_date_raw = str(tick_list[0].get("tradeDate") or "").strip()
-    try:
-        trade_date = datetime.strptime(trade_date_raw[:10], "%Y-%m-%d").date()
-    except (ValueError, TypeError):
-        trade_date = datetime.now().date()
-
-    # Get index name from tick data (more descriptive than sec_classification)
-    tick_name = ""
-    if tick_list:
-        tick_name = tick_list[0].get("indexName") or ""
-    if not tick_name:
-        tick_name = name
-
-    identity_rows, bar_rows, latest_time = aggregate_ticks_to_5min(
-        code, tick_name, tick_list, trade_date,
-    )
-
-    n_bars = 0
-    if bar_rows:
-        try:
-            upsert_index_bars(conn, identity_rows, bar_rows)
-            n_bars = len(bar_rows)
-            logger.info(
-                "  [csindex-stream] %s (%s): %d ticks -> %d bars (latest=%s) in %.1fs; upserted",
-                code, tick_name, len(tick_list), n_bars, latest_time, elapsed,
-            )
-        except Exception as e:
-            logger.error("  [csindex-stream] %s: DB upsert failed: %s", code, e)
-    else:
-        logger.info(
-            "  [csindex-stream] %s (%s): %d ticks -> 0 bars in %.1fs",
-            code, tick_name, len(tick_list), elapsed,
-        )
-
-    return n_bars, latest_time
-
-
-# ---------------------------------------------------------------------------
-# Main stream loop
-# ---------------------------------------------------------------------------
 
 def _seconds_until_next_loop(last_loop_start: float) -> float:
     """Seconds to sleep until the next 30-min loop boundary."""
     elapsed = _time.time() - last_loop_start
     remaining = LOOP_INTERVAL_SEC - elapsed
     return max(0.0, remaining)
+
+
+def _sleep_chunks(seconds: float, chunk: float = 5.0) -> None:
+    """Sleep in chunks for Ctrl-C responsiveness."""
+    end = _time.time() + seconds
+    while _time.time() < end:
+        _time.sleep(min(chunk, max(0.0, end - _time.time())))
 
 
 def stream(once: bool = False, single_code: Optional[str] = None) -> None:
@@ -540,32 +109,36 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
       1. Find missing/stale index codes from DB (EXCLUDING codes already
          streamed by SSE — CSIndex only downloads indices SSE does NOT cover).
       2. Fetch intraday ticks for each via csindex API (with antibot sleep).
-      3. Aggregate to 5-min bars and upsert to DB.
+      3. Aggregate to 5-min bars, archive to CSV, upsert to DB.
       4. Sleep until next 30-min boundary.
 
     SSE head start: On each new trading day, CSIndex waits until
     ``CSINDEX_START_TIME`` (09:40, 10 min after SSE's 09:30 open) before
     its first loop. This gives SSE time to produce its first bars, so
     CSIndex can query which codes SSE is streaming and exclude them.
+
+    CSV backfill: At startup and every 5 minutes outside trading hours,
+    archived CSVs are loaded to DB to recover data lost to DB failures.
     """
-    logger.info("[startup] csindex streamer starting (loop_interval=%ds, sleep=%.0fs, "
-                "sse_head_start=%dmin -> csindex_start=%s)",
-                LOOP_INTERVAL_SEC, DEFAULT_SLEEP_SEC,
-                SSE_HEAD_START_MIN, CSINDEX_START_TIME)
+    logger.info(
+        "[startup] csindex streamer starting (loop_interval=%ds, sleep=%.0fs, "
+        "sse_head_start -> csindex_start=%s)",
+        LOOP_INTERVAL_SEC, DEFAULT_SLEEP_SEC, CSINDEX_START_TIME,
+    )
 
     conn = get_db_connection()
     session = build_default_session(merge_browser_profile(CSINDEX_HEADERS))
     host_tracker = HostStatusTracker()
     proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
 
+    # --- Startup CSV backfill: load any CSV data not yet in DB ---
+    t0 = _time.time()
+    backfill_csvs(conn)
+    logger.info("[startup] CSV backfill done in %.1fs.", _time.time() - t0)
+
     # Per-biz-day state: refreshed at the start of each new trading day
-    # (after the 10-min SSE head start).
     current_biz_day = None
     sse_streamed_codes: set = set()
-    # index→industry mapping for industry-first download ordering (refreshed
-    # per biz day alongside sse_streamed_codes). Defaults to empty so the
-    # variable is bound even on non-trading days (where the biz-day block
-    # is skipped via `continue`).
     index_industry_map: Dict[str, str] = {}
 
     try:
@@ -578,10 +151,10 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
             # --- Single-code mode (--code) ---
             if single_code:
                 logger.info("=== single-code mode: %s ===", single_code)
-                # Get name from sec_classification
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT COALESCE(name, %s) FROM stats.sec_classification WHERE code=%s AND type='index' LIMIT 1",
+                        "SELECT COALESCE(name, %s) FROM stats.sec_classification "
+                        "WHERE code=%s AND type='index' LIMIT 1",
                         (single_code, single_code),
                     )
                     row = cur.fetchone()
@@ -589,13 +162,16 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                 fetch_and_upsert_one(session, single_code, name, proxy, host_tracker, conn)
                 break
 
-            # --- Normal loop mode ---
+            # --- Non-trading day: backfill CSV every 5 min, sleep, repeat ---
             if not trading_today:
-                logger.info("Today (%s) is not a trading day; sleeping %ds.",
-                            today, LOOP_INTERVAL_SEC)
+                backfill_csvs(conn)
+                logger.info(
+                    "Non-trading day (%s); backfill done; sleeping %ds.",
+                    today, BACKFILL_INTERVAL_SEC,
+                )
                 if once:
                     break
-                random_sleep(LOOP_INTERVAL_SEC)
+                _sleep_chunks(BACKFILL_INTERVAL_SEC)
                 continue
 
             # --- New trading day: wait for SSE head start, then gather
@@ -610,19 +186,10 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                         "(SSE head start so it produces first bars).",
                         today, wait_sec, CSINDEX_START_TIME,
                     )
-                    # Sleep in chunks for Ctrl-C responsiveness.
-                    end = _time.time() + wait_sec
-                    while _time.time() < end:
-                        _time.sleep(min(5.0, max(0.0, end - _time.time())))
+                    _sleep_chunks(wait_sec)
 
-                # SSE has now produced at least its first bar (09:35).
-                # Query which codes have bars today — those are SSE-streamed.
                 current_biz_day = today
                 sse_streamed_codes = load_sse_streamed_codes(conn, today)
-                # Also refresh the index→industry map (cheap indexed SELECT;
-                # classification doesn't change intraday, but rebuilding once
-                # per biz day keeps it in sync if build_classification.py ran
-                # overnight).
                 index_industry_map = load_index_industry_map(conn)
                 logger.info(
                     "Anchored to biz day %s: %d codes already streamed by SSE/SZSE "
@@ -637,10 +204,6 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
             codes = load_missing_or_stale_codes(
                 conn, today, exclude_codes=sse_streamed_codes,
             )
-            # Reorder so EVERY industry gets at least one index fetched FIRST.
-            # Without this, a partial sweep (Ctrl-C / anti-bot block mid-loop)
-            # would only cover the alphabetically-first codes, which cluster
-            # by theme — leaving most industries without fresh data.
             ordered_codes = order_codes_by_industry_coverage(
                 codes, index_industry_map,
             )
@@ -648,14 +211,14 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                 len({index_industry_map.get(c, "OTHER") for c, _ in ordered_codes})
                 if ordered_codes else 0
             )
-            n_head = min(len(ordered_codes), n_industries)  # one rep per industry
+            n_head = min(len(ordered_codes), n_industries)
             logger.info(
                 "=== loop @ %s biz=%s: %d codes to fetch across %d industries "
                 "(trading_hours=%s, excluded=%d sse-streamed); "
-                "industry-first: head=%d (1 per industry) + tail=%d ===",
+                "industry-first: head=%d + tail=%d ===",
                 datetime.now().strftime("%H:%M:%S"), today, len(ordered_codes),
                 n_industries,
-                TRADING_START <= now_time <= TRADING_END,
+                CSINDEX_START_TIME <= now_time,  # rough trading-hours flag
                 len(sse_streamed_codes),
                 n_head, len(ordered_codes) - n_head,
             )
@@ -668,8 +231,10 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                 n_fail = 0
                 for i, (code, name) in enumerate(ordered_codes):
                     if proxy.is_blocked(CSINDEX_BASE):
-                        logger.warning("csindex.com.cn blocked; stopping this loop (%d/%d done)",
-                                       i, len(ordered_codes))
+                        logger.warning(
+                            "csindex.com.cn blocked; stopping this loop (%d/%d done)",
+                            i, len(ordered_codes),
+                        )
                         break
 
                     n_bars, _ = fetch_and_upsert_one(
@@ -681,9 +246,6 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                     else:
                         n_fail += 1
 
-                    # Anti-bot sleep between fetches (already applied by proxy
-                    # inside fetch_intraday, but add explicit sleep for
-                    # consistency with SSE/SZSE streamers).
                     if i < len(ordered_codes) - 1:
                         random_sleep(DEFAULT_SLEEP_SEC)
 
@@ -701,10 +263,7 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
             sleep_sec = _seconds_until_next_loop(loop_start)
             if sleep_sec > 0:
                 logger.info("Sleeping %.0fs until next loop.", sleep_sec)
-                # Sleep in chunks for Ctrl-C responsiveness
-                end = _time.time() + sleep_sec
-                while _time.time() < end:
-                    _time.sleep(min(5.0, max(0.0, end - _time.time())))
+                _sleep_chunks(sleep_sec)
             else:
                 logger.info("Loop took longer than %ds; starting next loop immediately.",
                             LOOP_INTERVAL_SEC)
@@ -716,10 +275,6 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
         session.close()
         logger.info("Cleanup done.")
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(

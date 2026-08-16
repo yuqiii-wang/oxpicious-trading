@@ -26,9 +26,10 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import {
   Accordion, AccordionDetails, AccordionSummary,
-  Box, Chip, Table, TableBody, TableCell, TableRow, Typography,
+  Box, Chip, Collapse, IconButton, Table, TableBody, TableCell, TableRow, Typography,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import type { EChartsOption } from "echarts";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
@@ -37,6 +38,7 @@ import type {
   StrategyRiskResponse,
   StrategyRiskGrade,
   StrategyPeriodType,
+  StrategyRiskFactor,
 } from "../../../shared/types";
 import type { SelectedPeriod } from "../singletonStrategyChartOption";
 
@@ -107,6 +109,7 @@ function fmtPct(v: number | null | undefined, digits = 1): string {
 }
 
 const FC_PURPLE = "#9575CD";
+const FT_AMP_COLOR = "#0097a7"; // teal — FT amplified strategy reference line
 
 /** Check if a period_value (e.g. "2026-08") is a forecast period — i.e.
  *  its month is strictly after the forecast_date's month. */
@@ -168,6 +171,19 @@ export default function RiskPanel({
     let cum = 0;
     const cumulativeData = periodTotals.map((v) => (cum += v));
 
+    // FT Amplified P&L trend — cumulative sum of (ft_amplified_pnl +
+    // unrealized_pnl) per period, paralleling the baseline Accumulated Total
+    // P&L curve. The amplified strategy picks the adverse OHLC direction per
+    // SELL (loss → sell more, gain → sell less). The gap between the two
+    // curves = realized P&L degradation from the stress test. Only shown when
+    // FT was applied (rs.ft_amplified_total_pnl != null).
+    const hasFtAmp = rs.ft_amplified_total_pnl != null
+      && Number.isFinite(rs.ft_amplified_total_pnl);
+    let ftCum = 0;
+    const ftAmpCumulativeData = hasFtAmp
+      ? filtered.map((p) => (ftCum += (p.ft_amplified_pnl + p.unrealized_pnl)))
+      : [];
+
     // Which bar is currently selected? Match on periodType + periodValue so
     // switching the period-type tab clears the highlight on stale bars.
     const selectedIdx = selectedPeriod
@@ -204,6 +220,7 @@ export default function RiskPanel({
         data: [
           "Max Unrealized Loss", "Max Unrealized Gain", "Realized P&L",
           "Accumulated Total P&L",
+          ...(hasFtAmp ? ["FT Amplified P&L"] : []),
         ],
       }),
       grid: { left: 64, right: 24, top: 36, bottom: 40 },
@@ -233,6 +250,10 @@ export default function RiskPanel({
             `Max Unreal Gain: ${fmtSigned(p.max_gain_unrealized_pnl)}`,
             `End Unrealized: ${fmtSigned(p.end_unrealized_pnl)}`,
             `Cumulative: ${fmtSigned(cumulativeData[idx])}`,
+            ...(hasFtAmp ? [
+              `FT Amplified Cum: ${fmtSigned(ftAmpCumulativeData[idx])}`,
+              `FT Amp Period: ${fmtSigned(p.ft_amplified_pnl)}`,
+            ] : []),
             `Sells: ${p.n_sells} | Buys: ${p.n_buys}`,
           ];
           if (p.is_concentration_hotspot) {
@@ -338,6 +359,22 @@ export default function RiskPanel({
           smooth: true,
           z: 10,
         },
+        ...(hasFtAmp ? [{
+          // Line: FT Amplified cumulative P&L trend. Cumulative sum of
+          // (ft_amplified_pnl + unrealized_pnl) per period — parallels the
+          // baseline Accumulated Total P&L line. The gap between the two
+          // curves = realized P&L degradation from the amplified strategy.
+          name: "FT Amplified P&L",
+          type: "line" as const,
+          yAxisIndex: 0,
+          data: ftAmpCumulativeData,
+          lineStyle: { color: FT_AMP_COLOR, width: 2, type: "dashed" as const },
+          itemStyle: { color: FT_AMP_COLOR },
+          symbol: "circle",
+          symbolSize: 4,
+          smooth: true,
+          z: 9,
+        }] : []),
       ],
     };
   }, [rs, periods, periodType, themeMode, selectedPeriod, onPeriodSelect, selectedScenario, forecastDate]);
@@ -425,7 +462,7 @@ export default function RiskPanel({
         )}
 
         {/* Risk items table */}
-        <RiskItemsTable rs={rs} />
+        <RiskItemsTable rs={rs} factors={risks.risk_factors ?? []} />
       </AccordionDetails>
     </Accordion>
   );
@@ -434,9 +471,12 @@ export default function RiskPanel({
 // ---------------------------------------------------------------------------
 //  RiskItemsTable — compact 2-column table of all risk metrics (replaces the
 //  former free-text concentration / drawdown / top-trade paragraphs).
+//  The "Risk Score" row is expandable: clicking it reveals a per-factor
+//  contribution breakdown (realized/unrealized/streak/period signals).
 // ---------------------------------------------------------------------------
 interface RiskItemsTableProps {
   rs: NonNullable<StrategyRiskResponse["risk_seq"]>;
+  factors: StrategyRiskFactor[];
 }
 
 function pnlColor(v: number | null): "success.main" | "error.main" | "text.primary" {
@@ -444,13 +484,42 @@ function pnlColor(v: number | null): "success.main" | "error.main" | "text.prima
   return v > 0 ? "success.main" : "error.main";
 }
 
-function RiskItemsTable({ rs }: RiskItemsTableProps) {
+/**
+ * Unified alarm-level color for a risk-factor row. Color reflects the
+ * factor's OWN severity (ratio = raw_value / threshold, capped at 4.0),
+ * NOT its component type — so a high-ratio realized-loss factor shows
+ * the same dark red as a high-ratio seasonal-tail factor.
+ *
+ * Boundaries (defined in colors.css alongside the CSS variables):
+ *   ratio < 0.5        → little    (green)
+ *   0.5 ≤ ratio < 1.0  → low       (light orange)
+ *   1.0 ≤ ratio < 2.0  → moderate  (amber)
+ *   2.0 ≤ ratio < 3.0  → elevated  (red)
+ *   ratio ≥ 3.0        → high      (dark red)
+ *
+ * Returns a `var(--alarm-level-*)` reference so colors.css stays the
+ * single source of truth (no inline hex in this component).
+ */
+function factorAlarmColor(ratio: number | null | undefined): string {
+  if (ratio == null || !Number.isFinite(ratio) || ratio < 0.5) {
+    return "var(--alarm-level-little)";
+  }
+  if (ratio < 1.0) return "var(--alarm-level-low)";
+  if (ratio < 2.0) return "var(--alarm-level-moderate)";
+  if (ratio < 3.0) return "var(--alarm-level-elevated)";
+  return "var(--alarm-level-high)";
+}
+
+function RiskItemsTable({ rs, factors }: RiskItemsTableProps) {
+  const [scoreExpanded, setScoreExpanded] = useState(false);
+  const hasFactors = factors.length > 0;
+  const factorSum = factors.reduce((s, f) => s + (f.contribution ?? 0), 0);
+
    // Each row: label (left), value (right, big), sub (right, small).
    // For drawdown/drop rows: value = numeric magnitude (big), sub = date (small).
    // For other rows: value = the metric (big), no sub.
    const rows: Array<{ label: string; value: ReactNode; valueColor?: string; sub?: string; subColor?: string }> = [
     { label: "Risk Grade", value: rs.risk_grade ?? "—" },
-    { label: "Risk Score", value: fmtNum(rs.risk_score, 2) },
     { label: "Concentration Ratio", value: fmtNum((rs.concentration_ratio ?? 0) * 100, 1) + "%" },
     {
       label: "Worst Drawdown",
@@ -482,27 +551,150 @@ function RiskItemsTable({ rs }: RiskItemsTableProps) {
       valueColor: pnlColor(rs.deepest_drop_since_last_buy),
       sub: rs.deepest_drop_since_last_buy_trough_date ?? undefined,
     },
+    ...(rs.ft_amplified_total_pnl != null ? [{
+      label: "FT Amplified P&L",
+      value: fmtSigned(rs.ft_amplified_total_pnl, 2),
+      valueColor: pnlColor(rs.ft_amplified_total_pnl),
+      sub: "stressed strategy",
+      subColor: "#0097a7",
+    }] : []),
   ];
 
   return (
-    <Table size="small" sx={{ "& .MuiTableCell-root": { borderBottom: "1px solid", borderColor: "divider", py: 0.5, px: 1 } }}>
-      <TableBody>
-        {rows.map((r) => (
-          <TableRow key={r.label}>
+    <>
+      <Table size="small" sx={{ "& .MuiTableCell-root": { borderBottom: "1px solid", borderColor: "divider", py: 0.5, px: 1 } }}>
+        <TableBody>
+          <TableRow key="Risk Grade">
             <TableCell sx={{ width: "34%", color: "text.secondary", fontSize: "0.72rem" }}>
-              {r.label}
+              Risk Grade
             </TableCell>
-            <TableCell sx={{ fontSize: "0.85rem", color: r.valueColor ?? "text.primary", fontWeight: 600 }}>
-              {r.value}
-              {r.sub && (
-                <Typography component="div" sx={{ fontWeight: 400, fontSize: "0.68rem", color: r.subColor ?? "text.secondary" }}>
-                  {r.sub}
+            <TableCell sx={{ fontSize: "0.85rem", fontWeight: 600 }}>
+              {rs.risk_grade ?? "—"}
+            </TableCell>
+          </TableRow>
+          {/* Expandable Risk Score row */}
+          <TableRow
+            hover={hasFactors}
+            onClick={hasFactors ? () => setScoreExpanded((v) => !v) : undefined}
+            sx={{ cursor: hasFactors ? "pointer" : "default" }}
+          >
+            <TableCell sx={{ width: "34%", color: "text.secondary", fontSize: "0.72rem" }}>
+              <Box sx={{ display: "flex", alignItems: "center" }}>
+                {hasFactors && (
+                  <IconButton size="small" sx={{ p: 0, mr: 0.5 }} disableRipple>
+                    {scoreExpanded
+                      ? <ExpandMoreIcon sx={{ fontSize: "0.9rem" }} />
+                      : <ChevronRightIcon sx={{ fontSize: "0.9rem" }} />}
+                  </IconButton>
+                )}
+                Risk Score
+              </Box>
+            </TableCell>
+            <TableCell sx={{ fontSize: "0.85rem", fontWeight: 600 }}>
+              {fmtNum(rs.risk_score, 2)}
+              {hasFactors && (
+                <Typography component="span" sx={{ fontSize: "0.68rem", color: "text.secondary", ml: 1 }}>
+                  ({factors.length} factors)
                 </Typography>
               )}
             </TableCell>
           </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+          {rows.slice(1).map((r) => (
+            <TableRow key={r.label}>
+              <TableCell sx={{ width: "34%", color: "text.secondary", fontSize: "0.72rem" }}>
+                {r.label}
+              </TableCell>
+              <TableCell sx={{ fontSize: "0.85rem", color: r.valueColor ?? "text.primary", fontWeight: 600 }}>
+                {r.value}
+                {r.sub && (
+                  <Typography component="div" sx={{ fontWeight: 400, fontSize: "0.68rem", color: r.subColor ?? "text.secondary" }}>
+                    {r.sub}
+                  </Typography>
+                )}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      {/* Factor contribution breakdown — shown when the Risk Score row is expanded. */}
+      <Collapse in={scoreExpanded && hasFactors}>
+        <RiskFactorBreakdown factors={factors} totalScore={rs.risk_score ?? 0} factorSum={factorSum} />
+      </Collapse>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  RiskFactorBreakdown — expandable per-factor table showing how the
+//  risk_score was derived. Each factor shows its label, contribution (with
+//  a proportional bar), raw value, threshold, and ratio.
+// ---------------------------------------------------------------------------
+interface RiskFactorBreakdownProps {
+  factors: StrategyRiskFactor[];
+  totalScore: number;
+  factorSum: number;
+}
+
+function RiskFactorBreakdown({ factors, totalScore, factorSum }: RiskFactorBreakdownProps) {
+  // Use ABSOLUTE contribution for the bar scale so DISCOUNT factors
+  // (negative contributions from gain-dominated asymmetry) get a visible
+  // bar width. The sign of the contribution value (displayed separately)
+  // indicates direction: + = loss penalty, − = gain discount.
+  const maxContrib = Math.max(...factors.map((f) => Math.abs(f.contribution ?? 0)), 0.01);
+  return (
+    <Box sx={{ mt: 1, p: 1, border: 1, borderColor: "divider", borderRadius: 1, bgcolor: "action.hover" }}>
+      <Typography variant="caption" sx={{ fontWeight: 700, display: "block", mb: 0.5 }}>
+        Risk Score Breakdown — Σ = {fmtNum(factorSum, 2)}
+        {Math.abs(factorSum - totalScore) > 0.1 && (
+          <Typography component="span" color="warning.main" sx={{ ml: 1 }}>
+            (score={fmtNum(totalScore, 2)})
+          </Typography>
+        )}
+      </Typography>
+      <Table size="small" sx={{ "& .MuiTableCell-root": { borderBottom: "none", py: 0.25, px: 0.5 } }}>
+        <TableBody>
+          {factors.map((f, i) => {
+            const contrib = f.contribution ?? 0;
+            const isDiscount = contrib < 0;
+            const pct = maxContrib > 0 ? (Math.abs(contrib) / maxContrib) * 100 : 0;
+            // Discount factors use the "little" (green) alarm color — they
+            // REDUCE risk, so the severity-based alarm palette is inverted
+            // for them.
+            const color = isDiscount ? "var(--alarm-level-little)" : factorAlarmColor(f.ratio);
+            return (
+              <TableRow key={`${f.component}-${f.sub_key}-${i}`}>
+                <TableCell sx={{ width: "45%", fontSize: "0.7rem", color: "text.primary" }}>
+                  <Box sx={{ display: "flex", alignItems: "center" }}>
+                    <Box
+                      component="span"
+                      sx={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", bgcolor: color, mr: 0.5, flexShrink: 0 }}
+                    />
+                    {f.label}
+                  </Box>
+                </TableCell>
+                <TableCell sx={{ width: "20%", fontSize: "0.78rem", fontWeight: 600, textAlign: "right" }}>
+                  {fmtNum(contrib, 3)}
+                </TableCell>
+                <TableCell sx={{ width: "35%", fontSize: "0.66rem", color: "text.secondary" }}>
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                    <Box sx={{ flex: 1, height: 4, bgcolor: "divider", borderRadius: 2, overflow: "hidden" }}>
+                      <Box sx={{ width: `${pct}%`, height: "100%", bgcolor: color }} />
+                    </Box>
+                    <Typography component="span" sx={{ fontSize: "0.62rem", whiteSpace: "nowrap" }}>
+                      r={fmtNum(f.ratio, 2)}
+                    </Typography>
+                  </Box>
+                  {f.raw_value != null && f.threshold != null && (
+                    <Typography component="div" sx={{ fontSize: "0.6rem", mt: 0.25 }}>
+                      raw={fmtNum(f.raw_value, 2)} / thr={fmtNum(f.threshold, 3)}
+                    </Typography>
+                  )}
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
+    </Box>
   );
 }

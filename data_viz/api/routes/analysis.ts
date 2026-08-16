@@ -39,6 +39,21 @@ import {
   getIndustryEtfPriceSeries,
   getIndustryEtfContributionBars,
   getIndustryHypesAndDrains,
+  listPeAndDividendCodes,
+  getPeAndDividendChart,
+  listPeAndDividendThemes,
+  listPeAndDividendStrategyThemes,
+  listPeAndDividendStats,
+  listMarginTrendThemes,
+  listMarginTrendStrategyThemes,
+  getMarginIndustrySeries,
+  getMarginIndustryCorrelation,
+  getMarginTrends,
+  listFourierFreqsCodes,
+  getFourierFreqsChart,
+  getFourierFreqsSpectrum,
+  listFourierFreqsThemes,
+  listFourierFreqsStrategyThemes,
 } from "../services/analysis/index.js";
 import type { PerfAttrSecType } from "../../shared/types.js";
 
@@ -502,6 +517,262 @@ router.get("/industry-etf-contribution/etf-bars", async (req: Request, res: Resp
     res.json(await getIndustryEtfContributionBars(industryId, date));
   } catch (err) {
     console.error("[analysis/industry-etf-contribution/etf-bars] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- PE & Dividend Yield (per-(sec_type, code, date) valuation analytics)
+//   analysis.pe_and_dividends          — daily pe_ma20 + dividend_yield
+//   analysis.pe_and_dividend_stats     — monthly 5y rolling stats snapshot
+//
+//   Close price and raw PE ratio are NOT stored in analysis.pe_and_dividends
+//   (they live in stats); the chart endpoint JOINs stats live at request time.
+//
+//   GET /api/analysis/pe-and-dividend/codes?sec_type=index
+//     Returns PeAndDividendCodesResponse: list of codes with first/last date,
+//     n_dates, and latest pe_ma20 + dividend_yield snapshot.
+//   GET /api/analysis/pe-and-dividend/chart?sec_type=index&code=000300
+//     Returns PeAndDividendChartResponse: daily (date, close, pe, pe_ma20,
+//     dividend_yield) rows for one security. Close + pe are read live from
+//     stats so the UI always shows the freshest source values.
+//   GET /api/analysis/pe-and-dividend/themes?sec_type=index
+//     Returns the L1 sector → L2 industry → items tree for SecClassificationNav,
+//     filtered to codes that have rows in analysis.pe_and_dividends.
+//   GET /api/analysis/pe-and-dividend/strategy-themes?sec_type=index
+//     Parallel L1 strategy → L2 theme tree (RIGHT column).
+//   GET /api/analysis/pe-and-dividend/stats?sec_type=index&code=000300
+//     Returns PeAndDividendStatsResponse: ALL monthly 5y rolling stats
+//     snapshots for one code (most recent first). is_active marks the latest.
+router.get("/pe-and-dividend/codes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listPeAndDividendCodes(
+      parseSecType(req),
+      undefined, undefined, undefined, undefined,
+      parseExchange(req),
+    ));
+  } catch (err) {
+    console.error("[analysis/pe-and-dividend/codes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/pe-and-dividend/chart", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getPeAndDividendChart(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/pe-and-dividend/chart] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/pe-and-dividend/themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listPeAndDividendThemes(parseSecType(req), parseExchange(req)));
+  } catch (err) {
+    console.error("[analysis/pe-and-dividend/themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/pe-and-dividend/strategy-themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listPeAndDividendStrategyThemes(parseSecType(req), parseExchange(req)));
+  } catch (err) {
+    console.error("[analysis/pe-and-dividend/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/pe-and-dividend/stats", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await listPeAndDividendStats(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/pe-and-dividend/stats] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Margin Trends (single-industry RONGZI margin flows, security-pair)
+//   analysis.margin_index_series (VIEW)  — weighted-avg constituent-stock
+//                                          margin per (index_code, date)
+//   analysis.margin_industry_correlation — pairwise security corr
+//
+//   GET /api/analysis/margin-trends/themes
+//     L1 sector → L2 industry tree (industries WITH margin data).
+//   GET /api/analysis/margin-trends/strategy-themes
+//     Parallel L1 strategy → L2 theme tree (RIGHT column).
+//   GET /api/analysis/margin-trends/industry-series?industry_id=BANKS&attribution=index
+//     Per-(security, date) margin series for one industry + attribution.
+//     'index' reads the margin_index_series VIEW; 'etf' reads
+//     stats.etf_liquidity_margin for the industry's ETFs.
+//   GET /api/analysis/margin-trends/industry-correlation?industry_id=BANKS&attribution=index&codes=A,B,C&series=balance&window=60
+//     Precomputed pairwise rolling Pearson corr from
+//     margin_industry_correlation, filtered to the selected codes.
+router.get("/margin-trends/themes", async (req: Request, res: Response) => {
+  try {
+    const attribution = (req.query.attribution as string | undefined) ?? "index";
+    res.json(await listMarginTrendThemes(attribution));
+  } catch (err) {
+    console.error("[analysis/margin-trends/themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/margin-trends/strategy-themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listMarginTrendStrategyThemes());
+  } catch (err) {
+    console.error("[analysis/margin-trends/strategy-themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/margin-trends/industry-series", async (req: Request, res: Response) => {
+  try {
+    const industryId = (req.query.industry_id as string | undefined) ?? "";
+    if (!industryId.trim()) {
+      res.status(400).json({ error: "Missing 'industry_id' parameter" });
+      return;
+    }
+    const attribution = (req.query.attribution as string | undefined) ?? "index";
+    res.json(await getMarginIndustrySeries(industryId, attribution));
+  } catch (err) {
+    console.error("[analysis/margin-trends/industry-series] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/margin-trends/industry-correlation", async (req: Request, res: Response) => {
+  try {
+    const industryId = (req.query.industry_id as string | undefined) ?? "";
+    if (!industryId.trim()) {
+      res.status(400).json({ error: "Missing 'industry_id' parameter" });
+      return;
+    }
+    const attribution = (req.query.attribution as string | undefined) ?? "index";
+    const series = (req.query.series as string | undefined) ?? "balance";
+    const window = (req.query.window as string | undefined) ?? "60";
+    const codesParam = (req.query.codes as string | undefined) ?? "";
+    const codes = codesParam.split(",").map((c) => c.trim()).filter(Boolean);
+    res.json(
+      await getMarginIndustryCorrelation(industryId, attribution, codes, series, window),
+    );
+  } catch (err) {
+    console.error("[analysis/margin-trends/industry-correlation] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+//   GET /api/analysis/margin-trends/trends?industry_id=BANKS&attribution=index
+//     Sustained UP/DOWN trend episode date ranges for the securities in one
+//     industry + attribution. Used by the 1st plot to render light shade
+//     (markArea) over each trend window.
+router.get("/margin-trends/trends", async (req: Request, res: Response) => {
+  try {
+    const industryId = (req.query.industry_id as string | undefined) ?? "";
+    if (!industryId.trim()) {
+      res.status(400).json({ error: "Missing 'industry_id' parameter" });
+      return;
+    }
+    const attribution = (req.query.attribution as string | undefined) ?? "index";
+    res.json(await getMarginTrends(industryId, attribution));
+  } catch (err) {
+    console.error("[analysis/margin-trends/trends] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Fourier Frequencies (dominant cycle via real FFT on close prices)
+//   analysis.fourier_freqs — per-(sec_type, code, last_date, range_days)
+//   dominant cycle period (freq, trading days) + amplitude (yuan).
+//   Currently populated for sec_type='index' only.
+//
+//   GET /api/analysis/fourier-freqs/codes?sec_type=index
+//     Returns FourierFreqsCodesResponse: list of codes with first/last date,
+//     n_dates, and the latest dominant freq per range_days.
+//   GET /api/analysis/fourier-freqs/chart?sec_type=index&code=000300
+//     Returns FourierFreqsChartResponse: per-(last_date, range_days) freq +
+//     amplitude rows for one security.
+//   GET /api/analysis/fourier-freqs/themes?sec_type=index
+//     Returns the L1 sector → L2 industry → items tree for SecClassificationNav,
+//     filtered to codes that have rows in analysis.fourier_freqs.
+//   GET /api/analysis/fourier-freqs/strategy-themes?sec_type=index
+//     Parallel L1 strategy → L2 theme tree (RIGHT column).
+router.get("/fourier-freqs/codes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listFourierFreqsCodes(
+      parseSecType(req),
+      undefined, undefined, undefined, undefined,
+      parseExchange(req),
+    ));
+  } catch (err) {
+    console.error("[analysis/fourier-freqs/codes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/fourier-freqs/chart", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getFourierFreqsChart(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/fourier-freqs/chart] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+//   GET /api/analysis/fourier-freqs/spectrum?sec_type=index&code=000300&last_date=2026-01-08
+//     Returns FourierFreqsSpectrumResponse: the FULL one-sided amplitude
+//     spectrum for ONE (code, last_date) across ALL 5 range_days windows.
+//     last_date is optional — when omitted, defaults to the latest available
+//     date for that code (so the page has an initial spectrum before the
+//     user clicks a date on the top index price plot). Drives the per-date
+//     spectrum bar charts below the top price plot on the Fourier
+//     Frequencies page.
+router.get("/fourier-freqs/spectrum", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    const rawDate = typeof req.query.last_date === "string" ? req.query.last_date.trim() : "";
+    const lastDate = rawDate || null;
+    res.json(await getFourierFreqsSpectrum(code, parseSecType(req), lastDate));
+  } catch (err) {
+    console.error("[analysis/fourier-freqs/spectrum] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/fourier-freqs/themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listFourierFreqsThemes(parseSecType(req), parseExchange(req)));
+  } catch (err) {
+    console.error("[analysis/fourier-freqs/themes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/fourier-freqs/strategy-themes", async (req: Request, res: Response) => {
+  try {
+    res.json(await listFourierFreqsStrategyThemes(parseSecType(req), parseExchange(req)));
+  } catch (err) {
+    console.error("[analysis/fourier-freqs/strategy-themes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

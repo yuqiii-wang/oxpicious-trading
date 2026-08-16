@@ -26,6 +26,10 @@ import {
   getLiveDataCombined,
   type LiveDataSecType,
 } from "../services/live-data.service.js";
+import {
+  getIntradayMovements,
+  listIntradayMovementsBenchmarks,
+} from "../services/analysis/index.js";
 
 const router = Router();
 
@@ -92,6 +96,49 @@ router.get("/combined", async (req: Request, res: Response) => {
     res.json(await getLiveDataCombined(secType, query));
   } catch (err) {
     console.error("[live-data/combined] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Intraday Movements — per-5-min-tick % change vs prev day close for
+//      the benchmark + ALL industries (shaded areas) + member indices.
+//      Drives the "Market Movements" tab on the Live Data page.
+//      Data is pre-computed by analyze.intraday_industry_sentiments into
+//      analysis.intraday_industry_market_movements (parent) +
+//      analysis.intraday_index_market_movements (child).
+//
+//   GET /api/live-data/intraday-movements
+//     ?benchmark_code=000922&date=YYYY-MM-DD
+//     Returns IntradayMovementsResponse: benchmark % change per tick +
+//     all industries' % change per tick (for shades + middle bar chart) +
+//     member indices' % change per (code, tick) (for bottom bar chart).
+//     `date` optional → latest available for the benchmark.
+//   GET /api/live-data/intraday-movements/benchmarks
+//     Returns the list of benchmark codes that appear in
+//     analysis.sec_alloc_perf_attribution (broad-market benchmarks first).
+router.get("/intraday-movements/benchmarks", async (_req: Request, res: Response) => {
+  try {
+    const benchmarks = await listIntradayMovementsBenchmarks();
+    res.json({ benchmarks });
+  } catch (err) {
+    console.error("[live-data/intraday-movements/benchmarks] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/intraday-movements", async (req: Request, res: Response) => {
+  try {
+    const benchmarkCode = typeof req.query.benchmark_code === "string"
+      ? req.query.benchmark_code.trim()
+      : "";
+    if (!benchmarkCode) {
+      res.status(400).json({ error: "Missing 'benchmark_code' parameter" });
+      return;
+    }
+    const date = typeof req.query.date === "string" ? req.query.date.trim() : null;
+    res.json(await getIntradayMovements(benchmarkCode, date || null));
+  } catch (err) {
+    console.error("[live-data/intraday-movements] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

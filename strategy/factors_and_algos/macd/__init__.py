@@ -1,11 +1,12 @@
-"""strategy.factors_and_algos.macd — MACD (12/26/9) crossover mean-reversion.
+"""strategy.factors_and_algos.macd — MACD (10/60/6) crossover mean-reversion.
 
 A pluggable signal algo implementing :class:`strategy.factors_and_algos._algo.AlgoBase`.
 Produces the two columns the execution engine in ``strategy._trading``
 consumes (``signal_confidence`` + ``signal_value``) and exposes a
 ``run_backtest`` method (inherited from ``AlgoBase``) that wires the signals
-to the engine. EMAs are computed inside the algo from ``close_price`` — no
-precomputed analysis columns are required (REQUIRED_COLUMNS is empty).
+to the engine. Short/long EMAs are READ from the precomputed
+``stats.<sec_type>_tech_stats`` columns (ema10 / ema60); only the signal-line
+EMA is computed inline (it is an EMA of the MACD line, not of close).
 
 Public surface (consumed via
 ``strategy.factors_and_algos.get_algo("macd")`` — returns the ``ALGO``

@@ -19,7 +19,7 @@ from ._akshare_source import MinuteSample
 CLOSE_MINUTE_OF_DAY = 15 * 60  # 900
 
 
-def _emission_cutoff_minute(last_bar_minute: int) -> int:
+def _emission_cutoff_minute(last_bar_minute: int, data_date=None) -> int:
     """5-min rounding cutoff for window emission.
 
     Discards the tail window whose end minute has not been reached by a
@@ -34,10 +34,18 @@ def _emission_cutoff_minute(last_bar_minute: int) -> int:
     whose last bar is hours old. Once the wall-clock reaches 15:00 the market
     is closed and every window up to and including 15:00 is emitted.
 
+    If ``data_date`` is from a previous day (data_date < local today), the
+    market has definitely closed for that data's day — emit all windows up to
+    the last bar without rounding (avoids incorrectly discarding the 15:00
+    window when comparing minute-of-day values across different dates).
+
     Returns the latest minute-of-day whose windows are safe to emit (always
     <= last_bar_minute, so windows without data are still skipped).
     """
     now = datetime.now()
+    # Data from a previous day is fully closed — no in-progress tail to discard.
+    if data_date is not None and data_date < now.date():
+        return last_bar_minute
     now_minute = now.hour * 60 + now.minute
     if last_bar_minute < now_minute or now_minute >= CLOSE_MINUTE_OF_DAY:
         # Latest bar is from a past minute (complete) or market has closed.
@@ -66,23 +74,28 @@ def aggregate_5min(
     emitted: set,
     trade_date,
 ) -> Tuple[List[dict], List[dict], Optional[time]]:
-    """Aggregate 1-minute samples into 5-minute OHLCV bars for ``trade_date``.
+    """Aggregate 1-minute samples into 5-minute OHLCV bars.
 
-    Samples whose date does not match ``trade_date`` are dropped — this guards
-    against AkShare handing back the previous day's bars before today's session
-    opens (which would otherwise make a stock look "finished" at 15:00 of the
-    wrong day). Emits a window when its end time is at or before the 5-min
-    rounding cutoff (``_emission_cutoff_minute``) — so the in-progress tail
-    window is discarded — and it has not been emitted before.
+    The trade_date used for row stamps and sample filtering is derived from
+    the SAMPLES' own datetimes (the remote source's logged date — e.g. SZSE
+    ``marketTime``, AkShare ``day``, EM ``time_str``), NOT from the local
+    request time. The passed-in ``trade_date`` is only used to detect a
+    date mismatch: when the remote date differs from the local biz day,
+    bars are still produced (stamped with the remote date) but
+    ``latest_time`` is returned as None so the stock is NOT marked as
+    finished — it will be re-fetched until today's data arrives.
 
-    Args:
-        emitted: mutable set of already-emitted window-end ``time`` objects
-            for this stock (cleared when the loop anchors to a new biz day).
-        trade_date: the biz day we are currently collecting.
+    Sources like EM push2his return up to 5 days of data; only the most
+    recent trading day's samples are kept (``max(sample dates)``).
+
+    Emits a window when its end time is at or before the 5-min rounding
+    cutoff (``_emission_cutoff_minute``) and it has not been emitted before.
+    The ``emitted`` set is keyed by ``(date, time)`` so windows from different
+    dates don't collide.
 
     Returns (identity_rows, bar_rows, latest_time). ``latest_time`` is the
-    latest in-day bar time seen (or None if no in-day samples), used to tell
-    whether the stock has reached CLOSE_TIME.
+    latest in-day bar time seen (or None if no in-day samples or date
+    mismatch), used to tell whether the stock has reached CLOSE_TIME.
     """
     if not samples:
         return [], [], None
@@ -92,8 +105,13 @@ def aggregate_5min(
     parts = full_code.rsplit(".", 1)
     code_suffix = parts[-1] if len(parts) == 2 and parts[-1] in ("SZ", "SS", "BJ", "HK") else None
 
-    # Keep only samples that belong to the current biz day.
-    in_day: List[MinuteSample] = [s for s in samples if s[0].date() == trade_date]
+    # Derive trade_date from the samples' own dates (remote source logged
+    # date), NOT from the local request time. Use the latest date so multi-day
+    # sources (EM push2his ndays=5) only emit the most recent trading day.
+    derived_date = max(s[0].date() for s in samples)
+
+    # Keep only samples that belong to the derived (remote) date.
+    in_day: List[MinuteSample] = [s for s in samples if s[0].date() == derived_date]
     if not in_day:
         return [], [], None
 
@@ -109,7 +127,7 @@ def aggregate_5min(
     # 5-min rounding: discard the tail window whose end minute has not been
     # reached by a COMPLETE minute (the current wall-clock minute may still
     # be in progress — sources return real-time "close(now)").
-    cutoff_minute = _emission_cutoff_minute(last_bar_minute)
+    cutoff_minute = _emission_cutoff_minute(last_bar_minute, derived_date)
 
     identity_rows: List[dict] = []
     bar_rows: List[dict] = []
@@ -119,7 +137,8 @@ def aggregate_5min(
         # the source has not yet returned enough bars to complete them).
         if wend_minute > cutoff_minute:
             continue
-        if wend in emitted:
+        emit_key = (derived_date, wend)
+        if emit_key in emitted:
             continue
         # Order points by their own timestamp within the window.
         pts.sort(key=lambda x: x[0])
@@ -139,14 +158,14 @@ def aggregate_5min(
         # for an ETF-held stock. Setting it explicitly keeps new (date, code)
         # rows from defaulting to FALSE before the next backfill runs.
         identity_rows.append({
-            "date": trade_date,
+            "date": derived_date,
             "code": full_code,
             "code_suffix": code_suffix,
             "name": name,
             "is_in_index_or_etf": True,
         })
         bar_rows.append({
-            "date": trade_date,
+            "date": derived_date,
             "code": full_code,
             "code_suffix": code_suffix,
             "time": wend,
@@ -158,7 +177,14 @@ def aggregate_5min(
             "change": change,
             "change_pct": change_pct,
         })
-        emitted.add(wend)
+        emitted.add(emit_key)
+
+    # If the remote-derived date doesn't match the local biz day, return
+    # latest_time=None so the stock is NOT marked as finished. The bars are
+    # still upserted (stamped with the correct remote date), but the stock
+    # will be re-fetched until today's data arrives.
+    if derived_date != trade_date:
+        return identity_rows, bar_rows, None
     return identity_rows, bar_rows, latest_time
 
 
@@ -175,11 +201,19 @@ def aggregate_index_5min(
     which has NO trading_shares / code_suffix columns and stores the code BARE
     (e.g. "399001", not "399001.SZ").
 
+    The trade_date is derived from the samples' own datetimes (remote source
+    logged date, e.g. SZSE ``marketTime``), NOT from the local request time.
+    See ``aggregate_5min`` for full semantics.
+
     Returns (identity_rows, bar_rows, latest_time).
     """
     if not samples:
         return [], [], None
-    in_day: List[MinuteSample] = [s for s in samples if s[0].date() == trade_date]
+
+    # Derive trade_date from the samples' own dates (remote source logged
+    # date), NOT from the local request time.
+    derived_date = max(s[0].date() for s in samples)
+    in_day: List[MinuteSample] = [s for s in samples if s[0].date() == derived_date]
     if not in_day:
         return [], [], None
 
@@ -192,7 +226,7 @@ def aggregate_index_5min(
     latest_time = time(last_bar_minute // 60, last_bar_minute % 60)
 
     # 5-min rounding: discard the in-progress tail window (same as stocks).
-    cutoff_minute = _emission_cutoff_minute(last_bar_minute)
+    cutoff_minute = _emission_cutoff_minute(last_bar_minute, derived_date)
 
     identity_rows: List[dict] = []
     bar_rows: List[dict] = []
@@ -200,7 +234,8 @@ def aggregate_index_5min(
         wend_minute = wend.hour * 60 + wend.minute
         if wend_minute > cutoff_minute:
             continue
-        if wend in emitted:
+        emit_key = (derived_date, wend)
+        if emit_key in emitted:
             continue
         pts.sort(key=lambda x: x[0])
         prices = [p for _, p, _ in pts]
@@ -212,12 +247,12 @@ def aggregate_index_5min(
         change_pct = round((c - o) / o * 100, 4) if o else None
 
         identity_rows.append({
-            "date": trade_date,
+            "date": derived_date,
             "code": bare_code,
             "name": name,
         })
         bar_rows.append({
-            "date": trade_date,
+            "date": derived_date,
             "code": bare_code,
             "time": wend,
             "open": o,
@@ -227,5 +262,10 @@ def aggregate_index_5min(
             "change": change,
             "change_pct": change_pct,
         })
-        emitted.add(wend)
+        emitted.add(emit_key)
+
+    # If the remote-derived date doesn't match the local biz day, return
+    # latest_time=None (same rationale as aggregate_5min).
+    if derived_date != trade_date:
+        return identity_rows, bar_rows, None
     return identity_rows, bar_rows, latest_time

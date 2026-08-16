@@ -62,6 +62,8 @@ export function HypesAndDrainsChart({ benchmarkCode, themeMode }: HypesAndDrains
   const [error, setError] = useState<string | null>(null);
   const [periodDays, setPeriodDays] = useState<number>(DEFAULT_ROLLING_DAYS);
   const [weighting, setWeighting] = useState<Weighting>("equal");
+  // Default: show only top-3 / bottom-3. Toggle to expand to top-5 / bottom-5.
+  const [maxRank, setMaxRank] = useState<3 | 5>(3);
 
   // The date the user clicked on the chart (null → default to the latest
   // season). Used to reflect the chosen month in the detail table below.
@@ -97,9 +99,9 @@ export function HypesAndDrainsChart({ benchmarkCode, themeMode }: HypesAndDrains
   const option = useMemo(
     () =>
       data && data.benchmark_series.length > 0
-        ? buildHypesAndDrainsOption(data, themeMode, selectedDate)
+        ? buildHypesAndDrainsOption(data, themeMode, selectedDate, maxRank)
         : null,
-    [data, themeMode, selectedDate],
+    [data, themeMode, selectedDate, maxRank],
   );
 
   // --- Click handler: native DOM event on the chart container ---
@@ -155,13 +157,13 @@ export function HypesAndDrainsChart({ benchmarkCode, themeMode }: HypesAndDrains
       if (match) season = match.season_qkey;
     }
     const hypes = data.seasonal_rankings
-      .filter((r) => r.season_qkey === season && r.rank_side === "HYPE")
+      .filter((r) => r.season_qkey === season && r.rank_side === "HYPE" && r.rank <= maxRank)
       .sort((a, b) => a.rank - b.rank);
     const drains = data.seasonal_rankings
-      .filter((r) => r.season_qkey === season && r.rank_side === "DRAIN")
+      .filter((r) => r.season_qkey === season && r.rank_side === "DRAIN" && r.rank <= maxRank)
       .sort((a, b) => a.rank - b.rank);
     return { selectedHypes: hypes, selectedDrains: drains, selectedSeason: season };
-  }, [data, selectedDate]);
+  }, [data, selectedDate, maxRank]);
 
   // Build the subtitle.
   const subtitle = useMemo(() => {
@@ -223,6 +225,30 @@ export function HypesAndDrainsChart({ benchmarkCode, themeMode }: HypesAndDrains
             </ToggleButton>
           </ToggleButtonGroup>
         </Box>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+          <Tooltip
+            title="Number of top HYPE / bottom DRAIN industries to show. Default is 3; expand to 5 to see more ranked industries."
+            arrow
+          >
+            <Typography variant="caption" sx={{ fontSize: "0.72rem", fontWeight: 600, cursor: "help" }}>
+              Show:
+            </Typography>
+          </Tooltip>
+          <ToggleButtonGroup
+            value={maxRank}
+            exclusive
+            size="small"
+            onChange={(_e, v) => { if (v !== null) setMaxRank(v as 3 | 5); }}
+            sx={{ height: 28 }}
+          >
+            <ToggleButton value={3} sx={{ px: 1, py: 0.25, fontSize: "0.7rem", textTransform: "none" }}>
+              Top 3
+            </ToggleButton>
+            <ToggleButton value={5} sx={{ px: 1, py: 0.25, fontSize: "0.7rem", textTransform: "none" }}>
+              Top 5
+            </ToggleButton>
+          </ToggleButtonGroup>
+        </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
           <Typography variant="caption" sx={{ fontSize: "0.72rem", fontWeight: 600 }}>
             Period:
@@ -259,7 +285,7 @@ export function HypesAndDrainsChart({ benchmarkCode, themeMode }: HypesAndDrains
             variant="caption"
             sx={{ fontSize: "0.72rem", fontWeight: 600, display: "block", mb: -0.5, px: 0.5 }}
           >
-            Benchmark (rebased = 100) + Seasonal top-5 HYPE / bottom-5 DRAIN industries
+            Benchmark (rebased = 100) + Seasonal top-{maxRank} HYPE / bottom-{maxRank} DRAIN industries
             (● active · ○ fading · ✕ hidden)
           </Typography>
           <div ref={chartWrapperRef} style={{ position: "relative" }}>

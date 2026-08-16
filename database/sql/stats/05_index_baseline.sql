@@ -85,18 +85,57 @@ CREATE TABLE IF NOT EXISTS stats.index_tech_stats (
     ma60                      NUMERIC(18,4),
     ma120                     NUMERIC(18,4),
     ma255                     NUMERIC(18,4),
+    ema6                      NUMERIC(18,4),
+    ema10                     NUMERIC(18,4),
+    ema20                     NUMERIC(18,4),
+    ema60                     NUMERIC(18,4),
+    ema120                    NUMERIC(18,4),
+    ema255                    NUMERIC(18,4),
 
     CONSTRAINT pk_index_tech_stats PRIMARY KEY (date, code),
     CONSTRAINT fk_index_tech_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.index_identity(date, code)
 );
 
-COMMENT ON TABLE  stats.index_tech_stats                    IS 'Index technical indicators (moving averages).';
+-- Idempotent migration: add EMA columns to pre-existing tables.
+-- CREATE TABLE IF NOT EXISTS does not add new columns to an existing
+-- table, so the ALTER TABLE below is required for production upgrades
+-- without a full rebuild. Runs BEFORE the COMMENT statements so the
+-- columns exist when the comments are applied.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'stats' AND table_name = 'index_tech_stats' AND column_name = 'ema6'
+    ) THEN
+        ALTER TABLE stats.index_tech_stats
+            ADD COLUMN ema6  NUMERIC(18,4),
+            ADD COLUMN ema10 NUMERIC(18,4),
+            ADD COLUMN ema20 NUMERIC(18,4),
+            ADD COLUMN ema60 NUMERIC(18,4);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'stats' AND table_name = 'index_tech_stats' AND column_name = 'ema120'
+    ) THEN
+        ALTER TABLE stats.index_tech_stats
+            ADD COLUMN ema120 NUMERIC(18,4),
+            ADD COLUMN ema255 NUMERIC(18,4);
+    END IF;
+END $$;
+
+COMMENT ON TABLE  stats.index_tech_stats                    IS 'Index technical indicators (moving averages + EMAs).';
 COMMENT ON COLUMN stats.index_tech_stats.ma5               IS '5-day moving average of close.';
 COMMENT ON COLUMN stats.index_tech_stats.ma5_ratio         IS 'Close / MA5 - 1 (ratio of price to 5-day MA).';
 COMMENT ON COLUMN stats.index_tech_stats.ma20              IS '20-day moving average of close.';
 COMMENT ON COLUMN stats.index_tech_stats.ma60              IS '60-day moving average of close.';
 COMMENT ON COLUMN stats.index_tech_stats.ma120             IS '120-day moving average of close.';
 COMMENT ON COLUMN stats.index_tech_stats.ma255             IS '255-day moving average of close.';
+COMMENT ON COLUMN stats.index_tech_stats.ema6              IS '6-day exponential moving average of close (span=6, adjust=False).';
+COMMENT ON COLUMN stats.index_tech_stats.ema10             IS '10-day exponential moving average of close (span=10, adjust=False).';
+COMMENT ON COLUMN stats.index_tech_stats.ema20             IS '20-day exponential moving average of close (span=20, adjust=False).';
+COMMENT ON COLUMN stats.index_tech_stats.ema60             IS '60-day exponential moving average of close (span=60, adjust=False).';
+COMMENT ON COLUMN stats.index_tech_stats.ema120            IS '120-day exponential moving average of close (span=120, adjust=False).';
+COMMENT ON COLUMN stats.index_tech_stats.ema255            IS '255-day exponential moving average of close (span=255, adjust=False).';
 
 -- ----------------------------------------------------------------------------
 -- Table: index_intraday_5min

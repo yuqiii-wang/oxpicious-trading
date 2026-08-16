@@ -43,13 +43,13 @@ import {
   UP_COLOR,
   DOWN_COLOR,
   PALETTE_HI,
-  MUTED_PALETTE,
   axisColors,
   commonLegend,
   commonGrid,
   commonDataZoom,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { buildBenchmarkCenteredShadeSeries } from "@/lib/benchmark-shade";
 
 // ----------------------------------------------------------------------------
 //  Types
@@ -216,6 +216,7 @@ export function buildHypesAndDrainsOption(
   data: IndustryHypesAndDrainsResponse,
   themeMode: ThemeMode,
   selectedDate?: string | null,
+  maxRank: number = 3,
 ): EChartsOption {
   const c = axisColors(themeMode);
   const allDates = data.benchmark_series.map((r) => r.date);
@@ -226,6 +227,12 @@ export function buildHypesAndDrainsOption(
   if (totalN === 0) {
     return { backgroundColor: "transparent", animation: false };
   }
+
+  // ---- Filter seasonal rankings by maxRank (default 3, toggleable to 5) ----
+  // Industries with rank > maxRank in ALL seasons will be skipped (seasonMap
+  // empty). Industries ranked ≤ maxRank in at least one season stay computed;
+  // in seasons where their rank exceeds maxRank they fall to FADING/HIDDEN.
+  const filteredRankings = data.seasonal_rankings.filter((r) => r.rank <= maxRank);
 
   // ---- Compute benchmark values (rebase to 100 at first non-null close) ----
   const firstClose = allCloses.find((v) => v != null && v !== 0) ?? null;
@@ -255,9 +262,9 @@ export function buildHypesAndDrainsOption(
       swByDate.set(r.date, r.benchmark_shared_weight);
     }
 
-    // Build season map for this industry
-    const seasonMap = buildSeasonMap(data.seasonal_rankings, ind.industry_id);
-    if (seasonMap.size === 0) continue; // industry has no rankings — skip
+    // Build season map for this industry (using rank-filtered rankings)
+    const seasonMap = buildSeasonMap(filteredRankings, ind.industry_id);
+    if (seasonMap.size === 0) continue; // industry has no rankings (all > maxRank) — skip
 
     // Compute industry's own return for each date using the identity:
     //   bench_return = swf × ind_return + (1-swf) × non_ind_return
@@ -310,7 +317,85 @@ export function buildHypesAndDrainsOption(
     });
   }
 
+  // ---- Variance-based y-axis scaling: ignore extreme curves ----
+  // Some industry curves "shoot too high" (high variance) and would compress
+  // all other curves into a flat band. We compute the variance of each
+  // industry's ACTIVE-period displayValues, detect outliers (variance >
+  // 2 × median variance), and set explicit y-axis min/max from the
+  // non-outlier curves + benchmark. Extreme curves are STILL PLOTTED — their
+  // peaks/lows simply overflow the y-axis limit and are clipped (hidden).
+  const curveVariances: number[] = [];
+  const curveMinVals: number[] = [];
+  const curveMaxVals: number[] = [];
+
+  for (const ind of computed) {
+    const activeVals: number[] = [];
+    for (let i = 0; i < n; i++) {
+      if (ind.states[i] === ACTIVE && ind.displayValues[i] != null) {
+        activeVals.push(ind.displayValues[i]!);
+      }
+    }
+    if (activeVals.length < 2) {
+      curveVariances.push(0);
+      curveMinVals.push(Infinity);
+      curveMaxVals.push(-Infinity);
+      continue;
+    }
+    const mean = activeVals.reduce((a, b) => a + b, 0) / activeVals.length;
+    const variance = activeVals.reduce((a, b) => a + (b - mean) ** 2, 0) / activeVals.length;
+    curveVariances.push(variance);
+    curveMinVals.push(Math.min(...activeVals));
+    curveMaxVals.push(Math.max(...activeVals));
+  }
+
+  // Detect extreme curves via median-multiplier on variance. Requires at
+  // least 4 curves with non-zero variance for a robust median estimate.
+  const nonZeroVariances = curveVariances.filter((v) => v > 0).sort((a, b) => a - b);
+  const isExtremeCurve = new Array(computed.length).fill(false);
+  if (nonZeroVariances.length >= 4) {
+    const mid = Math.floor(nonZeroVariances.length / 2);
+    const medianVar = nonZeroVariances.length % 2 === 0
+      ? (nonZeroVariances[mid - 1] + nonZeroVariances[mid]) / 2
+      : nonZeroVariances[mid];
+    const varianceThreshold = medianVar * 2;
+    for (let i = 0; i < computed.length; i++) {
+      if (curveVariances[i] > varianceThreshold) {
+        isExtremeCurve[i] = true;
+      }
+    }
+  }
+
+  // Compute y-axis bounds from non-extreme curves + benchmark (always
+  // included). Falls back to null (auto-scale) if no valid bounds.
+  let yMin = Infinity;
+  let yMax = -Infinity;
+  for (const v of benchmarkValues) {
+    if (v != null) {
+      yMin = Math.min(yMin, v);
+      yMax = Math.max(yMax, v);
+    }
+  }
+  for (let i = 0; i < computed.length; i++) {
+    if (isExtremeCurve[i]) continue;
+    yMin = Math.min(yMin, curveMinVals[i]);
+    yMax = Math.max(yMax, curveMaxVals[i]);
+  }
+  let yAxisBounds: { min: number; max: number } | null = null;
+  if (yMin !== Infinity && yMax !== -Infinity && yMax > yMin) {
+    const range = yMax - yMin;
+    const pad = range * 0.05;
+    yAxisBounds = { min: yMin - pad, max: yMax + pad };
+  }
+
   // ---- Build series array ----
+  // The benchmark line + per-industry layered shades are built via the SHARED
+  // benchmark-centered shade helper (same builder used by Market Movements).
+  // The shade is centered about the BENCHMARK line (rebased to 100 here):
+  // green (UP_COLOR) fills benchmark→industry when industry > benchmark
+  // (HYPE), red (DOWN_COLOR) fills industry→benchmark when below (DRAIN).
+  // Only ACTIVE-period ticks are shaded; FADING/HIDDEN get null via the
+  // visible mask. Opacity 0.35 (heavier than Market Movements' 0.15 because
+  // only the top/bottom 3-5 ACTIVE industries are shaded at any time).
   const series: EChartsOption["series"] = [];
 
   // 1. Benchmark line
@@ -336,101 +421,34 @@ export function buildHypesAndDrainsOption(
       : undefined,
   });
 
-  // 2. Per-industry series
-  const legendData: string[] = [benchmarkName];
-  const indReturnsForTooltip: Array<Array<number | null>> = [];
-  const indDisplayForTooltip: Array<Array<number | null>> = [];
-  const indStatesForTooltip: Array<Uint8Array> = [];
-  const indLabelsForTooltip: Array<{ label: string; rank_side: string }> = [];
-
-  for (let idx = 0; idx < computed.length; idx++) {
-    const ind = computed[idx];
-    const indColor = MUTED_PALETTE[idx % MUTED_PALETTE.length];
-    const stackId = `hdShade_${idx}`;
-
-    // Build data arrays for the layered shade (ACTIVE only).
-    // The expanded dashed curve (FADING + ACTIVE lines) has been removed —
-    // only the layered shade remains, whose top edge traces the industry
-    // curve during ACTIVE periods.
-    const baseData: Array<number | null> = new Array(n).fill(null);
-    const posData: Array<number | null> = new Array(n).fill(null);
-    const negData: Array<number | null> = new Array(n).fill(null);
-
-    for (let i = 0; i < n; i++) {
-      const state = ind.states[i];
-      const dv = ind.displayValues[i];
-      if (dv == null) continue;
-
-      if (state === ACTIVE) {
-        // Shade (only for ACTIVE)
-        const bv = benchmarkValues[i];
-        if (bv != null) {
-          const diff = dv - bv;
-          baseData[i] = Math.min(bv, dv);
-          if (diff >= 0) {
-            // Curve above benchmark → HYPE → green shade
-            posData[i] = diff;
-            negData[i] = 0;
-          } else {
-            // Curve below benchmark → DRAIN → red shade
-            posData[i] = 0;
-            negData[i] = -diff;
-          }
-        }
-      }
-    }
-
-    // Legend label includes rank_side prefix + latest rank
-    const labelPrefix = ind.rank_side === "HYPE" ? "▲" : "▼";
-    const legendLabel = `${labelPrefix} #${ind.latest_rank} ${ind.industry_label}`;
-    legendData.push(legendLabel);
-
-    // Store for tooltip
-    indReturnsForTooltip.push(ind.industryReturns);
-    indDisplayForTooltip.push(ind.displayValues);
-    indStatesForTooltip.push(ind.states);
-    indLabelsForTooltip.push({ label: legendLabel, rank_side: ind.rank_side });
-
-    // Layered shade only (base + pos + neg stacked area series). The top
-    // edge of the shade traces the industry curve during ACTIVE periods —
-    // no separate dashed line is rendered on top.
-    series.push({
-      name: legendLabel,
-      type: "line",
-      data: baseData,
-      stack: stackId,
-      symbol: "none",
-      lineStyle: { opacity: 0 },
-      z: 4,
-      tooltip: { show: false },
+  // 2. Per-industry layered shades via the shared builder.
+  //    visible[i] = (state === ACTIVE) — only ACTIVE periods get shaded.
+  const shadeIndustries = computed.map((ind) => ({
+    id: ind.industry_id,
+    label: `${ind.rank_side === "HYPE" ? "▲" : "▼"} #${ind.latest_rank} ${ind.industry_label}`,
+    values: ind.displayValues,
+    visible: Array.from(ind.states, (s) => s === ACTIVE),
+  }));
+  const { series: shadeSeries, legendLabels: shadeLegendLabels } =
+    buildBenchmarkCenteredShadeSeries(benchmarkValues, shadeIndustries, {
+      shadeOpacity: 0.35,
+      stackPrefix: "hdShade",
+      zBase: 4,
     });
+  for (const s of shadeSeries) series.push(s);
 
-    // ACTIVE shade pos (green — curve above benchmark = HYPE)
-    series.push({
-      name: legendLabel,
-      type: "line",
-      data: posData,
-      stack: stackId,
-      symbol: "none",
-      lineStyle: { opacity: 0 },
-      areaStyle: { color: UP_COLOR, opacity: 0.35 },
-      z: 5,
-      tooltip: { show: false },
-    });
+  // Legend data: benchmark first, then per-industry labels.
+  const legendData: string[] = [benchmarkName, ...shadeLegendLabels];
 
-    // ACTIVE shade neg (red — curve below benchmark = DRAIN)
-    series.push({
-      name: legendLabel,
-      type: "line",
-      data: negData,
-      stack: stackId,
-      symbol: "none",
-      lineStyle: { opacity: 0 },
-      areaStyle: { color: DOWN_COLOR, opacity: 0.35 },
-      z: 5,
-      tooltip: { show: false },
-    });
-  }
+  // Tooltip lookup arrays (one entry per computed industry, aligned to
+  // shadeIndustries order so the tooltip can index by the same order).
+  const indReturnsForTooltip: Array<Array<number | null>> = computed.map((ind) => ind.industryReturns);
+  const indDisplayForTooltip: Array<Array<number | null>> = computed.map((ind) => ind.displayValues);
+  const indStatesForTooltip: Array<Uint8Array> = computed.map((ind) => ind.states);
+  const indLabelsForTooltip: Array<{ label: string; rank_side: string }> = computed.map((ind) => ({
+    label: `${ind.rank_side === "HYPE" ? "▲" : "▼"} #${ind.latest_rank} ${ind.industry_label}`,
+    rank_side: ind.rank_side,
+  }));
 
   // ---- X-axis: year-month ticks at 3-month interval ----
   const displayMonths = new Set<string>();
@@ -530,6 +548,10 @@ export function buildHypesAndDrainsOption(
     yAxis: {
       type: "value",
       scale: true,
+      // Explicit min/max from non-extreme curves — extreme (high-variance)
+      // curves overflow these bounds and are clipped, preventing them from
+      // compressing the rest of the plot into a flat band.
+      ...(yAxisBounds ? { min: yAxisBounds.min, max: yAxisBounds.max } : {}),
       name: "Rebased (100)",
       nameTextStyle: { color: c.textColor, fontSize: 9 },
       axisLine: { lineStyle: { color: c.axisLineColor } },

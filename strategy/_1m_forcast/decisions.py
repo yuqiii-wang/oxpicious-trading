@@ -146,6 +146,12 @@ def build_scenario_forecast_decisions(
             combined = pd.DataFrame(rows_combined)
             combined = _compute_required_columns(combined, algo.REQUIRED_COLUMNS)
             combined = algo.apply_signals(combined, algo_params or {})
+            # Apply the SAME base signal tuning (sub-threshold conf < 5 → 0)
+            # so dust SELL signals in the forecast region are skipped (a 0
+            # sell_conf yields qty_sold=0 → the loop's `qty_sold <= 0:
+            # continue` guard drops the day).
+            from strategy.factors_and_algos._algo.tuning import tune_signals
+            combined = tune_signals(combined)
             # Extract signal_confidence for the forecast days (last HORIZON_DAYS).
             fc_signals = combined["signal_confidence"].iloc[-HORIZON_DAYS:].tolist()
             # Derive sell confidence: |signal_confidence| when SELL (< 0), else 0.
@@ -471,7 +477,8 @@ async def copy_actual_decisions(
         "       normalized_fill_price, normalized_mean_buy_price, "
         "       position_before, position_after, cash_before, cash_after, "
         "       total_qty_before, total_qty_after, realized_pnl, "
-        "       slippage, fee, signal_value, signal_reason "
+        "       slippage, fee, signal_value, signal_reason, "
+        "       ft_stressed_conf_up, ft_stressed_conf_down "
         "FROM strategy.trade_decision "
         f"WHERE seq_id = $1{extra_filter} ORDER BY decision_no",
         parent_seq_id,
@@ -489,6 +496,7 @@ async def copy_actual_decisions(
             d["position_after"], d["cash_before"], d["cash_after"],
             d["total_qty_before"], d["total_qty_after"], d["realized_pnl"],
             d["slippage"], d["fee"], d["signal_value"], d["signal_reason"],
+            d["ft_stressed_conf_up"], d["ft_stressed_conf_down"],
         ))
 
     await conn.executemany(
@@ -497,8 +505,9 @@ async def copy_actual_decisions(
         " normalized_fill_price, normalized_mean_buy_price, "
         " position_before, position_after, cash_before, cash_after, "
         " total_qty_before, total_qty_after, realized_pnl, "
-        " slippage, fee, signal_value, signal_reason) "
-        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
+        " slippage, fee, signal_value, signal_reason, "
+        " ft_stressed_conf_up, ft_stressed_conf_down) "
+        "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",
         values,
     )
     return len(rows)

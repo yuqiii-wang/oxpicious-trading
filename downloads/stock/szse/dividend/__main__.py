@@ -41,13 +41,14 @@ Outputs one CSV per stock under ``temps/szse_archive/``::
 
     {code}_dividend_{YYYYMMDD}.csv
 
-The filename always carries the download date as a suffix so the download
-script can decide whether to re-download by checking:
+The filename always carries the download date as a suffix for traceability.
+The download script decides whether to re-download by checking:
 
   1. DB table ``stats.stock_dividends`` — if any row for this stock has
-     ``last_updated`` within the last 6 months, the data is still fresh; skip.
-  2. Local CSV — if any ``{code}_dividend_{YYYYMMDD}.csv`` exists with a
-     date within the last 6 months, the data is still fresh; skip.
+     ``last_updated`` within the last 180 days, the data is still fresh; skip.
+  2. Local CSV — if any ``{code}_dividend_*.csv`` exists whose file
+     modification time (mtime) is within the last 180 days, the data is
+     still considered cached; skip.
 
 CSV columns (same schema as the SSE dividend file for build-module
 compatibility — cninfo does not provide post-tax dividend, total payout,
@@ -63,10 +64,10 @@ Notes:
   • 证券简称 (stock name) is NOT in the cninfo response — it is looked up
     from ``stats.stock_identity`` alongside the stock list and passed
     through. When the DB lookup is unavailable the column is left blank.
-  • Resumable: a stock is skipped if (a) a local CSV dated within the last
-    6 months exists, or (b) ``stats.stock_dividends`` already has rows for
-    the stock with ``last_updated`` within the last 6 months. ``--force``
-    overrides both checks.
+  • Resumable: a stock is skipped if (a) a local CSV whose file mtime is
+    within the last 180 days exists, or (b) ``stats.stock_dividends`` already
+    has rows for the stock with ``last_updated`` within the last 180 days.
+    ``--force`` overrides both checks.
 
 Usage:
   python -m downloads.stock.szse.dividend                  # ETF-held SZSE stocks only (default)
@@ -80,14 +81,13 @@ import argparse
 import base64
 import csv
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-from dateutil.relativedelta import relativedelta
 
 from downloads._common.core import (
     DEFAULT_TIMEOUT,
@@ -142,11 +142,17 @@ logger = setup_logger("szse_dividend_download")
 # Freshness check — skip download if data is already up-to-date
 # ---------------------------------------------------------------------------
 # Dividend history is slow-moving (a stock pays dividends at most a few times
-# per year), and main.sh schedules this download quarterly. A 6-month
+# per year), and main.sh schedules this download quarterly. A 180-day
 # freshness window therefore safely skips re-downloading stocks that have
 # already been fetched within the last half year, regardless of whether the
 # CSV was written today or months ago.
-FRESHNESS_WINDOW_MONTHS = 6
+#
+# The local-cache check uses the file's modification time (mtime) rather than
+# the date suffix in the filename — this is more robust because mtime
+# reflects the actual last-write time (e.g. a file rewritten today with the
+# same date suffix, or a file copied across machines) and is not sensitive
+# to filename formatting.
+FRESHNESS_WINDOW_DAYS = 180
 
 
 def _today_str() -> str:
@@ -155,18 +161,18 @@ def _today_str() -> str:
 
 
 def _freshness_cutoff() -> date:
-    """Return the earliest date still considered fresh (today minus 6 months)."""
-    return date.today() - relativedelta(months=FRESHNESS_WINDOW_MONTHS)
+    """Return the earliest date still considered fresh (today minus 180 days)."""
+    return date.today() - timedelta(days=FRESHNESS_WINDOW_DAYS)
 
 
 def _is_fresh_local(archive_dir: Path, code: str) -> bool:
-    """Check if a local dividend CSV dated within the last 6 months exists.
+    """Check if a local dividend CSV whose mtime is within the last 180 days exists.
 
-    Scans ``archive_dir`` for any ``{code}_dividend_{YYYYMMDD}.csv`` whose
-    filename date is at or after ``today - FRESHNESS_WINDOW_MONTHS``. Legacy
-    files without a date suffix (``{code}_dividend.csv``) are NOT considered
-    fresh — they were written before the date-suffix convention was
-    introduced.
+    Scans ``archive_dir`` for any ``{code}_dividend_*.csv`` whose file
+    modification time (mtime) is at or after ``today -
+    FRESHNESS_WINDOW_DAYS``. The mtime reflects when the file was last
+    written, so the date suffix in the filename no longer needs to be parsed
+    — only the actual last-write time matters.
 
     Uses a 1-byte minimum (not MIN_VALID_BYTES=1024) because dividend CSVs
     for stocks with few events can be <700 bytes — still valid.
@@ -175,18 +181,9 @@ def _is_fresh_local(archive_dir: Path, code: str) -> bool:
         return False
     cutoff = _freshness_cutoff()
     for f in archive_dir.glob(f"{code}_dividend_*.csv"):
-        parts = f.stem.split("_")
-        # Expected stem: {code}_dividend_{YYYYMMDD}
-        if len(parts) < 3 or parts[-2] != "dividend":
-            continue
-        date_str = parts[-1]
-        if len(date_str) != 8 or not date_str.isdigit():
-            continue
         try:
-            file_date = date(
-                int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8])
-            )
-        except ValueError:
+            file_date = date.fromtimestamp(f.stat().st_mtime)
+        except OSError:
             continue
         if file_date >= cutoff and is_valid_file(f, min_bytes=1):
             return True
@@ -195,11 +192,11 @@ def _is_fresh_local(archive_dir: Path, code: str) -> bool:
 
 def _is_fresh_db(conn, full_code: str) -> bool:
     """Check if ``stats.stock_dividends`` has rows for this stock updated
-    within the last 6 months.
+    within the last 180 days.
 
     ``full_code`` is the DB-format code with exchange suffix (e.g. ``000651.SZ``).
     Returns True if at least one row exists with ``last_updated::date >=
-    today - FRESHNESS_WINDOW_MONTHS``.
+    today - FRESHNESS_WINDOW_DAYS``.
     """
     try:
         with conn.cursor() as cur:
@@ -443,10 +440,10 @@ def download_szse_dividends(
     minutes) before continuing, as an extra anti-bot cool-down. Set
     ``batch_pause_sec=0`` (or ``--batch-pause-sec 0``) to disable.
 
-    Resumable: a stock is skipped if (a) a local CSV dated within the last
-    6 months exists, or (b) ``stats.stock_dividends`` already has rows for
-    the stock with ``last_updated`` within the last 6 months. ``--force``
-    overrides both checks.
+    Resumable: a stock is skipped if (a) a local CSV whose file mtime is
+    within the last 180 days exists, or (b) ``stats.stock_dividends`` already
+    has rows for the stock with ``last_updated`` within the last 180 days.
+    ``--force`` overrides both checks.
     """
     archive_dir = resolve_out_dir(
         str(Path(__file__).resolve()), DIVIDEND_DIRNAME, out_root
@@ -482,9 +479,9 @@ def download_szse_dividends(
         return {"downloaded": 0, "failed": 1, "archive_dir": str(archive_dir)}
 
     # Freshness check — skip stocks that are already up-to-date.
-    # Checks BOTH: (a) local CSV dated within the last 6 months, (b) DB rows
-    # with last_updated within the last 6 months. Skips the stock if either
-    # is fresh (unless --force).
+    # Checks BOTH: (a) local CSV whose mtime is within the last 180 days,
+    # (b) DB rows with last_updated within the last 180 days. Skips the
+    # stock if either is fresh (unless --force).
     if not force:
         fresh_local = 0
         fresh_db = 0
@@ -499,9 +496,9 @@ def download_szse_dividends(
             filtered.append((code, name))
         stocks = filtered
         logger.info(
-            "Freshness check (%d-month window): %d stocks skipped (local CSV fresh), "
+            "Freshness check (%d-day window): %d stocks skipped (local CSV fresh), "
             "%d skipped (DB fresh), %d to process.",
-            FRESHNESS_WINDOW_MONTHS, fresh_local, fresh_db, len(stocks),
+            FRESHNESS_WINDOW_DAYS, fresh_local, fresh_db, len(stocks),
         )
     if db_conn:
         db_conn.close()
@@ -632,8 +629,8 @@ if __name__ == "__main__":
                     "AntiBotProxy (fingerprint rotation, random param, "
                     "sleep jitter, host blocking, base sleep 90s). "
                     "Output: {code}_dividend_{YYYYMMDD}.csv under temps/szse_archive/. "
-                    "Skips stocks with a fresh local CSV or DB rows updated "
-                    "within the last 6 months."
+                    "Skips stocks with a local CSV whose mtime is within the "
+                    "last 180 days or DB rows updated within the last 180 days."
     )
     ap.add_argument(
         "--no-etf-filter", action="store_true",

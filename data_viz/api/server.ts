@@ -13,6 +13,15 @@ const server = app.listen(PORT, () => {
   console.log(`Server ready on port ${PORT}`);
 });
 
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use. Stop the other process or set PORT env var.`);
+  } else {
+    console.error('Server error:', err);
+  }
+  process.exit(1);
+});
+
 /**
  * close server + db pool
  */

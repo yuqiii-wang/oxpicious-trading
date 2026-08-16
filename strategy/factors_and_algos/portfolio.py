@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from strategy.factors_and_algos import get_algo
+from strategy.factors_and_algos._algo.fault_tolerance import append_ft_suffix
 
 
 # ---------------------------------------------------------------------------
@@ -56,10 +57,14 @@ def _short_name(algo_name: str) -> str:
     return _ABBR.get(algo_name, algo_name)
 
 
-def portfolio_name(selection: Dict[str, float]) -> str:
+def portfolio_name(
+    selection: Dict[str, float],
+    fault_tolerance: float = 0,
+) -> str:
     """Build the portfolio strategy_name from the algo->weight selection.
 
     e.g. {"bollinger_bands": 0.5, "macd": 0.5} -> "portfolio:bb*0.5+macd*0.5"
+    With fault_tolerance=10 -> "portfolio:bb*0.5+macd*0.5_ft10"
 
     Algos with weight 0 are omitted from the name. The name is stable
     (sorted by algo name) so the same selection always maps to the same
@@ -73,8 +78,10 @@ def portfolio_name(selection: Dict[str, float]) -> str:
             continue
         parts.append(f"{_short_name(name)}*{weight:g}")
     if not parts:
-        return "portfolio:empty"
-    return "portfolio:" + "+".join(parts)
+        base = "portfolio:empty"
+    else:
+        base = "portfolio:" + "+".join(parts)
+    return append_ft_suffix(base, fault_tolerance)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +146,7 @@ async def _run_one_sub_algo(
     sec_type: str,
     codes: List[str],
     trading_layer: dict,
+    fault_tolerance: float = 0,
     force: bool,
     seq_no: Optional[int],
     dry_run: bool,
@@ -149,9 +157,9 @@ async def _run_one_sub_algo(
     Loads the algo's DB-backed params (algo defaults < DB < trading-layer
     overrides), then calls the shared ``run_one_sec_type``. The strategy_name
     stored in strategy_identity is the algo_name itself (e.g.
-    "bollinger_bands"), so each algo's runs are stored and queried under
-    their own name. skip-if-already-found is handled inside
-    ``upsert_strategy_seq``.
+    "bollinger_bands"), or ``algo_name_ft{N}`` when fault_tolerance > 0,
+    so each algo's runs are stored and queried under their own name.
+    skip-if-already-found is handled inside ``upsert_strategy_seq``.
 
     Returns the algo_name (for logging).
     """
@@ -159,6 +167,8 @@ async def _run_one_sub_algo(
     from strategy.factors_and_algos import (
         AlgoSignalCollector, ensure_default_config, load_params,
     )
+
+    strategy_name = append_ft_suffix(algo_name, fault_tolerance)
 
     async with pool.acquire() as conn:
         # Ensure a default algo_configs row exists for each code (so
@@ -183,7 +193,7 @@ async def _run_one_sub_algo(
         collector = AlgoSignalCollector({algo_name: 1.0})
         await run_one_sec_type(
             conn=conn,
-            strategy_name=algo_name,
+            strategy_name=strategy_name,
             sec_type=sec_type,
             codes=codes,
             params=params,
@@ -205,6 +215,7 @@ async def run_sub_algos(
     sec_type: str,
     codes: List[str],
     trading_layer: dict,
+    fault_tolerance: float = 0,
     force: bool,
     seq_no: Optional[int],
     dry_run: bool,
@@ -218,6 +229,8 @@ async def run_sub_algos(
 
     ``trading_layer`` carries the engine-consumed keys (min_holding_period,
     buy_notional, skip_final_liquidation) shared across all sub-algos.
+    ``fault_tolerance`` > 0 appends ``_ft{N}`` to each sub-algo's
+    strategy_name (so FT and non-FT runs coexist in the DB).
     """
     check_position_aware(selection)
 
@@ -234,6 +247,7 @@ async def run_sub_algos(
                 sec_type=sec_type,
                 codes=codes,
                 trading_layer=trading_layer,
+                fault_tolerance=fault_tolerance,
                 force=force,
                 seq_no=seq_no,
                 dry_run=dry_run,
@@ -268,6 +282,7 @@ async def build_algo_portfolio(
     sec_type: str,
     codes: List[str],
     trading_layer: dict,
+    fault_tolerance: float = 0,
     force: bool,
     seq_no: Optional[int],
     dry_run: bool,
@@ -277,9 +292,10 @@ async def build_algo_portfolio(
 
     The portfolio uses the collector's MIXED-mode fetch (union of per-algo
     data) + apply (weight-blend) + the same signal-agnostic engine. The
-    strategy_name stored in strategy_identity is ``portfolio_name(selection)``
-    — a stable name derived from the algo->weight map so the portfolio is
-    idempotent (skip-if-already-found).
+    strategy_name stored in strategy_identity is
+    ``portfolio_name(selection, fault_tolerance)`` — a stable name derived
+    from the algo->weight map (plus ``_ft{N}`` suffix when FT > 0) so the
+    portfolio is idempotent (skip-if-already-found).
 
     After the backtest, risks + forecast are computed for the portfolio
     (same as a standalone algo run) — handled by the caller (__main__.py)
@@ -287,7 +303,7 @@ async def build_algo_portfolio(
     """
     from strategy._common.runner import run_one_sec_type
 
-    pf_name = portfolio_name(selection)
+    pf_name = portfolio_name(selection, fault_tolerance=fault_tolerance)
     print(f"\n[Phase 2] Building portfolio '{pf_name}' "
           f"(blended backtest over {len(codes)} code(s))...", flush=True)
 

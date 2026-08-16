@@ -53,9 +53,13 @@ import IntradayPanel from "./IntradayPanel";
 interface Props {
   index: IndexBundle;
   themeMode: "light" | "dark";
+  /** Optional callback fired when the user clicks ANY date on the chart
+   *  (not just intraday-enabled dates). Used by the PE & Dividend analysis
+   *  page to highlight the matching month-end row in the stats table. */
+  onDateClick?: (date: string) => void;
 }
 
-export default function IndexPanel({ index, themeMode }: Props) {
+export default function IndexPanel({ index, themeMode, onDateClick }: Props) {
   const allRows = index.rows;
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
@@ -150,6 +154,10 @@ export default function IndexPanel({ index, themeMode }: Props) {
 
   const clickCbRef = useRef<(date: string) => void>(() => {});
   clickCbRef.current = handleDateClick;
+  // Keep the latest onDateClick in a ref so the zr handler (bound once on
+  // mount) always calls the freshest closure.
+  const onDateClickRef = useRef(onDateClick);
+  onDateClickRef.current = onDateClick;
 
   // Per-date cursor + click via zrender (the raw rendering layer).
   const handleReady = useCallback((chart: echarts.ECharts) => {
@@ -175,7 +183,12 @@ export default function IndexPanel({ index, themeMode }: Props) {
       if (dates.length === 0) return;
       const idx = idxFromX(e.offsetX ?? 0);
       const date = idx >= 0 ? dates[idx] : undefined;
-      if (date && intradaySetRef.current.has(date)) {
+      if (!date) return;
+      // Fire the generic onDateClick for ANY clicked date (used by the
+      // PE & Dividend analysis page to highlight the matching stats row).
+      onDateClickRef.current?.(date);
+      // Intraday expansion only fires for dates that have 5-min bars.
+      if (intradaySetRef.current.has(date)) {
         clickCbRef.current(date);
       }
     });

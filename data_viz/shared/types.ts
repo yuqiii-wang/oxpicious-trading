@@ -144,6 +144,9 @@ export interface EtfMarginRow {
   high: number;
   low: number;
   close: number;
+  /** Implied earnings per share (yuan) = close / pe (harmonic-weighted
+   *  constituent PE). Null when pe is null or close is null. */
+  eps: number | null;
   prev_close: number;
   adj_open: number | null;
   adj_high: number | null;
@@ -473,6 +476,9 @@ export interface StockBaselineRow {
   prev_close: number | null;
   pct_change: number | null;
   pe: number | null;
+  /** Earnings per share (yuan) = close / pe. Null when pe is null/<=0 (loss-
+   *  making / no PE recorded) or close is null. */
+  eps: number | null;
   is_pe_estimated: boolean;
   has_intraday_5mins: boolean;
   /** Trading volume in shares (from stats.stock_liquidity_margin.trading_shares,
@@ -627,10 +633,13 @@ export interface MovAveSpreadDetailRow {
   /**
    * Rolling population σ (ddof=0) of price over the long MA's window
    * (e.g. std_20days when ma_long = 20). In price units. Used to draw the
-   * Bollinger-style envelope (long_value ± k × long_std) on Price/MA charts.
-   * NULL until the rolling window is fully populated. MA5/MA charts also
-   * carry this field (the σ of the long MA's window) but the envelope is
-   * only drawn around the long MA on Price/MA charts by convention.
+   * Bollinger-style envelope (long_value ± k × long_std) on Price/MA and
+   * Price/EMA charts. NULL until the rolling window is fully populated.
+   * For SMA pairs, sourced from analysis.mov_ave_spreads_detail.std_*days;
+   * for EMA pairs, from analysis.mov_ave_spreads_detail_ema.std_*days (same
+   * source data — σ of price over W days). MA5/MA and EMA6/EMA charts also
+   * carry this field but the envelope is only drawn around the long MA/EMA
+   * on Price/MA and Price/EMA charts by convention.
    */
   long_std: number | null;
   /** Open price on this date (from basic_stats.open). */
@@ -726,8 +735,9 @@ export interface MovAveSpreadDetailRow {
   trading_amt_market_share_ma255: number | null;
 }
 
-/** Kind of pair: price-based (default, backward-compatible) or amt-based. */
-export type MovAveSpreadPairKind = "price" | "amt";
+/** Kind of pair: price-based (Simple MA, default, backward-compatible),
+ *  amt-based (trading-amount), or ema-based (Exponential MA). */
+export type MovAveSpreadPairKind = "price" | "amt" | "ema";
 
 export interface MovAveSpreadPairSeries {
   ma_short: number;
@@ -735,12 +745,16 @@ export interface MovAveSpreadPairSeries {
   /** Display label, e.g. "Price/MA5" or "MA5/MA20" or "Amt/MA20". */
   pair_label: string;
   /**
-   * "price" = the 9 original pairs (short=price or ma5, long=maW).
+   * "price" = the 9 original Simple MA pairs (short=price or ma5, long=maW).
    * "amt" = the 5 trading-amount pairs (short=trading_amount,
    *        long=trading_amt_maW). When an amt pair is selected, the chart
    *        switches to "amt envelope" mode: OHLC + price MAs are shown
    *        lowkey (dimmed), and the trading amount + all 5 trading_amt_ma
    *        lines form a prominent envelope on the secondary y-axis.
+   * "ema" = the 9 Exponential MA pairs (short=price or ema6, long=emaW).
+   *        Rendered like price pairs but using EMA values from
+   *        analysis.mov_ave_spreads_detail_ema. No Bollinger envelope
+   *        (EMA detail table has no σ columns).
    * Defaults to "price" for backward compatibility.
    */
   kind?: MovAveSpreadPairKind;
@@ -778,11 +792,11 @@ export interface MovAveSpreadCodesResponse {
   codes: MovAveSpreadCodeRow[];
 }
 
-/** Response for GET /chart?sec_type=etf&code=510050 — all 9 pair time series for one asset. */
+/** Response for GET /chart?sec_type=etf&code=510050 — all pair time series for one asset. */
 export interface MovAveSpreadChartResponse {
   code: string;
   name: string;
-  /** 9 pair time series (5 price-vs-MA + 4 ma5-vs-MA). */
+  /** Pair time series (9 Simple MA + 9 EMA + 5 trading-amt = 23 total). */
   pairs: MovAveSpreadPairSeries[];
   /**
    * Per-extreme-date rows from analysis.mov_ave_peaks_and_floors (filtered
@@ -820,6 +834,261 @@ export interface MovAveSpreadValleyLow {
    * down-triangles (red) for floors based on this flag.
    */
   is_extreme_peak_not_floor: boolean;
+}
+
+// ----------------------------------------------------------------------------
+//  Analysis Commons — PE & Dividend Yield (per-(sec_type, code, date) valuation)
+//    analysis.pe_and_dividends          — daily pe_ma20 + dividend_yield
+//    analysis.pe_and_dividend_stats     — monthly 5y rolling stats snapshot
+//    PK (detail): (sec_type, code, date)
+//    PK (stats):  (sec_type, code, date, is_active)  [date = month-end]
+//
+//    Close price and raw PE ratio are NOT stored in analysis.pe_and_dividends
+//    (they live in stats: index_basic_stats.close, index_valuation.pe,
+//    etf_basic_stats.close, stock_basic_stats.close). The chart endpoint JOINs
+//    stats live at request time so the UI always shows the freshest close/PE.
+// ----------------------------------------------------------------------------
+export type PeAndDividendSecType = "etf" | "index" | "stock";
+
+/** One daily row from analysis.pe_and_dividends JOINed with stats for close + pe. */
+export interface PeAndDividendChartRow {
+  /** Trading date (YYYY-MM-DD). */
+  date: string;
+  /** Close price from stats (index_basic_stats.close / etf adj_close /
+   *  stock_basic_stats.close). NULL when the source has no close on this date. */
+  close: number | null;
+  /** Raw PE ratio from stats.index_valuation.pe (index-only; NULL for etf/stock). */
+  pe: number | null;
+  /** 20-day MA of PE (index-only, from analysis.pe_and_dividends.pe_ma20). */
+  pe_ma20: number | null;
+  /** Trailing-12m dividend yield (D/P) as a fractional ratio (0.035 = 3.5%). */
+  dividend_yield: number | null;
+}
+
+/** Response for GET /api/analysis/pe-and-dividend/chart. */
+export interface PeAndDividendChartResponse {
+  code: string;
+  name: string;
+  rows: PeAndDividendChartRow[];
+}
+
+/** One monthly snapshot row from analysis.pe_and_dividend_stats. */
+export interface PeAndDividendStatsRow {
+  /** Month-end trading date (YYYY-MM-DD). */
+  date: string;
+  /** TRUE for the most recent monthly snapshot per (sec_type, code). */
+  is_active: boolean;
+  /** Rolling 5y min/max of PE (index-only; NULL for etf/stock). */
+  min_pe_5y: number | null;
+  max_pe_5y: number | null;
+  /** Rolling 5y population std (ddof=0) of dividend_yield, x100 as a
+   *  percentage (e.g. 0.5 = 0.5%). NULL when < 2 values in the window. */
+  dividend_var_5y: number | null;
+  /** Frequency-robust stability score (0-100) of per-share dividend AMOUNT
+   *  over trailing 5 calendar years (annualized per year so payment-frequency
+   *  changes don't create artificial gaps). 100 = perfectly stable. */
+  dividend_stability_5y: number | null;
+  /** Rolling record of the latest single dividend_per_share_pre_tax as of
+   *  the month-end date (stock/etf own events; NULL for index). */
+  last_dividend_per_share: number | null;
+  /** TRUE if at least one ex_dividend_date falls in the same (year, month)
+   *  as the month-end date. Drives bold styling on the Last Div cell. */
+  dividend_issued_this_month: boolean;
+}
+
+/** Response for GET /api/analysis/pe-and-dividend/stats. */
+export interface PeAndDividendStatsResponse {
+  code: string;
+  name: string;
+  rows: PeAndDividendStatsRow[];
+}
+
+/** One row in the codes list (analysis.pe_and_dividends DISTINCT ON code). */
+export interface PeAndDividendCodeRow {
+  code: string;
+  name: string;
+  first_date: string;
+  last_date: string;
+  n_dates: number;
+  /** Latest snapshot's pe_ma20 (NULL for etf/stock). */
+  latest_pe_ma20: number | null;
+  /** Latest snapshot's dividend_yield (fractional ratio). */
+  latest_dividend_yield: number | null;
+}
+
+/** Response for GET /api/analysis/pe-and-dividend/codes. */
+export interface PeAndDividendCodesResponse {
+  codes: PeAndDividendCodeRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Analysis Commons — Fourier Frequencies (dominant cycle via real FFT)
+//    analysis.fourier_freqs — per-(sec_type, code, last_date, range_days)
+//    dominant cycle period (freq, trading days) + amplitude (yuan) from a
+//    real FFT on the trailing range_days close prices.
+//    Currently populated for sec_type='index' only.
+export type FourierFreqsSecType = "index";
+
+/** One (last_date, range_days) row from analysis.fourier_freqs. */
+export interface FourierFreqsChartRow {
+  /** Last trading date of the FFT window (YYYY-MM-DD). */
+  last_date: string;
+  /** Window size in trading days (20 | 60 | 255 | 500 | 750). */
+  range_days: number;
+  /** Dominant cycle PERIOD in trading days (NOT cycles-per-day). */
+  freq: number;
+  /** Amplitude of the dominant component in yuan (half peak-to-peak). */
+  amplitude: number;
+}
+
+/** Response for GET /api/analysis/fourier-freqs/chart. */
+export interface FourierFreqsChartResponse {
+  code: string;
+  name: string;
+  rows: FourierFreqsChartRow[];
+}
+
+/** One code row from analysis.fourier_freqs (codes endpoint). */
+export interface FourierFreqsCodeRow {
+  code: string;
+  name: string;
+  first_date: string;
+  last_date: string;
+  n_dates: number;
+  /** Latest dominant cycle period per range_days (key=range_days). */
+  latest_freq: Record<number, number | null>;
+}
+
+/** Response for GET /api/analysis/fourier-freqs/codes. */
+export interface FourierFreqsCodesResponse {
+  codes: FourierFreqsCodeRow[];
+}
+
+/** One (range_days) row from the spectrum endpoint — the FULL one-sided
+ *  amplitude spectrum for a single (code, last_date) and window size. */
+export interface FourierFreqsSpectrumRow {
+  /** Window size in trading days (20 | 60 | 255 | 500 | 750). */
+  range_days: number;
+  /** Dominant cycle PERIOD in trading days (= round(range_days / k*),
+   *  where k* is the bin with the highest amplitude). */
+  freq: number;
+  /** Amplitude of the dominant component in yuan (= max(spectrum)). */
+  amplitude: number;
+  /** Full one-sided amplitude spectrum, length = floor(range_days/2).
+   *  Element i = |X[i+1]| × 2 / range_days — the amplitude of FFT bin
+   *  k=i+1, EXCLUDING DC (k=0). The corresponding cycle period for bin
+   *  k is range_days / k. The dominant bin is argmax(spectrum) + 1. */
+  spectrum: number[];
+}
+
+/** Response for GET /api/analysis/fourier-freqs/spectrum.
+ *  Up to 5 rows (one per range_days) for one (code, last_date). */
+export interface FourierFreqsSpectrumResponse {
+  code: string;
+  name: string;
+  /** The last_date these spectra are for. When the request omitted
+   *  last_date, this is the latest available date for the code. */
+  last_date: string;
+  spectrums: FourierFreqsSpectrumRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Analysis Derivatives — Margin Trends (single-industry RONGZI margin flows)
+//    analysis.margin_index_series (VIEW)  — weighted-avg constituent-stock
+//                                           margin per (index_code, date)
+//    analysis.margin_industry_correlation — pairwise security corr
+//
+//  RONGZI (融资 / cash-borrow) only — RONQIN (融券 / sec borrow) EXCLUDED.
+//  Two series: margin_balance (rz_balance, yuan, STOCK) and margin_buy
+//  (rz_buy, yuan, FLOW). Attribution: 'index' (weighted-avg stock margin
+//  via the VIEW) or 'etf' (the ETF's own margin from etf_liquidity_margin).
+//
+//  Single-industry page layout (2 plots):
+//    1. Margin trends — one line per security (indices or ETFs) in the
+//       industry; toggle Balance | Buy.
+//    2. Pairwise correlation — one line per selected security pair, read
+//       from margin_industry_correlation (precomputed); window toggle
+//       5/20/60/120/255d. Requires ≥2 securities selected.
+// ----------------------------------------------------------------------------
+export type MarginAttributionType = "index" | "etf";
+
+/** One security (index or ETF code) available in an industry for plotting. */
+export interface MarginSecurity {
+  /** Bare 6-digit index code or ETF code with exchange suffix. */
+  code: string;
+  /** Display name from stats.sec_classification.name. */
+  label: string;
+}
+
+/** One daily margin data point for one security. */
+export interface MarginSeriesRow {
+  code: string;
+  date: string;
+  /** RONGZI outstanding balance (融资余额, yuan). */
+  balance: number | null;
+  /** RONGZI buy amount (融资买入额, yuan, FLOW). */
+  buy: number | null;
+  /** Underlying security close price (from index/etf_basic_stats). */
+  close: number | null;
+}
+
+/** Response for GET /api/analysis/margin-trends/industry-series.
+ *  Per-security daily margin series for ONE industry + ONE attribution.
+ *  attribution='index' reads analysis.margin_index_series (weighted-avg
+ *  constituent-stock margin); attribution='etf' reads
+ *  stats.etf_liquidity_margin for the industry's ETFs. */
+export interface MarginIndustrySeriesResponse {
+  industry_id: string;
+  industry_label: string;
+  attribution: MarginAttributionType;
+  securities: MarginSecurity[];
+  rows: MarginSeriesRow[];
+}
+
+/** One security pair found in margin_industry_correlation for the
+ *  selected codes. Order: security_code < benchmark_code (COLLATE "C"). */
+export interface MarginCorrPair {
+  security_code: string;
+  benchmark_code: string;
+}
+
+/** One daily correlation value for one security pair. */
+export interface MarginCorrRow {
+  date: string;
+  security_code: string;
+  benchmark_code: string;
+  /** Pearson correlation in [-1, +1]; null when fewer than 2 overlapping
+   *  dates in the window. */
+  corr: number | null;
+}
+
+/** Response for GET /api/analysis/margin-trends/industry-correlation.
+ *  Precomputed pairwise rolling Pearson correlation from
+ *  analysis.margin_industry_correlation, filtered to the selected codes. */
+export interface MarginIndustryCorrelationResponse {
+  industry_id: string;
+  attribution: MarginAttributionType;
+  /** 'balance' (融资余额) or 'buy' (融资买入额). */
+  series: "balance" | "buy";
+  /** Rolling window in trading days (5/20/60/120/255). */
+  window: number;
+  pairs: MarginCorrPair[];
+  rows: MarginCorrRow[];
+}
+
+/** Margin trend episode for the margin trends shade overlay. */
+export interface MarginTrendEpisode {
+  code: string;
+  start_date: string;
+  end_date: string;
+  is_trend_up_not_down: boolean;
+}
+
+/** Response for GET /api/analysis/margin-trends/trends. */
+export interface MarginTrendsShadeResponse {
+  industry_id: string;
+  attribution: MarginAttributionType;
+  episodes: MarginTrendEpisode[];
 }
 
 // ----------------------------------------------------------------------------
@@ -1394,6 +1663,91 @@ export interface IndustryHypesAndDrainsResponse {
 }
 
 // ----------------------------------------------------------------------------
+//  Intraday Movements — per-5-min-tick % change vs previous trading day's
+//  close for the benchmark + ALL industries (shaded areas) + member indices.
+//  Pre-computed by analyze.intraday_industry_sentiments into
+//  analysis.intraday_industry_market_movements (parent, industry aggregate) +
+//  analysis.intraday_index_market_movements (child, individual index).
+//
+//  Top plot: benchmark_price_pct line + per-industry SHADED AREAS
+//  (industry_price_pct with areaStyle). Clicking a 5-min tick selects it
+//  for the middle + bottom plots.
+//  Middle plot: bar chart of industry_price_pct at the clicked tick,
+//  sorted by signed value. Green = positive, red = negative. Clicking an
+//  industry bar selects it for the bottom plot.
+//  Bottom plot: bar chart of code_price_pct for the clicked industry's
+//  member indices at the clicked tick, sorted by signed value.
+//
+//  GET /api/live-data/intraday-movements
+//    ?benchmark_code=000922&date=YYYY-MM-DD
+//  (date optional → latest available)
+// ----------------------------------------------------------------------------
+
+/** One 5-min tick of benchmark_price_pct (top plot main line). */
+export interface IntradayMovementsBenchmarkTick {
+  /** "HH:MM:SS" — bar timestamp within the trading day. */
+  time: string;
+  /** Benchmark close / prev_day_close - 1 (decimal, e.g. 0.0035 = +0.35%). */
+  benchmark_price_pct: number | null;
+}
+
+/** One (tick, industry) data point — drives the top plot SHADED AREAS and
+ *  the middle plot bars at any clicked tick. */
+export interface IntradayMovementsIndustryTick {
+  time: string;
+  industry_id: string;
+  industry_label: string;
+  /** TRUE for strategy themes, FALSE for industries. */
+  is_strategy: boolean;
+  /** Mean of member indices' code_price_pct across this industry at this tick. */
+  industry_price_pct: number | null;
+  /** industry_price_pct - benchmark_price_pct (signed diff). NULL when either
+   *  side is NULL. Drives the top plot SHADE color (green > 0, red < 0)
+   *  centered about the benchmark line — NOT a 0-baseline area. */
+  industry_price_pct_vs_benchmark: number | null;
+}
+
+/** One (code, tick, industry) data point — drives the bottom plot bars at
+ *  the clicked tick + clicked industry. */
+export interface IntradayMovementsMemberTick {
+  time: string;
+  /** Member index code (e.g. "000016"). */
+  code: string;
+  /** Display name from stats.index_identity (falls back to code). */
+  code_name: string;
+  industry_id: string;
+  /** Member index close / prev_day_close - 1. */
+  code_price_pct: number | null;
+}
+
+/** Distinct industry — for the legend & color map. */
+export interface IntradayMovementsIndustry {
+  industry_id: string;
+  industry_label: string;
+  is_strategy: boolean;
+}
+
+/** Response for GET /api/live-data/intraday-movements. */
+export interface IntradayMovementsResponse {
+  benchmark_code: string;
+  benchmark_name: string;
+  /** As-of date (YYYY-MM-DD). Latest available when no `date` was requested. */
+  date: string;
+  /** "HH:MM:SS" — the latest 5-min tick (default selection for middle plot). */
+  latest_time: string;
+  /** Benchmark % change per 5-min tick — drives the top plot main line. */
+  benchmark_series: IntradayMovementsBenchmarkTick[];
+  /** All industries' % change per (tick, industry) — drives the top plot
+   *  SHADED AREAS + middle plot bars at clicked tick. */
+  industry_series: IntradayMovementsIndustryTick[];
+  /** Member indices' % change per (code, tick, industry) — drives the
+   *  bottom plot bars at clicked tick + clicked industry. */
+  member_series: IntradayMovementsMemberTick[];
+  /** Distinct industries — for the legend & color map. */
+  industries: IntradayMovementsIndustry[];
+}
+
+// ----------------------------------------------------------------------------
 //  All-Industries Attribution Bar Chart — one row per industry for a given
 //  (benchmark_code, date). Drives the industry-level bar chart in "Benchmark
 //  Attribution" mode: each bar = one industry's benchmark_shared_weight
@@ -1644,6 +1998,13 @@ export interface StrategyDecision {
   fee: number | null;
   signal_value: number | null;
   signal_reason: string;
+  /** FT stressed confidence when OHLC moved UP. NULL = no FT applied.
+   *  0 = trade would be removed under UP stress (signal sign flipped).
+   *  >0 = stressed signal magnitude (confidence was cut but trade fires). */
+  ft_stressed_conf_up: number | null;
+  /** FT stressed confidence when OHLC moved DOWN. NULL = no FT applied.
+   *  0 = trade would be removed under DOWN stress. >0 = stressed magnitude. */
+  ft_stressed_conf_down: number | null;
 }
 
 export interface StrategyOhlcRow {
@@ -1709,6 +2070,8 @@ export interface StrategyBacktestResponse {
      *  null if no BUY. */
     first_buy_fill_price: number | null;
   };
+  /** Fault tolerance percentage (0-20) applied to this run. 0 = baseline. */
+  fault_tolerance: number;
 }
 
 // ----------------------------------------------------------------------------
@@ -1764,6 +2127,8 @@ export interface StrategyRiskSeq {
   drawdown_3rd_val: number | null;
   risk_score: number | null;
   risk_grade: StrategyRiskGrade | null;
+  /** FT amplified strategy's approximate total PnL. NULL = no FT applied. */
+  ft_amplified_total_pnl: number | null;
   /** Worst close-price peak-to-trough drawdown (fractional ratio <= 0) while position > 0. */
   deepest_drop_since_unzero_pos: number | null;
   deepest_drop_since_unzero_pos_peak_date: string | null;
@@ -1782,6 +2147,11 @@ export interface StrategyRiskPeriod {
   n_sells: number;
   n_buys: number;
   realized_pnl: number;
+  /** FT amplified realized P&L for this period (sum of per-SELL amplified
+   *  P&L). The amplified strategy picks the adverse OHLC direction per SELL
+   *  (loss → sell more, gain → sell less). 0 when no FT was applied.
+   *  UI plots a cumulative amplified P&L trend line vs the baseline curve. */
+  ft_amplified_pnl: number;
   /** Mark-to-market change in unrealized_pnl during this period =
    *  unrealized_pnl(end of period) - unrealized_pnl(end of previous period).
    *  From strategy_daily. Realized + unrealized = total economic P&L for the period. */
@@ -1801,11 +2171,34 @@ export interface StrategyRiskPeriod {
   is_counter_trend: boolean;
 }
 
+/** A single contribution factor to the risk_score. One row per
+ *  (seq, code, component, sub_key). SUM(contribution) = risk_score. */
+export interface StrategyRiskFactor {
+  seq_id: number;
+  code: string;
+  /** realized / unrealized / streak / period_asymmetry / period_tail / fault_tolerance */
+  component: "realized" | "unrealized" | "streak" | "period_asymmetry" | "period_tail" | "fault_tolerance";
+  /** Human-readable label (e.g. "Realized Loss (30d window)"). */
+  label: string;
+  /** Window days (1/30/90/365), streak length, or period type (month/season/year). */
+  sub_key: string;
+  /** This factor's contribution to the total risk_score. */
+  contribution: number;
+  /** The raw input (loss amount, streak months, dominance ratio, z-score). */
+  raw_value: number | null;
+  /** The threshold at which this factor contributes 1.0 (or 6.0 for period signals). */
+  threshold: number | null;
+  /** raw_value / threshold (capped at 4.0) — the exponential driver. */
+  ratio: number | null;
+}
+
 export interface StrategyRiskResponse {
   code: string;
   sec_type: MaSpreadSecType;
   risk_seq: StrategyRiskSeq | null;
   periods: StrategyRiskPeriod[];
+  /** Risk score contribution factors (empty when no risk_seq). */
+  risk_factors: StrategyRiskFactor[];
 }
 
 // ===========================================================================

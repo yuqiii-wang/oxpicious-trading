@@ -178,6 +178,10 @@ interface DecisionTableProps {
   selectedScenario?: string | null;
   /** Callback when the user selects a different scenario. */
   onScenarioChange?: (scenario: string | null) => void;
+  /** Fault tolerance percentage (0-20) applied to this run. 0 = baseline.
+   *  When >0, the Conf cell tooltip shows the baseline vs stressed
+   *  confidence comparison. */
+  faultTolerance?: number;
 }
 
 export default function DecisionTable({
@@ -187,6 +191,7 @@ export default function DecisionTable({
   forecastScenarios = [],
   selectedScenario = null,
   onScenarioChange,
+  faultTolerance = 0,
 }: DecisionTableProps) {
   if (decisions.length === 0) return null;
 
@@ -545,22 +550,126 @@ export default function DecisionTable({
                       >
                         {(() => {
                           const { mix, human } = parseMixReason(d.signal_reason);
+                          // FT comparison: when both ft_stressed_conf_up/down
+                          // are not null and fault_tolerance > 0, build a
+                          // bidirectional comparison block (OHLC ↑ + OHLC ↓).
+                          const hasFt = faultTolerance > 0 && (
+                            d.ft_stressed_conf_up != null || d.ft_stressed_conf_down != null
+                          );
+                          const ftUp = d.ft_stressed_conf_up ?? 0;
+                          const ftDown = d.ft_stressed_conf_down ?? 0;
+                          // % change relative to baseline confidence (guarded
+                          // against div-by-zero). Negative = confidence cut.
+                          const baseDenom = confidence > 0 ? confidence : 1;
+                          const pctUp = (ftUp - confidence) / baseDenom * 100;
+                          const pctDown = (ftDown - confidence) / baseDenom * 100;
+                          // Worst-case (most negative) % change across both
+                          // directions — drives the dot color.
+                          const worstPct = Math.min(pctUp, pctDown);
+                          const upGone = ftUp === 0;
+                          const downGone = ftDown === 0;
+                          const anyGone = upGone || downGone;
+                          // Per-direction color: dark red (signal disappeared),
+                          // red (>60% cut), amber (>30% cut), else inherit.
+                          const dirColor = (gone: boolean, pct: number): string | undefined => {
+                            if (gone) return "#8b0000";
+                            if (pct <= -60) return "#f44336";
+                            if (pct <= -30) return "#ed6c02";
+                            return undefined;
+                          };
+                          const upColor = dirColor(upGone, pctUp);
+                          const downColor = dirColor(downGone, pctDown);
+                          // Dot color: dark red (any signal disappeared) >
+                          // red (>60% cut) > amber (>30% cut) > gray.
+                          const dotColor = anyGone
+                            ? "#8b0000"
+                            : worstPct <= -60
+                              ? "#f44336"
+                              : worstPct <= -30
+                                ? "#ed6c02"
+                                : "#9e9e9e";
+                          const ftBlock = hasFt ? (
+                            <Box sx={{ mt: mix ? 1 : 0.5, pt: mix ? 1 : 0.5, borderTop: mix ? "1px dashed rgba(0,0,0,0.2)" : "none" }}>
+                              <Typography variant="caption" sx={{ fontWeight: 700, color: "#7b1fa2", display: "block" }}>
+                                ── FT{Math.round(faultTolerance)}% Stress (bidirectional) ──
+                              </Typography>
+                              <Typography variant="caption" sx={{ display: "block", color: upColor, fontWeight: upGone ? 600 : undefined }}>
+                                OHLC ↑: {ftUp > 0 ? `${ftUp.toFixed(1)}%` : "REMOVED"}
+                                {" "}({pctUp >= 0 ? "+" : ""}{pctUp.toFixed(0)}%)
+                              </Typography>
+                              <Typography variant="caption" sx={{ display: "block", color: downColor, fontWeight: downGone ? 600 : undefined }}>
+                                OHLC ↓: {ftDown > 0 ? `${ftDown.toFixed(1)}%` : "REMOVED"}
+                                {" "}({pctDown >= 0 ? "+" : ""}{pctDown.toFixed(0)}%)
+                              </Typography>
+                              {anyGone && (
+                                <Typography variant="caption" sx={{ display: "block", color: "#8b0000", fontWeight: 600 }}>
+                                  ⚠ Trade would be REMOVED under {upGone ? "UP" : "DOWN"} stress
+                                </Typography>
+                              )}
+                            </Box>
+                          ) : null;
+                          // FT dot indicator next to the reason text.
+                          const ftDot = hasFt ? (
+                            <Box
+                              component="span"
+                              sx={{
+                                display: "inline-block",
+                                width: 6,
+                                height: 6,
+                                borderRadius: "50%",
+                                mr: 0.5,
+                                bgcolor: dotColor,
+                                verticalAlign: "middle",
+                              }}
+                            />
+                          ) : null;
+
                           if (mix) {
+                            // Mixed mode: combine mix tooltip + FT block.
+                            const combinedTitle = (
+                              <Box>
+                                {renderMixTooltip(mix)}
+                                {ftBlock}
+                              </Box>
+                            );
                             return (
                               <Tooltip
-                                title={renderMixTooltip(mix)}
+                                title={combinedTitle}
                                 arrow
                                 placement="left"
                                 enterTouchDelay={0}
                               >
                                 <span style={{ cursor: "help", borderBottom: mix.netted ? "1px dashed #ed6c02" : "1px dotted rgba(0,0,0,0.3)" }}>
+                                  {ftDot}
                                   {human}
                                 </span>
                               </Tooltip>
                             );
                           }
-                          // Binary mode: show raw signal_reason (no tooltip —
-                          // the algo's reason text is already self-explanatory).
+                          // Binary mode: wrap reason in a tooltip when FT is
+                          // active; otherwise show plain text (no tooltip).
+                          if (hasFt) {
+                            return (
+                              <Tooltip
+                                title={(
+                                  <Box>
+                                    <Typography variant="caption" sx={{ display: "block", whiteSpace: "pre-wrap" }}>
+                                      {d.signal_reason}
+                                    </Typography>
+                                    {ftBlock}
+                                  </Box>
+                                )}
+                                arrow
+                                placement="left"
+                                enterTouchDelay={0}
+                              >
+                                <span style={{ cursor: "help", borderBottom: "1px dotted rgba(0,0,0,0.3)" }}>
+                                  {ftDot}
+                                  {d.signal_reason}
+                                </span>
+                              </Tooltip>
+                            );
+                          }
                           return d.signal_reason;
                         })()}
                       </td>

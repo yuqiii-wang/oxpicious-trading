@@ -49,6 +49,7 @@ from strategy._trading.engine import (
     run_backtest as _run_backtest_engine,
     compute_daily_rows as _compute_daily_rows,
 )
+from strategy.factors_and_algos._algo.tuning import tune_signals
 
 
 class AlgoBase(ABC):
@@ -132,13 +133,36 @@ class AlgoBase(ABC):
         buy_notional, skip_final_liquidation). ``signal_reason_fn`` is
         this algo's :meth:`build_signal_reason` so the reason text matches
         the algo's phrasing.
+
+        When ``params["fault_tolerance"] > 0``, a post-hoc stress pass
+        runs after the baseline backtest: OHLC on each baseline decision
+        date is adversarially perturbed (BUY up, SELL down by ft% of
+        |Δclose|), ``apply_signals`` is re-run on the stressed OHLC
+        (same precomputed tech stats — NOT recomputed), and the stressed
+        ``signal_confidence`` is attached to each decision as
+        ``ft_stressed_conf``. The baseline decisions themselves are
+        unchanged; the FT data is a comparison annotation for the UI.
         """
         if not df.empty:
             df = self.apply_signals(df, params)
-        return _run_backtest_engine(
+            # Base signal tuning (inherited by all sub-algos): zero out
+            # sub-threshold |signal_confidence| so dust trades (conf < 5)
+            # are ignored by the engine.
+            df = tune_signals(df)
+        decisions = _run_backtest_engine(
             df, params, sec_type, codes,
             signal_reason_fn=self.build_signal_reason,
         )
+
+        ft = float(params.get("fault_tolerance", 0) or 0)
+        if ft > 0 and decisions:
+            from strategy.factors_and_algos._algo.fault_tolerance import run_ft_stress
+            decisions = run_ft_stress(
+                self, df, params, sec_type, codes,
+                baseline_decisions=decisions,
+                signal_reason_fn=self.build_signal_reason,
+            )
+        return decisions
 
     def compute_daily_rows(self, code_df, decisions, anchor_price):
         """Delegate to the signal-agnostic engine helper (daily P&L)."""

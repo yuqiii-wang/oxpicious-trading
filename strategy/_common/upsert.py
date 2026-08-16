@@ -53,6 +53,7 @@ DECISION_COLUMNS = [
     "realized_pnl",
     "slippage", "fee",
     "signal_value", "signal_reason",
+    "ft_stressed_conf_up", "ft_stressed_conf_down",
 ]
 
 
@@ -124,19 +125,23 @@ async def insert_strategy_seq(
     ``start_date``/``end_date`` are the OHLC period the strategy is run over
     (input); they form the natural business key with strategy_name/sec_type/
     code/scenario. ``scenario``/``parent_seq_id`` tag forecast child seqs.
+    ``fault_tolerance`` is extracted from ``params`` (0 when absent) and
+    stored as a metadata column for querying/filtering.
     """
     params_json = json.dumps(params, default=str)
+    # Extract fault_tolerance from params (0 when absent).
+    ft = float(params.get("fault_tolerance", 0) or 0)
     # Use RETURNING to get the IDENTITY-generated seq_id.
     seq_id = await conn.fetchval(
         f"""
         INSERT INTO {SEQ_TABLE}
             (strategy_name, seq_no, sec_type, code, start_date, end_date,
-             params, status, scenario, parent_seq_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+             params, status, scenario, parent_seq_id, fault_tolerance)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
         RETURNING seq_id
         """,
         strategy_name, seq_no, sec_type, code, start_date, end_date,
-        params_json, status, scenario, parent_seq_id,
+        params_json, status, scenario, parent_seq_id, ft,
     )
     return int(seq_id)
 

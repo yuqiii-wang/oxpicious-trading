@@ -267,9 +267,11 @@ function trendBandsToMarkArea(
   ]);
 }
 
-/** Short-series label, e.g. "Price" or "MA5". */
-export function shortLabel(maShort: number): string {
-  return maShort === 0 ? "Price" : `MA${maShort}`;
+/** Short-series label, e.g. "Price", "MA5", or "EMA6".
+ *  kind = "ema" switches the prefix from MA to EMA for non-price shorts. */
+export function shortLabel(maShort: number, kind?: string): string {
+  if (maShort === 0) return "Price";
+  return kind === "ema" ? `EMA${maShort}` : `MA${maShort}`;
 }
 
 export type TradingAmtMode = "off" | "lowkey";
@@ -612,10 +614,17 @@ export function buildPairOption({
 
   const sColor = PRICE_COLOR;
   const lColor = MA120_COLOR;
-  const sName = shortLabel(pair.ma_short);
-  const lName = `MA${pair.ma_long}`;
+  const isEma = pair.kind === "ema";
+  const sName = shortLabel(pair.ma_short, pair.kind);
+  const lName = isEma ? `EMA${pair.ma_long}` : `MA${pair.ma_long}`;
 
-  // ---- Bollinger envelope (Price/MA pairs only) -------------------------
+  // ---- Bollinger envelope (Price/MA and Price/EMA pairs) ----
+  // Both SMA and EMA detail tables carry std_*days columns (σ of price over
+  // W days, ddof=0). For EMA pairs, the σ comes from the EMA detail table
+  // (ema.std_*days, aliased as ema_std_*days in the chart SQL); for SMA
+  // pairs, from the SMA detail table (d.std_*days). MA5/MA and EMA6/EMA
+  // pairs (ma_short !== 0) don't get the envelope (σ is of price, not of
+  // an MA-of-MA), matching the SMA pattern.
   const showBoll = isPricePair && bollingerK > 0;
   const upperData: Array<number | null> = new Array(n).fill(null);
   const lowerData: Array<number | null> = new Array(n).fill(null);

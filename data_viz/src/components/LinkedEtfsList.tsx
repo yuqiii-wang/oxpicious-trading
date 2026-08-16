@@ -35,6 +35,13 @@ import RefreshButton from "@/components/RefreshButton";
 import { fetchLinkedEtfs, invalidateCacheForUrl } from "@/lib/api-client";
 import { fmtNum } from "@/lib/series";
 import type { LinkedEtfsResponse } from "../../shared/types";
+import {
+  expandedTableAggCellSx,
+  expandedTableBodyCellSx,
+  expandedTableBodyRowSx,
+  expandedTableContainerSx,
+  expandedTableHeadCellSx,
+} from "@/shared/styles/expanded-table-styles";
 
 interface Props {
   /** Bare index code (e.g. "000300") — passed through to the API. */
@@ -54,18 +61,6 @@ interface Props {
 }
 
 const PAGE_SIZE = 10;
-
-const HEAD_SX = {
-  color: "#fff",
-  fontWeight: 600,
-  fontSize: "0.7rem",
-  whiteSpace: "nowrap",
-} as const;
-
-const CELL_SX = {
-  fontSize: "0.72rem",
-  whiteSpace: "nowrap",
-} as const;
 
 export default function LinkedEtfsList({
   code,
@@ -177,18 +172,7 @@ export default function LinkedEtfsList({
   // Sticky aggregation-row cell style — frozen top pane. position: sticky on
   // <td> pins the row to the top of the scrollable TableContainer so the
   // index-level totals stay visible while the per-ETF rows scroll beneath.
-  const AGG_SX = {
-    fontSize: "0.7rem",
-    fontWeight: 700,
-    whiteSpace: "nowrap",
-    color: "#fff",
-    position: "sticky",
-    top: 0,
-    zIndex: 2,
-    bgcolor: theme.palette.primary.dark,
-    borderBottom: "2px solid",
-    borderColor: "divider",
-  } as const;
+  const AGG_SX = expandedTableAggCellSx(theme);
 
   return (
     <Box>
@@ -249,29 +233,21 @@ export default function LinkedEtfsList({
                       {data.etfs.length} ETF{data.etfs.length === 1 ? "" : "s"} tracking {data.index_code}
                     </Typography>
                   </Stack>
-                  <TableContainer
-                    sx={{
-                      border: "1px solid",
-                      borderColor: "divider",
-                      borderRadius: 1,
-                      overflow: "auto",
-                      maxHeight: 460,
-                    }}
-                  >
+                  <TableContainer sx={expandedTableContainerSx(460)}>
                     <Table size="small" sx={{ minWidth: 880 }}>
                       <TableHead>
-                        <TableRow sx={{ bgcolor: theme.palette.primary.main }}>
-                          <TableCell sx={HEAD_SX}>Code</TableCell>
-                          <TableCell sx={HEAD_SX}>Name</TableCell>
-                          <TableCell sx={HEAD_SX}>Exch</TableCell>
-                          <TableCell sx={HEAD_SX} align="right">Close</TableCell>
-                          <TableCell sx={HEAD_SX} align="right">Trading Amt (亿)</TableCell>
-                          <TableCell sx={HEAD_SX} align="right">Total ETF Amt (亿)</TableCell>
-                          <TableCell sx={HEAD_SX} align="right">Amt MA5 (亿)</TableCell>
-                          <TableCell sx={HEAD_SX} align="right">Valuation Amt (亿)</TableCell>
-                          <TableCell sx={HEAD_SX}>Latest Date</TableCell>
-                          <TableCell sx={HEAD_SX} align="right">Days</TableCell>
-                          <TableCell sx={HEAD_SX}>Industry</TableCell>
+                        <TableRow>
+                          <TableCell sx={expandedTableHeadCellSx}>Code</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx}>Name</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx}>Exch</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx} align="right">Close</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx} align="right">Trading Amt (亿)</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx} align="right">Total ETF Amt (亿)</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx} align="right">Amt MA5 (亿)</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx} align="right">Valuation Amt (亿)</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx}>Latest Date</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx} align="right">Days</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx}>Industry</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
@@ -302,16 +278,10 @@ export default function LinkedEtfsList({
                           <TableCell sx={AGG_SX}>—</TableCell>
                         </TableRow>
                         {pagedEtfs.map((e, idx) => (
-                          <TableRow
-                            key={e.code}
-                            sx={{
-                              bgcolor: idx % 2 === 0 ? "background.paper" : "action.hover",
-                              "&:hover": { bgcolor: "action.selected" },
-                            }}
-                          >
-                            <TableCell sx={{ ...CELL_SX, fontWeight: 600 }}>{e.code}</TableCell>
-                            <TableCell sx={CELL_SX}>{e.name || "—"}</TableCell>
-                            <TableCell sx={CELL_SX}>
+                          <TableRow key={e.code} sx={expandedTableBodyRowSx(idx)}>
+                            <TableCell sx={{ ...expandedTableBodyCellSx, fontWeight: 600 }}>{e.code}</TableCell>
+                            <TableCell sx={expandedTableBodyCellSx}>{e.name || "—"}</TableCell>
+                            <TableCell sx={expandedTableBodyCellSx}>
                               {e.exchange ? (
                                 <Chip
                                   label={e.exchange}
@@ -323,23 +293,23 @@ export default function LinkedEtfsList({
                                 "—"
                               )}
                             </TableCell>
-                            <TableCell sx={{ ...CELL_SX, fontFamily: "monospace" }} align="right">
+                            <TableCell sx={{ ...expandedTableBodyCellSx, fontFamily: "monospace" }} align="right">
                               {e.latest_close != null ? fmtNum(e.latest_close) : "—"}
                             </TableCell>
-                            <TableCell sx={{ ...CELL_SX, fontFamily: "monospace" }} align="right">
+                            <TableCell sx={{ ...expandedTableBodyCellSx, fontFamily: "monospace" }} align="right">
                               {e.latest_trading_amount != null ? fmtNum(e.latest_trading_amount / 1e8) : "—"}
                             </TableCell>
                             {/* Index-level metrics — not applicable per-ETF. */}
-                            <TableCell sx={{ ...CELL_SX, color: "text.disabled" }} align="right">—</TableCell>
-                            <TableCell sx={{ ...CELL_SX, color: "text.disabled" }} align="right">—</TableCell>
-                            <TableCell sx={{ ...CELL_SX, fontFamily: "monospace" }} align="right">
+                            <TableCell sx={{ ...expandedTableBodyCellSx, color: "text.disabled" }} align="right">—</TableCell>
+                            <TableCell sx={{ ...expandedTableBodyCellSx, color: "text.disabled" }} align="right">—</TableCell>
+                            <TableCell sx={{ ...expandedTableBodyCellSx, fontFamily: "monospace" }} align="right">
                               {e.aum_yi != null ? fmtNum(e.aum_yi) : "—"}
                             </TableCell>
-                            <TableCell sx={CELL_SX}>{e.latest_date || "—"}</TableCell>
-                            <TableCell sx={{ ...CELL_SX, fontFamily: "monospace" }} align="right">
+                            <TableCell sx={expandedTableBodyCellSx}>{e.latest_date || "—"}</TableCell>
+                            <TableCell sx={{ ...expandedTableBodyCellSx, fontFamily: "monospace" }} align="right">
                               {e.n_days > 0 ? e.n_days : "—"}
                             </TableCell>
-                            <TableCell sx={CELL_SX}>{e.industry_label || "—"}</TableCell>
+                            <TableCell sx={expandedTableBodyCellSx}>{e.industry_label || "—"}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>

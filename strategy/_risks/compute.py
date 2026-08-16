@@ -34,6 +34,7 @@ import datetime
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 from strategy._risks.constants import (
@@ -45,6 +46,8 @@ from strategy._risks.constants import (
     LOSS_TAIL_2STD_TRIGGER,
     LOSS_DOMINANCE_RATIO_HIGH, MIN_PERIODS_FOR_STATS,
     LITTLE_LOSS_RATIO, LITTLE_GAIN_CV_MAX,
+    GAIN_DISCOUNT_WEIGHT,
+    FT_LOSS_THRESHOLD,
 )
 from strategy._risks.periods import period_value
 
@@ -579,34 +582,28 @@ def _period_override_risk(
     sells: pd.DataFrame,
     daily_df: pd.DataFrame,
     capital_base: float,
-) -> float:
+) -> Tuple[float, List[Dict[str, Any]]]:
     """Statistical distribution-based per-period risk component.
 
-    For each period type P ∈ {month, season, year}:
-      1. Compute per-period REALIZED P&L (SELL realized_pnl summed per
-         period — NO MTM change). MTM volatility is already captured by
-         the rolling-window unrealized component (weighted at 30%), so
-         including it here would double-count.
-      2. Split into gains (>0) and losses (<0); compute mean/var/std of each.
-      3. SIGNAL A — Distribution asymmetry: if loss_var > gain_var OR
-         loss_mean_abs > gain_mean, losses dominate gains. The dominance
-         ratio = max(loss_var/gain_var, loss_mean_abs/gain_mean). At ratio
-         = LOSS_DOMINANCE_RATIO_HIGH (2.0) → contributes 6.0 (HIGH).
-      4. SIGNAL B — Tail loss: the worst single period's loss z-score
-         (|loss| - loss_mean_abs) / loss_std beyond 2σ drives the
-         contribution. At 3σ (ratio = 1) → contributes 6.0 (HIGH).
+    Returns ``(total_score, factors)`` where ``factors`` is a list of
+    per-signal contribution dicts for UI display. Each factor has:
+    ``component`` (period_asymmetry / period_tail), ``label``, ``sub_key``
+    (period type), ``contribution`` (POSITIVE for loss penalty, NEGATIVE
+    for gain discount), ``raw_value``, ``threshold``, ``ratio``.
 
-    Both signals use ``scale * (exp(k · ratio) - 1)`` with
-    ``scale = RISK_GRADE_ELEVATED_BOUND`` (6.0) and ``k = ln 2``, capped at
-    MAX_LOSS_RATIO. Signals are summed across the three period types.
-
-    ``capital_base`` and ``daily_df`` are retained in the signature for
-    caller compatibility but ``daily_df`` is NOT used — the signals use
-    realized-only P&L. Thresholds are purely statistical (self-calibrating
-    from the strategy's own P&L distribution, not fixed capital fractions).
+    Signal A (Distribution Asymmetry) is BIDIRECTIONAL:
+      - Losses dominate (loss_var > gain_var OR loss_mean > gain_mean)
+        → POSITIVE penalty at full weight (1.0).
+      - Gains dominate (gain_var > loss_var OR gain_mean > loss_mean)
+        → NEGATIVE discount at GAIN_DISCOUNT_WEIGHT (0.3).
+      The dominant direction (larger dom_ratio) drives ONE signal per
+      period_type. Gain-side discounts can cancel the tail-loss signal
+      WITHIN this component but the score is floored at 0 so they cannot
+      push realized/unrealized/streak components negative.
     """
     scale = RISK_GRADE_ELEVATED_BOUND  # 6.0 — at-threshold contribution
     score = 0.0
+    factors: List[Dict[str, Any]] = []
 
     for period_type in ("month", "season", "year"):
         # Use REALIZED-only P&L (no MTM) to avoid double-counting unrealized
@@ -627,27 +624,74 @@ def _period_override_risk(
         loss_var = _variance(losses, loss_mean)
         loss_std = math.sqrt(loss_var)
 
-        # ---- Signal A: Distribution asymmetry ----------------------------
-        # loss_var > gain_var OR loss_mean_abs > gain_mean → losses dominate.
-        # dominance ratio: 1.0 = balanced, 2.0 = losses 2x gains (HIGH).
-        var_ratio = 1.0  # neutral (both degenerate or gains dominate)
+        # ---- Signal A: Distribution asymmetry (BIDIRECTIONAL) -----------
+        # Loss side: loss_var/gain_var OR loss_mean_abs/gain_mean (> 1 ⇒
+        # losses dominate → POSITIVE penalty, weight 1.0).
+        # Gain side: gain_var/loss_var OR gain_mean/loss_mean_abs (> 1 ⇒
+        # gains dominate → NEGATIVE discount, weight GAIN_DISCOUNT_WEIGHT).
+        # The DOMINANT direction (larger dom_ratio) drives ONE signal per
+        # period_type — gain-side discount can cancel tail-loss WITHIN this
+        # component but cannot push the period-override score below 0
+        # (floored at return).
+        loss_var_ratio = 1.0
         if gain_var > 0 and loss_var > 0:
-            var_ratio = loss_var / gain_var
+            loss_var_ratio = loss_var / gain_var
         elif gain_var == 0 and loss_var > 0:
             # Losses have variance where gains have none → losses dominate.
-            var_ratio = LOSS_DOMINANCE_RATIO_HIGH
-
-        mean_ratio = 1.0  # neutral
+            loss_var_ratio = LOSS_DOMINANCE_RATIO_HIGH
+        loss_mean_ratio = 1.0
         if gain_mean > 0 and loss_mean_abs > 0:
-            mean_ratio = loss_mean_abs / gain_mean
+            loss_mean_ratio = loss_mean_abs / gain_mean
         elif gain_mean == 0 and loss_mean_abs > 0:
             # No gains at all → losses dominate unconditionally.
-            mean_ratio = LOSS_DOMINANCE_RATIO_HIGH
+            loss_mean_ratio = LOSS_DOMINANCE_RATIO_HIGH
+        loss_dom_ratio = max(loss_var_ratio, loss_mean_ratio)
 
-        dom_ratio = max(var_ratio, mean_ratio)
-        if dom_ratio > 1.0:
-            ratio = min(dom_ratio - 1.0, MAX_LOSS_RATIO)
-            score += scale * (math.exp(RISK_EXP_K * ratio) - 1.0)
+        # Mirror: gain-side ratios (gain / loss, > 1 ⇒ gains dominate).
+        gain_var_ratio = 1.0
+        if loss_var > 0 and gain_var > 0:
+            gain_var_ratio = gain_var / loss_var
+        elif loss_var == 0 and gain_var > 0:
+            # Gains have variance where losses have none → gains dominate.
+            gain_var_ratio = LOSS_DOMINANCE_RATIO_HIGH
+        gain_mean_ratio = 1.0
+        if loss_mean_abs > 0 and gain_mean > 0:
+            gain_mean_ratio = gain_mean / loss_mean_abs
+        elif loss_mean_abs == 0 and gain_mean > 0:
+            # No losses at all → gains dominate unconditionally.
+            gain_mean_ratio = LOSS_DOMINANCE_RATIO_HIGH
+        gain_dom_ratio = max(gain_var_ratio, gain_mean_ratio)
+
+        # Pick the dominant direction (>= so ties favor loss penalty).
+        if loss_dom_ratio > 1.0 and loss_dom_ratio >= gain_dom_ratio:
+            ratio = min(loss_dom_ratio - 1.0, MAX_LOSS_RATIO)
+            contrib = scale * (math.exp(RISK_EXP_K * ratio) - 1.0)
+            score += contrib
+            factors.append({
+                "component": "period_asymmetry",
+                "label": f"Distribution Asymmetry — Loss-dominated ({period_type})",
+                "sub_key": period_type,
+                "contribution": round(contrib, 4),
+                "raw_value": round(loss_dom_ratio, 4),
+                "threshold": LOSS_DOMINANCE_RATIO_HIGH,
+                "ratio": round(ratio, 4),
+            })
+        elif gain_dom_ratio > 1.0:
+            # Gain-side discount — NEGATIVE contribution at reduced weight.
+            ratio = min(gain_dom_ratio - 1.0, MAX_LOSS_RATIO)
+            contrib = -scale * GAIN_DISCOUNT_WEIGHT * (
+                math.exp(RISK_EXP_K * ratio) - 1.0
+            )
+            score += contrib
+            factors.append({
+                "component": "period_asymmetry",
+                "label": f"Distribution Asymmetry — Gain-dominated ({period_type})",
+                "sub_key": period_type,
+                "contribution": round(contrib, 4),
+                "raw_value": round(gain_dom_ratio, 4),
+                "threshold": LOSS_DOMINANCE_RATIO_HIGH,
+                "ratio": round(ratio, 4),
+            })
 
         # ---- Signal B: Tail loss (2σ / 3σ exceedance) --------------------
         # Only when we have a loss distribution with non-zero std (≥ 2
@@ -662,62 +706,173 @@ def _period_override_risk(
                 ratio = min(
                     worst_z - LOSS_TAIL_2STD_TRIGGER, MAX_LOSS_RATIO
                 )
-                score += scale * (math.exp(RISK_EXP_K * ratio) - 1.0)
+                contrib = scale * (math.exp(RISK_EXP_K * ratio) - 1.0)
+                score += contrib
+                factors.append({
+                    "component": "period_tail",
+                    "label": f"Tail Loss ({period_type}, z={worst_z:.2f}σ)",
+                    "sub_key": period_type,
+                    "contribution": round(contrib, 4),
+                    "raw_value": round(worst_z, 4),
+                    "threshold": LOSS_TAIL_2STD_TRIGGER,
+                    "ratio": round(ratio, 4),
+                })
 
-    return score
+    # Floor: gain-side asymmetry discounts can cancel the tail-loss signal
+    # WITHIN this component but cannot push it negative (so they cannot
+    # leak negativity into realized/unrealized/streak components). The
+    # factorSum shown in UI may diverge from this floored score when the
+    # floor kicks in — the UI's "(score=X)" annotation surfaces that.
+    return max(0.0, score), factors
+
+
+# ---------------------------------------------------------------------------
+#  Fault-tolerance amplified stress factor
+# ---------------------------------------------------------------------------
+def _ft_amplified_pnl_per_sell(sells: pd.DataFrame) -> pd.Series:
+    """Per-SELL amplified realized P&L (aligned to ``sells`` index).
+
+    For each SELL row the "amplified" strategy picks the adverse OHLC
+    direction:
+
+      - SELL at **loss** (realized_pnl < 0): pick HIGHER stressed
+        confidence → sell MORE → realize MORE loss.
+      - SELL at **gain** (realized_pnl ≥ 0): pick LOWER stressed
+        confidence → sell LESS → lock in LESS gain.
+
+    The PnL scales linearly with the confidence ratio
+    (amplified_confidence / baseline_confidence). The baseline confidence
+    for a SELL is derived from qty (qty_sold) and total_qty_before:
+    baseline_conf = (qty / total_qty_before) * 100. Rows without FT data
+    use the baseline realized_pnl unchanged.
+
+    Returns a Series (float) indexed like ``sells``. All values are the
+    baseline realized_pnl when no FT columns are present (baseline run).
+    """
+    if sells.empty:
+        return pd.Series(dtype=float)
+    pnl = pd.to_numeric(sells.get("realized_pnl", 0), errors="coerce").fillna(0.0)
+    if (
+        "ft_stressed_conf_up" not in sells.columns
+        and "ft_stressed_conf_down" not in sells.columns
+    ):
+        return pnl.astype(float)
+    qty = pd.to_numeric(sells.get("qty", 0), errors="coerce").fillna(0.0)
+    total_qty_before = pd.to_numeric(
+        sells.get("total_qty_before", 0), errors="coerce").fillna(0.0)
+    up = pd.to_numeric(sells.get("ft_stressed_conf_up"), errors="coerce")
+    down = pd.to_numeric(sells.get("ft_stressed_conf_down"), errors="coerce")
+    has_ft = up.notna() | down.notna()
+    up_c = up.fillna(0.0)
+    down_c = down.fillna(0.0)
+    # Loss → max conf (sell more); Gain → min conf (sell less).
+    amplified_conf = np.where(pnl < 0, np.maximum(up_c, down_c), np.minimum(up_c, down_c))
+    # Baseline SELL confidence = (qty_sold / total_qty_before) * 100.
+    baseline_conf = np.where(total_qty_before > 0, (qty / total_qty_before) * 100.0, 0.0)
+    ratio = np.where(baseline_conf > 0, amplified_conf / baseline_conf, 1.0)
+    amplified = pnl * ratio
+    # Rows without FT data → baseline.
+    return pd.Series(np.where(has_ft, amplified, pnl), index=sells.index)
+
+
+def _compute_ft_factor(
+    sells: pd.DataFrame,
+    capital_base: float,
+) -> Tuple[float, Optional[float], List[Dict[str, Any]]]:
+    """Compute the fault-tolerance amplified stress risk factor.
+
+    Returns ``(contribution, amplified_total_pnl, factors)``.
+    - ``amplified_total_pnl`` is ``None`` when no FT data is present (so the
+      UI can distinguish "no FT" from "FT applied, amplified PnL = 0").
+    - ``factors`` is a list with 0 or 1 element (the FT factor, or empty
+      when no FT data is present or amplified PnL didn't degrade).
+
+    Risk-score rule:
+      - Amplified P&L **increases** gain (pnl_delta ≤ 0) → NO penalty.
+      - Amplified P&L **decreases** (pnl_delta > 0) → ADD risk score
+        (exponential contribution scaled by FT_LOSS_THRESHOLD).
+    """
+    if (
+        capital_base <= 0
+        or sells.empty
+        or "ft_stressed_conf_up" not in sells.columns
+        or "ft_stressed_conf_down" not in sells.columns
+    ):
+        return 0.0, None, []
+
+    # Drop rows where BOTH FT confs are NULL (baseline strategy, no FT).
+    ft_cols = sells[["ft_stressed_conf_up", "ft_stressed_conf_down"]]
+    has_ft = ft_cols.notna().any(axis=1)
+    if not has_ft.any():
+        return 0.0, None, []
+
+    amp_per_sell = _ft_amplified_pnl_per_sell(sells)
+    baseline_total = float(pd.to_numeric(sells["realized_pnl"], errors="coerce").fillna(0.0).sum())
+    amplified_total = float(amp_per_sell.sum())
+
+    pnl_delta = baseline_total - amplified_total  # positive = amplified worse
+    if pnl_delta <= 0:
+        # Amplified strategy didn't degrade → no risk contribution.
+        return 0.0, round(amplified_total, 4), []
+
+    scale = RISK_GRADE_ELEVATED_BOUND  # 6.0
+    loss_fraction = pnl_delta / capital_base
+    threshold = FT_LOSS_THRESHOLD  # 0.10
+    ratio = min(loss_fraction / threshold, MAX_LOSS_RATIO)
+    contribution = scale * (math.exp(RISK_EXP_K * ratio) - 1.0)
+
+    factor = {
+        "component": "fault_tolerance",
+        "label": f"FT Amplified Stress (ΔPnL={pnl_delta:+.2f})",
+        "sub_key": "amp",
+        "contribution": round(contribution, 4),
+        "raw_value": round(pnl_delta, 4),
+        "threshold": round(threshold * capital_base, 4),
+        "ratio": round(ratio, 4),
+    }
+    return contribution, round(amplified_total, 4), [factor]
 
 
 def _compute_risk_score(
     sells: pd.DataFrame,
     daily_df: pd.DataFrame,
     capital_base: float,
-) -> float:
+) -> Tuple[float, List[Dict[str, Any]]]:
     """Exponential rolling-window risk score.
 
-    For each window W ∈ RISK_WINDOW_DAYS (1d, 30d, 90d, 365d):
-      - REALIZED: worst W-day rolling sum of realized_pnl (losses only).
-      - UNREALIZED: worst W-day rolling MIN of unrealized_pnl (max_loss)
-        plus that window's end unrealized_pnl (end_loss).
-
-    Each loss contributes ``exp(k · loss_fraction / threshold_W) - 1`` where
-    ``loss_fraction = |loss| / capital_base`` (capital_base = total_buy_cost,
-    the peak capital deployed — the stable "% of capital" basis) and
-    ``threshold_W`` is the log-fit threshold for window W. Unrealized
-    contributions are weighted at UNREALIZED_WEIGHT (30%) vs realized.
-
-    A consecutive losing-month STREAK component is added at full weight on
-    top: the longest back-to-back run of losing trading months contributes
-    ``exp(k · streak / THRESHOLD) - 1`` (0 for streak < LOSING_STREAK_MIN),
-    so a sustained multi-month bleed pushes the grade up exponentially
-    even when each individual month's loss is below the window thresholds.
-
-    A PER-PERIOD STATISTICAL DISTRIBUTION component (``_period_override_risk``)
-    is added at full weight on top: for each period type (month/season/year)
-    the per-period Total P&L is split into gains/losses and mean/var/std are
-    computed. Two signals fire — distribution asymmetry (losses dominate
-    gains in variance or mean; at 2x dominance → 6.0) and tail loss (any
-    period whose loss z-score exceeds 2σ; at 3σ → 6.0) — each scaled by
-    RISK_GRADE_ELEVATED_BOUND so at-threshold contributes 6.0, pushing the
-    grade to HIGH on its own. Below threshold the contribution is
-    exponential (proportional). Thresholds are self-calibrating from the
-    strategy's own P&L distribution, NOT fixed capital fractions.
+    Returns ``(total_score, factors)`` where ``factors`` is a flat list of
+    per-component contribution dicts (realized per window, unrealized max
+    window, streak, period signals) for UI display.
     """
     if capital_base <= 0:
-        return 0.0
+        return 0.0, []
     realized_risk = 0.0
+    factors: List[Dict[str, Any]] = []
     # Unrealized: collect per-window contributions, then take the MAX (not
     # sum) across windows. A single MTM dip event is captured by ALL window
     # lengths (the dip falls within every rolling window), so summing would
     # quadruple-count it. Taking the max represents "the worst single-window
     # MTM dip risk" without double-counting.
     unrealized_window_contribs: List[float] = []
+    unrealized_window_meta: List[Dict[str, Any]] = []
     for w in RISK_WINDOW_DAYS:
         threshold = _loss_threshold(w)
         # Realized loss
         r_loss = _rolling_realized_loss(sells, w)
         if r_loss < 0:
-            realized_risk += _exp_contribution(
-                abs(r_loss) / capital_base, threshold)
+            loss_frac = abs(r_loss) / capital_base
+            ratio = min(loss_frac / threshold, MAX_LOSS_RATIO)
+            contrib = _exp_contribution(loss_frac, threshold)
+            realized_risk += contrib
+            factors.append({
+                "component": "realized",
+                "label": f"Realized Loss ({w}d window)",
+                "sub_key": str(w),
+                "contribution": round(contrib, 4),
+                "raw_value": round(float(r_loss), 4),
+                "threshold": round(threshold, 6),
+                "ratio": round(ratio, 4),
+            })
         # Unrealized max dip + end residual — collect for max-across-windows
         u_max, u_end = _rolling_unrealized_loss(daily_df, w)
         w_unreal = 0.0
@@ -728,13 +883,62 @@ def _compute_risk_score(
             w_unreal += _exp_contribution(
                 abs(u_end) / capital_base, threshold)
         unrealized_window_contribs.append(w_unreal)
-    unrealized_risk = max(unrealized_window_contribs) if unrealized_window_contribs else 0.0
-    streak_risk = _streak_contribution(_longest_losing_streak(sells))
-    period_risk = _period_override_risk(sells, daily_df, capital_base)
-    return (realized_risk
-            + UNREALIZED_WEIGHT * unrealized_risk
-            + streak_risk
-            + period_risk)
+        unrealized_window_meta.append({
+            "window": w, "threshold": threshold,
+            "u_max": float(u_max), "u_end": float(u_end),
+            "contrib": w_unreal,
+        })
+    # Unrealized: only the MAX window contributes (× UNREALIZED_WEIGHT).
+    if unrealized_window_contribs:
+        max_idx = max(range(len(unrealized_window_contribs)),
+                      key=lambda i: unrealized_window_contribs[i])
+        max_contrib = unrealized_window_contribs[max_idx]
+        meta = unrealized_window_meta[max_idx]
+        effective = UNREALIZED_WEIGHT * max_contrib
+        factors.append({
+            "component": "unrealized",
+            "label": f"Unrealized MTM Dip ({meta['window']}d, ×30%)",
+            "sub_key": str(meta["window"]),
+            "contribution": round(effective, 4),
+            "raw_value": round(meta["u_max"], 4),
+            "threshold": round(meta["threshold"], 6),
+            "ratio": round(
+                min(abs(meta["u_max"]) / capital_base / meta["threshold"]
+                    if meta["threshold"] > 0 and capital_base > 0 else 0.0,
+                    MAX_LOSS_RATIO), 4),
+        })
+        unrealized_risk = max_contrib
+    else:
+        unrealized_risk = 0.0
+    # Streak
+    streak = _longest_losing_streak(sells)
+    streak_risk = _streak_contribution(streak)
+    if streak_risk > 0:
+        ratio = min(streak / LOSING_STREAK_THRESHOLD_MONTHS, MAX_LOSS_RATIO)
+        factors.append({
+            "component": "streak",
+            "label": f"Losing-Month Streak ({streak} months)",
+            "sub_key": str(streak),
+            "contribution": round(streak_risk, 4),
+            "raw_value": streak,
+            "threshold": LOSING_STREAK_THRESHOLD_MONTHS,
+            "ratio": round(ratio, 4),
+        })
+    # Period override
+    period_risk, period_factors = _period_override_risk(
+        sells, daily_df, capital_base)
+    factors.extend(period_factors)
+    # Fault-tolerance amplified stress (only when ft_stressed_conf present)
+    ft_risk, _ft_amplified_pnl, ft_factors = _compute_ft_factor(
+        sells, capital_base)
+    factors.extend(ft_factors)
+    total = (realized_risk
+             + UNREALIZED_WEIGHT * unrealized_risk
+             + streak_risk
+             + period_risk
+             + ft_risk)
+    return total, factors
+
 
 
 # ---------------------------------------------------------------------------
@@ -827,7 +1031,12 @@ def compute_risk_seq(
     # Denominator = total_buy_cost (peak capital deployed, the stable "% of
     # capital" basis); falls back to total_abs_pnl when total_buy_cost is 0.
     capital_base = total_buy_cost if total_buy_cost > 0 else total_abs
-    risk_score = _compute_risk_score(sells, daily_df, capital_base)
+    risk_score, risk_factors = _compute_risk_score(sells, daily_df, capital_base)
+    # Compute FT amplified PnL separately (for the ft_amplified_total_pnl
+    # column on strategy_risks + the UI chart). _compute_risk_score already
+    # includes the FT factor in risk_score; this call just gets the PnL.
+    _ft_contrib, ft_amplified_pnl, _ft_fac_list = _compute_ft_factor(
+        sells, capital_base)
     is_little = _is_little_risk(sells, total_realized)
     grade = _risk_grade(risk_score, is_little=is_little)
 
@@ -862,6 +1071,7 @@ def compute_risk_seq(
         "drawdown_3rd_val": round(dd_vals[2], 4) if dd_vals[2] is not None else None,
         "risk_score": round(risk_score, 4),
         "risk_grade": grade,
+        "ft_amplified_total_pnl": round(ft_amplified_pnl, 4) if ft_amplified_pnl is not None else None,
         "deepest_drop_since_unzero_pos": round(drop_unzero, 6) if drop_unzero < 0 else 0.0,
         "deepest_drop_since_unzero_pos_peak_date": unzero_peak,
         "deepest_drop_since_unzero_pos_trough_date": unzero_trough,
@@ -873,6 +1083,11 @@ def compute_risk_seq(
         # recomputing. Stripped before upsert by _strip_non_column_keys.
         "_total_realized_pnl": round(total_realized, 4),
         "_total_abs_pnl": round(total_abs, 4),
+        # Risk score contribution factors — upserted to the separate
+        # strategy_risk_factors table by the orchestrator. Carried here
+        # (stripped before the risk_seq upsert) so each factor gets the
+        # seq_id + code context.
+        "_risk_factors": risk_factors,
     }
 
 
@@ -911,6 +1126,11 @@ def compute_risk_periods(
     else:
         sells["realized_pnl"] = pd.to_numeric(sells["realized_pnl"], errors="coerce").fillna(0.0)
         sells["abs_pnl"] = sells["realized_pnl"].abs()
+        # Per-SELL FT amplified realized P&L (baseline realized_pnl when no
+        # FT columns are present). Used to compute ft_amplified_pnl per
+        # period — the UI plots a cumulative amplified P&L trend line to
+        # compare against the baseline Accumulated Total P&L curve.
+        sells["_ft_amp_pnl"] = _ft_amplified_pnl_per_sell(sells)
 
     daily_df = pd.DataFrame()
     if daily_rows:
@@ -992,6 +1212,9 @@ def compute_risk_periods(
             grp = sells_pt[sells_pt["period_value"] == pv] if not sells_pt.empty else pd.DataFrame()
             grp_pnl = float(grp["realized_pnl"].sum()) if not grp.empty else 0.0
             grp_abs = float(grp["abs_pnl"].sum()) if not grp.empty else 0.0
+            # Per-period FT amplified realized P&L (sum of amplified SELL
+            # P&Ls in this period). 0 when no SELLs or no FT data.
+            grp_ft_amp = float(grp["_ft_amp_pnl"].sum()) if not grp.empty and "_ft_amp_pnl" in grp.columns else 0.0
             share = grp_abs / total_abs_pnl if total_abs_pnl > 0 else 0.0
             n_buys = int(((df["side"] == "BUY") &
                           (df["exec_date"].apply(
@@ -1010,6 +1233,7 @@ def compute_risk_periods(
                 "n_sells": int(len(grp)) if not grp.empty else 0,
                 "n_buys": n_buys,
                 "realized_pnl": round(grp_pnl, 4),
+                "ft_amplified_pnl": round(grp_ft_amp, 4),
                 "unrealized_pnl": round(unrealized, 4),
                 "max_loss_unrealized_pnl": round(cur_worst_loss, 4),
                 "max_gain_unrealized_pnl": round(cur_peak_gain, 4),

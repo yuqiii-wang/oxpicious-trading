@@ -11,7 +11,9 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from strategy._common.db import bulk_upsert_async
-from strategy._risks.constants import RISK_SEQ_TABLE, RISK_PERIOD_TABLE
+from strategy._risks.constants import (
+    RISK_SEQ_TABLE, RISK_PERIOD_TABLE, RISK_FACTORS_TABLE,
+)
 
 
 async def upsert_risk_seq(conn, rows: List[Dict[str, Any]]) -> int:
@@ -30,4 +32,14 @@ async def upsert_risk_periods(conn, rows: List[Dict[str, Any]]) -> int:
     return await bulk_upsert_async(
         conn, RISK_PERIOD_TABLE, rows,
         ["seq_id", "code", "period_type", "period_value"],
+    )
+
+
+async def upsert_risk_factors(conn, rows: List[Dict[str, Any]]) -> int:
+    """Upsert strategy_risk_factors rows (key: seq_id + code + component + sub_key)."""
+    if not rows:
+        return 0
+    return await bulk_upsert_async(
+        conn, RISK_FACTORS_TABLE, rows,
+        ["seq_id", "code", "component", "sub_key"],
     )

@@ -33,6 +33,10 @@ Execution model (worst-case fill on the signal day)
   - A SELL fires only where ``signal_confidence < 0`` (the signal layer
     already rising-edge-filters exits → one SELL per exit episode) and
     only after ``min_holding_period`` trading days since the last BUY.
+  - FT BUY tuning: when ``params["fault_tolerance"] > 0``, each BUY fill
+    is recomputed from OHLC shifted UP by ``ft% × |Δclose|`` (the day's
+    absolute close move), so the BUY cost is higher (worst-case entry
+    execution stress). SELL fills are NOT stressed — only entries pay up.
 
 Position model (long-only, no shorting)
 --------------------------------------
@@ -119,6 +123,15 @@ def backtest_single_code(
     cd = code_df.reset_index(drop=True)
     n = len(cd)
 
+    # FT BUY tuning: when fault_tolerance > 0, each BUY fill is recomputed
+    # from OHLC shifted UP by ft% × |Δclose| (the day's absolute close move)
+    # so the buy cost is higher. Precompute |Δclose| per bar (first row → 0).
+    ft = float(params.get("fault_tolerance", 0) or 0)
+    _ft_delta_close_abs = (
+        cd["close_price"].diff().abs().fillna(0.0).to_numpy()
+        if ft > 0 else None
+    )
+
     # Portfolio state (all in normalized units).
     cash = 0.0               # cumulative qty × norm_price (BUY −, SELL +)
     total_qty = 0.0          # cumulative quantity (qty/confidence units, NOT /100); always >= 0
@@ -154,6 +167,15 @@ def backtest_single_code(
         if sig > 0.0:
             confidence = sig
             fill_price = buy_fill
+            # FT BUY tuning: shift OHLC UP by ft% × |Δclose| and recompute
+            # the BUY fill so the buy cost is higher (worst-case entry
+            # execution stress). SELL fills are NOT stressed.
+            if _ft_delta_close_abs is not None:
+                shift = (ft / 100.0) * float(_ft_delta_close_abs[i])
+                if shift > 0:
+                    fill_price = F.worst_case_buy_fill(
+                        high + shift, low + shift, close + shift,
+                    )
             # Set the normalization anchor on the first BUY.
             if anchor_price is None:
                 anchor_price = float(fill_price)

@@ -9,11 +9,15 @@ import StockBaselinePage from "@/dataviz/pages/StockBaselinePage";
 import LiveDataIndexPage from "@/live/pages/LiveDataIndexPage";
 import LiveDataEtfPage from "@/live/pages/LiveDataEtfPage";
 import LiveDataStockPage from "@/live/pages/LiveDataStockPage";
+import LiveDataMarketMovementsPage from "@/live/pages/LiveDataMarketMovementsPage";
 import CommonsPage from "@/analysis/pages/CommonsPage";
 import DerivativesPage from "@/analysis/pages/DerivativesPage";
 import CompositesPage from "@/analysis/pages/CompositesPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
+import PeAndDividendPage from "@/analysis/pages/PeAndDividendPage";
+import FourierFreqsPage from "@/analysis/pages/FourierFreqsPage";
+import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
 
 export default function App() {
@@ -22,8 +26,9 @@ export default function App() {
       <TopAppBar />
       <Box component="main" sx={{ p: { xs: 1.5, md: 3 }, maxWidth: 1600, mx: "auto" }}>
         <Routes>
-          <Route path="/" element={<Navigate to="/dataviz/debt-baseline" replace />} />
-          <Route path="/live" element={<Navigate to="/live/index" replace />} />
+          <Route path="/" element={<Navigate to="/live/market-movements" replace />} />
+          <Route path="/live" element={<Navigate to="/live/market-movements" replace />} />
+          <Route path="/live/market-movements" element={<LiveDataMarketMovementsPage />} />
           <Route path="/live/index" element={<LiveDataIndexPage />} />
           <Route path="/live/etf" element={<LiveDataEtfPage />} />
           <Route path="/live/stock" element={<LiveDataStockPage />} />
@@ -37,7 +42,10 @@ export default function App() {
           <Route path="/analysis/commons" element={<CommonsPage />} />
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
           <Route path="/analysis/commons/industry-sentiments" element={<IndustrySentimentsPage />} />
+          <Route path="/analysis/commons/pe-dividend" element={<PeAndDividendPage />} />
+          <Route path="/analysis/commons/fourier-freqs" element={<FourierFreqsPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
+          <Route path="/analysis/derivatives/margin-trends" element={<MarginTrendsPage />} />
           <Route path="/analysis/composites" element={<CompositesPage />} />
           <Route path="/strategy" element={<Navigate to="/strategy/singleton" replace />} />
           <Route

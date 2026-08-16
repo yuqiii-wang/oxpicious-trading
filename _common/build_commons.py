@@ -100,6 +100,25 @@ def setup_utf8_stdout() -> None:
 _NUM_INVALID_TOKENS = {"", "--", "-", "—", "null", "NULL", "None", "nan", "NaN"}
 
 
+def compute_eps(close_val, pe_val) -> Optional[float]:
+    """Earnings per share = close / pe (identity PE = price / EPS).
+
+    Returns ``close / pe`` rounded to 6 decimals, or None when either value
+    is missing / non-finite or pe <= 0 (loss-making / NULL PE). Used by the
+    stock and ETF basic-stats builders to populate the ``eps`` column.
+    """
+    if close_val is None or pe_val is None:
+        return None
+    try:
+        c = float(close_val)
+        p = float(pe_val)
+    except (TypeError, ValueError):
+        return None
+    if not (np.isfinite(c) and np.isfinite(p)) or p <= 0:
+        return None
+    return round(c / p, 6)
+
+
 def parse_num(s, default: float = 0.0) -> Optional[float]:
     """Coerce a string/number to float.
 

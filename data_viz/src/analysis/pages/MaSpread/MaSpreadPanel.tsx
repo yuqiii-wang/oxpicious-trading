@@ -61,6 +61,13 @@ const LONG_MA_ORDER = [5, 20, 60, 120, 255] as const;
 /** Column index of MA60 in LONG_MA_ORDER — gets the "Trend Study" header. */
 const TREND_STUDY_COL = 2;
 
+/**
+ * Long-EMA column order for the 9 EMA pair chips. EMA windows are
+ * 6/20/60/120/255 (EMA6 replaces MA5 — EMAs use 6 instead of 5 as the
+ * short window). Same structure as LONG_MA_ORDER but with 6 in column 0.
+ */
+const LONG_EMA_ORDER = [6, 20, 60, 120, 255] as const;
+
 export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // ---- Chart data ---------------------------------------------------------
   const [chartData, setChartData] = useState<MovAveSpreadChartResponse | null>(null);
@@ -75,8 +82,8 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   const firstPairRows = chartData?.pairs[0]?.rows ?? [];
 
   // Bollinger multiplier k in MA ± k×σ. Default 2 (standard Bollinger).
-  // 0 hides the envelope. Only affects Price/MA pairs (ma_short === 0);
-  // MA5/MA pairs don't get the envelope and the dropdown is hidden.
+  // 0 hides the envelope. Affects Price/MA and Price/EMA pairs (ma_short === 0);
+  // MA5/MA and EMA6/EMA pairs don't get the envelope and the dropdown is hidden.
   // Options: 0, 0.5, 1, 1.5, 2, 2.5, 3 (step 0.5).
   const [bollingerK, setBollingerK] = useState(2);
 
@@ -151,11 +158,17 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // chart option builder.
   const pairs = chartData?.pairs ?? [];
 
-  // Lookup from `${ma_short}-${ma_long}` → index in pairs, used to
+  // Lookup from `${kind}-${ma_short}-${ma_long}` → index in pairs, used to
   // place each pair chip in its long-MA column of the 2-row pair grid.
+  // kind prefix ("price" | "ema" | "amt") separates the 3 pair families
+  // that share the same (ma_short, ma_long) — e.g. Price/MA20 (price-0-20)
+  // vs Price/EMA20 (ema-0-20).
   const pairIndexMap = useMemo(() => {
     const m = new Map<string, number>();
-    pairs.forEach((p, i) => m.set(`${p.ma_short}-${p.ma_long}`, i));
+    pairs.forEach((p, i) => {
+      const kind = p.kind ?? "price";
+      m.set(`${kind}-${p.ma_short}-${p.ma_long}`, i);
+    });
     return m;
   }, [pairs]);
 
@@ -164,7 +177,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   const selectedPair = pairs[safePairIdx];
   // True when the active pair is a Price/MA60 or MA5/MA60 "trend study" pair —
   // highlights the Trend Study column header.
-  const trendStudyActive = selectedPair?.ma_long === 60 && selectedPair?.kind !== "amt";
+  const trendStudyActive = selectedPair?.ma_long === 60 && selectedPair?.kind === "price";
   // True when an Amt/MA pair is selected — price chips are frozen (disabled).
   const amtPairSelected = selectedPair?.kind === "amt";
 
@@ -298,17 +311,18 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
       )}
       {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
 
-      {/* Pair chips — two rows aligned by long MA (Price row + MA5 row),
-          with a "Trend Study" column header above the MA60 column. Moved to
-          the top of the card so the time slider can sit at the bottom. */}
+      {/* Pair chips — Simple MA section (2 rows) + Exponential MA section
+          (2 rows) + optional Trading Amt/MA row. Moved to the top of the
+          card so the time slider can sit at the bottom. */}
       {!loading && !error && pairs.length > 0 && (
         <Box sx={{ mt: 1, mb: 0.5 }}>
+          {/* ---- Simple MA section ---- */}
           <Typography
             variant="caption"
             color="text.secondary"
             sx={{ mb: 0.5, display: "block", fontSize: "0.7rem" }}
           >
-            Pairs — click to switch
+            Pairs (Simple MA) — click to switch
           </Typography>
           <Box
             sx={{
@@ -351,7 +365,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                 Always clickable — selecting one recovers the normal OHLC
                 price style (exits the amt-envelope view). */}
             {LONG_MA_ORDER.map((maLong, col) => {
-              const idx = pairIndexMap.get(`0-${maLong}`);
+              const idx = pairIndexMap.get(`price-0-${maLong}`);
               return (
                 <Box key={`price-${col}`} sx={{ gridColumn: col + 1 }}>
                   {idx != null && renderPairChip(pairs[idx], idx)}
@@ -364,23 +378,67 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
               if (maLong === 5) {
                 return <Box key={`ma5-empty-${col}`} sx={{ gridColumn: col + 1 }} />;
               }
-              const idx = pairIndexMap.get(`5-${maLong}`);
+              const idx = pairIndexMap.get(`price-5-${maLong}`);
               return (
                 <Box key={`ma5-${col}`} sx={{ gridColumn: col + 1 }}>
                   {idx != null && renderPairChip(pairs[idx], idx)}
                 </Box>
               );
             })}
-            {/* Trading Amt/MA row (ma_short = -1): 5 chips, one per long-MA
-                column. Only shown when the trading-amt toggle is ON. Clicking
-                an Amt/MA chip switches the chart to "amt envelope" mode
-                (trading-amount bars + a slim envelope of 5 trading_amt_ma
-                lines, with a lowkey OHLC/price reference). Clicking the active
-                Amt/MA chip again ("unclick") recovers the OHLC price style. */}
-            {tradingAmtMode !== "off" && (
-              <>
+          </Box>
+
+          {/* ---- Exponential MA section ---- */}
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ mt: 1, mb: 0.5, display: "block", fontSize: "0.7rem" }}
+          >
+            Pairs (Exponential MA) — click to switch
+          </Typography>
+          <Box
+            sx={{
+              display: "grid",
+              gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+              gap: 0.75,
+              alignItems: "center",
+            }}
+          >
+            {/* Price/EMA row (ma_short = 0): one chip per long-EMA column. */}
+            {LONG_EMA_ORDER.map((emaLong, col) => {
+              const idx = pairIndexMap.get(`ema-0-${emaLong}`);
+              return (
+                <Box key={`ema-price-${col}`} sx={{ gridColumn: col + 1 }}>
+                  {idx != null && renderPairChip(pairs[idx], idx)}
+                </Box>
+              );
+            })}
+            {/* EMA6/EMA row (ma_short = 6): no EMA6/EMA6 pair — col 0 empty. */}
+            {LONG_EMA_ORDER.map((emaLong, col) => {
+              if (emaLong === 6) {
+                return <Box key={`ema6-empty-${col}`} sx={{ gridColumn: col + 1 }} />;
+              }
+              const idx = pairIndexMap.get(`ema-6-${emaLong}`);
+              return (
+                <Box key={`ema6-${col}`} sx={{ gridColumn: col + 1 }}>
+                  {idx != null && renderPairChip(pairs[idx], idx)}
+                </Box>
+              );
+            })}
+          </Box>
+
+          {/* ---- Trading Amt/MA section (optional, toggle-driven) ---- */}
+          {tradingAmtMode !== "off" && (
+            <Box sx={{ mt: 1 }}>
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
+                  gap: 0.75,
+                  alignItems: "center",
+                }}
+              >
                 {/* Row label */}
-                <Box sx={{ gridColumn: "1 / -1", mt: 0.5 }}>
+                <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
                   <Typography
                     variant="caption"
                     component="span"
@@ -394,16 +452,16 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                   </Typography>
                 </Box>
                 {LONG_MA_ORDER.map((maLong, col) => {
-                  const idx = pairIndexMap.get(`-1-${maLong}`);
+                  const idx = pairIndexMap.get(`amt--1-${maLong}`);
                   return (
                     <Box key={`amt-${col}`} sx={{ gridColumn: col + 1 }}>
                       {idx != null && renderPairChip(pairs[idx], idx)}
                     </Box>
                   );
                 })}
-              </>
-            )}
-          </Box>
+              </Box>
+            </Box>
+          )}
         </Box>
       )}
 

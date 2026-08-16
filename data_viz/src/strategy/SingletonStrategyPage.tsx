@@ -81,6 +81,12 @@ export default function SingletonStrategyPage() {
   // When any algo has non-zero weight, the resolved strategy_name is used to
   // load the composite (portfolio) strategy results from the DB.
   const [selection, setSelection] = useState<StrategySelection>(DEFAULT_STRATEGY_SELECTION);
+  // Fault tolerance percentage (0 = disabled, 1-20 = enabled). When > 0, the
+  // strategy_name gets an _ft{N} suffix and the backtest runs a two-pass
+  // stress test (baseline → stress OHLC on decision days → recompute → re-run).
+  // Toggling the checkbox switches between two distinct strategies in the DB.
+  // Defaults to 10 (ON) so the FT variant is the default strategy shown.
+  const [faultTolerance, setFaultTolerance] = useState(10);
   // Forecast toggle for Run Strategy. When true (default), the full pipeline
   // runs: backtest → risks → 10-scenario forecast → child seq risks. When
   // false, skips the forecast entirely for a faster run.
@@ -111,11 +117,31 @@ export default function SingletonStrategyPage() {
   // others. Updated by a capture-phase mousemove listener on the chart canvas
   // (see handleChartReady); read by the tooltip formatter in the option builder.
   const hoveredScenarioRef = useRef<string | null>(null);
-  // Refs mirroring the latest backtest/forecast state so the mousemove handler
-  // (bound once on chart ready) always sees fresh data without re-binding.
-  const backtestRef = useRef(backtest);
+
+  // Truncated backtest for chart display — when forecast data is present,
+  // truncate the OHLC array to end at forecast_date (the backtest's last
+  // actual decision date) so the chart ends where the backtest ended. This
+  // ensures the forecast anchor (placed at the last OHLC date) aligns with
+  // the last actual candle's close. Without truncation, the chart may show
+  // newer OHLC data (added after the backtest ran), causing the forecast to
+  // appear at the wrong position with a mismatched anchor value.
+  const displayBacktest = useMemo(() => {
+    if (!backtest) return null;
+    if (!forecast || forecast.rows.length === 0 || !forecast.stats?.forecast_date) return backtest;
+    const fcDate = forecast.stats.forecast_date;
+    const idx = backtest.ohlc.findIndex((r) => r.date === fcDate);
+    // Not found or already the last OHLC date — no truncation needed.
+    if (idx < 0 || idx >= backtest.ohlc.length - 1) return backtest;
+    return { ...backtest, ohlc: backtest.ohlc.slice(0, idx + 1) };
+  }, [backtest, forecast]);
+
+  // Refs mirroring the latest displayBacktest/forecast state so the mousemove
+  // handler (bound once on chart ready) always sees fresh data without
+  // re-binding. Uses displayBacktest (truncated at forecast_date) so the
+  // handler's ohlcLen matches the chart's actual OHLC region length.
+  const backtestRef = useRef<StrategyBacktestResponse | null>(displayBacktest);
   const forecastRef = useRef(forecast);
-  useEffect(() => { backtestRef.current = backtest; }, [backtest]);
+  useEffect(() => { backtestRef.current = displayBacktest; }, [displayBacktest]);
   useEffect(() => { forecastRef.current = forecast; }, [forecast]);
   // Cleanup function for the DOM mousemove/mouseleave listeners (stored so
   // we can remove old listeners before adding new ones on chart re-init).
@@ -160,9 +186,9 @@ export default function SingletonStrategyPage() {
     setLoading(true);
     setError(null);
     Promise.all([
-      fetchSingletonBacktest(code, secType as any, null, selection),
-      fetchSingletonRisks(code, secType as any, null, selection),
-      fetchSingletonForecast1m(code, secType as any, selection),
+      fetchSingletonBacktest(code, secType as any, null, selection, faultTolerance),
+      fetchSingletonRisks(code, secType as any, null, selection, faultTolerance),
+      fetchSingletonForecast1m(code, secType as any, selection, faultTolerance),
     ])
       .then(([bt, rk, fc]) => {
         setBacktest(bt);
@@ -174,7 +200,7 @@ export default function SingletonStrategyPage() {
         setError(String(e instanceof Error ? e.message : e));
       })
       .finally(() => setLoading(false));
-  }, [selection]);
+  }, [selection, faultTolerance]);
 
   // Load ONLY the forecast decisions + risks for a scenario. Merges the 20
   // forecast SELL decisions with the cached parent backtest's actual decisions
@@ -186,8 +212,8 @@ export default function SingletonStrategyPage() {
     setLoading(true);
     setError(null);
     Promise.all([
-      fetchForecastScenarioDecisions(code, secType as any, scenario, selection),
-      fetchSingletonRisks(code, secType as any, scenario, selection),
+      fetchForecastScenarioDecisions(code, secType as any, scenario, selection, faultTolerance),
+      fetchSingletonRisks(code, secType as any, scenario, selection, faultTolerance),
     ])
       .then(([fcResp, rk]) => {
         setRisks(rk);
@@ -218,7 +244,7 @@ export default function SingletonStrategyPage() {
         }
       })
       .finally(() => setLoading(false));
-  }, [selection]);
+  }, [selection, faultTolerance]);
 
   // Auto-load when a code is selected. Resets scenario to null (parent seq)
   // and clears the auto-select ref so the default scenario is re-applied.
@@ -271,26 +297,26 @@ export default function SingletonStrategyPage() {
       }
       // Re-fetch parent risks (cached, cheap) to restore the parent's risk
       // panel. Uses the cache so this is instant if already fetched.
-      fetchSingletonRisks(nav.searchCode, nav.secType as any, null, selection)
+      fetchSingletonRisks(nav.searchCode, nav.secType as any, null, selection, faultTolerance)
         .then((rk) => setRisks(rk))
         .catch((e) => setError(String(e instanceof Error ? e.message : e)));
     } else {
       loadScenarioForecast(nav.searchCode, nav.secType, selectedScenario);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedScenario, selection]);
+  }, [selectedScenario, selection, faultTolerance]);
 
   // Chart option — only built when backtest data is available. The selected
   // risk period drives a shaded band on the OHLC chart. The forecast overlay
   // (10 sigma scenarios + mean) is appended when forecast rows are present.
   const chartOption = useMemo(() => {
-    if (!backtest) return null;
+    if (!displayBacktest) return null;
     return buildSingletonStrategyOption({
-      data: backtest, themeMode, selectedPeriod,
+      data: displayBacktest, themeMode, selectedPeriod,
       forecast: forecast && forecast.rows.length > 0 ? forecast : null,
       hoveredScenarioRef,
     });
-  }, [backtest, themeMode, selectedPeriod, forecast]);
+  }, [displayBacktest, themeMode, selectedPeriod, forecast]);
 
   // ECharts instance ref — stored via onReady so the canvas click handler
   // can convert pixel coordinates to data values for forecast curve selection.
@@ -317,12 +343,12 @@ export default function SingletonStrategyPage() {
   // y-position. Only fires when forecast data is available AND the click is
   // in the forecast region (dataIdx >= OHLC dates length).
   const handleCanvasClick = useCallback((dataIdx: number, pixel?: [number, number]) => {
-    if (!backtest || !forecast || forecast.rows.length === 0) return;
+    if (!displayBacktest || !forecast || forecast.rows.length === 0) return;
     if (!pixel) return;
     const chart = chartInstanceRef.current;
     if (!chart) return;
 
-    const ohlcLen = backtest.ohlc.length;
+    const ohlcLen = displayBacktest.ohlc.length;
     // Forecast region starts at ohlcLen (F+1 label is at index ohlcLen).
     if (dataIdx < ohlcLen) return; // click was in the actual OHLC region
 
@@ -373,7 +399,7 @@ export default function SingletonStrategyPage() {
     if (bestScenario) {
       setSelectedScenario(bestScenario);
     }
-  }, [backtest, forecast]);
+  }, [displayBacktest, forecast]);
 
   // Chart ready handler — stores the instance AND attaches a capture-phase
   // mousemove listener on the chart CONTAINER (not the canvas) to track
@@ -494,7 +520,7 @@ export default function SingletonStrategyPage() {
     setRunSuccess(false);
     try {
       const result = await runSingletonStrategy(
-        nav.searchCode, nav.secType as any, runWithForecast, selection,
+        nav.searchCode, nav.secType as any, runWithForecast, selection, faultTolerance,
       );
       if (result.success) {
         setRunSuccess(true);
@@ -510,7 +536,7 @@ export default function SingletonStrategyPage() {
     } finally {
       setRunning(false);
     }
-  }, [nav.searchCode, nav.secType, running, loadParentFromDb, runWithForecast, selection]);
+  }, [nav.searchCode, nav.secType, running, loadParentFromDb, runWithForecast, selection, faultTolerance]);
 
   return (
     <StrategyPageShell
@@ -530,6 +556,8 @@ export default function SingletonStrategyPage() {
                 selection={selection}
                 onChange={setSelection}
                 disabled={running}
+                faultTolerance={faultTolerance}
+                onFaultToleranceChange={setFaultTolerance}
               />
               <ButtonGroup
                 variant="contained"
@@ -625,7 +653,7 @@ export default function SingletonStrategyPage() {
                 <Alert severity="info" sx={{ py: 0, flex: 1 }}>
                   Running <code>python -m strategy.singleton_trading --algo {serializeSelection(selection)}
                 --sec-type{" "}
-                {nav.secType} --codes {searchCode} --force{!runWithForecast ? " --no-forecast" : ""}</code>…
+                {nav.secType} --codes {searchCode} --force{!runWithForecast ? " --no-forecast" : ""}{faultTolerance > 0 ? ` --fault-tolerance ${faultTolerance}` : ""}</code>…
                 this may take a moment{runWithForecast ? " (forecast adds ~10 child seqs)" : ""}.
                 </Alert>
               )}
@@ -719,6 +747,7 @@ export default function SingletonStrategyPage() {
                 forecastScenarios={forecastScenarios}
                 selectedScenario={selectedScenario}
                 onScenarioChange={setSelectedScenario}
+                faultTolerance={backtest.fault_tolerance ?? 0}
               />
             )}
           </Stack>

@@ -1,17 +1,11 @@
 """
-build_index_composition.py — Build CSI + SZSE index composition snapshots
+builds.index.composition — Build CSI + SZSE index composition snapshots
 and insert directly to stats.sec_composition (missing-data-only, no
 intermediate CSV).
 
 Reads the per-index closeweight CSVs produced by download scripts:
   • CSI:  temps/csi_index_composition/*_closeweight_*.csv
-           (produced by download_csindex_linked_etf.py +
-            download_index_composition.py — CSI indices like 000300,
-            000905, 000852, etc., with weights from CSI)
   • SZSE: temps/szse_index_composition/*_closeweight_*.csv
-           (produced by download_szse_index_composition.py — SZSE indices
-            like 399001 深证成指, 399006 创业板指, 399237 运输指数, etc.,
-            with weights computed from float shares)
 
 Each CSV contains one snapshot_date for one index_code with columns
 (snapshot_date, index_code, stock_code, stock_name, weight_pct). Rows
@@ -29,21 +23,11 @@ With --force: DELETE FROM stats.sec_composition WHERE source_type='index'
 first (ETF composition rows are preserved — they are owned by
 builds.etf). Then read ALL source CSVs and insert.
 
-NOTE: stats.sec_composition is shared between ETF composition (source_type='etf',
-loaded by builds.etf) and index composition (source_type='index', loaded here).
-This script only touches index rows.
-
 Usage:
   python -m builds.index.composition
   python -m builds.index.composition --force
 """
-import os, glob, time, argparse
-import datetime
-
-import warnings
-warnings.filterwarnings("ignore")
-
-import pandas as pd
+import time
 
 from _common.build_commons import (
     setup_utf8_stdout, add_common_build_args, get_db_or_exit,
@@ -56,178 +40,16 @@ setup_utf8_stdout()
 
 import asyncio
 
-# ============================================================================
-# Paths
-# ============================================================================
-INDEX_COMP_DIR      = os.path.join(PROJECT_ROOT, "temps", "csi_index_composition")
-SZSE_INDEX_COMP_DIR = os.path.join(PROJECT_ROOT, "temps", "szse_index_composition")
+from builds._commons.paths import INDEX_COMP_DIR, SZSE_INDEX_COMP_DIR
+from builds.index.composition import (
+    build_index_composition_rows,
+    build_szse_index_composition_rows,
+)
 
 
-# ============================================================================
-# CSI index composition: read closeweight CSVs
-# ============================================================================
-def build_index_composition_rows(verbose=True):
-    """Read CSI index composition CSVs and build rows for stats.sec_composition.
-
-    Returns a list of dicts with keys:
-      snapshot_date, code, source_type, rank, stock_code, stock_name, weight_pct
-    """
-    if not os.path.isdir(INDEX_COMP_DIR):
-        if verbose:
-            print(f"    [INDEX-COMP] dir not found: {INDEX_COMP_DIR}", flush=True)
-        return []
-
-    files = sorted(glob.glob(os.path.join(INDEX_COMP_DIR, "*_closeweight_*.csv")))
-    if not files:
-        if verbose:
-            print(f"    [INDEX-COMP] no CSVs found in {INDEX_COMP_DIR}", flush=True)
-        return []
-
-    if verbose:
-        print(f"    [INDEX-COMP] {len(files)} CSV files in {INDEX_COMP_DIR}", flush=True)
-
-    dfs = []
-    for path in files:
-        try:
-            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
-        except Exception:
-            continue
-        if df is None or len(df) == 0:
-            continue
-        dfs.append(df)
-
-    if not dfs:
-        return []
-
-    combined = pd.concat(dfs, ignore_index=True)
-    for c in ("snapshot_date", "index_code", "stock_code", "stock_name", "weight_pct"):
-        if c not in combined.columns:
-            if verbose:
-                print(f"    [INDEX-COMP] WARN: missing column '{c}'", flush=True)
-            return []
-    combined["weight_pct"] = pd.to_numeric(combined["weight_pct"], errors="coerce").fillna(0.0)
-    combined = combined.sort_values(
-        ["index_code", "snapshot_date", "weight_pct"],
-        ascending=[True, True, False],
-    ).reset_index(drop=True)
-
-    rows = []
-    for (index_code, snap_date), sub in combined.groupby(["index_code", "snapshot_date"]):
-        snap_date_str = str(snap_date).strip()
-        try:
-            snap_date_obj = datetime.datetime.strptime(snap_date_str, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        for rank_idx, (_, r) in enumerate(sub.iterrows(), start=1):
-            sc = str(r.get("stock_code", "")).strip()
-            sc_stripped = sc.split(".")[0].zfill(6)
-            if len(sc_stripped) != 6 or not sc_stripped.isdigit():
-                continue
-            rows.append({
-                "snapshot_date": snap_date_obj,
-                "code": str(index_code).strip().zfill(6),
-                "source_type": "index",
-                "rank": rank_idx,
-                "stock_code": sc,
-                "stock_name": str(r.get("stock_name", "") or ""),
-                "weight_pct": float(r["weight_pct"]),
-            })
-
-    if verbose:
-        n_indices = combined["index_code"].nunique()
-        n_dates = combined["snapshot_date"].nunique()
-        print(f"    [INDEX-COMP] {len(rows):,} rows from {n_indices} indices, "
-              f"{n_dates} snapshot dates", flush=True)
-    return rows
-
-
-# ============================================================================
-# SZSE index composition: read SZSE index composition CSVs
-# ============================================================================
-def build_szse_index_composition_rows(verbose=True):
-    """Read SZSE index composition CSVs and build rows for stats.sec_composition.
-
-    Reads files from temps/szse_index_composition/ which are produced by
-    download_szse_index_composition.py. These contain the latest constituent
-    stocks for SZSE indices like 399001 (深证成指), 399006 (创业板指), and
-    399237 (运输指数), with weights computed from float shares.
-
-    Returns a list of dicts with keys:
-      snapshot_date, code, source_type, rank, stock_code, stock_name, weight_pct
-    """
-    if not os.path.isdir(SZSE_INDEX_COMP_DIR):
-        if verbose:
-            print(f"    [SZSE-INDEX-COMP] dir not found: {SZSE_INDEX_COMP_DIR}", flush=True)
-        return []
-
-    files = sorted(glob.glob(os.path.join(SZSE_INDEX_COMP_DIR, "*_closeweight_*.csv")))
-    if not files:
-        if verbose:
-            print(f"    [SZSE-INDEX-COMP] no CSVs found in {SZSE_INDEX_COMP_DIR}", flush=True)
-        return []
-
-    if verbose:
-        print(f"    [SZSE-INDEX-COMP] {len(files)} CSV files in {SZSE_INDEX_COMP_DIR}", flush=True)
-
-    dfs = []
-    for path in files:
-        try:
-            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
-        except Exception:
-            continue
-        if df is None or len(df) == 0:
-            continue
-        dfs.append(df)
-
-    if not dfs:
-        return []
-
-    combined = pd.concat(dfs, ignore_index=True)
-    for c in ("snapshot_date", "index_code", "stock_code", "stock_name", "weight_pct"):
-        if c not in combined.columns:
-            if verbose:
-                print(f"    [SZSE-INDEX-COMP] WARN: missing column '{c}'", flush=True)
-            return []
-    combined["weight_pct"] = pd.to_numeric(combined["weight_pct"], errors="coerce").fillna(0.0)
-    combined = combined.sort_values(
-        ["index_code", "snapshot_date", "weight_pct"],
-        ascending=[True, True, False],
-    ).reset_index(drop=True)
-
-    rows = []
-    for (index_code, snap_date), sub in combined.groupby(["index_code", "snapshot_date"]):
-        snap_date_str = str(snap_date).strip()
-        try:
-            snap_date_obj = datetime.datetime.strptime(snap_date_str, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        for rank_idx, (_, r) in enumerate(sub.iterrows(), start=1):
-            sc = str(r.get("stock_code", "")).strip()
-            sc_stripped = sc.split(".")[0].zfill(6)
-            if len(sc_stripped) != 6 or not sc_stripped.isdigit():
-                continue
-            rows.append({
-                "snapshot_date": snap_date_obj,
-                "code": str(index_code).strip().zfill(6),
-                "source_type": "index",
-                "rank": rank_idx,
-                "stock_code": sc,
-                "stock_name": str(r.get("stock_name", "") or ""),
-                "weight_pct": float(r["weight_pct"]),
-            })
-
-    if verbose:
-        n_indices = combined["index_code"].nunique()
-        n_dates = combined["snapshot_date"].nunique()
-        print(f"    [SZSE-INDEX-COMP] {len(rows):,} rows from {n_indices} indices, "
-              f"{n_dates} snapshot dates", flush=True)
-    return rows
-
-
-# ============================================================================
-# Main pipeline
-# ============================================================================
 async def main():
+    import argparse
+
     ap = argparse.ArgumentParser(
         description="Build CSI + SZSE index composition and insert to stats.sec_composition (missing-data-only)."
     )

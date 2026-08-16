@@ -1,28 +1,20 @@
 """Path and constant definitions for the index baseline build.
 
-All on-disk locations and validation regexes used by this package:
-  • CSINDEX_DIR    — temps/csindex/                  (CSIndex *_history.csv + *_1m.csv)
-  • SZSE_ARCHIVE_DIR — temps/szse_archive/           (SZSE historical archive)
-  • SZSE_TREND_DIR  — temps/szse_trend/              (SZSE recent trend)
-  • SSE_TREND_DIR   — temps/sse_trend/               (SSE trend snapshots)
-  • CNINDEX_DIR     — temps/cnindex_archive/         (CNINDEX history exports)
+All shared path constants are imported from builds._commons.paths.
+Baseline-specific constants (validation regex, thresholds) remain here.
 """
 from __future__ import annotations
 
-import os
 import re
 
-from _common.build_commons import PROJECT_ROOT
-
-CSINDEX_DIR = os.path.join(PROJECT_ROOT, "temps", "csindex")
-SZSE_ARCHIVE_DIR = os.path.join(PROJECT_ROOT, "temps", "szse_archive")
-SZSE_TREND_DIR = os.path.join(PROJECT_ROOT, "temps", "szse_trend")
-SSE_TREND_DIR = os.path.join(PROJECT_ROOT, "temps", "sse_trend")
-CNINDEX_DIR = os.path.join(PROJECT_ROOT, "temps", "cnindex_archive")
-
-# SZSE broad-market benchmarks to load from szse_archive/szse_trend index CSVs.
-# These supplement the CSIndex history files with SZSE-only indexes.
-SZSE_INDEX_CODES = {"399001", "399006", "399237"}  # 深证成指, 创业板指, 运输指数
+from builds._commons.paths import (
+    CSINDEX_DIR,
+    SZSE_ARCHIVE_DIR,
+    SZSE_TREND_DIR,
+    SSE_TREND_DIR,
+    CNINDEX_DIR,
+    SZSE_INDEX_CODES,
+)
 
 # Minimum shared-weight threshold for proxy index selection during close
 # estimation.  If no index has > 60% composition overlap with the target,
@@ -34,3 +26,9 @@ SHARED_WEIGHT_THRESHOLD = 60.0
 # (e.g. CES100 中华港股通精选100) that would violate the constraint, so they
 # are skipped during build.
 VALID_CODE_RE = re.compile(r'^(\d{6}|H\d{5})$')
+
+__all__ = [
+    "CSINDEX_DIR", "SZSE_ARCHIVE_DIR", "SZSE_TREND_DIR", "SSE_TREND_DIR",
+    "CNINDEX_DIR", "SZSE_INDEX_CODES",
+    "SHARED_WEIGHT_THRESHOLD", "VALID_CODE_RE",
+]

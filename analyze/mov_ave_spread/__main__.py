@@ -13,12 +13,17 @@ Pipeline
      (filtered to target_dates in incremental mode).
   5. Upsert detail.
   6. Upsert analysis_identity.
-  7. INTERNAL STEP: compute Wilder RSI (6/10/14/20d) + price gaps (2/3d)
+  7. INTERNAL STEP: compute Wilder RSI (6/10/14/20/60/120/255/500d) + price gaps (2/3d)
      from the SAME source price data already loaded in Step 1 ->
      analysis.mov_ave_rsi (see rsi.py). Reuses the same DB connection +
      source DataFrame. This step used to be a standalone
      analyze.mov_ave_rsi package; it is now an internal step because it
      shares the same source price data and active-universe pre-filter.
+  8. INTERNAL STEP: compute EMA spread detail (9 EMA gap pairs + 5 EMA
+     slope + 5 EMA curvature) from the SAME source data (EMA columns +
+     pre-computed EMA slopes/curvatures already in the parent DataFrame)
+     -> analysis.mov_ave_spreads_detail_ema (see ema.py). Reuses the
+     same DB connection + source DataFrame.
 
 Default (incremental) mode:
   Only dates present in source identity tables (stats.etf_identity +
@@ -91,6 +96,7 @@ from analyze.mov_ave_spread.peaks_and_floors import (  # noqa: E402
     compute_peaks_and_floors,
 )
 from analyze.mov_ave_spread.rsi import run_rsi  # noqa: E402
+from analyze.mov_ave_spread.ema import run_ema  # noqa: E402
 
 
 async def _filter_per_sec_type_async(conn, table, rows):
@@ -220,6 +226,16 @@ async def _process_one_sec_type(
 
     # ---- RSI step (reuses same source DataFrame) -----------------------
     await run_rsi(conn, df, force=force, pool=pool,
+                  max_concurrent=max_concurrent, sec_type=st)
+
+    # ---- EMA detail step (reuses same source DataFrame) ---------------
+    # Computes 9 EMA gap (vs) columns + selects pre-computed EMA slope/
+    # curvature columns into analysis.mov_ave_spreads_detail_ema (see
+    # ema.py). The EMA columns (ema{6,20,60,120,255}) + EMA slope/
+    # curvature are already in the parent DataFrame (fetched + computed
+    # by fetch_source_data / compute_ema_slopes_curvatures), so this step
+    # needs no second DB fetch.
+    await run_ema(conn, df, force=force, pool=pool,
                   max_concurrent=max_concurrent, sec_type=st)
 
     # Free the source DataFrame — full history no longer needed.

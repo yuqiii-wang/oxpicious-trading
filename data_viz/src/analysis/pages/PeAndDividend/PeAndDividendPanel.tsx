@@ -1,0 +1,327 @@
+/**
+ * PeAndDividendPanel — one card per code: the EXACT data-viz baseline plot
+ * for the security on top, monthly PE & Dividend stats table beneath.
+ *
+ * The plot is NOT reimplemented here — it delegates to the shared baseline
+ * panel used across the app:
+ *   • sec_type=index → IndexPanel  (OHLC + MAs + Trading Amt + PE twin axis)
+ *   • sec_type=etf   → EtfMarginPanel (rebased OHLC + MAs + RZ/RQ + Amt +
+ *                     corp-action markers; dividends already shown as gold
+ *                     diamond markPoints on ex-dividend dates)
+ *   • sec_type=stock → StockPanel (OHLC + MAs + PE; dividends already shown
+ *                     as gold diamond markPoints on ex-dividend dates)
+ *
+ * Clicking any date on the plot fires onDateClick → the monthly stats table
+ * beneath highlights the row whose month-end contains the clicked date and
+ * scrolls it into view.
+ *
+ * The monthly PE & Dividend stats table (analysis.pe_and_dividend_stats) is
+ * rendered beneath the plot: one row per month-end snapshot, most recent
+ * first. is_active row is tagged with a "latest" chip.
+ */
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Box,
+  Chip,
+  CircularProgress,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Typography,
+} from "@mui/material";
+import ChartCard from "@/components/ChartCard";
+import IndexPanel from "@/dataviz/features/index-baseline/IndexPanel";
+import EtfMarginPanel from "@/dataviz/features/etf-margin/EtfMarginPanel";
+import StockPanel from "@/dataviz/features/stock-baseline/StockPanel";
+import { DIVIDEND_COLOR, PE_COLOR } from "@/theme/chart-palette";
+import { fmtNum, fmtPct } from "@/lib/series";
+import {
+  fetchIndicesCombined,
+  fetchEtfMarginCombined,
+  fetchStocksCombined,
+  fetchPeAndDividendStats,
+} from "@/lib/api-client";
+import type {
+  IndexBundle,
+  EtfBundle,
+  StockBundle,
+  PeAndDividendStatsResponse,
+  PeAndDividendStatsRow,
+} from "../../../../shared/types";
+import type { PanelProps } from "./types";
+import {
+  expandedTableBodyCellSx,
+  expandedTableBodyRowSx,
+  expandedTableContainerSx,
+  expandedTableHeadCellSx,
+  expandedTableNumCellSx,
+} from "@/shared/styles/expanded-table-styles";
+
+/** Format a YYYY-MM-DD date as a short YYYY-MM string for month display. */
+function fmtMonth(dateStr: string): string {
+  return dateStr.length >= 7 ? dateStr.slice(0, 7) : dateStr;
+}
+
+/** Return the YYYY-MM key for a YYYY-MM-DD date string. */
+function monthKey(dateStr: string): string {
+  return dateStr.slice(0, 7);
+}
+
+export function PeAndDividendPanel({
+  code,
+  name,
+  secType,
+  themeMode,
+}: PanelProps) {
+  // ---- Security baseline bundle (IndexBundle | EtfBundle | StockBundle) ---
+  const [bundle, setBundle] = useState<IndexBundle | EtfBundle | StockBundle | null>(null);
+  const [bundleLoading, setBundleLoading] = useState(false);
+  const [bundleError, setBundleError] = useState<string | null>(null);
+
+  // ---- Stats data ---------------------------------------------------------
+  const [statsData, setStatsData] = useState<PeAndDividendStatsResponse | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
+
+  // Clicked date from the plot — drives the table highlight + scroll-into-view.
+  const [clickedDate, setClickedDate] = useState<string | null>(null);
+
+  // Ref to the table row that should scroll into view when the highlight
+  // changes (set by the chart click handler).
+  const highlightedRowRef = useRef<HTMLTableRowElement | null>(null);
+
+  // Fetch the security baseline bundle on mount and whenever code/sec_type
+  // changes. Uses the SAME combined endpoints as /dataviz/index-baseline,
+  // /dataviz/etf-margin, /dataviz/stock-baseline — page_size=1 + code filter
+  // returns just the one security.
+  useEffect(() => {
+    let cancelled = false;
+    setBundleLoading(true);
+    setBundleError(null);
+    setBundle(null);
+    const p =
+      secType === "index"
+        ? fetchIndicesCombined(null, null, null, null, 1, 1, code, null).then((r) => r.indices[0] ?? null)
+        : secType === "etf"
+          ? fetchEtfMarginCombined(null, null, null, null, undefined, 1, 1, code, null).then((r) => r.etfs[0] ?? null)
+          : fetchStocksCombined(null, null, null, null, 1, 1, code, null).then((r) => r.stocks[0] ?? null);
+    p.then((b) => {
+      if (cancelled) return;
+      setBundle(b);
+      setBundleLoading(false);
+    }).catch((e: Error) => {
+      if (cancelled) return;
+      setBundleError(e.message);
+      setBundleLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [code, secType]);
+
+  // Fetch stats data on mount and whenever code/sec_type changes.
+  useEffect(() => {
+    let cancelled = false;
+    setStatsLoading(true);
+    setStatsError(null);
+    fetchPeAndDividendStats(code, secType)
+      .then((data) => {
+        if (cancelled) return;
+        setStatsData(data);
+        setStatsLoading(false);
+      })
+      .catch((e: Error) => {
+        if (cancelled) return;
+        setStatsError(e.message);
+        setStatsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [code, secType]);
+
+  // Reset clicked date when the code changes.
+  useEffect(() => {
+    setClickedDate(null);
+  }, [code, secType]);
+
+  // ---- Stats table: highlight + scroll-into-view --------------------------
+  // Find the stats row whose month-end is the latest one <= clickedDate.
+  const statsRows: PeAndDividendStatsRow[] = statsData?.rows ?? [];
+  const highlightedStatsRowDate = useMemo(() => {
+    if (!clickedDate || statsRows.length === 0) return null;
+    for (const r of statsRows) {
+      if (r.date <= clickedDate) return r.date;
+    }
+    return null;
+  }, [clickedDate, statsRows]);
+
+  useEffect(() => {
+    if (!highlightedStatsRowDate) return;
+    const t = setTimeout(() => {
+      highlightedRowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
+    return () => clearTimeout(t);
+  }, [highlightedStatsRowDate]);
+
+  // ---- Render: baseline plot ---------------------------------------------
+  const plotContent = (() => {
+    if (bundleLoading) {
+      return (
+        <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+          <CircularProgress size={28} />
+        </Box>
+      );
+    }
+    if (bundleError) {
+      return (
+        <Alert severity="error" variant="filled">
+          Failed to load {secType} baseline: {bundleError}
+        </Alert>
+      );
+    }
+    if (!bundle) {
+      return (
+        <Alert severity="warning">
+          No {secType.toUpperCase()} baseline data for {code}.
+        </Alert>
+      );
+    }
+    // Delegate to the exact same plot component used in /dataviz/*.
+    // onDateClick fires for any click on the chart → highlights the matching
+    // month-end row in the stats table below.
+    if (secType === "index") {
+      return <IndexPanel index={bundle as IndexBundle} themeMode={themeMode} onDateClick={setClickedDate} />;
+    }
+    if (secType === "etf") {
+      return <EtfMarginPanel etf={bundle as EtfBundle} onDateClick={setClickedDate} />;
+    }
+    return <StockPanel stock={bundle as StockBundle} onDateClick={setClickedDate} />;
+  })();
+
+  return (
+    <Stack spacing={1.5}>
+      {/*
+        The baseline panels (IndexPanel / EtfMarginPanel / StockPanel) render
+        their own ChartCard with title + subtitle + controls, so we don't wrap
+        them in another ChartCard here — just render them directly.
+      */}
+      {plotContent}
+
+      {/* ---- Monthly PE & Dividend stats table ---- */}
+      <ChartCard
+        title="Monthly PE & Dividend Stats (5y rolling)"
+        subtitle={
+          statsData
+            ? `${statsRows.length} month-end snapshots · click a date on the chart above to highlight the matching month`
+            : undefined
+        }
+        height={undefined}
+      >
+        {statsLoading && (
+          <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+            <CircularProgress size={28} />
+          </Box>
+        )}
+        {statsError && (
+          <Alert severity="error" variant="filled">
+            Failed to load stats: {statsError}
+          </Alert>
+        )}
+        {!statsLoading && !statsError && statsRows.length === 0 && (
+          <Alert severity="warning">
+            No monthly stats for {code}. (Stats are computed monthly by the
+            Python build script — run it once a month after the 5y window
+            updates.)
+          </Alert>
+        )}
+        {!statsLoading && !statsError && statsRows.length > 0 && (
+          <TableContainer
+            component={Box}
+            sx={expandedTableContainerSx(360)}
+          >
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={expandedTableHeadCellSx}>Month</TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="center">Active</TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="right">Min PE 5y</TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="right">Max PE 5y</TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="right">Div Var 5y</TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="right">Last Div</TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="right">Div Stability 5y</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {statsRows.map((r, idx) => {
+                  const isHighlighted = r.date === highlightedStatsRowDate;
+                  const isActive = r.is_active;
+                  // Bold the Last Div cell when a dividend was issued in
+                  // this month — surfaces dividend-event months at a glance.
+                  const boldDiv = r.dividend_issued_this_month === true;
+                  return (
+                    <TableRow
+                      key={r.date}
+                      ref={isHighlighted ? highlightedRowRef : undefined}
+                      sx={{
+                        ...expandedTableBodyRowSx(idx),
+                        ...(isHighlighted
+                          ? { bgcolor: "action.selected" }
+                          : isActive
+                            ? { bgcolor: "action.hover" }
+                            : {}),
+                      }}
+                    >
+                      <TableCell sx={{ ...expandedTableBodyCellSx, fontWeight: isHighlighted ? 700 : 500 }}>
+                        {fmtMonth(r.date)}
+                      </TableCell>
+                      <TableCell align="center" sx={{ ...expandedTableBodyCellSx, py: 0.5 }}>
+                        {isActive && (
+                          <Chip
+                            label="latest"
+                            size="small"
+                            color="primary"
+                            sx={{ height: 18, fontSize: "0.65rem" }}
+                          />
+                        )}
+                      </TableCell>
+                      <TableCell align="right" sx={expandedTableNumCellSx}>{fmtNum(r.min_pe_5y)}</TableCell>
+                      <TableCell align="right" sx={expandedTableNumCellSx}>{fmtNum(r.max_pe_5y)}</TableCell>
+                      <TableCell align="right" sx={expandedTableNumCellSx}>{fmtPct(r.dividend_var_5y)}</TableCell>
+                      <TableCell
+                        align="right"
+                        sx={{
+                          ...expandedTableNumCellSx,
+                          color: DIVIDEND_COLOR,
+                          fontWeight: boldDiv ? 700 : 400,
+                        }}
+                      >
+                        {fmtNum(r.last_dividend_per_share, 4)}
+                      </TableCell>
+                      <TableCell align="right" sx={{ ...expandedTableNumCellSx, color: PE_COLOR }}>
+                        {r.dividend_stability_5y != null
+                          ? fmtNum(r.dividend_stability_5y, 1)
+                          : "—"}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+        {clickedDate && (
+          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
+            Clicked date <b>{clickedDate}</b> → highlighted month{" "}
+            <b>{highlightedStatsRowDate ? monthKey(highlightedStatsRowDate) : "(none — before earliest stats)"}</b>
+          </Typography>
+        )}
+      </ChartCard>
+    </Stack>
+  );
+}

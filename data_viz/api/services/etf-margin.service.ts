@@ -79,6 +79,7 @@ interface DbEtfMarginRow extends QueryResultRow {
   high: number | null;
   low: number | null;
   close: number | null;
+  eps: number | null;
   adj_open: number | null;
   adj_high: number | null;
   adj_low: number | null;
@@ -107,6 +108,7 @@ function transformEtfRow(r: DbEtfMarginRow): EtfMarginRow {
     high: toNum(r.high) ?? 0,
     low: toNum(r.low) ?? 0,
     close: toNum(r.close) ?? 0,
+    eps: toNum(r.eps),
     adj_open: toNum(r.adj_open),
     adj_high: toNum(r.adj_high),
     adj_low: toNum(r.adj_low),
@@ -128,7 +130,7 @@ function transformEtfRow(r: DbEtfMarginRow): EtfMarginRow {
 }
 
 const ETF_MARGIN_COLUMNS = `
-  date, prev_close, open, high, low, close,
+  date, prev_close, open, high, low, close, eps,
   adj_open, adj_high, adj_low, adj_close, adj_prev_close,
   is_split_event_day, action_type, implied_dividend_per_share, cum_split_factor,
   trading_shares, trading_amount,

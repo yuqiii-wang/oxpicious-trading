@@ -95,11 +95,13 @@ def _parse_szse_picupdata(payload, bare_code: str) -> Optional[List[MinuteSample
         logger.warning("[szse %s] missing or empty 'picupdata'", bare_code)
         return None
 
-    # Use marketTime if available for the date, else today.
+    # Use marketTime (remote source logged date) for the date, not local clock.
     market_time = data_obj.get("marketTime", "")
     try:
         trade_date = datetime.strptime(market_time[:10], "%Y-%m-%d").date()
     except (ValueError, TypeError):
+        logger.warning("[szse %s] marketTime missing/unparseable (%r); "
+                       "falling back to local date", bare_code, market_time)
         trade_date = datetime.now().date()
 
     samples: List[MinuteSample] = []
@@ -179,10 +181,13 @@ def _parse_szse_index_picupdata(payload, bare_code: str) -> Optional[List[Minute
         logger.warning("[szse-idx %s] missing or empty 'picupdata'", bare_code)
         return None
 
+    # Use marketTime (remote source logged date) for the date, not local clock.
     market_time = data_obj.get("marketTime", "")
     try:
         trade_date = datetime.strptime(market_time[:10], "%Y-%m-%d").date()
     except (ValueError, TypeError):
+        logger.warning("[szse-idx %s] marketTime missing/unparseable (%r); "
+                       "falling back to local date", bare_code, market_time)
         trade_date = datetime.now().date()
 
     samples: List[MinuteSample] = []

@@ -27,6 +27,7 @@ from _common.build_commons import (
 from analyze.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
 from analyze.mov_ave_spread.helpers import (
     compute_slopes_curvatures,
+    compute_ema_slopes_curvatures,
     compute_rolling_stds,
     compute_trading_amt_mas,
     compute_trading_amt_market_share_mas,
@@ -68,6 +69,7 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 COALESCE(a.adj_low, b.low)     AS low,
                 COALESCE(a.adj_high, b.high)   AS high,
                 t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
+                t.ema6, t.ema20, t.ema60, t.ema120, t.ema255,
                 m.trading_amount
             FROM stats.etf_identity i
             JOIN stats.etf_basic_stats b ON b.date = i.date AND b.code = i.code
@@ -87,6 +89,7 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 b.low   AS low,
                 b.high  AS high,
                 t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
+                t.ema6, t.ema20, t.ema60, t.ema120, t.ema255,
                 b.trading_amount
             FROM stats.index_identity i
             JOIN stats.index_basic_stats b ON b.date = i.date AND b.code = i.code
@@ -104,6 +107,7 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
                 b.low   AS low,
                 b.high  AS high,
                 t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
+                t.ema6, t.ema20, t.ema60, t.ema120, t.ema255,
                 m.trading_amount
             FROM stats.stock_identity i
             JOIN stats.stock_basic_stats b ON b.date = i.date AND b.code = i.code
@@ -193,6 +197,7 @@ async def fetch_source_data(
 
     Returns a DataFrame with columns:
         sec_type, code, date, price, ma5, ma20, ma60, ma120, ma255,
+        ema6, ema20, ema60, ema120, ema255,
         trading_amount,
         price_slope, price_curvature,
         ma5_slope, ma20_slope, ma60_slope, ma120_slope, ma255_slope,
@@ -228,7 +233,22 @@ async def fetch_source_data(
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",
                                      "ma5", "ma20", "ma60", "ma120", "ma255",
+                                     "ema6", "ema20", "ema60", "ema120", "ema255",
                                      "trading_amount",
+                                     "price_slope", "price_curvature",
+                                     "ma5_slope", "ma20_slope", "ma60_slope",
+                                     "ma120_slope", "ma255_slope",
+                                     "ma5_curvature", "ma20_curvature", "ma60_curvature",
+                                     "ma120_curvature", "ma255_curvature",
+                                     "ema6_slope", "ema20_slope", "ema60_slope",
+                                     "ema120_slope", "ema255_slope",
+                                     "ema6_curvature", "ema20_curvature", "ema60_curvature",
+                                     "ema120_curvature", "ema255_curvature",
+                                     "std_5days", "std_20days", "std_60days",
+                                     "std_120days", "std_255days",
+                                     "trading_amt_ma5", "trading_amt_ma20",
+                                     "trading_amt_ma60", "trading_amt_ma120",
+                                     "trading_amt_ma255",
                                      "trading_amt_market_share_ma5",
                                      "trading_amt_market_share_ma20",
                                      "trading_amt_market_share_ma60",
@@ -258,7 +278,22 @@ async def fetch_source_data(
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",
                                      "ma5", "ma20", "ma60", "ma120", "ma255",
+                                     "ema6", "ema20", "ema60", "ema120", "ema255",
                                      "trading_amount",
+                                     "price_slope", "price_curvature",
+                                     "ma5_slope", "ma20_slope", "ma60_slope",
+                                     "ma120_slope", "ma255_slope",
+                                     "ma5_curvature", "ma20_curvature", "ma60_curvature",
+                                     "ma120_curvature", "ma255_curvature",
+                                     "ema6_slope", "ema20_slope", "ema60_slope",
+                                     "ema120_slope", "ema255_slope",
+                                     "ema6_curvature", "ema20_curvature", "ema60_curvature",
+                                     "ema120_curvature", "ema255_curvature",
+                                     "std_5days", "std_20days", "std_60days",
+                                     "std_120days", "std_255days",
+                                     "trading_amt_ma5", "trading_amt_ma20",
+                                     "trading_amt_ma60", "trading_amt_ma120",
+                                     "trading_amt_ma255",
                                      "trading_amt_market_share_ma5",
                                      "trading_amt_market_share_ma20",
                                      "trading_amt_market_share_ma60",
@@ -290,12 +325,20 @@ async def fetch_source_data(
     df["date"] = pd.to_datetime(df["date"]).dt.date
     # Coerce numeric columns to float (asyncpg returns Decimal for NUMERIC)
     for col in ("price", "open", "low", "high", "ma5", "ma20", "ma60",
-                "ma120", "ma255", "trading_amount"):
+                "ma120", "ma255",
+                "ema6", "ema20", "ema60", "ema120", "ema255",
+                "trading_amount"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     # Compute slope (1st derivative) and curvature (2nd derivative) per code.
     # This is computed over the FULL per-code history so the diff() values
     # are correct for the first target date of each code (incremental mode).
     df = compute_slopes_curvatures(df)
+    # Compute EMA slope + curvature (same group-diff pattern, different
+    # source columns). Computed over the FULL per-code history for the same
+    # incremental-mode reasoning. Reused by the internal EMA step (ema.py)
+    # — the parent DataFrame carries these columns so the EMA step does not
+    # need a second pass.
+    df = compute_ema_slopes_curvatures(df)
     # Compute rolling population σ (Bollinger band widths) per code over the
     # FULL per-code history. Same incremental-mode reasoning as slopes: the
     # rolling window needs up to 255 prior rows to populate σ_255days, so we
@@ -336,11 +379,16 @@ async def fetch_source_data(
 
     # Reorder columns for readability.
     df = df[["sec_type", "code", "date", "price", "open", "low", "high",
-             "ma5", "ma20", "ma60", "ma120", "ma255", "trading_amount",
+             "ma5", "ma20", "ma60", "ma120", "ma255",
+             "ema6", "ema20", "ema60", "ema120", "ema255",
+             "trading_amount",
              "price_slope", "price_curvature",
              "ma5_slope", "ma20_slope", "ma60_slope", "ma120_slope", "ma255_slope",
              "ma5_curvature", "ma20_curvature", "ma60_curvature",
              "ma120_curvature", "ma255_curvature",
+             "ema6_slope", "ema20_slope", "ema60_slope", "ema120_slope", "ema255_slope",
+             "ema6_curvature", "ema20_curvature", "ema60_curvature",
+             "ema120_curvature", "ema255_curvature",
              "std_5days", "std_20days", "std_60days", "std_120days", "std_255days",
              "trading_amt_ma5", "trading_amt_ma20", "trading_amt_ma60",
              "trading_amt_ma120", "trading_amt_ma255",

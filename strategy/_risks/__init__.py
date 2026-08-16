@@ -38,7 +38,7 @@ from strategy._risks.compute import (  # noqa: F401
     compute_risk_seq, compute_risk_periods,
 )
 from strategy._risks.upsert import (  # noqa: F401
-    upsert_risk_seq, upsert_risk_periods,
+    upsert_risk_seq, upsert_risk_periods, upsert_risk_factors,
 )
 
 
@@ -92,12 +92,18 @@ async def compute_and_upsert_risks(
               flush=True)
         # Include position_after so the price-drawdown computation can detect
         # unzero holding periods; default fetch_decisions omits it.
+        # Include total_qty_before so the FT amplified P&L can derive the
+        # baseline SELL confidence = (qty / total_qty_before) * 100 and
+        # compute the amplified qty ratio = stressed_conf / baseline_conf.
         decision_cols = (
             "decision_no, side, exec_date, qty, fill_price, "
-            "position_after, realized_pnl, signal_reason"
+            "position_after, realized_pnl, signal_reason, "
+            "total_qty_before, "
+            "ft_stressed_conf_up, ft_stressed_conf_down"
         )
         risk_seq_rows: List[Dict[str, Any]] = []
         risk_period_rows: List[Dict[str, Any]] = []
+        risk_factor_rows: List[Dict[str, Any]] = []
         for seq_id, code in pairs:
             decisions = await fetch_decisions(conn, seq_id, columns=decision_cols)
             if not decisions:
@@ -125,6 +131,11 @@ async def compute_and_upsert_risks(
             if rs is None:
                 continue
             risk_seq_rows.append(rs)
+            # Collect risk factor rows (one per contribution component).
+            for f in rs.get("_risk_factors", []):
+                risk_factor_rows.append({
+                    "seq_id": seq_id, "code": code, **f,
+                })
             # total_realized_pnl / total_abs_pnl are carried on rs with a
             # leading underscore (they were MOVED to strategy_results and are no
             # longer strategy_risk_seq columns). Use them for the per-period
@@ -153,23 +164,30 @@ async def compute_and_upsert_risks(
                     seq_id, code,
                 )
                 await conn.execute(
+                    "DELETE FROM strategy.strategy_risk_factors "
+                    "WHERE seq_id = $1 AND code = $2",
+                    seq_id, code,
+                )
+                await conn.execute(
                     "DELETE FROM strategy.strategy_risks "
                     "WHERE seq_id = $1 AND code = $2",
                     seq_id, code,
                 )
 
-        # Strip the underscore-prefixed helper keys (totals carried for the
-        # per-period rollup) — they are NOT strategy_risks columns.
+        # Strip the underscore-prefixed helper keys (totals + risk factors
+        # carried for the per-period rollup / factor upsert) — they are NOT
+        # strategy_risks columns.
         upsert_rows = [
             {k: v for k, v in row.items() if not k.startswith("_")}
             for row in risk_seq_rows
         ]
         n_seq = await upsert_risk_seq(conn, upsert_rows)
         n_per = await upsert_risk_periods(conn, risk_period_rows)
+        n_fac = await upsert_risk_factors(conn, risk_factor_rows)
         total_seq += n_seq
         total_per += n_per
-        print(f"    -> [{st}] upserted {n_seq} risk_seq, {n_per} risk_period rows",
-              flush=True)
+        print(f"    -> [{st}] upserted {n_seq} risk_seq, {n_per} risk_period, "
+              f"{n_fac} risk_factor rows", flush=True)
 
     elapsed = time.time() - t0
     print(f"\n  risks done: {total_seq} risk_seq + {total_per} risk_period rows "
@@ -182,4 +200,5 @@ __all__ = [
     "compute_risk_periods",
     "upsert_risk_seq",
     "upsert_risk_periods",
+    "upsert_risk_factors",
 ]

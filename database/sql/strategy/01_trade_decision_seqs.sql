@@ -177,6 +177,33 @@ COMMENT ON COLUMN strategy.strategy_identity.end_date IS 'OHLC period end (df.da
 COMMENT ON COLUMN strategy.strategy_identity.parent_seq_id IS 'NULL for actual backtest seqs. For forecast child seqs: points to the parent actual backtest seq. Child seqs carry a full copy of actual decisions + scenario-specific forecast sells.';
 COMMENT ON COLUMN strategy.strategy_identity.scenario IS 'NULL for actual backtest seqs. For forecast child seqs: the scenario name (mir_255d_std_scale, flip_255d_std_scale, mir_255d_std_half_scale, flip_255d_std_half_scale, mir_20d_std_scale, flip_20d_std_scale, rand, rand_opp).';
 
+-- Idempotent migration: add fault_tolerance column for the stress-test
+-- feature. When > 0, the backtest was run with adverse OHLC perturbation
+-- on decision days by ft% of |delta_close|. Tech stats (MA, std, RSI) are
+-- NOT recomputed — only OHLC is tuned. The algo re-runs in BOTH directions
+-- (UP and DOWN) on every decision date; both stressed signal_confidences
+-- are stored on trade_decision (ft_stressed_conf_up / _down) for tooltip
+-- comparison. Strategy_name carries an _ft{N} suffix.
+ALTER TABLE strategy.strategy_identity
+    ADD COLUMN IF NOT EXISTS fault_tolerance NUMERIC(5,2) NOT NULL DEFAULT 0;
+
+COMMENT ON COLUMN strategy.strategy_identity.fault_tolerance IS
+    'Fault tolerance percentage (0-20) applied to decision-day OHLC. 0 = baseline (no stress). When >0, OHLC was perturbed on baseline decision dates by ft% of |delta_close| in BOTH directions (UP and DOWN). The algo re-ran on each stressed OHLC (same precomputed tech stats) and the stressed signal_confidences were stored on trade_decision.ft_stressed_conf_up / _down for comparison. Encoded in strategy_name as _ft{N} suffix.';
+
+-- Idempotent migration: replace ft_stressed_conf with two direction columns.
+ALTER TABLE strategy.trade_decision
+    ADD COLUMN IF NOT EXISTS ft_stressed_conf_up NUMERIC(8,4);
+ALTER TABLE strategy.trade_decision
+    ADD COLUMN IF NOT EXISTS ft_stressed_conf_down NUMERIC(8,4);
+-- Drop the legacy single-direction column if it exists.
+ALTER TABLE strategy.trade_decision
+    DROP COLUMN IF EXISTS ft_stressed_conf;
+
+COMMENT ON COLUMN strategy.trade_decision.ft_stressed_conf_up IS
+    'FT stressed signal_confidence when decision-day OHLC moved UP by ft% of |delta_close|. NULL = no FT applied. 0 = trade would be removed under UP stress (signal sign flipped or vanished). >0 = magnitude of the stressed signal (same sign as baseline side, confidence was cut but trade still fires).';
+COMMENT ON COLUMN strategy.trade_decision.ft_stressed_conf_down IS
+    'FT stressed signal_confidence when decision-day OHLC moved DOWN by ft% of |delta_close|. NULL = no FT applied. 0 = trade would be removed under DOWN stress. >0 = magnitude of the stressed signal (same sign as baseline side).';
+
 COMMENT ON TABLE  strategy.strategy_identity              IS 'One row per strategy execution on ONE code. Pure identity table — run results live on strategy_results (1:1).';
 COMMENT ON COLUMN strategy.strategy_identity.seq_id       IS 'Surrogate primary key (IDENTITY). Identifies a single (strategy, code) run; also the PK/FK of the 1:1 strategy_results row.';
 COMMENT ON COLUMN strategy.strategy_identity.strategy_name IS 'Strategy identifier, e.g. "singleton_trading".';
@@ -320,6 +347,14 @@ CREATE TABLE IF NOT EXISTS strategy.trade_decision (
     -- × normalized_fill_price). Applied to BUY only; 0 for SELL. Deducted
     -- from cash_after on BUY.
     fee                       NUMERIC(18,6),
+
+    -- Fault-tolerance stress comparison (bidirectional): the
+    -- signal_confidence the algo WOULD have produced on this decision
+    -- date if OHLC was perturbed by ft% of |Δclose| in EACH direction.
+    -- NULL when no FT was applied (baseline strategy). 0 = the trade
+    -- would be removed under that direction's stress (sign flipped).
+    ft_stressed_conf_up       NUMERIC(8,4),
+    ft_stressed_conf_down     NUMERIC(8,4),
 
     CONSTRAINT pk_trade_decision PRIMARY KEY (seq_id, decision_no),
     CONSTRAINT fk_trade_decision_seq FOREIGN KEY (seq_id)
@@ -700,7 +735,19 @@ ALTER TABLE strategy.strategy_risks ADD CONSTRAINT chk_risk_drawdown_2nd_val
 ALTER TABLE strategy.strategy_risks ADD CONSTRAINT chk_risk_drawdown_3rd_val
     CHECK (drawdown_3rd_val IS NULL OR drawdown_3rd_val <= 0);
 
-COMMENT ON TABLE  strategy.strategy_risks                  IS 'Per-(seq, code) RISK-SPECIFIC metrics: chronological P&L concentration, exponential risk score, top-3 gain/loss trade FK refs, price-based drawdowns. P&L summary (total_realized_pnl / total_abs_pnl / n_sells / n_buys) moved to strategy_results.';
+-- Idempotent migration: add ft_amplified_total_pnl column for the FT
+-- amplified stress P&L. NULL when no FT was applied (baseline strategy).
+-- When FT > 0, this is the approximate total PnL of the "amplified"
+-- strategy (BUY picks higher conf, SELL-at-loss picks higher conf, SELL-
+-- at-gain picks lower conf). The delta vs baseline total_realized_pnl
+-- drives the fault_tolerance risk factor contribution.
+ALTER TABLE strategy.strategy_risks
+    ADD COLUMN IF NOT EXISTS ft_amplified_total_pnl NUMERIC(24,4);
+
+COMMENT ON COLUMN strategy.strategy_risks.ft_amplified_total_pnl IS
+    'Approximate total PnL of the FT amplified strategy (NULL = no FT). BUY amplifies position, SELL-at-loss sells more, SELL-at-gain sells less. Delta vs baseline total_realized_pnl drives the fault_tolerance risk factor.';
+
+COMMENT ON TABLE  strategy.strategy_risks                  IS 'Per-(seq, code) RISK-SPECIFIC metrics: chronological P&L concentration, exponential risk score, top-3 gain/loss trade FK refs, price-based drawdowns, FT amplified PnL. P&L summary (total_realized_pnl / total_abs_pnl / n_sells / n_buys) moved to strategy_results.';
 COMMENT ON COLUMN strategy.strategy_risks.seq_id           IS 'FK → strategy_identity.seq_id.';
 COMMENT ON COLUMN strategy.strategy_risks.code             IS 'Security code this risk row pertains to (denormalized for fast UI display).';
 COMMENT ON COLUMN strategy.strategy_risks.pnl_gain_1st_decision_no IS 'decision_no of the 1st-largest single-trade gain (max realized_pnl among SELLs). FK → trade_decision(seq_id, decision_no). NULL if no SELL exists.';
@@ -792,6 +839,12 @@ ALTER TABLE strategy.strategy_risk_period ADD COLUMN IF NOT EXISTS unrealized_pn
 ALTER TABLE strategy.strategy_risk_period ADD COLUMN IF NOT EXISTS max_loss_unrealized_pnl NUMERIC(24,4) NOT NULL DEFAULT 0;
 ALTER TABLE strategy.strategy_risk_period ADD COLUMN IF NOT EXISTS max_gain_unrealized_pnl NUMERIC(24,4) NOT NULL DEFAULT 0;
 ALTER TABLE strategy.strategy_risk_period ADD COLUMN IF NOT EXISTS end_unrealized_pnl NUMERIC(24,4) NOT NULL DEFAULT 0;
+-- FT amplified realized P&L for this period (sum of per-SELL amplified P&L).
+-- The amplified strategy picks the adverse OHLC direction per SELL (loss →
+-- sell more, gain → sell less). UI plots a cumulative amplified P&L trend
+-- line to compare against the baseline Accumulated Total P&L curve. 0 when
+-- no FT was applied (baseline strategy) or no SELLs in this period.
+ALTER TABLE strategy.strategy_risk_period ADD COLUMN IF NOT EXISTS ft_amplified_pnl NUMERIC(24,4) NOT NULL DEFAULT 0;
 
 COMMENT ON TABLE  strategy.strategy_risk_period                  IS 'Per-period (year/season/month) gain/loss aggregations with top trades and concentration flags.';
 COMMENT ON COLUMN strategy.strategy_risk_period.seq_id           IS 'FK → strategy_identity.seq_id.';
@@ -799,6 +852,7 @@ COMMENT ON COLUMN strategy.strategy_risk_period.code             IS 'Security co
 COMMENT ON COLUMN strategy.strategy_risk_period.period_type      IS 'year / season / month.';
 COMMENT ON COLUMN strategy.strategy_risk_period.period_value     IS 'Period label: YYYY (year), YYYY-Qn (season), YYYY-MM (month).';
 COMMENT ON COLUMN strategy.strategy_risk_period.realized_pnl     IS 'Sum of realized_pnl across SELLs in this period.';
+COMMENT ON COLUMN strategy.strategy_risk_period.ft_amplified_pnl IS 'Sum of per-SELL FT amplified realized_pnl in this period. Amplified strategy picks adverse OHLC direction (loss→sell more, gain→sell less). 0 when no FT applied. UI plots cumulative trend vs baseline.';
 COMMENT ON COLUMN strategy.strategy_risk_period.unrealized_pnl   IS 'Mark-to-market change in unrealized_pnl during this period = unrealized_pnl(end of period) - unrealized_pnl(end of previous period). From strategy_daily. Realized + unrealized = total economic P&L for the period.';
 COMMENT ON COLUMN strategy.strategy_risk_period.max_loss_unrealized_pnl IS 'Worst (min, most negative) daily unrealized_pnl within this period — the deepest intra-period MTM loss (maximum unrealized loss). From strategy_daily. UI draws a transparent red bar for this.';
 COMMENT ON COLUMN strategy.strategy_risk_period.max_gain_unrealized_pnl IS 'Peak (max, most positive) daily unrealized_pnl within this period — the highest intra-period MTM gain (maximum unrealized gain). From strategy_daily. UI draws a transparent green bar for this.';
@@ -818,6 +872,50 @@ CREATE INDEX IF NOT EXISTS idx_strategy_risk_period_seq_code_type
 CREATE INDEX IF NOT EXISTS idx_strategy_risk_period_hotspot
     ON strategy.strategy_risk_period (seq_id, code)
     WHERE is_concentration_hotspot = TRUE;
+
+-- ----------------------------------------------------------------------------
+-- Table: strategy.strategy_risk_factors
+--   One row per contribution factor to the risk_score. The risk_score on
+--   strategy_risks is the SUM of all factor contributions for that
+--   (seq_id, code). This table lets the UI expand the risk score row to
+--   show HOW the score was derived (which components fired, their raw
+--   values, thresholds, and individual contributions).
+--
+--   Components:
+--     realized         — per rolling-window realized loss (1/30/90/365d).
+--     unrealized       — the MAX rolling-window unrealized MTM dip (×30%).
+--     streak           — consecutive losing-month streak penalty.
+--     period_asymmetry — losses dominate gains in var/mean (per period type).
+--     period_tail      — worst period loss z-score beyond 2σ.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS strategy.strategy_risk_factors (
+    seq_id          BIGINT        NOT NULL,
+    code            TEXT          NOT NULL,
+    component       TEXT          NOT NULL,
+    label           TEXT          NOT NULL,
+    sub_key         TEXT          NOT NULL DEFAULT '',
+    contribution    NUMERIC(10,4) NOT NULL DEFAULT 0,
+    raw_value       NUMERIC(18,6),
+    threshold       NUMERIC(18,6),
+    ratio           NUMERIC(10,4),
+
+    CONSTRAINT pk_strategy_risk_factors
+        PRIMARY KEY (seq_id, code, component, sub_key),
+    CONSTRAINT fk_risk_factors_seq FOREIGN KEY (seq_id)
+        REFERENCES strategy.strategy_identity(seq_id) ON DELETE CASCADE
+);
+
+COMMENT ON TABLE  strategy.strategy_risk_factors IS 'Per-factor contribution to risk_score. One row per (seq, code, component, sub_key). SUM(contribution) = strategy_risks.risk_score.';
+COMMENT ON COLUMN strategy.strategy_risk_factors.component    IS 'realized / unrealized / streak / period_asymmetry / period_tail.';
+COMMENT ON COLUMN strategy.strategy_risk_factors.label        IS 'Human-readable label (e.g. "Realized Loss (30d window)").';
+COMMENT ON COLUMN strategy.strategy_risk_factors.sub_key     IS 'Window days (1/30/90/365) for realized/unrealized, streak length, or period type (month/season/year) for period signals.';
+COMMENT ON COLUMN strategy.strategy_risk_factors.contribution IS 'This factor''s contribution to the total risk_score.';
+COMMENT ON COLUMN strategy.strategy_risk_factors.raw_value    IS 'The raw input (loss amount, streak months, dominance ratio, z-score).';
+COMMENT ON COLUMN strategy.strategy_risk_factors.threshold    IS 'The threshold at which this factor contributes 1.0 (or 6.0 for period signals).';
+COMMENT ON COLUMN strategy.strategy_risk_factors.ratio        IS 'raw_value / threshold (capped at 4.0), the exponential driver.';
+
+CREATE INDEX IF NOT EXISTS idx_strategy_risk_factors_seq_code
+    ON strategy.strategy_risk_factors (seq_id, code);
 
 -- ----------------------------------------------------------------------------
 -- Idempotent migration (part C): drop the legacy max_drawdown column. It is
@@ -869,7 +967,9 @@ SELECT
     d.slippage,
     d.fee,
     d.signal_value,
-    d.signal_reason
+    d.signal_reason,
+    d.ft_stressed_conf_up,
+    d.ft_stressed_conf_down
 FROM strategy.trade_decision d
 JOIN strategy.strategy_identity s ON s.seq_id = d.seq_id
 JOIN strategy.strategy_results i ON i.seq_id = d.seq_id;

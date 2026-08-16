@@ -20,6 +20,7 @@ from downloads._common.core import (
     random_sleep,
     setup_logger,
 )
+
 from _common.db_commons import check_stock_intraday_exists
 
 from ._aggregation import aggregate_5min, aggregate_index_5min
@@ -74,6 +75,19 @@ def sleep_chunks(sec: float, chunk_sec: float = 5.0) -> None:
         _time.sleep(min(chunk_sec, max(0.0, end - _time.time())))
 
 
+async def async_sleep_chunks(sec: float, chunk_sec: float = 5.0) -> None:
+    """Async sleep for ``sec`` in chunks. Responds to asyncio cancellation.
+
+    Unlike ``asyncio.to_thread(sleep_chunks, ...)``, this raises
+    ``CancelledError`` immediately when the task is cancelled — no thread
+    to wait for.
+    """
+    end = _time.time() + max(0.0, sec)
+    while _time.time() < end:
+        remaining = end - _time.time()
+        await asyncio.sleep(min(chunk_sec, max(0.0, remaining)))
+
+
 def _seconds_until_next_hour() -> float:
     """Seconds from now until the next HH:00:00 boundary (at least 1s)."""
     now = datetime.now()
@@ -117,13 +131,44 @@ def next_trading_moment(now: datetime) -> datetime:
 
 
 def sleep_until(target_dt: datetime, chunk_sec: float = 60.0) -> None:
-    """Sleep until target_dt, in chunks so KeyboardInterrupt stays responsive."""
+    """Sleep until target_dt, in chunks so KeyboardInterrupt stays responsive (sync)."""
     while True:
         now = datetime.now()
         if now >= target_dt:
             return
         remaining = (target_dt - now).total_seconds()
         _time.sleep(min(chunk_sec, max(0.0, remaining)))
+
+
+async def async_sleep_until(target_dt: datetime, chunk_sec: float = 60.0) -> None:
+    """Async sleep until target_dt. Responds to asyncio cancellation.
+
+    Unlike ``asyncio.to_thread(sleep_until, ...)``, this raises
+    ``CancelledError`` immediately when the task is cancelled — critical
+    because ``sleep_until`` may be called with a target_dt hours away
+    (e.g. next trading day 09:30), and threads can't be killed in Python.
+    """
+    while True:
+        now = datetime.now()
+        if now >= target_dt:
+            return
+        remaining = (target_dt - now).total_seconds()
+        await asyncio.sleep(min(chunk_sec, max(0.0, remaining)))
+
+
+async def async_random_sleep(base_sec: float, jitter_factor: float = 0.5) -> None:
+    """Async random_sleep. Responds to asyncio cancellation.
+
+    Mirrors ``random_sleep`` from ``_common.core`` but uses ``asyncio.sleep``
+    so the task can be cancelled instantly — no thread to wait for on
+    shutdown.
+    """
+    if base_sec <= 0:
+        return
+    import random as _r
+    jitter = base_sec * jitter_factor
+    sleep_time = _r.uniform(base_sec - jitter, base_sec + jitter)
+    await asyncio.sleep(max(0.0, sleep_time))
 
 
 async def probe_szse_for_today_bars(
@@ -321,7 +366,7 @@ async def _process_stocks(
 
         # Anti-bot cooldown between fetches (skip after the last stock).
         if i < n_stocks - 1:
-            await asyncio.to_thread(random_sleep, cooldown_sec)
+            await async_random_sleep(cooldown_sec)
 
     return identity_rows, bar_rows, latest_times, []
 
@@ -380,7 +425,7 @@ async def _run_index_round(
 
         # Anti-bot cooldown between index fetches (skip after the last).
         if i < len(index_codes) - 1:
-            await asyncio.to_thread(random_sleep, cooldown_sec)
+            await async_random_sleep(cooldown_sec)
     return n_ident_total, n_bars_total
 
 

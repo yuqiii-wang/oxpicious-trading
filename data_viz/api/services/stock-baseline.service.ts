@@ -61,6 +61,7 @@ interface DbStockRow extends QueryResultRow {
   close: number | null;
   pct_change: number | null;
   pe: number | null;
+  eps: number | null;
   is_pe_estimated: boolean | null;
   has_intraday_5mins: boolean | null;
   // Liquidity + margin columns (from stock_liquidity_margin via v_stock_baseline)
@@ -201,7 +202,7 @@ export async function getStockBaseline(
 
   const sql = `
     SELECT date, code, name, prev_close, open, high, low, close,
-           pct_change, pe, is_pe_estimated, has_intraday_5mins,
+           pct_change, pe, eps, is_pe_estimated, has_intraday_5mins,
            trading_shares, trading_amount,
            rz_balance, rz_buy, rq_balance_qty, rq_balance_amt, total_balance
       FROM stats.v_stock_baseline
@@ -239,6 +240,7 @@ export async function getStockBaseline(
       prev_close: toNum(r.prev_close),
       pct_change: toNum(r.pct_change),
       pe: toNum(r.pe),
+      eps: toNum(r.eps),
       is_pe_estimated: r.is_pe_estimated === true,
       has_intraday_5mins: r.has_intraday_5mins === true,
       trading_shares: toNum(r.trading_shares) ?? 0,
@@ -557,7 +559,7 @@ export async function getStocksCombined(
 
   const sql = `
     SELECT code, date, name, prev_close, open, high, low, close,
-           pct_change, pe, is_pe_estimated, has_intraday_5mins,
+           pct_change, pe, eps, is_pe_estimated, has_intraday_5mins,
            trading_shares, trading_amount,
            rz_balance, rz_buy, rq_balance_qty, rq_balance_amt, total_balance
       FROM stats.v_stock_baseline
@@ -583,6 +585,7 @@ export async function getStocksCombined(
       prev_close: toNum(r.prev_close),
       pct_change: toNum(r.pct_change),
       pe: toNum(r.pe),
+      eps: toNum(r.eps),
       is_pe_estimated: r.is_pe_estimated === true,
       has_intraday_5mins: r.has_intraday_5mins === true,
       trading_shares: toNum(r.trading_shares) ?? 0,

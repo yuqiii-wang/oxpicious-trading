@@ -53,12 +53,13 @@ from strategy.factors_and_algos import (  # noqa: E402
     ensure_default_config, load_params,
     portfolio_name, run_sub_algos, build_algo_portfolio,
 )
+from strategy.factors_and_algos._algo.fault_tolerance import append_ft_suffix  # noqa: E402
 from strategy._common.fetch import discover_available_codes  # noqa: E402
 
 # Engine/runner-consumed keys that stay CLI-driven (NOT stored in the DB
 # default algo_configs row). Everything else in the merged params comes from
 # the algo's DEFAULT_PARAMS + the DB row.
-_TRADING_LAYER_KEYS = ("min_holding_period", "buy_notional", "skip_final_liquidation")
+_TRADING_LAYER_KEYS = ("min_holding_period", "buy_notional", "skip_final_liquidation", "fault_tolerance")
 
 
 def _parse_algo_arg(raw: str) -> dict:
@@ -111,17 +112,30 @@ async def main() -> None:
         help="Skip the 1-month forecast (10 scenarios + child seqs). "
              "Forecast is on by default.",
     )
+    ap.add_argument(
+        "--fault-tolerance", type=float, default=0,
+        help="Fault tolerance percentage (0-20). When >0, runs a two-pass "
+             "stress test: baseline run finds decision dates, then OHLC is "
+             "adversely perturbed on those dates (BUY up, SELL down) by "
+             "ft%% of |delta_close|, indicators are recomputed, and the "
+             "algo re-runs on stressed data. Strategy name gets _ft{N} suffix.",
+    )
     args = ap.parse_args()
 
+    ft = max(0.0, min(20.0, args.fault_tolerance))
     selection = _parse_algo_arg(args.algo)
     is_mixed = len({n: w for n, w in selection.items() if w != 0}) > 1
 
     # Trading-layer params (shared across all algos + the portfolio).
+    # fault_tolerance is threaded into params so the two-pass runner in
+    # AlgoBase.run_backtest / AlgoSignalCollector.run_backtest picks it up.
     trading_layer = {
         "min_holding_period": STRATEGY_PARAMS["min_holding_period"],
         "buy_notional": args.buy_notional,
         "skip_final_liquidation": STRATEGY_PARAMS["skip_final_liquidation"],
     }
+    if ft > 0:
+        trading_layer["fault_tolerance"] = ft
 
     discovery = args.all or not args.codes
     sec_types = (args.sec_type,) if args.sec_type else ALL_SEC_TYPES
@@ -137,18 +151,20 @@ async def main() -> None:
         if not is_mixed:
             # ---- BINARY mode: single algo (existing path) ----
             algo_name = next(iter(selection))
-            strategy_name = algo_name
+            strategy_name = append_ft_suffix(algo_name, ft)
             collector = AlgoSignalCollector({algo_name: 1.0})
 
             params = dict(STRATEGY_PARAMS)
             params["buy_notional"] = args.buy_notional
+            if ft > 0:
+                params["fault_tolerance"] = ft
 
             # DB-backed param loading (existing path).
             if codes_by_st:
                 for st in sec_types:
                     for code in codes_by_st.get(st, []):
                         inserted = await ensure_default_config(
-                            conn, strategy_name, st, code, strategy_name,
+                            conn, algo_name, st, code, strategy_name,
                         )
                         if inserted:
                             print(f"    [algo_configs] inserted default "
@@ -157,7 +173,7 @@ async def main() -> None:
                 primary_code = codes_by_st[primary_st][0]
                 tl = {k: params[k] for k in _TRADING_LAYER_KEYS if k in params}
                 params = await load_params(
-                    conn, strategy_name, primary_st, primary_code, strategy_name,
+                    conn, algo_name, primary_st, primary_code, strategy_name,
                     strategy_overrides=tl,
                 )
                 print(f"    [algo_configs] loaded {strategy_name} params from DB "
@@ -199,10 +215,13 @@ async def main() -> None:
                 min_size=1, max_size=min(n_algos, 4),
             )
 
-            pf_name = portfolio_name(selection)
+            pf_name = portfolio_name(selection, fault_tolerance=ft)
             print(f"\n=== MIXED mode ===\n  selection: {selection}\n  "
                   f"portfolio_name: {pf_name}\n  sub-algos to run: "
                   f"{[n for n, w in selection.items() if w != 0]}", flush=True)
+            if ft > 0:
+                print(f"  fault_tolerance: {ft}% (strategy names get _ft{int(round(ft))} suffix)",
+                      flush=True)
 
             collector = AlgoSignalCollector(selection)  # mixed-mode collector
 
@@ -221,11 +240,14 @@ async def main() -> None:
                     continue
 
                 # Phase 1: async-run sub-algos independently (pooled).
+                # Each sub-algo gets the _ft{N} suffix in its strategy_name
+                # so FT and non-FT runs coexist in the DB.
                 if not args.dry_run:
                     await run_sub_algos(
                         pool, selection,
                         sec_type=st, codes=codes,
                         trading_layer=trading_layer,
+                        fault_tolerance=ft,
                         force=args.force, seq_no=args.seq_no,
                         dry_run=False, t0=t0,
                     )
@@ -238,13 +260,16 @@ async def main() -> None:
                     conn, collector, selection,
                     sec_type=st, codes=codes,
                     trading_layer=trading_layer,
+                    fault_tolerance=ft,
                     force=args.force, seq_no=args.seq_no,
                     dry_run=args.dry_run, t0=t0,
                 )
 
                 if not args.dry_run:
                     # Risks + forecast for every strategy_name (sub-algos + portfolio).
-                    all_names = [n for n, w in selection.items() if w != 0] + [pf_name]
+                    all_names = [
+                        append_ft_suffix(n, ft) for n, w in selection.items() if w != 0
+                    ] + [pf_name]
                     for sname in all_names:
                         print(f"\n  --- risks + forecast for '{sname}' [{st}] ---",
                               flush=True)

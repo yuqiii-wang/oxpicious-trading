@@ -48,6 +48,38 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
       "actual close + rebased % + stock_num per index.",
     tags: ["Index", "industry sentiment", "rebased to 100", "multi-line", "pool size", "mean/var overlay"],
   },
+  {
+    slug: "pe-dividend",
+    title: "PE & Dividend",
+    description:
+      "Per-security valuation: close price (left y-axis) vs PE / PE MA20 + " +
+      "trailing-12m dividend yield (right y-axis). Index securities show " +
+      "all four series; ETF/Stock show close + dividend_yield only (no PE " +
+      "source). Beneath the chart, a monthly 5-year rolling stats table " +
+      "(min/max PE 5y, min/max Div 5y, dividend_var_5y, dividend_stability_5y) " +
+      "with an is_active flag on the latest snapshot. Click any date on the " +
+      "chart to highlight the matching month-end row in the table. Backed by " +
+      "analysis.pe_and_dividends + analysis.pe_and_dividend_stats; close + " +
+      "raw PE are JOINed live from stats so the UI always shows the freshest " +
+      "source values.",
+    tags: ["ETF", "Index", "Stock", "PE", "dividend yield", "valuation", "5y stats"],
+  },
+  {
+    slug: "fourier-freqs",
+    title: "Fourier Frequencies",
+    description:
+      "Per-security dominant cycle detection via real FFT on trailing close " +
+      "prices. For each trading date, takes the trailing range_days window " +
+      "(20/60/255/500/750 days), detrends, applies numpy.rfft, and stores " +
+      "the dominant cycle period (freq, in trading days) + its amplitude. " +
+      "The chart plots freq over time, one line per window size — revealing " +
+      "cycle-regime shifts (e.g. a 255-day window whose dominant period " +
+      "collapses from ~60d to ~20d signals a shift from quarterly to " +
+      "monthly cyclicality). Y-axis is log-scaled. Index only for now; " +
+      "ETF/Stock pending the Python populator. Backed by " +
+      "analysis.fourier_freqs.",
+    tags: ["Index", "FFT", "cycle period", "frequency analysis", "amplitude"],
+  },
 ];
 
 export default function CommonsPage() {

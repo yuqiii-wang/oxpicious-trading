@@ -68,6 +68,7 @@ from strategy._trading.engine import (
     compute_daily_rows as _compute_daily_rows,
 )
 from strategy.factors_and_algos import get_algo
+from strategy.factors_and_algos._algo.tuning import tune_signals
 from strategy.factors_and_algos.portfolio import blend_signal_confidence, _short_name
 
 
@@ -368,13 +369,32 @@ class AlgoSignalCollector:
         algo-specific columns. ``signal_reason_fn`` is the collector's
         :meth:`build_signal_reason` so the reason text matches whatever
         algo(s) produced the signal.
+
+        When ``params["fault_tolerance"] > 0``, a post-hoc stress pass runs
+        after the baseline backtest (see :func:`run_ft_stress`). The baseline
+        decisions are returned unchanged with ``ft_stressed_conf`` annotated.
         """
         if not df.empty:
             df = self.apply_signals(df, params)
-        return _run_backtest_engine(
+            # Base signal tuning (inherited by the mixed-mode collector):
+            # zero out sub-threshold |signal_confidence| so dust trades
+            # (conf < 5) are ignored by the engine. Applied AFTER the blend
+            # so the threshold gates the FINAL consolidated signal.
+            df = tune_signals(df)
+        decisions = _run_backtest_engine(
             df, params, sec_type, codes,
             signal_reason_fn=self.build_signal_reason,
         )
+
+        ft = float(params.get("fault_tolerance", 0) or 0)
+        if ft > 0 and decisions:
+            from strategy.factors_and_algos._algo.fault_tolerance import run_ft_stress
+            decisions = run_ft_stress(
+                self, df, params, sec_type, codes,
+                baseline_decisions=decisions,
+                signal_reason_fn=self.build_signal_reason,
+            )
+        return decisions
 
     def compute_daily_rows(self, code_df, decisions, anchor_price):
         """Delegate to the signal-agnostic engine helper."""

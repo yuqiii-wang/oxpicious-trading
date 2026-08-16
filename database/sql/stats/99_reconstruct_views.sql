@@ -102,6 +102,7 @@ SELECT
     o.low,
     o.close,
     o.pct_change,
+    o.eps,
     o.has_intraday_5mins,
     -- Adjustment
     a.cum_split_factor,
@@ -121,6 +122,12 @@ SELECT
     t.ma60,
     t.ma120,
     t.ma255,
+    t.ema6,
+    t.ema10,
+    t.ema20,
+    t.ema60,
+    t.ema120,
+    t.ema255,
     -- Liquidity & margin
     lm.trading_shares,
     lm.trading_amount,
@@ -233,7 +240,13 @@ SELECT
     t.ma20,
     t.ma60,
     t.ma120,
-    t.ma255
+    t.ma255,
+    t.ema6,
+    t.ema10,
+    t.ema20,
+    t.ema60,
+    t.ema120,
+    t.ema255
 FROM stats.index_identity i
 LEFT JOIN stats.index_basic_stats bs ON i.date = bs.date AND i.code = bs.code
 LEFT JOIN stats.index_valuation v ON i.date = v.date AND i.code = v.code
@@ -244,8 +257,8 @@ COMMENT ON VIEW stats.v_index_baseline IS 'Reconstructed index_baseline view: JO
 -- ----------------------------------------------------------------------------
 -- View: v_stock_baseline
 --   Reconstructs stock daily data via JOIN on (date, code)
---   Mirrors v_etf_margin structure (identity + basic_stats + liquidity_margin).
---   DROP first (see v_etf_margin note re: column insertion).
+--   Mirrors v_etf_margin structure (identity + basic_stats + tech_stats +
+--   liquidity_margin). DROP first (see v_etf_margin note re: column insertion).
 -- ----------------------------------------------------------------------------
 DROP VIEW IF EXISTS stats.v_stock_baseline;
 CREATE OR REPLACE VIEW stats.v_stock_baseline AS
@@ -263,7 +276,21 @@ SELECT
     b.has_intraday_5mins,
     -- Stock-specific valuation
     b.pe,
+    b.eps,
     b.is_pe_estimated,
+    -- Technical (mirrors etf_tech_stats)
+    t.ma5,
+    t.ma5_ratio,
+    t.ma20,
+    t.ma60,
+    t.ma120,
+    t.ma255,
+    t.ema6,
+    t.ema10,
+    t.ema20,
+    t.ema60,
+    t.ema120,
+    t.ema255,
     -- Liquidity & margin (mirrors etf_liquidity_margin)
     lm.trading_shares,
     lm.trading_amount,
@@ -275,9 +302,10 @@ SELECT
     lm.total_balance
 FROM stats.stock_identity i
 LEFT JOIN stats.stock_basic_stats b ON i.date = b.date AND i.code = b.code
+LEFT JOIN stats.stock_tech_stats t ON i.date = t.date AND i.code = t.code
 LEFT JOIN stats.stock_liquidity_margin lm ON i.date = lm.date AND i.code = lm.code;
 
-COMMENT ON VIEW stats.v_stock_baseline IS 'Reconstructed stock_baseline view: JOIN of stock_identity + stock_basic_stats + stock_liquidity_margin. Mirrors v_etf_margin structure.';
+COMMENT ON VIEW stats.v_stock_baseline IS 'Reconstructed stock_baseline view: JOIN of stock_identity + stock_basic_stats + stock_tech_stats + stock_liquidity_margin. Mirrors v_etf_margin structure.';
 
 
 -- ============================================================================

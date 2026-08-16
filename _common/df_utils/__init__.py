@@ -91,7 +91,8 @@ MODULES
   - ``_detector``  : CUDA / cuDF availability detection (cached).
   - ``_thresholds``: Breakeven row counts per operation type + VRAM.
   - ``_router``    : ``should_use_gpu()`` combining both + VRAM check.
-  - ``rolling``    : ``compute_moving_averages`` + ``grouped_rolling_agg``.
+  - ``rolling``    : ``compute_moving_averages`` + ``compute_emas`` +
+                     ``grouped_rolling_agg``.
   - ``groupby``    : ``grouped_diff`` + ``grouped_shift`` (batched).
 """
 # ---- Router (the "checking cond when to use cuDF" layer) ---------------
@@ -118,6 +119,7 @@ from _common.df_utils._router import (
 # ---- DataFrame operation helpers (the "common df utils" layer) ---------
 from _common.df_utils.rolling import (
     compute_moving_averages,
+    compute_emas,
     grouped_rolling_agg,
 )
 from _common.df_utils.groupby import (
@@ -144,6 +146,7 @@ __all__ = [
     "decide_gpu",
     # Rolling helpers
     "compute_moving_averages",
+    "compute_emas",
     "grouped_rolling_agg",
     # Grouped diff / shift helpers
     "grouped_diff",

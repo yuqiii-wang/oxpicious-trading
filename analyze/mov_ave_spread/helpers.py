@@ -9,6 +9,7 @@ import pandas as pd
 
 from _common.df_utils import grouped_diff, grouped_rolling_agg
 from analyze.mov_ave_spread.config import (
+    EMA_WINDOWS,
     MA_WINDOWS,
     NUMERIC_MAX_ABS,
     NUMERIC_WIDE_MAX_ABS,
@@ -106,6 +107,47 @@ def compute_slopes_curvatures(df: pd.DataFrame) -> pd.DataFrame:
 
     # Curvatures: 2nd derivative = diff of slope (6 columns).
     curv_out = ["price_curvature"] + [f"ma{w}_curvature" for w in MA_WINDOWS]
+    grouped_diff(
+        df, grp_keys,
+        cols=slope_out, out_names=curv_out,
+        sort=False,
+    )
+
+    return df
+
+
+def compute_ema_slopes_curvatures(df: pd.DataFrame) -> pd.DataFrame:
+    """Add 1st-derivative (slope) and 2nd-derivative (curvature) columns
+    for each EMA window, computed per (sec_type, code) ordered by date.
+
+    slope[t]      = ema{W}[t] - ema{W}[t-1]   (NULL on first date of each code)
+    curvature[t]  = slope[t] - slope[t-1]       (NULL on first two dates)
+
+    Adds columns ema{W}_slope / ema{W}_curvature for W in EMA_WINDOWS
+    (6/20/60/120/255), sourced from stats.{etf,index,stock}_tech_stats.
+
+    GPU acceleration: uses the shared ``grouped_diff`` helper, which
+    routes to cuDF when the row count exceeds the ``groupby_diff``
+    breakeven (~320K rows conservative). Two batched calls cover all
+    10 diff() operations: one for the 5 slopes, one for the 5
+    curvatures (diff-of-diff). Each batch runs on a single cuDF
+    transfer of only the needed columns (group_keys + input cols),
+    avoiding the cost of transferring the full wide source frame.
+    """
+    df = df.sort_values(["sec_type", "code", "date"]).reset_index(drop=True)
+    grp_keys = ["sec_type", "code"]
+
+    # Slopes: 1st derivative of each EMA window (5 columns).
+    ema_cols = [f"ema{w}" for w in EMA_WINDOWS]
+    slope_out = [f"ema{w}_slope" for w in EMA_WINDOWS]
+    grouped_diff(
+        df, grp_keys,
+        cols=ema_cols, out_names=slope_out,
+        sort=False,  # df already sorted above
+    )
+
+    # Curvatures: 2nd derivative = diff of slope (5 columns).
+    curv_out = [f"ema{w}_curvature" for w in EMA_WINDOWS]
     grouped_diff(
         df, grp_keys,
         cols=slope_out, out_names=curv_out,

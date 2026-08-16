@@ -8,8 +8,9 @@ CNINDEX supplements (see loaders.py), then:
   3. Backfills PE from CSIndex rows that lost the dedup (e.g. SSE trend won
      OHLCV for 000xxx codes but its PE is NULL).
   4. Optionally fills missing trading days with estimated closes.
-  5. Computes moving averages (ma5, ma20, ma60, ma120, ma255) over the FULL
-     per-code history (must use ALL rows, not just missing, for correctness).
+  5. Computes moving averages (ma5, ma20, ma60, ma120, ma255) and exponential
+     moving averages (ema6, ema10, ema20, ema60, ema120, ema255) over the
+     FULL per-code history (must use ALL rows, not just missing, for correctness).
   6. Filters to (date, code) pairs NOT in `existing_keys` for the upsert.
 
 The *_1m.csv files are CSIndex's "recent 1-month" daily export with bilingual
@@ -25,7 +26,7 @@ import os
 import pandas as pd
 
 from _common.build_commons import parse_num, parse_date
-from _common.df_utils import compute_moving_averages
+from _common.df_utils import compute_moving_averages, compute_emas
 
 from builds.index.baseline.paths import CSINDEX_DIR, VALID_CODE_RE
 from builds.index.baseline.close_estimation import fill_missing_closes
@@ -250,6 +251,15 @@ def build_daily_df(existing_keys: set, shared_weights: dict = None,
         group_key="code",
         value_col="close",
         windows=[5, 20, 60, 120, 255],
+    )
+    # Compute EMAs over full per-code history (same correctness constraint).
+    # Stays on pandas: cuDF lacks grouped-ewm support (see
+    # analyze/mov_ave_spread/rsi.py for the same constraint).
+    compute_emas(
+        combined,
+        group_key="code",
+        value_col="close",
+        spans=[6, 10, 20, 60, 120, 255],
     )
 
     # Filter to missing (date, code) pairs only — this is the key optimization

@@ -109,7 +109,15 @@ router.post("/singleton/run", async (req: Request, res: Response) => {
     // binary algo (macd) when absent.
     const algo = typeof req.query.algo === "string" && req.query.algo.trim()
       ? req.query.algo.trim() : DEFAULT_STRATEGY_NAME;
-    const result = await runStrategyScript(code, rawSecType as MaSpreadSecType, forecast, algo);
+    // fault_tolerance query param: 0-20 (default 0 = disabled). When >0,
+    // passes --fault-tolerance to Python, which runs a two-pass stress test
+    // (baseline → stress OHLC on decision days → recompute → re-run) and
+    // appends _ft{N} suffix to the strategy_name so the FT variant is a
+    // distinct strategy in the DB.
+    const ftRaw = typeof req.query.fault_tolerance === "string"
+      ? req.query.fault_tolerance.trim() : "";
+    const faultTolerance = ftRaw ? Math.max(0, Math.min(20, Number(ftRaw) || 0)) : 0;
+    const result = await runStrategyScript(code, rawSecType as MaSpreadSecType, forecast, algo, faultTolerance);
     res.json(result);
   } catch (err) {
     console.error("[strategy/singleton/run] error:", err);

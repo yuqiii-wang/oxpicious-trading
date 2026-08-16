@@ -11,3 +11,25 @@ export { getAllIndustriesAttribution, getMemberIndexAttribution } from "./indust
 export { getIndustryBenchmarkAttribution, listIndustryAttributionBenchmarks } from "./industry-benchmark-attribution.js";
 export { getIndustryEtfPriceSeries, getIndustryEtfContributionBars } from "./industry-etf-contribution.js";
 export { getIndustryHypesAndDrains } from "./industry-hypes-and-drains.js";
+export { getIntradayMovements, listIntradayMovementsBenchmarks } from "./intraday-movements.js";
+export {
+  listPeAndDividendCodes,
+  getPeAndDividendChart,
+  listPeAndDividendThemes,
+  listPeAndDividendStrategyThemes,
+  listPeAndDividendStats,
+} from "./pe-and-dividends.js";
+export {
+  listMarginTrendThemes,
+  listMarginTrendStrategyThemes,
+  getMarginIndustrySeries,
+  getMarginIndustryCorrelation,
+  getMarginTrends,
+} from "./margin-trends.js";
+export {
+  listFourierFreqsCodes,
+  getFourierFreqsChart,
+  getFourierFreqsSpectrum,
+  listFourierFreqsThemes,
+  listFourierFreqsStrategyThemes,
+} from "./fourier-freqs.js";

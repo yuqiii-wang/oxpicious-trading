@@ -130,17 +130,8 @@ export default function MaSpreadPage() {
           setStrategyId(null);
           setThemeSlug(null);
         }
-        // BROAD is a STRATEGY (is_industry_not_strategy=FALSE), so it lives in
-        // the RIGHT column (strategy tree). Default to BROAD there if present;
-        // else fall back to the first sector in the LEFT column.
-        if (sectorId == null && strategyId == null) {
-          const broad = st.find((s) => s.sector_id === "BROAD");
-          if (broad) {
-            setStrategyId(broad.sector_id);
-          } else if (t.length > 0) {
-            setSectorId(t[0].sector_id);
-          }
-        }
+        // No page-level default — SecClassificationNav handles auto-selecting
+        // the default per sec_type via its DEFAULTS_BY_KIND map.
         setLoading(false);
       })
       .catch((e: Error) => {

@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS stats.stock_basic_stats (
     close                     NUMERIC(18,4),
     pct_change                NUMERIC(10,4),
     pe                        NUMERIC(18,4),
+    eps                       NUMERIC(18,6),
     is_pe_estimated           BOOLEAN       NOT NULL DEFAULT FALSE,
     is_close_estimated        BOOLEAN       NOT NULL DEFAULT FALSE,
     has_intraday_5mins        BOOLEAN       NOT NULL DEFAULT FALSE,
@@ -69,6 +70,11 @@ COMMENT ON COLUMN stats.stock_basic_stats.pe          IS 'Price-to-earnings rati
 COMMENT ON COLUMN stats.stock_basic_stats.is_pe_estimated IS 'TRUE when pe was estimated from the last actual PE row using constant-EPS assumption: estimated_pe = today_close * last_pe / last_close. FALSE when pe comes directly from the source CSV (actual), or when pe is NULL because no prior actual PE exists to estimate from.';
 COMMENT ON COLUMN stats.stock_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index (highest composition shared weight > 60%). If no proxy index qualifies, prev_close is carried forward.';
 COMMENT ON COLUMN stats.stock_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future stock intraday support).';
+
+-- Idempotent migration: add eps column (earnings per share = close / pe) to
+-- pre-existing tables. ADD COLUMN IF NOT EXISTS is a no-op on fresh installs.
+ALTER TABLE stats.stock_basic_stats ADD COLUMN IF NOT EXISTS eps NUMERIC(18,6);
+COMMENT ON COLUMN stats.stock_basic_stats.eps IS 'Earnings per share (EPS), in yuan per single share, derived from the identity PE = price / EPS as eps = close / pe. NULL when pe is NULL or <= 0 (loss-making / no PE recorded) or close is NULL. For SSE stocks where pe is estimated under the constant-EPS assumption (is_pe_estimated=TRUE), eps recovers that constant EPS = last_close / last_pe. Populated by builds/stock/__main__.py at insert time.';
 
 -- NOTE: trading_shares / trading_amount previously lived on stock_basic_stats.
 -- They have been moved to stats.stock_liquidity_margin (below) to mirror the
@@ -123,18 +129,30 @@ CREATE TABLE IF NOT EXISTS stats.stock_tech_stats (
     ma60                      NUMERIC(18,4),
     ma120                     NUMERIC(18,4),
     ma255                     NUMERIC(18,4),
+    ema6                      NUMERIC(18,4),
+    ema10                     NUMERIC(18,4),
+    ema20                     NUMERIC(18,4),
+    ema60                     NUMERIC(18,4),
+    ema120                    NUMERIC(18,4),
+    ema255                    NUMERIC(18,4),
 
     CONSTRAINT pk_stock_tech_stats PRIMARY KEY (date, code),
     CONSTRAINT fk_stock_tech_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.stock_identity(date, code)
 );
 
-COMMENT ON TABLE  stats.stock_tech_stats                    IS 'Stock technical indicators (moving averages), computed from stats.stock_basic_stats.close.';
+COMMENT ON TABLE  stats.stock_tech_stats                    IS 'Stock technical indicators (moving averages + EMAs), computed from stats.stock_basic_stats.close.';
 COMMENT ON COLUMN stats.stock_tech_stats.ma5                IS '5-day moving average of close.';
 COMMENT ON COLUMN stats.stock_tech_stats.ma5_ratio          IS 'Close / MA5 - 1 (ratio of price to 5-day MA).';
 COMMENT ON COLUMN stats.stock_tech_stats.ma20               IS '20-day moving average of close.';
 COMMENT ON COLUMN stats.stock_tech_stats.ma60               IS '60-day moving average of close.';
 COMMENT ON COLUMN stats.stock_tech_stats.ma120              IS '120-day moving average of close.';
 COMMENT ON COLUMN stats.stock_tech_stats.ma255              IS '255-day moving average of close.';
+COMMENT ON COLUMN stats.stock_tech_stats.ema6               IS '6-day exponential moving average of close (span=6, adjust=False).';
+COMMENT ON COLUMN stats.stock_tech_stats.ema10              IS '10-day exponential moving average of close (span=10, adjust=False).';
+COMMENT ON COLUMN stats.stock_tech_stats.ema20              IS '20-day exponential moving average of close (span=20, adjust=False).';
+COMMENT ON COLUMN stats.stock_tech_stats.ema60              IS '60-day exponential moving average of close (span=60, adjust=False).';
+COMMENT ON COLUMN stats.stock_tech_stats.ema120             IS '120-day exponential moving average of close (span=120, adjust=False).';
+COMMENT ON COLUMN stats.stock_tech_stats.ema255             IS '255-day exponential moving average of close (span=255, adjust=False).';
 
 CREATE INDEX IF NOT EXISTS idx_stock_tech_stats_code_date
     ON stats.stock_tech_stats (code, date);

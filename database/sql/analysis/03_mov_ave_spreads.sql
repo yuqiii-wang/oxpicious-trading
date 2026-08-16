@@ -32,12 +32,14 @@
 -- peaks_and_floors MUST be dropped AFTER detail (or CASCADE) because detail
 -- has an FK to peaks_and_floors; CASCADE handles both orderings safely.
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_detail CASCADE;
+DROP TABLE IF EXISTS analysis.mov_ave_spreads_detail_ema CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_peaks_and_floors CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_large_swings CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_rsi CASCADE;
 DROP TABLE IF EXISTS analysis.etf_mov_ave_spreads_detail;
 DELETE FROM analysis.analysis_identity WHERE name = 'etf_mov_ave_spread';
 DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rsi';
+DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_ema';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_spreads_detail  (WIDE format)
@@ -146,44 +148,6 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
         CHECK (sec_type IN ('etf', 'index', 'stock'))
 );
 
--- Migrate: add trading_amt_market_share_ma{5,20,60,120,255} columns to
--- pre-existing installs (CREATE TABLE IF NOT EXISTS does not retro-fit
--- columns to an already-existing table). Each column is NUMERIC(24,4) —
--- matches trading_amt_ma* precision; market_share is a ratio (0..1 in
--- practice) but uses the wide type for schema symmetry with trading_amt_ma*.
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_ma5     NUMERIC(24,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_ma20    NUMERIC(24,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_ma60    NUMERIC(24,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_ma120   NUMERIC(24,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_ma255   NUMERIC(24,4);
-
--- Migrate: add trading_amt_ma{5,20,60,120,255}_slope columns. Each is a
--- RATIO (fractional daily change) = (ma[t] - ma[t-1]) / ma[t-1], NOT a raw
--- difference — so NUMERIC(10,4) (cap ~10^6) is sufficient since typical MA
--- daily changes are 0.001-0.05. NULL when ma[t] or ma[t-1] is NULL or
--- ma[t-1] <= 0 (denominator guard). Built by analyze.mov_ave_spread.
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_ma5_slope     NUMERIC(10,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_ma20_slope    NUMERIC(10,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_ma60_slope    NUMERIC(10,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_ma120_slope   NUMERIC(10,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_ma255_slope   NUMERIC(10,4);
-
--- Migrate: add trading_amt_market_share_vs_ma{5,20,60,120,255} columns.
--- Each is a signed fractional ratio:
---   (market_share[t] - market_share_ma{W}[t]) / market_share_ma{W}[t]
--- where market_share[t] = trading_amount[t] / denominator[t] (denominator =
--- SUM of primary-exchange total_trading_amount on date t). Positive = the
--- security's current market share is ABOVE its W-day average (gaining
--- relative liquidity); negative = BELOW (losing relative liquidity).
--- NUMERIC(10,4) is sufficient — typical |ratio| < 1.0. NULL when
--- market_share or market_share_ma{W} is NULL or market_share_ma{W} <= 0.
--- Built by analyze.mov_ave_spread.
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_vs_ma5     NUMERIC(10,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_vs_ma20    NUMERIC(10,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_vs_ma60    NUMERIC(10,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_vs_ma120   NUMERIC(10,4);
-ALTER TABLE analysis.mov_ave_spreads_detail ADD COLUMN IF NOT EXISTS trading_amt_market_share_vs_ma255   NUMERIC(10,4);
-
 -- NOTE: no separate (sec_type, code, date) index — the PK already covers
 -- that lookup. A duplicate index was previously created here and dropped
 -- because it doubled index-maintenance cost on every INSERT for zero
@@ -246,6 +210,114 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_60days  IS 'Rolling popula
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_120days IS 'Rolling population σ (ddof=0) of price over 120 trading days. Bollinger band width for MA120 envelope. NULL until 120 consecutive rows.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_255days IS 'Rolling population σ (ddof=0) of price over 255 trading days. Bollinger band width for MA255 envelope. NULL until 255 consecutive rows.';
 
+-- ----------------------------------------------------------------------------
+--  Table: analysis.mov_ave_spreads_detail_ema  (WIDE: one row per
+--  asset+code+date, 9 EMA gap columns + 5 EMA slope + 5 EMA curvature)
+--
+--  EMA counterpart of mov_ave_spreads_detail. Source: stats.{etf,index,
+--  stock}_tech_stats.ema{6,20,60,120,255} (already fetched by the parent
+--  mov_ave_spread pipeline — reuses the same source DataFrame, no second
+--  DB round-trip).
+--
+--  9 gap pairs (canonical order):
+--    5 Price-vs-EMA pairs:  gap = (price - emaX) / emaX,  X ∈ {6,20,60,120,255}
+--    4 EMA6-vs-EMA pairs:   gap = (ema6 - emaX) / emaX,   X ∈ {20,60,120,255}
+--
+--  5 EMA slope columns (1st derivative = group-diff per (sec_type, code)
+--  ordered by date) + 5 EMA curvature columns (2nd derivative = diff of
+--  slope). NULL on first date (slope) / first two dates (curvature) of
+--  each code.
+--
+--  Populated by the internal EMA step of `analyze.mov_ave_spread` (see
+--  ema.py). Incremental upsert by missing dates; --force truncates first.
+--  No FK to mov_ave_spreads_detail — data integrity is guaranteed by
+--  INNER JOINs on tech_stats in the build script.
+-- ----------------------------------------------------------------------------
+CREATE TABLE analysis.mov_ave_spreads_detail_ema (
+    sec_type          TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
+    code              TEXT         NOT NULL,
+    date              DATE         NOT NULL,
+
+    -- 5 Price-vs-EMA gap columns
+    price_vs_ema6     NUMERIC(10,6),
+    price_vs_ema20    NUMERIC(10,6),
+    price_vs_ema60    NUMERIC(10,6),
+    price_vs_ema120   NUMERIC(10,6),
+    price_vs_ema255   NUMERIC(10,6),
+
+    -- 4 EMA6-vs-EMA gap columns
+    ema6_vs_ema20     NUMERIC(10,6),
+    ema6_vs_ema60     NUMERIC(10,6),
+    ema6_vs_ema120    NUMERIC(10,6),
+    ema6_vs_ema255    NUMERIC(10,6),
+
+    -- 5 EMA slope columns (1st derivative per (sec_type, code) by date)
+    ema6_slope        NUMERIC(10,6),
+    ema20_slope       NUMERIC(10,6),
+    ema60_slope       NUMERIC(10,6),
+    ema120_slope      NUMERIC(10,6),
+    ema255_slope      NUMERIC(10,6),
+
+    -- 5 EMA curvature columns (2nd derivative = diff of slope)
+    ema6_curvature    NUMERIC(10,6),
+    ema20_curvature   NUMERIC(10,6),
+    ema60_curvature   NUMERIC(10,6),
+    ema120_curvature  NUMERIC(10,6),
+    ema255_curvature  NUMERIC(10,6),
+
+    std_5days         NUMERIC(10,6),
+    std_20days        NUMERIC(10,6),
+    std_60days        NUMERIC(10,6),
+    std_120days       NUMERIC(10,6),
+    std_255days       NUMERIC(10,6),
+
+    CONSTRAINT pk_mov_ave_spreads_detail_ema PRIMARY KEY (sec_type, code, date),
+    CONSTRAINT chk_mov_ave_spreads_detail_ema_sec_type
+        CHECK (sec_type IN ('etf', 'index', 'stock'))
+);
+
+COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ema              IS 'EMA-spread detail (WIDE format): one row per (sec_type, code, date) with 9 EMA gap columns (5 Price/EMA + 4 EMA6/EMA) + 5 EMA slope + 5 EMA curvature columns. sec_type ∈ {etf, index, stock}. Source: stats.{etf,index,stock}_tech_stats.ema{6,20,60,120,255}.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.sec_type     IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.date         IS 'Business date (trading day).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.price_vs_ema6   IS '(price - ema6) / ema6 — signed fractional gap (NULL when either is NULL/invalid).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.price_vs_ema20  IS '(price - ema20) / ema20.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.price_vs_ema60  IS '(price - ema60) / ema60.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.price_vs_ema120 IS '(price - ema120) / ema120.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.price_vs_ema255 IS '(price - ema255) / ema255.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_vs_ema20  IS '(ema6 - ema20) / ema20.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_vs_ema60  IS '(ema6 - ema60) / ema60.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_vs_ema120 IS '(ema6 - ema120) / ema120.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_vs_ema255 IS '(ema6 - ema255) / ema255.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_slope        IS '1st derivative of EMA6 (EMA6[t] - EMA6[t-1]) per trading day. NULL on the first date of each code.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema20_slope       IS '1st derivative of EMA20 (EMA20[t] - EMA20[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema60_slope       IS '1st derivative of EMA60 (EMA60[t] - EMA60[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema120_slope      IS '1st derivative of EMA120 (EMA120[t] - EMA120[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema255_slope      IS '1st derivative of EMA255 (EMA255[t] - EMA255[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema6_curvature    IS '2nd derivative of EMA6 (slope[t] - slope[t-1]). NULL on the first two dates of each code.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema20_curvature   IS '2nd derivative of EMA20 (slope[t] - slope[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema60_curvature   IS '2nd derivative of EMA60 (slope[t] - slope[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema120_curvature  IS '2nd derivative of EMA120 (slope[t] - slope[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.ema255_curvature  IS '2nd derivative of EMA255 (slope[t] - slope[t-1]).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.std_5days   IS 'Rolling population σ (ddof=0) of price over 5 trading days. Bollinger band width for the EMA6 envelope (EMA6 uses the 5-day σ as the closest available window). NULL until 5 consecutive rows. Same source data as analysis.mov_ave_spreads_detail.std_5days — populated from the parent pipeline so the EMA table is self-contained for Bollinger rendering without a JOIN back to the SMA detail table.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.std_20days  IS 'Rolling population σ (ddof=0) of price over 20 trading days. Bollinger band width for the EMA20 envelope. NULL until 20 consecutive rows. Same source data as analysis.mov_ave_spreads_detail.std_20days.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.std_60days  IS 'Rolling population σ (ddof=0) of price over 60 trading days. Bollinger band width for the EMA60 envelope. NULL until 60 consecutive rows. Same source data as analysis.mov_ave_spreads_detail.std_60days.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.std_120days IS 'Rolling population σ (ddof=0) of price over 120 trading days. Bollinger band width for the EMA120 envelope. NULL until 120 consecutive rows. Same source data as analysis.mov_ave_spreads_detail.std_120days.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.std_255days IS 'Rolling population σ (ddof=0) of price over 255 trading days. Bollinger band width for the EMA255 envelope. NULL until 255 consecutive rows. Same source data as analysis.mov_ave_spreads_detail.std_255days.';
+
+-- Migrate: add std_*days columns to pre-existing installs (CREATE TABLE
+-- includes them for fresh installs, but ADD COLUMN IF NOT EXISTS retro-fits
+-- the columns to an already-existing table without dropping data). Rolling
+-- population σ (ddof=0) of price over N trading days — Bollinger band widths
+-- for the EMA{W} envelopes. Same source data as the SMA detail table's
+-- std_*days (σ of price over W days), populated from the parent pipeline's
+-- compute_rolling_stds so the EMA table is self-contained for Bollinger
+-- rendering. Built by analyze.mov_ave_spread (ema.py).
+ALTER TABLE analysis.mov_ave_spreads_detail_ema ADD COLUMN IF NOT EXISTS std_5days   NUMERIC(10,6);
+ALTER TABLE analysis.mov_ave_spreads_detail_ema ADD COLUMN IF NOT EXISTS std_20days  NUMERIC(10,6);
+ALTER TABLE analysis.mov_ave_spreads_detail_ema ADD COLUMN IF NOT EXISTS std_60days  NUMERIC(10,6);
+ALTER TABLE analysis.mov_ave_spreads_detail_ema ADD COLUMN IF NOT EXISTS std_120days NUMERIC(10,6);
+ALTER TABLE analysis.mov_ave_spreads_detail_ema ADD COLUMN IF NOT EXISTS std_255days NUMERIC(10,6);
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_peaks_and_floors  (per-EXTREME-DATE cadence)
@@ -352,11 +424,17 @@ CREATE TABLE analysis.mov_ave_rsi (
     code            TEXT         NOT NULL,
     date            DATE         NOT NULL,
 
-    -- 4 Wilder RSI columns (0..100, NULL until N periods)
+    -- Wilder RSI columns (0..100, NULL until N periods).
+    -- Windows: 6 / 10 / 14 (classic Wilder) / 20 / 60 / 120 (~half trading
+    -- year) / 255 (~1 trading year, matches MA255) / 500 (~2 trading years).
     rsi_6days       NUMERIC(10,6),
     rsi_10days      NUMERIC(10,6),
     rsi_14days      NUMERIC(10,6),
     rsi_20days      NUMERIC(10,6),
+    rsi_60days      NUMERIC(10,6),
+    rsi_120days     NUMERIC(10,6),
+    rsi_255days     NUMERIC(10,6),
+    rsi_500days     NUMERIC(10,6),
 
     -- 2 short-term price-gap (N-day return) columns
     gap_2days       NUMERIC(10,6), -- sign indicates last extreme is max or min
@@ -370,13 +448,33 @@ CREATE TABLE analysis.mov_ave_rsi (
         CHECK (sec_type IN ('etf', 'index', 'stock'))
 );
 
+-- Migrate: add rsi_60days column to pre-existing installs (CREATE TABLE
+-- includes it for fresh installs, but ADD COLUMN IF NOT EXISTS retro-fits
+-- the column to an already-existing table without dropping data). Wilder
+-- RSI over 60 trading days (alpha=1/60, ewm adjust=False,
+-- min_periods=60) — a longer-term momentum window complementing the
+-- classic 14-day Wilder default. 0..100. NULL until 60 consecutive
+-- gain/loss observations. Built by analyze.mov_ave_spread (rsi.py).
+ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_60days NUMERIC(10,6);
+
+-- Migrate: add rsi_120days / rsi_255days / rsi_500days columns to pre-existing
+-- installs. Wilder RSI over 120 / 255 / 500 trading days (alpha=1/N,
+-- ewm adjust=False, min_periods=N) — progressively longer-term momentum
+-- windows complementing the classic 14-day Wilder default. 255 days ≈ 1
+-- trading year (matches the MA255 window); 500 days ≈ 2 trading years.
+-- 0..100. NULL until N consecutive gain/loss observations. Built by
+-- analyze.mov_ave_spread (rsi.py).
+ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_120days NUMERIC(10,6);
+ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_255days NUMERIC(10,6);
+ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_500days NUMERIC(10,6);
+
 -- NOTE: no separate (sec_type, code, date) index — the PK already covers
 -- that lookup (same rationale as mov_ave_spreads_detail above). A duplicate
 -- index was previously created here and dropped because it doubled index-
 -- maintenance cost on every INSERT for zero benefit (PK B-tree already
 -- serves equality + range scans on the (sec_type, code, date) prefix).
 
-COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (6/10/14/20 days) + short-term price gaps (2/3 day returns). One row per (sec_type, code, date). sec_type ∈ {etf, index, stock}.';
+COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (6/10/14/20/60/120/255/500 days) + short-term price gaps (2/3 day returns). One row per (sec_type, code, date). sec_type ∈ {etf, index, stock}.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_rsi.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_rsi.date        IS 'Business date (trading day).';
@@ -384,6 +482,10 @@ COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_6days   IS 'Wilder RSI over 6 trading
 COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_10days  IS 'Wilder RSI over 10 trading days (alpha=1/10, ewm adjust=False, min_periods=10). 0..100. NULL until 10 periods.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_14days  IS 'Wilder RSI over 14 trading days (alpha=1/14, ewm adjust=False, min_periods=14) — the classic Wilder window. 0..100. NULL until 14 periods.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_20days  IS 'Wilder RSI over 20 trading days (alpha=1/20, ewm adjust=False, min_periods=20). 0..100. NULL until 20 periods.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_60days  IS 'Wilder RSI over 60 trading days (alpha=1/60, ewm adjust=False, min_periods=60) — a longer-term momentum window complementing the classic 14-day Wilder default. 0..100. NULL until 60 consecutive gain/loss observations. Computed by analyze.mov_ave_spread (rsi.py) using the same Wilder EWM recurrence as the other RSI windows (delta = price[t]-price[t-1] is cuDF-accelerated via grouped_diff; the per-window EWM stays on pandas because cuDF lacks grouped-ewm support — see rsi.py for the documented rationale).';
+COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_120days IS 'Wilder RSI over 120 trading days (alpha=1/120, ewm adjust=False, min_periods=120) — a half-trading-year momentum window. 0..100. NULL until 120 consecutive gain/loss observations. Computed by analyze.mov_ave_spread (rsi.py) using the same Wilder EWM recurrence as the other RSI windows.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_255days IS 'Wilder RSI over 255 trading days (alpha=1/255, ewm adjust=False, min_periods=255) — a ~1-trading-year momentum window matching the MA255 window. 0..100. NULL until 255 consecutive gain/loss observations. Computed by analyze.mov_ave_spread (rsi.py) using the same Wilder EWM recurrence as the other RSI windows.';
+COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_500days IS 'Wilder RSI over 500 trading days (alpha=1/500, ewm adjust=False, min_periods=500) — a ~2-trading-year long-term momentum window. 0..100. NULL until 500 consecutive gain/loss observations. Computed by analyze.mov_ave_spread (rsi.py) using the same Wilder EWM recurrence as the other RSI windows. Useful for very long-term trend confirmation on indices and mature stocks; will be NULL for most recent IPOs / ETFs with < 500 rows of history.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.gap_2days   IS '2-day price return: (price[t] - price[t-2]) / price[t-2]. Signed fractional ratio. NULL for the first 2 rows of each code.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.gap_3days   IS '3-day price return: (price[t] - price[t-3]) / price[t-3]. Signed fractional ratio. NULL for the first 3 rows of each code.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.gap_since_last_extreme IS 'Signed fractional gap from the most recent local turning point (high/low) detected by price_slope sign change: (price[t] - extreme_price) / extreme_price. Sign indicates the type of the last extreme: positive = last extreme was a local MIN (price rebounded upward since the trough), negative = last extreme was a local MAX (price fell since the peak). NULL when no preceding turning point exists for the code (early history before the first turn).';

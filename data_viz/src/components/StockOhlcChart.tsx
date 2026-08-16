@@ -72,10 +72,22 @@ interface Props {
   dataZoomStart?: number;
   /** Initial dataZoom end % (0–100). Defaults to 100 when dataZoomStart is set. */
   dataZoomEnd?: number;
+  /** Optional callback fired when the user clicks any date on the chart.
+   *  Used by the PE & Dividend analysis page to highlight the matching
+   *  month-end row in the stats table. */
+  onDateClick?: (date: string) => void;
 }
 
-export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = [], dataZoomStart, dataZoomEnd }: Props) {
+export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = [], dataZoomStart, dataZoomEnd, onDateClick }: Props) {
   const themeMode = useStore((s) => s.themeMode);
+
+  // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
+  // handler to map a click index back to a date string. Mirrors the broken
+  // dates computed inside the option useMemo.
+  const chartDates = useMemo(
+    () => breakArraysAtGaps(rows.map((r) => r.date), [rows.map(() => null)]).dates,
+    [rows],
+  );
 
   const option = useMemo<EChartsOption>(() => {
     const c = axisColors(themeMode);
@@ -155,6 +167,12 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
     );
     const rqByDate = new Map<string, number | null>(
       rows.map((r) => [r.date, r.rq_balance_amt]),
+    );
+    // Date → EPS (yuan/share) lookup for tooltip display. EPS is a per-row
+    // attribute (close / pe), not a plotted series, so the tooltip resolves it
+    // by date — mirroring the rz/rq balance lookups above.
+    const epsByDate = new Map<string, number | null>(
+      rows.map((r) => [r.date, r.eps]),
     );
 
     // Dynamic axis limits for hidden margin axis — matches Python's
@@ -471,6 +489,12 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
               html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}</b></div>`;
             }
           }
+          // EPS (per-row attribute, not a plotted series). Shown after the
+          // series rows so it sits beneath the PE line when PE is plotted.
+          const epsVal = epsByDate.get(dateStr);
+          if (epsVal != null && Number.isFinite(epsVal)) {
+            html += `<div><span style="color:${PE_COLOR}">●</span> EPS: <b>¥${fmtNum(epsVal, 4)}</b></div>`;
+          }
           return html;
         },
       },
@@ -492,5 +516,14 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
     };
   }, [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd]);
 
-  return <EChart option={option} height={height} />;
+  return (
+    <EChart
+      option={option}
+      height={height}
+      onCanvasClick={onDateClick ? (idx) => {
+        const date = chartDates[idx];
+        if (date) onDateClick(date);
+      } : undefined}
+    />
+  );
 }

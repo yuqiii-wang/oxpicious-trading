@@ -16,6 +16,7 @@ import math
 # ---------------------------------------------------------------------------
 RISK_SEQ_TABLE = "strategy.strategy_risks"
 RISK_PERIOD_TABLE = "strategy.strategy_risk_period"
+RISK_FACTORS_TABLE = "strategy.strategy_risk_factors"
 
 # ---------------------------------------------------------------------------
 # Concentration / hotspot thresholds
@@ -143,11 +144,24 @@ LITTLE_GAIN_CV_MAX = 1.5       # max gain coefficient of variation (std/mean)
 # variance, and std are computed for each distribution. Two signals drive
 # the contribution:
 #
-#   A. Distribution asymmetry: if loss_var > gain_var OR loss_mean_abs >
-#      gain_mean, losses dominate gains (dangerous regime). The dominance
-#      ratio = max(loss_var/gain_var, loss_mean_abs/gain_mean). At ratio
-#      = LOSS_DOMINANCE_RATIO_HIGH (2.0, losses 2x gains) the contribution
-#      is RISK_GRADE_ELEVATED_BOUND (6.0) — HIGH on its own.
+#   A. Distribution asymmetry (BIDIRECTIONAL — "higher penalty to loss var,
+#      less to gain var"):
+#      Loss-side ratios (loss / gain, > 1 means losses dominate):
+#        loss_var_ratio   = loss_var   / gain_var    (or HIGH if gain_var=0)
+#        loss_mean_ratio  = loss_mean  / gain_mean   (or HIGH if gain_mean=0)
+#        loss_dom_ratio   = max(loss_var_ratio, loss_mean_ratio)
+#      Gain-side ratios (gain / loss, > 1 means gains dominate) — mirror:
+#        gain_var_ratio   = gain_var   / loss_var    (or HIGH if loss_var=0)
+#        gain_mean_ratio  = gain_mean  / loss_mean    (or HIGH if loss_mean=0)
+#        gain_dom_ratio   = max(gain_var_ratio, gain_mean_ratio)
+#      The DOMINANT direction (larger dom_ratio) drives the signal:
+#        loss dominates → +scale · (exp(k·(loss_dom-1)) - 1)        [weight 1.0]
+#        gain dominates → -scale · GAIN_DISCOUNT_WEIGHT ·
+#                                  (exp(k·(gain_dom-1)) - 1)        [weight 0.3]
+#      Loss side carries full weight; gain side carries 30% (matches
+#      UNREALIZED_WEIGHT convention) — a 2x loss dominance contributes the
+#      same magnitude as a ~6x gain dominance, so gains cannot trivially
+#      wipe out real loss risk.
 #
 #   B. Tail loss: any single period whose loss z-score (|loss| vs the loss
 #      distribution mean/std) exceeds LOSS_TAIL_2STD_TRIGGER (2σ) is a
@@ -161,9 +175,37 @@ LITTLE_GAIN_CV_MAX = 1.5       # max gain coefficient of variation (std/mean)
 # three period types and added to the rolling-window + streak components
 # inside _compute_risk_score. NOT a grade override — the grade is still
 # derived from the total score via the boundary logic above.
+#
+# Score floor: _period_override_risk returns max(0, score) so gain-side
+# discounts cannot push the period-override component negative (they can
+# cancel the tail-loss signal WITHIN the component, but cannot leak
+# negativity into realized/unrealized/streak components).
 
 LOSS_TAIL_2STD_TRIGGER = 2.0        # z-score: "significant loss" threshold (2σ)
 LOSS_TAIL_3STD_HIGH = 3.0           # z-score: "HIGH on its own" (3σ) — ratio = 1.0
 LOSS_DOMINANCE_RATIO_HIGH = 2.0     # loss/gain ratio: "HIGH on its own" (ratio - 1 = 1.0)
 MIN_PERIODS_FOR_STATS = 2           # need ≥ 2 data points to compute variance/std
+
+# Weight applied to the gain-side asymmetry discount (loss side = 1.0).
+# 0.3 matches UNREALIZED_WEIGHT convention — gain variance is rewarded as
+# a risk-reducer but at less than half the loss-side weight, so a single
+# outlier gain period cannot trivially mask real loss risk.
+GAIN_DISCOUNT_WEIGHT = 0.3
+
+
+# ---------------------------------------------------------------------------
+#  Fault-tolerance amplified stress risk component
+# ---------------------------------------------------------------------------
+# When the strategy has fault_tolerance > 0, each SELL decision carries
+# ft_stressed_conf_up / ft_stressed_conf_down — the signal_confidence the
+# algo WOULD have produced if OHLC moved UP or DOWN on that date. The
+# "amplified" strategy picks the direction that makes the strategy trade
+# MORE aggressively (BUY/SELL-at-loss: higher confidence; SELL-at-gain:
+# lower confidence → less gain locked in). The PnL degradation vs baseline
+# is this component's driver.
+#
+# Contribution = RISK_GRADE_ELEVATED_BOUND × (exp(k · ratio) - 1) where
+# ratio = |pnl_delta| / (FT_LOSS_THRESHOLD × capital_base). At threshold
+# (pnl_delta = 10% of capital) → contributes 6.0 (HIGH on its own).
+FT_LOSS_THRESHOLD = 0.10  # 10% of capital_base — at-threshold → HIGH
 

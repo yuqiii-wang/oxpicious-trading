@@ -1,8 +1,8 @@
 """Internal RSI step for analyze.mov_ave_spread.
 
-Wilder RSI (6/10/14/20 days) + short-term price gaps (2/3 day returns) +
-last-extreme gap/days columns for ETF + Index + Stock. One row per
-(sec_type, code, date) in analysis.mov_ave_rsi.
+Wilder RSI (6/10/14/20/60/120/255/500 days) + short-term price gaps
+(2/3 day returns) + last-extreme gap/days columns for ETF + Index + Stock.
+One row per (sec_type, code, date) in analysis.mov_ave_rsi.
 
 RSI uses Wilder's smoothing (EWM alpha=1/N, adjust=False, min_periods=N).
 gap_Ndays = (price[t] - price[t-N]) / price[t-N] (N-day price return).
@@ -73,13 +73,14 @@ RSI_ANALYSIS_NAME = "mov_ave_rsi"
 RSI_DESCRIPTION = (
     "Wilder Relative Strength Index (RSI) + short-term price-gap analysis "
     "+ last-extreme gap/days (ETF + Index + Stock). For each security and "
-    "business date, computes Wilder RSI for 4 windows (rsi_6days / "
-    "rsi_10days / rsi_14days / rsi_20days) using Wilder's exponential "
-    "smoothing (EWM alpha=1/N, adjust=False, min_periods=N; RSI = "
+    "business date, computes Wilder RSI for 8 windows (rsi_6days / "
+    "rsi_10days / rsi_14days / rsi_20days / rsi_60days / rsi_120days / "
+    "rsi_255days / rsi_500days) using Wilder's exponential smoothing "
+    "(EWM alpha=1/N, adjust=False, min_periods=N; RSI = "
     "100 - 100/(1+RS) where RS = avg_gain/avg_loss over the per-code "
-    "N-day gain/loss series; RSI=100 on pure uptrend, 0 on pure downtrend, "
-    "NULL when flat), plus 2 short-term price-gap columns (gap_2days / "
-    "gap_3days) defined as the N-day price return "
+    "N-day gain/loss series; RSI=100 on pure uptrend, 0 on pure "
+    "downtrend, NULL when flat), plus 2 short-term price-gap columns "
+    "(gap_2days / gap_3days) defined as the N-day price return "
     "(price[t]-price[t-N])/price[t-N], plus 2 last-extreme columns "
     "(gap_since_last_extreme / days_since_last_extreme) computed from the "
     "most recent local turning point (high/low) detected by price_slope "
@@ -94,8 +95,13 @@ RSI_DESCRIPTION = (
 )
 
 # RSI windows (Wilder smoothing). 14 is the classic Wilder default; 6/10/20
-# are common shorter/longer variants.
-RSI_WINDOWS = (6, 10, 14, 20)
+# are common shorter/longer variants; 60 (~3 trading months), 120 (~half
+# trading year), 255 (~1 trading year, matches MA255), and 500 (~2 trading
+# years) are progressively longer-term momentum windows that smooth out
+# short-term noise — useful for trend-confirmation alongside the shorter
+# windows. Note: 500-day RSI will be NULL for recent IPOs / ETFs with
+# < 500 rows of history.
+RSI_WINDOWS = (6, 10, 14, 20, 60, 120, 255, 500)
 
 # N-day price-return windows for the gap columns.
 GAP_WINDOWS = (2, 3)
@@ -436,7 +442,7 @@ async def run_rsi(
       1. Determine target dates (per-sec_type) by checking missing dates
          in analysis.mov_ave_rsi against source identity tables. In force
          mode, truncate the table instead.
-      2. Compute Wilder RSI (4 windows) + gaps (2 windows) + last-extreme
+      2. Compute Wilder RSI (8 windows) + gaps (2 windows) + last-extreme
          columns (gap_since_last_extreme, days_since_last_extreme) over
          the FULL per-code history, then filter to target_dates.
       3. Upsert into analysis.mov_ave_rsi (chunked by date).

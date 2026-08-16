@@ -53,6 +53,18 @@ TECH_STATS_MA_COLUMNS = {
     255: "ma255",
 }
 
+# stats.*_tech_stats EMA column names by EMA window. EMAs come from the same
+# tech_stats tables as MAs (stats.{etf,index,stock}_tech_stats.ema{6,20,60,
+# 120,255}). ema10 exists in the source tables but is not used by this
+# analysis (the EMA detail table mirrors the MA window set: 6/20/60/120/255).
+TECH_STATS_EMA_COLUMNS = {
+    6:   "ema6",
+    20:  "ema20",
+    60:  "ema60",
+    120: "ema120",
+    255: "ema255",
+}
+
 # MA windows for which slope (1st derivative) and curvature (2nd derivative)
 # are computed. Matches the ma{W}_slope / ma{W}_curvature columns in the
 # detail table.
@@ -181,4 +193,91 @@ TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS = (
     "trading_amt_market_share_vs_ma60",
     "trading_amt_market_share_vs_ma120",
     "trading_amt_market_share_vs_ma255",
+)
+
+
+# ============================================================================
+#  EMA detail (analysis.mov_ave_spreads_detail_ema)
+#  — EMA counterpart of the MA detail table. Internal step of the parent
+#  mov_ave_spread pipeline (see ema.py).
+# ============================================================================
+
+EMA_DETAIL_TABLE = "analysis.mov_ave_spreads_detail_ema"
+EMA_ANALYSIS_NAME = "mov_ave_spread_ema"
+
+# EMA windows for slope (1st derivative) and curvature (2nd derivative).
+# Matches the ema{W}_slope / ema{W}_curvature columns in the EMA detail
+# table. Source: stats.{etf,index,stock}_tech_stats.ema{6,20,60,120,255}.
+EMA_WINDOWS = (6, 20, 60, 120, 255)
+
+# 9 (num_col, den_col, gap_column_name) tuples in canonical order for the
+# EMA detail table. num_col="price" is the price sentinel; num_col="ema6"
+# uses ema6. gap_column_name matches the column in
+# analysis.mov_ave_spreads_detail_ema.
+EMA_PAIRS = [
+    ("price", "ema6",   "price_vs_ema6"),
+    ("price", "ema20",  "price_vs_ema20"),
+    ("price", "ema60",  "price_vs_ema60"),
+    ("price", "ema120", "price_vs_ema120"),
+    ("price", "ema255", "price_vs_ema255"),
+    ("ema6",  "ema20",  "ema6_vs_ema20"),
+    ("ema6",  "ema60",  "ema6_vs_ema60"),
+    ("ema6",  "ema120", "ema6_vs_ema120"),
+    ("ema6",  "ema255", "ema6_vs_ema255"),
+]
+
+# EMA gap column names (canonical order). Used by ema.py for column
+# selection + overflow guard.
+EMA_VS_COLUMNS = (
+    "price_vs_ema6",
+    "price_vs_ema20",
+    "price_vs_ema60",
+    "price_vs_ema120",
+    "price_vs_ema255",
+    "ema6_vs_ema20",
+    "ema6_vs_ema60",
+    "ema6_vs_ema120",
+    "ema6_vs_ema255",
+)
+
+# EMA slope column names (canonical window order). Each is a RAW difference
+# (EMA[t] - EMA[t-1]) per (sec_type, code) ordered by date, so NUMERIC(10,6)
+# overflow guard applies (same as ma{W}_slope).
+EMA_SLOPE_COLUMNS = (
+    "ema6_slope",
+    "ema20_slope",
+    "ema60_slope",
+    "ema120_slope",
+    "ema255_slope",
+)
+
+# EMA curvature column names (canonical window order). Each is the 2nd
+# derivative (slope[t] - slope[t-1]).
+EMA_CURVATURE_COLUMNS = (
+    "ema6_curvature",
+    "ema20_curvature",
+    "ema60_curvature",
+    "ema120_curvature",
+    "ema255_curvature",
+)
+
+# Rolling population σ column names (Bollinger band widths) stored on the
+# EMA detail table. Mirrors the SMA detail table's std_*days columns — same
+# source data (σ of price over W days, ddof=0, computed by
+# helpers.compute_rolling_stds in the parent pipeline) carried into the EMA
+# table so it is self-contained for Bollinger rendering without a JOIN back
+# to the SMA detail table.
+#
+# The column NAME uses the SMA window (5/20/60/120/255) — NOT the EMA window
+# (6/20/60/120/255) — to match the SMA detail table's column names. For the
+# EMA6 envelope, std_5days (5-day σ) is used as the closest available window
+# (the 1-day difference vs the EMA6 window is negligible for σ). For all
+# other EMA windows (20/60/120/255) the σ window matches the EMA window
+# exactly.
+EMA_STD_COLUMNS = (
+    "std_5days",
+    "std_20days",
+    "std_60days",
+    "std_120days",
+    "std_255days",
 )

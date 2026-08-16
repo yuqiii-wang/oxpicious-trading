@@ -103,13 +103,33 @@ interface Props {
 // ---------------------------------------------------------------------------
 const ITEMS_PAGE_SIZE = 16;
 
-/** Default selection for Index sec_type: 宽基(BROAD) → 上证(broad_sse) → 上证指数(000001).
- *  Applied ONCE on initial mount when the classification tree has loaded and
- *  no prior user selection exists. Centralised here so every page using the
- *  nav gets the same default without per-page boilerplate. */
-const DEFAULT_INDEX_SECTOR_ID = "BROAD";
-const DEFAULT_INDEX_INDUSTRY_SLUG = "broad_sse";
-const DEFAULT_INDEX_ITEM_CODE = "000001";
+/** Default selection per sec_type. Applied ONCE on initial mount when the
+ *  classification tree has loaded and no prior user selection exists.
+ *  Centralised here so every page using the nav gets the same default
+ *  without per-page boilerplate.
+ *
+ *  Verified against stats.sec_classification (DB query on 2026-08-15):
+ *    Index 000001      — BROAD / broad_sse  (strategy column, is_industry_not_strategy=FALSE)
+ *    Stock 000001.SZ   — FIN   / banks      (industry column, is_industry_not_strategy=TRUE )
+ *    ETF   159673      — BROAD / broad_csi300 (strategy column, is_industry_not_strategy=FALSE)
+ *
+ *  `isStrategy` flags whether the default lives in the RIGHT column
+ *  (strategy → theme, is_industry_not_strategy=FALSE) or the LEFT column
+ *  (sector → industry, is_industry_not_strategy=TRUE). Mirrors how the
+ *  useEffect below picks which column-change handlers to invoke.
+ */
+const DEFAULTS_BY_KIND: Record<
+  "Index" | "ETF" | "Stock",
+  { sectorId: string; industrySlug: string; itemCode: string; isStrategy: boolean }
+> = {
+  Index: { sectorId: "BROAD", industrySlug: "broad_sse",     itemCode: "000001",    isStrategy: true },
+  // ETF themes tree strips the .SZ suffix (returns bare 6-digit codes), so
+  // the default must use the bare code to match the chip list. The search/
+  // filter logic in pages normalizes by stripping suffixes, so `159673` and
+  // `159673.SZ` are treated as equivalent when querying the chart API.
+  ETF:   { sectorId: "BROAD", industrySlug: "broad_csi300", itemCode: "159673",   isStrategy: true },
+  Stock: { sectorId: "FIN",   industrySlug: "banks",         itemCode: "000001.SZ", isStrategy: false },
+};
 
 // ---------------------------------------------------------------------------
 // Sub-component: a labeled row of chips
@@ -187,63 +207,88 @@ export default function SecClassificationNav({
     setItemPage(1);
   }, [sectorId, industrySlug, strategyId, themeSlug]);
 
-  // --- Default selection for Index sec_type ---
+  // --- Default selection per sec_type ---
   // On initial mount, when the classification tree has loaded, auto-select
-  // 宽基(BROAD) → 上证(broad_sse) → 上证指数(000001). Applied ONCE via a ref
-  // guard so subsequent tree reloads (e.g. exchange filter changes) do not
-  // override the user's selection. Skipped in multi-select mode.
+  // the default (sector/strategy + industry/theme + code) for the current
+  // itemKind. Applied ONCE via a ref guard so subsequent tree reloads (e.g.
+  // exchange filter changes) do not override the user's selection. Skipped
+  // in multi-select mode.
   //
   // Handles two scenarios:
   //  1. Clean slate — no sector/strategy selected (page has no default logic):
   //     set the full default (sector/strategy + industry/theme + code).
-  //  2. Page already set BROAD as the sector/strategy but didn't drill down:
-  //     complete the selection with the industry/theme + code.
+  //  2. Page already set the sector/strategy but didn't drill down: complete
+  //     the selection with the industry/theme + code.
+  //
+  // Default lives in the strategy (RIGHT) column for Index and ETF
+  // (is_industry_not_strategy=FALSE), and in the industry (LEFT) column for
+  // Stock (is_industry_not_strategy=TRUE). Falls back to LEFT column when
+  // the strategy column is absent on the page.
+  // Reset the "default applied" guard whenever itemKind changes, so the
+  // default re-applies on every sec_type switch (Index → Stock → ETF). Without
+  // this, the guard is set to TRUE on the first tree load and never fires
+  // again, so switching sec_type would leave the nav without a default.
   const defaultAppliedRef = useRef(false);
+  const lastItemKindRef = useRef<typeof itemKind>(undefined);
+  useEffect(() => {
+    if (lastItemKindRef.current !== itemKind) {
+      lastItemKindRef.current = itemKind;
+      defaultAppliedRef.current = false;
+    }
+  }, [itemKind]);
   useEffect(() => {
     if (defaultAppliedRef.current) return;
-    if (itemKind !== "Index") return;
+    if (!itemKind) return;
     if (multiSelect || multiSelectItems) return;
+
+    const def = DEFAULTS_BY_KIND[itemKind];
+    if (!def) return;
 
     const hasTree = sectors.length > 0 || (!!strategies && strategies.length > 0);
     if (!hasTree) return;
 
-    // Mark as applied on the first tree load — the default only runs once.
+    // The default's column is chosen by `isStrategy`, but it must fall back
+    // to the other column when that column is absent on the page. E.g. for
+    // Index/ETF the default lives in the strategy column, but pages without a
+    // strategy column should still drill down via sector/industry.
+    const asStrategy = def.isStrategy
+      ? (strategies?.find((s) => s.sector_id === def.sectorId) ?? null)
+      : null;
+    const asSector = sectors.find((s) => s.sector_id === def.sectorId) ?? null;
+    const node = asStrategy ?? asSector;
+    if (!node) return;
+
+    const industry = node.industries.find((i) => i.industry_slug === def.industrySlug);
+    if (!industry) return;
+    if (!industry.items.some((it) => it.code === def.itemCode)) return;
+
+    // All validation passed — mark as applied NOW (not earlier) so that a
+    // stale tree from a different sec_type (e.g. old Index tree while
+    // switching to ETF) doesn't prematurely set the guard and block the
+    // default from firing when the correct tree arrives.
     defaultAppliedRef.current = true;
 
-    // BROAD is a strategy (is_industry_not_strategy=FALSE) for index 000001,
-    // so it normally lives in the RIGHT column. Fall back to LEFT column.
-    const broadStrategy = strategies?.find((s) => s.sector_id === DEFAULT_INDEX_SECTOR_ID);
-    const broadSector = sectors.find((s) => s.sector_id === DEFAULT_INDEX_SECTOR_ID);
-    const broadNode = broadStrategy ?? broadSector;
-    if (!broadNode) return;
-
-    const sseIndustry = broadNode.industries.find(
-      (i) => i.industry_slug === DEFAULT_INDEX_INDUSTRY_SLUG,
-    );
-    if (!sseIndustry) return;
-    if (!sseIndustry.items.some((it) => it.code === DEFAULT_INDEX_ITEM_CODE)) return;
-
-    const isStrategy = !!broadStrategy;
+    const isStrategy = !!asStrategy;
 
     if (isStrategy) {
-      // BROAD is in the RIGHT column (strategy → theme)
+      // Default lives in the RIGHT column (strategy → theme)
       if (!sectorId && !strategyId) {
-        onStrategyChange?.(DEFAULT_INDEX_SECTOR_ID);
-        onThemeChange?.(DEFAULT_INDEX_INDUSTRY_SLUG);
-        onItemSelected?.(DEFAULT_INDEX_ITEM_CODE);
-      } else if (strategyId === DEFAULT_INDEX_SECTOR_ID && !themeSlug && !selectedItemCode) {
-        onThemeChange?.(DEFAULT_INDEX_INDUSTRY_SLUG);
-        onItemSelected?.(DEFAULT_INDEX_ITEM_CODE);
+        onStrategyChange?.(def.sectorId);
+        onThemeChange?.(def.industrySlug);
+        onItemSelected?.(def.itemCode);
+      } else if (strategyId === def.sectorId && !themeSlug && !selectedItemCode) {
+        onThemeChange?.(def.industrySlug);
+        onItemSelected?.(def.itemCode);
       }
     } else {
-      // BROAD is in the LEFT column (sector → industry)
+      // Default lives in the LEFT column (sector → industry)
       if (!sectorId && !strategyId) {
-        onSectorChange(DEFAULT_INDEX_SECTOR_ID);
-        onIndustryChange(DEFAULT_INDEX_INDUSTRY_SLUG);
-        onItemSelected?.(DEFAULT_INDEX_ITEM_CODE);
-      } else if (sectorId === DEFAULT_INDEX_SECTOR_ID && !industrySlug && !selectedItemCode) {
-        onIndustryChange(DEFAULT_INDEX_INDUSTRY_SLUG);
-        onItemSelected?.(DEFAULT_INDEX_ITEM_CODE);
+        onSectorChange(def.sectorId);
+        onIndustryChange(def.industrySlug);
+        onItemSelected?.(def.itemCode);
+      } else if (sectorId === def.sectorId && !industrySlug && !selectedItemCode) {
+        onIndustryChange(def.industrySlug);
+        onItemSelected?.(def.itemCode);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

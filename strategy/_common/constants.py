@@ -43,6 +43,14 @@ SEC_TYPE_BASIC_STATS_TABLE: dict = {
     "stock": "stats.stock_basic_stats",
 }
 
+# stats tech_stats table per sec_type — source of precomputed MAs/EMAs.
+# Mirrors SEC_TYPE_BASIC_STATS_TABLE; same code format per sec_type.
+SEC_TYPE_TECH_STATS_TABLE: dict = {
+    "index": "stats.index_tech_stats",
+    "etf":   "stats.etf_tech_stats",
+    "stock": "stats.stock_tech_stats",
+}
+
 # Default notional (yuan) deployed per BUY trade at confidence=100. Each BUY
 # deploys (confidence/100) * buy_notional, so confidence 25 = 25% of this.
 # There is no fixed capital budget — BUYs accumulate freely (unlimited),

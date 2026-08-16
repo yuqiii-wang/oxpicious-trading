@@ -126,11 +126,8 @@ export function useStrategyNav(
           setStrategyId(null);
           setThemeSlug(null);
         }
-        if (sectorId == null && strategyId == null) {
-          const broad = st.find((s) => s.sector_id === "BROAD");
-          if (broad) setStrategyId(broad.sector_id);
-          else if (t.length > 0) setSectorId(t[0].sector_id);
-        }
+        // No page-level default — SecClassificationNav handles auto-selecting
+        // the default per sec_type via its DEFAULTS_BY_KIND map.
         setLoading(false);
       })
       .catch((e: Error) => {

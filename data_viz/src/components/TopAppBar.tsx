@@ -31,8 +31,9 @@ interface AppConfig {
 const APPS: Record<AppKey, AppConfig> = {
   live: {
     label: "Live Data",
-    defaultPath: "/live/index",
+    defaultPath: "/live/market-movements",
     tabs: [
+      { label: "Market Movements", path: "/live/market-movements" },
       { label: "Index", path: "/live/index" },
       { label: "ETF", path: "/live/etf" },
       { label: "Stock", path: "/live/stock" },

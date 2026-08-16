@@ -106,6 +106,7 @@ from _common.study_and_select_stocks import (
 from ._akshare_source import _get_akshare
 from ._em_source import _get_em_session
 from ._io import write_cycle_csv
+from ._csv_backfill import BACKFILL_INTERVAL_SEC, backfill_szse_csvs
 from ._workers import (
     CLOSE_TIME,
     _parallel_source_worker,
@@ -113,6 +114,8 @@ from ._workers import (
     _seconds_until_next_hour,
     _szse_worker,
     _not_finished,
+    async_sleep_chunks,
+    async_sleep_until,
     next_trading_moment,
     probe_szse_for_today_bars,
     sleep_chunks,
@@ -169,6 +172,11 @@ NO_ADVANCE_BACKOFF_SEC = 60.0
 # Number of groups the target stock list is split into. Groups are processed
 # SEQUENTIALLY (one after another, single thread) — not concurrently.
 DEFAULT_GROUPS = 10
+
+# Hard timeout for worker shutdown on termination signal. Workers stuck inside
+# asyncio.to_thread (e.g. a DB upsert) can't be cancelled — this prevents the
+# gather from hanging forever waiting for them.
+SHUTDOWN_TIMEOUT_SEC = 15.0
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +272,13 @@ async def stream(
     logger.info("[startup] HostStatusTracker() ready in %.2fs.", _time.time() - t0)
     logger.info("[startup] total startup time: %.2fs; entering main loop.", _time.time() - t_stream)
 
+    # --- Startup CSV backfill: load any CSV data not yet in DB ---
+    # Runs before the fresh-start probe so historical CSV data is recovered
+    # on stream startup. Also runs periodically outside trading hours.
+    t0 = _time.time()
+    await asyncio.to_thread(backfill_szse_csvs, conn)
+    logger.info("[startup] CSV backfill done in %.1fs.", _time.time() - t0)
+
     # --- Per-biz-day state (reset whenever we anchor to a new biz day) ---
     current_biz_day = None
     latest_bar_time: dict = {}
@@ -291,7 +306,7 @@ async def stream(
                         "waiting until %s for trading hours to start.",
                         _probe_code, _fs_today, _nxt.strftime("%Y-%m-%d %H:%M"),
                     )
-                    await asyncio.to_thread(sleep_until, _nxt)
+                    await async_sleep_until(_nxt)
                 else:
                     logger.warning(
                         "[fresh-start] SZSE probe (%s) returned 0 bars during trading hours; "
@@ -312,8 +327,15 @@ async def stream(
             # ---- Anchor: pick / refresh the biz day we are collecting ----
             if current_biz_day is None:
                 if not trading_today:
-                    logger.info("Today (%s) is not a trading day; waiting for next biz day.", today)
-                    current_biz_day = await asyncio.to_thread(wait_for_next_trading_day, today)
+                    # Non-trading day: backfill CSV → DB every 5 minutes
+                    # instead of just sleeping until next trading day.
+                    await asyncio.to_thread(backfill_szse_csvs, conn)
+                    logger.info(
+                        "Non-trading day (%s); backfill cycle done; sleeping %ds.",
+                        today, BACKFILL_INTERVAL_SEC,
+                    )
+                    await async_sleep_chunks(BACKFILL_INTERVAL_SEC)
+                    continue
                 else:
                     current_biz_day = today
                 latest_bar_time = {}
@@ -394,12 +416,21 @@ async def stream(
                     ]
                     try:
                         await asyncio.gather(*workers)
-                    except asyncio.CancelledError:
+                    except (asyncio.CancelledError, KeyboardInterrupt):
                         state["stop"] = True
                         for w in workers:
                             if not w.done():
                                 w.cancel()
-                        await asyncio.gather(*workers, return_exceptions=True)
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.gather(*workers, return_exceptions=True),
+                                timeout=SHUTDOWN_TIMEOUT_SEC,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "Workers did not shut down within %.0fs; forcing exit.",
+                                SHUTDOWN_TIMEOUT_SEC,
+                            )
                         raise
                     n_stock_ident = len(state["identity"])
                     n_stock_bars = len(state["bars"])
@@ -431,14 +462,14 @@ async def stream(
                         len(active_stocks), current_biz_day,
                         nxt.strftime("%Y-%m-%d %H:%M"),
                     )
-                    await asyncio.to_thread(sleep_until, nxt)
+                    await async_sleep_until(nxt)
                     continue
 
                 # Sleep until next HH:00 boundary.
                 sleep_sec = _seconds_until_next_hour()
                 logger.info("Hourly round done; sleeping %.0fs until next hour boundary.",
                             sleep_sec)
-                await asyncio.to_thread(sleep_chunks, sleep_sec)
+                await async_sleep_chunks(sleep_sec)
                 continue
 
             # ================================================================
@@ -453,15 +484,17 @@ async def stream(
             n_finished = len(active_stocks) - n_unfinished
 
             if n_unfinished == 0:
-                logger.info("All %d stocks finished for biz day %s; waiting for next trading day.",
-                            len(active_stocks), current_biz_day)
+                # All stocks finished for today: backfill CSV → DB, then
+                # sleep 5 min before re-checking (instead of waiting for
+                # next trading day — keeps CSV data synced to DB).
+                await asyncio.to_thread(backfill_szse_csvs, conn)
+                logger.info(
+                    "All %d stocks finished for biz day %s; backfill done; sleeping %ds.",
+                    len(active_stocks), current_biz_day, BACKFILL_INTERVAL_SEC,
+                )
                 if once:
                     break
-                current_biz_day = await asyncio.to_thread(wait_for_next_trading_day, current_biz_day)
-                latest_bar_time = {}
-                emitted_map = {}
-                emitted_map_idx = {}
-                logger.info("Anchored to biz day %s.", current_biz_day)
+                await async_sleep_chunks(BACKFILL_INTERVAL_SEC)
                 continue
 
             # ---- Run ONE round via 4 parallel async workers ----
@@ -503,12 +536,21 @@ async def stream(
             ]
             try:
                 await asyncio.gather(*workers)
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, KeyboardInterrupt):
                 state["stop"] = True
                 for w in workers:
                     if not w.done():
                         w.cancel()
-                await asyncio.gather(*workers, return_exceptions=True)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*workers, return_exceptions=True),
+                        timeout=SHUTDOWN_TIMEOUT_SEC,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Workers did not shut down within %.0fs; forcing exit.",
+                        SHUTDOWN_TIMEOUT_SEC,
+                    )
                 raise
 
             round_elapsed = _time.time() - round_start
@@ -554,7 +596,7 @@ async def stream(
             else:
                 sleep_sec = poll_interval - round_elapsed
             if sleep_sec > 0:
-                await asyncio.to_thread(sleep_chunks, sleep_sec)
+                await async_sleep_chunks(sleep_sec)
     except (asyncio.CancelledError, KeyboardInterrupt):
         logger.info("Termination signal received; cancelling async workers and exiting.")
     finally:

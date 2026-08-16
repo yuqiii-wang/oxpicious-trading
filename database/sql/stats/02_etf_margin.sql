@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS stats.etf_basic_stats (
     low                       NUMERIC(18,4),
     close                     NUMERIC(18,4),
     pct_change                NUMERIC(10,4),
+    pe                        NUMERIC(18,4),
+    eps                       NUMERIC(18,6),
     is_close_estimated        BOOLEAN       NOT NULL DEFAULT FALSE,
     has_intraday_5mins        BOOLEAN       NOT NULL DEFAULT FALSE,
 
@@ -44,10 +46,15 @@ CREATE TABLE IF NOT EXISTS stats.etf_basic_stats (
     CONSTRAINT fk_etf_basic_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.etf_identity(date, code)
 );
 
+-- Idempotent migration: add pe column to pre-existing tables.
+ALTER TABLE stats.etf_basic_stats ADD COLUMN IF NOT EXISTS pe NUMERIC(18,4);
+ALTER TABLE stats.etf_basic_stats ADD COLUMN IF NOT EXISTS eps NUMERIC(18,6);
 
-COMMENT ON TABLE  stats.etf_basic_stats                    IS 'ETF raw basic_stats (yuan).';
+COMMENT ON TABLE  stats.etf_basic_stats                    IS 'ETF raw basic_stats (yuan) + pe (harmonic-weighted constituent PE).';
 COMMENT ON COLUMN stats.etf_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index/ETF (highest composition shared weight > 60%). If no proxy qualifies, prev_close is carried forward.';
 COMMENT ON COLUMN stats.etf_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future ETF intraday support).';
+COMMENT ON COLUMN stats.etf_basic_stats.pe                 IS 'Price-to-earnings ratio (PE). Computed by builds.etf via HARMONIC weighting of constituent stock PE from stats.stock_basic_stats by the LATEST stats.sec_composition snapshot (source_type=etf, temporal extrapolation): PE_etf = SUM(w_i) / SUM(w_i / PE_i). Loss-making constituents (NULL PE) excluded from both numerator and denominator. NULL when no composition or no constituent has positive PE.';
+COMMENT ON COLUMN stats.etf_basic_stats.eps                IS 'Implied earnings per share (EPS), in yuan per single share, derived from the identity PE = price / EPS as eps = close / pe. NULL when pe is NULL (no composition or all constituents loss-making) or close is NULL. Populated by builds/etf/__main__.py at insert time (recomputed when the harmonic PE is backfilled).';
 
 -- ----------------------------------------------------------------------------
 -- Table: etf_tech_stats
@@ -62,18 +69,57 @@ CREATE TABLE IF NOT EXISTS stats.etf_tech_stats (
     ma60                      NUMERIC(18,4),
     ma120                     NUMERIC(18,4),
     ma255                     NUMERIC(18,4),
+    ema6                      NUMERIC(18,4),
+    ema10                     NUMERIC(18,4),
+    ema20                     NUMERIC(18,4),
+    ema60                     NUMERIC(18,4),
+    ema120                    NUMERIC(18,4),
+    ema255                    NUMERIC(18,4),
 
     CONSTRAINT pk_etf_tech_stats PRIMARY KEY (date, code),
     CONSTRAINT fk_etf_tech_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.etf_identity(date, code)
 );
 
-COMMENT ON TABLE  stats.etf_tech_stats                    IS 'ETF technical indicators (moving averages).';
+-- Idempotent migration: add EMA columns to pre-existing tables.
+-- CREATE TABLE IF NOT EXISTS does not add new columns to an existing
+-- table, so the ALTER TABLE below is required for production upgrades
+-- without a full rebuild. Runs BEFORE the COMMENT statements so the
+-- columns exist when the comments are applied.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'stats' AND table_name = 'etf_tech_stats' AND column_name = 'ema6'
+    ) THEN
+        ALTER TABLE stats.etf_tech_stats
+            ADD COLUMN ema6  NUMERIC(18,4),
+            ADD COLUMN ema10 NUMERIC(18,4),
+            ADD COLUMN ema20 NUMERIC(18,4),
+            ADD COLUMN ema60 NUMERIC(18,4);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'stats' AND table_name = 'etf_tech_stats' AND column_name = 'ema120'
+    ) THEN
+        ALTER TABLE stats.etf_tech_stats
+            ADD COLUMN ema120 NUMERIC(18,4),
+            ADD COLUMN ema255 NUMERIC(18,4);
+    END IF;
+END $$;
+
+COMMENT ON TABLE  stats.etf_tech_stats                    IS 'ETF technical indicators (moving averages + EMAs).';
 COMMENT ON COLUMN stats.etf_tech_stats.ma5               IS '5-day moving average of adj_close.';
 COMMENT ON COLUMN stats.etf_tech_stats.ma5_ratio         IS 'Close / MA5 - 1 (ratio of price to 5-day MA).';
 COMMENT ON COLUMN stats.etf_tech_stats.ma20              IS '20-day moving average of adj_close.';
 COMMENT ON COLUMN stats.etf_tech_stats.ma60              IS '60-day moving average of adj_close.';
 COMMENT ON COLUMN stats.etf_tech_stats.ma120             IS '120-day moving average of adj_close.';
 COMMENT ON COLUMN stats.etf_tech_stats.ma255             IS '255-day moving average of adj_close.';
+COMMENT ON COLUMN stats.etf_tech_stats.ema6              IS '6-day exponential moving average of adj_close (span=6, adjust=False).';
+COMMENT ON COLUMN stats.etf_tech_stats.ema10             IS '10-day exponential moving average of adj_close (span=10, adjust=False).';
+COMMENT ON COLUMN stats.etf_tech_stats.ema20             IS '20-day exponential moving average of adj_close (span=20, adjust=False).';
+COMMENT ON COLUMN stats.etf_tech_stats.ema60             IS '60-day exponential moving average of adj_close (span=60, adjust=False).';
+COMMENT ON COLUMN stats.etf_tech_stats.ema120            IS '120-day exponential moving average of adj_close (span=120, adjust=False).';
+COMMENT ON COLUMN stats.etf_tech_stats.ema255            IS '255-day exponential moving average of adj_close (span=255, adjust=False).';
 
 -- ----------------------------------------------------------------------------
 -- Table: etf_adjustment

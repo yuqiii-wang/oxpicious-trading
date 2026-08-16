@@ -63,6 +63,27 @@
   --chart-subtitle: #7A8190;      /* card subtitle / muted label gray */
   --chart-muted-inline: #888888;  /* fallback inline gray (autocomplete hints) */
 
+  /* ---- Alarm-level color scale ----------------------------------------- */
+  /* Unified 5-step severity ramp (green → light orange → amber → red →
+   * dark red). Names mirror the StrategyRiskGrade enum so the semantic
+   * mapping is obvious. Used by the Risk Score breakdown table to color
+   * each factor by its own severity (ratio = raw_value / threshold), NOT
+   * by component type — so a high-ratio factor shows dark red regardless
+   * of whether it is realized / unrealized / streak / period / FT.
+   *
+   * Boundaries (on `ratio`, capped at MAX_LOSS_RATIO = 4.0):
+   *   ratio < 0.5                → little    (well below threshold)
+   *   0.5 ≤ ratio < 1.0          → low       (approaching threshold)
+   *   1.0 ≤ ratio < 2.0          → moderate  (at threshold)
+   *   2.0 ≤ ratio < 3.0          → elevated  (well beyond threshold)
+   *   ratio ≥ 3.0                → high      (severely beyond threshold)
+   */
+  --alarm-level-little:   #27ae60;  /* green       — lowest alarm  */
+  --alarm-level-low:      #f39c12;  /* light orange — mild alarm    */
+  --alarm-level-moderate: #e67e22;  /* amber       — moderate alarm */
+  --alarm-level-elevated: #c0392b;  /* red         — high alarm     */
+  --alarm-level-high:     #8b0000;  /* dark red    — severe alarm   */
+
   /* ---- Light theme axis / grid / tooltip -------------------------------- */
   --chart-axis-line-light: #9AA4B8;
   --chart-split-line-light: #E1E5EC;

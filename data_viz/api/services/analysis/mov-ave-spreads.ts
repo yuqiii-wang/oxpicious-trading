@@ -60,6 +60,23 @@ const AMT_PAIR_ORDER: PairSpec[] = [
   [-1, 255, ""],
 ];
 
+/** 9 Exponential MA pairs (EMA). gap_column is the EMA detail table column.
+ *  Mirrors PAIR_ORDER but for EMAs: 5 Price/EMA pairs (ma_short=0) + 4
+ *  EMA6/EMA pairs (ma_short=6). Windows are 6/20/60/120/255 (EMA6 replaces
+ *  MA5 — EMAs use 6 instead of 5 as the short window). Source:
+ *  analysis.mov_ave_spreads_detail_ema. */
+const EMA_PAIR_ORDER: PairSpec[] = [
+  [0, 6,   "price_vs_ema6"],
+  [0, 20,  "price_vs_ema20"],
+  [0, 60,  "price_vs_ema60"],
+  [0, 120, "price_vs_ema120"],
+  [0, 255, "price_vs_ema255"],
+  [6, 20,  "ema6_vs_ema20"],
+  [6, 60,  "ema6_vs_ema60"],
+  [6, 120, "ema6_vs_ema120"],
+  [6, 255, "ema6_vs_ema255"],
+];
+
 const VALID_SEC_TYPES: ReadonlySet<MaSpreadSecType> = new Set(["etf", "index", "stock"]);
 
 function normalizeSecType(raw: string | undefined | null): MaSpreadSecType {
@@ -170,6 +187,46 @@ interface DbChartRow extends QueryResultRow {
   trading_amt_market_share_ma60: number | null;
   trading_amt_market_share_ma120: number | null;
   trading_amt_market_share_ma255: number | null;
+  // 5 EMA value columns from stats.{sec_type}_tech_stats (alias `t`).
+  // Used to render EMA pair charts (short=price/ema6, long=emaW).
+  ema6: number | null;
+  ema20: number | null;
+  ema60: number | null;
+  ema120: number | null;
+  ema255: number | null;
+  // 9 EMA gap columns from analysis.mov_ave_spreads_detail_ema (alias `ema`).
+  price_vs_ema6: number | null;
+  price_vs_ema20: number | null;
+  price_vs_ema60: number | null;
+  price_vs_ema120: number | null;
+  price_vs_ema255: number | null;
+  ema6_vs_ema20: number | null;
+  ema6_vs_ema60: number | null;
+  ema6_vs_ema120: number | null;
+  ema6_vs_ema255: number | null;
+  // 5 EMA slope columns (1st derivative) from the EMA detail table.
+  ema6_slope: number | null;
+  ema20_slope: number | null;
+  ema60_slope: number | null;
+  ema120_slope: number | null;
+  ema255_slope: number | null;
+  // 5 EMA curvature columns (2nd derivative) from the EMA detail table.
+  ema6_curvature: number | null;
+  ema20_curvature: number | null;
+  ema60_curvature: number | null;
+  ema120_curvature: number | null;
+  ema255_curvature: number | null;
+  // 5 rolling population σ columns (Bollinger band widths) from the EMA
+  // detail table (alias `ema`). Same source data as the SMA detail table's
+  // std_*days (σ of price over W days, ddof=0) — populated from the parent
+  // pipeline's compute_rolling_stds. Aliased as ema_std_*days to avoid
+  // name collisions with d.std_*days. Used to draw Bollinger bands around
+  // the long EMA on Price/EMA pair charts.
+  ema_std_5days: number | null;
+  ema_std_20days: number | null;
+  ema_std_60days: number | null;
+  ema_std_120days: number | null;
+  ema_std_255days: number | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -177,10 +234,15 @@ interface DbChartRow extends QueryResultRow {
 // ----------------------------------------------------------------------------
 
 /** Build the display label for a (ma_short, ma_long) pair.
- *  ma_short = 0 → "Price/MA{long}" (price pair)
+ *  ma_short = 0 → "Price/MA{long}" or "Price/EMA{long}" (price pair)
  *  ma_short = -1 → "Amt/MA{long}" (trading-amount pair)
- *  else → "MA{short}/MA{long}" (MA/MA pair) */
-function pairLabel(maShort: number, maLong: number): string {
+ *  else → "MA{short}/MA{long}" or "EMA{short}/EMA{long}" (MA/MA pair)
+ *  kind = "ema" switches the label prefix from MA to EMA. */
+function pairLabel(maShort: number, maLong: number, kind: MovAveSpreadPairKind = "price"): string {
+  if (kind === "ema") {
+    if (maShort === 0) return `Price/EMA${maLong}`;
+    return `EMA${maShort}/EMA${maLong}`;
+  }
   if (maShort === 0) return `Price/MA${maLong}`;
   if (maShort === -1) return `Amt/MA${maLong}`;
   return `MA${maShort}/MA${maLong}`;
@@ -276,6 +338,66 @@ function pickTradingAmtMarketShare(r: DbChartRow, window: number): number | null
     case 60:  return toNum(r.trading_amt_market_share_ma60);
     case 120: return toNum(r.trading_amt_market_share_ma120);
     case 255: return toNum(r.trading_amt_market_share_ma255);
+    default:  return null;
+  }
+}
+
+/** Pick the long EMA value for a chart row given the ma_long window.
+ *  EMA values come from stats.{sec_type}_tech_stats (aliased as `t` in
+ *  the chart SQL). Windows: 6/20/60/120/255 (EMA6 replaces MA5). */
+function pickEmaLong(r: DbChartRow, maLong: number): number | null {
+  switch (maLong) {
+    case 6:   return toNum(r.ema6);
+    case 20:  return toNum(r.ema20);
+    case 60:  return toNum(r.ema60);
+    case 120: return toNum(r.ema120);
+    case 255: return toNum(r.ema255);
+    default:  return null;
+  }
+}
+
+/** Pick the EMA slope (1st derivative) for the given window from a chart
+ *  row. EMA slopes come from analysis.mov_ave_spreads_detail_ema (aliased
+ *  as `ema` in the chart SQL). */
+function pickEmaSlope(r: DbChartRow, window: number): number | null {
+  switch (window) {
+    case 6:   return toNum(r.ema6_slope);
+    case 20:  return toNum(r.ema20_slope);
+    case 60:  return toNum(r.ema60_slope);
+    case 120: return toNum(r.ema120_slope);
+    case 255: return toNum(r.ema255_slope);
+    default:  return null;
+  }
+}
+
+/** Pick the EMA curvature (2nd derivative) for the given window from a
+ *  chart row. EMA curvatures come from analysis.mov_ave_spreads_detail_ema. */
+function pickEmaCurvature(r: DbChartRow, window: number): number | null {
+  switch (window) {
+    case 6:   return toNum(r.ema6_curvature);
+    case 20:  return toNum(r.ema20_curvature);
+    case 60:  return toNum(r.ema60_curvature);
+    case 120: return toNum(r.ema120_curvature);
+    case 255: return toNum(r.ema255_curvature);
+    default:  return null;
+  }
+}
+
+/** Pick the rolling population σ (Bollinger band width) for the given EMA
+ *  window from a chart row. The σ columns are stored on the EMA detail row
+ *  as ema_std_{W}days (aliased from ema.std_{W}days in the chart SQL).
+ *
+ *  Window mapping: EMA6 → ema_std_5days (5-day σ, closest available window
+ *  to 6), EMA20 → ema_std_20days, EMA60 → ema_std_60days, etc. Same source
+ *  data as the SMA detail table's std_*days (σ of price over W days, ddof=0).
+ *  Used to draw the ±k×σ envelope around the long EMA on Price/EMA charts. */
+function pickEmaStd(r: DbChartRow, window: number): number | null {
+  switch (window) {
+    case 6:   return toNum(r.ema_std_5days);
+    case 20:  return toNum(r.ema_std_20days);
+    case 60:  return toNum(r.ema_std_60days);
+    case 120: return toNum(r.ema_std_120days);
+    case 255: return toNum(r.ema_std_255days);
     default:  return null;
   }
 }
@@ -511,6 +633,7 @@ function buildChartSql(secType: MaSpreadSecType): string {
       ${src.lowExpr} AS low,
       ${src.tradingAmtExpr} AS trading_amount,
       t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
+      t.ema6, t.ema20, t.ema60, t.ema120, t.ema255,
       d.price_vs_ma5, d.price_vs_ma20, d.price_vs_ma60,
       d.price_vs_ma120, d.price_vs_ma255,
       d.ma5_vs_ma20, d.ma5_vs_ma60, d.ma5_vs_ma120, d.ma5_vs_ma255,
@@ -525,11 +648,22 @@ function buildChartSql(secType: MaSpreadSecType): string {
       d.trading_amt_market_share_ma5, d.trading_amt_market_share_ma20,
       d.trading_amt_market_share_ma60, d.trading_amt_market_share_ma120,
       d.trading_amt_market_share_ma255,
+      ema.price_vs_ema6, ema.price_vs_ema20, ema.price_vs_ema60,
+      ema.price_vs_ema120, ema.price_vs_ema255,
+      ema.ema6_vs_ema20, ema.ema6_vs_ema60, ema.ema6_vs_ema120, ema.ema6_vs_ema255,
+      ema.ema6_slope, ema.ema20_slope, ema.ema60_slope, ema.ema120_slope, ema.ema255_slope,
+      ema.ema6_curvature, ema.ema20_curvature, ema.ema60_curvature,
+      ema.ema120_curvature, ema.ema255_curvature,
+      ema.std_5days AS ema_std_5days, ema.std_20days AS ema_std_20days,
+      ema.std_60days AS ema_std_60days, ema.std_120days AS ema_std_120days,
+      ema.std_255days AS ema_std_255days,
       rsi.date_of_last_extreme,
       rsi.gap_since_last_extreme,
       rsi.days_since_last_extreme,
       rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days
     ${src.chartFromClause}
+    LEFT JOIN analysis.mov_ave_spreads_detail_ema ema
+      ON ema.sec_type = d.sec_type AND ema.code = d.code AND ema.date = d.date
     LEFT JOIN analysis.mov_ave_rsi rsi
       ON rsi.sec_type = d.sec_type AND rsi.code = d.code AND rsi.date = d.date
     WHERE d.sec_type = $2
@@ -590,10 +724,11 @@ export async function getMovAveSpreadChart(
 
   const name = nameRows[0]?.name ?? "";
 
-  // Initialize the 9 price pair series + 5 amt pair series in canonical order.
+  // Initialize the 9 price pair series + 9 EMA pair series + 5 amt pair
+  // series in canonical order.
   const byPair = new Map<string, MovAveSpreadPairSeries>();
   for (const [ms, ml] of PAIR_ORDER) {
-    const key = `${ms}/${ml}`;
+    const key = `price-${ms}/${ml}`;
     byPair.set(key, {
       ma_short: ms,
       ma_long: ml,
@@ -602,8 +737,18 @@ export async function getMovAveSpreadChart(
       rows: [],
     });
   }
+  for (const [ms, ml] of EMA_PAIR_ORDER) {
+    const key = `ema-${ms}/${ml}`;
+    byPair.set(key, {
+      ma_short: ms,
+      ma_long: ml,
+      pair_label: pairLabel(ms, ml, "ema"),
+      kind: "ema" as MovAveSpreadPairKind,
+      rows: [],
+    });
+  }
   for (const [ms, ml] of AMT_PAIR_ORDER) {
-    const key = `${ms}/${ml}`;
+    const key = `amt-${ms}/${ml}`;
     byPair.set(key, {
       ma_short: ms,
       ma_long: ml,
@@ -659,9 +804,9 @@ export async function getMovAveSpreadChart(
     const rsi14 = toNum(r.rsi_14days);
     const rsi20 = toNum(r.rsi_20days);
 
-    // ---- 9 price pairs ----
+    // ---- 9 price (Simple MA) pairs ----
     for (const [maShort, maLong, gapCol] of PAIR_ORDER) {
-      const series = byPair.get(`${maShort}/${maLong}`);
+      const series = byPair.get(`price-${maShort}/${maLong}`);
       if (!series) continue;
       const shortVal = maShort === 0 ? price : ma5;
       const longVal = pickLong(r, maLong);
@@ -710,6 +855,63 @@ export async function getMovAveSpreadChart(
       series.rows.push(row);
     }
 
+    // ---- 9 EMA (Exponential MA) pairs ----
+    // short = price (ma_short=0) or ema6 (ma_short=6); long = emaW.
+    // gap_value, slope, and curvature come from the EMA detail table
+    // (alias `ema` in the SQL). long_std is the rolling population σ of
+    // price over the long EMA's window (aliased as ema_std_{W}days in
+    // the SQL), used to draw the Bollinger envelope around the long EMA.
+    const ema6 = toNum(r.ema6);
+    for (const [maShort, maLong, gapCol] of EMA_PAIR_ORDER) {
+      const series = byPair.get(`ema-${maShort}/${maLong}`);
+      if (!series) continue;
+      const shortVal = maShort === 0 ? price : ema6;
+      const longVal = pickEmaLong(r, maLong);
+      const gapVal = toNum(r[gapCol as keyof DbChartRow]);
+      // For Price/EMA pairs, short_slope = price_slope (from MA detail);
+      // for EMA6/EMA pairs, short_slope = ema6_slope (from EMA detail).
+      const shortSlope = maShort === 0 ? toNum(r.price_slope) : pickEmaSlope(r, maShort);
+      const shortCurv  = maShort === 0 ? toNum(r.price_curvature) : pickEmaCurvature(r, maShort);
+      const row: MovAveSpreadDetailRow = {
+        date: dateStr,
+        short_value: shortVal,
+        long_value: longVal,
+        gap_value: gapVal,
+        short_slope: shortSlope,
+        short_curvature: shortCurv,
+        long_slope: pickEmaSlope(r, maLong),
+        long_curvature: pickEmaCurvature(r, maLong),
+        long_std: pickEmaStd(r, maLong),
+        open,
+        high,
+        low,
+        trading_amount: tradingAmount,
+        date_of_last_extreme: dateOfLastExtreme,
+        gap_since_last_extreme: gapSinceLastExtreme,
+        days_since_last_extreme: daysSinceLastExtreme,
+        rsi_6days: rsi6,
+        rsi_10days: rsi10,
+        rsi_14days: rsi14,
+        rsi_20days: rsi20,
+        trading_amt_ma5: amtMa5,
+        trading_amt_ma20: amtMa20,
+        trading_amt_ma60: amtMa60,
+        trading_amt_ma120: amtMa120,
+        trading_amt_ma255: amtMa255,
+        trading_amt_ma5_slope: amtSlope5,
+        trading_amt_ma20_slope: amtSlope20,
+        trading_amt_ma60_slope: amtSlope60,
+        trading_amt_ma120_slope: amtSlope120,
+        trading_amt_ma255_slope: amtSlope255,
+        trading_amt_market_share_ma5: amtShare5,
+        trading_amt_market_share_ma20: amtShare20,
+        trading_amt_market_share_ma60: amtShare60,
+        trading_amt_market_share_ma120: amtShare120,
+        trading_amt_market_share_ma255: amtShare255,
+      };
+      series.rows.push(row);
+    }
+
     // ---- 5 amt pairs (short = trading_amount, long = trading_amt_maW) ----
     // gap_value = (trading_amount - trading_amt_maW) / trading_amt_maW
     //   (computed here since there is no pre-computed gap column for amt
@@ -717,7 +919,7 @@ export async function getMovAveSpreadChart(
     //   pairs (the envelope chart doesn't use them — it renders all 5 MA
     //   lines directly).
     for (const [maShort, maLong] of AMT_PAIR_ORDER) {
-      const series = byPair.get(`${maShort}/${maLong}`);
+      const series = byPair.get(`amt-${maShort}/${maLong}`);
       if (!series) continue;
       const shortVal = tradingAmount;
       const longVal = pickTradingAmtMa(r, maLong);
@@ -784,8 +986,9 @@ export async function getMovAveSpreadChart(
     code: target,
     name,
     pairs: [
-      ...PAIR_ORDER.map(([ms, ml]) => byPair.get(`${ms}/${ml}`)!),
-      ...AMT_PAIR_ORDER.map(([ms, ml]) => byPair.get(`${ms}/${ml}`)!),
+      ...PAIR_ORDER.map(([ms, ml]) => byPair.get(`price-${ms}/${ml}`)!),
+      ...EMA_PAIR_ORDER.map(([ms, ml]) => byPair.get(`ema-${ms}/${ml}`)!),
+      ...AMT_PAIR_ORDER.map(([ms, ml]) => byPair.get(`amt-${ms}/${ml}`)!),
     ],
     valley_lows,
   };

@@ -76,15 +76,8 @@ export default function StockBaselinePage() {
           setStrategyId(null);
           setThemeSlug(null);
         }
-        // BROAD is a STRATEGY (is_industry_not_strategy=FALSE), so it lives in
-        // the RIGHT column (strategyList). Default to BROAD there if present;
-        // else fall back to the first sector in the LEFT column.
-        const broad = strategyList.find((s) => s.sector_id === "BROAD");
-        if (broad) {
-          setStrategyId((prev) => prev ?? broad.sector_id);
-        } else if (list.length > 0) {
-          setSectorId((prev) => prev ?? list[0].sector_id);
-        }
+        // No page-level default — SecClassificationNav handles auto-selecting
+        // the default (FIN / banks / 000001.SZ) via its DEFAULTS_BY_KIND map.
         setNavLoading(false);
       })
       .catch((e: Error) => {
@@ -257,6 +250,7 @@ export default function StockBaselinePage() {
         onStrategyChange={handleStrategyChange}
         onThemeChange={handleThemeChange}
         loading={navLoading}
+        itemKind="Stock"
       />
 
       {loading && (

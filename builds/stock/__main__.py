@@ -80,7 +80,7 @@ from _common.build_commons import (
     find_missing_dates, glob_source_files, ymd_from_filename, ymd_to_date,
     filter_source_files_by_missing_dates, select_source_files_in_range,
     print_build_header, print_wall_time, PROJECT_ROOT, TODAY_STR,
-    bulk_upsert_async, truncate_table_async, parse_num,
+    bulk_upsert_async, truncate_table_async, parse_num, compute_eps,
 )
 
 setup_utf8_stdout()
@@ -88,28 +88,19 @@ setup_utf8_stdout()
 import asyncio
 
 # ============================================================================
-# Paths
+# Paths — imported from centralized builds._commons.paths
 # ============================================================================
-SZSE_ARCHIVE_DIR  = os.path.join(PROJECT_ROOT, "temps", "szse_archive")
-SZSE_TREND_DIR    = os.path.join(PROJECT_ROOT, "temps", "szse_trend")
-SSE_TREND_DIR     = os.path.join(PROJECT_ROOT, "temps", "sse_trend")
-BSE_TREND_DIR     = os.path.join(PROJECT_ROOT, "temps", "bse_trend")
-# SSE PE files are per-stock ({code}_pe.csv) in the sse_archive dir, separate
-# from the daily trend CSVs (SSE dayk endpoint does not publish PE).
-SSE_PE_DIR        = os.path.join(PROJECT_ROOT, "temps", "sse_archive")
-# Margin detail CSVs (per-security 融资融券). SSE margin detail contains BOTH
-# ETFs (510xxx/511xxx/...) and stocks (600xxx/601xxx/...); SZSE margin detail
-# contains both ETFs (159xxx/150xxx) and stocks (000xxx/001xxx/...). The
-# stock builder filters to STOCK codes only (excludes ETF prefixes) so it
-# doesn't double-count ETF margin rows that builds/etf already loads.
-SZSE_MARGIN_DIR   = os.path.join(PROJECT_ROOT, "temps", "szse_margin")
-SSE_MARGIN_DIR    = os.path.join(PROJECT_ROOT, "temps", "sse_margin")
-
-# ETF code prefixes — used to EXCLUDE ETF rows from margin CSVs (those are
-# loaded by builds/etf into etf_liquidity_margin). Mirrors the ETF prefix
-# lists in builds/etf/__main__.py.
-SZSE_ETF_PREFIXES = ("15", "16")
-SSE_ETF_PREFIXES  = ("510", "511", "512", "513", "515", "516", "518", "56")
+from builds._commons.paths import (
+    SZSE_ARCHIVE_DIR,
+    SZSE_TREND_DIR,
+    SSE_TREND_DIR,
+    BSE_TREND_DIR,
+    SSE_PE_DIR,
+    SZSE_MARGIN_DIR,
+    SSE_MARGIN_DIR,
+    SZSE_ETF_PREFIXES,
+    SSE_ETF_PREFIXES,
+)
 
 COL_MAP = {
     "交易日期":     "date",
@@ -1400,6 +1391,7 @@ async def main():
         for _, row in actual_pe_df.iterrows():
             code = str(row["code"])
             close_val = _to_db(row.get("close"))
+            pe_val = _to_db(row.get("pe"))
             entry = {
                 "date": row["date"],
                 "code": code,
@@ -1409,7 +1401,8 @@ async def main():
                 "low": _to_db(row.get("low")),
                 "close": close_val,
                 "pct_change": _to_db(row.get("pct_change")),
-                "pe": _to_db(row.get("pe")),
+                "pe": pe_val,
+                "eps": compute_eps(close_val, pe_val),
                 "is_pe_estimated": False,
                 "is_close_estimated": bool(row.get("is_close_estimated", False)),
             }
@@ -1429,14 +1422,21 @@ async def main():
                   flush=True)
 
         if pe_only_actual_rows:
-            # Partial upsert: only update pe and is_pe_estimated, preserving
-            # existing OHLCV. For new rows, OHLCV columns default to NULL.
+            # Partial upsert: only update pe, is_pe_estimated, and eps
+            # (recomputed from the EXISTING close in the table), preserving
+            # the other OHLCV columns. For new rows, OHLCV defaults to NULL
+            # so eps stays NULL (no close to divide by).
             pe_only_query = (
                 "INSERT INTO stats.stock_basic_stats "
                 "(date, code, pe, is_pe_estimated) "
                 "VALUES ($1, $2, $3, $4) "
                 "ON CONFLICT (date, code) DO UPDATE SET "
-                "pe = EXCLUDED.pe, is_pe_estimated = EXCLUDED.is_pe_estimated"
+                "pe = EXCLUDED.pe, "
+                "is_pe_estimated = EXCLUDED.is_pe_estimated, "
+                "eps = CASE WHEN stats.stock_basic_stats.close IS NOT NULL "
+                "            AND EXCLUDED.pe > 0 "
+                "       THEN stats.stock_basic_stats.close / EXCLUDED.pe "
+                "       ELSE NULL END"
             )
             pe_only_values = [
                 (r["date"], r["code"], r["pe"], r["is_pe_estimated"])
@@ -1487,6 +1487,7 @@ async def main():
                 code = str(row["code"])
                 key = (row["date"], code)
                 est_pe = estimated_pe_map.get(key)
+                close_val = _to_db(row.get("close"))
                 estimated_basic_stats_rows.append({
                     "date": row["date"],
                     "code": code,
@@ -1494,9 +1495,13 @@ async def main():
                     "open": _to_db(row.get("open")),
                     "high": _to_db(row.get("high")),
                     "low": _to_db(row.get("low")),
-                    "close": _to_db(row.get("close")),
+                    "close": close_val,
                     "pct_change": _to_db(row.get("pct_change")),
                     "pe": est_pe,
+                    # eps = close / pe; under the constant-EPS assumption this
+                    # recovers the baseline EPS (close / (close*last_pe/last_close)
+                    # = last_close / last_pe). NULL when est_pe is None.
+                    "eps": compute_eps(close_val, est_pe),
                     # is_pe_estimated=true only when estimation succeeded;
                     # rows with no prior actual PE get NULL pe and false.
                     "is_pe_estimated": est_pe is not None,
@@ -1687,6 +1692,23 @@ async def main():
                 print(f"    [DB] No margin-only backfill rows to insert "
                       f"(all margin rows already covered by OHLCV insert)",
                       flush=True)
+
+        # ------------------------------------------------------------------
+        # 5. Compute tech stats (MA/EMA) for all stocks
+        # ------------------------------------------------------------------
+        # Run tech_stats as a final phase — computes MA5/20/60/120/255 and
+        # EMA6/10/20/60/120/255 from stock_basic_stats.close. This is
+        # integrated here so builds.stock can produce both OHLCV+PE+margin
+        # and technical indicators in one pass.
+        print("\n[5/5] Computing stock tech stats (MA/EMA) …", flush=True)
+        from builds.stock.tech_stats import run_tech_stats_chunked
+
+        tech_stats_force = args.force
+        tech_total = await run_tech_stats_chunked(
+            conn, force=tech_stats_force, chunk_size=500
+        )
+        print(f"    [TECH-STATS] Total rows upserted into stats.stock_tech_stats: "
+              f"{tech_total:,}", flush=True)
 
     finally:
         await conn.close()

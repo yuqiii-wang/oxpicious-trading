@@ -13,9 +13,15 @@ Consolidates two patterns that share the same ``groupby(keys)[col]
     Used by analyzes (mov_ave_spread std, sec_alloc_perf MA5,
     industry_sentiments/etf_contribution MA5+MA20).
 
-Both use the cuDF router (``_common.df_utils._router.should_use_gpu``)
-to decide CPU vs GPU per call. The decision is cached per
-(op_type, n_rows) so repeated calls in a loop don't re-log.
+Also provides ``compute_emas`` for exponential moving averages
+(ema6 / ema10 / ema20 / ema60), which stays on pandas because cuDF
+lacks grouped-ewm support (see analyze/mov_ave_spread/rsi.py for
+the same constraint).
+
+Both rolling helpers use the cuDF router
+(``_common.df_utils._router.should_use_gpu``) to decide CPU vs GPU
+per call. The decision is cached per (op_type, n_rows) so repeated
+calls in a loop don't re-log.
 
 GPU AMORTIZATION
 ================
@@ -145,6 +151,84 @@ def compute_moving_averages(
         df[f"ma{rw}_ratio"] = (
             (df[value_col] / df[f"ma{rw}"]) - 1.0
         ).round(round_to)
+
+    return df
+
+
+# ---------------------------------------------------------------------------
+#  Multi-window exponential moving averages (builds path)
+# ---------------------------------------------------------------------------
+def compute_emas(
+    df: pd.DataFrame,
+    group_key: str,
+    value_col: str,
+    spans: list[int],
+    *,
+    adjust: bool = False,
+    round_to: int = 6,
+) -> pd.DataFrame:
+    """Compute multiple exponential moving averages per group.
+
+    Adds columns ``ema{span}`` for each span in ``spans``, using the
+    standard EWM recurrence ``ema = close.ewm(span=N, adjust=False)
+    .mean()`` (``adjust=False`` = the industry-standard "recursive"
+    EMA where the first observation seeds the EMA; ``adjust=True``
+    would weight early observations differently to correct for the
+    warm-up bias).
+
+    Always stays on pandas (CPU): cuDF lacks grouped-ewm support, and
+    the per-group apply fallback is no faster than pandas' vectorized
+    ``groupby.ewm`` (see ``analyze/mov_ave_spread/rsi.py`` for the
+    same constraint on Wilder EWM). The cuDF router is therefore NOT
+    consulted here.
+
+    The caller MUST pre-sort ``df`` by ``[group_key, date_col]`` so
+    that the EWM recurrence sees correct temporal order within each
+    group.
+
+    Args:
+        df: DataFrame pre-sorted by [group_key, date]. Modified in
+            place - EMA columns are added directly.
+        group_key: column to group by (e.g. "code").
+        value_col: column to compute EMAs on (e.g. "close",
+            "adj_close").
+        spans: list of EMA spans (e.g. [6, 10, 20, 60]). The span
+            parameter maps to alpha = 2 / (span + 1).
+        adjust: passed to ``pandas.DataFrame.ewm(adjust=...)``.
+            Default False (industry-standard recursive EMA).
+        round_to: decimal places to round EMA values (default 6).
+
+    Returns:
+        The same ``df`` with ``ema{span}`` columns added in place.
+
+    USAGE
+    =====
+
+        from _common.df_utils import compute_emas
+
+        df = df.sort_values(["code", "date"]).reset_index(drop=True)
+        df = compute_emas(
+            df, group_key="code", value_col="close",
+            spans=[6, 10, 20, 60],
+        )
+        # df now has columns: ema6, ema10, ema20, ema60
+    """
+    if df.empty:
+        for s in spans:
+            df[f"ema{s}"] = pd.Series(dtype="float64")
+        return df
+
+    # pandas groupby.ewm returns a MultiIndex Series (group_key level +
+    # original index). Strip the group-key level and reindex back to
+    # df's original index so the result aligns with the caller's frame.
+    grp = df.groupby(group_key, sort=False)[value_col]
+    for s in spans:
+        result = (
+            grp.ewm(span=s, adjust=adjust, min_periods=1)
+            .mean()
+            .reset_index(level=0, drop=True)
+        )
+        df[f"ema{s}"] = result.reindex(df.index).round(round_to)
 
     return df
 

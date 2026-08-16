@@ -31,12 +31,13 @@ do
 done
 
 # build combined CSVs
+# builds.stock includes tech_stats (MA/EMA) as an internal final step.
+# builds.index includes composition (CSI+SZSE) → baseline (CSIndex daily) as
+# sequential phases — composition must run before baseline.
 for m in \
   builds.stock \
-  builds.stock.tech_stats \
   builds.etf \
-  builds.index.composition \
-  builds.index.baseline \
+  builds.index \
   builds.bond \
   builds.options.szse
 do
@@ -53,7 +54,18 @@ done
 # reusing the same DB connection and source price DataFrame).
 for m in \
   analyze.industry_sentiments \
-  analyze.mov_ave_spread
+  analyze.mov_ave_spread \
+  analyze.pe_and_dividends \
+  analyze.margins
+do
+  python -m "$m"
+done
+fi
+
+# optional to run on daily
+if [ "${FORCE_DOWNLOADS:-0}" = "1" ] || { [ "$_is_biz_date" = "1" ] && [ "$_cur_hm" -ge 1900 ]; }; then
+for m in \
+  analyze.fourier_freqs
 do
   python -m "$m"
 done
@@ -65,6 +77,7 @@ python -m downloads.etf.szse.composition
 python -m downloads.index.csindex.composition
 python -m downloads.index.szse.composition
 python -m downloads.etf.csindex.linked_etf
+python -m downloads.macro.pboc.stats
 
 # run quarterly
 python -m downloads.stock.sse.dividend

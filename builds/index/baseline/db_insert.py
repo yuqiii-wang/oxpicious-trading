@@ -68,6 +68,12 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
             "ma60": row["ma60"],
             "ma120": row["ma120"],
             "ma255": row["ma255"],
+            "ema6": row.get("ema6"),
+            "ema10": row.get("ema10"),
+            "ema20": row.get("ema20"),
+            "ema60": row.get("ema60"),
+            "ema120": row.get("ema120"),
+            "ema255": row.get("ema255"),
         })
 
     pk = ["date", "code"]

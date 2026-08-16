@@ -16,6 +16,8 @@ import { useState, type MouseEvent } from "react";
 import {
   Box,
   Button,
+  Checkbox,
+  FormControlLabel,
   IconButton,
   Popover,
   Stack,
@@ -37,17 +39,28 @@ interface AlgoWeightMenuProps {
   selection: StrategySelection;
   onChange: (selection: StrategySelection) => void;
   disabled?: boolean;
+  /** Fault tolerance percentage (0-20). 0 = disabled. */
+  faultTolerance: number;
+  /** Callback when fault tolerance changes. */
+  onFaultToleranceChange: (ft: number) => void;
 }
 
 const EPSILON = 1e-6;
 
-export default function AlgoWeightMenu({ selection, onChange, disabled }: AlgoWeightMenuProps) {
+export default function AlgoWeightMenu({
+  selection,
+  onChange,
+  disabled,
+  faultTolerance,
+  onFaultToleranceChange,
+}: AlgoWeightMenuProps) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
   const open = Boolean(anchorEl);
   const sum = selectionSum(selection);
   const valid = Math.abs(sum - 1.0) < 1e-3;
-  const label = selectionLabel(selection);
+  const ftEnabled = faultTolerance > 0;
+  const label = selectionLabel(selection, faultTolerance);
 
   const handleOpen = (e: MouseEvent<HTMLElement>) => {
     if (disabled) return;
@@ -164,6 +177,53 @@ export default function AlgoWeightMenu({ selection, onChange, disabled }: AlgoWe
               <IconButton size="small" onClick={normalize} disabled={disabled}>
                 <TuneIcon fontSize="small" />
               </IconButton>
+            </Tooltip>
+          </Box>
+
+          {/* Fault Tolerance — adverse OHLC stress test on decision days.
+              When enabled, the strategy_name gets an _ft{N} suffix so the
+              FT variant is a distinct strategy in the DB. The slider sets
+              the stress percentage (0-20%); the checkbox toggles it on/off. */}
+          <Box sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  checked={ftEnabled}
+                  disabled={disabled}
+                  onChange={(e) => onFaultToleranceChange(
+                    e.target.checked ? (faultTolerance || 10) : 0,
+                  )}
+                />
+              }
+              label={
+                <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                  Fault Tolerance
+                </Typography>
+              }
+            />
+            <Tooltip
+              title="Adversely perturbs OHLC on BUY/SELL decision days (BUY up, SELL down) by this % of |Δclose|. Indicators are recomputed and the algo re-runs on stressed data. Produces a separate _ft{N} strategy."
+              placement="top"
+            >
+              <Box sx={{ px: 1, opacity: ftEnabled ? 1 : 0.5 }}>
+                <Slider
+                  size="small"
+                  min={1}
+                  max={20}
+                  step={1}
+                  value={faultTolerance > 0 ? faultTolerance : 10}
+                  disabled={disabled || !ftEnabled}
+                  onChange={(_, v) => onFaultToleranceChange(v as number)}
+                  valueLabelDisplay="auto"
+                  valueLabelFormat={(v) => `${v}%`}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  {ftEnabled
+                    ? `Stress = ${Math.round(faultTolerance)}% of daily price change`
+                    : "Tick to enable adverse OHLC stress test"}
+                </Typography>
+              </Box>
             </Tooltip>
           </Box>
         </Stack>

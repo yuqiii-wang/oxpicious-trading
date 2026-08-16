@@ -30,6 +30,7 @@ import {
   MA60_COLOR,
   NEUTRAL_FILL,
   PALETTE_HI,
+  PE_COLOR,
   SPLIT_COLOR,
   UP_COLOR,
   axisColors,
@@ -55,6 +56,10 @@ interface Props {
    *  to the shortest common time range. */
   defaultStartDate?: string;
   defaultEndDate?: string;
+  /** Optional callback fired when the user clicks any date on the chart.
+   *  Used by the PE & Dividend analysis page to highlight the matching
+   *  month-end row in the stats table. */
+  onDateClick?: (date: string) => void;
 }
 
 function retBadge(values: number[], idxFromEnd: number): number | null {
@@ -173,6 +178,12 @@ function buildOption(
   );
   const rqByDate = new Map<string, number | null>(
     rows.map((r) => [r.date, r.rq_balance_amt]),
+  );
+  // Date → implied EPS (yuan/share) lookup for tooltip display. EPS is a
+  // per-row attribute (close / harmonic-PE), not a plotted series, so the
+  // tooltip resolves it by date — mirroring the rz/rq balance lookups above.
+  const epsByDate = new Map<string, number | null>(
+    rows.map((r) => [r.date, r.eps]),
   );
 
   // Dynamic axis limits for hidden margin axis — matches Python's
@@ -398,6 +409,12 @@ function buildOption(
             html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}</b></div>`;
           }
         }
+        // EPS (per-row attribute, not a plotted series). Shown after the
+        // series rows — the implied earnings per share from harmonic PE.
+        const epsVal = epsByDate.get(dateStr);
+        if (epsVal != null && Number.isFinite(epsVal)) {
+          html += `<div><span style="color:${PE_COLOR}">●</span> EPS: <b>¥${fmtNum(epsVal, 4)}</b></div>`;
+        }
         return html;
       },
     },
@@ -494,9 +511,17 @@ function ReturnBadges({ etf }: { etf: EtfBundle }) {
   );
 }
 
-export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }: Props) {
+export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, onDateClick }: Props) {
   const themeMode = useStore((s) => s.themeMode);
   const allRows = etf.rows;
+  // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
+  // handler to map a click index back to a date string. Computed once per
+  // ETF; the buildOption function recomputes the same broken dates internally
+  // for the series data.
+  const chartDates = useMemo(
+    () => breakArraysAtGaps(allRows.map((r) => r.date), [allRows.map(() => null)]).dates,
+    [allRows],
+  );
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
@@ -570,7 +595,14 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate }
       height={cardHeight}
     >
       <Box sx={{ width: "100%" }}>
-        <EChart option={option} height={250} />
+        <EChart
+          option={option}
+          height={250}
+          onCanvasClick={onDateClick ? (idx) => {
+            const date = chartDates[idx];
+            if (date) onDateClick(date);
+          } : undefined}
+        />
         <CompositionPieChart
           code={etf.code}
           open={compositionOpen}
