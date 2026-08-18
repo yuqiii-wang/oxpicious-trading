@@ -19,12 +19,10 @@ STALE_THRESHOLD_MIN = 30
 TRADING_START = time(9, 25)
 TRADING_END = time(15, 5)
 
-# CSIndex starts 10 minutes after SSE so SSE has already produced its first
-# 2 bars (09:35, 09:40) by the time CSIndex queries which codes SSE is
-# streaming. CSIndex then excludes those codes from its download list,
-# downloading only indices that SSE does NOT cover.
-SSE_HEAD_START_MIN = 10
-CSINDEX_START_TIME = time(9, 30 + SSE_HEAD_START_MIN)  # 09:40
+# CSIndex afternoon-only start: the streamer waits until 13:30 on trading
+# days before entering the main loop, so API calls focus on the afternoon
+# trading session (13:30–15:00). Morning data is already captured by SSE/SZSE.
+CSINDEX_START_TIME = time(13, 30)
 
 # Bond indices (name contains '债') are skipped in CSIndex streaming — they
 # typically lack meaningful intraday tick data on csindex.com.cn.

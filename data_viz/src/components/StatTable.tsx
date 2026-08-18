@@ -62,6 +62,17 @@ const COLS: Array<{
         : "—",
   },
   {
+    label: "Smile Skew",
+    align: "right",
+    get: (s) => {
+      if (!s || s.smileSkewness.length === 0) return "—";
+      const front = s.smileSkewness[0];
+      const v = front.overallSkew;
+      if (v == null || !Number.isFinite(v)) return "—";
+      return (v >= 0 ? "+" : "") + fmtNum(v, 2);
+    },
+  },
+  {
     label: "ATM Δ",
     align: "right",
     get: (s) =>

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Live Data — Stock page.
  *
  * Shows 5-minute intraday OHLC + volume bars for A-share stocks, filtered by
@@ -36,7 +36,7 @@ import type {
   SectorNode,
   StrategyNode,
   LiveDataCombinedResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 const PAGE_SIZE = 1;
 const SEC_TYPE = "stock" as const;

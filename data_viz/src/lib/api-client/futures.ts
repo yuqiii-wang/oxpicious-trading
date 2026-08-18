@@ -1,8 +1,8 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   FuturesProduct,
   FuturesCombinedResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 export function fetchFuturesProducts(): Promise<{ products: FuturesProduct[] }> {
   return fetchJson<{ products: FuturesProduct[] }>(`/api/futures/products`);

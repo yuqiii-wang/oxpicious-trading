@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Index Baseline page — shows daily OHLCV + MA + PE for CSI indices.
  *
  * Layout (mirrors the ETF + Margin page):
@@ -29,7 +29,7 @@ import type {
   SectorNode,
   StrategyNode,
   IndexCombinedResponse,
-} from "../../../../shared/types";
+} from "@shared/types";
 
 const PAGE_SIZE = 1;
 

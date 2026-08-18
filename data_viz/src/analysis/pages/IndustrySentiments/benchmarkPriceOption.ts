@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for the Benchmark Price line chart (1st plot in
  * "Benchmark Attribution" mode).
  *
@@ -47,7 +47,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { BenchmarkPriceChartResponse } from "../../../../shared/types";
+import type { BenchmarkPriceChartResponse } from "@shared/types";
 import {
   UP_COLOR,
   DOWN_COLOR,

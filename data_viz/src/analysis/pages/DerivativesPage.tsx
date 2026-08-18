@@ -35,6 +35,13 @@ const DERIVATIVES_ANALYSES: DerivativesAnalysis[] = [
       "CFFEX futures vs underlying analysis: 1st plot replicates the Data Viz price curves with gap_price_vs_underlying added to tooltip; 2nd plot shows 20-day rolling correlation between futures and underlying.",
     tags: ["futures", "basis", "gap", "correlation", "cffex"],
   },
+  {
+    slug: "options",
+    title: "Options Analysis",
+    description:
+      "Options analytics: Open Interests wall, Volatility Smile, and The Greeks (Delta/Theta/Gamma/Vega/Rho) for SZSE ETF and CFFEX index options.",
+    tags: ["options", "oi", "vol-smile", "greeks", "etf", "index"],
+  },
 ];
 
 export default function DerivativesPage() {

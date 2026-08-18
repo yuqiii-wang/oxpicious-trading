@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StockOhlcExpansionChart — closeable daily OHLC expansion for a single
  * stock, rendered below the composition pie chart when the user clicks a
  * stock slice in Layer 2.
@@ -30,7 +30,7 @@ import OhlcModeToggle from "@/components/OhlcModeToggle";
 import StockOhlcChart from "@/components/StockOhlcChart";
 import { fetchStockBaseline } from "@/lib/api-client";
 import { type OhlcMode } from "@/lib/ohlc";
-import type { StockBaselineResponse } from "../../shared/types";
+import type { StockBaselineResponse } from "@shared/types";
 
 interface Props {
   /** Stock code — suffixed ("000001.SZ") or bare ("000001"). */

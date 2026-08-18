@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StockPanel — single stock chart + dataZoom.
  *
  * Layout (mirrors IndexPanel + StockOhlcExpansionChart but without intraday
@@ -22,7 +22,7 @@ import StockOhlcChart from "@/components/StockOhlcChart";
 import { fmtPct } from "@/lib/series";
 import { type OhlcMode } from "@/lib/ohlc";
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
-import type { StockBundle } from "../../../../shared/types";
+import type { StockBundle } from "@shared/types";
 
 interface Props {
   stock: StockBundle;

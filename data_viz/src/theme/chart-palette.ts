@@ -9,6 +9,7 @@
  * value, so the palette remains correct even if the stylesheet has not loaded
  * yet at module-eval time.
  */
+import type { CSSProperties } from "react";
 import type { ThemeMode } from "@/store/filters";
 
 /**
@@ -88,12 +89,109 @@ export const MUTED_PALETTE = [
 ];
 
 // ----------------------------------------------------------------------------
+// Expiry gradient palette (blue + grey) — both for options and futures.
+// Dark = nearest expiry, light = farthest expiry.
+// Endpoints are defined in colors.css (--expiry-blue-near/far,
+// --expiry-grey-near/far) so a single token change rethemes every chart.
+// ----------------------------------------------------------------------------
+const EXPIRY_BLUE_NEAR = cssVar("--expiry-blue-near", "#08306b");
+const EXPIRY_BLUE_FAR = cssVar("--expiry-blue-far", "#c6dbef");
+const EXPIRY_GREY_NEAR = cssVar("--expiry-grey-near", "#333333");
+const EXPIRY_GREY_FAR = cssVar("--expiry-grey-far", "#aaaaaa");
+
+/** Parse "#rrggbb" → [r, g, b] */
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace("#", "");
+  return [
+    parseInt(h.substring(0, 2), 16),
+    parseInt(h.substring(2, 4), 16),
+    parseInt(h.substring(4, 6), 16),
+  ];
+}
+
+/** Linear interpolate between two hex colors */
+function lerpColor(near: string, far: string, t: number): string {
+  const [r1, g1, b1] = hexToRgb(near);
+  const [r2, g2, b2] = hexToRgb(far);
+  const r = Math.round(r1 + t * (r2 - r1));
+  const g = Math.round(g1 + t * (g2 - g1));
+  const b = Math.round(b1 + t * (b2 - b1));
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+}
+
+/**
+ * Blue gradient palette for expiry-based color coding.
+ * Dark blue = nearest expiry, light blue = farthest expiry.
+ *
+ * @param i  Zero-based index (0 = nearest contract)
+ * @param n  Total number of expiries
+ * @returns  Hex color string
+ */
+export function expiryBlueColor(i: number, n: number): string {
+  if (n <= 1) return EXPIRY_BLUE_NEAR;
+  const t = i / (n - 1); // 0 (darkest) → 1 (lightest)
+  return lerpColor(EXPIRY_BLUE_NEAR, EXPIRY_BLUE_FAR, t);
+}
+
+/**
+ * Grey gradient palette for matured-expiry color coding.
+ * Dark grey = recently matured, light grey = oldest matured.
+ *
+ * @param i  Zero-based index (0 = most recently matured)
+ * @param n  Total number of matured expiries
+ * @returns  Hex color string
+ */
+export function expiryGreyColor(i: number, n: number): string {
+  if (n <= 1) return EXPIRY_GREY_NEAR;
+  const t = i / (n - 1);
+  return lerpColor(EXPIRY_GREY_NEAR, EXPIRY_GREY_FAR, t);
+}
+
+// ----------------------------------------------------------------------------
 // UI text tokens
 // ----------------------------------------------------------------------------
 /** Card subtitle / muted label gray (used in DOM styles). */
 export const SUBTITLE_COLOR = cssVar("--chart-subtitle", "#7A8190");
 /** Fallback inline gray (autocomplete hints, secondary axis names). */
 export const MUTED_INLINE_COLOR = cssVar("--chart-muted-inline", "#888888");
+
+// ----------------------------------------------------------------------------
+// Tooltip card tokens — shared look for every hover tooltip card (DOM React
+// tooltips and ECharts-native tooltips), sourced from colors.css.
+// ----------------------------------------------------------------------------
+export const TOOLTIP_CARD_BG = cssVar("--tooltip-card-bg", "rgba(255,255,255,0.96)");
+export const TOOLTIP_CARD_BORDER = cssVar("--tooltip-card-border", "#dddddd");
+export const TOOLTIP_CARD_SHADOW = cssVar("--tooltip-card-shadow", "0 2px 8px rgba(0,0,0,0.08)");
+export const TOOLTIP_CARD_TEXT = cssVar("--tooltip-card-text", "#333333");
+export const TOOLTIP_CARD_TEXT_HEADER = cssVar("--tooltip-card-text-header", "#555555");
+export const TOOLTIP_CARD_TEXT_MUTED = cssVar("--tooltip-card-text-muted", "#666666");
+export const TOOLTIP_CARD_TEXT_FAINT = cssVar("--tooltip-card-text-faint", "#888888");
+/** Positive / negative gap (or delta) text colors. */
+export const TOOLTIP_GAP_POS = cssVar("--tooltip-gap-pos", "#2e7d32");
+export const TOOLTIP_GAP_NEG = cssVar("--tooltip-gap-neg", "#c62828");
+/** Dashed axis crosshair line color. */
+export const AXIS_POINTER_LINE = cssVar("--axis-pointer-line", "#999999");
+
+/** Shared card container style for DOM-rendered React tooltips. */
+export const TOOLTIP_CARD_STYLE: CSSProperties = {
+  padding: "6px 10px",
+  background: TOOLTIP_CARD_BG,
+  border: `1px solid ${TOOLTIP_CARD_BORDER}`,
+  borderRadius: 4,
+  boxShadow: TOOLTIP_CARD_SHADOW,
+  fontSize: 12,
+  color: TOOLTIP_CARD_TEXT,
+};
+
+/** Shared date-header style inside a tooltip card. */
+export const TOOLTIP_CARD_HEADER_STYLE: CSSProperties = {
+  fontWeight: 600,
+  marginBottom: 4,
+  fontSize: 12,
+  color: TOOLTIP_CARD_TEXT_HEADER,
+  borderBottom: `1px solid ${TOOLTIP_CARD_BORDER}`,
+  paddingBottom: 4,
+};
 
 // ----------------------------------------------------------------------------
 // Axis / grid / tooltip theming (light + dark)
@@ -279,6 +377,12 @@ export const FUTURES_GREY_DARK = cssVar("--futures-grey-dark", "#333333");
 export const FUTURES_GREY_LIGHT = cssVar("--futures-grey-light", "#aaaaaa");
 /** Spot price warm orange */
 export const FUTURES_SPOT = cssVar("--futures-spot", "#d95f0e");
+/** Expiry dot marker red (history-mode dots on the spot curve) */
+export const FUTURES_EXPIRY_DOT = cssVar("--futures-expiry-dot", "#d32f2f");
+/** Expiry dot marker red in hover/emphasis state */
+export const FUTURES_EXPIRY_DOT_ACTIVE = cssVar("--futures-expiry-dot-active", "#b71c1c");
+/** Expiry dot marker border (white ring) */
+export const FUTURES_EXPIRY_DOT_BORDER = cssVar("--futures-expiry-dot-border", "#ffffff");
 /** Ghost opacity for matured contracts in future mode */
 export const FUTURES_GHOST_OPACITY = parseFloat(cssVar("--futures-ghost-opacity", "0.25"));
 /** Closer opacity for matured contracts in history mode */

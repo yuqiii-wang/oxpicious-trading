@@ -1,7 +1,8 @@
 import { fetchJson } from "./_cache";
 import type {
   IntradayMovementsResponse,
-} from "../../../shared/types";
+  PrevDayOhlcResponse,
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Live Data — Intraday Movements (per-5-min-tick % change vs prev day close
@@ -34,5 +35,21 @@ export function fetchIntradayMovements(
   if (date) params.set("date", date);
   return fetchJson<IntradayMovementsResponse>(
     `/api/live-data/intraday-movements?${params.toString()}`,
+  );
+}
+
+/** Raw prev-trading-day OHLC of the benchmark + every member index (with
+ *  industry_id). Drives the single prev-day OHLC bar on the Market
+ *  Movements top plot (before the 09:30 tick). `date` optional → latest
+ *  available for the benchmark. */
+export function fetchIntradayMovementsPrevDayOhlc(
+  benchmarkCode: string,
+  date?: string | null,
+): Promise<PrevDayOhlcResponse> {
+  const params = new URLSearchParams();
+  if (benchmarkCode) params.set("benchmark_code", benchmarkCode);
+  if (date) params.set("date", date);
+  return fetchJson<PrevDayOhlcResponse>(
+    `/api/live-data/intraday-movements/prev-day-ohlc?${params.toString()}`,
   );
 }

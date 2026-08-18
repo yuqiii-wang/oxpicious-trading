@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for an aggregate chart (mean_pe or
  * total_trading_amount) under the main Industry Sentiments price chart.
  *
@@ -13,7 +13,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { IndustrySentimentsChartResponse } from "../../../../shared/types";
+import type { IndustrySentimentsChartResponse } from "@shared/types";
 import { axisColors, commonLegend, commonGrid } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type { PoolSize, PerIndustryAggregation } from "./types";

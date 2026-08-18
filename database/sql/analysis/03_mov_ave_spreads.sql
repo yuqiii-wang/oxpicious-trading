@@ -702,7 +702,7 @@ CREATE TABLE analysis.mov_ave_trading_amt (
     trading_amt_market_share_ma60    NUMERIC(10,4),
     trading_amt_market_share_ma120   NUMERIC(10,4),
     trading_amt_market_share_ma255   NUMERIC(10,4),
-
+ 
     trading_amt_slope     NUMERIC(10,4),
     trading_amt_ma5_slope     NUMERIC(10,4),
     trading_amt_ma20_slope    NUMERIC(10,4),
@@ -710,12 +710,12 @@ CREATE TABLE analysis.mov_ave_trading_amt (
     trading_amt_ma120_slope   NUMERIC(10,4),
     trading_amt_ma255_slope   NUMERIC(10,4),
 
-    trading_amt_slope_vs_price_slope_ratio         NUMERIC(10,4), -- indicate for how much capital could push for what extent of price changes
-    trading_amt_ma5_slope_vs_price_ma5_slope_ratio     NUMERIC(10,4),
-    trading_amt_ma5_slope_vs_price_ma20_slope_ratio    NUMERIC(10,4),
-    trading_amt_ma5_slope_vs_price_ma60_slope_ratio    NUMERIC(10,4),
-    trading_amt_ma5_slope_vs_price_ma120_slope_ratio   NUMERIC(10,4),
-    trading_amt_ma5_slope_vs_price_ma255_slope_ratio   NUMERIC(10,4),
+    trading_amt_vs_price_slope_ratio         NUMERIC(10,4), -- indicate for how much capital could push for what extent of price changes
+    trading_amt_ma5_vs_price_ma5_slope_ratio     NUMERIC(10,4),
+    trading_amt_ma20_vs_price_ma20_slope_ratio    NUMERIC(10,4),
+    trading_amt_ma60_vs_price_ma60_slope_ratio    NUMERIC(10,4),
+    trading_amt_ma120_vs_price_ma120_slope_ratio   NUMERIC(10,4),
+    trading_amt_ma255_vs_price_ma255_slope_ratio   NUMERIC(10,4),
 
     trading_amt_market_share_vs_ma5     NUMERIC(10,4),
     trading_amt_market_share_vs_ma20    NUMERIC(10,4),
@@ -753,12 +753,12 @@ COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma60_slope   IS 'Frac
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma120_slope  IS 'Fractional daily change of trading_amt_ma120.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma255_slope  IS 'Fractional daily change of trading_amt_ma255.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_slope         IS 'Fractional daily change of raw trading_amount: (ta[t]-ta[t-1])/ta[t-1]. NUMERIC(10,4). NULL on first date per code or when ta[t-1] is NULL or <= 0.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_slope_vs_price_slope_ratio       IS 'Liquidity-impact proxy: trading_amt_slope / price_slope. How much capital (fractional change) pushes price by one unit. Mixed metric (fractional-amount / price-difference). NULL when either is NULL or price_slope = 0.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma5_slope_vs_price_ma5_slope_ratio   IS 'trading_amt_ma5_slope / ma5_slope. Same interpretation as trading_amt_slope_vs_price_slope_ratio but on MA5 timescales.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma5_slope_vs_price_ma20_slope_ratio  IS 'trading_amt_ma5_slope / ma20_slope. Cross-timescale liquidity-impact proxy (capital MA5 vs price MA20).';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma5_slope_vs_price_ma60_slope_ratio  IS 'trading_amt_ma5_slope / ma60_slope.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma5_slope_vs_price_ma120_slope_ratio IS 'trading_amt_ma5_slope / ma120_slope.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma5_slope_vs_price_ma255_slope_ratio IS 'trading_amt_ma5_slope / ma255_slope.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_vs_price_slope_ratio       IS 'Liquidity-impact proxy: (trading_amount / 1,000,000) / price_slope. How many millions of capital push price by one unit. price_slope=0 auto-set to 1.0 to avoid division-by-zero. NULL when trading_amount or price_slope is NULL.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma5_vs_price_ma5_slope_ratio   IS '(trading_amt_ma5 / 1,000,000) / ma5_slope. Millions of capital (MA5 timescale) per unit of MA5 price change. ma5_slope=0 auto-set to 1.0.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma20_vs_price_ma20_slope_ratio  IS '(trading_amt_ma20 / 1,000,000) / ma20_slope. Millions of capital (MA20 timescale) per unit of MA20 price change. ma20_slope=0 auto-set to 1.0.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma60_vs_price_ma60_slope_ratio  IS '(trading_amt_ma60 / 1,000,000) / ma60_slope. Millions of capital (MA60 timescale) per unit of MA60 price change. ma60_slope=0 auto-set to 1.0.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma120_vs_price_ma120_slope_ratio IS '(trading_amt_ma120 / 1,000,000) / ma120_slope. Millions of capital (MA120 timescale) per unit of MA120 price change. ma120_slope=0 auto-set to 1.0.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma255_vs_price_ma255_slope_ratio IS '(trading_amt_ma255 / 1,000,000) / ma255_slope. Millions of capital (MA255 timescale) per unit of MA255 price change. ma255_slope=0 auto-set to 1.0.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_market_share_vs_ma5    IS '(market_share - market_share_ma5) / market_share_ma5.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_market_share_vs_ma20   IS '(market_share - market_share_ma20) / market_share_ma20.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_market_share_vs_ma60   IS '(market_share - market_share_ma60) / market_share_ma60.';

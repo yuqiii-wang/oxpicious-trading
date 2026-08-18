@@ -1,4 +1,4 @@
-/**
+﻿/**
  * React-based tooltip formatters for MA-Spread charts.
  *
  * Uses React.createElement + a custom element-to-HTML renderer to produce
@@ -9,7 +9,7 @@
 import React from "react";
 import { fmtNum, fmtPct, fmtYi } from "@/lib/series";
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
-import type { MovAveSpreadPairSeries } from "../../../../../shared/types";
+import type { MovAveSpreadPairSeries } from "@shared/types";
 import { type OhlcMode } from "@/lib/ohlc";
 import { type TrendBand } from "./trendBands";
 

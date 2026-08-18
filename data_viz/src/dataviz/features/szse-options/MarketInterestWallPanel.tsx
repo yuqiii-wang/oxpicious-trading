@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Market Interest Wall — single horizontal stacked bar chart with date selector.
  *
  * Per-strike OI stacked by expiry month, calls to the right (positive) and puts
@@ -11,22 +11,23 @@
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
-import type { OptionsRow } from "../../../../shared/types";
+import type { OptionsRow } from "@shared/types";
 import {
   DOWN_COLOR,
   MA20_COLOR,
   MA60_COLOR,
   MUTED_INLINE_COLOR,
-  MUTED_PALETTE,
   PRICE_SCALE,
   SPOT_COLOR,
   UP_COLOR,
   axisColors,
   commonLegend,
   commonGrid,
+  expiryBlueColor,
 } from "@/theme/chart-palette";
 import { computeSnapshotStats } from "@/lib/options-stats";
 import { fmtPct, fmtMil, fmtNum } from "@/lib/series";
+import { makeWallTooltipFormatter } from "./marketInterestTooltip";
 import type { EChartsOption } from "echarts";
 
 interface Props {
@@ -52,7 +53,7 @@ function collectUnifiedStrikes(snapshots: OptionsRow[][]): number[] {
 
 /**
  * Collect all expiry months across all snapshots and assign global colors
- * (matches Python's expiry_colors map).
+ * using a blue gradient palette (dark = nearest, light = farthest).
  */
 function buildExpiryColorMap(snapshots: OptionsRow[][]): Map<string, string> {
   const all = new Set<string>();
@@ -60,9 +61,10 @@ function buildExpiryColorMap(snapshots: OptionsRow[][]): Map<string, string> {
     for (const r of snap) all.add(r.expiry_month);
   }
   const sorted = Array.from(all).sort((a, b) => expirySortKey(a) - expirySortKey(b));
+  const n = sorted.length;
   const map = new Map<string, string>();
   sorted.forEach((em, i) => {
-    map.set(em, MUTED_PALETTE[i % MUTED_PALETTE.length]);
+    map.set(em, expiryBlueColor(i, n));
   });
   return map;
 }
@@ -128,7 +130,7 @@ function buildWallOption(
       name: `${em} C`,
       stack: "call",
       data: unifiedStrikes.map((k) => callOiByK.get(k) ?? 0),
-      itemStyle: { color, opacity: 0.45 },
+      itemStyle: { color, opacity: 0.78 },
       emphasis: { focus: "series" },
     });
     // Put OI to the left (negative) — all put series share stack "put"
@@ -137,7 +139,7 @@ function buildWallOption(
       name: `${em} P`,
       stack: "put",
       data: unifiedStrikes.map((k) => -(putOiByK.get(k) ?? 0)),
-      itemStyle: { color, opacity: 0.45 },
+      itemStyle: { color, opacity: 0.78 },
       emphasis: { focus: "series" },
     });
   });
@@ -252,20 +254,7 @@ function buildWallOption(
       backgroundColor: tooltipBg,
       borderColor: splitColor,
       textStyle: { color: textColor, fontSize: 10 },
-      formatter: (params: unknown) => {
-        const arr = Array.isArray(params) ? params : [params];
-        const strikeK = unifiedStrikes[arr[0]?.dataIndex ?? 0];
-        const strikeYuan = fmtNum(strikeK / PRICE_SCALE);
-        const lines = arr
-          .filter((p: { value: number; seriesName: string }) => p.value !== 0)
-          .map((p: { value: number; seriesName: string; marker: string }) => {
-            const oi = Math.abs(p.value);
-            const oiStr = oi >= 1e6 ? fmtMil(oi) : fmtNum(oi);
-            return `${p.marker} ${p.seriesName}: ${oiStr}`;
-          })
-          .join("<br/>");
-        return `<b>K=${strikeYuan}</b><br/>${lines}`;
-      },
+      formatter: makeWallTooltipFormatter(unifiedStrikes),
     },
     legend: commonLegend(themeMode, { top: 22, type: "scroll" }),
     xAxis: {
@@ -317,7 +306,7 @@ export default function MarketInterestWallPanel({ rows, selectedDate }: Props) {
   return (
     <ChartCard
       title="Market Interest Wall (by Expiry)"
-      subtitle="OI by strike, stacked by expiry · Call → (green) · Put ← (red) · Spot / Call Wall / Put Wall / MaxPain / OI-weighted lines"
+      subtitle="OI by strike, stacked by expiry · Call → (right) · Put ← (left) · Blue gradient: dark=near expiry, light=far expiry · Spot / Call Wall / Put Wall / MaxPain / OI-weighted lines"
       height={420}
     >
       <EChart option={selectedOption} height={400} />

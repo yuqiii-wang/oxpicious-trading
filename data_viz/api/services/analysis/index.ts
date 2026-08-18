@@ -12,6 +12,7 @@ export { getIndustryBenchmarkAttribution, listIndustryAttributionBenchmarks } fr
 export { getIndustryEtfPriceSeries, getIndustryEtfContributionBars } from "./industry-etf-contribution.js";
 export { getIndustryHypesAndDrains } from "./industry-hypes-and-drains.js";
 export { getIntradayMovements, listIntradayMovementsBenchmarks } from "./intraday-movements.js";
+export { getIntradayMovementsPrevDayOhlc } from "./intraday-movements-prev-day-ohlc.js";
 export {
   listPeAndDividendCodes,
   getPeAndDividendChart,

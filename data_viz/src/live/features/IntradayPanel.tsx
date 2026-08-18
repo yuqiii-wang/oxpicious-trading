@@ -1,4 +1,4 @@
-/**
+﻿/**
  * IntradayPanel — single-code 5-minute intraday OHLC + volume chart for the
  * Live Data page. Renders one code's bars for a single trading day.
  *
@@ -37,7 +37,7 @@ import {
 } from "@/theme/chart-palette";
 import { useStore } from "@/store/filters";
 import { invalidateCacheForUrl } from "@/lib/api-client";
-import type { LiveDataBundle } from "../../../shared/types";
+import type { LiveDataBundle } from "@shared/types";
 import type { EChartsOption, CustomSeriesRenderItem } from "echarts";
 
 interface Props {

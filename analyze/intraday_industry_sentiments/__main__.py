@@ -47,11 +47,18 @@ Default scope (incremental, today + last biz day):
   Comma-separated list of benchmark codes to limit scope to (e.g.
   --benchmark 000922 for the 中证红利 index). Without this flag, all
   benchmarks in sec_alloc_perf_attribution are considered.
+
+--date YYYY-MM-DD[,YYYY-MM-DD,...]:
+  Comma-separated dates to restrict scope to (e.g. --date 2026-08-18
+  processes ONLY that date's pairs). Takes precedence over the default
+  today + last-biz-day scope (and over --all-dates). Useful to recompute
+  a single day after its prev-day reference was rebuilt.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime
 import os
 import sys
 import time
@@ -172,14 +179,38 @@ async def main() -> None:
             "biz day) to keep market-hours re-runs fast."
         ),
     )
+    ap.add_argument(
+        "--date",
+        type=str,
+        default="",
+        help=(
+            "Comma-separated dates (YYYY-MM-DD) to restrict scope to "
+            "(e.g. --date 2026-08-18 processes ONLY that date). Takes "
+            "precedence over the default today+last-biz-day scope; "
+            "combine with --force to rebuild specific dates."
+        ),
+    )
     args = ap.parse_args()
 
     benchmarks = [
         s.strip() for s in args.benchmark.split(",") if s.strip()
     ] or None
 
+    explicit_dates: list[datetime.date] | None = None
+    if args.date:
+        try:
+            explicit_dates = [
+                datetime.date.fromisoformat(s.strip())
+                for s in args.date.split(",") if s.strip()
+            ]
+        except ValueError as e:
+            ap.error(f"Invalid --date value: {e} (expected YYYY-MM-DD)")
+
     t0 = time.time()
-    scope_desc = "ALL dates" if args.all_dates else "today + last biz day"
+    if explicit_dates:
+        scope_desc = f"dates {[str(d) for d in explicit_dates]}"
+    else:
+        scope_desc = "ALL dates" if args.all_dates else "today + last biz day"
     mode_desc = (
         f"FORCE (truncate + recompute, {scope_desc}"
         f"{f' for {len(benchmarks)} benchmark(s)' if benchmarks else ''})"
@@ -214,7 +245,11 @@ async def main() -> None:
               "(source: stats.index_intraday_5min WHERE code IN "
               "sec_alloc_perf_attribution.benchmark_code) ...",
               flush=True)
-        if args.all_dates:
+        if explicit_dates:
+            print(f"    -> --date: scope restricted to "
+                  f"{[str(d) for d in explicit_dates]}", flush=True)
+            target_dates = explicit_dates
+        elif args.all_dates:
             print("    -> --all-dates: searching full history", flush=True)
             target_dates = None
         else:

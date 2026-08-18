@@ -117,6 +117,21 @@
   --mui-appbar-bg-dark: #0A1124;
   --mui-appbar-text-dark: #E6EAF2;
 
+  /* ---- Tooltip card tokens (DOM React tooltips + ECharts tooltips) ------ */
+  /* Shared surface/text look for every hover tooltip card: the futures
+   * per-date & expiry-dot React tooltips, and the ECharts-native tooltips
+   * (e.g. the correlation plot) so both render identically. */
+  --tooltip-card-bg: rgba(255,255,255,0.96);
+  --tooltip-card-border: #dddddd;
+  --tooltip-card-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  --tooltip-card-text: #333333;          /* primary row text */
+  --tooltip-card-text-header: #555555;   /* date header text */
+  --tooltip-card-text-muted: #666666;    /* secondary inline text (gap) */
+  --tooltip-card-text-faint: #888888;    /* tertiary text (mapped-date hint) */
+  --tooltip-gap-pos: #2e7d32;            /* positive gap text (green) */
+  --tooltip-gap-neg: #c62828;            /* negative gap text (red) */
+  --axis-pointer-line: #999999;          /* dashed axis crosshair line */
+
   /* ---- Futures chart colors --------------------------------------------- */
   /* Blue gradient for active qualifying contracts (nearer = darker) */
   --futures-blue-near: #08306b;
@@ -126,7 +141,19 @@
   --futures-grey-light: #aaaaaa;
   /* Spot price color (warm orange) */
   --futures-spot: #d95f0e;
+  /* Expiry dot markers on the spot curve (history mode) */
+  --futures-expiry-dot: #d32f2f;
+  --futures-expiry-dot-active: #b71c1c;
+  --futures-expiry-dot-border: #ffffff;
   /* Opacity tokens */
   --futures-ghost-opacity: 0.25;
   --futures-history-opacity: 0.90;
+
+  /* ---- Expiry gradient ranges (used by expiryBlueColor() / expiryGreyColor()) ---- */
+  /* These define the gradient endpoints for the expiry-based color coding
+     in options and futures charts. Dark = nearest expiry, light = farthest. */
+  --expiry-blue-near: #08306b;     /* darkest expiry set */
+  --expiry-blue-far: #c6dbef;      /* lightest expiry set */
+  --expiry-grey-near: #333333;     /* darkest matured expiry */
+  --expiry-grey-far: #aaaaaa;      /* lightest matured expiry */
 }

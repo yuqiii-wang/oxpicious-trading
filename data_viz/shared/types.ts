@@ -122,6 +122,33 @@ export interface OptionsCombinedResponse {
   rows: OptionsRow[];
 }
 
+export interface ExpiryGapRow {
+  date: string;
+  underlying_code: string;
+  expiry_date: string;
+  today_gap_from_today_spot: number | null;
+  today_gap_from_max_before_expiry: number | null;
+  today_gap_from_min_before_expiry: number | null;
+}
+
+export interface ExpiryGapsResponse {
+  underlying_code: string;
+  rows: ExpiryGapRow[];
+}
+
+export interface SkewnessCorrRow {
+  date: string;
+  expiry_month: string;
+  corr_skewness_ma5_vs_spot_ma5: number | null;
+  corr_skewness_ma20_vs_spot_ma20: number | null;
+  corr_skewness_ma60_vs_spot_ma60: number | null;
+}
+
+export interface SkewnessCorrResponse {
+  underlying_code: string;
+  rows: SkewnessCorrRow[];
+}
+
 export interface EtfOhlcvResponse {
   dates: string[];
   code: string;
@@ -587,6 +614,8 @@ export interface LatestDatesResponse {
   sec_composition: string;
   /** MAX(date) from stats.v_stock_baseline */
   stock_baseline: string;
+  /** MAX(date) from analysis.intraday_industry_market_movements (analysis) or stats.index_intraday_5min (raw) */
+  intraday_movements: string;
 }
 
 // ----------------------------------------------------------------------------
@@ -1783,6 +1812,84 @@ export interface IntradayMovementsResponse {
   member_series: IntradayMovementsMemberTick[];
   /** Distinct industries — for the legend & color map. */
   industries: IntradayMovementsIndustry[];
+}
+
+// ----------------------------------------------------------------------------
+//  Intraday Movements — Prev-Day OHLC (raw daily OHLC of the previous trading
+//  day for the benchmark + every member index of the benchmark's universe).
+//  Drives the single prev-day OHLC bar prepended BEFORE the 09:30 tick on
+//  the Market Movements top plot (GET /api/live-data/intraday-movements/
+//  prev-day-ohlc). The client converts to % vs the entry's own close
+//  (close → 0.0) so the bar shares the "% change vs prev close" y-axis with
+//  today's intraday curves; industry candles are aggregated client-side as
+//  the MEAN of member %s (equal-weight, same semantics as industry_price_pct).
+// ----------------------------------------------------------------------------
+/** Raw OHLC of one code on the previous trading day. */
+export interface PrevDayOhlcEntry {
+  /** The previous trading day (YYYY-MM-DD). */
+  date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+}
+
+/** One member index's prev-day OHLC (+ industry attribution). */
+export interface PrevDayOhlcMember extends PrevDayOhlcEntry {
+  /** Member index code. */
+  code: string;
+  /** Display name from stats.index_identity (falls back to code). */
+  code_name: string;
+  industry_id: string;
+}
+
+/** Response for GET /api/live-data/intraday-movements/prev-day-ohlc. */
+export interface PrevDayOhlcResponse {
+  benchmark_code: string;
+  /** The live date (YYYY-MM-DD) this prev-day data serves. */
+  date: string;
+  /** Benchmark prev-day raw OHLC (drives the DEFAULT prev-day bar). */
+  benchmark: PrevDayOhlcEntry | null;
+  /** Every member index of the benchmark universe with its prev-day raw
+   *  OHLC — aggregated client-side per industry when an industry is clicked. */
+  members: PrevDayOhlcMember[];
+}
+
+// ----------------------------------------------------------------------------
+//  Live Sec-Alloc Attribution (live schema) — per-industry aggregates at ONE
+//  5-min tick, computed at query time from live.sec_alloc_live_attribution
+//  joined with live.sec_alloc_live_prev_ref weights. Drives the
+//  "By Trading Amt / Equal" toggle on the Intraday Attribution panel of the
+//  Market Movements page (GET /api/live-data/sec-alloc-live/attribution).
+// ----------------------------------------------------------------------------
+/** One industry's aggregates at one tick. */
+export interface SecAllocLiveAttributionIndustry {
+  industry_id: string;
+  /** TRUE for strategy themes, FALSE for real industries. */
+  is_strategy: boolean;
+  /** Trading-amount-weighted aggregate (FRACTION): SUM(weight × pct) /
+   *  SUM(weight) over members with non-NULL pct. NULL while only fallback
+   *  rows exist (no prev-day trading-amount ref yet). */
+  weighted_pct: number | null;
+  /** Plain member average pct (FRACTION) — works with and without the ref. */
+  equal_pct: number | null;
+  /** Members covered at this tick. */
+  member_count: number;
+}
+
+/** Response for GET /api/live-data/sec-alloc-live/attribution. */
+export interface SecAllocLiveAttributionResponse {
+  benchmark_code: string;
+  /** As-of date (YYYY-MM-DD). */
+  date: string;
+  /** "HH:MM:SS" tick. */
+  time: string;
+  /** TRUE iff a weighted (ref-based) row set exists for this benchmark+date
+   *  — drives the UI: the "By Trading Amt" button is DISABLED while FALSE
+   *  (only fallback is_without_trading_amt = TRUE rows exist, e.g. prev-day
+   *  basic_stats lagging or the heavy ref pass still running). */
+  weighted_available: boolean;
+  industries: SecAllocLiveAttributionIndustry[];
 }
 
 // ----------------------------------------------------------------------------

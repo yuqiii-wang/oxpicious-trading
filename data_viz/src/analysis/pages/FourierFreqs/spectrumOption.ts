@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ECharts option builder for ONE per-range_days FFT amplitude-spectrum bar
  * chart (the bar charts below the top index price plot on the Fourier
  * Frequencies page).
@@ -30,7 +30,7 @@ import {
   commonDataZoom,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
-import type { FourierFreqsSpectrumRow } from "../../../../shared/types";
+import type { FourierFreqsSpectrumRow } from "@shared/types";
 
 /** Build the bar-chart option for one range_days spectrum. */
 export function buildSpectrumOption(

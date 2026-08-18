@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PerfAttrPanel — one card per code: benchmark selector + two time-series
  * charts.
  *
@@ -37,7 +37,7 @@ import {
 import type {
   PerfAttrAttributionResponse,
   PerfAttrChartResponse,
-} from "../../../../shared/types";
+} from "@shared/types";
 import type { PanelProps, ChartMode } from "./types";
 import { buildFluctuationOption } from "./fluctuationOption";
 import { buildComparisonOption } from "./comparisonOption";

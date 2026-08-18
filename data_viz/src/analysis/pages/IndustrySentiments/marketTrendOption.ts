@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for the Market Trend view.
  *
  * buildMarketTrendOption — the combined overview plot (sole chart).
@@ -10,7 +10,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { IndexBaselineRow } from "../../../../shared/types";
+import type { IndexBaselineRow } from "@shared/types";
 import {
   axisColors,
   commonLegend,

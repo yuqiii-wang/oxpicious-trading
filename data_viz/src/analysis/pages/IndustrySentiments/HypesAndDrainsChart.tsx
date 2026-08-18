@@ -1,4 +1,4 @@
-/**
+﻿/**
  * HypesAndDrainsChart — the "Hypes & Drains" sub-view of "Market Trend" mode.
  *
  * Uses SEASONAL (monthly) rankings to determine which industry curves to
@@ -30,7 +30,7 @@ import {
 } from "@mui/material";
 import EChart from "@/components/EChart";
 import { fetchIndustryHypesAndDrains } from "@/lib/api-client";
-import type { IndustryHypesAndDrainsResponse, SeasonalRankingRow } from "../../../../shared/types";
+import type { IndustryHypesAndDrainsResponse, SeasonalRankingRow } from "@shared/types";
 import type { HypesAndDrainsChartProps } from "./types";
 import { ROLLING_DAYS, ROLLING_DAYS_LABELS, DEFAULT_ROLLING_DAYS } from "./constants";
 import { buildHypesAndDrainsOption } from "./hypesAndDrainsOption";

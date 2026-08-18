@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for the Fluctuation Attribution chart.
  *
  * Vertical grouped bar chart — one pair of bars per benchmark:
@@ -20,7 +20,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { PerfAttrAttributionResponse } from "../../../../shared/types";
+import type { PerfAttrAttributionResponse } from "@shared/types";
 import {
   UP_COLOR,
   DOWN_COLOR,

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Futures page — CFFEX futures curve visualization.
  *
  *  • Product selector (IC/IF/IH/IM index or T/TF/TL/TS bond)
@@ -33,7 +33,7 @@ import type {
   FuturesProduct,
   FuturesCombinedResponse,
   FuturesRow,
-} from "../../../../shared/types";
+} from "@shared/types";
 import { buildFuturesChartOption, type ZoomRange } from "./chartOption";
 
 type ViewMode = "future" | "history";
@@ -220,7 +220,7 @@ export default function FuturesPage() {
           <Typography variant="caption" color="text.secondary">
             {summary.active} active · {summary.matured} matured ·{" "}
             {summary.nDays} trading days · {summary.d0} → {summary.d1} ·{" "}
-            {summary.contract_type}
+            {summary.contractType}
           </Typography>
 
           <EChart

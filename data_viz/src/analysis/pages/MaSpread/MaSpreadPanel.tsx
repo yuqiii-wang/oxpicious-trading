@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MaSpreadPanel — one card per code: pair chips + two-curve chart with
  * green/red fill between them + date-range slider + Bollinger envelope.
  *
@@ -44,7 +44,7 @@ import type { OhlcMode } from "@/lib/ohlc";
 import type {
   MovAveSpreadChartResponse,
   MovAveSpreadPairSeries,
-} from "../../../../shared/types";
+} from "@shared/types";
 import type { PanelProps } from "./types";
 import { buildPairOption, buildAmtEnvelopeOption, type TradingAmtMode } from "./chartOption";
 

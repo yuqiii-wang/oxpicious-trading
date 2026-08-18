@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for the main Industry Sentiments price chart.
  *
  * Plots each industry's member INDEX VALUES directly, rebased to 100 at the
@@ -18,7 +18,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { IndustrySentimentsChartResponse } from "../../../../shared/types";
+import type { IndustrySentimentsChartResponse } from "@shared/types";
 import { axisColors, commonLegend, commonGrid, commonDataZoom } from "@/theme/chart-palette";
 import { variantColorOf } from "@/theme/group-colors";
 import { fmtNum } from "@/lib/series";

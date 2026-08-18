@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PeAndDividendPanel — one card per code: the EXACT data-viz baseline plot
  * for the security on top, monthly PE & Dividend stats table beneath.
  *
@@ -52,7 +52,7 @@ import type {
   StockBundle,
   PeAndDividendStatsResponse,
   PeAndDividendStatsRow,
-} from "../../../../shared/types";
+} from "@shared/types";
 import type { PanelProps } from "./types";
 import {
   expandedTableBodyCellSx,

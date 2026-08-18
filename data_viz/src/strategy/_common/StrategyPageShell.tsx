@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StrategyPageShell — shared layout for strategy pages.
  *
  * Provides the common page structure every strategy page needs:
@@ -28,7 +28,7 @@ import { ArrowBack } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 import CodeSearchBar from "@/components/CodeSearchBar";
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
-import type { MaSpreadSecType } from "../../../shared/types";
+import type { MaSpreadSecType } from "@shared/types";
 import type { StrategyNavState } from "./useStrategyNav";
 
 interface StrategyPageShellProps {

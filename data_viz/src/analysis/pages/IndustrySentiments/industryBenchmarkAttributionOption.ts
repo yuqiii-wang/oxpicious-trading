@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for the Industry-level Benchmark Attribution
  * bar chart — 2nd plot onward in "Benchmark Attribution" mode.
  *
@@ -23,7 +23,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { IndustryBenchmarkAttributionResponse } from "../../../../shared/types";
+import type { IndustryBenchmarkAttributionResponse } from "@shared/types";
 import { MUTED_PALETTE, UP_COLOR, DOWN_COLOR, axisColors } from "@/theme/chart-palette";
 import {
   type AttributionBarRow,

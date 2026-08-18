@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FourierFreqsPanel — one card per code: the data-viz index price plot on
  * top (imported verbatim from the index-baseline feature) + the per-date
  * full-FFT-spectrum bar charts below.
@@ -41,7 +41,7 @@ import type {
   IndexBundle,
   IndexCombinedResponse,
   FourierFreqsSpectrumResponse,
-} from "../../../../shared/types";
+} from "@shared/types";
 
 export function FourierFreqsPanel({
   code,

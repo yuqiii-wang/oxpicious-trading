@@ -1,8 +1,8 @@
-/**
+﻿/**
  * Shared types for the PE & Dividend Yield analysis page sub-modules.
  */
 import type { ThemeMode } from "@/store/filters";
-import type { PeAndDividendSecType } from "../../../../shared/types";
+import type { PeAndDividendSecType } from "@shared/types";
 
 /** Props for the PeAndDividendPanel component. */
 export interface PanelProps {
@@ -19,4 +19,4 @@ export interface PanelProps {
   onChartDateClick?: (dateStr: string) => void;
 }
 
-export type { PeAndDividendSecType } from "../../../../shared/types";
+export type { PeAndDividendSecType } from "@shared/types";

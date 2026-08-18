@@ -1,8 +1,8 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   DebtBaselineResponse,
   PbocOmaResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 export function fetchDebtBaseline(
   startDate?: string | null,

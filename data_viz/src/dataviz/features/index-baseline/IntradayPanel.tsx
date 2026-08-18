@@ -1,4 +1,4 @@
-/**
+﻿/**
  * IntradayPanel — closeable 5-min OHLC expansion for the Index
  * Baseline page. Rendered below an IndexPanel when the user clicks a date
  * that has 5-minute intraday bars (gold-ringed marker on the close line).
@@ -24,7 +24,7 @@ import {
   type OhlcMode,
 } from "@/lib/ohlc";
 import { axisColors } from "@/theme/chart-palette";
-import type { IndexIntraday5minResponse } from "../../../../shared/types";
+import type { IndexIntraday5minResponse } from "@shared/types";
 import type { EChartsOption } from "echarts";
 
 interface Props {

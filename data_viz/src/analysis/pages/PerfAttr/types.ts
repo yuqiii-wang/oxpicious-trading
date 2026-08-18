@@ -1,8 +1,8 @@
-/**
+﻿/**
  * Shared types for the Performance Attribution analysis page sub-modules.
  */
 import type { ThemeMode } from "@/store/filters";
-import type { PerfAttrSecType } from "../../../../shared/types";
+import type { PerfAttrSecType } from "@shared/types";
 
 /**
  * Display mode for the time-series charts:
@@ -27,4 +27,4 @@ export interface PanelProps {
 
 // Re-export the API types for convenience so callers can import everything
 // from a single entry point if desired.
-export type { PerfAttrSecType } from "../../../../shared/types";
+export type { PerfAttrSecType } from "@shared/types";

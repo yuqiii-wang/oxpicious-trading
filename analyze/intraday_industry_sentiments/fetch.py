@@ -45,9 +45,16 @@ async def fetch_latest_intraday_dates(
 #  Find missing (benchmark_code, date) pairs within the given date scope.
 #
 #  A pair is missing if (benchmark, date) is in stats.index_intraday_5min
-#  AND the benchmark appears in analysis.sec_alloc_perf_attribution (i.e.
-#  has at least one member index we can aggregate), AND no row exists in
+#  AND the benchmark has an ELIGIBLE member universe (mirrors _MEMBERS_SQL:
+#  latest snapshot row with code_sec_shared_weight > 0, joined to an active
+#  stats.sec_classification row with a non-BROAD industry_id) with at least
+#  one member having intraday bars on that date, AND no row exists in
 #  analysis.intraday_industry_market_movements for that (benchmark, date).
+#
+#  The eligibility check is REQUIRED: many benchmarks appear in
+#  sec_alloc_perf_attribution with all code_sec_shared_weight = 0 (zero
+#  attributable members). Without the check, such pairs compute to 0 rows,
+#  insert nothing, and get re-detected as "missing" on every run forever.
 #
 #  ``target_dates`` narrows the search to those dates only (default scope:
 #  today + last biz day). Pass None to search across ALL dates (full
@@ -57,13 +64,36 @@ async def fetch_latest_intraday_dates(
 #  --benchmark CLI arg). When empty/None, all benchmarks are considered.
 # ----------------------------------------------------------------------------
 _FIND_MISSING_PAIRS_SQL = """
+WITH sap_latest AS (
+    SELECT benchmark_code, MAX(date) AS snap_date
+    FROM analysis.sec_alloc_perf_attribution
+    WHERE sec_type = 'index'
+    GROUP BY benchmark_code
+),
+member_universe AS (
+    SELECT DISTINCT sap.benchmark_code, sap.code AS member_code
+    FROM analysis.sec_alloc_perf_attribution sap
+    JOIN sap_latest sl
+        ON sl.benchmark_code = sap.benchmark_code
+       AND sap.date = sl.snap_date
+    JOIN stats.sec_classification sc
+        ON sc.code = sap.code AND sc.type = 'index' AND sc.is_active = TRUE
+       AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
+       AND sc.industry_id <> ALL($3::text[])
+    WHERE sap.sec_type = 'index'
+      AND sap.code_sec_shared_weight > 0
+)
 SELECT DISTINCT i5.code AS benchmark_code, i5.date AS tick_date
 FROM stats.index_intraday_5min i5
 WHERE i5.close IS NOT NULL
-  AND i5.code IN (
-      SELECT DISTINCT benchmark_code
-      FROM analysis.sec_alloc_perf_attribution
-      WHERE sec_type = 'index'
+  AND EXISTS (
+      SELECT 1
+      FROM member_universe mu
+      JOIN stats.index_intraday_5min mi5
+          ON mi5.code = mu.member_code
+         AND mi5.date = i5.date
+         AND mi5.close IS NOT NULL
+      WHERE mu.benchmark_code = i5.code
   )
   AND ($1::date[] IS NULL OR i5.date = ANY($1::date[]))
   AND ($2::text[] IS NULL OR i5.code = ANY($2::text[]))
@@ -90,7 +120,9 @@ async def find_missing_pairs(
     """
     bench_param = list(benchmarks) if benchmarks else None
     dates_param = list(target_dates) if target_dates else None
-    rows = await conn.fetch(_FIND_MISSING_PAIRS_SQL, dates_param, bench_param)
+    rows = await conn.fetch(
+        _FIND_MISSING_PAIRS_SQL, dates_param, bench_param, list(BROAD_EXCLUDED)
+    )
     return [(r["benchmark_code"], r["tick_date"]) for r in rows]
 
 

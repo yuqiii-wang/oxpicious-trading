@@ -28,6 +28,7 @@ function ThemedApp() {
 connectChartsByGroup("debt-baseline");
 connectChartsByGroup("annual-sentiment");
 connectChartsByGroup("industry-sentiments");
+connectChartsByGroup("options-trend");
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

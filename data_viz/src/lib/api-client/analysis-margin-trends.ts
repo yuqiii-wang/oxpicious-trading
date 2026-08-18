@@ -1,4 +1,4 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
@@ -6,7 +6,7 @@ import type {
   MarginIndustryCorrelationResponse,
   MarginTrendsShadeResponse,
   MarginAttributionType,
-} from "../../../shared/types";
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Analysis Derivatives — Margin Trends (single-industry RONGZI margin flows)

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Margin Trends analysis page (default export).
  *
  * Single-industry layout:
@@ -44,7 +44,7 @@ import {
 import type {
   SectorNode,
   StrategyNode,
-} from "../../../../shared/types";
+} from "@shared/types";
 import { MarginTrendsCharts } from "./MarginTrendsCharts";
 import type { MarginAttribution } from "./constants";
 

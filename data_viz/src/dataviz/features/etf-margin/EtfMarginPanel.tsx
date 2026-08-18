@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Single-ETF panel — rebased close % + MA20/MA60/MA120 + RZ/RQ margin fills +
  * volume bars. Mirrors draw_etf_panel() in plot_szse_sse_etf_and_margin.py.
  *
@@ -21,7 +21,7 @@ import CompositionPieChart from "@/components/CompositionPieChart";
 import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import { useStore } from "@/store/filters";
-import type { EtfBundle } from "../../../../shared/types";
+import type { EtfBundle } from "@shared/types";
 import {
   DOWN_COLOR,
   DIVIDEND_COLOR,

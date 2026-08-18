@@ -1,10 +1,10 @@
-/**
+﻿/**
  * Shared types for the Industry Sentiments analysis page sub-modules.
  */
 import type {
   IndustrySentimentsAggRow,
   IndustrySentimentsChartResponse,
-} from "../../../../shared/types";
+} from "@shared/types";
 import type { ThemeMode } from "@/store/filters";
 
 /** Pool-size bucket: small <51, mid 51-180, large >180, all = no filter. */

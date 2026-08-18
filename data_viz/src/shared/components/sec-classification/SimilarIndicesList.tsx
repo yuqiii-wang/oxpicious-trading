@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SimilarIndicesList — expandable panel showing the top-5 similar codes,
  * top-5 similar industry-classified peer codes, and top-5 dissimilar
  * industry-classified peer codes by mutual shared composition weight,
@@ -21,7 +21,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Alert, Box, Chip, CircularProgress, Stack, Typography } from "@mui/material";
 import { ExpandMore, Scale } from "@mui/icons-material";
 import { fetchSimilarIndices } from "@/lib/api-client";
-import type { SimilarIndicesResponse, SimilarIndexRow } from "../../../../shared/types";
+import type { SimilarIndicesResponse, SimilarIndexRow } from "@shared/types";
 
 interface Props {
   /** Bare index code (e.g. "000300") — the selected subject index. */

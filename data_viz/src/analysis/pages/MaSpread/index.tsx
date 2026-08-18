@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MA-Spread analysis page (default export).
  *
  * Layout mirrors the other analysis-commons pages (PerfAttr, IndustrySentiments):
@@ -53,7 +53,7 @@ import type {
   MovAveSpreadCodesResponse,
   SectorNode,
   StrategyNode,
-} from "../../../../shared/types";
+} from "@shared/types";
 import { PAGE_SIZE } from "./constants";
 import { MaSpreadPanel } from "./MaSpreadPanel";
 

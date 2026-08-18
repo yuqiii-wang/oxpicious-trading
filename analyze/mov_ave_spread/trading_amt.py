@@ -2,7 +2,8 @@
 
 Trading-amount metrics (5 trading-amount MA columns + 5 trading-amount
 Bollinger band σ columns + 5 market-share MA columns + 5 MA slope columns
-+ 1 raw slope column + 6 slope-vs-price ratio columns + 5 market-share-vs-MA
++ 1 raw slope column + 6 liquidity-impact ratio columns (trading-amount
+/ 1M per price-slope, matching-timescale) + 5 market-share-vs-MA
 gap columns) for ETF + Index + Stock. One row per
 (sec_type, code, date) in analysis.mov_ave_trading_amt.
 
@@ -140,25 +141,24 @@ def compute_trading_amt_slope(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_trading_amt_slope_vs_price_ratios(df: pd.DataFrame) -> pd.DataFrame:
-    """Add 6 slope-vs-price ratio columns (liquidity-impact proxies).
+    """Add 6 liquidity-impact ratio columns (trading-amount / price-slope).
 
-    Each column = trading-amount slope / price slope:
-      col[0] = trading_amt_slope / price_slope          (raw vs raw)
-      col[1] = trading_amt_ma5_slope / ma5_slope
-      col[2] = trading_amt_ma5_slope / ma20_slope
-      col[3] = trading_amt_ma5_slope / ma60_slope
-      col[4] = trading_amt_ma5_slope / ma120_slope
-      col[5] = trading_amt_ma5_slope / ma255_slope
+    Each column = (trading_amount_in_millions / price_slope):
+      col[0] = (trading_amount / 1M) / price_slope             (raw vs raw)
+      col[1] = (trading_amt_ma5 / 1M) / ma5_slope
+      col[2] = (trading_amt_ma20 / 1M) / ma20_slope
+      col[3] = (trading_amt_ma60 / 1M) / ma60_slope
+      col[4] = (trading_amt_ma120 / 1M) / ma120_slope
+      col[5] = (trading_amt_ma255 / 1M) / ma255_slope
 
-    Interpretation: how much capital (trading-amount fractional change)
-    pushes price by one unit — an elasticity-like liquidity-impact proxy.
+    Trading amount is divided by 1,000,000 to express capital in millions.
+    Matching-timescale: numerator and denominator use the same window.
+    Denominator=0 is auto-set to 1.0 to avoid division-by-zero.
 
-    Note: price_slope is a RAW difference (price[t] − price[t-1]), while
-    trading_amt_slope is a RATIO. The resulting ratio is a mixed metric
-    (fractional-amount-change / price-difference), which is intentional
-    as a cross-market elasticity indicator.
+    Interpretation: how many millions of capital push price by one unit
+    — an elasticity-like liquidity-impact proxy.
 
-    NULL when numerator or denominator is NULL or denominator is exactly 0.
+    NULL when numerator or denominator is NULL.
     NUMERIC(10,4).
     """
     if df.empty:
@@ -166,27 +166,46 @@ def compute_trading_amt_slope_vs_price_ratios(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = pd.Series(dtype="float64")
         return df
 
-    # col[0]: trading_amt_slope / price_slope
-    _safe_divide(
+    # col[0]: (trading_amount / 1M) / price_slope
+    _safe_divide_millions(
         df,
-        numerator_col=TRADING_AMT_RAW_SLOPE_COLUMN,
+        numerator_col="trading_amount",
         denominator_col="price_slope",
         out_col=TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS[0],
     )
 
-    # col[1..5]: trading_amt_ma5_slope / ma{5,20,60,120,255}_slope
-    amt_slope_col = "trading_amt_ma5_slope"
+    # col[1..5]: (trading_amt_maW / 1M) / maW_slope, matching timescale
+    ma_numerator_cols = [
+        "trading_amt_ma5", "trading_amt_ma20", "trading_amt_ma60",
+        "trading_amt_ma120", "trading_amt_ma255",
+    ]
     price_slope_cols = ["ma5_slope", "ma20_slope", "ma60_slope",
                         "ma120_slope", "ma255_slope"]
-    for i, ps_col in enumerate(price_slope_cols):
-        _safe_divide(
+    for i in range(5):
+        _safe_divide_millions(
             df,
-            numerator_col=amt_slope_col,
-            denominator_col=ps_col,
+            numerator_col=ma_numerator_cols[i],
+            denominator_col=price_slope_cols[i],
             out_col=TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS[i + 1],
         )
 
     return df
+
+
+def _safe_divide_millions(df: pd.DataFrame, numerator_col: str,
+                          denominator_col: str, out_col: str) -> None:
+    """Safe division with million-unit conversion and zero-denominator guard.
+
+    result = (numerator / 1_000_000) / denominator;
+    denominator=0 auto-set to 1.0. NULL when either is NULL or
+    result is not finite.
+    """
+    num = pd.to_numeric(df[numerator_col], errors="coerce")
+    den = pd.to_numeric(df[denominator_col], errors="coerce")
+    den = den.where(den != 0, 1.0)
+    result = (num / 1_000_000) / den
+    bad = num.isna() | den.isna() | ~np.isfinite(result)
+    df[out_col] = result.where(~bad)
 
 
 def _safe_divide(df: pd.DataFrame, numerator_col: str, denominator_col: str,
@@ -370,9 +389,9 @@ async def run_trading_amt(
           flush=True)
     ta_df = compute_trading_amt_slope(ta_df)
 
-    # ---- Step 3: compute slope-vs-price ratio columns over full history
-    print("[t3/5] Computing 6 slope-vs-price ratio columns "
-          "(trading-amount slope / price slope)...",
+    # ---- Step 3: compute liquidity-impact ratio columns over full history
+    print("[t3/5] Computing 6 liquidity-impact ratio columns "
+          "((trading_amt / 1M) / price_slope, matching-timescale)...",
           flush=True)
     ta_df = compute_trading_amt_slope_vs_price_ratios(ta_df)
 

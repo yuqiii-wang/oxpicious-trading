@@ -17,6 +17,7 @@ interface DbLatestDatesRow extends QueryResultRow {
   options: Date | string | null;
   sec_composition: Date | string | null;
   stock_baseline: Date | string | null;
+  intraday_movements: Date | string | null;
 }
 
 /**
@@ -31,7 +32,8 @@ export async function getLatestDates(): Promise<LatestDatesResponse> {
       (SELECT MAX(date)          FROM stats.v_index_baseline) AS index_baseline,
       (SELECT MAX(date)          FROM stats.v_options_quote)  AS options,
       (SELECT MAX(snapshot_date) FROM stats.sec_composition)  AS sec_composition,
-      (SELECT MAX(date)          FROM stats.v_stock_baseline) AS stock_baseline
+      (SELECT MAX(date)          FROM stats.v_stock_baseline) AS stock_baseline,
+      (SELECT MAX(date) FROM stats.index_intraday_5min WHERE close IS NOT NULL) AS intraday_movements
   `;
   const rows = await queryRows<DbLatestDatesRow>(sql);
   const r = rows[0];
@@ -42,5 +44,6 @@ export async function getLatestDates(): Promise<LatestDatesResponse> {
     options:        formatDate(r?.options),
     sec_composition: formatDate(r?.sec_composition),
     stock_baseline: formatDate(r?.stock_baseline),
+    intraday_movements: formatDate(r?.intraday_movements),
   };
 }

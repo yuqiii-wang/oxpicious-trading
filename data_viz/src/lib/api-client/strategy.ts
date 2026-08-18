@@ -1,11 +1,11 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   MaSpreadSecType,
   StrategyBacktestResponse,
   StrategyRiskResponse,
   StrategyForecast1mResponse,
   StrategyDecision,
-} from "../../../shared/types";
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Strategy — singleton backtest

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * BenchmarkPriceChart — the 1st plot in "Benchmark Attribution" mode.
  *
  * Fetches the selected benchmark's daily close + daily return series and
@@ -51,7 +51,7 @@ import {
 import type {
   BenchmarkPriceChartResponse,
   IndustryAttributionPriceSeriesResponse,
-} from "../../../../shared/types";
+} from "@shared/types";
 import type { BenchmarkPriceChartProps, RollingDays } from "./types";
 import {
   ROLLING_DAYS,

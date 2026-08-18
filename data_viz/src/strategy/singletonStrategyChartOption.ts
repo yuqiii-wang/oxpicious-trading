@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ECharts option builder for the singleton strategy backtest chart.
  *
  * Renders:
@@ -43,7 +43,7 @@ import type {
   StrategyOhlcRow,
   StrategyPeriodType,
   StrategyForecast1mResponse,
-} from "../../shared/types";
+} from "@shared/types";
 
 /**
  * Selected risk-analytics period — set when the user clicks a bar in the

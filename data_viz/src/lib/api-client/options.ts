@@ -3,7 +3,9 @@ import type {
   OptionsCombinedResponse,
   OptionsUnderlying,
   EtfOhlcvResponse,
-} from "../../../shared/types";
+  ExpiryGapsResponse,
+  SkewnessCorrResponse,
+} from "@shared/types";
 
 export type OptionsTargetType = "ETF" | "INDEX";
 
@@ -42,4 +44,34 @@ export function fetchEtfOhlcv(
   if (targetType) params.set("target_type", targetType);
   const qs = params.toString();
   return fetchJson<EtfOhlcvResponse>(`/api/szse-options/etf-ohlcv${qs ? `?${qs}` : ""}`);
+}
+
+export function fetchOptionsExpiryGaps(
+  underlying: string,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<ExpiryGapsResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<ExpiryGapsResponse>(
+    `/api/szse-options/stats-before-expiry${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchOptionsSkewnessCorr(
+  underlying: string,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<SkewnessCorrResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<SkewnessCorrResponse>(
+    `/api/szse-options/skewness-corr${qs ? `?${qs}` : ""}`,
+  );
 }

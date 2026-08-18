@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SecClassificationNav — shared two-column security classification navigator.
  *
  * LEFT column:  L1 sector  → L2 industry  (is_industry_not_strategy=TRUE)
@@ -21,7 +21,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Box, Chip, CircularProgress, Pagination, Stack, Typography, type SxProps } from "@mui/material";
-import type { SectorNode, StrategyNode } from "../../../../shared/types";
+import type { SectorNode, StrategyNode } from "@shared/types";
 import { PRIMARY_EXCHANGE_OPTIONS, SECONDARY_EXCHANGE_OPTIONS } from "../../utils/classify";
 import SimilarIndicesList from "./SimilarIndicesList";
 

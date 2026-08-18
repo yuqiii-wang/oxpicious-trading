@@ -1,4 +1,4 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
@@ -6,7 +6,7 @@ import type {
   PeAndDividendCodesResponse,
   PeAndDividendChartResponse,
   PeAndDividendStatsResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Analysis Commons — PE & Dividend Yield (Index + ETF + Stock)

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PE & Dividend Yield analysis page (default export).
  *
  * Layout mirrors the other analysis-commons pages (MaSpread, IndustrySentiments):
@@ -52,7 +52,7 @@ import type {
   PeAndDividendCodesResponse,
   SectorNode,
   StrategyNode,
-} from "../../../../shared/types";
+} from "@shared/types";
 import { PAGE_SIZE } from "./constants";
 import { PeAndDividendPanel } from "./PeAndDividendPanel";
 

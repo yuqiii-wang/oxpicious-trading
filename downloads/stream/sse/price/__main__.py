@@ -44,6 +44,9 @@ intraday tables to pre-populate finished_codes with securities that already
 have a 15:00 bar for today — preventing re-processing if the script restarts
 after close.
 
+Note: CSV backfill (recovering missed data from archived CSV files) is
+handled by the download/archive modules, NOT by this streaming module.
+
 Requires tables from database/sql/stats/02_etf_margin.sql (etf_identity +
 etf_intraday_5min), 05_index_baseline.sql (index_identity + index_intraday_5min)
 and 06_stock_baseline.sql (stock_identity + stock_intraday_5min). Run those
@@ -80,7 +83,6 @@ from _common.study_and_select_stocks import (
 
 from ._fetch import fetch_snapshot
 from ._io import _ensure_conn, load_bars, write_snapshot_csv
-from ._csv_backfill import BACKFILL_INTERVAL_SEC, backfill_all_csvs
 from ._model import (
     DEFAULT_BAR_WINDOW,
     DEFAULT_POLL_INTERVAL_SEC,
@@ -197,22 +199,13 @@ def stream(
         poll_interval, bar_window, once, ",".join(a.name for a in assets),
     )
 
-    # --- Startup CSV backfill: load any CSV data not yet in DB ---
-    # Runs before the main loop so historical CSV data is recovered on
-    # stream startup. Also runs periodically outside trading hours.
-    t0 = _time.time()
-    backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
-    logger.info("Startup CSV backfill done in %.1fs.", _time.time() - t0)
-
     try:
         while True:
             now = datetime.now()
 
-            # Outside trading hours: flush any partial buffers, then backfill
-            # CSV data to DB every 5 minutes (recovers data from CSV archives
-            # that wasn't loaded during live streaming — e.g. DB connection
-            # failure, stream crash/restart). Previously the loop just slept
-            # until the next trading session, leaving CSV data stranded.
+            # Outside trading hours: flush any partial buffers, then sleep
+            # until the next trading moment. CSV backfill is handled by
+            # download/archive modules (not the streaming loop).
             if not (is_trading_day(now.date()) and in_trading_hours(now)):
                 for asset in assets:
                     if not asset.buffer:
@@ -234,13 +227,10 @@ def stream(
                 if once:
                     logger.info("--once set and outside trading hours; exiting.")
                     break
-                # Backfill CSV → DB (every 5 min cycle, even outside trading hours)
-                backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
-                from datetime import timedelta as _td
-                nxt = now + _td(seconds=BACKFILL_INTERVAL_SEC)
+                nxt = next_trading_moment(now)
                 logger.info(
-                    "Outside trading hours; backfill cycle done; sleeping %ds.",
-                    BACKFILL_INTERVAL_SEC,
+                    "Outside trading hours; sleeping until %s.",
+                    nxt.strftime("%Y-%m-%d %H:%M"),
                 )
                 sleep_until(nxt)
                 continue

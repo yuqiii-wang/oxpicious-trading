@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Stock Baseline page — daily OHLC + MA + PE for A-share stocks.
  *
  * Layout (mirrors the Index Baseline page):
@@ -30,7 +30,7 @@ import type {
   SectorNode,
   StockCombinedResponse,
   StrategyNode,
-} from "../../../../shared/types";
+} from "@shared/types";
 
 const PAGE_SIZE = 1;
 

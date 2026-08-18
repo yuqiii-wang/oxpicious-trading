@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PBoC outright repo / MLF lifecycle computation.
  * Ported from compute_outright_repo_lifecycle() in plot_debt_baseline.py.
  *
@@ -6,7 +6,7 @@
  * for each outright repo + MLF tender (using tenor_days), then group by date
  * and cumsum to get a cumulative balance curve.
  */
-import type { DebtBaselineRow } from "../../shared/types";
+import type { DebtBaselineRow } from "@shared/types";
 import { addDays } from "./series";
 
 export interface RepoLeg {

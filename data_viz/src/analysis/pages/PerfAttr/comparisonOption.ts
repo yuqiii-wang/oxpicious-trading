@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for the Subject vs Benchmark close-price
  * comparison (two-line chart). Uses the /api/analysis/perf-attr/chart
  * endpoint which returns the full date series of subject_close +
@@ -22,7 +22,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { PerfAttrChartResponse } from "../../../../shared/types";
+import type { PerfAttrChartResponse } from "@shared/types";
 import {
   UP_COLOR,
   DOWN_COLOR,

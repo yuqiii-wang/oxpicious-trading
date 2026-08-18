@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Live Data — Index page.
  *
  * Shows 5-minute intraday OHLC bars for CSI / SSE / SZSE indices, filtered by
@@ -37,7 +37,7 @@ import type {
   SectorNode,
   StrategyNode,
   LiveDataCombinedResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 const PAGE_SIZE = 1;
 const SEC_TYPE = "index" as const;

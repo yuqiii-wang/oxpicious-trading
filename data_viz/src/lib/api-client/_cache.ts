@@ -19,6 +19,7 @@ import type {
   LatestDatesResponse,
   DebtBaselineResponse,
   OptionsCombinedResponse,
+  ExpiryGapsResponse,
   EtfOhlcvResponse,
   EtfMarginCombinedResponse,
   IndexInfo,
@@ -26,7 +27,8 @@ import type {
   SecCompositionResponse,
   LinkedEtfsResponse,
   StockCombinedResponse,
-} from "../../../shared/types";
+  IntradayMovementsResponse,
+} from "@shared/types";
 
 // Module-level cache singleton: 100 entries, 10-minute TTL (safety net).
 const apiCache = new LruCache<unknown>(100, 10 * 60 * 1000);
@@ -90,8 +92,10 @@ function mapUrlToSource(url: string): keyof LatestDatesResponse | null {
   if (url.startsWith("/api/index-baseline/combined"))     return "index_baseline";
   if (url.startsWith("/api/etf-margin/combined"))         return "etf_margin";
   if (url.startsWith("/api/szse-options/combined"))       return "options";
+  if (url.startsWith("/api/szse-options/stats-before-expiry")) return "options";
   if (url.startsWith("/api/szse-options/etf-ohlcv"))      return "etf_margin";
   if (url.startsWith("/api/stock-baseline/combined"))     return "stock_baseline";
+  if (url.startsWith("/api/live-data/intraday-movements")) return "intraday_movements";
   // No date in response — TTL only:
   // /api/etf-margin/themes, /api/szse-options/underlyings,
   // /api/index-baseline/themes, /api/index-baseline/strategy-themes,
@@ -135,6 +139,10 @@ function extractLatestDate(url: string, data: unknown): string {
       const dates = (data as OptionsCombinedResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
     }
+    if (url.startsWith("/api/szse-options/stats-before-expiry")) {
+      const rows = (data as ExpiryGapsResponse)?.rows ?? [];
+      return rows.length ? rows[rows.length - 1].date : "";
+    }
     if (url.startsWith("/api/szse-options/etf-ohlcv")) {
       const dates = (data as EtfOhlcvResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
@@ -142,6 +150,9 @@ function extractLatestDate(url: string, data: unknown): string {
     if (url.startsWith("/api/stock-baseline/combined")) {
       const dates = (data as StockCombinedResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
+    }
+    if (url.startsWith("/api/live-data/intraday-movements")) {
+      return (data as IntradayMovementsResponse)?.date ?? "";
     }
   } catch {
     // ignore — treat as no date

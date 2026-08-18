@@ -1,4 +1,4 @@
-/**
+﻿/**
  * FuturesCharts — the 2-plot futures analysis view.
  *
  * Layout (top → bottom):
@@ -29,14 +29,23 @@ import {
 } from "@/lib/api-client";
 import type {
   FuturesCombinedResponse,
-} from "../../../../shared/types";
+} from "@shared/types";
 import type { FuturesExtResponse } from "@/lib/api-client/analysis-futures";
 import {
   buildFuturesChartOption,
+  buildExpiryDotsSeriesData,
   computeFuturesContractStyles,
+  EXPIRY_DOTS_SERIES_ID,
   type FuturesChartExtra,
+  type ExpiryDot,
 } from "../../../dataviz/features/futures/chartOption";
 import type { EChartsOption } from "echarts";
+import {
+  AXIS_POINTER_LINE,
+  TOOLTIP_CARD_BG,
+  TOOLTIP_CARD_BORDER,
+  TOOLTIP_CARD_TEXT,
+} from "@/theme/chart-palette";
 
 interface FuturesChartsProps {
   product: string;
@@ -56,6 +65,24 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
 
   // Shared zoom range (percentages 0-100) for both plots' dataZoom sliders
   const [zoomRange, setZoomRange] = useState<{ start: number; end: number } | null>(null);
+
+  // Expiry dots — computed on hover for history mode. Deliberately kept OUT of
+  // React state: a state update on every mouse move would rebuild the chart
+  // option (setOption notMerge) and reset the tooltip → flickering. Instead we
+  // mutate the ref and push a targeted per-series setOption (merge by id).
+  const expiryDotsRef = useRef<ExpiryDot[]>([]);
+  const lastDotsSigRef = useRef<string>("");
+
+  // Push new expiry dots to the chart WITHOUT rebuilding the whole option.
+  const applyExpiryDots = useCallback((dots: ExpiryDot[]) => {
+    const sig = dots.map((d) => `${d.code}:${d.dateIndex}:${d.value ?? ""}`).join("|");
+    if (sig === lastDotsSigRef.current) return; // unchanged — no-op
+    lastDotsSigRef.current = sig;
+    expiryDotsRef.current = dots;
+    priceChartRef.current?.setOption({
+      series: [{ id: EXPIRY_DOTS_SERIES_ID, data: buildExpiryDotsSeriesData(dots) }],
+    });
+  }, []);
 
   // Default zoom: show last 120 days
   const defaultZoom = useMemo(() => {
@@ -92,6 +119,13 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
     setZoomRange(null);
   }, [product]);
 
+  // Clear expiry dots when leaving history mode or changing product. The next
+  // full option build (notMerge) recreates the dots series with empty data.
+  useEffect(() => {
+    expiryDotsRef.current = [];
+    lastDotsSigRef.current = "";
+  }, [viewMode, product]);
+
   // Handle dataZoom events from either chart — syncs both plots
   const handleZoom = useCallback((params: unknown) => {
     if (!params || typeof params !== "object") return;
@@ -103,55 +137,16 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
     setZoomRange({ start, end });
   }, [currentZoom.start, currentZoom.end]);
 
-  // ---- Cross-chart tooltip sync (manual showTip/hideTip) ------------------
-  // Forward the hovered category index to the other chart as a pixel point,
-  // so its axis tooltip + pointer render at the same date regardless of
-  // per-series nulls (see file header for why echarts.connect is not used).
-  const syncTipTo = useCallback((to: echarts.ECharts | null, params: unknown) => {
-    if (!to || syncingRef.current) return;
-    const p = params as { currTrigger?: string; dataIndex?: number };
-    if (p.currTrigger === "leave" || p.dataIndex == null || !Number.isFinite(p.dataIndex)) {
-      to.dispatchAction({ type: "hideTip" });
-      return;
-    }
-    const x = to.convertToPixel({ xAxisIndex: 0 }, p.dataIndex);
-    if (!Number.isFinite(x)) return;
-    syncingRef.current = true;
-    try {
-      to.dispatchAction({ type: "showTip", x, y: to.getHeight() / 2 });
-    } finally {
-      syncingRef.current = false;
-    }
-  }, []);
+  // ---- Expiry dots computation (history mode, hover-triggered) -----------
+  // Map a date string to its index in the combinedData.dates array.
+  const dateIndexMap = useMemo(() => {
+    if (!combinedData) return null;
+    const m = new Map<string, number>();
+    combinedData.dates.forEach((d, i) => m.set(d, i));
+    return m;
+  }, [combinedData]);
 
-  const handlePriceTipSync = useCallback(
-    (params: unknown) => syncTipTo(corrChartRef.current, params),
-    [syncTipTo],
-  );
-  const handleCorrTipSync = useCallback(
-    (params: unknown) => syncTipTo(priceChartRef.current, params),
-    [syncTipTo],
-  );
-  const hideCorrTip = useCallback(() => {
-    corrChartRef.current?.dispatchAction({ type: "hideTip" });
-  }, []);
-  const hidePriceTip = useCallback(() => {
-    priceChartRef.current?.dispatchAction({ type: "hideTip" });
-  }, []);
-
-  const priceEvents = useMemo(() => ({
-    dataZoom: handleZoom,
-    updateAxisPointer: handlePriceTipSync,
-    globalout: hideCorrTip,
-  }), [handleZoom, handlePriceTipSync, hideCorrTip]);
-
-  const corrEvents = useMemo(() => ({
-    dataZoom: handleZoom,
-    updateAxisPointer: handleCorrTipSync,
-    globalout: hidePriceTip,
-  }), [handleZoom, handleCorrTipSync, hidePriceTip]);
-
-  // Build gapByCodeDate Map for chartOption
+  // Build gapByCodeDate Map for chartOption (needed before computeExpiryDots)
   const gapMap = useMemo(() => {
     if (!extData) return undefined;
     const map = new Map<string, Map<string, number | null>>();
@@ -178,12 +173,168 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
     return map;
   }, [extData]);
 
+  // Find the nearest trading date index on or after the given date
+  const findNearestDateIndex = useCallback(
+    (targetDate: string): number | null => {
+      if (!combinedData || !dateIndexMap) return null;
+      const { dates } = combinedData;
+      // Exact match first
+      if (dateIndexMap.has(targetDate)) return dateIndexMap.get(targetDate)!;
+      // Find next trading date >= target (using local time for comparison)
+      const target = new Date(targetDate + "T00:00:00");
+      for (let i = 0; i < dates.length; i++) {
+        const d = new Date(dates[i] + "T00:00:00");
+        if (d >= target) return i;
+      }
+      // Find previous trading date < target
+      for (let i = dates.length - 1; i >= 0; i--) {
+        const d = new Date(dates[i] + "T00:00:00");
+        if (d < target) return i;
+      }
+      return null;
+    },
+    [combinedData, dateIndexMap],
+  );
+
+  // Compute expiry dots from the hovered date index
+  const computeExpiryDots = useCallback(
+    (hoveredIdx: number): ExpiryDot[] => {
+      if (!combinedData || viewMode !== "history" || !dateIndexMap) return [];
+      const { dates, rows, spot_price } = combinedData;
+      const hoveredDate = dates[hoveredIdx];
+      if (!hoveredDate) return [];
+
+      // Build row lookup: code -> date -> FuturesRow
+      const rowByCodeDate = new Map<string, Map<string, (typeof rows)[number]>>();
+      for (const r of rows) {
+        if (!rowByCodeDate.has(r.code)) rowByCodeDate.set(r.code, new Map());
+        rowByCodeDate.get(r.code)!.set(r.date, r);
+      }
+
+      // For each contract active on this date, compute its expiry
+      const contractsOnDate = new Set<string>();
+      for (const r of rows) {
+        if (r.date === hoveredDate) contractsOnDate.add(r.code);
+      }
+
+      const dots: ExpiryDot[] = [];
+      const processedCodes = new Set<string>();
+
+      for (const code of contractsOnDate) {
+        if (processedCodes.has(code)) continue;
+        processedCodes.add(code);
+
+        const row = rowByCodeDate.get(code)?.get(hoveredDate);
+        if (!row) continue;
+        const dte = row.days_to_expiry;
+        if (dte == null || !Number.isFinite(dte) || dte < 0) continue;
+
+        // Compute expiry date: hovered_date + days_to_expiry
+        const hoveredDateObj = new Date(hoveredDate + "T00:00:00");
+        const expiryDateObj = new Date(hoveredDateObj);
+        expiryDateObj.setDate(expiryDateObj.getDate() + Math.round(dte));
+        const y = expiryDateObj.getFullYear();
+        const m = String(expiryDateObj.getMonth() + 1).padStart(2, "0");
+        const d = String(expiryDateObj.getDate()).padStart(2, "0");
+        const expiryDateStr = `${y}-${m}-${d}`;
+
+        // Map expiry date to nearest trading date
+        const mappedIdx = findNearestDateIndex(expiryDateStr);
+        if (mappedIdx == null) continue;
+
+        const mappedDateStr = dates[mappedIdx] ?? expiryDateStr;
+
+        // Get spot price at mapped date (the dot's y-value)
+        const spotVal = spot_price?.[mappedIdx] ?? null;
+
+        dots.push({
+          dateIndex: mappedIdx,
+          value: spotVal != null && Number.isFinite(spotVal) ? spotVal : null,
+          code,
+          expiryDate: expiryDateStr,
+          mappedDate: mappedDateStr,
+          dte: Math.round(dte),
+        });
+      }
+
+      return dots;
+    },
+    [combinedData, viewMode, dateIndexMap, findNearestDateIndex],
+  );
+
+  // ---- Cross-chart tooltip sync (manual showTip/hideTip) ------------------
+  // Forward the hovered category index to the other chart as a pixel point,
+  // so its axis tooltip + pointer render at the same date regardless of
+  // per-series nulls (see file header for why echarts.connect is not used).
+  const syncTipTo = useCallback((to: echarts.ECharts | null, params: unknown) => {
+    if (!to || syncingRef.current) return;
+    const p = params as { currTrigger?: string; dataIndex?: number };
+    if (p.currTrigger === "leave" || p.dataIndex == null || !Number.isFinite(p.dataIndex)) {
+      to.dispatchAction({ type: "hideTip" });
+      return;
+    }
+    const x = to.convertToPixel({ xAxisIndex: 0 }, p.dataIndex);
+    if (!Number.isFinite(x)) return;
+    syncingRef.current = true;
+    try {
+      to.dispatchAction({ type: "showTip", x, y: to.getHeight() / 2 });
+    } finally {
+      syncingRef.current = false;
+    }
+  }, []);
+
+  const handlePriceTipSync = useCallback(
+    (params: unknown) => {
+      syncTipTo(corrChartRef.current, params);
+      // Compute expiry dots for history mode
+      if (viewMode === "history") {
+        const p = params as { dataIndex?: number; currTrigger?: string };
+        if (p.dataIndex != null && Number.isFinite(p.dataIndex)) {
+          applyExpiryDots(computeExpiryDots(p.dataIndex));
+        } else if (p.currTrigger === "leave") {
+          applyExpiryDots([]);
+        }
+      }
+    },
+    [syncTipTo, viewMode, computeExpiryDots, applyExpiryDots],
+  );
+  const handleCorrTipSync = useCallback(
+    (params: unknown) => syncTipTo(priceChartRef.current, params),
+    [syncTipTo],
+  );
+
+  const hideCorrTip = useCallback(() => {
+    corrChartRef.current?.dispatchAction({ type: "hideTip" });
+    applyExpiryDots([]);
+  }, [applyExpiryDots]);
+  const hidePriceTip = useCallback(() => {
+    priceChartRef.current?.dispatchAction({ type: "hideTip" });
+    applyExpiryDots([]);
+  }, [applyExpiryDots]);
+
+  const priceEvents = useMemo(() => ({
+    dataZoom: handleZoom,
+    updateAxisPointer: handlePriceTipSync,
+    globalout: hideCorrTip,
+  }), [handleZoom, handlePriceTipSync, hideCorrTip]);
+
+  const corrEvents = useMemo(() => ({
+    dataZoom: handleZoom,
+    updateAxisPointer: handleCorrTipSync,
+    globalout: hidePriceTip,
+  }), [handleZoom, handleCorrTipSync, hidePriceTip]);
+
   // First plot — reuse existing chartOption with gap extra + synced zoom
   const firstPlotOption = useMemo<EChartsOption | null>(() => {
     if (!combinedData) return null;
-    const extra: FuturesChartExtra | undefined = gapMap ? { gapByCodeDate: gapMap } : undefined;
+    const extra: FuturesChartExtra | undefined = gapMap
+      ? {
+          gapByCodeDate: gapMap,
+          expiryDotsRef: viewMode === "history" ? expiryDotsRef : undefined,
+        }
+      : undefined;
     return buildFuturesChartOption(combinedData, viewMode, currentZoom, extra);
-  }, [combinedData, gapMap, currentZoom, viewMode]);
+  }, [combinedData, gapMap, currentZoom, viewMode, expiryDotsRef]);
 
   // Second plot — correlation curves (active + matured contracts), using the
   // exact same per-contract colors/opacities as the main price plot
@@ -235,12 +386,12 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
       grid: { left: 60, right: 24, top: 24, bottom: 60 },
       tooltip: {
         trigger: "axis",
-        axisPointer: { type: "line", lineStyle: { color: "#999", type: "dashed" } },
+        axisPointer: { type: "line", lineStyle: { color: AXIS_POINTER_LINE, type: "dashed" } },
         confine: true,
-        backgroundColor: "rgba(255,255,255,0.96)",
-        borderColor: "#ddd",
+        backgroundColor: TOOLTIP_CARD_BG,
+        borderColor: TOOLTIP_CARD_BORDER,
         borderWidth: 1,
-        textStyle: { color: "#333", fontSize: 11 },
+        textStyle: { color: TOOLTIP_CARD_TEXT, fontSize: 11 },
         formatter: (params: unknown) => {
           const arr = (Array.isArray(params) ? params : [params]) as Array<{
             dataIndex?: number;

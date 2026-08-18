@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Live Data — ETF page.
  *
  * No stats.etf_intraday_5min table exists yet — the SSE/SZSE ETF trend
@@ -37,7 +37,7 @@ import type {
   EtfMarginCombinedResponse,
   SectorNode,
   StrategyNode,
-} from "../../../shared/types";
+} from "@shared/types";
 
 const PAGE_SIZE = 1;
 

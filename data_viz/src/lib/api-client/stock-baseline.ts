@@ -1,10 +1,10 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
   StockBaselineResponse,
   StockCombinedResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 export function fetchStockBaseline(
   code: string,

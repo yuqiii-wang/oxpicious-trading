@@ -1,9 +1,9 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SecCompositionResponse,
   LinkedEtfsResponse,
   SimilarIndicesResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 export function fetchSecComposition(code: string): Promise<SecCompositionResponse> {
   const params = new URLSearchParams();

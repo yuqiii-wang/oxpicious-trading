@@ -19,12 +19,16 @@ Pipeline
      source DataFrame. This step used to be a standalone
      analyze.mov_ave_rsi package; it is now an internal step because it
      shares the same source price data and active-universe pre-filter.
-  8. INTERNAL STEP: compute EMA spread detail (9 EMA gap pairs + 5 EMA
+  8. INTERNAL STEP: compute holiday / non-trading-day risk metrics
+     (previous-day trading/weekend/holiday status + today's intraday
+     gaps) from the SAME source data -> analysis.mov_ave_rsi_holiday
+     (see holiday.py). Must run AFTER RSI due to FK.
+  9. INTERNAL STEP: compute EMA spread detail (9 EMA gap pairs + 5 EMA
      slope + 5 EMA curvature) from the SAME source data (EMA columns +
      pre-computed EMA slopes/curvatures already in the parent DataFrame)
      -> analysis.mov_ave_spreads_detail_ema (see ema.py). Reuses the
      same DB connection + source DataFrame.
-  9. INTERNAL STEP: compute rolling OHLC detail (today_close +
+  10. INTERNAL STEP: compute rolling OHLC detail (today_close +
      open/high/low over 6 windows: 20/60/120/255/500/750 trading days)
      from the SAME source data -> analysis.mov_ave_spreads_detail_ohlc
      (see ohlc.py). Reuses the same DB connection + source DataFrame.
@@ -90,6 +94,7 @@ from analyze.mov_ave_spread.config import (  # noqa: E402
     DETAIL_TABLE,
     PEAKS_AND_FLOORS_TABLE,
     DESCRIPTION,
+    HOLIDAY_TABLE,
     PAIRS,
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
@@ -106,6 +111,7 @@ from analyze.mov_ave_spread.ema import run_ema  # noqa: E402
 from analyze.mov_ave_spread.ohlc import run_ohlc  # noqa: E402
 from analyze.mov_ave_spread.trading_amt import run_trading_amt  # noqa: E402
 from analyze.mov_ave_spread.rebounds import run_rebounds  # noqa: E402
+from analyze.mov_ave_spread.holiday import run_holiday  # noqa: E402
 
 
 async def _filter_per_sec_type_async(conn, table, rows):
@@ -260,6 +266,16 @@ async def _process_one_sec_type(
     await run_rsi(conn, df, force=force, pool=pool,
                   max_concurrent=max_concurrent, sec_type=st)
 
+    # ---- Holiday step (reuses same source DataFrame) ------------------
+    # Computes previous-day trading/weekend/holiday status + today's
+    # intraday gaps (high-low and open-close) into analysis.mov_ave_rsi_holiday
+    # (see holiday.py). The price/open/high/low columns are already in
+    # the parent DataFrame, so this step needs no second DB fetch.
+    # Must run AFTER run_rsi because mov_ave_rsi_holiday has an FK
+    # to analysis.mov_ave_rsi.
+    await run_holiday(conn, df, force=force, pool=pool,
+                      max_concurrent=max_concurrent, sec_type=st)
+
     # ---- EMA detail step (reuses same source DataFrame) ---------------
     # Computes 9 EMA gap (vs) columns + selects pre-computed EMA slope/
     # curvature columns into analysis.mov_ave_spreads_detail_ema (see
@@ -343,6 +359,7 @@ async def main() -> None:
             await truncate_table_async(conn, DETAIL_TABLE)
             await truncate_table_async(conn, PEAKS_AND_FLOORS_TABLE)
             await truncate_table_async(conn, TRADING_AMT_TABLE)
+            await truncate_table_async(conn, HOLIDAY_TABLE)
             # Use empty set (not None) so _process_one_sec_type knows to
             # compute ALL dates (no filtering) in force mode.
             target_dates_per_st = {st: set() for st in sec_types}

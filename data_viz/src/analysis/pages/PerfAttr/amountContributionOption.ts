@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for the Index Trading Amt Contribution chart
  * (ETF-market turnover over time).
  *
@@ -26,7 +26,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { PerfAttrChartResponse } from "../../../../shared/types";
+import type { PerfAttrChartResponse } from "@shared/types";
 import {
   MUTED_PALETTE,
   SUBTITLE_COLOR,

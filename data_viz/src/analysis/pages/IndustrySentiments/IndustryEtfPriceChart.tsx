@@ -1,4 +1,4 @@
-/**
+﻿/**
  * IndustryEtfPriceChart — the 1st plot in "ETF Contribution" mode.
  *
  * Fetches the daily close series for ALL ETFs tracking member indices of the
@@ -33,7 +33,7 @@ import {
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
 import { fetchIndustryEtfPriceSeries } from "@/lib/api-client";
-import type { IndustryEtfPriceSeriesResponse } from "../../../../shared/types";
+import type { IndustryEtfPriceSeriesResponse } from "@shared/types";
 import type { IndustryEtfPriceChartProps } from "./types";
 import { buildIndustryEtfPriceOption } from "./industryEtfPriceOption";
 

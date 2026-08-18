@@ -19,10 +19,18 @@
  *                   industry's member indices at the selected tick (sorted
  *                   by signed value).
  *
- * No weighting toggle (single equal-weighted computation). No forced
+ * Weighting toggle on the middle plot: "By Trading Amt" aggregates members
+ * by their PREVIOUS trading day's trading amount (live.sec_alloc_live_
+ * prev_ref weights via live.sec_alloc_live_attribution); "Equal" is the
+ * plain member average. While the prev-date ref is not ready (only
+ * fallback is_without_trading_amt rows exist), the By Trading Amt button
+ * is DISABLED and Equal is rendered. No forced
  * "latest tick" attribution — the middle plot is reactive to the clicked
  * 5-min tick (defaults to latest_time on load). Auto-refreshes every 5
- * minutes during Asia/Shanghai trading hours (09:30–11:30, 13:00–15:00).
+ * minutes during Asia/Shanghai trading hours (09:30–11:30, 13:00–15:00);
+ * each refresh FIRST triggers one incremental run of the live pipeline
+ * (python -m live.sec_alloc_live_attribution) via POST
+ * /api/live-data/sec-alloc-live/run so the data never lags the raw bars.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -32,6 +40,8 @@ import {
   CircularProgress,
   Stack,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
@@ -42,15 +52,27 @@ import { useStore } from "@/store/filters";
 import {
   fetchIntradayMovements,
   fetchIntradayMovementsBenchmarks,
+  fetchIntradayMovementsPrevDayOhlc,
   fetchIndicesCombined,
+  fetchSecAllocLiveAttribution,
   invalidateCacheForPrefix,
+  runSecAllocLivePipeline,
 } from "@/lib/api-client";
-import type { IndexBundle, IntradayMovementsResponse } from "../../../shared/types";
+import type {
+  IndexBundle,
+  IntradayMovementsIndustryTick,
+  IntradayMovementsResponse,
+  PrevDayOhlcResponse,
+  SecAllocLiveAttributionResponse,
+} from "@shared/types";
 import {
   buildMarketMovementsTopOption,
   buildIndustryBarsOption,
   buildMemberBarsOption,
+  FULL_DAY_TICKS,
+  type IndustryFilter,
 } from "../features/market-movements/marketMovementsOption";
+import { resolvePrevDayBar } from "../features/market-movements/prevDayOhlc";
 
 /** One benchmark option in the dropdown. */
 interface BenchmarkOption {
@@ -59,7 +81,7 @@ interface BenchmarkOption {
   is_broad_market: boolean | null;
 }
 
-const DEFAULT_BENCHMARK = "000001";
+const DEFAULT_BENCHMARK = "000300";
 const AUTO_REFRESH_MS = 5 * 60_000; // 5 minutes
 
 /**
@@ -118,12 +140,29 @@ export default function LiveDataMarketMovementsPage() {
   // Click-driven selection state.
   const [selectedTick, setSelectedTick] = useState<string>("");
   const [selectedIndustryId, setSelectedIndustryId] = useState<string | null>(null);
+  // Industry/strategy filter for the middle and bottom plots.
+  const [industryFilter, setIndustryFilter] = useState<IndustryFilter>("all");
+  // No-benchmark mode: shows raw % vs prev close with a flat 0.0% baseline
+  // instead of the selected benchmark line + relative shades.
+  const [noBenchmark, setNoBenchmark] = useState(false);
+  // Weighting mode for the middle (Intraday Attribution) plot:
+  //  • "amt"  — trading-amount-weighted (prev-day amounts, live ref tables)
+  //  • "equal"— plain member average
+  // "amt" is DISABLED while the prev-date ref is not ready for the current
+  // benchmark+date (weighted_available === false — only fallback
+  // is_without_trading_amt rows exist).
+  const [attributionMode, setAttributionMode] = useState<"equal" | "amt">("equal");
+  const [attribution, setAttribution] = useState<SecAllocLiveAttributionResponse | null>(null);
   // Clicked member index code (bottom plot bar click) → drives the IndexPanel
   // history chart below. Fetched on demand via fetchIndicesCombined.
   const [selectedMemberCode, setSelectedMemberCode] = useState<string | null>(null);
   const [memberIndex, setMemberIndex] = useState<IndexBundle | null>(null);
   const [memberIndexLoading, setMemberIndexLoading] = useState(false);
   const [memberIndexError, setMemberIndexError] = useState<string | null>(null);
+  // Raw prev-trading-day OHLC of the benchmark + every member index —
+  // resolved client-side into the single prev-day OHLC bar on the top
+  // plot (clicked member > clicked industry mean-of-% > benchmark).
+  const [prevDayOhlc, setPrevDayOhlc] = useState<PrevDayOhlcResponse | null>(null);
 
   // Fetch benchmark list on mount.
   useEffect(() => {
@@ -181,9 +220,58 @@ export default function LiveDataMarketMovementsPage() {
     return () => { cancelled = true; };
   }, [benchmarkCode, refreshKey]);
 
-  // Invalidate the intraday-movements cache entry then bump refreshKey.
-  const triggerRefresh = useCallback(() => {
+  // Fetch the raw prev-trading-day OHLC of the benchmark + all member
+  // indices (same latest date as the intraday payload — date=null picks
+  // the latest for the benchmark on both endpoints). Refetches on
+  // benchmark change and on every refresh cycle.
+  useEffect(() => {
+    if (!benchmarkCode) {
+      setPrevDayOhlc(null);
+      return;
+    }
+    let cancelled = false;
+    fetchIntradayMovementsPrevDayOhlc(benchmarkCode, null)
+      .then((resp) => {
+        if (!cancelled) setPrevDayOhlc(resp);
+      })
+      .catch(() => {
+        if (!cancelled) setPrevDayOhlc(null);
+      });
+    return () => { cancelled = true; };
+  }, [benchmarkCode, refreshKey]);
+
+  // Fetch live attribution aggregates (weighted/equal per industry) for the
+  // selected tick. Refetches on benchmark/date/tick change and on every
+  // refresh cycle (the 5-min pipeline run may have appended new ticks or
+  // built the ref since the last fetch).
+  useEffect(() => {
+    if (!benchmarkCode || !data?.date || !selectedTick) {
+      setAttribution(null);
+      return;
+    }
+    let cancelled = false;
+    fetchSecAllocLiveAttribution(benchmarkCode, data.date, selectedTick)
+      .then((resp) => {
+        if (!cancelled) setAttribution(resp);
+      })
+      .catch(() => {
+        if (!cancelled) setAttribution(null);
+      });
+    return () => { cancelled = true; };
+  }, [benchmarkCode, data?.date, selectedTick, refreshKey]);
+
+  // Refresh flow: FIRST trigger one incremental run of the live pipeline
+  // (`python -m live.sec_alloc_live_attribution` via POST
+  // /api/live-data/sec-alloc-live/run — heavy prev-date ref built once per
+  // date and skipped when present, light 5-min ticks appended for new bars
+  // only; an in-flight guard on the server prevents overlapping spawns),
+  // THEN invalidate the intraday-movements cache and bump refreshKey to
+  // refetch. Runs before every 5-min auto-refresh (trading hours) and every
+  // manual Refresh click so the shades never lag the raw 5-min bars.
+  const triggerRefresh = useCallback(async () => {
+    await runSecAllocLivePipeline();
     invalidateCacheForPrefix("/api/live-data/intraday-movements");
+    invalidateCacheForPrefix("/api/live-data/sec-alloc-live/attribution");
     setRefreshKey((k) => k + 1);
   }, []);
 
@@ -192,22 +280,56 @@ export default function LiveDataMarketMovementsPage() {
   // trading hours without doing unnecessary work.
   useEffect(() => {
     const timer = setInterval(() => {
-      if (isWithinTradingHours()) triggerRefresh();
+      if (isWithinTradingHours()) void triggerRefresh();
     }, AUTO_REFRESH_MS);
     return () => clearInterval(timer);
   }, [triggerRefresh]);
 
-  const handleRefresh = useCallback(() => triggerRefresh(), [triggerRefresh]);
+  const handleRefresh = useCallback(() => { void triggerRefresh(); }, [triggerRefresh]);
+
+  // ---- Prev-day OHLC bar resolution ----------------------------------------
+  // Resolve the ACTIVE prev-day OHLC bar (rendered at the prepended x
+  // category 0 on the top plot) by selection hierarchy: clicked member
+  // index > clicked industry (equal-weight mean-of-%) > benchmark default.
+  const industryLabelById = useMemo(
+    () =>
+      new Map(
+        (data?.industries ?? []).map((i) => [i.industry_id, i.industry_label]),
+      ),
+    [data],
+  );
+  const prevDayBar = useMemo(
+    () =>
+      resolvePrevDayBar(prevDayOhlc, {
+        benchmarkName: data?.benchmark_name ?? benchmarkCode,
+        selectedMemberCode,
+        selectedIndustryId,
+        industryLabelById,
+      }),
+    [
+      prevDayOhlc,
+      data?.benchmark_name,
+      benchmarkCode,
+      selectedMemberCode,
+      selectedIndustryId,
+      industryLabelById,
+    ],
+  );
 
   // ---- Click handlers ------------------------------------------------------
   // Top plot: any click inside the grid → pick the nearest 5-min tick.
+  // The x-axis is frozen to the full trading-day tick range (FULL_DAY_TICKS)
+  // with ONE prepended prev-day OHLC category at index 0 (when a prev-day
+  // bar is shown), so clicks on that slot are ignored and the remaining
+  // dataIndex maps to FULL_DAY_TICKS with an offset of 1.
   const handleTopCanvasClick = useCallback(
     (dataIndex: number) => {
-      if (!data) return;
-      const tick = data.benchmark_series[dataIndex]?.time;
+      const offset = prevDayBar ? 1 : 0;
+      if (offset > 0 && dataIndex === 0) return;
+      const tick = FULL_DAY_TICKS[dataIndex - offset];
       if (tick) setSelectedTick(tick);
     },
-    [data],
+    [prevDayBar],
   );
 
   // Middle plot: click a bar → pick that industry.
@@ -256,22 +378,53 @@ export default function LiveDataMarketMovementsPage() {
 
   // ---- Chart options -------------------------------------------------------
   const topOption = useMemo(
-    () => (data ? buildMarketMovementsTopOption(data, selectedTick, themeMode) : null),
-    [data, selectedTick, themeMode],
+    () => (data ? buildMarketMovementsTopOption(data, selectedTick, themeMode, noBenchmark, prevDayBar) : null),
+    [data, selectedTick, themeMode, noBenchmark, prevDayBar],
   );
+
+  // Weighted mode is effective only while the prev-date ref is ready.
+  const weightedAvailable = attribution?.weighted_available === true;
+  const effectiveAttributionMode: "equal" | "amt" =
+    attributionMode === "amt" && weightedAvailable ? "amt" : "equal";
+
+  // In "amt" mode the middle plot renders the trading-amount-weighted
+  // per-industry aggregates (from the live schema tables) instead of the
+  // equal-weighted analysis-table values. We only override the rows the
+  // middle builder reads (industry_series at the selected tick).
+  const middleData = useMemo(() => {
+    if (!data) return null;
+    if (effectiveAttributionMode !== "amt" || !attribution || !selectedTick) {
+      return data;
+    }
+    const labelById = new Map(
+      data.industries.map((i) => [i.industry_id, i.industry_label]),
+    );
+    const rows: IntradayMovementsIndustryTick[] = attribution.industries
+      .filter((r) => r.weighted_pct != null)
+      .map((r) => ({
+        time: selectedTick,
+        industry_id: r.industry_id,
+        industry_label: labelById.get(r.industry_id) ?? r.industry_id,
+        is_strategy: r.is_strategy,
+        industry_price_pct: r.weighted_pct,
+        industry_price_pct_vs_benchmark: null,
+      }));
+    return { ...data, industry_series: rows };
+  }, [data, attribution, effectiveAttributionMode, selectedTick]);
+
   const middleOption = useMemo(
     () =>
-      data && selectedTick
-        ? buildIndustryBarsOption(data, selectedTick, themeMode)
+      middleData && selectedTick
+        ? buildIndustryBarsOption(middleData, selectedTick, themeMode, industryFilter)
         : null,
-    [data, selectedTick, themeMode],
+    [middleData, selectedTick, themeMode, industryFilter],
   );
   const bottomOption = useMemo(
     () =>
-      data && selectedTick && selectedIndustryId
-        ? buildMemberBarsOption(data, selectedTick, selectedIndustryId, themeMode)
+      data && selectedTick
+        ? buildMemberBarsOption(data, selectedTick, selectedIndustryId, themeMode, industryFilter)
         : null,
-    [data, selectedTick, selectedIndustryId, themeMode],
+    [data, selectedTick, selectedIndustryId, themeMode, industryFilter],
   );
 
   // ---- Subtitles -----------------------------------------------------------
@@ -282,14 +435,24 @@ export default function LiveDataMarketMovementsPage() {
   }, [data, selectedIndustryId]);
 
   const topSubtitle = data
-    ? `${data.benchmark_name} (${data.benchmark_code}) · ${data.date} ${data.latest_time}` +
+    ? (noBenchmark
+        ? `No Benchmark (0.0%) · ${data.date} ${data.latest_time}`
+        : `${data.benchmark_name} (${data.benchmark_code}) · ${data.date} ${data.latest_time}`) +
+      (prevDayBar ? ` · prev-day OHLC: ${prevDayBar.label}` : "") +
       (selectedTick && selectedTick !== data.latest_time
         ? ` · selected tick ${selectedTick}`
         : "")
     : "Select a benchmark to see intraday market movements";
 
   const middleSubtitle = data && selectedTick
-    ? `Tick ${selectedTick} · ALL industries (green = +, red = −) · click a bar to drill into its member indices`
+    ? `Tick ${selectedTick} · ${industryFilter === "all" ? "ALL" : industryFilter === "industry" ? "Industries" : "Strategies"} · ${
+        effectiveAttributionMode === "amt"
+          ? "weighted by prev-day trading amt"
+          : weightedAvailable
+            ? "equal-weighted"
+            : "equal-weighted (trading-amt ref not ready)"
+      } · green = +, red = − · click a bar to drill into its member indices` +
+      (noBenchmark ? " · no-benchmark mode" : "")
     : "Click anywhere on the top plot to pick a 5-min tick";
 
   const bottomSubtitle = data && selectedTick
@@ -300,9 +463,60 @@ export default function LiveDataMarketMovementsPage() {
 
   const hasBars = !!data && data.benchmark_series.length > 0;
 
+  // Industry vs Strategy toggle — placed as ChartCard action.
+  const industryFilterToggle = (
+    <ToggleButtonGroup
+      size="small"
+      exclusive
+      value={industryFilter}
+      onChange={(_, v: IndustryFilter | null) => {
+        if (v) setIndustryFilter(v);
+      }}
+      sx={{ height: 22 }}
+    >
+      <ToggleButton value="all" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
+        All
+      </ToggleButton>
+      <ToggleButton value="industry" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
+        Industry
+      </ToggleButton>
+      <ToggleButton value="strategy" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
+        Strategy
+      </ToggleButton>
+    </ToggleButtonGroup>
+  );
+
+  // Weighting toggle (By Trading Amt / Equal) for the middle plot. "By
+  // Trading Amt" is DISABLED while the prev-date trading-amount reference
+  // is not ready for the current benchmark+date (only fallback
+  // is_without_trading_amt rows exist — e.g. basic_stats lagging or the
+  // heavy ref pass still running under the advisory lock).
+  const weightingToggle = (
+    <ToggleButtonGroup
+      size="small"
+      exclusive
+      value={effectiveAttributionMode}
+      onChange={(_, v: "equal" | "amt" | null) => {
+        if (v) setAttributionMode(v);
+      }}
+      sx={{ height: 22 }}
+    >
+      <ToggleButton value="equal" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
+        Equal
+      </ToggleButton>
+      <ToggleButton
+        value="amt"
+        disabled={!weightedAvailable}
+        sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}
+      >
+        By Trading Amt
+      </ToggleButton>
+    </ToggleButtonGroup>
+  );
+
   return (
     <Stack spacing={2}>
-      {/* Control bar: benchmark dropdown + refresh */}
+      {/* Control bar: benchmark dropdown + No Benchmark toggle + refresh */}
       <Stack
         direction="row"
         spacing={2}
@@ -322,21 +536,40 @@ export default function LiveDataMarketMovementsPage() {
           onChange={(_e, v) => {
             if (v) setBenchmarkCode(v.benchmark_code);
           }}
+          disabled={noBenchmark}
           renderInput={(params) => (
             <TextField
               {...params}
-              label="Benchmark (broad-market only ★)"
+              label={noBenchmark ? "Benchmark (disabled — No Benchmark mode)" : "Benchmark (broad-market only ★)"}
               variant="outlined"
               size="small"
             />
           )}
         />
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={noBenchmark ? "none" : "bench"}
+          onChange={(_, v: "bench" | "none" | null) => {
+            if (v) setNoBenchmark(v === "none");
+          }}
+          sx={{ height: 32 }}
+        >
+          <ToggleButton value="bench" sx={{ px: 1.5, fontSize: "0.75rem" }}>
+            Benchmark
+          </ToggleButton>
+          <ToggleButton value="none" sx={{ px: 1.5, fontSize: "0.75rem" }}>
+            No Benchmark
+          </ToggleButton>
+        </ToggleButtonGroup>
         <RefreshButton onClick={handleRefresh} />
       </Stack>
 
       {/* Top plot: Benchmark % line + per-industry shaded areas */}
       <ChartCard
-        title="Market Movements — Benchmark % & Per-Industry Shades"
+        title={noBenchmark
+          ? "Market Movements — 0.0% Baseline & Per-Industry Shades"
+          : "Market Movements — Benchmark % & Per-Industry Shades"}
         subtitle={topSubtitle}
       >
         {loading && (
@@ -369,6 +602,12 @@ export default function LiveDataMarketMovementsPage() {
       <ChartCard
         title="Intraday Attribution — All Industries at Selected Tick"
         subtitle={middleSubtitle}
+        action={(
+          <Stack direction="row" spacing={1} alignItems="center">
+            {weightingToggle}
+            {industryFilterToggle}
+          </Stack>
+        )}
       >
         {!loading && !error && middleOption && (
           <EChart

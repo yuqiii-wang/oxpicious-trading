@@ -1,8 +1,8 @@
-/**
+﻿/**
  * Shared types for the Fourier Frequencies analysis page sub-modules.
  */
 import type { ThemeMode } from "@/store/filters";
-import type { FourierFreqsSecType } from "../../../../shared/types";
+import type { FourierFreqsSecType } from "@shared/types";
 
 /** Props for the FourierFreqsPanel component. */
 export interface PanelProps {
@@ -12,4 +12,4 @@ export interface PanelProps {
   themeMode: ThemeMode;
 }
 
-export type { FourierFreqsSecType } from "../../../../shared/types";
+export type { FourierFreqsSecType } from "@shared/types";

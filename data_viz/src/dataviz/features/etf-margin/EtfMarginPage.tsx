@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ETF + Margin page — interactive mirror of plot_szse_sse_etf_and_margin.py.
  *
  *   • ThemeSelector — two-level cascade (L1 sector → L2 industry), loads from
@@ -28,7 +28,7 @@ import type {
   EtfMarginCombinedResponse,
   SectorNode,
   StrategyNode,
-} from "../../../../shared/types";
+} from "@shared/types";
 
 const PAGE_SIZE = 1;
 

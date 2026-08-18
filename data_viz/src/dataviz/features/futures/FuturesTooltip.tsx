@@ -1,10 +1,19 @@
 /**
  * React-based tooltip component for futures charts.
  *
- * Renders a styled tooltip with colored swatches and values using proper
- * React elements instead of HTML string concatenation.
+ * Per-date list of contracts TRADING on the hovered date (plus the spot
+ * line, with per-contract gap). Expiry dots render their own always-on
+ * static label on the chart (see chartOption.ts) — no dot tooltip here.
+ *
+ * Colors/styles come from the shared theme (chart-palette.ts → colors.css)
+ * so every tooltip card in the app renders identically.
  */
 import React from "react";
+import {
+  TOOLTIP_CARD_STYLE,
+  TOOLTIP_CARD_HEADER_STYLE,
+  TOOLTIP_CARD_TEXT_MUTED,
+} from "@/theme/chart-palette";
 
 export interface TooltipItem {
   seriesName: string;
@@ -26,30 +35,8 @@ export const FuturesTooltip: React.FC<FuturesTooltipProps> = ({ date, items }) =
   if (validItems.length === 0) return null;
 
   return (
-    <div
-      style={{
-        padding: "6px 10px",
-        background: "rgba(255,255,255,0.96)",
-        border: "1px solid #ddd",
-        borderRadius: 4,
-        boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-        fontSize: 12,
-        color: "#333",
-        minWidth: 140,
-      }}
-    >
-      <div
-        style={{
-          fontWeight: 600,
-          marginBottom: 4,
-          fontSize: 12,
-          color: "#555",
-          borderBottom: "1px solid #eee",
-          paddingBottom: 4,
-        }}
-      >
-        {date}
-      </div>
+    <div style={{ ...TOOLTIP_CARD_STYLE, minWidth: 140 }}>
+      <div style={TOOLTIP_CARD_HEADER_STYLE}>{date}</div>
       {validItems.map((item) => (
         <div
           key={item.seriesName}
@@ -81,7 +68,7 @@ export const FuturesTooltip: React.FC<FuturesTooltipProps> = ({ date, items }) =
                 fontVariantNumeric: "tabular-nums",
                 marginLeft: 8,
                 fontSize: 11,
-                color: "#666",
+                color: TOOLTIP_CARD_TEXT_MUTED,
               }}
             >
               gap {(item.gap >= 0 ? "+" : "")}{item.gap.toFixed(4)}

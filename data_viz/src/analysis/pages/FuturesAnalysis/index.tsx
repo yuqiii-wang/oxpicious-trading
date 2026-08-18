@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Futures Analysis page — CFFEX futures basis + correlation analysis.
  *
  * Layout:
@@ -36,7 +36,7 @@ import {
 import type {
   FuturesProduct,
   FuturesCombinedResponse,
-} from "../../../../shared/types";
+} from "@shared/types";
 import { FuturesCharts } from "./FuturesCharts";
 
 const DEFAULT_PRODUCT = "IF";
@@ -125,7 +125,7 @@ export default function FuturesAnalysisPage() {
               <ArrowBack />
             </IconButton>
             <Typography variant="h5" sx={{ fontWeight: 700 }}>
-              CFFEX Futures Analysis
+              Futures Analysis
             </Typography>
           </Box>
           <Typography variant="body2" color="text.secondary">

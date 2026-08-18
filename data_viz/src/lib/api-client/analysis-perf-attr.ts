@@ -1,4 +1,4 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
@@ -6,7 +6,7 @@ import type {
   PerfAttrChartResponse,
   PerfAttrAttributionResponse,
   PerfAttrSecType,
-} from "../../../shared/types";
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Analysis Commons — Perf Attribution (ETF/Index × Index)

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * RiskPanel — expandable panel showing strategy risk metrics.
  *
  * Displays:
@@ -39,7 +39,7 @@ import type {
   StrategyRiskGrade,
   StrategyPeriodType,
   StrategyRiskFactor,
-} from "../../../shared/types";
+} from "@shared/types";
 import type { SelectedPeriod } from "../singletonStrategyChartOption";
 
 /**

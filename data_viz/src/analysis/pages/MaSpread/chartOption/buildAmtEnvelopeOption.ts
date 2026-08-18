@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Amt Envelope chart — rendered when an Amt/MA pair is selected.
  *
  * Shows trading_amount BARS + a slim envelope of all 5 trading_amt_ma lines
@@ -24,7 +24,7 @@ import {
 } from "@/theme/chart-palette";
 import type { ThemeMode } from "@/store/filters";
 import type { EChartsOption } from "echarts";
-import type { MovAveSpreadPairSeries } from "../../../../../shared/types";
+import type { MovAveSpreadPairSeries } from "@shared/types";
 import type { OhlcMode } from "@/lib/ohlc";
 import { buildAmtTooltipFormatter } from "./tooltipFormatter";
 

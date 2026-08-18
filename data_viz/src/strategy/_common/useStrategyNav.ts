@@ -1,4 +1,4 @@
-/**
+﻿/**
  * useStrategyNav — shared hook for strategy pages' classification navigation.
  *
  * Encapsulates the state + handlers that every strategy page needs to wire up
@@ -28,7 +28,7 @@ import type {
   MovAveSpreadCodesResponse,
   SectorNode,
   StrategyNode,
-} from "../../../shared/types";
+} from "@shared/types";
 
 export interface StrategyNavState {
   // Classification data

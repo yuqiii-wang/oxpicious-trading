@@ -1,4 +1,4 @@
-/**
+﻿/**
  * IndustryBenchmarkAttributionChart — fetches the industry-aggregated
  * attribution rows for ONE industry from analysis.industry_attributions
  * and renders the bar chart. This is the 2nd plot (and onward — one per
@@ -23,7 +23,7 @@ import {
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
 import { fetchIndustryBenchmarkAttribution } from "@/lib/api-client";
-import type { IndustryBenchmarkAttributionResponse } from "../../../../shared/types";
+import type { IndustryBenchmarkAttributionResponse } from "@shared/types";
 import type { AttributionChartProps } from "./types";
 import { buildIndustryBenchmarkAttributionOption } from "./industryBenchmarkAttributionOption";
 

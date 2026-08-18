@@ -14,6 +14,10 @@ The ``astype(object)`` step is necessary because pandas would otherwise
 convert ``None`` back to ``NaN`` in numeric columns. By casting to
 object dtype first, None stays as None.
 
+After processing numeric_cols, any remaining NaN/NaT in object or
+datetime columns (e.g. date columns with NaN for non-matured expiries)
+is also converted to None so asyncpg serializes them as SQL NULL.
+
 cuDF note: ``to_dict(orient="records")`` always materializes Python
 objects (GPU→CPU). This is unavoidable for asyncpg. The rest of the
 pipeline should stay in numeric dtype as long as possible and only call
@@ -33,14 +37,18 @@ def sanitize_for_db_insert(
 ) -> list[dict]:
     """Sanitize a DataFrame for asyncpg bulk upsert.
 
-    Steps (applied to ``numeric_cols`` only; other columns pass through):
+    Steps (applied to ``numeric_cols`` only; other columns pass through
+    the final NaN→None sweep):
       1. Round to ``round_to`` decimal places (NaN-safe — round preserves
          NaN). Optional; pass ``None`` to skip.
       2. Replace +/-inf with NaN (rolling correlation / division can
          produce inf when one series has zero variance).
       3. Cast to object dtype, then replace NaN with None so asyncpg
          serializes them as SQL NULL.
-      4. ``to_dict(orient="records")`` — materialize list of dicts.
+      4. Final sweep: convert any remaining NaN/NaT in object/datetime
+         columns to None (e.g. date columns with NaN for non-matured
+         expiries).
+      5. ``to_dict(orient="records")`` — materialize list of dicts.
 
     Args:
         df: DataFrame to sanitize. Modified on a copy; original is not
@@ -81,5 +89,13 @@ def sanitize_for_db_insert(
             .astype(object)
             .where(pd.notna(out[numeric_cols]), None)
         )
+
+    # Convert any remaining NaN/NaT to None across ALL columns
+    # (e.g. date columns with NaN for non-matured expiries).
+    for col in out.columns:
+        if out[col].dtype == object or pd.api.types.is_datetime64_any_dtype(out[col]):
+            mask = out[col].isna()
+            if mask.any():
+                out.loc[mask, col] = None
 
     return out.to_dict(orient="records")

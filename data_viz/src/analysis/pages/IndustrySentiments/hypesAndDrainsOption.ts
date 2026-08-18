@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for the Industry Hypes & Drains SEASONAL chart.
  *
  * PLOT STYLE
@@ -38,7 +38,7 @@ import type { ThemeMode } from "@/store/filters";
 import type {
   IndustryHypesAndDrainsResponse,
   SeasonalRankingRow,
-} from "../../../../shared/types";
+} from "@shared/types";
 import {
   UP_COLOR,
   DOWN_COLOR,

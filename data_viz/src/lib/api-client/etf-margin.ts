@@ -1,9 +1,9 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
   EtfMarginCombinedResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 export function fetchThemes(exchange?: string | null): Promise<SectorNode[]> {
   const params = new URLSearchParams();

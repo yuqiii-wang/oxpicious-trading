@@ -1,11 +1,11 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
   LiveDataSecType,
   LiveDataDatesResponse,
   LiveDataCombinedResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Live Data — intraday 5-min bars (index + stock)

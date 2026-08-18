@@ -127,7 +127,14 @@ export {
 export {
   fetchIntradayMovementsBenchmarks,
   fetchIntradayMovements,
+  fetchIntradayMovementsPrevDayOhlc,
 } from "./intraday-movements";
+
+export {
+  runSecAllocLivePipeline,
+  fetchSecAllocLiveAttribution,
+  type SecAllocLiveRunResponse,
+} from "./sec-alloc-live";
 
 export type {
   StrategyAlgo,

@@ -1,4 +1,4 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   IndustryBenchmarkAttributionResponse,
   IndustryAttributionBenchmarksResponse,
@@ -7,7 +7,7 @@ import type {
   AllIndustriesAttributionResponse,
   MemberIndexAttributionResponse,
   IndustryHypesAndDrainsResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 /**
  * Fetch the industry-level benchmark attribution for ONE industry at a

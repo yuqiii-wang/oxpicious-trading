@@ -1,13 +1,85 @@
-/**
+﻿/**
  * Options market sentiment computation — port of compute_*() helpers in
  * plot_szse_options.py.
  *
  * All functions take a snapshot of options rows for a single underlying on a
  * single date.
  */
-import type { OptionsRow } from "../../shared/types";
+import type { OptionsRow } from "@shared/types";
 import { CONTRACT_SIZE, PRICE_SCALE } from "../theme/chart-palette";
 import { computeGreeks, impliedVolDefault } from "./iv";
+
+export interface SmileSkewness {
+  expiry: string;
+  callSkew: number | null;
+  putSkew: number | null;
+  overallSkew: number | null;
+}
+
+/**
+ * OI-weighted skewness (3rd standardized moment) of IV values across strikes.
+ *
+ * Skewness measures the asymmetry of the volatility smile:
+ *   • Negative → higher IV on downside (puts richer than calls, typical equity pattern)
+ *   • Positive → higher IV on upside (calls richer than puts)
+ *
+ * Computed per expiry month, separately for CALL and PUT.
+ */
+export function computeSmileSkewness(snap: OptionsRow[]): SmileSkewness[] {
+  const valid = snap.filter(
+    (r) => r.implied_vol != null && r.implied_vol > 0 && r.implied_vol < 5,
+  );
+  if (valid.length === 0) return [];
+
+  const expiryMonths = Array.from(new Set(valid.map((r) => r.expiry_month))).sort(
+    (a, b) => parseInt(a.replace("月", "")) - parseInt(b.replace("月", "")),
+  );
+
+  const results: SmileSkewness[] = [];
+
+  for (const em of expiryMonths) {
+    const emData = valid.filter((r) => r.expiry_month === em);
+    const calls = emData.filter((r) => r.option_type === "CALL");
+    const puts = emData.filter((r) => r.option_type === "PUT");
+
+    const callSkew = computeWeightedSkewness(calls);
+    const putSkew = computeWeightedSkewness(puts);
+
+    // Overall: pool CALL + PUT with OI weights
+    const overallSkew = computeWeightedSkewness(emData);
+
+    results.push({
+      expiry: em,
+      callSkew,
+      putSkew,
+      overallSkew,
+    });
+  }
+
+  return results;
+}
+
+/**
+ * OI-weighted skewness (3rd standardized moment) of a set of IV values.
+ * Returns null if fewer than 3 data points or zero total weight.
+ */
+function computeWeightedSkewness(rows: OptionsRow[]): number | null {
+  if (rows.length < 3) return null;
+
+  const xs = rows.map((r) => (r.implied_vol as number) * 100); // convert to %
+  const ws = rows.map((r) => Math.max(1, r.open_interest)); // at least weight=1
+
+  const wSum = ws.reduce((a, b) => a + b, 0);
+  if (wSum === 0) return null;
+
+  const mean = xs.reduce((s, x, i) => s + ws[i] * x, 0) / wSum;
+  const variance = xs.reduce((s, x, i) => s + ws[i] * (x - mean) ** 2, 0) / wSum;
+  const std = Math.sqrt(variance);
+  if (std < 1e-8) return null;
+
+  const skewness = xs.reduce((s, x, i) => s + ws[i] * ((x - mean) / std) ** 3, 0) / wSum;
+  return skewness;
+}
 
 /**
  * Max pain price — the strike that minimizes total option holder payout.
@@ -216,6 +288,7 @@ export interface SnapshotStats {
   maxPain: number | null;
   atmIv: number | null;
   ivSkew: number | null;
+  smileSkewness: SmileSkewness[];
   atmGreeks: AtmGreeks;
   netGex: number;
   oiWeighted: number | null;
@@ -271,6 +344,7 @@ export function computeSnapshotStats(snap: OptionsRow[]): SnapshotStats | null {
 
   const maxPain = computeMaxPain(snap);
   const [atmIv, _otmPutIv, ivSkew, atmGreeks] = computeIvSkew(snap);
+  const smileSkewness = computeSmileSkewness(snap);
   const gexProfile = computeGexProfile(snap);
   const netGex = Object.values(gexProfile).reduce((a, b) => a + b, 0);
   const oiWeighted = computeOiWeightedStrike(snap);
@@ -291,6 +365,7 @@ export function computeSnapshotStats(snap: OptionsRow[]): SnapshotStats | null {
     maxPain,
     atmIv,
     ivSkew,
+    smileSkewness,
     atmGreeks,
     netGex,
     oiWeighted,

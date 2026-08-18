@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for the Industry ETF Price line chart (1st plot in
  * "ETF Contribution" mode).
  *
@@ -25,7 +25,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { IndustryEtfPriceSeriesResponse } from "../../../../shared/types";
+import type { IndustryEtfPriceSeriesResponse } from "@shared/types";
 import {
   UP_COLOR,
   axisColors,

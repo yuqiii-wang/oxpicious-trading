@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Industry Sentiments analysis page (default export).
  *
  * Plots each industry's member INDEX VALUES directly, rebased to 100 at the
@@ -66,7 +66,7 @@ import type {
   IndustryAttributionBenchmarkEntry,
   SectorNode,
   StrategyNode,
-} from "../../../../shared/types";
+} from "@shared/types";
 import { IndustrySentimentsPlot } from "./IndustrySentimentsPlot";
 import { BenchmarkPriceChart } from "./BenchmarkPriceChart";
 import { IndustryBenchmarkAttributionChart } from "./IndustryBenchmarkAttributionChart";

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Correlation chart — expandable section below the main multi-line chart.
  *
  * Renders one line per industry pair, showing the rolling Pearson
@@ -21,7 +21,7 @@ import {
 } from "@mui/material";
 import EChart from "@/components/EChart";
 import { fetchIndustryCorrelations } from "@/lib/api-client";
-import type { IndustryCorrelationsResponse } from "../../../../shared/types";
+import type { IndustryCorrelationsResponse } from "@shared/types";
 import type { EChartsOption } from "echarts";
 import {
   MUTED_PALETTE,

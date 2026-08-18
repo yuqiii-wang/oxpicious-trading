@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ECharts option builder for the Fourier Frequencies chart.
  *
  * Renders the dominant cycle PERIOD (freq, trading days) over time, one
@@ -20,7 +20,7 @@ import {
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { RANGE_DAY_SERIES } from "./constants";
-import type { FourierFreqsChartRow } from "../../../../shared/types";
+import type { FourierFreqsChartRow } from "@shared/types";
 
 /** Per-range_days series data point: [date, freq, amplitude]. */
 type FreqPoint = [string, number, number];

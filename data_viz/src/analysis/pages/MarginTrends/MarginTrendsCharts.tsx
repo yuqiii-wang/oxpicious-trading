@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MarginTrendsCharts — the 2-plot single-industry margin trends view.
  *
  * Layout (top → bottom):
@@ -41,7 +41,7 @@ import type {
   MarginIndustryCorrelationResponse,
   MarginTrendsShadeResponse,
   MarginSecurity,
-} from "../../../../shared/types";
+} from "@shared/types";
 import type { EChartsOption } from "echarts";
 import {
   GROUP_MAJOR_COLORS,

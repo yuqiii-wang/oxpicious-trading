@@ -1,4 +1,4 @@
-/**
+﻿/**
  * MarketTrendChart — the sole plot in "Market Trend" mode.
  *
  * Layout (top → bottom):
@@ -39,7 +39,7 @@ import {
 import type {
   IndexBaselineRow,
   IndustryAttributionBenchmarkEntry,
-} from "../../../../shared/types";
+} from "@shared/types";
 import type { MarketTrendChartProps } from "./types";
 import { MARKET_TREND_INDICES } from "./constants";
 import {

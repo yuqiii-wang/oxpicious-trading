@@ -14,6 +14,10 @@ Two operating modes, switched by wall-clock time on trading days:
     looping rounds until every stock reaches CLOSE_TIME (15:00). This is
     the original end-of-day sweep behavior.
 
+Afternoon-only start: the streamer does NOT run during the morning session.
+On trading days it waits until 13:30 before entering the main loop, so all
+API calls are focused on the afternoon trading session (13:30–15:00).
+
 Architecture (see ``_workers.py`` for the async machinery):
   * Round-based streaming. The target list is split into N groups placed on
     a shared asyncio.Queue.
@@ -63,13 +67,8 @@ Cooldown: random_sleep(DEFAULT_SLEEP_SEC) per worker between fetches
 Termination: Ctrl-C cancels both async workers (state.stop + task.cancel) and
 exits cleanly after reaping them; the finally block closes the DB and session.
 
-Fresh-start probe: on startup (before entering the main loop) the streamer
-probes the SZSE source by fetching one always-on index (399001 深证成指). If
-the probe returns zero bars for today (pre-market, lunch break, or stale
-cached yesterday data), the streamer waits until the next trading moment
-(09:30 or 13:00 today, or 09:30 next trading day) before entering the main
-loop. This prevents wasting API calls fetching zero bars outside trading
-hours. The probe runs only once on fresh start.
+Note: CSV backfill (recovering missed data from archived CSV files) is
+handled by the download/archive modules, NOT by this streaming module.
 
 Requires tables from database/sql/05_index_baseline.sql (index_identity +
 index_intraday_5min) and database/sql/06_stock_baseline.sql (stock_identity +
@@ -106,7 +105,6 @@ from _common.study_and_select_stocks import (
 from ._akshare_source import _get_akshare
 from ._em_source import _get_em_session
 from ._io import write_cycle_csv
-from ._csv_backfill import BACKFILL_INTERVAL_SEC, backfill_szse_csvs
 from ._workers import (
     CLOSE_TIME,
     _parallel_source_worker,
@@ -117,7 +115,6 @@ from ._workers import (
     async_sleep_chunks,
     async_sleep_until,
     next_trading_moment,
-    probe_szse_for_today_bars,
     sleep_chunks,
     sleep_until,
     split_groups,
@@ -155,6 +152,11 @@ logger.info("[startup] module loaded; top-level imports done @ %.2fs.",
 # one round per hour). At/after 15:30 it switches to "full" mode (all ETF-member
 # stocks, rounds until every stock reaches CLOSE_TIME — the original behavior).
 HOURLY_MODE_CUTOFF = time(15, 30)
+
+# Afternoon-only start: the streamer waits until this time on trading days
+# before entering the main loop. Morning-session data (09:30–11:30) is
+# already captured by other streamers; we focus on the afternoon session.
+AFTERNOON_START = time(13, 30)
 
 # SZSE indices always streamed every hour during hourly mode. These are the
 # flagship SZSE indices that were missing from live data (399001 深证成指,
@@ -272,13 +274,6 @@ async def stream(
     logger.info("[startup] HostStatusTracker() ready in %.2fs.", _time.time() - t0)
     logger.info("[startup] total startup time: %.2fs; entering main loop.", _time.time() - t_stream)
 
-    # --- Startup CSV backfill: load any CSV data not yet in DB ---
-    # Runs before the fresh-start probe so historical CSV data is recovered
-    # on stream startup. Also runs periodically outside trading hours.
-    t0 = _time.time()
-    await asyncio.to_thread(backfill_szse_csvs, conn)
-    logger.info("[startup] CSV backfill done in %.1fs.", _time.time() - t0)
-
     # --- Per-biz-day state (reset whenever we anchor to a new biz day) ---
     current_biz_day = None
     latest_bar_time: dict = {}
@@ -286,38 +281,21 @@ async def stream(
     emitted_map_idx: dict = {}
 
     try:
-        # --- Fresh-start probe: check if the SZSE source has bars for today.
-        # If the probe returns zero bars (pre-market, lunch break, or stale
-        # cached yesterday data), wait until trading hours start before
-        # entering the main loop. This prevents wasting API calls fetching
-        # zero bars outside trading hours. Only probed once on fresh start. ---
+        # --- Afternoon-only start: on trading days, wait until AFTERNOON_START
+        # (13:30) before entering the main loop. Morning-session data is
+        # already captured by other streamers; we focus on afternoon. ---
         _fs_now = datetime.now()
         _fs_today = _fs_now.date()
-        if is_trading_day(_fs_today):
-            _probe_code = INDEX_ALWAYS_CODES[0]
-            _has_bars, _n = await probe_szse_for_today_bars(
-                session, host_tracker, _fs_today, _probe_code
+        if is_trading_day(_fs_today) and _fs_now.time() < AFTERNOON_START:
+            _start_dt = datetime.combine(_fs_today, AFTERNOON_START)
+            logger.info(
+                "[startup] Before afternoon start time (%s); sleeping until %s "
+                "before entering main loop.",
+                AFTERNOON_START.strftime("%H:%M"),
+                _start_dt.strftime("%Y-%m-%d %H:%M"),
             )
-            if not _has_bars:
-                _nxt = next_trading_moment(_fs_now)
-                if _nxt > _fs_now:
-                    logger.info(
-                        "[fresh-start] SZSE probe (%s) returned 0 bars for today (%s); "
-                        "waiting until %s for trading hours to start.",
-                        _probe_code, _fs_today, _nxt.strftime("%Y-%m-%d %H:%M"),
-                    )
-                    await async_sleep_until(_nxt)
-                else:
-                    logger.warning(
-                        "[fresh-start] SZSE probe (%s) returned 0 bars during trading hours; "
-                        "entering main loop (API may be down).",
-                        _probe_code,
-                    )
-            else:
-                logger.info(
-                    "[fresh-start] SZSE probe (%s) returned %d bars for today; entering main loop.",
-                    _probe_code, _n,
-                )
+            await async_sleep_until(_start_dt)
+            logger.info("[startup] Afternoon start time reached; entering main loop.")
 
         while True:
             now = datetime.now()
@@ -327,14 +305,14 @@ async def stream(
             # ---- Anchor: pick / refresh the biz day we are collecting ----
             if current_biz_day is None:
                 if not trading_today:
-                    # Non-trading day: backfill CSV → DB every 5 minutes
-                    # instead of just sleeping until next trading day.
-                    await asyncio.to_thread(backfill_szse_csvs, conn)
+                    # Non-trading day: sleep until next trading moment.
+                    # CSV backfill is handled by download/archive modules.
+                    nxt = next_trading_moment(now)
                     logger.info(
-                        "Non-trading day (%s); backfill cycle done; sleeping %ds.",
-                        today, BACKFILL_INTERVAL_SEC,
+                        "Non-trading day (%s); sleeping until %s.",
+                        today, nxt.strftime("%Y-%m-%d %H:%M"),
                     )
-                    await async_sleep_chunks(BACKFILL_INTERVAL_SEC)
+                    await async_sleep_until(nxt)
                     continue
                 else:
                     current_biz_day = today
@@ -484,17 +462,18 @@ async def stream(
             n_finished = len(active_stocks) - n_unfinished
 
             if n_unfinished == 0:
-                # All stocks finished for today: backfill CSV → DB, then
-                # sleep 5 min before re-checking (instead of waiting for
-                # next trading day — keeps CSV data synced to DB).
-                await asyncio.to_thread(backfill_szse_csvs, conn)
+                # All stocks finished for today — sleep until next
+                # trading moment. CSV backfill is handled by
+                # download/archive modules.
+                nxt = next_trading_moment(datetime.now())
                 logger.info(
-                    "All %d stocks finished for biz day %s; backfill done; sleeping %ds.",
-                    len(active_stocks), current_biz_day, BACKFILL_INTERVAL_SEC,
+                    "All %d stocks finished for biz day %s; sleeping until %s.",
+                    len(active_stocks), current_biz_day,
+                    nxt.strftime("%Y-%m-%d %H:%M"),
                 )
                 if once:
                     break
-                await async_sleep_chunks(BACKFILL_INTERVAL_SEC)
+                await async_sleep_until(nxt)
                 continue
 
             # ---- Run ONE round via 4 parallel async workers ----

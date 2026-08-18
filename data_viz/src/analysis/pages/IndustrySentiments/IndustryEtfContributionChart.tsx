@@ -1,4 +1,4 @@
-/**
+﻿/**
  * IndustryEtfContributionChart — fetches the per-ETF contribution rows for
  * ONE industry from analysis.industry_etf_contribution (via the API that also
  * reads stats.etf_liquidity_margin + stats.etf_basic_stats) and renders the
@@ -20,7 +20,7 @@ import {
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
 import { fetchIndustryEtfContributionBars } from "@/lib/api-client";
-import type { IndustryEtfContributionBarsResponse } from "../../../../shared/types";
+import type { IndustryEtfContributionBarsResponse } from "@shared/types";
 import type { IndustryEtfContributionChartProps } from "./types";
 import { buildIndustryEtfContributionOption } from "./industryEtfContributionOption";
 

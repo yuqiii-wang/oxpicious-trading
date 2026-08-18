@@ -1,11 +1,11 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
   IndexInfo,
   IndexCombinedResponse,
   IndexIntraday5minResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 export function fetchIndexList(): Promise<IndexInfo[]> {
   return fetchJson<IndexInfo[]>(`/api/index-baseline/list`);

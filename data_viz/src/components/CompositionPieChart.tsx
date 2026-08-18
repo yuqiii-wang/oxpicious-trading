@@ -1,4 +1,4 @@
-/**
+﻿/**
  * CompositionPieChart — 2-layer pie chart for security holdings.
  *
  * Shared between the ETF + Margin page and the Index Baseline page. Accepts
@@ -29,7 +29,7 @@ import { useStore } from "@/store/filters";
 import { fetchSecComposition, invalidateCacheForUrl } from "@/lib/api-client";
 import { MUTED_PALETTE, axisColors } from "@/theme/chart-palette";
 import { fmtNum, fmtPct } from "@/lib/series";
-import type { SecCompositionResponse } from "../../shared/types";
+import type { SecCompositionResponse } from "@shared/types";
 import type { EChartsOption } from "echarts";
 
 interface Props {

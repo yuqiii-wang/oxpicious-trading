@@ -1,4 +1,4 @@
-/**
+﻿/**
  * IndexPanel — single index chart + slider + intraday expansion + composition pie.
  *
  * Layout (mirrors EtfMarginPanel):
@@ -45,7 +45,7 @@ import {
 import type {
   IndexBundle,
   IndexIntraday5minResponse,
-} from "../../../../shared/types";
+} from "@shared/types";
 import type { EChartsOption } from "echarts";
 import type * as echarts from "echarts";
 import IntradayPanel from "./IntradayPanel";

@@ -1,4 +1,4 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
@@ -6,7 +6,7 @@ import type {
   FourierFreqsCodesResponse,
   FourierFreqsChartResponse,
   FourierFreqsSpectrumResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Analysis Commons — Fourier Frequencies (Index only)

@@ -6,11 +6,11 @@ endpoint behind https://www.csindex.com.cn/#/indices/family/detail?indexCode=930
 to fetch intraday ticks for index codes that are missing or stale in
 ``stats.index_intraday_5min``.
 
-SSE head start + exclusion
---------------------------
-CSIndex starts 10 minutes after SSE (``CSINDEX_START_TIME`` = 09:40, while
-SSE starts at 09:30). At the start of each trading day — AFTER the 10-min
-delay — CSIndex queries ``stats.index_intraday_5min`` for codes that already
+Afternoon-only start + exclusion
+--------------------------------
+CSIndex starts at 13:30 (``CSINDEX_START_TIME``) on trading days, focusing
+on the afternoon trading session. At the start of each trading day — AFTER
+13:30 — CSIndex queries ``stats.index_intraday_5min`` for codes that already
 have bars today. Those are the indices SSE (and SZSE) is actively streaming.
 CSIndex excludes them from its download list, so it only fetches indices
 that SSE does NOT cover (typically 930xxx/931xxx CSIndex-published indices).
@@ -27,16 +27,12 @@ Loop cadence: 30 minutes. Each loop:
      DB failures don't lose data.
   5. Upserts bars into ``stats.index_intraday_5min`` (+ ``stats.index_identity``).
 
-CSV backfill
-------------
-At startup and every 5 minutes outside trading hours, the streamer scans
-``temps/csindex_intraday/`` for archived CSV files and upserts them to DB.
-This recovers data lost to DB connection failures mid-sweep. Idempotent
-via ON CONFLICT.
-
 Anti-bot: reuses ``AntiBotProxy`` with ``DEFAULT_SLEEP_SEC`` (20s jittered)
 per request — same pattern as the SSE/SZSE streamers and the existing
 ``downloads.index.csindex.quote`` module.
+
+Note: CSV backfill (recovering missed data from archived CSV files) is
+handled by the download/archive modules, NOT by this streaming module.
 
 Usage:
   python -m downloads.stream.csindex.price              # stream (30-min loops)
@@ -72,11 +68,9 @@ from _common.db_commons import get_db_connection
 from _common._holidays_and_weekdays import is_trading_day
 
 from ._constants import (
-    BACKFILL_INTERVAL_SEC,
     CSINDEX_START_TIME,
     LOOP_INTERVAL_SEC,
 )
-from ._csv_io import backfill_csvs
 from ._db import (
     load_index_industry_map,
     load_missing_or_stale_codes,
@@ -93,6 +87,18 @@ def _seconds_until_next_loop(last_loop_start: float) -> float:
     elapsed = _time.time() - last_loop_start
     remaining = LOOP_INTERVAL_SEC - elapsed
     return max(0.0, remaining)
+
+
+def _next_trading_moment() -> datetime:
+    """Return the next trading moment (09:40 on a trading day)."""
+    from datetime import timedelta
+    now = datetime.now()
+    candidate = datetime.combine(now.date(), CSINDEX_START_TIME)
+    if now >= candidate or not is_trading_day(now.date()):
+        candidate += timedelta(days=1)
+        while not is_trading_day(candidate.date()):
+            candidate += timedelta(days=1)
+    return candidate
 
 
 def _sleep_chunks(seconds: float, chunk: float = 5.0) -> None:
@@ -122,7 +128,7 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
     """
     logger.info(
         "[startup] csindex streamer starting (loop_interval=%ds, sleep=%.0fs, "
-        "sse_head_start -> csindex_start=%s)",
+        "afternoon_only_start=%s)",
         LOOP_INTERVAL_SEC, DEFAULT_SLEEP_SEC, CSINDEX_START_TIME,
     )
 
@@ -130,11 +136,6 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
     session = build_default_session(merge_browser_profile(CSINDEX_HEADERS))
     host_tracker = HostStatusTracker()
     proxy = AntiBotProxy(AntiBotConfig(base_sleep_sec=DEFAULT_SLEEP_SEC))
-
-    # --- Startup CSV backfill: load any CSV data not yet in DB ---
-    t0 = _time.time()
-    backfill_csvs(conn)
-    logger.info("[startup] CSV backfill done in %.1fs.", _time.time() - t0)
 
     # Per-biz-day state: refreshed at the start of each new trading day
     current_biz_day = None
@@ -162,20 +163,21 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                 fetch_and_upsert_one(session, single_code, name, proxy, host_tracker, conn)
                 break
 
-            # --- Non-trading day: backfill CSV every 5 min, sleep, repeat ---
+            # --- Non-trading day: sleep until next trading moment ---
             if not trading_today:
-                backfill_csvs(conn)
+                nxt = _next_trading_moment()
+                wait_sec = (nxt - datetime.now()).total_seconds()
                 logger.info(
-                    "Non-trading day (%s); backfill done; sleeping %ds.",
-                    today, BACKFILL_INTERVAL_SEC,
+                    "Non-trading day (%s); sleeping until %s (%.0fs).",
+                    today, nxt.strftime("%Y-%m-%d %H:%M"), wait_sec,
                 )
                 if once:
                     break
-                _sleep_chunks(BACKFILL_INTERVAL_SEC)
+                _sleep_chunks(wait_sec)
                 continue
 
-            # --- New trading day: wait for SSE head start, then gather
-            #     which codes SSE is streaming (codes with bars today). ---
+            # --- New trading day: wait until CSINDEX_START_TIME (13:30), then gather
+            #     which codes SSE/SZSE is streaming (codes with bars today). ---
             if current_biz_day != today:
                 now_dt = datetime.now()
                 start_dt = datetime.combine(today, CSINDEX_START_TIME)
@@ -183,7 +185,7 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                     wait_sec = (start_dt - now_dt).total_seconds()
                     logger.info(
                         "New trading day %s; waiting %.0fs until %s "
-                        "(SSE head start so it produces first bars).",
+                        "(afternoon-only start; morning data already captured).",
                         today, wait_sec, CSINDEX_START_TIME,
                     )
                     _sleep_chunks(wait_sec)

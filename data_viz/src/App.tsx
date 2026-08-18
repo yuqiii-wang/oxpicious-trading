@@ -20,6 +20,7 @@ import PeAndDividendPage from "@/analysis/pages/PeAndDividendPage";
 import FourierFreqsPage from "@/analysis/pages/FourierFreqsPage";
 import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
+import OptionsAnalysisPage from "@/analysis/pages/OptionsAnalysis";
 import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
 
 export default function App() {
@@ -50,6 +51,7 @@ export default function App() {
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/derivatives/margin-trends" element={<MarginTrendsPage />} />
           <Route path="/analysis/derivatives/futures" element={<FuturesAnalysisPage />} />
+          <Route path="/analysis/derivatives/options" element={<OptionsAnalysisPage />} />
           <Route path="/analysis/composites" element={<CompositesPage />} />
           <Route path="/strategy" element={<Navigate to="/strategy/singleton" replace />} />
           <Route

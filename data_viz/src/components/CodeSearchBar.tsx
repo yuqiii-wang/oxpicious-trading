@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Reusable exact-code search bar for the ETF and Index pages.
  *
  *   • Enter a code (with or without exchange suffix) and press Enter / click
@@ -12,7 +12,7 @@
 import { useState, type KeyboardEvent } from "react";
 import { Box, Chip, InputAdornment, TextField } from "@mui/material";
 import { Search, Clear } from "@mui/icons-material";
-import type { SectorNode, StrategyNode } from "../../shared/types";
+import type { SectorNode, StrategyNode } from "@shared/types";
 
 interface Props {
   /** Currently active search code (null = browsing mode). */

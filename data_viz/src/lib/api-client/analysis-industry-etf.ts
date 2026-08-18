@@ -1,8 +1,8 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   IndustryEtfPriceSeriesResponse,
   IndustryEtfContributionBarsResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Industry ETF Contribution — drives the "ETF Contribution" view on the

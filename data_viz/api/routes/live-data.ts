@@ -29,7 +29,10 @@ import {
 import {
   getIntradayMovements,
   listIntradayMovementsBenchmarks,
+  getIntradayMovementsPrevDayOhlc,
 } from "../services/analysis/index.js";
+import { runPythonModule } from "../services/py-runner.service.js";
+import { getSecAllocLiveAttribution } from "../services/sec-alloc-live-attribution.service.js";
 
 const router = Router();
 
@@ -116,12 +119,34 @@ router.get("/combined", async (req: Request, res: Response) => {
 //   GET /api/live-data/intraday-movements/benchmarks
 //     Returns the list of benchmark codes that appear in
 //     analysis.sec_alloc_perf_attribution (broad-market benchmarks first).
+//   GET /api/live-data/intraday-movements/prev-day-ohlc
+//     ?benchmark_code=000922&date=YYYY-MM-DD
+//     Returns PrevDayOhlcResponse: raw prev-trading-day OHLC of the benchmark
+//     + every member index (with industry_id) — drives the single prev-day
+//     OHLC bar before the 09:30 tick on the top plot.
 router.get("/intraday-movements/benchmarks", async (_req: Request, res: Response) => {
   try {
     const benchmarks = await listIntradayMovementsBenchmarks();
     res.json({ benchmarks });
   } catch (err) {
     console.error("[live-data/intraday-movements/benchmarks] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/intraday-movements/prev-day-ohlc", async (req: Request, res: Response) => {
+  try {
+    const benchmarkCode = typeof req.query.benchmark_code === "string"
+      ? req.query.benchmark_code.trim()
+      : "";
+    if (!benchmarkCode) {
+      res.status(400).json({ error: "Missing 'benchmark_code' parameter" });
+      return;
+    }
+    const date = typeof req.query.date === "string" ? req.query.date.trim() : null;
+    res.json(await getIntradayMovementsPrevDayOhlc(benchmarkCode, date || null));
+  } catch (err) {
+    console.error("[live-data/intraday-movements/prev-day-ohlc] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
@@ -140,6 +165,62 @@ router.get("/intraday-movements", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("[live-data/intraday-movements] error:", err);
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Sec-Alloc Live Attribution data — per-industry weighted/equal
+//      aggregates at one 5-min tick from the live schema tables.
+//      weighted_available drives the UI "By Trading Amt" disable state.
+//      GET /api/live-data/sec-alloc-live/attribution
+router.get("/sec-alloc-live/attribution", async (req: Request, res: Response) => {
+  try {
+    const benchmarkCode = typeof req.query.benchmark_code === "string"
+      ? req.query.benchmark_code.trim()
+      : "";
+    const time = typeof req.query.time === "string" ? req.query.time.trim() : "";
+    const date = typeof req.query.date === "string" ? req.query.date.trim() : null;
+    if (!benchmarkCode || !time) {
+      res.status(400).json({ error: "Missing 'benchmark_code' or 'time' parameter" });
+      return;
+    }
+    res.json(await getSecAllocLiveAttribution(benchmarkCode, date || null, time));
+  } catch (err) {
+    console.error("[live-data/sec-alloc-live/attribution] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Sec-Alloc Live Attribution pipeline trigger.
+//      The Market Movements page fires this POST before each 5-min
+//      auto-refresh so the underlying tables stay fresh during trading
+//      hours without manual runs. The module is incremental:
+//        • heavy prev-date ref (live.sec_alloc_live_prev_ref) is built
+//          ONCE per date and skipped when already present;
+//        • light 5-min ticks (live.sec_alloc_live_attribution) are
+//          appended for new bars only.
+//      An in-flight guard prevents overlapping spawns when the 5-min
+//      interval fires while a previous run is still executing.
+let secAllocLiveRunInFlight = false;
+
+/** POST /api/live-data/sec-alloc-live/run */
+router.post("/sec-alloc-live/run", async (_req: Request, res: Response) => {
+  if (secAllocLiveRunInFlight) {
+    res.json({ success: true, skipped_in_flight: true });
+    return;
+  }
+  secAllocLiveRunInFlight = true;
+  try {
+    const result = await runPythonModule("live.sec_alloc_live_attribution", []);
+    res.json({
+      success: result.success,
+      stdout_tail: result.stdout.slice(-2000),
+      stderr_tail: result.stderr.slice(-2000),
+    });
+  } catch (err) {
+    console.error("[live-data/sec-alloc-live/run] error:", err);
+    res.status(500).json({ success: false, stderr_tail: String(err) });
+  } finally {
+    secAllocLiveRunInFlight = false;
   }
 });
 

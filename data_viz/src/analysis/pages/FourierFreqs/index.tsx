@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Fourier Frequencies analysis page (default export).
  *
  * Index-only for now. Layout mirrors the other analysis-commons pages
@@ -41,7 +41,7 @@ import type {
   FourierFreqsCodesResponse,
   SectorNode,
   StrategyNode,
-} from "../../../../shared/types";
+} from "@shared/types";
 import { PAGE_SIZE } from "./constants";
 import { FourierFreqsPanel } from "./FourierFreqsPanel";
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Debt Baseline page — 5-panel multi-chart view mirroring plot_debt_baseline.py.
  *
  * Layout (vertical stack, each its own ChartCard):
@@ -28,7 +28,7 @@ import type {
   DebtBaselineRow,
   PbocOmaRow,
   PbocOmaResponse,
-} from "../../../../shared/types";
+} from "@shared/types";
 import {
   CUMULATIVE_COLOR,
   MUTED_INLINE_COLOR,

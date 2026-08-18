@@ -58,7 +58,8 @@ for m in \
   analyze.mov_ave_spread \
   analyze.pe_and_dividends \
   analyze.margins \
-  analyze.futures
+  analyze.futures \
+  analyze.options
 do
   python -m "$m"
 done

@@ -1,11 +1,11 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
   MovAveSpreadCodesResponse,
   MovAveSpreadChartResponse,
   MaSpreadSecType,
-} from "../../../shared/types";
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Analysis Commons — MA-Spread (ETF + Index)

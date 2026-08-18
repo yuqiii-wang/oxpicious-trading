@@ -182,25 +182,27 @@ TRADING_AMT_MA_SLOPE_COLUMNS = (
 # Used by trading_amt.compute_trading_amt_slope.
 TRADING_AMT_RAW_SLOPE_COLUMN = "trading_amt_slope"
 
-# Trading-amount SLOPE vs PRICE SLOPE RATIO column names (6 columns).
-# Each is an elasticity-like ratio = trading_amt_slope / price_slope.
-#   col[0] = trading_amt_slope / price_slope (raw vs raw)
-#   col[1] = trading_amt_ma5_slope / ma5_slope
-#   col[2] = trading_amt_ma5_slope / ma20_slope
-#   col[3] = trading_amt_ma5_slope / ma60_slope
-#   col[4] = trading_amt_ma5_slope / ma120_slope
-#   col[5] = trading_amt_ma5_slope / ma255_slope
-# Interpretation: how much capital (trading-amount change) pushes price
-#   by one unit — a liquidity-impact proxy. NUMERIC(10,4). NULL when
-#   numerator or denominator is NULL or denominator is exactly 0.
+# Trading-amount vs PRICE SLOPE RATIO column names (6 columns).
+# Each is a liquidity-impact proxy = (trading_amt / 1_000_000) / price_slope.
+# Trading amount is divided by 1M to express capital in millions (yuan).
+#   col[0] = (trading_amount / 1M) / price_slope       (raw vs raw)
+#   col[1] = (trading_amt_ma5 / 1M) / ma5_slope
+#   col[2] = (trading_amt_ma20 / 1M) / ma20_slope
+#   col[3] = (trading_amt_ma60 / 1M) / ma60_slope
+#   col[4] = (trading_amt_ma120 / 1M) / ma120_slope
+#   col[5] = (trading_amt_ma255 / 1M) / ma255_slope
+# Interpretation: how many millions of capital push price by one unit
+#   — a liquidity-impact proxy. Matching-timescale (no cross-timescale).
+#   Denominator=0 auto-set to 1.0 to avoid division-by-zero.
+#   NUMERIC(10,4). NULL when numerator or denominator is NULL.
 # Used by trading_amt.compute_trading_amt_slope_vs_price_ratios.
 TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS = (
-    "trading_amt_slope_vs_price_slope_ratio",
-    "trading_amt_ma5_slope_vs_price_ma5_slope_ratio",
-    "trading_amt_ma5_slope_vs_price_ma20_slope_ratio",
-    "trading_amt_ma5_slope_vs_price_ma60_slope_ratio",
-    "trading_amt_ma5_slope_vs_price_ma120_slope_ratio",
-    "trading_amt_ma5_slope_vs_price_ma255_slope_ratio",
+    "trading_amt_vs_price_slope_ratio",
+    "trading_amt_ma5_vs_price_ma5_slope_ratio",
+    "trading_amt_ma20_vs_price_ma20_slope_ratio",
+    "trading_amt_ma60_vs_price_ma60_slope_ratio",
+    "trading_amt_ma120_vs_price_ma120_slope_ratio",
+    "trading_amt_ma255_vs_price_ma255_slope_ratio",
 )
 
 # Source price-slope column names needed by the ratio computation.
@@ -379,7 +381,10 @@ TRADING_AMT_DESCRIPTION = (
     "columns (trading_amt_std{5,20,60,120,255} — rolling population std of "
     "trading_amt_maW over W days, used for Bollinger-style envelopes), "
     "5 market-share MA columns, 5 trading-amount MA slope columns, "
-    "and 5 market-share-vs-MA gap columns. Source: same DataFrame "
+    "1 raw trading-amount slope column, 6 liquidity-impact ratio columns "
+    "(trading_amt / 1M vs price_slope, matching-timescale, denominator=0 "
+    "auto-set to 1.0), and 5 market-share-vs-MA gap columns. "
+    "Source: same DataFrame "
     "as the mov_ave_spread parent pipeline (no second DB round-trip). "
     "The sec_type column discriminates the source universe "
     "('etf' | 'index' | 'stock')."
@@ -450,4 +455,40 @@ REBOUNDS_COLUMNS = (
     "rebound_gap_days_120days",  "rebound_trading_amt_120days",
     "rebound_date_255days",  "rebound_close_price_255days",
     "rebound_gap_days_255days",  "rebound_trading_amt_255days",
+)
+
+
+# ============================================================================
+#  Holiday / non-trading-day risk (analysis.mov_ave_rsi_holiday)
+#  — Captures previous-day trading/weekend/holiday status + today's
+#    intraday gaps. Internal step of the parent mov_ave_spread pipeline
+#    (see holiday.py).
+# ============================================================================
+
+HOLIDAY_TABLE = "analysis.mov_ave_rsi_holiday"
+HOLIDAY_ANALYSIS_NAME = "mov_ave_rsi_holiday"
+
+HOLIDAY_DESCRIPTION = (
+    "Non-trading-day risk analysis (ETF + Index + Stock). For each trading "
+    "day D, captures whether the previous calendar day (D-1) was a trading "
+    "day / weekend / holiday / long holiday (>= 3 consecutive non-trading "
+    "days including at least one official holiday), the consecutive "
+    "non-trading-day count ending on D-1, and today's intraday high-low "
+    "gap ((high-low)/close) and open-close gap ((close-open)/open). "
+    "Source: same DataFrame as the mov_ave_spread parent pipeline "
+    "(price, open, high, low columns). Holiday classification uses "
+    "the project calendar (_common._holidays_and_weekdays). The sec_type "
+    "column discriminates the source universe ('etf' | 'index' | 'stock')."
+)
+
+# All holiday column names in order.
+HOLIDAY_COLUMNS = (
+    "sec_type", "code", "date",
+    "is_prev_day_trading",
+    "is_prev_day_weekend",
+    "is_prev_day_holiday",
+    "is_prev_day_long_holiday",
+    "non_trading_day_count",
+    "today_high_low_gap",
+    "today_open_close_gap",
 )

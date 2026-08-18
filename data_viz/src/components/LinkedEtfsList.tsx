@@ -1,4 +1,4 @@
-/**
+﻿/**
  * LinkedEtfsList — paginated table of ETFs tracking the given index.
  *
  * Shown on the Index Baseline page beside the Composition pie chart.
@@ -34,7 +34,7 @@ import { Link as LinkIcon } from "@mui/icons-material";
 import RefreshButton from "@/components/RefreshButton";
 import { fetchLinkedEtfs, invalidateCacheForUrl } from "@/lib/api-client";
 import { fmtNum } from "@/lib/series";
-import type { LinkedEtfsResponse } from "../../shared/types";
+import type { LinkedEtfsResponse } from "@shared/types";
 import {
   expandedTableAggCellSx,
   expandedTableBodyCellSx,

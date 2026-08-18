@@ -1,4 +1,4 @@
-/**
+﻿/**
  * DecisionTable — expandable trade-decisions table for any strategy backtest.
  *
  * Renders as an MUI Accordion (collapsed by default) with a summary showing
@@ -52,7 +52,7 @@ import {
 import { Fragment, type ReactNode } from "react";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
-import type { StrategyDecision } from "../../../shared/types";
+import type { StrategyDecision } from "@shared/types";
 
 // ---------------------------------------------------------------------------
 // Mixed-mode signal_reason parser

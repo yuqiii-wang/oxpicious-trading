@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Build the ECharts option for the Industry ETF Contribution bar chart —
  * 2nd plot onward in "ETF Contribution" mode.
  *
@@ -16,7 +16,7 @@
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
-import type { IndustryEtfContributionBarsResponse } from "../../../../shared/types";
+import type { IndustryEtfContributionBarsResponse } from "@shared/types";
 import {
   UP_COLOR,
   DOWN_COLOR,

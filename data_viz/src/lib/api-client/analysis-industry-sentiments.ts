@@ -1,10 +1,10 @@
-import { fetchJson } from "./_cache";
+﻿import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
   IndustrySentimentsChartResponse,
   IndustryCorrelationsResponse,
-} from "../../../shared/types";
+} from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Analysis Commons — Industry Sentiments (member index values, rebased to 100)

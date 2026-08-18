@@ -1,4 +1,4 @@
-/**
+﻿/**
  * StockOhlcChart — shared daily OHLC chart for a single stock.
  *
  * Single source of truth for the stock daily OHLC plot. Used by:
@@ -50,7 +50,7 @@ import {
   commonGrid,
   commonDataZoom,
 } from "@/theme/chart-palette";
-import type { StockBaselineRow, StockDividend } from "../../shared/types";
+import type { StockBaselineRow, StockDividend } from "@shared/types";
 import type { EChartsOption } from "echarts";
 
 interface Props {

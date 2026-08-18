@@ -86,10 +86,14 @@ def fetch_and_upsert_one(
     # CSV archival BEFORE DB upsert (so DB failure doesn't lose data)
     csv_path = None
     if bar_rows:
-        # Add name to each bar row for CSV archival (bar_rows don't carry it)
+        # Add name to each bar row for CSV archival only — CSV_COLUMNS
+        # includes "name" but index_intraday_5min does NOT.
         for br in bar_rows:
             br["name"] = tick_name
         csv_path = write_bars_csv(datetime.now(), bar_rows)
+        # Strip name before DB upsert — index_intraday_5min has no name column.
+        for br in bar_rows:
+            br.pop("name", None)
 
     n_bars = 0
     if bar_rows:

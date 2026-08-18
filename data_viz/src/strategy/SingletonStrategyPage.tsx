@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Singleton Strategy page — displays pre-computed backtest results.
  *
  * The backtest itself is run by the Python package `strategy.singleton_trading`
@@ -43,7 +43,7 @@ import type {
   StrategyBacktestResponse,
   StrategyRiskResponse,
   StrategyForecast1mResponse,
-} from "../../shared/types";
+} from "@shared/types";
 import { buildSingletonStrategyOption, type SelectedPeriod } from "./singletonStrategyChartOption";
 import {
   StrategyPageShell,

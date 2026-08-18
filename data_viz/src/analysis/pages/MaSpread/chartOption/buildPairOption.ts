@@ -1,4 +1,4 @@
-/**
+﻿/**
  * ECharts option builder for the MA-Spread pair chart (SMA + EMA).
  *
  * Extracted from the former MaSpreadPage.tsx so the panel component stays
@@ -37,7 +37,7 @@ import {
 } from "@/theme/chart-palette";
 import type { ThemeMode } from "@/store/filters";
 import type { EChartsOption } from "echarts";
-import type { MovAveSpreadPairSeries, MovAveSpreadValleyLow } from "../../../../../shared/types";
+import type { MovAveSpreadPairSeries, MovAveSpreadValleyLow } from "@shared/types";
 import {
   computeTrendBands,
   trendBandsToMarkArea,
