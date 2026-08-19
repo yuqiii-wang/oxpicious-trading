@@ -12,6 +12,7 @@
  * selected indices' close-price trends; the per-index attribution detail
  * lives in the PerfAttrPanel cards below the plot.
  */
+import React from "react";
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import {
@@ -22,6 +23,7 @@ import {
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { rebaseTo100 } from "./helpers";
+import { renderReactElement } from "@/lib/react-tooltip-renderer";
 
 /** One index's raw close series prepared for plotting (aligned to dates). */
 export interface IndexAllocationSeries {
@@ -118,7 +120,8 @@ export function buildIndexAllocationPriceOption(
         const idx0 = arr[0].dataIndex ?? 0;
         const dateStr = allDates[idx0] ?? "";
         if (!dateStr) return "";
-        let html = `<div style="font-weight:600">${dateStr}</div>`;
+        const children: React.ReactNode[] = [];
+        children.push(React.createElement("div", { style: { fontWeight: 600 } }, dateStr));
         for (const p of arr) {
           const s = rebasedSeries.find((it) => it.name === p.seriesName);
           if (!s) continue;
@@ -126,12 +129,17 @@ export function buildIndexAllocationPriceOption(
           if (rv == null || typeof rv !== "number" || !Number.isFinite(rv)) continue;
           const raw = s.raw[idx0] ?? null;
           const pct = rv - 100;
-          html +=
-            `<div>${p.marker ?? ""} ${p.seriesName}: <b>${pct >= 0 ? "+" : ""}${fmtNum(pct, 2)}%</b>` +
-            (raw != null ? ` <span style="opacity:0.6">(${fmtNum(raw, 2)})</span>` : "") +
-            `</div>`;
+          const lineChildren: React.ReactNode[] = [];
+          if (p.marker) lineChildren.push(p.marker);
+          lineChildren.push(` ${p.seriesName}: `);
+          lineChildren.push(React.createElement("b", null, (pct >= 0 ? "+" : "") + fmtNum(pct, 2) + "%"));
+          if (raw != null) {
+            lineChildren.push(" ");
+            lineChildren.push(React.createElement("span", { style: { opacity: 0.6 } }, `(${fmtNum(raw, 2)})`));
+          }
+          children.push(React.createElement("div", null, ...lineChildren));
         }
-        return html;
+        return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
     },
     legend: commonLegend(themeMode, { data: rebasedSeries.map((s) => s.name) }),

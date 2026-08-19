@@ -1,8 +1,8 @@
 """Constants shared across all strategy backtest + risk pipelines.
 
 These values are strategy-agnostic — they describe the security universe,
-DB table names, and execution defaults that any strategy (ma_spread,
-mean-reversion, momentum, etc.) would reuse.
+DB table names, and execution defaults that any strategy (momentum,
+mean-reversion, etc.) would reuse.
 """
 from __future__ import annotations
 

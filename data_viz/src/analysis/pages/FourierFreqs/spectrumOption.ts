@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ECharts option builder for ONE per-range_days FFT amplitude-spectrum bar
  * chart (the bar charts below the top index price plot on the Fourier
  * Frequencies page).
@@ -20,8 +20,10 @@
  * non-linear period spacing — this is the standard discrete-spectrum bar
  * chart; the period label communicates the actual cycle length.
  */
+import React from "react";
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import {
   UP_COLOR,
   PALETTE_HI,
@@ -110,14 +112,23 @@ export function buildSpectrumOption(
       textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (params: unknown) => {
         const p = params as { dataIndex?: number; value?: number; color?: string };
-        const j = p.dataIndex ?? 0; // index into the visible-bars array
-        const i = visibleIdx[j] ?? 0; // original spectrum bin index
+        const j = p.dataIndex ?? 0;
+        const i = visibleIdx[j] ?? 0;
         const k = i + 1;
         const period = Math.round(N / k);
         const amp = p.value ?? 0;
-        const isDom = i === domIdx ? " · <b>dominant</b>" : "";
-        return `<b>${period}d cycle</b> (bin k=${k})<br/>`
-          + `amplitude: <b>${fmtNum(amp, 4)}</b> yuan${isDom}`;
+        const isDom = i === domIdx;
+        return renderReactElement(
+          React.createElement(React.Fragment, null, [
+            tooltipComponents.Bold({ children: `${period}d cycle` }),
+            ` (bin k=${k})`,
+            React.createElement("br"),
+            "amplitude: ",
+            tooltipComponents.Bold({ children: fmtNum(amp, 4) }),
+            " yuan",
+            isDom ? tooltipComponents.Bold({ children: " · dominant" }) : null,
+          ]),
+        );
       },
     },
     xAxis: {

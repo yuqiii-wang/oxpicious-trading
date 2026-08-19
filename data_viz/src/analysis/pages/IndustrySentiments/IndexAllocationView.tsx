@@ -1,4 +1,4 @@
-﻿/**
+/**
  * IndexAllocationView — the "Index Allocation" view mode on the Industry
  * Sentiments page (renders when viewMode === "index_allocation").
  *
@@ -53,7 +53,7 @@ import type {
   IndustrySentimentsChartResponse,
   PerfAttrCodeRow,
 } from "@shared/types";
-import { PerfAttrPanel } from "../PerfAttr/PerfAttrPanel";
+import { PerfAttrPanel } from "@/analysis/pages/PerfAttr/PerfAttrPanel";
 import type { IndexAllocationViewProps } from "./types";
 import {
   buildIndexAllocationPriceOption,

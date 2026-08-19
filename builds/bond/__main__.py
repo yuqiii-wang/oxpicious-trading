@@ -77,6 +77,10 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings("ignore")
 
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 import numpy as np
 import pandas as pd
 
@@ -84,7 +88,7 @@ from _common.build_commons import (
     setup_utf8_stdout, add_common_build_args, get_db_or_exit,
     find_missing_dates, parse_num, print_build_header, print_wall_time,
     glob_source_files, PROJECT_ROOT, TODAY_STR,
-    bulk_upsert_async, truncate_table_async,
+    copy_or_upsert_split_async, truncate_table_async,
 )
 
 setup_utf8_stdout()
@@ -929,10 +933,14 @@ async def main():
             oma_rows = oma_df.copy()
             oma_rows["date"] = oma_rows["date"].dt.date
             oma_rows = oma_rows.to_dict("records")
-            inserted = await bulk_upsert_async(
+            n_copied, n_upserted = await copy_or_upsert_split_async(
                 conn, "stats.pboc_oma", oma_rows, ["date", "title"]
             )
-            print(f"    [DB] Inserted {inserted:,} rows into stats.pboc_oma", flush=True)
+            total = n_copied + n_upserted
+            via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                  f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                  "upsert"
+            print(f"    [DB] Inserted {total:,} rows into stats.pboc_oma via {via}", flush=True)
         else:
             print(f"    [DB] No OMA rows to insert into stats.pboc_oma", flush=True)
 
@@ -1028,8 +1036,14 @@ async def main():
 
         # Insert new identities for missing dates only
         identity_rows = [{"date": d} for d in sorted(missing_dates)]
-        inserted = await bulk_upsert_async(conn, "stats.debt_identity", identity_rows, ["date"])
-        print(f"    [DB] Inserted {inserted:,} rows into stats.debt_identity", flush=True)
+        n_copied, n_upserted = await copy_or_upsert_split_async(
+            conn, "stats.debt_identity", identity_rows, ["date"]
+        )
+        total = n_copied + n_upserted
+        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+              "upsert"
+        print(f"    [DB] Inserted {total:,} rows into stats.debt_identity via {via}", flush=True)
 
         # Helper: filter a frame to missing dates, convert to rows for insert
         def df_to_missing_rows(df, date_col="date"):
@@ -1055,8 +1069,14 @@ async def main():
         for tbl, df in table_source_pairs:
             rows = df_to_missing_rows(df)
             if rows:
-                inserted = await bulk_upsert_async(conn, tbl, rows, ["date"])
-                print(f"    [DB] Inserted {inserted:,} rows into {tbl} "
+                n_copied, n_upserted = await copy_or_upsert_split_async(
+                    conn, tbl, rows, ["date"]
+                )
+                total = n_copied + n_upserted
+                via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                      f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                      "upsert"
+                print(f"    [DB] Inserted {total:,} rows into {tbl} via {via} "
                       f"(filtered to {len(missing_dates)} missing dates)", flush=True)
             else:
                 print(f"    [DB] No new rows to insert into {tbl}", flush=True)

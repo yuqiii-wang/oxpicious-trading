@@ -19,7 +19,6 @@ import type {
   LatestDatesResponse,
   DebtBaselineResponse,
   OptionsCombinedResponse,
-  ExpiryGapsResponse,
   EtfOhlcvResponse,
   EtfMarginCombinedResponse,
   IndexInfo,
@@ -28,6 +27,7 @@ import type {
   LinkedEtfsResponse,
   StockCombinedResponse,
   IntradayMovementsResponse,
+  SkewnessCrossCountResponse,
 } from "@shared/types";
 
 // Module-level cache singleton: 100 entries, 10-minute TTL (safety net).
@@ -92,7 +92,7 @@ function mapUrlToSource(url: string): keyof LatestDatesResponse | null {
   if (url.startsWith("/api/index-baseline/combined"))     return "index_baseline";
   if (url.startsWith("/api/etf-margin/combined"))         return "etf_margin";
   if (url.startsWith("/api/szse-options/combined"))       return "options";
-  if (url.startsWith("/api/szse-options/stats-before-expiry")) return "options";
+  if (url.startsWith("/api/szse-options/skewness-cross-counts")) return "options";
   if (url.startsWith("/api/szse-options/etf-ohlcv"))      return "etf_margin";
   if (url.startsWith("/api/stock-baseline/combined"))     return "stock_baseline";
   if (url.startsWith("/api/live-data/intraday-movements")) return "intraday_movements";
@@ -139,9 +139,9 @@ function extractLatestDate(url: string, data: unknown): string {
       const dates = (data as OptionsCombinedResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
     }
-    if (url.startsWith("/api/szse-options/stats-before-expiry")) {
-      const rows = (data as ExpiryGapsResponse)?.rows ?? [];
-      return rows.length ? rows[rows.length - 1].date : "";
+    if (url.startsWith("/api/szse-options/skewness-cross-counts")) {
+      const rows = (data as SkewnessCrossCountResponse)?.rows ?? [];
+      return rows.reduce((max, r) => (r.date > max ? r.date : max), "");
     }
     if (url.startsWith("/api/szse-options/etf-ohlcv")) {
       const dates = (data as EtfOhlcvResponse)?.dates ?? [];

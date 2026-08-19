@@ -1,7 +1,7 @@
 -- ============================================================================
 --  Algo Configs — per-(security, strategy, date-range) algo param overrides.
 --  Stores the customizable params for a factors_and_algos algo (e.g.
---  bollinger_bands) as a JSONB column, keyed by security + strategy + an
+--  macd) as a JSONB column, keyed by security + strategy + an
 --  active date range. Lets a strategy load algo config dynamically from the
 --  DB instead of hardcoding it in Python.
 --

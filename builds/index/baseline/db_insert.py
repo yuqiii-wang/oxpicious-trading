@@ -15,9 +15,10 @@ further existing_keys check is needed here. All four tables share the
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
-from _common.build_commons import bulk_upsert_async
+from _common.build_commons import copy_or_upsert_split_async
 
 
 async def insert_daily_to_db(conn, daily_df, verbose=True):
@@ -34,47 +35,39 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
     valuation_rows = []
     tech_stats_rows = []
 
-    for _, row in daily_df.iterrows():
-        identity_rows.append({
-            "date": row["date"],
-            "code": row["code"],
-            "name": str(row.get("indexName", "")) if pd.notna(row.get("indexName")) else "",
-        })
-        basic_stats_rows.append({
-            "date": row["date"],
-            "code": row["code"],
-            "open": row["open"],
-            "high": row["high"],
-            "low": row["low"],
-            "close": row["close"],
-            "trading_shares": row["trading_shares"],
-            "trading_amount": row["trading_amount"],
-            "change": row["change"],
-            "change_pct": row["changePct"],
-            "is_close_estimated": bool(row.get("is_close_estimated", False)),
-        })
-        valuation_rows.append({
-            "date": row["date"],
-            "code": row["code"],
-            "pe": row["pe"],
-            "cons_number": row["consNumber"],
-        })
-        tech_stats_rows.append({
-            "date": row["date"],
-            "code": row["code"],
-            "ma5": row["ma5"],
-            "ma5_ratio": row["ma5_ratio"],
-            "ma20": row["ma20"],
-            "ma60": row["ma60"],
-            "ma120": row["ma120"],
-            "ma255": row["ma255"],
-            "ema6": row.get("ema6"),
-            "ema10": row.get("ema10"),
-            "ema20": row.get("ema20"),
-            "ema60": row.get("ema60"),
-            "ema120": row.get("ema120"),
-            "ema255": row.get("ema255"),
-        })
+    # Vectorized row construction for 4 tables
+    _src = daily_df.copy()
+    _src["code"] = _src["code"].astype(str)
+    # --- Helper: vectorized NaN→None ---
+    def _to_db_series(s: pd.Series) -> pd.Series:
+        return s.where(s.notna(), None)
+    # --- identity_rows ---
+    _src["name"] = _src["indexName"].where(_src["indexName"].notna(), "").astype(str)
+    identity_rows = _src[["date", "code", "name"]].to_dict(orient="records")
+    # --- basic_stats_rows ---
+    _basic_cols = ["open", "high", "low", "close", "trading_shares", "trading_amount",
+                   "change", "changePct"]
+    for _c in _basic_cols:
+        if _c in _src.columns:
+            _src[_c] = _to_db_series(_src[_c])
+    if "is_close_estimated" in _src.columns:
+        _src["is_close_estimated"] = _src["is_close_estimated"].fillna(False).astype(bool)
+    else:
+        _src["is_close_estimated"] = False
+    basic_cols_out = ["date", "code"] + _basic_cols + ["is_close_estimated"]
+    basic_stats_rows = _src[[c for c in basic_cols_out if c in _src.columns]].to_dict(orient="records")
+    # --- valuation_rows ---
+    _val_cols = ["pe", "consNumber"]
+    for _c in _val_cols:
+        if _c in _src.columns:
+            _src[_c] = _to_db_series(_src[_c])
+    val_cols_out = ["date", "code"] + [c for c in _val_cols if c in _src.columns]
+    valuation_rows = _src[val_cols_out].to_dict(orient="records")
+    # --- tech_stats_rows ---
+    _tech_cols = ["ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
+                  "ema6", "ema10", "ema20", "ema60", "ema120", "ema255"]
+    tech_cols_out = ["date", "code"] + [c for c in _tech_cols if c in _src.columns]
+    tech_stats_rows = _src[tech_cols_out].to_dict(orient="records")
 
     pk = ["date", "code"]
     for tbl, rows in [
@@ -84,8 +77,14 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
         ("stats.index_tech_stats",  tech_stats_rows),
     ]:
         if rows:
-            inserted = await bulk_upsert_async(conn, tbl, rows, pk)
+            n_copied, n_upserted = await copy_or_upsert_split_async(
+                conn, tbl, rows, pk
+            )
+            total = n_copied + n_upserted
             if verbose:
-                print(f"    [DB] Inserted {inserted:,} rows into {tbl}", flush=True)
+                via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                      f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                      "upsert"
+                print(f"    [DB] Inserted {total:,} rows into {tbl} via {via}", flush=True)
 
     return len(identity_rows)

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Build the ECharts option for the Industry-level Benchmark Attribution
  * bar chart — 2nd plot onward in "Benchmark Attribution" mode.
  *
@@ -36,7 +36,7 @@ import {
   buildYAxes,
   buildContributionBarData,
   buildSharedWtBarData,
-} from "../shared/attributionBarCommon";
+} from "@/analysis/pages/shared/attributionBarCommon";
 import { fmtNum } from "@/lib/series";
 
 export function buildIndustryBenchmarkAttributionOption(

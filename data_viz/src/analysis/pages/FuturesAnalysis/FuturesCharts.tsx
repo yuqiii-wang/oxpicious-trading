@@ -1,4 +1,4 @@
-﻿/**
+/**
  * FuturesCharts — the 2-plot futures analysis view.
  *
  * Layout (top → bottom):
@@ -20,7 +20,7 @@
  *     tooltip silently goes empty/stale. Manual dispatch with a pixel
  *     computed from the shared category index is deterministic.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, CircularProgress, Stack, Typography } from "@mui/material";
 import type * as echarts from "echarts";
 import EChart from "@/components/EChart";
@@ -38,7 +38,7 @@ import {
   EXPIRY_DOTS_SERIES_ID,
   type FuturesChartExtra,
   type ExpiryDot,
-} from "../../../dataviz/features/futures/chartOption";
+} from "@/dataviz/features/futures/chartOption";
 import type { EChartsOption } from "echarts";
 import {
   AXIS_POINTER_LINE,
@@ -46,6 +46,7 @@ import {
   TOOLTIP_CARD_BORDER,
   TOOLTIP_CARD_TEXT,
 } from "@/theme/chart-palette";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 
 interface FuturesChartsProps {
   product: string;
@@ -402,22 +403,24 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
           }>;
           if (arr.length === 0) return "";
           const dateStr = arr[0].axisValue ?? dates[arr[0].dataIndex ?? 0] ?? "";
-          const rowsHtml = arr
-            .filter((p) => {
-              const v = Array.isArray(p.value) ? p.value[1] : p.value;
-              if (v == null || !Number.isFinite(v as number)) return false;
-              // Matured (history) curves only appear in history mode —
-              // matching the main price plot's tooltip behavior.
-              if (viewMode !== "history" && maturedCodeSet.has(p.seriesName ?? "")) return false;
-              return true;
-            })
-            .map((p) => {
-              const v = (Array.isArray(p.value) ? p.value[1] : p.value) as number;
-              const valStr = (v >= 0 ? "+" : "") + v.toFixed(4);
-              return `<div><span style="color:${p.color ?? ""}">●</span> ${p.seriesName ?? ""}: <b>${valStr}</b></div>`;
-            })
-            .join("");
-          return `<div style="font-weight:600">${dateStr}</div>${rowsHtml}`;
+          const filtered = arr.filter((p) => {
+            const v = Array.isArray(p.value) ? p.value[1] : p.value;
+            if (v == null || !Number.isFinite(v as number)) return false;
+            if (viewMode !== "history" && maturedCodeSet.has(p.seriesName ?? "")) return false;
+            return true;
+          });
+          const children: React.ReactNode[] = [];
+          children.push(React.createElement(tooltipComponents.Header, null, dateStr));
+          for (const p of filtered) {
+            const v = (Array.isArray(p.value) ? p.value[1] : p.value) as number;
+            const valStr = (v >= 0 ? "+" : "") + v.toFixed(4);
+            children.push(React.createElement(tooltipComponents.Row, null, [
+              React.createElement("span", { style: { color: p.color ?? "" } }, "●"),
+              ` ${p.seriesName ?? ""}: `,
+              React.createElement(tooltipComponents.Bold, null, valStr),
+            ]));
+          }
+          return renderReactElement(React.createElement(React.Fragment, null, children));
         },
       },
       xAxis: {

@@ -1,28 +1,33 @@
-"""CPU-vs-GPU router for analyze / build operations.
+"""CPU-vs-GPU router — bulk data size controller for cudf.pandas.
 
-The single entry point is ``should_use_gpu()``, which combines three
-checks:
+When the process-level ``cudf.pandas`` hook is active (enabled at the
+entry point via ``_common.df_utils._activate.activate()``), ALL pandas
+operations transparently run on GPU via cuDF. This router exists to
+answer a single question:
 
-  1. **CUDA available?** - ``detector.is_gpu_available()`` (cached)
-  2. **Data volume above breakeven?** - ``thresholds.breakeven_rows()``
-  3. **DataFrame fits in VRAM?** - ``thresholds.fits_in_vram()``
+  "Is this DataFrame large enough for GPU acceleration to matter?"
 
-If all three pass, GPU (cuDF) is worthwhile. Otherwise, CPU (pandas)
-is faster. The decision is logged once per (op_type, n_rows) pair so
-repeated calls don't spam stdout.
+The router performs TWO checks:
+
+  1. **GPU available?** - ``detector.is_gpu_available()`` (cached).
+  2. **Data volume above breakeven?** - ``thresholds.breakeven_rows()``.
+
+There is NO VRAM fit check — cudf.pandas manages GPU memory internally
+and gracefully falls back to CPU when VRAM is insufficient.
+
+The return value is for AWARENESS / LOGGING only — callers use it to
+print a one-time notice per (op_type, n_rows) combination. Code-path
+branching based on this return value is deprecated (the single pandas
+code path handles both CPU and GPU modes via cudf.pandas).
 
 USAGE
 =====
 
     from _common.df_utils import should_use_gpu
 
-    if should_use_gpu(df, op_type="rolling_std"):
-        import cudf
-        gdf = cudf.from_pandas(df)
-        result = gdf.groupby(keys).rolling(W).std(ddof=0)
-        result = result.to_pandas()
-    else:
-        result = df.groupby(keys).rolling(W).std(ddof=0)
+    if should_use_gpu(df, op_type="rolling_mean"):
+        print("This workload is GPU-worthy — cudf.pandas will accelerate it.", flush=True)
+    # ... single pandas code path — cudf.pandas handles GPU/CPU routing.
 
 The ``op_type`` string selects the breakeven threshold from
 ``thresholds.OP_PROFILES``. Common values:
@@ -46,9 +51,7 @@ from _common.df_utils._detector import detect_gpu, GPUInfo
 from _common.df_utils._thresholds import (
     breakeven_rows,
     estimate_df_memory_bytes,
-    fits_in_vram,
     OP_PROFILES,
-    VRAM_USAGE_CAP,
 )
 
 
@@ -57,12 +60,11 @@ class GPUDecision:
     """Result of ``should_use_gpu()``.
 
     Attributes:
-        use_gpu: True iff GPU (cuDF) should be used.
+        use_gpu: True iff GPU is available AND data is above breakeven.
         reason:  human-readable explanation of the decision.
-        gpu_info: the GPUInfo snapshot (always populated, even when
-                  use_gpu is False - useful for logging).
+        gpu_info: the GPUInfo snapshot (always populated).
         breakeven: the row threshold that was applied.
-        est_vram_bytes: estimated VRAM needed for the DataFrame.
+        est_vram_bytes: estimated VRAM needed (informational only).
     """
     use_gpu: bool
     reason: str
@@ -86,7 +88,7 @@ def _count_numeric_cols(df) -> int:
                        if pd.api.types.is_numeric_dtype(df[c]))
     except ImportError:
         pass
-    # Fallback: assume all columns are numeric (conservative for VRAM).
+    # Fallback: assume all columns are numeric (conservative).
     return len(df.columns) if hasattr(df, "columns") else 10
 
 
@@ -97,37 +99,35 @@ def should_use_gpu(
     n_numeric_cols: int | None = None,
     verbose: bool = True,
 ) -> bool:
-    """Decide whether to use GPU (cuDF) or CPU (pandas) for ``df``.
+    """Check whether the DataFrame is large enough for GPU acceleration.
 
-    Combines three checks:
-      1. CUDA + cuDF available (cached ``detect_gpu()``).
-      2. ``len(df)`` >= operation-specific breakeven threshold.
-      3. Estimated VRAM fits in available GPU memory.
+    Performs TWO checks (no VRAM fit check — cudf.pandas handles that):
+      1. GPU available? (cached ``detect_gpu()``)
+      2. ``len(df)`` >= operation-specific breakeven threshold?
+
+    The return value is for AWARENESS / LOGGING only. Callers should
+    NOT use this for code-path branching — the single pandas code
+    path handles both CPU and GPU modes via cudf.pandas.
 
     Args:
-        df: pandas (or cuDF) DataFrame. Only ``len(df)`` and column
-            count are read - no data is copied.
-        op_type: operation type key from ``OP_PROFILES``. Common:
-            "rolling_mean", "rolling_std", "rolling_corr",
-            "groupby_diff", "groupby_shift", "groupby_agg", "merge",
-            "elementwise", "default".
-        n_numeric_cols: override for numeric column count. When None,
-            counted from ``df.dtypes``. For wide frames (25+ cols)
-            this affects the VRAM estimate and breakeven.
+        df: pandas DataFrame. Only ``len(df)`` and column count are read.
+        op_type: operation type key from ``OP_PROFILES``.
+        n_numeric_cols: override for numeric column count.
         verbose: when True, log the decision to stdout the first time
             each (op_type, n_rows, n_numeric_cols) combination is seen.
 
     Returns:
-        True iff GPU (cuDF) should be used; False for CPU (pandas).
+        True iff GPU is available AND data volume meets breakeven.
     """
     decision = decide_gpu(df, op_type=op_type,
                           n_numeric_cols=n_numeric_cols)
 
     if verbose:
-        key = (op_type, len(df), decision.est_vram_bytes)
+        n_nc = decision.est_vram_bytes  # use as proxy for key stability
+        key = (op_type, len(df), n_nc)
         if key not in _logged_decisions:
             _logged_decisions.add(key)
-            tag = "GPU" if decision.use_gpu else "CPU"
+            tag = "GPU-worthy" if decision.use_gpu else "CPU-bound"
             print(f"    [cuDF router] {tag}: {decision.reason}",
                   file=sys.stdout, flush=True)
 
@@ -142,15 +142,14 @@ def decide_gpu(
 ) -> GPUDecision:
     """Full decision with structured result (no logging).
 
-    Use this when you need the reason/breakeven/VRAM details, e.g. for
-    structured logging or testing. For the simple boolean, use
-    ``should_use_gpu()``.
+    TWO checks only: GPU availability + breakeven threshold.
+    No VRAM fit check — cudf.pandas manages GPU memory internally.
     """
     n_rows = len(df)
     if n_numeric_cols is None:
         n_numeric_cols = _count_numeric_cols(df)
 
-    # Check 1: CUDA + cuDF available?
+    # Check 1: GPU available?
     gpu = detect_gpu()
     if not gpu.available:
         return GPUDecision(
@@ -163,25 +162,13 @@ def decide_gpu(
 
     # Check 2: data volume above breakeven?
     threshold = breakeven_rows(op_type, n_numeric_cols=n_numeric_cols)
+    est_vram = estimate_df_memory_bytes(n_rows, n_numeric_cols)
+
     if n_rows < threshold:
         return GPUDecision(
             use_gpu=False,
             reason=(f"{n_rows:,} rows < {threshold:,} breakeven "
-                    f"for '{op_type}' (staying on CPU)"),
-            gpu_info=gpu,
-            breakeven=threshold,
-            est_vram_bytes=0,
-        )
-
-    # Check 3: fits in VRAM?
-    est_vram = estimate_df_memory_bytes(n_rows, n_numeric_cols)
-    if not fits_in_vram(n_rows, n_numeric_cols, gpu.vram_free_bytes):
-        budget = int(gpu.vram_free_bytes * VRAM_USAGE_CAP)
-        return GPUDecision(
-            use_gpu=False,
-            reason=(f"estimated {est_vram / 1024**3:.2f} GB VRAM exceeds "
-                    f"budget {budget / 1024**3:.2f} GB free "
-                    f"({gpu.device_name})"),
+                    f"for '{op_type}' (cudf.pandas will keep on CPU)"),
             gpu_info=gpu,
             breakeven=threshold,
             est_vram_bytes=est_vram,
@@ -190,9 +177,9 @@ def decide_gpu(
     return GPUDecision(
         use_gpu=True,
         reason=(f"{n_rows:,} rows x {n_numeric_cols} cols >= "
-                f"{threshold:,} breakeven for '{op_type}', "
-                f"~{est_vram / 1024**3:.2f} GB VRAM "
-                f"({gpu.device_name})"),
+                f"{threshold:,} breakeven for '{op_type}' "
+                f"(cudf.pandas will accelerate on "
+                f"{gpu.device_name})"),
         gpu_info=gpu,
         breakeven=threshold,
         est_vram_bytes=est_vram,
@@ -200,10 +187,7 @@ def decide_gpu(
 
 
 def list_thresholds(n_numeric_cols: int = 10) -> dict[str, int]:
-    """Return a dict of {op_type: breakeven_rows} for inspection.
-
-    Useful for logging or debugging the router's thresholds.
-    """
+    """Return a dict of {op_type: breakeven_rows} for inspection."""
     return {
         op: breakeven_rows(op, n_numeric_cols=n_numeric_cols)
         for op in OP_PROFILES

@@ -224,30 +224,3 @@ export function buildOhlcBarSeries(
     },
   };
 }
-
-/** Tooltip HTML for the prev-day tick (idx === 0).
- *
- *  TOOLTIP-ONLY REBASING: unlike the bar's y-space (fractions vs the
- *  prev day's close, close pinned at 0.0 to share the plot's y-axis),
- *  the tooltip numbers are rebased to the prev day's OPEN — open shows
- *  0.00% by definition, H/L/C show x/open − 1. Conversion from the
- *  bar's close-based fractions: x/open = (1 + xPct) / (1 + openPct) − 1
- *  (openPct > −1 always, since open > 0). Only this tooltip is rebased;
- *  the bar rendering keeps the plot's "% vs prev close" axis base. */
-export function formatPrevDayOhlcTooltip(bar: PrevDayOhlcBar): string {
-  const pct = (v: number, sign = true) =>
-    (sign && v >= 0 ? "+" : "") + (v * 100).toFixed(2) + "%";
-  // Same rule as the bar strokes: prev day's own open→close direction.
-  const color = bar.upDay ? UP_COLOR : DOWN_COLOR;
-  const row = (name: string, v: number) =>
-    `<div>${name}: <b style="color:${color}">${pct(v)}</b></div>`;
-  const rel = (v: number) => (1 + v) / (1 + bar.openPct) - 1;
-  return (
-    `<div style="font-weight:600">${bar.label} · prev day ${bar.date}</div>` +
-    `<div style="margin-top:2px;opacity:0.85">OHLC vs prev open</div>` +
-    row("O", 0) +
-    row("H", rel(bar.highPct)) +
-    row("L", rel(bar.lowPct)) +
-    row("C", rel(bar.closePct))
-  );
-}

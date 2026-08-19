@@ -76,7 +76,7 @@ sys.path.insert(
 from _common.build_commons import (  # noqa: E402
     setup_utf8_stdout,
     get_db_connection_async,
-    bulk_upsert_async,
+    copy_or_upsert_split_async,
     truncate_table_async,
     print_build_header,
     print_wall_time,
@@ -99,6 +99,10 @@ from analyze.intraday_industry_sentiments.fetch import (  # noqa: E402
 from analyze.intraday_industry_sentiments.compute import (  # noqa: E402
     compute_movements,
 )
+
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
 
 setup_utf8_stdout()
 
@@ -129,24 +133,31 @@ async def _process_pair(
         sec_type="index",
     )
 
-    # Insert PARENT first (FK requirement). Use ON CONFLICT DO UPDATE so
-    # re-runs of the same tick (e.g. during market hours when a 5-min bar
-    # arrives after the previous computation) refresh the metrics.
-    n_parent = await bulk_upsert_async(
+    # Insert PARENT first (FK requirement). Use COPY for new dates.
+    n_copied_p, n_upserted_p = await copy_or_upsert_split_async(
         conn,
         INDUSTRY_TABLE,
         industry_rows,
         key_columns=["industry_id", "date", "time", "benchmark_code"],
-        batch_size=2000,
     )
-    # Insert CHILD after parent. ON CONFLICT DO UPDATE likewise.
-    n_child = await bulk_upsert_async(
+    n_parent = n_copied_p + n_upserted_p
+    via_p = "COPY" if n_copied_p > 0 and n_upserted_p == 0 else \
+            f"COPY+upsert ({n_copied_p}+{n_upserted_p})" if n_copied_p > 0 else \
+            "upsert"
+    print(f"    -> PARENT: inserted {n_parent:,} rows via {via_p}", flush=True)
+
+    # Insert CHILD after parent. COPY for new dates.
+    n_copied_c, n_upserted_c = await copy_or_upsert_split_async(
         conn,
         INDEX_TABLE,
         index_rows,
         key_columns=["code", "date", "time", "sec_type", "benchmark_code"],
-        batch_size=5000,
     )
+    n_child = n_copied_c + n_upserted_c
+    via_c = "COPY" if n_copied_c > 0 and n_upserted_c == 0 else \
+            f"COPY+upsert ({n_copied_c}+{n_upserted_c})" if n_copied_c > 0 else \
+            "upsert"
+    print(f"    -> CHILD: inserted {n_child:,} rows via {via_c}", flush=True)
     return n_parent, n_child
 
 

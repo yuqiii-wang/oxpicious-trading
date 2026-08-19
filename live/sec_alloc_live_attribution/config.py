@@ -63,11 +63,18 @@ SUPPORTED_SEC_TYPES: Final[tuple[str, ...]] = ("index",)
 # kept in the REF table for share-weight purposes only.
 TICK_CLASS_TYPES: Final[tuple[str, ...]] = ("index", "etf")
 
-# PG advisory-lock key for single-instance coordination. A second instance
-# detecting the lock held (previous run still alive) degrades to the
-# FALLBACK-ONLY pass (no heavy ref build, no weighted upgrades) so live
-# data keeps flowing without duplicated work.
+# PG advisory-lock keys for single-instance coordination — ONE PER PROCESS
+# (the pipeline is split into two independent processes):
+#
+#   • ADVISORY_LOCK_KEY (LIVE ticks process, --mode live): the 5-min
+#     auto-refresh equal-weight path. A second concurrent instance simply
+#     SKIPS (exits fast) — the next 5-min run catches up.
+#   • REF_ADVISORY_LOCK_KEY (YDAY REF process, --mode ref): the heavy
+#     once-per-date prev-day reference build + weighted tick upgrades,
+#     triggered manually from the Market Movements UI button. Waits
+#     (bounded) for the lock instead of skipping.
 ADVISORY_LOCK_KEY: Final[int] = 482311001  # arbitrary stable constant
+REF_ADVISORY_LOCK_KEY: Final[int] = 482311002  # arbitrary stable constant
 
 # Broad-market industry_ids excluded from the member universe (they are
 # benchmarks, not industries — same list as intraday_industry_sentiments).

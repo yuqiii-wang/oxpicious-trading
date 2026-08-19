@@ -1,12 +1,9 @@
-﻿import type { ExpiryGapRow } from "@shared/types";
-
-export type ExpiryGapsMap = Map<string, ExpiryGapRow>;
-
 export interface ExpirySkew {
   expiry: string;
   expiryDate: string;
   skewPrice: number | null;
   skewPct: number | null;
+  countSkewnessCurveCrossedSpot?: number;
 }
 
 export interface DailySkew {

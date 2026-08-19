@@ -22,9 +22,9 @@ Position-awareness
 The blend is only valid for NON-POSITION-AWARE algos
 (``POSITION_AWARE = False``): position-aware algos' signals depend on their
 own portfolio state, so blending their signals across algos would be
-inconsistent. All current algos (bollinger_bands, macd, ma_spread) are
-position-irrelevant — their signals depend only on market data. The check
-is enforced in :func:`check_position_aware` before Phase 1 starts.
+inconsistent. All current algos (macd) are position-irrelevant — their
+signals depend only on market data. The check is enforced in
+:func:`check_position_aware` before Phase 1 starts.
 """
 from __future__ import annotations
 
@@ -35,26 +35,13 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 
 from strategy.factors_and_algos import get_algo
+from strategy.factors_and_algos._algo.registry import short_name
 from strategy.factors_and_algos._algo.fault_tolerance import append_ft_suffix
 
 
 # ---------------------------------------------------------------------------
 # Portfolio naming
 # ---------------------------------------------------------------------------
-_ABBR = {
-    "bollinger_bands": "bb",
-    "ma_spread": "ma",
-    "macd": "macd",
-}
-
-
-def _short_name(algo_name: str) -> str:
-    """Abbreviate an algo name for the portfolio strategy_name (readability).
-
-    The DB ``strategy_name`` column is TEXT, so the full name would work too,
-    but abbreviations keep the name compact in UI/logs.
-    """
-    return _ABBR.get(algo_name, algo_name)
 
 
 def portfolio_name(
@@ -63,8 +50,8 @@ def portfolio_name(
 ) -> str:
     """Build the portfolio strategy_name from the algo->weight selection.
 
-    e.g. {"bollinger_bands": 0.5, "macd": 0.5} -> "portfolio:bb*0.5+macd*0.5"
-    With fault_tolerance=10 -> "portfolio:bb*0.5+macd*0.5_ft10"
+    e.g. {"macd": 0.5} -> "portfolio:macd*0.5"
+    With fault_tolerance=10 -> "portfolio:macd*0.5_ft10"
 
     Algos with weight 0 are omitted from the name. The name is stable
     (sorted by algo name) so the same selection always maps to the same
@@ -76,7 +63,7 @@ def portfolio_name(
         weight = selection[name]
         if weight == 0:
             continue
-        parts.append(f"{_short_name(name)}*{weight:g}")
+        parts.append(f"{short_name(name)}*{weight:g}")
     if not parts:
         base = "portfolio:empty"
     else:
@@ -157,7 +144,7 @@ async def _run_one_sub_algo(
     Loads the algo's DB-backed params (algo defaults < DB < trading-layer
     overrides), then calls the shared ``run_one_sec_type``. The strategy_name
     stored in strategy_identity is the algo_name itself (e.g.
-    "bollinger_bands"), or ``algo_name_ft{N}`` when fault_tolerance > 0,
+    "macd"), or ``algo_name_ft{N}`` when fault_tolerance > 0,
     so each algo's runs are stored and queried under their own name.
     skip-if-already-found is handled inside ``upsert_strategy_seq``.
 

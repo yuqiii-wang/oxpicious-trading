@@ -34,15 +34,13 @@ import {
 import { buildBenchmarkCenteredShadeSeries } from "@/lib/benchmark-shade";
 import {
   buildOhlcBarSeries,
-  formatPrevDayOhlcTooltip,
   prevDayOhlcSeriesName,
   prevDayTickLabel,
   type PrevDayOhlcBar,
 } from "./prevDayOhlc";
+import { renderTooltip, renderIndustryBarTooltip, renderMemberBarTooltip } from "./tooltips";
 import type {
   IntradayMovementsResponse,
-  IntradayMovementsIndustryTick,
-  IntradayMovementsMemberTick,
 } from "@shared/types";
 
 /** Filter mode for the Intraday Attribution middle/bottom plots.
@@ -88,6 +86,8 @@ export function buildMarketMovementsTopOption(
   themeMode: ThemeMode,
   noBenchmark: boolean = false,
   prevDayBar: PrevDayOhlcBar | null = null,
+  selectedIndustryId: string | null = null,
+  selectedMemberCode: string | null = null,
 ): EChartsOption {
   const c = axisColors(themeMode);
 
@@ -115,17 +115,34 @@ export function buildMarketMovementsTopOption(
 
   // No-benchmark mode: flat 0.0% baseline instead of the actual benchmark
   // line. Industry shades are then centered about zero (raw % vs prev close).
+  // Build the benchmark time→pct lookup map once (shared by both the
+  // benchPct array builder and the directional-color logic for overlays).
+  const benchByTime = new Map<string, number | null>();
+  for (const b of data.benchmark_series) {
+    benchByTime.set(b.time, b.benchmark_price_pct);
+  }
   const benchPct: Array<number | null> = pad(
     noBenchmark
       ? times.map(() => 0.0)
-      : (() => {
-          const benchByTime = new Map<string, number | null>();
-          for (const b of data.benchmark_series) {
-            benchByTime.set(b.time, b.benchmark_price_pct);
-          }
-          return times.map((t) => benchByTime.get(t) ?? null);
-        })(),
+      : times.map((t) => benchByTime.get(t) ?? null),
   );
+
+  // Benchmark line color — dark green when the last tick is above prev-day
+  // close (benchmark_price_pct > 0), dark red when at or below. In no-
+  // benchmark mode (flat 0.0% baseline) or when no data exists, fall back
+  // to the original PALETTE_HI blue so the line stays visible.
+  const lastBenchPct = (() => {
+    for (let i = benchPct.length - 1; i >= 0; i--) {
+      if (benchPct[i] != null) return benchPct[i] as number;
+    }
+    return null;
+  })();
+  const benchmarkLineColor =
+    noBenchmark || lastBenchPct == null
+      ? PALETTE_HI
+      : lastBenchPct > 0
+        ? UP_COLOR
+        : DOWN_COLOR;
 
   // Index of the selected tick (for the markLine) within the FULL day range.
   const selectedIdx =
@@ -143,8 +160,8 @@ export function buildMarketMovementsTopOption(
     showSymbol: false,
     smooth: false,
     connectNulls: noBenchmark ? false : true,
-    lineStyle: { width: 2.5, color: PALETTE_HI },
-    itemStyle: { color: PALETTE_HI },
+    lineStyle: { width: 2.5, color: benchmarkLineColor },
+    itemStyle: { color: benchmarkLineColor },
     z: 10,
     markLine: {
       symbol: "none",
@@ -189,6 +206,104 @@ export function buildMarketMovementsTopOption(
       zBase: 4,
     });
 
+  // Selected industry / member index intraday curve — rendered as a
+  // prominent solid line on the top plot alongside the benchmark. When a
+  // member index is clicked the INDEX curve takes priority (more specific);
+  // when only an industry is clicked the INDUSTRY aggregate curve is shown.
+  // Color is directional: green when above the benchmark, red when at or
+  // below — consistent with the industry shade coloring convention.
+  const extraSeries: SeriesOption[] = [];
+  const extraLegendLabels: string[] = [];
+
+  // Build member-series lookup: code → { pctByTime, diffByTime }.
+  const memberLookup = new Map<string, {
+    name: string;
+    pctByTime: Map<string, number | null>;
+    diffByTime: Map<string, number | null>;
+  }>();
+  for (const m of data.member_series) {
+    if (!memberLookup.has(m.code)) {
+      memberLookup.set(m.code, {
+        name: m.code_name || m.code,
+        pctByTime: new Map(),
+        diffByTime: new Map(),
+      });
+    }
+    const entry = memberLookup.get(m.code)!;
+    entry.pctByTime.set(m.time, m.code_price_pct);
+    const bv = benchByTime.get(m.time);
+    if (m.code_price_pct != null && bv != null) {
+      entry.diffByTime.set(m.time, m.code_price_pct - bv);
+    }
+  }
+
+  // Build industry-series lookup: industry_id → industry tick rows (by time).
+  const industryById = new Map(data.industries.map((i) => [i.industry_id, i]));
+  const industryPctById = new Map<string, Map<string, number | null>>();
+  for (const r of data.industry_series) {
+    let byTime = industryPctById.get(r.industry_id);
+    if (!byTime) {
+      byTime = new Map<string, number | null>();
+      industryPctById.set(r.industry_id, byTime);
+    }
+    byTime.set(r.time, r.industry_price_pct);
+  }
+
+  // Determine directional color by comparing last valid curve point with
+  // the benchmark at the same tick. Green = above benchmark, red = below.
+  const directionalColor = (curveByTime: Map<string, number | null>): string => {
+    // Walk ticks in reverse order to find the last tick where both
+    // curve and benchmark have data.
+    for (let i = times.length - 1; i >= 0; i--) {
+      const t = times[i];
+      const cv = curveByTime.get(t);
+      const bv = benchByTime.get(t);
+      if (cv != null && bv != null) {
+        return cv > bv ? UP_COLOR : DOWN_COLOR;
+      }
+    }
+    return PALETTE_HI; // fallback when no overlapping data
+  };
+
+  if (selectedMemberCode) {
+    const entry = memberLookup.get(selectedMemberCode);
+    if (entry) {
+      const color = directionalColor(entry.pctByTime);
+      const label = `${entry.name} (${selectedMemberCode})`;
+      extraSeries.push({
+        name: label,
+        type: "line" as const,
+        data: pad(times.map((t) => entry.pctByTime.get(t) ?? null)),
+        showSymbol: false,
+        smooth: false,
+        connectNulls: true,
+        lineStyle: { width: 2, color, type: "solid" as const },
+        itemStyle: { color },
+        z: 9,
+      });
+      extraLegendLabels.push(label);
+    }
+  } else if (selectedIndustryId) {
+    const ind = industryById.get(selectedIndustryId);
+    const byTime = industryPctById.get(selectedIndustryId);
+    if (ind && byTime) {
+      const color = directionalColor(byTime);
+      const label = ind.industry_label;
+      extraSeries.push({
+        name: label,
+        type: "line" as const,
+        data: pad(times.map((t) => byTime.get(t) ?? null)),
+        showSymbol: false,
+        smooth: false,
+        connectNulls: true,
+        lineStyle: { width: 2, color, type: "dashed" as const },
+        itemStyle: { color },
+        z: 9,
+      });
+      extraLegendLabels.push(label);
+    }
+  }
+
   // Per-industry lookup for the tooltip: industry_id → (label + per-time pct
   // + precomputed diff vs benchmark). Pre-pivoted once so the tooltip
   // formatter stays O(1) per industry per render. The diff comes straight
@@ -216,6 +331,7 @@ export function buildMarketMovementsTopOption(
       ...commonLegend(themeMode),
       data: legendIndustryLabels.concat([
         benchmarkLabel,
+        ...extraLegendLabels,
         ...(prevDayBar ? [prevDayOhlcSeriesName(prevDayBar.label)] : []),
       ]),
     },
@@ -245,76 +361,20 @@ export function buildMarketMovementsTopOption(
       //     (descending), with green for positive and red for negative.
       //     No diff column (no benchmark to compare against).
       formatter: (params: unknown) => {
-        const arr = (Array.isArray(params) ? params : [params]) as Array<{
-          dataIndex?: number;
-          axisValue?: string;
-        }>;
-        if (arr.length === 0) return "";
-        const idx = arr[0].dataIndex ?? 0;
-        // Prepended prev-day OHLC tick → dedicated OHLC tooltip.
-        if (offset > 0 && idx === 0) {
-          return prevDayBar ? formatPrevDayOhlcTooltip(prevDayBar) : "";
-        }
-        const tick = times[idx - offset] ?? "";
-        const bv = benchPct[idx];
-        const benchPctStr = bv == null ? "—" : (bv * 100).toFixed(3) + "%";
-
-        if (noBenchmark) {
-          // No-benchmark: flat 0.0% baseline. Show all industries sorted
-          // by raw % descending, with green/red coloring.
-          let html = `<div style="font-weight:600">${benchmarkLabel}</div>` +
-            `<div style="margin-top:2px;opacity:0.85">tick ${tick} · baseline 0.0%</div>`;
-
-          const rows: Array<{ label: string; pct: number }> = [];
-          for (const [, info] of indPctByTime) {
-            const iv = info.pctByTime.get(tick);
-            if (iv == null) continue;
-            rows.push({ label: info.label, pct: iv });
-          }
-          rows.sort((a, b) => b.pct - a.pct);
-          for (const r of rows) {
-            const color = r.pct >= 0 ? UP_COLOR : DOWN_COLOR;
-            const pctStr = (r.pct >= 0 ? "+" : "") + (r.pct * 100).toFixed(3) + "%";
-            html += `<div style="margin-top:1px"><span style="color:${color}">●</span> ${r.label}: <b style="color:${color}">${pctStr}</b></div>`;
-          }
-          return html;
-        }
-
-        // Normal mode: benchmark-centered tooltip with top/bottom 5 diffs.
-        let html = `<div style="font-weight:600">${data.benchmark_name} (${data.benchmark_code})</div>` +
-          `<div style="margin-top:2px;opacity:0.85">tick ${tick} · bench ${benchPctStr}</div>`;
-
-        // Collect (industry_id, label, pct, diff) for industries with data
-        // at this tick, then sort by diff descending and pick top 5 + bottom 5.
-        const rows: Array<{ label: string; pct: number; diff: number }> = [];
-        for (const [, info] of indPctByTime) {
-          const iv = info.pctByTime.get(tick);
-          const dv = info.diffByTime.get(tick);
-          if (iv == null || dv == null) continue;
-          rows.push({ label: info.label, pct: iv, diff: dv });
-        }
-        rows.sort((a, b) => b.diff - a.diff);
-        const top5 = rows.slice(0, 5);
-        const bottom5 = rows.slice(-5).reverse();
-        const shown = new Set<string>();
-        const renderRow = (r: { label: string; pct: number; diff: number }) => {
-          if (shown.has(r.label)) return "";
-          shown.add(r.label);
-          const arrow = r.diff >= 0 ? "▲" : "▼";
-          const diffColor = r.diff >= 0 ? UP_COLOR : DOWN_COLOR;
-          const diffStr = (r.diff >= 0 ? "+" : "") + (r.diff * 100).toFixed(3) + "%";
-          return `<div style="margin-top:1px"><span style="color:${diffColor}">${arrow}</span> ${r.label}: <b>${(r.pct * 100).toFixed(3)}%</b> <span style="opacity:0.7">(${diffStr})</span></div>`;
-        };
-
-        if (top5.length > 0) {
-          html += `<div style="margin-top:3px;opacity:0.6;font-size:10px">▲ Top 5</div>`;
-          for (const r of top5) html += renderRow(r);
-        }
-        if (bottom5.length > 0 && bottom5[0].diff < 0) {
-          html += `<div style="margin-top:3px;opacity:0.6;font-size:10px">▼ Bottom 5</div>`;
-          for (const r of bottom5) html += renderRow(r);
-        }
-        return html;
+        return renderTooltip({
+          params,
+          times,
+          offset,
+          benchPct,
+          noBenchmark,
+          benchmarkLabel,
+          data,
+          prevDayBar,
+          selectedMemberCode,
+          selectedIndustryId,
+          memberLookup,
+          indPctByTime,
+        });
       },
     },
     xAxis: {
@@ -328,9 +388,13 @@ export function buildMarketMovementsTopOption(
         // prepended prev-day tick (idx 0, "MM-DD"). Times from the API are
         // "HH:MM:SS" — slice the minutes field (chars 3-5) rather than
         // using endsWith, because endsWith(":00") would match the SECONDS
-        // field (always "00") and show every 5-min label.
+        // field (always "00") and show every 5-min label. When the
+        // prev-day category is prepended, the 09:30 label (idx 1) is
+        // SKIPPED — it sits one narrow category away from "MM-DD" and the
+        // two centered labels collide into an unreadable smudge.
         interval: (idx: number) => {
           if (offset > 0 && idx === 0) return true;
+          if (offset > 0 && idx === 1) return false;
           const t = times[idx - offset];
           if (!t) return false;
           const mm = t.slice(3, 5);
@@ -356,6 +420,8 @@ export function buildMarketMovementsTopOption(
       // Prev-day OHLC bar at the prepended category 0 (before 09:30).
       ...(prevDayBar ? [buildOhlcBarSeries(prevDayBar)] : []),
       benchmarkSeries,
+      // Extra overlay: selected member index (solid) or industry (dashed).
+      ...extraSeries,
       // benchmark-shade returns a series ARRAY typed as the loose
       // SeriesOption | SeriesOption[] union — cast to the array form.
       ...(industrySeries as unknown as SeriesOption[]),
@@ -409,10 +475,7 @@ export function buildIndustryBarsOption(
         const param = p as { dataIndex: number };
         const r = sorted[param.dataIndex];
         if (!r) return "";
-        const pct = r.industry_price_pct != null
-          ? (r.industry_price_pct * 100).toFixed(4) + "%"
-          : "—";
-        return `<b>${r.industry_label}</b><br/>${pct}`;
+        return renderIndustryBarTooltip(r.industry_label, r.industry_price_pct);
       },
     },
     xAxis: {
@@ -471,34 +534,20 @@ export function buildIndustryBarsOption(
 export function buildMemberBarsOption(
   data: IntradayMovementsResponse,
   selectedTick: string,
-  selectedIndustryId: string | null,
+  selectedIndustryId: string,
   themeMode: ThemeMode,
-  filter: IndustryFilter = "all",
 ): EChartsOption {
   const c = axisColors(themeMode);
 
-  // Build a lookup of industry_id → is_strategy from the industries list.
-  const industryStrategyMap = new Map<string, boolean>();
-  for (const ind of data.industries) {
-    industryStrategyMap.set(ind.industry_id, ind.is_strategy);
-  }
-
   // Filter member_series to (selected tick + selected industry), sort desc.
-  let rowsAtTick = data.member_series.filter(
-    (r) => r.time === selectedTick && r.code_price_pct != null,
+  // The bottom plot stays empty until an industry bar is clicked — no
+  // all-industries fallback.
+  const rowsAtTick = data.member_series.filter(
+    (r) =>
+      r.time === selectedTick &&
+      r.code_price_pct != null &&
+      r.industry_id === selectedIndustryId,
   );
-  if (selectedIndustryId) {
-    rowsAtTick = rowsAtTick.filter((r) => r.industry_id === selectedIndustryId);
-  }
-  // Apply the industry/strategy filter: when no specific industry is selected,
-  // the bottom plot shows member indices for ALL industries visible under
-  // the current filter (industry-only or strategy-only).
-  if (!selectedIndustryId && filter !== "all") {
-    rowsAtTick = rowsAtTick.filter((r) => {
-      const isStrategy = industryStrategyMap.get(r.industry_id) ?? false;
-      return filter === "strategy" ? isStrategy : !isStrategy;
-    });
-  }
   const sorted = [...rowsAtTick].sort(
     (a, b) => (b.code_price_pct ?? -Infinity) - (a.code_price_pct ?? -Infinity),
   );
@@ -519,10 +568,7 @@ export function buildMemberBarsOption(
         const param = p as { dataIndex: number };
         const r = sorted[param.dataIndex];
         if (!r) return "";
-        const pct = r.code_price_pct != null
-          ? (r.code_price_pct * 100).toFixed(4) + "%"
-          : "—";
-        return `<b>${r.code_name || r.code}</b> (${r.code})<br/>${pct}`;
+        return renderMemberBarTooltip(r.code_name || r.code, r.code, r.code_price_pct);
       },
     },
     xAxis: {

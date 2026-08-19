@@ -81,8 +81,15 @@ from _common.study_and_select_stocks import (
     load_etf_member_codes,
 )
 
+from ._csv_backfill import BACKFILL_INTERVAL_SEC, backfill_all_csvs
 from ._fetch import fetch_snapshot
-from ._io import _ensure_conn, load_bars, write_snapshot_csv
+from ._io import (
+    _ensure_conn,
+    get_intraday_progress,
+    is_intraday_complete,
+    load_bars,
+    write_snapshot_csv,
+)
 from ._model import (
     DEFAULT_BAR_WINDOW,
     DEFAULT_POLL_INTERVAL_SEC,
@@ -172,6 +179,24 @@ def stream(
             )
 
     current_trade_date = None
+    last_backfill_time = 0.0
+
+    # Run initial CSV backfill at startup to catch up on any missed data
+    # before entering the polling loop. Uses DB-completeness guard internally.
+    logger.info("Running initial CSV backfill at startup ...")
+    t0 = _time.time()
+    try:
+        n_backfilled = backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
+        if n_backfilled > 0:
+            logger.info(
+                "Initial backfill: %d bars upserted in %.1fs.",
+                n_backfilled, _time.time() - t0,
+            )
+        else:
+            logger.info("Initial backfill: no new bars needed (DB already up to date).")
+    except Exception as e:
+        logger.warning("Initial backfill failed: %s", e)
+    last_backfill_time = _time.time()
 
     # Pre-populate finished_codes from DB: securities that already have a
     # 15:00 bar for today. This prevents re-processing if the script restarts
@@ -234,6 +259,59 @@ def stream(
                 )
                 sleep_until(nxt)
                 continue
+
+            # --- DB completeness check: if all assets already have complete
+            #     intraday data for today (latest bar >= CLOSE_TIME), skip
+            #     polling entirely and sleep until the next trading hour.
+            today = now.date()
+            if is_trading_day(today):
+                all_complete = True
+                progress_msgs = []
+                for asset in assets:
+                    p = get_intraday_progress(conn, asset, today)
+                    pct = (p["n_codes_done"] / p["n_total_codes"] * 100) if p["n_total_codes"] else 0.0
+                    progress_msgs.append(
+                        f"{asset.name}: {p['n_codes_done']}/{p['n_total_codes']} codes "
+                        f"({pct:.1f}%), max_time={p['max_time']}"
+                    )
+                    if not p["complete"]:
+                        all_complete = False
+                if all_complete:
+                    logger.info(
+                        "All assets have complete intraday data for %s "
+                        "(latest bar >= 15:00); skipping polling and sleeping "
+                        "until next trading moment. Details: %s",
+                        today, "; ".join(progress_msgs),
+                    )
+                    # Run a final backfill to ensure CSV files are fully
+                    # reconciled with DB, then sleep.
+                    try:
+                        backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
+                    except Exception:
+                        pass
+                    if once:
+                        logger.info("--once set and data complete; exiting.")
+                        break
+                    nxt = next_trading_moment(now)
+                    logger.info(
+                        "Data complete for %s; sleeping until %s.",
+                        today, nxt.strftime("%Y-%m-%d %H:%M"),
+                    )
+                    sleep_until(nxt)
+                    continue
+
+            # --- Periodic CSV backfill (every BACKFILL_INTERVAL_SEC):
+            #     Recovers missed data from CSV files, guarded by DB
+            #     completeness check inside backfill_csv_file.
+            if _time.time() - last_backfill_time >= BACKFILL_INTERVAL_SEC:
+                logger.info("Periodic CSV backfill check ...")
+                try:
+                    n_bf = backfill_all_csvs(conn, assets, etf_member_codes=etf_member_codes)
+                    if n_bf > 0:
+                        logger.info("Periodic backfill: %d bars upserted.", n_bf)
+                except Exception as e:
+                    logger.warning("Periodic backfill failed: %s", e)
+                last_backfill_time = _time.time()
 
             # New trading day: reset per-asset streaming state.
             if current_trade_date != now.date():

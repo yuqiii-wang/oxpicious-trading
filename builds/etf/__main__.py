@@ -71,6 +71,10 @@ import datetime
 import warnings
 warnings.filterwarnings("ignore")
 
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 import numpy as np
 import pandas as pd
 
@@ -80,7 +84,7 @@ from _common.build_commons import (
     parse_date, ymd_from_filename, ymd_to_date,
     glob_source_files, print_build_header, print_wall_time,
     TODAY_STR,
-    get_existing_keys_async, bulk_upsert_async, truncate_table_async,
+    get_existing_keys_async, copy_or_upsert_split_async, bulk_upsert_async, truncate_table_async,
     compute_eps,
 )
 from _common.df_utils import compute_moving_averages, compute_emas
@@ -488,77 +492,63 @@ async def main():
             # Dedupe within the batch
             merged_missing = merged_missing.drop_duplicates(subset=["date", "code"], keep="last")
 
-            # Build rows for each split table
-            identity_rows, basic_rows, tech_rows = [], [], []
-            adj_rows, liq_rows = [], []
-            for _, row in merged_missing.iterrows():
-                code = str(row["code"])
-                suffix = (code.split(".")[-1]
-                          if "." in code and code.split(".")[-1] in ("SZ", "SS", "SH")
-                          else None)
-                identity_rows.append({
-                    "date": row["date"],
-                    "code": code,
-                    "code_suffix": suffix,
-                    "name": str(row.get("name", "")) if pd.notna(row.get("name")) else "",
-                })
-                close_v = row.get("close")
-                pe_v = row.get("pe") if pd.notna(row.get("pe")) else None
-                basic_rows.append({
-                    "date": row["date"],
-                    "code": row["code"],
-                    "prev_close": row.get("prev_close"),
-                    "open": row.get("open"),
-                    "high": row.get("high"),
-                    "low": row.get("low"),
-                    "close": close_v,
-                    "pct_change": row.get("pct_change"),
-                    "pe": pe_v,
-                    "eps": compute_eps(close_v, pe_v),
-                    "is_close_estimated": bool(row.get("is_close_estimated", False)),
-                })
-                tech_rows.append({
-                    "date": row["date"],
-                    "code": row["code"],
-                    "ma5": row.get("ma5"),
-                    "ma5_ratio": row.get("ma5_ratio"),
-                    "ma20": row.get("ma20"),
-                    "ma60": row.get("ma60"),
-                    "ma120": row.get("ma120"),
-                    "ma255": row.get("ma255"),
-                    "ema6": row.get("ema6"),
-                    "ema10": row.get("ema10"),
-                    "ema20": row.get("ema20"),
-                    "ema60": row.get("ema60"),
-                    "ema120": row.get("ema120"),
-                    "ema255": row.get("ema255"),
-                })
-                adj_rows.append({
-                    "date": row["date"],
-                    "code": row["code"],
-                    "cum_split_factor": row.get("cum_split_factor", 1.0),
-                    "is_split_event_day": int(row.get("is_split_event_day", 0)),
-                    "action_type": row.get("action_type") or None,
-                    "implied_dividend_per_share": row.get("implied_dividend_per_share", 0),
-                    "cum_dividend_per_share": row.get("cum_dividend_per_share", 0),
-                    "adj_prev_close": row.get("adj_prev_close"),
-                    "adj_open": row.get("adj_open"),
-                    "adj_high": row.get("adj_high"),
-                    "adj_low": row.get("adj_low"),
-                    "adj_close": row.get("adj_close"),
-                })
-                liq_rows.append({
-                    "date": row["date"],
-                    "code": row["code"],
-                    "trading_shares": row.get("trading_shares", 0),
-                    "trading_amount": row.get("trading_amount", 0),
-                    "rz_buy": row.get("rz_buy", 0),
-                    "rz_balance": row.get("rz_balance", 0),
-                    "rq_sell_qty": row.get("rq_sell_qty", 0),
-                    "rq_balance_qty": row.get("rq_balance_qty", 0),
-                    "rq_balance_amt": row.get("rq_balance_amt", 0),
-                    "total_balance": row.get("total_balance", 0),
-                })
+            # Build rows for each split table — vectorized
+            _src = merged_missing.copy()
+            _src["code"] = _src["code"].astype(str)
+            # --- Helper: vectorized NaN→None ---
+            def _to_db_series(s: pd.Series) -> pd.Series:
+                return s.where(s.notna(), None)
+            # --- Helper: vectorized EPS ---
+            def _compute_eps_vec(close: pd.Series, pe: pd.Series) -> pd.Series:
+                mask = close.notna() & pe.notna() & (pe > 0)
+                vals = (close[mask].astype(float) / pe[mask].astype(float)).round(6)
+                result = pd.Series([None] * len(close), index=close.index, dtype=object)
+                result[mask] = vals
+                return result
+            # --- code_suffix ---
+            _has_dot = _src["code"].str.contains(r"\.", na=False)
+            _suffixes = _src["code"].str.split(".").str[-1]
+            _src["code_suffix"] = np.where(
+                _has_dot & _suffixes.isin(["SZ", "SS", "SH"]),
+                _suffixes, "",
+            )
+            # --- identity_rows ---
+            _src["name"] = _src["name"].where(_src["name"].notna(), "").astype(str)
+            identity_rows = _src[["date", "code", "code_suffix", "name"]].to_dict(orient="records")
+            # --- basic_rows ---
+            _basic_cols = ["prev_close", "open", "high", "low", "close", "pct_change"]
+            for _c in _basic_cols:
+                if _c in _src.columns:
+                    _src[_c] = _to_db_series(_src[_c])
+            if "pe" in _src.columns:
+                _src["pe"] = _to_db_series(_src["pe"])
+            _src["eps"] = _compute_eps_vec(_src["close"], _src["pe"].astype(float))
+            if "is_close_estimated" in _src.columns:
+                _src["is_close_estimated"] = _src["is_close_estimated"].fillna(False).astype(bool)
+            else:
+                _src["is_close_estimated"] = False
+            basic_cols_out = ["date", "code"] + _basic_cols + ["pe", "eps", "is_close_estimated"]
+            basic_rows = _src[[c for c in basic_cols_out if c in _src.columns]].to_dict(orient="records")
+            # --- tech_rows ---
+            _tech_cols = ["ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
+                          "ema6", "ema10", "ema20", "ema60", "ema120", "ema255"]
+            tech_cols_out = ["date", "code"] + [c for c in _tech_cols if c in _src.columns]
+            tech_rows = _src[tech_cols_out].to_dict(orient="records")
+            # --- adj_rows ---
+            _adj_cols = ["cum_split_factor", "is_split_event_day", "action_type",
+                         "implied_dividend_per_share", "cum_dividend_per_share",
+                         "adj_prev_close", "adj_open", "adj_high", "adj_low", "adj_close"]
+            adj_cols_out = ["date", "code"] + [c for c in _adj_cols if c in _src.columns]
+            adj_rows = _src[adj_cols_out].to_dict(orient="records")
+            # --- liq_rows ---
+            _liq_cols = ["trading_shares", "trading_amount", "rz_buy", "rz_balance",
+                         "rq_sell_qty", "rq_balance_qty", "rq_balance_amt", "total_balance"]
+            for _c in _liq_cols:
+                if _c in _src.columns:
+                    _src[_c] = _to_db_series(_src[_c])
+                    _src[_c] = _src[_c].fillna(0)
+            liq_cols_out = ["date", "code"] + [c for c in _liq_cols if c in _src.columns]
+            liq_rows = _src[liq_cols_out].to_dict(orient="records")
 
             pk_cols = ["date", "code"]
             split_tables = [
@@ -570,8 +560,14 @@ async def main():
             ]
             for tbl, rows in split_tables:
                 if rows:
-                    inserted = await bulk_upsert_async(conn, tbl, rows, pk_cols)
-                    print(f"    [DB] Inserted {inserted:,} rows into {tbl}", flush=True)
+                    n_copied, n_upserted = await copy_or_upsert_split_async(
+                        conn, tbl, rows, pk_cols
+                    )
+                    total = n_copied + n_upserted
+                    via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                          f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                          "upsert"
+                    print(f"    [DB] Inserted {total:,} rows into {tbl} via {via}", flush=True)
                 else:
                     print(f"    [DB] No new rows to insert into {tbl}", flush=True)
 
@@ -611,31 +607,42 @@ async def main():
                         continue
                     sub_sorted = sub.sort_values("_w", ascending=False).reset_index(drop=True)
                     rows_before = len(holdings_rows)
-                    for rank_idx, (_, r) in enumerate(sub_sorted.iterrows(), start=1):
-                        sc = str(r.get("stock_code", "")).strip()
-                        sc_stripped = sc.split(".")[0].zfill(6)
-                        if len(sc_stripped) != 6 or not sc_stripped.isdigit():
-                            continue
-                        holdings_rows.append({
-                            "snapshot_date": snap_date,
-                            "code": etf_code_full,
-                            "source_type": "etf",
-                            "rank": rank_idx,
-                            "stock_code": sc,
-                            "stock_name": str(r.get("stock_name", "") or ""),
-                            "weight_pct": float(r["_w"]) / total_w * 100.0,
-                        })
+                    # Vectorized holdings: filter valid stocks, assign ranks
+                    _sh = sub_sorted.copy()
+                    _sh["stock_code"] = _sh["stock_code"].astype(str).str.strip()
+                    _sh["sc_stripped"] = _sh["stock_code"].str.split(".").str[0].str.zfill(6)
+                    _sh = _sh[
+                        (_sh["sc_stripped"].str.len() == 6) &
+                        _sh["sc_stripped"].str.isdigit()
+                    ].copy()
+                    if len(_sh) > 0:
+                        _sh["rank"] = range(1, len(_sh) + 1)
+                        _sh["weight_pct"] = _sh["_w"] / total_w * 100.0
+                        _sh["snapshot_date"] = snap_date
+                        _sh["code"] = etf_code_full
+                        _sh["source_type"] = "etf"
+                        _sh["stock_name"] = _sh["stock_name"].fillna("").astype(str)
+                        holdings_rows.extend(
+                            _sh[["snapshot_date", "code", "source_type", "rank",
+                                 "stock_code", "stock_name", "weight_pct"]]
+                            .to_dict(orient="records")
+                        )
                     if len(holdings_rows) > rows_before:
                         n_full += 1
                 print(f"    [DB] Built {len(holdings_rows):,} sec_composition rows (full comp) "
                       f"from {n_full} ETFs (skipped existing)", flush=True)
 
         if holdings_rows:
-            inserted = await bulk_upsert_async(
+            n_copied, n_upserted = await copy_or_upsert_split_async(
                 conn, "stats.sec_composition", holdings_rows,
                 ["code", "snapshot_date", "rank"],
+                date_column="snapshot_date",
             )
-            print(f"    [DB] Inserted {inserted:,} rows into stats.sec_composition", flush=True)
+            total = n_copied + n_upserted
+            via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                  f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                  "upsert"
+            print(f"    [DB] Inserted {total:,} rows into stats.sec_composition via {via}", flush=True)
         else:
             print(f"    [DB] No new rows to insert into stats.sec_composition", flush=True)
 
@@ -652,39 +659,45 @@ async def main():
             r["code"]: r["parent_index_code"] for r in existing_etf_pks
         }
 
-        sec_classification_rows = []
-        for _, row in uni_df.iterrows():
-            code = str(row.get("code", "")).strip()
-            if not code:
-                continue
-            n_days = int(row.get("n_ohlcv_days", 0) or 0)
-            n_margin = int(row.get("n_margin_days", 0) or 0)
-            has_margin = n_margin > 0
-            avg_vol = float(avg_vol_by_code.get(code, 0.0) or 0.0)
-            fd = row.get("first_date", "")
-            ld = row.get("last_date", "")
-            fd_date = datetime.datetime.strptime(str(fd), "%Y-%m-%d").date() if fd else None
-            ld_date = datetime.datetime.strptime(str(ld), "%Y-%m-%d").date() if ld else None
-            base_score = (100 if n_days >= 200 else 0) + (50 if has_margin else 0)
-            sec_classification_rows.append({
-                "code": code,
-                "name": str(row.get("name", "") or ""),
-                "type": "etf",
-                "parent_index_code": etf_parent_index_by_code.get(code, ""),
-                "n_days": n_days,
-                "has_margin": has_margin,
-                "avg_shares": avg_vol,
-                "first_date": fd_date,
-                "last_date": ld_date,
-                "selectivity_rank_score": base_score,
-            })
-
-        # Add volume-rank component (0..50)
-        if sec_classification_rows:
-            by_vol = sorted(sec_classification_rows, key=lambda r: r["avg_shares"], reverse=True)
-            n_etf = len(by_vol)
-            for rank_i, r in enumerate(by_vol):
-                r["selectivity_rank_score"] += int(50 * (1.0 - rank_i / max(n_etf, 1)))
+        # --- sec_classification (type='etf'): per-ETF quality metrics (vectorized) ---
+        _cls = uni_df.copy()
+        _cls["code"] = _cls["code"].astype(str).str.strip()
+        _cls = _cls[_cls["code"].str.len() > 0].copy()
+        if not _cls.empty:
+            _cls["name"] = _cls["name"].fillna("").astype(str)
+            _cls["n_days"] = pd.to_numeric(_cls["n_ohlcv_days"], errors="coerce").fillna(0).astype(int)
+            _cls["n_margin"] = pd.to_numeric(_cls["n_margin_days"], errors="coerce").fillna(0).astype(int)
+            _cls["has_margin"] = _cls["n_margin"] > 0
+            _cls["avg_shares"] = _cls["code"].map(
+                lambda c: float(avg_vol_by_code.get(c, 0.0) or 0.0)
+            )
+            # Parse dates
+            _cls["first_date"] = pd.to_datetime(_cls["first_date"], errors="coerce").dt.date
+            _cls["last_date"] = pd.to_datetime(_cls["last_date"], errors="coerce").dt.date
+            # Base score: 100 if n_days >= 200, +50 if has_margin
+            _cls["selectivity_rank_score"] = (
+                (_cls["n_days"] >= 200).astype(int) * 100 +
+                _cls["has_margin"].astype(int) * 50
+            )
+            # Parent index lookup
+            _cls["parent_index_code"] = _cls["code"].map(
+                lambda c: etf_parent_index_by_code.get(c, "")
+            )
+            _cls["type"] = "etf"
+            # Sort by avg_shares and add volume-rank component
+            _cls = _cls.sort_values("avg_shares", ascending=False).reset_index(drop=True)
+            n_etf = len(_cls)
+            if n_etf > 0:
+                _vol_rank = pd.Series(range(n_etf), index=_cls.index)
+                _cls["selectivity_rank_score"] += (50 * (1.0 - _vol_rank / max(n_etf, 1))).astype(int)
+            _cls["n_days"] = _cls["n_days"]
+            sec_classification_rows = _cls[
+                ["code", "name", "type", "parent_index_code", "n_days",
+                 "has_margin", "avg_shares", "first_date", "last_date",
+                 "selectivity_rank_score"]
+            ].to_dict(orient="records")
+        else:
+            sec_classification_rows = []
 
         if sec_classification_rows:
             inserted = await bulk_upsert_async(

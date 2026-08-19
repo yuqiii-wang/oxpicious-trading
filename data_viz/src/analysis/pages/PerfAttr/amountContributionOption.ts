@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Build the ECharts option for the Index Trading Amt Contribution chart
  * (ETF-market turnover over time).
  *
@@ -37,6 +37,8 @@ import {
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type { ChartMode } from "./types";
+import React from "react";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 
 export function buildAmountContributionOption(
   data: PerfAttrChartResponse,
@@ -177,26 +179,79 @@ export function buildAmountContributionOption(
         const erMa5 = ratioMa5s[idx];
         const benchNum = benchmarkEtfNums[idx];
         const codeNum = codeEtfNums[idx];
-        // Subject's SHARE of the benchmark ETF market = 1 / ratio (only
-        // meaningful when both amounts are non-null and ratio > 0).
         const share = er == null || er === 0 ? null : 1 / er;
         const shareMa5 = erMa5 == null || erMa5 === 0 ? null : 1 / erMa5;
-        // In percentage mode the main value is the % change, with the raw
-        // 亿元 shown in parentheses for reference. In absolute mode the raw
-        // 亿元 is the main value.
-        const benchValStr = isPercentage
-          ? `${fmtPct(ba)} <span style="opacity:0.5">(${baRaw == null ? "—" : fmtNum(baRaw, 2) + " 亿"})</span>`
-          : `${ba == null ? "—" : fmtNum(ba, 2) + " 亿"}`;
-        const codeValStr = isPercentage
-          ? `${fmtPct(ca)} <span style="opacity:0.5">(${caRaw == null ? "—" : fmtNum(caRaw, 2) + " 亿"})</span>`
-          : `${ca == null ? "—" : fmtNum(ca, 2) + " 亿"}`;
-        return `
-          <div style="font-weight:600">${dates[idx]}</div>
-          <div style="margin-top:2px">${benchLabel}: <b style="color:${MUTED_PALETTE[1]}">${benchValStr}</b>${benchNum == null ? "" : ` <span style="opacity:0.6">(${benchNum} ETFs)</span>`}</div>
-          <div>${codeLabel}: <b style="color:${MUTED_PALETTE[0]}">${codeValStr}</b>${codeNum == null ? "" : ` <span style="opacity:0.6">(${codeNum} ETFs)</span>`}</div>
-          <div style="margin-top:2px;opacity:0.85">Ratio (bench/code): <b style="color:${MUTED_PALETTE[1]}">${er == null ? "—" : fmtNum(er, 4)}</b>${share == null ? "" : ` · share ${fmtNum(share, 4)}`}</div>
-          <div style="opacity:0.85">MA5 Ratio: <b style="color:${MUTED_PALETTE[0]}">${erMa5 == null ? "—" : fmtNum(erMa5, 4)}</b>${shareMa5 == null ? "" : ` · share ${fmtNum(shareMa5, 4)}`}</div>
-        `;
+
+        const makeValNode = (v: number | null, raw: number | null): React.ReactNode => {
+          if (isPercentage) {
+            return React.createElement(React.Fragment, null,
+              fmtPct(v),
+              " ",
+              React.createElement("span", { style: { opacity: 0.5 } },
+                `(${raw == null ? "—" : fmtNum(raw, 2) + " 亿"})`
+              )
+            );
+          }
+          return v == null ? "—" : fmtNum(v, 2) + " 亿";
+        };
+
+        const children: React.ReactNode[] = [];
+
+        children.push(
+          React.createElement(tooltipComponents.Header, null, dates[idx])
+        );
+
+        const benchExtra = benchNum == null
+          ? null
+          : React.createElement(React.Fragment, null,
+              " ",
+              React.createElement("span", { style: { opacity: 0.6 } }, `(${benchNum} ETFs)`)
+            );
+        children.push(
+          React.createElement(tooltipComponents.Row, { style: { marginTop: 2 } },
+            `${benchLabel}: `,
+            React.createElement(tooltipComponents.Bold, { style: { color: MUTED_PALETTE[1] } }, makeValNode(ba, baRaw)),
+            benchExtra
+          )
+        );
+
+        const codeExtra = codeNum == null
+          ? null
+          : React.createElement(React.Fragment, null,
+              " ",
+              React.createElement("span", { style: { opacity: 0.6 } }, `(${codeNum} ETFs)`)
+            );
+        children.push(
+          React.createElement(tooltipComponents.Row, null,
+            `${codeLabel}: `,
+            React.createElement(tooltipComponents.Bold, { style: { color: MUTED_PALETTE[0] } }, makeValNode(ca, caRaw)),
+            codeExtra
+          )
+        );
+
+        const shareText = share == null ? null : ` · share ${fmtNum(share, 4)}`;
+        children.push(
+          React.createElement(tooltipComponents.Row, { style: { marginTop: 2, opacity: 0.85 } },
+            "Ratio (bench/code): ",
+            React.createElement(tooltipComponents.Bold, { style: { color: MUTED_PALETTE[1] } },
+              er == null ? "—" : fmtNum(er, 4)
+            ),
+            shareText
+          )
+        );
+
+        const shareMa5Text = shareMa5 == null ? null : ` · share ${fmtNum(shareMa5, 4)}`;
+        children.push(
+          React.createElement(tooltipComponents.Row, { style: { opacity: 0.85 } },
+            "MA5 Ratio: ",
+            React.createElement(tooltipComponents.Bold, { style: { color: MUTED_PALETTE[0] } },
+              erMa5 == null ? "—" : fmtNum(erMa5, 4)
+            ),
+            shareMa5Text
+          )
+        );
+
+        return renderReactElement(React.createElement(React.Fragment, null, children));
       },
     },
     legend: commonLegend(themeMode, {

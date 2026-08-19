@@ -62,7 +62,7 @@ from _common.build_commons import (
     copy_insert_async,
     truncate_table_async,
 )
-from _common.db_commons import bulk_upsert_async
+from _common.db_commons import copy_or_upsert_split_async
 from _common.df_utils import should_use_gpu
 from analyze._common import (
     sanitize_for_db_insert,
@@ -130,12 +130,7 @@ def rolling_corr(a: np.ndarray, b: np.ndarray, window: int) -> np.ndarray:
 
     router_df = pd.DataFrame({"a": a, "b": b})
     if should_use_gpu(router_df, op_type="rolling_corr"):
-        import cudf  # type: ignore[import-untyped]
-        gdf = cudf.from_pandas(router_df)
-        g_result = gdf["a"].rolling(window=window, min_periods=2).corr(
-            gdf["b"]
-        )
-        return g_result.to_numpy()
+        print(f"    [cuDF router] {len(router_df):,} rows — rolling_corr (GPU-worthy)", flush=True)
 
     s_a = pd.Series(a)
     s_b = pd.Series(b)
@@ -453,14 +448,18 @@ async def run_correlations(
         # ---- Step 4: upsert (incremental) ---------------------------
         print(f"\n[c4/5] Upserting {len(out_rows):,} rows into "
               f"{TABLE_INDUSTRY_CORRELATION}...", flush=True)
-        n = await bulk_upsert_async(
+        n_copied, n_upserted = await copy_or_upsert_split_async(
             conn, TABLE_INDUSTRY_CORRELATION, out_rows,
             key_columns=[
                 "date", "industry_id", "security_code",
                 "benchmark_code", "attribution_type",
             ],
         )
-        print(f"      -> upserted {n:,} rows", flush=True)
+        n = n_copied + n_upserted
+        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+              "upsert"
+        print(f"      -> inserted {n:,} rows via {via}", flush=True)
 
     # ---- Step 5: register in analysis_identity ----------------------
     print("\n[c5/5] Registering in analysis.analysis_identity...",

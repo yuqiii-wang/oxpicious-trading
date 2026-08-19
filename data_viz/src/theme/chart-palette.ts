@@ -389,7 +389,8 @@ export const FUTURES_GHOST_OPACITY = parseFloat(cssVar("--futures-ghost-opacity"
 export const FUTURES_HISTORY_OPACITY = parseFloat(cssVar("--futures-history-opacity", "0.90"));
 
 // Underlying display names (for options dashboard)
-// Now unified: both SZSE ETF options and CFFEX index options share index codes
+// SZSE ETF options use native ETF codes (1599xx); CFFEX index options
+// use index codes — the two venues load different code sets.
 export const UNDERLYING_LABELS: Record<string, string> = {
   "000016": "上证50",
   "000300": "沪深300",

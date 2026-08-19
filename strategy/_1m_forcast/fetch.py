@@ -32,7 +32,7 @@ _RUN_STATE_SQL = """
         s.seq_id,
         s.sec_type,
         s.code,
-        i.end_date,
+        s.end_date,
         i.first_buy_fill_price
     FROM strategy.strategy_identity s
     JOIN strategy.strategy_results i ON i.seq_id = s.seq_id
@@ -49,7 +49,10 @@ async def fetch_run_end_state(
     already 0 before the last day, or the run has no decisions).
 
     The returned dict carries:
-      - seq_id, sec_type, code, end_date (forecast_date), first_buy_fill_price
+      - seq_id, sec_type, code, forecast_date (the run's LAST DATA date —
+        strategy_identity.end_date, e.g. yesterday; NOT the last decision's
+        exec_date — the position is typically held after the last trade),
+        first_buy_fill_price
       - total_qty: position carried into the horizon
         (= total_qty_before of the FINAL LIQUIDATION SELL when the last
         decision is the force-liquidation; else total_qty_after of the last
@@ -88,13 +91,21 @@ async def fetch_run_end_state(
     if total_qty <= 0:
         return None  # nothing to forecast — no open position
 
-    # Fetch the last total_pnl from strategy_daily (the P&L forecast offset).
-    # Exclude forecast daily rows (trade_date > last actual decision's exec_date).
+    # Anchor the forecast at the run's LAST DATA date (end_date = the last
+    # OHLC day the backtest consumed, e.g. yesterday), NOT the last
+    # decision's exec_date — the position is typically held for days/weeks
+    # after the last trade, and the forecast must project forward from the
+    # latest data (matching the non-forecast view which shows data through
+    # end_date). Falls back to the last decision date when end_date is NULL.
+    forecast_date = row["end_date"] or last["exec_date"]
+
+    # Fetch the last total_pnl from strategy_daily (the P&L forecast offset)
+    # at the anchor date — includes MTM changes after the last decision.
     last_pnl_row = await conn.fetchrow(
         "SELECT total_pnl FROM strategy.strategy_daily "
         "WHERE seq_id = $1 AND trade_date <= $2 "
         "ORDER BY trade_date DESC LIMIT 1",
-        seq_id, last["exec_date"],
+        seq_id, forecast_date,
     )
     last_total_pnl = float(last_pnl_row["total_pnl"]) if last_pnl_row else 0.0
 
@@ -102,7 +113,7 @@ async def fetch_run_end_state(
         "seq_id": seq_id,
         "sec_type": row["sec_type"],
         "code": row["code"],
-        "forecast_date": last["exec_date"],
+        "forecast_date": forecast_date,
         "first_buy_fill_price": (
             float(row["first_buy_fill_price"])
             if row["first_buy_fill_price"] is not None else None

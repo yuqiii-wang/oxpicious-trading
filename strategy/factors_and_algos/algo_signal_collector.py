@@ -12,8 +12,8 @@ Two modes
 ---------
 BINARY: exactly one algo at weight 1.0. The collector delegates fetch /
 apply_signals / build_signal_reason to that algo, so behavior is identical
-to running the algo directly. ``selection = {"bollinger_bands": 1.0}``
-selects Bollinger Bands.
+to running the algo directly. ``selection = {"macd": 1.0}``
+selects MACD.
 
 MIXED: multiple algos with non-zero weights. The collector fetches each
 algo's data INDEPENDENTLY (each owns its table joins), applies each algo's
@@ -69,7 +69,8 @@ from strategy._trading.engine import (
 )
 from strategy.factors_and_algos import get_algo
 from strategy.factors_and_algos._algo.tuning import tune_signals
-from strategy.factors_and_algos.portfolio import blend_signal_confidence, _short_name
+from strategy.factors_and_algos._algo.registry import short_name
+from strategy.factors_and_algos.portfolio import blend_signal_confidence
 
 
 class AlgoSignalCollector:
@@ -144,8 +145,7 @@ class AlgoSignalCollector:
         """Fetch the data the selected algo(s) need.
 
         Binary: delegate to the selected algo's ``fetch_signal_data`` — each
-        algo owns its table joins (e.g. ma_spread joins mov_ave_rsi, MACD
-        reads OHLC straight from basic_stats).
+        algo owns its table joins (MACD reads OHLC straight from basic_stats).
 
         Mixed: fetch each algo's data INDEPENDENTLY + merge OHLC on
         (code, date). Per-algo REQUIRED_COLUMNS stay on each algo's own df
@@ -295,7 +295,7 @@ class AlgoSignalCollector:
         """Build the ``signal_reason`` text.
 
         Binary: delegate to the selected algo's reason builder (algo-specific
-        phrasing — e.g. MA5/MA60 cross vs BB z-score vs MACD crossover).
+        phrasing — e.g. MACD crossover).
 
         Mixed: build a per-algo contribution breakdown encoded as a JSON
         prefix (``__MIX__<json>__``) followed by a human-readable summary.
@@ -325,7 +325,7 @@ class AlgoSignalCollector:
                 raw_c = 0.0
             contrib = weight * raw_c
             contributions.append({
-                "a": _short_name(algo_name),   # abbreviation (bb/macd/ma)
+                "a": short_name(algo_name),   # abbreviation (macd)
                 "algo": algo_name,              # full name
                 "w": round(weight, 4),
                 "c": round(raw_c, 2),

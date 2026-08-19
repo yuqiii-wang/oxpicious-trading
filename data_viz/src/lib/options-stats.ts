@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Options market sentiment computation — port of compute_*() helpers in
  * plot_szse_options.py.
  *
@@ -6,7 +6,7 @@
  * single date.
  */
 import type { OptionsRow } from "@shared/types";
-import { CONTRACT_SIZE, PRICE_SCALE } from "../theme/chart-palette";
+import { CONTRACT_SIZE, PRICE_SCALE } from "@/theme/chart-palette";
 import { computeGreeks, impliedVolDefault } from "./iv";
 
 export interface SmileSkewness {

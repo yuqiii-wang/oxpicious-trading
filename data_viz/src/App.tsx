@@ -22,8 +22,14 @@ import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
 import OptionsAnalysisPage from "@/analysis/pages/OptionsAnalysis";
 import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
+import { useSecAllocLivePipeline } from "@/live/hooks/useSecAllocLivePipeline";
 
 export default function App() {
+  // App-root keeper: run the live sec-alloc attribution pipeline every
+  // 5 min during trading hours regardless of the active route, so the
+  // Market Movements tables stay fresh even when that page isn't open.
+  useSecAllocLivePipeline();
+
   return (
     <Router>
       <TopAppBar />

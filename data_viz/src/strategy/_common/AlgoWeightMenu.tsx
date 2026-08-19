@@ -5,12 +5,12 @@
  * weight slider (0-100%). The resolved strategy_name is computed from the
  * selection:
  *   - Binary (one algo non-zero): strategy_name = algo name (e.g. "macd")
- *   - Mixed (multiple non-zero): strategy_name = "portfolio:bb*0.5+macd*0.5"
+ *   - Mixed (multiple non-zero): strategy_name = "portfolio:macd*0.5"
  *
  * The sum indicator turns red when weights don't sum to 100%. A "Normalize"
  * button auto-scales existing non-zero weights to sum to 100%.
  *
- * Default selection: { bollinger_bands: 0, macd: 1.0, ma_spread: 0 }.
+ * Default selection: { macd: 1.0 }.
  */
 import { useState, type MouseEvent } from "react";
 import {
@@ -43,6 +43,10 @@ interface AlgoWeightMenuProps {
   faultTolerance: number;
   /** Callback when fault tolerance changes. */
   onFaultToleranceChange: (ft: number) => void;
+  /** Whether to run forecast scenarios (10 scenarios + child seqs). */
+  runWithForecast: boolean;
+  /** Callback when forecast toggle changes. */
+  onRunWithForecastChange: (v: boolean) => void;
 }
 
 const EPSILON = 1e-6;
@@ -53,6 +57,8 @@ export default function AlgoWeightMenu({
   disabled,
   faultTolerance,
   onFaultToleranceChange,
+  runWithForecast,
+  onRunWithForecastChange,
 }: AlgoWeightMenuProps) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
@@ -80,7 +86,7 @@ export default function AlgoWeightMenu({
   const normalize = () => {
     const total = selectionSum(selection);
     if (total < EPSILON) {
-      onChange({ bollinger_bands: 0, macd: 1.0, ma_spread: 0 });
+      onChange({ macd: 1.0 });
       return;
     }
     const next: StrategySelection = { ...selection };
@@ -225,6 +231,33 @@ export default function AlgoWeightMenu({
                 </Typography>
               </Box>
             </Tooltip>
+          </Box>
+
+          {/* Forecast — runs 10 forecast scenarios + child sequences in
+              addition to the backtest + risks. Toggle on/off. */}
+          <Box sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  checked={runWithForecast}
+                  disabled={disabled}
+                  onChange={(e) => onRunWithForecastChange(e.target.checked)}
+                />
+              }
+              label={
+                <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                  Forecast
+                </Typography>
+              }
+            />
+            <Box sx={{ px: 1, opacity: runWithForecast ? 1 : 0.5 }}>
+              <Typography variant="caption" color="text.secondary">
+                {runWithForecast
+                  ? "10 scenarios + child seqs (adds ~10× runtime)"
+                  : "Sells all remaining units on the last day"}
+              </Typography>
+            </Box>
           </Box>
         </Stack>
       </Popover>

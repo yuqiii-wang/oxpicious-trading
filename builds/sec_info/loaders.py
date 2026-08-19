@@ -150,8 +150,10 @@ def load_identify(path: str) -> Optional[Dict[str, Any]]:
         return None
     if df.empty:
         return None
-    kv = {str(r["key"]).strip(): ("" if pd.isna(r["value"]) else str(r["value"]).strip())
-          for _, r in df.iterrows()}
+    kv = dict(zip(
+          df["key"].astype(str).str.strip(),
+          df["value"].fillna("").astype(str).str.strip()
+      ))
 
     period_text = kv.get("报告期", "")
     parsed_period = parse_report_period(period_text)

@@ -7,17 +7,18 @@ collector + per-algo packages); there is no fetch/signal code here
 anymore — the collector + algos own fetch and signal math.
 
 The strategy identity stored in the DB (``strategy_identity.strategy_name``)
-is the **algo name** itself (e.g. ``bollinger_bands`` / ``macd`` /
-``ma_spread``), not the package name. Per-(security, date-range) algo params
-are loaded from ``strategy.algo_configs`` by
-``factors_and_algos.loader.load_params``.
+is the **algo name** itself (e.g. ``macd``), not the package name.
+Per-(security, date-range) algo params are loaded from
+``strategy.algo_configs`` by ``factors_and_algos.loader.load_params``.
 
 What lives here (algo-agnostic):
-  - DEFAULT_ALGO             — the algo used when --algo is omitted
+  - DEFAULT_ALGO             — resolved lazily from _algo.registry
+                               (single source; lazy so importing this
+                               package stays pandas-free — see below)
   - STRATEGY_PARAMS          — TRADING-LAYER defaults only (engine keys:
                                min_holding_period, buy_notional,
                                skip_final_liquidation). Algo-specific params
-                               (band_width, ema_short, ...) are NOT here —
+                               (ema_short, ...) are NOT here —
                                they come from the algo's DEFAULT_PARAMS and
                                the DB algo_configs row.
   - __main__                 — CLI: --algo picks the algo; strategy_name =
@@ -32,12 +33,10 @@ from strategy._common.constants import (  # noqa: F401
     SEC_TYPE_BASIC_STATS_TABLE, DEFAULT_BUY_NOTIONAL,
 )
 
-# Default algo when --algo is omitted. Registered in factors_and_algos.
-DEFAULT_ALGO = "bollinger_bands"
 
 # TRADING-LAYER defaults (engine-consumed; NOT algo-specific). These are
 # merged into the params dict alongside the algo's DEFAULT_PARAMS + the DB
-# algo_configs row. Algo-specific keys (band_width, ema_short, weights, ...)
+# algo_configs row. Algo-specific keys (ema_short, weights, ...)
 # are intentionally NOT here — they belong to the algo + the DB config.
 #
 #   - min_holding_period, buy_notional — consumed by strategy._trading.engine
@@ -49,3 +48,19 @@ STRATEGY_PARAMS = {
     "buy_notional": DEFAULT_BUY_NOTIONAL,
     "skip_final_liquidation": True,
 }
+
+
+# LAZY (PEP 562): DEFAULT_ALGO resolves to the registry's single source on
+# first attribute access. Eagerly importing the registry here would pull
+# ``strategy.factors_and_algos._algo.base`` → pandas BEFORE ``__main__.py``
+# installs the cudf.pandas import hook (``python -m`` executes THIS
+# ``__init__`` first), which silently keeps Run Strategy on CPU pandas.
+def __getattr__(name: str):
+    if name == "DEFAULT_ALGO":
+        from strategy.factors_and_algos._algo.registry import DEFAULT_ALGO
+        return DEFAULT_ALGO
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | {"DEFAULT_ALGO"})

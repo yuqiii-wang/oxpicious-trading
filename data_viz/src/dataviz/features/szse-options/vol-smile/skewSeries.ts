@@ -1,4 +1,4 @@
-﻿import type { OptionsRow } from "@shared/types";
+import type { OptionsRow, SkewnessCrossCountRow } from "@shared/types";
 import { PRICE_SCALE } from "@/theme/chart-palette";
 import { expiryToYyyyMm, expiryCompare } from "./expiryUtils";
 import type { DailySkew, ExpirySkew } from "./types";
@@ -20,11 +20,22 @@ export function computeOiWeightedSkew(rows: OptionsRow[], S: number): { skewPric
   };
 }
 
-export function computeDailySkewSeries(rows: OptionsRow[]): DailySkew[] {
+export function computeDailySkewSeries(
+  rows: OptionsRow[],
+  crossCounts?: SkewnessCrossCountRow[],
+): DailySkew[] {
   const byDate = new Map<string, OptionsRow[]>();
   for (const r of rows) {
     if (!byDate.has(r.date)) byDate.set(r.date, []);
     byDate.get(r.date)!.push(r);
+  }
+
+  const crossCountMap = new Map<string, number>();
+  if (crossCounts && crossCounts.length > 0) {
+    for (const c of crossCounts) {
+      const em = c.expiry_month.slice(0, 7);
+      crossCountMap.set(`${c.date}|${em}`, c.count_skewness_curve_crossed_spot);
+    }
   }
 
   const dates = Array.from(byDate.keys()).sort();
@@ -61,11 +72,23 @@ export function computeDailySkewSeries(rows: OptionsRow[]): DailySkew[] {
     const perExpiry: ExpirySkew[] = [];
     for (const em of expiryMonths) {
       const { rows: emRows, expiryDate } = expiryMap.get(em)!;
+      const crossCount = crossCountMap.get(`${date}|${em}`);
       if (emRows.length < 3) {
-        perExpiry.push({ expiry: em, expiryDate, skewPrice: null, skewPct: null });
+        perExpiry.push({
+          expiry: em,
+          expiryDate,
+          skewPrice: null,
+          skewPct: null,
+          ...(crossCount != null ? { countSkewnessCurveCrossedSpot: crossCount } : {}),
+        });
       } else {
         const s = computeOiWeightedSkew(emRows, S);
-        perExpiry.push({ expiry: em, expiryDate, ...s });
+        perExpiry.push({
+          expiry: em,
+          expiryDate,
+          ...s,
+          ...(crossCount != null ? { countSkewnessCurveCrossedSpot: crossCount } : {}),
+        });
       }
     }
 

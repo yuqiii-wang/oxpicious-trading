@@ -8,10 +8,16 @@ Called at startup and every 5 minutes (even outside trading hours) so CSV
 data that wasn't loaded during live streaming (e.g. DB connection failure,
 stream crash/restart) is recovered automatically. Idempotent: re-upserting
 the same (date, code, time) row via ON CONFLICT just updates it.
+
+DB-completeness guard: Before processing a CSV file, checks whether the
+intraday table already has complete bars for that date (latest bar >=
+CLOSE_TIME). If complete, skips the file entirely — no redundant CSV
+parsing or re-insertion.
 """
 from __future__ import annotations
 
 import csv
+import re
 import time as _time
 from datetime import datetime, time
 from pathlib import Path
@@ -20,7 +26,8 @@ from typing import Dict, List, Optional, Tuple
 from downloads._common.core import resolve_out_dir, setup_logger
 from _common.db_commons import bulk_upsert
 
-from ._model import AssetStream, CSV_COLUMNS, ceiling_5min, aggregate_bars
+from ._io import is_intraday_complete
+from ._model import AssetStream, CSV_COLUMNS, CLOSE_TIME, ceiling_5min, aggregate_bars
 
 logger = setup_logger("stream_sse")
 
@@ -78,6 +85,17 @@ def _group_csv_by_windows(
     return windows
 
 
+def _extract_date_from_filename(csv_path: Path) -> Optional[datetime]:
+    """Extract trading date from a CSV filename like '<prefix>_YYYYMMDD.csv'."""
+    match = re.search(r"(\d{8})", csv_path.stem)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%d")
+    except ValueError:
+        return None
+
+
 def backfill_csv_file(
     conn,
     asset: AssetStream,
@@ -87,9 +105,31 @@ def backfill_csv_file(
     """Load one CSV file, aggregate into 5-min bars, upsert to DB.
 
     Returns (n_identity, n_bars) upserted.
+
+    DB-completeness guard: If the intraday table already has complete
+    bars for this CSV's date (latest bar >= CLOSE_TIME), the file is
+    skipped entirely — no redundant CSV parsing or re-insertion.
     """
     if not csv_path.exists():
         return 0, 0
+
+    # --- DB-completeness guard: check if this date is already fully loaded ---
+    trade_date = _extract_date_from_filename(csv_path)
+    if trade_date is not None:
+        try:
+            if is_intraday_complete(conn, asset, trade_date.date()):
+                logger.info(
+                    "backfill %s: %s already complete in DB (latest >= 15:00); "
+                    "skipping CSV.",
+                    asset.name, csv_path.name,
+                )
+                return 0, 0
+        except Exception as e:
+            logger.warning(
+                "backfill %s: completeness check failed for %s: %s "
+                "(will proceed with backfill)",
+                asset.name, csv_path.name, e,
+            )
 
     t0 = _time.time()
     windows = _group_csv_by_windows(csv_path)

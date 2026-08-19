@@ -64,7 +64,7 @@ async def fetch_strategy_seqs(
     If ``codes`` is empty/None, returns ALL (seq_id, code) pairs for the
     sec_type (subject to the strategy_name filter). Used by the risk pipeline
     to know which seqs to compute risk metrics for. ``strategy_name`` scopes
-    the result to one algo (e.g. 'bollinger_bands' / 'macd') so a run for one
+    the result to one algo (e.g. 'macd') so a run for one
     algo doesn't recompute risks for another algo's seqs.
     """
     name_clause = " AND strategy_name = $3" if strategy_name else ""

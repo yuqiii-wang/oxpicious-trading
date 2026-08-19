@@ -28,28 +28,35 @@ from strategy._trading.constants import (
 # ---------------------------------------------------------------------------
 #  Fill prices (worst-case OHLC stress model)
 # ---------------------------------------------------------------------------
-def worst_case_buy_fill(high: float, low: float, close: float) -> float:
+def worst_case_buy_fill(
+    high: float, low: float, close: float, band: float = SLIPPAGE_BAND,
+) -> float:
     """Worst-case BUY fill price (highest plausible).
 
-        fill = max(high, close + SLIPPAGE_BAND × (high − low))
+        fill = max(high, close + band × (high − low))
 
     The buyer is stressed to the day's worst (highest) plausible price:
     either the session high or the close + band, whichever is higher.
+    ``band`` defaults to SLIPPAGE_BAND; the optimizer (_optm_engine) passes
+    its static ``slippage_band`` through params so fills are consistent.
     """
     rng = high - low
-    return max(high, close + SLIPPAGE_BAND * rng)
+    return max(high, close + band * rng)
 
 
-def worst_case_sell_fill(high: float, low: float, close: float) -> float:
+def worst_case_sell_fill(
+    high: float, low: float, close: float, band: float = SLIPPAGE_BAND,
+) -> float:
     """Worst-case SELL fill price (lowest plausible).
 
-        fill = min(low, close − SLIPPAGE_BAND × (high − low))
+        fill = min(low, close − band × (high − low))
 
     The seller is stressed to the day's worst (lowest) plausible price:
     either the session low or the close − band, whichever is lower.
+    ``band`` defaults to SLIPPAGE_BAND (see worst_case_buy_fill).
     """
     rng = high - low
-    return min(low, close - SLIPPAGE_BAND * rng)
+    return min(low, close - band * rng)
 
 
 # ---------------------------------------------------------------------------
@@ -92,15 +99,18 @@ def sell_slippage(fill_price: float, close: float) -> float:
 # ---------------------------------------------------------------------------
 #  Fee (BUY only)
 # ---------------------------------------------------------------------------
-def buy_fee(qty: float, norm_price: float) -> float:
-    """Fee on a BUY = FEE_RATE × BUY notional (normalized money).
+def buy_fee(
+    qty: float, norm_price: float, rate: float = FEE_RATE,
+) -> float:
+    """Fee on a BUY = rate × BUY notional (normalized money).
 
-        fee = FEE_RATE × (qty / SHARES_PER_QTY) × norm_price
+        fee = rate × (qty / SHARES_PER_QTY) × norm_price
 
     Applied to BUY only (0 for SELL, per A-share convention). Deducted
-    from cash_after on BUY.
+    from cash_after on BUY. ``rate`` defaults to FEE_RATE; the optimizer
+    (_optm_engine) passes its static ``fee_rate`` through params.
     """
-    return FEE_RATE * (qty / SHARES_PER_QTY) * norm_price
+    return rate * (qty / SHARES_PER_QTY) * norm_price
 
 
 # ---------------------------------------------------------------------------

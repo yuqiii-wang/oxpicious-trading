@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Build the ECharts option for the Industry ETF Contribution bar chart —
  * 2nd plot onward in "ETF Contribution" mode.
  *
@@ -27,6 +27,8 @@ import {
   commonGrid,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import React from "react";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 
 /** Format a fractional value as a signed percentage string. */
 function fmtPctSigned(v: number | null, digits = 2): string {
@@ -95,21 +97,45 @@ export function buildIndustryEtfContributionOption(
         const share = shares[idx];
         const parent = parentIndices[idx];
         const rsign = ret == null ? "" : ret >= 0 ? "▲ " : "▼ ";
-        let html = `
-          <div style="font-weight:600">${labels[idx]} <span style="opacity:0.6">(${codes[idx]})</span></div>
-          <div style="margin-top:2px">Parent index: ${parent}</div>
-          <div>Trading Amt: <b>${fmtAmtYi(amt)}</b></div>
-          <div>${rsign}ETF Return: <b style="color:${ret == null ? c.textColor : ret >= 0 ? UP_COLOR : DOWN_COLOR}">${fmtPctSigned(ret)}</b></div>
-          <div>Share of Industry: ${share == null ? "—" : fmtNum(share, 1) + "%"}</div>
-        `;
+        const children: React.ReactNode[] = [];
+        children.push(
+          React.createElement(tooltipComponents.Header, null,
+            labels[idx],
+            " ",
+            React.createElement("span", { style: { opacity: 0.6 } }, `(${codes[idx]})`)
+          ),
+          React.createElement("div", { style: { marginTop: 2 } }, `Parent index: ${parent}`),
+          React.createElement("div", null,
+            "Trading Amt: ",
+            React.createElement(tooltipComponents.Bold, null, fmtAmtYi(amt))
+          ),
+          React.createElement("div", null,
+            rsign,
+            "ETF Return: ",
+            React.createElement(tooltipComponents.Bold, {
+              style: { color: ret == null ? c.textColor : ret >= 0 ? UP_COLOR : DOWN_COLOR }
+            }, fmtPctSigned(ret))
+          ),
+          React.createElement("div", null,
+            `Share of Industry: ${share == null ? "—" : fmtNum(share, 1) + "%"}`
+          )
+        );
         if (industryTotal != null) {
-          html += `<div style="opacity:0.7;margin-top:2px">Industry Total: ${fmtAmtYi(industryTotal)}`;
+          const totalRow: React.ReactNode[] = [
+            "Industry Total: ",
+            fmtAmtYi(industryTotal)
+          ];
           if (data.industry_etf_trading_amount_ma5 != null) {
-            html += ` · MA5: ${fmtAmtYi(data.industry_etf_trading_amount_ma5)}`;
+            totalRow.push(
+              ` · MA5: `,
+              fmtAmtYi(data.industry_etf_trading_amount_ma5)
+            );
           }
-          html += `</div>`;
+          children.push(
+            React.createElement("div", { style: { opacity: 0.7, marginTop: 2 } }, ...totalRow)
+          );
         }
-        return html;
+        return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
     },
     xAxis: {

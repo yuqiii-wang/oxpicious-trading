@@ -6,7 +6,7 @@ columns as a CSIndex *_history.csv after schema normalization
 trading_amount, change, changePct, pe, consNumber):
 
   · load_szse_index_history  — temps/szse_archive + temps/szse_trend
-                               (filters to 399001 / 399006 / 399237)
+                               (filters to 399001 / 399006)
   · load_sse_index_history   — temps/sse_trend (today's EOD snapshot,
                                ~200 SSE indices, no filtering)
   · load_cnindex_history     — temps/cnindex_archive (国证 indices:
@@ -44,7 +44,7 @@ def load_szse_index_history(verbose: bool = True) -> list:
       • temps/szse_trend/szse_trend_index_YYYYMMDD.csv   (recent trend)
 
     Each CSV contains ~180 indexes for one date; this function keeps only
-    399001 (深证成指), 399006 (创业板指), and 399237 (运输指数) and maps
+    399001 (深证成指), 399006 (创业板指) and maps
     columns to the CSIndex history schema so they can be concatenated with
     CSIndex DataFrames.
 

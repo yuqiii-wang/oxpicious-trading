@@ -57,4 +57,44 @@ def tune_signals(df: pd.DataFrame, threshold: float = SIGNAL_CONFIDENCE_THRESHOL
     return df
 
 
-__all__ = ["SIGNAL_CONFIDENCE_THRESHOLD", "tune_signals"]
+def apply_exec_delays(
+    df: pd.DataFrame,
+    buy_delay: int = 0,
+    sell_delay: int = 0,
+) -> pd.DataFrame:
+    """Shift BUY/SELL signals N trading days later (execution-date tuning).
+
+    The "what date to buy and sell" seam: a signal fired at bar t is
+    executed at bar t+N instead (the engine fills on the bar where the
+    signal is non-zero, at that bar's worst-case OHLC). BUY signals
+    (conf > 0) and SELL signals (conf < 0) are shifted INDEPENDENTLY by
+    ``buy_delay`` / ``sell_delay`` bars within each code group, so any
+    inherited algo gets tunable trade dates without algo-side changes.
+    If a delayed BUY and a delayed SELL land on the same bar they NET
+    (same rule as the mixed-mode collector blend).
+
+    Operates IN-PLACE on ``df`` (and returns it for chaining). Delays
+    <= 0 are no-ops. Bars shifted past the series end are dropped (the
+    trade never executes).
+    """
+    if df.empty or "signal_confidence" not in df.columns:
+        return df
+    buy_delay = max(0, int(buy_delay or 0))
+    sell_delay = max(0, int(sell_delay or 0))
+    if buy_delay == 0 and sell_delay == 0:
+        return df
+
+    sig = df["signal_confidence"]
+    # Per-side masked shift: BUY signals move by buy_delay bars, SELL
+    # signals by sell_delay bars, each within its code group.
+    pos = sig.where(sig > 0, 0.0)
+    neg = sig.where(sig < 0, 0.0)
+    if buy_delay > 0:
+        pos = pos.groupby(df["code"]).shift(buy_delay)
+    if sell_delay > 0:
+        neg = neg.groupby(df["code"]).shift(sell_delay)
+    df["signal_confidence"] = pos.fillna(0.0) + neg.fillna(0.0)
+    return df
+
+
+__all__ = ["SIGNAL_CONFIDENCE_THRESHOLD", "tune_signals", "apply_exec_delays"]

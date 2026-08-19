@@ -40,6 +40,7 @@ _REF_ROW_COLUMNS = (
     "benchmark_prev_date_close",
     "code_prev_date_trading_amount",
     "code_trading_amount_weight",
+    "code_sec_shared_weight",
 )
 
 
@@ -79,28 +80,52 @@ def compute_ref_rows(
         else None
     )
 
-    rows: list[dict] = []
-    for _, r in df.iterrows():
-        weight = r["code_trading_amount_weight"]
-        rows.append(
-            {
-                "benchmark_code": benchmark_code,
-                "date": live_date,
-                "code": r["member_code"],
-                "sec_type": r["member_sec_type"],
-                "industry_id": r["industry_id"],
-                "is_industry_not_strategy": bool(r["is_industry_not_strategy"]),
-                "prev_date": r["prev_date"],
-                "code_prev_date_close": r["prev_close"],
-                "benchmark_prev_date_close": bench_prev_close,
-                "code_prev_date_trading_amount": (
-                    float(r["prev_trading_amount"]) if pd.notna(r["prev_trading_amount"]) else None
-                ),
-                "code_trading_amount_weight": (
-                    float(weight) if weight is not None and pd.notna(weight) else None
-                ),
-            }
-        )
+    # Build ref rows — vectorized: add constant columns, pre-convert
+    # types, then single to_dict(records) call.
+    df["benchmark_code"] = benchmark_code
+    df["date"] = live_date
+    df["benchmark_prev_date_close"] = bench_prev_close
+
+    # Convert boolean column
+    df["is_industry_not_strategy"] = df["is_industry_not_strategy"].astype(bool)
+
+    # Convert prev_trading_amount: NaN → None, else float
+    amt_col = "prev_trading_amount"
+    df[amt_col] = pd.to_numeric(df[amt_col], errors="coerce")
+    df[amt_col] = df[amt_col].where(df[amt_col].notna(), None)
+    # Keep non-None values as float (to_numeric already produced float)
+
+    # Convert code_trading_amount_weight: None/NaN → None, float values as-is
+    w_col = "code_trading_amount_weight"
+    df[w_col] = pd.to_numeric(df[w_col], errors="coerce")
+    # Replace all NaN (incl. those from pd.to_numeric(None)) with None
+    df.loc[df[w_col].isna(), w_col] = None
+
+    # Convert code_sec_shared_weight: None/NaN → None, float values as-is
+    # COALESCE'd to 0 in SQL so missing SAP rows get 0 (not NULL)
+    sw_col = "code_sec_shared_weight"
+    df[sw_col] = pd.to_numeric(df[sw_col], errors="coerce")
+    # Replace all NaN with None
+    df.loc[df[sw_col].isna(), sw_col] = None
+
+    # Select and rename columns to match _REF_ROW_COLUMNS order
+    _col_map = {
+        "member_code": "code",
+        "member_sec_type": "sec_type",
+        "prev_close": "code_prev_date_close",
+        amt_col: "code_prev_date_trading_amount",
+    }
+    out_df = df.rename(columns=_col_map)
+
+    out_cols = [
+        "benchmark_code", "date", "code", "sec_type",
+        "industry_id", "is_industry_not_strategy", "prev_date",
+        "code_prev_date_close", "benchmark_prev_date_close",
+        "code_prev_date_trading_amount", "code_trading_amount_weight",
+        "code_sec_shared_weight",
+    ]
+    out_df = out_df[out_cols].copy()
+    rows = out_df.to_dict(orient="records")
     return rows
 
 
@@ -161,3 +186,38 @@ async def ensure_ref(
             flush=True,
         )
     return total, zero_ref_pairs
+
+
+def _delete_count(status: str) -> int:
+    """Parse an asyncpg execute() status tag ('DELETE n') into an int."""
+    try:
+        return int(status.split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+async def invalidate_ref_for_date(
+    conn,
+    live_date: datetime.date,
+) -> tuple[int, int]:
+    """Delete this date's ref + tick rows so the heavy pass rebuilds them.
+
+    Used by the "Build Yday Ref" chain (--rebuild-latest-date): the chain
+    refreshes the CSVs and rebuilds estimated daily rows BEFORE the ref
+    runs, so existing refs for the date (potentially built from stale
+    estimated closes) are invalidated to force a rebuild from the fresh
+    data. Ticks are deleted first (FK child); fallback ticks are
+    re-created by the 5-min LIVE process, weighted ticks by the heavy
+    pass that follows in the same run.
+
+    Returns (ref rows deleted, tick rows deleted).
+    """
+    n_tick = await conn.execute(
+        "DELETE FROM live.sec_alloc_live_attribution WHERE date = $1::date",
+        live_date,
+    )
+    n_ref = await conn.execute(
+        "DELETE FROM live.sec_alloc_live_prev_ref WHERE date = $1::date",
+        live_date,
+    )
+    return _delete_count(n_ref), _delete_count(n_tick)

@@ -54,23 +54,26 @@ def _compute_info_fields(
 ) -> Dict[str, Any]:
     """Derive the strategy_results row fields from one code's decisions.
 
-    Returns a dict with: start_date, end_date, total_buy_cost,
-    first_buy_date, first_buy_fill_price, total_realized_pnl,
-    total_abs_pnl, n_sells, n_buys.
+    Returns a dict with: total_buy_cost, first_buy_date, first_buy_fill_price,
+    total_realized_pnl, total_abs_pnl, n_sells, n_buys.
 
     The first BUY is the normalization anchor (first_buy_fill_price);
     trade_decision.normalized_fill_price = fill_price / this * 100, so the
     first BUY reads as 100. By construction every code with decisions has
     ≥1 BUY (SELLs need a prior BUY), so first_buy_* are populated; they're
     left None in the degenerate no-BUY case (strategy_results allows NULL).
+
+    start_date / end_date are NOT derived here — the caller passes the
+    code's OHLC period (code_df date min/max) so strategy_results dates
+    match strategy_identity dates (the run's DATA period, not the last
+    decision's exec_date — the position is typically held after the last
+    trade).
     """
     first_buy = next(
         (d for d in code_decisions if d.get("side") == "BUY"), None,
     )
     sells = [d for d in code_decisions if d.get("side") == "SELL"]
     return {
-        "start_date": min(d["exec_date"] for d in code_decisions),
-        "end_date": max(d["exec_date"] for d in code_decisions),
         "total_buy_cost": _compute_total_buy_cost(code_decisions),
         "first_buy_date": first_buy["exec_date"] if first_buy else None,
         "first_buy_fill_price": (
@@ -235,12 +238,15 @@ async def run_one_sec_type(
             continue
 
         # strategy_results = 1:1 results row (dates, total_buy_cost, first-buy
-        # anchor, P&L summary), all derived from this code's decisions.
+        # anchor, P&L summary). Dates mirror the identity row: the code's
+        # OHLC period (code_start/code_end), NOT the first/last decision —
+        # the position is typically held after the last trade, so the run's
+        # end must be the last DATA date.
         info = _compute_info_fields(code_decisions)
         await insert_strategy_results(
             conn, seq_id, sec_type, code,
-            start_date=info["start_date"],
-            end_date=info["end_date"],
+            start_date=code_start,
+            end_date=code_end,
             total_buy_cost=info["total_buy_cost"],
             first_buy_date=info["first_buy_date"],
             first_buy_fill_price=info["first_buy_fill_price"],

@@ -1,32 +1,26 @@
 /**
  * Volatility Smile panel for Options Analysis page.
  *
- * Wraps the base VolSmilePanel with precomputed expiry gap data from
- * analysis.options_stats_before_expiry and skewness correlation data
+ * Wraps the base VolSmilePanel with skewness correlation data
  * from analysis.options_skewness_stats.
  *
- * The gaps (ΔSpot / ↓Min / ↑Max) are fetched once via the API and
- * passed as a gapsMap prop to the base panel, which renders them in
- * the tooltip. The corr data (whole-period correlation between
+ * The corr data (whole-period correlation between
  * skewness and spot) is rendered as a 3rd chart below the skew time
  * series, with a toggle to switch between Daily / MA5 / MA20 / MA60.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ToggleButton, ToggleButtonGroup } from "@mui/material";
-import VolSmilePanel, {
-  expiryToYyyyMm,
-  type ExpiryGapsMap,
-} from "@/dataviz/features/szse-options/VolSmilePanel";
+import VolSmilePanel from "@/dataviz/features/szse-options/VolSmilePanel";
 import {
-  fetchOptionsExpiryGaps,
   fetchOptionsSkewnessCorr,
+  fetchOptionsSkewnessCrossCounts,
 } from "@/lib/api-client/options";
 import { computeDailySkewSeries } from "@/dataviz/features/szse-options/vol-smile/skewSeries";
 import {
   buildCorrTimeSeriesOption,
   type CorrMode,
 } from "@/dataviz/features/szse-options/vol-smile/corrTimeSeriesOption";
-import type { OptionsRow, SkewnessCorrRow } from "@shared/types";
+import type { OptionsRow, SkewnessCorrRow, SkewnessCrossCountRow } from "@shared/types";
 import type { EChartsOption } from "echarts";
 
 interface Props {
@@ -47,9 +41,9 @@ export default function AnalysisVolSmilePanel({
   onDateChange,
 }: Props) {
   const underlyingCode = rows[0]?.underlying_code ?? "";
-  const [gapsMap, setGapsMap] = useState<ExpiryGapsMap | null>(null);
   const [corrRows, setCorrRows] = useState<SkewnessCorrRow[]>([]);
   const [corrMode, setCorrMode] = useState<CorrMode>("ma5");
+  const [crossCountRows, setCrossCountRows] = useState<SkewnessCrossCountRow[]>([]);
 
   useEffect(() => {
     if (!underlyingCode) return;
@@ -59,31 +53,25 @@ export default function AnalysisVolSmilePanel({
     let cancelled = false;
 
     Promise.all([
-      fetchOptionsExpiryGaps(underlyingCode, startDate, endDate),
       fetchOptionsSkewnessCorr(underlyingCode, startDate, endDate),
+      fetchOptionsSkewnessCrossCounts(underlyingCode, startDate, endDate),
     ])
-      .then(([gapsResp, corrResp]) => {
+      .then(([corrResp, crossResp]) => {
         if (cancelled) return;
-
-        const map = new Map<string, typeof gapsResp.rows[number]>();
-        for (const g of gapsResp.rows) {
-          const key = `${g.date}|${expiryToYyyyMm(g.expiry_date)}`;
-          map.set(key, g);
-        }
-        setGapsMap(map as unknown as ExpiryGapsMap);
         setCorrRows(corrResp.rows);
+        setCrossCountRows(crossResp.rows);
       })
       .catch(() => {
         if (!cancelled) {
-          setGapsMap(null);
           setCorrRows([]);
+          setCrossCountRows([]);
         }
       });
 
     return () => { cancelled = true; };
   }, [underlyingCode, rows.length]);
 
-  const dailySkewSeries = useMemo(() => computeDailySkewSeries(rows), [rows]);
+  const dailySkewSeries = useMemo(() => computeDailySkewSeries(rows, crossCountRows), [rows, crossCountRows]);
 
   const corrOption: EChartsOption | null = useMemo(() => {
     if (corrRows.length === 0 || dailySkewSeries.length === 0) return null;
@@ -114,7 +102,7 @@ export default function AnalysisVolSmilePanel({
       rows={rows}
       selectedDate={selectedDate}
       onDateChange={onDateChange}
-      gapsMap={gapsMap}
+      crossCounts={crossCountRows}
       bottomChartOption={corrOption}
       bottomChartHeight={200}
       bottomChartControls={

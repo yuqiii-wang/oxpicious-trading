@@ -1,7 +1,7 @@
 """Abstract base class for pluggable signal algos.
 
-Every algo in ``strategy.factors_and_algos`` (bollinger_bands, macd,
-ma_spread) inherits from :class:`AlgoBase`. The ABC enforces a consistent
+Every algo in ``strategy.factors_and_algos`` (macd) inherits from
+:class:`AlgoBase`. The ABC enforces a consistent
 contract — each algo MUST declare its class attributes + implement the three
 abstract methods (``fetch_signal_data``, ``apply_signals``,
 ``build_signal_reason``). The concrete methods (``build_params``,
@@ -11,7 +11,7 @@ eliminating the per-algo ``config.py`` / ``adapter.py`` duplication.
 Contract
 --------
 Class attributes (each algo overrides):
-  ``ALGO_NAME``         — unique short name (e.g. "bollinger_bands")
+  ``ALGO_NAME``         — unique short name (e.g. "macd")
   ``POSITION_AWARE``    — False = position-irrelevant (safe to blend)
   ``DEFAULT_PARAMS``    — algo-specific default param dict
   ``REQUIRED_COLUMNS``  — data columns the algo reads from fetched df
@@ -49,15 +49,19 @@ from strategy._trading.engine import (
     run_backtest as _run_backtest_engine,
     compute_daily_rows as _compute_daily_rows,
 )
-from strategy.factors_and_algos._algo.tuning import tune_signals
+from strategy.factors_and_algos._algo.tuning import (
+    SIGNAL_CONFIDENCE_THRESHOLD,
+    tune_signals,
+    apply_exec_delays,
+)
 
 
 class AlgoBase(ABC):
     """Abstract base for all pluggable signal algos.
 
     Subclasses MUST set the class attributes + implement the three abstract
-    methods. The concrete methods (``build_params``, ``run_backtest``,
-    ``compute_daily_rows``) are inherited as-is.
+    methods. The concrete methods (``build_params``, ``build_params_from_json``,
+    ``run_backtest``, ``compute_daily_rows``) are inherited as-is.
     """
 
     # ------------------------------------------------------------------
@@ -68,6 +72,16 @@ class AlgoBase(ABC):
     DEFAULT_PARAMS: Dict[str, Any] = {}
     REQUIRED_COLUMNS: tuple = ()
     ALGO_PARAM_KEYS: tuple = ()
+
+    # JSON-serializable declaration of the algo's TUNABLE model params —
+    # the search space the optimization engine (``_optm_engine``) samples.
+    # Empty dict = no tunable model params (only the COMMON trading space
+    # is optimized). Schema per entry (Optuna-compatible):
+    #   {"type": "int"|"float", "low": x, "high": y, "log": bool?, "step": n?}
+    #   {"type": "categorical", "choices": [...]}
+    # The engine reads this via the base-class contract, so ANY inherited
+    # algo that declares a space is optimizable without engine changes.
+    TUNABLE_SPACE: Dict[str, dict] = {}
 
     # ------------------------------------------------------------------
     # Concrete: merge DEFAULT_PARAMS with caller overrides
@@ -90,6 +104,32 @@ class AlgoBase(ABC):
             merged.update(overrides)
         return merged
 
+    def build_params_from_json(self, params_json: str | dict | None) -> dict:
+        """Build a full params dict from a JSON arg (str or decoded dict).
+
+        Accepts common algo params as a JSON argument — a JSON object
+        string (CLI ``--params-json``) or an already-decoded dict — merges
+        it over ``DEFAULT_PARAMS`` via :meth:`build_params`, and returns
+        the fully-populated param dict. ``None`` / empty / ``"null"`` →
+        plain defaults. Unknown keys pass through untouched (same rule as
+        ``build_params``) so trading-layer keys may travel in the JSON.
+        """
+        import json
+
+        if params_json is None:
+            return self.build_params()
+        if isinstance(params_json, str):
+            s = params_json.strip()
+            if not s or s.lower() == "null":
+                return self.build_params()
+            params_json = json.loads(s)
+        if not isinstance(params_json, dict):
+            raise TypeError(
+                "params_json must be a JSON object string or dict, got "
+                f"{type(params_json).__name__}"
+            )
+        return self.build_params(dict(params_json))
+
     # ------------------------------------------------------------------
     # Abstract: each algo implements its own fetch / signal / reason
     # ------------------------------------------------------------------
@@ -97,8 +137,7 @@ class AlgoBase(ABC):
     async def fetch_signal_data(self, conn, sec_type: str, codes: list) -> pd.DataFrame:
         """Fetch the per-(code, date) data the algo needs from the DB.
 
-        Each algo owns its table joins (e.g. ma_spread joins mov_ave_rsi,
-        MACD reads OHLC straight from basic_stats). Returns a DataFrame
+        Each algo owns its table joins (MACD reads OHLC straight from basic_stats). Returns a DataFrame
         sorted by (code, date) with OHLC + the algo's REQUIRED_COLUMNS.
         """
 
@@ -145,10 +184,31 @@ class AlgoBase(ABC):
         """
         if not df.empty:
             df = self.apply_signals(df, params)
+            # tune_signals / apply_exec_delays mutate in-place — copy so
+            # the caller's df (e.g. the optimizer's cached base df) is
+            # never modified across trials.
+            df = df.copy()
             # Base signal tuning (inherited by all sub-algos): zero out
-            # sub-threshold |signal_confidence| so dust trades (conf < 5)
-            # are ignored by the engine.
-            df = tune_signals(df)
+            # sub-threshold |signal_confidence| so dust trades are ignored
+            # by the engine. The threshold is param-driven (default
+            # SIGNAL_CONFIDENCE_THRESHOLD) so the optimizer can tune it.
+            df = tune_signals(
+                df,
+                threshold=float(
+                    params.get("conf_threshold", SIGNAL_CONFIDENCE_THRESHOLD)
+                    or SIGNAL_CONFIDENCE_THRESHOLD
+                ),
+            )
+            # Execution-date tuning (inherited by all sub-algos): shift
+            # BUY/SELL execution N trading days after the signal bar.
+            # Default delays are 0 (execute on the signal bar), so normal
+            # runs are unchanged; optimizer-tuned params flow through the
+            # DB algo_configs row.
+            df = apply_exec_delays(
+                df,
+                buy_delay=int(params.get("buy_exec_delay", 0) or 0),
+                sell_delay=int(params.get("sell_exec_delay", 0) or 0),
+            )
         decisions = _run_backtest_engine(
             df, params, sec_type, codes,
             signal_reason_fn=self.build_signal_reason,

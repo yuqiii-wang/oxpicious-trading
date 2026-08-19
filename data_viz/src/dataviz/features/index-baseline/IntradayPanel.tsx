@@ -1,9 +1,9 @@
-﻿/**
+/**
  * IntradayPanel — closeable 5-min OHLC expansion for the Index
  * Baseline page. Rendered below an IndexPanel when the user clicks a date
  * that has 5-minute intraday bars (gold-ringed marker on the close line).
  */
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -23,6 +23,7 @@ import {
   formatPriceValue,
   type OhlcMode,
 } from "@/lib/ohlc";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { axisColors } from "@/theme/chart-palette";
 import type { IndexIntraday5minResponse } from "@shared/types";
 import type { EChartsOption } from "echarts";
@@ -96,21 +97,35 @@ export default function IntradayPanel({
           }>;
           if (arr.length === 0) return "";
           const time = (arr[0].axisValue as string) || "";
-          let html = `<div style="font-weight:600;margin-bottom:4px">${time}</div>`;
+
+          const makeHeader = (text: string) =>
+            React.createElement(tooltipComponents.Header, null, text);
+          const makeRow = (children: React.ReactNode, style?: React.CSSProperties) =>
+            React.createElement(tooltipComponents.Row, { style }, children);
+          const makeTextRow = (marker: string, name: string, text: React.ReactNode) =>
+            makeRow([marker, " ", name, ": ", text]);
+          const makeBoldRow = (marker: string, name: string, vstr: string) =>
+            makeTextRow(marker, name, React.createElement(tooltipComponents.Bold, null, vstr));
+
+          const children: React.ReactNode[] = [];
+          children.push(makeHeader(time));
+
           for (const p of arr) {
             if (p.value == null) continue;
             const name = p.seriesName ?? "";
             if (Array.isArray(p.value)) {
               const [o, cl, l, h] = p.value;
               if (o == null && cl == null && l == null && h == null) continue;
-              html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
+              children.push(makeTextRow(p.marker ?? "", name,
+                `O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}`));
             } else {
               const v = p.value as number;
               if (!Number.isFinite(v)) continue;
-              html += `<div>${p.marker ?? ""} ${name}: <b>${formatPriceValue(v, ohlcMode)}</b></div>`;
+              children.push(makeBoldRow(p.marker ?? "", name, formatPriceValue(v, ohlcMode)));
             }
           }
-          return html;
+
+          return renderReactElement(React.createElement(React.Fragment, null, children));
         },
       },
       xAxis: {

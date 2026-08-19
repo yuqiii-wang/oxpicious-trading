@@ -1065,7 +1065,7 @@ SHENZHEN_EXCLUSIVE_PREFIXES = ("002", "003", "300", "301")
 
 AMBIGUOUS_PREFIXES = ("000", "001")
 
-SHANGHAI_INDEX_CODES = {
+SHANGHAI_BROADMARKET_INDEX_CODES = {
     "000001",
     "000002",
     "000003",
@@ -1087,7 +1087,7 @@ def get_exchange_from_code(stock_code: str) -> Optional[str]:
     if prefix in SHENZHEN_EXCLUSIVE_PREFIXES:
         return "SZ"
     if prefix in AMBIGUOUS_PREFIXES:
-        if code in SHANGHAI_INDEX_CODES:
+        if code in SHANGHAI_BROADMARKET_INDEX_CODES:
             return "SS"
     return None
 

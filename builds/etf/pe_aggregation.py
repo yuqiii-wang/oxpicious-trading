@@ -146,44 +146,24 @@ def compute_etf_pe_harmonic(
 
     # The merge with stock_pe is the heavy operation
     if should_use_gpu(merge_left, op_type="merge"):
-        import cudf
-        g_left = cudf.from_pandas(merge_left)
-        g_pe = cudf.from_pandas(stock_pe)
-        g_merged = g_left.merge(
-            g_pe,
-            left_on=["stock_code_bare", "date"],
-            right_on=["code", "date"],
-            how="inner",
-        )
-        # Harmonic aggregation: SUM(w) / SUM(w/pe) per (etf_code_bare, date)
-        g_merged["w_over_pe"] = g_merged["weight_fraction"] / g_merged["pe"]
-        g_agg = g_merged.groupby(
-            ["etf_code_bare", "date"], sort=False
-        ).agg(
-            sum_w=("weight_fraction", "sum"),
-            sum_w_over_pe=("w_over_pe", "sum"),
-        ).reset_index()
-        result = g_agg.to_pandas()
-        if verbose:
-            print(f"    [ETF-PE] cuDF merge+groupby done: {len(result):,} (etf, date) PE values",
-                  flush=True)
-    else:
-        merged = merge_left.merge(
-            stock_pe,
-            left_on=["stock_code_bare", "date"],
-            right_on=["code", "date"],
-            how="inner",
-        )
-        merged["w_over_pe"] = merged["weight_fraction"] / merged["pe"]
-        result = merged.groupby(
-            ["etf_code_bare", "date"], sort=False
-        ).agg(
-            sum_w=("weight_fraction", "sum"),
-            sum_w_over_pe=("w_over_pe", "sum"),
-        ).reset_index()
-        if verbose:
-            print(f"    [ETF-PE] pandas merge+groupby done: {len(result):,} (etf, date) PE values",
-                  flush=True)
+        print(f"    [cuDF router] {len(merge_left):,} rows — merge (GPU-worthy)", flush=True)
+
+    merged = merge_left.merge(
+        stock_pe,
+        left_on=["stock_code_bare", "date"],
+        right_on=["code", "date"],
+        how="inner",
+    )
+    merged["w_over_pe"] = merged["weight_fraction"] / merged["pe"]
+    result = merged.groupby(
+        ["etf_code_bare", "date"], sort=False
+    ).agg(
+        sum_w=("weight_fraction", "sum"),
+        sum_w_over_pe=("w_over_pe", "sum"),
+    ).reset_index()
+    if verbose:
+        print(f"    [ETF-PE] pandas merge+groupby done: {len(result):,} (etf, date) PE values",
+              flush=True)
 
     # PE_etf = SUM(w) / SUM(w/pe)
     result["pe"] = np.where(

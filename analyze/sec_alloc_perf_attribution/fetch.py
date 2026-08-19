@@ -5,6 +5,9 @@ index closes, and aggregate ETF turnover per (date, tracking_index).
 """
 from __future__ import annotations
 
+import datetime
+from typing import Optional
+
 import pandas as pd
 
 from analyze.sec_alloc_perf_attribution.config import TOP_N_NON_BROAD
@@ -113,7 +116,9 @@ async def fetch_shared_weights(conn) -> dict:
     return result
 
 
-async def fetch_index_closes(conn) -> pd.DataFrame:
+async def fetch_index_closes(
+    conn, start_date: Optional[datetime.date] = None
+) -> pd.DataFrame:
     """Fetch daily close prices for indices used as benchmarks (and as
     subject candidates).
 
@@ -129,6 +134,12 @@ async def fetch_index_closes(conn) -> pd.DataFrame:
          preserving sector diversity.
       3. DEBT-sector indices are always excluded.
 
+    Args:
+        conn: asyncpg connection.
+        start_date: if provided, only fetch rows with date >= start_date.
+            Used to limit data to the lookback window for incremental
+            single-date rebuilds.
+
     Returns DataFrame: [benchmark_code, date, benchmark_close]
       - benchmark_close = the index close (used for downstream rolling-
         correlation computation against subject closes).
@@ -139,7 +150,14 @@ async def fetch_index_closes(conn) -> pd.DataFrame:
         stats.sec_classification.parent_index_code), not the index's own
         turnover.
     """
-    rows = await conn.fetch("""
+    # Build query with optional date filter.
+    date_where: str = ""
+    params: list = [TOP_N_NON_BROAD]
+    if start_date is not None:
+        date_where = "AND b.date >= $2"
+        params.append(start_date)
+
+    sql = f"""
         WITH broad_codes AS (
             -- All broad-market indices (kept in full)
             SELECT b.code
@@ -184,8 +202,11 @@ async def fetch_index_closes(conn) -> pd.DataFrame:
             b.close
         FROM stats.index_basic_stats b
         JOIN kept_codes kc ON kc.code = b.code
+        WHERE 1=1 {date_where}
         ORDER BY b.code, b.date
-    """, TOP_N_NON_BROAD)
+    """
+
+    rows = await conn.fetch(sql, *params)
 
     if not rows:
         return pd.DataFrame(
@@ -193,7 +214,7 @@ async def fetch_index_closes(conn) -> pd.DataFrame:
         )
 
     df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["date"] = pd.to_datetime(df["date"])
     df["close"] = pd.to_numeric(df["close"], errors="coerce")
     df = df.sort_values(["benchmark_code", "date"]).reset_index(drop=True)
     # Rename close -> benchmark_close for clarity (used for rolling correlation).
@@ -201,7 +222,85 @@ async def fetch_index_closes(conn) -> pd.DataFrame:
     return df[["benchmark_code", "date", "benchmark_close"]]
 
 
-async def fetch_etf_amount_by_index(conn) -> pd.DataFrame:
+async def fetch_index_subject_closes(
+    conn, start_date: Optional[datetime.date] = None
+) -> pd.DataFrame:
+    """Fetch daily close prices for ALL compositioned non-broad non-debt
+    indices used as SUBJECTS.
+
+    Subject pool:
+      ALL non-broad, non-debt indices that have composition data in
+      stats.sec_composition (stock_code IS NOT NULL, source_type='index').
+      This is the full universe needed for the Intraday Attribution view
+      to show all industries at a selected tick.
+
+    Key difference from fetch_index_closes():
+      - fetch_index_closes() returns the BENCHMARK pool (top-N per
+        industry by ETF turnover + all broad-market indices) — used by
+        the Market Movements top plot shades.
+      - fetch_index_subject_closes() returns the FULL SUBJECT pool (all
+        compositioned indices) — used by the Intraday Attribution view.
+      - Both pools share the same broad-market indices (they appear in
+        both benchmark and subject roles).
+
+    Args:
+        conn: asyncpg connection.
+        start_date: if provided, only fetch rows with date >= start_date.
+            Used to limit data to the lookback window for incremental
+            single-date rebuilds.
+
+    Returns DataFrame: [code, date, subject_close]
+    """
+    date_where: str = ""
+    params: list = []
+    if start_date is not None:
+        date_where = "AND b.date >= $1"
+        params.append(start_date)
+
+    sql = f"""
+        WITH subject_codes AS (
+            SELECT DISTINCT b.code
+            FROM stats.index_basic_stats b
+            JOIN stats.sec_classification sc
+                ON sc.code = b.code AND sc.type = 'index'
+            WHERE sc.sector_id NOT IN ('BROAD', 'DEBT')
+              AND sc.is_active = TRUE
+              AND sc.industry_id IS NOT NULL
+              AND sc.industry_id <> ''
+              AND EXISTS (
+                  SELECT 1 FROM stats.sec_composition scm
+                  WHERE scm.code = b.code
+                    AND scm.stock_code IS NOT NULL
+                    AND scm.source_type = 'index'
+              )
+        )
+        SELECT
+            b.code,
+            b.date,
+            b.close AS subject_close
+        FROM stats.index_basic_stats b
+        JOIN subject_codes sc ON sc.code = b.code
+        WHERE 1=1 {date_where}
+        ORDER BY b.code, b.date
+    """
+
+    rows = await conn.fetch(sql, *params)
+
+    if not rows:
+        return pd.DataFrame(
+            columns=["code", "date", "subject_close"]
+        )
+
+    df = pd.DataFrame([dict(r) for r in rows])
+    df["date"] = pd.to_datetime(df["date"])
+    df["subject_close"] = pd.to_numeric(df["subject_close"], errors="coerce")
+    df = df.sort_values(["code", "date"]).reset_index(drop=True)
+    return df[["code", "date", "subject_close"]]
+
+
+async def fetch_etf_amount_by_index(
+    conn, start_date: Optional[datetime.date] = None
+) -> pd.DataFrame:
     """Aggregate ETF turnover per (date, tracking_index) — used to populate
     benchmark_etf_trading_amount AND code_etf_trading_amount for index subjects.
 
@@ -231,19 +330,34 @@ async def fetch_etf_amount_by_index(conn) -> pd.DataFrame:
         aggregate for an index mechanically trends upward — this is a known
         bias of the metric (a liquidity view, not a price-attribution view).
 
+    Args:
+        conn: asyncpg connection.
+        start_date: if provided, only fetch rows with date >= start_date.
+            Used to limit data to the lookback window for incremental
+            single-date rebuilds.
+
     Returns DataFrame: [index_code, date, etf_amount]
       - etf_amount is in yuan.
     """
-    rows = await conn.fetch("""
+    date_where: str = ""
+    params: list = []
+    if start_date is not None:
+        date_where = "AND date >= $1"
+        params.append(start_date)
+
+    sql = f"""
         SELECT code AS index_code, date, total_etf_trading_amount AS etf_amount
         FROM stats.index_exts
         WHERE total_etf_trading_amount IS NOT NULL
-    """)
+        {date_where}
+    """
+
+    rows = await conn.fetch(sql, *params)
 
     if not rows:
         return pd.DataFrame(columns=["index_code", "date", "etf_amount"])
 
     df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["date"] = pd.to_datetime(df["date"])
     df["etf_amount"] = pd.to_numeric(df["etf_amount"], errors="coerce")
     return df[["index_code", "date", "etf_amount"]]

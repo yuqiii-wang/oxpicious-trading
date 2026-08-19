@@ -3,8 +3,8 @@ import type {
   OptionsCombinedResponse,
   OptionsUnderlying,
   EtfOhlcvResponse,
-  ExpiryGapsResponse,
   SkewnessCorrResponse,
+  SkewnessCrossCountResponse,
 } from "@shared/types";
 
 export type OptionsTargetType = "ETF" | "INDEX";
@@ -46,21 +46,6 @@ export function fetchEtfOhlcv(
   return fetchJson<EtfOhlcvResponse>(`/api/szse-options/etf-ohlcv${qs ? `?${qs}` : ""}`);
 }
 
-export function fetchOptionsExpiryGaps(
-  underlying: string,
-  startDate?: string | null,
-  endDate?: string | null,
-): Promise<ExpiryGapsResponse> {
-  const params = new URLSearchParams();
-  if (underlying) params.set("underlying", underlying);
-  if (startDate) params.set("start_date", startDate);
-  if (endDate) params.set("end_date", endDate);
-  const qs = params.toString();
-  return fetchJson<ExpiryGapsResponse>(
-    `/api/szse-options/stats-before-expiry${qs ? `?${qs}` : ""}`,
-  );
-}
-
 export function fetchOptionsSkewnessCorr(
   underlying: string,
   startDate?: string | null,
@@ -73,5 +58,20 @@ export function fetchOptionsSkewnessCorr(
   const qs = params.toString();
   return fetchJson<SkewnessCorrResponse>(
     `/api/szse-options/skewness-corr${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchOptionsSkewnessCrossCounts(
+  underlying: string,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<SkewnessCrossCountResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<SkewnessCrossCountResponse>(
+    `/api/szse-options/skewness-cross-counts${qs ? `?${qs}` : ""}`,
   );
 }

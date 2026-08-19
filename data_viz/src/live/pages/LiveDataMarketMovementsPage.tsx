@@ -26,17 +26,22 @@
  * fallback is_without_trading_amt rows exist), the By Trading Amt button
  * is DISABLED and Equal is rendered. No forced
  * "latest tick" attribution — the middle plot is reactive to the clicked
- * 5-min tick (defaults to latest_time on load). Auto-refreshes every 5
+ * 5-min tick (anchored to latest_time on load AND re-anchored whenever a
+ * refresh brings new data; the x-axis stays the static full-day range
+ * 09:30–15:30 — no zoom/slider). Auto-refreshes every 5
  * minutes during Asia/Shanghai trading hours (09:30–11:30, 13:00–15:00);
- * each refresh FIRST triggers one incremental run of the live pipeline
+ * the refresh is SILENT — charts stay mounted and identical payloads are
+ * dropped, so only genuinely new data triggers a repaint. Each refresh
+ * FIRST triggers one incremental run of the live pipeline
  * (python -m live.sec_alloc_live_attribution) via POST
  * /api/live-data/sec-alloc-live/run so the data never lags the raw bars.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Autocomplete,
   Box,
+  Button,
   CircularProgress,
   Stack,
   TextField,
@@ -55,8 +60,12 @@ import {
   fetchIntradayMovementsPrevDayOhlc,
   fetchIndicesCombined,
   fetchSecAllocLiveAttribution,
+  fetchSecAllocLiveRunStatus,
   invalidateCacheForPrefix,
   runSecAllocLivePipeline,
+  SEC_ALLOC_LIVE_REF_TAG,
+  SEC_ALLOC_LIVE_REF_DL_TAG,
+  SEC_ALLOC_LIVE_REF_BASE_TAG,
 } from "@/lib/api-client";
 import type {
   IndexBundle,
@@ -71,8 +80,9 @@ import {
   buildMemberBarsOption,
   FULL_DAY_TICKS,
   type IndustryFilter,
-} from "../features/market-movements/marketMovementsOption";
-import { resolvePrevDayBar } from "../features/market-movements/prevDayOhlc";
+} from "@/live/features/market-movements/marketMovementsOption";
+import { resolvePrevDayBar } from "@/live/features/market-movements/prevDayOhlc";
+import { isWithinTradingHours } from "@/live/hooks/useSecAllocLivePipeline";
 
 /** One benchmark option in the dropdown. */
 interface BenchmarkOption {
@@ -84,50 +94,6 @@ interface BenchmarkOption {
 const DEFAULT_BENCHMARK = "000300";
 const AUTO_REFRESH_MS = 5 * 60_000; // 5 minutes
 
-/**
- * Pick the tick with the MOST industries covered (fall back to latest_time).
- *
- * The latest tick is often sparse — partial data fetch in progress, or some
- * member indices haven't reported their latest 5-min close yet. Defaulting to
- * latest would render only a handful of (often all down) industries in the
- * middle plot. The densest tick gives the user a representative snapshot of
- * the market on first load.
- */
-function pickDensestTick(resp: IntradayMovementsResponse): string {
-  if (resp.benchmark_series.length === 0) return resp.latest_time;
-  const counts = new Map<string, number>();
-  for (const r of resp.industry_series) {
-    if (r.industry_price_pct != null) {
-      counts.set(r.time, (counts.get(r.time) ?? 0) + 1);
-    }
-  }
-  let bestTick = resp.latest_time;
-  let bestCount = -1;
-  for (const [tick, n] of counts) {
-    if (n > bestCount) {
-      bestCount = n;
-      bestTick = tick;
-    }
-  }
-  return bestTick;
-}
-
-/** True if current Asia/Shanghai time is inside trading hours. */
-function isWithinTradingHours(): boolean {
-  // Asia/Shanghai is UTC+8 year-round (no DST). Build a pseudo-local time
-  // from the UTC offset so the check is correct regardless of the browser's
-  // own timezone.
-  const now = new Date();
-  const utc = now.getTime() + now.getTimezoneOffset() * 60_000;
-  const sh = new Date(utc + 8 * 60 * 60_000); // Shanghai wall-clock
-  const day = sh.getDay(); // 0=Sun .. 6=Sat
-  if (day === 0 || day === 6) return false; // weekend
-  const hm = sh.getHours() * 100 + sh.getMinutes();
-  const morning = hm >= 930 && hm <= 1130;
-  const afternoon = hm >= 1300 && hm <= 1500;
-  return morning || afternoon;
-}
-
 export default function LiveDataMarketMovementsPage() {
   const themeMode = useStore((s) => s.themeMode);
   const [benchmarks, setBenchmarks] = useState<BenchmarkOption[]>([]);
@@ -136,6 +102,16 @@ export default function LiveDataMarketMovementsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Mirror of `data` readable inside fetch effects without adding `data`
+  // to their deps (keeps [benchmarkCode, refreshKey] as the only triggers).
+  const dataRef = useRef<IntradayMovementsResponse | null>(null);
+  // JSON signatures of the last APPLIED payload for each fetch. A 5-min
+  // auto-refresh that returns IDENTICAL data is dropped here (no setState)
+  // so a no-op cycle does not ripple fresh object identities through every
+  // memo → chart option → ECharts setOption on the whole page.
+  const lastDataSigRef = useRef<string | null>(null);
+  const lastOhlcSigRef = useRef<string | null>(null);
+  const lastAttrSigRef = useRef<string | null>(null);
 
   // Click-driven selection state.
   const [selectedTick, setSelectedTick] = useState<string>("");
@@ -143,14 +119,17 @@ export default function LiveDataMarketMovementsPage() {
   // Industry/strategy filter for the middle and bottom plots.
   const [industryFilter, setIndustryFilter] = useState<IndustryFilter>("all");
   // No-benchmark mode: shows raw % vs prev close with a flat 0.0% baseline
-  // instead of the selected benchmark line + relative shades.
+  // instead of the selected benchmark line + relative shades. Entering this
+  // mode forces attributionMode to "equal" and disables the "By Trading Amt"
+  // toggle, since weighted comparison is meaningless against a zero line.
   const [noBenchmark, setNoBenchmark] = useState(false);
   // Weighting mode for the middle (Intraday Attribution) plot:
   //  • "amt"  — trading-amount-weighted (prev-day amounts, live ref tables)
   //  • "equal"— plain member average
-  // "amt" is DISABLED while the prev-date ref is not ready for the current
-  // benchmark+date (weighted_available === false — only fallback
-  // is_without_trading_amt rows exist).
+  // "amt" is DISABLED when:
+  //   - noBenchmark is true (zero-baseline mode — comparison is against 0%)
+  //   - prev-date ref is not ready (weighted_available === false — only
+  //     fallback is_without_trading_amt rows exist)
   const [attributionMode, setAttributionMode] = useState<"equal" | "amt">("equal");
   const [attribution, setAttribution] = useState<SecAllocLiveAttributionResponse | null>(null);
   // Clicked member index code (bottom plot bar click) → drives the IndexPanel
@@ -186,30 +165,40 @@ export default function LiveDataMarketMovementsPage() {
   }, []);
 
   // Fetch intraday movements on mount, on benchmark change, on refresh.
+  // SILENT refresh: the blocking spinner (which unmounts the charts) only
+  // happens when there is nothing to paint yet (first load) or the
+  // benchmark switched. The 5-min auto-refresh and manual Refresh keep
+  // the current charts mounted and swap the new payload in-place when it
+  // arrives, so no other component on the page flickers or remounts.
   useEffect(() => {
     if (!benchmarkCode) {
+      dataRef.current = null;
+      lastDataSigRef.current = null;
       setData(null);
       return;
     }
     let cancelled = false;
-    setLoading(true);
+    const needsBlockingLoad =
+      dataRef.current === null || dataRef.current.benchmark_code !== benchmarkCode;
+    if (needsBlockingLoad) setLoading(true);
     setError(null);
     fetchIntradayMovements(benchmarkCode, null)
       .then((resp) => {
         if (cancelled) return;
-        setData(resp);
-        // Default selected tick = the tick with the MOST industries covered.
-        // The latest tick is often sparse (data fetch in-progress / partial),
-        // so defaulting to latest would show only a handful of (often all-down)
-        // industries in the middle plot. Picking the densest tick gives the
-        // user a representative snapshot on first load. The user's prior
-        // click selection survives a 5-min auto-refresh within the same session
-        // if the tick still exists.
-        setSelectedTick((prev) => {
-          const stillExists = resp.benchmark_series.some((b) => b.time === prev);
-          if (stillExists) return prev;
-          return pickDensestTick(resp);
-        });
+        // Drop identical payloads (e.g. refresh fired but the pipeline has
+        // not appended any new tick yet) — no state update, no rerender.
+        const sig = JSON.stringify(resp);
+        if (sig !== lastDataSigRef.current) {
+          lastDataSigRef.current = sig;
+          dataRef.current = resp;
+          setData(resp);
+          // Anchor the selected tick at the LATEST time on load and on
+          // every refresh that brings NEW data (identical payloads are
+          // dropped above, so a manual click survives no-op cycles).
+          // The markLine on the top plot, the middle/bottom bar plots and
+          // the attribution fetch all re-key off this tick.
+          setSelectedTick(resp.latest_time);
+        }
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -220,19 +209,35 @@ export default function LiveDataMarketMovementsPage() {
     return () => { cancelled = true; };
   }, [benchmarkCode, refreshKey]);
 
+  // Reset the industry drill-down when the benchmark changes — the new
+  // benchmark may not cover the previously clicked industry, and the bottom
+  // plot should be empty until an industry bar is clicked.
+  useEffect(() => {
+    setSelectedIndustryId(null);
+    setSelectedMemberCode(null);
+  }, [benchmarkCode]);
+
   // Fetch the raw prev-trading-day OHLC of the benchmark + all member
   // indices (same latest date as the intraday payload — date=null picks
   // the latest for the benchmark on both endpoints). Refetches on
   // benchmark change and on every refresh cycle.
   useEffect(() => {
     if (!benchmarkCode) {
+      lastOhlcSigRef.current = null;
       setPrevDayOhlc(null);
       return;
     }
     let cancelled = false;
     fetchIntradayMovementsPrevDayOhlc(benchmarkCode, null)
       .then((resp) => {
-        if (!cancelled) setPrevDayOhlc(resp);
+        if (cancelled) return;
+        // Signature guard — skip setState on identical payloads so the
+        // prev-day bar memo (and the top option that depends on it) keeps
+        // its identity across no-op refresh cycles.
+        const sig = JSON.stringify(resp);
+        if (sig === lastOhlcSigRef.current) return;
+        lastOhlcSigRef.current = sig;
+        setPrevDayOhlc(resp);
       })
       .catch(() => {
         if (!cancelled) setPrevDayOhlc(null);
@@ -246,13 +251,20 @@ export default function LiveDataMarketMovementsPage() {
   // built the ref since the last fetch).
   useEffect(() => {
     if (!benchmarkCode || !data?.date || !selectedTick) {
+      lastAttrSigRef.current = null;
       setAttribution(null);
       return;
     }
     let cancelled = false;
     fetchSecAllocLiveAttribution(benchmarkCode, data.date, selectedTick)
       .then((resp) => {
-        if (!cancelled) setAttribution(resp);
+        if (cancelled) return;
+        // Signature guard — skip setState on identical payloads (see
+        // lastDataSigRef above).
+        const sig = JSON.stringify(resp);
+        if (sig === lastAttrSigRef.current) return;
+        lastAttrSigRef.current = sig;
+        setAttribution(resp);
       })
       .catch(() => {
         if (!cancelled) setAttribution(null);
@@ -260,15 +272,23 @@ export default function LiveDataMarketMovementsPage() {
     return () => { cancelled = true; };
   }, [benchmarkCode, data?.date, selectedTick, refreshKey]);
 
-  // Refresh flow: FIRST trigger one incremental run of the live pipeline
-  // (`python -m live.sec_alloc_live_attribution` via POST
-  // /api/live-data/sec-alloc-live/run — heavy prev-date ref built once per
-  // date and skipped when present, light 5-min ticks appended for new bars
-  // only; an in-flight guard on the server prevents overlapping spawns),
-  // THEN invalidate the intraday-movements cache and bump refreshKey to
-  // refetch. Runs before every 5-min auto-refresh (trading hours) and every
-  // manual Refresh click so the shades never lag the raw 5-min bars.
+  // Refresh flow: FIRST invalidate caches and refetch so the page paints
+  // the CURRENT DB state immediately (never stalled behind a slow pipeline
+  // run — e.g. the first-of-day heavy ref pass), THEN trigger one
+  // incremental run of the live pipeline (`python -m
+  //  live.sec_alloc_live_attribution` via POST /api/live-data/sec-alloc-
+  //  live/run — heavy prev-date ref built once per date and skipped when
+  //  present, light 5-min ticks appended for new bars only; in-flight
+  //  guard on the server prevents overlapping spawns), and refetch AGAIN
+  // when it finishes so whatever it just appended shows up right away.
+  // Runs before every 5-min auto-refresh (trading hours) and every manual
+  // Refresh click. The App-root useSecAllocLivePipeline() hook also fires
+  // the pipeline every 5 min on any route — extra fires are harmless
+  // (server-side in-flight guard + PK upserts).
   const triggerRefresh = useCallback(async () => {
+    invalidateCacheForPrefix("/api/live-data/intraday-movements");
+    invalidateCacheForPrefix("/api/live-data/sec-alloc-live/attribution");
+    setRefreshKey((k) => k + 1);
     await runSecAllocLivePipeline();
     invalidateCacheForPrefix("/api/live-data/intraday-movements");
     invalidateCacheForPrefix("/api/live-data/sec-alloc-live/attribution");
@@ -286,6 +306,89 @@ export default function LiveDataMarketMovementsPage() {
   }, [triggerRefresh]);
 
   const handleRefresh = useCallback(() => { void triggerRefresh(); }, [triggerRefresh]);
+
+  // ---- Yday Ref (heavy prev-day reference) manual build -----------------
+  // Runs the FULL chain server-side (deduped by process-id-tag across all
+  // phases — a second click / page refresh / second tab while ANY phase
+  // runs resolves immediately with already_running):
+  //   1. downloads.index.csindex.quote --ensure-prev-trading-day —
+  //      targeted: codes whose local CSVs already contain the prev
+  //      trading day are skipped entirely; only laggards fetch.
+  //   2. builds.index.baseline --refresh-estimated-days 10 — rebuild
+  //      recent ESTIMATED daily rows from the fresh CSVs so prev-day
+  //      OHLC is real (own process-id-tag …:ref:base).
+  //   3. live.sec_alloc_live_attribution --mode ref --rebuild-latest-date
+  //      — invalidate this date's ref + tick rows (may have been built
+  //      from stale/estimated closes), then rebuild the heavy prev-day
+  //      ref (closes + trading amounts + weights) into
+  //      live.sec_alloc_live_prev_ref and upgrade fallback tick rows to
+  //      weighted ones.
+  // May take minutes on the first run of a date → spinner via
+  // handleBuildRef while in flight, and via the status poll below after a
+  // page refresh, then invalidate + refetch so weighted aggregates and
+  // the prev-day OHLC bar appear.
+  const [refRunning, setRefRunning] = useState(false);
+  const [refMessage, setRefMessage] = useState<string | null>(null);
+  const handleBuildRef = useCallback(async () => {
+    if (refRunning) return;
+    setRefRunning(true);
+    setRefMessage(null);
+    try {
+      const resp = await runSecAllocLivePipeline("ref", SEC_ALLOC_LIVE_REF_TAG);
+      if (resp.already_running) {
+        setRefMessage("Yday ref process already running — waiting for it to finish…");
+      } else if (resp.success) {
+        setRefMessage("Yday ref built.");
+      } else {
+        setRefMessage(`Yday ref failed: ${resp.stderr_tail ?? "unknown error"}`);
+      }
+    } finally {
+      setRefRunning(false);
+      invalidateCacheForPrefix("/api/live-data/intraday-movements");
+      invalidateCacheForPrefix("/api/live-data/sec-alloc-live/attribution");
+      setRefreshKey((k) => k + 1);
+    }
+  }, [refRunning]);
+
+  // Remote-ref spinner recovery: poll ALL chain tags (CSV downloads,
+  // baseline rebuild, ref process) on mount and every 5s while any is
+  // (or may be) running, so a page refresh during ANY phase of the
+  // chain puts the button straight back into spinning + notified state,
+  // and refreshes the plots when the whole chain finishes.
+  const REF_CHAIN_TAGS = [
+    SEC_ALLOC_LIVE_REF_TAG,
+    SEC_ALLOC_LIVE_REF_DL_TAG,
+    SEC_ALLOC_LIVE_REF_BASE_TAG,
+  ] as const;
+  useEffect(() => {
+    let cancelled = false;
+    let wasRunning = false;
+    const poll = async () => {
+      try {
+        const status = await fetchSecAllocLiveRunStatus([...REF_CHAIN_TAGS]);
+        if (cancelled) return;
+        const running = REF_CHAIN_TAGS.some((t) => status[t] === true);
+        if (running) {
+          wasRunning = true;
+          setRefRunning(true);
+          setRefMessage("Yday ref chain already running — waiting for it to finish…");
+        } else if (wasRunning) {
+          // Remote process just finished → clear spinner + refetch.
+          wasRunning = false;
+          setRefRunning(false);
+          setRefMessage("Yday ref finished — refreshed.");
+          invalidateCacheForPrefix("/api/live-data/intraday-movements");
+          invalidateCacheForPrefix("/api/live-data/sec-alloc-live/attribution");
+          setRefreshKey((k) => k + 1);
+        }
+      } catch {
+        /* status poll is best-effort */
+      }
+    };
+    void poll();
+    const timer = setInterval(poll, 5_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
 
   // ---- Prev-day OHLC bar resolution ----------------------------------------
   // Resolve the ACTIVE prev-day OHLC bar (rendered at the prepended x
@@ -336,7 +439,10 @@ export default function LiveDataMarketMovementsPage() {
   const handleIndustryClick = useCallback((params: unknown) => {
     const p = params as { data?: { industry_id?: string } };
     const ind = p.data?.industry_id;
-    if (ind) setSelectedIndustryId(ind);
+    if (ind) {
+      setSelectedIndustryId(ind);
+      setSelectedMemberCode(null);
+    }
   }, []);
 
   // Bottom plot: click a member bar → pick that index code → fetch its full
@@ -345,7 +451,10 @@ export default function LiveDataMarketMovementsPage() {
   const handleMemberClick = useCallback((params: unknown) => {
     const p = params as { data?: { code?: string } };
     const code = p.data?.code;
-    if (code) setSelectedMemberCode(code);
+    if (code) {
+      setSelectedMemberCode(code);
+      setSelectedIndustryId(null);
+    }
   }, []);
 
   // Fetch the IndexBundle for the clicked member index code. The
@@ -376,16 +485,31 @@ export default function LiveDataMarketMovementsPage() {
     return () => { cancelled = true; };
   }, [selectedMemberCode]);
 
-  // ---- Chart options -------------------------------------------------------
-  const topOption = useMemo(
-    () => (data ? buildMarketMovementsTopOption(data, selectedTick, themeMode, noBenchmark, prevDayBar) : null),
-    [data, selectedTick, themeMode, noBenchmark, prevDayBar],
+  // Memoized IndexPanel ELEMENT — React bails out of re-rendering a subtree
+  // when the element reference is unchanged, so the (heavy) member history
+  // panel (its own charts + internal state) only re-renders when the member
+  // bundle or theme actually changes — never on 5-min auto-refresh cycles
+  // or other unrelated page state updates.
+  const memberPanel = useMemo(
+    () => (memberIndex ? <IndexPanel index={memberIndex} themeMode={themeMode} /> : null),
+    [memberIndex, themeMode],
   );
 
-  // Weighted mode is effective only while the prev-date ref is ready.
+  // ---- Chart options -------------------------------------------------------
+  const topOption = useMemo(
+    () => (data ? buildMarketMovementsTopOption(data, selectedTick, themeMode, noBenchmark, prevDayBar, selectedIndustryId, selectedMemberCode) : null),
+    [data, selectedTick, themeMode, noBenchmark, prevDayBar, selectedIndustryId, selectedMemberCode],
+  );
+
+  // Weighted mode is effective only while the prev-date ref is ready AND
+  // we are NOT in no-benchmark mode (which forces zero-baseline equal).
   const weightedAvailable = attribution?.weighted_available === true;
   const effectiveAttributionMode: "equal" | "amt" =
-    attributionMode === "amt" && weightedAvailable ? "amt" : "equal";
+    noBenchmark
+      ? "equal"
+      : attributionMode === "amt" && weightedAvailable
+        ? "amt"
+        : "equal";
 
   // In "amt" mode the middle plot renders the trading-amount-weighted
   // per-industry aggregates (from the live schema tables) instead of the
@@ -421,10 +545,10 @@ export default function LiveDataMarketMovementsPage() {
   );
   const bottomOption = useMemo(
     () =>
-      data && selectedTick
-        ? buildMemberBarsOption(data, selectedTick, selectedIndustryId, themeMode, industryFilter)
+      data && selectedTick && selectedIndustryId
+        ? buildMemberBarsOption(data, selectedTick, selectedIndustryId, themeMode)
         : null,
-    [data, selectedTick, selectedIndustryId, themeMode, industryFilter],
+    [data, selectedTick, selectedIndustryId, themeMode],
   );
 
   // ---- Subtitles -----------------------------------------------------------
@@ -455,8 +579,8 @@ export default function LiveDataMarketMovementsPage() {
       (noBenchmark ? " · no-benchmark mode" : "")
     : "Click anywhere on the top plot to pick a 5-min tick";
 
-  const bottomSubtitle = data && selectedTick
-    ? `Tick ${selectedTick} · ${selectedIndustryLabel ?? "All industries"} member indices`
+  const bottomSubtitle = data && selectedTick && selectedIndustryLabel
+    ? `Tick ${selectedTick} · ${selectedIndustryLabel} member indices`
     : "";
 
   const selectedBenchmark = benchmarks.find((b) => b.benchmark_code === benchmarkCode);
@@ -506,7 +630,7 @@ export default function LiveDataMarketMovementsPage() {
       </ToggleButton>
       <ToggleButton
         value="amt"
-        disabled={!weightedAvailable}
+        disabled={noBenchmark || !weightedAvailable}
         sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}
       >
         By Trading Amt
@@ -551,7 +675,11 @@ export default function LiveDataMarketMovementsPage() {
           exclusive
           value={noBenchmark ? "none" : "bench"}
           onChange={(_, v: "bench" | "none" | null) => {
-            if (v) setNoBenchmark(v === "none");
+            if (v) {
+              const isNoBench = v === "none";
+              setNoBenchmark(isNoBench);
+              if (isNoBench) setAttributionMode("equal");
+            }
           }}
           sx={{ height: 32 }}
         >
@@ -570,7 +698,24 @@ export default function LiveDataMarketMovementsPage() {
         title={noBenchmark
           ? "Market Movements — 0.0% Baseline & Per-Industry Shades"
           : "Market Movements — Benchmark % & Per-Industry Shades"}
-        subtitle={topSubtitle}
+        subtitle={refRunning
+          ? "Building yday ref (prev-day closes + trading-amt weights) — equal-weight ticks keep flowing..."
+          : refMessage
+            ? `${topSubtitle} · ${refMessage}`
+            : topSubtitle}
+        action={(
+          <Button
+            size="small"
+            variant="outlined"
+            disabled={refRunning}
+            onClick={() => { void handleBuildRef(); }}
+            startIcon={refRunning ? <CircularProgress size={12} /> : null}
+            sx={{ height: 26, minWidth: 0, px: 1, fontSize: "0.7rem" }}
+            title="Runs the full yday-ref chain: (1) targeted downloads — only codes whose CSVs lack the prev trading day are fetched; (2) builds.index.baseline --refresh-estimated-days — rebuild estimated daily rows; (3) live.sec_alloc_live_attribution --mode ref — heavy prev-day ref + weighted tick upgrades. Deduped by process-id-tag. The 5-min equal-weight refresh runs independently."
+          >
+            {refRunning ? "Building Yday Ref…" : "Build Yday Ref"}
+          </Button>
+        )}
       >
         {loading && (
           <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
@@ -582,14 +727,17 @@ export default function LiveDataMarketMovementsPage() {
             Failed to load intraday movements: {error}
           </Alert>
         )}
-        {!loading && !error && hasBars && topOption && (
+        {/* NOTE: charts are NOT hidden while `error` is set — a failed
+            silent refresh keeps the last painted data visible; the alert
+            banner above is the only visible change. */}
+        {!loading && hasBars && topOption && (
           <EChart
             option={topOption}
             height={460}
             onCanvasClick={handleTopCanvasClick}
           />
         )}
-        {!loading && !error && data && data.benchmark_series.length === 0 && (
+        {!loading && data && data.benchmark_series.length === 0 && (
           <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
             <Typography variant="body2" color="text.secondary">
               No intraday bars for benchmark {benchmarkCode} on {data.date}.
@@ -609,14 +757,14 @@ export default function LiveDataMarketMovementsPage() {
           </Stack>
         )}
       >
-        {!loading && !error && middleOption && (
+        {!loading && middleOption && (
           <EChart
             option={middleOption}
             height={320}
             onEvents={{ click: handleIndustryClick }}
           />
         )}
-        {!loading && !error && data && !selectedTick && (
+        {!loading && data && !selectedTick && (
           <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
             <Typography variant="body2" color="text.secondary">
               Click anywhere on the top plot to pick a 5-min tick.
@@ -636,17 +784,19 @@ export default function LiveDataMarketMovementsPage() {
             : ""
         }
       >
-        {!loading && !error && bottomOption && (
+        {!loading && bottomOption && (
           <EChart
             option={bottomOption}
             height={320}
             onEvents={{ click: handleMemberClick }}
           />
         )}
-        {!loading && !error && data && selectedTick && !selectedIndustryId && (
+        {!loading && data && !bottomOption && (
           <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
             <Typography variant="body2" color="text.secondary">
-              Click an industry bar above to see its member indices.
+              {!selectedTick
+                ? "Click anywhere on the top plot to pick a 5-min tick."
+                : "Click an industry bar above to see its member indices."}
             </Typography>
           </Box>
         )}
@@ -667,9 +817,7 @@ export default function LiveDataMarketMovementsPage() {
               Failed to load index history for {selectedMemberCode}: {memberIndexError}
             </Alert>
           )}
-          {!memberIndexLoading && !memberIndexError && memberIndex && (
-            <IndexPanel index={memberIndex} themeMode={themeMode} />
-          )}
+          {!memberIndexLoading && !memberIndexError && memberPanel}
         </>
       )}
     </Stack>

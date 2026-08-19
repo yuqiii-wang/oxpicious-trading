@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Build the ECharts option for an aggregate chart (mean_pe or
  * total_trading_amount) under the main Industry Sentiments price chart.
  *
@@ -11,6 +11,7 @@
  * X-axis uses the same allDates + visible range as the main price chart so
  * the shared date-range slider controls all three plots in sync.
  */
+import React from "react";
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import type { IndustrySentimentsChartResponse } from "@shared/types";
@@ -18,6 +19,7 @@ import { axisColors, commonLegend, commonGrid } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type { PoolSize, PerIndustryAggregation } from "./types";
 import { MEAN_PALETTE, POOL_COLORS } from "./constants";
+import { renderReactElement } from "@/lib/react-tooltip-renderer";
 
 export function buildAggregateChartOption(
   data: IndustrySentimentsChartResponse,
@@ -124,7 +126,7 @@ export function buildAggregateChartOption(
         const dateStr = visibleDates[idx0] ?? "";
         if (!dateStr) return "";
         const unit = column === "mean_pe" ? "x" : "亿";
-        const rowsHtml = arr
+        const rowElements = arr
           .map((p) => {
             const v = p.value;
             const fmtV = (x: number | null | undefined) => {
@@ -143,16 +145,17 @@ export function buildAggregateChartOption(
                     (a.industry_label || a.industry_id).split("  ")[0] === p.seriesName
                     || a.industry_id === p.seriesName) % MEAN_PALETTE.length])
               : POOL_COLORS[(p.seriesName as PoolSize) ?? "all"])) ?? "#424242";
-            return `<div style="display:flex;justify-content:space-between;gap:12px">
-              <span style="color:${color}">━</span>
-              <span style="flex:1">${p.seriesName ?? ""}</span>
-              <b>${fmtV(v)}</b>
-            </div>`;
-          })
-          .join("");
-        return `<div style="font-weight:600">${dateStr}</div>
-                <div style="margin-top:2px;opacity:0.7">${yAxisName}</div>
-                <div style="margin-top:4px">${rowsHtml}</div>`;
+            return React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
+              React.createElement("span", { style: { color } }, "━"),
+              React.createElement("span", { style: { flex: 1 } }, p.seriesName ?? ""),
+              React.createElement("b", null, fmtV(v))
+            );
+          });
+        return renderReactElement(React.createElement(React.Fragment, null,
+          React.createElement("div", { style: { fontWeight: 600 } }, dateStr),
+          React.createElement("div", { style: { marginTop: 2, opacity: 0.7 } }, yAxisName),
+          React.createElement("div", { style: { marginTop: 4 } }, ...rowElements)
+        ));
       },
     },
     xAxis: {

@@ -8,12 +8,26 @@ Flow per index:
   3. Fetch PE (peg) series for the full range (skip if cached and fresh today after 17:00).
   4. Merge full-range + 1m + PE into ``{indexCode}_history.csv``.
   5. Fetch intraday granular ticks for the latest trading day (skip if unavailable).
+
+Targeted mode (``ensure_prev_trading_day=True`` — used by the "Build Yday
+Ref" UI button chain): compute the PREVIOUS trading day from the holiday
+calendar and, per code, skip ALL network work when the local 1m/history
+CSV already contains that date. Only codes MISSING the prev-day row run
+the per-code pipeline (steps 1-2 + history merge; PE/intraday stay owned
+by the nightly run). Turns the common case (nightly 19:00 run already
+fetched yday) into a seconds-long local check instead of a ~500-code
+full sweep.
 """
 from __future__ import annotations
 
+import datetime as _dt
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import pandas as pd
+
+from _common._holidays_and_weekdays import is_trading_day
 
 from downloads._common.core import (
     MIN_VALID_BYTES,
@@ -46,7 +60,37 @@ from ._pe import (
     index_pe_by_date,
 )
 from ._intraday import fetch_intraday, save_intraday
-from ._history import build_history_csv, append_missing_dates_to_csv
+from ._history import (
+    build_history_csv,
+    append_missing_dates_to_csv,
+    _find_date_column,
+    clean_date,
+)
+
+
+def _csv_has_date(out_dir: Path, code: str, yyyymmdd: str) -> bool:
+    """True iff the code's local 1m or history CSV contains the date.
+
+    Pure local check (small recent-window files) — the targeted mode's
+    per-code cost. Missing/unreadable files count as NOT having the date.
+    """
+    for fname in (f"{code}_1m.csv", f"{code}_history.csv"):
+        f = out_dir / fname
+        if not f.is_file():
+            continue
+        try:
+            df = pd.read_csv(f)
+        except Exception:
+            continue
+        col = _find_date_column(df)
+        if not col:
+            continue
+        try:
+            if (df[col].apply(clean_date) == yyyymmdd).any():
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def download_index(
@@ -57,8 +101,17 @@ def download_index(
     update_days: int = UPDATE_WINDOW_DAYS,
     sleep_sec: float = SLEEP_SEC,
     skip_intraday: bool = False,
+    ensure_prev_trading_day: bool = False,
 ) -> dict:
-    """Download iconic CSI index daily history (OHLCV + amount + PE)."""
+    """Download iconic CSI index daily history (OHLCV + amount + PE).
+
+    ``ensure_prev_trading_day``: targeted mode — skip ALL network work for
+    codes whose local 1m/history CSV already contains the previous trading
+    day (computed from the holiday calendar). Laggard codes run only the
+    from2020 (cached-skip) + 1m steps; PE / history-merge / intraday stay
+    owned by the nightly full run. The baseline build reads the 1m CSVs
+    directly, so yday rows land in the DB without the heavy extras.
+    """
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "csindex", out_root)
 
     if index_codes is None:
@@ -70,6 +123,22 @@ def download_index(
     _start, _end = parse_date_window(start_date=start_date)
     update_end = _end
     update_start = _end - timedelta(days=update_days)
+
+    # Targeted mode: resolve the prev trading day ONCE (calendar-walk).
+    target_yyyymmdd: Optional[str] = None
+    if ensure_prev_trading_day:
+        live = _dt.date.today()
+        while not is_trading_day(live):
+            live -= timedelta(days=1)
+        prev = live - timedelta(days=1)
+        while not is_trading_day(prev):
+            prev -= timedelta(days=1)
+        target_yyyymmdd = prev.strftime("%Y%m%d")
+        logger.info(
+            "Targeted mode: ensuring prev trading day %s is present in local "
+            "CSVs (codes already covering it are skipped entirely)",
+            target_yyyymmdd,
+        )
 
     logger.info(
         "Starting csindex download: codes=%s window=%s->%s (start=%s) "
@@ -92,6 +161,15 @@ def download_index(
                 stats.skipped_cached += 1
                 continue
 
+            # Targeted fast path: local CSVs already have the prev trading
+            # day → nothing to fetch for the yday-ref purpose.
+            if (
+                target_yyyymmdd is not None
+                and _csv_has_date(out_dir, code, target_yyyymmdd)
+            ):
+                stats.skipped_cached += 1
+                continue
+
             logger.info("== Index %s (%s) ==", code, name)
 
             if proxy.is_blocked(CSINDEX_BASE):
@@ -107,6 +185,12 @@ def download_index(
                 continue
 
             _run_1m(session, code, update_start, update_end, out_dir, proxy, stats)
+
+            if target_yyyymmdd is not None:
+                # Targeted mode stops after the daily rows: PE / history
+                # merge / intraday are nightly-owned; the build reads the
+                # 1m CSV directly.
+                continue
 
             if proxy.is_blocked(CSINDEX_BASE):
                 logger.warning("  [host-blocked] csindex.com.cn blocked after 1m download, skipping remaining tasks for %s", code)

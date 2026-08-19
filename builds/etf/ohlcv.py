@@ -8,6 +8,7 @@ import os
 import re
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from downloads._common.core import read_csv_preferred
@@ -66,23 +67,29 @@ def _scan_ohlcv_dir(scan_dir, file_prefix, market, files=None):
         date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
         volume_col = "成交量（万份）" if market == "深圳" else "成交量(万股)"
         amount_col = "成交金额(万元)"
-        for _, r in df.iterrows():
-            code = r["_code"]
-            exchange = "SZ" if market == "深圳" else "SS"
-            code_with_suffix = code if "." in code else f"{code}.{exchange}"
-            rows.append({
-                "date":         date_str,
-                "code":         code_with_suffix,
-                "name":         str(r.get("证券简称", "")).strip(),
-                "prev_close":   parse_num(r.get("前收")),
-                "open":         parse_num(r.get("开盘")),
-                "high":         parse_num(r.get("最高")),
-                "low":          parse_num(r.get("最低")),
-                "close":        parse_num(r.get("今收")),
-                "pct_change":   parse_num(r.get("涨跌幅（%）")),
-                "volume_wan":   parse_num(r.get(volume_col)),
-                "amount_wan":   parse_num(r.get(amount_col)),
-            })
+        exchange = "SZ" if market == "深圳" else "SS"
+        # Vectorized OHLCV row construction
+        _df_out = df[["_code", "证券简称"]].copy()
+        _df_out["code"] = np.where(
+            _df_out["_code"].str.contains(r"\.", na=False),
+            _df_out["_code"],
+            _df_out["_code"] + "." + exchange,
+        )
+        _df_out["date"] = date_str
+        _df_out["name"] = _df_out["证券简称"].astype(str).str.strip()
+        _ohlcv_cols_src = {
+            "prev_close": "前收",
+            "open": "开盘",
+            "high": "最高",
+            "low": "最低",
+            "close": "今收",
+            "pct_change": "涨跌幅（%）",
+            "volume_wan": volume_col,
+            "amount_wan": amount_col,
+        }
+        for _out_col, _src_col in _ohlcv_cols_src.items():
+            _df_out[_out_col] = df[_src_col].map(parse_num)
+        rows.extend(_df_out[["date", "code", "name"] + list(_ohlcv_cols_src.keys())].to_dict(orient="records"))
         n_ok += 1
     return rows, n_ok, n_empty, len(files)
 

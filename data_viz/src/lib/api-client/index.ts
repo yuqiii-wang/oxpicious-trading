@@ -133,6 +133,11 @@ export {
 export {
   runSecAllocLivePipeline,
   fetchSecAllocLiveAttribution,
+  fetchSecAllocLiveRunStatus,
+  SEC_ALLOC_LIVE_REF_TAG,
+  SEC_ALLOC_LIVE_REF_DL_TAG,
+  SEC_ALLOC_LIVE_REF_BASE_TAG,
+  SEC_ALLOC_LIVE_LIVE_TAG,
   type SecAllocLiveRunResponse,
 } from "./sec-alloc-live";
 
@@ -141,6 +146,12 @@ export type {
   StrategySelection,
   ForecastScenarioResponse,
   RunStrategyResult,
+  CheckExistingResult,
+  TrainConfigRow,
+  TrainRunRow,
+  TrainLossType,
+  TrainTrialRow,
+  TrainInfoResponse,
 } from "./strategy";
 
 export {
@@ -157,5 +168,11 @@ export {
   fetchSingletonRisks,
   fetchSingletonForecast1m,
   fetchForecastScenarioDecisions,
+  checkExistingStrategy,
   runSingletonStrategy,
+  trainStrategyModel,
+  fetchTrainInfo,
+  fetchStrategyProcessStatus,
+  singletonRunTag,
+  singletonTrainTag,
 } from "./strategy";

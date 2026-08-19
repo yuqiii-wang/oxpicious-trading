@@ -61,7 +61,7 @@ async def compute_and_upsert_risks(
       - Otherwise only the listed codes are processed.
 
     ``strategy_name`` scopes the recomputed seqs to one algo (e.g.
-    'bollinger_bands' / 'macd') so a run for one algo doesn't recompute risks
+    'macd') so a run for one algo doesn't recompute risks
     for another algo's seqs. When None, all strategies' seqs for the matched
     (sec_type, code) pairs are processed (legacy behavior).
 

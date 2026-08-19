@@ -40,6 +40,10 @@ import time
 from datetime import date, datetime
 from typing import List, Optional
 
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 import numpy as np
 import pandas as pd
 

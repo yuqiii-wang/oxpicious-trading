@@ -24,7 +24,7 @@ from downloads._common.core import (
 
 # SZSE indices that must NOT be downloaded from csindex.com.cn
 # (they are covered by download_szse_trend.py via East Money API)
-CSINDEX_SKIP_CODES = {"399001", "399006", "399237", "399348", "399346"}
+CSINDEX_SKIP_CODES = {"399001", "399006", "399348", "399346"}
 
 CSINDEX_BASE = "https://www.csindex.com.cn"
 

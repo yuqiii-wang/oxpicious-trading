@@ -3,6 +3,10 @@
 Computes MA5/20/60/120/255 + MA5 ratio + EMA6/10/20/60/120/255 from
 stats.stock_basic_stats.close, storing results in stats.stock_tech_stats.
 
+OPTIMIZED: Only loads the minimal lookback window from source and
+computes indicators only for NEW dates (date > MAX(date) in the target
+table). Full history is only loaded on --force.
+
 Usage:
     # As standalone module:
     python -m builds.stock.tech_stats
@@ -14,19 +18,32 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import date, timedelta
 from typing import Optional
 
 from _common.build_commons import (
-    bulk_upsert_async,
+    copy_or_upsert_split_async,
     truncate_table_async,
-    get_existing_keys_async,
+    get_max_table_date_async,
 )
+
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 from _common.df_utils import compute_moving_averages, compute_emas
 import pandas as pd
 
 TABLE = "stats.stock_tech_stats"
 SOURCE_TABLE = "stats.stock_basic_stats"
 DEFAULT_CHUNK_CODES = 500
+
+# Lookback: enough calendar days to cover max MA/EMA period × convergence
+# factor. Max period = 255; EMA needs ~3× span for stable convergence.
+# 255 × 3 = 765 trading days → ~1115 calendar days.
+_MAX_INDICATOR_PERIOD = 255
+_LOOKBACK_TRADING_DAYS = _MAX_INDICATOR_PERIOD * 3  # 765
+_LOOKBACK_CALENDAR_DAYS = round(_LOOKBACK_TRADING_DAYS * 365 / 250)  # 1115
 
 
 async def _load_all_codes(conn) -> list:
@@ -36,7 +53,31 @@ async def _load_all_codes(conn) -> list:
     return [r["code"] for r in rows]
 
 
-async def _load_close_history(conn, codes: list) -> pd.DataFrame:
+async def _load_close_window(conn, codes: list, start_date: date) -> pd.DataFrame:
+    """Load close data for given codes from start_date onward.
+
+    Only loads the minimal window needed for indicator computation
+    (lookback + new dates), not the full history.
+    """
+    rows = await conn.fetch(
+        f'SELECT date, code, close FROM {SOURCE_TABLE} '
+        f'WHERE code = ANY($1::text[]) '
+        f'  AND close IS NOT NULL '
+        f'  AND date >= $2 '
+        f'ORDER BY code, date ASC',
+        sorted(codes), start_date,
+    )
+    if not rows:
+        return pd.DataFrame(columns=["date", "code", "close"])
+    df = pd.DataFrame([dict(r) for r in rows])
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna(subset=["close"]).sort_values(["code", "date"]).reset_index(drop=True)
+    return df
+
+
+async def _load_full_close_history(conn, codes: list) -> pd.DataFrame:
+    """Load ALL close history for given codes (force mode only)."""
     rows = await conn.fetch(
         f'SELECT date, code, close FROM {SOURCE_TABLE} '
         f'WHERE code = ANY($1::text[]) AND close IS NOT NULL '
@@ -72,9 +113,22 @@ async def run_tech_stats_chunked(
 ) -> int:
     """Compute tech stats (MA/EMA) for all stocks and upsert missing rows.
 
+    Incremental mode (default):
+      1. Query MAX(date) from TABLE (existing tech_stats).
+      2. Load only the lookback window + new dates from SOURCE_TABLE.
+      3. Compute indicators on this window.
+      4. Filter to rows with date > MAX(date).
+      5. Insert via COPY/upsert.
+
+    Force mode:
+      1. Truncate TABLE.
+      2. Load full history from SOURCE_TABLE.
+      3. Compute indicators on full history.
+      4. Insert all rows.
+
     Args:
         conn: asyncpg connection (must remain open)
-        force: if True, truncate TABLE first and recompute all rows
+        force: if True, truncate TABLE and recompute all rows
         chunk_size: number of codes per chunk
         verbose: print progress messages
 
@@ -83,74 +137,114 @@ async def run_tech_stats_chunked(
     """
     t0 = time.time()
 
+    # ------------------------------------------------------------------
+    # 1. Determine max existing date and compute lookback window
+    # ------------------------------------------------------------------
     if force:
         if verbose:
-            print(f"    [TECH-STATS] Force mode: truncating {TABLE}...", flush=True)
+            print(f"    [TECH-STATS] Force mode: truncating {TABLE}…", flush=True)
         await truncate_table_async(conn, TABLE)
-        existing_keys: set = set()
+        max_existing_date: Optional[date] = None
     else:
-        if verbose:
-            print(f"    [TECH-STATS] Querying existing (date, code) keys in {TABLE}...", flush=True)
-        existing_keys = await get_existing_keys_async(conn, TABLE, ["date", "code"])
-        if verbose:
-            print(f"    [TECH-STATS] {len(existing_keys):,} existing (date, code) pairs", flush=True)
+        max_existing_date = await get_max_table_date_async(conn, TABLE)
+        if max_existing_date is not None and verbose:
+            lookback_start = max_existing_date - timedelta(days=_LOOKBACK_CALENDAR_DAYS)
+            print(f"    [TECH-STATS] Existing max date: {max_existing_date}…",
+                  flush=True)
+            print(f"    [TECH-STATS] Loading lookback window: "
+                  f"{lookback_start} → today "
+                  f"({_LOOKBACK_CALENDAR_DAYS} calendar days ≈ "
+                  f"{_LOOKBACK_TRADING_DAYS} trading days)…",
+                  flush=True)
 
+    # ------------------------------------------------------------------
+    # 2. Load all codes
+    # ------------------------------------------------------------------
     if verbose:
-        print(f"    [TECH-STATS] Loading distinct codes from {SOURCE_TABLE}...", flush=True)
+        print(f"    [TECH-STATS] Loading distinct codes from {SOURCE_TABLE}…", flush=True)
     all_codes = await _load_all_codes(conn)
     if verbose:
         print(f"    [TECH-STATS] {len(all_codes):,} codes with non-null close", flush=True)
     if not all_codes:
         return 0
 
+    # ------------------------------------------------------------------
+    # 3. Compute indicators per chunk
+    # ------------------------------------------------------------------
     total_upserted = 0
     n_chunks = (len(all_codes) + chunk_size - 1) // chunk_size
     for i in range(0, len(all_codes), chunk_size):
         chunk = all_codes[i:i + chunk_size]
         chunk_idx = i // chunk_size + 1
-        df = await _load_close_history(conn, chunk)
-        if df.empty:
-            continue
-        df = _compute_tech_indicators(df)
-        if existing_keys:
-            mask = df.apply(
-                lambda r: (r["date"], r["code"]) not in existing_keys, axis=1
-            )
-            df = df[mask].reset_index(drop=True)
+
+        # Load data: minimal lookback window for incremental, full history for force
+        if force or max_existing_date is None:
+            df = await _load_full_close_history(conn, chunk)
+        else:
+            lookback_start = max_existing_date - timedelta(days=_LOOKBACK_CALENDAR_DAYS)
+            df = await _load_close_window(conn, chunk, lookback_start)
+
         if df.empty:
             if verbose:
-                print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes {chunk[0]}..{chunk[-1]}: "
-                      f"0 new rows (all in DB)", flush=True)
+                print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
+                      f"{chunk[0]}..{chunk[-1]}: no close data, skipping",
+                      flush=True)
             continue
 
-        rows = []
-        for _, r in df.iterrows():
-            rows.append({
-                "date": r["date"],
-                "code": str(r["code"]),
-                "ma5": None if pd.isna(r["ma5"]) else float(r["ma5"]),
-                "ma5_ratio": None if pd.isna(r["ma5_ratio"]) else float(r["ma5_ratio"]),
-                "ma20": None if pd.isna(r["ma20"]) else float(r["ma20"]),
-                "ma60": None if pd.isna(r["ma60"]) else float(r["ma60"]),
-                "ma120": None if pd.isna(r["ma120"]) else float(r["ma120"]),
-                "ma255": None if pd.isna(r["ma255"]) else float(r["ma255"]),
-                "ema6": None if pd.isna(r["ema6"]) else float(r["ema6"]),
-                "ema10": None if pd.isna(r["ema10"]) else float(r["ema10"]),
-                "ema20": None if pd.isna(r["ema20"]) else float(r["ema20"]),
-                "ema60": None if pd.isna(r["ema60"]) else float(r["ema60"]),
-                "ema120": None if pd.isna(r["ema120"]) else float(r["ema120"]),
-                "ema255": None if pd.isna(r["ema255"]) else float(r["ema255"]),
-            })
-        n = await bulk_upsert_async(conn, TABLE, rows, ["date", "code"], batch_size=1000)
+        # Compute indicators
+        df = _compute_tech_indicators(df)
+
+        # Filter to new dates only (incremental mode)
+        if not force and max_existing_date is not None:
+            df = df[df["date"] > max_existing_date].reset_index(drop=True)
+            if df.empty:
+                if verbose:
+                    print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
+                          f"{chunk[0]}..{chunk[-1]}: 0 new rows "
+                          f"(all dates ≤ {max_existing_date})",
+                          flush=True)
+                continue
+
+        # Build rows dict — vectorized: column-wise NaN→None conversion,
+        # then single to_dict(records) call.
+        _numeric_cols = [
+            "ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
+            "ema6", "ema10", "ema20", "ema60", "ema120", "ema255",
+        ]
+        _out_cols = ["date", "code"] + _numeric_cols
+        out_df = df[_out_cols].copy()
+        out_df["code"] = out_df["code"].astype(str)
+        for _c in _numeric_cols:
+            out_df[_c] = out_df[_c].where(out_df[_c].notna(), None)
+        rows = out_df.to_dict(orient="records")
+
+        n_copied, n_upserted = await copy_or_upsert_split_async(
+            conn, TABLE, rows, ["date", "code"],
+        )
+        n = n_copied + n_upserted
         total_upserted += n
         if verbose:
-            print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes {chunk[0]}..{chunk[-1]}: "
-                  f"{len(rows):,} rows -> upserted {n:,} (cumulative {total_upserted:,})",
-                  flush=True)
+            # Show lookback row count to demonstrate the optimization
+            n_source_rows = len(df)
+            if not force and max_existing_date is not None:
+                print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
+                      f"{chunk[0]}..{chunk[-1]}: "
+                      f"{len(rows):,} new rows "
+                      f"(computed from {n_source_rows:,} lookback rows) "
+                      f"-> {n_copied:,} copied + {n_upserted:,} upserted "
+                      f"(cumulative {total_upserted:,})",
+                      flush=True)
+            else:
+                print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
+                      f"{chunk[0]}..{chunk[-1]}: "
+                      f"{len(rows):,} rows -> upserted {n:,} "
+                      f"(cumulative {total_upserted:,})",
+                      flush=True)
 
     elapsed = int(time.time() - t0)
     if verbose:
-        print(f"    [TECH-STATS] Done in {elapsed}s. Total upserted: {total_upserted:,}", flush=True)
+        print(f"    [TECH-STATS] Done in {elapsed}s. Total upserted: {total_upserted:,}",
+              flush=True)
     return total_upserted
 
 

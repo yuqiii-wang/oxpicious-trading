@@ -56,7 +56,7 @@ from typing import Optional, Set
 import datetime
 
 from _common.build_commons import (
-    bulk_upsert_async,
+    copy_or_upsert_split_async,
 )
 
 TABLE = "stats.sec_similars"
@@ -399,12 +399,15 @@ async def _build_for_sec_type(conn, sec_type: str, force: bool) -> None:
         return
 
     data = [{col: r[col] for col in COLUMNS} for r in rows]
-    n = await bulk_upsert_async(
+    n_copied, n_upserted = await copy_or_upsert_split_async(
         conn, TABLE, data,
         key_columns=["date", "code", "sec_type"],
-        batch_size=1000,
     )
-    print(f"{tag} -> upserted {n:,} rows", flush=True)
+    total = n_copied + n_upserted
+    via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+          f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+          "upsert"
+    print(f"{tag} -> upserted {total:,} rows via {via}", flush=True)
 
 
 async def build_sec_similars(conn, force: bool = False) -> None:

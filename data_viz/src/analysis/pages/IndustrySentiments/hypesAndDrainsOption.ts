@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Build the ECharts option for the Industry Hypes & Drains SEASONAL chart.
  *
  * PLOT STYLE
@@ -50,6 +50,8 @@ import {
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { buildBenchmarkCenteredShadeSeries } from "@/lib/benchmark-shade";
+import React from "react";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 
 // ----------------------------------------------------------------------------
 //  Types
@@ -489,28 +491,48 @@ export function buildHypesAndDrainsOption(
     const bv = benchmarkValues[idx];
     const rt = returns[idx];
     const rsign = rt == null ? "" : rt >= 0 ? "▲ " : "▼ ";
-    let html = `
-      <div style="font-weight:600">${data.benchmark_name} (${data.benchmark_code})</div>
-      <div style="margin-top:2px">${dt}</div>
-      <div>Rebased: <b>${bv == null ? "—" : fmtNum(bv, 2)}</b></div>
-      <div>${rsign}Daily Return: <b style="color:${rt == null ? c.textColor : rt >= 0 ? UP_COLOR : DOWN_COLOR}">${fmtPctSigned(rt, 2)}</b></div>
-    `;
-    // Append each industry's value + state
+    const children: React.ReactNode[] = [];
+    children.push(
+      React.createElement(tooltipComponents.Header, null, `${data.benchmark_name} (${data.benchmark_code})`),
+      React.createElement("div", { style: { marginTop: 2 } }, dt),
+      React.createElement("div", null,
+        "Rebased: ",
+        React.createElement(tooltipComponents.Bold, null, bv == null ? "—" : fmtNum(bv, 2))
+      ),
+      React.createElement("div", null,
+        rsign,
+        "Daily Return: ",
+        React.createElement(tooltipComponents.Bold, {
+          style: { color: rt == null ? c.textColor : rt >= 0 ? UP_COLOR : DOWN_COLOR }
+        }, fmtPctSigned(rt, 2))
+      )
+    );
     for (let i = 0; i < indLabelsForTooltip.length; i++) {
       const { label } = indLabelsForTooltip[i];
       const state = indStatesForTooltip[i][idx];
       const indRet = indReturnsForTooltip[i]?.[idx] ?? null;
       const iv = indDisplayForTooltip[i]?.[idx] ?? null;
       if (indRet == null || iv == null) {
-        continue; // skip industries with no data on this date
+        continue;
       }
       const stateLabel = state === ACTIVE ? "●" : state === FADING ? "○" : "✕";
       const stateColor = state === ACTIVE ? c.textColor : state === FADING ? "#999" : "#ccc";
       const retColor = indRet >= 0 ? UP_COLOR : DOWN_COLOR;
       const retSign = indRet >= 0 ? "▲ " : "▼ ";
-      html += `<div style="opacity:${state === ACTIVE ? 1 : state === FADING ? 0.5 : 0.3}"><span style="color:${stateColor}">${stateLabel}</span> ${label}: <b>${fmtNum(iv, 2)}</b> <span style="opacity:0.7">${retSign}ret: <b style="color:${retColor}">${fmtPctSigned(indRet, 2)}</b></span></div>`;
+      children.push(
+        React.createElement("div", { style: { opacity: state === ACTIVE ? 1 : state === FADING ? 0.5 : 0.3 } },
+          React.createElement("span", { style: { color: stateColor } }, stateLabel),
+          ` ${label}: `,
+          React.createElement(tooltipComponents.Bold, null, fmtNum(iv, 2)),
+          " ",
+          React.createElement("span", { style: { opacity: 0.7 } },
+            `${retSign}ret: `,
+            React.createElement(tooltipComponents.Bold, { style: { color: retColor } }, fmtPctSigned(indRet, 2))
+          )
+        )
+      );
     }
-    return html;
+    return renderReactElement(React.createElement(React.Fragment, null, ...children));
   };
 
   return {

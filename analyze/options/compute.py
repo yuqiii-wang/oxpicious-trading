@@ -1,20 +1,8 @@
 """Pure pandas computation logic for analyze.options.
 
-Persists two per-contract statistics stores:
+Persists per-expiry-group statistics stores:
 
-1. Volatility Smile panel skew logic (options_stats_before_expiry):
-   Per (date, underlying_code, expiry_date) expiry set:
-     S    = underlying_close / PRICE_SCALE            (spot)
-     E[M] = Σ(max(1, OI) · strike/underlying_close)   (scale-free moneyness)
-            / Σ(max(1, OI))
-     S*   = S · E[M]                                  (skew-adjusted price)
-
-   Gaps (direction: today − reference):
-     today_gap_from_today_spot        = S* − S
-     today_gap_from_max_before_expiry = S* − max(S* over [date, expiry])
-     today_gap_from_min_before_expiry = S* − min(S* over [date, expiry])
-
-2. Rolling skewness / moneyness stats (options_skewness_stats):
+1. Rolling skewness / moneyness stats (options_skewness_stats):
    Per contract-level moneyness (strike_price / underlying_close):
      skewness_ma5/20/60  — rolling MA of moneyness over 5/20/60 days
      skewness_std5/20/60 — rolling STD of moneyness over 5/20/60 days
@@ -22,6 +10,11 @@ Persists two per-contract statistics stores:
      gap_skewness_vs_spot_slope — full-history slope of (moneyness - 1)
      gap_skewness_vs_spot_maW_slope — full-history slope of gap_maW
      corr_skewness_vs_spot — 60-day rolling corr(moneyness, spot)
+     count_skewness_curve_crossed_spot — cumulative count of sign changes
+       in (skewness - 1) for this expiry group
+
+2. OI stats (options_oi_stats):
+   corr_put_call_ratio_vs_spot_ma5/20/60
 
 GPU note: the pipeline is plain groupby/agg/cummax/rolling on ~1M rows; the
 should_use_gpu import is included per project convention (the CPU path
@@ -35,160 +28,9 @@ import pandas as pd
 from _common.df_utils import should_use_gpu  # noqa: F401 — per project convention
 from _common.df_utils import grouped_rolling_agg
 from analyze.options.config import (
-    MIN_CONTRACTS,
-    PRICE_SCALE,
     SKEWNESS_RESULT_COLUMNS,
     SKEWNESS_WINDOWS,
-    STATS_BEFORE_EXPIRY_RESULT_COLUMNS,
 )
-
-RESULT_COLUMNS = STATS_BEFORE_EXPIRY_RESULT_COLUMNS
-
-_SET_KEYS = ["date", "option_type", "underlying_code", "expiry_date"]
-
-
-def compute_options_stats_before_expiry(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute per-expiry-group rolling skew gaps.
-
-    For open (non-matured) expiry groups, expiry_date is collapsed to
-    the mean of all expiry dates per (option_type, underlying_code).
-
-    Args:
-        df: DataFrame from fetch.fetch_options_rows with columns:
-            date, contract_code, option_type, underlying_code, expiry_date,
-            strike_price, underlying_close, open_interest, implied_vol.
-
-    Returns:
-        DataFrame with RESULT_COLUMNS — one row per
-        (date, option_type, underlying_code, expiry_date) expiry group.
-    """
-    if df.empty:
-        return pd.DataFrame(columns=RESULT_COLUMNS)
-
-    out = df.copy()
-
-    # Matured reference: latest date available in the source data. Any
-    # expiry beyond this still has an incomplete future window.
-    dataset_max_date = out["date"].max()
-
-    # ---- Step 1: OI-weighted mean moneyness per expiry-set day -----------
-    # weight = max(1, OI) — panel parity (zero-OI contracts still count 1).
-    out["w"] = out["open_interest"].clip(lower=1.0)
-    out["wm"] = out["w"] * out["strike_price"] / out["underlying_close"]
-
-    day = (
-        out.groupby(_SET_KEYS, as_index=False, sort=False)
-        .agg(
-            n=("w", "size"),
-            w_sum=("w", "sum"),
-            wm_sum=("wm", "sum"),
-            underlying_close=("underlying_close", "first"),
-        )
-    )
-
-    # Panel parity: expiry sets with < MIN_CONTRACTS valid rows get no rows.
-    day = day[day["n"] >= MIN_CONTRACTS].reset_index(drop=True)
-    if day.empty:
-        return pd.DataFrame(columns=RESULT_COLUMNS)
-
-    # ---- Step 1b: collapse open expiry groups to mean expiry_date -------
-    day = _apply_open_expiry_collapse(day, dataset_max_date)
-
-    # Re-check MIN_CONTRACTS after collapse (sum of n may differ)
-    if "n" in day.columns:
-        day = day[day["n"] >= MIN_CONTRACTS].reset_index(drop=True)
-
-    day["S"] = day["underlying_close"] / PRICE_SCALE
-    day["E_M"] = day["wm_sum"] / day["w_sum"]
-    day["skew_price"] = day["S"] * day["E_M"]
-    day["today_gap_from_today_spot"] = day["skew_price"] - day["S"]
-
-    # ---- Step 2: future-window max/min per (option_type, underlying, expiry) ---
-    # Sort ascending by date inside each expiry set, then reversed-cummax/
-    # cummin gives max/min over the remaining lifetime [date, expiry].
-    day = day.sort_values(
-        ["option_type", "underlying_code", "expiry_date", "date"]
-    ).reset_index(drop=True)
-
-    rev = day.iloc[::-1]
-    grp_keys = ["option_type", "underlying_code", "expiry_date"]
-    future_max = (
-        rev.groupby(grp_keys, sort=False)["skew_price"]
-        .cummax()
-        .iloc[::-1]
-    )
-    future_min = (
-        rev.groupby(grp_keys, sort=False)["skew_price"]
-        .cummin()
-        .iloc[::-1]
-    )
-
-    day["today_gap_from_max_before_expiry"] = (
-        day["skew_price"] - future_max
-    )
-    day["today_gap_from_min_before_expiry"] = (
-        day["skew_price"] - future_min
-    )
-
-    # ---- Step 2b: compute dates of future max/min skew_price ----------
-    # For each (option_type, underlying, expiry) group, track the date at
-    # which the running max/min skew_price occurs in the reversed (future)
-    # direction using numpy for speed.
-    def _compute_extreme_dates(group):
-        n = len(group)
-        skew = group["skew_price"].values.astype(np.float64)
-        g_dates = group["date"].values
-
-        rev_skew = skew[::-1]
-        rev_dates = g_dates[::-1]
-
-        max_idx = np.zeros(n, dtype=np.intp)
-        min_idx = np.zeros(n, dtype=np.intp)
-        cur_max = -np.inf
-        cur_min = np.inf
-        for i in range(n):
-            if rev_skew[i] > cur_max:
-                cur_max = rev_skew[i]
-                max_idx[i] = i
-            elif i > 0:
-                max_idx[i] = max_idx[i - 1]
-            if rev_skew[i] < cur_min:
-                cur_min = rev_skew[i]
-                min_idx[i] = i
-            elif i > 0:
-                min_idx[i] = min_idx[i - 1]
-
-        return pd.DataFrame({
-            "max_date_before_expiry": rev_dates[max_idx[::-1]],
-            "min_date_before_expiry": rev_dates[min_idx[::-1]],
-        }, index=group.index)
-
-    extreme_dates = (
-        day.groupby(grp_keys, sort=False)
-        .apply(_compute_extreme_dates)
-        .reset_index(level=[0, 1, 2], drop=True)
-    )
-    day = day.reset_index(drop=True).join(extreme_dates.reset_index(drop=True))
-
-    # NULL the future-window gaps and dates while the expiry is not yet matured.
-    matured = day["expiry_date"] <= dataset_max_date
-    day.loc[~matured, [
-        "today_gap_from_max_before_expiry",
-        "today_gap_from_min_before_expiry",
-        "max_date_before_expiry",
-        "min_date_before_expiry",
-    ]] = np.nan
-
-    # ---- Step 3: select and order result columns (expiry-level) -------
-    result = day[RESULT_COLUMNS].copy()
-    result = result.sort_values(
-        ["date", "option_type", "underlying_code", "expiry_date"]
-    ).reset_index(drop=True)
-
-    return result
-
-
-# ---- Options skewness / moneyness rolling stats --------------------------
 
 # Expiry group key for skewness aggregation and rolling.
 _EXPIRY_GROUP_KEY = ["option_type", "underlying_code", "expiry_date"]
@@ -321,6 +163,35 @@ def _broadcast_slopes(
     return df
 
 
+def _compute_cross_count(group: pd.DataFrame, gap_col: str = "_gap") -> pd.Series:
+    """Cumulative count of sign changes in a gap column for an expiry group.
+
+    For an expiry group sorted by date, tracks how many times the
+    sign of (gap) changes from one day to the next.
+
+    First day: 0 (no previous day to compare).
+    Subsequent days:
+      - gap >= 0 → skewness at/above spot
+      - gap <  0 → skewness below spot
+      - sign changed (below↔above): counter +1
+      - sign unchanged: keep previous value
+      - NaN gap: keep previous value (no decision)
+    """
+    gap = group[gap_col].values
+    n = len(gap)
+    counter = np.zeros(n, dtype=np.int64)
+
+    for i in range(1, n):
+        if np.isnan(gap[i]) or np.isnan(gap[i - 1]):
+            counter[i] = counter[i - 1]
+        elif (gap[i] >= 0) != (gap[i - 1] >= 0):
+            counter[i] = counter[i - 1] + 1
+        else:
+            counter[i] = counter[i - 1]
+
+    return pd.Series(counter, index=group.index)
+
+
 def _expanding_corr(
     df: pd.DataFrame,
     group_key: list[str],
@@ -419,6 +290,14 @@ def compute_options_skewness_stats(df: pd.DataFrame) -> pd.DataFrame:
     agg = agg.sort_values(
         _EXPIRY_GROUP_KEY + ["date"]
     ).reset_index(drop=True)
+
+    # ---- Step 3b: cumulative cross count of _gap (skewness − 1) ----------
+    agg["count_skewness_curve_crossed_spot"] = (
+        agg.groupby(_EXPIRY_GROUP_KEY, sort=False)
+        .apply(_compute_cross_count, gap_col="_gap")
+        .reset_index(level=list(range(len(_EXPIRY_GROUP_KEY))), drop=True)
+        .astype(int)
+    )
 
     # Add sequential time index per expiry group for slope computation.
     agg["_t"] = agg.groupby(_EXPIRY_GROUP_KEY, sort=False).cumcount()

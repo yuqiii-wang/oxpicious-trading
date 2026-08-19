@@ -71,16 +71,23 @@ from dateutil.relativedelta import relativedelta
 import warnings
 warnings.filterwarnings("ignore")
 
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 import numpy as np
 import pandas as pd
 
 from downloads._common.core import add_exchange_suffix, read_csv_preferred
 from _common.build_commons import (
     setup_utf8_stdout, add_common_build_args, get_db_or_exit,
+    get_db_pool_async, get_max_table_date_async,
     find_missing_dates, glob_source_files, ymd_from_filename, ymd_to_date,
     filter_source_files_by_missing_dates, select_source_files_in_range,
     print_build_header, print_wall_time, PROJECT_ROOT, TODAY_STR,
-    bulk_upsert_async, truncate_table_async, parse_num, compute_eps,
+    copy_or_upsert_split_async, copy_or_upsert_split_pool_async,
+    truncate_table_async,
+    parse_num, compute_eps,
 )
 
 setup_utf8_stdout()
@@ -539,19 +546,25 @@ def _scan_stock_margin_dir(scan_dir, file_prefix, market, verbose=True, files=No
             continue
 
         date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
-        for _, r in df.iterrows():
-            code = r["_code"]
-            code_with_suffix = code if "." in code else f"{code}{default_suffix}"
-            rows.append({
-                "date":           date_str,
-                "code":           code_with_suffix,
-                "rz_buy":         parse_num(r.get("融资买入额(元)")),
-                "rz_balance":     parse_num(r.get("融资余额(元)")),
-                "rq_sell_qty":    parse_num(r.get("融券卖出量(股/份)")),
-                "rq_balance_qty": parse_num(r.get("融券余量(股/份)")),
-                "rq_balance_amt": parse_num(r.get("融券余额(元)")),
-                "total_balance":  parse_num(r.get("融资融券余额(元)")),
-            })
+        # Vectorized margin row construction
+        _df_out = df[["_code"]].copy()
+        _df_out["code"] = np.where(
+            _df_out["_code"].str.contains(r"\.", na=False),
+            _df_out["_code"],
+            _df_out["_code"] + default_suffix,
+        )
+        _df_out["date"] = date_str
+        _margin_cols_src = {
+            "rz_buy": "融资买入额(元)",
+            "rz_balance": "融资余额(元)",
+            "rq_sell_qty": "融券卖出量(股/份)",
+            "rq_balance_qty": "融券余量(股/份)",
+            "rq_balance_amt": "融券余额(元)",
+            "total_balance": "融资融券余额(元)",
+        }
+        for _out_col, _src_col in _margin_cols_src.items():
+            _df_out[_out_col] = df[_src_col].map(parse_num)
+        rows.extend(_df_out[["date", "code"] + list(_margin_cols_src.keys())].to_dict(orient="records"))
         n_ok += 1
     if verbose:
         print(f"    [STOCK-MARGIN-{market}] {n_ok} files with data, {n_empty} empty, "
@@ -923,6 +936,7 @@ async def main():
     # ------------------------------------------------------------------
     print("\n[2/4] Connecting to database and detecting missing dates …", flush=True)
     conn = await get_db_or_exit()
+    pool = await get_db_pool_async(min_size=1, max_size=4)
 
     try:
         if args.force:
@@ -936,11 +950,38 @@ async def main():
             await truncate_table_async(conn, "stats.stock_identity")
             missing_dates = available_dates  # all dates are missing after truncate
         else:
-            missing_dates = await find_missing_dates(
-                conn, "stats.stock_identity", available_dates
+            # Fast path: use MAX(date) instead of SELECT DISTINCT date
+            # on a 4M+ row table. New dates after MAX are definitely
+            # missing; gap dates (≤ max_date but absent) are rare and
+            # handled by the per-suffix find_missing_dates check below.
+            max_global_date = await get_max_table_date_async(
+                conn, "stats.stock_identity"
             )
-        print(f"    [DB] {len(missing_dates)} dates missing from stats.stock_identity "
-              f"(out of {len(available_dates)} available)", flush=True)
+            if max_global_date is None:
+                missing_dates = set(available_dates)
+                print(f"    [DB] stats.stock_identity is empty — "
+                      f"all {len(available_dates)} dates are missing", flush=True)
+            else:
+                new_dates = {d for d in available_dates if d > max_global_date}
+                missing_dates = set(new_dates)
+                n_gap_candidates = sum(
+                    1 for d in available_dates if d <= max_global_date
+                )
+                if n_gap_candidates > 0:
+                    # Check for gap dates (≤ max_date but not in DB).
+                    # This is the slow path but very rare (holidays missed).
+                    gap_dates = await find_missing_dates(
+                        conn, "stats.stock_identity",
+                        {d for d in available_dates if d <= max_global_date},
+                    )
+                    missing_dates |= gap_dates
+                    print(f"    [DB] max existing date: {max_global_date} | "
+                          f"{len(new_dates)} new + {len(gap_dates)} gap dates missing",
+                          flush=True)
+                else:
+                    print(f"    [DB] max existing date: {max_global_date} | "
+                          f"{len(new_dates)} new dates missing",
+                          flush=True)
 
         # ------------------------------------------------------------------
         # 3. Filter source files to only missing dates and build rows
@@ -979,11 +1020,27 @@ async def main():
                                 suffix_dates.add(d)
                                 break
 
-                # Per-suffix missing-date detection
-                suffix_missing = await find_missing_dates(
-                    conn, "stats.stock_identity", suffix_dates,
-                    code_suffix=suffix,
+                # Per-suffix missing-date detection — MAX(date) fast path
+                max_suffix_date = await get_max_table_date_async(
+                    conn, "stats.stock_identity",
+                    where_clause=f"code LIKE '%%.{suffix}'"
                 )
+                if max_suffix_date is None:
+                    suffix_missing = set(suffix_dates)
+                else:
+                    suffix_missing = {
+                        d for d in suffix_dates if d > max_suffix_date
+                    }
+                    # Check for gaps within the suffix
+                    gap_candidates = {
+                        d for d in suffix_dates if d <= max_suffix_date
+                    }
+                    if gap_candidates:
+                        gap_dates = await find_missing_dates(
+                            conn, "stats.stock_identity", gap_candidates,
+                            code_suffix=suffix,
+                        )
+                        suffix_missing |= gap_dates
                 if not suffix_missing:
                     print(f"    [{suffix}] No dates missing (all {len(suffix_dates)} dates already loaded)", flush=True)
                     continue
@@ -1383,6 +1440,18 @@ async def main():
                 pass
             return v
 
+        # Vectorized: convert NaN/NA in a Series to None for DB insertion.
+        def _to_db_series(s: pd.Series) -> pd.Series:
+            return s.where(s.notna(), None)
+
+        # Vectorized EPS: close / pe rounded to 6 decimals, else None.
+        def _compute_eps_vec(close: pd.Series, pe: pd.Series) -> pd.Series:
+            mask = close.notna() & pe.notna() & (pe > 0)
+            vals = (close[mask].astype(float) / pe[mask].astype(float)).round(6)
+            result = pd.Series([None] * len(close), index=close.index, dtype=object)
+            result[mask] = vals
+            return result
+
         # --- 4a. Build & insert identity rows (all rows, FK parent) ----------
         # Compute is_in_index_or_etf: for each date in this batch, find which stocks
         # appear in any ETF's active composition (most recent snapshot on or
@@ -1393,112 +1462,262 @@ async def main():
               flush=True)
         etf_membership = await compute_is_in_index_or_etf_async(conn, batch_dates)
 
-        identity_rows = []
-        n_in_etf = 0
-        for _, row in combined_db.iterrows():
-            code = str(row["code"])
-            suffix = (code.split(".")[-1]
-                      if "." in code and code.split(".")[-1] in ("SZ", "SS", "BJ")
-                      else None)
-            in_etf = code in etf_membership.get(row["date"], set())
-            if in_etf:
-                n_in_etf += 1
-            identity_rows.append({
-                "date": row["date"],
-                "code": code,
-                "code_suffix": suffix,
-                "name": str(row.get("name", "")) if pd.notna(row.get("name")) else "",
-                "is_in_index_or_etf": in_etf,
-            })
+        # Vectorized identity rows construction
+        _id_df = combined_db[["date", "code", "name"]].copy()
+        _id_df["code"] = _id_df["code"].astype(str)
+        # Extract suffix: last part after "." if it's a known exchange suffix
+        _id_df["code_suffix"] = np.where(
+            _id_df["code"].str.contains(r"\.", na=False),
+            _id_df["code"].str.split(".").str[-1],
+            "",
+        )
+        _id_df["code_suffix"] = _id_df["code_suffix"].where(
+            _id_df["code_suffix"].isin(["SZ", "SS", "BJ"]), ""
+        )
+        # Name: convert NaN to empty string
+        _id_df["name"] = _id_df["name"].where(_id_df["name"].notna(), "")
+        _id_df["name"] = _id_df["name"].astype(str)
+        # Vectorized ETF membership: build a lookup DataFrame and merge
+        _etf_rows: list[tuple] = []
+        for _d, _codes in etf_membership.items():
+            _etf_rows.extend((_d, _c) for _c in _codes)
+        _etf_df = pd.DataFrame(_etf_rows, columns=["date", "code"]).drop_duplicates() if _etf_rows else pd.DataFrame(columns=["date", "code"])
+        if not _etf_df.empty:
+            _etf_df["is_in_index_or_etf"] = True
+            _id_df = _id_df.merge(_etf_df, on=["date", "code"], how="left")
+        else:
+            _id_df["is_in_index_or_etf"] = False
+        _id_df["is_in_index_or_etf"] = _id_df["is_in_index_or_etf"].fillna(False).astype(bool)
+        n_in_etf = int(_id_df["is_in_index_or_etf"].sum())
+        identity_rows = _id_df[["date", "code", "code_suffix", "name", "is_in_index_or_etf"]].to_dict(orient="records")
         print(f"    [ETF] {n_in_etf:,} / {len(identity_rows):,} rows flagged "
               f"is_in_index_or_etf=true in this batch", flush=True)
 
         if identity_rows:
-            inserted = await bulk_upsert_async(
+            n_copied, n_upserted = await copy_or_upsert_split_async(
                 conn, "stats.stock_identity", identity_rows, ["date", "code"]
             )
-            print(f"    [DB] Inserted {inserted:,} rows into stats.stock_identity", flush=True)
+            total_inserted = n_copied + n_upserted
+            if n_copied > 0 and n_upserted == 0:
+                print(f"    [DB] Inserted {total_inserted:,} rows into "
+                      f"stats.stock_identity via COPY (all new dates)",
+                      flush=True)
+            elif n_copied > 0:
+                print(f"    [DB] Inserted {total_inserted:,} rows into "
+                      f"stats.stock_identity ({n_copied:,} copied + "
+                      f"{n_upserted:,} upserted)", flush=True)
+            else:
+                print(f"    [DB] Inserted {total_inserted:,} rows into "
+                      f"stats.stock_identity via upsert (all historical)",
+                      flush=True)
         else:
             print(f"    [DB] No new rows to insert into stats.stock_identity", flush=True)
 
-        # --- 4b. Pass 1: insert actual PE rows (is_pe_estimated=false) ------
-        # Inserting these FIRST makes them visible to the estimation query
-        # below, so SSE stocks with a quarterly PE snapshot earlier in this
-        # batch can be used to estimate PE for later dates in the same batch.
-        #
-        # Split into regular rows (with OHLCV) and PE-only rows (NULL OHLCV
-        # from the OUTER JOIN in merge_sse_pe). PE-only rows use a partial
-        # upsert that only updates pe/is_pe_estimated, preserving any existing
-        # OHLCV data in the DB.
-        regular_actual_rows = []
-        pe_only_actual_rows = []
-        for _, row in actual_pe_df.iterrows():
-            code = str(row["code"])
-            close_val = _to_db(row.get("close"))
-            pe_val = _to_db(row.get("pe"))
-            entry = {
-                "date": row["date"],
-                "code": code,
-                "prev_close": _to_db(row.get("prev_close")),
-                "open": _to_db(row.get("open")),
-                "high": _to_db(row.get("high")),
-                "low": _to_db(row.get("low")),
-                "close": close_val,
-                "pct_change": _to_db(row.get("pct_change")),
-                "pe": pe_val,
-                "eps": compute_eps(close_val, pe_val),
-                "is_pe_estimated": False,
-                "is_close_estimated": bool(row.get("is_close_estimated", False)),
-            }
-            if close_val is None:
-                pe_only_actual_rows.append(entry)
-            else:
-                regular_actual_rows.append(entry)
+        # --- Build ALL row lists first (computation only, no DB writes) ---
+        # This allows the independent table writes (basic_stats vs
+        # liquidity_margin) to run in parallel via the connection pool.
 
-        if regular_actual_rows:
-            inserted = await bulk_upsert_async(
-                conn, "stats.stock_basic_stats", regular_actual_rows, ["date", "code"]
-            )
-            print(f"    [DB] Inserted {inserted:,} rows into stats.stock_basic_stats "
-                  f"(actual PE, is_pe_estimated=false)", flush=True)
-        else:
-            print(f"    [DB] No regular actual-PE rows to insert into stats.stock_basic_stats",
-                  flush=True)
+        # --- 4b-row. Build regular + PE-only actual PE rows (vectorized) ---------
+        _pe_cols = ["prev_close", "open", "high", "low", "close", "pct_change", "pe"]
+        _pe_df = actual_pe_df[["date", "code"] + _pe_cols + ["is_close_estimated"]].copy()
+        _pe_df["code"] = _pe_df["code"].astype(str)
+        # Vectorized NaN→None conversion for all numeric columns
+        for _c in _pe_cols:
+            _pe_df[_c] = _to_db_series(_pe_df[_c])
+        # Vectorized EPS computation
+        _pe_df["eps"] = _compute_eps_vec(_pe_df["close"], _pe_df["pe"])
+        _pe_df["is_pe_estimated"] = False
+        _pe_df["is_close_estimated"] = _pe_df["is_close_estimated"].fillna(False).astype(bool)
+        # Split: close is None → pe-only, else regular
+        _is_pe_only = _pe_df["close"].isna()
+        regular_actual_rows = _pe_df[~_is_pe_only].to_dict(orient="records")
+        pe_only_actual_rows = _pe_df[_is_pe_only].to_dict(orient="records")
 
-        if pe_only_actual_rows:
-            # Partial upsert: only update pe, is_pe_estimated, and eps
-            # (recomputed from the EXISTING close in the table), preserving
-            # the other OHLCV columns. For new rows, OHLCV defaults to NULL
-            # so eps stays NULL (no close to divide by).
-            pe_only_query = (
-                "INSERT INTO stats.stock_basic_stats "
-                "(date, code, pe, is_pe_estimated) "
-                "VALUES ($1, $2, $3, $4) "
-                "ON CONFLICT (date, code) DO UPDATE SET "
-                "pe = EXCLUDED.pe, "
-                "is_pe_estimated = EXCLUDED.is_pe_estimated, "
-                "eps = CASE WHEN stats.stock_basic_stats.close IS NOT NULL "
-                "            AND EXCLUDED.pe > 0 "
-                "       THEN stats.stock_basic_stats.close / EXCLUDED.pe "
-                "       ELSE NULL END"
-            )
-            pe_only_values = [
-                (r["date"], r["code"], r["pe"], r["is_pe_estimated"])
-                for r in pe_only_actual_rows
-            ]
-            async with conn.transaction():
-                for i in range(0, len(pe_only_values), 1000):
-                    await conn.executemany(
-                        pe_only_query, pe_only_values[i:i + 1000]
+        # --- 4d-row. Build liq_rows + margin_only_rows -------------
+        # These are independent of basic_stats — build them now so the
+        # writes can run in parallel with basic_stats writes.
+
+        # (1) FULL rows from combined_db (OHLCV + all 8 cols) — vectorized
+        _liq_cols = ["trading_shares", "trading_amount", "rz_buy", "rz_balance",
+                      "rq_sell_qty", "rq_balance_qty", "rq_balance_amt", "total_balance"]
+        _liq_df = combined_db[["date", "code", "close"] + _liq_cols].copy()
+        _liq_df["code"] = _liq_df["code"].astype(str)
+        # Filter out PE-only rows (close is None/NaN)
+        _has_close = _liq_df["close"].notna()
+        _liq_df = _liq_df[_has_close].drop(columns=["close"])
+        # Vectorized NaN→None→0 for all numeric columns
+        for _c in _liq_cols:
+            _liq_df[_c] = _to_db_series(_liq_df[_c]).fillna(0)
+        liq_rows = _liq_df.to_dict(orient="records")
+
+        # (2) MARGIN-ONLY rows from margin_df (6 margin cols only) — vectorized
+        # Build ohlcv_keys from the liquidity DataFrame (before dict conversion)
+        _liq_keys = _liq_df[["date", "code"]].drop_duplicates()
+        ohlcv_keys: set[tuple] = set(zip(_liq_keys["date"], _liq_keys["code"]))
+        margin_only_rows: list[dict] = []
+        if margin_df is not None and len(margin_df) > 0:
+            margin_df_db = margin_df.copy()
+            margin_df_db["date"] = pd.to_datetime(margin_df_db["date"]).dt.date
+            _margin_cols = ["rz_buy", "rz_balance", "rq_sell_qty", "rq_balance_qty",
+                            "rq_balance_amt", "total_balance"]
+            _mdf = margin_df_db[["date", "code"] + _margin_cols].copy()
+            _mdf["code"] = _mdf["code"].astype(str)
+            # Filter out rows already in ohlcv_keys using anti-join
+            _mdf = _mdf.merge(_liq_keys, on=["date", "code"], how="left", indicator=True)
+            _mdf = _mdf[_mdf["_merge"] == "left_only"].drop(columns=["_merge"])
+            # Vectorized NaN→None→0 for margin columns
+            for _c in _margin_cols:
+                _mdf[_c] = _to_db_series(_mdf[_c]).fillna(0)
+            margin_only_rows = _mdf.to_dict(orient="records")
+
+        # --- Parallel DB writes: basic_stats + liquidity_margin -----
+        async def _write_basic_stats():
+            """Write regular + pe_only to basic_stats, then estimated."""
+            async with pool.acquire() as bs_conn:
+                # Pass 1: regular actual PE rows
+                if regular_actual_rows:
+                    n_copied, n_upserted = await copy_or_upsert_split_async(
+                        bs_conn, "stats.stock_basic_stats", regular_actual_rows,
+                        ["date", "code"]
                     )
-            print(f"    [DB] Upserted {len(pe_only_actual_rows):,} PE-only rows "
-                  f"(partial: only pe updated, OHLCV preserved if exists)", flush=True)
+                    total = n_copied + n_upserted
+                    via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                          f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                          "upsert"
+                    print(f"    [DB] Inserted {total:,} rows into stats.stock_basic_stats "
+                          f"(actual PE, is_pe_estimated=false) via {via}", flush=True)
+                else:
+                    print(f"    [DB] No regular actual-PE rows to insert into stats.stock_basic_stats",
+                          flush=True)
+
+                # PE-only rows (partial upsert)
+                if pe_only_actual_rows:
+                    pe_only_query = (
+                        "INSERT INTO stats.stock_basic_stats "
+                        "(date, code, pe, is_pe_estimated) "
+                        "VALUES ($1, $2, $3, $4) "
+                        "ON CONFLICT (date, code) DO UPDATE SET "
+                        "pe = EXCLUDED.pe, "
+                        "is_pe_estimated = EXCLUDED.is_pe_estimated, "
+                        "eps = CASE WHEN stats.stock_basic_stats.close IS NOT NULL "
+                        "            AND EXCLUDED.pe > 0 "
+                        "       THEN stats.stock_basic_stats.close / EXCLUDED.pe "
+                        "       ELSE NULL END"
+                    )
+                    pe_only_values = [
+                        (r["date"], r["code"], r["pe"], r["is_pe_estimated"])
+                        for r in pe_only_actual_rows
+                    ]
+                    async with bs_conn.transaction():
+                        for i in range(0, len(pe_only_values), 1000):
+                            await bs_conn.executemany(
+                                pe_only_query, pe_only_values[i:i + 1000]
+                            )
+                    print(f"    [DB] Upserted {len(pe_only_actual_rows):,} PE-only rows "
+                          f"(partial: only pe updated, OHLCV preserved if exists)", flush=True)
+
+        async def _write_liquidity_margin():
+            """Write liq_rows + margin_only_rows to stock_liquidity_margin."""
+            async with pool.acquire() as lm_conn:
+                # (1) FULL rows
+                if liq_rows:
+                    n_copied, n_upserted = await copy_or_upsert_split_async(
+                        lm_conn, "stats.stock_liquidity_margin", liq_rows, ["date", "code"]
+                    )
+                    total = n_copied + n_upserted
+                    n_with_margin = sum(
+                        1 for r in liq_rows if (r.get("rz_balance") or 0) > 0
+                    )
+                    via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                          f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                          "upsert"
+                    print(f"    [DB] Inserted {total:,} rows into "
+                          f"stats.stock_liquidity_margin ({n_with_margin:,} with "
+                          f"non-zero rz_balance) via {via}", flush=True)
+                else:
+                    print(f"    [DB] No OHLCV rows to insert into "
+                          f"stats.stock_liquidity_margin", flush=True)
+
+                # (2) MARGIN-ONLY backfill (temp table + JOIN identity for FK safety)
+                if margin_only_rows:
+                    print(f"    [DB] Preparing {len(margin_only_rows):,} "
+                          f"margin-only rows for upsert (FK filtering via "
+                          f"temp table)…", flush=True)
+                    async with lm_conn.transaction():
+                        await lm_conn.execute(
+                            "CREATE TEMP TABLE _margin_upsert ("
+                            "  date DATE, code TEXT, "
+                            "  rz_buy NUMERIC(24,4), rz_balance NUMERIC(24,4), "
+                            "  rq_sell_qty NUMERIC(24,4), "
+                            "  rq_balance_qty NUMERIC(24,4), "
+                            "  rq_balance_amt NUMERIC(24,4), "
+                            "  total_balance NUMERIC(24,4)"
+                            ") ON COMMIT DROP"
+                        )
+                        temp_values = [
+                            (r["date"], r["code"],
+                             r["rz_buy"], r["rz_balance"],
+                             r["rq_sell_qty"], r["rq_balance_qty"],
+                             r["rq_balance_amt"], r["total_balance"])
+                            for r in margin_only_rows
+                        ]
+                        insert_query = (
+                            "INSERT INTO _margin_upsert "
+                            "(date, code, rz_buy, rz_balance, rq_sell_qty, "
+                            " rq_balance_qty, rq_balance_amt, total_balance) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+                        )
+                        for i in range(0, len(temp_values), 1000):
+                            await lm_conn.executemany(
+                                insert_query, temp_values[i:i + 1000]
+                            )
+                        result = await lm_conn.execute(
+                            "INSERT INTO stats.stock_liquidity_margin "
+                            "(date, code, rz_buy, rz_balance, rq_sell_qty, "
+                            " rq_balance_qty, rq_balance_amt, total_balance) "
+                            "SELECT t.date, t.code, t.rz_buy, t.rz_balance, "
+                            "       t.rq_sell_qty, t.rq_balance_qty, "
+                            "       t.rq_balance_amt, t.total_balance "
+                            "FROM _margin_upsert t "
+                            "INNER JOIN stats.stock_identity si "
+                            "  ON si.date = t.date AND si.code = t.code "
+                            "ON CONFLICT (date, code) DO UPDATE SET "
+                            "  rz_buy = EXCLUDED.rz_buy, "
+                            "  rz_balance = EXCLUDED.rz_balance, "
+                            "  rq_sell_qty = EXCLUDED.rq_sell_qty, "
+                            "  rq_balance_qty = EXCLUDED.rq_balance_qty, "
+                            "  rq_balance_amt = EXCLUDED.rq_balance_amt, "
+                            "  total_balance = EXCLUDED.total_balance"
+                        )
+                        parts = result.split()
+                        inserted_count = int(parts[-1]) if parts else 0
+
+                    n_with_margin = sum(
+                        1 for r in margin_only_rows
+                        if (r.get("rz_balance") or 0) > 0
+                    )
+                    print(f"    [DB] Upserted {inserted_count:,} margin-only "
+                          f"rows into stats.stock_liquidity_margin (6 margin "
+                          f"cols, trading_shares/amount preserved; "
+                          f"{n_with_margin:,} with non-zero rz_balance)",
+                          flush=True)
+                else:
+                    print(f"    [DB] No margin-only backfill rows to insert "
+                          f"(all margin rows already covered by OHLCV insert)",
+                          flush=True)
+
+        # Phase 1: run basic_stats (regular+pe_only) and liquidity_margin in parallel
+        print(f"\n    [POOL] Running basic_stats + liquidity_margin writes in parallel "
+              f"(pool size={pool.size}) …", flush=True)
+        await asyncio.gather(
+            _write_basic_stats(),
+            _write_liquidity_margin(),
+        )
 
         # --- 4c. Pass 2: estimate missing PE and insert (is_pe_estimated=true)
+        # This MUST run AFTER basic_stats is inserted (the estimation uses
+        # the current batch's basic_stats rows as PE reference).
         if n_missing > 0:
-            # Skip PE-only rows (NULL close) — they have no OHLCV and can't be
-            # estimated (estimation requires close). They're already in
-            # stock_identity; no useful data to add to stock_basic_stats.
             missing_pe_df_with_close = missing_pe_df[missing_pe_df["close"].notna()].copy()
             n_pe_only_skipped = len(missing_pe_df) - len(missing_pe_df_with_close)
             if n_pe_only_skipped > 0:
@@ -1527,215 +1746,39 @@ async def main():
                 estimated_pe_map = {}
 
             estimated_basic_stats_rows = []
-            for _, row in missing_pe_df_with_close.iterrows():
-                code = str(row["code"])
-                key = (row["date"], code)
-                est_pe = estimated_pe_map.get(key)
-                close_val = _to_db(row.get("close"))
-                estimated_basic_stats_rows.append({
-                    "date": row["date"],
-                    "code": code,
-                    "prev_close": _to_db(row.get("prev_close")),
-                    "open": _to_db(row.get("open")),
-                    "high": _to_db(row.get("high")),
-                    "low": _to_db(row.get("low")),
-                    "close": close_val,
-                    "pct_change": _to_db(row.get("pct_change")),
-                    "pe": est_pe,
-                    # eps = close / pe; under the constant-EPS assumption this
-                    # recovers the baseline EPS (close / (close*last_pe/last_close)
-                    # = last_close / last_pe). NULL when est_pe is None.
-                    "eps": compute_eps(close_val, est_pe),
-                    # is_pe_estimated=true only when estimation succeeded;
-                    # rows with no prior actual PE get NULL pe and false.
-                    "is_pe_estimated": est_pe is not None,
-                    "is_close_estimated": bool(row.get("is_close_estimated", False)),
-                })
+            if not missing_pe_df_with_close.empty:
+                _est_cols = ["prev_close", "open", "high", "low", "close", "pct_change"]
+                _est_df = missing_pe_df_with_close[["date", "code"] + _est_cols + ["is_close_estimated"]].copy()
+                _est_df["code"] = _est_df["code"].astype(str)
+                # Vectorized NaN→None conversion
+                for _c in _est_cols:
+                    _est_df[_c] = _to_db_series(_est_df[_c])
+                # Map estimated PE values from the dict
+                _pe_keys: list[tuple] = list(zip(_est_df["date"], _est_df["code"]))
+                _est_pe_vals: list = [estimated_pe_map.get(k) for k in _pe_keys]
+                _est_df["pe"] = _est_pe_vals
+                # Vectorized EPS computation
+                _est_df["eps"] = _compute_eps_vec(_est_df["close"], _est_df["pe"].astype(float))
+                _est_df["is_pe_estimated"] = _est_df["pe"].notna()
+                _est_df["is_close_estimated"] = _est_df["is_close_estimated"].fillna(False).astype(bool)
+                estimated_basic_stats_rows = _est_df[["date", "code"] + _est_cols + ["pe", "eps", "is_pe_estimated", "is_close_estimated"]].to_dict(orient="records")
 
             if estimated_basic_stats_rows:
-                inserted = await bulk_upsert_async(
+                n_copied, n_upserted = await copy_or_upsert_split_async(
                     conn, "stats.stock_basic_stats", estimated_basic_stats_rows,
                     ["date", "code"]
                 )
+                total = n_copied + n_upserted
                 n_est_flag = sum(1 for r in estimated_basic_stats_rows if r["is_pe_estimated"])
-                print(f"    [DB] Inserted {inserted:,} rows into stats.stock_basic_stats "
+                via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                      f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                      "upsert"
+                print(f"    [DB] Inserted {total:,} rows into stats.stock_basic_stats "
                       f"(missing-PE batch: {n_est_flag:,} estimated + "
-                      f"{len(estimated_basic_stats_rows) - n_est_flag:,} NULL pe)",
+                      f"{len(estimated_basic_stats_rows) - n_est_flag:,} NULL pe) via {via}",
                       flush=True)
         else:
             print(f"    [DB] No missing-PE rows to estimate", flush=True)
-
-        # --- 4d. Insert liquidity + margin rows into stock_liquidity_margin --
-        # Two insert paths:
-        #
-        # (1) FULL rows (from combined_db): rows with OHLCV data get all 8
-        #     cols (trading_shares, trading_amount + 6 margin cols). This
-        #     handles new OHLCV dates where both OHLCV and margin are loaded
-        #     together. Rows with NULL close (PE-only from merge_sse_pe) are
-        #     excluded — they have no OHLCV and semantically don't belong in
-        #     this table.
-        #
-        # (2) MARGIN-ONLY rows (from margin_df): for backfill dates where
-        #     OHLCV source CSVs don't exist (e.g., old SSE dates without
-        #     date-grouped files), margin data would be lost in the LEFT
-        #     JOIN of merge_stock_margin. This second insert updates ONLY
-        #     the 6 margin cols, preserving existing trading_shares/
-        #     trading_amount (migrated from stock_basic_stats or loaded in
-        #     path 1). Filtered against stock_identity to avoid FK
-        #     violations for delisted stocks not in the OHLCV source.
-        liq_rows = []
-        for _, row in combined_db.iterrows():
-            close_val = _to_db(row.get("close"))
-            if close_val is None:
-                continue  # PE-only row — no OHLCV, skip
-            liq_rows.append({
-                "date":             row["date"],
-                "code":             str(row["code"]),
-                "trading_shares":   _to_db(row.get("trading_shares")) or 0,
-                "trading_amount":   _to_db(row.get("trading_amount")) or 0,
-                "rz_buy":           _to_db(row.get("rz_buy")) or 0,
-                "rz_balance":       _to_db(row.get("rz_balance")) or 0,
-                "rq_sell_qty":      _to_db(row.get("rq_sell_qty")) or 0,
-                "rq_balance_qty":   _to_db(row.get("rq_balance_qty")) or 0,
-                "rq_balance_amt":   _to_db(row.get("rq_balance_amt")) or 0,
-                "total_balance":    _to_db(row.get("total_balance")) or 0,
-            })
-
-        if liq_rows:
-            inserted = await bulk_upsert_async(
-                conn, "stats.stock_liquidity_margin", liq_rows, ["date", "code"]
-            )
-            n_with_margin = sum(
-                1 for r in liq_rows if (r.get("rz_balance") or 0) > 0
-            )
-            print(f"    [DB] Inserted {inserted:,} rows into "
-                  f"stats.stock_liquidity_margin ({n_with_margin:,} with "
-                  f"non-zero rz_balance)", flush=True)
-        else:
-            print(f"    [DB] No OHLCV rows to insert into "
-                  f"stats.stock_liquidity_margin", flush=True)
-
-        # (2) Margin-only backfill: update 6 margin cols for rows NOT
-        # already covered by the OHLCV insert above. This catches margin
-        # rows for dates where OHLCV source CSVs don't exist (old SSE
-        # dates) or stocks not in the OHLCV source but present in
-        # stock_identity. trading_shares/trading_amount are NOT in the
-        # row dict, so existing values are preserved (ON CONFLICT DO
-        # UPDATE SET only updates the 6 margin cols).
-        #
-        # FK safety: stock_liquidity_margin has FK (date, code) →
-        # stock_identity. Margin CSVs may contain delisted stocks not in
-        # stock_identity. Instead of loading millions of identity pairs
-        # into Python for filtering, we use a server-side temp table +
-        # JOIN approach: insert margin rows into a temp table, then
-        # INSERT ... SELECT ... JOIN stock_identity (invalid pairs are
-        # dropped by the INNER JOIN). This is efficient for 4M+ rows.
-        if margin_df is not None and len(margin_df) > 0:
-            # Convert margin_df dates to datetime.date for asyncpg.
-            margin_df_db = margin_df.copy()
-            margin_df_db["date"] = pd.to_datetime(
-                margin_df_db["date"]
-            ).dt.date
-
-            # Build the set of (date, code) pairs already inserted in
-            # path (1) so we don't re-upsert them (redundant, not wrong).
-            ohlcv_keys = {
-                (r["date"], r["code"]) for r in liq_rows
-            }
-
-            margin_only_rows = []
-            for _, row in margin_df_db.iterrows():
-                key = (row["date"], str(row["code"]))
-                if key in ohlcv_keys:
-                    continue  # already inserted with full 8 cols
-                margin_only_rows.append({
-                    "date":            row["date"],
-                    "code":            str(row["code"]),
-                    "rz_buy":          _to_db(row.get("rz_buy")) or 0,
-                    "rz_balance":      _to_db(row.get("rz_balance")) or 0,
-                    "rq_sell_qty":     _to_db(row.get("rq_sell_qty")) or 0,
-                    "rq_balance_qty":  _to_db(row.get("rq_balance_qty")) or 0,
-                    "rq_balance_amt":  _to_db(row.get("rq_balance_amt")) or 0,
-                    "total_balance":   _to_db(row.get("total_balance")) or 0,
-                })
-
-            if margin_only_rows:
-                # Server-side FK filtering via temp table + INNER JOIN
-                # with stock_identity. This avoids loading millions of
-                # identity pairs into Python.
-                print(f"    [DB] Preparing {len(margin_only_rows):,} "
-                      f"margin-only rows for upsert (FK filtering via "
-                      f"temp table)…", flush=True)
-                async with conn.transaction():
-                    await conn.execute(
-                        "CREATE TEMP TABLE _margin_upsert ("
-                        "  date DATE, code TEXT, "
-                        "  rz_buy NUMERIC(24,4), rz_balance NUMERIC(24,4), "
-                        "  rq_sell_qty NUMERIC(24,4), "
-                        "  rq_balance_qty NUMERIC(24,4), "
-                        "  rq_balance_amt NUMERIC(24,4), "
-                        "  total_balance NUMERIC(24,4)"
-                        ") ON COMMIT DROP"
-                    )
-                    # Batch-insert margin rows into temp table
-                    temp_values = [
-                        (r["date"], r["code"],
-                         r["rz_buy"], r["rz_balance"],
-                         r["rq_sell_qty"], r["rq_balance_qty"],
-                         r["rq_balance_amt"], r["total_balance"])
-                        for r in margin_only_rows
-                    ]
-                    insert_query = (
-                        "INSERT INTO _margin_upsert "
-                        "(date, code, rz_buy, rz_balance, rq_sell_qty, "
-                        " rq_balance_qty, rq_balance_amt, total_balance) "
-                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
-                    )
-                    for i in range(0, len(temp_values), 1000):
-                        await conn.executemany(
-                            insert_query, temp_values[i:i + 1000]
-                        )
-
-                    # Upsert from temp table, INNER JOIN stock_identity
-                    # to filter out FK-violating rows. Only updates the 6
-                    # margin cols (trading_shares/trading_amount NOT in
-                    # the SELECT, so existing values are preserved).
-                    result = await conn.execute(
-                        "INSERT INTO stats.stock_liquidity_margin "
-                        "(date, code, rz_buy, rz_balance, rq_sell_qty, "
-                        " rq_balance_qty, rq_balance_amt, total_balance) "
-                        "SELECT t.date, t.code, t.rz_buy, t.rz_balance, "
-                        "       t.rq_sell_qty, t.rq_balance_qty, "
-                        "       t.rq_balance_amt, t.total_balance "
-                        "FROM _margin_upsert t "
-                        "INNER JOIN stats.stock_identity si "
-                        "  ON si.date = t.date AND si.code = t.code "
-                        "ON CONFLICT (date, code) DO UPDATE SET "
-                        "  rz_buy = EXCLUDED.rz_buy, "
-                        "  rz_balance = EXCLUDED.rz_balance, "
-                        "  rq_sell_qty = EXCLUDED.rq_sell_qty, "
-                        "  rq_balance_qty = EXCLUDED.rq_balance_qty, "
-                        "  rq_balance_amt = EXCLUDED.rq_balance_amt, "
-                        "  total_balance = EXCLUDED.total_balance"
-                    )
-                    # result is like "INSERT 0 1234567"
-                    parts = result.split()
-                    inserted_count = int(parts[-1]) if parts else 0
-
-                # Count rows with non-zero rz_balance (for logging)
-                n_with_margin = sum(
-                    1 for r in margin_only_rows
-                    if (r.get("rz_balance") or 0) > 0
-                )
-                print(f"    [DB] Upserted {inserted_count:,} margin-only "
-                      f"rows into stats.stock_liquidity_margin (6 margin "
-                      f"cols, trading_shares/amount preserved; "
-                      f"{n_with_margin:,} with non-zero rz_balance)",
-                      flush=True)
-            else:
-                print(f"    [DB] No margin-only backfill rows to insert "
-                      f"(all margin rows already covered by OHLCV insert)",
-                      flush=True)
 
         # ------------------------------------------------------------------
         # 5. Compute tech stats (MA/EMA) for all stocks
@@ -1756,6 +1799,7 @@ async def main():
 
     finally:
         await conn.close()
+        await pool.close()
 
     print_wall_time(t0)
 

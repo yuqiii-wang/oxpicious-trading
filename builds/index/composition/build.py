@@ -63,20 +63,25 @@ def _build_rows_from_df(combined: pd.DataFrame, label: str) -> list:
             snap_date_obj = datetime.datetime.strptime(snap_date_str, "%Y-%m-%d").date()
         except ValueError:
             continue
-        for rank_idx, (_, r) in enumerate(sub.iterrows(), start=1):
-            sc = str(r.get("stock_code", "")).strip()
-            sc_stripped = sc.split(".")[0].zfill(6)
-            if len(sc_stripped) != 6 or not sc_stripped.isdigit():
-                continue
-            rows.append({
-                "snapshot_date": snap_date_obj,
-                "code": str(index_code).strip().zfill(6),
-                "source_type": "index",
-                "rank": rank_idx,
-                "stock_code": sc,
-                "stock_name": str(r.get("stock_name", "") or ""),
-                "weight_pct": float(r["weight_pct"]),
-            })
+        # Vectorized: filter valid stocks, assign ranks
+        _sub = sub.copy()
+        _sub["stock_code"] = _sub["stock_code"].astype(str).str.strip()
+        _sub["sc_stripped"] = _sub["stock_code"].str.split(".").str[0].str.zfill(6)
+        _sub = _sub[
+            (_sub["sc_stripped"].str.len() == 6) &
+            _sub["sc_stripped"].str.isdigit()
+        ].copy()
+        if len(_sub) > 0:
+            _sub["rank"] = range(1, len(_sub) + 1)
+            _sub["snapshot_date"] = snap_date_obj
+            _sub["code"] = str(index_code).strip().zfill(6)
+            _sub["source_type"] = "index"
+            _sub["stock_name"] = _sub["stock_name"].fillna("").astype(str)
+            rows.extend(
+                _sub[["snapshot_date", "code", "source_type", "rank",
+                      "stock_code", "stock_name", "weight_pct"]]
+                .to_dict(orient="records")
+            )
 
     if rows:
         n_indices = combined["index_code"].nunique()

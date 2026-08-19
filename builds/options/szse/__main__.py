@@ -53,6 +53,10 @@ import datetime
 import warnings
 warnings.filterwarnings("ignore")
 
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 import numpy as np
 import pandas as pd
 
@@ -142,27 +146,9 @@ def parse_underlying_code(underlying_str):
     return name, code
 
 
-# ETF code → (index_code, index_name) mapping.
-# SZSE ETF options track the corresponding index. We normalize to the
-# underlying index code so SZSE and CFFEX options appear under the same
-# underlying (e.g. both 159919 ETF options and IO index options map to 000300).
-_ETF_TO_INDEX = {
-    "159919": ("000300", "沪深300"),
-    "159922": ("000905", "中证500"),
-    "159901": ("399330", "深证100"),
-    "159915": ("399006", "创业板"),
-}
-
-
-def etf_to_index(etf_code: str):
-    """Convert an ETF code to (index_code, index_name) if a mapping exists.
-
-    Returns (etf_code, etf_name) unchanged if no mapping is found.
-    """
-    mapping = _ETF_TO_INDEX.get(str(etf_code).strip())
-    if mapping:
-        return mapping
-    return None, None
+# SZSE ETF options keep their native ETF code (1599xx) as underlying_code.
+# CFFEX index options use index codes (000xxx/399xxx), so the two venues
+# are naturally separated by code space — no ETF→index normalization.
 
 
 def compute_expiry_date(trade_date, expiry_month):
@@ -238,13 +224,6 @@ def build_options_df(files, verbose=True):
             if underlying_code is None:
                 n_parse_fail += 1
                 continue
-
-            # Normalize ETF code → index code so SZSE and CFFEX options
-            # share the same underlying_code (e.g. 159919 → 000300).
-            index_code, index_name = etf_to_index(underlying_code)
-            if index_code:
-                underlying_code = index_code
-                underlying_name = index_name
 
             expiry_dt = compute_expiry_date(trade_date_dt, parsed["expiry_month"])
             days_to_expiry = max(0, (expiry_dt - trade_date_dt).days)

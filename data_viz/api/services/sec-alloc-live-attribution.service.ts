@@ -75,7 +75,12 @@ base AS (
         COALESCE(r.industry_id, cls.industry_id)          AS industry_id,
         COALESCE(r.is_industry_not_strategy, cls.is_industry_not_strategy, TRUE)
                                                          AS is_industry_not_strategy,
-        r.code_trading_amount_weight                      AS w,
+        -- NULL-safe weight: NaN → NULL → excluded from weighted aggregate
+        CASE WHEN r.code_trading_amount_weight::text = 'NaN' THEN NULL
+             ELSE r.code_trading_amount_weight END         AS w,
+        -- NULL-safe shared weight: NaN → 0 (treat as zero-overlap)
+        CASE WHEN r.code_sec_shared_weight::text = 'NaN' THEN 0
+             ELSE COALESCE(r.code_sec_shared_weight, 0) END AS sw,
         a.code_price_pct_relative_prev_date_close         AS pct
     FROM live.sec_alloc_live_attribution a
     LEFT JOIN live.sec_alloc_live_prev_ref r
@@ -91,15 +96,18 @@ base AS (
 SELECT
     industry_id,
     BOOL_OR(is_industry_not_strategy)                     AS is_industry_not_strategy,
-    (SUM(w * pct)
-        / NULLIF(SUM(w) FILTER (WHERE pct IS NOT NULL AND w IS NOT NULL), 0)
-    )::float8                                             AS weighted_pct,
+    COALESCE(
+        (SUM(w * sw * pct)
+            / NULLIF(SUM(w * sw) FILTER (WHERE pct IS NOT NULL AND w IS NOT NULL AND sw IS NOT NULL), 0)
+        )::float8,
+        0
+    )                                                      AS weighted_pct,
     AVG(pct)::float8                                      AS equal_pct,
     COUNT(*)                                              AS member_count
 FROM base
 WHERE industry_id IS NOT NULL
 GROUP BY industry_id
-ORDER BY weighted_pct DESC NULLS LAST
+ORDER BY weighted_pct DESC
 `;
 
 /** Availability + date resolution in one round-trip each.

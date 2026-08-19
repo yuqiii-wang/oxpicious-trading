@@ -30,35 +30,42 @@ async def fetch_price_ohlc(conn, sec_types: list[str]) -> pd.DataFrame:
 
     Returns a DataFrame with columns [sec_type, code, date, open, high,
     low, close] for merging with trend episodes.
+
+    Uses a single UNION ALL query across all sec_type tables to avoid
+    per-type round-trips and eliminate the frames-list append pattern.
     """
-    frames: list[pd.DataFrame] = []
+    _empty_cols = ["sec_type", "code", "date", "open", "high", "low", "close"]
+    if not sec_types:
+        return pd.DataFrame(columns=_empty_cols)
+
+    parts: list[str] = []
+    params: list[str] = []
     for sec_type in sec_types:
         table_info = _PRICE_OHLC_TABLES.get(sec_type)
         if table_info is None:
             continue
         table, code_col = table_info
-        rows = await conn.fetch(
-            f"""
-            SELECT $1::text AS sec_type, {code_col} AS code, date,
+        params.append(sec_type)
+        parts.append(f"""
+            SELECT ${len(params)}::text AS sec_type, {code_col} AS code, date,
                    open, high, low, close
             FROM {table}
             WHERE open IS NOT NULL AND close IS NOT NULL
-            """,
-            sec_type,
-        )
-        if rows:
-            frames.append(pd.DataFrame({
-                "sec_type": [r["sec_type"] for r in rows],
-                "code": [r["code"] for r in rows],
-                "date": [r["date"] for r in rows],
-                "open": [float(r["open"]) if r["open"] is not None else np.nan for r in rows],
-                "high": [float(r["high"]) if r["high"] is not None else np.nan for r in rows],
-                "low": [float(r["low"]) if r["low"] is not None else np.nan for r in rows],
-                "close": [float(r["close"]) if r["close"] is not None else np.nan for r in rows],
-            }))
-    if not frames:
-        return pd.DataFrame(columns=["sec_type", "code", "date", "open", "high", "low", "close"])
-    return pd.concat(frames, ignore_index=True)
+        """)
+
+    if not parts:
+        return pd.DataFrame(columns=_empty_cols)
+
+    query = "\nUNION ALL\n".join(parts)
+    rows = await conn.fetch(query, *params)
+
+    if not rows:
+        return pd.DataFrame(columns=_empty_cols)
+
+    df = pd.DataFrame(rows, columns=_empty_cols)
+    for col in ("open", "high", "low", "close"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
 
 
 def compute_price_ohlc_ratio(

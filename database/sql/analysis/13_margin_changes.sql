@@ -191,3 +191,139 @@ ON CONFLICT (name) DO UPDATE SET
     summary_name      = EXCLUDED.summary_name,
     last_run_datetime = NOW(),
     description       = EXCLUDED.description;
+
+-- ============================================================================
+--  Margin Hype-to-Price Forcasts — per-(sec_type, code, trend) FORWARD price
+--  performance after a margin trend episode ends. Validates whether margin
+--  balance trends (UP/DOWN) are predictive of future price moves.
+--
+--  PURPOSE
+--    A "forcast" row answers: after a margin trend episode [start_date,
+--    end_date] ends, what did the PRICE do in the next 5, 20, and 60
+--    TRADING days? For each horizon window starting from end_date+1:
+--      high_price_Xd   — MAX(close) over the X-day window.
+--      low_price_Xd    — MIN(close) over the X-day window.
+--      days_to_high_Xd — trading days from window start to reach the high.
+--      days_to_low_Xd  — trading days from window start to reach the low.
+--
+--    This provides a BACKTEST / VALIDATION layer for the hype signal:
+--    if margin UP trends consistently see price highs early in the window
+--    (small days_to_high_5d), the hype signal has predictive value.
+--
+--  SCOPE — RONGZI ONLY (matches margin_changes). Covers all sec_types
+--  (etf, stock, index). Forward windows are computed from price close
+--  data in stats.{index,etf,stock}_basic_stats.
+--
+--  Table: analysis.margin_hype_to_price_forcasts
+--    PK/FK: (code, sec_type, start_date, end_date) → margin_changes
+--    1 row per trend episode (1:1 with margin_changes).
+--
+--  POPULATION
+--    analyze.margins.changes.forcasts (Python module). Reuses the
+--    margin_changes episodes already in memory + fetches forward price
+--    data from basic_stats. Truncate-then-recompute (aligned with
+--    margin_changes recompute cycle).
+--
+--  Register in analysis.analysis_identity (name='margin_hype_to_price_forcasts').
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS analysis.margin_hype_to_price_forcasts (
+    code        TEXT NOT NULL,
+    sec_type    TEXT NOT NULL,
+    start_date  DATE NOT NULL,
+    end_date    DATE NOT NULL,
+
+    -- ---- 5-day forward window (end_date+1 to end_date+5) ------------------
+    high_price_5d    NUMERIC(12,4),
+    low_price_5d     NUMERIC(12,4),
+    days_to_high_5d  INTEGER,
+    days_to_low_5d   INTEGER,
+
+    -- ---- 20-day forward window (end_date+1 to end_date+20) ---------------
+    high_price_20d   NUMERIC(12,4),
+    low_price_20d    NUMERIC(12,4),
+    days_to_high_20d INTEGER,
+    days_to_low_20d  INTEGER,
+
+    -- ---- 60-day forward window (end_date+1 to end_date+60) ---------------
+    high_price_60d   NUMERIC(12,4),
+    low_price_60d    NUMERIC(12,4),
+    days_to_high_60d INTEGER,
+    days_to_low_60d  INTEGER,
+
+    CONSTRAINT pk_margin_hype_to_price_forcasts
+        PRIMARY KEY (code, sec_type, start_date, end_date),
+    CONSTRAINT fk_margin_hype_to_price_forcasts_trend
+        FOREIGN KEY (code, sec_type, start_date, end_date)
+        REFERENCES analysis.margin_changes (code, sec_type, start_date, end_date),
+    CONSTRAINT chk_margin_hype_to_price_forcasts_sec_type
+        CHECK (sec_type IN ('etf', 'stock', 'index')),
+    CONSTRAINT chk_margin_hype_to_price_forcasts_days_to_positive
+        CHECK (
+            days_to_high_5d IS NULL OR days_to_high_5d >= 0
+        ),
+    CONSTRAINT chk_margin_hype_to_price_forcasts_high_ge_low
+        CHECK (
+            high_price_5d IS NULL OR low_price_5d IS NULL
+            OR high_price_5d >= low_price_5d
+        )
+);
+
+-- Idempotent migration: ADD COLUMN IF NOT EXISTS for forward-compatibility.
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS high_price_5d    NUMERIC(12,4);
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS low_price_5d     NUMERIC(12,4);
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS days_to_high_5d  INTEGER;
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS days_to_low_5d   INTEGER;
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS high_price_20d   NUMERIC(12,4);
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS low_price_20d    NUMERIC(12,4);
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS days_to_high_20d INTEGER;
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS days_to_low_20d  INTEGER;
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS high_price_60d   NUMERIC(12,4);
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS low_price_60d    NUMERIC(12,4);
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS days_to_high_60d INTEGER;
+ALTER TABLE analysis.margin_hype_to_price_forcasts ADD COLUMN IF NOT EXISTS days_to_low_60d  INTEGER;
+
+-- Migrate sec_type CHECK constraint (safe to re-run).
+ALTER TABLE analysis.margin_hype_to_price_forcasts DROP CONSTRAINT IF EXISTS chk_margin_hype_to_price_forcasts_sec_type;
+ALTER TABLE analysis.margin_hype_to_price_forcasts
+    ADD CONSTRAINT chk_margin_hype_to_price_forcasts_sec_type
+        CHECK (sec_type IN ('etf', 'stock', 'index'));
+
+-- Indexes for common access patterns:
+--   1. Per-security time series of forcasts (joins with margin_changes
+--      on the PK to fetch the full trend + forward performance profile).
+--   2. Forward-window analysis (slicing by end_date to find trends that
+--      ended on a given date and their subsequent price performance).
+CREATE INDEX IF NOT EXISTS idx_margin_hype_to_price_forcasts_sec_type_code
+    ON analysis.margin_hype_to_price_forcasts (sec_type, code);
+CREATE INDEX IF NOT EXISTS idx_margin_hype_to_price_forcasts_end_date
+    ON analysis.margin_hype_to_price_forcasts (end_date);
+
+COMMENT ON TABLE  analysis.margin_hype_to_price_forcasts IS 'Per-(sec_type, code, trend) FORWARD price performance after a margin trend episode ends. One row per margin_changes trend episode (1:1 via FK). For each of 3 forward windows (5, 20, 60 TRADING days after end_date), stores: high_price (MAX close), low_price (MIN close), days_to_high (trading days from window start to high), days_to_low (trading days from window start to low). Validates whether margin UP/DOWN trends have predictive value for future price moves. sec_type ∈ {etf, stock, index}. Built by analyze.margins.changes.forcasts (truncate-then-recompute); all INSERTs in Python per project rule.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.code             IS 'Security ticker matching the margin_changes FK target.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.sec_type         IS 'Subject security type: etf, stock, or index. Must match the corresponding margin_changes row.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.start_date       IS 'Trend episode start date (inclusive). FK to margin_changes PK.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.end_date         IS 'Trend episode end date (inclusive). Forward windows start from end_date + 1.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.high_price_5d     IS 'MAX(close) over the 5-TRADING-DAY forward window [end_date+1 .. end_date+5]. NULL when insufficient price data.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.low_price_5d      IS 'MIN(close) over the 5-TRADING-DAY forward window [end_date+1 .. end_date+5]. NULL when insufficient price data.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.days_to_high_5d   IS 'Trading days from end_date+1 (window start) to the high_price_5d. 0 = high reached on the first day. NULL when high_price_5d is NULL.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.days_to_low_5d    IS 'Trading days from end_date+1 (window start) to the low_price_5d. 0 = low reached on the first day. NULL when low_price_5d is NULL.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.high_price_20d    IS 'MAX(close) over the 20-TRADING-DAY forward window [end_date+1 .. end_date+20]. NULL when insufficient price data.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.low_price_20d     IS 'MIN(close) over the 20-TRADING-DAY forward window [end_date+1 .. end_date+20]. NULL when insufficient price data.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.days_to_high_20d  IS 'Trading days from end_date+1 (window start) to the high_price_20d. 0 = high reached on the first day. NULL when high_price_20d is NULL.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.days_to_low_20d   IS 'Trading days from end_date+1 (window start) to the low_price_20d. 0 = low reached on the first day. NULL when low_price_20d is NULL.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.high_price_60d    IS 'MAX(close) over the 60-TRADING-DAY forward window [end_date+1 .. end_date+60]. NULL when insufficient price data.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.low_price_60d     IS 'MIN(close) over the 60-TRADING-DAY forward window [end_date+1 .. end_date+60]. NULL when insufficient price data.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.days_to_high_60d  IS 'Trading days from end_date+1 (window start) to the high_price_60d. 0 = high reached on the first day. NULL when high_price_60d is NULL.';
+COMMENT ON COLUMN analysis.margin_hype_to_price_forcasts.days_to_low_60d   IS 'Trading days from end_date+1 (window start) to the low_price_60d. 0 = low reached on the first day. NULL when low_price_60d is NULL.';
+
+-- ----------------------------------------------------------------------------
+--  Register in analysis.analysis_identity
+-- ----------------------------------------------------------------------------
+INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
+    ('margin_hype_to_price_forcasts', 'margin_hype_to_price_forcasts', NULL, NOW(),
+     'Per-(sec_type, code, trend) FORWARD price performance after a margin trend episode ends. One row per margin_changes trend episode (1:1 via FK on code, sec_type, start_date, end_date). For each of 3 forward windows (5, 20, 60 TRADING days after end_date): high_price (MAX close), low_price (MIN close), days_to_high (trading days from window start to high), days_to_low (trading days from window start to low). Validates whether margin UP/DOWN trends have predictive value for future price moves. sec_type ∈ {etf, stock, index}. Built by analyze.margins.changes.forcasts (truncate-then-recompute); all INSERTs in Python per project rule.')
+ON CONFLICT (name) DO UPDATE SET
+    detail_name       = EXCLUDED.detail_name,
+    summary_name      = EXCLUDED.summary_name,
+    last_run_datetime = NOW(),
+    description       = EXCLUDED.description;

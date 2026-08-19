@@ -6,8 +6,8 @@ import {
   listUnderlyings,
   getOptionsCombined,
   getEtfOhlcv,
-  getOptionsExpiryGaps,
   getOptionsSkewnessCorr,
+  getOptionsSkewnessCrossCounts,
 } from "../services/szse-options.service.js";
 
 const router = Router();
@@ -58,26 +58,6 @@ router.get("/etf-ohlcv", async (req: Request, res: Response) => {
   }
 });
 
-router.get("/stats-before-expiry", async (req: Request, res: Response) => {
-  try {
-    const underlying =
-      typeof req.query.underlying === "string" ? req.query.underlying : "";
-    if (!underlying) {
-      res.status(400).json({ error: "Missing 'underlying' query parameter" });
-      return;
-    }
-    const data = await getOptionsExpiryGaps(
-      underlying,
-      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-    );
-    res.json(data);
-  } catch (err) {
-    console.error("[szse-options/stats-before-expiry] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
 router.get("/skewness-corr", async (req: Request, res: Response) => {
   try {
     const underlying =
@@ -94,6 +74,26 @@ router.get("/skewness-corr", async (req: Request, res: Response) => {
     res.json(data);
   } catch (err) {
     console.error("[szse-options/skewness-corr] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/skewness-cross-counts", async (req: Request, res: Response) => {
+  try {
+    const underlying =
+      typeof req.query.underlying === "string" ? req.query.underlying : "";
+    if (!underlying) {
+      res.status(400).json({ error: "Missing 'underlying' query parameter" });
+      return;
+    }
+    const data = await getOptionsSkewnessCrossCounts(
+      underlying,
+      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
+      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+    );
+    res.json(data);
+  } catch (err) {
+    console.error("[szse-options/skewness-cross-counts] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

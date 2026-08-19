@@ -1,5 +1,5 @@
-"""analyze.options — per-expiry options skew statistics before expiry.
+"""analyze.options — per-expiry options skewness and OI statistics.
 
-Populates analysis.options_stats_before_expiry (see
+Populates analysis.options_skewness_stats and analysis.options_oi_stats (see
 database/sql/analysis/16_options.sql).
 """

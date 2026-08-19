@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Build the ECharts option for the Benchmark Price line chart (1st plot in
  * "Benchmark Attribution" mode).
  *
@@ -60,6 +60,8 @@ import {
   commonDataZoom,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import React from "react";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 
 /** One industry's shade series — values pre-aligned by index with the
  *  benchmark dates array. Carries the SELECTED rolling_Xdays_price column
@@ -443,44 +445,69 @@ export function buildBenchmarkPriceOption(
         const bv = benchmarkValues[idx];
         const rt = returns[idx];
         const rsign = rt == null ? "" : rt >= 0 ? "▲ " : "▼ ";
-        let html = `
-          <div style="font-weight:600">${data.name} (${data.code})</div>
-          <div style="margin-top:2px">${dt}</div>
-          <div>${priceMode === "rolling" ? "Rebased" : "Close"}: <b>${bv == null ? "—" : fmtNum(bv, 2)}</b></div>
-          <div>${rsign}Daily Return: <b style="color:${rt == null ? c.textColor : rt >= 0 ? UP_COLOR : DOWN_COLOR}">${fmtPctSigned(rt, 2)}</b></div>
-        `;
-        // Trading amount — only when bars are shown (anchor of the volume bar).
+        const children: React.ReactNode[] = [];
+        children.push(
+          React.createElement(tooltipComponents.Header, null, `${data.name} (${data.code})`),
+          React.createElement("div", { style: { marginTop: 2 } }, dt),
+          React.createElement("div", null,
+            `${priceMode === "rolling" ? "Rebased" : "Close"}: `,
+            React.createElement(tooltipComponents.Bold, null, bv == null ? "—" : fmtNum(bv, 2))
+          ),
+          React.createElement("div", null,
+            rsign,
+            "Daily Return: ",
+            React.createElement(tooltipComponents.Bold, {
+              style: { color: rt == null ? c.textColor : rt >= 0 ? UP_COLOR : DOWN_COLOR }
+            }, fmtPctSigned(rt, 2))
+          )
+        );
         if (showTradingAmt) {
           const amt = amts[idx];
-          html += `<div style="margin-top:2px">Trading Amt: <b>${fmtAmtYi(amt)}</b></div>`;
+          children.push(
+            React.createElement("div", { style: { marginTop: 2 } },
+              "Trading Amt: ",
+              React.createElement(tooltipComponents.Bold, null, fmtAmtYi(amt))
+            )
+          );
         }
-        // Append each industry's non-this-industry value + gap
-        // Gap is expressed as a PERCENTAGE of the benchmark — this is
-        // invariant across modes (rolling_Xdays_price / 100 - 1).
         for (let i = 0; i < industryShades.length; i++) {
           const ind = industryShades[i];
           const rolling = indRollingSliced[i]?.[idx] ?? null;
           const iv = indDisplayValuesByIndustry[i]?.[idx] ?? null;
-          // Shared weight + shared portion of trading amount (only when
-          // the bars are shown — otherwise the user has no visual anchor).
           const sw = showTradingAmt ? indSharedWeightsSliced[i]?.[idx] ?? null : null;
           const amt = showTradingAmt ? amts[idx] : null;
           const sharedAmt = (sw != null && amt != null) ? amt * sw / 100 : null;
           if (rolling == null || iv == null) {
-            html += `<div style="opacity:0.6">${ind.industry_label}: —</div>`;
+            children.push(
+              React.createElement("div", { style: { opacity: 0.6 } }, `${ind.industry_label}: —`)
+            );
           } else {
-            // gap_pct = (industry - benchmark) / benchmark = rolling/100 - 1
             const gapPct = rolling / 100 - 1;
             const gapColor = gapPct >= 0 ? UP_COLOR : DOWN_COLOR;
             const gapSign = gapPct >= 0 ? "▲ " : "▼ ";
-            html += `<div>${ind.industry_label}: <b>${fmtNum(iv, 2)}</b> <span style="opacity:0.7">${gapSign}gap: <b style="color:${gapColor}">${fmtPctSigned(gapPct, 2)}</b></span>`;
+            const inner: React.ReactNode[] = [
+              `${ind.industry_label}: `,
+              React.createElement(tooltipComponents.Bold, null, fmtNum(iv, 2)),
+              " ",
+              React.createElement("span", { style: { opacity: 0.7 } },
+                `${gapSign}gap: `,
+                React.createElement(tooltipComponents.Bold, { style: { color: gapColor } }, fmtPctSigned(gapPct, 2))
+              )
+            ];
             if (showTradingAmt) {
-              html += ` <span style="opacity:0.7">· shared: <b>${sw == null ? "—" : fmtNum(sw, 1) + "%"}</b>${sharedAmt == null ? "" : ` (${fmtAmtYi(sharedAmt)})`}</span>`;
+              inner.push(
+                " ",
+                React.createElement("span", { style: { opacity: 0.7 } },
+                  `· shared: `,
+                  React.createElement(tooltipComponents.Bold, null, sw == null ? "—" : fmtNum(sw, 1) + "%"),
+                  sharedAmt == null ? "" : ` (${fmtAmtYi(sharedAmt)})`
+                )
+              );
             }
-            html += `</div>`;
+            children.push(React.createElement("div", null, ...inner));
           }
         }
-        return html;
+        return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
     },
     legend: commonLegend(themeMode, {

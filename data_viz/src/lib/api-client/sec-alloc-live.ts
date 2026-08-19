@@ -27,28 +27,91 @@ import type { SecAllocLiveAttributionResponse } from "@shared/types";
 export interface SecAllocLiveRunResponse {
   /** True iff a run was started AND exited with code 0. */
   success: boolean;
-  /** True when a previous run was still in flight and this one was skipped. */
-  skipped_in_flight?: boolean;
+  /** True when NO run was started because one with the SAME
+   *  process-id-tag is already running (dedupe path). */
+  already_running?: boolean;
+  /** Which process ran ("live" | "ref"). */
+  mode?: "live" | "ref";
+  /** The process-id-tag the run was registered under. */
+  process_id_tag?: string;
   /** Tail of the Python stdout (diagnostics). */
   stdout_tail?: string;
   /** Tail of the Python stderr (diagnostics). */
   stderr_tail?: string;
 }
 
-/** Trigger one incremental run of `python -m live.sec_alloc_live_attribution`.
- *  Resolves when the run finishes (or is skipped because one is in flight).
- *  Never throws — failures surface as `{ success: false }` so refresh
- *  flows can proceed regardless. */
-export async function runSecAllocLivePipeline(): Promise<SecAllocLiveRunResponse> {
+/** Default process-id-tags (must match the server-side defaults). */
+export const SEC_ALLOC_LIVE_REF_TAG = "sec-alloc-live:ref";
+/** Downloads pre-step of the ref chain (targeted CSV refresh) — polled
+ *  together with SEC_ALLOC_LIVE_REF_TAG so the button spins across ALL
+ *  phases. */
+export const SEC_ALLOC_LIVE_REF_DL_TAG = "sec-alloc-live:ref:dl";
+/** Baseline pre-step of the ref chain (estimated daily rows rebuild). */
+export const SEC_ALLOC_LIVE_REF_BASE_TAG = "sec-alloc-live:ref:base";
+export const SEC_ALLOC_LIVE_LIVE_TAG = "sec-alloc-live:live";
+
+/** Trigger one run of `python -m live.sec_alloc_live_attribution`.
+ *
+ *  Two independent processes share this endpoint via `mode`:
+ *    • "live" (default) — fast equal-weight 5-min tick pass (no yday-ref
+ *      dependency); fired automatically every 5 min during trading hours.
+ *    • "ref" — the FULL yday-ref chain, run sequentially server-side and
+ *      deduped by process-id-tag (a second POST while any phase runs
+ *      resolves immediately with already_running: true):
+ *        1. downloads.index.csindex.quote --ensure-prev-trading-day
+ *           (tag …:ref:dl) — TARGETED CSV refresh: codes whose local
+ *           CSVs already contain the prev trading day are skipped
+ *           entirely; only laggards fetch the 1m window.
+ *        2. builds.index.baseline --refresh-estimated-days 10 (tag
+ *           …:ref:base) — rebuild recent ESTIMATED daily rows from the
+ *           fresh CSVs so prev-day OHLC is real.
+ *        3. live.sec_alloc_live_attribution --mode ref
+ *           --rebuild-latest-date (tag …:ref) — invalidate this date's
+ *           ref + tick rows, then heavy prev-day closes + trading
+ *           amounts + weights + weighted tick upgrades.
+ *      Fired by the "Build Yday Ref" button; may take minutes.
+ *
+ *  `processIdTag` dedupes: if a process with the same tag is already
+ *  running, the server does NOT spawn a duplicate and resolves with
+ *  `already_running: true` (the UI shows "process already running" and
+ *  keeps the button spinning via the status poll).
+ *
+ *  Resolves when the run finishes (or is deduped). Never throws —
+ *  failures surface as `{ success: false }` so refresh flows can proceed
+ *  regardless. */
+export async function runSecAllocLivePipeline(
+  mode: "live" | "ref" = "live",
+  processIdTag?: string,
+): Promise<SecAllocLiveRunResponse> {
   try {
     const res = await fetch("/api/live-data/sec-alloc-live/run", {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode, process_id_tag: processIdTag }),
     });
-    if (!res.ok) return { success: false, stderr_tail: `HTTP ${res.status}` };
+    if (!res.ok) return { success: false, mode, stderr_tail: `HTTP ${res.status}` };
     return (await res.json()) as SecAllocLiveRunResponse;
   } catch (e) {
-    return { success: false, stderr_tail: String(e) };
+    return { success: false, mode, stderr_tail: String(e) };
   }
+}
+
+/** Running-state of sec-alloc-live process tags — polled on mount and
+ *  while a REMOTE process runs, so a page refresh restores the Build
+ *  Yday Ref button's spinning state until the process exits. */
+export async function fetchSecAllocLiveRunStatus(
+  tags: ReadonlyArray<string>,
+): Promise<Record<string, boolean>> {
+  const params = new URLSearchParams();
+  if (tags.length) params.set("process_id_tag", tags.join(","));
+  const res = await fetch(
+    `/api/live-data/sec-alloc-live/run/status?${params.toString()}`,
+  );
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  }
+  const json = (await res.json()) as { status: Record<string, boolean> };
+  return json.status ?? {};
 }
 
 /** Per-industry weighted/equal aggregates at ONE 5-min tick for a

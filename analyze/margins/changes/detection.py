@@ -99,12 +99,15 @@ def detect_trend_episodes(
     work["__gain"] = work["__delta"].where(work["__delta"] > 0, 0.0)
     work["__loss"] = (-work["__delta"]).where(work["__delta"] < 0, 0.0)
     alpha = 1.0 / RSI_WINDOW
-    work["__avg_gain"] = work.groupby("code", sort=False)["__gain"].transform(
-        lambda s: s.ewm(alpha=alpha, adjust=False, min_periods=RSI_WINDOW).mean()
-    )
-    work["__avg_loss"] = work.groupby("code", sort=False)["__loss"].transform(
-        lambda s: s.ewm(alpha=alpha, adjust=False, min_periods=RSI_WINDOW).mean()
-    )
+    # Use direct groupby.ewm (no lambda) for GPU-compatible computation.
+    # groupby.ewm() returns MultiIndex (code, orig_idx) — drop code level.
+    grp = work.groupby("code", sort=False)
+    work["__avg_gain"] = grp["__gain"].ewm(
+        alpha=alpha, adjust=False, min_periods=RSI_WINDOW
+    ).mean().droplevel(0)
+    work["__avg_loss"] = grp["__loss"].ewm(
+        alpha=alpha, adjust=False, min_periods=RSI_WINDOW
+    ).mean().droplevel(0)
     work["__rsi"] = 100.0 - 100.0 / (1.0 + work["__avg_gain"] / work["__avg_loss"])
 
     # ---- Step 1: Assign raw direction from slope_ma5 sign ------------
@@ -140,40 +143,78 @@ def _bridge_gaps(work: pd.DataFrame) -> None:
     """Flip short opposite-direction segments sandwiched between two
     same-direction segments (in-place on ``work``).
 
-    Bridging is done LEFT-TO-RIGHT with UPDATES: after flipping a
-    segment, its direction in ``real_segs`` is updated so subsequent
-    iterations see the bridged direction. This prevents contradictory
-    bridging where two adjacent short segments both qualify for bridging
-    in opposite directions.
+    Fully cudf-native: uses groupby.shift() for stencil computation,
+    boolean masks for eligibility, and a single merge to apply
+    bridged directions — no Python for-loops over codes.
+
+    Break segments (NaN direction) are forward-filled within each
+    code so they become transparent to the shift-based neighbor
+    lookups, matching the original per-code bridging behavior.
     """
     work["__dir_bridged"] = work["__dir_raw"].copy()
 
+    # Build per-code segment metadata (cudf-backed)
     seg_meta = work.groupby(["code", "__seg_id_raw"]).agg(
         seg_dir=("__dir_raw", "first"),
         seg_len=("date", "count"),
-        seg_start_idx=("date", "first"),
     ).reset_index()
 
-    for code_val, code_segs in seg_meta.groupby("code", sort=False):
-        real_segs = code_segs[code_segs["seg_dir"].notna()].reset_index(drop=True)
-        if len(real_segs) < 3:
-            continue
+    # --- Fully vectorized cudf-native bridging (all codes at once) ---
+    # Forward-fill break (NaN) segments so they become transparent
+    # to shift-based neighbor lookups. The original per-code loop
+    # excluded breaks from real_segs, making them invisible neighbors.
+    seg_meta["_dir_ffill"] = seg_meta.groupby("code", sort=False)["seg_dir"].ffill()
 
-        for i in range(1, len(real_segs) - 1):
-            prev_dir = real_segs.loc[i - 1, "seg_dir"]
-            curr_dir = real_segs.loc[i, "seg_dir"]
-            next_dir = real_segs.loc[i + 1, "seg_dir"]
-            curr_len = real_segs.loc[i, "seg_len"]
-            curr_seg_id = real_segs.loc[i, "__seg_id_raw"]
+    # Identify real segments (direction is not NaN)
+    real_mask = seg_meta["seg_dir"].notna()
+    # Need at least 3 real segments per code for bridging to matter
+    real_count = seg_meta.groupby("code", sort=False)["seg_dir"].transform("count")
+    can_bridge = real_count >= 3
 
-            if (
-                curr_len <= BRIDGE_GAP_DAYS
-                and curr_dir != prev_dir
-                and prev_dir == next_dir
-            ):
-                mask = (work["code"] == code_val) & (work["__seg_id_raw"] == curr_seg_id)
-                work.loc[mask, "__dir_bridged"] = prev_dir
-                real_segs.loc[i, "seg_dir"] = prev_dir
+    def _compute_bridged(seg: pd.DataFrame) -> pd.Series:
+        """Run iterative bridging on seg_meta (cudf).
+
+        Uses _dir_ffill for shift-based neighbor lookup so that
+        break segments are transparent. Only real segments are
+        eligible for flipping; break segments keep NaN.
+        """
+        result = seg["_dir_ffill"].copy()
+
+        # Only real segments within bridgeable codes are eligible
+        eligible_init = real_mask & can_bridge
+
+        for _ in range(5):
+            # Groupby shift — GPU-accelerated, on forward-filled direction
+            prev_dir = result.groupby(seg["code"], sort=False).shift(1)
+            next_dir = result.groupby(seg["code"], sort=False).shift(-1)
+
+            # Vectorized eligibility (cudf boolean operations)
+            elig = (
+                eligible_init
+                & (seg["seg_len"] <= BRIDGE_GAP_DAYS)
+                & (result != prev_dir)
+                & (prev_dir == next_dir)
+            )
+
+            if not elig.any():
+                break
+
+            # Vectorized flip on GPU
+            result.loc[elig] = prev_dir.loc[elig]
+
+        # Restore NaN for break segments (they were ffilled for bridging)
+        result = result.where(real_mask, np.nan)
+        return result
+
+    bridged = _compute_bridged(seg_meta)
+
+    # --- Apply bridged directions back to work ---
+    seg_meta["__dir_bridged"] = bridged
+    merged = work[["code", "__seg_id_raw"]].merge(
+        seg_meta[["code", "__seg_id_raw", "__dir_bridged"]],
+        on=["code", "__seg_id_raw"], how="left",
+    )
+    work["__dir_bridged"] = merged["__dir_bridged"].fillna(work["__dir_raw"])
 
 
 def _aggregate_and_filter(work: pd.DataFrame, sec_type: str) -> pd.DataFrame:

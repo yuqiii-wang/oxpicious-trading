@@ -122,20 +122,6 @@ export interface OptionsCombinedResponse {
   rows: OptionsRow[];
 }
 
-export interface ExpiryGapRow {
-  date: string;
-  underlying_code: string;
-  expiry_date: string;
-  today_gap_from_today_spot: number | null;
-  today_gap_from_max_before_expiry: number | null;
-  today_gap_from_min_before_expiry: number | null;
-}
-
-export interface ExpiryGapsResponse {
-  underlying_code: string;
-  rows: ExpiryGapRow[];
-}
-
 export interface SkewnessCorrRow {
   date: string;
   expiry_month: string;
@@ -147,6 +133,17 @@ export interface SkewnessCorrRow {
 export interface SkewnessCorrResponse {
   underlying_code: string;
   rows: SkewnessCorrRow[];
+}
+
+export interface SkewnessCrossCountRow {
+  date: string;
+  expiry_month: string;
+  count_skewness_curve_crossed_spot: number;
+}
+
+export interface SkewnessCrossCountResponse {
+  underlying_code: string;
+  rows: SkewnessCrossCountRow[];
 }
 
 export interface EtfOhlcvResponse {

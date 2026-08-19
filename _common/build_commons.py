@@ -53,8 +53,11 @@ from _common.db_commons import (
     get_db_connection_async,
     get_db_pool_async,
     get_existing_keys_async,
+    get_max_table_date_async,
     bulk_upsert_async,
     copy_insert_async,
+    copy_or_upsert_split_async,
+    copy_or_upsert_split_pool_async,
     truncate_table_async,
 )
 # Missing-data detection migrated to _common.pre_check_and_load.

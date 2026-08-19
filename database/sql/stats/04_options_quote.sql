@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS stats.options_terms (
 );
 
 COMMENT ON TABLE  stats.options_terms                 IS 'Options underlying and contract terms.';
-COMMENT ON COLUMN stats.options_terms.underlying_code IS 'Underlying index code (e.g. "000300") or ETF code (e.g. "159901") — unified scheme for SZSE and CFFEX.';
+COMMENT ON COLUMN stats.options_terms.underlying_code IS 'SZSE: native ETF code (e.g. "159901"). CFFEX: underlying index code (e.g. "000300"). Venues are separated by code space + underlying_target_type.';
 COMMENT ON COLUMN stats.options_terms.option_type     IS 'CALL = 认购 (right to buy); PUT = 认沽 (right to sell).';
 COMMENT ON COLUMN stats.options_terms.expiry_month    IS 'Chinese month label from contract name (e.g. "12月"); for display only — use expiry_date for date math.';
 

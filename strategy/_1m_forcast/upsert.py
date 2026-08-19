@@ -55,21 +55,27 @@ async def upsert_forecast(
     ``stats_row`` is the output of ``compute.compute_history_stats`` + the
     caller-attached anchor_close / first_buy_fill_price / RSI values.
     Returns the number of forecast rows upserted (stats row not counted).
+
+    The existing forecast set for the seq (if any) is always replaced —
+    ``force`` is kept for API compatibility but no longer gates deletion
+    (upserting a new set for a seq supersedes the old one by definition).
     """
     if not rows:
         return 0
 
-    if force:
-        await conn.execute(
-            f"DELETE FROM {FORECAST_TABLE} "
-            "WHERE seq_id = $1 AND forecast_date = $2",
-            seq_id, forecast_date,
-        )
-        await conn.execute(
-            f"DELETE FROM {STATS_TABLE} "
-            "WHERE seq_id = $1 AND forecast_date = $2",
-            seq_id, forecast_date,
-        )
+    # A seq carries exactly ONE forecast set, anchored at its latest
+    # forecast_date. Delete the whole existing set first — both same-date
+    # rows (force re-run) and any stale set anchored at an OLDER date (e.g.
+    # pre-fix runs anchored at the last decision date instead of the run's
+    # last data date) — so no duplicate forecast sets coexist.
+    await conn.execute(
+        f"DELETE FROM {FORECAST_TABLE} WHERE seq_id = $1",
+        seq_id,
+    )
+    await conn.execute(
+        f"DELETE FROM {STATS_TABLE} WHERE seq_id = $1",
+        seq_id,
+    )
 
     # 1. Main forecast rows.
     out: List[Dict[str, Any]] = []

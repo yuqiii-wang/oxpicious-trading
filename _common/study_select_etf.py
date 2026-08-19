@@ -255,58 +255,92 @@ def study_etf_themes(combined_df=None, save=True, require_recent_data=True):
 
     cutoff_date = combined_df["date"].max() - pd.Timedelta(days=30)
 
-    rows = []
-    for code, sub in combined_df.groupby("code"):
-        name = str(sub["name"].dropna().iloc[0]) if sub["name"].notna().any() else ""
-        tid, tlabel, tslug = classify_etf(code, name)
+    # --- Vectorized per-code aggregation via groupby.agg ---
+    _rz = pd.to_numeric(combined_df.get("rz_balance", 0), errors="coerce").fillna(0.0)
+    _rq = pd.to_numeric(combined_df.get("rq_balance_amt", 0), errors="coerce").fillna(0.0)
+    _combined = combined_df.copy()
+    _combined["_rz_pos"] = (_rz > 0).astype(int)
+    _combined["_rq_pos"] = (_rq > 0).astype(int)
+    _combined["_margin_pos"] = _combined["_rz_pos"] | _combined["_rq_pos"]
+
+    def _first_name(series: pd.Series) -> str:
+        non_null = series.dropna()
+        return str(non_null.iloc[0]) if len(non_null) > 0 else ""
+
+    def _mean_vol(series: pd.Series) -> float:
+        vol = pd.to_numeric(series, errors="coerce").fillna(0.0)
+        return float(vol.mean()) if len(vol) > 0 else 0.0
+
+    agg_df = _combined.groupby("code").agg(
+        name=("name", _first_name),
+        n_ohlcv_days=("date", "size"),
+        n_margin_days=("_margin_pos", "sum"),
+        avg_shares=("trading_shares", _mean_vol),
+        has_recent_data=("date", lambda x: (x >= cutoff_date).any()),
+    ).reset_index()
+    agg_df["has_margin"] = agg_df["n_margin_days"] > 0
+
+    # --- Classify each code (using map for efficiency) ---
+    def _classify_row(row: pd.Series) -> pd.Series:
+        tid, tlabel, tslug = classify_etf(row["code"], row["name"])
         tgid, tglab, iid, ilab = get_theme_taxonomy(tid)
-        rz = pd.to_numeric(sub.get("rz_balance", 0), errors="coerce").fillna(0.0)
-        rq = pd.to_numeric(sub.get("rq_balance_amt", 0), errors="coerce").fillna(0.0)
-        vol = pd.to_numeric(sub.get("trading_shares", 0), errors="coerce").fillna(0.0)
-        n_margin = int(((rz > 0) | (rq > 0)).sum())
-        has_recent = (sub["date"] >= cutoff_date).any()
-        rows.append({
-            "code":               code,
-            "name":               name,
-            "theme_id":           tid,
-            "theme_label":        tlabel,
-            "slug":               tslug,
-            "theme_group_id":     tgid,
-            "theme_group_label":  tglab,
-            "industry_id":        iid,
-            "industry_label":     ilab,
-            "n_ohlcv_days":       len(sub),
-            "n_margin_days":      n_margin,
-            "has_margin":         n_margin > 0,
-            "avg_shares":         float(vol.mean()) if len(vol) else 0.0,
-            "has_recent_data":    has_recent,
+        return pd.Series({
+            "theme_id": tid,
+            "theme_label": tlabel,
+            "slug": tslug,
+            "theme_group_id": tgid,
+            "theme_group_label": tglab,
+            "industry_id": iid,
+            "industry_label": ilab,
         })
-    study_df = pd.DataFrame(rows)
+
+    _classify_cols = agg_df.apply(_classify_row, axis=1)
+    study_df = pd.concat([agg_df, _classify_cols], axis=1)
+
+    # Ensure proper types
+    study_df["n_margin_days"] = study_df["n_margin_days"].astype(int)
+    study_df["n_ohlcv_days"] = study_df["n_ohlcv_days"].astype(int)
+    study_df["has_margin"] = study_df["has_margin"].astype(bool)
+    study_df["has_recent_data"] = study_df["has_recent_data"].astype(bool)
 
     if require_recent_data:
         before_count = len(study_df)
         study_df = study_df[study_df["has_recent_data"]].reset_index(drop=True)
         print(f"    [FILTER] Removed {before_count - len(study_df)} ETFs with no data in the last month", flush=True)
 
-    summary_rows = []
-    for tid, cfg in ETF_THEMES.items():
-        sub = study_df[study_df["theme_id"] == tid]
-        if len(sub) == 0:
-            continue
-        summary_rows.append({
-            "theme_id":          tid,
-            "theme_label":       cfg["theme_label"],
-            "slug":              cfg["slug"],
-            "theme_group_id":    cfg.get("theme_group_id", ""),
-            "theme_group_label": cfg.get("theme_group_label", ""),
-            "industry_id":       cfg.get("industry_id", tid),
-            "industry_label":    cfg.get("industry_label", ""),
-            "n_etfs":            len(sub),
-            "n_with_margin":     int(sub["has_margin"].sum()),
-            "n_ohlcv_qualified": int((sub["n_ohlcv_days"] >= 40).sum()),
-            "n_recent_qualified": int(sub["has_recent_data"].sum()),
+    # --- Vectorized summary via groupby + merge with ETF_THEMES ---
+    # Build a theme config DataFrame from ETF_THEMES
+    theme_cfg_rows: list[dict] = []
+    for _tid, _cfg in ETF_THEMES.items():
+        theme_cfg_rows.append({
+            "theme_id": _tid,
+            "theme_label": _cfg["theme_label"],
+            "slug": _cfg["slug"],
+            "theme_group_id": _cfg.get("theme_group_id", ""),
+            "theme_group_label": _cfg.get("theme_group_label", ""),
+            "industry_id": _cfg.get("industry_id", _tid),
+            "industry_label": _cfg.get("industry_label", ""),
         })
-    summary_df = pd.DataFrame(summary_rows).sort_values("n_etfs", ascending=False).reset_index(drop=True)
+    _theme_cfg = pd.DataFrame(theme_cfg_rows)
+
+    # Aggregate per theme_id from study_df
+    _theme_agg = study_df.groupby("theme_id").agg(
+        n_etfs=("code", "nunique"),
+        n_with_margin=("has_margin", "sum"),
+        n_ohlcv_qualified=("n_ohlcv_days", lambda x: (x >= 40).sum()),
+        n_recent_qualified=("has_recent_data", "sum"),
+    ).reset_index()
+
+    # Merge with theme config
+    summary_df = _theme_cfg.merge(_theme_agg, on="theme_id", how="inner")
+    if summary_df.empty and not _theme_agg.empty:
+        # If no themes matched, still output the aggregated data
+        summary_df = _theme_agg.merge(_theme_cfg, on="theme_id", how="left")
+    # Ensure int types
+    for _c in ["n_etfs", "n_with_margin", "n_ohlcv_qualified", "n_recent_qualified"]:
+        if _c in summary_df.columns:
+            summary_df[_c] = summary_df[_c].fillna(0).astype(int)
+    summary_df = summary_df.sort_values("n_etfs", ascending=False).reset_index(drop=True)
 
     if save:
         study_path = os.path.join(STUDY_DIR, "etf_theme_study.csv")

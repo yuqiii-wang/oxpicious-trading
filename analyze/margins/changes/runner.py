@@ -13,7 +13,9 @@ Orchestrates the full margin trend detection pipeline:
      margin/price ratios per episode.
   4. Truncate ``analysis.margin_changes`` and COPY-insert the final
      episodes DataFrame.
-  5. Upsert the ``margin_changes`` row in ``analysis.analysis_identity``.
+  5. Compute forward price forcasts (5d/20d/60d highs, lows, days-to-
+     extremes) and store in ``analysis.margin_hype_to_price_forcasts``.
+  6. Upsert the ``margin_changes`` row in ``analysis.analysis_identity``.
 
 Always truncates + recomputes when called — new dates shift trend
 boundaries, so a partial upsert would leave stale trends in the table.
@@ -27,6 +29,7 @@ from analyze._common import upsert_analysis_identity
 from analyze.margins.changes.constants import DESCRIPTION, INSERT_COLUMNS
 from analyze.margins.changes.db_io import truncate_and_insert
 from analyze.margins.changes.detection import detect_trend_episodes
+from analyze.margins.changes.forcasts import run_margin_forcasts
 from analyze.margins.changes.price_ohlc import (
     compute_price_ohlc_ratio,
     fetch_price_ohlc,
@@ -82,6 +85,10 @@ async def run_margin_changes(
         print("    -> no trend episodes detected; writing empty table.",
               flush=True)
         await truncate_and_insert(conn, pd.DataFrame(columns=INSERT_COLUMNS))
+        # Also truncate forcasts and write empty.
+        await run_margin_forcasts(
+            conn, pd.DataFrame(columns=["code", "sec_type", "start_date", "end_date"])
+        )
     else:
         episodes_df = pd.concat(all_episodes, ignore_index=True)
 
@@ -106,6 +113,11 @@ async def run_margin_changes(
         n = await truncate_and_insert(conn, episodes_df)
         print(f"    -> COPY-inserted {n:,} rows into margin_changes",
               flush=True)
+
+        # Compute forward price forcasts (5d/20d/60d).
+        # Reuses the episodes_df (with code, sec_type, start_date, end_date)
+        # to fetch forward closes and compute highs/lows/days-to-extremes.
+        await run_margin_forcasts(conn, episodes_df)
 
     # Upsert the analysis_identity row.
     await upsert_analysis_identity(

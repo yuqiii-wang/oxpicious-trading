@@ -33,6 +33,10 @@ from typing import List
 import warnings
 warnings.filterwarnings("ignore")
 
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 import numpy as np
 import pandas as pd
 
@@ -42,7 +46,7 @@ from _common.build_commons import (
     get_db_or_exit,
     find_missing_dates,
     truncate_table_async,
-    bulk_upsert_async,
+    copy_or_upsert_split_async,
     print_build_header,
     print_wall_time,
     TODAY_STR,
@@ -200,11 +204,15 @@ async def main() -> None:
 
         # Insert identity first (FK parent)
         if identity_rows:
-            inserted = await bulk_upsert_async(
+            n_copied, n_upserted = await copy_or_upsert_split_async(
                 conn, "stats.futures_identity", identity_rows, pk_cols
             )
+            total = n_copied + n_upserted
+            via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                  f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                  "upsert"
             print(
-                f"    [DB] Inserted {inserted:,} rows into stats.futures_identity",
+                f"    [DB] Inserted {total:,} rows into stats.futures_identity via {via}",
                 flush=True,
             )
         else:
@@ -215,11 +223,15 @@ async def main() -> None:
 
         # Insert basic_stats
         if basic_rows:
-            inserted = await bulk_upsert_async(
+            n_copied, n_upserted = await copy_or_upsert_split_async(
                 conn, "stats.futures_basic_stats", basic_rows, pk_cols
             )
+            total = n_copied + n_upserted
+            via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                  f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                  "upsert"
             print(
-                f"    [DB] Inserted {inserted:,} rows into stats.futures_basic_stats",
+                f"    [DB] Inserted {total:,} rows into stats.futures_basic_stats via {via}",
                 flush=True,
             )
         else:

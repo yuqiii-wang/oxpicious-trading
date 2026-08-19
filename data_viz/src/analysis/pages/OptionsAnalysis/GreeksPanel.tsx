@@ -1,9 +1,10 @@
-﻿/**
+/**
  * Greeks panel — shows Delta, Theta, Gamma, Vega, Rho for option contracts.
  *
  * Displays per-expiry Greek values vs moneyness (strike/spot) for CALL and PUT,
  * grouped by expiry month.
  */
+import React from "react";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
@@ -16,6 +17,7 @@ import {
   expiryBlueColor,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import type { EChartsOption } from "echarts";
 
 interface Props {
@@ -224,7 +226,8 @@ function buildGreekOption(
           if (extra.optionType === "CALL") g.call = param;
           else g.put = param;
         });
-        let html = `<b>Moneyness: ${fmtNum(moneyness)}</b>`;
+        const children: React.ReactNode[] = [];
+        children.push(React.createElement(tooltipComponents.Bold, null, `Moneyness: ${fmtNum(moneyness)}`));
         grouped.forEach((g) => {
           const call = g.call as {
             seriesName?: string;
@@ -240,19 +243,33 @@ function buildGreekOption(
           };
           const strike = call?.data?.strike ?? put?.data?.strike;
           const expiry = call?.data?.expiry ?? put?.data?.expiry;
-          html += `<br/><br/><b>${expiry} · K=${fmtNum(strike)}</b>`;
+          children.push(React.createElement("br"));
+          children.push(React.createElement("br"));
+          children.push(React.createElement(tooltipComponents.Bold, null, `${expiry} · K=${fmtNum(strike)}`));
           if (call) {
             const arr = Array.isArray(call.value) ? call.value : [call.value ?? 0, 0];
             const v = arr[1] as number;
-            html += `<br/>${call.marker ?? ""} <b>CALL</b>: ${GREEK_LABELS[greekKey]}=${fmtNum(v, 4)}${GREEK_UNITS[greekKey]}`;
+            children.push(React.createElement("br"));
+            children.push(React.createElement(React.Fragment, null,
+              call.marker ?? "",
+              " ",
+              React.createElement(tooltipComponents.Bold, null, "CALL"),
+              `: ${GREEK_LABELS[greekKey]}=${fmtNum(v, 4)}${GREEK_UNITS[greekKey]}`,
+            ));
           }
           if (put) {
             const arr = Array.isArray(put.value) ? put.value : [put.value ?? 0, 0];
             const v = arr[1] as number;
-            html += `<br/>${put.marker ?? ""} <b>PUT</b>: ${GREEK_LABELS[greekKey]}=${fmtNum(v, 4)}${GREEK_UNITS[greekKey]}`;
+            children.push(React.createElement("br"));
+            children.push(React.createElement(React.Fragment, null,
+              put.marker ?? "",
+              " ",
+              React.createElement(tooltipComponents.Bold, null, "PUT"),
+              `: ${GREEK_LABELS[greekKey]}=${fmtNum(v, 4)}${GREEK_UNITS[greekKey]}`,
+            ));
           }
         });
-        return html;
+        return renderReactElement(React.createElement(React.Fragment, null, children));
       },
     },
     legend: commonLegend(themeMode, { top: 14, data: visibleLegendData }),

@@ -10,14 +10,12 @@ import {
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { makeSkewTooltipFormatter } from "./SkewTooltip";
-import { expiryToYyyyMm } from "./expiryUtils";
-import type { DailySkew, ExpiryGapsMap } from "./types";
+import type { DailySkew } from "./types";
 import type { EChartsOption } from "echarts";
 
 export function buildSkewTimeSeriesOption(
   dailySkew: DailySkew[],
   selectedDate: string,
-  gapsMap: ExpiryGapsMap | null,
 ): EChartsOption {
   const themeMode = useStore.getState().themeMode;
   const c = axisColors(themeMode);
@@ -63,8 +61,7 @@ export function buildSkewTimeSeriesOption(
   const nExpiries = expiryList.length;
 
   // Currently active expiry sets ON the clicked date (perExpiry is built from
-  // rows with expiry_date >= date — strictly pre-expiry, mirroring the expiry
-  // sets stored in analysis.options_stats_before_expiry). Each set's
+  // rows with expiry_date >= date — strictly pre-expiry). Each set's
   // expiryDate is its contracts' last active date: one shade per set, from
   // the clicked date till that expiry. Overlapping layers make near-term
   // regions darker and far regions lighter.
@@ -102,37 +99,6 @@ export function buildSkewTimeSeriesOption(
     expiryColorMap.set(exp, expiryBlueColor(ei, nExpiries));
   });
 
-  // Per-expiry max/min skewPrice (for gap display)
-  const expiryGapMap = new Map<string, { max: number; min: number }>();
-  if (gapsMap) {
-    for (const [, g] of gapsMap) {
-      const yyyymm = expiryToYyyyMm(g.expiry_date);
-      if (
-        g.today_gap_from_max_before_expiry != null &&
-        g.today_gap_from_min_before_expiry != null
-      ) {
-        const cur = expiryGapMap.get(yyyymm);
-        const maxVal =
-          g.today_gap_from_today_spot != null
-            ? g.today_gap_from_today_spot + -g.today_gap_from_max_before_expiry
-            : NaN;
-        if (!cur) expiryGapMap.set(yyyymm, { max: maxVal, min: maxVal });
-      }
-    }
-  }
-  for (const d of dailySkew) {
-    for (const pe of d.perExpiry) {
-      if (pe.skewPrice == null || !Number.isFinite(pe.skewPrice)) continue;
-      const cur = expiryGapMap.get(pe.expiry);
-      if (!cur) {
-        expiryGapMap.set(pe.expiry, { max: pe.skewPrice, min: pe.skewPrice });
-      } else {
-        if (pe.skewPrice > cur.max) cur.max = pe.skewPrice;
-        if (pe.skewPrice < cur.min) cur.min = pe.skewPrice;
-      }
-    }
-  }
-
   const perExpirySeries: EChartsOption["series"] = expiryList.map((exp, ei) => {
     const data: (number | null)[] = dailySkew.map((d) => {
       const pe = d.perExpiry.find((p) => p.expiry === exp);
@@ -168,6 +134,7 @@ export function buildSkewTimeSeriesOption(
   // its expiry, bounded by the band levels (spot ↔ skew).
   const SHADE_COLOR = "rgba(31, 119, 180, 0.12)";
   const expiryShadeSeries: EChartsOption["series"] = [];
+  const crossCountMarkPoints: unknown[] = [];
   if (hasActiveExpiries) {
     const lastD = dailySkew[dailySkew.length - 1];
     const activeSets = dailySkew[selectedIdx].perExpiry
@@ -211,6 +178,34 @@ export function buildSkewTimeSeriesOption(
       if (lastSkew == null) return; // no skew values in range → nothing to bound
       const stackId = `exp-shade-${k}`;
       const ySpot = endIdx < dates.length ? dailySkew[endIdx].S : lastD.S;
+
+      // Cross count markPoint at spot price level on the expiry date
+      if (pe.countSkewnessCurveCrossedSpot != null && pe.countSkewnessCurveCrossedSpot > 0) {
+        crossCountMarkPoints.push({
+          name: `cross-count-${pe.expiry}`,
+          coord: [xEnd, ySpot],
+          value: pe.countSkewnessCurveCrossedSpot,
+          itemStyle: { color: IV_BLUE },
+          label: {
+            show: true,
+            formatter: `Expiry ${pe.expiryDate}\nNeutral Moneyness Days ×${pe.countSkewnessCurveCrossedSpot}`,
+            color: textColor,
+            fontSize: 10,
+            fontWeight: 700,
+            position: "top",
+            distance: 6,
+            backgroundColor: "rgba(255,255,255,0.9)",
+            borderColor: IV_BLUE,
+            borderWidth: 1,
+            borderRadius: 3,
+            padding: [3, 5],
+          },
+          symbol: "circle",
+          symbolSize: 4,
+          tooltip: { show: false },
+        });
+      }
+
       expiryShadeSeries.push(
         {
           type: "line" as const,
@@ -241,6 +236,7 @@ export function buildSkewTimeSeriesOption(
         // and this expiry's skewness level (band height at the boundary).
         // Drawn as a 2-point line series (same category twice) — markLine
         // coord pairs proved unreliable on the stacked shade series.
+        // When a cross count is available, show it as a text label.
         {
           type: "line" as const,
           name: `expiry-line ${pe.expiry}`,
@@ -298,36 +294,35 @@ export function buildSkewTimeSeriesOption(
       itemStyle: { color: IV_BLUE },
       data: skewData,
       z: 2,
-      markPoint:
-        selectedIdx >= 0 && dailySkew[selectedIdx].skewPrice != null
-          ? {
-              symbol: "circle",
-              symbolSize: 9,
-              itemStyle: { color: IV_BLUE, borderColor: "#fff", borderWidth: 1 },
-              data: [
-                {
-                  name: "skew",
-                  coord: [selectedDate, dailySkew[selectedIdx].skewPrice as number],
-                },
-              ],
-              label: {
-                show: true,
-                formatter: `Skew Δ=${
-                  dailySkew[selectedIdx].skewPct != null
-                    ? (dailySkew[selectedIdx].skewPct >= 0 ? "+" : "") +
-                      dailySkew[selectedIdx].skewPct.toFixed(2) +
-                      "%"
-                    : "—"
-                }`,
-                color: textColor,
-                fontSize: 10,
-                fontWeight: 600,
-                position: "top",
-                distance: 8,
-              },
-              z: 10,
-            }
-          : undefined,
+      markPoint: (() => {
+        const data: unknown[] = [];
+        if (selectedIdx >= 0 && dailySkew[selectedIdx].skewPrice != null) {
+          data.push({
+            name: "skew",
+            coord: [selectedDate, dailySkew[selectedIdx].skewPrice as number],
+            symbol: "circle",
+            symbolSize: 9,
+            itemStyle: { color: IV_BLUE, borderColor: "#fff", borderWidth: 1 },
+            label: {
+              show: true,
+              formatter: `Skew Δ=${
+                dailySkew[selectedIdx].skewPct != null
+                  ? (dailySkew[selectedIdx].skewPct >= 0 ? "+" : "") +
+                    dailySkew[selectedIdx].skewPct.toFixed(2) +
+                    "%"
+                  : "—"
+              }`,
+              color: textColor,
+              fontSize: 10,
+              fontWeight: 600,
+              position: "top",
+              distance: 8,
+            },
+          });
+        }
+        data.push(...crossCountMarkPoints);
+        return data.length > 0 ? { data, z: 10 } : undefined;
+      })(),
     },
   ];
 
@@ -364,7 +359,7 @@ export function buildSkewTimeSeriesOption(
       backgroundColor: c.tooltipBg,
       borderColor: splitColor,
       textStyle: { color: textColor, fontSize: 11 },
-      formatter: makeSkewTooltipFormatter(dailySkew, gapsMap, allExpiries, expiryGapMap, expiryColorMap),
+      formatter: makeSkewTooltipFormatter(dailySkew, allExpiries, expiryColorMap),
     },
     legend: commonLegend(themeMode, {
       top: 14,

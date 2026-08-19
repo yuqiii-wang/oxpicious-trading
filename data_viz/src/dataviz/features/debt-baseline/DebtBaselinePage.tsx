@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Debt Baseline page — 5-panel multi-chart view mirroring plot_debt_baseline.py.
  *
  * Layout (vertical stack, each its own ChartCard):
@@ -15,7 +15,7 @@
  * PBoC operation dates (outright repo / MLF) are shown in the tooltip on hover
  * instead of dense vertical markLines.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, Accordion, AccordionDetails, AccordionSummary, Box, Chip, CircularProgress, Link, Stack, Typography } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ChartCard from "@/components/ChartCard";
@@ -45,6 +45,7 @@ import {
 } from "@/theme/chart-palette";
 import { computeOutrightRepoLifecycle } from "@/lib/lifecycle";
 import { fmtNum, fmtPct } from "@/lib/series";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { buildBaseOption } from "./base-option";
 
 const CHART_GROUP = "debt-baseline";
@@ -154,10 +155,19 @@ function OmaNewsPanel({ minDate, maxDate }: OmaNewsPanelProps) {
           };
           const row = p.data?.row;
           if (!row) return "";
-          const kw = row.keywords ? `<div style="font-size:10px;opacity:0.8;margin-top:2px">${row.keywords}</div>` : "";
-          return `<div style="font-weight:600;max-width:380px">${row.title}</div>` +
-                 `<div style="font-size:10px;opacity:0.7;margin-top:2px">${row.date} · ${omaTypeLabel(row.type)}</div>` +
-                 kw;
+          const children: React.ReactNode[] = [];
+          children.push(React.createElement("div", {
+            style: { fontWeight: 600, maxWidth: 380 as number | string },
+          }, row.title));
+          children.push(React.createElement("div", {
+            style: { fontSize: 10, opacity: 0.7, marginTop: 2 },
+          }, `${row.date} · ${omaTypeLabel(row.type)}`));
+          if (row.keywords) {
+            children.push(React.createElement("div", {
+              style: { fontSize: 10, opacity: 0.8, marginTop: 2 },
+            }, row.keywords));
+          }
+          return renderReactElement(React.createElement(React.Fragment, null, children));
         },
       },
       xAxis: {

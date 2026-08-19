@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Build the ECharts option for the Industry ETF Price line chart (1st plot in
  * "ETF Contribution" mode).
  *
@@ -34,6 +34,8 @@ import {
 } from "@/theme/chart-palette";
 import { buildItemGroupColors } from "@/theme/group-colors";
 import { fmtNum } from "@/lib/series";
+import React from "react";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 
 /** Which layer is prominent. The other layer is rendered lowkey (low opacity)
  *  rather than hidden, so the user always sees both — only the emphasis
@@ -472,25 +474,37 @@ export function buildIndustryEtfPriceOption(
         if (arr.length === 0) return "";
         const idx = arr[0].dataIndex ?? 0;
         const dt = dates[idx] ?? "—";
-        let html = `<div style="font-weight:600">${dt}</div>`;
-        // Per-industry total ETF trading amount + its MA — always surfaced
-        // (the bars + MA lines are always rendered, just lowkey when price is
-        // prominent). One row per industry.
+        const children: React.ReactNode[] = [];
+        children.push(
+          React.createElement(tooltipComponents.Header, null, dt)
+        );
         for (let ii = 0; ii < industryOrder.length; ii++) {
           const indLabel = industryLabelById.get(industryOrder[ii]) ?? industryOrder[ii];
           const indTotal = industryTotals[ii][startIdx + idx];
           const indMa = industryMaLines[ii][startIdx + idx];
           const indColor = industryMaColors[ii];
-          html += `<div style="margin-top:2px"><span style="opacity:0.85">${indLabel}</span>: ` +
-            `<b>${fmtAmtYi(indTotal)}</b>`;
+          const rowChildren: React.ReactNode[] = [
+            React.createElement("span", { style: { opacity: 0.85 } }, indLabel),
+            ": ",
+            React.createElement(tooltipComponents.Bold, null, fmtAmtYi(indTotal))
+          ];
           if (indMa != null) {
-            html += ` · ${maName}: <b style="color:${indColor}">${fmtAmtYi(indMa)}</b>`;
+            rowChildren.push(
+              ` · ${maName}: `,
+              React.createElement(tooltipComponents.Bold, { style: { color: indColor } }, fmtAmtYi(indMa))
+            );
           }
-          html += `</div>`;
+          children.push(
+            React.createElement("div", { style: { marginTop: 2 } }, ...rowChildren)
+          );
         }
-        // Grand total across all selected industries (for context).
         const total = totalAmts[startIdx + idx] ?? 0;
-        html += `<div style="margin-top:2px;opacity:0.7">All industries: <b>${fmtAmtYi(total)}</b></div>`;
+        children.push(
+          React.createElement("div", { style: { marginTop: 2, opacity: 0.7 } },
+            "All industries: ",
+            React.createElement(tooltipComponents.Bold, null, fmtAmtYi(total))
+          )
+        );
         for (const p of arr) {
           const sIdx = seriesData.findIndex((s) => s.etf_name === p.seriesName);
           if (sIdx < 0) continue;
@@ -498,23 +512,42 @@ export function buildIndustryEtfPriceOption(
           const raw = s.rawCloses[startIdx + idx];
           const rebased = p.value;
           if (rebased == null) {
-            html += `<div style="opacity:0.5">${s.etf_name}: —</div>`;
+            children.push(
+              React.createElement("div", { style: { opacity: 0.5 } }, `${s.etf_name}: —`)
+            );
           } else {
             const prevRaw = idx > 0 ? s.rawCloses[startIdx + idx - 1] : null;
             const change = raw != null && prevRaw != null && prevRaw !== 0
               ? (raw - prevRaw) / prevRaw
               : null;
-            const changeStr = change == null ? "" : ` <span style="opacity:0.7">${fmtPctSigned(change)}</span>`;
-            // Each ETF's trading amount + its % share of the date's total.
-            const amtStr = ` <span style="opacity:0.6">· ${fmtAmtYi(s.rawAmts[startIdx + idx])}` +
-              (total > 0 && s.rawAmts[startIdx + idx] != null
-                ? ` (${fmtNum((s.rawAmts[startIdx + idx] as number) / total * 100, 1)}%)`
-                : "") +
-              `</span>`;
-            html += `<div>${s.etf_name}: <b>${fmtNum(rebased, 1)}</b>${changeStr} <span style="opacity:0.5">(px: ${fmtNum(raw, 3)})</span>${amtStr}</div>`;
+            const inner: React.ReactNode[] = [
+              `${s.etf_name}: `,
+              React.createElement(tooltipComponents.Bold, null, fmtNum(rebased, 1))
+            ];
+            if (change != null) {
+              inner.push(
+                " ",
+                React.createElement("span", { style: { opacity: 0.7 } }, fmtPctSigned(change))
+              );
+            }
+            inner.push(
+              " ",
+              React.createElement("span", { style: { opacity: 0.5 } }, `(px: ${fmtNum(raw, 3)})`)
+            );
+            const rawAmt = s.rawAmts[startIdx + idx];
+            inner.push(
+              " ",
+              React.createElement("span", { style: { opacity: 0.6 } },
+                `· ${fmtAmtYi(rawAmt)}`,
+                total > 0 && rawAmt != null
+                  ? ` (${fmtNum((rawAmt as number) / total * 100, 1)}%)`
+                  : "",
+              )
+            );
+            children.push(React.createElement("div", null, ...inner));
           }
         }
-        return html;
+        return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
     },
     legend: commonLegend(themeMode, {

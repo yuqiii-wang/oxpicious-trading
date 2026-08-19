@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Single-ETF panel — rebased close % + MA20/MA60/MA120 + RZ/RQ margin fills +
  * volume bars. Mirrors draw_etf_panel() in plot_szse_sse_etf_and_margin.py.
  *
@@ -14,7 +14,8 @@
  *
  * Return badges shown in the panel header.
  */
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { Alert, Box, Chip, Stack } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import CompositionPieChart from "@/components/CompositionPieChart";
@@ -374,21 +375,39 @@ function buildOption(
         }>;
         if (arr.length === 0) return "";
         const dateStr = (arr[0].axisValue as string) || "";
-        let html = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
-        // Corporate-action event (dividend / split) on the hovered day
+
+        const makeHeader = (text: string) =>
+          React.createElement(tooltipComponents.Header, null, text);
+        const makeRow = (children: React.ReactNode, style?: React.CSSProperties) =>
+          React.createElement(tooltipComponents.Row, { style }, children);
+        const makeTextRow = (marker: string, name: string, text: React.ReactNode) =>
+          makeRow([marker, " ", name, ": ", text]);
+        const makeBoldRow = (marker: string, name: string, vstr: string) =>
+          makeTextRow(marker, name, React.createElement(tooltipComponents.Bold, null, vstr));
+        const makeOhlcRow = (marker: string, name: string, o: number | null, h: number | null, l: number | null, c: number | null) =>
+          makeTextRow(marker, name,
+            `O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(c, ohlcMode)}`);
+
+        const children: React.ReactNode[] = [];
+        children.push(makeHeader(dateStr));
+
         const corp = corpActionByDate.get(dateStr);
         if (corp) {
           const color = corp.type === "dividend" ? DIVIDEND_COLOR : SPLIT_COLOR;
-          html += `<div style="margin-bottom:4px"><span style="color:${color}">●</span> <b style="color:${color}">${corp.text}</b></div>`;
+          children.push(makeRow([
+            React.createElement("span", { style: { color } }, "●"),
+            " ",
+            React.createElement(tooltipComponents.Bold, { style: { color } }, corp.text),
+          ], { marginBottom: 4 }));
         }
+
         for (const p of arr) {
           if (p.value == null) continue;
           const name = p.seriesName ?? "";
           if (Array.isArray(p.value)) {
-            // OHLC: [open, close, low, high]
             const [o, cl, l, h] = p.value;
             if (o == null && cl == null && l == null && h == null) continue;
-            html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
+            children.push(makeOhlcRow(p.marker ?? "", name, o, h, l, cl));
           } else {
             const v = p.value as number;
             if (!Number.isFinite(v)) continue;
@@ -406,16 +425,21 @@ function buildOption(
             } else {
               vstr = formatPriceValue(v, ohlcMode);
             }
-            html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}</b></div>`;
+            children.push(makeBoldRow(p.marker ?? "", name, vstr));
           }
         }
-        // EPS (per-row attribute, not a plotted series). Shown after the
-        // series rows — the implied earnings per share from harmonic PE.
+
         const epsVal = epsByDate.get(dateStr);
         if (epsVal != null && Number.isFinite(epsVal)) {
-          html += `<div><span style="color:${PE_COLOR}">●</span> EPS: <b>¥${fmtNum(epsVal, 4)}</b></div>`;
+          children.push(makeRow([
+            React.createElement("span", { style: { color: PE_COLOR } }, "●"),
+            " ",
+            "EPS: ",
+            React.createElement(tooltipComponents.Bold, null, `¥${fmtNum(epsVal, 4)}`),
+          ]));
         }
-        return html;
+
+        return renderReactElement(React.createElement(React.Fragment, null, children));
       },
     },
     legend: commonLegend(themeMode, { type: "scroll" }),

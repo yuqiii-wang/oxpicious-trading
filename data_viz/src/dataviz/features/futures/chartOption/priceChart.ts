@@ -1,4 +1,4 @@
-﻿import React from "react";
+import React from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { EChartsOption } from "echarts";
@@ -10,7 +10,7 @@ import {
   AXIS_POINTER_LINE,
   TOOLTIP_CARD_TEXT,
 } from "@/theme/chart-palette";
-import FuturesTooltip, { type TooltipItem } from "../FuturesTooltip";
+import FuturesTooltip, { type TooltipItem } from "@/dataviz/features/futures/FuturesTooltip";
 import type { FuturesCombinedResponse } from "@shared/types";
 import { buildExpiryDotsSeriesData } from "./expiryDots";
 import { computeFuturesContractStyles } from "./contractStyles";

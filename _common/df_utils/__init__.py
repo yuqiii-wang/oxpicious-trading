@@ -91,73 +91,74 @@ MODULES
   - ``_detector``  : CUDA / cuDF availability detection (cached).
   - ``_thresholds``: Breakeven row counts per operation type + VRAM.
   - ``_router``    : ``should_use_gpu()`` combining both + VRAM check.
+  - ``_cudf_pandas``: process-level cudf.pandas activation
+                     (``maybe_enable_cudf_pandas``) — must run BEFORE
+                     pandas is first imported; this package's exports
+                     are therefore LAZY (PEP 562) so importing
+                     ``_common.df_utils`` never pulls pandas in.
   - ``rolling``    : ``compute_moving_averages`` + ``compute_emas`` +
                      ``grouped_rolling_agg``.
   - ``groupby``    : ``grouped_diff`` + ``grouped_shift`` (batched).
+
+All exports are resolved lazily via module ``__getattr__``: the helper
+submodules (``rolling`` / ``groupby`` / ``black_scholes``) import
+pandas at module level, and eager re-exports here would import pandas
+whenever the package itself is imported — breaking the
+``_cudf_pandas`` import-order contract (the cudf.pandas hook must be
+installed before pandas' first import).
 """
-# ---- Router (the "checking cond when to use cuDF" layer) ---------------
-from _common.df_utils._detector import (
-    GPUInfo,
-    detect_gpu,
-    is_gpu_available,
-    get_gpu_info,
-    reset_cache,
-)
-from _common.df_utils._thresholds import (
-    OP_PROFILES,
-    breakeven_rows,
-    estimate_df_memory_bytes,
-    fits_in_vram,
-)
-from _common.df_utils._router import (
-    GPUDecision,
-    should_use_gpu,
-    decide_gpu,
-    list_thresholds,
-)
+from __future__ import annotations
 
-# ---- DataFrame operation helpers (the "common df utils" layer) ---------
-from _common.df_utils.rolling import (
-    compute_moving_averages,
-    compute_emas,
-    grouped_rolling_agg,
-)
-from _common.df_utils.groupby import (
-    grouped_diff,
-    grouped_shift,
-)
-from _common.df_utils.black_scholes import (
-    bs_price_greeks,
-    solve_iv_newton,
-    compute_iv_and_greeks,
-)
-
-__all__ = [
+# name -> (module path, attribute). Resolved on first access only.
+_EXPORTS: dict[str, tuple[str, str]] = {
     # Detector
-    "GPUInfo",
-    "detect_gpu",
-    "is_gpu_available",
-    "get_gpu_info",
-    "reset_cache",
+    "GPUInfo": ("_common.df_utils._detector", "GPUInfo"),
+    "detect_gpu": ("_common.df_utils._detector", "detect_gpu"),
+    "is_gpu_available": ("_common.df_utils._detector", "is_gpu_available"),
+    "get_gpu_info": ("_common.df_utils._detector", "get_gpu_info"),
+    "reset_cache": ("_common.df_utils._detector", "reset_cache"),
     # Thresholds
-    "OP_PROFILES",
-    "breakeven_rows",
-    "estimate_df_memory_bytes",
-    "fits_in_vram",
-    "list_thresholds",
+    "OP_PROFILES": ("_common.df_utils._thresholds", "OP_PROFILES"),
+    "breakeven_rows": ("_common.df_utils._thresholds", "breakeven_rows"),
+    "estimate_df_memory_bytes": ("_common.df_utils._thresholds", "estimate_df_memory_bytes"),
+    "fits_in_vram": ("_common.df_utils._thresholds", "fits_in_vram"),
+    "list_thresholds": ("_common.df_utils._router", "list_thresholds"),
     # Router
-    "GPUDecision",
-    "should_use_gpu",
-    "decide_gpu",
+    "GPUDecision": ("_common.df_utils._router", "GPUDecision"),
+    "should_use_gpu": ("_common.df_utils._router", "should_use_gpu"),
+    "decide_gpu": ("_common.df_utils._router", "decide_gpu"),
+    # Process-level cudf.pandas activation
+    "maybe_enable_cudf_pandas": ("_common.df_utils._cudf_pandas", "maybe_enable_cudf_pandas"),
+    "activate": ("_common.df_utils._activate", "activate"),
     # Rolling helpers
-    "compute_moving_averages",
-    "compute_emas",
-    "grouped_rolling_agg",
+    "compute_moving_averages": ("_common.df_utils.rolling", "compute_moving_averages"),
+    "compute_emas": ("_common.df_utils.rolling", "compute_emas"),
+    "grouped_rolling_agg": ("_common.df_utils.rolling", "grouped_rolling_agg"),
     # Grouped diff / shift helpers
-    "grouped_diff",
-    "grouped_shift",
+    "grouped_diff": ("_common.df_utils.groupby", "grouped_diff"),
+    "grouped_shift": ("_common.df_utils.groupby", "grouped_shift"),
     # Black-Scholes IV + Greeks (vectorized, CPU/GPU routed)
-    "bs_price_greeks",
-    "solve_iv_newton",
-    "compute_iv_and_greeks",
-]
+    "bs_price_greeks": ("_common.df_utils.black_scholes", "bs_price_greeks"),
+    "solve_iv_newton": ("_common.df_utils.black_scholes", "solve_iv_newton"),
+    "compute_iv_and_greeks": ("_common.df_utils.black_scholes", "compute_iv_and_greeks"),
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    # LAZY (PEP 562): helper submodules import pandas at module level;
+    # deferring their import keeps this package pandas-free so the
+    # cudf.pandas import hook can still be installed by callers that
+    # import the detector / _cudf_pandas first.
+    try:
+        module_path, attr = _EXPORTS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    import importlib
+
+    return getattr(importlib.import_module(module_path), attr)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

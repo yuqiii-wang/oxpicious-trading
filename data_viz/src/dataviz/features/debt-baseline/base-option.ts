@@ -4,10 +4,12 @@
  * cross-chart tooltip sync — matching the matplotlib sharex=True behaviour
  * in plot_debt_baseline.py.
  */
+import React from "react";
 import type { EChartsOption, SeriesOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { axisColors, MUTED_PALETTE, commonDataZoom, commonLegend, commonGrid } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 
 export type AxisColors = ReturnType<typeof axisColors>;
 
@@ -74,25 +76,34 @@ export function buildBaseOption(
         }>;
         if (arr.length === 0) return "";
         const dateStr = (arr[0].axisValue as string) || "";
-        let header = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
-        // Show PBoC operation info on hover instead of dense markLines
+        const children: React.ReactNode[] = [
+          tooltipComponents.Header({ children: dateStr, style: { marginBottom: 4 } }),
+        ];
         const markerInfo = markerMap?.get(dateStr);
         if (markerInfo && markerInfo.length > 0) {
-          header += `<div style="font-size:10px;margin-bottom:4px;color:${MUTED_PALETTE[1]}">${markerInfo.join("<br/>")}</div>`;
+          children.push(
+            React.createElement("div", {
+              style: { fontSize: 10, marginBottom: 4, color: MUTED_PALETTE[1] },
+            }, markerInfo.map((info, i) => [i > 0 ? React.createElement("br") : null, info])),
+          );
         }
-        const body = arr
-          .filter((p) => {
-            if (p.value == null) return false;
-            if (Array.isArray(p.value)) return p.value.length > 0;
-            return !Number.isNaN(p.value as number);
-          })
-          .map((p) => {
-            const v = Array.isArray(p.value) ? p.value[p.value.length - 1] : p.value;
-            const vstr = typeof v === "number" ? fmtNum(v) : String(v ?? "");
-            return `<div>${p.marker ?? ""} ${p.seriesName ?? ""}: <b>${vstr}</b></div>`;
-          })
-          .join("");
-        return header + body;
+        for (const p of arr) {
+          if (p.value == null) continue;
+          if (Array.isArray(p.value) && p.value.length === 0) continue;
+          if (!Array.isArray(p.value) && Number.isNaN(p.value as number)) continue;
+          const v = Array.isArray(p.value) ? p.value[p.value.length - 1] : p.value;
+          const vstr = typeof v === "number" ? fmtNum(v) : String(v ?? "");
+          children.push(
+            tooltipComponents.Row({
+              children: [
+                p.marker ?? "",
+                ` ${p.seriesName ?? ""}: `,
+                tooltipComponents.Bold({ children: vstr }),
+              ],
+            }),
+          );
+        }
+        return renderReactElement(React.createElement(React.Fragment, null, children));
       },
     },
     axisPointer: { link: [{ xAxisIndex: "all" }] },

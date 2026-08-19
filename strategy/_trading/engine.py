@@ -58,7 +58,11 @@ from typing import Any, Callable, Dict, List
 import pandas as pd
 
 from strategy._trading import formula as F
-from strategy._trading.constants import TRADING_DAYS_PER_YEAR
+from strategy._trading.constants import (
+    FEE_RATE,
+    SLIPPAGE_BAND,
+    TRADING_DAYS_PER_YEAR,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +124,12 @@ def backtest_single_code(
 
     min_hp = params["min_holding_period"]
 
+    # Static execution costs — overridable via params (the optimization
+    # engine _optm_engine threads its --statics-json fee_rate /
+    # slippage_band here); defaults keep the constants module behavior.
+    band = float(params.get("slippage_band", SLIPPAGE_BAND) or SLIPPAGE_BAND)
+    fee_rate = float(params.get("fee_rate", FEE_RATE) or FEE_RATE)
+
     cd = code_df.reset_index(drop=True)
     n = len(cd)
 
@@ -156,8 +166,8 @@ def backtest_single_code(
         close = float(close)
         if high <= 0 or low <= 0 or close <= 0:
             continue
-        buy_fill = F.worst_case_buy_fill(high, low, close)
-        sell_fill = F.worst_case_sell_fill(high, low, close)
+        buy_fill = F.worst_case_buy_fill(high, low, close, band=band)
+        sell_fill = F.worst_case_sell_fill(high, low, close, band=band)
         exec_date = row["date"]
 
         # Singular b/s confidence from the signal layer: >0 BUY, <0 SELL.
@@ -174,7 +184,7 @@ def backtest_single_code(
                 shift = (ft / 100.0) * float(_ft_delta_close_abs[i])
                 if shift > 0:
                     fill_price = F.worst_case_buy_fill(
-                        high + shift, low + shift, close + shift,
+                        high + shift, low + shift, close + shift, band=band,
                     )
             # Set the normalization anchor on the first BUY.
             if anchor_price is None:
@@ -183,7 +193,7 @@ def backtest_single_code(
             qty = confidence  # BUY: qty = confidence (0-100)
 
             slippage = F.buy_slippage(fill_price, close)
-            fee = F.buy_fee(qty, norm_price)
+            fee = F.buy_fee(qty, norm_price, rate=fee_rate)
 
             # Mark-to-market position at current execution price.
             position_before = F.position_value(total_qty, norm_price)
@@ -302,6 +312,7 @@ def backtest_single_code(
                 and last_high > 0 and last_low > 0 and last_close > 0:
             fill_price = F.worst_case_sell_fill(
                 float(last_high), float(last_low), float(last_close),
+                band=band,
             )
             norm_price = F.normalized_price(fill_price, anchor_price)
             slippage = F.sell_slippage(fill_price, float(last_close))

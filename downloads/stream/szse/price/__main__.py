@@ -2,8 +2,8 @@
 
 Two operating modes, switched by wall-clock time on trading days:
 
-  * HOURLY MODE (before 15:30): Streams 3 always-on SZSE indices
-    (399001 深证成指, 399006 创业板指, 399237 运输指数) PLUS yesterday's
+  * HOURLY MODE (before 15:30): Streams 2 always-on SZSE indices
+    (399001 深证成指, 399006 创业板指) PLUS yesterday's
     top-500 traded SZSE stocks (by trading_amount from stock_basic_stats).
     One round per hour (sleeps until the next HH:00 boundary, or until the
     next trading session if all stocks have already reached CLOSE_TIME).
@@ -160,8 +160,8 @@ AFTERNOON_START = time(13, 30)
 
 # SZSE indices always streamed every hour during hourly mode. These are the
 # flagship SZSE indices that were missing from live data (399001 深证成指,
-# 399006 创业板指) plus 399237 运输指数.
-INDEX_ALWAYS_CODES: list = ["399001", "399006", "399237"]
+# 399006 创业板指).
+INDEX_ALWAYS_CODES: list = ["399001", "399006"]
 
 # Number of top-traded SZSE stocks (by yesterday's trading_amount) to sample
 # each hour during hourly mode.

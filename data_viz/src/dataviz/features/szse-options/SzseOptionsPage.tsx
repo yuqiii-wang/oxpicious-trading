@@ -21,10 +21,7 @@ import {
 import SnapshotControls, { autoDeriveSnapshots } from "@/components/SnapshotControls";
 import StatTable from "@/components/StatTable";
 import RefreshButton from "@/components/RefreshButton";
-import VolSmilePanel, {
-  expiryToYyyyMm,
-  type ExpiryGapsMap,
-} from "@/dataviz/features/szse-options/VolSmilePanel";
+import VolSmilePanel from "@/dataviz/features/szse-options/VolSmilePanel";
 import MarketInterestWallPanel from "@/dataviz/features/szse-options/MarketInterestWallPanel";
 import { OptionsTrendPanel } from "@/dataviz/features/szse-options/options-trend";
 import { buildOhlcOption } from "@/dataviz/features/szse-options/annual-sentiment";
@@ -38,8 +35,8 @@ import {
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
 import {
-  fetchOptionsExpiryGaps,
   fetchOptionsSkewnessCorr,
+  fetchOptionsSkewnessCrossCounts,
 } from "@/lib/api-client/options";
 import { computeDailySkewSeries } from "@/dataviz/features/szse-options/vol-smile/skewSeries";
 import {
@@ -52,6 +49,7 @@ import type {
   OptionsCombinedResponse,
   OptionsUnderlying,
   SkewnessCorrRow,
+  SkewnessCrossCountRow,
 } from "@shared/types";
 import { UNDERLYING_LABELS } from "@/theme/chart-palette";
 import { computeSnapshotStats } from "@/lib/options-stats";
@@ -84,7 +82,9 @@ export default function SzseOptionsPage() {
   // Corr chart state
   const [corrRows, setCorrRows] = useState<SkewnessCorrRow[]>([]);
   const [corrMode, setCorrMode] = useState<CorrMode>("ma5");
-  const [gapsMap, setGapsMap] = useState<ExpiryGapsMap | null>(null);
+
+  // Cross counts state
+  const [crossCountRows, setCrossCountRows] = useState<SkewnessCrossCountRow[]>([]);
 
   // Load underlyings list once (and on refresh / target-type change).
   useEffect(() => {
@@ -124,7 +124,7 @@ export default function SzseOptionsPage() {
     };
   }, [underlyingCode, optionsTargetType, refreshKey]);
 
-  // Fetch corr + gap data for the correlation chart
+  // Fetch corr data for the correlation chart + cross counts
   useEffect(() => {
     if (!underlyingCode || !optionsData) return;
     const dates = optionsData.dates;
@@ -134,23 +134,18 @@ export default function SzseOptionsPage() {
     let cancelled = false;
 
     Promise.all([
-      fetchOptionsExpiryGaps(underlyingCode, startDate, endDate),
       fetchOptionsSkewnessCorr(underlyingCode, startDate, endDate),
+      fetchOptionsSkewnessCrossCounts(underlyingCode, startDate, endDate),
     ])
-      .then(([gapsResp, corrResp]) => {
+      .then(([corrResp, crossResp]) => {
         if (cancelled) return;
-        const map = new Map<string, typeof gapsResp.rows[number]>();
-        for (const g of gapsResp.rows) {
-          const key = `${g.date}|${expiryToYyyyMm(g.expiry_date)}`;
-          map.set(key, g);
-        }
-        setGapsMap(map as unknown as ExpiryGapsMap);
         setCorrRows(corrResp.rows);
+        setCrossCountRows(crossResp.rows);
       })
       .catch(() => {
         if (!cancelled) {
-          setGapsMap(null);
           setCorrRows([]);
+          setCrossCountRows([]);
         }
       });
 
@@ -190,8 +185,8 @@ export default function SzseOptionsPage() {
 
   // Correlation chart option
   const dailySkewSeries = useMemo(
-    () => (optionsData ? computeDailySkewSeries(optionsData.rows) : []),
-    [optionsData],
+    () => (optionsData ? computeDailySkewSeries(optionsData.rows, crossCountRows) : []),
+    [optionsData, crossCountRows],
   );
 
   const corrOption: EChartsOption | null = useMemo(() => {
@@ -264,7 +259,7 @@ export default function SzseOptionsPage() {
                 rows={optionsData.rows}
                 selectedDate={selectedDate}
                 onDateChange={setSelectedDate}
-                gapsMap={gapsMap}
+                crossCounts={crossCountRows}
                 bottomChartOption={corrOption}
                 bottomChartHeight={200}
                 bottomChartControls={

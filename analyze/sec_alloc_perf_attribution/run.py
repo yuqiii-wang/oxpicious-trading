@@ -37,6 +37,13 @@ import datetime
 import time
 from typing import Optional, Set
 
+# IMPORTANT: import ``compute`` BEFORE ``pandas`` so that
+# cudf.pandas (activated by compute/__init__.py) patches pandas
+# before any pandas operations run.
+from analyze.sec_alloc_perf_attribution.compute import build_and_insert  # noqa: F401
+
+import pandas as pd
+
 from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
@@ -48,6 +55,7 @@ from _common.build_commons import (
 from analyze._common import upsert_analysis_identity
 from analyze.sec_alloc_perf_attribution.config import (
     ANALYSIS_NAME,
+    CORR_WINDOWS,
     TABLE,
     DESCRIPTION,
 )
@@ -55,9 +63,9 @@ from analyze.sec_alloc_perf_attribution.fetch import (
     fetch_codes_with_composition,
     fetch_shared_weights,
     fetch_index_closes,
+    fetch_index_subject_closes,
     fetch_etf_amount_by_index,
 )
-from analyze.sec_alloc_perf_attribution.compute import build_and_insert
 
 
 async def run_perf_attribution(
@@ -108,9 +116,24 @@ async def run_perf_attribution(
                   flush=True)
             return
 
+    # ---- Compute lookback start_date for incremental mode ---------
+    # When target_dates is set, only fetch data within the lookback window
+    # (max corr window + MA5 buffer) to reduce DB I/O and memory usage.
+    # This is an additional optimization on top of the pandas-level filter
+    # in build_and_insert's _filter_dataframes_for_lookback.
+    _MAX_CORR: int = max(CORR_WINDOWS)  # 255 trading days
+    _MA5_BUF: int = 5                   # for etf_trading_amount_ratio MA5
+    _LOOKBACK: int = _MAX_CORR + _MA5_BUF  # 260 trading days
+    start_date: Optional[datetime.date] = None
+    if target_dates is not None and len(target_dates) > 0:
+        min_target: datetime.date = min(target_dates)
+        start_date = recent_trading_day_cutoff(_LOOKBACK, ref=min_target)
+        print(f"    -> lookback window: {start_date} to {min_target} "
+              f"({_LOOKBACK} trading days)", flush=True)
+
     # ---- Step 1: fetch ALL index closes (used as benchmarks) -----
     print("\n[1/6] Fetching all index closes (benchmarks)...", flush=True)
-    index_closes = await fetch_index_closes(conn)
+    index_closes = await fetch_index_closes(conn, start_date=start_date)
     n_indices = index_closes["benchmark_code"].nunique() if not index_closes.empty else 0
     print(f"    -> {len(index_closes):,} index rows across {n_indices} indices",
           flush=True)
@@ -160,7 +183,9 @@ async def run_perf_attribution(
     # code via stats.sec_classification.parent_index_code).
     print("\n[2b/6] Fetching total_etf_trading_amount from stats.index_exts per "
           "(date, tracking_index)...", flush=True)
-    etf_amount_by_index = await fetch_etf_amount_by_index(conn)
+    etf_amount_by_index = await fetch_etf_amount_by_index(
+        conn, start_date=start_date
+    )
     if not etf_amount_by_index.empty:
         n_idx_with_etf = etf_amount_by_index["index_code"].nunique()
         print(f"    -> {len(etf_amount_by_index):,} rows across "
@@ -173,28 +198,38 @@ async def run_perf_attribution(
     total = 0
 
     # ---- Step 3a: Index subjects ---------------------------------
-    print("\n[3a/6] Building Index subjects (indices with composition vs all "
-          "indices)...", flush=True)
-    # Index subjects: rename columns from benchmark_* to subject_*.
-    # NOTE: benchmark_etf_trading_amount is NOT carried in this rename — it is
-    # fetched separately via etf_amount_by_index and merged inside
-    # build_and_insert (keyed on subject_code as the tracked index).
-    index_subject_closes = index_closes.rename(columns={
+    # Subject pool: ALL compositioned non-broad non-debt indices
+    # (for Intraday Attribution to show all industries).
+    # Benchmark pool (index_closes): top-N per industry by ETF turnover
+    # + all broad-market indices (for the Market Movements top plot).
+    print("\n[3a/6] Building Index subjects (ALL compositioned indices vs "
+          "top-N benchmark pool)...", flush=True)
+    index_subject_closes = await fetch_index_subject_closes(
+        conn, start_date=start_date
+    )
+
+    # Also include broad-market indices in the subject pool (they should
+    # appear as subjects in the Attribution view alongside all others).
+    broad_subjects = index_closes[
+        ~index_closes["benchmark_code"].isin(index_subject_closes["code"])
+    ].rename(columns={
         "benchmark_code": "code",
         "benchmark_close": "subject_close",
     })
-    # Filter: only include index subjects that have composition data.
-    # Many indices (SSE/SZSE-published 000xxx/399xxx, BeSec 899xxx) have
-    # NO published composition (only 44 CSI indices have closeweight CSVs).
-    # Without this filter, every (subject, benchmark) pair for those
-    # indices would have NULL shared_weight, rendering the chart empty.
-    before_idx = index_subject_closes["code"].nunique()
+    if not broad_subjects.empty:
+        index_subject_closes = pd.concat(
+            [index_subject_closes, broad_subjects], ignore_index=True
+        )
+
+    # Recent-data pre-filter also applies to subjects.
+    before_idx = int(index_subject_closes["code"].nunique())
     index_subject_closes = index_subject_closes[
-        index_subject_closes["code"].isin(codes_with_comp)
+        index_subject_closes["code"].isin(active_index_codes)
     ].copy()
-    after_idx = index_subject_closes["code"].nunique()
-    print(f"    -> {after_idx} of {before_idx} indices have composition data "
-          f"(dropped {before_idx - after_idx} without composition)", flush=True)
+    after_idx = int(index_subject_closes["code"].nunique())
+    print(f"    -> {after_idx} of {before_idx} subjects "
+          f"(recent-data filter + broad-include)", flush=True)
+
     if not index_subject_closes.empty:
         n = await build_and_insert(conn, index_subject_closes, index_closes,
                                    shared_weights,

@@ -2,7 +2,7 @@
 download_szse_index_composition.py — Download SZSE index composition
 (constituent stocks) from szse.cn and convert to CSV.
 
-For each index code (e.g. 399001 深证成指, 399006 创业板指, 399237 运输指数,
+For each index code (e.g. 399001 深证成指, 399006 创业板指,
 399348 深证价值, 399346 深证成长), downloads
 the latest constituent list from the SZSE "指数样本股" (index constituents)
 API and computes approximate weights from float shares.
@@ -38,7 +38,7 @@ Month-start refresh:
 
 Usage:
   python download_szse_index_composition.py
-  python download_szse_index_composition.py --index-codes 399001,399006,399237
+  python download_szse_index_composition.py --index-codes 399001,399006
   python download_szse_index_composition.py --skip-cached
   python download_szse_index_composition.py --force-month-start
   python download_szse_index_composition.py --out-root /tmp/szse_comp
@@ -80,7 +80,7 @@ SZSE_INDEX_API = (
 )
 
 # Default indices to track
-DEFAULT_INDEX_CODES = ["399001", "399006", "399237", "399812", "399348", "399346"]
+DEFAULT_INDEX_CODES = ["399001", "399006", "399812", "399348", "399346"]
 
 # Sleep between API calls (SZSE API is less aggressive than the report site)
 SLEEP_SEC = DEFAULT_SHORT_SLEEP_SEC
@@ -190,7 +190,6 @@ def _get_szse_index_name(index_code: str) -> str:
         "399999": "中证红利",
         "399001": "深证成指",
         "399006": "创业板指",
-        "399237": "运输指数",
         "399348": "深证价值",
         "399346": "深证成长",
     }
@@ -618,7 +617,7 @@ if __name__ == "__main__":
     )
     ap.add_argument(
         "--index-codes", type=str, default=None,
-        help="Comma-separated list of index codes (default: 399001,399006,399237,399812,399348,399346). "
+        help="Comma-separated list of index codes (default: 399001,399006,399812,399348,399346). "
              "Example: --index-codes 399001,399006,399004",
     )
     ap.add_argument(

@@ -1,17 +1,13 @@
-﻿import React from "react";
+import React from "react";
 import { fmtNum } from "@/lib/series";
 import { renderTooltip } from "./renderTooltip";
-import type { DailySkew, ExpiryGapsMap } from "./types";
-import { expiryToYyyyMm } from "./expiryUtils";
-import type { ExpiryGapRow } from "@shared/types";
+import type { DailySkew } from "./types";
 
 interface SkewTooltipData {
   date: string;
   seriesItems: Array<{ seriesName: string; value: [string, number | null]; marker?: string; color?: string }>;
   dailySkew: DailySkew[];
-  gapsMap: ExpiryGapsMap | null;
   allExpiries: Map<string, string>;
-  expiryGapMap: Map<string, { max: number; min: number }>;
   expiryColorMap: Map<string, string>;
 }
 
@@ -36,9 +32,7 @@ function SkewTooltipContent({
   date,
   seriesItems,
   dailySkew,
-  gapsMap,
   allExpiries,
-  expiryGapMap,
   expiryColorMap,
 }: SkewTooltipData) {
   const d = dailySkew.find((s) => s.date === date);
@@ -72,67 +66,35 @@ function SkewTooltipContent({
   if (d.perExpiry.length > 0) {
     children.push(
       <div key="per-expiry-label" style={{ opacity: 0.7 }}>
-        Per-expiry (ΔSpot / ↓Min / ↑Max):
+        Per-expiry (ΔSpot):
       </div>,
     );
 
     d.perExpiry.forEach((pe, idx) => {
-      const dbGap = gapsMap ? gapsMap.get(`${date}|${pe.expiry}`) : null;
-      const expDate = allExpiries.get(pe.expiry) ?? pe.expiryDate ?? "";
-      const maturedByDate = !!(expDate && expDate <= date);
-      const hasDbMinMax = !!(
-        dbGap &&
-        dbGap.today_gap_from_max_before_expiry != null &&
-        Number.isFinite(dbGap.today_gap_from_max_before_expiry) &&
-        dbGap.today_gap_from_min_before_expiry != null &&
-        Number.isFinite(dbGap.today_gap_from_min_before_expiry)
-      );
-
+      const spot = d.S;
+      const sk = pe.skewPrice;
       let gapSpotStr: React.ReactNode = "—";
-      let gapMinStr: React.ReactNode = "—";
-      let gapMaxStr: React.ReactNode = "—";
-
-      if (
-        dbGap &&
-        dbGap.today_gap_from_today_spot != null &&
-        Number.isFinite(dbGap.today_gap_from_today_spot)
-      ) {
-        gapSpotStr = fmtNum(dbGap.today_gap_from_today_spot, 2);
-      } else {
-        const spot = d.S;
-        const sk = pe.skewPrice;
-        if (sk != null && Number.isFinite(sk)) {
-          gapSpotStr = fmtNum(spot - (sk as number), 2);
-        }
-      }
-
-      if (hasDbMinMax) {
-        gapMinStr = fmtNum((dbGap as ExpiryGapRow).today_gap_from_min_before_expiry!, 2);
-        gapMaxStr = fmtNum(
-          -(dbGap as ExpiryGapRow).today_gap_from_max_before_expiry!,
-          2,
-        );
-      } else if (maturedByDate) {
-        const gapInfo = expiryGapMap.get(pe.expiry);
-        const sk = pe.skewPrice;
-        if (gapInfo && sk != null && Number.isFinite(sk)) {
-          gapMinStr = fmtNum((sk as number) - gapInfo.min, 2);
-          gapMaxStr = fmtNum(gapInfo.max - (sk as number), 2);
-        }
-      } else {
-        gapMinStr = <span style={{ opacity: 0.5 }}>future</span>;
-        gapMaxStr = <span style={{ opacity: 0.5 }}>future</span>;
+      if (sk != null && Number.isFinite(sk)) {
+        gapSpotStr = fmtNum(spot - (sk as number), 2);
       }
 
       const sign = pe.skewPct != null && Number.isFinite(pe.skewPct)
         ? (pe.skewPct >= 0 ? "+" : "") + fmtNum(pe.skewPct, 2)
         : "—";
 
+      const crossCount = pe.countSkewnessCurveCrossedSpot;
+      const crossCountStr = crossCount != null && crossCount > 0
+        ? ` ×${crossCount}`
+        : "";
+
       children.push(
         <div key={`pe-${idx}`} style={{ paddingLeft: "8px" }}>
           <ColoredDot color={expiryColorMap.get(pe.expiry) ?? "#888"} />
           {pe.expiry}: <b>{sign}</b>{" "}
-          ΔSpot=<b>{gapSpotStr}</b> ↓=<b>{gapMinStr}</b> ↑=<b>{gapMaxStr}</b>
+          ΔSpot=<b>{gapSpotStr}</b>
+          {crossCountStr ? (
+            <span style={{ color: "#888", fontSize: 10 }}>{crossCountStr}</span>
+          ) : null}
         </div>,
       );
     });
@@ -143,9 +105,7 @@ function SkewTooltipContent({
 
 export function makeSkewTooltipFormatter(
   dailySkew: DailySkew[],
-  gapsMap: ExpiryGapsMap | null,
   allExpiries: Map<string, string>,
-  expiryGapMap: Map<string, { max: number; min: number }>,
   expiryColorMap: Map<string, string>,
 ): (params: unknown) => string {
   return (p: unknown): string => {
@@ -162,13 +122,9 @@ export function makeSkewTooltipFormatter(
         date={date}
         seriesItems={items}
         dailySkew={dailySkew}
-        gapsMap={gapsMap}
         allExpiries={allExpiries}
-        expiryGapMap={expiryGapMap}
         expiryColorMap={expiryColorMap}
       />,
     );
   };
 }
-
-export { expiryToYyyyMm };

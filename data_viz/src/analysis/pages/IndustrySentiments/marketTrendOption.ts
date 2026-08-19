@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Build the ECharts option for the Market Trend view.
  *
  * buildMarketTrendOption — the combined overview plot (sole chart).
@@ -18,6 +18,8 @@ import {
   commonDataZoom,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import React from "react";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { MARKET_TREND_INDICES } from "./constants";
 
 /** One index's daily baseline rows prepared for plotting. */
@@ -192,32 +194,57 @@ export function buildMarketTrendOption(
         const dateStr = allDates[idx0] ?? (arr[0].axisValue as string) ?? "";
         if (!dateStr) return "";
         const total = totalsByDate[idx0] ?? 0;
-        let html = `<div style="font-weight:600">${dateStr}</div>`;
+        const children: React.ReactNode[] = [];
+        children.push(
+          React.createElement(tooltipComponents.Header, null, dateStr)
+        );
         if (showAmt && total > 0) {
-          html += `<div style="margin-top:2px;opacity:0.7">Total Amt: ${fmtNum(total)} 亿</div>`;
+          children.push(
+            React.createElement("div", { style: { marginTop: 2, opacity: 0.7 } },
+              `Total Amt: ${fmtNum(total)} 亿`
+            )
+          );
         }
-        // Separate close-line entries from amount-bar entries.
-        const closeRows: string[] = [];
-        const amtRows: string[] = [];
+        const closeRowElements: React.ReactNode[] = [];
+        const amtRowElements: React.ReactNode[] = [];
         for (const p of arr) {
           const name = p.seriesName ?? "";
           const v = p.value;
           if (v == null || !Number.isFinite(v)) continue;
           if (name.endsWith(" Amt")) {
             const pct = total > 0 ? (v / total) * 100 : 0;
-            amtRows.push(
-              `<div>${p.marker ?? ""} ${name.replace(" Amt", "")}: <b>${fmtNum(v)} 亿</b> (${fmtNum(pct, 1)}%)</div>`,
+            amtRowElements.push(
+              React.createElement("div", null,
+                p.marker ?? "",
+                ` ${name.replace(" Amt", "")}: `,
+                React.createElement(tooltipComponents.Bold, null, `${fmtNum(v)} 亿`),
+                ` (${fmtNum(pct, 1)}%)`
+              )
             );
           } else {
             const pct = v - 100;
-            closeRows.push(
-              `<div>${p.marker ?? ""} ${name}: <b style="color:${p.marker?.includes("color") ? "" : ""}">${pct >= 0 ? "+" : ""}${fmtNum(pct, 2)}%</b></div>`,
+            closeRowElements.push(
+              React.createElement("div", null,
+                p.marker ?? "",
+                ` ${name}: `,
+                React.createElement(tooltipComponents.Bold, {
+                  style: { color: p.marker?.includes("color") ? "" : "" }
+                }, `${pct >= 0 ? "+" : ""}${fmtNum(pct, 2)}%`)
+              )
             );
           }
         }
-        if (closeRows.length) html += `<div style="margin-top:4px">${closeRows.join("")}</div>`;
-        if (showAmt && amtRows.length) html += `<div style="margin-top:4px;opacity:0.85">${amtRows.join("")}</div>`;
-        return html;
+        if (closeRowElements.length) {
+          children.push(
+            React.createElement("div", { style: { marginTop: 4 } }, ...closeRowElements)
+          );
+        }
+        if (showAmt && amtRowElements.length) {
+          children.push(
+            React.createElement("div", { style: { marginTop: 4, opacity: 0.85 } }, ...amtRowElements)
+          );
+        }
+        return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
     },
     legend: commonLegend(themeMode, {

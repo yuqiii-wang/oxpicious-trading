@@ -43,7 +43,7 @@ import numpy as np
 import pandas as pd
 
 from _common.build_commons import (
-    bulk_upsert_async,
+    copy_or_upsert_split_async,
     copy_insert_async,
     truncate_table_async,
 )
@@ -128,12 +128,7 @@ def rolling_corr(a: np.ndarray, b: np.ndarray, window: int) -> np.ndarray:
     # the correct behavior: short series stay on CPU.
     router_df = pd.DataFrame({"a": a, "b": b})
     if should_use_gpu(router_df, op_type="rolling_corr"):
-        import cudf  # type: ignore[import-untyped]
-        gdf = cudf.from_pandas(router_df)
-        g_result = gdf["a"].rolling(window=window, min_periods=2).corr(
-            gdf["b"]
-        )
-        return g_result.to_numpy()
+        print(f"    [cuDF router] {len(router_df):,} rows — rolling_corr (GPU-worthy)", flush=True)
 
     # CPU path (pandas Cython).
     s_a = pd.Series(a)
@@ -365,7 +360,7 @@ async def run_correlations(
     else:
         print(f"\n[c4/4] Upserting {len(out_rows):,} rows into {TABLE}...",
               flush=True)
-        n = await bulk_upsert_async(
+        n_copied, n_upserted = await copy_or_upsert_split_async(
             conn, TABLE, out_rows,
             key_columns=[
                 "date",
@@ -373,9 +368,12 @@ async def run_correlations(
                 "benchmark_industry_id",
                 "pool_size",
             ],
-            batch_size=5000,
         )
-    print(f"      -> inserted {n:,} rows", flush=True)
+        n = n_copied + n_upserted
+        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+              "upsert"
+    print(f"      -> inserted {n:,} rows via {via}", flush=True)
 
     # ---- Register in analysis.analysis_identity ----------------------
     await upsert_analysis_identity(

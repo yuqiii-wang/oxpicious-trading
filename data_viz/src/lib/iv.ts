@@ -6,7 +6,7 @@
  * Greeks columns, so these functions are only called when recomputing IV for
  * snapshots not present in the CSV (rare).
  */
-import { RISK_FREE_RATE } from "../theme/chart-palette";
+import { RISK_FREE_RATE } from "@/theme/chart-palette";
 
 /** Standard normal PDF. */
 function normPdf(x: number): number {

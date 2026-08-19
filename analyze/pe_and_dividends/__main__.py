@@ -63,9 +63,13 @@ from _common.build_commons import (  # noqa: E402
     add_force_arg,
     find_missing_analysis_dates,
 )
-from _common.db_commons import bulk_upsert_async, copy_insert_async  # noqa: E402
+from _common.db_commons import copy_or_upsert_split_async, copy_insert_async  # noqa: E402
 
 setup_utf8_stdout()
+
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
 
 import pandas as pd  # noqa: E402
 
@@ -400,11 +404,15 @@ async def _write_detail(
 
     print(f"  [{sec_type}] Upserting {len(rows_to_write):,} detail rows...",
           flush=True)
-    n = await bulk_upsert_async(
+    n_copied, n_upserted = await copy_or_upsert_split_async(
         conn, DETAIL_TABLE, rows_to_write,
         key_columns=["sec_type", "code", "date"],
     )
-    print(f"  [{sec_type}]   upserted {n:,} detail rows", flush=True)
+    n = n_copied + n_upserted
+    via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+          f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+          "upsert"
+    print(f"  [{sec_type}]   inserted {n:,} detail rows via {via}", flush=True)
     return n
 
 

@@ -84,6 +84,10 @@ from _common.build_commons import (  # noqa: E402
 
 setup_utf8_stdout()
 
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 from analyze._common import (  # noqa: E402
     batched_upsert_by_date,
     build_and_insert_chunked,

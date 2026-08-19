@@ -29,7 +29,7 @@ stats.exchange_trading_amt are (re)computed and upserted.
 Force mode (force=True): truncate the table first, then full recompute.
 """
 from _common.build_commons import (
-    bulk_upsert_async,
+    copy_or_upsert_split_async,
     truncate_table_async,
     find_missing_keys,
 )
@@ -111,9 +111,11 @@ async def build_exchange_trading_amt(conn, force: bool = False) -> None:
             }
             for r in target_rows
         ]
-        n = await bulk_upsert_async(
-            conn, TABLE, data,
-            key_columns=["date", "exchange"],
-            batch_size=1000,
+        n_copied, n_upserted = await copy_or_upsert_split_async(
+            conn, TABLE, data, key_columns=["date", "exchange"],
         )
-        print(f"    -> upserted {n:,} rows", flush=True)
+        total = n_copied + n_upserted
+        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+              "upsert"
+        print(f"    -> upserted {total:,} rows via {via}", flush=True)

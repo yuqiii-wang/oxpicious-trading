@@ -7,7 +7,7 @@ strategy can load per-(security, date-range) algo config from the DB instead
 of hardcoding it.
 
 Precedence (low → high) when using :func:`load_params`:
-  1. algo ``DEFAULT_PARAMS``  (e.g. bollinger_bands DEFAULT_PARAMS)
+  1. algo ``DEFAULT_PARAMS``  (e.g. macd DEFAULT_PARAMS)
   2. DB ``algo_configs.params`` for the active date range
   3. caller-supplied ``strategy_overrides`` (e.g. STRATEGY_PARAMS, CLI args)
 
@@ -110,7 +110,7 @@ async def load_params(
     ``algo_configs.params`` < ``strategy_overrides``. Returns a fully-populated
     param dict ready to pass to the algo's ``apply_signals`` / ``run_backtest``.
 
-    ``algo_name`` selects the algo via the registry (e.g. "bollinger_bands");
+    ``algo_name`` selects the algo via the registry (e.g. "macd");
     the algo must expose ``DEFAULT_PARAMS`` + ``build_params``.
     """
     from strategy.factors_and_algos import get_algo  # lazy: avoid circular import
@@ -137,13 +137,14 @@ _EXISTS_SQL = """
     SELECT 1
     FROM strategy.algo_configs
     WHERE sec_type = $1 AND sec_code = $2 AND strategy_name = $3
+      AND is_default
     LIMIT 1
 """
 
 _INSERT_DEFAULT_SQL = """
     INSERT INTO strategy.algo_configs
-        (sec_type, sec_code, strategy_name, start_date, end_date, params)
-    VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        (sec_type, sec_code, strategy_name, start_date, end_date, params, is_default)
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb, TRUE)
     ON CONFLICT (sec_type, sec_code, strategy_name, start_date, end_date)
     DO NOTHING
 """
@@ -156,19 +157,21 @@ async def ensure_default_config(
     sec_code: str,
     strategy_name: str,
 ) -> bool:
-    """Insert a default algo_configs row if none exists for this
-    (sec_type, sec_code, strategy_name).
+    """Insert the DEFAULT algo_configs row if it does not exist yet.
 
-    The default row spans the widest possible date range (1900-01-01 ..
-    9999-12-31) so it is always the active config, and its ``params`` JSONB
-    is the algo's own ``DEFAULT_PARAMS`` (e.g. bollinger_bands band_width /
-    weights). Trading-layer keys (buy_notional, min_holding_period, ...) are
-    NOT stored here — they come from the strategy's hardcoded config / CLI at
-    load time via ``load_params(strategy_overrides=...)``.
+    The default row (``is_default = TRUE``) spans the widest possible
+    date range (1900-01-01 .. 9999-12-31) — a RESERVED range the
+    optimizer never writes to — and its ``params`` JSONB is the algo's
+    own ``DEFAULT_PARAMS`` (e.g. macd fast/slow EMA weights).
+    Trading-layer keys (buy_notional, min_holding_period, ...) are
+    NOT stored here — they come from the strategy's hardcoded config /
+    CLI at load time via ``load_params(strategy_overrides=...)``.
 
-    Idempotent: if any row already exists for this (sec_type, sec_code,
-    strategy_name) — even for a different date range — nothing is inserted
-    (the user has already customized the config). Returns True iff a row was
+    Idempotent: skips when a default row already exists for this
+    (sec_type, sec_code, strategy_name). Trained rows
+    (``is_default = FALSE``, written by ``_optm_engine.persist``) do
+    NOT suppress this — both coexist so the UI can show the algo
+    defaults next to the trained configs. Returns True iff a row was
     inserted.
     """
     from strategy.factors_and_algos import get_algo  # lazy: avoid circular import

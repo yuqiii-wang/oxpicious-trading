@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ECharts option builder for the Fourier Frequencies chart.
  *
  * Renders the dominant cycle PERIOD (freq, trading days) over time, one
@@ -10,8 +10,10 @@
  *   freq spans 2..range_days and a linear scale would crush the short-cycle
  *   values against the floor.
  */
+import React from "react";
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import {
   axisColors,
   commonLegend,
@@ -130,19 +132,28 @@ export function buildFourierFreqsOption(
         }>;
         if (!Array.isArray(arr) || arr.length === 0) return "";
         const dateLabel = arr[0].axisValueLabel ?? "";
-        const lines: string[] = [`<b>${dateLabel}</b>`];
+        const children: React.ReactNode[] = [
+          tooltipComponents.Header({ children: dateLabel }),
+        ];
         for (const p of arr) {
           const rdSpec = RANGE_DAY_SERIES.find((s) => s.label === p.seriesName);
           if (!rdSpec) continue;
           const freq = p.value;
           const amp = ampByKey.get(`${rdSpec.range_days}|${dateLabel}`);
           const freqStr = freq != null ? `${freq}d` : "—";
-          const ampStr = amp != null ? `· amp ${fmtNum(amp, 2)}` : "";
-          lines.push(
-            `<span style="color:${p.color ?? ""}">●</span> ${p.seriesName}: <b>${freqStr}</b> ${ampStr}`,
+          const ampStr = amp != null ? ` · amp ${fmtNum(amp, 2)}` : "";
+          children.push(
+            tooltipComponents.Row({
+              children: [
+                React.createElement("span", { style: { color: p.color ?? "" } }, "●"),
+                ` ${p.seriesName}: `,
+                tooltipComponents.Bold({ children: freqStr }),
+                ampStr,
+              ],
+            }),
           );
         }
-        return lines.join("<br/>");
+        return renderReactElement(React.createElement(React.Fragment, null, children));
       },
     },
     xAxis: {

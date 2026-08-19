@@ -1,23 +1,22 @@
 """CLI entry: ``python -m strategy.singleton_trading --algo <algo>``.
 
 Pure ENTRY POINT. ``--algo`` selects a pluggable signal algo from
-``strategy.factors_and_algos`` (default ``bollinger_bands``; also ``macd``,
-``ma_spread``). The DB strategy identity
+``strategy.factors_and_algos`` (default ``macd``). The DB strategy identity
 (``strategy_identity.strategy_name``) is the **algo name**, so each algo's
 runs are stored and queried under their own name.
 
 Two modes
 ---------
-BINARY (single algo): ``--algo bollinger_bands``. The collector delegates
+BINARY (single algo): ``--algo macd``. The collector delegates
 fetch/apply/backtest to that one algo. The strategy_name stored in the DB
 is the algo name itself.
 
-MIXED (weighted blend): ``--algo bollinger_bands:0.5,macd:0.5``. Two phases:
+MIXED (weighted blend): ``--algo macd:0.5,bb:0.5``. Two phases:
   1. Phase 1 — ``run_sub_algos``: each sub-algo runs INDEPENDENTLY on its
      own pooled connection (async gather), writing its own strategy_identity
      (strategy_name = algo_name) with skip-if-already-found.
   2. Phase 2 — ``build_algo_portfolio``: the collector (mixed mode) runs
-     the blended backtest under a new ``portfolio:bb*0.5+macd*0.5``
+     the blended backtest under a new ``portfolio:macd*0.5``
      strategy_name.
 
 After both phases, risks + forecast are computed for every strategy_name
@@ -39,6 +38,16 @@ import time
 sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
 )
+
+# GPU decision FIRST — cudf.pandas must patch the pandas import before
+# any module below (fetch / algos / engine) pulls pandas in. Shared
+# util in _common.df_utils; its exports are lazy so this import stays
+# pandas-free. Run Strategy signal math then transparently runs on the
+# GPU when the shared detector finds a working CUDA device.
+from _common.df_utils import maybe_enable_cudf_pandas  # noqa: E402
+
+_GPU_ON, _GPU_WHY = maybe_enable_cudf_pandas("auto")
+print(f"[gpu] {_GPU_WHY}", flush=True)
 
 from strategy._common.db import setup_utf8_stdout, get_db_or_exit, print_wall_time  # noqa: E402
 from strategy._common.constants import ALL_SEC_TYPES, DEFAULT_BUY_NOTIONAL  # noqa: E402
@@ -66,11 +75,11 @@ def _parse_algo_arg(raw: str) -> dict:
     """Parse the --algo CLI value into ``{algo_name: weight}``.
 
     Accepted formats:
-      - "bollinger_bands"               -> {"bollinger_bands": 1.0}  (binary)
-      - "bollinger_bands:0.5,macd:0.5"  -> {"bollinger_bands": 0.5, "macd": 0.5}  (mixed)
-      - "bollinger_bands:1,macd:2"      -> {"bollinger_bands": 1.0, "macd": 2.0}  (weights normalized later)
+      - "macd"                        -> {"macd": 1.0}  (binary)
+      - "macd:0.5,bb:0.5"            -> {"macd": 0.5, "bb": 0.5}  (mixed)
+      - "macd:1,bb:2"                -> {"macd": 1.0, "bb": 2.0}  (weights normalized later)
 
-    Weights default to 1.0 when omitted (e.g. "bollinger_bands,macd" -> both 1.0).
+    Weights default to 1.0 when omitted (e.g. "macd,bb" -> both 1.0).
     """
     selection: dict = {}
     for part in raw.split(","):
@@ -89,15 +98,14 @@ def _parse_algo_arg(raw: str) -> dict:
 
 async def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Algo-driven backtest runner (default: Bollinger Bands).",
+        description="Algo-driven backtest runner (default: MACD).",
     )
     ap.add_argument(
         "--algo", default=DEFAULT_ALGO,
         help=(
             f"Signal algo (registered in factors_and_algos). "
-            f"Default: {DEFAULT_ALGO}. Binary: 'bollinger_bands'. "
-            f"Mixed (weighted blend): 'bollinger_bands:0.5,macd:0.5'. "
-            f"Also: macd, ma_spread."
+            f"Default: {DEFAULT_ALGO}. Binary: 'macd'. "
+            f"Mixed (weighted blend): 'macd:0.5,bb:0.5'.",
         ),
     )
     ap.add_argument("--sec-type", choices=("index", "etf", "stock"), default=None)
@@ -109,8 +117,10 @@ async def main() -> None:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument(
         "--no-forecast", action="store_true",
-        help="Skip the 1-month forecast (10 scenarios + child seqs). "
-             "Forecast is on by default.",
+        help="Skip the 1-month forecast (10 scenarios + child seqs) and "
+             "instead sell ALL remaining units on the last day "
+             "(FINAL LIQUIDATION). Forecast is on by default (position "
+             "stays open; forecast children take over the sell schedule).",
     )
     ap.add_argument(
         "--fault-tolerance", type=float, default=0,
@@ -129,10 +139,14 @@ async def main() -> None:
     # Trading-layer params (shared across all algos + the portfolio).
     # fault_tolerance is threaded into params so the two-pass runner in
     # AlgoBase.run_backtest / AlgoSignalCollector.run_backtest picks it up.
+    # skip_final_liquidation: forecast ON → position stays open at the end of
+    # actual OHLC (the forecast child seqs take over the sell schedule over
+    # the 20 forecast days); --no-forecast → the engine sells ALL remaining
+    # units on the last day (FINAL LIQUIDATION) so the run is fully closed.
     trading_layer = {
         "min_holding_period": STRATEGY_PARAMS["min_holding_period"],
         "buy_notional": args.buy_notional,
-        "skip_final_liquidation": STRATEGY_PARAMS["skip_final_liquidation"],
+        "skip_final_liquidation": not args.no_forecast,
     }
     if ft > 0:
         trading_layer["fault_tolerance"] = ft
@@ -156,6 +170,10 @@ async def main() -> None:
 
             params = dict(STRATEGY_PARAMS)
             params["buy_notional"] = args.buy_notional
+            # Forecast ON → position stays open (forecast children sell);
+            # --no-forecast → FINAL LIQUIDATION sells all remaining units
+            # on the last day (overrides DB algo_configs via strategy_overrides).
+            params["skip_final_liquidation"] = not args.no_forecast
             if ft > 0:
                 params["fault_tolerance"] = ft
 
@@ -171,10 +189,20 @@ async def main() -> None:
                                   f"{strategy_name} config for {st}/{code}", flush=True)
                 primary_st = next(iter(codes_by_st))
                 primary_code = codes_by_st[primary_st][0]
-                tl = {k: params[k] for k in _TRADING_LAYER_KEYS if k in params}
+                # min_holding_period is NOT forced here: when the optimizer
+                # (_optm_engine) tuned it, the DB algo_configs row wins; the
+                # hardcoded STRATEGY_PARAMS value is only the fallback.
+                tl = {
+                    k: params[k] for k in _TRADING_LAYER_KEYS
+                    if k in params and k != "min_holding_period"
+                }
                 params = await load_params(
                     conn, algo_name, primary_st, primary_code, strategy_name,
                     strategy_overrides=tl,
+                )
+                params.setdefault(
+                    "min_holding_period",
+                    STRATEGY_PARAMS["min_holding_period"],
                 )
                 print(f"    [algo_configs] loaded {strategy_name} params from DB "
                       f"for {primary_st}/{primary_code}", flush=True)

@@ -1,4 +1,4 @@
-"""Rolling aggregation helpers with cuDF acceleration.
+"""Rolling aggregation helpers — single pandas path (cudf.pandas accelerated).
 
 Consolidates two patterns that share the same ``groupby(keys)[col]
 .rolling(W, min_periods=P).agg(...)`` shape:
@@ -18,21 +18,18 @@ Also provides ``compute_emas`` for exponential moving averages
 lacks grouped-ewm support (see analyze/mov_ave_spread/rsi.py for
 the same constraint).
 
-Both rolling helpers use the cuDF router
-(``_common.df_utils._router.should_use_gpu``) to decide CPU vs GPU
-per call. The decision is cached per (op_type, n_rows) so repeated
-calls in a loop don't re-log.
-
-GPU AMORTIZATION
+GPU ACCELERATION
 ================
 
-``compute_moving_averages`` transfers the (group_key, value_col)
-subset to VRAM ONCE and computes all MA windows from that single
-transfer - this is the key benefit over calling
-``grouped_rolling_agg`` once per window (which would re-transfer per
-call). Use ``compute_moving_averages`` when you need multiple
-windows on the same column; use ``grouped_rolling_agg`` when you
-need a single window.
+When the process-level ``cudf.pandas`` hook is active (enabled at the
+entry point via ``_common.df_utils._activate.activate()``), ALL pandas
+operations transparently run on GPU via cuDF. There is NO manual
+``import cudf`` / ``cudf.from_pandas()`` / ``to_pandas()`` branching
+— the single pandas code path handles both CPU and GPU modes.
+
+``should_use_gpu`` is called for LOGGING ONLY (awareness of whether
+the data volume meets the GPU breakeven threshold). It does NOT
+control code-path branching.
 
 CALLER CONTRACT
 ===============
@@ -68,15 +65,9 @@ def compute_moving_averages(
     ``add_ratio`` is True, also adds ``ma{ratio_window}_ratio`` =
     ``(value_col / ma{ratio_window} - 1.0)``.
 
-    Uses the cuDF router (``should_use_gpu``) to decide CPU vs GPU.
-    The decision is based on the ``rolling_mean`` breakeven threshold
-    (~100K rows conservative). When GPU is selected:
-
-      1. Only the (group_key, value_col) columns are transferred to
-         VRAM (object-dtype columns like python dates are skipped).
-      2. All MA windows are computed on-device from the single
-         transfer - amortizes PCIe cost across all windows.
-      3. Results are transferred back and rounded on CPU.
+    Single pandas code path — when ``cudf.pandas`` is active, this
+    runs on GPU transparently. The ``should_use_gpu`` router is
+    consulted once for logging only (no branching).
 
     The caller MUST pre-sort ``df`` by ``[group_key, date_col]`` so
     that rolling windows see correct temporal order within each group.
@@ -122,29 +113,19 @@ def compute_moving_averages(
 
     rw = ratio_window or windows[0]
 
-    # ---- GPU path (cuDF) ----
-    # Transfer only the needed columns to VRAM. Object-dtype columns
-    # (e.g. python date objects) are not cuDF-compatible and would
-    # waste VRAM, so we never transfer them.
+    # Log GPU decision for awareness (no branching — cudf.pandas
+    # handles the actual GPU/CPU routing internally).
     if should_use_gpu(df, op_type="rolling_mean"):
-        import cudf  # type: ignore[import-untyped]
-        work_subset = df[[group_key, value_col]]
-        gdf = cudf.from_pandas(work_subset)
-        g_grp = gdf.groupby(group_key, sort=False)[value_col]
-        for w in windows:
-            g_result = g_grp.rolling(window=w, min_periods=min_periods).mean()
-            # Strip the group-key level -> align by original index.
-            g_result = g_result.reset_index(level=0, drop=True)
-            df[f"ma{w}"] = g_result.to_pandas().reindex(df.index)
-    # ---- CPU path (pandas) ----
-    else:
-        g = df.groupby(group_key, sort=False)[value_col]
-        for w in windows:
-            df[f"ma{w}"] = g.transform(
-                lambda x, _w=w: x.rolling(window=_w, min_periods=min_periods).mean()
-            )
+        print(f"    [cuDF router] {len(df):,} rows — rolling_mean (GPU-worthy)", flush=True)
 
-    # Round + ratio (on CPU - cheap elementwise, avoids cuDF overhead).
+    # Single code path — cudf.pandas accelerates transparently when active.
+    g = df.groupby(group_key, sort=False)[value_col]
+    for w in windows:
+        df[f"ma{w}"] = g.transform(
+            lambda x, _w=w: x.rolling(window=_w, min_periods=min_periods).mean()
+        )
+
+    # Round + ratio (elementwise — cheap on both CPU and GPU).
     for w in windows:
         df[f"ma{w}"] = df[f"ma{w}"].round(round_to)
     if add_ratio:
@@ -261,12 +242,9 @@ def grouped_rolling_agg(
     levels from the resulting MultiIndex Series so it aligns back to the
     original DataFrame by the preserved original index.
 
-    GPU acceleration: when the cuDF router determines the GPU is
-    worthwhile for this op_type + row count, the computation is
-    performed on a cuDF DataFrame and the result is brought back to
-    pandas. cuDF supports ``groupby().rolling().agg()`` natively.
-    The decision is cached per (op_type, n_rows) so repeated calls
-    (e.g. 5 rolling-std windows in compute_rolling_stds) only log once.
+    Single pandas code path — when ``cudf.pandas`` is active, this
+    runs on GPU transparently. The ``should_use_gpu`` router is
+    consulted once for logging only (no branching).
 
     Args:
         df: DataFrame sorted by ``group_keys + [date_col]`` (or will be
@@ -306,44 +284,25 @@ def grouped_rolling_agg(
     """
     if isinstance(group_keys, str):
         group_keys = [group_keys]
-    n_levels = len(group_keys)
 
     if min_periods is None:
         min_periods = window
 
     work = df.sort_values(group_keys) if sort else df
 
-    # Map agg name to cuDF op_type for the router's breakeven lookup.
-    # rolling mean/sum share a profile; std/var share another.
+    # Log GPU decision for awareness (no branching — cudf.pandas
+    # handles the actual GPU/CPU routing internally).
     op_type = {
         "mean": "rolling_mean", "sum": "rolling_sum",
         "std": "rolling_std", "var": "rolling_var",
-        "median": "rolling_mean",  # approximate
+        "median": "rolling_mean",
         "min": "rolling_mean", "max": "rolling_mean", "count": "rolling_mean",
     }.get(agg, "default")
 
     if should_use_gpu(work, op_type=op_type):
-        import cudf  # type: ignore[import-untyped]
-        # Only transfer the columns we need (group_keys + col) to VRAM.
-        # Other columns (e.g. object-dtype ``date`` with python date
-        # objects) are not cuDF-compatible and would waste VRAM.
-        needed = list(group_keys) + [col]
-        work_subset = work[needed]
-        gdf = cudf.from_pandas(work_subset)
-        g_grp = gdf.groupby(group_keys, sort=False)[col]
-        g_roller = g_grp.rolling(window=window, min_periods=min_periods)
-        if agg in ("std", "var"):
-            g_result = getattr(g_roller, agg)(ddof=ddof)
-        else:
-            g_result = getattr(g_roller, agg)()
-        # Strip group-key levels -> align by original index, then to_pandas.
-        g_result = g_result.reset_index(
-            level=list(range(n_levels)), drop=True
-        )
-        result = g_result.to_pandas()
-        return result.reindex(df.index)
+        print(f"    [cuDF router] {len(work):,} rows — {op_type} (GPU-worthy)", flush=True)
 
-    # CPU path (pandas Cython).
+    # Single code path — cudf.pandas accelerates transparently when active.
     grp = work.groupby(group_keys, sort=False)[col]
     roller = grp.rolling(window=window, min_periods=min_periods)
 
@@ -355,7 +314,7 @@ def grouped_rolling_agg(
     # Strip the group-key levels from the MultiIndex, leaving only the
     # original index. The result then aligns back to `df` by index.
     result = result.reset_index(
-        level=list(range(n_levels)), drop=True
+        level=list(range(len(group_keys))), drop=True
     )
     # Reindex back to df's original order (sort may have reordered).
     return result.reindex(df.index)

@@ -5,7 +5,7 @@ Reads the history CSV archive produced by download_csindex.py:
   • {code}_history.csv        (daily OHLCV + PE + amount)
   • {code}_1m.csv             (recent 1-month export, bilingual headers)
 
-Also reads SZSE index daily CSVs (399001 / 399006 / 399237), SSE index
+Also reads SZSE index daily CSVs (399001 / 399006), SSE index
 trend snapshots (~200 SSE indices), and CNINDEX history (399303 / 399310 /
 399311). All sources are concatenated, deduplicated (priority: CNINDEX >
 SSE trend > SZSE > 1m > history), then PE is backfilled from CSIndex rows
@@ -76,6 +76,20 @@ from builds.index.baseline.db_insert import insert_daily_to_db
 async def main():
     ap = argparse.ArgumentParser()
     add_common_build_args(ap)
+    ap.add_argument(
+        "--refresh-estimated-days",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Treat (date, code) rows newer than N days that are estimated "
+            "(is_close_estimated = TRUE) or lack real OHLC (NULL/NaN open) "
+            "as MISSING so they are rebuilt from the local CSVs (upsert is "
+            "idempotent; 0 = off). Self-heals rows gap-filled by a build "
+            "that ran before the EOD CSV publish landed. Used by the "
+            "nightly builds.index run and the 'Build Yday Ref' chain."
+        ),
+    )
     args = ap.parse_args()
 
     t0 = time.time()
@@ -116,6 +130,39 @@ async def main():
                 conn, "stats.index_tech_stats", ["date", "code"]
             )
             print(f"    [DB] {len(existing_daily_keys):,} existing (date, code) pairs in stats.index_tech_stats", flush=True)
+
+            # Self-heal: drop recent estimated/NULL-OHLC keys so they are
+            # rebuilt from the local CSVs. Covers rows gap-filled by a
+            # build that ran before the EOD CSV publish landed; rows whose
+            # CSVs still lack the data are re-estimated identically.
+            if args.refresh_estimated_days > 0:
+                stale_rows = await conn.fetch(
+                    """
+                    SELECT date, code
+                    FROM stats.index_basic_stats
+                    WHERE date >= CURRENT_DATE - ($1::int)
+                      AND (is_close_estimated = TRUE
+                           OR open IS NULL
+                           OR open::text = 'NaN')
+                    """,
+                    args.refresh_estimated_days,
+                )
+                stale_keys = {(r["date"], r["code"]) for r in stale_rows}
+                if stale_keys:
+                    dropped = len(existing_daily_keys & stale_keys)
+                    existing_daily_keys -= stale_keys
+                    print(
+                        f"    [DB] refresh-estimated({args.refresh_estimated_days}d): "
+                        f"{len(stale_keys):,} estimated/NULL-open keys found; "
+                        f"{dropped:,} dropped from existing keys for rebuild",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"    [DB] refresh-estimated({args.refresh_estimated_days}d): "
+                        f"no estimated/NULL-open rows in window",
+                        flush=True,
+                    )
 
         # ------------------------------------------------------------------
         # 2. Build daily frame (filtered to missing keys)

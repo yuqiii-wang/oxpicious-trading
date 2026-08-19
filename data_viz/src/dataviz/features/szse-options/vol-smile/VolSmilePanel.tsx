@@ -1,37 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
-import type { OptionsRow } from "@shared/types";
+import type { OptionsRow, SkewnessCrossCountRow } from "@shared/types";
 import { fmtNum } from "@/lib/series";
 import { computeSmileSkewness } from "@/lib/options-stats";
 import { buildSmileOption } from "./smileOption";
 import { buildSkewTimeSeriesOption } from "./skewTimeSeriesOption";
 import { computeDailySkewSeries } from "./skewSeries";
-import type { ExpiryGapsMap } from "./types";
 
 import type { EChartsOption } from "echarts";
 import type { ECharts } from "echarts";
-
-export type { ExpiryGapsMap };
 
 interface Props {
   rows: OptionsRow[];
   selectedDate: string;
   onDateChange?: (date: string) => void;
-  gapsMap?: ExpiryGapsMap | null;
   bottomChartOption?: EChartsOption | null;
   bottomChartHeight?: number;
   bottomChartControls?: React.ReactNode;
+  crossCounts?: SkewnessCrossCountRow[];
 }
 
 export default function VolSmilePanel({
   rows,
   selectedDate,
   onDateChange,
-  gapsMap,
   bottomChartOption,
   bottomChartHeight = 200,
   bottomChartControls,
+  crossCounts,
 }: Props) {
   const snap = rows.filter((r) => r.date === selectedDate);
   const option = useMemo(
@@ -39,11 +36,11 @@ export default function VolSmilePanel({
     [snap, selectedDate],
   );
 
-  const dailySkewSeries = useMemo(() => computeDailySkewSeries(rows), [rows]);
+  const dailySkewSeries = useMemo(() => computeDailySkewSeries(rows, crossCounts), [rows, crossCounts]);
 
   const skewOption = useMemo(
-    () => buildSkewTimeSeriesOption(dailySkewSeries, selectedDate, gapsMap ?? null),
-    [dailySkewSeries, selectedDate, gapsMap],
+    () => buildSkewTimeSeriesOption(dailySkewSeries, selectedDate),
+    [dailySkewSeries, selectedDate],
   );
 
   // Refs to chart instances for cross-chart dataZoom + tooltip sync

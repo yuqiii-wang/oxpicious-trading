@@ -54,11 +54,15 @@ from _common.build_commons import (  # noqa: E402
     add_force_arg,
 )
 from _common.db_commons import (  # noqa: E402
-    bulk_upsert_async,
+    copy_or_upsert_split_async,
     copy_insert_async,
 )
 
 setup_utf8_stdout()
+
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
@@ -259,13 +263,19 @@ async def _write_rows(
         if force:
             n = await copy_insert_async(conn, TABLE_NAME, rows)
         else:
-            n = await bulk_upsert_async(
-                conn, TABLE_NAME, rows,
-                key_columns=_PK_COLUMNS,
+            n_copied, n_upserted = await copy_or_upsert_split_async(
+                conn, TABLE_NAME, rows, key_columns=_PK_COLUMNS,
+                date_column="last_date",
             )
+            n = n_copied + n_upserted
         total += n
+        via = "COPY" if force else (
+            "COPY" if n_copied > 0 and n_upserted == 0 else
+            f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else
+            "upsert"
+        )
         print(f"    chunk {i + 1}/{n_chunks}: "
-              f"{'COPY' if force else 'upsert'} {n:,} rows "
+              f"{via} {n:,} rows "
               f"(cumulative {total:,})", flush=True)
 
     print(f"  [{sec_type}]   wrote {total:,} rows total", flush=True)

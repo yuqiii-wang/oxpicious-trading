@@ -32,7 +32,7 @@ async def forecast_one_seq(
 ) -> int:
     """Compute + (optionally) upsert the forecast for one seq_id.
 
-    ``strategy_name`` (= algo name, e.g. 'bollinger_bands' / 'macd') selects
+    ``strategy_name`` (= algo name, e.g. 'macd') selects
     the signal algo whose SELL signals drive the forecast sell decisions.
     When provided, the algo is resolved + params loaded from algo_configs,
     and the trailing 255d OHLC is passed to the forecast decision builder so
@@ -171,7 +171,13 @@ async def run_forecast(
     seqs for the strategy+sec_type) can be used. Returns total rows upserted.
     """
     if seq_id is not None:
-        pairs: List[Tuple[int, str]] = [(seq_id, "")]
+        # Resolve the code for the seq so downstream risk recomputation is
+        # correctly scoped (passing "" would match no rows).
+        code = await conn.fetchval(
+            "SELECT code FROM strategy.strategy_identity WHERE seq_id = $1",
+            seq_id,
+        )
+        pairs: List[Tuple[int, str]] = [(seq_id, code or "")]
     else:
         # Always honor the codes filter when provided (even with force=True);
         # only the skip_existing flag flips with force. Previously `codes` was

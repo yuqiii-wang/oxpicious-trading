@@ -51,7 +51,7 @@ INDUSTRY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("DEBT", "债券", "DEBT_LOCAL", "地方债", ["地债"]),
     ("DEBT", "债券", "DEBT_POLICY", "政金债", ["政金债"]),
     ("DEBT", "债券", "DEBT_CONVERTIBLE", "转债", ["转债", "可交换债"]),
-    ("DEBT", "债券", "DEBT_CORP", "信用债", ["城投债", "短融", "科创债", "公司债", "企债"]),
+    ("DEBT", "债券", "DEBT_CORP", "信用债", ["城投债", "短融", "科创债", "公司债", "企债", "信用"]),
     # DEBT_GENERAL — catch-all for bond ETFs/LOFs whose name contains 债 but
     # doesn't match a specific debt type above (e.g. 综债, 双债, 强债, 粤债).
     # Safe: 0 stocks have 债 in their name.
@@ -75,7 +75,7 @@ INDUSTRY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     # not PHARMA_BROAD).  Catches health-themed ETFs/stocks (健康A/B, 申万健康,
     # 泰康公卫健康, 美年健康, 卫宁健康, …).
     ("HC", "医药", "HEALTH", "健康", ["健康"]),
-    ("HC", "医药", "PHARMA_BROAD", "医药", ["医药", "制药", "医疗", "医卫", "药业"]),
+    ("HC", "医药", "PHARMA_BROAD", "医药", ["医药", "制药", "医疗", "医卫", "药业", "精准医"]),
     ("HC", "医药", "ELDER_CARE", "养老产业", ["养老"]),
 
     # --- TECH (科技) ---
@@ -134,7 +134,7 @@ INDUSTRY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("CONS", "消费", "MEDIA", "传媒", ["传媒", "影视", "动漫"]),
     ("CONS", "消费", "DISCRETIONARY", "可选消费", ["可选", "家电", "家用电器"]),
     ("CONS", "消费", "EDU", "教育", ["教育"]),
-    ("CONS", "消费", "CONS_GENERAL", "消费", ["消费", "品牌"]),
+    ("CONS", "消费", "CONS_GENERAL", "消费", ["消费"]),
     ("CONS", "消费", "RETAIL", "百货/零售", ["百货", "零售", "超市", "商业"]),
     ("CONS", "消费", "HOTEL", "酒店", ["酒店", "饭店"]),
 
@@ -146,7 +146,7 @@ INDUSTRY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("MAT", "材料", "CHEM", "化工", ["化工"]),
     ("MAT", "材料", "BLDG_STEEL", "建材/钢铁", ["钢铁", "建材", "建筑材料"]),
     ("MAT", "材料", "NEW_MAT", "新材料", ["新材料"]),
-    ("MAT", "材料", "MAT_GENERAL", "材料", ["材料"]),
+    ("MAT", "材料", "MAT_GENERAL", "材料", ["材料", "原料"]),
 
     # --- IND (工业) ---
     ("IND", "工业", "AUTO", "汽车", ["汽车"]),
@@ -165,6 +165,14 @@ INDUSTRY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("IND", "工业", "TEXTILE", "纺织服装", ["纺织", "服饰", "服装"]),
     ("IND", "工业", "PAPER", "造纸", ["纸业"]),
     ("IND", "工业", "PRINTING", "印刷", ["印刷"]),
+    # IND_GENERAL — catch-all for industrial indices that don't match a
+    # specific sub-industry (工程机械/汽车/机器人/…). Placed LAST in
+    # the IND section so specific rules win first.  Matches indices like
+    # 工业指数, 180工业, 380工业, 500工业, 优势制造, 沪投资品.
+    ("IND", "工业", "IND_GENERAL", "工业",
+     ["工业", "制造", "投资品", "持续产业",
+      "工业制造", "工业4", "工业互联", "工业等权",
+      "装备", "装备产业", "优势制造"]),
 
     # --- INFRA (基建) ---
     ("INFRA", "基建", "INFRA_CONSTR", "建筑/基建", ["基建", "建筑", "建工", "建设"]),
@@ -213,7 +221,7 @@ STRATEGY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("BROAD", "宽基", "BROAD_SSE50", "上证50", ["上证50"]),
     ("BROAD", "宽基", "BROAD_SSE180", "上证180", ["上证180"]),
     ("BROAD", "宽基", "BROAD_SSE380", "上证380", ["上证380"]),
-    ("BROAD", "宽基", "BROAD_SSE", "上证", ["上证", "沪综"]),  # residual (上证指数, 上证580, …)
+    ("BROAD", "宽基", "BROAD_SSE", "上证", ["上证", "沪综", "综指", "Ａ股", "Ｂ股", "沪市"]),  # residual (上证指数, 上证580, …)
 
     # CSI (中证/沪深) flagship cross-market series — the core broad-market
     # size-stratified combos.  Each major 沪深/中证 benchmark gets its own
@@ -277,7 +285,7 @@ STRATEGY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     ("STRATEGY", "策略", "LEVERAGED", "杠杆/反向",
      ["两倍", "反向", "杠杆"]),
     ("STRATEGY", "策略", "STRAT_THEMED", "主题",
-     ["品牌工程", "凤凰", "精选市场", "小康", "新兴成指", "结构调整"]),
+     ["凤凰", "精选市场", "小康", "新兴成指", "结构调整", "济安"]),
     ("STRATEGY", "策略", "STRAT_GROWTH", "成长",
      ["成长"]),
     ("STRATEGY", "策略", "STRAT_LARGE", "大盘",
@@ -302,14 +310,21 @@ STRATEGY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     # dividends). Split out from STRAT_FACTOR and pulled out of STRAT_LARGE
     # (基本面50 was formerly grouped under 大盘 via the "基本面50" keyword).
     ("STRATEGY", "策略", "STRAT_FUNDAMENTAL", "基本面",
-     ["基本面"]),
+     ["基本面", "基本"]),
     ("STRATEGY", "策略", "STRAT_FACTOR", "因子",
      ["质量", "低波", "等权", "研发创新",
       "战略新兴", "核心竞争力", "公司治理", "新动能",
-      "SNLV", "治理", "基石", "蓝筹", "量化", "贝塔"]),
+      "SNLV", "治理", "基石", "蓝筹", "量化", "贝塔",
+      "分层", "动态", "稳定", "波动", "高贝", "低贝",
+      "非周期", "市值", "AH"]),
     # Belt and Road / 改革 / 重组 — theme strategies not tied to a sector.
     ("STRATEGY", "策略", "STRAT_THEMED", "主题",
-     ["一带", "带路", "一带一路", "改革", "重组", "互联"]),
+     ["一带", "带路", "一带一路", "改革", "重组", "互联", "百发"]),
+    # Brand-themed strategy indices — e.g. 央视500 (CCTV brand index),
+    # 百强企业, 品牌工程.  These are brand-licensed strategy indices,
+    # not industry-specific.
+    ("STRATEGY", "策略", "STRAT_BRAND", "品牌",
+     ["央视", "百强企业", "品牌"]),
 
     # --- SOE (央企/国企) — SOE-themed indices ---
     ("SOE", "央企/国企", "SOE_THEME", "央企/国企", ["央企", "国企", "国资", "民企", "内地国有"]),
@@ -318,9 +333,9 @@ STRATEGY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     # Mainland regional concepts (长三角/大湾区/成渝…) and HK-connect / 沪港深
     # cross-market access indices that don't map to a single sector.
     ("REGION", "区域概念", "REGION_CN", "区域",
-     ["长三角", "G60", "张江", "大湾区", "成渝", "杭州湾区", "湖北", "海洋经济"]),
+     ["长三角", "G60", "张江", "大湾区", "成渝", "杭州湾区", "湖北", "海洋经济", "丝路", "新丝路"]),
     ("REGION", "区域概念", "REGION_HK_LINK", "沪港深/港股通",
-     ["沪港深", "港股通", "港股", "香港", "恒生", "恒生中国", "恒中企", "中华"]),
+     ["沪港深", "港股通", "港股", "香港", "恒生", "恒生中国", "恒中企", "中华", "股通"]),
 
     # --- OVERSEAS (海外) — overseas/foreign-market access indices & ETFs ---
     # Cross-border QDII ETFs/LOFs tracking foreign equity markets (纳斯达克,

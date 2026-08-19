@@ -8,6 +8,7 @@ import os
 import re
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from downloads._common.core import read_csv_preferred
@@ -64,19 +65,25 @@ def _scan_margin_dir(scan_dir, file_prefix, market, verbose=True, files=None):
         if len(df) == 0:
             continue
         date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
-        for _, r in df.iterrows():
-            code = r["_code"]
-            code_with_suffix = code if "." in code else f"{code}{default_suffix}"
-            rows.append({
-                "date":           date_str,
-                "code":           code_with_suffix,
-                "rz_buy":         parse_num(r.get("融资买入额(元)")),
-                "rz_balance":     parse_num(r.get("融资余额(元)")),
-                "rq_sell_qty":    parse_num(r.get("融券卖出量(股/份)")),
-                "rq_balance_qty": parse_num(r.get("融券余量(股/份)")),
-                "rq_balance_amt": parse_num(r.get("融券余额(元)")),
-                "total_balance":  parse_num(r.get("融资融券余额(元)")),
-            })
+        # Vectorized margin row construction
+        _df_out = df[["_code"]].copy()
+        _df_out["code"] = np.where(
+            _df_out["_code"].str.contains(r"\.", na=False),
+            _df_out["_code"],
+            _df_out["_code"] + default_suffix,
+        )
+        _df_out["date"] = date_str
+        _margin_cols_src = {
+            "rz_buy": "融资买入额(元)",
+            "rz_balance": "融资余额(元)",
+            "rq_sell_qty": "融券卖出量(股/份)",
+            "rq_balance_qty": "融券余量(股/份)",
+            "rq_balance_amt": "融券余额(元)",
+            "total_balance": "融资融券余额(元)",
+        }
+        for _out_col, _src_col in _margin_cols_src.items():
+            _df_out[_out_col] = df[_src_col].map(parse_num)
+        rows.extend(_df_out[["date", "code"] + list(_margin_cols_src.keys())].to_dict(orient="records"))
         n_ok += 1
     if verbose:
         print(f"    [MARGIN-{market}] {n_ok} files with data, {n_empty} empty, {len(rows)} rows", flush=True)

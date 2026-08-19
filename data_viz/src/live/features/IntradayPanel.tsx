@@ -1,4 +1,4 @@
-﻿/**
+/**
  * IntradayPanel — single-code 5-minute intraday OHLC + volume chart for the
  * Live Data page. Renders one code's bars for a single trading day.
  *
@@ -14,7 +14,8 @@
  * are rendered below the intraday chart — same shared component used by the
  * Index Baseline and ETF + Margin pages.
  */
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { Box, Button, Stack } from "@mui/material";
 import { PieChart as PieChartIcon } from "@mui/icons-material";
 import ChartCard from "@/components/ChartCard";
@@ -246,7 +247,19 @@ export default function IntradayPanel({ bundle, date, hasVolume, showComposition
           const time = typeof av === "number" && Number.isFinite(av)
             ? formatHM(av)
             : String(av ?? "");
-          let html = `<div style="font-weight:600;margin-bottom:4px">${time}</div>`;
+
+          const makeHeader = (text: string) =>
+            React.createElement(tooltipComponents.Header, null, text);
+          const makeRow = (children: React.ReactNode, style?: React.CSSProperties) =>
+            React.createElement(tooltipComponents.Row, { style }, children);
+          const makeTextRow = (marker: string, name: string, text: React.ReactNode) =>
+            makeRow([marker, " ", name, ": ", text]);
+          const makeBoldRow = (marker: string, name: string, vstr: string) =>
+            makeTextRow(marker, name, React.createElement(tooltipComponents.Bold, null, vstr));
+
+          const children: React.ReactNode[] = [];
+          children.push(makeHeader(time));
+
           for (const p of arr) {
             if (p.value == null) continue;
             const name = p.seriesName ?? "";
@@ -256,19 +269,20 @@ export default function IntradayPanel({ bundle, date, hasVolume, showComposition
                 : p.value;
               const v = val as number;
               if (!Number.isFinite(v)) continue;
-              html += `<div>${p.marker ?? ""} ${name}: <b>${fmtNum(v)}</b></div>`;
+              children.push(makeBoldRow(p.marker ?? "", name, fmtNum(v)));
             } else if (Array.isArray(p.value)) {
-              // [ts, open, close, low, high] — skip the leading timestamp.
               const off = p.value.length >= 5 ? 1 : 0;
               const o = p.value[off];
               const cl = p.value[off + 1];
               const l = p.value[off + 2];
               const h = p.value[off + 3];
               if (o == null && cl == null && l == null && h == null) continue;
-              html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
+              children.push(makeTextRow(p.marker ?? "", name,
+                `O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}`));
             }
           }
-          return html;
+
+          return renderReactElement(React.createElement(React.Fragment, null, children));
         },
       },
       legend: commonLegend(themeMode, { type: "scroll" }),

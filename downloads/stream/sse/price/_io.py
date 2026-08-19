@@ -120,3 +120,116 @@ def _prepopulate_finished_codes(
                 finished_codes.add(bare)
     except Exception as e:  # noqa: BLE001
         logger.warning("Failed to pre-populate finished_codes from %s: %s", table, e)
+
+
+def is_intraday_complete(conn, asset: AssetStream, trade_date, threshold: float = 0.95) -> bool:
+    """Check if the intraday table already has sufficient bars up to CLOSE_TIME
+    for the given trade_date. Returns True if the ratio of distinct codes
+    with a CLOSE_TIME bar to total identity codes >= threshold.
+
+    This catches edge cases where only a few codes have 15:00 bars while
+    hundreds of others are missing (suspended stocks, partial DB failures).
+    A 95% threshold handles suspended stocks gracefully.
+    """
+    try:
+        # Count identity rows for this date
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(DISTINCT code) FROM {asset.identity_table} WHERE date = %s",
+                (trade_date,),
+            )
+            n_total = cur.fetchone()[0]
+        if n_total == 0:
+            return False
+
+        # Count codes that have a CLOSE_TIME bar
+        code_filter = ""
+        params: list = [trade_date, CLOSE_TIME]
+        if asset.code_suffix is not None:
+            code_filter = " AND code_suffix = %s"
+            params.append(asset.code_suffix)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(DISTINCT code) FROM {asset.intraday_table} "
+                f"WHERE date = %s AND time = %s{code_filter}",
+                tuple(params),
+            )
+            n_done = cur.fetchone()[0]
+
+        # Also verify latest bar time is at least CLOSE_TIME
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT MAX(time) FROM {asset.intraday_table} WHERE date = %s",
+                (trade_date,),
+            )
+            max_time = cur.fetchone()[0]
+        if max_time is None or max_time < CLOSE_TIME:
+            return False
+
+        ratio = n_done / n_total if n_total > 0 else 0.0
+        return ratio >= threshold
+    except Exception as e:
+        logger.warning("is_intraday_complete(%s) failed: %s", asset.name, e)
+        return False
+
+
+def get_intraday_progress(conn, asset: AssetStream, trade_date) -> dict:
+    """Get progress stats for an asset's intraday data for a given date.
+
+    Returns dict with:
+      - n_identity: number of identity rows
+      - n_bars: number of intraday bars
+      - max_time: latest bar time (or None)
+      - n_codes_done: number of codes with CLOSE_TIME bar
+      - n_total_codes: number of distinct codes in identity table
+      - complete: whether all codes have CLOSE_TIME bar
+    """
+    result = {
+        "n_identity": 0,
+        "n_bars": 0,
+        "max_time": None,
+        "n_codes_done": 0,
+        "n_total_codes": 0,
+        "complete": False,
+    }
+    try:
+        # Count identity rows
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(*) FROM {asset.identity_table} WHERE date = %s", (trade_date,))
+            result["n_identity"] = cur.fetchone()[0]
+
+        if result["n_identity"] == 0:
+            return result
+
+        # Count distinct codes in identity
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT COUNT(DISTINCT code) FROM {asset.identity_table} WHERE date = %s", (trade_date,))
+            result["n_total_codes"] = cur.fetchone()[0]
+
+        # Get max bar time
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT MAX(time) FROM {asset.intraday_table} WHERE date = %s", (trade_date,))
+            max_t = cur.fetchone()[0]
+            result["max_time"] = max_t
+
+        # Count codes that have a CLOSE_TIME bar
+        code_filter = ""
+        params: list = [trade_date, CLOSE_TIME]
+        if asset.code_suffix is not None:
+            code_filter = " AND code_suffix = %s"
+            params.append(asset.code_suffix)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(DISTINCT code) FROM {asset.intraday_table} "
+                f"WHERE date = %s AND time = %s{code_filter}",
+                tuple(params),
+            )
+            result["n_codes_done"] = cur.fetchone()[0]
+
+        result["n_bars"] = result["n_codes_done"]  # at least
+        result["complete"] = result["max_time"] is not None and result["max_time"] >= CLOSE_TIME
+
+    except Exception as e:
+        logger.warning("get_intraday_progress(%s) failed: %s", asset.name, e)
+
+    return result

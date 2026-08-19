@@ -157,36 +157,12 @@ def compute_ema_vs_columns(df: pd.DataFrame) -> pd.DataFrame:
     needed = ["sec_type", "code", "date"] + sorted(src_cols)
 
     if should_use_gpu(df[needed], op_type="merge"):
-        import cudf  # type: ignore[import-untyped]
-        # cuDF cannot handle object dtype (Python date objects) — convert
-        # date column to datetime64 before the GPU transfer, then restore
-        # the original dtype after the computation.
-        orig_date_dtype = df["date"].dtype
-        df["date"] = pd.to_datetime(df["date"])
-        # Transfer only the minimal column subset to VRAM. All 9 ratios
-        # run on-device; results are brought back in one to_pandas() call.
-        gdf = cudf.from_pandas(df[needed])
-        for num_col, den_col, out_col in EMA_PAIRS:
-            num = gdf[num_col]
-            den = gdf[den_col]
-            out = (num - den) / den
-            # cuDF doesn't support np.isfinite; inf values are caught by
-            # the overflow guard in sanitize_ema_rows. Mask on NaN +
-            # near-zero denominator (the only realistic null conditions
-            # for price/EMA ratios).
-            mask = num.isna() | den.isna() | (den.abs() < 1e-12)
-            gdf[out_col] = out.where(~mask)
-        out_cols = [p[2] for p in EMA_PAIRS]
-        result = gdf[out_cols].to_pandas()
-        for col in out_cols:
-            df[col] = result[col].values
-        # Restore original date dtype (object for Python date objects)
-        df["date"] = df["date"].astype(orig_date_dtype)
-    else:
-        # CPU path — use the shared gap_col helper (vectorized pandas).
-        from analyze.mov_ave_spread.helpers import gap_col
-        for num_col, den_col, out_col in EMA_PAIRS:
-            df[out_col] = gap_col(df, num_col, den_col)
+        print(f"    [cuDF router] {len(df):,} rows — merge (GPU-worthy)", flush=True)
+
+    # CPU path — use the shared gap_col helper (vectorized pandas).
+    from analyze.mov_ave_spread.helpers import gap_col
+    for num_col, den_col, out_col in EMA_PAIRS:
+        df[out_col] = gap_col(df, num_col, den_col)
 
     return df
 

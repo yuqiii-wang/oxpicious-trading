@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_identity (
     params                JSONB         NOT NULL DEFAULT '{}'::jsonb,
     status                TEXT          NOT NULL DEFAULT 'completed'
         CHECK (status IN ('running', 'completed', 'stopped', 'error')),
+    is_active             BOOLEAN       NOT NULL DEFAULT TRUE,
     created_at            TIMESTAMPTZ   NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_strategy_identity PRIMARY KEY (seq_id),
@@ -248,7 +249,6 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_results (
     total_abs_pnl         NUMERIC(24,4) NOT NULL DEFAULT 0,  -- sum |realized_pnl|
     n_sells               INTEGER       NOT NULL DEFAULT 0,
     n_buys                INTEGER       NOT NULL DEFAULT 0,
-
     CONSTRAINT pk_strategy_results PRIMARY KEY (seq_id),
     CONSTRAINT fk_strategy_results_seq
         FOREIGN KEY (seq_id)
@@ -1030,3 +1030,23 @@ JOIN strategy.strategy_identity s ON s.seq_id = r.seq_id
 JOIN strategy.strategy_results i ON i.seq_id = r.seq_id;
 
 COMMENT ON VIEW strategy.v_strategy_risk_full IS 'Convenience JOIN of strategy_identity + strategy_results + strategy_risks: run context + P&L summary (from strategy_results) alongside risk-specific metrics (incl. top-3 gain/loss FK refs to trade_decision).';
+
+-- ----------------------------------------------------------------------------
+-- Idempotent migration: add is_active column to strategy_identity.
+-- When multiple runs exist for the same (strategy_name, sec_type, code),
+-- is_active marks which run is the "active" one (the one the UI loads by
+-- default). When a new run is created, the old active run is deactivated
+-- (is_active = FALSE) and the new run becomes active (is_active = TRUE).
+-- Queries should prefer is_active = TRUE runs, falling back to seq_no DESC
+-- when no active run exists.
+-- ----------------------------------------------------------------------------
+ALTER TABLE strategy.strategy_identity
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+
+COMMENT ON COLUMN strategy.strategy_identity.is_active IS
+    'Whether this run is the active one for its (strategy_name, sec_type, code). The UI loads active runs by default. When a new run is created, the old active run is deactivated and the new one becomes active. Default TRUE for new runs.';
+
+-- Index for fast lookup of active runs per (strategy_name, sec_type, code).
+CREATE INDEX IF NOT EXISTS idx_strategy_identity_active
+    ON strategy.strategy_identity(strategy_name, sec_type, code)
+    WHERE is_active = TRUE AND parent_seq_id IS NULL;

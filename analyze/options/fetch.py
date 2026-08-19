@@ -1,7 +1,7 @@
 """Async DB fetch primitives for analyze.options.
 
 Loads per-(date, contract_code) option rows with the fields needed for
-the OI-weighted skew computation and the rolling skewness computation,
+the rolling skewness computation and the OI stats computation,
 plus incremental missing-row detection for both target tables.
 
 Open expiry handling: for each (option_type, underlying_code), the mean
@@ -16,18 +16,9 @@ import pandas as pd
 import numpy as np
 
 from analyze.options.config import (
-    IV_MAX,
-    IV_MIN,
-    MIN_CONTRACTS,
-    TABLE_NAME,
     SKEWNESS_TABLE_NAME,
     EXPIRY_IDENTITY_TABLE,
 )
-
-FETCH_COLUMNS = [
-    "date", "contract_code", "option_type", "underlying_code", "expiry_date",
-    "strike_price", "underlying_close", "open_interest", "implied_vol",
-]
 
 # Map sec_type filter to underlying_target_type column values.
 # sec_type='index' -> underlying_target_type IN ('INDEX')
@@ -44,169 +35,6 @@ def _sec_type_where(sec_type: str | None) -> str:
     if target is None:
         return ""
     return f"AND t.underlying_target_type = '{target}'"
-
-# Shared validity filter for source contract rows (panel parity):
-#   active (expiry_date >= date), plausible IV, positive strike/underlying.
-_VALID_ROW_WHERE = """
-    t.expiry_date >= t.date
-    AND g.implied_vol IS NOT NULL
-    AND g.implied_vol > {iv_min}
-    AND g.implied_vol < {iv_max}
-    AND k.strike_price > 0
-    AND s.underlying_close > 0
-""".format(iv_min=IV_MIN, iv_max=IV_MAX)
-
-
-async def fetch_options_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
-    """Fetch all valid option contract rows for the skew computation.
-
-    Returns a DataFrame with columns:
-        date, contract_code, underlying_code, expiry_date, strike_price,
-        underlying_close, open_interest, implied_vol
-
-    Args:
-        conn: async DB connection.
-        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
-    """
-    sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        SELECT
-            t.date,
-            t.contract_code,
-            t.option_type,
-            t.underlying_code,
-            t.expiry_date,
-            k.strike_price,
-            s.underlying_close,
-            v.open_interest,
-            g.implied_vol
-        FROM stats.options_terms t
-        JOIN stats.options_strike k
-          ON k.date = t.date AND k.contract_code = t.contract_code
-        JOIN stats.options_settlement s
-          ON s.date = t.date AND s.contract_code = t.contract_code
-        JOIN stats.options_volume_oi v
-          ON v.date = t.date AND v.contract_code = t.contract_code
-        JOIN stats.options_greeks g
-          ON g.date = t.date AND g.contract_code = t.contract_code
-        WHERE {_VALID_ROW_WHERE}
-        {sec_filter}
-        ORDER BY t.option_type, t.underlying_code, t.expiry_date, t.date, t.contract_code
-    """
-    rows = await conn.fetch(sql)
-    if not rows:
-        return pd.DataFrame(columns=FETCH_COLUMNS)
-
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
-    for col in ("strike_price", "underlying_close",
-                "open_interest", "implied_vol"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
-
-
-async def fetch_missing_groups(conn, sec_type: str | None = None) -> list:
-    """Fetch (date, option_type, underlying_code, expiry_date) tuples
-    that need (re)computation.
-
-    Applies open expiry collapse before detection so that open expiry
-    groups are correctly identified by their mean expiry_date.
-
-    Two categories:
-      1. Valid expiry groups (option_type + underlying_code + expiry_date
-         with >= MIN_CONTRACTS valid rows) missing from the target
-         table entirely.
-      2. Target rows whose future-window gap columns are still NULL now
-         that the expiry has matured (expiry_date <= max source date) —
-         these rows must be recomputed to backfill the matured gaps.
-
-    Returns list of (date, option_type, underlying_code, expiry_date) tuples.
-
-    Args:
-        conn: async DB connection.
-        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
-    """
-    sec_filter = _sec_type_where(sec_type)
-    sql = f"""
-        WITH valid AS (
-            SELECT
-                t.date,
-                t.contract_code,
-                t.option_type,
-                t.underlying_code,
-                t.expiry_date
-            FROM stats.options_terms t
-            JOIN stats.options_strike k
-              ON k.date = t.date AND k.contract_code = t.contract_code
-            JOIN stats.options_settlement s
-              ON s.date = t.date AND s.contract_code = t.contract_code
-            JOIN stats.options_volume_oi v
-              ON v.date = t.date AND v.contract_code = t.contract_code
-            JOIN stats.options_greeks g
-              ON g.date = t.date AND g.contract_code = t.contract_code
-            WHERE {_VALID_ROW_WHERE}
-            {sec_filter}
-        )
-        SELECT date, option_type, underlying_code, expiry_date
-        FROM valid
-        GROUP BY date, option_type, underlying_code, expiry_date
-        HAVING COUNT(*) >= {MIN_CONTRACTS}
-        ORDER BY date, option_type, underlying_code, expiry_date
-    """
-    rows = await conn.fetch(sql)
-    if not rows:
-        return []
-
-    # Convert to DataFrame and apply collapse
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
-
-    # Apply open expiry collapse
-    collapsed = _collapse_open_expiry_df(df)
-
-    # Now detect which groups are missing from the target table
-    # and which need backfill (matured with NULL gaps)
-    dataset_max_date = collapsed["date"].max()
-
-    missing = []
-    existing_pks = set()
-    try:
-        existing_rows = await conn.fetch(
-            f"SELECT date, option_type, underlying_code, expiry_date "
-            f"FROM {TABLE_NAME}"
-        )
-        existing_pks = set(
-            (r["date"], r["option_type"],
-             r["underlying_code"], r["expiry_date"])
-            for r in existing_rows
-        )
-    except Exception:
-        pass
-
-    for _, r in collapsed.iterrows():
-        pk = (r["date"], r["option_type"], r["underlying_code"], r["expiry_date"])
-        if pk not in existing_pks:
-            missing.append(pk)
-        else:
-            # Check if matured with NULL gaps
-            if r["expiry_date"] <= dataset_max_date:
-                try:
-                    gap_row = await conn.fetchrow(
-                        f"SELECT today_gap_from_max_before_expiry "
-                        f"FROM {TABLE_NAME} "
-                        f"WHERE date = $1 AND option_type = $2 "
-                        f"AND underlying_code = $3 AND expiry_date = $4",
-                        r["date"], r["option_type"],
-                        r["underlying_code"], r["expiry_date"],
-                    )
-                    if gap_row and gap_row["today_gap_from_max_before_expiry"] is None:
-                        missing.append(pk)
-                except Exception:
-                    pass
-
-    return missing
 
 
 # ---- Skewness stats fetchers -----------------------------------------------
@@ -272,9 +100,13 @@ async def fetch_options_skewness_rows(conn, sec_type: str | None = None) -> pd.D
     return df
 
 
-async def fetch_missing_skewness_groups(conn, sec_type: str | None = None) -> list:
+async def fetch_missing_skewness_groups(
+    conn,
+    sec_type: str | None = None,
+    table_name: str = SKEWNESS_TABLE_NAME,
+) -> list:
     """Fetch (date, option_type, underlying_code, expiry_date) tuples
-    missing from options_skewness_stats.
+    missing from the target stats table (skewness or OI).
 
     Applies open expiry collapse before detection so that open expiry
     groups are correctly identified by their mean expiry_date.
@@ -285,6 +117,8 @@ async def fetch_missing_skewness_groups(conn, sec_type: str | None = None) -> li
     Args:
         conn: async DB connection.
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+        table_name: Target table checked for missing PKs (defaults to the
+            skewness table; the OI pipeline passes its own table).
     """
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
@@ -317,7 +151,7 @@ async def fetch_missing_skewness_groups(conn, sec_type: str | None = None) -> li
     try:
         existing_rows = await conn.fetch(
             f"SELECT date, option_type, underlying_code, expiry_date "
-            f"FROM {SKEWNESS_TABLE_NAME}"
+            f"FROM {table_name}"
         )
         existing_pks = set(
             (r["date"], r["option_type"],

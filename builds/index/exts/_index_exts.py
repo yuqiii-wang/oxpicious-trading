@@ -38,7 +38,7 @@ from typing import Optional, Set
 import datetime
 
 from _common.build_commons import (
-    bulk_upsert_async,
+    copy_or_upsert_split_async,
     truncate_table_async,
     find_missing_dates,
 )
@@ -151,12 +151,14 @@ async def build_index_exts(conn, force: bool = False) -> None:
             }
             for r in rows
         ]
-        n = await bulk_upsert_async(
-            conn, TABLE_INDEX, data,
-            key_columns=["date", "code"],
-            batch_size=1000,
+        n_copied, n_upserted = await copy_or_upsert_split_async(
+            conn, TABLE_INDEX, data, key_columns=["date", "code"],
         )
-        print(f"    -> upserted {n:,} rows", flush=True)
+        total = n_copied + n_upserted
+        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+              "upsert"
+        print(f"    -> upserted {total:,} rows via {via}", flush=True)
 
     # ---- Step 3b: backfill stock_num from sec_composition ---------
     # For every (date, code) row in index_exts, find the latest
@@ -277,9 +279,11 @@ async def build_index_exts(conn, force: bool = False) -> None:
             }
             for r in ind_rows
         ]
-        n_ind = await bulk_upsert_async(
-            conn, TABLE_INDUSTRY, ind_data,
-            key_columns=["date", "code"],
-            batch_size=1000,
+        n_copied2, n_upserted2 = await copy_or_upsert_split_async(
+            conn, TABLE_INDUSTRY, ind_data, key_columns=["date", "code"],
         )
-        print(f"    -> upserted {n_ind:,} rows", flush=True)
+        total2 = n_copied2 + n_upserted2
+        via2 = "COPY" if n_copied2 > 0 and n_upserted2 == 0 else \
+               f"COPY+upsert ({n_copied2}+{n_upserted2})" if n_copied2 > 0 else \
+               "upsert"
+        print(f"    -> upserted {total2:,} rows via {via2}", flush=True)

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 
-from _common.build_commons import bulk_upsert_async, copy_insert_async
+from _common.build_commons import copy_insert_async, copy_or_upsert_split_async
 from _common.pre_check_and_load.missing_dates import (
     filter_rows_to_missing_dates_async,
 )
@@ -93,16 +93,22 @@ async def _upsert_chunk_sequential(
     conn, table_name, chunk, key_columns, batch_size,
     chunk_idx, n_chunks, label, total_counter,
 ) -> int:
-    """Upsert one chunk using the shared connection (sequential)."""
-    n = await bulk_upsert_async(
-        conn, table_name, chunk,
-        key_columns=key_columns,
-        batch_size=batch_size,
+    """Upsert one chunk using the shared connection (sequential).
+
+    Uses copy_or_upsert_split_async: splits at MAX(date) boundary so
+    new-date rows use COPY (fast path) and gap/history rows use upsert.
+    """
+    n_copied, n_upserted = await copy_or_upsert_split_async(
+        conn, table_name, chunk, key_columns,
     )
+    n = n_copied + n_upserted
     total_counter[0] += n
     prefix = f"      {label} " if label else "      "
-    print(f"{prefix}chunk {chunk_idx}/{n_chunks}: upserted {n:,} rows "
-          f"(cumulative {total_counter[0]:,})", flush=True)
+    via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+          f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+          "upsert"
+    print(f"{prefix}chunk {chunk_idx}/{n_chunks}: inserted {n:,} rows "
+          f"via {via} (cumulative {total_counter[0]:,})", flush=True)
     return n
 
 
@@ -112,21 +118,22 @@ async def _upsert_chunk_parallel(
 ) -> int:
     """Upsert one chunk using a connection borrowed from the pool.
 
-    Each parallel task runs in its own transaction (inside
-    ``bulk_upsert_async``). The pool guarantees connection isolation.
+    Uses copy_or_upsert_split_async for the COPY-fast-path optimization.
     """
     async with pool.acquire() as conn:
-        n = await bulk_upsert_async(
-            conn, table_name, chunk,
-            key_columns=key_columns,
-            batch_size=batch_size,
+        n_copied, n_upserted = await copy_or_upsert_split_async(
+            conn, table_name, chunk, key_columns,
         )
+        n = n_copied + n_upserted
     async with lock:
         total_counter[0] += n
         so_far = total_counter[0]
     prefix = f"      {label} " if label else "      "
-    print(f"{prefix}chunk {chunk_idx}/{n_chunks} done: upserted {n:,} rows "
-          f"(cumulative {so_far:,})", flush=True)
+    via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+          f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+          "upsert"
+    print(f"{prefix}chunk {chunk_idx}/{n_chunks} done: inserted {n:,} rows "
+          f"via {via} (cumulative {so_far:,})", flush=True)
     return n
 
 

@@ -115,8 +115,9 @@ async def insert_strategy_seq(
     scenario: Optional[str] = None,
     parent_seq_id: Optional[int] = None,
     status: str = "completed",
+    is_active: bool = True,
 ) -> int:
-    """Insert a strategy_seq row (one code per seq) and return its seq_id.
+    """Insert a strategy_seq row (one codes per seq) and return its seq_id.
 
     strategy_seq is now a PURE IDENTITY table — run results (dates,
     total_buy_cost, first-buy anchor, P&L summary) are written separately to
@@ -127,6 +128,12 @@ async def insert_strategy_seq(
     code/scenario. ``scenario``/``parent_seq_id`` tag forecast child seqs.
     ``fault_tolerance`` is extracted from ``params`` (0 when absent) and
     stored as a metadata column for querying/filtering.
+
+    ``is_active`` marks this run as the active one (the one the UI loads by
+    default). Default True. When inserting a new parent run, set is_active=True
+    and call ``_deactivate_other_runs`` to deactivate other runs for the same
+    (strategy_name, sec_type, code). Child seqs inherit is_active from their
+    parent.
     """
     params_json = json.dumps(params, default=str)
     # Extract fault_tolerance from params (0 when absent).
@@ -136,14 +143,74 @@ async def insert_strategy_seq(
         f"""
         INSERT INTO {SEQ_TABLE}
             (strategy_name, seq_no, sec_type, code, start_date, end_date,
-             params, status, scenario, parent_seq_id, fault_tolerance)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
+             params, status, scenario, parent_seq_id, fault_tolerance, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
         RETURNING seq_id
         """,
         strategy_name, seq_no, sec_type, code, start_date, end_date,
-        params_json, status, scenario, parent_seq_id, ft,
+        params_json, status, scenario, parent_seq_id, ft, is_active,
     )
     return int(seq_id)
+
+
+async def _deactivate_other_runs(
+    conn,
+    *,
+    strategy_name: str,
+    sec_type: str,
+    code: str,
+    exclude_seq_id: int,
+) -> None:
+    """Deactivate other active runs (and their children) for the same
+    (strategy_name, sec_type, code). Called when a new active run is created
+    so only one run is active at a time.
+
+    Also sets is_active = TRUE on children of the new active parent (so
+    forecast scenarios are also "active") and is_active = FALSE on children
+    of deactivated parents.
+    """
+    # Get old parent seq_ids being deactivated
+    old_parents = await conn.fetch(
+        f"""
+        SELECT seq_id FROM {SEQ_TABLE}
+        WHERE strategy_name=$1 AND sec_type=$2 AND code=$3
+          AND seq_id != $4 AND parent_seq_id IS NULL AND is_active = TRUE
+        """,
+        strategy_name, sec_type, code, exclude_seq_id,
+    )
+    old_parent_ids = [r["seq_id"] for r in old_parents]
+
+    # Collect child seq_ids of old parents to deactivate
+    if old_parent_ids:
+        await conn.execute(
+            f"""
+            UPDATE {SEQ_TABLE}
+            SET is_active = FALSE
+            WHERE parent_seq_id = ANY($1) AND is_active = TRUE
+            """,
+            old_parent_ids,
+        )
+
+    # Deactivate old parent runs themselves
+    await conn.execute(
+        f"""
+        UPDATE {SEQ_TABLE}
+        SET is_active = FALSE
+        WHERE strategy_name=$1 AND sec_type=$2 AND code=$3
+          AND seq_id != $4 AND parent_seq_id IS NULL AND is_active = TRUE
+        """,
+        strategy_name, sec_type, code, exclude_seq_id,
+    )
+
+    # Activate children of the new parent (forecast scenarios)
+    await conn.execute(
+        f"""
+        UPDATE {SEQ_TABLE}
+        SET is_active = TRUE
+        WHERE parent_seq_id = $1
+        """,
+        exclude_seq_id,
+    )
 
 
 async def upsert_strategy_seq(
@@ -159,6 +226,7 @@ async def upsert_strategy_seq(
     parent_seq_id: Optional[int] = None,
     force: bool = False,
     seq_no: Optional[int] = None,
+    is_active: bool = True,
 ) -> Optional[int]:
     """Insert (or skip/replace) a strategy_identity row on the natural key.
 
@@ -175,6 +243,13 @@ async def upsert_strategy_seq(
     ``seq_no`` is a display counter (computed as max+1 when None). It is NOT
     part of uniqueness. Returns the seq_id (new or existing-on-force), or None
     when skipped.
+
+    ``is_active``: when True (default) and this is a parent run (scenario IS
+    NULL / parent_seq_id IS NULL), deactivates other active runs for the same
+    (strategy_name, sec_type, code). Child seqs (scenario IS NOT NULL) inherit
+    is_active from their parent — set is_active=True here only if the parent is
+    active. When False, the run is inserted but other runs are NOT deactivated
+    (useful for historical/debug runs that should not displace the active one).
     """
     existing = await find_seq_id(
         conn, strategy_name, sec_type, code, start_date, end_date, scenario,
@@ -190,11 +265,26 @@ async def upsert_strategy_seq(
 
     if seq_no is None:
         seq_no = await compute_next_seq_no(conn, strategy_name)
-    return await insert_strategy_seq(
+
+    seq_id = await insert_strategy_seq(
         conn, strategy_name, seq_no, sec_type, code, params,
         start_date=start_date, end_date=end_date,
         scenario=scenario, parent_seq_id=parent_seq_id,
+        is_active=is_active,
     )
+
+    # If this is a new active parent run, deactivate other active runs
+    # (and their children) for the same (strategy_name, sec_type, code).
+    if is_active and parent_seq_id is None:
+        await _deactivate_other_runs(
+            conn,
+            strategy_name=strategy_name,
+            sec_type=sec_type,
+            code=code,
+            exclude_seq_id=seq_id,
+        )
+
+    return seq_id
 
 
 async def insert_strategy_results(

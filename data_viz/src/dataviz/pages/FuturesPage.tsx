@@ -1,1 +1,1 @@
-export { default } from "../features/futures/FuturesPage";
+export { default } from "@/dataviz/features/futures/FuturesPage";

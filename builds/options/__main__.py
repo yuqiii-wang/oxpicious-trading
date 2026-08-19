@@ -1,12 +1,13 @@
 """builds/options/__main__.py — Build both SZSE and CFFEX options data.
 
 Orchestrates the two sub-builders sequentially:
-  1. builds.options.szse  — SZSE ETF options (1599xx → index codes)
-  2. builds.options.cffex — CFFEX index options (IO/HO/MO/CO)
+  1. builds.options.szse  — SZSE ETF options (native ETF codes, 1599xx)
+  2. builds.options.cffex — CFFEX index options (IO/HO/MO/CO → index codes)
 
-Both write into the same 7 options_* tables under the unified
-underlying_code scheme (e.g. both 159919 ETF options and IO options
-map to underlying_code = '000300').
+Both write into the same 7 options_* tables. SZSE and CFFEX are
+separated by underlying_code space: SZSE keeps native ETF codes
+(e.g. 159919), CFFEX uses index codes (e.g. 000300), distinguished
+further by underlying_target_type ('ETF' vs 'INDEX').
 
 With --force: truncates all 7 tables ONCE upfront, then runs both
 builders in normal (non-force) mode so they repopulate from scratch.

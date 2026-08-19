@@ -35,7 +35,7 @@ from builds._commons.paths import INDEX_COMP_DIR, SZSE_INDEX_COMP_DIR
 
 async def _run_composition(force: bool) -> None:
     """Run index composition build (CSI + SZSE) → stats.sec_composition."""
-    from _common.build_commons import get_db_or_exit, bulk_upsert_async
+    from _common.build_commons import get_db_or_exit, copy_or_upsert_split_async
 
     print("\n    Building CSI index composition rows …", flush=True)
     index_comp_rows = build_index_composition_rows(verbose=True)
@@ -75,11 +75,16 @@ async def _run_composition(force: bool) -> None:
             print(f"    [DB] {len(all_rows):,} rows to insert (skipped {n_skipped:,} existing)", flush=True)
 
         if all_rows:
-            inserted = await bulk_upsert_async(
+            n_copied, n_upserted = await copy_or_upsert_split_async(
                 conn, "stats.sec_composition", all_rows,
                 ["code", "snapshot_date", "rank"],
+                date_column="snapshot_date",
             )
-            print(f"    [DB] Inserted {inserted:,} rows into stats.sec_composition", flush=True)
+            total = n_copied + n_upserted
+            via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+                  f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+                  "upsert"
+            print(f"    [DB] Inserted {total:,} rows into stats.sec_composition via {via}", flush=True)
         else:
             print("    [DB] No new rows to insert", flush=True)
     finally:
@@ -118,7 +123,10 @@ async def main():
     print("=" * 78)
     t2 = time.time()
 
-    # baseline.main uses sys.argv for argparse; set it and call directly
+    # baseline.main uses sys.argv for argparse; set it and call directly.
+    # --refresh-estimated-days: nightly self-heal — rebuild recent daily
+    # rows gap-filled as ESTIMATED by a build that raced ahead of the
+    # EOD CSV publish; idempotent when the CSVs already agree.
     original_argv = sys.argv.copy()
     try:
         sys.argv = [
@@ -126,6 +134,7 @@ async def main():
             *(["--start-date", args.start_date] if args.start_date else []),
             *(["--end-date", args.end_date] if args.end_date else []),
             *(["--force"] if args.force else []),
+            *([] if args.force else ["--refresh-estimated-days", "10"]),
         ]
         from builds.index.baseline import main as baseline_main
         await baseline_main()

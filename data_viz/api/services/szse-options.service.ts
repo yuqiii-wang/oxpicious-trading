@@ -5,7 +5,7 @@
  * Also provides getEtfOhlcv() which queries stats.v_etf_margin for
  * the annual-sentiment panel (split-adjusted OHLCV).
  */
-import { query, queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
+import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix } from "../lib/classify-etf.js";
 import type {
@@ -15,6 +15,8 @@ import type {
   EtfOhlcvResponse,
   SkewnessCorrRow,
   SkewnessCorrResponse,
+  SkewnessCrossCountRow,
+  SkewnessCrossCountResponse,
 } from "../../shared/types.js";
 
 export interface OptionsQuery {
@@ -64,34 +66,6 @@ interface DbIndexOhlcvRow extends QueryResultRow {
   low: number | null;
   close: number | null;
   trading_shares: number | null;
-}
-
-// Per-expiry-group gap row from analysis.options_stats_before_expiry
-// (expiry-level PK: date, option_type, underlying_code, expiry_date).
-// CALL and PUT rows are aggregated (AVG) and grouped by expiry month
-// (DATE_TRUNC('month', expiry_date)) to match the frontend's
-// month-level key structure: Map<`date|yyyymm`, ExpiryGapRow>.
-interface DbExpiryGapRow extends QueryResultRow {
-  date: Date | string;
-  underlying_code: string;
-  expiry_date: Date | string;
-  today_gap_from_today_spot: number | null;
-  today_gap_from_max_before_expiry: number | null;
-  today_gap_from_min_before_expiry: number | null;
-}
-
-export interface ExpiryGapRow {
-  date: string;
-  underlying_code: string;
-  expiry_date: string;
-  today_gap_from_today_spot: number | null;
-  today_gap_from_max_before_expiry: number | null;
-  today_gap_from_min_before_expiry: number | null;
-}
-
-export interface ExpiryGapsResponse {
-  underlying_code: string;
-  rows: ExpiryGapRow[];
 }
 
 interface DbEtfOhlcvRow extends QueryResultRow {
@@ -146,23 +120,11 @@ const OPTIONS_COLUMNS = `
 `;
 
 // ----------------------------------------------------------------------------
-//  ETF code ↔ index code mapping (kept in sync with builds/options/szse/__main__.py)
-// ----------------------------------------------------------------------------
-
-const INDEX_TO_ETF: Record<string, { etfCode: string; etfName: string; indexName: string }> = {
-  "000300": { etfCode: "159919", etfName: "沪深300ETF", indexName: "沪深300" },
-  "000905": { etfCode: "159922", etfName: "中证500ETF", indexName: "中证500" },
-  "399330": { etfCode: "159901", etfName: "深证100ETF", indexName: "深证100" },
-  "399006": { etfCode: "159915", etfName: "创业板ETF", indexName: "创业板" },
-};
-
-const ETF_TO_INDEX: Record<string, string> = {};
-for (const [idxCode, { etfCode }] of Object.entries(INDEX_TO_ETF)) {
-  ETF_TO_INDEX[etfCode] = idxCode;
-}
-
-// ----------------------------------------------------------------------------
 //  List underlyings — SELECT DISTINCT from v_options_quote
+//
+//  SZSE ETF options keep native ETF codes (1599xx); CFFEX index options
+//  use index codes (000xxx/399xxx). The two venues load different code
+//  sets via the underlying_target_type filter — no code mapping needed.
 // ----------------------------------------------------------------------------
 export async function listUnderlyings(targetType?: string): Promise<OptionsUnderlying[]> {
   const t = (targetType ?? "").trim().toUpperCase();
@@ -174,14 +136,10 @@ export async function listUnderlyings(targetType?: string): Promise<OptionsUnder
     ORDER BY underlying_code
   `;
   const rows = await queryRows<DbUnderlyingRow>(sql, t === "ETF" || t === "INDEX" ? [t] : []);
-  return rows.map((r) => {
-    const code = r.underlying_code;
-    const info = INDEX_TO_ETF[code];
-    return {
-      code,
-      name: info ? info.indexName : r.underlying_name,
-    };
-  });
+  return rows.map((r) => ({
+    code: r.underlying_code,
+    name: r.underlying_name,
+  }));
 }
 
 // ----------------------------------------------------------------------------
@@ -233,8 +191,8 @@ export async function getOptionsCombined(
 
 // ----------------------------------------------------------------------------
 //  Get underlying OHLCV for the annual-sentiment panel.
-//    • ETF mode   — stats.v_etf_margin via INDEX_TO_ETF mapping
-//                   (split-adjusted prices when available)
+//    • ETF mode   — stats.v_etf_margin directly (code = native ETF code,
+//                   split-adjusted prices when available)
 //    • INDEX mode — stats.v_index_baseline directly (code = index code)
 // ----------------------------------------------------------------------------
 export async function getEtfOhlcv(
@@ -282,9 +240,8 @@ export async function getEtfOhlcv(
     };
   }
 
-  // ---- ETF mode (default): v_etf_margin via ETF mapping ----
-  const etfCode = INDEX_TO_ETF[cleanedCode]?.etfCode ?? cleanedCode;
-  const targetCode = etfCode;
+  // ---- ETF mode (default): v_etf_margin with the native ETF code ----
+  const targetCode = cleanedCode;
 
   const params: unknown[] = [];
   const where: string[] = [
@@ -335,61 +292,6 @@ export async function getEtfOhlcv(
     code: cleanedCode,
     rows: transformed,
   };
-}
-
-// ----------------------------------------------------------------------------
-//  Get precomputed expiry-set gap stats from analysis.options_stats_before_expiry.
-//  Aggregates back from the per-contract store to (date, underlying_code,
-//  expiry_date) level. Gaps are identical across contracts of the same
-//  expiry set, so we use MIN() / MAX() / ANY_VALUE() aggregations.
-// ----------------------------------------------------------------------------
-export async function getOptionsExpiryGaps(
-  underlying: string,
-  startDate?: string,
-  endDate?: string,
-): Promise<ExpiryGapsResponse> {
-  const cleanedCode = stripExchangeSuffix(underlying).trim();
-  const sd = toDateParam(startDate);
-  const ed = toDateParam(endDate);
-
-  const params: unknown[] = [cleanedCode];
-  const where: string[] = ["underlying_code = $1"];
-  let i = 2;
-
-  if (sd) {
-    where.push(`date >= $${i++}::date`);
-    params.push(sd);
-  }
-  if (ed) {
-    where.push(`date <= $${i++}::date`);
-    params.push(ed);
-  }
-
-  const sql = `
-    SELECT
-      date,
-      underlying_code,
-      DATE_TRUNC('month', expiry_date) AS expiry_date,
-      AVG(today_gap_from_today_spot)        AS today_gap_from_today_spot,
-      AVG(today_gap_from_max_before_expiry) AS today_gap_from_max_before_expiry,
-      AVG(today_gap_from_min_before_expiry) AS today_gap_from_min_before_expiry
-    FROM analysis.options_stats_before_expiry
-    WHERE ${where.join(" AND ")}
-    GROUP BY date, underlying_code, DATE_TRUNC('month', expiry_date)
-    ORDER BY date ASC, DATE_TRUNC('month', expiry_date) ASC
-  `;
-
-  const rows = await queryRows<DbExpiryGapRow>(sql, params);
-  const transformed: ExpiryGapRow[] = rows.map((r) => ({
-    date: formatDate(r.date),
-    underlying_code: r.underlying_code,
-    expiry_date: formatDate(r.expiry_date),
-    today_gap_from_today_spot: toNum(r.today_gap_from_today_spot),
-    today_gap_from_max_before_expiry: toNum(r.today_gap_from_max_before_expiry),
-    today_gap_from_min_before_expiry: toNum(r.today_gap_from_min_before_expiry),
-  }));
-
-  return { underlying_code: cleanedCode, rows: transformed };
 }
 
 // ----------------------------------------------------------------------------
@@ -448,6 +350,61 @@ export async function getOptionsSkewnessCorr(
     corr_skewness_ma5_vs_spot_ma5: toNum(r.corr_skewness_ma5_vs_spot_ma5),
     corr_skewness_ma20_vs_spot_ma20: toNum(r.corr_skewness_ma20_vs_spot_ma20),
     corr_skewness_ma60_vs_spot_ma60: toNum(r.corr_skewness_ma60_vs_spot_ma60),
+  }));
+
+  return { underlying_code: cleanedCode, rows: transformed };
+}
+
+// ----------------------------------------------------------------------------
+//  Options Skewness Cross Counts — per-expiry cross count of skewness curve
+// ----------------------------------------------------------------------------
+
+interface DbSkewnessCrossCountRow extends QueryResultRow {
+  date: Date | string;
+  underlying_code: string;
+  expiry_month: Date | string;
+  count_skewness_curve_crossed_spot: number;
+}
+
+export async function getOptionsSkewnessCrossCounts(
+  underlying: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<SkewnessCrossCountResponse> {
+  const cleanedCode = stripExchangeSuffix(underlying).trim();
+  const sd = toDateParam(startDate);
+  const ed = toDateParam(endDate);
+
+  const params: unknown[] = [cleanedCode];
+  const where: string[] = ["underlying_code = $1"];
+  let i = 2;
+
+  if (sd) {
+    where.push(`date >= $${i++}::date`);
+    params.push(sd);
+  }
+  if (ed) {
+    where.push(`date <= $${i++}::date`);
+    params.push(ed);
+  }
+
+  const sql = `
+    SELECT
+      date,
+      underlying_code,
+      DATE_TRUNC('month', expiry_date) AS expiry_month,
+      MAX(count_skewness_curve_crossed_spot) AS count_skewness_curve_crossed_spot
+    FROM analysis.options_skewness_stats
+    WHERE ${where.join(" AND ")}
+    GROUP BY date, underlying_code, DATE_TRUNC('month', expiry_date)
+    ORDER BY date ASC, DATE_TRUNC('month', expiry_date) ASC
+  `;
+
+  const rows = await queryRows<DbSkewnessCrossCountRow>(sql, params);
+  const transformed: SkewnessCrossCountRow[] = rows.map((r) => ({
+    date: formatDate(r.date),
+    expiry_month: formatDate(r.expiry_month),
+    count_skewness_curve_crossed_spot: toNum(r.count_skewness_curve_crossed_spot) ?? 0,
   }));
 
   return { underlying_code: cleanedCode, rows: transformed };

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Correlation chart — expandable section below the main multi-line chart.
  *
  * Renders one line per industry pair, showing the rolling Pearson
@@ -10,7 +10,7 @@
  * are no pairs to correlate below that threshold. This component is only
  * rendered inside the Collapse when open.
  */
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -30,6 +30,7 @@ import {
   commonGrid,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import type { CorrelationChartProps, CorrWindow } from "./types";
 import { CORR_WINDOWS } from "./constants";
 
@@ -155,52 +156,68 @@ export function CorrelationChart({
           const idx0 = arr[0].dataIndex ?? 0;
           const dateStr = allDates[idx0] ?? "";
           if (!dateStr) return "";
-          // For each pair (in series order), look up all 4 window values
-          // at this date. Display the selected window's value as the main
-          // number; the other 3 as small muted chips for context.
-          const rowsHtml = arr
-            .map((p) => {
-              const key = sortedPairs.find((k) => {
-                const rows = byPair.get(k);
-                if (!rows || rows.length === 0) return false;
-                const r0 = rows[0];
-                const shortA = (r0.industry_label || r0.industry_id).split("  ")[0] || r0.industry_id;
-                const shortB = (r0.benchmark_industry_label || r0.benchmark_industry_id).split("  ")[0] || r0.benchmark_industry_id;
-                return `${shortA} ↔ ${shortB}` === p.seriesName;
-              });
-              if (!key) return "";
-              const rows = byPair.get(key)!;
-              const r = rows.find((x) => x.date === dateStr);
-              if (!r) return "";
-              const pairIdx = sortedPairs.indexOf(key);
-              const color = MUTED_PALETTE[pairIdx % MUTED_PALETTE.length];
-              const fmtV = (v: number | null | undefined) => {
-                if (v == null || !Number.isFinite(v)) return "—";
-                return (v >= 0 ? "+" : "") + fmtNum(v, 3);
-              };
-              const chip = (w: CorrWindow, v: number | null) => {
-                const isSel = w === window;
-                const cls = isSel ? "font-weight:700" : "opacity:0.55;font-size:0.85em";
-                return `<span style="${cls}">${w}:${v == null || !Number.isFinite(v) ? "—" : fmtV(v)}</span>`;
-              };
-              return `<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
-                <span style="color:${color}">●</span>
-                <span style="flex:1">${p.seriesName ?? ""}</span>
-                <span style="display:flex;gap:6px;align-items:baseline">
-                  ${chip("5d", r.corr_5d)} ${chip("20d", r.corr_20d)} ${chip("60d", r.corr_60d)} ${chip("255d", r.corr_255d)}
-                </span>
-              </div>`;
-            })
-            .join("");
-          return `<div style="font-weight:600">${dateStr}</div>
-                  <div style="margin-top:2px;opacity:0.7">Pairwise rolling Pearson correlation of mean_price series</div>
-                  <div style="margin-top:4px">
-                    <div style="display:flex;justify-content:space-between;gap:8px;opacity:0.55;font-size:0.85em">
-                      <span>window:</span>
-                      <span><b>${window}</b> highlighted · others shown for context</span>
-                    </div>
-                  </div>
-                  <div style="margin-top:4px">${rowsHtml}</div>`;
+          const fmtV = (v: number | null | undefined) => {
+            if (v == null || !Number.isFinite(v)) return "—";
+            return (v >= 0 ? "+" : "") + fmtNum(v, 3);
+          };
+          const children: React.ReactNode[] = [];
+          children.push(React.createElement(tooltipComponents.Header, null, dateStr));
+          children.push(React.createElement("div", {
+            style: { marginTop: 2, opacity: 0.7 },
+          }, "Pairwise rolling Pearson correlation of mean_price series"));
+          children.push(React.createElement("div", { style: { marginTop: 4 } },
+            React.createElement("div", {
+              style: { display: "flex", justifyContent: "space-between", gap: 8, opacity: 0.55, fontSize: "0.85em" },
+            },
+              React.createElement("span", null, "window:"),
+              React.createElement("span", null,
+                React.createElement(tooltipComponents.Bold, null, window),
+                " highlighted · others shown for context",
+              ),
+            ),
+          ));
+          const rowChildren: React.ReactNode[] = [];
+          for (const p of arr) {
+            const key = sortedPairs.find((k) => {
+              const rows = byPair.get(k);
+              if (!rows || rows.length === 0) return false;
+              const r0 = rows[0];
+              const shortA = (r0.industry_label || r0.industry_id).split("  ")[0] || r0.industry_id;
+              const shortB = (r0.benchmark_industry_label || r0.benchmark_industry_id).split("  ")[0] || r0.benchmark_industry_id;
+              return `${shortA} ↔ ${shortB}` === p.seriesName;
+            });
+            if (!key) continue;
+            const rows = byPair.get(key)!;
+            const r = rows.find((x) => x.date === dateStr);
+            if (!r) continue;
+            const pairIdx = sortedPairs.indexOf(key);
+            const color = MUTED_PALETTE[pairIdx % MUTED_PALETTE.length];
+            const makeChip = (w: CorrWindow, v: number | null) => {
+              const isSel = w === window;
+              const style: React.CSSProperties = isSel
+                ? { fontWeight: 700 }
+                : { opacity: 0.55, fontSize: "0.85em" };
+              return React.createElement("span", { style },
+                `${w}:${v == null || !Number.isFinite(v) ? "—" : fmtV(v)}`,
+              );
+            };
+            rowChildren.push(React.createElement("div", {
+              style: { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" },
+            },
+              React.createElement("span", { style: { color } }, "●"),
+              React.createElement("span", { style: { flex: 1 } }, p.seriesName ?? ""),
+              React.createElement("span", {
+                style: { display: "flex", gap: 6, alignItems: "baseline" },
+              },
+                makeChip("5d", r.corr_5d),
+                makeChip("20d", r.corr_20d),
+                makeChip("60d", r.corr_60d),
+                makeChip("255d", r.corr_255d),
+              ),
+            ));
+          }
+          children.push(React.createElement("div", { style: { marginTop: 4 } }, rowChildren));
+          return renderReactElement(React.createElement(React.Fragment, null, children));
         },
       },
       xAxis: {

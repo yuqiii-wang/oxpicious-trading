@@ -59,7 +59,7 @@ import pandas as pd
 
 from _common.build_commons import (
     truncate_table_async,
-    bulk_upsert_async,
+    copy_or_upsert_split_async,
 )
 from analyze._common import (
     grouped_rolling_agg,
@@ -340,12 +340,15 @@ async def run_etf_contribution(
             "industry_etf_trading_amount_ma20",
         ],
     )
-    n = await bulk_upsert_async(
+    n_copied, n_upserted = await copy_or_upsert_split_async(
         conn, TABLE, data,
         key_columns=["date", "industry_id", "pool_size"],
-        batch_size=1000,
     )
-    print(f"    -> upserted {n:,} rows", flush=True)
+    n = n_copied + n_upserted
+    via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+          f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+          "upsert"
+    print(f"    -> inserted {n:,} rows via {via}", flush=True)
 
     # ---- Step 6: register in analysis_identity ----------------------
     await upsert_analysis_identity(

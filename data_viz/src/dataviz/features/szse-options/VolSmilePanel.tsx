@@ -5,10 +5,6 @@
  * month, with an ATM vertical line at moneyness=1.0.
  * Also shows per-expiry OI-weighted skewness (3rd standardized moment) of the IV smile.
  * Mirrors plot_volatility_smile() in plot_szse_options.py.
- *
- * Optional gapsMap prop: Map<`date|yyyy-mm`, ExpiryGapRow> from
- * analysis.options_stats_before_expiry. When provided, tooltip uses
- * precomputed gaps; otherwise falls back to frontend computation.
  */
 
-export { default, type ExpiryGapsMap, expiryToYyyyMm } from "./vol-smile";
+export { default, expiryToYyyyMm } from "./vol-smile";

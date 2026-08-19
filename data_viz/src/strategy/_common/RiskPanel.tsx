@@ -1,4 +1,4 @@
-﻿/**
+/**
  * RiskPanel — expandable panel showing strategy risk metrics.
  *
  * Displays:
@@ -23,7 +23,7 @@
  * Data comes from /api/strategy/singleton/risks (pre-computed by
  * `python -m strategy._risks`).
  */
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import React, { useCallback, useMemo, useState, type ReactNode } from "react";
 import {
   Accordion, AccordionDetails, AccordionSummary,
   Box, Chip, Collapse, IconButton, Table, TableBody, TableCell, TableRow, Typography,
@@ -34,13 +34,14 @@ import type { EChartsOption } from "echarts";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
 import { axisColors, commonLegend, UP_COLOR, DOWN_COLOR, MA20_COLOR } from "@/theme/chart-palette";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import type {
   StrategyRiskResponse,
   StrategyRiskGrade,
   StrategyPeriodType,
   StrategyRiskFactor,
 } from "@shared/types";
-import type { SelectedPeriod } from "../singletonStrategyChartOption";
+import type { SelectedPeriod } from "@/strategy/singletonStrategyChartOption";
 
 /**
  * Semantic P&L color: green (gain) / red (loss) / orange (flat).
@@ -240,26 +241,43 @@ export default function RiskPanel({
           const p = filtered[idx];
           const total = p.realized_pnl + p.unrealized_pnl;
           const isFc = fcFlags[idx];
-          const tag = isFc ? ` <span style="color:${FC_PURPLE};font-size:10px">[FORECAST]</span>` : "";
-          const lines: string[] = [
-            `<b>${p.period_value}</b> (${PERIOD_LABELS[periodType]})${tag}`,
-            `Period Total: ${fmtSigned(total)}`,
-            `Realized: ${fmtSigned(p.realized_pnl)}`,
-            `Unrealized Δ: ${fmtSigned(p.unrealized_pnl)}`,
-            `Max Unreal Loss: ${fmtSigned(p.max_loss_unrealized_pnl)}`,
-            `Max Unreal Gain: ${fmtSigned(p.max_gain_unrealized_pnl)}`,
-            `End Unrealized: ${fmtSigned(p.end_unrealized_pnl)}`,
-            `Cumulative: ${fmtSigned(cumulativeData[idx])}`,
-            ...(hasFtAmp ? [
-              `FT Amplified Cum: ${fmtSigned(ftAmpCumulativeData[idx])}`,
-              `FT Amp Period: ${fmtSigned(p.ft_amplified_pnl)}`,
-            ] : []),
-            `Sells: ${p.n_sells} | Buys: ${p.n_buys}`,
-          ];
-          if (p.is_concentration_hotspot) {
-            lines.push(`<span style="color:#f39c12">⚠ Concentration hotspot</span>`);
+          const children: React.ReactNode[] = [];
+          children.push(React.createElement(React.Fragment, null,
+            React.createElement(tooltipComponents.Bold, null, p.period_value),
+            ` (${PERIOD_LABELS[periodType]})`,
+            isFc ? React.createElement("span", {
+              style: { color: FC_PURPLE, fontSize: 10 },
+            }, " [FORECAST]") : null,
+          ));
+          children.push(React.createElement("br"));
+          children.push(`Period Total: ${fmtSigned(total)}`);
+          children.push(React.createElement("br"));
+          children.push(`Realized: ${fmtSigned(p.realized_pnl)}`);
+          children.push(React.createElement("br"));
+          children.push(`Unrealized Δ: ${fmtSigned(p.unrealized_pnl)}`);
+          children.push(React.createElement("br"));
+          children.push(`Max Unreal Loss: ${fmtSigned(p.max_loss_unrealized_pnl)}`);
+          children.push(React.createElement("br"));
+          children.push(`Max Unreal Gain: ${fmtSigned(p.max_gain_unrealized_pnl)}`);
+          children.push(React.createElement("br"));
+          children.push(`End Unrealized: ${fmtSigned(p.end_unrealized_pnl)}`);
+          children.push(React.createElement("br"));
+          children.push(`Cumulative: ${fmtSigned(cumulativeData[idx])}`);
+          if (hasFtAmp) {
+            children.push(React.createElement("br"));
+            children.push(`FT Amplified Cum: ${fmtSigned(ftAmpCumulativeData[idx])}`);
+            children.push(React.createElement("br"));
+            children.push(`FT Amp Period: ${fmtSigned(p.ft_amplified_pnl)}`);
           }
-          return lines.join("<br/>");
+          children.push(React.createElement("br"));
+          children.push(`Sells: ${p.n_sells} | Buys: ${p.n_buys}`);
+          if (p.is_concentration_hotspot) {
+            children.push(React.createElement("br"));
+            children.push(React.createElement("span", {
+              style: { color: "#f39c12" },
+            }, "⚠ Concentration hotspot"));
+          }
+          return renderReactElement(React.createElement(React.Fragment, null, children));
         },
       },
       xAxis: {

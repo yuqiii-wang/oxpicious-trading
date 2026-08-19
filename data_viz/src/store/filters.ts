@@ -72,7 +72,8 @@ export const useStore = create<AppState>((set) => ({
   setEndDate: (d) => set({ endDate: d }),
   setDateRange: (start, end) => set({ startDate: start, endDate: end }),
 
-  underlyingCode: "000300",
+  // Default matches the default optionsTargetType='ETF' (SZSE ETF codes).
+  underlyingCode: "159919",
   setUnderlyingCode: (code) => set({ underlyingCode: code }),
 
   optionsTargetType: "ETF",

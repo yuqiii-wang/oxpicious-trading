@@ -1,4 +1,4 @@
-﻿/**
+/**
  * IndexPanel — single index chart + slider + intraday expansion + composition pie.
  *
  * Layout (mirrors EtfMarginPanel):
@@ -10,7 +10,8 @@
  *   • CompositionPieChart toggle — lifted open state expands the card height
  *     so the pie chart stays inside the parent box.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { Alert, Box, Button } from "@mui/material";
 import { PieChart as PieChartIcon } from "@mui/icons-material";
 import { Link as LinkIcon } from "@mui/icons-material";
@@ -269,7 +270,22 @@ export default function IndexPanel({ index, themeMode, onDateClick }: Props) {
           }>;
           if (arr.length === 0) return "";
           const dateStr = (arr[0].axisValue as string) || "";
-          let html = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
+
+          const makeHeader = (text: string) =>
+            React.createElement(tooltipComponents.Header, null, text);
+          const makeRow = (children: React.ReactNode, style?: React.CSSProperties) =>
+            React.createElement(tooltipComponents.Row, { style }, children);
+          const makeTextRow = (marker: string, name: string, text: React.ReactNode) =>
+            makeRow([marker, " ", name, ": ", text]);
+          const makeBoldRow = (marker: string, name: string, vstr: string) =>
+            makeTextRow(marker, name, React.createElement(tooltipComponents.Bold, null, vstr));
+          const makeOhlcRow = (marker: string, name: string, o: number | null, h: number | null, l: number | null, c: number | null) =>
+            makeTextRow(marker, name,
+              `O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(c, ohlcMode)}`);
+
+          const children: React.ReactNode[] = [];
+          children.push(makeHeader(dateStr));
+
           const isPriceSeries = (name: string) =>
             name === "OHLC" || name === "Close" || name.startsWith("MA");
           for (const p of arr) {
@@ -278,19 +294,19 @@ export default function IndexPanel({ index, themeMode, onDateClick }: Props) {
             if (Array.isArray(p.value)) {
               const [o, cl, l, h] = p.value as Array<number | null>;
               if (o == null && cl == null && l == null && h == null) continue;
-              html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
+              children.push(makeOhlcRow(p.marker ?? "", name, o, h, l, cl));
             } else {
               const v = p.value as number;
               if (!Number.isFinite(v)) continue;
               const vstr = isPriceSeries(name)
                 ? formatPriceValue(v, ohlcMode)
                 : fmtNum(v);
-              // Trading Amt bars are in 亿元 (turnover / 成交金额).
               const unit = name === "Trading Amt" ? " (亿元)" : "";
-              html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}${unit}</b></div>`;
+              children.push(makeBoldRow(p.marker ?? "", name, `${vstr}${unit}`));
             }
           }
-          return html;
+
+          return renderReactElement(React.createElement(React.Fragment, null, children));
         },
       },
       legend: commonLegend(themeMode, { type: "scroll" }),

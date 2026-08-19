@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ECharts option builder for the singleton strategy backtest chart.
  *
  * Renders:
@@ -22,10 +22,12 @@
  * remain visible despite the rebased axis. If there is no BUY (anchor is
  * null), the chart falls back to absolute prices.
  */
+import React from "react";
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { ohlcSeries } from "@/lib/ohlc";
 import { fmtNum, fmtPct } from "@/lib/series";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import {
   MA5_COLOR,
   MA60_COLOR,
@@ -37,6 +39,7 @@ import {
   commonGrid,
   commonDataZoom,
 } from "@/theme/chart-palette";
+import { createMarkerTooltipFormatter, createFcSellTooltipFormatter, createFcSellFallbackTooltipFormatter } from "./tooltips";
 import type {
   StrategyBacktestResponse,
   StrategyDecision,
@@ -293,34 +296,14 @@ export function buildSingletonStrategyOption({
   // normalized_mean_buy_price (the cost basis) is shown for SELLs alongside
   // the realized_pnl so the viewer can see what avg buy price the SELL is
   // exiting against.
-  const markerTooltipFormatter = (params: unknown): string => {
-    const p = params as { data?: { decision?: StrategyDecision } };
-    const d = p.data?.decision;
-    if (!d) return "";
-    const sideColor = d.side === "BUY" ? UP_COLOR : DOWN_COLOR;
-    const pnlStr = d.side === "SELL"
-      ? `<br/>Realized P&L: <b style="color:${d.realized_pnl >= 0 ? UP_COLOR : DOWN_COLOR}">${d.realized_pnl >= 0 ? "+" : ""}${fmtNum(d.realized_pnl, 2)}</b>` +
-        ` | Mean Buy idx: ${fmtNum(d.normalized_mean_buy_price, 1)}`
-      : "";
-    const priceStr = isNormalized
-      ? `${fmtNum(d.fill_price, 4)} (idx ${fmtNum(d.normalized_fill_price, 1)})`
-      : fmtNum(d.fill_price, 4);
-    // Confidence: BUY = qty; SELL = (qty / total_qty_before) * 100.
-    const confidence = d.side === "BUY"
-      ? d.qty
-      : d.total_qty_before > 0
-        ? (d.qty / d.total_qty_before) * 100
-        : 0;
-    return [
-      `<b style="color:${sideColor}">${d.side} #${d.decision_no}</b>`,
-      `Exec: ${d.exec_date}`,
-      `Confidence: ${fmtNum(confidence, 1)} / 100 | Qty: ${fmtNum(d.qty, 2)} @ ${priceStr}`,
-      `Position: ${fmtNum(d.position_before, 2)} → ${fmtNum(d.position_after, 2)}`,
-      `Cash: ${fmtNum(d.cash_before, 2)} → ${fmtNum(d.cash_after, 2)}`,
-      pnlStr,
-      `<span style="color:${c.textColor};font-size:11px">${stripMixPrefix(d.signal_reason)}</span>`,
-    ].join("<br/>");
-  };
+  const markerTooltipFormatter = createMarkerTooltipFormatter({
+    upColor: UP_COLOR,
+    downColor: DOWN_COLOR,
+    textColor: c.textColor,
+    isNormalized,
+    fmtNum,
+    stripMixPrefix,
+  });
 
   // ---- Forecast series (8 mirror/flip/random curves + 1 mean). Built only when
   // forecast data is present. Each series is padded with nulls over the OHLC
@@ -506,11 +489,11 @@ export function buildSingletonStrategyOption({
         const y = scClose != null ? scClose : (norm(d.fill_price) ?? d.fill_price);
         const xIdx = t != null ? ohlcDates.length + t : ohlcDates.length;
         return { value: [xIdx, y], decision: d };
-      }).filter((d: any) => d.value[1] != null)
+      }).filter((d) => d.value[1] != null)
     : (fcByScenario.get("mean") ?? []).map((r, i) => ({
         value: [ohlcDates.length + i, fcCloseToPlot(r.close_price)],
         forecastRow: r,
-      })).filter((d: any) => d.value[1] != null);
+      })).filter((d) => d.value[1] != null);
 
   return {
     // Disable ECharts animation. The chart is rebuilt (notMerge:true in
@@ -599,29 +582,20 @@ export function buildSingletonStrategyOption({
         const date = dates[di] ?? "";
         const row: StrategyOhlcRow | undefined = data.ohlc[di];
 
-        // ---- Forecast region: no OHLC row at this x-index. Show forecast
-        // curve values instead of returning empty (which caused blinking as
-        // the tooltip appeared/disappeared over forecast days). The forecast
-        // curves have data at these indices, so we can display close prices
-        // and P&L for each scenario at this forecast day.
         if (!row && hasForecast) {
-          const fcDay = di - ohlcDates.length; // 0-based forecast day
+          const fcDay = di - ohlcDates.length;
           if (fcDay < 0 || fcDay >= HORIZON) return "";
           const dayLabel = `F+${fcDay + 1}`;
           const hovered = hoveredScenarioRef?.current ?? null;
-          const lines: string[] = [`<b style="color:${FC_PURPLE}">${dayLabel} · Forecast</b>`];
-          // Show each forecast scenario's close price (converted to actual)
-          // and P&L at this day. The hovered scenario is highlighted (bold,
-          // purple, ▶ marker, larger font); others are dimmed (low opacity,
-          // smaller font) when a curve is hovered. When no curve is hovered,
-          // all are shown at normal opacity.
+          const children: React.ReactNode[] = [
+            React.createElement("b", { style: { color: FC_PURPLE } }, `${dayLabel} · Forecast`),
+          ];
           for (const sc of [...fcOrder, "mean"]) {
             const closeArr = fcClose[sc] ?? [];
             const pnlArr = fcPnl[sc] ?? [];
             const closeNorm = closeArr[fcDay];
             const pnlVal = pnlArr[fcDay];
             if (closeNorm == null || !Number.isFinite(closeNorm)) continue;
-            // Convert backtest-norm close to actual price for display.
             const actualClose = isNormalized
               ? closeNorm / normScale
               : closeNorm;
@@ -630,65 +604,78 @@ export function buildSingletonStrategyOption({
               : "";
             const label = sc === "mean" ? "mean" : sc;
             if (sc === hovered) {
-              lines.push(
-                `<b style="color:${FC_PURPLE};font-size:12px">▶ ${label}: ${fmtNum(actualClose, 2)}${pnlStr}</b>`
+              children.push(
+                React.createElement("b", { style: { color: FC_PURPLE, fontSize: 12 } },
+                  `▶ ${label}: ${fmtNum(actualClose, 2)}${pnlStr}`),
               );
             } else if (hovered != null) {
-              lines.push(
-                `<span style="opacity:0.4;font-size:10px">${label}: ${fmtNum(actualClose, 2)}${pnlStr}</span>`
+              children.push(
+                React.createElement("span", { style: { opacity: 0.4, fontSize: 10 } },
+                  `${label}: ${fmtNum(actualClose, 2)}${pnlStr}`),
               );
             } else {
-              lines.push(
-                `${label}: ${fmtNum(actualClose, 2)}${pnlStr}`
+              children.push(
+                React.createElement(React.Fragment, null, `${label}: ${fmtNum(actualClose, 2)}${pnlStr}`),
               );
             }
           }
-          return lines.join("<br/>");
+          return renderReactElement(React.createElement(React.Fragment, null, children));
         }
         if (!row) return "";
-        const lines: string[] = [`<b>${date}</b>`];
+        const children: React.ReactNode[] = [
+          tooltipComponents.Header({ children: date }),
+        ];
         for (const p of arr) {
           if (p.seriesName === "OHLC") {
-            // Tooltips show ACTUAL prices (row.*), not the rebased plot
-            // values (p.data), so the user always sees real OHLC numbers.
-            lines.push(`${p.marker}O ${fmtNum(row.open)}  H ${fmtNum(row.high)}  L ${fmtNum(row.low)}  C ${fmtNum(row.close)}`);
+            children.push(React.createElement(React.Fragment, null,
+              `${p.marker}O ${fmtNum(row.open)}  H ${fmtNum(row.high)}  L ${fmtNum(row.low)}  C ${fmtNum(row.close)}`));
           } else if (p.seriesName === "MA5") {
-            lines.push(`${p.marker}MA5: ${fmtNum(row.ma5)}`);
+            children.push(React.createElement(React.Fragment, null, `${p.marker}MA5: ${fmtNum(row.ma5)}`));
           } else if (p.seriesName === "MA60") {
-            lines.push(`${p.marker}MA60: ${fmtNum(row.ma60)}`);
+            children.push(React.createElement(React.Fragment, null, `${p.marker}MA60: ${fmtNum(row.ma60)}`));
           } else if (p.seriesName === "Trading Amt") {
-            lines.push(`${p.marker}Amt: ${fmtNum((p.data as number) / 1e8, 2)}亿`);
+            children.push(React.createElement(React.Fragment, null, `${p.marker}Amt: ${fmtNum((p.data as number) / 1e8, 2)}亿`));
           }
         }
-        // Check if this date has a B/S decision — append decision info.
         const decision = data.decisions.find((d) => d.exec_date === date);
         if (decision) {
           const sc = decision.side === "BUY" ? UP_COLOR : DOWN_COLOR;
-          lines.push(`<b style="color:${sc}">${decision.side} #${decision.decision_no}</b> @ ${fmtNum(decision.fill_price, 4)} | ${stripMixPrefix(decision.signal_reason)}`);
+          children.push(
+            React.createElement("b", { style: { color: sc } },
+              `${decision.side} #${decision.decision_no}`),
+            ` @ ${fmtNum(decision.fill_price, 4)} | ${stripMixPrefix(decision.signal_reason)}`,
+          );
         }
-        // Daily portfolio state — unrealized_pnl (as if all remaining position
-        // sold at the day's close) + total_pnl (realized + unrealized) +
-        // return_rate (ANNUALIZED return on capital, ×255) + annualized Sharpe
-        // ratios (×√255, rf=0) of daily Δtotal_pnl.
         const daily = dailyByDate.get(date);
         if (daily) {
           const upColor = daily.unrealized_pnl >= 0 ? UP_COLOR : DOWN_COLOR;
           const tpColor = daily.total_pnl >= 0 ? UP_COLOR : DOWN_COLOR;
           const rrColor = daily.return_rate >= 0 ? UP_COLOR : DOWN_COLOR;
-          lines.push(
-            `Unrealized: <b style="color:${upColor}">${daily.unrealized_pnl >= 0 ? "+" : ""}${fmtNum(daily.unrealized_pnl, 2)}</b>` +
-            ` | Total: <b style="color:${tpColor}">${daily.total_pnl >= 0 ? "+" : ""}${fmtNum(daily.total_pnl, 2)}</b>` +
-            ` | Pos: ${fmtNum(daily.position_value, 2)} (${fmtNum(daily.total_qty, 1)})`
+          children.push(
+            React.createElement(React.Fragment, null, [
+              "Unrealized: ",
+              React.createElement("b", { style: { color: upColor } },
+                `${daily.unrealized_pnl >= 0 ? "+" : ""}${fmtNum(daily.unrealized_pnl, 2)}`),
+              " | Total: ",
+              React.createElement("b", { style: { color: tpColor } },
+                `${daily.total_pnl >= 0 ? "+" : ""}${fmtNum(daily.total_pnl, 2)}`),
+              ` | Pos: ${fmtNum(daily.position_value, 2)} (${fmtNum(daily.total_qty, 1)})`,
+            ]),
           );
-          lines.push(
-            `Return: <b style="color:${rrColor}">${daily.return_rate >= 0 ? "+" : ""}${fmtNum(daily.return_rate * 100, 2)}%</b>/yr` +
-            ` | Hold: ${fmtNum(daily.normalized_mean_buy_period, 1)}d` +
-            ` | Sharpe: full=${fmtNum(daily.sharpe_ratio, 2)}` +
-            ` | 255d=${fmtNum(daily.sharpe_ratio_255d, 2)}` +
-            ` | 500d=${fmtNum(daily.sharpe_ratio_500d, 2)}`
+          children.push(
+            React.createElement(React.Fragment, null, [
+              "Return: ",
+              React.createElement("b", { style: { color: rrColor } },
+                `${daily.return_rate >= 0 ? "+" : ""}${fmtNum(daily.return_rate * 100, 2)}%`),
+              "/yr",
+              ` | Hold: ${fmtNum(daily.normalized_mean_buy_period, 1)}d`,
+              ` | Sharpe: full=${fmtNum(daily.sharpe_ratio, 2)}`,
+              ` | 255d=${fmtNum(daily.sharpe_ratio_255d, 2)}`,
+              ` | 500d=${fmtNum(daily.sharpe_ratio_500d, 2)}`,
+            ]),
           );
         }
-        return lines.join("<br/>");
+        return renderReactElement(React.createElement(React.Fragment, null, children));
       },
     },
     dataZoom: commonDataZoom({}, 60, 100),
@@ -866,7 +853,7 @@ export function buildSingletonStrategyOption({
       // forecast close prices as a visual reference.
       ...(hasForecast && fcSellData.length > 0 ? [{
         name: "FC Sell",
-        type: "scatter",
+        type: "scatter" as const,
         data: fcSellData,
         xAxisIndex: 0,
         yAxisIndex: 0,
@@ -881,35 +868,16 @@ export function buildSingletonStrategyOption({
         emphasis: { disabled: true },
         tooltip: {
           formatter: fcSellHasDecisions
-            ? (p: any) => {
-                const d = p.data.decision as StrategyDecision;
-                if (!d) return "";
-                const confidence = d.total_qty_before > 0
-                  ? (d.qty / d.total_qty_before) * 100 : 0;
-                const priceStr = isNormalized
-                  ? `${fmtNum(d.fill_price, 4)} (idx ${fmtNum(d.normalized_fill_price, 1)})`
-                  : fmtNum(d.fill_price, 4);
-                return [
-                  `<b style="color:${FC_PURPLE}">FC Sell #${d.decision_no}</b>`,
-                  `Exec: ${d.exec_date}`,
-                  `Confidence: ${fmtNum(confidence, 1)} / 100 | Qty: ${fmtNum(d.qty, 2)} @ ${priceStr}`,
-                  `Realized P&L: <b style="color:${d.realized_pnl >= 0 ? UP_COLOR : DOWN_COLOR}">${d.realized_pnl >= 0 ? "+" : ""}${fmtNum(d.realized_pnl, 2)}</b>`,
-                  `Position: ${fmtNum(d.position_before, 2)} → ${fmtNum(d.position_after, 2)}`,
-                  `<span style="color:${c.textColor};font-size:11px">${stripMixPrefix(d.signal_reason)}</span>`,
-                ].join("<br/>");
-              }
-            : (p: any) => {
-                const r = p.data.forecastRow;
-                if (!r) return "";
-                const day = r.forecast_day;
-                const conf = r.sell_confidence.toFixed(1);
-                const close = r.close_price.toFixed(2);
-                const pnl = r.realized_pnl_forecast.toFixed(2);
-                return `<b>FC Sell · F+${day}</b><br/>`
-                  + `Close: ${close} (norm)<br/>`
-                  + `Sell Conf: ${conf}%<br/>`
-                  + `P&L: ${pnl}`;
-              },
+            ? createFcSellTooltipFormatter({
+                fcPurple: FC_PURPLE,
+                upColor: UP_COLOR,
+                downColor: DOWN_COLOR,
+                textColor: c.textColor,
+                isNormalized,
+                fmtNum,
+                stripMixPrefix,
+              })
+            : createFcSellFallbackTooltipFormatter(),
         },
       }] : []),
       // ---- Forecast overlay (10 mirror/flip/random + 1 mean). Appended so

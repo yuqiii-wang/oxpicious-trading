@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "built_at": "2026-08-12T12:49:19.020059",
+  "built_at": "2026-08-19T20:55:05.118435",
   "csv_source": "temps/csindex_linked_etf/etf_index_map_all_2026-07-30.csv",
   "catalog": {
     "OTHER": {
@@ -401,6 +401,10 @@
           "label": "印刷",
           "slug": "printing"
         },
+        "IND_GENERAL": {
+          "label": "工业",
+          "slug": "ind_general"
+        },
         "POWER_EQUIP": {
           "label": "电力设备",
           "slug": "power_equip"
@@ -606,6 +610,10 @@
         "STRAT_FACTOR": {
           "label": "因子",
           "slug": "strat_factor"
+        },
+        "STRAT_BRAND": {
+          "label": "品牌",
+          "slug": "strat_brand"
         }
       }
     },
@@ -674,9 +682,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30192": {
       "name": "食品",
@@ -690,9 +698,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932315": {
       "name": "中证红利质量",
@@ -718,9 +726,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30199": {
       "name": "电力指数",
@@ -734,9 +742,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11146": {
       "name": "港股通内地金融",
@@ -754,9 +762,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11059": {
       "name": "工业有色",
@@ -767,12 +775,16 @@
         {
           "sector_id": "MAT",
           "industry_id": "METALS"
+        },
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950180": {
       "name": "科创AI",
@@ -790,9 +802,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930632": {
       "name": "CS稀金属",
@@ -806,16 +818,20 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931495": {
       "name": "工业互联",
       "exchange": "SS",
-      "sector_id": "TECH",
-      "industry_id": "IOT",
+      "sector_id": "IND",
+      "industry_id": "IND_GENERAL",
       "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        },
         {
           "sector_id": "TECH",
           "industry_id": "IOT"
@@ -826,9 +842,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931752": {
       "name": "工程机械主题",
@@ -842,9 +858,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930967": {
       "name": "港股通信息C",
@@ -866,9 +882,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30269": {
       "name": "红利低波",
@@ -890,9 +906,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950162": {
       "name": "科创芯片设计",
@@ -910,9 +926,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930903": {
       "name": "中证A股",
@@ -926,9 +942,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399986": {
       "name": "中证银行",
@@ -946,9 +962,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932366": {
       "name": "300现金流",
@@ -962,9 +978,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931946": {
       "name": "畜牧养殖",
@@ -978,9 +994,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30202": {
       "name": "软件指数",
@@ -994,9 +1010,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930955": {
       "name": "红利低波100",
@@ -1018,9 +1034,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930713": {
       "name": "CS人工智",
@@ -1034,9 +1050,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000001": {
       "name": "上证指数",
@@ -1050,15 +1066,15 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931892": {
       "name": "有色矿业",
       "exchange": "SS",
-      "sector_id": "MAT",
-      "industry_id": "METALS",
+      "sector_id": "ENG",
+      "industry_id": "ENG_GENERAL",
       "tags": [
         {
           "sector_id": "ENG",
@@ -1070,9 +1086,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000688": {
       "name": "科创50",
@@ -1086,9 +1102,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931637": {
       "name": "港股通互联网",
@@ -1110,9 +1126,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932094": {
       "name": "软件开发",
@@ -1126,9 +1142,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30217": {
       "name": "医疗器械",
@@ -1146,9 +1162,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000949": {
       "name": "中证农业",
@@ -1166,9 +1182,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000699": {
       "name": "科创200",
@@ -1182,9 +1198,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931470": {
       "name": "SHS云计算",
@@ -1198,9 +1214,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930601": {
       "name": "中证软件",
@@ -1218,9 +1234,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931719": {
       "name": "CS电池",
@@ -1234,9 +1250,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931643": {
       "name": "科创创业50",
@@ -1250,9 +1266,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931008": {
       "name": "汽车指数",
@@ -1266,9 +1282,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1603,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931412": {
       "name": "证券公司30",
@@ -1282,9 +1298,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932069": {
       "name": "港股通医疗主题",
@@ -1302,9 +1318,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930697": {
       "name": "家用电器",
@@ -1318,9 +1334,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000811": {
       "name": "细分有色",
@@ -1334,9 +1350,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931241": {
       "name": "家居家电",
@@ -1350,9 +1366,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1603,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931021": {
       "name": "家电龙头",
@@ -1366,9 +1382,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399975": {
       "name": "证券公司",
@@ -1382,9 +1398,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000698": {
       "name": "科创100",
@@ -1398,9 +1414,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932690": {
       "name": "精选市场稳健",
@@ -1414,9 +1430,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930910": {
       "name": "农牧渔",
@@ -1430,9 +1446,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931239": {
       "name": "港股通汽车",
@@ -1450,9 +1466,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399976": {
       "name": "CS新能车",
@@ -1470,9 +1486,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931151": {
       "name": "光伏产业",
@@ -1486,9 +1502,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931696": {
       "name": "科技50策略",
@@ -1506,9 +1522,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000995": {
       "name": "全指公用",
@@ -1522,9 +1538,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000510": {
       "name": "中证A500",
@@ -1538,9 +1554,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932420": {
       "name": "智选船舶产业",
@@ -1554,9 +1570,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000685": {
       "name": "科创芯片",
@@ -1574,9 +1590,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931855": {
       "name": "通用航空",
@@ -1590,9 +1606,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930914": {
       "name": "港股通高股息",
@@ -1614,9 +1630,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931594": {
       "name": "卫星产业",
@@ -1630,9 +1646,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930050": {
       "name": "中证A50",
@@ -1646,9 +1662,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11136": {
       "name": "中国互联网",
@@ -1670,9 +1686,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931785": {
       "name": "智选沪深港科技50",
@@ -1690,9 +1706,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932431": {
       "name": "300质量",
@@ -1706,9 +1722,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931573": {
       "name": "港股通科技",
@@ -1730,9 +1746,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932422": {
       "name": "A500红利低波",
@@ -1754,9 +1770,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000813": {
       "name": "细分化工",
@@ -1770,9 +1786,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932368": {
       "name": "800现金流",
@@ -1786,9 +1802,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930986": {
       "name": "金融科技",
@@ -1814,9 +1830,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932088": {
       "name": "全指航空",
@@ -1830,9 +1846,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931848": {
       "name": "800红利低波",
@@ -1854,9 +1870,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930931": {
       "name": "港股通50",
@@ -1870,9 +1886,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000905": {
       "name": "中证500",
@@ -1886,9 +1902,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000010": {
       "name": "上证180",
@@ -1902,9 +1918,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950580": {
       "name": "上证580",
@@ -1918,9 +1934,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931265": {
       "name": "民企300",
@@ -1934,9 +1950,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1709,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "000824": {
       "name": "国企红利",
@@ -1958,9 +1974,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000009": {
       "name": "上证380",
@@ -1974,9 +1990,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932160": {
       "name": "AAA科创债",
@@ -1998,9 +2014,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "950167": {
       "name": "沪AAA科创债",
@@ -2022,9 +2038,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "950161": {
       "name": "科创新药",
@@ -2042,9 +2058,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000692": {
       "name": "科创新能",
@@ -2062,9 +2078,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950125": {
       "name": "科创半导体材料设备",
@@ -2086,9 +2102,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30590": {
       "name": "机器人",
@@ -2102,9 +2118,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931233": {
       "name": "港股通央企红利",
@@ -2134,9 +2150,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932365": {
       "name": "中证现金流",
@@ -2154,9 +2170,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000681": {
       "name": "科创价格",
@@ -2170,9 +2186,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931250": {
       "name": "港股通创新药",
@@ -2190,9 +2206,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932367": {
       "name": "500现金流",
@@ -2206,9 +2222,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950228": {
       "name": "智选科创价值50",
@@ -2226,9 +2242,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000903": {
       "name": "中证A100",
@@ -2242,9 +2258,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931582": {
       "name": "数字经济",
@@ -2258,9 +2274,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930625": {
       "name": "SHS互联网",
@@ -2278,9 +2294,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932217": {
       "name": "制药指数",
@@ -2294,9 +2310,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000689": {
       "name": "科创材料",
@@ -2314,9 +2330,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931529": {
       "name": "国企数字经济",
@@ -2334,9 +2350,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000690": {
       "name": "科创成长",
@@ -2354,9 +2370,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000683": {
       "name": "科创生物",
@@ -2374,9 +2390,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931823": {
       "name": "国资央企50",
@@ -2390,9 +2406,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000693": {
       "name": "科创机械",
@@ -2410,9 +2426,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30270": {
       "name": "红利价值",
@@ -2434,9 +2450,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000300": {
       "name": "沪深300",
@@ -2450,25 +2466,25 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000680": {
       "name": "科创综指",
       "exchange": "SS",
       "sector_id": "BROAD",
-      "industry_id": "BROAD_STAR",
+      "industry_id": "BROAD_SSE",
       "tags": [
         {
           "sector_id": "BROAD",
-          "industry_id": "BROAD_STAR"
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000922": {
       "name": "中证红利",
@@ -2486,9 +2502,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932305": {
       "name": "智选高股息",
@@ -2502,9 +2518,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950333": {
       "name": "智选创新价值",
@@ -2518,9 +2534,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000682": {
       "name": "科创信息",
@@ -2538,9 +2554,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931132": {
       "name": "诚通央企红利",
@@ -2562,9 +2578,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950245": {
       "name": "沪做市公司债",
@@ -2582,9 +2598,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "931552": {
       "name": "1-3年国债",
@@ -2602,9 +2618,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "931243": {
       "name": "诚通央企ESG",
@@ -2622,9 +2638,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000016": {
       "name": "上证50",
@@ -2638,9 +2654,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932066": {
       "name": "半导体行业精选",
@@ -2654,9 +2670,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000151": {
       "name": "上国红利",
@@ -2670,9 +2686,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30198": {
       "name": "油气产业",
@@ -2686,9 +2702,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931994": {
       "name": "电网设备主题",
@@ -2702,9 +2718,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932052": {
       "name": "央企科技创新",
@@ -2726,9 +2742,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931743": {
       "name": "半导体材料设备",
@@ -2746,9 +2762,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000825": {
       "name": "央企红利",
@@ -2770,9 +2786,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931722": {
       "name": "国新港股通央企红利",
@@ -2802,9 +2818,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931271": {
       "name": "通信设备主题",
@@ -2818,9 +2834,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000906": {
       "name": "中证800",
@@ -2834,9 +2850,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931238": {
       "name": "SSH黄金股票",
@@ -2850,9 +2866,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931248": {
       "name": "油气资源",
@@ -2870,9 +2886,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932000": {
       "name": "中证2000",
@@ -2886,9 +2902,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399974": {
       "name": "国企改革",
@@ -2906,9 +2922,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30366": {
       "name": "高息策略",
@@ -2922,9 +2938,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1725,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-11"
+      "last_date": "2026-08-19"
     },
     "931230": {
       "name": "汽车零部件",
@@ -2938,9 +2954,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930939": {
       "name": "500质量成长",
@@ -2958,9 +2974,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931247": {
       "name": "中证信创",
@@ -2978,9 +2994,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30007": {
       "name": "芯片产业",
@@ -2994,9 +3010,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932087": {
       "name": "集成电路",
@@ -3010,9 +3026,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931865": {
       "name": "中证半导",
@@ -3030,9 +3046,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931235": {
       "name": "中证电信",
@@ -3050,9 +3066,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000993": {
       "name": "全指信息",
@@ -3066,9 +3082,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950175": {
       "name": "沪30年国债",
@@ -3086,9 +3102,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "000989": {
       "name": "全指可选",
@@ -3102,9 +3118,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30182": {
       "name": "计算机",
@@ -3118,9 +3134,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930851": {
       "name": "云计算",
@@ -3134,9 +3150,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950243": {
       "name": "沪做市国债",
@@ -3154,9 +3170,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "000015": {
       "name": "红利指数",
@@ -3170,9 +3186,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931024": {
       "name": "港股通非银",
@@ -3190,9 +3206,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000852": {
       "name": "中证1000",
@@ -3206,9 +3222,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931068": {
       "name": "消费龙头",
@@ -3222,9 +3238,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399989": {
       "name": "中证医疗",
@@ -3242,9 +3258,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931589": {
       "name": "300成长创新",
@@ -3258,9 +3274,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11153": {
       "name": "内地国有",
@@ -3274,9 +3290,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931586": {
       "name": "300价值稳健",
@@ -3290,9 +3306,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000936": {
       "name": "800通信",
@@ -3306,9 +3322,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932037": {
       "name": "央企现代能源",
@@ -3326,9 +3342,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932038": {
       "name": "央企科技引领",
@@ -3350,9 +3366,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30356": {
       "name": "800价值",
@@ -3366,9 +3382,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399994": {
       "name": "信息安全",
@@ -3386,9 +3402,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932039": {
       "name": "央企股东回报",
@@ -3406,9 +3422,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000919": {
       "name": "300价值",
@@ -3422,9 +3438,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931409": {
       "name": "SHS创新药",
@@ -3438,9 +3454,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931139": {
       "name": "CS消费50",
@@ -3454,9 +3470,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931463": {
       "name": "300 ESG",
@@ -3470,9 +3486,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30352": {
       "name": "500价值",
@@ -3486,9 +3502,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931663": {
       "name": "SHS消费龙头",
@@ -3502,9 +3518,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931897": {
       "name": "绿色电力",
@@ -3526,9 +3542,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930839": {
       "name": "港股通高息精选",
@@ -3550,9 +3566,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000932": {
       "name": "800消费",
@@ -3566,9 +3582,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931992": {
       "name": "疫苗生物",
@@ -3586,9 +3602,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399997": {
       "name": "中证白酒",
@@ -3610,9 +3626,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30171": {
       "name": "运输指数",
@@ -3626,9 +3642,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000918": {
       "name": "300成长",
@@ -3642,9 +3658,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30106": {
       "name": "港股通金融服务",
@@ -3662,9 +3678,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931733": {
       "name": "绿色能源",
@@ -3682,9 +3698,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000945": {
       "name": "内地运输",
@@ -3698,9 +3714,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931798": {
       "name": "光伏龙头30",
@@ -3714,9 +3730,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931790": {
       "name": "中韩半导体",
@@ -3730,9 +3746,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931866": {
       "name": "中证机床",
@@ -3750,9 +3766,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930641": {
       "name": "中证中药",
@@ -3770,9 +3786,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932200": {
       "name": "国债及政金债0-3",
@@ -3794,9 +3810,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "931695": {
       "name": "成渝经济圈",
@@ -3810,9 +3826,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931521": {
       "name": "高装细分50",
@@ -3826,9 +3842,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931588": {
       "name": "1000价值稳健",
@@ -3842,9 +3858,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931778": {
       "name": "农牧主题",
@@ -3858,9 +3874,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931590": {
       "name": "500成长创新",
@@ -3874,9 +3890,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931755": {
       "name": "SEEE碳中和",
@@ -3890,9 +3906,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930796": {
       "name": "全球中国互联网",
@@ -3914,9 +3930,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931787": {
       "name": "港股创新药",
@@ -3934,9 +3950,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930608": {
       "name": "中证基建",
@@ -3954,9 +3970,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931447": {
       "name": "科技先锋",
@@ -3974,9 +3990,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931587": {
       "name": "500价值稳健",
@@ -3990,9 +4006,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931152": {
       "name": "CS创新药",
@@ -4006,9 +4022,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30463": {
       "name": "沪港深500医药",
@@ -4030,9 +4046,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1714,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-11"
+      "last_date": "2026-08-19"
     },
     "931596": {
       "name": "SHS张江50",
@@ -4046,9 +4062,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931039": {
       "name": "银行AH",
@@ -4059,12 +4075,16 @@
         {
           "sector_id": "FIN",
           "industry_id": "BANKS"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931454": {
       "name": "港股通消费",
@@ -4082,9 +4102,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931591": {
       "name": "1000成长创新",
@@ -4098,9 +4118,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930965": {
       "name": "港股通医药C",
@@ -4118,9 +4138,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931009": {
       "name": "建筑材料",
@@ -4142,9 +4162,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930957": {
       "name": "港股通中国100",
@@ -4162,9 +4182,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930721": {
       "name": "CS智汽车",
@@ -4178,9 +4198,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000948": {
       "name": "内地地产",
@@ -4194,9 +4214,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931574": {
       "name": "港股科技",
@@ -4218,9 +4238,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931494": {
       "name": "消费电子",
@@ -4238,9 +4258,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930716": {
       "name": "CS物流",
@@ -4254,25 +4274,29 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11054": {
       "name": "装备产业",
       "exchange": "HK",
       "sector_id": "IND",
-      "industry_id": "ADVMFG",
+      "industry_id": "IND_GENERAL",
       "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        },
         {
           "sector_id": "IND",
           "industry_id": "ADVMFG"
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931393": {
       "name": "湖北指数",
@@ -4286,9 +4310,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930633": {
       "name": "中证旅游",
@@ -4306,9 +4330,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000977": {
       "name": "内地低碳",
@@ -4322,9 +4346,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931468": {
       "name": "红利质量",
@@ -4346,9 +4370,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930712": {
       "name": "CS物联网",
@@ -4362,9 +4386,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930662": {
       "name": "CS现代农",
@@ -4378,9 +4402,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11057": {
       "name": "石化产业",
@@ -4394,9 +4418,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931554": {
       "name": "长江保护",
@@ -4410,9 +4434,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931580": {
       "name": "SHS游戏传媒",
@@ -4430,9 +4454,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930604": {
       "name": "中国互联网30",
@@ -4454,9 +4478,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30597": {
       "name": "新材料",
@@ -4474,9 +4498,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931404": {
       "name": "SHS品牌消费50",
@@ -4487,12 +4511,16 @@
         {
           "sector_id": "CONS",
           "industry_id": "CONS_GENERAL"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_BRAND"
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931481": {
       "name": "SHS线上消费",
@@ -4506,9 +4534,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399965": {
       "name": "800地产",
@@ -4522,9 +4550,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000815": {
       "name": "细分食品",
@@ -4538,9 +4566,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30178": {
       "name": "医疗保健",
@@ -4554,9 +4582,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930781": {
       "name": "中证影视",
@@ -4574,9 +4602,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931575": {
       "name": "SHS物联网",
@@ -4590,9 +4618,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931524": {
       "name": "SHS科技龙头",
@@ -4610,29 +4638,25 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931403": {
       "name": "品牌工程",
       "exchange": "SS",
-      "sector_id": "CONS",
-      "industry_id": "CONS_GENERAL",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_BRAND",
       "tags": [
         {
-          "sector_id": "CONS",
-          "industry_id": "CONS_GENERAL"
-        },
-        {
           "sector_id": "STRATEGY",
-          "industry_id": "STRAT_THEMED"
+          "industry_id": "STRAT_BRAND"
         }
       ],
-      "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950049": {
       "name": "G60成指",
@@ -4646,9 +4670,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931395": {
       "name": "沪港深300",
@@ -4666,9 +4690,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30365": {
       "name": "文娱传媒",
@@ -4682,9 +4706,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930653": {
       "name": "CS食品饮",
@@ -4698,9 +4722,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399812": {
       "name": "养老产业",
@@ -4714,9 +4738,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930598": {
       "name": "稀土产业",
@@ -4730,9 +4754,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399808": {
       "name": "中证新能",
@@ -4750,9 +4774,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931469": {
       "name": "云计算50",
@@ -4766,9 +4790,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930743": {
       "name": "中证生科",
@@ -4786,9 +4810,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931487": {
       "name": "SHS人工智能50",
@@ -4802,9 +4826,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30455": {
       "name": "沪港深500",
@@ -4822,9 +4846,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1676,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-11"
+      "last_date": "2026-08-19"
     },
     "930821": {
       "name": "中证VR",
@@ -4842,9 +4866,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931140": {
       "name": "医药50",
@@ -4858,9 +4882,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931476": {
       "name": "ESG 120策略",
@@ -4874,9 +4898,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000941": {
       "name": "新能源",
@@ -4894,9 +4918,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11052": {
       "name": "智能电车",
@@ -4910,9 +4934,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399995": {
       "name": "基建工程",
@@ -4926,9 +4950,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931088": {
       "name": "180 ESG",
@@ -4942,9 +4966,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931442": {
       "name": "SHS科技100",
@@ -4962,9 +4986,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930708": {
       "name": "中证有色",
@@ -4982,9 +5006,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931526": {
       "name": "企业核心竞争力50",
@@ -4998,9 +5022,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930725": {
       "name": "CS车联网",
@@ -5014,9 +5038,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931402": {
       "name": "证券先锋",
@@ -5030,9 +5054,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931480": {
       "name": "线上消费",
@@ -5046,9 +5070,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931484": {
       "name": "CS医药创新",
@@ -5062,9 +5086,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931456": {
       "name": "中国教育",
@@ -5082,9 +5106,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930997": {
       "name": "新能源车",
@@ -5106,9 +5130,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30022": {
       "name": "800银行",
@@ -5122,9 +5146,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930902": {
       "name": "中证数据",
@@ -5142,9 +5166,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000807": {
       "name": "食品饮料",
@@ -5158,9 +5182,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000812": {
       "name": "细分机械",
@@ -5174,9 +5198,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30015": {
       "name": "800汽车",
@@ -5190,9 +5214,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399814": {
       "name": "大农业",
@@ -5206,9 +5230,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931380": {
       "name": "科技50",
@@ -5226,9 +5250,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930614": {
       "name": "环保50",
@@ -5242,9 +5266,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930707": {
       "name": "中证畜牧",
@@ -5262,9 +5286,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931382": {
       "name": "智选300 ESG领先",
@@ -5278,9 +5302,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930901": {
       "name": "动漫游戏",
@@ -5298,9 +5322,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000806": {
       "name": "消费服务",
@@ -5314,9 +5338,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930850": {
       "name": "智能制造",
@@ -5327,12 +5351,16 @@
         {
           "sector_id": "IND",
           "industry_id": "ADVMFG"
+        },
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931087": {
       "name": "科技龙头",
@@ -5350,9 +5378,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930648": {
       "name": "CS智消费",
@@ -5366,9 +5394,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931461": {
       "name": "电子50",
@@ -5382,9 +5410,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931079": {
       "name": "5G通信",
@@ -5398,9 +5426,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931372": {
       "name": "浙江国资",
@@ -5414,9 +5442,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H50069": {
       "name": "港股通",
@@ -5430,9 +5458,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1714,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-11"
+      "last_date": "2026-08-19"
     },
     "H11014": {
       "name": "中证短融",
@@ -5450,9 +5478,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1669,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "931161": {
       "name": "0-4年地债",
@@ -5470,9 +5498,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1669,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "950041": {
       "name": "上证投资级转债及可交换债",
@@ -5494,9 +5522,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1669,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "931166": {
       "name": "医药健康100",
@@ -5514,9 +5542,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1677,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950105": {
       "name": "上证证券",
@@ -5534,9 +5562,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931406": {
       "name": "5G 50",
@@ -5550,9 +5578,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930651": {
       "name": "CS计算机",
@@ -5566,9 +5594,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930709": {
       "name": "香港证券",
@@ -5586,9 +5614,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931078": {
       "name": "中证转债及可交换债",
@@ -5610,9 +5638,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1721,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-05"
+      "last_date": "2026-08-18"
     },
     "399971": {
       "name": "中证传媒",
@@ -5630,9 +5658,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399966": {
       "name": "800证保",
@@ -5646,9 +5674,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930652": {
       "name": "CS电子",
@@ -5662,9 +5690,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930606": {
       "name": "中证钢铁",
@@ -5682,9 +5710,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399998": {
       "name": "中证煤炭",
@@ -5702,9 +5730,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931268": {
       "name": "持续发展",
@@ -5718,9 +5746,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931071": {
       "name": "人工智能",
@@ -5734,9 +5762,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931775": {
       "name": "房地产",
@@ -5750,9 +5778,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931186": {
       "name": "中证科技",
@@ -5770,9 +5798,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000982": {
       "name": "500等权",
@@ -5786,9 +5814,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950045": {
       "name": "上证5年期地债",
@@ -5810,9 +5838,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "000859": {
       "name": "国企一带一路",
@@ -5830,9 +5858,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931159": {
       "name": "创新100",
@@ -5846,9 +5874,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931187": {
       "name": "科技100",
@@ -5866,9 +5894,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931165": {
       "name": "新兴科技100",
@@ -5886,9 +5914,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931000": {
       "name": "大湾区",
@@ -5902,9 +5930,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000861": {
       "name": "央企创新",
@@ -5918,9 +5946,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930865": {
       "name": "5年地债",
@@ -5938,9 +5966,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "000821": {
       "name": "300红利",
@@ -5954,9 +5982,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931160": {
       "name": "通信设备",
@@ -5970,9 +5998,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930740": {
       "name": "300红利低波",
@@ -5994,9 +6022,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930758": {
       "name": "凤凰50",
@@ -6010,9 +6038,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931141": {
       "name": "CS长三角",
@@ -6026,9 +6054,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931066": {
       "name": "军工龙头",
@@ -6042,9 +6070,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399973": {
       "name": "中证国防",
@@ -6062,9 +6090,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000925": {
       "name": "基本面50",
@@ -6078,9 +6106,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "990001": {
       "name": "中华半导体芯片",
@@ -6098,9 +6126,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30184": {
       "name": "半导体",
@@ -6114,9 +6142,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930726": {
       "name": "CS生医",
@@ -6130,9 +6158,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399987": {
       "name": "中证酒",
@@ -6150,9 +6178,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931018": {
       "name": "中证5-10年国债活跃券",
@@ -6174,9 +6202,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "931033": {
       "name": "杭州湾区",
@@ -6190,9 +6218,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930782": {
       "name": "500SNLV",
@@ -6206,9 +6234,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931052": {
       "name": "国信价值",
@@ -6222,9 +6250,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000860": {
       "name": "结构调整",
@@ -6238,9 +6266,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "950109": {
       "name": "上证10年地债",
@@ -6262,9 +6290,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "000171": {
       "name": "新兴成指",
@@ -6278,9 +6306,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "CES100": {
       "name": "中华港股通精选100",
@@ -6310,9 +6338,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "930927": {
       "name": "CR基石",
@@ -6326,9 +6354,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11077": {
       "name": "10年国债",
@@ -6346,9 +6374,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "000819": {
       "name": "有色金属",
@@ -6362,9 +6390,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399967": {
       "name": "中证军工",
@@ -6382,9 +6410,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000827": {
       "name": "中证环保",
@@ -6402,9 +6430,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30533": {
       "name": "中国互联网50",
@@ -6426,9 +6454,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1725,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-11"
+      "last_date": "2026-08-19"
     },
     "950096": {
       "name": "上海国企",
@@ -6442,9 +6470,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30257": {
       "name": "500信息",
@@ -6458,9 +6486,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000987": {
       "name": "全指材料",
@@ -6474,9 +6502,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000986": {
       "name": "全指能源",
@@ -6490,9 +6518,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30083": {
       "name": "300反向",
@@ -6506,9 +6534,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30082": {
       "name": "300两倍",
@@ -6522,9 +6550,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30403": {
       "name": "300日报酬两倍",
@@ -6538,9 +6566,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1725,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-11"
+      "last_date": "2026-08-19"
     },
     "H30404": {
       "name": "300日报酬反向",
@@ -6554,9 +6582,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1714,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-11"
+      "last_date": "2026-08-19"
     },
     "000992": {
       "name": "金融地产",
@@ -6574,9 +6602,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000991": {
       "name": "全指医药",
@@ -6590,9 +6618,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11098": {
       "name": "沪城投债",
@@ -6610,9 +6638,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "H50045": {
       "name": "180两倍",
@@ -6626,9 +6654,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1725,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-11"
+      "last_date": "2026-08-19"
     },
     "H50046": {
       "name": "180反向",
@@ -6642,9 +6670,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1714,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-11"
+      "last_date": "2026-08-19"
     },
     "H30318": {
       "name": "科技传媒通信150",
@@ -6670,9 +6698,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H30035": {
       "name": "300非银",
@@ -6686,9 +6714,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000934": {
       "name": "800金地",
@@ -6702,9 +6730,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000814": {
       "name": "细分医药",
@@ -6718,9 +6746,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000913": {
       "name": "300医药",
@@ -6734,9 +6762,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000914": {
       "name": "300金融",
@@ -6750,9 +6778,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000933": {
       "name": "800医卫",
@@ -6766,9 +6794,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000928": {
       "name": "800能源",
@@ -6782,9 +6810,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000038": {
       "name": "上证金融",
@@ -6802,9 +6830,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000037": {
       "name": "上证医药",
@@ -6822,9 +6850,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000036": {
       "name": "上证消费",
@@ -6842,9 +6870,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H00140": {
       "name": "5年国债(全)",
@@ -6862,9 +6890,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "000068": {
       "name": "上证资源",
@@ -6882,9 +6910,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11140": {
       "name": "香港红利",
@@ -6906,9 +6934,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399701": {
       "name": "深证F60",
@@ -6926,9 +6954,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399702": {
       "name": "深证F120",
@@ -6946,9 +6974,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000056": {
       "name": "上证国企",
@@ -6966,9 +6994,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000018": {
       "name": "180金融",
@@ -6982,9 +7010,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000069": {
       "name": "消费80",
@@ -6998,9 +7026,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000066": {
       "name": "上证商品",
@@ -7018,9 +7046,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000901": {
       "name": "小康指数",
@@ -7034,9 +7062,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000048": {
       "name": "责任指数",
@@ -7050,9 +7078,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000029": {
       "name": "180价值",
@@ -7066,9 +7094,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000044": {
       "name": "上证中盘",
@@ -7086,9 +7114,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000043": {
       "name": "超大盘",
@@ -7102,9 +7130,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000021": {
       "name": "180治理",
@@ -7118,9 +7146,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000042": {
       "name": "上证央企",
@@ -7138,9 +7166,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "H11100": {
       "name": "香港100",
@@ -7154,9 +7182,89 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
+    },
+    "000002": {
+      "name": "Ａ股指数",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000003": {
+      "name": "Ｂ股指数",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000004": {
+      "name": "工业指数",
+      "exchange": "SS",
+      "sector_id": "IND",
+      "industry_id": "IND_GENERAL",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000005": {
+      "name": "商业指数",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "RETAIL",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "RETAIL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000006": {
+      "name": "地产指数",
+      "exchange": "SS",
+      "sector_id": "RE",
+      "industry_id": "RE_REAL_ESTATE",
+      "tags": [
+        {
+          "sector_id": "RE",
+          "industry_id": "RE_REAL_ESTATE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
     },
     "000007": {
       "name": "公用指数",
@@ -7170,9 +7278,41 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
+    },
+    "000008": {
+      "name": "综合指数",
+      "exchange": "SS",
+      "sector_id": "OTHER",
+      "industry_id": "OTHER",
+      "tags": [
+        {
+          "sector_id": "OTHER",
+          "industry_id": "OTHER"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000011": {
+      "name": "基金指数",
+      "exchange": "SS",
+      "sector_id": "OTHER",
+      "industry_id": "OTHER",
+      "tags": [
+        {
+          "sector_id": "OTHER",
+          "industry_id": "OTHER"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
     },
     "000012": {
       "name": "国债指数",
@@ -7190,9 +7330,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000013": {
       "name": "企债指数",
@@ -7210,9 +7350,313 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1721,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-05"
+      "last_date": "2026-08-18"
+    },
+    "000017": {
+      "name": "新综指",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000019": {
+      "name": "治理指数",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000020": {
+      "name": "中型综指",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000022": {
+      "name": "沪公司债",
+      "exchange": "SS",
+      "sector_id": "DEBT",
+      "industry_id": "DEBT_CORP",
+      "tags": [
+        {
+          "sector_id": "DEBT",
+          "industry_id": "DEBT_CORP"
+        },
+        {
+          "sector_id": "DEBT",
+          "industry_id": "DEBT_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000025": {
+      "name": "180基建",
+      "exchange": "SS",
+      "sector_id": "INFRA",
+      "industry_id": "INFRA_CONSTR",
+      "tags": [
+        {
+          "sector_id": "INFRA",
+          "industry_id": "INFRA_CONSTR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000026": {
+      "name": "180资源",
+      "exchange": "SS",
+      "sector_id": "ENG",
+      "industry_id": "ENG_GENERAL",
+      "tags": [
+        {
+          "sector_id": "ENG",
+          "industry_id": "ENG_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000027": {
+      "name": "180运输",
+      "exchange": "SS",
+      "sector_id": "IND",
+      "industry_id": "TRANSPORT",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "TRANSPORT"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000028": {
+      "name": "180成长",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_GROWTH",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_GROWTH"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000030": {
+      "name": "180R成长",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_GROWTH",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_GROWTH"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000031": {
+      "name": "180R价值",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_VALUE",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_VALUE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000032": {
+      "name": "上证能源",
+      "exchange": "SS",
+      "sector_id": "ENG",
+      "industry_id": "ENG_GENERAL",
+      "tags": [
+        {
+          "sector_id": "ENG",
+          "industry_id": "ENG_GENERAL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000033": {
+      "name": "上证材料",
+      "exchange": "SS",
+      "sector_id": "MAT",
+      "industry_id": "MAT_GENERAL",
+      "tags": [
+        {
+          "sector_id": "MAT",
+          "industry_id": "MAT_GENERAL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000034": {
+      "name": "上证工业",
+      "exchange": "SS",
+      "sector_id": "IND",
+      "industry_id": "IND_GENERAL",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000035": {
+      "name": "上证可选",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "DISCRETIONARY",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "DISCRETIONARY"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000039": {
+      "name": "上证信息",
+      "exchange": "SS",
+      "sector_id": "TECH",
+      "industry_id": "COMPUTER",
+      "tags": [
+        {
+          "sector_id": "TECH",
+          "industry_id": "COMPUTER"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000040": {
+      "name": "上证通信",
+      "exchange": "SS",
+      "sector_id": "TECH",
+      "industry_id": "COMMS",
+      "tags": [
+        {
+          "sector_id": "TECH",
+          "industry_id": "COMMS"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000041": {
+      "name": "上证公用",
+      "exchange": "SS",
+      "sector_id": "INFRA",
+      "industry_id": "INFRA_UTIL",
+      "tags": [
+        {
+          "sector_id": "INFRA",
+          "industry_id": "INFRA_UTIL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
     },
     "000045": {
       "name": "上证小盘",
@@ -7230,9 +7674,637 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
+    },
+    "000046": {
+      "name": "上证中小",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_MID_SMALL",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_MID_SMALL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000047": {
+      "name": "上证全指",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000049": {
+      "name": "上证民企",
+      "exchange": "SS",
+      "sector_id": "SOE",
+      "industry_id": "SOE_THEME",
+      "tags": [
+        {
+          "sector_id": "SOE",
+          "industry_id": "SOE_THEME"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000050": {
+      "name": "50等权",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000051": {
+      "name": "180等权",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000052": {
+      "name": "50基本",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FUNDAMENTAL",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FUNDAMENTAL"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000053": {
+      "name": "180基本",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FUNDAMENTAL",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FUNDAMENTAL"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000054": {
+      "name": "上证海外",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000055": {
+      "name": "上证地企",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000057": {
+      "name": "全指成长",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_GROWTH",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_GROWTH"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000058": {
+      "name": "全指价值",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_VALUE",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_VALUE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000059": {
+      "name": "全R成长",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_GROWTH",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_GROWTH"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000060": {
+      "name": "全R价值",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_VALUE",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_VALUE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000061": {
+      "name": "沪企债30",
+      "exchange": "SS",
+      "sector_id": "DEBT",
+      "industry_id": "DEBT_CORP",
+      "tags": [
+        {
+          "sector_id": "DEBT",
+          "industry_id": "DEBT_CORP"
+        },
+        {
+          "sector_id": "DEBT",
+          "industry_id": "DEBT_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000062": {
+      "name": "上证沪企",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000063": {
+      "name": "上证周期",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000064": {
+      "name": "非周期",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000065": {
+      "name": "上证龙头",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000067": {
+      "name": "上证新兴",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000070": {
+      "name": "能源等权",
+      "exchange": "SS",
+      "sector_id": "ENG",
+      "industry_id": "ENG_GENERAL",
+      "tags": [
+        {
+          "sector_id": "ENG",
+          "industry_id": "ENG_GENERAL"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000071": {
+      "name": "材料等权",
+      "exchange": "SS",
+      "sector_id": "MAT",
+      "industry_id": "MAT_GENERAL",
+      "tags": [
+        {
+          "sector_id": "MAT",
+          "industry_id": "MAT_GENERAL"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000072": {
+      "name": "工业等权",
+      "exchange": "SS",
+      "sector_id": "IND",
+      "industry_id": "IND_GENERAL",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000073": {
+      "name": "可选等权",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "DISCRETIONARY",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "DISCRETIONARY"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000074": {
+      "name": "消费等权",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "CONS_GENERAL",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "CONS_GENERAL"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000075": {
+      "name": "医药等权",
+      "exchange": "SS",
+      "sector_id": "HC",
+      "industry_id": "PHARMA_BROAD",
+      "tags": [
+        {
+          "sector_id": "HC",
+          "industry_id": "PHARMA_BROAD"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000076": {
+      "name": "金融等权",
+      "exchange": "SS",
+      "sector_id": "FIN",
+      "industry_id": "FIN_GENERAL",
+      "tags": [
+        {
+          "sector_id": "FIN",
+          "industry_id": "FIN_GENERAL"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000077": {
+      "name": "信息等权",
+      "exchange": "SS",
+      "sector_id": "TECH",
+      "industry_id": "COMPUTER",
+      "tags": [
+        {
+          "sector_id": "TECH",
+          "industry_id": "COMPUTER"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000078": {
+      "name": "通信等权",
+      "exchange": "SS",
+      "sector_id": "TECH",
+      "industry_id": "COMMS",
+      "tags": [
+        {
+          "sector_id": "TECH",
+          "industry_id": "COMMS"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000079": {
+      "name": "公用等权",
+      "exchange": "SS",
+      "sector_id": "INFRA",
+      "industry_id": "INFRA_UTIL",
+      "tags": [
+        {
+          "sector_id": "INFRA",
+          "industry_id": "INFRA_UTIL"
+        },
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000090": {
+      "name": "上证流通",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000091": {
+      "name": "沪财中小",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_MID_SMALL",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_MID_SMALL"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000092": {
+      "name": "资源50",
+      "exchange": "SS",
+      "sector_id": "ENG",
+      "industry_id": "ENG_GENERAL",
+      "tags": [
+        {
+          "sector_id": "ENG",
+          "industry_id": "ENG_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000093": {
+      "name": "180分层",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000094": {
+      "name": "上证上游",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000095": {
+      "name": "上证中游",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000096": {
+      "name": "上证下游",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
     },
     "000097": {
       "name": "高端装备",
@@ -7243,12 +8315,1032 @@
         {
           "sector_id": "IND",
           "industry_id": "ADVMFG"
+        },
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
+    },
+    "000098": {
+      "name": "上证F200",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000099": {
+      "name": "上证F300",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000100": {
+      "name": "上证F500",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000101": {
+      "name": "5年信用",
+      "exchange": "SS",
+      "sector_id": "DEBT",
+      "industry_id": "DEBT_CORP",
+      "tags": [
+        {
+          "sector_id": "DEBT",
+          "industry_id": "DEBT_CORP"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000102": {
+      "name": "沪投资品",
+      "exchange": "SS",
+      "sector_id": "IND",
+      "industry_id": "IND_GENERAL",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000103": {
+      "name": "沪消费品",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "CONS_GENERAL",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "CONS_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000104": {
+      "name": "380能源",
+      "exchange": "SS",
+      "sector_id": "ENG",
+      "industry_id": "ENG_GENERAL",
+      "tags": [
+        {
+          "sector_id": "ENG",
+          "industry_id": "ENG_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000105": {
+      "name": "380材料",
+      "exchange": "SS",
+      "sector_id": "MAT",
+      "industry_id": "MAT_GENERAL",
+      "tags": [
+        {
+          "sector_id": "MAT",
+          "industry_id": "MAT_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000106": {
+      "name": "380工业",
+      "exchange": "SS",
+      "sector_id": "IND",
+      "industry_id": "IND_GENERAL",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000107": {
+      "name": "380可选",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "DISCRETIONARY",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "DISCRETIONARY"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000108": {
+      "name": "380消费",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "CONS_GENERAL",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "CONS_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000109": {
+      "name": "380医药",
+      "exchange": "SS",
+      "sector_id": "HC",
+      "industry_id": "PHARMA_BROAD",
+      "tags": [
+        {
+          "sector_id": "HC",
+          "industry_id": "PHARMA_BROAD"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000110": {
+      "name": "380金融",
+      "exchange": "SS",
+      "sector_id": "FIN",
+      "industry_id": "FIN_GENERAL",
+      "tags": [
+        {
+          "sector_id": "FIN",
+          "industry_id": "FIN_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000111": {
+      "name": "380信息",
+      "exchange": "SS",
+      "sector_id": "TECH",
+      "industry_id": "COMPUTER",
+      "tags": [
+        {
+          "sector_id": "TECH",
+          "industry_id": "COMPUTER"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000112": {
+      "name": "380通信",
+      "exchange": "SS",
+      "sector_id": "TECH",
+      "industry_id": "COMMS",
+      "tags": [
+        {
+          "sector_id": "TECH",
+          "industry_id": "COMMS"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000113": {
+      "name": "380公用",
+      "exchange": "SS",
+      "sector_id": "INFRA",
+      "industry_id": "INFRA_UTIL",
+      "tags": [
+        {
+          "sector_id": "INFRA",
+          "industry_id": "INFRA_UTIL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000114": {
+      "name": "持续产业",
+      "exchange": "SS",
+      "sector_id": "IND",
+      "industry_id": "IND_GENERAL",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000115": {
+      "name": "380等权",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000116": {
+      "name": "信用100",
+      "exchange": "SS",
+      "sector_id": "DEBT",
+      "industry_id": "DEBT_CORP",
+      "tags": [
+        {
+          "sector_id": "DEBT",
+          "industry_id": "DEBT_CORP"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000117": {
+      "name": "380成长",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_GROWTH",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_GROWTH"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000118": {
+      "name": "380价值",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_VALUE",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_VALUE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000119": {
+      "name": "380R成长",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_GROWTH",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_GROWTH"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000120": {
+      "name": "380R价值",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_VALUE",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_VALUE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000121": {
+      "name": "医药主题",
+      "exchange": "SS",
+      "sector_id": "HC",
+      "industry_id": "PHARMA_BROAD",
+      "tags": [
+        {
+          "sector_id": "HC",
+          "industry_id": "PHARMA_BROAD"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000122": {
+      "name": "农业主题",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "AGRI",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "AGRI"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000123": {
+      "name": "180动态",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000125": {
+      "name": "180稳定",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000126": {
+      "name": "消费50",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "CONS_GENERAL",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "CONS_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000128": {
+      "name": "380基本",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FUNDAMENTAL",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FUNDAMENTAL"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000129": {
+      "name": "180波动",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000130": {
+      "name": "380波动",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000131": {
+      "name": "上证高新",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000132": {
+      "name": "上证100",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000133": {
+      "name": "上证150",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000134": {
+      "name": "上证银行",
+      "exchange": "SS",
+      "sector_id": "FIN",
+      "industry_id": "BANKS",
+      "tags": [
+        {
+          "sector_id": "FIN",
+          "industry_id": "BANKS"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000135": {
+      "name": "180高贝",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000136": {
+      "name": "180低贝",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000137": {
+      "name": "380高贝",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000138": {
+      "name": "380低贝",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000139": {
+      "name": "上证转债",
+      "exchange": "SS",
+      "sector_id": "DEBT",
+      "industry_id": "DEBT_CONVERTIBLE",
+      "tags": [
+        {
+          "sector_id": "DEBT",
+          "industry_id": "DEBT_CONVERTIBLE"
+        },
+        {
+          "sector_id": "DEBT",
+          "industry_id": "DEBT_GENERAL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000141": {
+      "name": "380动态",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000142": {
+      "name": "380稳定",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000145": {
+      "name": "优势资源",
+      "exchange": "SS",
+      "sector_id": "ENG",
+      "industry_id": "ENG_GENERAL",
+      "tags": [
+        {
+          "sector_id": "ENG",
+          "industry_id": "ENG_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000146": {
+      "name": "优势制造",
+      "exchange": "SS",
+      "sector_id": "IND",
+      "industry_id": "IND_GENERAL",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000147": {
+      "name": "优势消费",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "CONS_GENERAL",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "CONS_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000148": {
+      "name": "消费领先",
+      "exchange": "SS",
+      "sector_id": "CONS",
+      "industry_id": "CONS_GENERAL",
+      "tags": [
+        {
+          "sector_id": "CONS",
+          "industry_id": "CONS_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000149": {
+      "name": "180红利",
+      "exchange": "SS",
+      "sector_id": "DIV",
+      "industry_id": "DIV_GENERAL",
+      "tags": [
+        {
+          "sector_id": "DIV",
+          "industry_id": "DIV_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000150": {
+      "name": "380红利",
+      "exchange": "SS",
+      "sector_id": "DIV",
+      "industry_id": "DIV_GENERAL",
+      "tags": [
+        {
+          "sector_id": "DIV",
+          "industry_id": "DIV_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000152": {
+      "name": "上央红利",
+      "exchange": "SS",
+      "sector_id": "DIV",
+      "industry_id": "DIV_GENERAL",
+      "tags": [
+        {
+          "sector_id": "DIV",
+          "industry_id": "DIV_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000153": {
+      "name": "上民红利",
+      "exchange": "SS",
+      "sector_id": "DIV",
+      "industry_id": "DIV_GENERAL",
+      "tags": [
+        {
+          "sector_id": "DIV",
+          "industry_id": "DIV_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000155": {
+      "name": "市值百强",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000158": {
+      "name": "上证环保",
+      "exchange": "SS",
+      "sector_id": "ESG",
+      "industry_id": "GREEN",
+      "tags": [
+        {
+          "sector_id": "ESG",
+          "industry_id": "GREEN"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000159": {
+      "name": "沪股通",
+      "exchange": "SS",
+      "sector_id": "REGION",
+      "industry_id": "REGION_HK_LINK",
+      "tags": [
+        {
+          "sector_id": "REGION",
+          "industry_id": "REGION_HK_LINK"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000160": {
+      "name": "沪新丝路",
+      "exchange": "SS",
+      "sector_id": "REGION",
+      "industry_id": "REGION_CN",
+      "tags": [
+        {
+          "sector_id": "REGION",
+          "industry_id": "REGION_CN"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000161": {
+      "name": "沪中国造",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_CSI",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_CSI"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000162": {
+      "name": "沪互联+",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_THEMED",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_THEMED"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000170": {
+      "name": "50AH优选",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_FACTOR",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_FACTOR"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000687": {
+      "name": "科创高装",
+      "exchange": "SS",
+      "sector_id": "IND",
+      "industry_id": "ADVMFG",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "ADVMFG"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_STAR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000691": {
+      "name": "科创ESG",
+      "exchange": "SS",
+      "sector_id": "ESG",
+      "industry_id": "ESG_GENERAL",
+      "tags": [
+        {
+          "sector_id": "ESG",
+          "industry_id": "ESG_GENERAL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_STAR"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000695": {
+      "name": "科长三角",
+      "exchange": "SS",
+      "sector_id": "REGION",
+      "industry_id": "REGION_CN",
+      "tags": [
+        {
+          "sector_id": "REGION",
+          "industry_id": "REGION_CN"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000697": {
+      "name": "科大湾区",
+      "exchange": "SS",
+      "sector_id": "REGION",
+      "industry_id": "REGION_CN",
+      "tags": [
+        {
+          "sector_id": "REGION",
+          "industry_id": "REGION_CN"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000802": {
+      "name": "500沪市",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
     },
     "000808": {
       "name": "医药生物",
@@ -7266,9 +9358,265 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
+    },
+    "000823": {
+      "name": "800有色",
+      "exchange": "SS",
+      "sector_id": "MAT",
+      "industry_id": "METALS",
+      "tags": [
+        {
+          "sector_id": "MAT",
+          "industry_id": "METALS"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000847": {
+      "name": "腾讯济安",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_THEMED",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_THEMED"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000849": {
+      "name": "300非银",
+      "exchange": "SS",
+      "sector_id": "FIN",
+      "industry_id": "FIN_GENERAL",
+      "tags": [
+        {
+          "sector_id": "FIN",
+          "industry_id": "FIN_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000851": {
+      "name": "百发100",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_THEMED",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_THEMED"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000853": {
+      "name": "CSSW丝路",
+      "exchange": "SS",
+      "sector_id": "REGION",
+      "industry_id": "REGION_CN",
+      "tags": [
+        {
+          "sector_id": "REGION",
+          "industry_id": "REGION_CN"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000854": {
+      "name": "500原料",
+      "exchange": "SS",
+      "sector_id": "MAT",
+      "industry_id": "MAT_GENERAL",
+      "tags": [
+        {
+          "sector_id": "MAT",
+          "industry_id": "MAT_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000855": {
+      "name": "央视500",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_BRAND",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_BRAND"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000856": {
+      "name": "500工业",
+      "exchange": "SS",
+      "sector_id": "IND",
+      "industry_id": "IND_GENERAL",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000857": {
+      "name": "500医药",
+      "exchange": "SS",
+      "sector_id": "HC",
+      "industry_id": "PHARMA_BROAD",
+      "tags": [
+        {
+          "sector_id": "HC",
+          "industry_id": "PHARMA_BROAD"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000858": {
+      "name": "500信息",
+      "exchange": "SS",
+      "sector_id": "TECH",
+      "industry_id": "COMPUTER",
+      "tags": [
+        {
+          "sector_id": "TECH",
+          "industry_id": "COMPUTER"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000863": {
+      "name": "CS精准医",
+      "exchange": "SS",
+      "sector_id": "HC",
+      "industry_id": "PHARMA_BROAD",
+      "tags": [
+        {
+          "sector_id": "HC",
+          "industry_id": "PHARMA_BROAD"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000865": {
+      "name": "上海国企",
+      "exchange": "SS",
+      "sector_id": "SOE",
+      "industry_id": "SOE_THEME",
+      "tags": [
+        {
+          "sector_id": "SOE",
+          "industry_id": "SOE_THEME"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000867": {
+      "name": "港中小企",
+      "exchange": "SS",
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_MID_SMALL",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_MID_SMALL"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000869": {
+      "name": "HK银行",
+      "exchange": "SS",
+      "sector_id": "FIN",
+      "industry_id": "BANKS",
+      "tags": [
+        {
+          "sector_id": "FIN",
+          "industry_id": "BANKS"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
+    },
+    "000888": {
+      "name": "上证收益",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
+    },
+    "000891": {
+      "name": "新兴综指",
+      "exchange": "SS",
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
     },
     "000912": {
       "name": "300消费",
@@ -7282,9 +9630,29 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1715,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
+    },
+    "000935": {
+      "name": "中证信息",
+      "exchange": "SS",
+      "sector_id": "TECH",
+      "industry_id": "COMPUTER",
+      "tags": [
+        {
+          "sector_id": "TECH",
+          "industry_id": "COMPUTER"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_CSI"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 1731,
+      "first_date": "2020-01-01",
+      "last_date": "2026-08-19"
     },
     "000970": {
       "name": "中证ESG40",
@@ -7302,9 +9670,25 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1603,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
+    },
+    "000974": {
+      "name": "800金融",
+      "exchange": "SS",
+      "sector_id": "FIN",
+      "industry_id": "FIN_GENERAL",
+      "tags": [
+        {
+          "sector_id": "FIN",
+          "industry_id": "FIN_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "n_days": 5,
+      "first_date": "2026-08-13",
+      "last_date": "2026-08-19"
     },
     "000978": {
       "name": "医药100",
@@ -7318,9 +9702,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "000998": {
       "name": "中证TMT",
@@ -7338,9 +9722,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399001": {
       "name": "深证成指",
@@ -7354,9 +9738,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1706,
+      "n_days": 1730,
       "first_date": "2020-01-02",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399006": {
       "name": "创业板指",
@@ -7370,25 +9754,25 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1706,
+      "n_days": 1730,
       "first_date": "2020-01-02",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399237": {
-      "name": "运输指数",
+      "name": "399237",
       "exchange": "SZ",
-      "sector_id": "IND",
-      "industry_id": "TRANSPORT",
+      "sector_id": "OTHER",
+      "industry_id": "OTHER",
       "tags": [
         {
-          "sector_id": "IND",
-          "industry_id": "TRANSPORT"
+          "sector_id": "OTHER",
+          "industry_id": "OTHER"
         }
       ],
-      "is_industry_not_strategy": true,
-      "n_days": 513,
-      "first_date": "2024-07-01",
-      "last_date": "2026-08-12"
+      "is_industry_not_strategy": false,
+      "n_days": 1,
+      "first_date": "2026-08-18",
+      "last_date": "2026-08-18"
     },
     "399303": {
       "name": "国证2000",
@@ -7402,9 +9786,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1599,
+      "n_days": 1729,
       "first_date": "2020-01-02",
-      "last_date": "2026-08-07"
+      "last_date": "2026-08-18"
     },
     "399310": {
       "name": "国证A50",
@@ -7418,9 +9802,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1599,
+      "n_days": 1729,
       "first_date": "2020-01-02",
-      "last_date": "2026-08-07"
+      "last_date": "2026-08-18"
     },
     "399311": {
       "name": "国证1000",
@@ -7434,25 +9818,29 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1599,
+      "n_days": 1729,
       "first_date": "2020-01-02",
-      "last_date": "2026-08-07"
+      "last_date": "2026-08-18"
     },
     "399803": {
       "name": "工业4.0",
       "exchange": "SZ",
       "sector_id": "IND",
-      "industry_id": "ADVMFG",
+      "industry_id": "IND_GENERAL",
       "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        },
         {
           "sector_id": "IND",
           "industry_id": "ADVMFG"
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "399804": {
       "name": "中证体育",
@@ -7470,9 +9858,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "899050": {
       "name": "北证50",
@@ -7486,9 +9874,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931407": {
       "name": "全球金矿",
@@ -7502,9 +9890,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "931528": {
       "name": "光伏设备行业",
@@ -7518,9 +9906,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "931688": {
       "name": "中证算力",
@@ -7538,9 +9926,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "931746": {
       "name": "储能产业",
@@ -7554,9 +9942,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "931786": {
       "name": "中证半导体",
@@ -7574,9 +9962,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "931800": {
       "name": "绿色生态",
@@ -7590,9 +9978,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1718,
+      "n_days": 1730,
       "first_date": "2020-01-01",
-      "last_date": "2026-07-31"
+      "last_date": "2026-08-18"
     },
     "932056": {
       "name": "海洋经济",
@@ -7606,9 +9994,9 @@
         }
       ],
       "is_industry_not_strategy": false,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932076": {
       "name": "全指地产",
@@ -7622,9 +10010,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "932536": {
       "name": "航运发展",
@@ -7638,9 +10026,9 @@
         }
       ],
       "is_industry_not_strategy": true,
-      "n_days": 1726,
+      "n_days": 1731,
       "first_date": "2020-01-01",
-      "last_date": "2026-08-12"
+      "last_date": "2026-08-19"
     },
     "DUMMY_STRAT_THEMED": {
       "name": "主题综合指数",
@@ -8399,6 +10787,10 @@
         {
           "sector_id": "IND",
           "industry_id": "ROBOTICS"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -8569,6 +10961,10 @@
         {
           "sector_id": "HC",
           "industry_id": "INNO_DRUG"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9011,6 +11407,10 @@
         {
           "sector_id": "INFRA",
           "industry_id": "INFRA_CONSTR"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9125,6 +11525,10 @@
         {
           "sector_id": "IND",
           "industry_id": "TEXTILE"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9142,6 +11546,10 @@
         {
           "sector_id": "IND",
           "industry_id": "AIRPORT"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9159,6 +11567,10 @@
         {
           "sector_id": "IND",
           "industry_id": "MACHINE_TOOL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9193,6 +11605,10 @@
         {
           "sector_id": "INFRA",
           "industry_id": "INFRA_UTIL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9214,6 +11630,10 @@
         {
           "sector_id": "CONS",
           "industry_id": "FOOD_BEV"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9231,6 +11651,10 @@
         {
           "sector_id": "IND",
           "industry_id": "EXPRESSWAY"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9246,8 +11670,8 @@
       "industry_id": "PAPER",
       "tags": [
         {
-          "sector_id": "OTHER",
-          "industry_id": "OTHER"
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9265,6 +11689,10 @@
         {
           "sector_id": "CONS",
           "industry_id": "TOURISM"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9282,6 +11710,10 @@
         {
           "sector_id": "MAT",
           "industry_id": "CHEM"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9299,6 +11731,10 @@
         {
           "sector_id": "ENG",
           "industry_id": "PETROCHEM"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9316,6 +11752,10 @@
         {
           "sector_id": "IND",
           "industry_id": "ENG_MACHINERY"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9333,6 +11773,10 @@
         {
           "sector_id": "IND",
           "industry_id": "ELEC_EQUIP"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9350,6 +11794,10 @@
         {
           "sector_id": "MAT",
           "industry_id": "MAT_GENERAL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9367,6 +11815,10 @@
         {
           "sector_id": "IND",
           "industry_id": "PORT"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9384,6 +11836,10 @@
         {
           "sector_id": "CONS",
           "industry_id": "EDU"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9401,6 +11857,10 @@
         {
           "sector_id": "INFRA",
           "industry_id": "WATER"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9418,6 +11878,10 @@
         {
           "sector_id": "INFRA",
           "industry_id": "GAS"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9435,6 +11899,10 @@
         {
           "sector_id": "TECH",
           "industry_id": "DIGITAL"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9452,6 +11920,10 @@
         {
           "sector_id": "HC",
           "industry_id": "ELDER_CARE"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9469,6 +11941,10 @@
         {
           "sector_id": "IND",
           "industry_id": "PRINTING"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9486,6 +11962,10 @@
         {
           "sector_id": "NEV",
           "industry_id": "PV"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9503,6 +11983,10 @@
         {
           "sector_id": "HC",
           "industry_id": "TCM"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9520,6 +12004,10 @@
         {
           "sector_id": "CONS",
           "industry_id": "GAMES"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
@@ -9537,9 +12025,81 @@
         {
           "sector_id": "MAT",
           "industry_id": "REE"
+        },
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
         }
       ],
       "is_industry_not_strategy": true,
+      "is_dummy": true,
+      "n_days": 0,
+      "first_date": null,
+      "last_date": null
+    },
+    "DUMMY_BROAD_SSE": {
+      "name": "上证综合指数",
+      "exchange": null,
+      "sector_id": "BROAD",
+      "industry_id": "BROAD_SSE",
+      "tags": [
+        {
+          "sector_id": "BROAD",
+          "industry_id": "BROAD_SSE"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "is_dummy": true,
+      "n_days": 0,
+      "first_date": null,
+      "last_date": null
+    },
+    "DUMMY_IND_GENERAL": {
+      "name": "工业综合指数",
+      "exchange": null,
+      "sector_id": "IND",
+      "industry_id": "IND_GENERAL",
+      "tags": [
+        {
+          "sector_id": "IND",
+          "industry_id": "IND_GENERAL"
+        }
+      ],
+      "is_industry_not_strategy": true,
+      "is_dummy": true,
+      "n_days": 0,
+      "first_date": null,
+      "last_date": null
+    },
+    "DUMMY_STRAT_BRAND_CCTV": {
+      "name": "央视品牌综合指数",
+      "exchange": null,
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_BRAND",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_BRAND"
+        }
+      ],
+      "is_industry_not_strategy": false,
+      "is_dummy": true,
+      "n_days": 0,
+      "first_date": null,
+      "last_date": null
+    },
+    "DUMMY_STRAT_BRAND": {
+      "name": "品牌综合指数",
+      "exchange": null,
+      "sector_id": "STRATEGY",
+      "industry_id": "STRAT_BRAND",
+      "tags": [
+        {
+          "sector_id": "STRATEGY",
+          "industry_id": "STRAT_BRAND"
+        }
+      ],
+      "is_industry_not_strategy": false,
       "is_dummy": true,
       "n_days": 0,
       "first_date": null,

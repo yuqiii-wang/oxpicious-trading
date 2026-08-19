@@ -102,39 +102,18 @@ def _compute_pf_date_mapping(
     # so df_keyed's row count is an accurate size estimate for the
     # VRAM check.
     if should_use_gpu(df_keyed, op_type="merge"):
-        import cudf  # type: ignore[import-untyped]
-        # Step 3: concat both stubs into one timeline per
-        # (sec_type, code). Transfer only the minimal column subset.
-        g_detail = cudf.from_pandas(df_keyed)
-        g_pf = cudf.from_pandas(pf_df)
-        combined = cudf.concat([g_detail, g_pf], ignore_index=True)
-        # Step 4: sort — (sec_type, code, date, _kind). pf (_kind=0)
-        # precedes detail (_kind=1) on the same date.
-        combined = combined.sort_values(
-            ["sec_type", "code", "date", "_kind"]
-        )
-        # Step 5: forward-fill pf_date within each (sec_type, code)
-        # group. After this, every detail row's pf_date is the largest
-        # extreme date <= its own date (NaN for rows before the first
-        # extreme in their group).
-        combined["pf_date"] = combined.groupby(
-            ["sec_type", "code"], sort=False
-        )["pf_date"].ffill()
-        # Step 6: filter back to detail rows + restore original order.
-        result = combined[combined["_kind"] == 1]
-        result = result.sort_values("_orig_idx").reset_index(drop=True)
-        merged = result.to_pandas()
-    else:
-        # CPU path (pandas).
-        combined = pd.concat([df_keyed, pf_df], ignore_index=True)
-        combined = combined.sort_values(
-            ["sec_type", "code", "date", "_kind"]
-        )
-        combined["pf_date"] = combined.groupby(
-            ["sec_type", "code"], sort=False
-        )["pf_date"].ffill()
-        result = combined[combined["_kind"] == 1]
-        merged = result.sort_values("_orig_idx").reset_index(drop=True)
+        print(f"    [cuDF router] {len(df_keyed):,} rows — merge (GPU-worthy)", flush=True)
+
+    # CPU path (pandas).
+    combined = pd.concat([df_keyed, pf_df], ignore_index=True)
+    combined = combined.sort_values(
+        ["sec_type", "code", "date", "_kind"]
+    )
+    combined["pf_date"] = combined.groupby(
+        ["sec_type", "code"], sort=False
+    )["pf_date"].ffill()
+    result = combined[combined["_kind"] == 1]
+    merged = result.sort_values("_orig_idx").reset_index(drop=True)
 
     pf_dates = merged["pf_date"].dt.date.values
     # Forward-fill leaves NaN/NaT for rows with no preceding extreme

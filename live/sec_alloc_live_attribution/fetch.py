@@ -57,19 +57,14 @@ async def fetch_latest_intraday_dates(
 #  (prepared-statement generic plan — lesson learned).
 #
 #  A pair is missing iff:
-#    • the benchmark appears in analysis.sec_alloc_perf_attribution, AND
-#    • it has an ELIGIBLE member universe (latest snapshot row with
-#      code_sec_shared_weight > 0 joined to an ACTIVE stats.sec_classification
-#      row with a non-BROAD industry_id — ANY type incl. stocks, since the
-#      ref keeps stocks for share weights) with at least one TICK-ELIGIBLE
-#      member (stats.sec_classification.type IN ('index','etf')) having
-#      intraday bars on that date, AND
+#    • the benchmark appears in today_bench (has intraday data), AND
+#    • it has an ELIGIBLE member universe — ALL classified indices with a
+#      non-BROAD industry_id are members (not just those with non-zero
+#      composition overlap — zero-weight indices still carry price pct for
+#      the equal-weight Market Movements shading), with at least one
+#      TICK-ELIGIBLE member (type IN ('index','etf')) having intraday bars
+#      on that date, AND
 #    • no row exists in live.sec_alloc_live_prev_ref for (benchmark, date).
-#
-#  The eligibility check is REQUIRED (lesson learned from
-#  intraday_industry_sentiments): many benchmarks have ALL
-#  code_sec_shared_weight = 0. Without the check such pairs compute to
-#  0 rows, insert nothing, and get re-detected as "missing" every run.
 #
 #  "Skip if today's ref already present" is inherent: pairs with existing
 #  ref rows are not missing → skipped on every subsequent 5-min run.
@@ -86,33 +81,21 @@ today_bench AS MATERIALIZED (
     WHERE i5.date = (SELECT d FROM target)
       AND i5.close IS NOT NULL
 ),
-sap_latest AS (
-    SELECT benchmark_code, MAX(date) AS snap_date
-    FROM analysis.sec_alloc_perf_attribution
-    WHERE sec_type = 'index'
-    GROUP BY benchmark_code
-),
-member_universe AS (
-    SELECT DISTINCT sap.benchmark_code, sap.code AS member_code
-    FROM analysis.sec_alloc_perf_attribution sap
-    JOIN sap_latest sl
-        ON sl.benchmark_code = sap.benchmark_code
-       AND sap.date = sl.snap_date
-    JOIN stats.sec_classification sc
-        ON sc.code = sap.code AND sc.is_active = TRUE
-       AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
-       AND sc.industry_id <> ALL($2::text[])
-    WHERE sap.sec_type = 'index'
-      AND sap.code_sec_shared_weight > 0
+classified_members AS (
+    SELECT DISTINCT sc.code
+    FROM stats.sec_classification sc
+    WHERE sc.is_active = TRUE
+      AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
+      AND sc.industry_id <> ALL($2::text[])
 ),
 today_member AS MATERIALIZED (
-    SELECT DISTINCT mu.benchmark_code
-    FROM member_universe mu
+    SELECT DISTINCT cm.code AS benchmark_code
+    FROM classified_members cm
     JOIN stats.sec_classification sc2
-        ON sc2.code = mu.member_code
+        ON sc2.code = cm.code
        AND sc2.type = ANY($3::text[])
     JOIN stats.index_intraday_5min mi5
-        ON mi5.code = mu.member_code
+        ON mi5.code = cm.code
        AND mi5.date = (SELECT d FROM target)
        AND mi5.close IS NOT NULL
 )
@@ -120,7 +103,6 @@ SELECT tb.code AS benchmark_code, (SELECT d FROM target) AS tick_date
 FROM today_bench tb
 WHERE EXISTS (
       SELECT 1 FROM today_member tm
-      WHERE tm.benchmark_code = tb.code
   )
   AND ($1::text[] IS NULL OR tb.code = ANY($1::text[]))
   AND NOT EXISTS (
@@ -149,6 +131,71 @@ async def find_missing_ref_pairs(
 
 
 # ----------------------------------------------------------------------------
+#  Find ALL tick-eligible (benchmark, date) pairs for the LIVE process
+#  (--mode live — the 5-min equal-weight path). Same eligibility rules as
+#  _FIND_MISSING_REF_PAIRS_SQL but WITHOUT the "ref missing" NOT EXISTS —
+#  the live process runs the ref-less FALLBACK tick loader for every
+#  eligible pair regardless of ref state (its anti-join skips (code, time)
+#  rows that already exist with ANY flag, so pairs fully covered by
+#  weighted rows are natural no-ops and brand-new bars get equal-weight
+#  rows until the next yday-ref run upgrades them).
+# ----------------------------------------------------------------------------
+_LIVE_TICK_PAIRS_SQL = """
+WITH target AS MATERIALIZED (
+    SELECT MAX(date) AS d
+    FROM stats.index_intraday_5min
+    WHERE close IS NOT NULL
+),
+today_bench AS MATERIALIZED (
+    SELECT DISTINCT i5.code
+    FROM stats.index_intraday_5min i5
+    WHERE i5.date = (SELECT d FROM target)
+      AND i5.close IS NOT NULL
+),
+classified_members AS (
+    SELECT DISTINCT sc.code
+    FROM stats.sec_classification sc
+    WHERE sc.is_active = TRUE
+      AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
+      AND sc.industry_id <> ALL($2::text[])
+),
+today_member AS MATERIALIZED (
+    SELECT DISTINCT cm.code AS benchmark_code
+    FROM classified_members cm
+    JOIN stats.sec_classification sc2
+        ON sc2.code = cm.code
+       AND sc2.type = ANY($3::text[])
+    JOIN stats.index_intraday_5min mi5
+        ON mi5.code = cm.code
+       AND mi5.date = (SELECT d FROM target)
+       AND mi5.close IS NOT NULL
+)
+SELECT tb.code AS benchmark_code, (SELECT d FROM target) AS tick_date
+FROM today_bench tb
+WHERE EXISTS (
+      SELECT 1 FROM today_member tm
+  )
+  AND ($1::text[] IS NULL OR tb.code = ANY($1::text[]))
+ORDER BY tb.code
+"""
+
+
+async def find_live_tick_pairs(
+    conn: asyncpg.Connection,
+    benchmarks: Sequence[str] | None = None,
+) -> list[tuple[str, datetime.date]]:
+    """Return ALL tick-eligible (benchmark, latest_date) pairs (live mode)."""
+    bench_param = list(benchmarks) if benchmarks else None
+    rows = await conn.fetch(
+        _LIVE_TICK_PAIRS_SQL,
+        bench_param,
+        list(BROAD_EXCLUDED),
+        list(TICK_CLASS_TYPES),
+    )
+    return [(r["benchmark_code"], r["tick_date"]) for r in rows]
+
+
+# ----------------------------------------------------------------------------
 #  HEAVY fetch: member universe + prev-day reference values for ONE
 #  (benchmark, date) ref pair.
 #
@@ -169,25 +216,55 @@ async def find_missing_ref_pairs(
 #  the live date (independent of member prev dates).
 # ----------------------------------------------------------------------------
 _REF_MEMBERS_SQL = """
-WITH sap_date AS (
-    SELECT MAX(date) AS d
-    FROM analysis.sec_alloc_perf_attribution
-    WHERE sec_type = 'index' AND benchmark_code = $1::text
-),
-universe AS (
+WITH universe AS (
     SELECT
-        sap.code                    AS member_code,
-        sap.sec_type                AS member_sec_type,
+        sc.code                    AS member_code,
+        sc.type                    AS member_sec_type,
         sc.industry_id,
         sc.is_industry_not_strategy
-    FROM analysis.sec_alloc_perf_attribution sap
-    JOIN stats.sec_classification sc
-        ON sc.code = sap.code AND sc.is_active = TRUE
-       AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
-       AND sc.industry_id <> ALL($3::text[])
-    WHERE sap.benchmark_code = $1::text
-      AND sap.date = (SELECT d FROM sap_date)
-      AND sap.code_sec_shared_weight > 0
+    FROM stats.sec_classification sc
+    WHERE sc.is_active = TRUE
+      AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
+      AND sc.industry_id <> ALL($3::text[])
+      AND sc.code != $1::text
+),
+bench_comp AS (
+    -- Benchmark's latest composition snapshot (most recent per stock)
+    SELECT stock_code,
+           LEFT(stock_code, 6) AS normalized_code,
+           weight_pct
+    FROM (
+        SELECT sc.stock_code, sc.weight_pct,
+               ROW_NUMBER() OVER (PARTITION BY sc.stock_code
+                                  ORDER BY sc.snapshot_date DESC) AS rn
+        FROM stats.sec_composition sc
+        WHERE sc.code = $1::text
+          AND sc.stock_code IS NOT NULL
+    ) t
+    WHERE rn = 1
+),
+member_comp AS (
+    -- Each member's latest composition snapshot (most recent per code+stock)
+    SELECT mc.code,
+           LEFT(mc.stock_code, 6) AS normalized_code,
+           mc.weight_pct,
+           ROW_NUMBER() OVER (PARTITION BY mc.code, mc.stock_code
+                              ORDER BY mc.snapshot_date DESC) AS rn
+    FROM stats.sec_composition mc
+    JOIN universe u ON u.member_code = mc.code
+    WHERE mc.stock_code IS NOT NULL
+),
+shared AS (
+    -- Member's composition overlap weight vs benchmark
+    -- Only members with at least one overlapping stock get a row here;
+    -- others will be COALESCE'd to 0 in the final SELECT.
+    SELECT mc.code AS member_code,
+           SUM(mc.weight_pct) AS code_sec_shared_weight
+    FROM member_comp mc
+    JOIN bench_comp bc
+      ON mc.normalized_code = bc.normalized_code AND mc.rn = 1
+    WHERE mc.code != $1::text
+    GROUP BY mc.code
 ),
 member_prev_close AS (
     SELECT DISTINCT ON (u.member_code)
@@ -232,11 +309,13 @@ SELECT
     mp.prev_date,
     mp.prev_close,
     ma.prev_trading_amount,
-    bp.bench_prev_close
+    bp.bench_prev_close,
+    COALESCE(sw.code_sec_shared_weight, 0) AS code_sec_shared_weight
 FROM member_prev_close mp
 JOIN universe u ON u.member_code = mp.member_code
 LEFT JOIN member_prev_amt ma ON ma.member_code = mp.member_code
 LEFT JOIN bench_prev bp ON true
+LEFT JOIN shared sw ON sw.member_code = mp.member_code
 ORDER BY mp.member_code
 """
 
@@ -266,6 +345,7 @@ async def fetch_ref_members(
             "prev_close": _f(r["prev_close"]),
             "prev_trading_amount": _f(r["prev_trading_amount"]),
             "bench_prev_close": _f(r["bench_prev_close"]),
+            "code_sec_shared_weight": _f(r["code_sec_shared_weight"]),
         }
         for r in rows
     ]
@@ -408,24 +488,16 @@ async def fetch_missing_ticks(
 #  are never downgraded.
 # ----------------------------------------------------------------------------
 _FALLBACK_TICKS_SQL = """
-WITH sap_date AS (
-    SELECT MAX(date) AS d
-    FROM analysis.sec_alloc_perf_attribution
-    WHERE sec_type = 'index' AND benchmark_code = $1::text
-),
-universe AS (
+WITH universe AS (
     SELECT DISTINCT
-        sap.code AS member_code,
-        sap.sec_type AS member_sec_type
-    FROM analysis.sec_alloc_perf_attribution sap
-    JOIN stats.sec_classification sc
-        ON sc.code = sap.code AND sc.is_active = TRUE
-       AND sc.type = ANY($3::text[])
-       AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
-       AND sc.industry_id <> ALL($4::text[])
-    WHERE sap.benchmark_code = $1::text
-      AND sap.date = (SELECT d FROM sap_date)
-      AND sap.code_sec_shared_weight > 0
+        sc.code AS member_code,
+        sc.type AS member_sec_type
+    FROM stats.sec_classification sc
+    WHERE sc.is_active = TRUE
+      AND sc.type = ANY($3::text[])
+      AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
+      AND sc.industry_id <> ALL($4::text[])
+      AND sc.code != $1::text
 ),
 member_prev_close AS (
     SELECT DISTINCT ON (code)

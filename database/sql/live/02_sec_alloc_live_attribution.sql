@@ -10,11 +10,13 @@
 --     trading-amount market-share weight) are computed ONCE per (benchmark,
 --     date) from PREVIOUS trading day data only. The tick table never
 --     recomputes these.
---     Member universe: ANY sec_type from the latest
---     analysis.sec_alloc_perf_attribution snapshot with
---     code_sec_shared_weight > 0 (joined to an ACTIVE classification row
---     with a non-BROAD industry_id). STOCKS are kept here for SHARE WEIGHT
---     purposes only — they carry no live tick rows.
+--     Member universe: ALL active classified indices (with non-BROAD
+--     industry_id), regardless of composition overlap. Shared weights
+--     come from stats.sec_composition directly (computed in _REF_MEMBERS_SQL).
+--     Zero-overlap members (code_sec_shared_weight = 0) still appear in the
+--     equal-weight aggregate but contribute zero to the trading-amount
+--     weighted aggregate. STOCKS are kept here for SHARE WEIGHT purposes
+--     only — they carry no live tick rows.
 --
 --  2) live.sec_alloc_live_attribution (LIVE — light, per 5-min tick)
 --     One row per (code, date, time, sec_type, benchmark_code). Only
@@ -55,10 +57,14 @@
 --    Industry-level aggregates are computed AT QUERY TIME from the tick
 --    table (no precomputed industry parent):
 --      • weighted : SUM(ref.code_trading_amount_weight *
+--                       ref.code_sec_shared_weight *
 --                       tick.code_price_pct_relative_prev_date_close)
---                   / SUM(ref.code_trading_amount_weight)  -- renormalized
+--                   / SUM(ref.code_trading_amount_weight *
+--                        ref.code_sec_shared_weight)  -- renormalized
 --                      over members with non-NULL pct (stocks hold
---                      weights but no ticks, so they cancel out)
+--                      weights but no ticks, so they cancel out).
+--                      code_sec_shared_weight = 0 ZEROes out disjoint
+--                      indices (no composition overlap with benchmark).
 --      • equal    : AVG(tick.code_price_pct_relative_prev_date_close)
 --
 --  All pct columns are FRACTIONS (0.01 = 1%), matching the intraday_*
@@ -94,6 +100,14 @@ CREATE TABLE IF NOT EXISTS live.sec_alloc_live_prev_ref (
     -- Member share of Σ prev-day trading amounts across the benchmark's
     -- eligible member universe (renormalized over non-NULL amounts). 0..1.
     code_trading_amount_weight    NUMERIC(10,8),
+
+    -- Composition overlap: member's share of benchmark's composition.
+    -- Sourced from analysis.sec_alloc_perf_attribution (latest date).
+    -- 0.0 = disjoint (no overlapping stocks); NULL = no composition data.
+    -- Used by the "By Trading Amt" weighted aggregate to zero-out members
+    -- with zero composition overlap (their pct moves don't reflect
+    -- benchmark composition changes).
+    code_sec_shared_weight        NUMERIC(12,8),
 
     CONSTRAINT pk_sec_alloc_live_prev_ref
         PRIMARY KEY (benchmark_code, date, code, sec_type),
@@ -170,6 +184,11 @@ ALTER TABLE live.sec_alloc_live_attribution
 
 ALTER TABLE live.sec_alloc_live_attribution
     DROP CONSTRAINT IF EXISTS fk_sec_alloc_live_attr_ref;
+
+ALTER TABLE live.sec_alloc_live_prev_ref
+    ADD COLUMN IF NOT EXISTS code_sec_shared_weight NUMERIC(12,8);
+
+COMMENT ON COLUMN live.sec_alloc_live_prev_ref.code_sec_shared_weight IS 'Member composition overlap weight vs benchmark (SUM of member weight_pct on overlapping stocks from stats.sec_composition). 0.0 = disjoint indices (no overlapping stocks); column is populated for ALL classified members. Multiplied with code_trading_amount_weight in the "By Trading Amt" weighted aggregate so zero-overlap members contribute zero to the benchmark attribution.';
 
 -- ----------------------------------------------------------------------------
 --  Register in live.live_identity

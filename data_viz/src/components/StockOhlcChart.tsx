@@ -1,4 +1,4 @@
-﻿/**
+/**
  * StockOhlcChart — shared daily OHLC chart for a single stock.
  *
  * Single source of truth for the stock daily OHLC plot. Used by:
@@ -24,7 +24,8 @@
  * gold diamond markPoints on the ex-dividend date. The dividend amount is
  * shown in the axis tooltip when the user hovers the event day.
  */
-import { useMemo } from "react";
+import React, { useMemo } from "react";
+import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
 import { breakArraysAtGaps, fmtNum, fmtMil, safeMa } from "@/lib/series";
@@ -445,8 +446,22 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
           }>;
           if (arr.length === 0) return "";
           const dateStr = (arr[0].axisValue as string) || "";
-          let html = `<div style="font-weight:600;margin-bottom:4px">${dateStr}</div>`;
-          // Dividend event on the hovered day — shown above the OHLC/PE rows.
+
+          const makeHeader = (text: string) =>
+            React.createElement(tooltipComponents.Header, null, text);
+          const makeRow = (children: React.ReactNode, style?: React.CSSProperties) =>
+            React.createElement(tooltipComponents.Row, { style }, children);
+          const makeTextRow = (marker: string, name: string, text: React.ReactNode) =>
+            makeRow([marker, " ", name, ": ", text]);
+          const makeBoldRow = (marker: string, name: string, vstr: string) =>
+            makeTextRow(marker, name, React.createElement(tooltipComponents.Bold, null, vstr));
+          const makeOhlcRow = (marker: string, name: string, o: number | null, h: number | null, l: number | null, c: number | null) =>
+            makeTextRow(marker, name,
+              `O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(c, ohlcMode)}`);
+
+          const children: React.ReactNode[] = [];
+          children.push(makeHeader(dateStr));
+
           const div = dividendByDate.get(dateStr);
           if (div) {
             const dps = div.dividend_per_share_pre_tax;
@@ -454,8 +469,14 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
             const totStr = div.total_dividend_wan != null
               ? ` · ¥${fmtNum(div.total_dividend_wan, 0)}万 total`
               : "";
-            html += `<div style="margin-bottom:4px"><span style="color:${DIVIDEND_COLOR}">◆</span> <b style="color:${DIVIDEND_COLOR}">Dividend</b> · ${dpsStr}${totStr}</div>`;
+            children.push(makeRow([
+              React.createElement("span", { style: { color: DIVIDEND_COLOR } }, "◆"),
+              " ",
+              React.createElement(tooltipComponents.Bold, { style: { color: DIVIDEND_COLOR } }, "Dividend"),
+              ` · ${dpsStr}${totStr}`,
+            ], { marginBottom: 4 }));
           }
+
           const isPriceSeries = (name: string) =>
             name === "OHLC" || name === "Close" || name.startsWith("MA");
           for (const p of arr) {
@@ -464,7 +485,7 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
             if (Array.isArray(p.value)) {
               const [o, cl, l, h] = p.value;
               if (o == null && cl == null && l == null && h == null) continue;
-              html += `<div>${p.marker ?? ""} ${name}: O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(cl, ohlcMode)}</div>`;
+              children.push(makeOhlcRow(p.marker ?? "", name, o, h, l, cl));
             } else {
               const v = p.value as number;
               if (!Number.isFinite(v)) continue;
@@ -486,16 +507,21 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
               } else {
                 vstr = formatPriceValue(v, ohlcMode);
               }
-              html += `<div>${p.marker ?? ""} ${name}: <b>${vstr}</b></div>`;
+              children.push(makeBoldRow(p.marker ?? "", name, vstr));
             }
           }
-          // EPS (per-row attribute, not a plotted series). Shown after the
-          // series rows so it sits beneath the PE line when PE is plotted.
+
           const epsVal = epsByDate.get(dateStr);
           if (epsVal != null && Number.isFinite(epsVal)) {
-            html += `<div><span style="color:${PE_COLOR}">●</span> EPS: <b>¥${fmtNum(epsVal, 4)}</b></div>`;
+            children.push(makeRow([
+              React.createElement("span", { style: { color: PE_COLOR } }, "●"),
+              " ",
+              "EPS: ",
+              React.createElement(tooltipComponents.Bold, null, `¥${fmtNum(epsVal, 4)}`),
+            ]));
           }
-          return html;
+
+          return renderReactElement(React.createElement(React.Fragment, null, children));
         },
       },
       legend: commonLegend(themeMode, { type: "scroll" }),

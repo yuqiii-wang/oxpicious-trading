@@ -173,7 +173,7 @@ def build_daily_df(existing_keys: set, shared_weights: dict = None,
     if verbose and n_1m_loaded:
         print(f"    [DAILY] loaded {n_1m_loaded} 1m CSVs (appended last for override)", flush=True)
 
-    # Also load SZSE index data (archive + trend) for 399001 / 399006 / 399237
+    # Also load SZSE index data (archive + trend) for 399001 / 399006
     szse_dfs = load_szse_index_history(verbose=verbose)
     for df in szse_dfs:
         dfs.append(df)
@@ -206,8 +206,11 @@ def build_daily_df(existing_keys: set, shared_weights: dict = None,
     pe_lookup: dict = {}
     if "pe" in combined.columns:
         pe_rows = combined[combined["pe"].notna()]
-        for _, row in pe_rows.iterrows():
-            pe_lookup[(row["date"], row["code"])] = row["pe"]
+        if not pe_rows.empty:
+            pe_lookup = dict(zip(
+                zip(pe_rows["date"], pe_rows["code"]),
+                pe_rows["pe"]
+            ))
         if verbose and pe_lookup:
             print(f"    [DAILY] PE lookup: {len(pe_lookup):,} (date, code) pairs with PE "
                   f"(from CSIndex)", flush=True)

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * React-based tooltip formatters for MA-Spread charts.
  *
  * Uses React.createElement + a custom element-to-HTML renderer to produce
@@ -13,87 +13,7 @@ import type { MovAveSpreadPairSeries } from "@shared/types";
 import { type OhlcMode } from "@/lib/ohlc";
 import { type TrendBand } from "./trendBands";
 
-// ---- Custom React element → HTML renderer --------------------------------
-// Minimal renderer that converts React.createElement results to HTML strings.
-// Handles:
-//   - React.Fragment (renders children without wrapper)
-//   - String/number children (text nodes)
-//   - Array children (rendered sequentially)
-//   - DOM elements (div, span, etc.) with className, style, children
-// Does NOT handle function components — callers must call the component
-// function first (or use the helpers below).
-
-type El = React.ReactElement | string | number | boolean | null | undefined;
-
-function styleObjectToString(style: React.CSSProperties | undefined): string {
-  if (!style) return "";
-  const parts: string[] = [];
-  for (const [key, val] of Object.entries(style)) {
-    if (val == null) continue;
-    // Convert camelCase to kebab-case
-    const cssKey = key.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
-    if (typeof val === "number") {
-      // Numeric values default to px except for unitless properties
-      const unitless = ["opacity", "zIndex", "fontWeight", "lineHeight"];
-      if (unitless.includes(key) || val === 0) {
-        parts.push(`${cssKey}:${val}`);
-      } else {
-        parts.push(`${cssKey}:${val}px`);
-      }
-    } else {
-      parts.push(`${cssKey}:${String(val)}`);
-    }
-  }
-  return parts.join(";");
-}
-
-function renderChildren(children: React.ReactNode): string {
-  if (children == null || children === false || children === true) return "";
-  if (typeof children === "string") return children;
-  if (typeof children === "number") return String(children);
-  if (Array.isArray(children)) {
-    return children.map((c) => renderChildren(c)).join("");
-  }
-  if (React.isValidElement(children)) {
-    return renderEl(children);
-  }
-  return String(children);
-}
-
-function renderEl(el: El): string {
-  if (el == null || el === false || el === true) return "";
-  if (typeof el === "string") return el;
-  if (typeof el === "number") return String(el);
-  if (Array.isArray(el)) return el.map((c) => renderEl(c)).join("");
-  if (!React.isValidElement(el)) return "";
-
-  const { type, props } = el as React.ReactElement;
-
-  // React.Fragment (symbol type) — render children without wrapper.
-  // Must be checked before the function-component branch.
-  if (type === React.Fragment) {
-    return renderChildren(props?.children);
-  }
-
-  // Handle function components by calling them
-  if (typeof type === "function") {
-    return renderEl((type as React.FC<Record<string, unknown>>)(props ?? {}) as El);
-  }
-
-  // HTML element (div, span, etc.)
-  const tag = String(type).toLowerCase();
-  const styleStr = styleObjectToString(props?.style as React.CSSProperties | undefined);
-  const classStr = props?.className ? ` class="${String(props.className)}"` : "";
-  const styleAttr = styleStr ? ` style="${styleStr}"` : "";
-  const childHtml = renderChildren(props?.children as React.ReactNode);
-
-  return `<${tag}${classStr}${styleAttr}>${childHtml}</${tag}>`;
-}
-
-/** Final render function — takes React element, returns HTML string. */
-function render(el: React.ReactElement): string {
-  return renderEl(el);
-}
+import { renderReactElement } from "@/lib/react-tooltip-renderer";
 
 // ---- Shared helpers ------------------------------------------------------
 
@@ -252,7 +172,7 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     if (arr.length === 0) return "";
     const dateStr = (arr[0].axisValue as string) || "";
     const idx = dates.indexOf(dateStr);
-    if (idx < 0) return render(React.createElement(Header, null, dateStr));
+    if (idx < 0) return renderReactElement(React.createElement(Header, null, dateStr));
 
     const children: React.ReactNode[] = [];
 
@@ -521,7 +441,7 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
       }
     }
 
-    return render(React.createElement(React.Fragment, null, children));
+    return renderReactElement(React.createElement(React.Fragment, null, children));
   };
 }
 
@@ -549,7 +469,7 @@ export function buildAmtTooltipFormatter(
     if (arr.length === 0) return "";
     const dateStr = (arr[0].axisValue as string) || "";
     const idx = dates.indexOf(dateStr);
-    if (idx < 0) return render(React.createElement(Header, null, dateStr));
+    if (idx < 0) return renderReactElement(React.createElement(Header, null, dateStr));
 
     const children: React.ReactNode[] = [];
 
@@ -613,6 +533,6 @@ export function buildAmtTooltipFormatter(
       }, `H: ${fmtPrice(h)} · L: ${fmtPrice(l)}`),
     );
 
-    return render(React.createElement(React.Fragment, null, children));
+    return renderReactElement(React.createElement(React.Fragment, null, children));
   };
 }

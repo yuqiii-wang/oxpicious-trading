@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Margin Trends analysis page (default export).
  *
  * Single-industry layout:
@@ -63,6 +63,7 @@ export default function MarginTrendsPage() {
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [attribution, setAttribution] = useState<MarginAttribution>("index");
+  const [selectedItemCode, setSelectedItemCode] = useState<string | null>(null);
 
   // ---- Load themes on mount / refresh / attribution change -----------------
   useEffect(() => {
@@ -122,6 +123,11 @@ export default function MarginTrendsPage() {
     ? (strategyIndustryIds[0] ?? null)
     : selectedIndustryId;
 
+  // Clear single-item selection when industry or attribution changes
+  useEffect(() => {
+    setSelectedItemCode(null);
+  }, [effectiveIndustryId, attribution]);
+
   // ---- Nav handlers (mutual exclusivity: LEFT clears RIGHT) ----------------
   const handleSectorChange = (id: string | null) => {
     setSectorId(id);
@@ -142,6 +148,12 @@ export default function MarginTrendsPage() {
   };
   const handleThemeChange = (slug: string | null) => {
     setThemeSlug(slug);
+  };
+  const handleItemSelected = (code: string) => {
+    setSelectedItemCode(code);
+  };
+  const handleClearItemSelection = () => {
+    setSelectedItemCode(null);
   };
 
   return (
@@ -216,6 +228,9 @@ export default function MarginTrendsPage() {
         onStrategyChange={handleStrategyChange}
         onThemeChange={handleThemeChange}
         itemKind={attribution === "index" ? "Index" : "ETF"}
+        selectedItemCode={selectedItemCode}
+        onItemSelected={handleItemSelected}
+        onClearItemSelection={handleClearItemSelection}
         loading={loading}
       />
 
@@ -240,6 +255,7 @@ export default function MarginTrendsPage() {
           industryId={effectiveIndustryId}
           themeMode={themeMode}
           attribution={attribution}
+          selectedItemCode={selectedItemCode}
         />
       )}
     </Box>

@@ -5,7 +5,7 @@ https://www.szse.cn/market/trend/archive/index.html. Writes
 ``szse_index_{YYYYMMDD}.xlsx/.csv`` under ``temps/sse_archive/``.
 
 The xlsx contains ~180 indexes per day; the CSV is filtered to only
-399001 深证成指, 399006 创业板指, 399237 运输指数, 399348 深证价值, and
+399001 深证成指, 399006 创业板指, 399348 深证价值, and
 399346 深证成长. The xlsx is kept in full.
 No identity table — falls back to filesystem scan.
 
@@ -43,7 +43,7 @@ SECURITY_CFGS: Dict[str, Dict[str, object]] = {
     },
 }
 
-INDEX_CODES_TO_KEEP: List[str] = ["399001", "399006", "399237", "399348", "399346"]
+INDEX_CODES_TO_KEEP: List[str] = ["399001", "399006", "399348", "399346"]
 CODE_FILTER_BY_TYPE: Dict[str, List[str]] = {
     "index": INDEX_CODES_TO_KEEP,
 }

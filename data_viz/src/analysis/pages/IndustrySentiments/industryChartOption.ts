@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Build the ECharts option for the main Industry Sentiments price chart.
  *
  * Plots each industry's member INDEX VALUES directly, rebased to 100 at the
@@ -16,6 +16,7 @@
  * window-start but the mean/var overlay STAYS anchored at history start —
  * they are aligned only at full slider range.
  */
+import React from "react";
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import type { IndustrySentimentsChartResponse } from "@shared/types";
@@ -25,6 +26,7 @@ import { fmtNum } from "@/lib/series";
 import type { PoolSize, PerIndustryAggregation } from "./types";
 import { BENCHMARK_COLORS } from "./constants";
 import { classifyPoolSize, rebaseTo100 } from "./helpers";
+import { renderReactElement } from "@/lib/react-tooltip-renderer";
 
 export function buildIndustryChartOption(
   data: IndustrySentimentsChartResponse,
@@ -345,7 +347,7 @@ export function buildIndustryChartOption(
         const dateStr = visibleDates[idx0] ?? "";
         if (!dateStr) return "";
         // Build per-index rows: name, actual close, rebased %, stock_num.
-        const rowsHtml = arr
+        const rowElements = arr
           .map((p) => {
             const sIdx = data.indices.findIndex(
               (idx) => (idx.name || idx.code) === p.seriesName,
@@ -367,12 +369,12 @@ export function buildIndustryChartOption(
                 const fmtRaw = (v: number | null | undefined) =>
                   v == null || !Number.isFinite(v) ? "—" : fmtNum(v, 2);
                 const color = BENCHMARK_COLORS[bm.code] ?? "#ff6b35";
-                return `<div style="display:flex;justify-content:space-between;gap:12px">
-                  <span style="color:${color}">━</span>
-                  <span style="flex:1;font-weight:600">${p.seriesName ?? ""}</span>
-                  <span style="opacity:0.7">${fmtRaw(rawClose)}</span>
-                  <b>${fmtV(v)}</b>
-                </div>`;
+                return React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
+                  React.createElement("span", { style: { color } }, "━"),
+                  React.createElement("span", { style: { flex: 1, fontWeight: 600 } }, p.seriesName ?? ""),
+                  React.createElement("span", { style: { opacity: 0.7 } }, fmtRaw(rawClose)),
+                  React.createElement("b", null, fmtV(v))
+                );
               }
               // Mean / ±1σ rows — show value directly.
               const v = p.value;
@@ -382,16 +384,10 @@ export function buildIndustryChartOption(
                 return (pct >= 0 ? "+" : "") + fmtNum(pct, 2) + "%";
               };
               if (p.seriesName?.startsWith("mean")) {
-                // Mean row. Two cases:
-                //   • single-industry: name = "mean (all)" → look up var from
-                //     data.aggregation (the merged set).
-                //   • multi-industry:  name = "mean · <shortLabel>" → look up
-                //     var from the matching perIndustryAggregations entry.
-                const idx0Local = p.dataIndex ?? 0;
+                // Mean row.
                 let varVal: number | null = null;
                 let meanColor = "#444";
                 if (perIndustryAggregations.length > 0) {
-                  // Parse the shortLabel from "mean · <shortLabel>".
                   const shortLabel = p.seriesName.includes(" · ")
                     ? p.seriesName.split(" · ").slice(1).join(" · ")
                     : "";
@@ -416,14 +412,14 @@ export function buildIndustryChartOption(
                   if (x == null || !Number.isFinite(x)) return "—";
                   return fmtNum(x, 2);
                 };
-                return `<div style="display:flex;justify-content:space-between;gap:12px">
-                  <span style="color:${meanColor}">┄</span>
-                  <span style="flex:1;font-weight:600">${p.seriesName ?? ""}</span>
-                  <span style="opacity:0.7">var ${fmtVar(varVal)}</span>
-                  <b>${fmtV(v)}</b>
-                </div>`;
+                return React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
+                  React.createElement("span", { style: { color: meanColor } }, "┄"),
+                  React.createElement("span", { style: { flex: 1, fontWeight: 600 } }, p.seriesName ?? ""),
+                  React.createElement("span", { style: { opacity: 0.7 } }, `var ${fmtVar(varVal)}`),
+                  React.createElement("b", null, fmtV(v))
+                );
               }
-              return ""; // ±1σ band — skip in tooltip
+              return null; // ±1σ band — skip in tooltip
             }
             const raw = rawClosesPerIdx[sIdx][p.dataIndex ?? 0];
             const rebased = p.value;
@@ -437,14 +433,17 @@ export function buildIndustryChartOption(
             };
             const color = indexColors[sIdx];
             const stockNumStr = sn == null ? "" : ` · ${sn} stocks`;
-            return `<div style="display:flex;justify-content:space-between;gap:12px">
-              <span style="color:${color}">●</span>
-              <span style="flex:1">${p.seriesName ?? ""}<span style="opacity:0.5;font-size:0.9em">${stockNumStr}</span></span>
-              <span style="opacity:0.7">${fmtRaw(raw)}</span>
-              <b>${fmtRebased(rebased)}</b>
-            </div>`;
+            return React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
+              React.createElement("span", { style: { color } }, "●"),
+              React.createElement("span", { style: { flex: 1 } },
+                p.seriesName ?? "",
+                React.createElement("span", { style: { opacity: 0.5, fontSize: "0.9em" } }, stockNumStr)
+              ),
+              React.createElement("span", { style: { opacity: 0.7 } }, fmtRaw(raw)),
+              React.createElement("b", null, fmtRebased(rebased))
+            );
           })
-          .join("");
+          .filter((el): el is React.ReactElement => el !== null);
 
         // ---- One-date stats summary (header block) ----
         // Aggregate across all HIGHLIGHTED indices that have data on this date.
@@ -471,7 +470,7 @@ export function buildIndustryChartOption(
           return (pct >= 0 ? "+" : "") + fmtNum(pct, 2) + "%";
         };
 
-        let statsHtml = "";
+        let statsElement: React.ReactElement | null = null;
         if (highlightedRebased.length > 0) {
           const vals = highlightedRebased.map((h) => h.rebased);
           const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
@@ -481,28 +480,33 @@ export function buildIndustryChartOption(
           const maxItem = highlightedRebased.reduce((a, b) => (b.rebased > a.rebased ? b : a));
           const minItem = highlightedRebased.reduce((a, b) => (b.rebased < a.rebased ? b : a));
           const sd = Math.sqrt(variance);
-          statsHtml = `<div style="margin-top:4px;padding:4px 6px;border:1px solid ${c.splitLineColor};border-radius:3px;font-size:0.95em">
-            <div style="display:flex;justify-content:space-between;gap:12px">
-              <span style="opacity:0.7">highlighted</span><b>${highlightedRebased.length} indices</b>
-            </div>
-            <div style="display:flex;justify-content:space-between;gap:12px">
-              <span style="opacity:0.7">mean</span><b>${fmtPct(mean)}</b>
-            </div>
-            <div style="display:flex;justify-content:space-between;gap:12px">
-              <span style="opacity:0.7">var / σ</span><b>${fmtNum(variance, 2)} / ${fmtNum(sd, 2)}</b>
-            </div>
-            <div style="display:flex;justify-content:space-between;gap:12px">
-              <span style="opacity:0.7">max</span><b>${fmtPct(maxItem.rebased)} (${maxItem.name})</b>
-            </div>
-            <div style="display:flex;justify-content:space-between;gap:12px">
-              <span style="opacity:0.7">min</span><b>${fmtPct(minItem.rebased)} (${minItem.name})</b>
-            </div>
-          </div>`;
+          statsElement = React.createElement("div", { style: { marginTop: 4, padding: "4px 6px", border: `1px solid ${c.splitLineColor}`, borderRadius: 3, fontSize: "0.95em" } },
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
+              React.createElement("span", { style: { opacity: 0.7 } }, "highlighted"),
+              React.createElement("b", null, `${highlightedRebased.length} indices`)
+            ),
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
+              React.createElement("span", { style: { opacity: 0.7 } }, "mean"),
+              React.createElement("b", null, fmtPct(mean))
+            ),
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
+              React.createElement("span", { style: { opacity: 0.7 } }, "var / σ"),
+              React.createElement("b", null, `${fmtNum(variance, 2)} / ${fmtNum(sd, 2)}`)
+            ),
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
+              React.createElement("span", { style: { opacity: 0.7 } }, "max"),
+              React.createElement("b", null, `${fmtPct(maxItem.rebased)} (${maxItem.name})`)
+            ),
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
+              React.createElement("span", { style: { opacity: 0.7 } }, "min"),
+              React.createElement("b", null, `${fmtPct(minItem.rebased)} (${minItem.name})`)
+            )
+          );
         }
 
         // Benchmark close + rebased % for this date (one row per visible
         // selected benchmark).
-        let bmHtml = "";
+        const bmElements: React.ReactElement[] = [];
         for (const bm of visibleBenchmarks) {
           const bmRow = bm.rows.find((r) => r.date === dateStr);
           if (!bmRow || bmRow.close == null) continue;
@@ -515,19 +519,23 @@ export function buildIndustryChartOption(
             return fmtPct(v);
           };
           const color = BENCHMARK_COLORS[bm.code] ?? "#ff6b35";
-          bmHtml += `<div style="display:flex;justify-content:space-between;gap:12px;margin-top:2px">
-            <span style="color:${color}">━</span>
-            <span style="flex:1;opacity:0.7">${bm.name}</span>
-            <span style="opacity:0.7">${fmtRawOuter(bmRow.close)}</span>
-            <b style="color:${color}">${fmtBmPct(bmRebased)}</b>
-          </div>`;
+          bmElements.push(React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12, marginTop: 2 } },
+            React.createElement("span", { style: { color } }, "━"),
+            React.createElement("span", { style: { flex: 1, opacity: 0.7 } }, bm.name),
+            React.createElement("span", { style: { opacity: 0.7 } }, fmtRawOuter(bmRow.close)),
+            React.createElement("b", { style: { color } }, fmtBmPct(bmRebased))
+          ));
         }
 
-        return `<div style="font-weight:600">${dateStr}</div>
-                <div style="margin-top:2px;opacity:0.7">Rebased to 100 at window start · actual close shown</div>
-                ${statsHtml}
-                ${bmHtml}
-                <div style="margin-top:4px">${rowsHtml}</div>`;
+        const children: React.ReactNode[] = [
+          React.createElement("div", { style: { fontWeight: 600 } }, dateStr),
+          React.createElement("div", { style: { marginTop: 2, opacity: 0.7 } }, "Rebased to 100 at window start · actual close shown"),
+        ];
+        if (statsElement) children.push(statsElement);
+        children.push(...bmElements);
+        children.push(React.createElement("div", { style: { marginTop: 4 } }, ...rowElements));
+
+        return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
     },
     xAxis: {
