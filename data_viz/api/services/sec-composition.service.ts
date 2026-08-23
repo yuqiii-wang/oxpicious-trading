@@ -18,6 +18,13 @@
  *   - source:   "full"  = all ETF holdings available,
  *               "index" = ETF had no holdings; tracking index composition used.
  *   - index_source: populated only when source === "index" (which index was used).
+ *
+ * Seasonal (quarterly) support — snapshot cadence in the DB is irregular
+ * (SZSE ETF full-composition CSVs land roughly monthly; CSI index
+ * closeweight files land per review). Every "by season" query therefore maps
+ * a date to its CALENDAR QUARTER and picks the LATEST snapshot within that
+ * quarter (no carry-forward: a quarter without a snapshot yields no data —
+ * see getQuarterlyComposition for the per-quarter bar-chart feed).
  */
 import { queryRows, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
@@ -28,6 +35,8 @@ import type {
   LinkedEtfRow,
   SimilarIndicesResponse,
   SimilarIndexRow,
+  QuarterlyCompositionResponse,
+  QuarterlyCompositionQuarter,
 } from "../../shared/types.js";
 
 interface DbCompositionRow extends QueryResultRow {
@@ -48,6 +57,13 @@ interface IndexMetaRow extends QueryResultRow {
 
 /** Regex to strip the exchange suffix from a code (159001.SZ → 159001). */
 const SUFFIX_RE = /\.(SZ|SS|SH)$/;
+
+/** Map a "YYYY-MM-DD" date to its quarter label ("2026Q2"). "" on bad input. */
+function quarterLabel(dateStr: string): string {
+  const m = /^(\d{4})-(\d{2})/.exec(dateStr);
+  if (!m) return "";
+  return `${m[1]}Q${Math.floor((parseInt(m[2], 10) - 1) / 3) + 1}`;
+}
 
 /** Map a DB row to a SecCompositionHolding. */
 function toHolding(r: DbCompositionRow): SecCompositionHolding {
@@ -71,10 +87,15 @@ function toHolding(r: DbCompositionRow): SecCompositionHolding {
  *
  * @param code       bare code (suffix-stripped for ETFs, or bare index code)
  * @param sourceType 'etf' or 'index'
+ * @param date       optional "YYYY-MM-DD". When provided, the snapshot is
+ *                   constrained to the CALENDAR QUARTER containing the date
+ *                   (latest snapshot within that quarter). When the quarter
+ *                   has no snapshot, [] is returned.
  */
 async function fetchHoldings(
   code: string,
   sourceType: "etf" | "index",
+  date?: string,
 ): Promise<DbCompositionRow[]> {
   // The code predicate differs by source_type — static strings, no injection
   // risk (sourceType is a hardcoded literal, not user input).
@@ -86,6 +107,18 @@ async function fetchHoldings(
     sourceType === "etf"
       ? "REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1"
       : "code = $1";
+
+  // Seasonal constraint: latest snapshot WITHIN the quarter containing `date`.
+  // Both the `latest` subquery and the outer WHERE must carry the filter so
+  // the chosen snapshot and the returned rows agree.
+  const hasDate = typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date);
+  const dateFilter = hasDate
+    ? "AND snapshot_date >= date_trunc('quarter', $3::date) AND snapshot_date < date_trunc('quarter', $3::date) + interval '3 months'"
+    : "";
+  const outerDateFilter = hasDate
+    ? "AND h.snapshot_date >= date_trunc('quarter', $3::date) AND h.snapshot_date < date_trunc('quarter', $3::date) + interval '3 months'"
+    : "";
+  const params: unknown[] = hasDate ? [code, sourceType, date] : [code, sourceType];
 
   const sql = `
     SELECT h.snapshot_date,
@@ -102,6 +135,7 @@ async function fetchHoldings(
           FROM stats.sec_composition
          WHERE source_type = $2
            AND ${latestCodePredicate}
+           ${dateFilter}
       ) latest
       LEFT JOIN LATERAL (
         SELECT sc.sector_id, sc.industry_id, sc.sector_label, sc.industry_label
@@ -113,9 +147,10 @@ async function fetchHoldings(
      WHERE h.source_type = $2
        AND ${codePredicate}
        AND h.snapshot_date = latest.snap_date
+       ${outerDateFilter}
      ORDER BY h.weight_pct DESC
   `;
-  return queryRows<DbCompositionRow>(sql, [code, sourceType]);
+  return queryRows<DbCompositionRow>(sql, params);
 }
 
 /**
@@ -157,13 +192,19 @@ async function fetchTrackingIndex(
  *      callers pass a bare index code (e.g. "000300" or "H30007") directly
  *      — used by the Index Baseline page, which has no sec_classification entry.
  *
+ * When `date` is provided, every step is constrained to the calendar quarter
+ * containing that date (latest snapshot within the quarter) — the "by season"
+ * lookup used by the ETF Holdings page's quarterly bar → pie drill-down.
+ *
  * Returns holdings (all) and the source type
  * ("full" = ETF holdings, "index" = tracking/raw index composition).
  */
 export async function getSecComposition(
   codeParam: string,
+  dateParam?: string,
 ): Promise<SecCompositionResponse> {
   const stripped = codeParam.replace(SUFFIX_RE, "").trim();
+  const date = typeof dateParam === "string" ? dateParam.trim() : undefined;
   if (!stripped) {
     return {
       code: codeParam,
@@ -174,12 +215,13 @@ export async function getSecComposition(
   }
 
   // 1. Try ETF holdings first.
-  const etfRows = await fetchHoldings(stripped, "etf");
+  const etfRows = await fetchHoldings(stripped, "etf", date);
   if (etfRows.length > 0) {
     const holdings = etfRows.map(toHolding);
     return {
       code: etfRows[0].code,
       snapshot_date: formatDate(etfRows[0].snapshot_date),
+      quarter: quarterLabel(formatDate(etfRows[0].snapshot_date)),
       holdings,
       source: "full",
     };
@@ -188,12 +230,13 @@ export async function getSecComposition(
   // 2. Fallback: ETF has no holdings → use its tracking index's composition.
   const idx = await fetchTrackingIndex(stripped);
   if (idx) {
-    const idxRows = await fetchHoldings(idx.code, "index");
+    const idxRows = await fetchHoldings(idx.code, "index", date);
     if (idxRows.length > 0) {
       const holdings = idxRows.map(toHolding);
       return {
         code: codeParam,
         snapshot_date: formatDate(idxRows[0].snapshot_date),
+        quarter: quarterLabel(formatDate(idxRows[0].snapshot_date)),
         holdings,
         source: "index",
         index_source: { code: idx.code, name: idx.name },
@@ -203,12 +246,13 @@ export async function getSecComposition(
 
   // 3. Direct index lookup — caller passed a bare index code with no
   //    associated sec_classification entry (e.g. the Index Baseline page).
-  const directIdxRows = await fetchHoldings(stripped, "index");
+  const directIdxRows = await fetchHoldings(stripped, "index", date);
   if (directIdxRows.length > 0) {
     const holdings = directIdxRows.map(toHolding);
     return {
       code: codeParam,
       snapshot_date: formatDate(directIdxRows[0].snapshot_date),
+      quarter: quarterLabel(formatDate(directIdxRows[0].snapshot_date)),
       holdings,
       source: "index",
     };
@@ -221,6 +265,174 @@ export async function getSecComposition(
     holdings: [],
     source: "full",
   };
+}
+
+// ----------------------------------------------------------------------------
+//  Quarterly composition — per-season industry-aggregated weights for the
+//  ETF Holdings page's stacked bar chart.
+//
+//  For each calendar quarter the LATEST snapshot within that quarter is
+//  chosen (DISTINCT ON date_trunc('quarter', snapshot_date)); quarters
+//  without a snapshot are simply absent (no carry-forward — bars appear only
+//  where real data exists). Weights are aggregated per industry via the same
+//  LATERAL sec_classification join as fetchHoldings.
+//
+//  Fallback chain mirrors getSecComposition: ETF snapshots → tracking index
+//  snapshots → direct index snapshots.
+// ----------------------------------------------------------------------------
+interface DbQuarterlyRow extends QueryResultRow {
+  quarter_start: string;
+  snapshot_date: string;
+  sector_id: string;
+  sector_label: string;
+  industry: string;
+  weight_pct: string | number | null;
+  n_holdings: string | number;
+}
+
+async function fetchQuarterlyRows(
+  code: string,
+  sourceType: "etf" | "index",
+): Promise<DbQuarterlyRow[]> {
+  // The code predicate differs by source_type — static strings, no injection
+  // risk (sourceType is a hardcoded literal, not user input).
+  const codePredicate =
+    sourceType === "etf"
+      ? "REGEXP_REPLACE(h.code, '\\.(SZ|SS|SH)$', '') = $1"
+      : "h.code = $1";
+
+  const sql = `
+    WITH snaps AS (
+      SELECT DISTINCT ON (date_trunc('quarter', snapshot_date))
+             date_trunc('quarter', snapshot_date) AS quarter_start,
+             snapshot_date
+        FROM stats.sec_composition
+       WHERE source_type = $2
+         AND REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1
+       ORDER BY date_trunc('quarter', snapshot_date), snapshot_date DESC
+    )
+    SELECT s.quarter_start::text AS quarter_start,
+           s.snapshot_date::text AS snapshot_date,
+           COALESCE(sc.sector_id, 'OTHER')   AS sector_id,
+           COALESCE(sc.sector_label, '其他') AS sector_label,
+           COALESCE(sc.industry_label, '未分类') AS industry,
+           SUM(h.weight_pct)                AS weight_pct,
+           COUNT(*)                         AS n_holdings
+      FROM snaps s
+      JOIN stats.sec_composition h
+        ON h.source_type = $2
+       AND h.snapshot_date = s.snapshot_date
+       AND ${codePredicate}
+      LEFT JOIN LATERAL (
+        SELECT sc.sector_id, sc.industry_id, sc.sector_label, sc.industry_label
+          FROM stats.sec_classification sc
+         WHERE sc.code = h.stock_code AND sc.type = 'stock'
+         ORDER BY sc.parent_index_weight DESC NULLS LAST, sc.parent_index_code
+         LIMIT 1
+      ) sc ON true
+     GROUP BY s.quarter_start, s.snapshot_date,
+              COALESCE(sc.sector_id, 'OTHER'),
+              COALESCE(sc.sector_label, '其他'),
+              COALESCE(sc.industry_label, '未分类')
+     ORDER BY s.quarter_start, SUM(h.weight_pct) DESC
+  `;
+  return queryRows<DbQuarterlyRow>(sql, [code, sourceType]);
+}
+
+/** Fold raw grouped rows into the per-quarter response shape. */
+function foldQuarterlyRows(rows: DbQuarterlyRow[]): QuarterlyCompositionQuarter[] {
+  const byQuarter = new Map<string, QuarterlyCompositionQuarter>();
+  for (const r of rows) {
+    const label = quarterLabel(r.quarter_start);
+    let q = byQuarter.get(label);
+    if (!q) {
+      q = {
+        quarter: label,
+        snapshot_date: formatDate(r.snapshot_date),
+        n_holdings: 0,
+        total_weight_pct: 0,
+        industries: [],
+      };
+      byQuarter.set(label, q);
+    }
+    q.n_holdings += parseInt(String(r.n_holdings), 10) || 0;
+    const w = toNum(r.weight_pct) ?? 0;
+    q.total_weight_pct += w;
+    q.industries.push({
+      industry: r.industry,
+      sector_id: r.sector_id,
+      sector_label: r.sector_label,
+      weight_pct: w,
+      n_holdings: parseInt(String(r.n_holdings), 10) || 0,
+    });
+  }
+  const quarters = Array.from(byQuarter.values());
+  for (const q of quarters) {
+    // Round totals + per-industry weights (SQL SUM of NUMERIC arrives as string).
+    q.total_weight_pct = Number(q.total_weight_pct.toFixed(6));
+    for (const ind of q.industries) {
+      ind.weight_pct = Number(ind.weight_pct.toFixed(6));
+    }
+  }
+  return quarters;
+}
+
+/**
+ * Per-quarter industry-aggregated composition for the given code.
+ *
+ * Lookup order (same as getSecComposition):
+ *   1. ETF snapshots (source_type='etf') — source "full".
+ *   2. Tracking index snapshots — source "index" (+ index_source).
+ *   3. Direct index snapshots — source "index".
+ *
+ * Quarters without any snapshot are absent from `quarters`.
+ */
+export async function getQuarterlyComposition(
+  codeParam: string,
+): Promise<QuarterlyCompositionResponse> {
+  const stripped = codeParam.replace(SUFFIX_RE, "").trim();
+  const empty: QuarterlyCompositionResponse = {
+    code: codeParam,
+    source: "full",
+    quarters: [],
+  };
+  if (!stripped) return empty;
+
+  // 1. ETF snapshots.
+  const etfRows = await fetchQuarterlyRows(stripped, "etf");
+  if (etfRows.length > 0) {
+    return {
+      code: codeParam,
+      source: "full",
+      quarters: foldQuarterlyRows(etfRows),
+    };
+  }
+
+  // 2. Tracking index fallback.
+  const idx = await fetchTrackingIndex(stripped);
+  if (idx) {
+    const idxRows = await fetchQuarterlyRows(idx.code, "index");
+    if (idxRows.length > 0) {
+      return {
+        code: codeParam,
+        source: "index",
+        index_source: { code: idx.code, name: idx.name },
+        quarters: foldQuarterlyRows(idxRows),
+      };
+    }
+  }
+
+  // 3. Direct index lookup.
+  const directRows = await fetchQuarterlyRows(stripped, "index");
+  if (directRows.length > 0) {
+    return {
+      code: codeParam,
+      source: "index",
+      quarters: foldQuarterlyRows(directRows),
+    };
+  }
+
+  return empty;
 }
 
 // ----------------------------------------------------------------------------

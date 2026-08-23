@@ -3,9 +3,9 @@
 Run via ``python -m analyze.options``.
 
 Pipeline:
-  1. Populate analysis.options_expiry_identity with distinct
+  0. Populate analysis.options_expiry_identity with distinct
      (date, option_type, underlying_code, expiry_date) tuples.
-  2. Compute per-expiry-group rolling skewness (OI-weighted moneyness)
+  1. Compute per-expiry-group rolling skewness (OI-weighted moneyness)
      stats and write to analysis.options_skewness_stats (PK
      (date, option_type, underlying_code, expiry_date), FK ->
      analysis.options_expiry_identity):
@@ -13,8 +13,20 @@ Pipeline:
        - default:     chunked upsert (ON CONFLICT DO UPDATE on PK).
        - Includes count_skewness_curve_crossed_spot: cumulative count of
          sign changes in (skewness − 1) per expiry group.
-  3. Compute per-expiry-group OI stats and write to
+  2. Compute per-expiry-group OI stats and write to
      analysis.options_oi_stats (same PK/FK pattern).
+  3. Compute per-expiry-group options wall levels (80pct + large_num)
+     and write to analysis.options_walls (PK includes wall_type).
+  4. Compute per-expiry-group IV skew stats (ATM IV, 25-delta wings,
+     risk reversal, smile skewness) into analysis.options_iv_skew_stats
+     and the iv_smile skewness rolling stats into
+     options_skewness_stats (skew_type='iv_smile').
+  5. Compute the greek skew rolling stats — PAIR-level CALL-vs-PUT
+     contrasts per industry anchors — into options_skewness_stats with
+     skew_type='greek_delta' (delta-weighted put/call ratio),
+     'greek_gamma' (GEX-style gamma balance) and 'greek_vega' (OTM-wing
+     vega balance). theta/rho have no standard positioning skew and are
+     not computed (compute/ package: one module per greek).
 """
 from __future__ import annotations
 
@@ -63,21 +75,43 @@ from analyze.options.config import (  # noqa: E402
     SKEWNESS_DESCRIPTION,
     SKEWNESS_NUMERIC_COLS,
     SKEWNESS_RESULT_COLUMNS,
+    SKEWNESS_PK_COLUMNS,
+    SKEW_TYPE_IV_SMILE,
+    SKEW_TYPE_MONEYNESS,
+    GREEK_NAMES,
     EXPIRY_IDENTITY_TABLE,
     EXPIRY_PK_COLUMNS,
+    IV_SKEW_TABLE_NAME,
+    IV_SKEW_ANALYSIS_NAME,
+    IV_SKEW_DESCRIPTION,
+    IV_SKEW_NUMERIC_COLS,
+    IV_SKEW_RESULT_COLUMNS,
     OI_TABLE_NAME,
     OI_ANALYSIS_NAME,
     OI_DESCRIPTION,
     OI_NUMERIC_COLS,
     OI_RESULT_COLUMNS,
+    WALLS_TABLE_NAME,
+    WALLS_ANALYSIS_NAME,
+    WALLS_DESCRIPTION,
+    WALLS_NUMERIC_COLS,
+    WALLS_RESULT_COLUMNS,
 )
 from analyze.options.fetch import (  # noqa: E402
     fetch_options_skewness_rows,
     fetch_missing_skewness_groups,
     fetch_expiry_identity_rows,
+    fetch_options_walls_rows,
+    fetch_missing_walls_groups,
+    fetch_iv_skew_rows,
+    fetch_missing_iv_skew_groups,
 )
 from analyze.options.compute import (  # noqa: E402
     compute_options_skewness_stats,
+    compute_options_walls,
+    compute_options_iv_skew_stats,
+    compute_options_iv_smile_corr_stats,
+    GREEK_SKEW_COMPUTERS,
 )
 
 
@@ -93,10 +127,13 @@ async def _write_rows(
     force: bool,
     target_pairs: set | None,
     pk_columns: list[str],
+    force_delete_where: str | None = None,
+    round_to: int = 2,
 ) -> int:
     """Write result rows to a target table.
 
-    - force: DELETE all + chunked COPY-insert.
+    - force: DELETE (optionally scoped by force_delete_where) + chunked
+      COPY-insert.
     - incremental: filter to target_pairs + chunked upsert.
 
     Returns:
@@ -107,8 +144,15 @@ async def _write_rows(
         return 0
 
     if force:
-        print(f"  Deleting existing rows from {table_name}...", flush=True)
-        await conn.execute(f"DELETE FROM {table_name}")
+        if force_delete_where:
+            print(f"  Deleting rows ({force_delete_where}) from "
+                  f"{table_name}...", flush=True)
+            await conn.execute(
+                f"DELETE FROM {table_name} WHERE {force_delete_where}"
+            )
+        else:
+            print(f"  Deleting existing rows from {table_name}...", flush=True)
+            await conn.execute(f"DELETE FROM {table_name}")
     else:
         if target_pairs is not None and len(target_pairs) == 0:
             print("  up to date; nothing to insert.", flush=True)
@@ -143,7 +187,7 @@ async def _write_rows(
         rows = sanitize_for_db_insert(
             chunk,
             numeric_cols=numeric_cols,
-            round_to=2,
+            round_to=round_to,
         )
         if not rows:
             continue
@@ -185,7 +229,9 @@ async def _run_expiry_identity_pipeline(
 
     if force:
         print("    Force mode: clearing dependent tables first...", flush=True)
+        await conn.execute("DELETE FROM analysis.options_walls")
         await conn.execute("DELETE FROM analysis.options_skewness_stats")
+        await conn.execute("DELETE FROM analysis.options_iv_skew_stats")
         await conn.execute("DELETE FROM analysis.options_oi_stats")
 
     rows = await fetch_expiry_identity_rows(conn, sec_type)
@@ -242,16 +288,18 @@ async def _run_skewness_pipeline(
     force: bool,
     sec_type: str | None = None,
 ) -> int:
-    """Run the options_skewness_stats pipeline.
+    """Run the options_skewness_stats pipeline (skew_type='oi_moneyness').
 
     Returns number of rows written.
     """
     target_pairs: set | None = None
     if not force:
         print("\n  Detecting missing expiry groups "
-              "for skewness stats...", flush=True)
-        missing_list = await fetch_missing_skewness_groups(conn, sec_type)
-        target_pairs = set(missing_list)
+              "for skewness stats (oi_moneyness)...", flush=True)
+        missing_list = await fetch_missing_skewness_groups(
+            conn, sec_type, skew_type=SKEW_TYPE_MONEYNESS,
+        )
+        target_pairs = {(*t, SKEW_TYPE_MONEYNESS) for t in missing_list}
         print(f"    -> {len(target_pairs):,} missing expiry groups",
               flush=True)
         if len(target_pairs) == 0:
@@ -277,7 +325,8 @@ async def _run_skewness_pipeline(
         numeric_cols=SKEWNESS_NUMERIC_COLS,
         force=force,
         target_pairs=target_pairs,
-        pk_columns=EXPIRY_PK_COLUMNS,
+        pk_columns=SKEWNESS_PK_COLUMNS,
+        round_to=4,
     )
 
     print("\n  -> Upserting analysis.analysis_identity registry...",
@@ -354,11 +403,237 @@ async def _run_oi_pipeline(
     return n
 
 
+async def _run_walls_pipeline(
+    conn,
+    force: bool,
+    sec_type: str | None = None,
+) -> int:
+    """Run the options_walls pipeline.
+
+    Computes per-expiry-group wall levels for both 80pct and large_num
+    wall types. Returns number of rows written.
+    """
+    # PK for walls includes wall_type
+    WALLS_PK_COLUMNS = EXPIRY_PK_COLUMNS + ["wall_type"]
+
+    target_pairs: set | None = None
+    if not force:
+        print("\n  Detecting missing expiry groups "
+              "for walls...", flush=True)
+        missing_list = await fetch_missing_walls_groups(conn, sec_type)
+        target_pairs = set(missing_list)
+        print(f"    -> {len(target_pairs):,} missing expiry-group+wall-type pairs",
+              flush=True)
+        if len(target_pairs) == 0:
+            print("    -> DB is up to date; nothing to do.", flush=True)
+            return 0
+
+    print("\n  [1/3] Fetching option contract rows for walls...",
+          flush=True)
+    df = await fetch_options_walls_rows(conn, sec_type)
+    print(f"    {len(df):,} contract-date rows", flush=True)
+    if df.empty:
+        print("    no data; skipping.", flush=True)
+        return 0
+
+    print("\n  [2/3] Computing options wall levels...", flush=True)
+    result_df = compute_options_walls(df)
+    print(f"    {len(result_df):,} expiry-group wall result rows", flush=True)
+
+    print("\n  [3/3] Writing to DB...", flush=True)
+    n = await _write_rows(
+        conn, result_df,
+        table_name=WALLS_TABLE_NAME,
+        numeric_cols=WALLS_NUMERIC_COLS,
+        force=force,
+        target_pairs=target_pairs,
+        pk_columns=WALLS_PK_COLUMNS,
+    )
+
+    print("\n  -> Upserting analysis.analysis_identity registry...",
+          flush=True)
+    await upsert_analysis_identity(
+        conn,
+        name=WALLS_ANALYSIS_NAME,
+        detail_name="options_walls",
+        description=WALLS_DESCRIPTION,
+    )
+
+    return n
+
+
+async def _run_iv_skew_pipeline(
+    conn,
+    force: bool,
+    sec_type: str | None = None,
+) -> int:
+    """Run the options_iv_skew_stats pipeline.
+
+    Computes per-expiry-group implied-volatility skew stats (ATM IV,
+    25-delta wings, risk reversal, put/call skew, smile skewness + rolling
+    suite on risk_reversal_25d) AND the IV smile skewness rolling stats
+    written to options_skewness_stats with skew_type='iv_smile' (shared
+    skewness stats table, data sources separated by skew_type).
+    Returns number of rows written to options_iv_skew_stats.
+    """
+    # Two missing-group checks: one per output table.
+    target_pairs: set | None = None
+    corr_target_pairs: set | None = None
+    if not force:
+        print("\n  Detecting missing expiry groups "
+              "for IV skew stats...", flush=True)
+        missing_list = await fetch_missing_iv_skew_groups(conn, sec_type)
+        target_pairs = set(missing_list)
+        print(f"    -> {len(target_pairs):,} missing expiry groups",
+              flush=True)
+
+        print("  Detecting missing expiry groups for iv_smile "
+              "skewness stats...", flush=True)
+        corr_missing = await fetch_missing_iv_skew_groups(
+            conn, sec_type,
+            table_name=SKEWNESS_TABLE_NAME,
+            skew_type=SKEW_TYPE_IV_SMILE,
+        )
+        corr_target_pairs = {(*t, SKEW_TYPE_IV_SMILE) for t in corr_missing}
+        print(f"    -> {len(corr_target_pairs):,} missing expiry groups",
+              flush=True)
+
+        if len(target_pairs) == 0 and len(corr_target_pairs) == 0:
+            print("    -> DB is up to date; nothing to do.", flush=True)
+            return 0
+
+    print("\n  [1/4] Fetching option contract rows for IV skew...",
+          flush=True)
+    df = await fetch_iv_skew_rows(conn, sec_type)
+    print(f"    {len(df):,} contract-date rows", flush=True)
+    if df.empty:
+        print("    no data; skipping.", flush=True)
+        return 0
+
+    print("\n  [2/4] Computing IV skew stats...", flush=True)
+    result_df = compute_options_iv_skew_stats(df)
+    print(f"    {len(result_df):,} expiry-group result rows", flush=True)
+
+    print("\n  [3/4] Writing IV skew stats to DB...", flush=True)
+    n = await _write_rows(
+        conn, result_df,
+        table_name=IV_SKEW_TABLE_NAME,
+        numeric_cols=IV_SKEW_NUMERIC_COLS,
+        force=force,
+        target_pairs=target_pairs,
+        pk_columns=EXPIRY_PK_COLUMNS,
+    )
+
+    # ---- iv_smile skewness rolling stats (shared skewness table) -------
+    print("\n  [4/4] Computing iv_smile skewness rolling stats...",
+          flush=True)
+    corr_df = compute_options_iv_smile_corr_stats(df)
+    print(f"    {len(corr_df):,} expiry-group result rows", flush=True)
+    await _write_rows(
+        conn, corr_df,
+        table_name=SKEWNESS_TABLE_NAME,
+        numeric_cols=SKEWNESS_NUMERIC_COLS,
+        force=force,
+        target_pairs=corr_target_pairs,
+        pk_columns=SKEWNESS_PK_COLUMNS,
+        force_delete_where=f"skew_type = '{SKEW_TYPE_IV_SMILE}'",
+        round_to=4,
+    )
+
+    print("\n  -> Upserting analysis.analysis_identity registry...",
+          flush=True)
+    await upsert_analysis_identity(
+        conn,
+        name=IV_SKEW_ANALYSIS_NAME,
+        detail_name="options_iv_skew_stats",
+        description=IV_SKEW_DESCRIPTION,
+    )
+
+    return n
+
+
+async def _run_greek_skew_pipeline(
+    conn,
+    force: bool,
+    sec_type: str | None = None,
+) -> int:
+    """Run the greek skew pipelines (skew_type='greek_<name>').
+
+    For each greek WITH an industry-standard positioning-skew metric
+    (delta/gamma/vega — see analyze/options/compute/), computes the
+    PAIR-level CALL-vs-PUT contrast rolling stats and writes them to
+    options_skewness_stats with skew_type='greek_<name>' (shared
+    skewness stats table, data sources separated by skew_type). The
+    pair-level value is duplicated on the CALL and PUT rows.
+    Returns total number of rows written across all greeks.
+    """
+    total = 0
+
+    # Per-greek missing-group detection against the shared skewness table.
+    target_pairs_by_greek: dict[str, set | None] = {}
+    if not force:
+        for g in GREEK_NAMES:
+            skew_type = f"greek_{g}"
+            print(f"\n  Detecting missing expiry groups for {skew_type} "
+                  f"skewness stats...", flush=True)
+            missing = await fetch_missing_iv_skew_groups(
+                conn, sec_type,
+                table_name=SKEWNESS_TABLE_NAME,
+                skew_type=skew_type,
+            )
+            target_pairs_by_greek[g] = {(*t, skew_type) for t in missing}
+            print(f"    -> {len(target_pairs_by_greek[g]):,} missing "
+                  f"expiry groups", flush=True)
+        if all(len(tp) == 0 for tp in target_pairs_by_greek.values()):
+            print("    -> DB is up to date; nothing to do.", flush=True)
+            return 0
+
+    print("\n  [1/2] Fetching option contract rows for greek skew...",
+          flush=True)
+    df = await fetch_iv_skew_rows(conn, sec_type)
+    print(f"    {len(df):,} contract-date rows", flush=True)
+    if df.empty:
+        print("    no data; skipping.", flush=True)
+        return 0
+
+    for gi, g in enumerate(GREEK_NAMES, start=2):
+        skew_type = f"greek_{g}"
+        print(f"\n  [{gi}/{len(GREEK_NAMES) + 1}] Computing {skew_type} "
+              f"rolling stats...", flush=True)
+        result_df = GREEK_SKEW_COMPUTERS[g](df)
+        print(f"    {len(result_df):,} expiry-group result rows", flush=True)
+
+        n = await _write_rows(
+            conn, result_df,
+            table_name=SKEWNESS_TABLE_NAME,
+            numeric_cols=SKEWNESS_NUMERIC_COLS,
+            force=force,
+            target_pairs=target_pairs_by_greek.get(g),
+            pk_columns=SKEWNESS_PK_COLUMNS,
+            force_delete_where=f"skew_type = '{skew_type}'",
+            round_to=4,
+        )
+        total += n
+
+    print("\n  -> Upserting analysis.analysis_identity registry...",
+          flush=True)
+    await upsert_analysis_identity(
+        conn,
+        name=SKEWNESS_ANALYSIS_NAME,
+        detail_name="options_skewness_stats",
+        description=SKEWNESS_DESCRIPTION,
+    )
+
+    return total
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(
         description="Options analysis pipelines. Computes per-expiry-group "
-                    "rolling skewness (OI-weighted moneyness) stats and "
-                    "per-expiry-group OI correlation stats.",
+                    "rolling skewness (OI-weighted moneyness) stats, "
+                    "per-expiry-group OI correlation stats, per-expiry-group "
+                    "options wall levels (80pct + large_num), and "
+                    "per-expiry-group IV skew stats (risk reversal etc.).",
     )
     add_force_arg(ap)
     ap.add_argument(
@@ -373,8 +648,9 @@ async def main() -> None:
 
     t0 = time.time()
     print_build_header(
-        "ANALYZE OPTIONS (expiry-group skewness + OI stats)",
-        tables=f"{EXPIRY_IDENTITY_TABLE}, {SKEWNESS_TABLE_NAME}, {OI_TABLE_NAME}",
+        "ANALYZE OPTIONS (expiry-group skewness + OI stats + walls + IV skew)",
+        tables=(f"{EXPIRY_IDENTITY_TABLE}, {SKEWNESS_TABLE_NAME}, "
+                f"{OI_TABLE_NAME}, {WALLS_TABLE_NAME}, {IV_SKEW_TABLE_NAME}"),
         sec_type=sec_type or "all",
         mode="FORCE (full recompute)" if force
              else "incremental (missing groups only)",
@@ -400,10 +676,29 @@ async def main() -> None:
         print("=" * 60)
         n2 = await _run_oi_pipeline(conn, force, sec_type)
 
-        total = n_id + n1 + n2
+        # ---- Pipeline 3: options_walls ----------------------------------
+        print("\n" + "=" * 60)
+        print("PIPELINE 3: options_walls (80pct + large_num wall levels)")
+        print("=" * 60)
+        n3 = await _run_walls_pipeline(conn, force, sec_type)
+
+        # ---- Pipeline 4: options_iv_skew_stats --------------------------
+        print("\n" + "=" * 60)
+        print("PIPELINE 4: options_iv_skew_stats (IV-based skew)")
+        print("=" * 60)
+        n4 = await _run_iv_skew_pipeline(conn, force, sec_type)
+
+        # ---- Pipeline 5: greek skew (options_skewness_stats) -----------
+        print("\n" + "=" * 60)
+        print("PIPELINE 5: options_skewness_stats (greek_* skew types)")
+        print("=" * 60)
+        n5 = await _run_greek_skew_pipeline(conn, force, sec_type)
+
+        total = n_id + n1 + n2 + n3 + n4 + n5
         print(f"\n  TOTAL: {total:,} rows written "
               f"(expiry_identity={n_id:,}, "
-              f"skewness={n1:,}, oi={n2:,})", flush=True)
+              f"skewness={n1:,}, oi={n2:,}, walls={n3:,}, "
+              f"iv_skew={n4:,}, greek_skew={n5:,})", flush=True)
         print_wall_time(t0)
     finally:
         try:

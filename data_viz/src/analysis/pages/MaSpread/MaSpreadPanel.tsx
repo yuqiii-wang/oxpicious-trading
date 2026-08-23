@@ -1,4 +1,4 @@
-﻿/**
+/**
  * MaSpreadPanel — one card per code: pair chips + two-curve chart with
  * green/red fill between them + date-range slider + Bollinger envelope.
  *
@@ -18,12 +18,30 @@
  *      dropdown in the card's top-right corner (0 = hidden, 2 = standard
  *      Bollinger, max 3, step 0.5). MA5/MA pairs do not show the envelope
  *      (σ is of price, not of an MA-of-MA) and the dropdown is hidden.
- *   4. Date-range slider at the bottom of the plot — drives all 9 pairs
+ *   4. OHLC Window section beneath the Trading Amt/MA section — an
+ *      "OHLC Window" row label (same style as the Trading Amt/MA label)
+ *      on its own full-width row, with the window buttons (20 … 1275d)
+ *      on a new row below it. The buttons keep the period-column
+ *      alignment of the pair chips — 20d sits under the MA20 column, …,
+ *      1275d in the last column. Clicking one enables that rolling
+ *      window's High/Low envelope on the chart and arms the roof/floor
+ *      interaction — clicking a date on the chart draws the trendline
+ *      through the window's top + 2nd highs (the roof) and top + 2nd
+ *      lows (the floor) from history, converging and stopping at the
+ *      clicked date (two points determining a line).
+ *   5. Market Hype section beneath the OHLC Window row — a "Market Hype"
+ *      row label with 2 check-in window buttons (20/60d,
+ *      period-column aligned, same chip style as every other button
+ *      row). Clicking one shades the chart's hyped date periods with a
+ *      light purple markArea (analysis.mov_ave_market_hypes); the
+ *      caption below reports the latest date's hyped state.
+ *   6. Date-range slider at the bottom of the plot — drives all 9 pairs
  *      (they share one date axis).
  *
  * Fetches its own chart data on mount via fetchMovAveSpreadChart(code, secType).
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import {
   Alert,
   Box,
@@ -37,15 +55,17 @@ import {
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
+import AnalysisRunButton from "@/components/AnalysisRunButton";
 import { UP_COLOR } from "@/theme/chart-palette";
 import { fmtNum, fmtPct } from "@/lib/series";
-import { fetchMovAveSpreadChart } from "@/lib/api-client";
+import { fetchMovAveSpreadChart, invalidateCacheForUrl } from "@/lib/api-client";
 import type { OhlcMode } from "@/lib/ohlc";
 import type {
   MovAveSpreadChartResponse,
   MovAveSpreadPairSeries,
 } from "@shared/types";
 import type { PanelProps } from "./types";
+import { OHLC_WINDOWS, HYPE_WINDOWS } from "./constants";
 import { buildPairOption, buildAmtEnvelopeOption, type TradingAmtMode } from "./chartOption";
 
 /** Bollinger multiplier options for the top-right dropdown (0.0 … 3.0, step 0.5).
@@ -68,11 +88,42 @@ const TREND_STUDY_COL = 2;
  */
 const LONG_EMA_ORDER = [6, 20, 60, 120, 255] as const;
 
+/**
+ * Shared period-column grid — one column per period (5, 20, 60, 120, 255,
+ * 500, 750, 1275) so every button row aligns vertically by period. Pair
+ * rows only fill the first 5 columns (their long MAs stop at 255); the
+ * OHLC Window row spans the full width (its 20d … 1275d buttons continue
+ * into the extra columns under their matching periods).
+ */
+const PERIOD_GRID_SX: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(8, minmax(0, 1fr))",
+  gap: 0.75,
+  alignItems: "center",
+};
+
+/**
+ * Shared Chip sx for every period button (pair chips + OHLC-window
+ * buttons): fill its grid cell with a centered label, compact size.
+ */
+const PERIOD_CHIP_SX: CSSProperties = {
+  fontSize: "0.7rem",
+  height: 24,
+  width: "100%",
+  display: "flex",
+  justifyContent: "center",
+};
+
 export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // ---- Chart data ---------------------------------------------------------
   const [chartData, setChartData] = useState<MovAveSpreadChartResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Bumped by the per-security AnalysisRunButton after a rebuild run —
+  // retriggers the chart fetch (the cache entry is invalidated first in
+  // the completion handler).
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // Which of the 9 pairs is shown in the single plot (default 0 = Price/MA5).
   const [selectedPairIdx, setSelectedPairIdx] = useState(0);
@@ -80,6 +131,20 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // The first pair's rows — used for the card subtitle (date range + bar count)
   // and as the x-axis dates for the chart (all pairs share one date axis).
   const firstPairRows = chartData?.pairs[0]?.rows ?? [];
+
+  // Whether this security has analysis rows — drives the bold highlight of
+  // the per-security build button (AnalysisRunButton). Loading counts as
+  // "present" so the button doesn't bold-flicker on every fetch.
+  const hasAnalysisData = loading || firstPairRows.length > 0;
+
+  // Refetch after a per-security analysis rebuild (AnalysisRunButton):
+  // drop the cached chart response, then bump the refresh key.
+  const handleAnalysisRunCompleted = useCallback(() => {
+    invalidateCacheForUrl(
+      `/api/analysis/mov-ave-spread/chart?code=${code}&sec_type=${secType}`,
+    );
+    setRefreshKey((k) => k + 1);
+  }, [code, secType]);
 
   // Bollinger multiplier k in MA ± k×σ. Default 2 (standard Bollinger).
   // 0 hides the envelope. Affects Price/MA and Price/EMA pairs (ma_short === 0);
@@ -101,6 +166,20 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // on hover.
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
+  // Enabled rolling-OHLC window (trading days) — null = off. Selected via
+  // the OHLC-window button row beneath the Trading Amt/MA section.
+  const [ohlcWindow, setOhlcWindow] = useState<number | null>(null);
+
+  // Clicked chart date index (into the full rows — shared date axis). The
+  // roof/floor trendlines of the enabled window are drawn to (and stop at)
+  // this date. Clicking the same date again clears it.
+  const [ohlcClickIdx, setOhlcClickIdx] = useState<number | null>(null);
+
+  // Enabled market-hype check-in window (trading days) — null = off.
+  // Selected via the Market Hype button row beneath the OHLC Window row;
+  // shades the chart's hyped date periods light purple.
+  const [hypeWindow, setHypeWindow] = useState<number | null>(null);
+
   // Fetch chart data on mount and whenever the code/sec_type changes.
   useEffect(() => {
     let cancelled = false;
@@ -112,6 +191,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
         setChartData(d);
         setSelectedPairIdx(0);
         setHoveredIdx(null);
+        setOhlcClickIdx(null);
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -123,7 +203,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [code, secType]);
+  }, [code, secType, refreshKey]);
 
   // Track the hovered date index via ECharts' `updateAxisPointer` event so we
   // can draw a single last-extreme triangle at the hovered date's
@@ -153,6 +233,17 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     [handleAxisPointer],
   );
 
+  // Canvas-level chart click: sets the roof/floor endpoint date. Only armed
+  // while an OHLC window is enabled; clicking the already-selected date
+  // clears the anchor (toggle), clicking another date moves it.
+  const handleCanvasClick = useCallback(
+    (dataIdx: number) => {
+      if (ohlcWindow == null) return;
+      setOhlcClickIdx((prev) => (prev === dataIdx ? null : dataIdx));
+    },
+    [ohlcWindow],
+  );
+
   // The full pairs list (no slicing — the chart's in-chart dataZoom handles
   // viewport control). Used for the pair chips, the pair index lookup, and the
   // chart option builder.
@@ -171,6 +262,73 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     });
     return m;
   }, [pairs]);
+
+  // ---- Market-hype data (analysis.mov_ave_market_hypes via
+  // chartData.hypeEpisodes) ----
+  // One episode list per check-in window — each episode is a maximal run
+  // of consecutive hyped dates (startDate/endDate = first/last satisfied
+  // dates). Windows with no episodes are absent from the map.
+  const hypeEpisodes = chartData?.hypeEpisodes ?? null;
+
+  // The chart's latest date (all pairs share one date axis) — the yardstick
+  // for "currently hyped".
+  const lastChartDate =
+    pairs.length > 0 && pairs[0].rows.length > 0
+      ? pairs[0].rows[pairs[0].rows.length - 1].date
+      : null;
+
+  // Whether ANY hype data exists for this code (buttons are disabled when
+  // the table has no episodes for it — before the table's first build, or a
+  // code that was never hyped in any window).
+  const hasHypeData =
+    hypeEpisodes != null &&
+    Object.values(hypeEpisodes).some((eps) => eps.length > 0);
+
+  // Each window's CURRENT hyped state — TRUE when an episode of that window
+  // still covers the chart's latest date (a code's trailing episode extends
+  // as new hyped dates arrive, so its endDate IS the latest hyped date).
+  // Drives the "currently hyped" note in the caption under the selected
+  // hype window.
+  const latestHypeFlags = useMemo(() => {
+    const m = new Map<number, boolean>();
+    if (hypeEpisodes == null || lastChartDate == null) return m;
+    for (const w of HYPE_WINDOWS) {
+      m.set(
+        w,
+        (hypeEpisodes[w] ?? []).some((ep) => ep.endDate >= lastChartDate),
+      );
+    }
+    return m;
+  }, [hypeEpisodes, lastChartDate]);
+
+  // Stats for the caption under the selected hype window: number of hyped
+  // TRADING days in the full history (episode spans), the per-leg check-in
+  // day counts (amt / σ legs — diagnostics for which leg drove the
+  // episodes), and the last hyped date.
+  const hypeSelectedStats = useMemo(() => {
+    if (hypeWindow == null || hypeEpisodes == null) return null;
+    const eps = hypeEpisodes[hypeWindow] ?? [];
+    let count = 0;
+    let amtDays = 0;
+    let stdDays = 0;
+    let lastDate: string | null = null;
+    let hasLegData = false;
+    for (const ep of eps) {
+      count += ep.hypeDays;
+      if (ep.tradingAmtHypeDays != null && ep.stdHypeDays != null) {
+        hasLegData = true;
+        amtDays += ep.tradingAmtHypeDays;
+        stdDays += ep.stdHypeDays;
+      }
+      if (lastDate == null || ep.endDate > lastDate) lastDate = ep.endDate;
+    }
+    return {
+      count,
+      amtDays: hasLegData ? amtDays : null,
+      stdDays: hasLegData ? stdDays : null,
+      lastDate,
+    };
+  }, [hypeWindow, hypeEpisodes]);
 
   // Clamp selectedPairIdx to valid range.
   const safePairIdx = Math.min(selectedPairIdx, Math.max(0, pairs.length - 1));
@@ -287,13 +445,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
             setSelectedPairIdx(idx);
           }
         }}
-        sx={{
-          fontSize: "0.7rem",
-          height: 24,
-          width: "100%",
-          display: "flex",
-          justifyContent: "center",
-        }}
+        sx={PERIOD_CHIP_SX}
       />
     );
   };
@@ -302,7 +454,28 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     <ChartCard
       title={selectedPair ? selectedPair.pair_label : "MA-Spread"}
       subtitle={subtitle}
-      action={bollAction}
+      action={
+        bollAction ? (
+          <Stack direction="row" alignItems="center">
+            {bollAction}
+            <AnalysisRunButton
+              module="mov_ave_spread"
+              secType={secType}
+              code={code}
+              hasData={hasAnalysisData}
+              onCompleted={handleAnalysisRunCompleted}
+            />
+          </Stack>
+        ) : (
+          <AnalysisRunButton
+            module="mov_ave_spread"
+            secType={secType}
+            code={code}
+            hasData={hasAnalysisData}
+            onCompleted={handleAnalysisRunCompleted}
+          />
+        )
+      }
     >
       {loading && (
         <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
@@ -324,14 +497,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
           >
             Pairs (Simple MA) — click to switch
           </Typography>
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
-              gap: 0.75,
-              alignItems: "center",
-            }}
-          >
+          <Box sx={PERIOD_GRID_SX}>
             {/* Header row: "Trend Study" label above the MA60 column. */}
             {LONG_MA_ORDER.map((maLong, col) => (
               <Box
@@ -395,14 +561,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
           >
             Pairs (Exponential MA) — click to switch
           </Typography>
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
-              gap: 0.75,
-              alignItems: "center",
-            }}
-          >
+          <Box sx={PERIOD_GRID_SX}>
             {/* Price/EMA row (ma_short = 0): one chip per long-EMA column. */}
             {LONG_EMA_ORDER.map((emaLong, col) => {
               const idx = pairIndexMap.get(`ema-0-${emaLong}`);
@@ -429,14 +588,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
           {/* ---- Trading Amt/MA section (optional, toggle-driven) ---- */}
           {tradingAmtMode !== "off" && (
             <Box sx={{ mt: 1 }}>
-              <Box
-                sx={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
-                  gap: 0.75,
-                  alignItems: "center",
-                }}
-              >
+              <Box sx={PERIOD_GRID_SX}>
                 {/* Row label */}
                 <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
                   <Typography
@@ -462,6 +614,137 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
               </Box>
             </Box>
           )}
+
+          {/* ---- Rolling-OHLC window buttons ----
+              Row label ("OHLC Window") spans the full grid width on its own
+              row — same style as the Trading Amt/MA label — with the window
+              buttons on a new row below it. The buttons keep the
+              period-column alignment of the pair chips: 20d sits under the
+              MA20 column, …, 1275d in the last column. */}
+          <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
+            {/* Row label */}
+            <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
+              <Typography
+                variant="caption"
+                component="span"
+                sx={{
+                  fontSize: "0.65rem",
+                  color: ohlcWindow != null ? "primary.main" : "text.secondary",
+                  fontWeight: ohlcWindow != null ? 700 : 400,
+                }}
+              >
+                OHLC Window
+              </Typography>
+            </Box>
+            {OHLC_WINDOWS.map((w, col) => (
+              <Chip
+                key={w}
+                label={`${w}d`}
+                size="small"
+                clickable
+                color={ohlcWindow === w ? "primary" : "default"}
+                variant={ohlcWindow === w ? "filled" : "outlined"}
+                onClick={() =>
+                  setOhlcWindow((prev) => (prev === w ? null : w))
+                }
+                sx={{ gridColumn: col + 2, ...PERIOD_CHIP_SX }}
+              />
+            ))}
+          </Box>
+          {ohlcWindow != null && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              click a date on the chart to draw roof/floor trendlines
+              {ohlcClickIdx != null && firstPairRows[ohlcClickIdx]
+                ? ` · anchor ${firstPairRows[ohlcClickIdx].date}`
+                : ""}
+            </Typography>
+          )}
+
+          {/* ---- Market Hype buttons ----
+              Same layout and chip style as the OHLC Window row: full-width
+              row label on its own line, then the check-in window buttons
+              (5/20/60/120/255d) aligned with the pair chips' MA columns —
+              each window doubles as an episode-span BUCKET (its own length
+              as the minimum, the next window as the exclusive maximum), so
+              each calendar turmoil lands in exactly the bucket matching
+              its length. Clicking a button shades the chart's hyped date
+              periods light purple (clicking the active one again turns the
+              shading off). The latest date's hyped state is reported in
+              the caption below, not on the buttons. */}
+          <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
+            {/* Row label */}
+            <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
+              <Typography
+                variant="caption"
+                component="span"
+                sx={{
+                  fontSize: "0.65rem",
+                  color: hypeWindow != null ? "primary.main" : "text.secondary",
+                  fontWeight: hypeWindow != null ? 700 : 400,
+                }}
+              >
+                Market Hype
+              </Typography>
+            </Box>
+            {HYPE_WINDOWS.map((w, col) => (
+              <Chip
+                key={w}
+                label={`${w}d`}
+                size="small"
+                clickable
+                disabled={!hasHypeData}
+                color={hypeWindow === w ? "primary" : "default"}
+                variant={hypeWindow === w ? "filled" : "outlined"}
+                onClick={() =>
+                  setHypeWindow((prev) => (prev === w ? null : w))
+                }
+                sx={{ gridColumn: col + 1, ...PERIOD_CHIP_SX }}
+              />
+            ))}
+          </Box>
+          {hypeWindow != null && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              light purple shading marks hyped periods ({hypeWindow}d bucket
+              · episodes spanning {hypeWindow}-
+              {(HYPE_WINDOWS[HYPE_WINDOWS.indexOf(hypeWindow as (typeof HYPE_WINDOWS)[number]) + 1] ?? 5100) - 1}
+              trading days · trading amt + volatility check-ins vs their
+              centered 20y (±10y) percentiles)
+              {hypeSelectedStats
+                ? ` · ${hypeSelectedStats.count} hyped ${
+                    hypeSelectedStats.count === 1 ? "day" : "days"
+                  }` +
+                  (hypeSelectedStats.amtDays != null &&
+                  hypeSelectedStats.stdDays != null
+                    ? ` (amt ${hypeSelectedStats.amtDays} · σ ${hypeSelectedStats.stdDays})`
+                    : "") +
+                  (hypeSelectedStats.lastDate
+                    ? ` · last ${hypeSelectedStats.lastDate}`
+                    : "")
+                : ""}
+              {latestHypeFlags.get(hypeWindow) === true
+                ? " · currently hyped"
+                : ""}
+            </Typography>
+          )}
+          {!hasHypeData && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              no hype data yet — run{" "}
+              <code>python -m analyze.mov_ave_spread</code> to build
+              analysis.mov_ave_market_hypes
+            </Typography>
+          )}
         </Box>
       )}
 
@@ -474,19 +757,26 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                   themeMode,
                   ohlcMode,
                   bollingerK,
+                  hypeWindow,
+                  hypeEpisodes: chartData?.hypeEpisodes ?? null,
                 })
               : buildPairOption({
                   pair: selectedPair,
                   themeMode,
                   bollingerK,
                   tradingAmtMode,
-                  valleyLows: chartData?.valley_lows,
                   hoveredIdx,
                   ohlcMode,
+                  ohlcWindow,
+                  ohlcClickIdx,
+                  ohlcRows: chartData?.ohlc ?? null,
+                  hypeWindow,
+                  hypeEpisodes: chartData?.hypeEpisodes ?? null,
                 })
           }
           height={420}
           onEvents={chartEvents}
+          onCanvasClick={handleCanvasClick}
         />
       )}
 

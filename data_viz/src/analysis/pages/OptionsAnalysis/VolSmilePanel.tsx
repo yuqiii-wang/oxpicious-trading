@@ -1,26 +1,29 @@
 /**
  * Volatility Smile panel for Options Analysis page.
  *
- * Wraps the base VolSmilePanel with skewness correlation data
- * from analysis.options_skewness_stats.
- *
- * The corr data (whole-period correlation between
- * skewness and spot) is rendered as a 3rd chart below the skew time
- * series, with a toggle to switch between Daily / MA5 / MA20 / MA60.
+ *   • Snapshot smile chart (base VolSmilePanel — IV vs moneyness for the
+ *     selected date).
+ *   • SharedSkewPanel in iv_smile mode — IV smile skewness over time
+ *     (rebased to price space, with expiry shade bands) + the
+ *     skewness–spot correlation from analysis.options_skewness_stats
+ *     (skew_type='iv_smile').
+ *   • IV skew chart — 25Δ risk reversal per expiry group from
+ *     analysis.options_iv_skew_stats, with a Daily / MA5 / MA20 / MA60
+ *     toggle.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ToggleButton, ToggleButtonGroup } from "@mui/material";
 import VolSmilePanel from "@/dataviz/features/szse-options/VolSmilePanel";
+import SharedSkewPanel from "@/dataviz/features/szse-options/skew-shared/SharedSkewPanel";
+import ChartCard from "@/components/ChartCard";
+import EChart from "@/components/EChart";
+import { fetchOptionsIvSkew } from "@/lib/api-client/options";
 import {
-  fetchOptionsSkewnessCorr,
-  fetchOptionsSkewnessCrossCounts,
-} from "@/lib/api-client/options";
-import { computeDailySkewSeries } from "@/dataviz/features/szse-options/vol-smile/skewSeries";
-import {
-  buildCorrTimeSeriesOption,
-  type CorrMode,
-} from "@/dataviz/features/szse-options/vol-smile/corrTimeSeriesOption";
-import type { OptionsRow, SkewnessCorrRow, SkewnessCrossCountRow } from "@shared/types";
+  buildIvSkewTimeSeriesOption,
+  ivSkewAxisDates,
+  type IvSkewMode,
+} from "@/dataviz/features/szse-options/vol-smile/ivSkewTimeSeriesOption";
+import type { OptionsRow, IvSkewRow } from "@shared/types";
 import type { EChartsOption } from "echarts";
 
 interface Props {
@@ -29,7 +32,8 @@ interface Props {
   onDateChange?: (date: string) => void;
 }
 
-const CORR_MODES: { value: CorrMode; label: string }[] = [
+const IV_SKEW_MODES: { value: IvSkewMode; label: string }[] = [
+  { value: "daily", label: "Daily" },
   { value: "ma5", label: "MA5" },
   { value: "ma20", label: "MA20" },
   { value: "ma60", label: "MA60" },
@@ -41,9 +45,8 @@ export default function AnalysisVolSmilePanel({
   onDateChange,
 }: Props) {
   const underlyingCode = rows[0]?.underlying_code ?? "";
-  const [corrRows, setCorrRows] = useState<SkewnessCorrRow[]>([]);
-  const [corrMode, setCorrMode] = useState<CorrMode>("ma5");
-  const [crossCountRows, setCrossCountRows] = useState<SkewnessCrossCountRow[]>([]);
+  const [ivSkewRows, setIvSkewRows] = useState<IvSkewRow[]>([]);
+  const [ivSkewMode, setIvSkewMode] = useState<IvSkewMode>("daily");
 
   useEffect(() => {
     if (!underlyingCode) return;
@@ -52,82 +55,95 @@ export default function AnalysisVolSmilePanel({
     const endDate = dates[dates.length - 1] ?? undefined;
     let cancelled = false;
 
-    Promise.all([
-      fetchOptionsSkewnessCorr(underlyingCode, startDate, endDate),
-      fetchOptionsSkewnessCrossCounts(underlyingCode, startDate, endDate),
-    ])
-      .then(([corrResp, crossResp]) => {
+    fetchOptionsIvSkew(underlyingCode, startDate, endDate)
+      .then((ivSkewResp) => {
         if (cancelled) return;
-        setCorrRows(corrResp.rows);
-        setCrossCountRows(crossResp.rows);
+        setIvSkewRows(ivSkewResp.rows);
       })
       .catch(() => {
-        if (!cancelled) {
-          setCorrRows([]);
-          setCrossCountRows([]);
-        }
+        if (!cancelled) setIvSkewRows([]);
       });
 
     return () => { cancelled = true; };
   }, [underlyingCode, rows.length]);
 
-  const dailySkewSeries = useMemo(() => computeDailySkewSeries(rows, crossCountRows), [rows, crossCountRows]);
+  const ivSkewOption: EChartsOption | null = useMemo(() => {
+    if (ivSkewRows.length === 0) return null;
+    return buildIvSkewTimeSeriesOption(ivSkewRows, selectedDate, ivSkewMode);
+  }, [ivSkewRows, selectedDate, ivSkewMode]);
 
-  const corrOption: EChartsOption | null = useMemo(() => {
-    if (corrRows.length === 0 || dailySkewSeries.length === 0) return null;
-    return buildCorrTimeSeriesOption(
-      dailySkewSeries, corrRows, selectedDate, corrMode,
-    );
-  }, [corrRows, dailySkewSeries, selectedDate, corrMode]);
+  const ivSkewDates = useMemo(() => ivSkewAxisDates(ivSkewRows), [ivSkewRows]);
 
-  const handleCorrModeChange = useCallback(
-    (_e: React.MouseEvent<HTMLElement>, newMode: CorrMode | null) => {
-      if (newMode) setCorrMode(newMode);
+  const handleIvSkewModeChange = useCallback(
+    (_e: React.MouseEvent<HTMLElement>, newMode: IvSkewMode | null) => {
+      if (newMode) setIvSkewMode(newMode);
     },
     [],
   );
 
-  const handleCanvasClick = useCallback(
+  const handleIvSkewCanvasClick = useCallback(
     (dataIndex: number) => {
       if (!onDateChange) return;
-      const entry =
-        dataIndex < dailySkewSeries.length ? dailySkewSeries[dataIndex] : undefined;
-      if (entry) onDateChange(entry.date);
+      const date = dataIndex < ivSkewDates.length ? ivSkewDates[dataIndex] : undefined;
+      if (date) onDateChange(date);
     },
-    [dailySkewSeries, onDateChange],
+    [ivSkewDates, onDateChange],
   );
 
+  const toggleGroupSx = {
+    bgcolor: "background.paper",
+    "& .MuiToggleButton-root": {
+      px: 1.5,
+      py: 0.25,
+      fontSize: "0.7rem",
+      minWidth: 48,
+    },
+  } as const;
+
   return (
-    <VolSmilePanel
-      rows={rows}
-      selectedDate={selectedDate}
-      onDateChange={onDateChange}
-      crossCounts={crossCountRows}
-      bottomChartOption={corrOption}
-      bottomChartHeight={200}
-      bottomChartControls={
-        <ToggleButtonGroup
-          value={corrMode}
-          exclusive
-          onChange={handleCorrModeChange}
-          size="small"
-          sx={{
-            bgcolor: "background.paper",
-            "& .MuiToggleButton-root": {
-              px: 1.5,
-              py: 0.25,
-              fontSize: "0.7rem",
-              minWidth: 48,
-            },
-          }}
+    <>
+      <VolSmilePanel rows={rows} selectedDate={selectedDate} />
+      <SharedSkewPanel
+        mode="iv_smile"
+        rows={rows}
+        selectedDate={selectedDate}
+        onDateChange={onDateChange}
+      />
+      {ivSkewOption ? (
+        <ChartCard
+          title="IV Skew · 25Δ Risk Reversal (Call − Put)"
+          subtitle="From analysis.options_iv_skew_stats (premium-calibrated implied vol). Negative = OTM puts richer = downside hedging demand. Thin lines: per-expiry-month groups · Thick line: mean across groups · Click to select date."
+          height={280}
         >
-          {CORR_MODES.map((m) => (
-            <ToggleButton key={m.value} value={m.value}>
-              {m.label}
-            </ToggleButton>
-          ))}
-        </ToggleButtonGroup>
-      }
-    />
+          <div style={{ position: "relative" }}>
+            <div style={{
+              position: "absolute",
+              top: 0,
+              right: 8,
+              zIndex: 10,
+            }}>
+              <ToggleButtonGroup
+                value={ivSkewMode}
+                exclusive
+                onChange={handleIvSkewModeChange}
+                size="small"
+                sx={toggleGroupSx}
+              >
+                {IV_SKEW_MODES.map((m) => (
+                  <ToggleButton key={m.value} value={m.value}>
+                    {m.label}
+                  </ToggleButton>
+                ))}
+              </ToggleButtonGroup>
+            </div>
+            <EChart
+              option={ivSkewOption}
+              height={240}
+              onCanvasClick={handleIvSkewCanvasClick}
+            />
+          </div>
+        </ChartCard>
+      ) : null}
+    </>
   );
 }

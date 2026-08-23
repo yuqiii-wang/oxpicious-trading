@@ -18,7 +18,7 @@ DESCRIPTION = (
     "in yuan), and the FULL one-sided amplitude spectrum "
     "(amplitude_spectrum, double-precision array of length "
     "floor(range_days/2), excluding DC). range_days constrained to "
-    "(20, 60, 255, 500, 750). Source: index=index_basic_stats.close, "
+    "(20, 60, 255, 500, 750, 1275). Source: index=index_basic_stats.close, "
     "etf=COALESCE(etf_adjustment.adj_close, etf_basic_stats.close), "
     "stock=stock_basic_stats.close. Built by analyze.fourier_freqs "
     "(truncate-then-recompute per sec_type on --force; incremental "
@@ -40,11 +40,21 @@ SEC_TYPE_IDENTITY_TABLE = {
     "stock": "stats.stock_identity",
 }
 
+# Close-source table per sec_type (close IS NOT NULL rows define the
+# (code, date) universe the FFT windows are built on) — used by the
+# incremental missing-target detection in __main__.
+SEC_TYPE_CLOSE_TABLE = {
+    "etf":   "stats.etf_basic_stats",
+    "index": "stats.index_basic_stats",
+    "stock": "stats.stock_basic_stats",
+}
+
 # ---- FFT window sizes (trading days) --------------------------------------
-# Constrained by the SQL CHECK: range_days IN (20, 60, 255, 500, 750).
-#   20  — ~1 trading month (short-term cycles)
-#   60  — ~1 trading quarter
-#   255 — ~1 trading year
-#   500 — ~2 trading years
-#   750 — ~3 trading years
-RANGE_DAYS = (20, 60, 255, 500, 750)
+# Constrained by the SQL CHECK: range_days IN (20, 60, 255, 500, 750, 1275).
+#   20   — ~1 trading month (short-term cycles)
+#   60   — ~1 trading quarter
+#   255  — ~1 trading year
+#   500  — ~2 trading years
+#   750  — ~3 trading years
+#   1275 — ~5 trading years
+RANGE_DAYS = (20, 60, 255, 500, 750, 1275)

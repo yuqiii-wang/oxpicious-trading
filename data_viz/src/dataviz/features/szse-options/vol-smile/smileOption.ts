@@ -10,6 +10,7 @@ import {
 } from "@/theme/chart-palette";
 import { fmtNum, fmtPct } from "@/lib/series";
 import { makeSmileTooltipFormatter } from "./SmileTooltip";
+import { buildSkewLineSeries } from "./skewMarkLine";
 import { expiryToYyyyMm, expiryCompare } from "./expiryUtils";
 import type { EChartsOption } from "echarts";
 
@@ -144,47 +145,8 @@ export function buildSmileOption(
       },
   });
 
-  const totalOi = valid.reduce((s, r) => s + Math.max(1, r.open_interest), 0);
-  if (totalOi > 0) {
-    const weightedMeanMoneyness =
-      valid.reduce((s, r) => {
-        const oi = Math.max(1, r.open_interest);
-        const mn = r.strike_price / PRICE_SCALE / S;
-        return s + oi * mn;
-      }, 0) / totalOi;
-
-    const skewDx = weightedMeanMoneyness - 1.0;
-    const skewColor =
-      skewDx < -1e-4
-        ? "rgba(220, 50, 50, 0.35)"
-        : skewDx > 1e-4
-          ? "rgba(50, 140, 220, 0.35)"
-          : "rgba(128,128,128,0.25)";
-    const skewLabel = skewDx >= 0 ? `+${skewDx.toFixed(3)}` : skewDx.toFixed(3);
-
-    series.push({
-      type: "line",
-      name: "Skewness",
-      showSymbol: false,
-      data: [
-        [weightedMeanMoneyness, 0],
-        [weightedMeanMoneyness, yMax],
-      ],
-      lineStyle: { color: skewColor, type: "solid", width: 1.5, opacity: 0.7 },
-      silent: true,
-      z: 1,
-      tooltip: { show: false },
-      label: {
-        show: true,
-        formatter: `Skew Δ=${skewLabel}`,
-        color: textColor,
-        fontSize: 10,
-        fontWeight: 600,
-        position: "bottom",
-        distance: 4,
-      },
-    });
-  }
+  const skewLine = buildSkewLineSeries(valid, S, themeMode, yMax, PRICE_SCALE);
+  if (skewLine) series.push(skewLine as never);
 
   const visibleLegendData = series
     .filter(

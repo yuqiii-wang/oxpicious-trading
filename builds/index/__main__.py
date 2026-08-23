@@ -34,45 +34,35 @@ from builds._commons.paths import INDEX_COMP_DIR, SZSE_INDEX_COMP_DIR
 
 
 async def _run_composition(force: bool) -> None:
-    """Run index composition build (CSI + SZSE) → stats.sec_composition."""
+    """Run index composition build (CSI + SZSE) → stats.sec_composition.
+
+    Date-check fast-path: filenames are checked first to identify missing
+    (code, snapshot_date) pairs before reading any CSV content.
+    """
     from _common.build_commons import get_db_or_exit, copy_or_upsert_split_async
-
-    print("\n    Building CSI index composition rows …", flush=True)
-    index_comp_rows = build_index_composition_rows(verbose=True)
-
-    print("\n    Building SZSE index composition rows …", flush=True)
-    szse_index_comp_rows = build_szse_index_composition_rows(verbose=True)
-
-    all_rows = index_comp_rows + szse_index_comp_rows
-    print(f"\n    → total: {len(all_rows):,} index composition rows "
-          f"({len(index_comp_rows):,} CSI + {len(szse_index_comp_rows):,} SZSE)", flush=True)
 
     conn = await get_db_or_exit()
     try:
+        print("\n    Building CSI index composition rows …", flush=True)
+        index_comp_rows = await build_index_composition_rows(conn=conn, force=force)
+
+        print("\n    Building SZSE index composition rows …", flush=True)
+        szse_index_comp_rows = await build_szse_index_composition_rows(conn=conn, force=force)
+
+        all_rows = index_comp_rows + szse_index_comp_rows
+        print(f"\n    → total: {len(all_rows):,} index composition rows "
+              f"({len(index_comp_rows):,} CSI + {len(szse_index_comp_rows):,} SZSE)", flush=True)
+
         if force:
             print("    [DB] Force mode: deleting existing index composition rows", flush=True)
             await conn.execute(
                 "DELETE FROM stats.sec_composition WHERE source_type = 'index'"
             )
-            existing_comp_keys: set = set()
         else:
-            comp_existing_rows = await conn.fetch(
-                "SELECT DISTINCT code, snapshot_date "
-                "FROM stats.sec_composition WHERE source_type = 'index'"
-            )
-            existing_comp_keys = {
-                (r["code"], r["snapshot_date"]) for r in comp_existing_rows
-            }
-            print(f"    [DB] {len(existing_comp_keys):,} existing (code, snapshot_date) pairs", flush=True)
-
-        if not force and existing_comp_keys:
-            n_before = len(all_rows)
-            all_rows = [
-                r for r in all_rows
-                if (r["code"], r["snapshot_date"]) not in existing_comp_keys
-            ]
-            n_skipped = n_before - len(all_rows)
-            print(f"    [DB] {len(all_rows):,} rows to insert (skipped {n_skipped:,} existing)", flush=True)
+            # Date-check fast-path already filtered CSVs before reading,
+            # so only missing dates were processed. Skip the secondary
+            # row-level filter — all remaining rows are genuinely new.
+            pass
 
         if all_rows:
             n_copied, n_upserted = await copy_or_upsert_split_async(

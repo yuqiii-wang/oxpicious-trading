@@ -122,6 +122,22 @@ export interface OptionsCombinedResponse {
   rows: OptionsRow[];
 }
 
+/** Data-source selector for analysis.options_skewness_stats rows. */
+export type SkewType =
+  | "oi_moneyness"
+  | "iv_smile"
+  | "greek_delta"
+  | "greek_gamma"
+  | "greek_vega";
+
+export const SKEW_TYPES: SkewType[] = [
+  "oi_moneyness",
+  "iv_smile",
+  "greek_delta",
+  "greek_gamma",
+  "greek_vega",
+];
+
 export interface SkewnessCorrRow {
   date: string;
   expiry_month: string;
@@ -144,6 +160,43 @@ export interface SkewnessCrossCountRow {
 export interface SkewnessCrossCountResponse {
   underlying_code: string;
   rows: SkewnessCrossCountRow[];
+}
+
+/** Daily raw skewness series per (date, expiry month) from the DB. */
+export interface SkewnessSeriesRow {
+  date: string;
+  expiry_month: string;
+  /** Latest exact expiry date in the month group (shade boundary). */
+  expiry_date: string | null;
+  /** Daily raw skewness (CALL/PUT averaged). NULL when not stored. */
+  skewness: number | null;
+}
+
+export interface SkewnessSeriesResponse {
+  underlying_code: string;
+  rows: SkewnessSeriesRow[];
+}
+
+export interface IvSkewRow {
+  date: string;
+  expiry_month: string;
+  /** Latest exact expiry date in the month group (null when absent). */
+  expiry_date: string | null;
+  atm_iv: number | null;
+  iv_call25: number | null;
+  iv_put25: number | null;
+  risk_reversal_25d: number | null;
+  put_skew_25d: number | null;
+  call_skew_25d: number | null;
+  smile_skewness: number | null;
+  rr25_ma5: number | null;
+  rr25_ma20: number | null;
+  rr25_ma60: number | null;
+}
+
+export interface IvSkewResponse {
+  underlying_code: string;
+  rows: IvSkewRow[];
 }
 
 export interface EtfOhlcvResponse {
@@ -392,6 +445,9 @@ export interface SecCompositionHolding {
 export interface SecCompositionResponse {
   code: string;
   snapshot_date: string;
+  /** Calendar quarter of the chosen snapshot ("2026Q2"). Populated whenever
+   *  holdings exist (also for the no-date latest-snapshot path). */
+  quarter?: string;
   /** All holdings (from sec_composition — full composition when available). */
   holdings: SecCompositionHolding[];
   /** Source:
@@ -405,6 +461,51 @@ export interface SecCompositionResponse {
     code: string;
     name: string;
   };
+}
+
+// ----------------------------------------------------------------------------
+// Quarterly composition (per-season industry aggregation) — used by the ETF
+// Holdings analysis page's 100% stacked bar chart. One entry per calendar
+// quarter that HAS a snapshot (no carry-forward: quarters without data are
+// absent). Weights are aggregated per industry via sec_classification.
+// ----------------------------------------------------------------------------
+/** One industry's aggregated weight within a quarterly snapshot. */
+export interface QuarterlyIndustryWeight {
+  industry: string;
+  sector_id: string;
+  sector_label: string;
+  /** Sum of raw weight_pct across the industry's holdings (≈% of NAV). */
+  weight_pct: number;
+  /** Number of holding rows in this industry. */
+  n_holdings: number;
+}
+
+/** One quarter's composition (latest snapshot within the quarter). */
+export interface QuarterlyCompositionQuarter {
+  /** Quarter label, e.g. "2026Q2". */
+  quarter: string;
+  /** Snapshot date used for this quarter (latest within the quarter). */
+  snapshot_date: string;
+  /** Total holding rows in the snapshot. */
+  n_holdings: number;
+  /** Sum of raw weight_pct (≈100). */
+  total_weight_pct: number;
+  /** Industry-aggregated weights, sorted by weight desc. */
+  industries: QuarterlyIndustryWeight[];
+}
+
+export interface QuarterlyCompositionResponse {
+  code: string;
+  /** Same semantics as SecCompositionResponse.source — "full" = ETF
+   *  snapshots, "index" = tracking/raw index snapshots used as fallback. */
+  source: "full" | "index";
+  /** Populated only when `source === "index"`. */
+  index_source?: {
+    code: string;
+    name: string;
+  };
+  /** Chronological quarters with data. */
+  quarters: QuarterlyCompositionQuarter[];
 }
 
 // ----------------------------------------------------------------------------
@@ -799,6 +900,114 @@ export interface MovAveSpreadDetailRow {
   low_750d: number | null;
 }
 
+/**
+ * Rolling-window OHLC extrema for one date — one row per date, index-aligned
+ * with every pair's rows (all pairs share one date axis, so a single copy
+ * serves all 23 pair series). Source: analysis.mov_ave_spreads_detail_ohlc.
+ *
+ * For each window W ∈ {20, 60, 120, 255, 500, 750, 1275}:
+ *   open_Wd           — open price on the W-th trading day before `date`
+ *   high_Wd           — max high over the W trading days ending on `date`
+ *   high_date_Wd      — date the window max high occurred
+ *   high_2nd_Wd       — second local-max peak (≥ 20%·W cooldown from top)
+ *   high_2nd_date_Wd  — date of the second peak
+ *   low_Wd            — min low over the W trading days ending on `date`
+ *   low_date_Wd       — date the window min low occurred
+ *   low_2nd_Wd        — second local-min trough (≥ 20%·W cooldown)
+ *   low_2nd_date_Wd   — date of the second trough
+ *
+ * The (top, 2nd) high pairs determine the "roof" trendline and the (top,
+ * 2nd) low pairs determine the "floor" trendline drawn on the MA-Spread
+ * chart (two points determining a line).
+ */
+export interface MovAveSpreadOhlcRow {
+  date: string;
+
+  open_20d: number | null;
+  high_20d: number | null;
+  high_date_20d: string | null;
+  high_2nd_20d: number | null;
+  high_2nd_date_20d: string | null;
+  high_line_slope_20d: number | null;
+  low_20d: number | null;
+  low_date_20d: string | null;
+  low_2nd_20d: number | null;
+  low_2nd_date_20d: string | null;
+  low_line_slope_20d: number | null;
+
+  open_60d: number | null;
+  high_60d: number | null;
+  high_date_60d: string | null;
+  high_2nd_60d: number | null;
+  high_2nd_date_60d: string | null;
+  high_line_slope_60d: number | null;
+  low_60d: number | null;
+  low_date_60d: string | null;
+  low_2nd_60d: number | null;
+  low_2nd_date_60d: string | null;
+  low_line_slope_60d: number | null;
+
+  open_120d: number | null;
+  high_120d: number | null;
+  high_date_120d: string | null;
+  high_2nd_120d: number | null;
+  high_2nd_date_120d: string | null;
+  high_line_slope_120d: number | null;
+  low_120d: number | null;
+  low_date_120d: string | null;
+  low_2nd_120d: number | null;
+  low_2nd_date_120d: string | null;
+  low_line_slope_120d: number | null;
+
+  open_255d: number | null;
+  high_255d: number | null;
+  high_date_255d: string | null;
+  high_2nd_255d: number | null;
+  high_2nd_date_255d: string | null;
+  high_line_slope_255d: number | null;
+  low_255d: number | null;
+  low_date_255d: string | null;
+  low_2nd_255d: number | null;
+  low_2nd_date_255d: string | null;
+  low_line_slope_255d: number | null;
+
+  open_500d: number | null;
+  high_500d: number | null;
+  high_date_500d: string | null;
+  high_2nd_500d: number | null;
+  high_2nd_date_500d: string | null;
+  high_line_slope_500d: number | null;
+  low_500d: number | null;
+  low_date_500d: string | null;
+  low_2nd_500d: number | null;
+  low_2nd_date_500d: string | null;
+  low_line_slope_500d: number | null;
+
+  open_750d: number | null;
+  high_750d: number | null;
+  high_date_750d: string | null;
+  high_2nd_750d: number | null;
+  high_2nd_date_750d: string | null;
+  high_line_slope_750d: number | null;
+  low_750d: number | null;
+  low_date_750d: string | null;
+  low_2nd_750d: number | null;
+  low_2nd_date_750d: string | null;
+  low_line_slope_750d: number | null;
+
+  open_1275d: number | null;
+  high_1275d: number | null;
+  high_date_1275d: string | null;
+  high_2nd_1275d: number | null;
+  high_2nd_date_1275d: string | null;
+  high_line_slope_1275d: number | null;
+  low_1275d: number | null;
+  low_date_1275d: string | null;
+  low_2nd_1275d: number | null;
+  low_2nd_date_1275d: string | null;
+  low_line_slope_1275d: number | null;
+}
+
 /** Kind of pair: price-based (Simple MA, default, backward-compatible),
  *  amt-based (trading-amount), or ema-based (Exponential MA). */
 export type MovAveSpreadPairKind = "price" | "amt" | "ema";
@@ -856,48 +1065,59 @@ export interface MovAveSpreadCodesResponse {
   codes: MovAveSpreadCodeRow[];
 }
 
+/** One market-hype EPISODE from analysis.mov_ave_market_hypes: a
+ *  CONCATENATED span of trading dates anchored on a maximal run of
+ *  consecutive hyped dates and extended through the surrounding
+ *  check-in evidence (the W rows before the run's first hyped date,
+ *  back to its first check-in, and the W rows after the last hyped
+ *  date, to its last check-in). startDate / endDate bracket the span;
+ *  hypeDays is the span length in trading dates, BUCKETED into
+ *  [minCheckinPeriod, next window) — minCheckinPeriod is the bucket's
+ *  MINIMUM span, the next check-in window (5100 = the whole ±10y base
+ *  for 255d) its exclusive maximum, so one calendar turmoil lands in
+ *  exactly the bucket matching its length. A date is hyped when,
+ *  within the last W (min_checkin_period) trading rows ending at it, more
+ *  than min_checkin_satisfaction_threshold percent of the dates are
+ *  check-ins (trading_amount AND std_{W}days both above their centered
+ *  20-year — ±10 trading years around each audited date — percentile
+ *  thresholds). */
+export interface MovAveSpreadHypeEpisode {
+  startDate: string;
+  endDate: string;
+  hypeDays: number;
+  /** Days within the episode span on which the liquidity leg
+   *  (trading_amount > its centered-20y percentile) individually
+   *  checked in. Optional: absent on rows built before the column
+   *  existed. */
+  tradingAmtHypeDays?: number;
+  /** Days within the episode span on which the volatility leg
+   *  (std_{W}days > its centered-20y percentile) individually checked
+   *  in. Optional: absent on rows built before the column existed. */
+  stdHypeDays?: number;
+}
+
+/** Market-hype episodes keyed by check-in window (5/20/60/120/255) — one
+ *  episode list per window; windows with no episodes are absent from the
+ *  map. Source: analysis.mov_ave_market_hypes. */
+export type MovAveSpreadHypeEpisodes = Record<number, MovAveSpreadHypeEpisode[]>;
+
 /** Response for GET /chart?sec_type=etf&code=510050 — all pair time series for one asset. */
 export interface MovAveSpreadChartResponse {
   code: string;
   name: string;
   /** Pair time series (9 Simple MA + 9 EMA + 5 trading-amt = 23 total). */
   pairs: MovAveSpreadPairSeries[];
-  /**
-   * Per-extreme-date rows from analysis.mov_ave_peaks_and_floors (filtered
-   * by sec_type + code). Each row's `date` is the actual biz date of a
-   * local min (floor) or max (peak) close observed within a continuous
-   * belt; `extreme_val` is that min/max close price. The frontend plots
-   * one marker per row directly from this array — red down-triangle for
-   * floors (is_extreme_peak_not_floor=false) and green up-triangle for
-   * peaks (is_extreme_peak_not_floor=true). It does NOT derive extremes
-   * from the per-date detail series (which would smear each extreme
-   * across every detail date that maps to it via peaks_and_floors_date).
-   */
-  valley_lows: MovAveSpreadValleyLow[];
-}
-
-/** One row of analysis.mov_ave_peaks_and_floors for the requested code. */
-export interface MovAveSpreadValleyLow {
-  /** Extreme biz date (local min or max close within a continuous belt). */
-  date: string;
-  /** Min (floor) or max (peak) close price observed on `date`. */
-  extreme_val: number;
-  /**
-   * The furthest date within ±30 trading days of `date` whose OHLC low is
-   * strictly lower than the valley_low's OHLC high. NULL when no qualifying
-   * date exists, and NULL for peaks (only floors compute it). The frontend
-   * draws a light-red horizontal band linking `date` and
-   * `nearby_extreme_date`, with upper/lower bounds from the two days' OHLC
-   * highs/lows.
-   */
-  nearby_extreme_date?: string | null;
-  /**
-   * TRUE when this extreme is a local MAX (peak — upward trend). FALSE
-   * when this extreme is a local MIN (valley low / floor — downward
-   * trend). The frontend renders up-triangles (green) for peaks and
-   * down-triangles (red) for floors based on this flag.
-   */
-  is_extreme_peak_not_floor: boolean;
+  /** Rolling-window OHLC extrema, one row per date, index-aligned with every
+   *  pair's rows (all pairs share one date axis). Source:
+   *  analysis.mov_ave_spreads_detail_ohlc — used by the OHLC-window
+   *  roof/floor trendline overlay. */
+  ohlc: MovAveSpreadOhlcRow[];
+  /** Market-hype episodes keyed by check-in window (20/60/120/255), shared
+   *  by all pairs (same date axis). Source: analysis.mov_ave_market_hypes —
+   *  used by the Market Hype button row to shade hyped date periods (light
+   *  purple). Optional so older cached responses without the field still
+   *  typecheck. */
+  hypeEpisodes?: MovAveSpreadHypeEpisodes;
 }
 
 // ----------------------------------------------------------------------------
@@ -1031,7 +1251,7 @@ export interface FourierFreqsCodesResponse {
 /** One (range_days) row from the spectrum endpoint — the FULL one-sided
  *  amplitude spectrum for a single (code, last_date) and window size. */
 export interface FourierFreqsSpectrumRow {
-  /** Window size in trading days (20 | 60 | 255 | 500 | 750). */
+  /** Window size in trading days (20 | 60 | 255 | 500 | 750 | 1275). */
   range_days: number;
   /** Dominant cycle PERIOD in trading days (= round(range_days / k*),
    *  where k* is the bin with the highest amplitude). */
@@ -1041,12 +1261,19 @@ export interface FourierFreqsSpectrumRow {
   /** Full one-sided amplitude spectrum, length = floor(range_days/2).
    *  Element i = |X[i+1]| × 2 / range_days — the amplitude of FFT bin
    *  k=i+1, EXCLUDING DC (k=0). The corresponding cycle period for bin
-   *  k is range_days / k. The dominant bin is argmax(spectrum) + 1. */
+   *  k is range_days / k. The dominant bin is argmax(spectrum) + 1.
+   *  Per-day-freq REPEAT counts are NOT derived from this array (the
+   *  bin index k trivially equals k cycles per window — a definitional
+   *  constant, not a measurement); they are audited client-side from
+   *  the price window via autocorrelation (see repeatCounts.ts). */
   spectrum: number[];
+  /** Number of sliding windows (dates) analyzed for this (code,
+   *  range_days). Title context only. */
+  total_windows: number;
 }
 
 /** Response for GET /api/analysis/fourier-freqs/spectrum.
- *  Up to 5 rows (one per range_days) for one (code, last_date). */
+ *  Up to 6 rows (one per range_days) for one (code, last_date). */
 export interface FourierFreqsSpectrumResponse {
   code: string;
   name: string;

@@ -18,6 +18,8 @@ import numpy as np
 from analyze.options.config import (
     SKEWNESS_TABLE_NAME,
     EXPIRY_IDENTITY_TABLE,
+    WALLS_TABLE_NAME,
+    IV_SKEW_TABLE_NAME,
 )
 
 # Map sec_type filter to underlying_target_type column values.
@@ -104,6 +106,7 @@ async def fetch_missing_skewness_groups(
     conn,
     sec_type: str | None = None,
     table_name: str = SKEWNESS_TABLE_NAME,
+    skew_type: str | None = None,
 ) -> list:
     """Fetch (date, option_type, underlying_code, expiry_date) tuples
     missing from the target stats table (skewness or OI).
@@ -119,6 +122,10 @@ async def fetch_missing_skewness_groups(
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
         table_name: Target table checked for missing PKs (defaults to the
             skewness table; the OI pipeline passes its own table).
+        skew_type: Optional skew_type filter on the target table's existing
+            rows (options_skewness_stats separates data sources by
+            skew_type: 'oi_moneyness' / 'iv_smile'). Only used when the
+            target table has that column.
     """
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
@@ -149,9 +156,13 @@ async def fetch_missing_skewness_groups(
     # Check which PKs are missing from the target table
     existing_pks = set()
     try:
+        type_filter = ""
+        if skew_type is not None:
+            type_filter = " WHERE skew_type = $1"
         existing_rows = await conn.fetch(
             f"SELECT date, option_type, underlying_code, expiry_date "
-            f"FROM {table_name}"
+            f"FROM {table_name}{type_filter}",
+            *( [skew_type] if skew_type is not None else [] ),
         )
         existing_pks = set(
             (r["date"], r["option_type"],
@@ -322,3 +333,272 @@ async def fetch_oi_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
     for col in ("open_interest", "underlying_close"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
+
+
+# ---- Options IV skew fetchers ---------------------------------------------
+
+IV_SKEW_FETCH_COLUMNS = [
+    "date", "contract_code", "option_type", "underlying_code",
+    "expiry_date", "strike_price", "underlying_close", "open_interest",
+    "implied_vol", "delta", "theta", "gamma", "vega", "rho",
+]
+
+# Valid IV range for premium-calibrated implied vol (frontend convention:
+# 0 < IV < 5 as a fraction, i.e. 0-500 vol points).
+_IV_SKEW_VALID_WHERE = """
+    k.strike_price > 0
+    AND s.underlying_close > 0
+    AND g.implied_vol > 0
+    AND g.implied_vol < 5
+    AND g.delta IS NOT NULL
+"""
+
+
+async def fetch_iv_skew_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
+    """Fetch contract rows with valid IV + delta for the IV skew
+    computation, carrying ALL greeks (delta/theta/gamma/vega/rho) for the
+    greek skew pipeline.
+
+    Returns a DataFrame with columns:
+        date, contract_code, option_type, underlying_code, expiry_date,
+        strike_price, underlying_close, open_interest, implied_vol,
+        delta, theta, gamma, vega, rho
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+    """
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT
+            t.date,
+            t.contract_code,
+            t.option_type,
+            t.underlying_code,
+            t.expiry_date,
+            k.strike_price,
+            s.underlying_close,
+            v.open_interest,
+            g.implied_vol,
+            g.delta,
+            g.theta,
+            g.gamma,
+            g.vega,
+            g.rho
+        FROM stats.options_terms t
+        JOIN stats.options_strike k
+          ON k.date = t.date AND k.contract_code = t.contract_code
+        JOIN stats.options_settlement s
+          ON s.date = t.date AND s.contract_code = t.contract_code
+        JOIN stats.options_volume_oi v
+          ON v.date = t.date AND v.contract_code = t.contract_code
+        JOIN stats.options_greeks g
+          ON g.date = t.date AND g.contract_code = t.contract_code
+        WHERE {_IV_SKEW_VALID_WHERE}
+          {sec_filter}
+        ORDER BY t.underlying_code, t.expiry_date, t.date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return pd.DataFrame(columns=IV_SKEW_FETCH_COLUMNS)
+
+    df = pd.DataFrame([dict(r) for r in rows])
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+    for col in ("strike_price", "underlying_close", "open_interest",
+                "implied_vol", "delta", "theta", "gamma", "vega", "rho"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+async def fetch_missing_iv_skew_groups(
+    conn,
+    sec_type: str | None = None,
+    table_name: str = IV_SKEW_TABLE_NAME,
+    skew_type: str | None = None,
+) -> list:
+    """Fetch (date, option_type, underlying_code, expiry_date) tuples
+    missing from the IV skew stats table.
+
+    Applies open expiry collapse before detection so that open expiry
+    groups are correctly identified by their mean expiry_date.
+
+    Returns list of (date, option_type, underlying_code, expiry_date) tuples
+    that need computation.
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+        table_name: Target table checked for missing PKs (defaults to the
+            IV skew table; the iv_smile corr pipeline passes the skewness
+            stats table).
+        skew_type: Optional skew_type filter on the target table's existing
+            rows (used when table_name is options_skewness_stats, which
+            separates data sources by skew_type).
+    """
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT DISTINCT t.date, t.option_type, t.underlying_code, t.expiry_date
+        FROM stats.options_terms t
+        JOIN stats.options_strike k
+          ON k.date = t.date AND k.contract_code = t.contract_code
+        JOIN stats.options_settlement s
+          ON s.date = t.date AND s.contract_code = t.contract_code
+        JOIN stats.options_volume_oi v
+          ON v.date = t.date AND v.contract_code = t.contract_code
+        JOIN stats.options_greeks g
+          ON g.date = t.date AND g.contract_code = t.contract_code
+        WHERE {_IV_SKEW_VALID_WHERE}
+          {sec_filter}
+        ORDER BY t.date, t.option_type, t.underlying_code, t.expiry_date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return []
+
+    df = pd.DataFrame([dict(r) for r in rows])
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+
+    collapsed = _collapse_open_expiry_df(df)
+
+    existing_pks = set()
+    try:
+        type_filter = ""
+        if skew_type is not None:
+            type_filter = " WHERE skew_type = $1"
+        existing_rows = await conn.fetch(
+            f"SELECT date, option_type, underlying_code, expiry_date "
+            f"FROM {table_name}{type_filter}",
+            *( [skew_type] if skew_type is not None else [] ),
+        )
+        existing_pks = set(
+            (r["date"], r["option_type"],
+             r["underlying_code"], r["expiry_date"])
+            for r in existing_rows
+        )
+    except Exception:
+        pass
+
+    missing = [
+        (r["date"], r["option_type"], r["underlying_code"], r["expiry_date"])
+        for _, r in collapsed.iterrows()
+        if (r["date"], r["option_type"],
+            r["underlying_code"], r["expiry_date"]) not in existing_pks
+    ]
+    return missing
+
+
+# ---- Options walls fetchers -----------------------------------------------
+
+WALLS_FETCH_COLUMNS = [
+    "date", "contract_code", "option_type", "underlying_code",
+    "expiry_date", "strike_price", "open_interest",
+]
+
+
+async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
+    """Fetch all valid option contract rows for the walls computation.
+
+    Returns a DataFrame with columns:
+        date, contract_code, option_type, underlying_code,
+        expiry_date, strike_price, open_interest
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+    """
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT
+            t.date,
+            t.contract_code,
+            t.option_type,
+            t.underlying_code,
+            t.expiry_date,
+            k.strike_price,
+            v.open_interest
+        FROM stats.options_terms t
+        JOIN stats.options_strike k
+          ON k.date = t.date AND k.contract_code = t.contract_code
+        JOIN stats.options_volume_oi v
+          ON v.date = t.date AND v.contract_code = t.contract_code
+        WHERE k.strike_price > 0
+          {sec_filter}
+        ORDER BY t.option_type, t.underlying_code, t.expiry_date, t.date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return pd.DataFrame(columns=WALLS_FETCH_COLUMNS)
+
+    df = pd.DataFrame([dict(r) for r in rows])
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+    for col in ("strike_price", "open_interest"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+async def fetch_missing_walls_groups(
+    conn,
+    sec_type: str | None = None,
+) -> list:
+    """Fetch (date, option_type, underlying_code, expiry_date, wall_type)
+    tuples missing from analysis.options_walls.
+
+    Returns list of tuples that need computation. Each expiry group needs
+    both wall types (80pct and large_num), and both option types (CALL/PUT).
+    """
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT DISTINCT t.date, t.option_type, t.underlying_code, t.expiry_date
+        FROM stats.options_terms t
+        JOIN stats.options_strike k
+          ON k.date = t.date AND k.contract_code = t.contract_code
+        JOIN stats.options_volume_oi v
+          ON v.date = t.date AND v.contract_code = t.contract_code
+        WHERE k.strike_price > 0
+          {sec_filter}
+        ORDER BY t.date, t.option_type, t.underlying_code, t.expiry_date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return []
+
+    # Convert to DataFrame and apply collapse
+    df = pd.DataFrame([dict(r) for r in rows])
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+
+    # Apply open expiry collapse
+    collapsed = _collapse_open_expiry_df(df)
+
+    # Check which PKs are missing from the walls table
+    existing_pks = set()
+    try:
+        existing_rows = await conn.fetch(
+            f"SELECT date, option_type, underlying_code, expiry_date, wall_type "
+            f"FROM {WALLS_TABLE_NAME}"
+        )
+        existing_pks = set(
+            (r["date"], r["option_type"],
+             r["underlying_code"], r["expiry_date"],
+             r["wall_type"])
+            for r in existing_rows
+        )
+    except Exception:
+        pass
+
+    # Need both wall types for each (date, option_type, underlying, expiry)
+    from analyze.options.config import WALL_TYPE_80PCT, WALL_TYPE_LARGE_NUM
+    wall_types = [WALL_TYPE_80PCT, WALL_TYPE_LARGE_NUM]
+
+    missing = []
+    for _, r in collapsed.iterrows():
+        for wt in wall_types:
+            pk = (r["date"], r["option_type"], r["underlying_code"],
+                  r["expiry_date"], wt)
+            if pk not in existing_pks:
+                missing.append(pk)
+
+    return missing

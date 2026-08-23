@@ -2,11 +2,13 @@
  * Sec Composition API routes.
  */
 import { Router, type Request, type Response } from "express";
-import { getSecComposition, getLinkedEtfs, getSimilarIndices } from "../services/sec-composition.service.js";
+import { getSecComposition, getQuarterlyComposition, getLinkedEtfs, getSimilarIndices } from "../services/sec-composition.service.js";
 
 const router = Router();
 
-/** GET /api/sec-composition?code=159001.SZ */
+/** GET /api/sec-composition?code=159001.SZ[&date=2026-06-30]
+ *  Without `date`: latest snapshot. With `date`: latest snapshot within the
+ *  calendar quarter containing the date (the "by season" lookup). */
 router.get("/", async (req: Request, res: Response) => {
   try {
     const code = typeof req.query.code === "string" ? req.query.code : "";
@@ -14,9 +16,28 @@ router.get("/", async (req: Request, res: Response) => {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
     }
-    res.json(await getSecComposition(code));
+    const date = typeof req.query.date === "string" ? req.query.date : undefined;
+    res.json(await getSecComposition(code, date));
   } catch (err) {
     console.error("[sec-composition] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/sec-composition/quarterly?code=159673
+ *  Per-quarter industry-aggregated composition (latest snapshot within each
+ *  quarter; quarters without a snapshot are absent). Falls back to the
+ *  tracking index when the ETF has no snapshots. */
+router.get("/quarterly", async (req: Request, res: Response) => {
+  try {
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getQuarterlyComposition(code));
+  } catch (err) {
+    console.error("[sec-composition/quarterly] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

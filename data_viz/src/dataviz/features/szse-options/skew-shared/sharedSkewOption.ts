@@ -1,3 +1,16 @@
+/**
+ * Unified skew-over-time chart builder — renders a SharedSkewSpec from
+ * EITHER data source (oi_moneyness / iv_smile) with the identical layout:
+ *
+ *   • Underlying spot curve (solid blue) + selected-date mark
+ *   • Mean (aggregate) skew curve in price space (thick dashed blue)
+ *   • Per-expiry thin dashed blue-gradient lines
+ *   • Expiry shade bands from the selected date to each active expiry
+ *     (band between spot and that expiry's skew curve)
+ *   • Vertical expiry closing lines + neutral-cross-count markPoints
+ *
+ * Generalized from the OI-wtd moneyness skew chart (oiMoneynessOption.ts).
+ */
 import { useStore } from "@/store/filters";
 import {
   axisColors,
@@ -6,27 +19,33 @@ import {
   commonLegend,
   expiryBlueColor,
   FUTURES_BLUE_NEAR,
+  FUTURES_EXPIRY_DOT_BORDER,
   IV_BLUE,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
-import { makeSkewTooltipFormatter } from "./SkewTooltip";
-import type { DailySkew } from "./types";
+import { makeSharedSkewTooltipFormatter } from "./sharedSkewTooltip";
+import type { SharedSkewSpec } from "./types";
 import type { EChartsOption } from "echarts";
 
-export function buildSkewTimeSeriesOption(
-  dailySkew: DailySkew[],
+export function buildSharedSkewOption(
+  spec: SharedSkewSpec,
   selectedDate: string,
+  showCrossCounts: boolean = true,
+  dataZoomStart?: number,
+  dataZoomEnd?: number,
 ): EChartsOption {
   const themeMode = useStore.getState().themeMode;
   const c = axisColors(themeMode);
   const textColor = c.textColor;
   const splitColor = c.splitLineColor;
 
-  if (dailySkew.length === 0) {
+  const { points, chartTitle, meanSeriesName } = spec;
+
+  if (points.length === 0) {
     return {
       backgroundColor: "transparent",
       title: {
-        text: "Underlying Price & Smile Skewness Over Time  [No data]",
+        text: `${chartTitle}  [No data]`,
         left: "center",
         top: "center",
         textStyle: { color: textColor, fontSize: 11, fontWeight: 400 },
@@ -34,16 +53,16 @@ export function buildSkewTimeSeriesOption(
     };
   }
 
-  const spotData = dailySkew.map((d) => [d.date, d.S]);
-  const skewData = dailySkew.map((d) =>
+  const spotData = points.map((d) => [d.date, d.spot]);
+  const skewData = points.map((d) =>
     d.skewPrice != null ? [d.date, d.skewPrice] : null,
   );
 
-  const dates = dailySkew.map((d) => d.date);
+  const dates = points.map((d) => d.date);
   const selectedIdx = dates.indexOf(selectedDate);
 
   const allExpiries = new Map<string, string>();
-  for (const d of dailySkew) {
+  for (const d of points) {
     for (const pe of d.perExpiry) {
       if (!allExpiries.has(pe.expiry) && pe.expiryDate) {
         allExpiries.set(pe.expiry, pe.expiryDate);
@@ -60,16 +79,15 @@ export function buildSkewTimeSeriesOption(
   const expiryList = expiryEntries.map(([exp]) => exp);
   const nExpiries = expiryList.length;
 
-  // Currently active expiry sets ON the clicked date (perExpiry is built from
-  // rows with expiry_date >= date — strictly pre-expiry). Each set's
-  // expiryDate is its contracts' last active date: one shade per set, from
-  // the clicked date till that expiry. Overlapping layers make near-term
-  // regions darker and far regions lighter.
+  // Currently active expiry sets ON the selected date (each set's
+  // expiryDate is its boundary): one shade per set, from the selected
+  // date till that expiry. Overlapping layers make near-term regions
+  // darker and far regions lighter.
   const activeExpiryDates =
     selectedIdx >= 0
       ? Array.from(
           new Set(
-            dailySkew[selectedIdx].perExpiry
+            points[selectedIdx].perExpiry
               .map((pe) => pe.expiryDate)
               .filter((ed) => ed && ed >= selectedDate),
           ),
@@ -77,8 +95,8 @@ export function buildSkewTimeSeriesOption(
       : [];
 
   // Stretch the x-axis past the data range so every shade reaches its
-  // contract's true expiry (e.g. 3/6/9-month sets) instead of being clipped
-  // at the last data date. Real data dates stay the axis prefix.
+  // contract's true expiry (e.g. 3/6/9-month sets) instead of being
+  // clipped at the last data date. Real data dates stay the axis prefix.
   const lastDate = dates[dates.length - 1];
   const futureExpiryDates = activeExpiryDates.filter((ed) => ed > lastDate);
   const axisDates = [...dates, ...futureExpiryDates];
@@ -100,7 +118,7 @@ export function buildSkewTimeSeriesOption(
   });
 
   const perExpirySeries: EChartsOption["series"] = expiryList.map((exp, ei) => {
-    const data: (number | null)[] = dailySkew.map((d) => {
+    const data: (number | null)[] = points.map((d) => {
       const pe = d.perExpiry.find((p) => p.expiry === exp);
       if (!pe || pe.skewPrice == null) return null;
       return pe.skewPrice;
@@ -134,10 +152,19 @@ export function buildSkewTimeSeriesOption(
   // its expiry, bounded by the band levels (spot ↔ skew).
   const SHADE_COLOR = "rgba(31, 119, 180, 0.12)";
   const expiryShadeSeries: EChartsOption["series"] = [];
-  const crossCountMarkPoints: unknown[] = [];
+  const crossCountMarkPoints: {
+    name: string;
+    coord: [string, number];
+    value: number;
+    itemStyle: { color: string; borderColor: string; borderWidth: number };
+    label: Record<string, unknown>;
+    symbol: string;
+    symbolSize: number;
+    tooltip: { show: boolean };
+  }[] = [];
   if (hasActiveExpiries) {
-    const lastD = dailySkew[dailySkew.length - 1];
-    const activeSets = dailySkew[selectedIdx].perExpiry
+    const lastD = points[points.length - 1];
+    const activeSets = points[selectedIdx].perExpiry
       .filter((pe) => pe.expiryDate && pe.expiryDate >= selectedDate)
       .sort((a, b) => a.expiryDate.localeCompare(b.expiryDate));
     activeSets.forEach((pe, k) => {
@@ -155,18 +182,18 @@ export function buildSkewTimeSeriesOption(
           continue;
         }
         if (i < dates.length) {
-          const d = dailySkew[i];
+          const d = points[i];
           const sk =
             d.perExpiry.find((p) => p.expiry === pe.expiry)?.skewPrice ?? null;
           if (sk != null) {
-            const lower = Math.min(d.S, sk);
+            const lower = Math.min(d.spot, sk);
             lastLower = lower;
-            lastWidth = Math.abs(sk - d.S);
+            lastWidth = Math.abs(sk - d.spot);
             lastSkew = sk;
             base.push(lower);
             diff.push(lastWidth);
           } else {
-            base.push(d.S);
+            base.push(d.spot);
             diff.push(null);
           }
         } else {
@@ -177,31 +204,39 @@ export function buildSkewTimeSeriesOption(
       }
       if (lastSkew == null) return; // no skew values in range → nothing to bound
       const stackId = `exp-shade-${k}`;
-      const ySpot = endIdx < dates.length ? dailySkew[endIdx].S : lastD.S;
+      const ySpot = endIdx < dates.length ? points[endIdx].spot : lastD.spot;
 
-      // Cross count markPoint at spot price level on the expiry date
-      if (pe.countSkewnessCurveCrossedSpot != null && pe.countSkewnessCurveCrossedSpot > 0) {
+      // Cross count markPoint at spot price level on the expiry date.
+      // Marker shape follows the futures expiry-date dots (see
+      // features/futures/chartOption/priceChart.ts): circle with a white
+      // ring + two-line label with a white halo — but tinted with THIS
+      // expiry's blue-gradient contract color (expiryColorMap) so each
+      // mark visually ties to its own per-expiry skew line.
+      if (showCrossCounts && pe.countSkewnessCurveCrossedSpot != null && pe.countSkewnessCurveCrossedSpot > 0) {
+        const expColor = expiryColorMap.get(pe.expiry) ?? IV_BLUE;
         crossCountMarkPoints.push({
           name: `cross-count-${pe.expiry}`,
           coord: [xEnd, ySpot],
           value: pe.countSkewnessCurveCrossedSpot,
-          itemStyle: { color: IV_BLUE },
+          itemStyle: {
+            color: expColor,
+            borderColor: FUTURES_EXPIRY_DOT_BORDER,
+            borderWidth: 2,
+          },
           label: {
             show: true,
-            formatter: `Expiry ${pe.expiryDate}\nNeutral Moneyness Days ×${pe.countSkewnessCurveCrossedSpot}`,
-            color: textColor,
+            formatter: `${pe.expiryDate}\nCrossed ×${pe.countSkewnessCurveCrossedSpot}`,
+            color: expColor,
             fontSize: 10,
-            fontWeight: 700,
+            fontWeight: 600,
+            lineHeight: 13,
             position: "top",
             distance: 6,
-            backgroundColor: "rgba(255,255,255,0.9)",
-            borderColor: IV_BLUE,
-            borderWidth: 1,
-            borderRadius: 3,
-            padding: [3, 5],
+            textBorderColor: FUTURES_EXPIRY_DOT_BORDER,
+            textBorderWidth: 2,
           },
           symbol: "circle",
-          symbolSize: 4,
+          symbolSize: 10,
           tooltip: { show: false },
         });
       }
@@ -236,7 +271,6 @@ export function buildSkewTimeSeriesOption(
         // and this expiry's skewness level (band height at the boundary).
         // Drawn as a 2-point line series (same category twice) — markLine
         // coord pairs proved unreliable on the stacked shade series.
-        // When a cross count is available, show it as a text label.
         {
           type: "line" as const,
           name: `expiry-line ${pe.expiry}`,
@@ -276,7 +310,7 @@ export function buildSkewTimeSeriesOption(
               data: [
                 {
                   name: "spot",
-                  coord: [selectedDate, dailySkew[selectedIdx].S],
+                  coord: [selectedDate, points[selectedIdx].spot],
                 },
               ],
               label: { show: false },
@@ -286,30 +320,31 @@ export function buildSkewTimeSeriesOption(
     },
     {
       type: "line",
-      name: "Skewness (OI-wtd)",
+      name: meanSeriesName,
       showSymbol: false,
       smooth: false,
       connectNulls: false,
-      lineStyle: { color: IV_BLUE, width: 2.5, type: "dashed", opacity: 0.95 },
+      lineStyle: { color: IV_BLUE, width: 2.5, type: "dashed" as const, opacity: 0.95 },
       itemStyle: { color: IV_BLUE },
       data: skewData,
       z: 2,
       markPoint: (() => {
-        const data: unknown[] = [];
-        if (selectedIdx >= 0 && dailySkew[selectedIdx].skewPrice != null) {
+        // Evolving array: TS infers the union of pushed item literals.
+        const data = [];
+        if (selectedIdx >= 0 && points[selectedIdx].skewPrice != null) {
           data.push({
             name: "skew",
-            coord: [selectedDate, dailySkew[selectedIdx].skewPrice as number],
+            coord: [selectedDate, points[selectedIdx].skewPrice as number],
             symbol: "circle",
             symbolSize: 9,
             itemStyle: { color: IV_BLUE, borderColor: "#fff", borderWidth: 1 },
             label: {
               show: true,
               formatter: `Skew Δ=${
-                dailySkew[selectedIdx].skewPct != null
-                  ? (dailySkew[selectedIdx].skewPct >= 0 ? "+" : "") +
-                    dailySkew[selectedIdx].skewPct.toFixed(2) +
-                    "%"
+                points[selectedIdx].skewPct != null
+                  ? (points[selectedIdx].skewPct as number) >= 0
+                    ? "+" + (points[selectedIdx].skewPct as number).toFixed(2) + "%"
+                    : (points[selectedIdx].skewPct as number).toFixed(2) + "%"
                   : "—"
               }`,
               color: textColor,
@@ -326,14 +361,12 @@ export function buildSkewTimeSeriesOption(
     },
   ];
 
-  const visibleLegendData = ["Underlying Spot", "Skewness (OI-wtd)"];
-
   return {
     backgroundColor: "transparent",
     animation: false,
     grid: commonGrid({ left: 56, right: 56, top: 36, bottom: 36 }),
     title: {
-      text: "Underlying Price & Smile Skewness Over Time",
+      text: chartTitle,
       left: "left",
       textStyle: { color: textColor, fontSize: 11, fontWeight: 600 },
     },
@@ -359,11 +392,19 @@ export function buildSkewTimeSeriesOption(
       backgroundColor: c.tooltipBg,
       borderColor: splitColor,
       textStyle: { color: textColor, fontSize: 11 },
-      formatter: makeSkewTooltipFormatter(dailySkew, allExpiries, expiryColorMap),
+      formatter: makeSharedSkewTooltipFormatter(
+        points,
+        expiryColorMap,
+      ),
     },
+    // Legend centered: the top-right corner is reserved for the overlay
+    // "Neutral Skew/Moneyness Days" toggle (absolute, top: 0, right: 8) —
+    // a right-aligned legend would sit underneath it and the texts overlap.
     legend: commonLegend(themeMode, {
       top: 14,
-      data: visibleLegendData,
+      left: "center",
+      right: "auto",
+      data: ["Underlying Spot", meanSeriesName],
     }),
     xAxis: {
       type: "category",
@@ -394,7 +435,11 @@ export function buildSkewTimeSeriesOption(
         lineStyle: { color: splitColor, type: "dashed", opacity: 0.4 },
       },
     },
-    dataZoom: commonDataZoom({ xAxisIndex: 0 }, 0, 100),
+    dataZoom: commonDataZoom(
+      { xAxisIndex: 0 },
+      dataZoomStart ?? 0,
+      dataZoomEnd ?? 100,
+    ),
     series,
   };
 }

@@ -71,21 +71,41 @@ from ._history import (
 def _csv_has_date(out_dir: Path, code: str, yyyymmdd: str) -> bool:
     """True iff the code's local 1m or history CSV contains the date.
 
+    Optimized: reads only the header + last ~500KB of each CSV instead of
+    the full file. CSVs are append-only in chronological order, so the
+    target date (prev trading day) is always near the end.
+
     Pure local check (small recent-window files) — the targeted mode's
     per-code cost. Missing/unreadable files count as NOT having the date.
     """
+    import io
+    import os
+
     for fname in (f"{code}_1m.csv", f"{code}_history.csv"):
         f = out_dir / fname
         if not f.is_file():
             continue
         try:
-            df = pd.read_csv(f)
-        except Exception:
-            continue
-        col = _find_date_column(df)
-        if not col:
-            continue
-        try:
+            fsize = f.stat().st_size
+            if fsize == 0:
+                continue
+
+            # Read header (first line) — needed for column names
+            with open(f, "r", encoding="utf-8") as fh:
+                header = fh.readline().strip()
+
+            # Read last portion of file (append-only → recent dates at end)
+            tail_size = min(fsize, 500_000)  # ~500KB covers many rows
+            with open(f, "rb") as fh:
+                fh.seek(-tail_size, 2)
+                if fsize > tail_size:
+                    fh.readline()  # skip first partial line to align to row boundary
+                tail_data = fh.read().decode("utf-8")
+
+            df = pd.read_csv(io.StringIO(header + "\n" + tail_data))
+            col = _find_date_column(df)
+            if not col:
+                continue
             if (df[col].apply(clean_date) == yyyymmdd).any():
                 return True
         except Exception:

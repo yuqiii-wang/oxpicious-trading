@@ -3,6 +3,9 @@
  *
  * Uses React.createElement + a custom element-to-HTML renderer (shared
  * pattern with expiryTooltip.ts and annual-sentiment/tooltipComponents.tsx).
+ *
+ * Filters items to only show strike levels that have OI data for the
+ * hovered date. Supports both 80% wall and large_num wall modes.
  */
 import React from "react";
 import { DOWN_COLOR, SPOT_COLOR, UP_COLOR } from "@/theme/chart-palette";
@@ -10,7 +13,13 @@ import { fmtMil, fmtNum } from "@/lib/series";
 import { renderReactElement } from "@/lib/react-tooltip-renderer";
 import { EXPIRY_MARKERS_SERIES_NAME, ExpiryInfoBlock, type TooltipColors } from "./expiryTooltip";
 import { mixHex } from "./bandTexture";
-import { BEAR_THRESHOLD_SERIES_NAME, BULL_THRESHOLD_SERIES_NAME } from "./bandData";
+import {
+  BEAR_THRESHOLD_SERIES_NAME,
+  BULL_THRESHOLD_SERIES_NAME,
+  CALL_LARGE_NUM_SERIES_NAME,
+  PUT_LARGE_NUM_SERIES_NAME,
+  type WallMode,
+} from "./bandData";
 import type { BandCell } from "./bandData";
 import type { ExpiryMarkerDataItem } from "./sharedData";
 
@@ -54,6 +63,7 @@ export function makeBandsTooltipFormatter(
   textColor: string,
   tooltipBg: string,
   splitLineColor: string,
+  wallMode: WallMode = "80pct",
 ) {
   const colors: TooltipColors = { textColor, tooltipBg, splitLineColor };
   return (params: unknown): string => {
@@ -63,14 +73,22 @@ export function makeBandsTooltipFormatter(
     const spotParam = arr.find((p) => p.seriesName === "Spot");
     const expiryItem = arr.find((p) => p.seriesName === EXPIRY_MARKERS_SERIES_NAME);
     const bandCells = arr
-      .filter((p) => p.seriesName !== "Spot" && p.seriesName !== EXPIRY_MARKERS_SERIES_NAME)
+      .filter((p) => p.seriesName !== "Spot" && p.seriesName !== EXPIRY_MARKERS_SERIES_NAME
+        && p.seriesName !== BULL_THRESHOLD_SERIES_NAME
+        && p.seriesName !== BEAR_THRESHOLD_SERIES_NAME
+        && p.seriesName !== CALL_LARGE_NUM_SERIES_NAME
+        && p.seriesName !== PUT_LARGE_NUM_SERIES_NAME)
       .map((p) => p.data as BandCell)
-      .filter((d): d is BandCell => !!d && typeof d !== "number" && d.putPct != null);
+      .filter((d): d is BandCell => !!d && typeof d !== "number" && d.putPct != null && d.totalOi > 0);
 
     const dateStr = spotParam?.axisValue ?? bandCells[0]?.date ?? "";
     const spotV =
       typeof spotParam?.value === "number" ? spotParam.value : spotParam?.value?.[1];
     const hasSpot = spotV != null && Number.isFinite(spotV);
+
+    // Determine the wall series names based on mode
+    const callWallName = wallMode === "80pct" ? BULL_THRESHOLD_SERIES_NAME : CALL_LARGE_NUM_SERIES_NAME;
+    const putWallName = wallMode === "80pct" ? BEAR_THRESHOLD_SERIES_NAME : PUT_LARGE_NUM_SERIES_NAME;
 
     type Entry = { price: number; node: React.ReactElement };
     const entries: Entry[] = [];
@@ -87,10 +105,13 @@ export function makeBandsTooltipFormatter(
       });
     }
 
-    const bullV = arr.find((p) => p.seriesName === BULL_THRESHOLD_SERIES_NAME)?.value;
-    const bearV = arr.find((p) => p.seriesName === BEAR_THRESHOLD_SERIES_NAME)?.value;
+    // Only show bandCells that belong to the hovered date
+    // (filter by date match when dateStr is available)
+    const filteredCells = dateStr
+      ? bandCells.filter((d) => d.date === dateStr)
+      : bandCells;
 
-    for (const d of bandCells) {
+    for (const d of filteredCells) {
       const callDominant = d.callOi >= d.putOi;
       const domName = callDominant ? "Call" : "Put";
       const domPct = callDominant ? 100 - d.putPct : d.putPct;
@@ -126,10 +147,14 @@ export function makeBandsTooltipFormatter(
       };
     };
 
-    const bullEntry = thresholdEntry(BULL_THRESHOLD_SERIES_NAME, bullV, UP_COLOR);
-    if (bullEntry) entries.push(bullEntry);
-    const bearEntry = thresholdEntry(BEAR_THRESHOLD_SERIES_NAME, bearV, DOWN_COLOR);
-    if (bearEntry) entries.push(bearEntry);
+    // Show wall entries based on mode
+    const callWallV = arr.find((p) => p.seriesName === callWallName)?.value;
+    const putWallV = arr.find((p) => p.seriesName === putWallName)?.value;
+
+    const callWallEntry = thresholdEntry(callWallName, callWallV, UP_COLOR);
+    if (callWallEntry) entries.push(callWallEntry);
+    const putWallEntry = thresholdEntry(putWallName, putWallV, DOWN_COLOR);
+    if (putWallEntry) entries.push(putWallEntry);
 
     entries.sort((a, b) => b.price - a.price);
 

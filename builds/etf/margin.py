@@ -81,8 +81,13 @@ def _scan_margin_dir(scan_dir, file_prefix, market, verbose=True, files=None):
             "rq_balance_amt": "融券余额(元)",
             "total_balance": "融资融券余额(元)",
         }
+        # SSE detail CSVs do NOT publish 融券余额(元) or 融资融券余额(元);
+        # missing columns default to 0. SZSE CSVs contain all six columns.
         for _out_col, _src_col in _margin_cols_src.items():
-            _df_out[_out_col] = df[_src_col].map(parse_num)
+            if _src_col in df.columns:
+                _df_out[_out_col] = df[_src_col].map(parse_num)
+            else:
+                _df_out[_out_col] = 0.0
         rows.extend(_df_out[["date", "code"] + list(_margin_cols_src.keys())].to_dict(orient="records"))
         n_ok += 1
     if verbose:

@@ -51,6 +51,7 @@ from _common._holidays_and_weekdays import (
     business_days,
 )
 from _common.db_commons import get_db_connection
+from _common.pre_check_and_load.identity import check_identity
 
 setup_utf8_stdout()
 
@@ -156,16 +157,17 @@ def find_missing_dates(
 ) -> List[date]:
     """Find dates that need to be downloaded.
 
-    A date is missing if:
-      1. It's a trading day
-      2. It's not in the database
-      3. It's not in the local trend files
-      4. It's within the specified date range
+    Default behaviour (no explicit --start-date): scan the **current month**
+    from day 1 to today, flagging every trading day that is missing from
+    either the database or the local trend files.
+
+    When an explicit --start-date is supplied, the original
+    "latest-DB-date forward" logic is retained for historical ranges.
 
     Args:
         latest_db_date: Latest date in the database (None if empty).
         trend_dates: Set of dates with local trend files.
-        start_date: Start of date range (None = unlimited).
+        start_date: Start of date range (None = current-month scan).
         end_date: End of date range (None = today).
 
     Returns:
@@ -177,28 +179,54 @@ def find_missing_dates(
 
     # Determine the earliest date to consider
     if start_date is None:
-        # Start from the day after the last archive month
-        last_archive = _last_completed_archive_month()
-        # Go to the last day of that month
-        if last_archive.month == 12:
-            start_from = date(last_archive.year + 1, 1, 1) - timedelta(days=1)
-        else:
-            start_from = date(last_archive.year, last_archive.month + 1, 1) - timedelta(days=1)
-        # But not earlier than the day after the latest DB date
-        if latest_db_date and latest_db_date > start_from:
-            start_from = latest_db_date
+        # Default: scan the **entire current month** (day 1 → today) so
+        # that gap dates earlier in the month are not silently skipped.
+        start_from = today.replace(day=1)
     else:
         start_from = start_date
 
-    # Collect all trading days in the range
+    # ------------------------------------------------------------------
+    # Build the set of dates already present in the DB for the target
+    # window.  For the current month we query the DB directly (catches
+    # mid-month gaps); for historical ranges we keep the lightweight
+    # MAX(date) comparison.
+    # ------------------------------------------------------------------
+    current_month_missing_from_db: Set[date] = set()
+    use_current_month_scan: bool = False
+    if start_date is None and start_from.month == today.month:
+        # Query ALL dates in the current month from stats.futures_identity
+        # This returns trading days that are completely absent from the DB
+        try:
+            current_month_missing_from_db = check_identity(
+                "stats.futures_identity",
+                start_from,
+                end_date,
+            )
+            use_current_month_scan = True
+        except Exception:
+            # Table may not exist yet — fall back to MAX(date) comparison
+            logger.warning(
+                "check_identity query failed, falling back to MAX(date) logic"
+            )
+
     missing: List[date] = []
     d = start_from
     while d <= end_date:
-        if is_trading_day(d):
+        if not is_trading_day(d):
+            d += timedelta(days=1)
+            continue
+
+        if use_current_month_scan and d.month == today.month:
+            # Current-month logic: use the pre-computed gap set from check_identity
+            not_in_db = d in current_month_missing_from_db
+        else:
+            # Historical / fallback logic: date must be after the latest DB entry
             not_in_db = latest_db_date is None or d > latest_db_date
-            not_in_trend = d not in trend_dates
-            if not_in_db and not_in_trend:
-                missing.append(d)
+
+        not_in_trend = d not in trend_dates
+        if not_in_db and not_in_trend:
+            missing.append(d)
+
         d += timedelta(days=1)
 
     return sorted(missing)
@@ -215,7 +243,7 @@ def main() -> None:
     parser.add_argument(
         "--start-date",
         default=None,
-        help="Start date (YYYY-MM-DD). Default: day after last archive month.",
+        help="Start date (YYYY-MM-DD). Default: 1st of current month (scan for gaps).",
     )
     parser.add_argument(
         "--end-date",
@@ -336,7 +364,10 @@ def main() -> None:
     if args.force:
         # In force mode, re-download all dates in range
         all_trading_days: List[date] = []
-        d = start_date or date(2020, 1, 1)
+        if start_date is None:
+            d = date.today().replace(day=1)
+        else:
+            d = start_date
         end_d = end_date or date.today()
         while d <= end_d:
             if is_trading_day(d):

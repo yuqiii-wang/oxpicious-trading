@@ -28,6 +28,17 @@
   --chart-atm-gray: #7F7F7F;      /* neutral gray for ATM vertical line */
   --chart-marker-edge-gray: #444444;
 
+  /* ---- Skewness vertical-line palette ----------------------------------- */
+  /* Shared by the IV-smile skew line and the Greek-panel ATM-normalized
+   * greek-skew line. <1 reads as blue (below-neutral tilt), >1 as red
+   * (above-neutral tilt), ≈1 as grey. Single source of truth so the two
+   * charts render identically. */
+  --chart-skew-below: rgba(50, 140, 220, 0.4);   /* blue — skew < 1 */
+  --chart-skew-above: rgba(220, 50, 50, 0.4);    /* red  — skew > 1 */
+  --chart-skew-neutral: rgba(128, 128, 128, 0.3);/* grey — skew ≈ 1 */
+  --chart-skew-line-width: 1.5;                  /* vertical line width */
+  --chart-skew-line-opacity: 0.7;                /* vertical line opacity */
+
   --chart-pe: #e377c2;            /* tableau pink — PE ratio */
   --chart-spot: #2C3E50;          /* spot / underlying reference line */
   --chart-boll-band: #3498db;     /* Bollinger band envelope line (±k×σ) */

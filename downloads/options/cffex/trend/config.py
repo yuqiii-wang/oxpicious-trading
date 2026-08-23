@@ -21,6 +21,7 @@ from _common._holidays_and_weekdays import is_trading_day
 # ---------------------------------------------------------------------------
 CFFEX_TREND_URL = "http://www.cffex.com.cn/cn/rtj.html"
 CFFEX_TREND_REFERER = "http://www.cffex.com.cn/cn/"
+CFFEX_BASE_ORIGIN = "http://www.cffex.com.cn"
 
 TREND_DIRNAME = "cffex_options_trend"
 OUTPUT_CSV_ENCODING = "utf-8-sig"

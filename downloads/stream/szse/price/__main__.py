@@ -87,7 +87,7 @@ import asyncio
 import locale as _locale
 import sys
 import time as _time
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 
 from downloads._common.core import (
     DEFAULT_SLEEP_SEC,
@@ -347,6 +347,21 @@ async def stream(
             # HOURLY MODE: 3 indices + top-500 stocks, one round per hour
             # ================================================================
             if mode == "hourly":
+                # ---- Guard: before AFTERNOON_START (13:30) on a trading
+                # day, the market hasn't opened yet — no data to fetch.
+                # Sleep until the session starts instead of wasting 2+
+                # hours on pointless API calls returning 0 bars. ---------
+                if trading_today and now.time() < AFTERNOON_START:
+                    _ast_dt = datetime.combine(today, AFTERNOON_START)
+                    logger.info(
+                        "Hourly mode but before afternoon start (%s); "
+                        "no market data yet — sleeping until %s.",
+                        AFTERNOON_START.strftime("%H:%M"),
+                        _ast_dt.strftime("%Y-%m-%d %H:%M"),
+                    )
+                    await async_sleep_until(_ast_dt)
+                    continue
+
                 round_start = _time.time()
                 round_label = now.strftime("%H:%M:%S")
                 logger.info(
@@ -427,16 +442,45 @@ async def stream(
                     logger.info("--once set; exiting after one hourly round.")
                     break
 
+                # ---- If no bars were produced at all, the market is
+                # closed or data hasn't been published yet. Sleep until
+                # the next trading session instead of just the next hour.
+                total_bars = n_idx_bars + n_stock_bars
+                if total_bars == 0:
+                    if now.time() >= CLOSE_TIME:
+                        # Post-close: jump directly to next trading day's
+                        # 13:30 (afternoon-only streamer).
+                        next_day = current_biz_day + timedelta(days=1)
+                        while not is_trading_day(next_day):
+                            next_day += timedelta(days=1)
+                        nxt = datetime.combine(next_day, AFTERNOON_START)
+                    else:
+                        nxt = next_trading_moment(datetime.now())
+                    if nxt > datetime.now():
+                        logger.info(
+                            "No bars produced this round (indices=%d, "
+                            "stocks=%d); market closed or data "
+                            "unavailable — waiting until %s.",
+                            n_idx_bars, n_stock_bars,
+                            nxt.strftime("%Y-%m-%d %H:%M"),
+                        )
+                        await async_sleep_until(nxt)
+                        continue
+
                 # If every active stock has reached CLOSE_TIME, no more data
-                # will arrive today. Wait until the next trading session starts
-                # (next trading day 09:30) instead of sleeping one hour.
+                # will arrive today. Since this streamer is afternoon-only,
+                # sleep directly until the next trading day's 13:30 instead
+                # of wasting a wake cycle at 09:30.
                 still_unfinished = [(c, nm) for (c, nm) in active_stocks
                                     if _not_finished(latest_bar_time.get(c))]
                 if not still_unfinished:
-                    nxt = next_trading_moment(datetime.now())
+                    next_day = current_biz_day + timedelta(days=1)
+                    while not is_trading_day(next_day):
+                        next_day += timedelta(days=1)
+                    nxt = datetime.combine(next_day, AFTERNOON_START)
                     logger.info(
                         "All %d stocks finished for biz day %s; no more data today — "
-                        "waiting until next trading hour %s.",
+                        "waiting until next trading session %s.",
                         len(active_stocks), current_biz_day,
                         nxt.strftime("%Y-%m-%d %H:%M"),
                     )

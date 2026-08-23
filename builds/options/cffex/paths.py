@@ -3,6 +3,7 @@
 Option CSV files are stored under:
   temps/cffex_archive/YYYYMM/YYYYMMDD_options.csv    (archive data)
   temps/cffex_options_trend/YYYYMM/YYYYMMDD_options.csv  (trend/downloaded data)
+  temps/cffex_trend/YYYYMM/YYYYMMDD_options.csv     (futures trend, also has options)
 
 Also shared with builds.futures:
   temps/cffex_archive/YYYYMM/YYYYMMDD_futures.csv   (futures archive)
@@ -20,20 +21,27 @@ CFFEX_ARCHIVE_DIR: str = os.path.join(PROJECT_ROOT, "temps", "cffex_archive")
 # Root directory for CFFEX options trend data
 CFFEX_OPTIONS_TREND_DIR: str = os.path.join(PROJECT_ROOT, "temps", "cffex_options_trend")
 
+# Root directory for CFFEX futures trend data (also contains _options.csv files)
+CFFEX_FUTURES_TREND_DIR: str = os.path.join(PROJECT_ROOT, "temps", "cffex_trend")
+
 # Filename suffix: options CSVs are named YYYYMMDD_options.csv
 OPTIONS_SUFFIX: str = "_options.csv"
 
 
 def glob_options_files() -> list[str]:
-    """Glob all *_options.csv files under archive AND trend directories.
+    """Glob all *_options.csv files under archive, options trend, and futures trend.
 
-    Searches both temps/cffex_archive/ and temps/cffex_options_trend/
-    recursively. Returns sorted unique file paths.
+    Searches:
+      - temps/cffex_archive/  (archive data)
+      - temps/cffex_options_trend/  (options trend / downloaded data)
+      - temps/cffex_trend/  (futures trend, also has _options.csv)
+
+    Returns sorted unique file paths.
     """
     result: list[str] = []
     seen: set[str] = set()
 
-    for base_dir in [CFFEX_ARCHIVE_DIR, CFFEX_OPTIONS_TREND_DIR]:
+    for base_dir in [CFFEX_ARCHIVE_DIR, CFFEX_OPTIONS_TREND_DIR, CFFEX_FUTURES_TREND_DIR]:
         if not os.path.isdir(base_dir):
             continue
         for root, _dirs, files in os.walk(base_dir):

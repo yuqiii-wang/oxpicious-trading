@@ -57,11 +57,25 @@ export interface TooltipContext {
   ohlcOpens: Array<number | null>;
   ohlcHighs: Array<number | null>;
   ohlcLows: Array<number | null>;
-  peakData: Array<number | null>;
-  valleyLowData: Array<number | null>;
-  nearbyBands: Array<{ startIndex: number; endIndex: number; lower: number; upper: number }>;
+  /** Enabled rolling-OHLC window (trading days) — null when the OHLC-window
+   *  overlay is off. */
+  ohlcWindow: number | null;
+  /** Per-date OHLC extrema arrays for the enabled window (from the top-level
+   *  chartData.ohlc rows) — null when the overlay is off. */
+  ohlcWinArrays: {
+    open: Array<number | null>;
+    high: Array<number | null>;
+    highDate: Array<string | null>;
+    high2nd: Array<number | null>;
+    high2ndDate: Array<string | null>;
+    highSlope: Array<number | null>;
+    low: Array<number | null>;
+    lowDate: Array<string | null>;
+    low2nd: Array<number | null>;
+    low2ndDate: Array<string | null>;
+    lowSlope: Array<number | null>;
+  } | null;
   trendBands: TrendBand[];
-  hasNearbyBands: boolean;
   hasTrendBands: boolean;
   hasBase: boolean;
   baseVal: number | null;
@@ -134,11 +148,9 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     ohlcOpens,
     ohlcHighs,
     ohlcLows,
-    peakData,
-    valleyLowData,
-    nearbyBands,
+    ohlcWindow,
+    ohlcWinArrays,
     trendBands,
-    hasNearbyBands,
     hasTrendBands,
     hasBase,
     baseVal,
@@ -213,8 +225,10 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
       React.createElement(Row, { key: "gap" }, `gap: ${gv != null ? fmtPct(gv * 100, 3) : "—"}`),
     );
 
-    // Rolling OHLC for SMA pairs only (kind === "price")
-    if (pair.ma_long >= 20 && pair.kind === "price") {
+    // Rolling OHLC for SMA pairs only (kind === "price"). Skipped when the
+    // enabled OHLC-window overlay covers the same window (the overlay
+    // section below already shows it).
+    if (pair.ma_long >= 20 && pair.kind === "price" && pair.ma_long !== ohlcWindow) {
       const ohlcO = ohlcOpens[idx];
       const ohlcH = ohlcHighs[idx];
       const ohlcL = ohlcLows[idx];
@@ -231,6 +245,56 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
             key: "ohlcWin2",
             style: { opacity: 0.85 },
           }, `${maLabel}d Low: ${fmtPrice(ohlcL)}`),
+        );
+      }
+    }
+
+    // Percentage-mode slope scale — shared by the roof/floor line slopes
+    // and the MA slope/curvature rows below.
+    const isPctSlope = ohlcMode === "percentage" && hasBase && baseVal != null;
+    const slopeScale = isPctSlope && baseVal != null ? 100 / baseVal : 1;
+    const fmtSlope = (v: number | null | undefined): string =>
+      fmtVal(v != null && Number.isFinite(v) ? v * slopeScale : null);
+
+    // Enabled OHLC-window overlay: rolling O/H/L of the window ending at the
+    // hovered date plus its (top, 2nd) extrema with dates — the four points
+    // that determine the roof/floor trendlines. The DB-persisted
+    // high/low_line_slope_Wd (price units per trading day, slope of the
+    // line through the two anchors) is shown alongside the anchor points.
+    if (ohlcWinArrays != null && ohlcWindow != null) {
+      const w = ohlcWindow;
+      const A = ohlcWinArrays;
+      const o = A.open[idx];
+      const h = A.high[idx];
+      const l = A.low[idx];
+      children.push(
+        React.createElement(Row, {
+          key: "ohlcOverlay",
+          style: { marginTop: "2px", opacity: 0.85 },
+        }, `OHLC ${w}d: O ${fmtPrice(o)} · H ${fmtPrice(h)} · L ${fmtPrice(l)}`),
+      );
+      const hDate = A.highDate[idx];
+      const h2 = A.high2nd[idx];
+      const h2Date = A.high2ndDate[idx];
+      const hSlope = A.highSlope[idx];
+      if (hDate != null || h2Date != null || hSlope != null) {
+        children.push(
+          React.createElement(Row, {
+            key: "ohlcPeaks",
+            style: { color: "#FB8C00", opacity: 0.95 },
+          }, `Roof pts: top ${fmtPrice(h)} @ ${hDate ?? "—"} · 2nd ${fmtPrice(h2)} @ ${h2Date ?? "—"} · slope ${fmtSlope(hSlope)}/d`),
+        );
+      }
+      const lDate = A.lowDate[idx];
+      const l2 = A.low2nd[idx];
+      const l2Date = A.low2ndDate[idx];
+      const lSlope = A.lowSlope[idx];
+      if (lDate != null || l2Date != null || lSlope != null) {
+        children.push(
+          React.createElement(Row, {
+            key: "ohlcTroughs",
+            style: { color: "#1E88E5", opacity: 0.95 },
+          }, `Floor pts: top ${fmtPrice(l)} @ ${lDate ?? "—"} · 2nd ${fmtPrice(l2)} @ ${l2Date ?? "—"} · slope ${fmtSlope(lSlope)}/d`),
         );
       }
     }
@@ -269,11 +333,8 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
       }
     }
 
-    // Slope + curvature
-    const isPctSlope = ohlcMode === "percentage" && hasBase && baseVal != null;
-    const slopeScale = isPctSlope && baseVal != null ? 100 / baseVal : 1;
-    const fmtSlope = (v: number | null | undefined): string =>
-      fmtVal(v != null && Number.isFinite(v) ? v * slopeScale : null);
+    // Slope + curvature (fmtSlope/slopeScale defined above, shared with the
+    // roof/floor line-slope rows).
     const rebasedTag = isPctSlope
       ? React.createElement("span", {
           style: { opacity: 0.6, fontSize: "0.9em" },
@@ -319,26 +380,6 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
           `σ${maLabel}: ${fmtSlope(sd)} · band width: ${fmtSlope(bw)}`,
           rebasedTag,
         ]),
-      );
-    }
-
-    // Peak / valley-low marker info
-    const pk = peakData[idx];
-    const vl = valleyLowData[idx];
-    if (pk != null) {
-      children.push(
-        React.createElement(Row, {
-          key: "peak",
-          style: { marginTop: "2px", color: "#43A047", fontWeight: 600 },
-        }, `▲ Peak: ${fmtPrice(pk)}`),
-      );
-    }
-    if (vl != null) {
-      children.push(
-        React.createElement(Row, {
-          key: "valley",
-          style: { marginTop: "2px", color: "#E53935", fontWeight: 600 },
-        }, `▼ Valley Low: ${fmtPrice(vl)}`),
       );
     }
 
@@ -391,21 +432,6 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
             key: "leMark",
             style: { color: leHex, opacity: 0.9 },
           }, `extreme ${sName}: ${fmtPrice(leMark)}`),
-        );
-      }
-    }
-
-    // Nearby-extreme band info
-    if (hasNearbyBands) {
-      const band = nearbyBands.find(
-        (b) => idx >= b.startIndex && idx <= b.endIndex,
-      );
-      if (band) {
-        children.push(
-          React.createElement(Row, {
-            key: "nearby",
-            style: { marginTop: "2px", color: "#E53935", opacity: 0.9 },
-          }, `Nearby Extreme: ${dates[band.startIndex]} ↔ ${dates[band.endIndex]} · [${fmtPrice(band.lower)}, ${fmtPrice(band.upper)}]`),
         );
       }
     }

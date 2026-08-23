@@ -51,3 +51,16 @@ def _parse_table_name(table_name: str) -> tuple:
     if len(parts) == 2:
         return parts[0], parts[1]
     return None, parts[0]
+
+
+def _get_replica_conn_params() -> dict:
+    """Get connection parameters for the read-only replica.
+
+    Falls back to the primary params when the replica host is unset, so
+    environments without a replica (CI, remote deployments) still work.
+    """
+    params = _get_conn_params()
+    if os.environ.get("SUPABASE_REPLICA_HOST"):
+        params["host"] = os.environ["SUPABASE_REPLICA_HOST"]
+        params["port"] = int(os.environ.get("SUPABASE_REPLICA_PORT", params["port"]))
+    return params

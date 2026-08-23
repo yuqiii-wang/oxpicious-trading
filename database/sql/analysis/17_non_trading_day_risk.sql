@@ -36,9 +36,12 @@
 --                                      NUMERIC(18,4) as a ratio. NOT NULL
 --                                      DEFAULT 0.0 when OHLC is missing.
 --
---  FK: (sec_type, code, date) → analysis.mov_ave_rsi(sec_type, code, date).
---      Rows only exist for dates already in mov_ave_rsi — data integrity
---      is guaranteed by the parent pipeline's INNER JOIN on source tables.
+--  FK: (sec_type, code, date) → analysis.mov_ave_rsi(sec_type, code, date)
+--      ON DELETE CASCADE. Rows only exist for dates already in mov_ave_rsi
+--      — data integrity is guaranteed by the parent pipeline's INNER JOIN
+--      on source tables. The CASCADE lets the identity→rsi FK cascade
+--      (03_mov_ave_spreads.sql) flow through: deleting an identity row
+--      removes its rsi row AND its holiday row instead of erroring.
 --
 --  Populated by the internal holiday step of `analyze.mov_ave_spread`
 --  (see holiday.py). Incremental upsert by missing dates; --force truncates
@@ -71,7 +74,8 @@ CREATE TABLE analysis.mov_ave_rsi_holiday (
     CONSTRAINT pk_mov_ave_rsi_holiday PRIMARY KEY (sec_type, code, date),
     CONSTRAINT fk_non_trading_day_risk_expiry
         FOREIGN KEY (sec_type, code, date)
-        REFERENCES analysis.mov_ave_rsi (sec_type, code, date),
+        REFERENCES analysis.mov_ave_rsi (sec_type, code, date)
+        ON DELETE CASCADE,
     CONSTRAINT chk_mov_ave_rsi_holiday_sec_type
         CHECK (sec_type IN ('etf', 'index', 'stock'))
 );

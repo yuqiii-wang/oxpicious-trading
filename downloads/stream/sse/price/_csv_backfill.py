@@ -9,19 +9,21 @@ data that wasn't loaded during live streaming (e.g. DB connection failure,
 stream crash/restart) is recovered automatically. Idempotent: re-upserting
 the same (date, code, time) row via ON CONFLICT just updates it.
 
-DB-completeness guard: Before processing a CSV file, checks whether the
-intraday table already has complete bars for that date (latest bar >=
-CLOSE_TIME). If complete, skips the file entirely — no redundant CSV
-parsing or re-insertion.
+Date-check pattern (fast-path before reading any CSV content):
+  1. Glob <prefix>_*.csv files (filenames only — no reading yet)
+  2. Extract dates from filenames
+  3. Query DB for dates already complete (latest bar >= CLOSE_TIME)
+  4. Filter files to only those with incomplete dates
+  5. Read ONLY the filtered files
 """
 from __future__ import annotations
 
 import csv
 import re
 import time as _time
-from datetime import datetime, time
+from datetime import date, datetime, time as dtime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from downloads._common.core import resolve_out_dir, setup_logger
 from _common.db_commons import bulk_upsert
@@ -33,6 +35,40 @@ logger = setup_logger("stream_sse")
 
 # Backfill interval: how often the main loop calls backfill_all_csvs.
 BACKFILL_INTERVAL_SEC = 5 * 60  # 5 minutes
+
+
+def _get_incomplete_dates_for_asset(
+    conn,
+    asset: AssetStream,
+    all_dates: Set[date],
+) -> Set[date]:
+    """Return subset of dates NOT yet complete in the DB for this asset.
+
+    A date is complete when the latest bar time in the asset's intraday
+    table is >= CLOSE_TIME (15:00).
+
+    Single SQL query — batch-checks all dates at once instead of per-file.
+    """
+    if not all_dates:
+        return set()
+
+    date_list = list(all_dates)
+    cur = conn.execute(
+        f"SELECT date, MAX(time) AS max_time "
+        f"FROM {asset.intraday_table} "
+        f"WHERE date = ANY(%s) "
+        f"GROUP BY date",
+        (date_list,),
+    )
+    rows = cur.fetchall()
+
+    complete_dates: Set[date] = set()
+    for row in rows:
+        max_time = row[1]
+        if max_time is not None and max_time >= CLOSE_TIME:
+            complete_dates.add(row[0])
+
+    return all_dates - complete_dates
 
 
 def _parse_csv_row(row: dict) -> Optional[Tuple[datetime, str, dict]]:
@@ -85,13 +121,13 @@ def _group_csv_by_windows(
     return windows
 
 
-def _extract_date_from_filename(csv_path: Path) -> Optional[datetime]:
+def _extract_date_from_filename(csv_path: Path) -> Optional[date]:
     """Extract trading date from a CSV filename like '<prefix>_YYYYMMDD.csv'."""
     match = re.search(r"(\d{8})", csv_path.stem)
     if not match:
         return None
     try:
-        return datetime.strptime(match.group(1), "%Y%m%d")
+        return datetime.strptime(match.group(1), "%Y%m%d").date()
     except ValueError:
         return None
 
@@ -117,7 +153,7 @@ def backfill_csv_file(
     trade_date = _extract_date_from_filename(csv_path)
     if trade_date is not None:
         try:
-            if is_intraday_complete(conn, asset, trade_date.date()):
+            if is_intraday_complete(conn, asset, trade_date):
                 logger.info(
                     "backfill %s: %s already complete in DB (latest >= 15:00); "
                     "skipping CSV.",
@@ -203,6 +239,11 @@ def backfill_all_csvs(
 ) -> int:
     """Scan for all CSV files for each asset and backfill to DB.
 
+    Date-check fast-path: for each asset, filenames are checked first to
+    identify dates already complete in the DB (latest bar >= 15:00).
+    Only CSV files for incomplete dates are read — avoiding redundant
+    per-file completeness checks and CSV parsing for already-complete days.
+
     Returns total number of bars upserted across all assets.
     """
     total_bars = 0
@@ -215,11 +256,57 @@ def backfill_all_csvs(
         csv_files = sorted(out_dir.glob(f"{asset.csv_prefix}_*.csv"))
         if not csv_files:
             continue
+
+        # --- FAST-PATH: Extract dates from filenames (no CSV reading) ---
+        file_dates: Dict[Path, Optional[date]] = {}
+        all_dates: Set[date] = set()
+        for f in csv_files:
+            d = _extract_date_from_filename(f)
+            file_dates[f] = d
+            if d is not None:
+                all_dates.add(d)
+
+        if not all_dates:
+            logger.info("backfill %s: no parseable dates in %d CSVs",
+                        asset.name, len(csv_files))
+            continue
+
         logger.info(
-            "backfill %s: scanning %d CSV files in %s/",
-            asset.name, len(csv_files), out_dir,
+            "backfill %s: %d CSVs → %d unique dates, checking completeness",
+            asset.name, len(csv_files), len(all_dates),
         )
-        for csv_path in csv_files:
+
+        # --- Batch-check completeness: only read CSVs for incomplete dates ---
+        incomplete_dates = _get_incomplete_dates_for_asset(conn, asset, all_dates)
+        if not incomplete_dates:
+            logger.info(
+                "backfill %s: all %d dates already complete in DB — skipping all reads",
+                asset.name, len(all_dates),
+            )
+            continue
+
+        n_skipped = len(all_dates) - len(incomplete_dates)
+        logger.info(
+            "backfill %s: %d dates incomplete (skipping %d complete dates)",
+            asset.name, len(incomplete_dates), n_skipped,
+        )
+
+        # Filter files to only those with incomplete dates
+        filtered_files: List[Path] = []
+        for f in csv_files:
+            d = file_dates.get(f)
+            if d is not None and d in incomplete_dates:
+                filtered_files.append(f)
+
+        if not filtered_files:
+            continue
+
+        logger.info(
+            "backfill %s: reading %d/%d CSV files",
+            asset.name, len(filtered_files), len(csv_files),
+        )
+
+        for csv_path in filtered_files:
             try:
                 _, n_bars = backfill_csv_file(
                     conn, asset, csv_path, etf_member_codes,

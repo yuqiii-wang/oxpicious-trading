@@ -22,7 +22,6 @@ CHECK allows three values ('etf' | 'index' | 'stock'):
 """
 ANALYSIS_NAME = "mov_ave_spread"
 DETAIL_TABLE = "analysis.mov_ave_spreads_detail"
-PEAKS_AND_FLOORS_TABLE = "analysis.mov_ave_peaks_and_floors"
 
 DESCRIPTION = (
     "Moving-average spread analysis (ETF + Index + Stock). For each security "
@@ -191,11 +190,14 @@ TRADING_AMT_RAW_SLOPE_COLUMN = "trading_amt_slope"
 #   col[3] = (trading_amt_ma60 / 1M) / ma60_slope
 #   col[4] = (trading_amt_ma120 / 1M) / ma120_slope
 #   col[5] = (trading_amt_ma255 / 1M) / ma255_slope
-# Interpretation: how many millions of capital push price by one unit
-#   — a liquidity-impact proxy. Matching-timescale (no cross-timescale).
-#   Denominator=0 auto-set to 1.0 to avoid division-by-zero.
-#   NUMERIC(10,4). NULL when numerator or denominator is NULL.
-# Used by trading_amt.compute_trading_amt_slope_vs_price_ratios.
+# Interpretation: how many millions of capital accompany one unit of
+# price movement — the reciprocal of the Amihud (2002) illiquidity
+# measure (higher = deeper market). Matching-timescale (no
+# cross-timescale). Denominator=0 auto-set to 1.0 to avoid
+# division-by-zero. NUMERIC(10,4). NULL when numerator or denominator
+# is NULL.
+# Used by trading_amt_ratios.compute_trading_amt_slope_vs_price_ratios
+# (written to analysis.mov_ave_trading_amt_ratios).
 TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS = (
     "trading_amt_vs_price_slope_ratio",
     "trading_amt_ma5_vs_price_ma5_slope_ratio",
@@ -207,6 +209,7 @@ TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS = (
 
 # Source price-slope column names needed by the ratio computation.
 # These come from compute_slopes_curvatures in the parent pipeline.
+# Used by trading_amt_ratios (raw diffs of price and each MA window).
 TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS = (
     "price_slope",
     "ma5_slope",
@@ -334,33 +337,124 @@ EMA_STD_COLUMNS = (
 OHLC_TABLE = "analysis.mov_ave_spreads_detail_ohlc"
 OHLC_ANALYSIS_NAME = "mov_ave_spread_ohlc"
 
-# OHLC windows (trading days). Each window W produces 3 columns:
-#   open_Wd  — open price on the W-th trading day before `date`
-#   high_Wd  — max high over the W trading days ending on `date`
-#   low_Wd   — min low over the W trading days ending on `date`
-OHLC_WINDOWS = (20, 60, 120, 255, 500, 750)
+# OHLC windows (trading days). Each window W produces 5 columns:
+#   open_Wd      — open price on the W-th trading day before `date`
+#   high_Wd      — top-high anchor: the highest CLOSE among window dates
+#                  MORE THAN 20% of W trading days before `date`; the
+#                  stored value is that anchor date's CLOSE
+#   low_Wd       — lowest-low anchor: the lowest CLOSE among window dates
+#                  MORE THAN 20% of W trading days before `date`; the
+#                  stored value is that anchor date's CLOSE
+#   high_2nd_Wd  — second-high anchor: the best local-max CLOSE peak in
+#                  the same restricted region lying MORE THAN 20% of W
+#                  trading days AFTER the top anchor (the 2nd date is
+#                  always later than the top date — roof line runs
+#                  forward in time); the stored value is that anchor
+#                  date's INTRADAY HIGH
+#   low_2nd_Wd   — second-low anchor: the best local-min CLOSE trough in
+#                  the same restricted region lying MORE THAN 20% of W
+#                  trading days AFTER the bottom anchor (the 2nd date is
+#                  always later than the top date — floor line runs
+#                  forward in time); the stored value is that anchor
+#                  date's INTRADAY LOW
+# Anchor dates are selected on CLOSE; when the unconstrained extreme lies
+# within 20% of the window from `date`, the next-best qualifying date is
+# used ("search other dates"). NULL when no qualifying date exists.
+OHLC_WINDOWS = (20, 60, 120, 255, 500, 750, 1275)
+
+# Cooldown fraction used for BOTH separations: (a) anchor-vs-today —
+# anchor dates must be MORE THAN OHLC_COOLDOWN_PCT × W trading days
+# before the row `date`; (b) 2nd-vs-top — the 2nd anchor must lie
+# strictly AFTER the top anchor, MORE THAN OHLC_COOLDOWN_PCT × W trading
+# days later (so the roof/floor line always runs forward in time).
+# e.g., for a 20d window, anchors sit > 4 trading days from today and
+# the 2nd anchor > 4 trading days after the top anchor.
+OHLC_COOLDOWN_PCT = 0.20
 
 # All output column names in the order they appear in the table.
+# Per window W: open_Wd, high_Wd, high_date_Wd, low_Wd, low_date_Wd,
+#                 high_2nd_Wd, high_2nd_date_Wd, low_2nd_Wd, low_2nd_date_Wd,
+#                 high_line_slope_Wd, low_line_slope_Wd
+# DATE columns are the (high/low/2nd-peak/2nd-trough) date within the
+# rolling window — when the max/min/2nd-extreme occurred.
 OHLC_COLUMNS = (
     "today_close",
-    "open_20d",  "high_20d",  "low_20d",
-    "open_60d",  "high_60d",  "low_60d",
-    "open_120d", "high_120d", "low_120d",
-    "open_255d", "high_255d", "low_255d",
-    "open_500d", "high_500d", "low_500d",
-    "open_750d", "high_750d", "low_750d",
+    # Window 20
+    "open_20d",   "high_20d",   "high_date_20d",
+    "low_20d",    "low_date_20d",
+    "high_2nd_20d", "high_2nd_date_20d",
+    "low_2nd_20d",  "low_2nd_date_20d",
+    "high_line_slope_20d", "low_line_slope_20d",
+    # Window 60
+    "open_60d",   "high_60d",   "high_date_60d",
+    "low_60d",    "low_date_60d",
+    "high_2nd_60d", "high_2nd_date_60d",
+    "low_2nd_60d",  "low_2nd_date_60d",
+    "high_line_slope_60d", "low_line_slope_60d",
+    # Window 120
+    "open_120d",  "high_120d",  "high_date_120d",
+    "low_120d",   "low_date_120d",
+    "high_2nd_120d", "high_2nd_date_120d",
+    "low_2nd_120d",  "low_2nd_date_120d",
+    "high_line_slope_120d", "low_line_slope_120d",
+    # Window 255
+    "open_255d",  "high_255d",  "high_date_255d",
+    "low_255d",   "low_date_255d",
+    "high_2nd_255d", "high_2nd_date_255d",
+    "low_2nd_255d",  "low_2nd_date_255d",
+    "high_line_slope_255d", "low_line_slope_255d",
+    # Window 500
+    "open_500d",  "high_500d",  "high_date_500d",
+    "low_500d",   "low_date_500d",
+    "high_2nd_500d", "high_2nd_date_500d",
+    "low_2nd_500d",  "low_2nd_date_500d",
+    "high_line_slope_500d", "low_line_slope_500d",
+    # Window 750
+    "open_750d",  "high_750d",  "high_date_750d",
+    "low_750d",   "low_date_750d",
+    "high_2nd_750d", "high_2nd_date_750d",
+    "low_2nd_750d",  "low_2nd_date_750d",
+    "high_line_slope_750d", "low_line_slope_750d",
+    # Window 1275
+    "open_1275d", "high_1275d", "high_date_1275d",
+    "low_1275d",  "low_date_1275d",
+    "high_2nd_1275d", "high_2nd_date_1275d",
+    "low_2nd_1275d",  "low_2nd_date_1275d",
+    "high_line_slope_1275d", "low_line_slope_1275d",
+)
+
+# Subset of OHLC_COLUMNS that are DATE type (not numeric). Used by
+# sanitize_ohlc_rows to skip the overflow-guard and DATE columns from
+# numeric conversion. Also used for ALTER TABLE migration generation.
+OHLC_DATE_COLUMNS = tuple(
+    c for c in OHLC_COLUMNS
+    if "_date_" in c or c.endswith("_date")
+)
+
+# Subset of OHLC_COLUMNS that are numeric (NUMERIC(18,6)).
+OHLC_NUMERIC_COLUMNS = tuple(
+    c for c in OHLC_COLUMNS
+    if c not in OHLC_DATE_COLUMNS
 )
 
 OHLC_DESCRIPTION = (
     "OHLC detail analysis (ETF + Index + Stock). For each security and "
-    "business date, stores today_close plus rolling open/high/low over "
-    "6 windows (20/60/120/255/500/750 trading days). open_Wd is the "
-    "open price on the W-th trading day before date; high_Wd is the max "
-    "high over the W trading days ending on date; low_Wd is the min low "
-    "over the same window. NULL when not enough history. Source: same "
-    "DataFrame as the mov_ave_spread parent pipeline (no second DB "
-    "round-trip). The sec_type column discriminates the source universe "
-    "('etf' | 'index' | 'stock')."
+    "business date (the clicked date / today), stores today_close plus "
+    "rolling window anchors over 7 windows (20/60/120/255/500/750/1275 "
+    "trading days): open_Wd is the open price on the W-th trading day "
+    "before date; high_Wd / low_Wd are the top-high / lowest-low anchors "
+    "— the highest / lowest CLOSE among window dates MORE THAN 20% of "
+    "the window before date (value = that date's close; when the "
+    "unconstrained extreme is closer to date, the next-best qualifying "
+    "date is used); high_2nd_Wd / low_2nd_Wd are the second anchors — "
+    "the best local-max/min CLOSE peaks in the same restricted region, "
+    "separated by more than 20% of the window from the top anchors "
+    "(value = that date's INTRADAY high/low). The 28 DATE columns "
+    "(high_date_Wd, low_date_Wd, high_2nd_date_Wd, low_2nd_date_Wd per "
+    "window) record the anchor dates. Source: same DataFrame as the "
+    "mov_ave_spread parent pipeline (no second DB round-trip). The "
+    "sec_type column discriminates the source universe ('etf' | 'index' "
+    "| 'stock')."
 )
 
 
@@ -380,10 +474,8 @@ TRADING_AMT_DESCRIPTION = (
     "(trading_amt_ma{5,20,60,120,255}), 5 trading-amount Bollinger band σ "
     "columns (trading_amt_std{5,20,60,120,255} — rolling population std of "
     "trading_amt_maW over W days, used for Bollinger-style envelopes), "
-    "5 market-share MA columns, 5 trading-amount MA slope columns, "
-    "1 raw trading-amount slope column, 6 liquidity-impact ratio columns "
-    "(trading_amt / 1M vs price_slope, matching-timescale, denominator=0 "
-    "auto-set to 1.0), and 5 market-share-vs-MA gap columns. "
+    "5 market-share MA columns, 6 slope columns (raw trading_amt_slope + "
+    "5 fractional MA slopes), and 5 market-share-vs-MA gap columns. "
     "Source: same DataFrame "
     "as the mov_ave_spread parent pipeline (no second DB round-trip). "
     "The sec_type column discriminates the source universe "
@@ -404,6 +496,11 @@ TRADING_AMT_STD_COLUMNS = (
 )
 
 # All output column names in the order they appear in the table.
+# NOTE: the 6 liquidity-impact ratio columns previously drafted for this
+# table live in the companion table analysis.mov_ave_trading_amt_ratios
+# (see TRADING_AMT_RATIOS_COLUMNS below) — the shapes of
+# TRADING_AMT_COLUMNS and the CREATE TABLE in 03_mov_ave_spreads.sql
+# must stay in sync.
 TRADING_AMT_COLUMNS = (
     ("sec_type", "code", "date")
     + TRADING_AMT_MA_COLUMNS
@@ -411,51 +508,102 @@ TRADING_AMT_COLUMNS = (
     + TRADING_AMT_MARKET_SHARE_MA_COLUMNS
     + TRADING_AMT_MA_SLOPE_COLUMNS
     + (TRADING_AMT_RAW_SLOPE_COLUMN,)
-    + TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS
     + TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS
 )
 
 
 # ============================================================================
-#  Rebounds (analysis.mov_ave_rebounds)
-#  — Double-top / shoulder pattern detection. Internal step of the parent
-#  mov_ave_spread pipeline (see rebounds.py).
+#  Trading-amount liquidity-impact ratios
+#  (analysis.mov_ave_trading_amt_ratios) — capital-per-movement ratio
+#  columns: how many millions of yuan of trading amount accompany one
+#  unit of price movement (reciprocal of the Amihud illiquidity
+#  measure; higher = deeper market). Internal step of the parent
+#  mov_ave_spread pipeline (see trading_amt_ratios.py).
 # ============================================================================
 
-REBOUNDS_TABLE = "analysis.mov_ave_rebounds"
-REBOUNDS_ANALYSIS_NAME = "mov_ave_rebounds"
+TRADING_AMT_RATIOS_TABLE = "analysis.mov_ave_trading_amt_ratios"
+TRADING_AMT_RATIOS_ANALYSIS_NAME = "mov_ave_trading_amt_ratios"
 
-REBOUNDS_DESCRIPTION = (
-    "Double-top (rebound) detection analysis (ETF + Index + Stock). "
-    "For each security and business date, detects a rebound pattern "
-    "(2nd max close after the top max within trailing windows of "
-    "{20,60,120,255} trading days). For each window W: finds the "
-    "close-price maximum in [D-W+1, D] (top max), then finds the next "
-    "close-price maximum after the top max date within the same window "
-    "(2nd max = rebound). Emits 4 columns per window: rebound_date_{W}days "
-    "(date of 2nd max), rebound_close_price_{W}days (close at 2nd max), "
-    "rebound_gap_days_{W}days (trading days between top max and 2nd max), "
-    "rebound_trading_amt_{W}days (SUM of trading_amount during the rebound "
-    "period). All NULL when the top max is today or no 2nd max exists. "
-    "Source: same DataFrame as the mov_ave_spread parent pipeline "
-    "(price + trading_amount columns)."
+TRADING_AMT_RATIOS_DESCRIPTION = (
+    "Trading-amount liquidity-impact ratios (ETF + Index + Stock). For "
+    "each security and business date, computes 10 capital-per-movement "
+    "ratio columns = (trading amount in millions of yuan) / (price "
+    "movement in price units) — the reciprocal of the Amihud (2002) "
+    "illiquidity measure: higher = deeper market. The daily price move "
+    "decomposes into three legs, each with its own ratio family: "
+    "close-to-close net move (6 slope ratios: trading_amt_vs_price_slope_"
+    "ratio + trading_amt_ma{W}_vs_price_ma{W}_slope_ratio, matching "
+    "timescale, signed), intraday range (trading_amt_vs_high_low_ratio = "
+    "(ta/1M)/(high-low), unsigned depth gauge) and overnight gap "
+    "(trading_amt_vs_overnight_gap_ratio = (ta/1M)/(open - prev close), "
+    "signed gap-day liquidity gauge; the draft's literal 'prev close vs "
+    "today close' reading would be identical to price_slope, so the "
+    "standard trading 'gap' — where today's session OPENS relative to "
+    "yesterday's close — is used instead), plus MA5-timescale versions "
+    "of the range and gap ratios (numerators trading_amt_ma5, "
+    "denominators MA5 of the daily range / gap). Denominator=0 auto-set "
+    "to 1.0 (stored value = capital in millions) for flat / limit-locked "
+    "days. Source: same DataFrame as the mov_ave_spread parent pipeline "
+    "(no second DB round-trip). The sec_type column discriminates the "
+    "source universe ('etf' | 'index' | 'stock')."
 )
 
-# Windows for rebound detection (trading days).
-REBOUNDS_WINDOWS = (20, 60, 120, 255)
+# High-low range ratio column (raw timescale). Capital per unit of
+# INTRADAY range: (trading_amount / 1M) / (high - low). Unsigned and
+# always positive (range > 0 unless limit-locked / flat). Range-based
+# liquidity in the Parkinson-volatility spirit: high turnover + narrow
+# range = deep book; low turnover + wide range = volatile / thin
+# session. range=0 auto-set denominator to 1.0. NUMERIC(10,4).
+TRADING_AMT_HIGH_LOW_RATIO_COLUMN = "trading_amt_vs_high_low_ratio"
 
-# All rebounds column names in order.
-REBOUNDS_COLUMNS = (
-    "sec_type", "code", "date",
-    "rebound_date_20days",   "rebound_close_price_20days",
-    "rebound_gap_days_20days",   "rebound_trading_amt_20days",
-    "rebound_date_60days",   "rebound_close_price_60days",
-    "rebound_gap_days_60days",   "rebound_trading_amt_60days",
-    "rebound_date_120days",  "rebound_close_price_120days",
-    "rebound_gap_days_120days",  "rebound_trading_amt_120days",
-    "rebound_date_255days",  "rebound_close_price_255days",
-    "rebound_gap_days_255days",  "rebound_trading_amt_255days",
+# Overnight-gap ratio column (raw timescale). Capital per unit of
+# OVERNIGHT gap: (trading_amount / 1M) / (open[t] - close[t-1]).
+# Signed: negative = gap down. Gap-day liquidity / confirmation gauge.
+# The literal "gap between prev close and today close" (close[t] -
+# close[t-1]) is EXACTLY price_slope — already covered by
+# trading_amt_vs_price_slope_ratio — so this column uses the standard
+# trading "gap" (open vs prev close) instead, the distinct quantity.
+# gap=0 auto-set denominator to 1.0. NULL on the first date per code
+# (no prior close). NUMERIC(10,4).
+TRADING_AMT_OVERNIGHT_GAP_RATIO_COLUMN = "trading_amt_vs_overnight_gap_ratio"
+
+# MA5-timescale range ratio column. Matching timescale:
+# (trading_amt_ma5 / 1M) / MA5(high - low) — 5-day average capital per
+# unit of 5-day average daily range. NULL until 5 consecutive rows.
+# NUMERIC(10,4).
+TRADING_AMT_MA5_HIGH_LOW_RATIO_COLUMN = "trading_amt_ma5_vs_high_low_ma5_ratio"
+
+# MA5-timescale overnight-gap ratio column. Matching timescale:
+# (trading_amt_ma5 / 1M) / MA5(open[t] - close[t-1]) — 5-day average
+# capital per unit of 5-day average overnight gap. NULL until 5
+# consecutive gap observations. NUMERIC(10,4).
+TRADING_AMT_MA5_OVERNIGHT_GAP_RATIO_COLUMN = (
+    "trading_amt_ma5_vs_overnight_gap_ma5_ratio"
 )
+
+# All output column names of analysis.mov_ave_trading_amt_ratios in the
+# order they appear in the table (must stay in sync with the CREATE
+# TABLE in 03_mov_ave_spreads.sql — COPY infers columns from these
+# dict keys).
+TRADING_AMT_RATIOS_COLUMNS = (
+    ("sec_type", "code", "date")
+    + TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS
+    + (
+        TRADING_AMT_HIGH_LOW_RATIO_COLUMN,
+        TRADING_AMT_OVERNIGHT_GAP_RATIO_COLUMN,
+        TRADING_AMT_MA5_HIGH_LOW_RATIO_COLUMN,
+        TRADING_AMT_MA5_OVERNIGHT_GAP_RATIO_COLUMN,
+    )
+)
+
+# Overflow bound for the ratio columns: NUMERIC(10,4) holds
+# |value| < 10^6 (10 total digits - 4 decimals = 6 integer digits).
+# Typical magnitudes: ~10^2 (small stocks) to ~10^5 (broad indices /
+# liquid ETFs, e.g. 5e11-yuan index turnover / 30-pt move ~= 16,667).
+# NOTE: the previous guard for these columns used 10^4 — the
+# NUMERIC(10,6) bound copy-pasted over — which nulled exactly the most
+# liquid instruments (broad indices ~16,667). This bound fixes that.
+TRADING_AMT_RATIOS_MAX_ABS = 10**6
 
 
 # ============================================================================
@@ -491,4 +639,154 @@ HOLIDAY_COLUMNS = (
     "non_trading_day_count",
     "today_high_low_gap",
     "today_open_close_gap",
+)
+
+
+# ============================================================================
+#  Market hypes (analysis.mov_ave_market_hypes)
+#  — Market-hype EPISODE detector: one row per CONCATENATED hype episode
+#    per check-in window. An episode is a maximal span of trading dates
+#    around a sustained run of hyped dates, extended through the
+#    surrounding check-in evidence, with its SPAN (hype_days) bounded
+#    below by the window (min_checkin_period) and above by the NEXT
+#    window (exclusive) — so each calendar turmoil lands in exactly the
+#    bucket matching its length. Internal step of the parent
+#    mov_ave_spread pipeline (see market_hypes.py).
+# ============================================================================
+
+MARKET_HYPES_TABLE = "analysis.mov_ave_market_hypes"
+MARKET_HYPES_ANALYSIS_NAME = "mov_ave_market_hypes"
+
+# Check-in windows (trading rows) — one EPISODE SET per window per
+# (sec_type, code). min_checkin_period IS the MINIMUM episode span for
+# its bucket; the span is bounded above by the NEXT window (exclusive).
+# Mirrors the min_checkin_period column (part of the PK) in
+# 03_mov_ave_spreads.sql.
+HYPE_CHECKIN_PERIODS = (5, 20, 60, 120, 255)
+
+# Audit base window (trading rows) for the percentile thresholds:
+# CENTERED ±10 trading years around each audited date — NOT a trailing /
+# rolling-back window. The base for date t spans the 2550 rows (10 trading
+# years) BEFORE t, t itself, and the 2550 rows AFTER t (total 5101 rows ≈
+# 20 trading years). Windows near the start / end of a code's history are
+# naturally truncated (the newest dates have no future rows yet — their
+# base is effectively the trailing 10y); a base with fewer than
+# HYPE_THRESHOLD_MIN_PERIODS non-NULL observations has no thresholds
+# (the date is not hyped).
+HYPE_THRESHOLD_HALF_WINDOW_ROWS = 2550
+HYPE_THRESHOLD_WINDOW_ROWS = 2 * HYPE_THRESHOLD_HALF_WINDOW_ROWS + 1
+HYPE_THRESHOLD_MIN_PERIODS = 255
+
+# Maximum episode span for the LONGEST bucket (255d): the whole
+# 10y+10y = 20y centered threshold base (2 * 2550 rows). Shorter buckets
+# are capped by the next check-in window instead (see
+# HYPE_EPISODE_SPAN_MAX) — e.g. a 20d-bucket episode spans 20..59 rows,
+# a 60d-bucket one 60..119, and a 255d-bucket one 255..5100.
+HYPE_MAX_EPISODE_ROWS = 2 * HYPE_THRESHOLD_HALF_WINDOW_ROWS
+
+# Episode-span upper bound (EXCLUSIVE) per check-in window: the next
+# window in HYPE_CHECKIN_PERIODS, or HYPE_MAX_EPISODE_ROWS (the full
+# 20y base) for the longest window. Together with the window itself
+# (the inclusive lower bound) this partitions episode lengths into
+# disjoint buckets — one calendar turmoil lands in exactly the bucket
+# whose range contains its span.
+HYPE_EPISODE_SPAN_MAX = {
+    w: (
+        HYPE_CHECKIN_PERIODS[i + 1]
+        if i + 1 < len(HYPE_CHECKIN_PERIODS)
+        else HYPE_MAX_EPISODE_ROWS
+    )
+    for i, w in enumerate(HYPE_CHECKIN_PERIODS)
+}
+
+# Parameter set recorded on every row (the schema defaults). All three
+# are strict-greater-than comparisons in percent units (0-100):
+#   - satisfaction: fraction of check-in dates within the window that
+#     must be EXCEEDED for is_hyped = TRUE (60.0 = "> 60% of the days").
+#   - amt percentile: centered-20y (±10y) percentile of daily
+#     trading_amount that a date must EXCEED on the liquidity leg
+#     (60.0 = 60th pct).
+#   - std percentile: centered-20y (±10y) percentile of std_{W}days
+#     that a date must EXCEED on the volatility leg. Deliberately LOW
+#     (30.0 = 30th pct): the W-day trailing σ lags a sudden turmoil by
+#     construction (the window still holds W-1 pre-turmoil rows on day
+#     1), so the volatility leg must clear a modest bar to let episodes
+#     start at the turmoil's first big-move day — the 2024-09-24 rally
+#     audit (159673.SZ) showed a 60th-pct std leg delayed episode starts
+#     by a full month while the amt leg fired from day one.
+# Changing any of these requires a --force rebuild (they are recorded
+# per row but are NOT part of the PK).
+HYPE_CHECKIN_SATISFACTION_THRESHOLD = 60.0
+HYPE_TRADING_AMT_THRESHOLD_PCT = 60.0
+HYPE_STD_THRESHOLD_PCT = 30.0
+
+# Volatility source column per check-in window (matching timescale):
+# the W-day rolling population σ of price already computed by the
+# parent pipeline (helpers.compute_rolling_stds -> std_{W}days in the
+# source DataFrame / mov_ave_spreads_detail).
+HYPE_STD_COLUMN_BY_PERIOD = {
+    5:   "std_5days",
+    20:  "std_20days",
+    60:  "std_60days",
+    120: "std_120days",
+    255: "std_255days",
+}
+
+# All output column names of analysis.mov_ave_market_hypes in the order
+# they appear in the table (must stay in sync with the CREATE TABLE in
+# 03_mov_ave_spreads.sql — COPY inserts with this explicit column
+# order). NOTE: the PK is (sec_type, code, start_date, end_date,
+# min_checkin_period); the three threshold columns are recorded build
+# parameters, not key columns. trading_amt_hype_days / std_hype_days
+# count the days within the episode span on which each leg individually
+# checked in (diagnostics for which leg drove the episode).
+MARKET_HYPES_COLUMNS = (
+    "sec_type", "code",
+    "start_date", "end_date", "min_checkin_period", "hype_days",
+    "min_checkin_satisfaction_threshold",
+    "min_trading_amt_threshold",
+    "trading_amt_hype_days",
+    "min_std_threshold",
+    "std_hype_days",
+)
+
+MARKET_HYPES_DESCRIPTION = (
+    "Market-hype EPISODE detector (ETF + Index + Stock). One row per "
+    "(sec_type, code, min_checkin_period, episode): a CONCATENATED hype "
+    "episode — a maximal span of trading dates anchored on a maximal run "
+    "of consecutive hyped dates and extended through the surrounding "
+    "check-in evidence (the W rows before the run's first hyped date, "
+    "back to its first check-in, and the W rows after the last hyped "
+    "date, to its last check-in). start_date / end_date bracket the "
+    "span; hype_days = the span length in trading dates. min_checkin_"
+    "period (W) is the bucket's MINIMUM span and the next window its "
+    "EXCLUSIVE maximum (20d bucket: 20..59 rows; 60d: 60..119; 120d: "
+    "120..254; 255d: 255..5100 = the whole ±10y threshold base), so "
+    "each calendar turmoil lands in exactly the bucket matching its "
+    "length. A date is hyped when, within the last W trading rows "
+    "ending at it, MORE than min_checkin_satisfaction_threshold "
+    "percent of the dates are check-ins — a check-in being a date "
+    "whose daily trading_amount EXCEEDS its centered-20y "
+    "min_trading_amt_threshold percentile AND whose W-day rolling "
+    "population σ (std_{W}days, matching timescale) EXCEEDS its "
+    "centered-20y min_std_threshold percentile. The audit base window "
+    "is CENTERED on each audited date — 2550 trading rows (10 trading "
+    "years) before the date plus 2550 rows after it (NOT a trailing/"
+    "rolling-back window) — with a 255-row (1 trading year) minimum "
+    "before thresholds exist; bases near the start/end of a code's "
+    "history are naturally truncated (the newest dates have no future "
+    "rows yet). Because the base looks both ways, historical rows use "
+    "their following decade (retrospective audit; run --force to "
+    "refresh historical rows' flags after new data arrives). "
+    "trading_amt_hype_days / std_hype_days count the days within the "
+    "episode span on which each leg individually checked in. Non-hyped "
+    "dates leave no footprint; episodes are REBUILT WHOLESALE per "
+    "sec_type on every pipeline run (new dates shift episode "
+    "boundaries — the margin_changes precedent). One episode set per "
+    "check-in window (5/20/60/120/255); the three threshold columns "
+    "record the build's parameter set (defaults 60.0/60.0/30.0). "
+    "Source: same DataFrame as the mov_ave_spread parent pipeline "
+    "(trading_amount + std_{W}days columns — no second DB round-trip). "
+    "The sec_type column discriminates the source universe ('etf' | "
+    "'index' | 'stock')."
 )

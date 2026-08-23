@@ -9,7 +9,6 @@ import {
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { expiryToYyyyMm } from "./expiryUtils";
-import type { DailySkew } from "./types";
 import type { SkewnessCorrRow } from "@shared/types";
 import type { EChartsOption } from "echarts";
 
@@ -28,7 +27,7 @@ const CORR_MODE_LABELS: Record<CorrMode, string> = {
 };
 
 export function buildCorrTimeSeriesOption(
-  dailySkew: DailySkew[],
+  dates: string[],
   corrRows: SkewnessCorrRow[],
   selectedDate: string,
   mode: CorrMode = "ma5",
@@ -38,7 +37,7 @@ export function buildCorrTimeSeriesOption(
   const textColor = c.textColor;
   const splitColor = c.splitLineColor;
 
-  if (dailySkew.length === 0) {
+  if (dates.length === 0) {
     return {
       backgroundColor: "transparent",
       title: {
@@ -49,8 +48,6 @@ export function buildCorrTimeSeriesOption(
       },
     };
   }
-
-  const dates = dailySkew.map((d) => d.date);
 
   const corrField = CORR_FIELD_MAP[mode];
 
@@ -130,7 +127,7 @@ export function buildCorrTimeSeriesOption(
     markLine: {
       symbol: ["none" as const, "none" as const],
       silent: true,
-      lineStyle: { color: textColor, type: "dashed", opacity: 0.3 },
+      lineStyle: { color: textColor, type: "dashed" as const, opacity: 0.3 },
       data: [{ yAxis: 0 }],
       tooltip: { show: false },
       label: { show: false },
@@ -193,8 +190,13 @@ export function buildCorrTimeSeriesOption(
         return lines.join("<br/>");
       },
     },
+    // Legend centered: the top-right corner is reserved for the overlay
+    // MA5/MA20/MA60 toggle (absolute, top: 0, right: 8) — a right-aligned
+    // legend would sit underneath it and the texts overlap.
     legend: commonLegend(themeMode, {
       top: 10,
+      left: "center",
+      right: "auto",
       data: visibleLegendData,
       show: visibleLegendData.length <= 8,
       textStyle: { fontSize: 9 },

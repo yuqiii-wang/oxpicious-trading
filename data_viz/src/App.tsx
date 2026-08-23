@@ -18,6 +18,7 @@ import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
 import PeAndDividendPage from "@/analysis/pages/PeAndDividendPage";
 import FourierFreqsPage from "@/analysis/pages/FourierFreqsPage";
+import EtfHoldingsPage from "@/analysis/pages/EtfHoldingsPage";
 import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
 import OptionsAnalysisPage from "@/analysis/pages/OptionsAnalysis";
@@ -54,6 +55,7 @@ export default function App() {
           <Route path="/analysis/commons/industry-sentiments" element={<IndustrySentimentsPage />} />
           <Route path="/analysis/commons/pe-dividend" element={<PeAndDividendPage />} />
           <Route path="/analysis/commons/fourier-freqs" element={<FourierFreqsPage />} />
+          <Route path="/analysis/commons/etf-holdings" element={<EtfHoldingsPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/derivatives/margin-trends" element={<MarginTrendsPage />} />
           <Route path="/analysis/derivatives/futures" element={<FuturesAnalysisPage />} />

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Options Analysis page — options analytics: OI, Volatility Smile, Greeks.
  *
  * Layout:
@@ -45,6 +45,7 @@ import type {
 import { useStore } from "@/store/filters";
 import { UNDERLYING_LABELS } from "@/theme/chart-palette";
 import MarketInterestWallPanel from "@/dataviz/features/szse-options/MarketInterestWallPanel";
+import SharedSkewPanel from "@/dataviz/features/szse-options/skew-shared/SharedSkewPanel";
 import AnalysisVolSmilePanel from "./VolSmilePanel";
 import { OptionsTrendPanel } from "@/dataviz/features/szse-options/options-trend";
 import GreeksPanel from "./GreeksPanel";
@@ -312,6 +313,12 @@ export default function OptionsAnalysisPage() {
                 <>
                   <MarketInterestWallPanel rows={data.rows} selectedDate={selectedDate} />
                   <OptionsTrendPanel rows={data.rows} />
+                  <SharedSkewPanel
+                    mode="oi_moneyness"
+                    rows={data.rows}
+                    selectedDate={selectedDate}
+                    onDateChange={setSelectedDate}
+                  />
                 </>
               )}
               {activeTab === "smile" && selectedDate && (
@@ -321,6 +328,15 @@ export default function OptionsAnalysisPage() {
                 <>
                   <StatTable statsList={snapshotStats} />
                   <GreeksPanel rows={data.rows} selectedDate={selectedDate} greekKey={activeGreek} />
+                  {activeGreek !== "theta" && activeGreek !== "rho" && (
+                    <SharedSkewPanel
+                      key={`greek_${activeGreek}`}
+                      mode={`greek_${activeGreek}`}
+                      rows={data.rows}
+                      selectedDate={selectedDate}
+                      onDateChange={setSelectedDate}
+                    />
+                  )}
                 </>
               )}
             </>

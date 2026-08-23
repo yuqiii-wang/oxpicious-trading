@@ -36,13 +36,14 @@ currently a project dependency. The should_use_gpu check from
 _common.df_utils is imported per project convention, but the FFT itself
 runs on CPU via numpy regardless. The sliding-window approach
 (stride_tricks + vectorized rfft) is efficient enough for the production
-data volume (~6K stock codes × 5 windows × ~1.7K dates ≈ 10-15 min).
+data volume (~6K stock codes × 6 windows × ~1.7K dates ≈ 12-16 min).
 
 Memory note: amplitude_spectrum is held as 1-D numpy array views into
 each (code, range_days) 2-D amplitudes block until the DataFrame is
-written. For index-only this is ~3-4 GB peak (the 2-D blocks stay live
+written. For index-only this is ~4-5 GB peak (the 2-D blocks stay live
 because the views reference them); for etf+stock the volume is much
 larger, so the populator is run per sec_type and --force truncates first.
+The 1275d window has ~637 bins per row, increasing memory proportionally.
 """
 from __future__ import annotations
 
@@ -73,7 +74,7 @@ def compute_fourier_freqs(
     sec_type: str,
     range_days_list: tuple[int, ...] = RANGE_DAYS,
     *,
-    target_dates: set | None = None,
+    target_dates: dict[str, set] | None = None,
 ) -> pd.DataFrame:
     """Compute dominant Fourier frequency per (code, last_date, range_days).
 
@@ -87,12 +88,13 @@ def compute_fourier_freqs(
         sec_type: 'index', 'etf', or 'stock'.
         range_days_list: tuple of window sizes in trading days. Defaults
             to RANGE_DAYS from config (20, 60, 255, 500, 750).
-        target_dates: optional set of dates to compute. When None, all
-            dates with sufficient history are computed. When supplied
-            (incremental mode), only windows whose last_date is in
-            target_dates are included in the output. The FFT still uses
-            the FULL per-code history for the window (target_dates only
-            filters which windows to OUTPUT, not the input data).
+        target_dates: optional per-code date sets to compute (code ->
+            set of dates). When None, all dates with sufficient history
+            are computed. When supplied (incremental mode), only windows
+            of a code whose last_date is in that code's target set are
+            included in the output. The FFT still uses the FULL per-code
+            history for the window (target_dates only filters which
+            windows to OUTPUT, not the input data).
 
     Returns:
         DataFrame with columns: sec_type, code, freq (int),
@@ -134,6 +136,20 @@ def compute_fourier_freqs(
         close = group["close"].values.astype(np.float64)
         dates = group["date"].values
 
+        # Incremental mode: this code's target date set. Normalize to
+        # datetime.date once per code — guards against datetime64 vs
+        # datetime.date mismatches across pandas/cudf DataFrame
+        # constructions (a datetime64 value is never `in` a set of
+        # datetime.date, which would silently drop every window).
+        code_targets: set | None = None
+        if target_dates is not None:
+            code_targets = target_dates.get(code)
+            if not code_targets:
+                # No missing targets for this code — skip entirely.
+                continue
+            if dates.dtype != object:
+                dates = pd.to_datetime(dates).date
+
         for range_days in range_days_list:
             n = len(close)
             if n < range_days:
@@ -147,13 +163,12 @@ def compute_fourier_freqs(
             )
             window_dates = dates[range_days - 1:]
 
-            # Incremental mode: filter to target_dates BEFORE the FFT
-            # to save computation. Only windows whose last_date is in
-            # target_dates are processed.
-            if target_dates is not None:
-                target_set = set(target_dates)
+            # Incremental mode: filter to the code's target dates BEFORE
+            # the FFT to save computation. Only windows whose last_date
+            # is a target are processed.
+            if code_targets is not None:
                 mask = np.array(
-                    [d in target_set for d in window_dates],
+                    [d in code_targets for d in window_dates],
                     dtype=bool,
                 )
                 if not mask.any():

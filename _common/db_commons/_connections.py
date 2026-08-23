@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import psycopg
 
-from ._helpers import _get_conn_params
+from ._helpers import _get_conn_params, _get_replica_conn_params
 
 try:
     import asyncpg
@@ -152,5 +152,109 @@ async def get_db_pool_async(
         max_size=max_size,
         max_queries=max_queries,
         command_timeout=300,  # 5 min per query — upserts of 100K rows can take >60s under WAL pressure
+    )
+    return pool
+
+
+def get_read_db_connection() -> psycopg.Connection:
+    """Connect to the read-only replica (sync).
+
+    Use for SELECT queries so heavy reads do not compete with writes on
+    the primary. Falls back to the primary when no replica is configured.
+    """
+    conn_params = _get_replica_conn_params()
+    try:
+        conn = psycopg.connect(
+            host=conn_params["host"],
+            port=conn_params["port"],
+            dbname=conn_params["database"],
+            user=conn_params["user"],
+            password=conn_params["password"],
+            connect_timeout=10,
+            autocommit=True,
+        )
+        # Guard against accidental writes on a replica connection.
+        conn.execute("SET default_transaction_read_only = on")
+        return conn
+    except Exception as e:
+        print(f"    [ERROR] Failed to connect to read replica: {e}", flush=True)
+        raise
+
+
+async def get_read_db_connection_async():
+    """Connect to the read-only replica (async).
+
+    Use for SELECT queries so heavy reads do not compete with writes on
+    the primary. Falls back to the primary when no replica is configured.
+    """
+    if not HAS_ASYNCPG:
+        raise ImportError(
+            "asyncpg is required for async database operations. Install with: pip install asyncpg"
+        )
+    conn_params = _get_replica_conn_params()
+    try:
+        conn = await asyncpg.connect(
+            host=conn_params["host"],
+            port=conn_params["port"],
+            database=conn_params["database"],
+            user=conn_params["user"],
+            password=conn_params["password"],
+            timeout=30,
+        )
+        # Guard against accidental writes on a replica connection.
+        await conn.execute("SET default_transaction_read_only = on")
+        return conn
+    except Exception as e:
+        msg = str(e).strip()
+        print(
+            f"    [ERROR] Failed to connect to read replica: "
+            f"{type(e).__name__}: {msg if msg else repr(e)}",
+            flush=True,
+        )
+        raise
+
+
+async def get_read_db_pool_async(
+    min_size: int = 1,
+    max_size: int = 5,
+    max_queries: int = 50000,
+):
+    """Create an asyncpg connection pool for the read-only replica.
+
+    Falls back to the primary host when no replica is configured, so
+    environments without a replica still work. Each connection in the
+    pool is set to read-only to guard against accidental writes.
+
+    Args:
+        min_size: number of connections opened eagerly at pool creation.
+        max_size: hard cap on concurrent connections.
+        max_queries: asyncpg recycles a connection after this many queries.
+
+    Returns:
+        asyncpg.pool.Pool. The caller is responsible for closing it
+        (``await pool.close()``) when done.
+    """
+    if not HAS_ASYNCPG:
+        raise ImportError(
+            "asyncpg is required for connection pooling. "
+            "Install with: pip install asyncpg"
+        )
+    conn_params = _get_replica_conn_params()
+
+    async def _setup_readonly(conn):
+        """Set each pool connection to read-only."""
+        await conn.execute("SET default_transaction_read_only = on")
+
+    pool = await asyncpg.create_pool(
+        host=conn_params["host"],
+        port=conn_params["port"],
+        database=conn_params["database"],
+        user=conn_params["user"],
+        password=conn_params["password"],
+        min_size=min_size,
+        max_size=max_size,
+        max_queries=max_queries,
+        command_timeout=300,
+        init=_setup_readonly,
     )
     return pool

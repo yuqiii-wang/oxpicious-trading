@@ -1,16 +1,29 @@
 ﻿/**
  * CompositionPieChart — 2-layer pie chart for security holdings.
  *
- * Shared between the ETF + Margin page and the Index Baseline page. Accepts
- * any code (ETF code like "510050" or bare index code like "000300" / "H30007")
- * and fetches composition from /api/sec-composition, which queries
- * stats.sec_composition (ALL holdings for ETFs and full constituents
- * for CSI indices).
+ * Shared between the ETF + Margin page, the Index Baseline page and the ETF
+ * Holdings analysis page. Accepts any code (ETF code like "510050" or bare
+ * index code like "000300" / "H30007") and fetches composition from
+ * /api/sec-composition, which queries stats.sec_composition (ALL holdings
+ * for ETFs and full constituents for CSI indices).
+ *
+ * Seasonal mode: when a `date` prop ("YYYY-MM-DD") is provided, the fetch is
+ * constrained to the calendar QUARTER containing the date — the API returns
+ * the latest snapshot within that quarter and the response carries a
+ * `quarter` label shown in the summary line. Without `date`, the latest
+ * snapshot overall is used (original behavior).
+ *
+ * Color consistency: an optional `colorByIndustry` map (industry → hex color)
+ * pins each Layer-1 slice to a fixed color instead of the default palette
+ * cycling. The ETF Holdings page passes the same map it uses for its
+ * quarterly stacked BAR chart, so a given industry has the SAME color in the
+ * bars and in this pie.
  *
  * Layer 1: Pie chart by industry (aggregated weight).
- *   Click an industry slice → drills into Layer 2.
+ *   Click an industry slice → drills into Layer 2. Clicking a DIFFERENT
+ *   industry switches Layer 2 to that industry; clicking the selected
+ *   industry again closes Layer 2.
  * Layer 2: Pie chart of individual stocks within the selected industry.
- *   "← Back" button returns to Layer 1.
  *   Click a stock slice → toggles a daily OHLC chart of that stock
  *   below the pies (click the same stock again, or the × button, to close).
  *
@@ -38,6 +51,10 @@ interface Props {
   /** Controlled open state — lifted to parent so it can expand the card. */
   open: boolean;
   onToggle: () => void;
+  /** Seasonal mode — when provided ("YYYY-MM-DD"), the composition shown is
+   *  the latest snapshot within the calendar QUARTER containing this date
+   *  (mapped to the corresponding season server-side). */
+  date?: string;
   /** Notified when the per-stock OHLC expansion opens/closes so the
    *  parent can expand its card height to fit the chart. */
   onStockOhlcOpenChange?: (open: boolean) => void;
@@ -46,6 +63,11 @@ interface Props {
    *  Composition and Linked-ETFs buttons on the same horizontal row).
    *  Defaults to false (standalone mode used by EtfMarginPanel). */
   hideButton?: boolean;
+  /** Optional industry → color map. When provided, each Layer-1 (industry)
+   *  slice is pinned to its mapped color instead of cycling MUTED_PALETTE —
+   *  used to keep colors consistent with an external chart (e.g. the ETF
+   *  Holdings quarterly stacked bars). Layer 2 (stocks) always cycles. */
+  colorByIndustry?: Record<string, string>;
   /** External refresh key — when provided, the parent owns the refresh state
    *  and renders its own refresh button. Bumping this value triggers a refetch.
    *  When absent, the internal refresh key is used (standalone mode). */
@@ -65,14 +87,17 @@ interface PieItem {
   name: string;
   value: number;
   code?: string;
+  itemStyle?: { color: string };
 }
 
 export default function CompositionPieChart({
   code,
   open,
   onToggle,
+  date,
   onStockOhlcOpenChange,
   hideButton = false,
+  colorByIndustry,
   refreshKey: externalRefreshKey,
   onLoadingChange,
 }: Props) {
@@ -95,21 +120,20 @@ export default function CompositionPieChart({
   const onLoadingChangeRef = useRef(onLoadingChange);
   onLoadingChangeRef.current = onLoadingChange;
 
-  // Refs so the ECharts click handlers (set once via onReady) always read
-  // the latest values without needing to re-bind.
-  const selectedIndustryRef = useRef<string | null>(null);
-  selectedIndustryRef.current = selectedIndustry;
+  // Ref so the stock-pie click handler (set once via onReady) always reads
+  // the latest value without needing to re-bind.
   const selectedStockRef = useRef<SelectedStock | null>(null);
   selectedStockRef.current = selectedStock;
 
-  // Fetch composition data when the panel is opened
+  // Fetch composition data when the panel is opened. With a `date` prop the
+  // fetch is constrained to that date's quarter (seasonal mode).
   useEffect(() => {
     if (!open || !code) return;
     let cancelled = false;
     setLoading(true);
     onLoadingChangeRef.current?.(true);
     setError(null);
-    fetchSecComposition(code)
+    fetchSecComposition(code, date)
       .then((d) => {
         if (cancelled) return;
         setData(d);
@@ -125,10 +149,12 @@ export default function CompositionPieChart({
     return () => {
       cancelled = true;
     };
-  }, [open, code, refreshKey]);
+  }, [open, code, date, refreshKey]);
 
   const handleRefresh = () => {
-    invalidateCacheForUrl(`/api/sec-composition?code=${code}`);
+    const params = new URLSearchParams({ code });
+    if (date) params.set("date", date);
+    invalidateCacheForUrl(`/api/sec-composition?${params.toString()}`);
     setInternalRefreshKey((k) => k + 1);
   };
 
@@ -144,7 +170,10 @@ export default function CompositionPieChart({
     onStockOhlcOpenChange?.(selectedStock != null);
   }, [selectedStock, onStockOhlcOpenChange]);
 
-  // Layer 1: aggregate holdings by industry
+  // Layer 1: aggregate holdings by industry. When `colorByIndustry` is
+  // provided, each industry's slice is pinned to its mapped color so the pie
+  // agrees with an external chart using the same mapping (e.g. the ETF
+  // Holdings quarterly stacked bars).
   const industryData = useMemo<PieItem[]>(() => {
     if (!data || data.holdings.length === 0) return [];
     const byIndustry = new Map<string, number>();
@@ -152,9 +181,13 @@ export default function CompositionPieChart({
       byIndustry.set(h.industry, (byIndustry.get(h.industry) ?? 0) + h.weight_pct);
     }
     return Array.from(byIndustry.entries())
-      .map(([name, value]) => ({ name, value: Number(value.toFixed(2)) }))
+      .map(([name, value]) => ({
+        name,
+        value: Number(value.toFixed(2)),
+        ...(colorByIndustry?.[name] ? { itemStyle: { color: colorByIndustry[name] } } : {}),
+      }))
       .sort((a, b) => b.value - a.value);
-  }, [data]);
+  }, [data, colorByIndustry]);
 
   // Layer 2: stocks within the selected industry
   const stockData = useMemo<PieItem[]>(() => {
@@ -349,7 +382,8 @@ export default function CompositionPieChart({
               {/* Top-level summary: holdings count + date + source badge */}
               <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }} flexWrap="wrap" useFlexGap>
                 <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
-                  {data!.holdings.length} holdings ({data!.snapshot_date})
+                  {data!.holdings.length} holdings ({data!.snapshot_date}
+                  {data!.quarter ? ` · ${data!.quarter}` : ""})
                 </Typography>
                 <Chip
                   label={sourceBadge.label}
@@ -384,8 +418,8 @@ export default function CompositionPieChart({
 
               {/* Layer 1 (industry) always shown; Layer 2 (stocks) renders
                   beside it when an industry is selected, instead of overlapping.
-                  Each chart has its own left-aligned header; the Back button
-                  lives on the stock chart's header so it aligns with that chart. */}
+                  Clicking another industry switches Layer 2 to it; clicking
+                  the selected industry again closes it. */}
               <Stack
                 direction={{ xs: "column", sm: "row" }}
                 spacing={1}
@@ -404,41 +438,43 @@ export default function CompositionPieChart({
                     option={industryOption}
                     height={280}
                     onReady={(chart) => {
-                      // Click handler: drill into industry → show stock pie
-                      // beside it. Only active on Layer 1 (selectedIndustry is null).
+                      // Click handler: show the clicked industry's stock pie
+                      // beside this chart. Clicking a DIFFERENT industry
+                      // switches the stock pie to it; clicking the selected
+                      // industry again closes it (replaces the old Back
+                      // button). The per-stock OHLC selection always resets —
+                      // it belongs to the previously selected industry.
                       chart.on("click", (params: { componentType: string; name?: string }) => {
-                        if (
-                          params.componentType === "series" &&
-                          params.name &&
-                          !selectedIndustryRef.current
-                        ) {
-                          setSelectedIndustry(params.name);
-                        }
+                        if (params.componentType !== "series" || !params.name) return;
+                        const name = params.name;
+                        setSelectedIndustry((prev) => (prev === name ? null : name));
+                        setSelectedStock(null);
                       });
                     }}
                   />
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      fontSize: "0.6rem",
+                      display: "block",
+                      mt: 0.25,
+                      textAlign: "center",
+                    }}
+                    color="text.secondary"
+                  >
+                    Click an industry to view its stocks
+                    {selectedIndustry ? " · click it again to close" : ""}
+                  </Typography>
                 </Box>
                 {selectedIndustry && (
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mb: 0.25 }}>
-                      <Button
-                        size="small"
-                        onClick={() => {
-                          setSelectedIndustry(null);
-                          setSelectedStock(null);
-                        }}
-                        sx={{ fontSize: "0.7rem", textTransform: "none", minWidth: 0, py: 0 }}
-                      >
-                        ← Back
-                      </Button>
-                      <Typography
-                        variant="caption"
-                        sx={{ fontSize: "0.7rem", fontWeight: 600 }}
-                        color="text.secondary"
-                      >
-                        Stocks in &quot;{selectedIndustry}&quot;
-                      </Typography>
-                    </Stack>
+                    <Typography
+                      variant="caption"
+                      sx={{ fontSize: "0.7rem", fontWeight: 600, display: "block", mb: 0.25 }}
+                      color="text.secondary"
+                    >
+                      Stocks in &quot;{selectedIndustry}&quot;
+                    </Typography>
                     <EChart
                       option={stockOption}
                       height={280}

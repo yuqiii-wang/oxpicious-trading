@@ -205,7 +205,7 @@ async def filter_rows_to_missing_dates_async(
     this is effectively a no-op (returns all rows). The overhead is one
     ``SELECT DISTINCT date`` query per call.
 
-    Used by analyze.mov_ave_spread (peaks_and_floors + detail),
+    Used by analyze.mov_ave_spread (detail),
     analyze.industry_sentiments (main table), and
     analyze.sec_alloc_perf_attribution (build_and_insert) to skip
     already-populated dates before bulk upsert.
@@ -213,7 +213,7 @@ async def filter_rows_to_missing_dates_async(
     Args:
         conn: asyncpg connection.
         table: target analysis table (schema-qualified, e.g.
-            ``"analysis.mov_ave_peaks_and_floors"``).
+            ``"analysis.mov_ave_spreads_detail"``).
         rows: list of row dicts to filter.
         date_key: dict key holding the date value (default ``"date"``).
         sec_type: optional value for the ``sec_type`` column to scope the

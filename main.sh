@@ -17,6 +17,7 @@ for m in \
   downloads.macro.pboc.repo_news \
   downloads.options.sse.price \
   downloads.options.szse.trend \
+  downloads.options.cffex.trend \
   downloads.macro.pboc.lpr_news \
   downloads.macro.zhihu.news
 do

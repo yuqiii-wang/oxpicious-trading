@@ -2,6 +2,15 @@
  * ECharts React wrapper with theme-aware styling.
  *
  * - Accepts an ECharts `option` prop and re-renders when it changes.
+ * - Preserves the user's dataZoom viewport across option rebuilds: the
+ *   option prop is a fresh object on every parent render (hover / click
+ *   state, control toggles), and `notMerge: true` would otherwise
+ *   re-create the dataZoom at the option's default start/end (0–100 =
+ *   full range), snapping the time slider back. When the incoming
+ *   start/end match what we last sent (the builder did NOT intend to move
+ *   the window), the chart's live window is re-injected instead. An
+ *   intentional window change (different start/end than the previous
+ *   option, e.g. a date-range preset) is still honored.
  * - Auto-resizes the chart on container resize.
  * - Exposes the chart instance via ref for cross-chart sync (used by the
  *   debt-baseline 4-panel view to share x-axis crosshair).
@@ -10,8 +19,14 @@
  */
 import { useEffect, useRef } from "react";
 import * as echarts from "echarts";
-import type { EChartsOption } from "echarts";
+import type { DataZoomComponentOption, EChartsOption } from "echarts";
 import { useStore } from "@/store/filters";
+
+/** Minimal dataZoom window shape read back from a live chart instance. */
+interface ZoomWindow {
+  start?: number;
+  end?: number;
+}
 
 interface EChartProps {
   option: EChartsOption;
@@ -48,6 +63,13 @@ export default function EChart({ option, height = 320, minHeight = 200, group, o
     onCanvasClickRef.current = onCanvasClick;
   }, [onCanvasClick]);
 
+  // The dataZoom start/end we last handed to setOption, one entry per
+  // dataZoom component. Used to tell an intentional zoom-window change
+  // (incoming start/end differ from the previous option) apart from an
+  // incidental rebuild (hover / click state, control toggles — same
+  // start/end as before), which must keep the user's current viewport.
+  const lastZoomRef = useRef<ZoomWindow[] | null>(null);
+
   // Init chart on mount
   useEffect(() => {
     if (!containerRef.current) return;
@@ -55,6 +77,9 @@ export default function EChart({ option, height = 320, minHeight = 200, group, o
       renderer: "canvas",
     });
     chartRef.current = chart;
+    // Fresh instance → no zoom history yet (guards StrictMode remounts,
+    // where the ref outlives the disposed chart).
+    lastZoomRef.current = null;
     if (group) chart.group = group;
     onReady?.(chart);
     const resizeObserver = new ResizeObserver(() => {
@@ -76,7 +101,60 @@ export default function EChart({ option, height = 320, minHeight = 200, group, o
   // data from the previous option, so removed lines never disappear.
   useEffect(() => {
     if (!chartRef.current) return;
-    chartRef.current.setOption(option, { notMerge: true, lazyUpdate: true });
+    const chart = chartRef.current;
+
+    // Preserve the user's dataZoom viewport across rebuilds (see the
+    // component doc comment). Only options whose dataZoom start/end are
+    // unchanged from the previous setOption are patched; value-based
+    // windows (startValue/endValue) are left untouched.
+    const incoming = option.dataZoom;
+    const incomingArr: DataZoomComponentOption[] =
+      incoming == null
+        ? []
+        : Array.isArray(incoming)
+          ? [...incoming]
+          : [incoming];
+    let effective = option;
+    if (incomingArr.length > 0) {
+      const last = lastZoomRef.current;
+      const zoomUnchanged =
+        last != null &&
+        last.length === incomingArr.length &&
+        incomingArr.every(
+          (dz, i) => dz.start === last[i].start && dz.end === last[i].end,
+        );
+      if (zoomUnchanged) {
+        // getOption() returns undefined before the first setOption lands
+        // (e.g. a remounted instance) — nothing to preserve then.
+        const live = (chart.getOption() as { dataZoom?: ZoomWindow[] } | undefined)
+          ?.dataZoom;
+        if (live != null && live.length === incomingArr.length) {
+          const merged = incomingArr.map((dz) => ({ ...dz }));
+          merged.forEach((dz, i) => {
+            const s = live[i]?.start;
+            const e = live[i]?.end;
+            if (
+              dz.startValue == null &&
+              dz.endValue == null &&
+              typeof s === "number" &&
+              typeof e === "number"
+            ) {
+              dz.start = s;
+              dz.end = e;
+            }
+          });
+          effective = { ...option, dataZoom: merged };
+        }
+      }
+      lastZoomRef.current = incomingArr.map((dz) => ({
+        start: dz.start,
+        end: dz.end,
+      }));
+    } else {
+      lastZoomRef.current = null;
+    }
+
+    chart.setOption(effective, { notMerge: true, lazyUpdate: true });
   }, [option]);
 
   // Bind / re-bind event handlers when onEvents identity changes

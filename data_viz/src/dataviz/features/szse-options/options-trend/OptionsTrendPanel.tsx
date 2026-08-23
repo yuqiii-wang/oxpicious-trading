@@ -10,12 +10,16 @@
  *   - One x-axis (full trading date range — aligned across all plots)
  *   - One group for axisPointer/tooltip sync (mouse hover shows
  *     simultaneous tooltips on all three charts)
+ *   - One cohort selection (Active/History + month): charts 2 and 3
+ *     aggregate only the selected expiry cohorts' rows, leaving line
+ *     breaks on dates where the selection has no data, while the x-axis
+ *     keeps the full trading range for zoom/tooltip alignment
  *
  * The ETF Price & Volume chart from AnnualSentimentPanel is intentionally
  * NOT included here — it remains a separate ChartCard below.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Stack } from "@mui/material";
+import { Alert, Box, Stack, ToggleButton, ToggleButtonGroup } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
@@ -28,6 +32,7 @@ import { buildBandsOption } from "./bandsOption";
 import { useDataZoomSync } from "./useDataZoomSync";
 import CohortSelector from "./cohortSelector";
 import { breakArraysAtGaps, safeMa } from "@/lib/series";
+import { type WallMode, WALL_MODE_LABELS } from "./bandData";
 
 export const CHART_GROUP = "options-trend";
 
@@ -46,6 +51,7 @@ export default function OptionsTrendPanel({ rows }: Props) {
   const cohorts = useMemo(() => buildCohorts(rows), [rows]);
   const [cohortMode, setCohortMode] = useState<"active" | "history">("active");
   const [monthFilter, setMonthFilter] = useState<"all" | string>("all");
+  const [wallMode, setWallMode] = useState<WallMode>("80pct");
 
   const lastDate = useMemo(() => {
     let mx = "";
@@ -96,16 +102,62 @@ export default function OptionsTrendPanel({ rows }: Props) {
   );
   const selectedExpiryKeysKey = selectedExpiryKeys.join(",");
 
-  // Compute broken data once — used by all three charts for x-axis alignment
-  const pcRatio = useMemo(() => daily.map((d) => d.pcRatio), [daily]);
-  const callOi = useMemo(() => daily.map((d) => d.callOi), [daily]);
-  const putOi = useMemo(() => daily.map((d) => d.putOi), [daily]);
+  // Expiry-key set of the current selection — drives filtering below
+  const selectedExpirySet = useMemo(
+    () => new Set(selectedExpiryKeys),
+    [selectedExpiryKeys],
+  );
 
+  // Rows restricted to the selected expiry cohorts — charts 2 (P/C Ratio)
+  // and 3 (Total OI) aggregate only these rows, so all three plots follow
+  // the Active/History + month selection of the OI Bands chart above.
+  const selectedRows = useMemo(
+    () =>
+      selectedExpirySet.size === 0
+        ? []
+        : rows.filter((r) => selectedExpirySet.has(r.expiry_date)),
+    [rows, selectedExpirySet],
+  );
+
+  // Daily aggregates of the selected cohorts, indexed by date
+  const selectedDailyByDate = useMemo(
+    () => new Map(buildDailyOi(selectedRows).map((d) => [d.date, d])),
+    [selectedRows],
+  );
+
+  // Expiry markers restricted to the selected cohorts (charts 2 & 3)
+  const selectedExpiryMarkers = useMemo(
+    () => expiryMarkers.filter((m) => selectedExpirySet.has(m.expiryDate)),
+    [expiryMarkers, selectedExpirySet],
+  );
+
+  // Per-date series for the SELECTED cohorts, aligned to the full allDates
+  // axis — null on dates where the selection has no data (lines break there)
+  const pcRatio = useMemo(
+    () =>
+      allDates.map((dt) => {
+        const d = selectedDailyByDate.get(dt);
+        return d && Number.isFinite(d.pcRatio) ? d.pcRatio : null;
+      }),
+    [allDates, selectedDailyByDate],
+  );
+  const callOi = useMemo(
+    () => allDates.map((dt) => selectedDailyByDate.get(dt)?.callOi ?? null),
+    [allDates, selectedDailyByDate],
+  );
+  const putOi = useMemo(
+    () => allDates.map((dt) => selectedDailyByDate.get(dt)?.putOi ?? null),
+    [allDates, selectedDailyByDate],
+  );
+
+  // Broken data for charts 2 & 3 — computed from the selected cohorts with
+  // lines broken at date gaps. brokenData.dates is also used to remap chart
+  // 1's cells for x-axis alignment.
   const brokenData = useMemo(() => {
     const ma5 = safeMa(pcRatio, 5);
     const ma20 = safeMa(pcRatio, 20);
-    const callMil = callOi.map((v) => v / 1e6);
-    const putMil = putOi.map((v) => v / 1e6);
+    const callMil = callOi.map((v) => (v == null ? null : v / 1e6));
+    const putMil = putOi.map((v) => (v == null ? null : v / 1e6));
     const pcBroken = breakArraysAtGaps(allDates, [pcRatio, ma5, ma20]);
     const oiBroken = breakArraysAtGaps(allDates, [callMil, putMil]);
     return {
@@ -117,6 +169,41 @@ export default function OptionsTrendPanel({ rows }: Props) {
       putMil: oiBroken.arrays[1],
     };
   }, [allDates, pcRatio, callOi, putOi]);
+
+  // Frozen y-axis ranges from the FULL dataset (all cohorts, all dates) —
+  // charts 2 & 3 keep a constant vertical scale when the Active/History or
+  // month toggle changes the plotted selection.
+  const yAxisRanges = useMemo(() => {
+    let pcMin = Infinity;
+    let pcMax = -Infinity;
+    let oiMin = Infinity;
+    let oiMax = -Infinity;
+    for (const d of daily) {
+      if (Number.isFinite(d.pcRatio)) {
+        if (d.pcRatio < pcMin) pcMin = d.pcRatio;
+        if (d.pcRatio > pcMax) pcMax = d.pcRatio;
+      }
+      for (const v of [d.callOi / 1e6, d.putOi / 1e6]) {
+        if (v < oiMin) oiMin = v;
+        if (v > oiMax) oiMax = v;
+      }
+    }
+    // Keep the P/C neutral markLine (y = 1) inside the frozen range
+    if (Number.isFinite(pcMin)) pcMin = Math.min(pcMin, 1);
+    if (Number.isFinite(pcMax)) pcMax = Math.max(pcMax, 1);
+
+    const padRange = (min: number, max: number): [number, number] => {
+      const pad = (max - min) * 0.05 || Math.max(Math.abs(max) * 0.05, 0.5);
+      return [min - pad, max + pad];
+    };
+
+    return {
+      pcRange:
+        Number.isFinite(pcMin) && Number.isFinite(pcMax) ? padRange(pcMin, pcMax) : undefined,
+      oiRange:
+        Number.isFinite(oiMin) && Number.isFinite(oiMax) ? padRange(oiMin, oiMax) : undefined,
+    };
+  }, [daily]);
 
   // Build bands with cells remapped to broken date indices
   const built = useMemo(() => {
@@ -160,22 +247,56 @@ export default function OptionsTrendPanel({ rows }: Props) {
   return (
     <ChartCard
       title="Options Trend — OI Bands · P/C Ratio · Total OI"
-      subtitle="Expiry OI evolution (selected months) vs spot · Put/Call sentiment · Total OI · time slider + tooltip synchronized across all three"
+      subtitle="Expiry OI evolution vs spot · Put/Call sentiment · Total OI — all three follow the Active/History + month selection · slider + tooltip synchronized"
       height={960}
     >
-      <CohortSelector
-        cohortMode={cohortMode}
-        onCohortModeChange={setCohortMode}
-        monthFilter={monthFilter}
-        onMonthFilterChange={setMonthFilter}
-        availableMonths={availableMonths}
-      />
-
       <Stack spacing={1}>
+        <Box sx={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 1, mb: 0.5 }}>
+          <CohortSelector
+            cohortMode={cohortMode}
+            onCohortModeChange={setCohortMode}
+            monthFilter={monthFilter}
+            onMonthFilterChange={setMonthFilter}
+            availableMonths={availableMonths}
+          />
+          <ToggleButtonGroup
+            size="small"
+            exclusive
+            value={wallMode}
+            onChange={(_, v: WallMode | null) => {
+              if (v) setWallMode(v);
+            }}
+            sx={{
+              ml: "auto",
+              bgcolor: "background.paper",
+              "& .MuiToggleButton-root": {
+                px: 1.5,
+                py: 0.25,
+                fontSize: "0.7rem",
+                minWidth: 80,
+              },
+            }}
+          >
+            {(["80pct", "large_num"] as WallMode[]).map((mode) => (
+              <ToggleButton key={mode} value={mode}>
+                {WALL_MODE_LABELS[mode]}
+              </ToggleButton>
+            ))}
+          </ToggleButtonGroup>
+        </Box>
+
         {/* Chart 1: Expiry OI Bands (top) */}
         {built && built.cells.length > 0 ? (
           <EChart
-            option={buildBandsOption(built.dates, built.cells, built.spot, themeMode, dataZoomOpt, expiryMarkers)}
+            option={buildBandsOption(
+              built.dates,
+              built.cells,
+              built.spot,
+              themeMode,
+              dataZoomOpt,
+              expiryMarkers,
+              wallMode,
+            )}
             height={340}
             group={CHART_GROUP}
             onEvents={{ dataZoom: handleDataZoom }}
@@ -188,36 +309,50 @@ export default function OptionsTrendPanel({ rows }: Props) {
           </Alert>
         )}
 
-        {/* Chart 2: Put/Call OI Ratio (middle) */}
-        <EChart
-          option={buildPcRatioOptionWithBroken(
-            brokenData.dates,
-            brokenData.pcRatio,
-            brokenData.ma5,
-            brokenData.ma20,
-            themeMode,
-            expiryMarkers,
-            insideDataZoomOpt,
-          )}
-          height={300}
-          group={CHART_GROUP}
-          onEvents={{ dataZoom: handleDataZoom }}
-        />
+        {/* Chart 2: Put/Call OI Ratio (middle) — same cohort selection as chart 1 */}
+        {selectedExpiryKeys.length > 0 ? (
+          <EChart
+            option={buildPcRatioOptionWithBroken(
+              brokenData.dates,
+              brokenData.pcRatio,
+              brokenData.ma5,
+              brokenData.ma20,
+              themeMode,
+              selectedExpiryMarkers,
+              insideDataZoomOpt,
+              yAxisRanges.pcRange,
+            )}
+            height={300}
+            group={CHART_GROUP}
+            onEvents={{ dataZoom: handleDataZoom }}
+          />
+        ) : (
+          <Alert severity="info" sx={{ height: 300 }}>
+            No {cohortMode} expiry cohorts — P/C Ratio follows the selection above.
+          </Alert>
+        )}
 
-        {/* Chart 3: Total Open Interest Trend (bottom) */}
-        <EChart
-          option={buildOiTrendOptionWithBroken(
-            brokenData.dates,
-            brokenData.callMil,
-            brokenData.putMil,
-            themeMode,
-            expiryMarkers,
-            insideDataZoomOpt,
-          )}
-          height={300}
-          group={CHART_GROUP}
-          onEvents={{ dataZoom: handleDataZoom }}
-        />
+        {/* Chart 3: Total Open Interest Trend (bottom) — same cohort selection as chart 1 */}
+        {selectedExpiryKeys.length > 0 ? (
+          <EChart
+            option={buildOiTrendOptionWithBroken(
+              brokenData.dates,
+              brokenData.callMil,
+              brokenData.putMil,
+              themeMode,
+              selectedExpiryMarkers,
+              insideDataZoomOpt,
+              yAxisRanges.oiRange,
+            )}
+            height={300}
+            group={CHART_GROUP}
+            onEvents={{ dataZoom: handleDataZoom }}
+          />
+        ) : (
+          <Alert severity="info" sx={{ height: 300 }}>
+            No {cohortMode} expiry cohorts — Total OI follows the selection above.
+          </Alert>
+        )}
       </Stack>
     </ChartCard>
   );

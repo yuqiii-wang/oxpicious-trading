@@ -23,6 +23,33 @@ services:
     networks:
       - supabase_network
 
+  db-replica:
+    image: supabase/postgres:17.6.1.150_amd64
+    container_name: oxpicious-db-replica
+    shm_size: 256m
+    entrypoint: ["/replica-entrypoint.sh"]
+    command: []
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "9877:5432"
+    volumes:
+      # Data lives on E: disk
+      - E:/docker-data/oxpicious-db-replica:/var/lib/postgresql/data
+      - ./replica/entrypoint.sh:/replica-entrypoint.sh:ro
+    environment:
+      POSTGRES_PASSWORD: postgres
+      PRIMARY_HOST: db
+      PRIMARY_PORT: "5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks:
+      - supabase_network
+
 volumes:
   db_data:
 

@@ -37,6 +37,7 @@ export {
 
 export {
   fetchSecComposition,
+  fetchQuarterlyComposition,
   fetchLinkedEtfs,
   fetchSimilarIndices,
 } from "./sec-composition";
@@ -140,6 +141,14 @@ export {
   SEC_ALLOC_LIVE_LIVE_TAG,
   type SecAllocLiveRunResponse,
 } from "./sec-alloc-live";
+
+export {
+  runAnalysisForSecurity,
+  fetchAnalysisRunStatus,
+  analysisRunTag,
+  type RunnableAnalysisModule,
+  type AnalysisRunResponse,
+} from "./analysis-run";
 
 export type {
   StrategyAlgo,

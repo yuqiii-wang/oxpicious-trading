@@ -374,6 +374,12 @@ interface DbSpectrumRow extends QueryResultRow {
   freq: number;
   amplitude_close_price: number;
   amplitude_spectrum: number[] | null;
+  last_date: Date | string;
+}
+
+interface DbWindowCountRow extends QueryResultRow {
+  range_days: number;
+  cnt: number;
 }
 
 export async function getFourierFreqsSpectrum(
@@ -385,21 +391,47 @@ export async function getFourierFreqsSpectrum(
   const target = stripped(rawCode);
   const lastDate = (rawLastDate ?? "").trim() || null;
 
-  // Resolve the effective last_date. When not supplied, pick the latest
-  // available date for this code (so the page has an initial spectrum).
-  // Done in a single query that COALESCEs the param to MAX(last_date).
+  // Resolve the effective last_date. When not supplied (or when the
+  // supplied date has no spectrum data), pick the latest date that has
+  // ALL range_days windows for this code (so every window chart renders).
   const spectrumSql = `
-    WITH resolved AS (
-      SELECT COALESCE($3::date, MAX(last_date)) AS d
+    WITH code_dates AS (
+      SELECT last_date, range_days
       FROM analysis.fourier_freqs
       WHERE sec_type = $2
         AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+    ),
+    -- Get distinct range_days for this code
+    all_range_days AS (
+      SELECT DISTINCT range_days FROM code_dates
+    ),
+    -- Find dates that have ALL range_days
+    dates_with_all AS (
+      SELECT last_date
+      FROM code_dates
+      GROUP BY last_date
+      HAVING COUNT(DISTINCT range_days) = (SELECT COUNT(*) FROM all_range_days)
+    ),
+    -- The requested date (if any)
+    requested AS (
+      SELECT $3::date AS d
+    ),
+    -- Find the best available date:
+    -- 1. If requested date has all windows → use it
+    -- 2. Else → latest date with all windows
+    resolved AS (
+      SELECT COALESCE(
+        (SELECT r.d FROM requested r
+         WHERE EXISTS (SELECT 1 FROM dates_with_all d WHERE d.last_date = r.d)),
+        (SELECT MAX(last_date) FROM dates_with_all)
+      ) AS d
     )
     SELECT
       f.range_days,
       f.freq,
       f.amplitude_close_price,
-      f.amplitude_spectrum
+      f.amplitude_spectrum,
+      f.last_date
     FROM analysis.fourier_freqs f, resolved r
     WHERE f.sec_type = $2
       AND REGEXP_REPLACE(f.code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
@@ -408,35 +440,66 @@ export async function getFourierFreqsSpectrum(
     ORDER BY f.range_days ASC
   `;
 
+  // Total-windows count per range_days (title context: how many sliding
+  // windows were analyzed for this code). NOTE: the per-bin freq REPEAT
+  // count is NOT queried — it is purely derived client-side from the bin
+  // index (bin k's sinusoid completes exactly k cycles within the window,
+  // so repeat count = k = range_days / period).
+  const windowCountSql = `
+    SELECT range_days, COUNT(*) AS cnt
+    FROM analysis.fourier_freqs
+    WHERE sec_type = $1
+      AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $2::text
+    GROUP BY range_days
+  `;
+
   const nameSql = buildNameSql(secType);
 
-  const [specRows, nameRows, dateRow] = await Promise.all([
+  const [specRows, windowCountRows, nameRows] = await Promise.all([
     queryRows<DbSpectrumRow>(spectrumSql, [target, secType, lastDate]),
+    queryRows<DbWindowCountRow>(windowCountSql, [secType, target]),
     queryRows<{ name: string | null }>(nameSql, [target]),
-    // Fetch the resolved last_date (for the response) — re-query only
-    // when lastDate was null so the frontend knows which date it got.
-    lastDate
-      ? Promise.resolve<{ d: string | null }[]>([{ d: lastDate }])
-      : queryRows<{ d: Date | string | null }>(
-          `SELECT COALESCE(MAX(last_date)::text, NULL) AS d
-           FROM analysis.fourier_freqs
-           WHERE sec_type = $2
-             AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text`,
-          [target, secType],
-        ),
   ]);
 
   const name = nameRows[0]?.name ?? "";
-  const resolvedDate = dateRow[0]?.d ? formatDate(dateRow[0].d) : "";
+  // Determine the resolved date: use the date from the returned rows
+  // (they all share the same last_date since the query filters to it).
+  // If no rows were returned (edge case), fall back to the max date.
+  let resolvedDateStr: string;
+  if (specRows.length > 0) {
+    // All rows share the same last_date — read from the first one.
+    resolvedDateStr = formatDate(specRows[0].last_date);
+  } else {
+    const maxDateRow = await queryRows<{ d: Date | string | null }>(
+      `SELECT COALESCE(MAX(last_date)::text, NULL) AS d
+       FROM analysis.fourier_freqs
+       WHERE sec_type = $2
+         AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text`,
+      [target, secType],
+    );
+    resolvedDateStr = maxDateRow[0]?.d ? formatDate(maxDateRow[0].d) : "";
+  }
 
-  const spectrums: FourierFreqsSpectrumRow[] = specRows.map((r) => ({
-    range_days: Number(r.range_days),
-    freq: Number(r.freq),
-    amplitude: toNum(r.amplitude_close_price) ?? 0,
-    spectrum: Array.isArray(r.amplitude_spectrum)
+  // Total windows analyzed per range_days (title context only).
+  const totalWindowsMap = new Map<number, number>();
+  for (const r of windowCountRows) {
+    totalWindowsMap.set(Number(r.range_days), Number(r.cnt) || 0);
+  }
+
+  const spectrums: FourierFreqsSpectrumRow[] = specRows.map((r) => {
+    const rd = Number(r.range_days);
+    const rawSpectrum = Array.isArray(r.amplitude_spectrum)
       ? r.amplitude_spectrum.map((v) => (typeof v === "number" ? v : Number(v) || 0))
-      : [],
-  }));
+      : [];
 
-  return { code: target, name, last_date: resolvedDate, spectrums };
+    return {
+      range_days: rd,
+      freq: Number(r.freq),
+      amplitude: toNum(r.amplitude_close_price) ?? 0,
+      spectrum: rawSpectrum,
+      total_windows: totalWindowsMap.get(rd) || 0,
+    };
+  });
+
+  return { code: target, name, last_date: resolvedDateStr, spectrums };
 }

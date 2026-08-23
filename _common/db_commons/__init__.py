@@ -8,6 +8,7 @@ continue to work unchanged.
 Submodules:
   - _helpers        — internal helpers (env loading, table name parsing)
   - _connections   — sync + async connection creation
+  - _router        — read/write query routing with connection pooling
   - _sync_ops       — synchronous bulk operations and table management
   - _async_ops      — asynchronous bulk operations and table management
   - _copy_or_upsert — copy-or-upsert split for fast-path bulk inserts
@@ -21,6 +22,20 @@ __all__ = [
     "get_db_connection",
     "get_db_connection_async",
     "get_db_pool_async",
+    "get_read_db_connection",
+    "get_read_db_connection_async",
+    "get_read_db_pool_async",
+    # Query router (read/write splitting with connection pooling)
+    "is_read_query",
+    "route_query",
+    "execute",
+    "execute_async",
+    "get_routed_connection",
+    "get_routed_connection_async",
+    "close_pools",
+    "close_pools_async",
+    "get_pool_stats",
+    "is_pool_initialized",
     # Synchronous API
     "check_stock_intraday_exists",
     "get_existing_keys",
@@ -52,6 +67,23 @@ from ._connections import (
     get_db_connection,
     get_db_connection_async,
     get_db_pool_async,
+    get_read_db_connection,
+    get_read_db_connection_async,
+    get_read_db_pool_async,
+)
+
+# -- Query router (read/write splitting with connection pooling) --
+from ._router import (
+    is_read_query,
+    route_query,
+    execute,
+    execute_async,
+    get_routed_connection,
+    get_routed_connection_async,
+    close_pools,
+    close_pools_async,
+    get_pool_stats,
+    is_pool_initialized,
 )
 
 # -- Synchronous API (backward compatible) --

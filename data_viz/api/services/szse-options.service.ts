@@ -13,10 +13,15 @@ import type {
   OptionsUnderlying,
   OptionsCombinedResponse,
   EtfOhlcvResponse,
+  SkewType,
   SkewnessCorrRow,
   SkewnessCorrResponse,
   SkewnessCrossCountRow,
   SkewnessCrossCountResponse,
+  SkewnessSeriesRow,
+  SkewnessSeriesResponse,
+  IvSkewRow,
+  IvSkewResponse,
 } from "../../shared/types.js";
 
 export interface OptionsQuery {
@@ -311,14 +316,15 @@ export async function getOptionsSkewnessCorr(
   underlying: string,
   startDate?: string,
   endDate?: string,
+  skewType: SkewType = "oi_moneyness",
 ): Promise<SkewnessCorrResponse> {
   const cleanedCode = stripExchangeSuffix(underlying).trim();
   const sd = toDateParam(startDate);
   const ed = toDateParam(endDate);
 
-  const params: unknown[] = [cleanedCode];
-  const where: string[] = ["underlying_code = $1"];
-  let i = 2;
+  const params: unknown[] = [cleanedCode, skewType];
+  const where: string[] = ["underlying_code = $1", "skew_type = $2"];
+  let i = 3;
 
   if (sd) {
     where.push(`date >= $${i++}::date`);
@@ -370,14 +376,15 @@ export async function getOptionsSkewnessCrossCounts(
   underlying: string,
   startDate?: string,
   endDate?: string,
+  skewType: SkewType = "oi_moneyness",
 ): Promise<SkewnessCrossCountResponse> {
   const cleanedCode = stripExchangeSuffix(underlying).trim();
   const sd = toDateParam(startDate);
   const ed = toDateParam(endDate);
 
-  const params: unknown[] = [cleanedCode];
-  const where: string[] = ["underlying_code = $1"];
-  let i = 2;
+  const params: unknown[] = [cleanedCode, skewType];
+  const where: string[] = ["underlying_code = $1", "skew_type = $2"];
+  let i = 3;
 
   if (sd) {
     where.push(`date >= $${i++}::date`);
@@ -405,6 +412,155 @@ export async function getOptionsSkewnessCrossCounts(
     date: formatDate(r.date),
     expiry_month: formatDate(r.expiry_month),
     count_skewness_curve_crossed_spot: toNum(r.count_skewness_curve_crossed_spot) ?? 0,
+  }));
+
+  return { underlying_code: cleanedCode, rows: transformed };
+}
+
+// ----------------------------------------------------------------------------
+//  Options Skewness Series — daily raw skewness per (date, expiry month)
+// ----------------------------------------------------------------------------
+
+interface DbSkewnessSeriesRow extends QueryResultRow {
+  date: Date | string;
+  underlying_code: string;
+  expiry_month: Date | string;
+  expiry_date: Date | string | null;
+  skewness: number | null;
+}
+
+export async function getOptionsSkewnessSeries(
+  underlying: string,
+  startDate?: string,
+  endDate?: string,
+  skewType: SkewType = "oi_moneyness",
+): Promise<SkewnessSeriesResponse> {
+  const cleanedCode = stripExchangeSuffix(underlying).trim();
+  const sd = toDateParam(startDate);
+  const ed = toDateParam(endDate);
+
+  const params: unknown[] = [cleanedCode, skewType];
+  const where: string[] = ["underlying_code = $1", "skew_type = $2"];
+  let i = 3;
+
+  if (sd) {
+    where.push(`date >= $${i++}::date`);
+    params.push(sd);
+  }
+  if (ed) {
+    where.push(`date <= $${i++}::date`);
+    params.push(ed);
+  }
+
+  const sql = `
+    SELECT
+      date,
+      underlying_code,
+      DATE_TRUNC('month', expiry_date) AS expiry_month,
+      MAX(expiry_date) AS expiry_date,
+      AVG(skewness) AS skewness
+    FROM analysis.options_skewness_stats
+    WHERE ${where.join(" AND ")}
+      AND skewness IS NOT NULL
+    GROUP BY date, underlying_code, DATE_TRUNC('month', expiry_date)
+    ORDER BY date ASC, DATE_TRUNC('month', expiry_date) ASC
+  `;
+
+  const rows = await queryRows<DbSkewnessSeriesRow>(sql, params);
+  const transformed: SkewnessSeriesRow[] = rows.map((r) => ({
+    date: formatDate(r.date),
+    expiry_month: formatDate(r.expiry_month),
+    expiry_date: r.expiry_date ? formatDate(r.expiry_date) : null,
+    skewness: toNum(r.skewness),
+  }));
+
+  return { underlying_code: cleanedCode, rows: transformed };
+}
+
+// ----------------------------------------------------------------------------
+//  Options IV Skew Stats — per-expiry implied-volatility skew metrics
+// ----------------------------------------------------------------------------
+
+interface DbIvSkewRow extends QueryResultRow {
+  date: Date | string;
+  underlying_code: string;
+  expiry_month: Date | string;
+  expiry_date: Date | string | null;
+  atm_iv: number | null;
+  iv_call25: number | null;
+  iv_put25: number | null;
+  risk_reversal_25d: number | null;
+  put_skew_25d: number | null;
+  call_skew_25d: number | null;
+  smile_skewness: number | null;
+  rr25_ma5: number | null;
+  rr25_ma20: number | null;
+  rr25_ma60: number | null;
+}
+
+export async function getOptionsIvSkew(
+  underlying: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<IvSkewResponse> {
+  const cleanedCode = stripExchangeSuffix(underlying).trim();
+  const sd = toDateParam(startDate);
+  const ed = toDateParam(endDate);
+
+  const params: unknown[] = [cleanedCode];
+  const where: string[] = ["underlying_code = $1"];
+  let i = 2;
+
+  if (sd) {
+    where.push(`date >= $${i++}::date`);
+    params.push(sd);
+  }
+  if (ed) {
+    where.push(`date <= $${i++}::date`);
+    params.push(ed);
+  }
+
+  // AVG across CALL/PUT rows (pair metrics are duplicated per option_type;
+  // smile_skewness differs per type, so the mean is the group-level value).
+  // MAX(expiry_date) gives the latest exact expiry in the month group (for
+  // the frontend shade boundaries / expiry marks).
+  const sql = `
+    SELECT
+      date,
+      underlying_code,
+      DATE_TRUNC('month', expiry_date) AS expiry_month,
+      MAX(expiry_date) AS expiry_date,
+      AVG(atm_iv) AS atm_iv,
+      AVG(iv_call25) AS iv_call25,
+      AVG(iv_put25) AS iv_put25,
+      AVG(risk_reversal_25d) AS risk_reversal_25d,
+      AVG(put_skew_25d) AS put_skew_25d,
+      AVG(call_skew_25d) AS call_skew_25d,
+      AVG(smile_skewness) AS smile_skewness,
+      AVG(rr25_ma5) AS rr25_ma5,
+      AVG(rr25_ma20) AS rr25_ma20,
+      AVG(rr25_ma60) AS rr25_ma60
+    FROM analysis.options_iv_skew_stats
+    WHERE ${where.join(" AND ")}
+    GROUP BY date, underlying_code, DATE_TRUNC('month', expiry_date)
+    ORDER BY date ASC, DATE_TRUNC('month', expiry_date) ASC
+  `;
+
+  const rows = await queryRows<DbIvSkewRow>(sql, params);
+  const transformed: IvSkewRow[] = rows.map((r) => ({
+    date: formatDate(r.date),
+    expiry_month: formatDate(r.expiry_month),
+    expiry_date: r.expiry_date != null ? formatDate(r.expiry_date) : null,
+    atm_iv: toNum(r.atm_iv),
+    iv_call25: toNum(r.iv_call25),
+    iv_put25: toNum(r.iv_put25),
+    risk_reversal_25d: toNum(r.risk_reversal_25d),
+    put_skew_25d: toNum(r.put_skew_25d),
+    call_skew_25d: toNum(r.call_skew_25d),
+    smile_skewness: toNum(r.smile_skewness),
+    rr25_ma5: toNum(r.rr25_ma5),
+    rr25_ma20: toNum(r.rr25_ma20),
+    rr25_ma60: toNum(r.rr25_ma60),
   }));
 
   return { underlying_code: cleanedCode, rows: transformed };

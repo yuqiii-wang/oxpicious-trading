@@ -24,6 +24,7 @@ from downloads._common.core import (
     build_default_session,
     RunStats,
     business_days,
+    _PROJECT_ROOT,
 )
 
 
@@ -682,8 +683,7 @@ def build_instruments_csv(md_dir: Path, output_dir: Optional[Path] = None) -> Di
     Output: ``<output_dir>/instruments_combined.csv``
     """
     if output_dir is None:
-        project_root = Path(__file__).resolve().parent
-        output_dir = project_root / "temp_data" / "analysis_output" / "pboc_repo_news"
+        output_dir = _PROJECT_ROOT / "temp_data" / "analysis_output" / "pboc_repo_news"
     output_dir.mkdir(parents=True, exist_ok=True)
     combined_path = output_dir / "instruments_combined.csv"
 

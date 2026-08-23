@@ -156,6 +156,74 @@ def discover_source_files(start_date=None, end_date=None):
     return out
 
 
+# ============================================================================
+# CSV tail-peek utility — read only the last portion of a CSV to find max date
+# ============================================================================
+import io
+
+def _peek_csv_max_date(
+    path: str,
+    date_col: str,
+    code_col: str = "证券代码",
+    tail_bytes: int = 500_000,
+) -> tuple | None:
+    """Peek at only the tail of a CSV file to get (max_date, first_code) without
+    reading the entire file.
+
+    Per-stock CSVs (like {code}_pe.csv or {code}_trend.csv) are append-only in
+    chronological order, so the max date is always near the end. Reading only
+    the last ~500KB is a fast way to check whether a file has data beyond what's
+    already in the DB, without loading the full (potentially multi-MB) file.
+
+    Args:
+        path: path to the CSV file
+        date_col: name of the date column (e.g. "日期" for PE, "交易日期" for trend)
+        code_col: name of the code column (e.g. "证券代码")
+        tail_bytes: number of bytes to read from the end (default 500KB)
+
+    Returns:
+        (max_date, first_code) tuple or None if the file can't be parsed.
+        max_date is a pandas Timestamp or NaT; first_code is the first code
+        found in the tail data.
+    """
+    try:
+        fsize = os.stat(path).st_size
+        if fsize == 0:
+            return None
+
+        # Read header (first line) to get column names
+        with open(path, "r", encoding="utf-8") as fh:
+            header = fh.readline().strip()
+
+        # Read last portion of file (append-only → recent dates at end)
+        read_size = min(fsize, tail_bytes)
+        with open(path, "rb") as fh:
+            fh.seek(-read_size, 2)
+            if fsize > read_size:
+                fh.readline()  # skip first partial line to align to row boundary
+            tail_data = fh.read().decode("utf-8")
+
+        df_tail = pd.read_csv(io.StringIO(header + "\n" + tail_data), dtype={code_col: str})
+        if date_col not in df_tail.columns:
+            return None
+        df_tail = df_tail[df_tail[date_col].notna()]
+        if df_tail.empty:
+            return None
+
+        max_date = pd.to_datetime(df_tail[date_col], errors="coerce").max()
+        if pd.isna(max_date):
+            return None
+
+        # Get the first code in the tail (to identify which stock this is)
+        first_code = None
+        if code_col in df_tail.columns:
+            first_code = df_tail[code_col].astype(str).str.strip().iloc[0]
+
+        return (max_date, first_code)
+    except Exception:
+        return None
+
+
 def _read_one(path, market):
     """Read one stock CSV, return a lean DataFrame or None (holiday/empty).
 
@@ -260,27 +328,129 @@ def build_missing_rows(file_market_pairs, verbose=True):
 # ============================================================================
 # SSE PE file reader — separate {code}_pe.csv files in temps/sse_archive/
 # ============================================================================
-def _read_sse_pe_files():
-    """Read all SSE PE files ({code}_pe.csv) and return a DataFrame with
+async def _read_sse_pe_files(conn=None, force: bool = False, verbose: bool = True):
+    """Read SSE PE files ({code}_pe.csv) and return a DataFrame with
     (date, code, name, pe) columns.
 
     SSE publishes PE in separate per-stock CSVs (quarterly snapshots + jump
     days), NOT in the daily trend CSV (whose 市盈率 column is always empty
-    for SSE stocks). This reads all available PE files so they can be merged
-    into the combined OHLCV DataFrame.
+    for SSE stocks). This function reads ONLY PE files whose latest data
+    is NOT already in the database, using tail-peek to check max dates
+    without loading the full file.
 
     The ``name`` column (证券简称) is included so that PE-only rows — dates
     that exist in the PE file but not in the trend file — can still populate
     stock_identity with a valid name.
 
     File schema: 日期,证券代码,证券简称,静态市盈率(倍),总换手率(%)
+
+    Args:
+        conn: asyncpg connection. If provided, enables DB-first filtering.
+        force: if True, ignore DB checks and read all PE files.
+        verbose: print progress messages.
     """
     pe_files = glob_source_files(SSE_PE_DIR, "*_pe.csv")
     if not pe_files:
+        if verbose:
+            print("    [PE] No PE files found", flush=True)
         return pd.DataFrame(columns=["date", "code", "name", "pe"])
 
+    # ------------------------------------------------------------------
+    # DB-first filtering: peek at file tails to find max dates, compare
+    # with DB max PE dates per code, and only read files with new data.
+    # ------------------------------------------------------------------
+    files_to_read = pe_files
+
+    if conn is not None and not force:
+        # Phase 1: peek at tail of each PE file to get (max_date, code)
+        file_peek_results: list[tuple[str, pd.Timestamp | None, str | None]] = []
+        for path in pe_files:
+            result = _peek_csv_max_date(path, "日期", "证券代码")
+            if result is None:
+                file_peek_results.append((path, None, None))
+            else:
+                max_date, first_code = result
+                file_peek_results.append((path, max_date, first_code))
+
+        # Phase 2: build set of (code, max_date) from peek results
+        code_max_dates: dict[str, pd.Timestamp] = {}
+        code_to_files: dict[str, list[str]] = {}
+        for path, max_date, first_code in file_peek_results:
+            if max_date is None or first_code is None:
+                continue
+            # Normalize code: bare 6-digit → add .SS suffix
+            bare_code = first_code.strip()
+            if "." not in bare_code:
+                full_code = add_exchange_suffix(bare_code, "上海")
+            else:
+                full_code = bare_code
+
+            if full_code not in code_max_dates or max_date > code_max_dates[full_code]:
+                code_max_dates[full_code] = max_date
+            code_to_files.setdefault(full_code, []).append(path)
+
+        # Phase 3: query DB for existing max pe date per code
+        if code_max_dates:
+            codes_list = list(code_max_dates.keys())
+            # Query stock_basic_stats for max date per code (only for codes we care about)
+            max_dates_in_db: dict[str, pd.Timestamp] = {}
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT code, MAX(date) AS max_date
+                    FROM stats.stock_basic_stats
+                    WHERE code = ANY($1) AND pe IS NOT NULL
+                    GROUP BY code
+                    """,
+                    codes_list,
+                )
+                for r in rows:
+                    code = r["code"]
+                    max_d = r["max_date"]
+                    if max_d is not None:
+                        max_dates_in_db[code] = pd.Timestamp(max_d)
+            except Exception:
+                pass  # If query fails, fall back to reading all files
+
+            # Phase 4: filter files — keep only files whose code has newer data
+            files_to_read = []
+            skipped_count = 0
+            codes_with_new_data = 0
+            for full_code, files in code_to_files.items():
+                file_max = code_max_dates.get(full_code)
+                db_max = max_dates_in_db.get(full_code)
+                if file_max is not None:
+                    if db_max is None or file_max > db_max:
+                        # File has new data beyond what's in DB
+                        files_to_read.extend(files)
+                        codes_with_new_data += 1
+                    else:
+                        # No new data — skip all files for this code
+                        skipped_count += len(files)
+
+            if verbose:
+                print(f"    [PE] {len(pe_files)} PE files total → "
+                      f"{len(files_to_read)} files to read "
+                      f"({skipped_count} skipped, {codes_with_new_data} codes with new data)",
+                      flush=True)
+        else:
+            if verbose:
+                print(f"    [PE] {len(pe_files)} PE files → "
+                      f"no parseable dates found in tails, reading all", flush=True)
+    elif force:
+        if verbose:
+            print(f"    [PE] Force mode: reading all {len(pe_files)} PE files", flush=True)
+
+    if not files_to_read:
+        if verbose:
+            print(f"    [PE] No PE files with new data to read", flush=True)
+        return pd.DataFrame(columns=["date", "code", "name", "pe"])
+
+    # ------------------------------------------------------------------
+    # Read filtered files only
+    # ------------------------------------------------------------------
     frames = []
-    for path in pe_files:
+    for path in files_to_read:
         try:
             df = pd.read_csv(path, dtype={"证券代码": str})
         except Exception:
@@ -418,7 +588,14 @@ def merge_sse_pe(combined, sse_pe, verbose=True):
 # Without loading these files, SSE stocks have only a few days of OHLCV data
 # (from daily snapshots), which is far below the MIN_DAYS threshold used by
 # the UI's stock list query — so NO SSE stocks appear in the UI.
-def _read_sse_archive_trend_files(start_date=None, end_date=None, limit=None):
+async def _read_sse_archive_trend_files(
+    start_date=None,
+    end_date=None,
+    limit=None,
+    conn=None,
+    force: bool = False,
+    verbose: bool = True,
+):
     """Read SSE per-stock {code}_trend.csv archive files (historical OHLCV).
 
     Globs all ``{code}_trend.csv`` files from ``temps/sse_archive/`` and reads
@@ -427,22 +604,123 @@ def _read_sse_archive_trend_files(start_date=None, end_date=None, limit=None):
     ``build_missing_rows`` output, or an empty DataFrame if no archive files
     exist.
 
+    DB-first filtering: when ``conn`` is provided and ``force`` is False,
+    peeks at the tail of each archive file to find its max date, then queries
+    the DB for the max (date, code) already in stock_identity. Only files whose
+    latest data is NOT already in the DB are fully read.
+
     Args:
         start_date: optional 'YYYY-MM-DD' lower bound (inclusive) for rows
         end_date: optional 'YYYY-MM-DD' upper bound (inclusive) for rows
         limit: optional max number of files to read (dev/test)
+        conn: asyncpg connection. If provided, enables DB-first filtering.
+        force: if True, ignore DB checks and read all archive files.
+        verbose: print progress messages.
     """
     archive_files = glob_source_files(SSE_PE_DIR, "*_trend.csv")
     if limit:
         archive_files = archive_files[:limit]
     if not archive_files:
+        if verbose:
+            print("    [ARCHIVE] No archive trend files found", flush=True)
         return pd.DataFrame()
 
+    # ------------------------------------------------------------------
+    # DB-first filtering: peek at file tails to find max dates, compare
+    # with DB, and only read files with new data.
+    # ------------------------------------------------------------------
+    files_to_read = archive_files
+
+    if conn is not None and not force:
+        # Phase 1: peek at tail of each archive file to get (max_date, code)
+        file_peek_results: list[tuple[str, pd.Timestamp | None, str | None]] = []
+        for path in archive_files:
+            result = _peek_csv_max_date(path, "交易日期", "证券代码")
+            if result is None:
+                file_peek_results.append((path, None, None))
+            else:
+                max_date, first_code = result
+                file_peek_results.append((path, max_date, first_code))
+
+        # Phase 2: build set of (code, max_date) from peek results
+        code_max_dates: dict[str, pd.Timestamp] = {}
+        code_to_files: dict[str, list[str]] = {}
+        for path, max_date, first_code in file_peek_results:
+            if max_date is None or first_code is None:
+                continue
+            # Normalize code
+            bare_code = first_code.strip()
+            if "." not in bare_code:
+                full_code = add_exchange_suffix(bare_code, "上海")
+            else:
+                full_code = bare_code
+
+            if full_code not in code_max_dates or max_date > code_max_dates[full_code]:
+                code_max_dates[full_code] = max_date
+            code_to_files.setdefault(full_code, []).append(path)
+
+        # Phase 3: query DB for existing max (date, code) in stock_identity
+        if code_max_dates:
+            codes_list = list(code_max_dates.keys())
+            max_dates_in_db: dict[str, pd.Timestamp] = {}
+            try:
+                rows = await conn.fetch(
+                    """
+                    SELECT code, MAX(date) AS max_date
+                    FROM stats.stock_identity
+                    WHERE code = ANY($1) AND code_suffix = 'SS'
+                    GROUP BY code
+                    """,
+                    codes_list,
+                )
+                for r in rows:
+                    code = r["code"]
+                    max_d = r["max_date"]
+                    if max_d is not None:
+                        max_dates_in_db[code] = pd.Timestamp(max_d)
+            except Exception:
+                pass  # If query fails, fall back to reading all files
+
+            # Phase 4: filter files — keep only files whose code has newer data
+            files_to_read = []
+            skipped_count = 0
+            codes_with_new_data = 0
+            for full_code, files in code_to_files.items():
+                file_max = code_max_dates.get(full_code)
+                db_max = max_dates_in_db.get(full_code)
+                if file_max is not None:
+                    if db_max is None or file_max > db_max:
+                        files_to_read.extend(files)
+                        codes_with_new_data += 1
+                    else:
+                        skipped_count += len(files)
+
+            if verbose:
+                print(f"    [ARCHIVE] {len(archive_files)} archive files total → "
+                      f"{len(files_to_read)} files to read "
+                      f"({skipped_count} skipped, {codes_with_new_data} codes with new data)",
+                      flush=True)
+        else:
+            if verbose:
+                print(f"    [ARCHIVE] {len(archive_files)} archive files → "
+                      f"no parseable dates found in tails, reading all", flush=True)
+    elif force:
+        if verbose:
+            print(f"    [ARCHIVE] Force mode: reading all {len(archive_files)} archive files", flush=True)
+
+    if not files_to_read:
+        if verbose:
+            print(f"    [ARCHIVE] No archive files with new data to read", flush=True)
+        return pd.DataFrame()
+
+    # ------------------------------------------------------------------
+    # Read filtered files only
+    # ------------------------------------------------------------------
     sd = pd.to_datetime(start_date) if start_date else None
     ed = pd.to_datetime(end_date) if end_date else None
 
     frames = []
-    for path in archive_files:
+    for path in files_to_read:
         df = _read_one(path, "上海")
         if df is None or df.empty:
             continue
@@ -562,8 +840,13 @@ def _scan_stock_margin_dir(scan_dir, file_prefix, market, verbose=True, files=No
             "rq_balance_amt": "融券余额(元)",
             "total_balance": "融资融券余额(元)",
         }
+        # SSE detail CSVs do NOT publish 融券余额(元) or 融资融券余额(元);
+        # missing columns default to 0. SZSE CSVs contain all six columns.
         for _out_col, _src_col in _margin_cols_src.items():
-            _df_out[_out_col] = df[_src_col].map(parse_num)
+            if _src_col in df.columns:
+                _df_out[_out_col] = df[_src_col].map(parse_num)
+            else:
+                _df_out[_out_col] = 0.0
         rows.extend(_df_out[["date", "code"] + list(_margin_cols_src.keys())].to_dict(orient="records"))
         n_ok += 1
     if verbose:
@@ -1023,7 +1306,7 @@ async def main():
                 # Per-suffix missing-date detection — MAX(date) fast path
                 max_suffix_date = await get_max_table_date_async(
                     conn, "stats.stock_identity",
-                    where_clause=f"code LIKE '%%.{suffix}'"
+                    where_clause=f"code LIKE '%{suffix}'"
                 )
                 if max_suffix_date is None:
                     suffix_missing = set(suffix_dates)
@@ -1046,6 +1329,7 @@ async def main():
                     continue
 
                 # Filter suffix files to only missing dates
+                before_count = len(missing_file_pairs)
                 for path, market in suffix_files:
                     for _dir, _pat, prefix, _mkt, _sfx in SOURCE_FILE_SETS:
                         ymd = ymd_from_filename(path, prefix)
@@ -1054,10 +1338,11 @@ async def main():
                             if d and d in suffix_missing:
                                 missing_file_pairs.append((path, market))
                                 break
+                suffix_file_count = len(missing_file_pairs) - before_count
 
                 print(f"    [{suffix}] {len(suffix_missing)} dates missing, "
                       f"{len(suffix_files)} files available, "
-                      f"{sum(1 for p, _ in missing_file_pairs if any(ymd_from_filename(p, pr) for _, _, pr, _, _ in SOURCE_FILE_SETS))} files to read so far",
+                      f"{suffix_file_count} files to read",
                       flush=True)
 
             # Actually count files per suffix for the summary
@@ -1080,8 +1365,9 @@ async def main():
         # level filtering: query the DB for existing SS (date, code) pairs and
         # keep only archive rows that are NOT already in the DB.
         print(f"\n    Loading SSE archive historical OHLCV from {SSE_PE_DIR} …", flush=True)
-        archive_df = _read_sse_archive_trend_files(
-            args.start_date, args.end_date, limit=args.limit
+        archive_df = await _read_sse_archive_trend_files(
+            args.start_date, args.end_date, limit=args.limit,
+            conn=conn, force=args.force, verbose=True,
         )
         if len(archive_df) > 0:
             n_archive_total = len(archive_df)
@@ -1095,9 +1381,12 @@ async def main():
                 print(f"    [ARCHIVE] Force mode: keeping all {n_archive_total:,} rows",
                       flush=True)
             else:
-                # DB-first filtering: query existing SS (date, code) pairs and
-                # keep only archive rows NOT already in the DB. This avoids
-                # re-inserting rows from daily snapshots already loaded.
+                # Row-level safety net: query existing SS (date, code) pairs and
+                # keep only archive rows NOT already in the DB. The file-level
+                # filter in _read_sse_archive_trend_files already skips whole
+                # files whose max date is already in DB; this catches any
+                # remaining individual (date, code) pairs that were inserted
+                # since the last file-level check.
                 existing_ss_rows = await conn.fetch(
                     "SELECT date, code FROM stats.stock_identity "
                     "WHERE code_suffix = 'SS'"
@@ -1156,7 +1445,7 @@ async def main():
         # merge_sse_pe may produce PE-only rows (dates in PE files but not in
         # trend files) even when all OHLCV rows are already in the DB.
         print(f"\n    Merging SSE PE snapshots from {SSE_PE_DIR} …", flush=True)
-        sse_pe = _read_sse_pe_files()
+        sse_pe = await _read_sse_pe_files(conn=conn, force=args.force, verbose=True)
         combined = merge_sse_pe(combined, sse_pe, verbose=True)
 
         # Expand history_start/end to include PE-only dates (may go back to

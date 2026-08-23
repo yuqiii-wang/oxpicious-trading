@@ -3,13 +3,35 @@ import type {
   SecCompositionResponse,
   LinkedEtfsResponse,
   SimilarIndicesResponse,
+  QuarterlyCompositionResponse,
 } from "@shared/types";
 
-export function fetchSecComposition(code: string): Promise<SecCompositionResponse> {
+/** Fetch the composition holdings for a security.
+ *  Without `date`: latest snapshot. With `date` ("YYYY-MM-DD"): the latest
+ *  snapshot within the calendar QUARTER containing the date (by-season
+ *  lookup — used by the ETF Holdings page's quarterly bar → pie drill-down). */
+export function fetchSecComposition(
+  code: string,
+  date?: string,
+): Promise<SecCompositionResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (date) params.set("date", date);
+  const qs = params.toString();
+  return fetchJson<SecCompositionResponse>(`/api/sec-composition${qs ? `?${qs}` : ""}`);
+}
+
+/** Fetch per-quarter industry-aggregated composition for a security (one
+ *  entry per calendar quarter that has a snapshot; tracking-index fallback
+ *  when the ETF has no snapshots). Used by the ETF Holdings page's stacked
+ *  bar chart. */
+export function fetchQuarterlyComposition(
+  code: string,
+): Promise<QuarterlyCompositionResponse> {
   const params = new URLSearchParams();
   if (code) params.set("code", code);
   const qs = params.toString();
-  return fetchJson<SecCompositionResponse>(`/api/sec-composition${qs ? `?${qs}` : ""}`);
+  return fetchJson<QuarterlyCompositionResponse>(`/api/sec-composition/quarterly${qs ? `?${qs}` : ""}`);
 }
 
 /** Fetch ETFs tracking the given index (parent_index_code = code).

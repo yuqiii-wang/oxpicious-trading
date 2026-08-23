@@ -4,6 +4,12 @@
  *
  * Extracted from ExpiryOiBandsPanel.tsx for the merged OptionsTrendPanel.
  * Uses shared bandsTooltip.ts for tooltip formatting.
+ *
+ * Two wall modes:
+ *   - "80pct":  boundary where one side dominates ≥80% of total OI at
+ *              each strike, interpolated across strikes (existing logic).
+ *   - "large_num": strike with the max OI among those exceeding 70% of
+ *              the mean OI across all strikes in the expiry group.
  */
 import {
   DOWN_COLOR,
@@ -24,8 +30,12 @@ import {
 import {
   BEAR_THRESHOLD_SERIES_NAME,
   BULL_THRESHOLD_SERIES_NAME,
+  CALL_LARGE_NUM_SERIES_NAME,
+  LARGE_NUM_MEAN_FRACTION,
+  PUT_LARGE_NUM_SERIES_NAME,
   PUT_PCT_GREEN,
   PUT_PCT_RED,
+  type WallMode,
 } from "./bandData";
 import type { BandCell } from "./bandData";
 import type { ExpiryMarker } from "./sharedData";
@@ -136,6 +146,104 @@ export function computeThresholdCurves(
   return { bull, bear };
 }
 
+/**
+ * Compute the "large num wall" curves for the bands chart.
+ *
+ * Per date, for each option type (CALL / PUT):
+ *   1. Aggregate OI by strike across all cells for that date + type.
+ *   2. Compute the mean OI across all strikes.
+ *   3. Filter strikes where OI > 70% of the mean value.
+ *   4. Pick the strike with the maximum OI among qualifying strikes.
+ *
+ * Returns two wall series:
+ *   - callWall:  the max-OI strike among CALL strikes exceeding the mean
+ *                threshold (acts as support — price tends to stay above).
+ *   - putWall:   the max-OI strike among PUT strikes exceeding the mean
+ *                threshold (acts as resistance — price tends to stay below).
+ */
+export function computeLargeNumWalls(
+  cells: BandCell[],
+  datesLength: number,
+): {
+  callWall: (number | null)[];
+  putWall: (number | null)[];
+} {
+  // Group cells by date index
+  const byIdx = new Map<number, BandCell[]>();
+  for (const cell of cells) {
+    const idx = cell.value[0];
+    let group = byIdx.get(idx);
+    if (!group) {
+      group = [];
+      byIdx.set(idx, group);
+    }
+    group.push(cell);
+  }
+
+  const callWall: (number | null)[] = new Array(datesLength).fill(null);
+  const putWall: (number | null)[] = new Array(datesLength).fill(null);
+
+  for (const [idx, group] of byIdx) {
+    if (idx >= datesLength) continue;
+
+    // Aggregate OI by strike for CALL and PUT separately
+    const callOiByStrike = new Map<number, number>();
+    const putOiByStrike = new Map<number, number>();
+
+    for (const cell of group) {
+      if (cell.callOi > 0) {
+        callOiByStrike.set(
+          cell.strikeY,
+          (callOiByStrike.get(cell.strikeY) ?? 0) + cell.callOi,
+        );
+      }
+      if (cell.putOi > 0) {
+        putOiByStrike.set(
+          cell.strikeY,
+          (putOiByStrike.get(cell.strikeY) ?? 0) + cell.putOi,
+        );
+      }
+    }
+
+    // Compute mean OI for calls and puts
+    const callStrikes = Array.from(callOiByStrike.values());
+    const putStrikes = Array.from(putOiByStrike.values());
+
+    if (callStrikes.length > 0) {
+      const callMean = callStrikes.reduce((a, b) => a + b, 0) / callStrikes.length;
+      const callThreshold = callMean * LARGE_NUM_MEAN_FRACTION;
+
+      // Filter strikes exceeding threshold, pick max OI
+      let bestCallStrike: number | null = null;
+      let bestCallOi = 0;
+      for (const [strike, oi] of callOiByStrike) {
+        if (oi >= callThreshold && oi > bestCallOi) {
+          bestCallOi = oi;
+          bestCallStrike = strike;
+        }
+      }
+      callWall[idx] = bestCallStrike;
+    }
+
+    if (putStrikes.length > 0) {
+      const putMean = putStrikes.reduce((a, b) => a + b, 0) / putStrikes.length;
+      const putThreshold = putMean * LARGE_NUM_MEAN_FRACTION;
+
+      let bestPutStrike: number | null = null;
+      let bestPutOi = 0;
+      for (const [strike, oi] of putOiByStrike) {
+        if (oi >= putThreshold && oi > bestPutOi) {
+          bestPutOi = oi;
+          bestPutStrike = strike;
+        }
+      }
+      putWall[idx] = bestPutStrike;
+    }
+  }
+
+  return { callWall, putWall };
+}
+
 export function buildBandsOption(
   dates: string[],
   cells: BandCell[],
@@ -143,17 +251,73 @@ export function buildBandsOption(
   themeMode: "light" | "dark",
   dataZoom: EChartsOption["dataZoom"] = undefined,
   expiryMarkers: ExpiryMarker[] = [],
+  wallMode: WallMode = "80pct",
 ): EChartsOption {
   const c = axisColors(themeMode);
   const renderItem = buildBandRenderItem(cells);
-  const tooltipFormatter = makeBandsTooltipFormatter(c.textColor, c.tooltipBg, c.splitLineColor);
+  const tooltipFormatter = makeBandsTooltipFormatter(c.textColor, c.tooltipBg, c.splitLineColor, wallMode);
   const dotTooltip = makeExpiryDotTooltip({
     textColor: c.textColor,
     tooltipBg: c.tooltipBg,
     splitLineColor: c.splitLineColor,
   });
   const expiryData = buildExpiryData(dates, [spot], expiryMarkers);
-  const { bull, bear } = computeThresholdCurves(cells, dates.length);
+
+  // Compute wall curves based on the selected mode
+  let wallSeries: EChartsOption["series"] = [];
+  if (wallMode === "80pct") {
+    const { bull, bear } = computeThresholdCurves(cells, dates.length);
+    wallSeries = [
+      {
+        type: "line",
+        name: BULL_THRESHOLD_SERIES_NAME,
+        data: bull,
+        showSymbol: false,
+        smooth: false,
+        connectNulls: false,
+        lineStyle: { color: UP_COLOR, width: 2.5 },
+        itemStyle: { color: UP_COLOR },
+        z: 9,
+      },
+      {
+        type: "line",
+        name: BEAR_THRESHOLD_SERIES_NAME,
+        data: bear,
+        showSymbol: false,
+        smooth: false,
+        connectNulls: false,
+        lineStyle: { color: DOWN_COLOR, width: 2.5 },
+        itemStyle: { color: DOWN_COLOR },
+        z: 9,
+      },
+    ];
+  } else {
+    const { callWall, putWall } = computeLargeNumWalls(cells, dates.length);
+    wallSeries = [
+      {
+        type: "line",
+        name: CALL_LARGE_NUM_SERIES_NAME,
+        data: callWall,
+        showSymbol: false,
+        smooth: false,
+        connectNulls: false,
+        lineStyle: { color: UP_COLOR, width: 2.5, type: "dashed" as const },
+        itemStyle: { color: UP_COLOR },
+        z: 9,
+      },
+      {
+        type: "line",
+        name: PUT_LARGE_NUM_SERIES_NAME,
+        data: putWall,
+        showSymbol: false,
+        smooth: false,
+        connectNulls: false,
+        lineStyle: { color: DOWN_COLOR, width: 2.5, type: "dashed" as const },
+        itemStyle: { color: DOWN_COLOR },
+        z: 9,
+      },
+    ];
+  }
 
   return {
     backgroundColor: "transparent",
@@ -220,28 +384,7 @@ export function buildBandsOption(
         lineStyle: { color: SPOT_COLOR, width: 1.6 },
         z: 10,
       },
-      {
-        type: "line",
-        name: BULL_THRESHOLD_SERIES_NAME,
-        data: bull,
-        showSymbol: false,
-        smooth: false,
-        connectNulls: false,
-        lineStyle: { color: UP_COLOR, width: 2.5 },
-        itemStyle: { color: UP_COLOR },
-        z: 9,
-      },
-      {
-        type: "line",
-        name: BEAR_THRESHOLD_SERIES_NAME,
-        data: bear,
-        showSymbol: false,
-        smooth: false,
-        connectNulls: false,
-        lineStyle: { color: DOWN_COLOR, width: 2.5 },
-        itemStyle: { color: DOWN_COLOR },
-        z: 9,
-      },
+      ...wallSeries,
       {
         id: "bands-expiry-markers",
         type: "scatter",

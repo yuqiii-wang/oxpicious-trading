@@ -80,6 +80,20 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
       "analysis.fourier_freqs.",
     tags: ["Index", "FFT", "cycle period", "frequency analysis", "amplitude"],
   },
+  {
+    slug: "etf-holdings",
+    title: "ETF Holdings",
+    description:
+      "Per-ETF holdings inspection: browse the ETF classification nav " +
+      "(sector → industry + strategy → theme, exchange filter, ETF chips) " +
+      "and drill into what each ETF holds — full stock weights / composition " +
+      "with L1/L2 classification labels, falling back to the tracking " +
+      "index's constituents when an ETF has no holdings snapshot. Scaffolding " +
+      "stage: the page currently loads the ETF classification nav only; the " +
+      "holdings view is coming next. Backed by stats.sec_composition " +
+      "(/api/sec-composition).",
+    tags: ["ETF", "holdings", "composition", "stock weights", "classification nav"],
+  },
 ];
 
 export default function CommonsPage() {

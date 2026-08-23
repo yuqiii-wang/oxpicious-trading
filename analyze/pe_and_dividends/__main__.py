@@ -121,23 +121,36 @@ def _normalize_stock_codes(df, col: str) -> None:
 
 async def _process_index(
     conn, pool, *, force: bool, target_dates_detail: set | None,
-    target_dates_stats: set | None,
+    target_dates_stats: set | None, code: str | None = None,
 ) -> int:
-    """Process sec_type='index' end-to-end."""
+    """Process sec_type='index' end-to-end.
+
+    ``code`` (single-code mode, --code): bypasses the active-universe
+    pre-filter and recomputes ALL rows for that one code (upsert).
+    """
     st = "index"
-    print(f"\n  [{st}] Fetching active codes...", flush=True)
-    codes = await fetch_active_codes(conn, st)
-    code_list = sorted(codes)
-    print(f"  [{st}]   {len(code_list):,} active codes", flush=True)
-    if not code_list:
-        print(f"  [{st}]   no active codes; skipping.", flush=True)
-        return 0
+    if code is not None:
+        code_list = [code]
+        print(f"\n  [{st}] SINGLE-CODE mode: processing {code}", flush=True)
+    else:
+        print(f"\n  [{st}] Fetching active codes...", flush=True)
+        codes = await fetch_active_codes(conn, st)
+        code_list = sorted(codes)
+        print(f"  [{st}]   {len(code_list):,} active codes", flush=True)
+        if not code_list:
+            print(f"  [{st}]   no active codes; skipping.", flush=True)
+            return 0
 
     # ---- Fetch source data ----------------------------------------------
     print(f"  [{st}] Fetching PE + close from index_valuation + index_basic_stats...",
           flush=True)
     close_df = await fetch_index_pe_and_close(conn, code_list)
     print(f"  [{st}]   {len(close_df):,} (code, date) rows with close", flush=True)
+
+    if code is not None and close_df.empty:
+        print(f"  [{st}]   no source data for {code} in {st}; skipping.",
+              flush=True)
+        return 0
 
     print(f"  [{st}] Fetching latest composition from sec_composition...", flush=True)
     comp_df = await fetch_latest_index_composition(conn, code_list)
@@ -200,7 +213,8 @@ async def _process_index(
     # ---- Compute + insert monthly stats ----------------------------------
     # Stats always needs full recompute when new month-end dates appear
     # (is_active flag flips). Skip entirely if no missing month-end dates.
-    if force or (target_dates_stats is not None and len(target_dates_stats) > 0):
+    # Single-code mode always recomputes the code's stats rows.
+    if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
         print(f"  [{st}] Computing monthly 5y rolling stats...", flush=True)
         detail_df = pd.DataFrame(detail_rows)
         pe_df = close_df[["code", "date", "pe"]].copy() if "pe" in close_df.columns else None
@@ -209,7 +223,7 @@ async def _process_index(
             detail_df, pe_df, comp_df, div_df, trading_dates, st
         )
         print(f"  [{st}]   {len(stats_rows):,} monthly stats rows", flush=True)
-        await _write_stats(conn, st, stats_rows, force=force)
+        await _write_stats(conn, st, stats_rows, force=force, code=code)
     else:
         print(f"  [{st}] Monthly stats up to date; skipping stats step.",
               flush=True)
@@ -219,21 +233,34 @@ async def _process_index(
 
 async def _process_etf(
     conn, pool, *, force: bool, target_dates_detail: set | None,
-    target_dates_stats: set | None,
+    target_dates_stats: set | None, code: str | None = None,
 ) -> int:
-    """Process sec_type='etf' end-to-end."""
+    """Process sec_type='etf' end-to-end.
+
+    ``code`` (single-code mode, --code): bypasses the active-universe
+    pre-filter and recomputes ALL rows for that one code (upsert).
+    """
     st = "etf"
-    print(f"\n  [{st}] Fetching active codes...", flush=True)
-    codes = await fetch_active_codes(conn, st)
-    code_list = sorted(codes)
-    print(f"  [{st}]   {len(code_list):,} active codes", flush=True)
-    if not code_list:
-        print(f"  [{st}]   no active codes; skipping.", flush=True)
-        return 0
+    if code is not None:
+        code_list = [code]
+        print(f"\n  [{st}] SINGLE-CODE mode: processing {code}", flush=True)
+    else:
+        print(f"\n  [{st}] Fetching active codes...", flush=True)
+        codes = await fetch_active_codes(conn, st)
+        code_list = sorted(codes)
+        print(f"  [{st}]   {len(code_list):,} active codes", flush=True)
+        if not code_list:
+            print(f"  [{st}]   no active codes; skipping.", flush=True)
+            return 0
 
     print(f"  [{st}] Fetching close + pe + implied_dividend_per_share...", flush=True)
     etf_df = await fetch_etf_close_and_dividends(conn, code_list)
     print(f"  [{st}]   {len(etf_df):,} (code, date) rows", flush=True)
+
+    if code is not None and etf_df.empty:
+        print(f"  [{st}]   no source data for {code} in {st}; skipping.",
+              flush=True)
+        return 0
 
     print(f"  [{st}] Fetching trading dates...", flush=True)
     trading_dates = await fetch_trading_dates(conn, st)
@@ -266,14 +293,14 @@ async def _process_etf(
     )
 
     # Monthly stats
-    if force or (target_dates_stats is not None and len(target_dates_stats) > 0):
+    if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
         print(f"  [{st}] Computing monthly 5y rolling stats...", flush=True)
         detail_df = pd.DataFrame(detail_rows)
         stats_rows = compute_monthly_stats(
             detail_df, pe_df, None, div_events, trading_dates, st
         )
         print(f"  [{st}]   {len(stats_rows):,} monthly stats rows", flush=True)
-        await _write_stats(conn, st, stats_rows, force=force)
+        await _write_stats(conn, st, stats_rows, force=force, code=code)
     else:
         print(f"  [{st}] Monthly stats up to date; skipping stats step.",
               flush=True)
@@ -283,21 +310,34 @@ async def _process_etf(
 
 async def _process_stock(
     conn, pool, *, force: bool, target_dates_detail: set | None,
-    target_dates_stats: set | None,
+    target_dates_stats: set | None, code: str | None = None,
 ) -> int:
-    """Process sec_type='stock' end-to-end."""
+    """Process sec_type='stock' end-to-end.
+
+    ``code`` (single-code mode, --code): bypasses the active-universe
+    pre-filter and recomputes ALL rows for that one code (upsert).
+    """
     st = "stock"
-    print(f"\n  [{st}] Fetching active codes...", flush=True)
-    codes = await fetch_active_codes(conn, st)
-    code_list = sorted(codes)
-    print(f"  [{st}]   {len(code_list):,} active codes", flush=True)
-    if not code_list:
-        print(f"  [{st}]   no active codes; skipping.", flush=True)
-        return 0
+    if code is not None:
+        code_list = [code]
+        print(f"\n  [{st}] SINGLE-CODE mode: processing {code}", flush=True)
+    else:
+        print(f"\n  [{st}] Fetching active codes...", flush=True)
+        codes = await fetch_active_codes(conn, st)
+        code_list = sorted(codes)
+        print(f"  [{st}]   {len(code_list):,} active codes", flush=True)
+        if not code_list:
+            print(f"  [{st}]   no active codes; skipping.", flush=True)
+            return 0
 
     print(f"  [{st}] Fetching close + pe...", flush=True)
     close_df = await fetch_stock_close(conn, code_list)
     print(f"  [{st}]   {len(close_df):,} (code, date) rows", flush=True)
+
+    if code is not None and close_df.empty:
+        print(f"  [{st}]   no source data for {code} in {st}; skipping.",
+              flush=True)
+        return 0
 
     print(f"  [{st}] Fetching dividends (all stock_dividends)...", flush=True)
     div_df = await fetch_stock_dividends(conn, stock_codes=None)
@@ -331,14 +371,14 @@ async def _process_stock(
     )
 
     # Monthly stats
-    if force or (target_dates_stats is not None and len(target_dates_stats) > 0):
+    if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
         print(f"  [{st}] Computing monthly 5y rolling stats...", flush=True)
         detail_df = pd.DataFrame(detail_rows)
         stats_rows = compute_monthly_stats(
             detail_df, pe_df, None, div_df, trading_dates, st
         )
         print(f"  [{st}]   {len(stats_rows):,} monthly stats rows", flush=True)
-        await _write_stats(conn, st, stats_rows, force=force)
+        await _write_stats(conn, st, stats_rows, force=force, code=code)
     else:
         print(f"  [{st}] Monthly stats up to date; skipping stats step.",
               flush=True)
@@ -418,23 +458,36 @@ async def _write_detail(
 
 async def _write_stats(
     conn, sec_type: str, stats_rows: list[dict], *, force: bool,
+    code: str | None = None,
 ) -> int:
     """Write monthly stats rows to analysis.pe_and_dividend_stats.
 
-    Always DELETE sec_type + COPY-insert. The is_active flag + 5y rolling
+    Always DELETE + COPY-insert. The is_active flag + 5y rolling
     windows require full recompute when a new month-end date appears, so
     there is no per-row upsert path for stats — the caller gates this call
     on whether new month-end dates are actually missing.
+
+    Single-code mode (``code``): deletes only that code's rows first
+    (the recomputed stats_rows cover just that code) instead of the
+    whole sec_type.
     """
     if not stats_rows:
         print(f"  [{sec_type}]   no stats rows to write", flush=True)
         return 0
 
-    print(f"  [{sec_type}] Deleting existing {sec_type} rows from "
-          f"{STATS_TABLE}...", flush=True)
-    await conn.execute(
-        f"DELETE FROM {STATS_TABLE} WHERE sec_type = $1", sec_type
-    )
+    if code is not None:
+        print(f"  [{sec_type}] Deleting existing rows for {code} from "
+              f"{STATS_TABLE}...", flush=True)
+        await conn.execute(
+            f"DELETE FROM {STATS_TABLE} WHERE sec_type = $1 AND code = $2",
+            sec_type, code,
+        )
+    else:
+        print(f"  [{sec_type}] Deleting existing {sec_type} rows from "
+              f"{STATS_TABLE}...", flush=True)
+        await conn.execute(
+            f"DELETE FROM {STATS_TABLE} WHERE sec_type = $1", sec_type
+        )
     print(f"  [{sec_type}] Inserting {len(stats_rows):,} stats rows "
           f"(COPY)...", flush=True)
     n = await copy_insert_async(conn, STATS_TABLE, stats_rows)
@@ -516,8 +569,21 @@ async def main() -> None:
         "--sec-type", choices=("index", "etf", "stock"), default=None,
         help="Process only this sec_type (for testing). Default: all.",
     )
+    ap.add_argument(
+        "--code", default=None,
+        help="Recompute ALL rows for this single security only "
+             "(single-code mode; used by the UI per-security build "
+             "button). Detail rows are upserted (ON CONFLICT DO "
+             "UPDATE); the code's monthly stats rows are deleted and "
+             "rebuilt. Mutually exclusive with --force.",
+    )
     args = ap.parse_args()
     force = args.force
+
+    if args.code and args.force:
+        print("ERROR: --code and --force are mutually exclusive.",
+              flush=True)
+        sys.exit(2)
 
     sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
 
@@ -527,13 +593,47 @@ async def main() -> None:
         detail_table=DETAIL_TABLE,
         stats_table=STATS_TABLE,
         sec_types=", ".join(sec_types),
-        mode="FORCE (full recompute per sec_type)" if force
-             else "incremental (missing dates only)",
+        mode=(
+            f"SINGLE-CODE {args.code} (full recompute for this security)"
+            if args.code else
+            "FORCE (full recompute per sec_type)" if force
+            else "incremental (missing dates only)"
+        ),
     )
 
     conn = await get_db_connection_async()
     pool = await get_db_pool_async(min_size=1, max_size=4)
     try:
+        # ---- Single-code mode (--code): rebuild ONE security -------------
+        # Bypasses the per-sec_type missing-date detection entirely — the
+        # UI fires this when a security has NO rows while the rest of the
+        # sec_type is up to date (date-level detection would see nothing
+        # missing and skip it).
+        if args.code:
+            total = 0
+            for st in sec_types:
+                processor = _PROCESSORS[st]
+                total += await processor(
+                    conn, pool,
+                    force=False,
+                    target_dates_detail=None,
+                    target_dates_stats=None,
+                    code=args.code,
+                )
+
+            print(f"\n  -> Upserting analysis.analysis_identity registry...",
+                  flush=True)
+            await upsert_analysis_identity(
+                conn,
+                name=ANALYSIS_NAME,
+                detail_name="pe_and_dividends",
+                description=DESCRIPTION,
+            )
+
+            print(f"\n  TOTAL: {total:,} detail rows inserted", flush=True)
+            print_wall_time(t0)
+            return
+
         # ---- Detect missing dates (incremental mode) --------------------
         if not force:
             print("\n  Detecting missing dates per sec_type (incremental mode)...",

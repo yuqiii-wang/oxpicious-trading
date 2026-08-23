@@ -30,6 +30,7 @@ function buildOiTrendOptionFromBroken(
   themeMode: "light" | "dark",
   expiryMarkers: ExpiryMarker[] = [],
   dataZoom: EChartsOption["dataZoom"] = undefined,
+  yRange?: [number, number],
 ): EChartsOption {
   const c = axisColors(themeMode);
   const colors = { textColor: c.textColor, tooltipBg: c.tooltipBg, splitLineColor: c.splitLineColor };
@@ -72,6 +73,9 @@ function buildOiTrendOptionFromBroken(
     yAxis: {
       type: "value",
       scale: true,
+      // Frozen y-range (from the full dataset) keeps the scale constant when
+      // the cohort selection changes; omitted → ECharts auto extent
+      ...(yRange ? { min: yRange[0], max: yRange[1] } : {}),
       name: "OI (mil contracts)",
       nameTextStyle: { color: c.textColor, fontSize: 10 },
       axisLine: { lineStyle: { color: c.axisLineColor } },
@@ -146,11 +150,13 @@ export function buildOiTrendOptionWithBroken(
   themeMode: "light" | "dark",
   expiryMarkers: ExpiryMarker[] = [],
   dataZoom: EChartsOption["dataZoom"] = undefined,
+  yRange?: [number, number],
 ): EChartsOption {
   return buildOiTrendOptionFromBroken(
     { dates: brokenDates, arrays: [callMilBroken, putMilBroken] },
     themeMode,
     expiryMarkers,
     dataZoom,
+    yRange,
   );
 }

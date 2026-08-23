@@ -5,6 +5,9 @@ import type {
   EtfOhlcvResponse,
   SkewnessCorrResponse,
   SkewnessCrossCountResponse,
+  SkewnessSeriesResponse,
+  IvSkewResponse,
+  SkewType,
 } from "@shared/types";
 
 export type OptionsTargetType = "ETF" | "INDEX";
@@ -46,15 +49,22 @@ export function fetchEtfOhlcv(
   return fetchJson<EtfOhlcvResponse>(`/api/szse-options/etf-ohlcv${qs ? `?${qs}` : ""}`);
 }
 
+/** Skew data source in options_skewness_stats: 'oi_moneyness' (OI-weighted
+ *  mean moneyness, positioning), 'iv_smile' (OI-wtd 3rd moment of IV),
+ *  or 'greek_<name>' (OI-wtd mean greek / ATM greek, per greek). */
+export type { SkewType } from "@shared/types";
+
 export function fetchOptionsSkewnessCorr(
   underlying: string,
   startDate?: string | null,
   endDate?: string | null,
+  skewType: SkewType = "oi_moneyness",
 ): Promise<SkewnessCorrResponse> {
   const params = new URLSearchParams();
   if (underlying) params.set("underlying", underlying);
   if (startDate) params.set("start_date", startDate);
   if (endDate) params.set("end_date", endDate);
+  params.set("skew_type", skewType);
   const qs = params.toString();
   return fetchJson<SkewnessCorrResponse>(
     `/api/szse-options/skewness-corr${qs ? `?${qs}` : ""}`,
@@ -65,13 +75,47 @@ export function fetchOptionsSkewnessCrossCounts(
   underlying: string,
   startDate?: string | null,
   endDate?: string | null,
+  skewType: SkewType = "oi_moneyness",
 ): Promise<SkewnessCrossCountResponse> {
   const params = new URLSearchParams();
   if (underlying) params.set("underlying", underlying);
   if (startDate) params.set("start_date", startDate);
   if (endDate) params.set("end_date", endDate);
+  params.set("skew_type", skewType);
   const qs = params.toString();
   return fetchJson<SkewnessCrossCountResponse>(
     `/api/szse-options/skewness-cross-counts${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchOptionsSkewnessSeries(
+  underlying: string,
+  startDate?: string | null,
+  endDate?: string | null,
+  skewType: SkewType = "oi_moneyness",
+): Promise<SkewnessSeriesResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  params.set("skew_type", skewType);
+  const qs = params.toString();
+  return fetchJson<SkewnessSeriesResponse>(
+    `/api/szse-options/skewness-series${qs ? `?${qs}` : ""}`,
+  );
+}
+
+export function fetchOptionsIvSkew(
+  underlying: string,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<IvSkewResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<IvSkewResponse>(
+    `/api/szse-options/iv-skew${qs ? `?${qs}` : ""}`,
   );
 }

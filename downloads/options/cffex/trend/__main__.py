@@ -68,21 +68,28 @@ from downloads.options.cffex.trend.downloader import (
 
 logger = setup_logger("cffex_options_trend")
 
+# CFFEX option contract code prefixes (matched by the build module too)
+_CFFEX_CONTRACT_PREFIXES = ("IO%", "HO%", "MO%", "CO%")
+
 
 # ---------------------------------------------------------------------------
 # Step 1: Check SQL for latest date
 # ---------------------------------------------------------------------------
 
 def get_latest_db_date() -> Optional[date]:
-    """Query stats.options_identity for the latest date.
+    """Query stats.options_identity for the latest date with CFFEX data.
 
     Returns:
-        Latest date in the database, or None if table is empty/missing.
+        Latest date with CFFEX entries in the database, or None if absent.
     """
     try:
         conn = get_db_connection()
+        conditions = " OR ".join(
+            ["contract_code LIKE %s" for _ in _CFFEX_CONTRACT_PREFIXES]
+        )
         row = conn.execute(
-            "SELECT MAX(date) as max_date FROM stats.options_identity"
+            f"SELECT MAX(date) FROM stats.options_identity WHERE {conditions}",
+            list(_CFFEX_CONTRACT_PREFIXES),
         ).fetchone()
         conn.close()
         if row and row[0]:
@@ -90,6 +97,42 @@ def get_latest_db_date() -> Optional[date]:
     except Exception as e:
         logger.warning("DB check failed (table may not exist): %s", e)
     return None
+
+
+def _cffex_missing_dates_in_range(
+    start_date: date,
+    end_date: date,
+) -> Set[date]:
+    """Find trading days in [start_date, end_date] that lack CFFEX data.
+
+    Queries stats.options_identity for dates with CFFEX contract codes
+    (IO%, HO%, MO%, CO%) and returns the complement set of expected
+    trading days that are completely absent.
+
+    This mirrors the build module's find_missing_cffex_dates() logic but
+    works with the sync psycopg2 connection used by the downloader.
+    """
+    expected: Set[date] = set(business_days(start_date, end_date, reverse=False))
+    if not expected:
+        return set()
+
+    try:
+        conn = get_db_connection()
+        conditions = " OR ".join(
+            ["contract_code LIKE %s" for _ in _CFFEX_CONTRACT_PREFIXES]
+        )
+        sql = (
+            f"SELECT DISTINCT date FROM stats.options_identity "
+            f"WHERE date BETWEEN %s AND %s AND ({conditions})"
+        )
+        params = [start_date, end_date] + list(_CFFEX_CONTRACT_PREFIXES)
+        rows = conn.execute(sql, params).fetchall()
+        present: Set[date] = {r[0] for r in rows if r[0] is not None}
+        conn.close()
+        return expected - present
+    except Exception as e:
+        logger.warning("CFFEX-specific DB check failed: %s", e)
+        return set()
 
 
 # ---------------------------------------------------------------------------
@@ -171,16 +214,17 @@ def find_missing_dates(
 ) -> List[date]:
     """Find dates that need to be downloaded.
 
-    A date is missing if:
-      1. It's a trading day
-      2. It's not in the database
-      3. It's not in the local trend files
-      4. It's within the specified date range
+    Default behaviour (no explicit --start-date): scan the **current month**
+    from day 1 to today, flagging every trading day that is missing CFFEX
+    data in the database (not SZSE) OR missing from local/shared CSVs.
+
+    When an explicit --start-date is supplied, the original
+    "latest-DB-date forward" logic is retained for historical ranges.
 
     Args:
-        latest_db_date: Latest date in the database (None if empty).
-        trend_dates: Set of dates with local trend files.
-        start_date: Start of date range (None = unlimited).
+        latest_db_date: Latest date with CFFEX data in the DB.
+        trend_dates: Set of dates with local (or shared) trend files.
+        start_date: Start of date range (None = current-month scan).
         end_date: End of date range (None = today).
 
     Returns:
@@ -192,24 +236,48 @@ def find_missing_dates(
 
     # Determine the earliest date to consider
     if start_date is None:
-        last_archive = _last_completed_archive_month()
-        if last_archive.month == 12:
-            start_from = date(last_archive.year + 1, 1, 1) - timedelta(days=1)
-        else:
-            start_from = date(last_archive.year, last_archive.month + 1, 1) - timedelta(days=1)
-        if latest_db_date and latest_db_date > start_from:
-            start_from = latest_db_date
+        # Default: scan the **entire current month** (day 1 → today)
+        start_from = today.replace(day=1)
     else:
         start_from = start_date
+
+    # ------------------------------------------------------------------
+    # Build the set of dates that are missing CFFEX data from the DB.
+    # We use CFFEX-specific contract code filters (IO%, HO%, MO%, CO%)
+    # so that SZSE entries in the same table don't mask CFFEX gaps.
+    # ------------------------------------------------------------------
+    cffex_missing_from_db: Set[date] = set()
+    use_cffex_scan: bool = False
+    if start_date is None and start_from.month == today.month:
+        try:
+            cffex_missing_from_db = _cffex_missing_dates_in_range(
+                start_from, end_date,
+            )
+            use_cffex_scan = True
+        except Exception:
+            logger.warning(
+                "CFFEX-specific DB check failed, falling back to MAX(date) logic"
+            )
 
     missing: List[date] = []
     d = start_from
     while d <= end_date:
-        if is_trading_day(d):
+        if not is_trading_day(d):
+            d += timedelta(days=1)
+            continue
+
+        if use_cffex_scan and d.month == today.month:
+            # Current-month logic: use the CFFEX-specific gap set
+            not_in_db = d in cffex_missing_from_db
+        else:
+            # Historical / fallback logic: date must be after the latest
+            # CFFEX entry in the DB
             not_in_db = latest_db_date is None or d > latest_db_date
-            not_in_trend = d not in trend_dates
-            if not_in_db and not_in_trend:
-                missing.append(d)
+
+        not_in_trend = d not in trend_dates
+        if not_in_db and not_in_trend:
+            missing.append(d)
+
         d += timedelta(days=1)
 
     return sorted(missing)
@@ -226,7 +294,7 @@ def main() -> None:
     parser.add_argument(
         "--start-date",
         default=None,
-        help="Start date (YYYY-MM-DD). Default: day after last archive month.",
+        help="Start date (YYYY-MM-DD). Default: 1st of current month (scan for gaps).",
     )
     parser.add_argument(
         "--end-date",
@@ -357,12 +425,15 @@ def main() -> None:
     # ------------------------------------------------------------------
     print("\n[4/4] Finding missing dates to download ...", flush=True)
     missing = find_missing_dates(
-        latest_db_date, trend_dates, start_date, end_date,
+        latest_db_date, all_available, start_date, end_date,
     )
 
     if args.force:
         all_trading_days: List[date] = []
-        d = start_date or date(2020, 1, 1)
+        if start_date is None:
+            d = date.today().replace(day=1)
+        else:
+            d = start_date
         end_d = end_date or date.today()
         while d <= end_d:
             if is_trading_day(d):

@@ -1,13 +1,21 @@
+/**
+ * Shared skew-over-time chart tooltip — works on the unified
+ * SharedSkewPoint[] model for both data sources (oi_moneyness / iv_smile).
+ */
 import React from "react";
 import { fmtNum } from "@/lib/series";
-import { renderTooltip } from "./renderTooltip";
-import type { DailySkew } from "./types";
+import { renderTooltip } from "../vol-smile/renderTooltip";
+import type { SharedSkewPoint } from "./types";
 
-interface SkewTooltipData {
+interface SharedSkewTooltipData {
   date: string;
-  seriesItems: Array<{ seriesName: string; value: [string, number | null]; marker?: string; color?: string }>;
-  dailySkew: DailySkew[];
-  allExpiries: Map<string, string>;
+  seriesItems: Array<{
+    seriesName: string;
+    value: [string, number | null];
+    marker?: string;
+    color?: string;
+  }>;
+  points: SharedSkewPoint[];
   expiryColorMap: Map<string, string>;
 }
 
@@ -28,14 +36,13 @@ function ColoredDot({ color }: { color: string }) {
   );
 }
 
-function SkewTooltipContent({
+function SharedSkewTooltipContent({
   date,
   seriesItems,
-  dailySkew,
-  allExpiries,
+  points,
   expiryColorMap,
-}: SkewTooltipData) {
-  const d = dailySkew.find((s) => s.date === date);
+}: SharedSkewTooltipData) {
+  const d = points.find((s) => s.date === date);
 
   const children: React.ReactNode[] = [<b key="date">{date}</b>];
 
@@ -71,21 +78,21 @@ function SkewTooltipContent({
     );
 
     d.perExpiry.forEach((pe, idx) => {
-      const spot = d.S;
+      const spot = d.spot;
       const sk = pe.skewPrice;
       let gapSpotStr: React.ReactNode = "—";
       if (sk != null && Number.isFinite(sk)) {
         gapSpotStr = fmtNum(spot - (sk as number), 2);
       }
 
-      const sign = pe.skewPct != null && Number.isFinite(pe.skewPct)
-        ? (pe.skewPct >= 0 ? "+" : "") + fmtNum(pe.skewPct, 2)
-        : "—";
+      const sign =
+        pe.skewPct != null && Number.isFinite(pe.skewPct)
+          ? (pe.skewPct >= 0 ? "+" : "") + fmtNum(pe.skewPct, 2)
+          : "—";
 
       const crossCount = pe.countSkewnessCurveCrossedSpot;
-      const crossCountStr = crossCount != null && crossCount > 0
-        ? ` ×${crossCount}`
-        : "";
+      const crossCountStr =
+        crossCount != null && crossCount > 0 ? ` ×${crossCount}` : "";
 
       children.push(
         <div key={`pe-${idx}`} style={{ paddingLeft: "8px" }}>
@@ -103,9 +110,8 @@ function SkewTooltipContent({
   return <React.Fragment>{children}</React.Fragment>;
 }
 
-export function makeSkewTooltipFormatter(
-  dailySkew: DailySkew[],
-  allExpiries: Map<string, string>,
+export function makeSharedSkewTooltipFormatter(
+  points: SharedSkewPoint[],
   expiryColorMap: Map<string, string>,
 ): (params: unknown) => string {
   return (p: unknown): string => {
@@ -118,11 +124,10 @@ export function makeSkewTooltipFormatter(
     if (items.length === 0) return "";
     const date = items[0].value[0];
     return renderTooltip(
-      <SkewTooltipContent
+      <SharedSkewTooltipContent
         date={date}
         seriesItems={items}
-        dailySkew={dailySkew}
-        allExpiries={allExpiries}
+        points={points}
         expiryColorMap={expiryColorMap}
       />,
     );

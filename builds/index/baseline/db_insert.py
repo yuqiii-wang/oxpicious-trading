@@ -38,15 +38,22 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
     # Vectorized row construction for 4 tables
     _src = daily_df.copy()
     _src["code"] = _src["code"].astype(str)
+    # --- Rename camelCase → snake_case for DB column alignment ---
+    _src = _src.rename(columns={
+        "changePct": "change_pct",
+        "consNumber": "cons_number",
+        "indexName": "name",
+    })
+    # Ensure name is never NaN/None (DB column is NOT NULL)
+    _src["name"] = _src["name"].where(_src["name"].notna(), "").astype(str)
     # --- Helper: vectorized NaN→None ---
     def _to_db_series(s: pd.Series) -> pd.Series:
         return s.where(s.notna(), None)
     # --- identity_rows ---
-    _src["name"] = _src["indexName"].where(_src["indexName"].notna(), "").astype(str)
     identity_rows = _src[["date", "code", "name"]].to_dict(orient="records")
     # --- basic_stats_rows ---
     _basic_cols = ["open", "high", "low", "close", "trading_shares", "trading_amount",
-                   "change", "changePct"]
+                   "change", "change_pct"]
     for _c in _basic_cols:
         if _c in _src.columns:
             _src[_c] = _to_db_series(_src[_c])
@@ -57,7 +64,7 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
     basic_cols_out = ["date", "code"] + _basic_cols + ["is_close_estimated"]
     basic_stats_rows = _src[[c for c in basic_cols_out if c in _src.columns]].to_dict(orient="records")
     # --- valuation_rows ---
-    _val_cols = ["pe", "consNumber"]
+    _val_cols = ["pe", "cons_number"]
     for _c in _val_cols:
         if _c in _src.columns:
             _src[_c] = _to_db_series(_src[_c])

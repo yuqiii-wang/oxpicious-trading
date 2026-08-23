@@ -166,6 +166,7 @@ async def fetch_source_data(
     sec_type: str,
     *,
     target_dates: Optional[Set[datetime.date]] = None,
+    code_filter: Optional[str] = None,
 ) -> pd.DataFrame:
     """Fetch per-(code, date) price + MAs from the stats schema for the
     given sec_type ('etf', 'index', or 'stock'), then compute per-(code)
@@ -229,6 +230,13 @@ async def fetch_source_data(
     print(f"      pre-filter: {len(active_codes):,} {sec_type} codes have "
           f"data in the last {RECENT_TRADING_DAYS} trading days "
           f"(cutoff={cutoff.isoformat()})", flush=True)
+    if code_filter is not None:
+        # Single-code mode (--code): bypass the active-universe pre-filter
+        # and load exactly this code's full history. Empty df when the code
+        # has no source data for this sec_type (caller skips it).
+        active_codes = {code_filter}
+        print(f"      code filter: {code_filter} (single-code mode)",
+              flush=True)
     if not active_codes:
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",

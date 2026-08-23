@@ -5,40 +5,58 @@ Run via ``python -m analyze.mov_ave_spread``.
 Pipeline
   1. Fetch per-(sec_type, code, date) price + MAs from stats schema for
      every sec_type in SEC_TYPES (active-universe pre-filter applied).
-  2. Compute peaks_and_floors (monthly valley-low detection) from the FULL
-     per-code history — belt detection needs the full history so belts
-     spanning month boundaries are detected correctly.
-  3. Upsert peaks_and_floors FIRST (so the detail FK resolves).
-  4. Compute 9 wide gap columns + 12 slope/curvature columns per row
+  2. Compute 9 wide gap columns + 12 slope/curvature columns per row
      (filtered to target_dates in incremental mode).
-  5. Upsert detail.
-  6. Upsert analysis_identity.
-  7. INTERNAL STEP: compute Wilder RSI (6/10/14/20/60/120/255/500d) + price gaps (2/3d)
+  3. Upsert detail.
+  4. Upsert analysis_identity.
+  5. INTERNAL STEP: compute Wilder RSI (6/10/14/20/60/120/255/500d) + price gaps (2/3d)
      from the SAME source price data already loaded in Step 1 ->
      analysis.mov_ave_rsi (see rsi.py). Reuses the same DB connection +
      source DataFrame. This step used to be a standalone
      analyze.mov_ave_rsi package; it is now an internal step because it
      shares the same source price data and active-universe pre-filter.
-  8. INTERNAL STEP: compute holiday / non-trading-day risk metrics
+  6. INTERNAL STEP: compute holiday / non-trading-day risk metrics
      (previous-day trading/weekend/holiday status + today's intraday
      gaps) from the SAME source data -> analysis.mov_ave_rsi_holiday
      (see holiday.py). Must run AFTER RSI due to FK.
-  9. INTERNAL STEP: compute EMA spread detail (9 EMA gap pairs + 5 EMA
+  7. INTERNAL STEP: compute EMA spread detail (9 EMA gap pairs + 5 EMA
      slope + 5 EMA curvature) from the SAME source data (EMA columns +
      pre-computed EMA slopes/curvatures already in the parent DataFrame)
      -> analysis.mov_ave_spreads_detail_ema (see ema.py). Reuses the
      same DB connection + source DataFrame.
-  10. INTERNAL STEP: compute rolling OHLC detail (today_close +
-     open/high/low over 6 windows: 20/60/120/255/500/750 trading days)
+  8. INTERNAL STEP: compute rolling OHLC detail (today_close +
+     open/high/low/second-high/second-low over 7 windows:
+     20/60/120/255/500/750/1275 trading days)
      from the SAME source data -> analysis.mov_ave_spreads_detail_ohlc
      (see ohlc.py). Reuses the same DB connection + source DataFrame.
+  9. INTERNAL STEP: compute trading-amount liquidity-impact ratios
+     (6 slope ratios + range ratio + overnight-gap ratio + MA5 versions)
+     from the SAME source data -> analysis.mov_ave_trading_amt_ratios
+     (see trading_amt_ratios.py). Reuses the same DB connection +
+     source DataFrame.
+  10. INTERNAL STEP: compute market-hype EPISODES (one row per
+     CONCATENATED episode per check-in window 5/20/60/120/255: the span
+     around a maximal run of consecutive hyped dates, extended through
+     the check-in evidence, bucketed by span into [W, next window) —
+     W = min_checkin_period is the bucket MINIMUM, the next window the
+     exclusive maximum (the 255d bucket spans up to the whole ±10y
+     base); a date is hyped when more than
+     min_checkin_satisfaction_threshold percent of the last W trading
+     rows are check-ins — dates whose trading_amount AND std_{W}days
+     both exceed their centered 20-year (±10 trading years around the
+     audited date) percentile thresholds) from the SAME source data
+     (trading_amount + std_{W}days columns) ->
+     analysis.mov_ave_market_hypes (see market_hypes.py; also counts
+     the per-leg check-in days trading_amt_hype_days / std_hype_days
+     within each episode span). Reuses the same DB connection +
+     source DataFrame. Episodes are rebuilt wholesale per sec_type on
+     every run — new dates shift episode boundaries (margin_changes
+     precedent).
 
 Default (incremental) mode:
   Only dates present in source identity tables (stats.etf_identity +
   stats.index_identity + stats.stock_identity) but NOT yet in
   analysis.mov_ave_spreads_detail are (re)computed and upserted.
-  peaks_and_floors is always recomputed for ALL months of affected codes
-  (belts can change when new data arrives).
 
   The missing-date check is PER-sec_type: a date populated for ETF does
   NOT mask the same date being missing for index/stock. This matters
@@ -47,7 +65,7 @@ Default (incremental) mode:
   sec_type A already had it.
 
 --force mode:
-  Truncate peaks_and_floors + detail, then recompute and
+  Truncate detail, then recompute and
   insert all rows for the active universe.
 
 --sec-type mode:
@@ -78,7 +96,6 @@ from _common.build_commons import (  # noqa: E402
     print_build_header,
     print_wall_time,
     find_missing_analysis_dates,
-    filter_rows_to_missing_dates_async,
     add_force_arg,
 )
 
@@ -89,58 +106,33 @@ from _common.df_utils._activate import activate
 activate()
 
 from analyze._common import (  # noqa: E402
-    batched_upsert_by_date,
     build_and_insert_chunked,
     upsert_analysis_identity,
 )
 from analyze.mov_ave_spread.config import (  # noqa: E402
     ANALYSIS_NAME,
     DETAIL_TABLE,
-    PEAKS_AND_FLOORS_TABLE,
     DESCRIPTION,
+    EMA_DETAIL_TABLE,
     HOLIDAY_TABLE,
+    MARKET_HYPES_TABLE,
+    OHLC_TABLE,
     PAIRS,
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
     TRADING_AMT_ANALYSIS_NAME,
+    TRADING_AMT_RATIOS_TABLE,
     TRADING_AMT_TABLE,
 )
 from analyze.mov_ave_spread.fetch import fetch_source_data  # noqa: E402
 from analyze.mov_ave_spread.compute import build_detail_rows  # noqa: E402
-from analyze.mov_ave_spread.peaks_and_floors import (  # noqa: E402
-    compute_peaks_and_floors,
-)
-from analyze.mov_ave_spread.rsi import run_rsi  # noqa: E402
+from analyze.mov_ave_spread.rsi import run_rsi, RSI_TABLE  # noqa: E402
 from analyze.mov_ave_spread.ema import run_ema  # noqa: E402
-from analyze.mov_ave_spread.ohlc import run_ohlc  # noqa: E402
+from analyze.mov_ave_spread.ohlc import run_ohlc, find_ohlc_repair_dates  # noqa: E402
 from analyze.mov_ave_spread.trading_amt import run_trading_amt  # noqa: E402
-from analyze.mov_ave_spread.rebounds import run_rebounds  # noqa: E402
+from analyze.mov_ave_spread.trading_amt_ratios import run_trading_amt_ratios  # noqa: E402
+from analyze.mov_ave_spread.market_hypes import run_market_hypes  # noqa: E402
 from analyze.mov_ave_spread.holiday import run_holiday  # noqa: E402
-
-
-async def _filter_per_sec_type_async(conn, table, rows):
-    """Filter rows to missing dates, scoping the existing-date check
-    per-sec_type.
-
-    ``rows`` is a list of dicts each carrying a ``sec_type`` field. We
-    split them by sec_type and call
-    :func:`filter_rows_to_missing_dates_async` once per group with the
-    matching ``sec_type`` argument. Without per-sec_type scoping, a date
-    already populated for ETF would mask the same date being missing for
-    index/stock (PK is (sec_type, code, date)).
-    """
-    if not rows:
-        return []
-    by_st: dict = {}
-    for r in rows:
-        by_st.setdefault(r.get("sec_type"), []).append(r)
-    out: list = []
-    for st, group in by_st.items():
-        filtered = await filter_rows_to_missing_dates_async(
-            conn, table, group, sec_type=st,
-        )
-        out.extend(filtered)
-    return out
 
 
 async def _process_one_sec_type(
@@ -148,10 +140,10 @@ async def _process_one_sec_type(
 ):
     """Process a single sec_type end-to-end.
 
-    Fetches the FULL per-code history for ``st`` (needed for belt
-    detection), computes peaks_and_floors, upserts them, then builds +
-    inserts detail rows (filtered to ``target_dates_st`` in incremental
-    mode), then runs the RSI step on the same source data. The source
+    Fetches the FULL per-code history for ``st``, builds + inserts
+    detail rows (filtered to ``target_dates_st`` in incremental
+    mode), then runs the RSI/holiday/EMA/OHLC/trading-amt/trading-amt-
+    ratios/market-hypes steps on the same source data. The source
     DataFrame is freed before returning so the caller can process the
     next sec_type without cumulative memory growth.
 
@@ -161,58 +153,13 @@ async def _process_one_sec_type(
     at a time bounds peak memory to a single sec_type's data.
     """
     # ---- Fetch FULL source data for this sec_type ----------------------
-    # Always fetch the FULL per-code history (target_dates=None) so belt
-    # detection for peaks_and_floors works correctly across month
-    # boundaries. The target_dates filter is applied AFTER
-    # peaks_and_floors computation for the detail rows.
     print(f"\n  [{st}] Fetching FULL per-(code, date) price + MAs "
-          f"from stats schema (needed for belt detection)...", flush=True)
+          f"from stats schema...", flush=True)
     df = await fetch_source_data(conn, st, target_dates=None)
     print(f"  [{st}]   {len(df):,} (code, date) source rows", flush=True)
     if df.empty:
         print(f"  [{st}]   no source data; skipping.", flush=True)
-        return 0, 0
-
-    # ---- Compute + upsert peaks_and_floors -----------------------------
-    print(f"\n  [{st}] Computing peaks_and_floors (per-extreme-date "
-          f"detection from full history)...", flush=True)
-    pf_rows = compute_peaks_and_floors(df)
-    print(f"  [{st}]   {len(pf_rows):,} peaks_and_floors rows",
-          flush=True)
-
-    # Save the FULL list of peaks_and_floors rows for the detail FK
-    # mapping (nearest-preceding-extreme). Must be saved BEFORE the
-    # incremental skip-filter so detail rows can map to ALL extremes,
-    # not just newly-added ones.
-    all_pf_rows = pf_rows
-
-    print(f"  [{st}]   Upserting {len(pf_rows):,} peaks_and_floors rows "
-          f"into {PEAKS_AND_FLOORS_TABLE} "
-          f"(chunked by date to bound memory)...", flush=True)
-
-    # Pre-check: skip already-present extreme dates, scoped per-sec_type.
-    n_pf_before = len(pf_rows)
-    pf_rows = await _filter_per_sec_type_async(
-        conn, PEAKS_AND_FLOORS_TABLE, pf_rows,
-    )
-    n_pf_skipped = n_pf_before - len(pf_rows)
-    if n_pf_skipped > 0:
-        print(f"  [{st}]   skip check (per-sec_type): {n_pf_skipped:,} of "
-              f"{n_pf_before:,} peaks_and_floors rows already present "
-              f"(skipped)",
-              flush=True)
-
-    n_pf = await batched_upsert_by_date(
-        conn, PEAKS_AND_FLOORS_TABLE, pf_rows,
-        key_columns=["sec_type", "code", "date"],
-        label=f"peaks_and_floors[{st}]",
-        pool=pool,
-        max_concurrent=max_concurrent,
-    )
-    print(f"  [{st}]   upserted {n_pf:,} peaks_and_floors rows", flush=True)
-
-    # Free the filtered pf_rows list (all_pf_rows is retained for detail).
-    del pf_rows
+        return 0
 
     # ---- Build + insert detail (chunked by date) -----------------------
     if target_dates_st is not None and len(target_dates_st) == 0:
@@ -222,7 +169,7 @@ async def _process_one_sec_type(
         detail_df = df
         n_detail = await build_and_insert_chunked(
             conn, pool, detail_df,
-            lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows),
+            lambda sub: build_detail_rows(sub),
             table_name=DETAIL_TABLE,
             key_columns=["sec_type", "code", "date"],
             force=force,
@@ -236,7 +183,7 @@ async def _process_one_sec_type(
         print(f"\n  [{st}] Detail up-to-date; skipping detail "
               f"computation.", flush=True)
         n_detail = 0
-        return n_pf, n_detail
+        # Still need to run internal steps even if detail is up-to-date
     else:
         print(f"\n  [{st}] Computing + inserting detail rows in date-bounded "
               f"chunks (9 gap cols + 12 slope/curv cols per row)...",
@@ -254,7 +201,7 @@ async def _process_one_sec_type(
 
         n_detail = await build_and_insert_chunked(
             conn, pool, detail_df,
-            lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows),
+            lambda sub: build_detail_rows(sub),
             table_name=DETAIL_TABLE,
             key_columns=["sec_type", "code", "date"],
             force=force,
@@ -271,55 +218,122 @@ async def _process_one_sec_type(
                   max_concurrent=max_concurrent, sec_type=st)
 
     # ---- Holiday step (reuses same source DataFrame) ------------------
-    # Computes previous-day trading/weekend/holiday status + today's
-    # intraday gaps (high-low and open-close) into analysis.mov_ave_rsi_holiday
-    # (see holiday.py). The price/open/high/low columns are already in
-    # the parent DataFrame, so this step needs no second DB fetch.
-    # Must run AFTER run_rsi because mov_ave_rsi_holiday has an FK
-    # to analysis.mov_ave_rsi.
     await run_holiday(conn, df, force=force, pool=pool,
                       max_concurrent=max_concurrent, sec_type=st)
 
     # ---- EMA detail step (reuses same source DataFrame) ---------------
-    # Computes 9 EMA gap (vs) columns + selects pre-computed EMA slope/
-    # curvature columns into analysis.mov_ave_spreads_detail_ema (see
-    # ema.py). The EMA columns (ema{6,20,60,120,255}) + EMA slope/
-    # curvature are already in the parent DataFrame (fetched + computed
-    # by fetch_source_data / compute_ema_slopes_curvatures), so this step
-    # needs no second DB fetch.
     await run_ema(conn, df, force=force, pool=pool,
                   max_concurrent=max_concurrent, sec_type=st)
 
     # ---- OHLC detail step (reuses same source DataFrame) -------------
-    # Computes today_close + rolling open/high/low over 6 windows
-    # (20/60/120/255/500/750 trading days) into analysis.mov_ave_spreads_
-    # detail_ohlc (see ohlc.py). The price/open/high/low columns are
-    # already in the parent DataFrame, so this step needs no second
-    # DB fetch.
     await run_ohlc(conn, df, force=force, pool=pool,
                    max_concurrent=max_concurrent, sec_type=st)
 
     # ---- Trading-amount detail step (reuses same source DataFrame) ---
-    # Computes rolling max/min of trading_amt_ma5 + ratio columns into
-    # analysis.mov_ave_trading_amt (see trading_amt.py). The trading_amt_*
-    # columns are already computed by the parent fetch step (helpers),
-    # so this step only adds the new max/min + ratio columns.
     await run_trading_amt(conn, df, force=force, pool=pool,
                           max_concurrent=max_concurrent, sec_type=st)
 
-    # ---- Rebounds step (reuses same source DataFrame) ---------------
-    # Computes double-top (rebound) detection metrics into
-    # analysis.mov_ave_rebounds (see rebounds.py). The price and
-    # trading_amount columns are already in the parent DataFrame,
-    # so this step needs no second DB fetch.
-    await run_rebounds(conn, df, force=force, pool=pool,
-                       max_concurrent=max_concurrent, sec_type=st)
+    # ---- Trading-amount ratios step (reuses same source DataFrame) --
+    await run_trading_amt_ratios(conn, df, force=force, pool=pool,
+                                 max_concurrent=max_concurrent, sec_type=st)
+
+    # ---- Market-hypes step (reuses same source DataFrame) ---------
+    await run_market_hypes(conn, df, force=force, pool=pool,
+                           max_concurrent=max_concurrent, sec_type=st)
 
     # Free the source DataFrame — full history no longer needed.
     del df
-    del all_pf_rows
 
-    return n_pf, n_detail
+    return n_detail
+
+
+async def _process_single_code(
+    conn, pool, st, code, max_concurrent,
+) -> int:
+    """Recompute ALL analysis rows for ONE (sec_type, code) — ``--code`` mode.
+
+    Used by the UI per-security build button when a security has no
+    analysis data. Steps:
+      1. DELETE the code's existing rows from every target table (FK-safe
+         order: holiday references mov_ave_rsi, so it goes first).
+      2. Fetch the code's FULL source history (bypassing the
+         active-universe pre-filter).
+      3. Recompute + COPY-insert detail, then run ALL internal steps
+         (RSI / holiday / EMA / OHLC / trading-amt / ratios / hypes) with
+         ``code_filter`` so each step skips its per-sec_type missing-date
+         detection (dates covered by OTHER codes would mask this code's
+         gaps) and bypasses the per-sec_type skip-filter
+         (``sec_types=()`` — rows are pre-deleted, so COPY cannot
+         conflict).
+
+    Returns the number of detail rows inserted (0 when the sec_type has
+    no source data for the code).
+    """
+    print(f"\n  [{st}] SINGLE-CODE mode: rebuilding all rows for {code}",
+          flush=True)
+
+    # ---- Step 1: delete the code's rows (FK-safe order) ------------------
+    # mov_ave_rsi_holiday has a FK to mov_ave_rsi → delete holiday first.
+    for table in (
+        HOLIDAY_TABLE, RSI_TABLE, DETAIL_TABLE, EMA_DETAIL_TABLE,
+        OHLC_TABLE, TRADING_AMT_TABLE, TRADING_AMT_RATIOS_TABLE,
+        MARKET_HYPES_TABLE,
+    ):
+        status = await conn.execute(
+            f"DELETE FROM {table} WHERE sec_type = $1 AND code = $2",
+            st, code,
+        )
+        n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
+        print(f"  [{st}]   deleted {n_del:,} rows from {table}", flush=True)
+
+    # ---- Step 2: fetch the code's FULL source history --------------------
+    print(f"  [{st}] Fetching FULL per-(code, date) price + MAs "
+          f"for {code}...", flush=True)
+    df = await fetch_source_data(conn, st, target_dates=None,
+                                 code_filter=code)
+    print(f"  [{st}]   {len(df):,} (code, date) source rows", flush=True)
+    if df.empty:
+        print(f"  [{st}]   no source data for {code} in {st}; skipping.",
+              flush=True)
+        return 0
+
+    # ---- Step 3: detail + all internal steps -----------------------------
+    n_detail = await build_and_insert_chunked(
+        conn, pool, df,
+        lambda sub: build_detail_rows(sub),
+        table_name=DETAIL_TABLE,
+        key_columns=["sec_type", "code", "date"],
+        force=False,
+        sec_types=(),  # bypass per-sec_type skip-filter (rows pre-deleted)
+        max_concurrent=max_concurrent,
+        label=f"detail[{st}:{code}]",
+    )
+    print(f"  [{st}]   inserted {n_detail:,} detail rows", flush=True)
+
+    await run_rsi(conn, df, force=False, pool=pool,
+                  max_concurrent=max_concurrent, sec_type=st,
+                  code_filter=code)
+    await run_holiday(conn, df, force=False, pool=pool,
+                      max_concurrent=max_concurrent, sec_type=st,
+                      code_filter=code)
+    await run_ema(conn, df, force=False, pool=pool,
+                  max_concurrent=max_concurrent, sec_type=st,
+                  code_filter=code)
+    await run_ohlc(conn, df, force=False, pool=pool,
+                   max_concurrent=max_concurrent, sec_type=st,
+                   code_filter=code)
+    await run_trading_amt(conn, df, force=False, pool=pool,
+                          max_concurrent=max_concurrent, sec_type=st,
+                          code_filter=code)
+    await run_trading_amt_ratios(conn, df, force=False, pool=pool,
+                                 max_concurrent=max_concurrent, sec_type=st,
+                                 code_filter=code)
+    await run_market_hypes(conn, df, force=False, pool=pool,
+                           max_concurrent=max_concurrent, sec_type=st,
+                           code_filter=code)
+
+    del df
+    return n_detail
 
 
 async def main() -> None:
@@ -339,7 +353,20 @@ async def main() -> None:
              "max_connections=100 with ~2 in use, so 20 is safe. "
              "Reduce if you see 'too many clients' errors. Default: 20.",
     )
+    ap.add_argument(
+        "--code", default=None,
+        help="Recompute ALL analysis rows for this single security only "
+             "(single-code mode; used by the UI per-security build "
+             "button). Deletes the code's rows first, then rebuilds "
+             "detail + every internal step for that code. Mutually "
+             "exclusive with --force.",
+    )
     args = ap.parse_args()
+
+    if args.code and args.force:
+        print("ERROR: --code and --force are mutually exclusive.",
+              flush=True)
+        sys.exit(2)
 
     sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
     max_concurrent = max(1, args.max_concurrent)
@@ -350,24 +377,57 @@ async def main() -> None:
         detail_table=DETAIL_TABLE,
         pairs=f"{len(PAIRS)} (5 Price/MA + 4 MA5/MA)",
         sec_types=", ".join(sec_types),
-        mode="FORCE (full recompute)" if args.force else "incremental (missing dates only)",
+        mode=(
+            f"SINGLE-CODE {args.code} (full recompute for this security)"
+            if args.code else
+            "FORCE (full recompute)" if args.force
+            else "incremental (missing dates only)"
+        ),
     )
 
     conn = await get_db_connection_async()
     pool = await get_db_pool_async(min_size=1, max_size=max_concurrent)
     try:
+        # ---- Single-code mode (--code): rebuild ONE security -------------
+        # Bypasses the per-sec_type missing-date detection entirely — the
+        # UI fires this when a security has NO analysis rows while the
+        # rest of the sec_type is up to date (date-level detection would
+        # see nothing missing and skip it).
+        if args.code:
+            total_detail = 0
+            for st in sec_types:
+                total_detail += await _process_single_code(
+                    conn, pool, st, args.code, max_concurrent,
+                )
+            print(f"\n  -> Upserting analysis.analysis_identity registry...",
+                  flush=True)
+            await upsert_analysis_identity(
+                conn,
+                name=ANALYSIS_NAME,
+                detail_name="mov_ave_spreads_detail",
+                description=DESCRIPTION,
+            )
+            print(f"\n  TOTAL: {total_detail:,} detail rows inserted",
+                  flush=True)
+            print_wall_time(t0)
+            return
+
         # ---- Step 0: determine target dates (per-sec_type) --------------
         if args.force:
-            print("\n[0/4] Force mode: truncating detail + peaks_and_floors "
+            print("\n[0/4] Force mode: truncating detail "
                   "tables...", flush=True)
             await truncate_table_async(conn, DETAIL_TABLE)
-            await truncate_table_async(conn, PEAKS_AND_FLOORS_TABLE)
             await truncate_table_async(conn, TRADING_AMT_TABLE)
+            await truncate_table_async(conn, TRADING_AMT_RATIOS_TABLE)
             await truncate_table_async(conn, HOLIDAY_TABLE)
+            await truncate_table_async(conn, MARKET_HYPES_TABLE)
             # Use empty set (not None) so _process_one_sec_type knows to
             # compute ALL dates (no filtering) in force mode.
             target_dates_per_st = {st: set() for st in sec_types}
             ta_missing_per_st = {}
+            ta_ratios_missing_per_st = {}
+            ohlc_missing_per_st = {}
+            hypes_missing_per_st = {}
             print("    -> truncated; will recompute all rows", flush=True)
         else:
             print("\n[0/4] Detecting missing dates PER-sec_type "
@@ -376,6 +436,9 @@ async def main() -> None:
                   flush=True)
             target_dates_per_st: dict = {}
             ta_missing_per_st: dict = {}
+            ta_ratios_missing_per_st: dict = {}
+            ohlc_missing_per_st: dict = {}
+            hypes_missing_per_st: dict = {}
             for st in sec_types:
                 src_tbl = SEC_TYPE_IDENTITY_TABLE[st]
                 td_st = await find_missing_analysis_dates(
@@ -392,21 +455,76 @@ async def main() -> None:
                 if td_ta:
                     print(f"    -> {st}: trading_amt {len(td_ta)} missing dates",
                           flush=True)
+                # Also check trading_amt_ratios table independently
+                td_tar = await find_missing_analysis_dates(
+                    conn, TRADING_AMT_RATIOS_TABLE, [src_tbl], sec_type=st,
+                )
+                ta_ratios_missing_per_st[st] = td_tar
+                if td_tar:
+                    print(f"    -> {st}: trading_amt_ratios "
+                          f"{len(td_tar)} missing dates", flush=True)
+                # Also check the OHLC table independently (missing dates
+                # + repair dates whose rows predate the DATE/2nd-extrema
+                # columns — see ohlc.find_ohlc_repair_dates).
+                td_oh = await find_missing_analysis_dates(
+                    conn, OHLC_TABLE, [src_tbl], sec_type=st,
+                )
+                td_oh |= await find_ohlc_repair_dates(conn, st)
+                ohlc_missing_per_st[st] = td_oh
+                if td_oh:
+                    print(f"    -> {st}: ohlc {len(td_oh)} missing/repair dates",
+                          flush=True)
+                # The market-hypes table stores EPISODES (runs of hyped
+                # dates), so per-date coverage cannot be diffed against
+                # it — it is rebuilt wholesale whenever a sec_type is
+                # processed. Only flag COMPLETELY EMPTY scopes (fresh
+                # schema / wiped table) so the pipeline runs at least
+                # once to populate them.
+                hypes_empty = not await conn.fetchval(
+                    f"SELECT EXISTS (SELECT 1 FROM {MARKET_HYPES_TABLE} "
+                    f"WHERE sec_type = $1)",
+                    st,
+                )
+                hypes_missing_per_st[st] = hypes_empty
+                if hypes_empty:
+                    print(f"    -> {st}: market_hypes empty "
+                          f"(no episodes yet)", flush=True)
             total_missing = sum(
                 len(s) for s in target_dates_per_st.values()
             )
             total_ta_missing = sum(
                 len(s) for s in ta_missing_per_st.values()
             )
-            if total_missing == 0 and total_ta_missing == 0:
+            total_ta_ratios_missing = sum(
+                len(s) for s in ta_ratios_missing_per_st.values()
+            )
+            total_ohlc_missing = sum(
+                len(s) for s in ohlc_missing_per_st.values()
+            )
+            total_hypes_missing = sum(
+                1 for s in hypes_missing_per_st.values() if s
+            )
+            if (
+                total_missing == 0
+                and total_ta_missing == 0
+                and total_ta_ratios_missing == 0
+                and total_ohlc_missing == 0
+                and total_hypes_missing == 0
+            ):
                 print("    -> DB is up to date; nothing to do.", flush=True)
                 print_wall_time(t0)
                 return
-            # For sec_types where only trading_amt needs updates,
-            # set target_dates to None so detail step is skipped but
+            # For sec_types where only trading_amt / trading_amt_ratios /
+            # OHLC needs updates or market_hypes is still empty, set
+            # target_dates to None so the detail step is skipped but the
             # internal steps (which have their own checks) still run.
             for st in sec_types:
-                if not target_dates_per_st.get(st) and ta_missing_per_st.get(st):
+                if not target_dates_per_st.get(st) and (
+                    ta_missing_per_st.get(st)
+                    or ta_ratios_missing_per_st.get(st)
+                    or ohlc_missing_per_st.get(st)
+                    or hypes_missing_per_st.get(st)
+                ):
                     target_dates_per_st[st] = None
 
         # ---- Steps 1-5: process each sec_type independently -------------
@@ -415,19 +533,28 @@ async def main() -> None:
         # memory to a single sec_type's data — critical for the stock
         # universe (11K+ codes × 1.6K dates ≈ 17M rows / ~6 GB in pandas).
         # Loading all 3 sec_types at once (18.5M rows) OOMs the host.
-        total_pf = 0
         total_detail = 0
         for st in sec_types:
             td_st = target_dates_per_st.get(st) if target_dates_per_st else None
             ta_st = ta_missing_per_st.get(st) if ta_missing_per_st else None
+            ta_ratio_st = (
+                ta_ratios_missing_per_st.get(st)
+                if ta_ratios_missing_per_st
+                else None
+            )
+            oh_st = (
+                ohlc_missing_per_st.get(st) if ohlc_missing_per_st else None
+            )
+            hy_st = (
+                hypes_missing_per_st.get(st) if hypes_missing_per_st else None
+            )
             if td_st is not None and len(td_st) == 0 and not args.force:
-                if not ta_st:
+                if not ta_st and not ta_ratio_st and not oh_st and not hy_st:
                     print(f"\n  [{st}] up to date; skipping.", flush=True)
                     continue
-            n_pf, n_detail = await _process_one_sec_type(
+            n_detail = await _process_one_sec_type(
                 conn, pool, st, td_st, args.force, max_concurrent, t0,
             )
-            total_pf += n_pf
             total_detail += n_detail
 
         # ---- Upsert analysis_identity ------------------------------------
@@ -440,8 +567,7 @@ async def main() -> None:
             description=DESCRIPTION,
         )
 
-        print(f"\n  TOTAL: {total_pf:,} peaks_and_floors + "
-              f"{total_detail:,} detail rows inserted", flush=True)
+        print(f"\n  TOTAL: {total_detail:,} detail rows inserted", flush=True)
         print_wall_time(t0)
     finally:
         try:

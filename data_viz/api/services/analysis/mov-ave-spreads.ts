@@ -13,10 +13,11 @@ import type {
   MovAveSpreadCodesResponse,
   MovAveSpreadChartResponse,
   MovAveSpreadDetailRow,
+  MovAveSpreadHypeEpisodes,
+  MovAveSpreadOhlcRow,
   MovAveSpreadPairSeries,
   MovAveSpreadPairKind,
   MovAveSpreadLatestGap,
-  MovAveSpreadValleyLow,
   SectorNode,
   IndustryNode,
   StrategyNode,
@@ -256,6 +257,73 @@ interface DbChartRow extends QueryResultRow {
   open_750d: number | null;
   high_750d: number | null;
   low_750d: number | null;
+  // Rolling-window OHLC extrema from analysis.mov_ave_spreads_detail_ohlc
+  // (alias ohlc) — used by the top-level `ohlc` array (roof/floor trendline
+  // overlay). Per window W: the date of the window max high, the second
+  // local-max peak + date, the date of the window min low, and the second
+  // local-min trough + date. DATE columns arrive as Date | string.
+  high_date_20d: Date | string | null;
+  high_2nd_20d: number | null;
+  high_2nd_date_20d: Date | string | null;
+  low_date_20d: Date | string | null;
+  low_2nd_20d: number | null;
+  low_2nd_date_20d: Date | string | null;
+  high_date_60d: Date | string | null;
+  high_2nd_60d: number | null;
+  high_2nd_date_60d: Date | string | null;
+  low_date_60d: Date | string | null;
+  low_2nd_60d: number | null;
+  low_2nd_date_60d: Date | string | null;
+  high_date_120d: Date | string | null;
+  high_2nd_120d: number | null;
+  high_2nd_date_120d: Date | string | null;
+  low_date_120d: Date | string | null;
+  low_2nd_120d: number | null;
+  low_2nd_date_120d: Date | string | null;
+  high_date_255d: Date | string | null;
+  high_2nd_255d: number | null;
+  high_2nd_date_255d: Date | string | null;
+  low_date_255d: Date | string | null;
+  low_2nd_255d: number | null;
+  low_2nd_date_255d: Date | string | null;
+  high_date_500d: Date | string | null;
+  high_2nd_500d: number | null;
+  high_2nd_date_500d: Date | string | null;
+  low_date_500d: Date | string | null;
+  low_2nd_500d: number | null;
+  low_2nd_date_500d: Date | string | null;
+  high_date_750d: Date | string | null;
+  high_2nd_750d: number | null;
+  high_2nd_date_750d: Date | string | null;
+  low_date_750d: Date | string | null;
+  low_2nd_750d: number | null;
+  low_2nd_date_750d: Date | string | null;
+  high_date_1275d: Date | string | null;
+  high_2nd_1275d: number | null;
+  high_2nd_date_1275d: Date | string | null;
+  low_date_1275d: Date | string | null;
+  low_2nd_1275d: number | null;
+  low_2nd_date_1275d: Date | string | null;
+  open_1275d: number | null;
+  high_1275d: number | null;
+  low_1275d: number | null;
+  // Roof/floor line slopes through the two anchors (price units per
+  // trading day) from the OHLC extrema table — surfaced in the chart
+  // tooltip alongside the (top, 2nd) anchor points.
+  high_line_slope_20d: number | null;
+  low_line_slope_20d: number | null;
+  high_line_slope_60d: number | null;
+  low_line_slope_60d: number | null;
+  high_line_slope_120d: number | null;
+  low_line_slope_120d: number | null;
+  high_line_slope_255d: number | null;
+  low_line_slope_255d: number | null;
+  high_line_slope_500d: number | null;
+  low_line_slope_500d: number | null;
+  high_line_slope_750d: number | null;
+  low_line_slope_750d: number | null;
+  high_line_slope_1275d: number | null;
+  low_line_slope_1275d: number | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -712,7 +780,29 @@ function buildChartSql(secType: MaSpreadSecType): string {
       ohlc.open_120d, ohlc.high_120d, ohlc.low_120d,
       ohlc.open_255d, ohlc.high_255d, ohlc.low_255d,
       ohlc.open_500d, ohlc.high_500d, ohlc.low_500d,
-      ohlc.open_750d, ohlc.high_750d, ohlc.low_750d
+      ohlc.open_750d, ohlc.high_750d, ohlc.low_750d,
+      ohlc.high_date_20d, ohlc.high_2nd_20d, ohlc.high_2nd_date_20d,
+      ohlc.low_date_20d, ohlc.low_2nd_20d, ohlc.low_2nd_date_20d,
+      ohlc.high_date_60d, ohlc.high_2nd_60d, ohlc.high_2nd_date_60d,
+      ohlc.low_date_60d, ohlc.low_2nd_60d, ohlc.low_2nd_date_60d,
+      ohlc.high_date_120d, ohlc.high_2nd_120d, ohlc.high_2nd_date_120d,
+      ohlc.low_date_120d, ohlc.low_2nd_120d, ohlc.low_2nd_date_120d,
+      ohlc.high_date_255d, ohlc.high_2nd_255d, ohlc.high_2nd_date_255d,
+      ohlc.low_date_255d, ohlc.low_2nd_255d, ohlc.low_2nd_date_255d,
+      ohlc.high_date_500d, ohlc.high_2nd_500d, ohlc.high_2nd_date_500d,
+      ohlc.low_date_500d, ohlc.low_2nd_500d, ohlc.low_2nd_date_500d,
+      ohlc.high_date_750d, ohlc.high_2nd_750d, ohlc.high_2nd_date_750d,
+      ohlc.low_date_750d, ohlc.low_2nd_750d, ohlc.low_2nd_date_750d,
+      ohlc.high_date_1275d, ohlc.high_2nd_1275d, ohlc.high_2nd_date_1275d,
+      ohlc.low_date_1275d, ohlc.low_2nd_1275d, ohlc.low_2nd_date_1275d,
+      ohlc.open_1275d, ohlc.high_1275d, ohlc.low_1275d,
+      ohlc.high_line_slope_20d, ohlc.low_line_slope_20d,
+      ohlc.high_line_slope_60d, ohlc.low_line_slope_60d,
+      ohlc.high_line_slope_120d, ohlc.low_line_slope_120d,
+      ohlc.high_line_slope_255d, ohlc.low_line_slope_255d,
+      ohlc.high_line_slope_500d, ohlc.low_line_slope_500d,
+      ohlc.high_line_slope_750d, ohlc.low_line_slope_750d,
+      ohlc.high_line_slope_1275d, ohlc.low_line_slope_1275d
     ${src.chartFromClause}
     LEFT JOIN analysis.mov_ave_trading_amt ta
       ON ta.sec_type = d.sec_type AND ta.code = d.code AND ta.date = d.date
@@ -728,30 +818,27 @@ function buildChartSql(secType: MaSpreadSecType): string {
   `;
 }
 
-// ----------------------------------------------------------------------------
-//  Valley-low query — fetch peaks_and_floors rows directly by (sec_type, code)
-//  so each mov_ave_peaks_and_floors.date is plotted ONCE on the chart. The
-//  previous implementation JOINed peaks_and_floors to mov_ave_spreads_detail
-//  via d.peaks_and_floors_date (the "nearest preceding extreme" mapping),
-//  which smeared each extreme's extreme_val across every detail date that
-//  mapped to it — producing a marker on essentially every detail row. This
-//  direct query avoids that smearing entirely.
-// ----------------------------------------------------------------------------
-function buildValleyLowsSql(): string {
+/** SQL for the market-hype EPISODES of one (sec_type, code): one row per
+ *  CONCATENATED hype episode per check-in window (span bucketed into
+ *  [min_checkin_period, next window)), straight from
+ *  analysis.mov_ave_market_hypes (PK (sec_type, code, start_date,
+ *  end_date, min_checkin_period)). Fetched once per chart request — far
+ *  cheaper than pivoting the episodes back into per-date flags inside the
+ *  chart query. */
+function buildHypeEpisodesSql(): string {
   return `
-    SELECT date, extreme_val, nearby_extreme_date, is_extreme_peak_not_floor
-    FROM analysis.mov_ave_peaks_and_floors
-    WHERE sec_type = $2
-      AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
-    ORDER BY date ASC
+    SELECT
+      h.min_checkin_period,
+      h.start_date,
+      h.end_date,
+      h.hype_days,
+      h.trading_amt_hype_days,
+      h.std_hype_days
+    FROM analysis.mov_ave_market_hypes h
+    WHERE h.sec_type = $2
+      AND REGEXP_REPLACE(h.code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+    ORDER BY h.min_checkin_period, h.start_date
   `;
-}
-
-interface DbValleyLowRow extends QueryResultRow {
-  date: Date | string;
-  extreme_val: number | null;
-  nearby_extreme_date: Date | string | null;
-  is_extreme_peak_not_floor: boolean | null;
 }
 
 function buildNameSql(secType: MaSpreadSecType): string {
@@ -764,6 +851,124 @@ function buildNameSql(secType: MaSpreadSecType): string {
   `;
 }
 
+/** Map one DB chart row to a top-level ohlc extrema row (all 7 windows).
+ *  Used to build response.ohlc — ONE copy per date shared by all pair series
+ *  (instead of fanning the extrema out into every pair's rows, which would
+ *  multiply the payload by the pair count). */
+function toOhlcExtremaRow(r: DbChartRow): MovAveSpreadOhlcRow {
+  const d = (v: Date | string | null): string | null =>
+    v != null ? formatDate(v) : null;
+  return {
+    date: formatDate(r.date),
+    open_20d: toNum(r.open_20d),
+    high_20d: toNum(r.high_20d),
+    high_date_20d: d(r.high_date_20d),
+    high_2nd_20d: toNum(r.high_2nd_20d),
+    high_2nd_date_20d: d(r.high_2nd_date_20d),
+    low_20d: toNum(r.low_20d),
+    low_date_20d: d(r.low_date_20d),
+    low_2nd_20d: toNum(r.low_2nd_20d),
+    low_2nd_date_20d: d(r.low_2nd_date_20d),
+    open_60d: toNum(r.open_60d),
+    high_60d: toNum(r.high_60d),
+    high_date_60d: d(r.high_date_60d),
+    high_2nd_60d: toNum(r.high_2nd_60d),
+    high_2nd_date_60d: d(r.high_2nd_date_60d),
+    low_60d: toNum(r.low_60d),
+    low_date_60d: d(r.low_date_60d),
+    low_2nd_60d: toNum(r.low_2nd_60d),
+    low_2nd_date_60d: d(r.low_2nd_date_60d),
+    open_120d: toNum(r.open_120d),
+    high_120d: toNum(r.high_120d),
+    high_date_120d: d(r.high_date_120d),
+    high_2nd_120d: toNum(r.high_2nd_120d),
+    high_2nd_date_120d: d(r.high_2nd_date_120d),
+    low_120d: toNum(r.low_120d),
+    low_date_120d: d(r.low_date_120d),
+    low_2nd_120d: toNum(r.low_2nd_120d),
+    low_2nd_date_120d: d(r.low_2nd_date_120d),
+    open_255d: toNum(r.open_255d),
+    high_255d: toNum(r.high_255d),
+    high_date_255d: d(r.high_date_255d),
+    high_2nd_255d: toNum(r.high_2nd_255d),
+    high_2nd_date_255d: d(r.high_2nd_date_255d),
+    low_255d: toNum(r.low_255d),
+    low_date_255d: d(r.low_date_255d),
+    low_2nd_255d: toNum(r.low_2nd_255d),
+    low_2nd_date_255d: d(r.low_2nd_date_255d),
+    open_500d: toNum(r.open_500d),
+    high_500d: toNum(r.high_500d),
+    high_date_500d: d(r.high_date_500d),
+    high_2nd_500d: toNum(r.high_2nd_500d),
+    high_2nd_date_500d: d(r.high_2nd_date_500d),
+    low_500d: toNum(r.low_500d),
+    low_date_500d: d(r.low_date_500d),
+    low_2nd_500d: toNum(r.low_2nd_500d),
+    low_2nd_date_500d: d(r.low_2nd_date_500d),
+    open_750d: toNum(r.open_750d),
+    high_750d: toNum(r.high_750d),
+    high_date_750d: d(r.high_date_750d),
+    high_2nd_750d: toNum(r.high_2nd_750d),
+    high_2nd_date_750d: d(r.high_2nd_date_750d),
+    low_750d: toNum(r.low_750d),
+    low_date_750d: d(r.low_date_750d),
+    low_2nd_750d: toNum(r.low_2nd_750d),
+    low_2nd_date_750d: d(r.low_2nd_date_750d),
+    open_1275d: toNum(r.open_1275d),
+    high_1275d: toNum(r.high_1275d),
+    high_date_1275d: d(r.high_date_1275d),
+    high_2nd_1275d: toNum(r.high_2nd_1275d),
+    high_2nd_date_1275d: d(r.high_2nd_date_1275d),
+    low_1275d: toNum(r.low_1275d),
+    low_date_1275d: d(r.low_date_1275d),
+    low_2nd_1275d: toNum(r.low_2nd_1275d),
+    low_2nd_date_1275d: d(r.low_2nd_date_1275d),
+    high_line_slope_20d: toNum(r.high_line_slope_20d),
+    low_line_slope_20d: toNum(r.low_line_slope_20d),
+    high_line_slope_60d: toNum(r.high_line_slope_60d),
+    low_line_slope_60d: toNum(r.low_line_slope_60d),
+    high_line_slope_120d: toNum(r.high_line_slope_120d),
+    low_line_slope_120d: toNum(r.low_line_slope_120d),
+    high_line_slope_255d: toNum(r.high_line_slope_255d),
+    low_line_slope_255d: toNum(r.low_line_slope_255d),
+    high_line_slope_500d: toNum(r.high_line_slope_500d),
+    low_line_slope_500d: toNum(r.low_line_slope_500d),
+    high_line_slope_750d: toNum(r.high_line_slope_750d),
+    low_line_slope_750d: toNum(r.low_line_slope_750d),
+    high_line_slope_1275d: toNum(r.high_line_slope_1275d),
+    low_line_slope_1275d: toNum(r.low_line_slope_1275d),
+  };
+}
+
+/** One episode row from analysis.mov_ave_market_hypes (see
+ *  buildHypeEpisodesSql). trading_amt_hype_days / std_hype_days may be
+ *  NULL on rows built before those columns existed. */
+interface DbHypeEpisodeRow {
+  min_checkin_period: number;
+  start_date: Date | string;
+  end_date: Date | string;
+  hype_days: number;
+  trading_amt_hype_days: number | null;
+  std_hype_days: number | null;
+}
+
+/** Group the episode rows into the response's per-window map
+ *  (check-in window → episodes ascending by startDate; windows with no
+ *  episodes are absent). */
+function toHypeEpisodes(rows: DbHypeEpisodeRow[]): MovAveSpreadHypeEpisodes {
+  const out: MovAveSpreadHypeEpisodes = {};
+  for (const r of rows) {
+    (out[r.min_checkin_period] ??= []).push({
+      startDate: formatDate(r.start_date),
+      endDate: formatDate(r.end_date),
+      hypeDays: r.hype_days,
+      tradingAmtHypeDays: r.trading_amt_hype_days ?? undefined,
+      stdHypeDays: r.std_hype_days ?? undefined,
+    });
+  }
+  return out;
+}
+
 export async function getMovAveSpreadChart(
   rawCode: string,
   rawSecType: string | undefined | null,
@@ -771,11 +976,11 @@ export async function getMovAveSpreadChart(
   const secType = normalizeSecType(rawSecType);
   const target = stripped(rawCode);
 
-  // Fetch chart rows + name + valley lows in parallel.
-  const [chartRows, nameRows, valleyLowRows] = await Promise.all([
+  // Fetch chart rows + name + market-hype episodes in parallel.
+  const [chartRows, nameRows, hypeEpisodeRows] = await Promise.all([
     queryRows<DbChartRow>(buildChartSql(secType), [target, secType]),
     queryRows<{ name: string | null }>(buildNameSql(secType), [target]),
-    queryRows<DbValleyLowRow>(buildValleyLowsSql(), [target, secType]),
+    queryRows<DbHypeEpisodeRow>(buildHypeEpisodesSql(), [target, secType]),
   ]);
 
   const name = nameRows[0]?.name ?? "";
@@ -1120,20 +1325,6 @@ export async function getMovAveSpreadChart(
     }
   }
 
-  // Valley lows: one entry per peaks_and_floors row for this code. Plotted
-  // directly by the frontend as red down-triangle markers — no per-detail-row
-  // smearing.
-  const valley_lows: MovAveSpreadValleyLow[] = valleyLowRows
-    .map((r) => ({
-      date: formatDate(r.date),
-      extreme_val: toNum(r.extreme_val) ?? 0,
-      nearby_extreme_date: r.nearby_extreme_date != null
-        ? formatDate(r.nearby_extreme_date)
-        : null,
-      is_extreme_peak_not_floor: r.is_extreme_peak_not_floor === true,
-    }))
-    .filter((v) => Number.isFinite(v.extreme_val));
-
   return {
     code: target,
     name,
@@ -1142,7 +1333,12 @@ export async function getMovAveSpreadChart(
       ...EMA_PAIR_ORDER.map(([ms, ml]) => byPair.get(`ema-${ms}/${ml}`)!),
       ...AMT_PAIR_ORDER.map(([ms, ml]) => byPair.get(`amt-${ms}/${ml}`)!),
     ],
-    valley_lows,
+    // One extrema row per date, index-aligned with every pair's rows.
+    ohlc: chartRows.map(toOhlcExtremaRow),
+    // Market-hype episodes keyed by check-in window (5/20/60/120/255) —
+    // drives the light-purple hyped-period shading (spans, so no
+    // index-alignment with the pair rows is needed).
+    hypeEpisodes: toHypeEpisodes(hypeEpisodeRows),
   };
 }
 

@@ -20,36 +20,49 @@
 --  Repopulated from scratch on every run of
 --  `analyze_mov_ave_spread.py` (TRUNCATE then INSERT).
 --
---  NOTE: Foreign-key constraints to the source OHLCV / MA tables are NOT
---  enforced because the source tables differ per sec_type (etf_* vs
---  index_* vs stock_*). Data integrity is guaranteed by the build script's
---  INNER JOINs on both basic_stats and tech_stats for each security type.
+--  NOTE: NO FOREIGN KEYS / NO CHECK CONSTRAINTS by design. These tables
+--  hold derived data owned and rebuilt by `analyze.mov_ave_spread`, so
+--  each keeps only its PRIMARY KEY for row identity / upserts. (An
+--  earlier revision carried a polymorphic FK pattern — generated
+--  etf_date / index_date / stock_date discriminator columns + 3 FKs to
+--  stats.{etf,index,stock}_identity ON DELETE CASCADE + 3 partial
+--  FK-support indexes per table — plus sec_type CHECK constraints;
+--  removed to keep the schema simple and bulk inserts cheap.)
+--  Consequence: deleting/truncating stats identity rows no longer
+--  cascades into these tables — rebuild them with
+--  `python -m analyze.mov_ave_spread` (or `--force`) instead.
 -- ============================================================================
 
 -- Drop any prior version of these tables (ETF-only etf_mov_ave_spreads_* and
 -- earlier wide-format revisions). Also remove the old analysis_identity row
 -- so the new mov_ave_spread registration starts clean.
--- peaks_and_floors MUST be dropped AFTER detail (or CASCADE) because detail
--- has an FK to peaks_and_floors; CASCADE handles both orderings safely.
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_detail CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_detail_ema CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_spreads_detail_ohlc CASCADE;
-DROP TABLE IF EXISTS analysis.mov_ave_peaks_and_floors CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_large_swings CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_rsi CASCADE;
 DROP TABLE IF EXISTS analysis.etf_mov_ave_spreads_detail;
+DROP TABLE IF EXISTS analysis.mov_ave_peaks_and_floors CASCADE;
+DROP TABLE IF EXISTS analysis.mov_ave_rebounds CASCADE;
 DELETE FROM analysis.analysis_identity WHERE name = 'etf_mov_ave_spread';
 DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rsi';
 DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_ema';
 DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_spread_ohlc';
+DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rebounds';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_spreads_detail  (WIDE format)
---    One row per (sec_type, code, date) holding all 9 gap values.
+--    One row per (sec_type, code, date) holding all 9 gap values plus the
+--    20 trading-amount liquidity-trend columns.
 --
 --  Columns:
 --    sec_type, code, date              — PK; identifies the asset universe
 --                                            (etf vs index), ticker, and date
+--    trading_amt_ma{5,20,60,120,255}     — trading-amount MAs + market-share
+--    trading_amt_market_share_ma{...}      MAs + fractional MA slopes +
+--    trading_amt_ma{...}_slope             market-share-vs-MA gaps (20 cols,
+--    trading_amt_market_share_vs_ma{...}   mirrored into mov_ave_trading_amt;
+--                                            see that section for semantics)
 --    price_vs_ma{5,20,60,120,255}        — (price - maX) / maX
 --    ma5_vs_ma{20,60,120,255}            — (ma5  - maX) / maX
 --    std_{5,20,60,120,255}days            — rolling population σ of price over
@@ -67,14 +80,30 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
     code              TEXT         NOT NULL,
     date              DATE         NOT NULL,
 
-    -- FK to analysis.mov_ave_peaks_and_floors(sec_type, code, date).
-    -- "Nearest preceding extreme" mapping: for each detail row at date D,
-    -- peaks_and_floors_date = the largest extreme date <= D (most recent
-    -- peak/floor on or before D). NULL only when no extreme exists before
-    -- D (e.g. early history before the first belt). Constrained by a
-    -- DEFERRABLE FK so the build script can insert peaks_and_floors +
-    -- detail in any order within a single transaction.
-    peaks_and_floors_date DATE,
+    -- 20 trading-amount liquidity-trend columns (mirrored into
+    -- analysis.mov_ave_trading_amt by the trading-amt internal step; kept
+    -- here too so single-table chart queries need no JOIN). Definitions
+    -- and semantics: see the mov_ave_trading_amt section below.
+    trading_amt_ma5                   NUMERIC(24,4),
+    trading_amt_ma20                  NUMERIC(24,4),
+    trading_amt_ma60                  NUMERIC(24,4),
+    trading_amt_ma120                 NUMERIC(24,4),
+    trading_amt_ma255                 NUMERIC(24,4),
+    trading_amt_market_share_ma5      NUMERIC(10,4),
+    trading_amt_market_share_ma20     NUMERIC(10,4),
+    trading_amt_market_share_ma60     NUMERIC(10,4),
+    trading_amt_market_share_ma120    NUMERIC(10,4),
+    trading_amt_market_share_ma255    NUMERIC(10,4),
+    trading_amt_ma5_slope             NUMERIC(10,4),
+    trading_amt_ma20_slope            NUMERIC(10,4),
+    trading_amt_ma60_slope            NUMERIC(10,4),
+    trading_amt_ma120_slope           NUMERIC(10,4),
+    trading_amt_ma255_slope           NUMERIC(10,4),
+    trading_amt_market_share_vs_ma5   NUMERIC(10,4),
+    trading_amt_market_share_vs_ma20  NUMERIC(10,4),
+    trading_amt_market_share_vs_ma60  NUMERIC(10,4),
+    trading_amt_market_share_vs_ma120 NUMERIC(10,4),
+    trading_amt_market_share_vs_ma255 NUMERIC(10,4),
 
     -- 5 Price-vs-MA gap columns
     price_vs_ma5      NUMERIC(10,6),
@@ -113,9 +142,7 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
     std_120days       NUMERIC(10,6),
     std_255days       NUMERIC(10,6),
 
-    CONSTRAINT pk_mov_ave_spreads_detail PRIMARY KEY (sec_type, code, date),
-    CONSTRAINT chk_mov_ave_spreads_detail_sec_type
-        CHECK (sec_type IN ('etf', 'index', 'stock'))
+    CONSTRAINT pk_mov_ave_spreads_detail PRIMARY KEY (sec_type, code, date)
 );
 
 -- NOTE: no separate (sec_type, code, date) index — the PK already covers
@@ -124,11 +151,7 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
 -- benefit (PK B-tree already serves equality + range scans on the
 -- (sec_type, code, date) prefix).
 --
--- Index for the FK lookups + monthly group-by queries (e.g. "all detail
--- rows belonging to a given peaks_and_floors row").
-CREATE INDEX idx_mov_ave_spreads_detail_pf_date
-    ON analysis.mov_ave_spreads_detail (sec_type, code, peaks_and_floors_date);
-
+--
 COMMENT ON TABLE  analysis.mov_ave_spreads_detail              IS 'MA-spread detail (WIDE format): one row per (sec_type, code, date) with 9 gap_value columns (5 Price/MA + 4 MA5/MA). sec_type ∈ {etf, index, stock}.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
@@ -200,8 +223,6 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_detail.std_255days IS 'Rolling popula
 --
 --  Populated by the internal EMA step of `analyze.mov_ave_spread` (see
 --  ema.py). Incremental upsert by missing dates; --force truncates first.
---  No FK to mov_ave_spreads_detail — data integrity is guaranteed by
---  INNER JOINs on tech_stats in the build script.
 -- ----------------------------------------------------------------------------
 CREATE TABLE analysis.mov_ave_spreads_detail_ema (
     sec_type          TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
@@ -241,9 +262,7 @@ CREATE TABLE analysis.mov_ave_spreads_detail_ema (
     std_120days       NUMERIC(10,6),
     std_255days       NUMERIC(10,6),
 
-    CONSTRAINT pk_mov_ave_spreads_detail_ema PRIMARY KEY (sec_type, code, date),
-    CONSTRAINT chk_mov_ave_spreads_detail_ema_sec_type
-        CHECK (sec_type IN ('etf', 'index', 'stock'))
+    CONSTRAINT pk_mov_ave_spreads_detail_ema PRIMARY KEY (sec_type, code, date)
 );
 
 COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ema              IS 'EMA-spread detail (WIDE format): one row per (sec_type, code, date) with 9 EMA gap columns (5 Price/EMA + 4 EMA6/EMA) + 5 EMA slope + 5 EMA curvature columns. sec_type ∈ {etf, index, stock}. Source: stats.{etf,index,stock}_tech_stats.ema{6,20,60,120,255}.';
@@ -290,64 +309,41 @@ ALTER TABLE analysis.mov_ave_spreads_detail_ema ADD COLUMN IF NOT EXISTS std_120
 ALTER TABLE analysis.mov_ave_spreads_detail_ema ADD COLUMN IF NOT EXISTS std_255days NUMERIC(10,6);
 
 -- ----------------------------------------------------------------------------
---  Table: analysis.mov_ave_peaks_and_floors  (per-EXTREME-DATE cadence)
---    One row per (sec_type, code, extreme_date). `date` IS the extreme date
---    itself — the actual biz date on which a local minimum or maximum close
---    price was observed within a "continuous belt" (see
---    analyze.mov_ave_spread.peaks_and_floors). The detail table
---    analysis.mov_ave_spreads_detail references this table via its
---    `peaks_and_floors_date` FK column using a "nearest preceding extreme"
---    mapping: each detail row at date D maps to the largest extreme date
---    <= D (NULL only when no extreme exists before D).
---
---  Columns:
---    sec_type, code, date  — PK; identifies the asset universe and the
---                            extreme biz date (NOT a month-start).
---    extreme_val           — the local min or max close price observed on
---                            `date`. Always NOT NULL (every row is an
---                            extreme). Both minima (valley lows / floors)
---                            and maxima (peaks) are detected.
---    nearby_extreme_date   — (floors only) the furthest date within the
---                            PREVIOUS 30 trading days of `date` whose
---                            OHLC low is strictly lower than the
---                            valley_low's OHLC high. NULL when no
---                            qualifying date exists, and NULL for peaks
---                            (only floors compute it). Backward-only
---                            (causal — no future data).
---    is_extreme_peak_not_floor — TRUE when this extreme is a local MAX
---                            (peak — upward trend). FALSE when this
---                            extreme is a local MIN (valley low / floor
---                            — downward trend). NOT NULL.
---
---  Cadence: ONE row per detected extreme. CAUSAL algorithm (no future
---  data used for the peak/floor judgement). A day D is a floor candidate
---  when its close is the trailing 60-day MINIMUM (lowest in [D-59, D])
---  AND D is inside a downward belt (close < MA60 − 2σ, OR close < MA60
---  for a causally-bridged run > 20 days; interruptions < 5 days bridged,
---  >= 5 break). Peak candidates are symmetric (trailing 60-day MAX +
---  upward belt). Cross-kind candidates within 5 PREVIOUS trading days
---  are dropped (oscillating/flat region). Same-kind candidates within
---  30 trading days are clustered, keeping the most extreme per cluster
---  (min for floors, max for peaks). Non-extreme dates have no
---  peaks_and_floors row; detail.peaks_and_floors_date is NULL for them.
--- ----------------------------------------------------------------------------
-
-
--- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_spreads_detail_ohlc  (OHLC summary per window)
 --    One row per (sec_type, code, date) with today_close + rolling OHLC
---    stats over 6 windows (20/60/120/255/500/750 trading days).
+--    stats over 7 windows (20/60/120/255/500/750/1275 trading days).
 --
 --  Columns:
 --    sec_type, code, date              — PK; identifies the asset universe
 --                                        (etf vs index), ticker, and date
 --    today_close                        — close price on `date`
---    For each window W ∈ {20, 60, 120, 255, 500, 750}:
---      open_Wd   — open price on the W-th trading day before `date`
---      high_Wd   — max high over the W trading days ending on `date`
---      low_Wd    — min low over the W trading days ending on `date`
+--    For each window W ∈ {20, 60, 120, 255, 500, 750, 1275}:
+--      open_Wd      — open price on the W-th trading day before `date`
+--      high_Wd      — top-high anchor: highest CLOSE among window dates
+--                     MORE THAN 20% of W trading days before `date`
+--                     (value = that anchor date's close)
+--      low_Wd       — lowest-low anchor: lowest CLOSE among window dates
+--                     MORE THAN 20% of W trading days before `date`
+--                     (value = that anchor date's close)
+--      high_2nd_Wd  — second-high anchor: best local-max CLOSE peak in
+--                     the same restricted region lying > 20% of W
+--                     trading days AFTER the top anchor (2nd date is
+--                     always later than the top date — roof line runs
+--                     forward in time)
+--                     (value = that anchor date's INTRADAY HIGH)
+--      low_2nd_Wd   — second-low anchor: best local-min CLOSE trough in
+--                     the same restricted region lying > 20% of W
+--                     trading days AFTER the bottom anchor (2nd date is
+--                     always later than the top date — floor line runs
+--                     forward in time)
+--                     (value = that anchor date's INTRADAY LOW)
 --
---  NULL when not enough history (< W prior rows for the window).
+--  Anchor dates are selected on CLOSE; when the unconstrained extreme
+--  lies within 20% of the window from `date`, the next-best qualifying
+--  date is used ("search other dates"). Columns are NULL when no
+--  qualifying date exists (e.g. history shorter than 20% of W + 1 rows);
+--  2nd anchors are also NULL when no qualifying second peak/trough
+--  exists.
 --  Populated by the internal OHLC step of `analyze.mov_ave_spread`
 --  (see ohlc.py). Reuses the same source DataFrame as the parent
 --  pipeline — no second DB round-trip.
@@ -361,82 +357,178 @@ CREATE TABLE analysis.mov_ave_spreads_detail_ohlc (
 
     open_20d          NUMERIC(18,6),
     high_20d          NUMERIC(18,6),
+    high_date_20d    DATE,
     low_20d           NUMERIC(18,6),
+    low_date_20d     DATE,
+    high_2nd_20d          NUMERIC(18,6),
+    high_2nd_date_20d     DATE,
+    low_2nd_20d           NUMERIC(18,6),
+    low_2nd_date_20d     DATE,
+    high_line_slope_20d NUMERIC(18,6),
+    low_line_slope_20d  NUMERIC(18,6),
 
     open_60d          NUMERIC(18,6),
     high_60d          NUMERIC(18,6),
+    high_date_60d    DATE,
     low_60d           NUMERIC(18,6),
+    low_date_60d     DATE,
+    high_2nd_60d          NUMERIC(18,6),
+    high_2nd_date_60d     DATE,
+    low_2nd_60d           NUMERIC(18,6),
+    low_2nd_date_60d     DATE,
+    high_line_slope_60d NUMERIC(18,6),
+    low_line_slope_60d  NUMERIC(18,6),
 
     open_120d         NUMERIC(18,6),
     high_120d         NUMERIC(18,6),
+    high_date_120d    DATE,
     low_120d          NUMERIC(18,6),
+    low_date_120d     DATE,
+    high_2nd_120d         NUMERIC(18,6),
+    high_2nd_date_120d     DATE,
+    low_2nd_120d          NUMERIC(18,6),
+    low_2nd_date_120d     DATE,
+    high_line_slope_120d NUMERIC(18,6),
+    low_line_slope_120d  NUMERIC(18,6),
 
     open_255d         NUMERIC(18,6),
     high_255d         NUMERIC(18,6),
+    high_date_255d    DATE,
     low_255d          NUMERIC(18,6),
+    low_date_255d     DATE,
+    high_2nd_255d         NUMERIC(18,6),
+    high_2nd_date_255d     DATE,
+    low_2nd_255d          NUMERIC(18,6),
+    low_2nd_date_255d     DATE,
+    high_line_slope_255d NUMERIC(18,6),
+    low_line_slope_255d  NUMERIC(18,6),
 
     open_500d         NUMERIC(18,6),
     high_500d         NUMERIC(18,6),
+    high_date_500d    DATE,
     low_500d          NUMERIC(18,6),
+    low_date_500d     DATE,
+    high_2nd_500d         NUMERIC(18,6),
+    high_2nd_date_500d     DATE,
+    low_2nd_500d          NUMERIC(18,6),
+    low_2nd_date_500d     DATE,
+    high_line_slope_500d NUMERIC(18,6),
+    low_line_slope_500d  NUMERIC(18,6),
 
     open_750d         NUMERIC(18,6),
     high_750d         NUMERIC(18,6),
+    high_date_750d    DATE,
     low_750d          NUMERIC(18,6),
+    low_date_750d     DATE,
+    high_2nd_750d         NUMERIC(18,6),
+    high_2nd_date_750d     DATE,
+    low_2nd_750d          NUMERIC(18,6),
+    low_2nd_date_750d     DATE,
+    high_line_slope_750d NUMERIC(18,6),
+    low_line_slope_750d  NUMERIC(18,6),
 
+    open_1275d         NUMERIC(18,6),
+    high_1275d         NUMERIC(18,6),
+    high_date_1275d    DATE,
+    low_1275d          NUMERIC(18,6),
+    low_date_1275d     DATE,
+    high_2nd_1275d         NUMERIC(18,6),
+    high_2nd_date_1275d     DATE,
+    low_2nd_1275d          NUMERIC(18,6),
+    low_2nd_date_1275d     DATE,
+    high_line_slope_1275d NUMERIC(18,6),
+    low_line_slope_1275d  NUMERIC(18,6),
+    
     CONSTRAINT pk_mov_ave_spreads_detail_ohlc
-        PRIMARY KEY (sec_type, code, date),
-    CONSTRAINT chk_mov_ave_spreads_detail_ohlc_sec_type
-        CHECK (sec_type IN ('etf', 'index', 'stock'))
+        PRIMARY KEY (sec_type, code, date)
 );
 
-COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ohlc              IS 'OHLC detail: one row per (sec_type, code, date) with today_close + rolling open/high/low over 6 windows (20/60/120/255/500/750 trading days). sec_type ∈ {etf, index, stock}. Source: same DataFrame as mov_ave_spread parent pipeline (no second DB round-trip).';
+COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ohlc              IS 'OHLC detail: one row per (sec_type, code, date) with today_close + rolling window anchors over 7 windows (20/60/120/255/500/750/1275 trading days). Top anchors (high_Wd/low_Wd) are the highest/lowest CLOSE among window dates more than 20% of the window before `date` (value = anchor date close); 2nd anchors (high_2nd_Wd/low_2nd_Wd) are the best local-max/min CLOSE peaks in the same restricted region, separated from the top anchors by more than 20% of the window (value = anchor date INTRADAY high/low). DATE columns record the anchor dates. sec_type ∈ {etf, index, stock}. Source: same DataFrame as mov_ave_spread parent pipeline (no second DB round-trip).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.sec_type     IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.date        IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.today_close IS 'Close price on `date` (COALESCE(adj_close, close) for ETFs; close for index/stock). NOT NULL.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_20d   IS 'Open price on the 20th trading day before `date`. NULL if fewer than 20 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_20d   IS 'Max high price over the 20 trading days ending on `date`. NULL if fewer than 20 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_20d    IS 'Min low price over the 20 trading days ending on `date`. NULL if fewer than 20 prior rows exist.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_20d   IS 'Top-high anchor: highest CLOSE among the 20d-window dates more than 20% of the window (> 4 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_20d    IS 'Lowest-low anchor: lowest CLOSE among the 20d-window dates more than 20% of the window (> 4 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_20d IS 'Second-high anchor: best local-max CLOSE peak in the 20d-window restricted region, > 4 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_20d  IS 'Second-low anchor: best local-min CLOSE trough in the 20d-window restricted region, > 4 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_60d   IS 'Open price on the 60th trading day before `date`. NULL if fewer than 60 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_60d   IS 'Max high price over the 60 trading days ending on `date`. NULL if fewer than 60 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_60d    IS 'Min low price over the 60 trading days ending on `date`. NULL if fewer than 60 prior rows exist.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_60d   IS 'Top-high anchor: highest CLOSE among the 60d-window dates more than 20% of the window (> 12 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_60d    IS 'Lowest-low anchor: lowest CLOSE among the 60d-window dates more than 20% of the window (> 12 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_60d IS 'Second-high anchor: best local-max CLOSE peak in the 60d-window restricted region, > 12 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_60d  IS 'Second-low anchor: best local-min CLOSE trough in the 60d-window restricted region, > 12 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_120d  IS 'Open price on the 120th trading day before `date`. NULL if fewer than 120 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_120d  IS 'Max high price over the 120 trading days ending on `date`. NULL if fewer than 120 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_120d   IS 'Min low price over the 120 trading days ending on `date`. NULL if fewer than 120 prior rows exist.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_120d  IS 'Top-high anchor: highest CLOSE among the 120d-window dates more than 20% of the window (> 24 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_120d   IS 'Lowest-low anchor: lowest CLOSE among the 120d-window dates more than 20% of the window (> 24 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_120d IS 'Second-high anchor: best local-max CLOSE peak in the 120d-window restricted region, > 24 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_120d  IS 'Second-low anchor: best local-min CLOSE trough in the 120d-window restricted region, > 24 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_255d  IS 'Open price on the 255th trading day before `date`. NULL if fewer than 255 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_255d  IS 'Max high price over the 255 trading days ending on `date`. NULL if fewer than 255 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_255d   IS 'Min low price over the 255 trading days ending on `date`. NULL if fewer than 255 prior rows exist.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_255d  IS 'Top-high anchor: highest CLOSE among the 255d-window dates more than 20% of the window (> 51 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_255d   IS 'Lowest-low anchor: lowest CLOSE among the 255d-window dates more than 20% of the window (> 51 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_255d IS 'Second-high anchor: best local-max CLOSE peak in the 255d-window restricted region, > 51 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_255d  IS 'Second-low anchor: best local-min CLOSE trough in the 255d-window restricted region, > 51 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_500d  IS 'Open price on the 500th trading day before `date`. NULL if fewer than 500 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_500d  IS 'Max high price over the 500 trading days ending on `date`. NULL if fewer than 500 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_500d   IS 'Min low price over the 500 trading days ending on `date`. NULL if fewer than 500 prior rows exist.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_500d  IS 'Top-high anchor: highest CLOSE among the 500d-window dates more than 20% of the window (> 100 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_500d   IS 'Lowest-low anchor: lowest CLOSE among the 500d-window dates more than 20% of the window (> 100 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_500d IS 'Second-high anchor: best local-max CLOSE peak in the 500d-window restricted region, > 100 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_500d  IS 'Second-low anchor: best local-min CLOSE trough in the 500d-window restricted region, > 100 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_750d  IS 'Open price on the 750th trading day before `date`. NULL if fewer than 750 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_750d  IS 'Max high price over the 750 trading days ending on `date`. NULL if fewer than 750 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_750d   IS 'Min low price over the 750 trading days ending on `date`. NULL if fewer than 750 prior rows exist.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_750d  IS 'Top-high anchor: highest CLOSE among the 750d-window dates more than 20% of the window (> 150 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_750d   IS 'Lowest-low anchor: lowest CLOSE among the 750d-window dates more than 20% of the window (> 150 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_750d IS 'Second-high anchor: best local-max CLOSE peak in the 750d-window restricted region, > 150 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_750d  IS 'Second-low anchor: best local-min CLOSE trough in the 750d-window restricted region, > 150 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_1275d  IS 'Open price on the 1275th trading day before `date` (~5 trading years). NULL if fewer than 1275 prior rows exist.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_1275d  IS 'Top-high anchor: highest CLOSE among the 1275d-window dates more than 20% of the window (> 255 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_1275d   IS 'Lowest-low anchor: lowest CLOSE among the 1275d-window dates more than 20% of the window (> 255 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_1275d IS 'Second-high anchor: best local-max CLOSE peak in the 1275d-window restricted region, > 255 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_1275d  IS 'Second-low anchor: best local-min CLOSE trough in the 1275d-window restricted region, > 255 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
 
-CREATE TABLE analysis.mov_ave_peaks_and_floors (
-    sec_type          TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
-    code              TEXT         NOT NULL,
-    date              DATE         NOT NULL,  -- extreme biz date (NOT month-start)
+-- Comments on the new DATE columns (when the rolling max/min/2nd-extreme occurred).
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_20d    IS 'Business date on which the rolling max(high) over the preceding 20 trading days occurred. NULL when fewer than 20 prior rows exist or all highs in the window are NaN.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_20d     IS 'Business date on which the rolling min(low) over the preceding 20 trading days occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_20d IS 'Business date of the second distinct local-maximum peak in the 20d window (>= 20% cooldown = 4 days from the top peak). NULL when no qualifying second peak exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_20d  IS 'Business date of the second distinct local-minimum trough in the 20d window (>= 20% cooldown = 4 days from the bottom trough).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_60d    IS 'Business date on which the rolling max(high) over the preceding 60 trading days occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_60d     IS 'Business date on which the rolling min(low) over the preceding 60 trading days occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_60d IS 'Business date of the second distinct local-maximum peak in the 60d window (>= 20% cooldown = 12 days from the top peak).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_60d  IS 'Business date of the second distinct local-minimum trough in the 60d window (>= 20% cooldown = 12 days from the bottom trough).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_120d   IS 'Business date on which the rolling max(high) over the preceding 120 trading days occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_120d    IS 'Business date on which the rolling min(low) over the preceding 120 trading days occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_120d IS 'Business date of the second distinct local-maximum peak in the 120d window (>= 20% cooldown = 24 days).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_120d  IS 'Business date of the second distinct local-minimum trough in the 120d window (>= 20% cooldown = 24 days).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_255d   IS 'Business date on which the rolling max(high) over the preceding 255 trading days (~1 trading year) occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_255d    IS 'Business date on which the rolling min(low) over the preceding 255 trading days occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_255d IS 'Business date of the second distinct local-maximum peak in the 255d window (>= 20% cooldown = 51 days).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_255d  IS 'Business date of the second distinct local-minimum trough in the 255d window (>= 20% cooldown = 51 days).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_500d   IS 'Business date on which the rolling max(high) over the preceding 500 trading days (~2 trading years) occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_500d    IS 'Business date on which the rolling min(low) over the preceding 500 trading days occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_500d IS 'Business date of the second distinct local-maximum peak in the 500d window (>= 20% cooldown = 100 days).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_500d  IS 'Business date of the second distinct local-minimum trough in the 500d window (>= 20% cooldown = 100 days).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_750d   IS 'Business date on which the rolling max(high) over the preceding 750 trading days (~3 trading years) occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_750d    IS 'Business date on which the rolling min(low) over the preceding 750 trading days occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_750d IS 'Business date of the second distinct local-maximum peak in the 750d window (>= 20% cooldown = 150 days).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_750d  IS 'Business date of the second distinct local-minimum trough in the 750d window (>= 20% cooldown = 150 days).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_1275d  IS 'Business date on which the rolling max(high) over the preceding 1275 trading days (~5 trading years) occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_1275d   IS 'Business date on which the rolling min(low) over the preceding 1275 trading days occurred.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_1275d IS 'Business date of the second distinct local-maximum peak in the 1275d window (>= 20% cooldown = 255 days).';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_1275d  IS 'Business date of the second distinct local-minimum trough in the 1275d window (>= 20% cooldown = 255 days).';
 
-    extreme_val        NUMERIC(18,6)         NOT NULL,
-    nearby_extreme_date DATE,
-    is_extreme_peak_not_floor BOOLEAN         NOT NULL,
-
-    CONSTRAINT pk_mov_ave_peaks_and_floors PRIMARY KEY (sec_type, code, date),
-    CONSTRAINT chk_mov_ave_peaks_and_floors_sec_type
-        CHECK (sec_type IN ('etf', 'index', 'stock'))
-);
-
-CREATE INDEX idx_mov_ave_peaks_and_floors_sec_type_code_date
-    ON analysis.mov_ave_peaks_and_floors (sec_type, code, date);
-
-COMMENT ON TABLE  analysis.mov_ave_peaks_and_floors             IS 'Peaks-and-floors analysis: one row per (sec_type, code, extreme_date). `date` is the extreme biz date (local min/max close); detail.mov_ave_spreads_detail.peaks_and_floors_date FK references this table (NULL for non-extreme dates).';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.date        IS 'Extreme biz date — the actual trading day on which a trailing-60-day local min/max close was observed inside a belt. PK column referenced by mov_ave_spreads_detail.peaks_and_floors_date.';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.extreme_val  IS 'The close price observed on `date` (a trailing-60-day min for floors / max for peaks). CAUSAL detection: a day qualifies as a floor candidate when its close is the lowest in the trailing 60 trading days AND it is inside a downward belt (close < MA60 − 2σ, OR close < MA60 for a causally-bridged run > 20 days, interruptions < 5 days bridged). Peaks are symmetric (trailing 60-day max + upward belt). Cross-kind candidates within 5 PREVIOUS trading days are dropped (oscillating region). Same-kind candidates within 30 trading days are clustered, keeping the most extreme per cluster (min for floors, max for peaks).';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.nearby_extreme_date IS 'The furthest date within the PREVIOUS 30 trading days of `date` (the valley_low_date) whose OHLC low is strictly lower than the valley_low''s OHLC high. NULL when no qualifying date exists in the backward 30 trading-day window, and NULL for peaks (only floors compute nearby_extreme_date). Backward-only (causal — no future data). Computed by analyze.mov_ave_spread.peaks_and_floors._compute_nearby_extreme_date.';
-COMMENT ON COLUMN analysis.mov_ave_peaks_and_floors.is_extreme_peak_not_floor IS 'TRUE when this extreme is a local MAX (peak — trailing-60-day high inside an upward belt). FALSE when this extreme is a local MIN (valley low / floor — trailing-60-day low inside a downward belt). The frontend uses this to render up-triangles (green) for peaks and down-triangles (red) for floors.';
+-- Comments on the roof/floor line-slope columns.
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_20d  IS 'Slope of the roof line through the two high anchors (high_20d close -> high_2nd_20d intraday high), in price units per trading day: (high_2nd_20d - high_20d) / (trading days between the two anchor dates). Negative = descending roof. NULL when either anchor is absent.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_20d   IS 'Slope of the floor line through the two low anchors (low_20d close -> low_2nd_20d intraday low), in price units per trading day: (low_2nd_20d - low_20d) / (trading days between the two anchor dates). Positive = ascending floor. NULL when either anchor is absent.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_60d  IS 'Slope of the roof line through the two high anchors of the 60d window, in price units per trading day. Negative = descending roof.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_60d   IS 'Slope of the floor line through the two low anchors of the 60d window, in price units per trading day. Positive = ascending floor.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_120d IS 'Slope of the roof line through the two high anchors of the 120d window, in price units per trading day. Negative = descending roof.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_120d  IS 'Slope of the floor line through the two low anchors of the 120d window, in price units per trading day. Positive = ascending floor.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_255d IS 'Slope of the roof line through the two high anchors of the 255d window, in price units per trading day. Negative = descending roof.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_255d  IS 'Slope of the floor line through the two low anchors of the 255d window, in price units per trading day. Positive = ascending floor.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_500d IS 'Slope of the roof line through the two high anchors of the 500d window, in price units per trading day. Negative = descending roof.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_500d  IS 'Slope of the floor line through the two low anchors of the 500d window, in price units per trading day. Positive = ascending floor.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_750d IS 'Slope of the roof line through the two high anchors of the 750d window, in price units per trading day. Negative = descending roof.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_750d  IS 'Slope of the floor line through the two low anchors of the 750d window, in price units per trading day. Positive = ascending floor.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_1275d IS 'Slope of the roof line through the two high anchors of the 1275d window, in price units per trading day. Negative = descending roof.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_1275d  IS 'Slope of the floor line through the two low anchors of the 1275d window, in price units per trading day. Positive = ascending floor.';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_rsi  (per-asset+date Wilder RSI + short-term gaps)
@@ -495,9 +587,7 @@ CREATE TABLE analysis.mov_ave_rsi (
     days_since_last_extreme NUMERIC(10,6),
     date_of_last_extreme DATE,
 
-    CONSTRAINT pk_mov_ave_rsi PRIMARY KEY (sec_type, code, date),
-    CONSTRAINT chk_mov_ave_rsi_sec_type
-        CHECK (sec_type IN ('etf', 'index', 'stock'))
+    CONSTRAINT pk_mov_ave_rsi PRIMARY KEY (sec_type, code, date)
 );
 
 -- Migrate: add rsi_60days column to pre-existing installs (CREATE TABLE
@@ -526,7 +616,7 @@ ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_500days NUMERIC(10
 -- maintenance cost on every INSERT for zero benefit (PK B-tree already
 -- serves equality + range scans on the (sec_type, code, date) prefix).
 
-COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (6/10/14/20/60/120/255/500 days) + short-term price gaps (2/3 day returns). One row per (sec_type, code, date). sec_type ∈ {etf, index, stock}.';
+COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (6/10/14/20/60/120/255/500 days) + short-term price gaps (2/3 day returns). One row per (sec_type, code, date). sec_type ∈ {etf, index, stock}. analysis.mov_ave_rsi_holiday FK-references this table ON DELETE CASCADE.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_rsi.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_rsi.date        IS 'Business date (trading day).';
@@ -546,85 +636,9 @@ COMMENT ON COLUMN analysis.mov_ave_rsi.date_of_last_extreme IS 'The biz date of 
 
 
 -- ----------------------------------------------------------------------------
---  Table: analysis.mov_ave_rebounds  (per-asset+date double-top detection)
---    One row per (sec_type, code, date). For each window W ∈ {20,60,120,255},
---    detects a "rebound" (double-top / shoulder pattern) within the trailing
---    W trading days:
---      1. Find the close-price maximum in [D-W+1, D] → "top max"
---      2. After the top max date, find the next close-price maximum within
---         the same window → "2nd max" (the rebound)
---      3. If the top max is NOT today and a 2nd max exists after it:
---           rebound_date_{W}days        = date of the 2nd max
---           rebound_close_price_{W}days = close at the 2nd max
---           rebound_gap_days_{W}days    = trading days between top max
---                                        and 2nd max
---           rebound_trading_amt_{W}days = SUM(trading_amount) during the
---                                        rebound period (top max → 2nd max)
---         All 4 columns are NULL when the top max is today or when no
---         2nd max exists after it (single-peak window).
---
---  Source: same DataFrame as the mov_ave_spread parent pipeline (price,
---  trading_amount columns — no second DB round-trip). Populated by the
---  internal rebounds step (see rebounds.py).
--- ----------------------------------------------------------------------------
-DROP TABLE IF EXISTS analysis.mov_ave_rebounds CASCADE;
-DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_rebounds';
-
-CREATE TABLE analysis.mov_ave_rebounds (
-    sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
-    code            TEXT         NOT NULL,
-    date            DATE         NOT NULL,
-
-    rebound_date_20days DATE,
-    rebound_close_price_20days  NUMERIC(10,6),
-    rebound_gap_days_20days     NUMERIC(10,6),
-    rebound_trading_amt_20days  NUMERIC(24,4),
-
-    rebound_date_60days DATE,
-    rebound_close_price_60days  NUMERIC(10,6),
-    rebound_gap_days_60days     NUMERIC(10,6),
-    rebound_trading_amt_60days  NUMERIC(24,4),
-
-    rebound_date_120days DATE,
-    rebound_close_price_120days  NUMERIC(10,6),
-    rebound_gap_days_120days     NUMERIC(10,6),
-    rebound_trading_amt_120days  NUMERIC(24,4),
-
-    rebound_date_255days DATE,
-    rebound_close_price_255days  NUMERIC(10,6),
-    rebound_gap_days_255days     NUMERIC(10,6),
-    rebound_trading_amt_255days  NUMERIC(24,4),
-
-    CONSTRAINT pk_mov_ave_rebounds PRIMARY KEY (sec_type, code, date),
-    CONSTRAINT chk_mov_ave_rebounds_sec_type
-        CHECK (sec_type IN ('etf', 'index', 'stock'))
-);
-
-COMMENT ON TABLE  analysis.mov_ave_rebounds IS 'Double-top (rebound) detection analysis: one row per (sec_type, code, date). For each window W ∈ {20,60,120,255}, detects a rebound pattern (2nd max close after the top max within the trailing W days). sec_type ∈ {etf, index, stock}.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.date IS 'Business date (trading day).';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_date_20days IS 'Date of the 2nd max close (rebound peak) within the trailing 20-day window. NULL when no rebound pattern exists (today is the window max or no second peak).';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_close_price_20days IS 'Close price at the 2nd max (rebound peak) within the trailing 20-day window. NUMERIC(10,6). NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_gap_days_20days IS 'Trading days between the top max and the 2nd max (rebound) within the trailing 20-day window. NUMERIC(10,6). NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_trading_amt_20days IS 'SUM of trading_amount during the rebound period (top max → 2nd max, inclusive) within the trailing 20-day window. NUMERIC(24,4). NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_date_60days IS 'Date of the 2nd max close (rebound peak) within the trailing 60-day window. NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_close_price_60days IS 'Close price at the 2nd max within the trailing 60-day window. NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_gap_days_60days IS 'Trading days between top max and 2nd max within the trailing 60-day window. NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_trading_amt_60days IS 'SUM of trading_amount during the rebound period within the trailing 60-day window. NUMERIC(24,4). NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_date_120days IS 'Date of the 2nd max close (rebound peak) within the trailing 120-day window. NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_close_price_120days IS 'Close price at the 2nd max within the trailing 120-day window. NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_gap_days_120days IS 'Trading days between top max and 2nd max within the trailing 120-day window. NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_trading_amt_120days IS 'SUM of trading_amount during the rebound period within the trailing 120-day window. NUMERIC(24,4). NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_date_255days IS 'Date of the 2nd max close (rebound peak) within the trailing 255-day window. NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_close_price_255days IS 'Close price at the 2nd max within the trailing 255-day window. NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_gap_days_255days IS 'Trading days between top max and 2nd max within the trailing 255-day window. NULL when no rebound.';
-COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_trading_amt_255days IS 'SUM of trading_amount during the rebound period within the trailing 255-day window. NUMERIC(24,4). NULL when no rebound.';
-
--- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_trading_amt  (WIDE format — trading-amount metrics)
---    One row per (sec_type, code, date). Extracted from
---    mov_ave_spreads_detail and extended with rolling max/min + ratio columns.
+--    One row per (sec_type, code, date). Liquidity-trend metrics computed
+--    from the same source DataFrame as mov_ave_spreads_detail.
 --
 --  Columns (grouped by semantic purpose):
 --
@@ -634,34 +648,28 @@ COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_trading_amt_255days IS 'SUM 
 --     stats.{etf_liquidity_margin,index_basic_stats,stock_liquidity_margin}
 --     .trading_amount. NULL until W consecutive rows.
 --
---  2. Rolling max/min of trading_amt_ma5 over N days (NUMERIC(24,4)):
---     trading_amt_ma5_max_over_{20,60,120,255}days — rolling max of
---     trading_amt_ma5 over the past N trading days. NULL until N rows.
---     trading_amt_ma5_min_over_{20,60,120,255}days — rolling min.
+--  2. Trading-amount Bollinger σ (yuan, NUMERIC(24,4)):
+--     trading_amt_std{5,20,60,120,255} — rolling population σ (ddof=0) of
+--     trading_amt_maW over W days. Bollinger-style envelope widths around
+--     each trading-amount MA line. NULL until W rows.
 --
---  3. Ratio columns (NUMERIC(10,4)):
---     trading_amt_today_vs_trading_amt_ma5_max_over_{N}days_ratio —
---         today's trading_amount / rolling max of trading_amt_ma5
---         over N days. >1 means today's volume exceeds the recent peak
---         in the MA5. NULL when today's amt or rolling max is NULL or
---         max <= 0.
---     trading_amt_ma5_vs_trading_amt_ma5_max_over_{N}days_ratio —
---         trading_amt_ma5 / rolling max of trading_amt_ma5 over N days.
---         How close the current MA5 is to its recent peak.
---         NULL when either is NULL or max <= 0.
---
---  4. Trading-amount market-share MAs (NUMERIC(10,4)):
+--  3. Trading-amount market-share MAs (NUMERIC(10,4)):
 --     trading_amt_market_share_ma{5,20,60,120,255} — market_share =
 --     trading_amount / market_denominator. Then W-day MA of market_share
 --     per (sec_type, code).
 --
---  5. Trading-amount MA slopes (NUMERIC(10,4)):
+--  4. Trading-amount slopes (NUMERIC(10,4)):
+--     trading_amt_slope — fractional daily change of RAW trading_amount.
 --     trading_amt_ma{5,20,60,120,255}_slope — fractional daily change
---     (ma[t]-ma[t-1])/ma[t-1].
+--     (ma[t]-ma[t-1])/ma[t-1] of each MA.
 --
---  6. Trading-amount market-share-vs-MA gaps (NUMERIC(10,4)):
+--  5. Trading-amount market-share-vs-MA gaps (NUMERIC(10,4)):
 --     trading_amt_market_share_vs_ma{5,20,60,120,255} — signed fractional
 --     gap (market_share - market_share_ma{W}) / market_share_ma{W}.
+--
+--  The liquidity-impact RATIO columns (trading_amt_vs_price_slope_ratio
+--  etc.) previously drafted for this table live in the companion table
+--  analysis.mov_ave_trading_amt_ratios (see below).
 --
 --  Populated by the internal trading-amt step of `analyze.mov_ave_spread`
 --  (see trading_amt.py). Incremental upsert by missing dates;
@@ -670,7 +678,9 @@ COMMENT ON COLUMN analysis.mov_ave_rebounds.rebound_trading_amt_255days IS 'SUM 
 
 DROP TABLE IF EXISTS analysis.mov_ave_trading_amt CASCADE;
 DROP TABLE IF EXISTS analysis.mov_ave_trading_amt_ext CASCADE;
+DROP TABLE IF EXISTS analysis.mov_ave_trading_amt_ratios CASCADE;
 DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_trading_amt';
+DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_trading_amt_ratios';
 
 CREATE TABLE analysis.mov_ave_trading_amt (
     sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
@@ -710,25 +720,16 @@ CREATE TABLE analysis.mov_ave_trading_amt (
     trading_amt_ma120_slope   NUMERIC(10,4),
     trading_amt_ma255_slope   NUMERIC(10,4),
 
-    trading_amt_vs_price_slope_ratio         NUMERIC(10,4), -- indicate for how much capital could push for what extent of price changes
-    trading_amt_ma5_vs_price_ma5_slope_ratio     NUMERIC(10,4),
-    trading_amt_ma20_vs_price_ma20_slope_ratio    NUMERIC(10,4),
-    trading_amt_ma60_vs_price_ma60_slope_ratio    NUMERIC(10,4),
-    trading_amt_ma120_vs_price_ma120_slope_ratio   NUMERIC(10,4),
-    trading_amt_ma255_vs_price_ma255_slope_ratio   NUMERIC(10,4),
-
     trading_amt_market_share_vs_ma5     NUMERIC(10,4),
     trading_amt_market_share_vs_ma20    NUMERIC(10,4),
     trading_amt_market_share_vs_ma60    NUMERIC(10,4),
     trading_amt_market_share_vs_ma120   NUMERIC(10,4),
     trading_amt_market_share_vs_ma255   NUMERIC(10,4),
 
-    CONSTRAINT pk_mov_ave_trading_amt PRIMARY KEY (sec_type, code, date),
-    CONSTRAINT chk_mov_ave_trading_amt_sec_type
-        CHECK (sec_type IN ('etf', 'index', 'stock'))
+    CONSTRAINT pk_mov_ave_trading_amt PRIMARY KEY (sec_type, code, date)
 );
 
-COMMENT ON TABLE  analysis.mov_ave_trading_amt              IS 'Trading-amount analysis (WIDE format): one row per (sec_type, code, date) with 5 trading-amount MA columns + 5 trading-amount Bollinger band σ columns (rolling population std of trading_amt_maW over W days) + 5 market-share MA columns + 5 MA slope columns + 5 market-share-vs-MA gap columns. sec_type ∈ {etf, index, stock}.';
+COMMENT ON TABLE  analysis.mov_ave_trading_amt              IS 'Trading-amount analysis (WIDE format): one row per (sec_type, code, date) with 5 trading-amount MA columns + 5 trading-amount Bollinger band σ columns (rolling population std of trading_amt_maW over W days) + 5 market-share MA columns + 6 slope columns (raw trading_amt_slope + 5 fractional MA slopes) + 5 market-share-vs-MA gap columns. sec_type ∈ {etf, index, stock}. Liquidity-impact ratio columns live in the companion table analysis.mov_ave_trading_amt_ratios.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.date         IS 'Business date (trading day).';
@@ -753,14 +754,270 @@ COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma60_slope   IS 'Frac
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma120_slope  IS 'Fractional daily change of trading_amt_ma120.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma255_slope  IS 'Fractional daily change of trading_amt_ma255.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_slope         IS 'Fractional daily change of raw trading_amount: (ta[t]-ta[t-1])/ta[t-1]. NUMERIC(10,4). NULL on first date per code or when ta[t-1] is NULL or <= 0.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_vs_price_slope_ratio       IS 'Liquidity-impact proxy: (trading_amount / 1,000,000) / price_slope. How many millions of capital push price by one unit. price_slope=0 auto-set to 1.0 to avoid division-by-zero. NULL when trading_amount or price_slope is NULL.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma5_vs_price_ma5_slope_ratio   IS '(trading_amt_ma5 / 1,000,000) / ma5_slope. Millions of capital (MA5 timescale) per unit of MA5 price change. ma5_slope=0 auto-set to 1.0.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma20_vs_price_ma20_slope_ratio  IS '(trading_amt_ma20 / 1,000,000) / ma20_slope. Millions of capital (MA20 timescale) per unit of MA20 price change. ma20_slope=0 auto-set to 1.0.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma60_vs_price_ma60_slope_ratio  IS '(trading_amt_ma60 / 1,000,000) / ma60_slope. Millions of capital (MA60 timescale) per unit of MA60 price change. ma60_slope=0 auto-set to 1.0.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma120_vs_price_ma120_slope_ratio IS '(trading_amt_ma120 / 1,000,000) / ma120_slope. Millions of capital (MA120 timescale) per unit of MA120 price change. ma120_slope=0 auto-set to 1.0.';
-COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_ma255_vs_price_ma255_slope_ratio IS '(trading_amt_ma255 / 1,000,000) / ma255_slope. Millions of capital (MA255 timescale) per unit of MA255 price change. ma255_slope=0 auto-set to 1.0.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_market_share_vs_ma5    IS '(market_share - market_share_ma5) / market_share_ma5.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_market_share_vs_ma20   IS '(market_share - market_share_ma20) / market_share_ma20.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_market_share_vs_ma60   IS '(market_share - market_share_ma60) / market_share_ma60.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_market_share_vs_ma120  IS '(market_share - market_share_ma120) / market_share_ma120.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.trading_amt_market_share_vs_ma255  IS '(market_share - market_share_ma255) / market_share_ma255.';
+
+-- ----------------------------------------------------------------------------
+--  Table: analysis.mov_ave_trading_amt_ratios  (liquidity-impact ratios)
+--    One row per (sec_type, code, date). Capital-per-movement ratios:
+--    how many MILLIONS of yuan of trading amount accompany one unit of
+--    price movement. This is the reciprocal of the Amihud (2002)
+--    illiquidity measure (ILLIQ = |price change| / dollar volume): a
+--    HIGH value means a deep market (much capital absorbed per unit of
+--    movement); a LOW value means a thin market (small capital moved
+--    price a lot).
+--
+--  Financial semantics — the daily price move decomposes into three
+--  measurable legs, and each leg gets its own capital ratio:
+--
+--    close[t] - close[t-1]  (net daily move)      = price_slope
+--    open[t]  - close[t-1]  (overnight gap)       — jump between sessions
+--    high[t]  - low[t]     (intraday range)       — session movement envelope
+--
+--  1. Slope ratios (signed, close-to-close basis), NUMERIC(10,4):
+--     trading_amt_vs_price_slope_ratio
+--         = (trading_amount / 1M) / price_slope
+--         today's capital per unit of NET daily price change.
+--     trading_amt_ma{W}_vs_price_ma{W}_slope_ratio
+--         = (trading_amt_ma{W} / 1M) / ma{W}_slope
+--         matching-timescale: W-day average capital per unit of the W-day
+--         price-MA daily step (trend liquidity — the capital behind the
+--         average trend step, smoothed).
+--
+--  2. Range ratio (unsigned — intraday depth gauge), NUMERIC(10,4):
+--     trading_amt_vs_high_low_ratio
+--         = (trading_amount / 1M) / (high - low)
+--         capital per unit of intraday range. Range-based liquidity in the
+--         Parkinson-volatility spirit: high turnover + narrow range = deep
+--         book; low turnover + wide range = volatile / thin session.
+--
+--  3. Overnight-gap ratio (signed — gap-day liquidity), NUMERIC(10,4):
+--     trading_amt_vs_overnight_gap_ratio
+--         = (trading_amount / 1M) / (open[t] - close[t-1])
+--         capital traded on a day that gapped, per unit of gap. NOTE: the
+--         draft name "gap betw prev close today close" would be literally
+--         identical to price_slope (close[t] - close[t-1]); it is
+--         implemented as the standard trading "gap" instead — where
+--         today's session OPENS relative to yesterday's close — which is
+--         the distinct, non-redundant quantity.
+--
+--  4. MA5 versions of 2 & 3 (matching timescale), NUMERIC(10,4):
+--     trading_amt_ma5_vs_high_low_ma5_ratio
+--         = (trading_amt_ma5 / 1M) / MA5(high - low)
+--     trading_amt_ma5_vs_overnight_gap_ma5_ratio
+--         = (trading_amt_ma5 / 1M) / MA5(open[t] - close[t-1])
+--         5-day average capital per unit of 5-day average range / gap.
+--
+--  Sign convention: turnover >= 0, so sign(ratio) = sign(movement).
+--  Negative slope/gap ratios = the move was downward.
+--
+--  Zero-movement guard (all columns): a 0 denominator is auto-set to 1.0
+--  (the stored value then equals the capital in millions — a pragmatic
+--  floor for flat / limit-locked days rather than a true ratio).
+--
+--  Scale note: ratios are in price units (not scale-free), so absolute
+--  values are comparable across time within a code, and cross-sectionally
+--  only among similarly-priced instruments. Typical magnitudes: 10^2
+--  (small stocks) .. 10^5 (broad indices / liquid ETFs); values with
+--  |v| >= 10^6 (the NUMERIC(10,4) cap) are nulled by the build script.
+--
+--  Populated by the internal trading-amt-ratios step of
+--  `analyze.mov_ave_spread` (see trading_amt_ratios.py). Incremental
+--  upsert by missing dates; --force truncates first.
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE analysis.mov_ave_trading_amt_ratios (
+    sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
+    code            TEXT         NOT NULL,
+    date            DATE         NOT NULL,
+
+    -- 6 slope ratios (signed, close-to-close basis; matching timescale)
+    trading_amt_vs_price_slope_ratio             NUMERIC(10,4),
+    trading_amt_ma5_vs_price_ma5_slope_ratio     NUMERIC(10,4),
+    trading_amt_ma20_vs_price_ma20_slope_ratio   NUMERIC(10,4),
+    trading_amt_ma60_vs_price_ma60_slope_ratio   NUMERIC(10,4),
+    trading_amt_ma120_vs_price_ma120_slope_ratio NUMERIC(10,4),
+    trading_amt_ma255_vs_price_ma255_slope_ratio NUMERIC(10,4),
+
+    -- 4 range / overnight-gap ratios
+    trading_amt_vs_high_low_ratio                NUMERIC(10,4),
+    trading_amt_vs_overnight_gap_ratio           NUMERIC(10,4),
+    trading_amt_ma5_vs_high_low_ma5_ratio        NUMERIC(10,4),
+    trading_amt_ma5_vs_overnight_gap_ma5_ratio   NUMERIC(10,4),
+
+    CONSTRAINT pk_mov_ave_trading_amt_ratios PRIMARY KEY (sec_type, code, date)
+);
+
+COMMENT ON TABLE  analysis.mov_ave_trading_amt_ratios              IS 'Liquidity-impact ratios (WIDE format): one row per (sec_type, code, date) with 10 capital-per-movement ratio columns — 6 slope ratios ((trading_amt or trading_amt_maW) / 1M yuan) / (price_slope or maW_slope), matching-timescale) + range ratio ((trading_amt / 1M) / (high - low)) + overnight-gap ratio ((trading_amt / 1M) / (open - prev close)) + MA5 versions of both. Reciprocal of the Amihud illiquidity measure: higher = deeper market. sec_type ∈ {etf, index, stock}. Built by analyze.mov_ave_spread (trading_amt_ratios.py).';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.date         IS 'Business date (trading day).';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_vs_price_slope_ratio       IS 'Liquidity-impact proxy: (trading_amount / 1,000,000) / price_slope — today''s capital (millions of yuan) per unit of NET close-to-close price change. Reciprocal of the Amihud illiquidity measure: higher = deeper market. Signed: negative = the daily move was downward. price_slope=0 auto-set to 1.0 (stored value = capital in millions). NULL when trading_amount or price_slope is NULL.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_ma5_vs_price_ma5_slope_ratio   IS '(trading_amt_ma5 / 1,000,000) / ma5_slope. Millions of capital (MA5 timescale) per unit of MA5 price change — trend liquidity. ma5_slope=0 auto-set to 1.0.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_ma20_vs_price_ma20_slope_ratio  IS '(trading_amt_ma20 / 1,000,000) / ma20_slope. Millions of capital (MA20 timescale) per unit of MA20 price change. ma20_slope=0 auto-set to 1.0.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_ma60_vs_price_ma60_slope_ratio  IS '(trading_amt_ma60 / 1,000,000) / ma60_slope. Millions of capital (MA60 timescale) per unit of MA60 price change. ma60_slope=0 auto-set to 1.0.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_ma120_vs_price_ma120_slope_ratio IS '(trading_amt_ma120 / 1,000,000) / ma120_slope. Millions of capital (MA120 timescale) per unit of MA120 price change. ma120_slope=0 auto-set to 1.0.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_ma255_vs_price_ma255_slope_ratio IS '(trading_amt_ma255 / 1,000,000) / ma255_slope. Millions of capital (MA255 timescale) per unit of MA255 price change. ma255_slope=0 auto-set to 1.0.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_vs_high_low_ratio                IS '(trading_amount / 1,000,000) / (high - low) — capital per unit of INTRADAY range (unsigned, always positive). Range-based liquidity: high turnover + narrow range = deep book (Parkinson-volatility spirit); low turnover + wide range = volatile / thin session. range=0 (limit-locked / flat day) auto-set denominator to 1.0 (stored value = capital in millions). NULL when trading_amount, high, or low is NULL.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_vs_overnight_gap_ratio           IS '(trading_amount / 1,000,000) / (open[t] - close[t-1]) — capital traded on a day that gapped, per unit of OVERNIGHT gap (where today''s session opens relative to yesterday''s close; the literal "prev close vs today close" reading would be identical to trading_amt_vs_price_slope_ratio). Signed: negative = gap down. Gap-day liquidity / confirmation gauge: high ratio on a big gap = the gap attracted flow; low ratio = thin overnight market. gap=0 auto-set denominator to 1.0. NULL on the first date per code or when trading_amount, open, or prev close is NULL.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_ma5_vs_high_low_ma5_ratio        IS '(trading_amt_ma5 / 1,000,000) / MA5(high - low) — matching timescale: 5-day average capital per unit of 5-day average daily range. NULL until 5 consecutive rows.';
+COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.trading_amt_ma5_vs_overnight_gap_ma5_ratio   IS '(trading_amt_ma5 / 1,000,000) / MA5(open[t] - close[t-1]) — matching timescale: 5-day average capital per unit of 5-day average overnight gap. NULL until 5 consecutive gap observations.';
+
+-- ----------------------------------------------------------------------------
+--  Table: analysis.mov_ave_market_hypes  (market-hype EPISODE detector)
+--    One row per (sec_type, code, min_checkin_period, EPISODE): a
+--    CONCATENATED hype episode — a maximal span of trading dates
+--    anchored on a maximal run of CONSECUTIVE "hyped" dates (trading
+--    amount AND price volatility BOTH elevated, SUSTAINEDLY over a
+--    check-in window, each measured against its own CENTERED 20-year
+--    percentile threshold) and EXTENDED through the surrounding
+--    check-in evidence, bucketed BY ITS LENGTH: min_checkin_period is
+--    the bucket's MINIMUM span and the NEXT window its EXCLUSIVE
+--    maximum (5d: 5..19 rows; 20d: 20..59; 60d: 60..119; 120d:
+--    120..254; 255d: 255..5100 = the whole ±10y threshold base).
+--
+--  Computation semantics (from the draft comment):
+--
+--  1. CENTERED PERCENTILE THRESHOLDS (per date t, per code — the audit
+--     base window spans BOTH directions around the audited date, NOT a
+--     trailing/rolling-back window):
+--     trading_amt_threshold[t] = the min_trading_amt_threshold-th
+--         PERCENTILE (0-100, linear interpolation) of daily
+--         trading_amount over the centered window of ~2550 trading
+--         rows (10 trading years) BEFORE t, t itself, and ~2550 rows
+--         AFTER t (~5101 rows ≈ 20 trading years total).
+--     std_threshold[t] = the min_std_threshold-th percentile of
+--         std_{W}days over the same centered window, where W = the
+--         row's min_checkin_period (matching timescale: the
+--         volatility metric is the SAME W-day rolling population σ
+--         already stored in mov_ave_spreads_detail.std_{W}days).
+--     A base window with fewer than 255 non-NULL observations (1
+--     trading year) has no thresholds -> the date is not hyped. Bases
+--     near the start / end of a code's history are naturally truncated
+--     (the newest dates have no future rows yet, so their base is
+--     effectively the trailing 10y). Because the base looks both ways,
+--     historical rows use their FOLLOWING decade (retrospective audit,
+--     look-ahead by design) — run --force to refresh historical rows'
+--     flags after new data arrives.
+--
+--  2. CHECK-IN CONDITION (per date s):
+--     checkin[s] = trading_amount[s] > trading_amt_threshold[s]
+--                  AND std_{W}days[s] > std_threshold[s]
+--     Strict > on both legs (the draft's ">min_trading_amt_threshold
+--     and min_std_threshold"). NULL turnover / σ counts as NOT a
+--     check-in.
+--
+--  3. SATISFACTION (per row date t, "within min_checkin_period from
+--     today date"):
+--     Within the last W trading rows ending at t (inclusive), the
+--     percentage of check-in dates must EXCEED
+--     min_checkin_satisfaction_threshold (strict >; the 60.0 default
+--     means "> 60% of the W days checked in"). The denominator is the
+--     full W rows — missing data counts against satisfaction. The
+--     first W-1 rows of each code have no full window -> not hyped.
+--
+--  4. EPISODE CONCAT + EXTENSION + BUCKETING (what the table stores):
+--     The per-date hyped series from (3) is collapsed, per (sec_type,
+--     code, min_checkin_period), into maximal runs of CONSECUTIVE
+--     hyped dates ("cores"), then each core is extended through the
+--     check-in evidence that fed its satisfaction and bucketed by its
+--     SPAN:
+--       - start: the FIRST check-in within the W rows ending at the
+--         core's first hyped date (the lookback window that produced
+--         the core's first satisfaction verdict — its earliest
+--         evidence). This lets an episode start at the FIRST big-move
+--         day of a turmoil instead of ~W rows later, when the trailing
+--         satisfaction count finally crosses the threshold (the
+--         2024-09-24 rally audit, 159673.SZ: the 20d satisfaction only
+--         crossed 60% on 2024-10-21 — a full month late — while the
+--         check-ins began on the rally's day 1).
+--       - end: symmetric — the LAST check-in within the W rows
+--         starting at the core's last hyped date (the decaying tail).
+--       - episodes of one bucket never overlap; each start is clipped
+--         to just after the previous episode's end.
+--       - BUCKET BOUNDS: hype_days (the span in trading dates,
+--         start and end inclusive) must satisfy
+--         W <= hype_days < next check-in window (the longest window
+--         is bounded by 5100 rows = the whole ±10y base). A core whose
+--         own consecutive span already reaches its bucket max is
+--         dropped from that bucket: sustained activity of that length
+--         is the domain of the NEXT bucket up, whose own
+--         longer-window satisfaction flags it.
+--       - trading_amt_hype_days / std_hype_days count the days within
+--         the stored span on which each leg individually checked in
+--         (diagnostics for which leg drove the episode).
+--     Only qualifying spans are stored — non-hyped dates leave no
+--     footprint (the pre-episode revision wrote one is_hyped row per
+--     date, TRUE and FALSE alike; superseded).
+--
+--  Row multiplicity: one row per EPISODE per check-in window
+--  (5 / 20 / 60 / 120 / 255). min_checkin_period IS part of the PK —
+--  different windows can produce episodes with identical spans, so
+--  the window must disambiguate the rows. The three threshold columns
+--  RECORD the parameter set the build used (defaults 60.0 / 60.0 /
+--  30.0 — the σ leg sits at a DELIBERATELY LOW 30th percentile: the
+--  W-day trailing σ lags a sudden turmoil by construction, so a low
+--  bar lets episodes start at the turmoil's first big-move day); they
+--  are NOT part of the PK — rebuilding with different parameters (use
+--  --force) overwrites in place.
+--
+--  Rebuild semantics (same as analysis.margin_changes): episode
+--  boundaries shift whenever new dates arrive (the trailing episode
+--  extends; the centered threshold windows move), and non-hyped dates
+--  leave no footprint — date-level coverage cannot be diffed against
+--  an episodes table. The build therefore DELETEs its entire scope
+--  (one sec_type, or one code in --code mode) and recompu tes every
+--  episode from the FULL per-code history on every pipeline run;
+--  --force additionally truncates the table first. Populated by the
+--  internal market-hypes step of `analyze.mov_ave_spread` (see
+--  market_hypes.py; reuses the parent source DataFrame's
+--  trading_amount + std_{W}days columns — no second DB round-trip).
+-- ----------------------------------------------------------------------------
+DROP TABLE IF EXISTS analysis.mov_ave_market_hypes CASCADE;
+DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_market_hypes';
+
+CREATE TABLE analysis.mov_ave_market_hypes (
+    sec_type                        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
+    code                            TEXT         NOT NULL,
+    start_date                      DATE         NOT NULL,
+    end_date                        DATE         NOT NULL,
+    min_checkin_period              INTEGER      NOT NULL,  -- 5 | 20 | 60 | 120 | 255
+    hype_days                       INTEGER      NOT NULL,
+
+    min_checkin_satisfaction_threshold NUMERIC(6,4) NOT NULL DEFAULT 60.0,
+    min_trading_amt_threshold          NUMERIC(6,4) NOT NULL DEFAULT 60.0,
+    trading_amt_hype_days              INTEGER      NOT NULL,
+    min_std_threshold                  NUMERIC(6,4) NOT NULL DEFAULT 30.0,
+    std_hype_days                      INTEGER      NOT NULL,
+
+    CONSTRAINT pk_mov_ave_market_hypes PRIMARY KEY (sec_type, code, start_date, end_date, min_checkin_period)
+);
+
+COMMENT ON TABLE  analysis.mov_ave_market_hypes              IS 'Market-hype EPISODE detector: one row per (sec_type, code, min_checkin_period, episode) — a CONCATENATED hype episode: a maximal span of trading dates anchored on a maximal run of consecutive hyped dates and extended through the surrounding check-in evidence (the W rows before the run''s first hyped date, back to its first check-in, and the W rows after the last hyped date, to its last check-in). A date is hyped when, within the last min_checkin_period (W) trading rows ending at it, MORE than min_checkin_satisfaction_threshold percent of the dates are check-ins — a check-in being a date whose daily trading_amount exceeds its centered-20-year min_trading_amt_threshold percentile AND whose W-day rolling population σ (std_{W}days) exceeds its centered-20-year min_std_threshold percentile (strict > on both legs; matching timescale: the σ window equals the check-in window). The audit base window is CENTERED on each audited date — ~2550 trading rows (10 trading years) before the date plus ~2550 rows after it (NOT a trailing/rolling-back window); windows with < 255 observations have no thresholds -> the date is not hyped; bases near the start/end of a code''s history are naturally truncated (newest dates have no future rows yet). Episodes are BUCKETED BY SPAN: min_checkin_period is the bucket minimum, the next window the exclusive maximum (20d: 20..59 rows; 60d: 60..119; 120d: 120..254; 255d: 255..5100 = the whole ±10y base) — one calendar turmoil lands in exactly the bucket matching its length. Non-hyped dates leave no footprint; episodes are REBUILT WHOLESALE per sec_type on every run of analyze.mov_ave_spread (new dates shift episode boundaries — the margin_changes precedent). sec_type ∈ {etf, index, stock}; one episode set per check-in window (5/20/60/120/255).';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.start_date   IS 'Episode start date (inclusive): the earliest date of the episode''s CONCATENATED span — the FIRST check-in within the W-row lookback evidence window ending at the core run''s first hyped date (so episodes start at a turmoil''s first big-move day, not ~W rows later when the trailing satisfaction count finally crosses the threshold).';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.end_date     IS 'Episode end date (inclusive): the latest date of the episode''s CONCATENATED span — the LAST check-in within the W-row lookforward window starting at the core run''s last hyped date (the decaying tail). A code''s trailing episode extends as new hyped dates arrive — the build deletes + recomputes its whole scope, so stored boundaries are always wholesale-rebuilt. >= start_date.';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.min_checkin_period                 IS 'Check-in window length W in trading rows: the count of check-in dates is taken over the last W rows ending at each audited date (inclusive), and W doubles as the bucket''s MINIMUM episode span (the next window is the exclusive maximum; the 255d bucket is bounded by the whole ±10y base instead). Allowed values 5 / 20 / 60 / 120 / 255 — one episode set per window; the volatility leg uses the matching-timescale σ (std_{W}days). Part of the PK (two windows can produce episodes with identical spans).';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.hype_days    IS 'Episode SPAN in TRADING dates: the number of trading rows from start_date to end_date inclusive — the CONCATENATED length (check-in days PLUS bridged interior gaps), bucket-filtered to [min_checkin_period, next check-in window) so each calendar turmoil lands in exactly the bucket matching its length.';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.min_checkin_satisfaction_threshold IS 'Required percentage (0-100] of check-in dates within the window, strict greater-than. Default 60.0 = more than 60% of the W dates must be check-ins. Recorded build parameter — NOT part of the PK; changing it requires a --force rebuild.';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.min_trading_amt_threshold          IS 'Centered-20-year PERCENTILE level (0-100, linear interpolation) of daily trading_amount used as the liquidity-leg threshold: a date checks in on this leg when its trading_amount exceeds the percentile of its centered window (~2550 rows before the date + ~2550 rows after it, ±10 trading years). Default 60.0 (60th percentile). Recorded build parameter — NOT part of the PK; changing it requires a --force rebuild.';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.trading_amt_hype_days              IS 'Days within the episode span (start_date..end_date inclusive) on which the LIQUIDITY leg individually checked in (trading_amount > its centered-20y percentile). Diagnostic for which leg drove the episode; <= hype_days (interior bridged gaps did not check in).';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.min_std_threshold                  IS 'Centered-20-year PERCENTILE level (0-100) of std_{W}days used as the volatility-leg threshold: a date checks in on this leg when its W-day rolling population σ exceeds the percentile of its centered window (~2550 rows before the date + ~2550 rows after it, ±10 trading years). Default 30.0 (30th percentile) — DELIBERATELY LOW: the W-day trailing σ lags a sudden turmoil by construction (the window still holds W-1 pre-turmoil rows on day 1), so a low bar lets episodes start at the turmoil''s first big-move day (the 2024-09-24 rally audit showed a 60th-pct σ leg delayed episode starts by a full month while the amt leg fired from day one). Recorded build parameter — NOT part of the PK; changing it requires a --force rebuild.';
+COMMENT ON COLUMN analysis.mov_ave_market_hypes.std_hype_days                      IS 'Days within the episode span (start_date..end_date inclusive) on which the VOLATILITY leg individually checked in (std_{W}days > its centered-20y percentile). Diagnostic for which leg drove the episode; <= hype_days (interior bridged gaps did not check in).';
+
+-- Migrate: add the per-leg check-in day counts to pre-existing installs
+-- (CREATE TABLE includes them for fresh installs, but ADD COLUMN IF NOT
+-- EXISTS retro-fits the columns to an already-existing table without
+-- dropping data). Days within the episode span on which each leg
+-- individually checked in — diagnostics for which leg drove the episode
+-- (the volatility leg lags turmoil onsets, the liquidity leg fires from
+-- day one). Nullable in the migration only because the column cannot be
+-- added NOT NULL to a non-empty table; the wholesale per-sec_type rebuild
+-- that the market-hypes step performs on every pipeline run refills every
+-- row (run --force to trigger it immediately).
+ALTER TABLE analysis.mov_ave_market_hypes ADD COLUMN IF NOT EXISTS trading_amt_hype_days INTEGER;
+ALTER TABLE analysis.mov_ave_market_hypes ADD COLUMN IF NOT EXISTS std_hype_days           INTEGER;

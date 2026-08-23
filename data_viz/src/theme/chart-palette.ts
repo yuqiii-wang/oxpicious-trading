@@ -43,6 +43,26 @@ export const IV_BLUE = cssVar("--chart-iv-blue", "#1F77B4"); // standard tableau
 export const ATM_GRAY = cssVar("--chart-atm-gray", "#7F7F7F"); // neutral gray for ATM vertical line
 export const MARKER_EDGE_GRAY = cssVar("--chart-marker-edge-gray", "#444444");
 
+// Skewness vertical-line palette (IV-smile skew + Greek-panel greek-skew).
+// Below-neutral (<1) → blue, above-neutral (>1) → red, ≈neutral → grey.
+export const SKEW_BELOW_COLOR = cssVar("--chart-skew-below", "rgba(50, 140, 220, 0.4)");
+export const SKEW_ABOVE_COLOR = cssVar("--chart-skew-above", "rgba(220, 50, 50, 0.4)");
+export const SKEW_NEUTRAL_COLOR = cssVar("--chart-skew-neutral", "rgba(128, 128, 128, 0.3)");
+export const SKEW_LINE_WIDTH = Number(cssVar("--chart-skew-line-width", "1.5"));
+export const SKEW_LINE_OPACITY = Number(cssVar("--chart-skew-line-opacity", "0.7"));
+
+/**
+ * Resolve the skewness vertical-line color from the skew value relative to its
+ * neutral (== 1.0) anchor. Returns the shared palette colors so callers never
+ * hard-code the RGBA (or disagree on the blue/red/grey thresholds).
+ */
+export function skewLineColor(skew: number): string {
+  const EPS = 1e-4;
+  if (skew < 1 - EPS) return SKEW_BELOW_COLOR;
+  if (skew > 1 + EPS) return SKEW_ABOVE_COLOR;
+  return SKEW_NEUTRAL_COLOR;
+}
+
 // Valuation — PE ratio (distinct from Close/IV_BLUE)
 export const PE_COLOR = cssVar("--chart-pe", "#e377c2"); // tableau pink — stands apart from blue/orange/purple MA lines
 

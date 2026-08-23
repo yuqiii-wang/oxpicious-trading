@@ -1,27 +1,28 @@
-﻿/**
+/**
  * SZSE Options page — interactive mirror of plot_szse_options.py.
  *
  *   • SnapshotControls — underlying ETF selector + snapshot date picker
  *   • StatTable — 4 auto-derived snapshot columns (Q4 Start / Last Quarter / Last Month / Latest)
- *   • VolSmilePanel — IV smile for the selected snapshot date + corr chart
+ *   • VolSmilePanel — IV smile snapshot for the selected date
+ *   • SharedSkewPanel (iv_smile) — IV smile skewness over time + correlation
+ *   • SharedSkewPanel (oi_moneyness) — OI-wtd moneyness skew over time + correlation
  *   • MarketInterestWallPanel — OI wall by expiry for the selected snapshot date
  *   • OptionsTrendPanel — OI bands + P/C Ratio + Total OI (merged card)
  *   • AnnualSentimentPanel — ETF OHLC price & volume (separate card)
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
   CircularProgress,
   Stack,
-  ToggleButton,
-  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 import SnapshotControls, { autoDeriveSnapshots } from "@/components/SnapshotControls";
 import StatTable from "@/components/StatTable";
 import RefreshButton from "@/components/RefreshButton";
 import VolSmilePanel from "@/dataviz/features/szse-options/VolSmilePanel";
+import SharedSkewPanel from "@/dataviz/features/szse-options/skew-shared/SharedSkewPanel";
 import MarketInterestWallPanel from "@/dataviz/features/szse-options/MarketInterestWallPanel";
 import { OptionsTrendPanel } from "@/dataviz/features/szse-options/options-trend";
 import { buildOhlcOption } from "@/dataviz/features/szse-options/annual-sentiment";
@@ -34,33 +35,15 @@ import {
   fetchUnderlyings,
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
-import {
-  fetchOptionsSkewnessCorr,
-  fetchOptionsSkewnessCrossCounts,
-} from "@/lib/api-client/options";
-import { computeDailySkewSeries } from "@/dataviz/features/szse-options/vol-smile/skewSeries";
-import {
-  buildCorrTimeSeriesOption,
-  type CorrMode,
-} from "@/dataviz/features/szse-options/vol-smile/corrTimeSeriesOption";
 import { useStore } from "@/store/filters";
 import type {
   EtfOhlcvResponse,
   OptionsCombinedResponse,
   OptionsUnderlying,
-  SkewnessCorrRow,
-  SkewnessCrossCountRow,
 } from "@shared/types";
 import { UNDERLYING_LABELS } from "@/theme/chart-palette";
 import { computeSnapshotStats } from "@/lib/options-stats";
 import type { OhlcMode } from "@/lib/ohlc";
-import type { EChartsOption } from "echarts";
-
-const CORR_MODES: { value: CorrMode; label: string }[] = [
-  { value: "ma5", label: "MA5" },
-  { value: "ma20", label: "MA20" },
-  { value: "ma60", label: "MA60" },
-];
 
 export default function SzseOptionsPage() {
   const underlyingCode = useStore((s) => s.underlyingCode);
@@ -78,13 +61,6 @@ export default function SzseOptionsPage() {
   const [selectedDate, setSelectedDate] = useState<string>("");
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
   const [refreshKey, setRefreshKey] = useState(0);
-
-  // Corr chart state
-  const [corrRows, setCorrRows] = useState<SkewnessCorrRow[]>([]);
-  const [corrMode, setCorrMode] = useState<CorrMode>("ma5");
-
-  // Cross counts state
-  const [crossCountRows, setCrossCountRows] = useState<SkewnessCrossCountRow[]>([]);
 
   // Load underlyings list once (and on refresh / target-type change).
   useEffect(() => {
@@ -124,34 +100,6 @@ export default function SzseOptionsPage() {
     };
   }, [underlyingCode, optionsTargetType, refreshKey]);
 
-  // Fetch corr data for the correlation chart + cross counts
-  useEffect(() => {
-    if (!underlyingCode || !optionsData) return;
-    const dates = optionsData.dates;
-    if (dates.length === 0) return;
-    const startDate = dates[0];
-    const endDate = dates[dates.length - 1];
-    let cancelled = false;
-
-    Promise.all([
-      fetchOptionsSkewnessCorr(underlyingCode, startDate, endDate),
-      fetchOptionsSkewnessCrossCounts(underlyingCode, startDate, endDate),
-    ])
-      .then(([corrResp, crossResp]) => {
-        if (cancelled) return;
-        setCorrRows(corrResp.rows);
-        setCrossCountRows(crossResp.rows);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setCorrRows([]);
-          setCrossCountRows([]);
-        }
-      });
-
-    return () => { cancelled = true; };
-  }, [underlyingCode, optionsData]);
-
   const handleRefresh = () => {
     invalidateCacheForPrefix("/api/szse-options/");
     setRefreshKey((k) => k + 1);
@@ -182,26 +130,6 @@ export default function SzseOptionsPage() {
     UNDERLYING_LABELS[underlyingCode] ??
     underlyings.find((u) => u.code === underlyingCode)?.name ??
     underlyingCode;
-
-  // Correlation chart option
-  const dailySkewSeries = useMemo(
-    () => (optionsData ? computeDailySkewSeries(optionsData.rows, crossCountRows) : []),
-    [optionsData, crossCountRows],
-  );
-
-  const corrOption: EChartsOption | null = useMemo(() => {
-    if (corrRows.length === 0 || dailySkewSeries.length === 0) return null;
-    return buildCorrTimeSeriesOption(
-      dailySkewSeries, corrRows, selectedDate, corrMode,
-    );
-  }, [corrRows, dailySkewSeries, selectedDate, corrMode]);
-
-  const handleCorrModeChange = useCallback(
-    (_e: React.MouseEvent<HTMLElement>, newMode: CorrMode | null) => {
-      if (newMode) setCorrMode(newMode);
-    },
-    [],
-  );
 
   return (
     <Stack spacing={2}>
@@ -258,33 +186,18 @@ export default function SzseOptionsPage() {
               <VolSmilePanel
                 rows={optionsData.rows}
                 selectedDate={selectedDate}
+              />
+              <SharedSkewPanel
+                mode="iv_smile"
+                rows={optionsData.rows}
+                selectedDate={selectedDate}
                 onDateChange={setSelectedDate}
-                crossCounts={crossCountRows}
-                bottomChartOption={corrOption}
-                bottomChartHeight={200}
-                bottomChartControls={
-                  <ToggleButtonGroup
-                    value={corrMode}
-                    exclusive
-                    onChange={handleCorrModeChange}
-                    size="small"
-                    sx={{
-                      bgcolor: "background.paper",
-                      "& .MuiToggleButton-root": {
-                        px: 1.5,
-                        py: 0.25,
-                        fontSize: "0.7rem",
-                        minWidth: 48,
-                      },
-                    }}
-                  >
-                    {CORR_MODES.map((m) => (
-                      <ToggleButton key={m.value} value={m.value}>
-                        {m.label}
-                      </ToggleButton>
-                    ))}
-                  </ToggleButtonGroup>
-                }
+              />
+              <SharedSkewPanel
+                mode="oi_moneyness"
+                rows={optionsData.rows}
+                selectedDate={selectedDate}
+                onDateChange={setSelectedDate}
               />
               <MarketInterestWallPanel rows={optionsData.rows} selectedDate={selectedDate} />
               <OptionsTrendPanel rows={optionsData.rows} />

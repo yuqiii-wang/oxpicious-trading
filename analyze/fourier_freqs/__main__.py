@@ -18,8 +18,8 @@ Per sec_type (index / etf / stock):
      for each window).
   4. Write rows to analysis.fourier_freqs:
      - ``--force``: DELETE sec_type rows + chunked COPY-insert.
-     - default: chunked upsert only rows whose last_date is in the
-       missing-dates set (ON CONFLICT DO UPDATE on PK).
+     - default: chunked upsert only rows whose (code, last_date) is in
+       the per-code missing-target set (ON CONFLICT DO UPDATE on PK).
   5. Upsert analysis_identity.
 
 Incremental mode rationale
@@ -77,6 +77,7 @@ from analyze.fourier_freqs.config import (  # noqa: E402
     DESCRIPTION,
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
+    SEC_TYPE_CLOSE_TABLE,
     RANGE_DAYS,
 )
 from analyze.fourier_freqs.fetch import (  # noqa: E402
@@ -103,69 +104,76 @@ _PK_COLUMNS = ["sec_type", "code", "last_date", "range_days"]
 #  Missing-date detection (incremental mode)
 # ---------------------------------------------------------------------------
 
-async def _find_missing_dates(
+async def _find_missing_targets(
     conn,
     sec_type: str,
-) -> set:
-    """Return dates that need (re)computation for the given sec_type.
+    codes: list[str],
+) -> dict[str, set]:
+    """Return per-code date sets needing (re)computation.
 
-    A date needs computation when EITHER:
-      1. It is present in the source identity table but NOT yet in
-         analysis.fourier_freqs (a genuinely new trading day), OR
-      2. It IS in fourier_freqs but ``amplitude_spectrum`` is NULL
-         (legacy rows written before the spectrum column was added —
-         these need a backfill recompute so the per-date spectrum bar
-         charts have data).
+    A (code, date, range_days) target needs computation when the code
+    has a close on that date with enough prior close history for the
+    window (its close-date rank >= range_days), but analysis.fourier_freqs
+    has NO row with a non-NULL amplitude_spectrum at that exact PK.
+    Legacy rows with a NULL spectrum therefore count as missing and are
+    backfilled by the recompute-upsert.
 
-    The analysis table uses ``last_date`` as its date column (not
-    ``date``), so the standard ``find_missing_analysis_dates`` helper
-    can't be used directly (it assumes the same date_column name in both
-    the analysis and source tables).
+    Detecting gaps at the FULL PK granularity (code × date × window) —
+    not just distinct dates — catches per-code holes that global
+    date-level detection masks forever: a single row for one code and
+    one window on a date (e.g. a stray test write) makes that date look
+    "done" for EVERY code, permanently freezing every other code's
+    spectrum at the previous date.
+
+    Scoped to the given active codes so delisted/suspended codes with
+    unfillable gaps don't inflate the target set every run.
 
     Args:
         conn: asyncpg connection.
         sec_type: 'index', 'etf', or 'stock'.
+        codes: active-code universe (from fetch_active_codes).
 
     Returns:
-        Set of datetime.date values needing (re)computation. Empty set
-        if up to date.
+        dict code -> set of datetime.date needing (re)computation.
+        Empty dict if up to date.
     """
-    identity_table = SEC_TYPE_IDENTITY_TABLE[sec_type]
+    close_table = SEC_TYPE_CLOSE_TABLE[sec_type]
 
-    # Source dates from identity table (column name = "date").
-    source_rows = await conn.fetch(
-        f"SELECT DISTINCT date FROM {identity_table}"
+    rows = await conn.fetch(
+        f"""
+        WITH close_dates AS (
+            SELECT DISTINCT code, date
+            FROM {close_table}
+            WHERE close IS NOT NULL AND code = ANY($2::text[])
+        ),
+        ranked AS (
+            SELECT code, date,
+                   ROW_NUMBER() OVER (PARTITION BY code ORDER BY date) AS rn
+            FROM close_dates
+        ),
+        expected AS (
+            SELECT r.code, r.date, rd.range_days
+            FROM ranked r
+            CROSS JOIN unnest($3::int[]) AS rd(range_days)
+            WHERE r.rn >= rd.range_days
+        )
+        SELECT DISTINCT e.code, e.date
+        FROM expected e
+        LEFT JOIN {TABLE_NAME} f
+            ON f.sec_type = $1
+            AND f.code = e.code
+            AND f.last_date = e.date
+            AND f.range_days = e.range_days
+            AND f.amplitude_spectrum IS NOT NULL
+        WHERE f.code IS NULL
+        """,
+        sec_type, codes, list(RANGE_DAYS),
     )
-    source_dates = {
-        r["date"] for r in source_rows if r["date"] is not None
-    }
 
-    # Existing dates in fourier_freqs (column name = "last_date").
-    existing_rows = await conn.fetch(
-        f"SELECT DISTINCT last_date FROM {TABLE_NAME} WHERE sec_type = $1",
-        sec_type,
-    )
-    existing_dates = {
-        r["last_date"] for r in existing_rows
-        if r["last_date"] is not None
-    }
-
-    missing_dates = source_dates - existing_dates
-
-    # Also flag dates where amplitude_spectrum is NULL — legacy rows that
-    # pre-date the spectrum column. These get upserted (ON CONFLICT DO
-    # UPDATE) to backfill the array without touching freq/amplitude.
-    null_spectrum_rows = await conn.fetch(
-        f"SELECT DISTINCT last_date FROM {TABLE_NAME} "
-        f"WHERE sec_type = $1 AND amplitude_spectrum IS NULL",
-        sec_type,
-    )
-    null_spectrum_dates = {
-        r["last_date"] for r in null_spectrum_rows
-        if r["last_date"] is not None
-    }
-
-    return missing_dates | null_spectrum_dates
+    targets: dict[str, set] = {}
+    for r in rows:
+        targets.setdefault(r["code"], set()).add(r["date"])
+    return targets
 
 
 # ---------------------------------------------------------------------------
@@ -178,14 +186,17 @@ async def _write_rows(
     result_df: pd.DataFrame,
     *,
     force: bool,
-    target_dates: set | None,
+    target_dates: dict[str, set] | None,
+    code: str | None = None,
 ) -> int:
     """Write fourier_freqs rows to the DB.
 
     - force: DELETE sec_type rows + chunked COPY-insert (no conflicts
       because the table was just cleared for this sec_type).
-    - incremental: filter to target_dates rows + chunked upsert on the
-      full PK (ON CONFLICT DO UPDATE). Skipped entirely when target_dates
+    - single-code mode (``code``): DELETE the code's rows + chunked
+      COPY-insert (scoped rebuild for the UI per-security build button).
+    - incremental: filter to target rows + chunked upsert on the full
+      PK (ON CONFLICT DO UPDATE). Skipped entirely when target_dates
       is empty.
 
     Args:
@@ -193,8 +204,11 @@ async def _write_rows(
         sec_type: 'index', 'etf', or 'stock'.
         result_df: DataFrame from compute_fourier_freqs.
         force: when True, DELETE + COPY-insert. When False, upsert.
-        target_dates: set of missing dates (incremental mode). Ignored
-            when force is True.
+        target_dates: per-code missing date sets (code -> set of dates,
+            incremental mode). Ignored when force is True.
+        code: single-code mode — recompute ALL windows for this one
+            code (DELETE its rows first, then COPY-insert). Mutually
+            exclusive with force.
 
     Returns:
         Number of rows written.
@@ -203,25 +217,39 @@ async def _write_rows(
         print(f"  [{sec_type}]   no rows to write", flush=True)
         return 0
 
-    if force:
+    if code is not None:
+        print(f"  [{sec_type}] SINGLE-CODE mode: deleting existing rows "
+              f"for {code} from {TABLE_NAME}...", flush=True)
+        await conn.execute(
+            f"DELETE FROM {TABLE_NAME} WHERE sec_type = $1 AND code = $2",
+            sec_type, code,
+        )
+    elif force:
         print(f"  [{sec_type}] Deleting existing {sec_type} rows from "
               f"{TABLE_NAME}...", flush=True)
         await conn.execute(
             f"DELETE FROM {TABLE_NAME} WHERE sec_type = $1", sec_type
         )
     else:
-        # Incremental: filter to target_dates only.
+        # Incremental: filter to target dates only. compute_fourier_freqs
+        # already applied per-code target masks before the FFT, so
+        # result_df contains ONLY target rows — this union-of-dates isin
+        # is a defensive no-op that also handles the empty-target skip.
         if target_dates is not None:
-            if len(target_dates) == 0:
+            all_target_dates: set = (
+                set().union(*target_dates.values()) if target_dates
+                else set()
+            )
+            if not all_target_dates:
                 print(f"  [{sec_type}]   up to date; skipping insert.",
                       flush=True)
                 return 0
             n_before = len(result_df)
             result_df = result_df[
-                result_df["last_date"].isin(target_dates)
+                result_df["last_date"].isin(all_target_dates)
             ].reset_index(drop=True)
             print(f"  [{sec_type}] Incremental filter: {len(result_df):,} "
-                  f"of {n_before:,} rows are in target_dates", flush=True)
+                  f"of {n_before:,} rows are in target dates", flush=True)
 
     if result_df.empty:
         print(f"  [{sec_type}]   no rows to write after filter",
@@ -232,7 +260,7 @@ async def _write_rows(
     n_chunks = (len(result_df) + _CHUNK_SIZE - 1) // _CHUNK_SIZE
     total = 0
 
-    if force:
+    if force or code is not None:
         print(f"  [{sec_type}] COPY-inserting {len(result_df):,} rows "
               f"in {n_chunks} chunks...", flush=True)
     else:
@@ -260,7 +288,7 @@ async def _write_rows(
         if not rows:
             continue
 
-        if force:
+        if force or code is not None:
             n = await copy_insert_async(conn, TABLE_NAME, rows)
         else:
             n_copied, n_upserted = await copy_or_upsert_split_async(
@@ -269,7 +297,7 @@ async def _write_rows(
             )
             n = n_copied + n_upserted
         total += n
-        via = "COPY" if force else (
+        via = "COPY" if (force or code is not None) else (
             "COPY" if n_copied > 0 and n_upserted == 0 else
             f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else
             "upsert"
@@ -291,24 +319,56 @@ async def _process_sec_type(
     sec_type: str,
     *,
     force: bool,
-    target_dates: set | None,
+    code: str | None = None,
 ) -> int:
     """Process one sec_type end-to-end.
 
-    1. Fetch active codes (recent-data pre-filter).
-    2. Fetch full close-price history.
-    3. Compute dominant Fourier frequency per (code, last_date, range_days).
-    4. Write to DB (force: DELETE + COPY; incremental: upsert).
+    1. Fetch active codes (recent-data pre-filter). Single-code mode
+       (``code``) bypasses the pre-filter and processes just that code.
+    2. Incremental mode: detect missing (code, date, range_days) targets
+       scoped to those codes; skip early when up to date. Single-code
+       mode skips detection (recompute ALL windows for the code).
+    3. Fetch full close-price history.
+    4. Compute dominant Fourier frequency per (code, last_date, range_days).
+    5. Write to DB (force / single-code: DELETE + COPY; incremental:
+       upsert).
 
     Returns the number of rows written.
     """
-    print(f"\n  [{sec_type}] Fetching active codes...", flush=True)
-    codes = await fetch_active_codes(conn, sec_type)
-    code_list = sorted(codes)
-    print(f"  [{sec_type}]   {len(code_list):,} active codes", flush=True)
-    if not code_list:
-        print(f"  [{sec_type}]   no active codes; skipping.", flush=True)
-        return 0
+    if code is not None:
+        # Single-code mode (--code): bypass the active-universe pre-filter
+        # and the incremental missing-target detection — the UI fires this
+        # when a security has NO rows while the rest of the sec_type is up
+        # to date (date-level detection would see nothing missing).
+        code_list = [code]
+        print(f"\n  [{sec_type}] SINGLE-CODE mode: processing {code}",
+              flush=True)
+    else:
+        print(f"\n  [{sec_type}] Fetching active codes...", flush=True)
+        codes = await fetch_active_codes(conn, sec_type)
+        code_list = sorted(codes)
+        print(f"  [{sec_type}]   {len(code_list):,} active codes", flush=True)
+        if not code_list:
+            print(f"  [{sec_type}]   no active codes; skipping.", flush=True)
+            return 0
+
+    # ---- Detect missing targets (incremental mode) ------------------------
+    target_dates: dict[str, set] | None = None
+    if code is None and not force:
+        print(f"  [{sec_type}] Detecting missing (code, date, window) "
+              f"targets...", flush=True)
+        target_dates = await _find_missing_targets(
+            conn, sec_type, code_list
+        )
+        n_gap_codes = len(target_dates)
+        n_target_dates = (
+            len(set().union(*target_dates.values())) if target_dates else 0
+        )
+        print(f"  [{sec_type}]   {n_gap_codes:,} codes with gaps; "
+              f"{n_target_dates:,} distinct missing dates", flush=True)
+        if not target_dates:
+            print(f"  [{sec_type}]   up to date; skipping.", flush=True)
+            return 0
 
     # ---- Fetch close prices (full history) -------------------------------
     print(f"  [{sec_type}] Fetching full close-price history for "
@@ -327,7 +387,7 @@ async def _process_sec_type(
           f"(range_days={list(RANGE_DAYS)})...", flush=True)
     result_df = compute_fourier_freqs(
         close_df, sec_type, RANGE_DAYS,
-        target_dates=target_dates if not force else None,
+        target_dates=target_dates,
     )
     print(f"  [{sec_type}]   {len(result_df):,} fourier-freqs rows",
           flush=True)
@@ -335,7 +395,7 @@ async def _process_sec_type(
     # ---- Write to DB -----------------------------------------------------
     n = await _write_rows(
         conn, sec_type, result_df,
-        force=force, target_dates=target_dates,
+        force=force, target_dates=target_dates, code=code,
     )
     return n
 
@@ -355,9 +415,21 @@ async def main() -> None:
         "--sec-type", choices=("index", "etf", "stock"), default=None,
         help="Process only this sec_type (for testing). Default: all.",
     )
+    ap.add_argument(
+        "--code", default=None,
+        help="Recompute ALL windows for this single security only "
+             "(single-code mode; used by the UI per-security build "
+             "button). Deletes the code's rows first, then rebuilds "
+             "them. Mutually exclusive with --force.",
+    )
     add_force_arg(ap)
     args = ap.parse_args()
     force = args.force
+
+    if args.code and args.force:
+        print("ERROR: --code and --force are mutually exclusive.",
+              flush=True)
+        sys.exit(2)
 
     sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
 
@@ -366,44 +438,32 @@ async def main() -> None:
         "ANALYZE FOURIER FREQS (dominant cycle via real FFT on close)",
         table=TABLE_NAME,
         sec_types=", ".join(sec_types),
-        mode="FORCE (full recompute per sec_type)" if force
-             else "incremental (missing dates only)",
+        mode=(
+            f"SINGLE-CODE {args.code} (full recompute for this security)"
+            if args.code else
+            "FORCE (full recompute per sec_type)" if force
+            else "incremental (missing dates only)"
+        ),
     )
 
     conn = await get_db_connection_async()
     try:
-        # ---- Detect missing dates (incremental mode) --------------------
-        target_dates_by_sec_type: dict[str, set] = {}
-        if not force:
-            print("\n  Detecting missing dates per sec_type "
-                  "(incremental mode)...", flush=True)
-            for st in sec_types:
-                missing = await _find_missing_dates(conn, st)
-                target_dates_by_sec_type[st] = missing
-                print(f"    -> [{st}]: {len(missing)} missing dates",
-                      flush=True)
-
-            # Early exit if everything is up to date.
-            total_missing = sum(
-                len(td) for td in target_dates_by_sec_type.values()
-            )
-            if total_missing == 0:
-                print("    -> DB is up to date; nothing to do.",
-                      flush=True)
-                print_wall_time(t0)
-                return
-
         # ---- Process each sec_type --------------------------------------
+        # Incremental missing-target detection happens inside
+        # _process_sec_type, scoped to that sec_type's active-code
+        # universe (codes are fetched once and shared by detection
+        # and compute). Single-code mode (--code) bypasses the detection.
         total = 0
         for st in sec_types:
-            td = None if force else target_dates_by_sec_type.get(st, set())
-            if not force and td is not None and len(td) == 0:
-                print(f"\n  [{st}] up to date; skipping.", flush=True)
-                continue
-            n = await _process_sec_type(
-                conn, st, force=force, target_dates=td,
+            total += await _process_sec_type(
+                conn, st, force=force, code=args.code,
             )
-            total += n
+
+        # Early exit if everything was up to date (nothing written).
+        if total == 0 and not force and not args.code:
+            print("\n  DB is up to date; nothing to do.", flush=True)
+            print_wall_time(t0)
+            return
 
         # ---- Upsert analysis_identity -----------------------------------
         print(f"\n  -> Upserting analysis.analysis_identity registry...",

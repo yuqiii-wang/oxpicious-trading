@@ -39,6 +39,20 @@ export const PUT_PCT_RED = 80; // bearish side: puts > 80% (putPct ≥ 80%)
 export const BULL_THRESHOLD_SERIES_NAME = ">80% Calls (Bull)";
 export const BEAR_THRESHOLD_SERIES_NAME = ">80% Puts (Bear)";
 
+/** Wall computation mode for the OI Bands chart. */
+export type WallMode = "80pct" | "large_num";
+
+export const WALL_MODE_LABELS: Record<WallMode, string> = {
+  "80pct": "80% Wall",
+  "large_num": "Large Num Wall",
+};
+
+/** Large-num wall: pick strikes where OI exceeds this fraction of the mean. */
+export const LARGE_NUM_MEAN_FRACTION = 0.70;
+
+export const CALL_LARGE_NUM_SERIES_NAME = "Call Large Num Wall";
+export const PUT_LARGE_NUM_SERIES_NAME = "Put Large Num Wall";
+
 export function buildCohorts(rows: OptionsRow[]): ExpiryCohort[] {
   const byExpiry = new Map<string, number>();
   for (const r of rows) {

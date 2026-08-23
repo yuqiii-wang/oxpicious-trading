@@ -24,8 +24,13 @@ import {
 } from "@/theme/chart-palette";
 import type { ThemeMode } from "@/store/filters";
 import type { EChartsOption } from "echarts";
-import type { MovAveSpreadPairSeries } from "@shared/types";
+import type { MovAveSpreadHypeEpisodes, MovAveSpreadPairSeries } from "@shared/types";
 import type { OhlcMode } from "@/lib/ohlc";
+import {
+  hypeEpisodesToMarkArea,
+  HYPE_ACCENT_COLOR,
+  HYPE_SHADE_COLOR,
+} from "./hypeBands";
 import { buildAmtTooltipFormatter } from "./tooltipFormatter";
 
 /** Trading-amount MA windows in canonical order. */
@@ -49,6 +54,13 @@ export interface BuildAmtEnvelopeOptionArgs {
   ohlcMode?: OhlcMode;
   /** Bollinger multiplier k in MA ± k × σ. Default 2.0; 0 = hidden. */
   bollingerK?: number;
+  /** Enabled market-hype check-in window (trading days) — null/undefined =
+   *  off. When set, hyped date periods are shaded light purple. */
+  hypeWindow?: number | null;
+  /** Market-hype episodes keyed by check-in window. Source:
+   *  analysis.mov_ave_market_hypes — episodes are date spans, so no
+   *  index-alignment with pair.rows is required. */
+  hypeEpisodes?: MovAveSpreadHypeEpisodes | null;
 }
 
 /** Format a yuan amount as 亿元 (100M yuan). */
@@ -63,6 +75,8 @@ export function buildAmtEnvelopeOption({
   themeMode,
   ohlcMode = "absolute",
   bollingerK = 2,
+  hypeWindow = null,
+  hypeEpisodes = null,
 }: BuildAmtEnvelopeOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
@@ -134,6 +148,19 @@ export function buildAmtEnvelopeOption({
   // ---- Build series ----
   const echartsSeries: NonNullable<EChartsOption["series"]> = [];
 
+  // ---- Market-hype shading (light purple over hyped periods) ------------
+  // Active only when a hype window button is enabled AND episode data was
+  // fetched for this code. Episodes are date spans (first/last satisfied
+  // dates of each hyped run), so they apply directly as markArea
+  // rectangles — no index-alignment with the pair's rows needed.
+  // Attached to the invisible "_hlBase" band series (z=0, price y-axis) so
+  // the shade sits behind everything and spans the full plot height.
+  const hypeW = hypeWindow ?? null;
+  const hypeMarkAreaData =
+    hypeW != null && hypeEpisodes != null
+      ? hypeEpisodesToMarkArea(hypeEpisodes[hypeW])
+      : [];
+
   // Lowkey high-low band
   const hlBase: Array<number | null> = lows.slice();
   const hlDelta: Array<number | null> = new Array(n).fill(null);
@@ -153,6 +180,15 @@ export function buildAmtEnvelopeOption({
     lineStyle: { opacity: 0 },
     yAxisIndex: 0,
     z: 0,
+    ...(hypeMarkAreaData.length > 0
+      ? {
+          markArea: {
+            silent: true as const,
+            itemStyle: { borderWidth: 0 },
+            data: hypeMarkAreaData,
+          },
+        }
+      : {}),
   });
   echartsSeries.push({
     type: "line",
@@ -333,6 +369,19 @@ export function buildAmtEnvelopeOption({
   }
   if (showBoll) {
     legendData.push(`Amt Upper (+${bollingerK}σ)`, `Amt Lower (−${bollingerK}σ)`);
+  }
+  if (hypeMarkAreaData.length > 0 && hypeW != null) {
+    legendData.push(`Hyped(${hypeW}d)`);
+    // Cosmetic legend marker for the hype shading (light purple rect).
+    echartsSeries.push({
+      type: "scatter",
+      name: `Hyped(${hypeW}d)`,
+      data: [null],
+      symbol: "rect",
+      symbolSize: [10, 8],
+      itemStyle: { color: HYPE_ACCENT_COLOR, opacity: 0.45, borderColor: HYPE_SHADE_COLOR },
+      z: 0,
+    });
   }
 
   const grid = commonGrid({ left: 55, right: 65, bottom: 50 });

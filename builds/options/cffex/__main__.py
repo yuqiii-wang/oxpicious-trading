@@ -3,6 +3,7 @@
 Reads per-day CFFEX options CSV files from:
   - temps/cffex_archive/YYYYMM/YYYYMMDD_options.csv (archive)
   - temps/cffex_options_trend/YYYYMM/YYYYMMDD_options.csv (trend/downloaded)
+  - temps/cffex_trend/YYYYMM/YYYYMMDD_options.csv (futures trend, also has options)
 
 Inserts into 7 options tables (same schema as SZSE options):
   - stats.options_identity   (PK: date, contract_code)
@@ -14,7 +15,7 @@ Inserts into 7 options tables (same schema as SZSE options):
   - stats.options_aggregate  (FK: date, contract_code → identity)
 
 Missing-data detection flow:
-  1. Glob all *_options.csv files under archive + trend directories
+  1. Glob all *_options.csv files under archive + trend + futures_trend directories
   2. Extract available dates from filenames
   3. Query SELECT DISTINCT date FROM stats.options_identity → existing dates
   4. missing_dates = available_dates - existing_dates
@@ -72,6 +73,7 @@ from builds.options.cffex.config import (
 from builds.options.cffex.paths import (
     CFFEX_ARCHIVE_DIR,
     CFFEX_OPTIONS_TREND_DIR,
+    CFFEX_FUTURES_TREND_DIR,
     glob_options_files,
     ymd_from_options_filename,
 )
@@ -178,10 +180,11 @@ async def main() -> None:
     print_build_header(
         "BUILD CFFEX OPTIONS  ·  missing-data-only → DATABASE",
         **{
-            "Archive dir":  CFFEX_ARCHIVE_DIR,
-            "Trend dir":    CFFEX_OPTIONS_TREND_DIR,
-            "Date range":   f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
-            "Today":        TODAY_STR,
+            "Archive dir":       CFFEX_ARCHIVE_DIR,
+            "Options trend dir": CFFEX_OPTIONS_TREND_DIR,
+            "Futures trend dir": CFFEX_FUTURES_TREND_DIR,
+            "Date range":        f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
+            "Today":             TODAY_STR,
         },
     )
 
@@ -190,7 +193,7 @@ async def main() -> None:
     # ------------------------------------------------------------------
     print("\n[1/4] Discovering source CSV files …", flush=True)
     all_files = glob_options_files()
-    print(f"    → {len(all_files)} *_options.csv files found (archive + trend)", flush=True)
+    print(f"    → {len(all_files)} *_options.csv files found (archive + options_trend + futures_trend)", flush=True)
 
     if not all_files:
         print("    [FATAL] No options CSV files found", flush=True)

@@ -19,7 +19,7 @@
  * rendered beneath the plot: one row per month-end snapshot, most recent
  * first. is_active row is tagged with a "latest" chip.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -35,6 +35,7 @@ import {
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
+import AnalysisRunButton from "@/components/AnalysisRunButton";
 import IndexPanel from "@/dataviz/features/index-baseline/IndexPanel";
 import EtfMarginPanel from "@/dataviz/features/etf-margin/EtfMarginPanel";
 import StockPanel from "@/dataviz/features/stock-baseline/StockPanel";
@@ -45,6 +46,7 @@ import {
   fetchEtfMarginCombined,
   fetchStocksCombined,
   fetchPeAndDividendStats,
+  invalidateCacheForUrl,
 } from "@/lib/api-client";
 import type {
   IndexBundle,
@@ -74,7 +76,6 @@ function monthKey(dateStr: string): string {
 
 export function PeAndDividendPanel({
   code,
-  name,
   secType,
   themeMode,
 }: PanelProps) {
@@ -87,6 +88,11 @@ export function PeAndDividendPanel({
   const [statsData, setStatsData] = useState<PeAndDividendStatsResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState<string | null>(null);
+
+  // Bumped by the per-security AnalysisRunButton after a rebuild run —
+  // retriggers the stats fetch (the cache entry is invalidated first in
+  // the completion handler).
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // Clicked date from the plot — drives the table highlight + scroll-into-view.
   const [clickedDate, setClickedDate] = useState<string | null>(null);
@@ -143,7 +149,7 @@ export function PeAndDividendPanel({
     return () => {
       cancelled = true;
     };
-  }, [code, secType]);
+  }, [code, secType, refreshKey]);
 
   // Reset clicked date when the code changes.
   useEffect(() => {
@@ -153,6 +159,20 @@ export function PeAndDividendPanel({
   // ---- Stats table: highlight + scroll-into-view --------------------------
   // Find the stats row whose month-end is the latest one <= clickedDate.
   const statsRows: PeAndDividendStatsRow[] = statsData?.rows ?? [];
+
+  // Whether this security has PE & dividend analysis rows — drives the bold
+  // highlight of the per-security build button (AnalysisRunButton). Loading
+  // counts as "present" so the button doesn't bold-flicker.
+  const hasAnalysisData = statsLoading || statsRows.length > 0;
+
+  // Refetch after a per-security analysis rebuild (AnalysisRunButton):
+  // drop the cached stats response, then bump the refresh key.
+  const handleAnalysisRunCompleted = useCallback(() => {
+    invalidateCacheForUrl(
+      `/api/analysis/pe-and-dividend/stats?code=${code}&sec_type=${secType}`,
+    );
+    setRefreshKey((k) => k + 1);
+  }, [code, secType]);
   const highlightedStatsRowDate = useMemo(() => {
     if (!clickedDate || statsRows.length === 0) return null;
     for (const r of statsRows) {
@@ -220,6 +240,15 @@ export function PeAndDividendPanel({
           statsData
             ? `${statsRows.length} month-end snapshots · click a date on the chart above to highlight the matching month`
             : undefined
+        }
+        action={
+          <AnalysisRunButton
+            module="pe_and_dividends"
+            secType={secType}
+            code={code}
+            hasData={hasAnalysisData}
+            onCompleted={handleAnalysisRunCompleted}
+          />
         }
         height={undefined}
       >

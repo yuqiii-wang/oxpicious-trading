@@ -24,7 +24,7 @@ the parent's already-fetched source DataFrame, avoiding a second DB
 round-trip).
 
 This module is an INTERNAL step of analyze.mov_ave_spread — it is invoked
-from __main__.py after the detail + peaks_and_floors tables have been
+from __main__.py after the detail table has been
 repopulated, reusing the same DB connection + source DataFrame. It is NOT
 a standalone runnable.
 
@@ -429,6 +429,7 @@ async def run_rsi(
     pool=None,
     max_concurrent: int = 20,
     sec_type: str | None = None,
+    code_filter: str | None = None,
 ) -> None:
     """Run the Wilder RSI + gaps pipeline against the source price data
     already loaded by the parent mov_ave_spread.
@@ -492,7 +493,16 @@ async def run_rsi(
         sec_types = tuple(sorted(rsi_df["sec_type"].unique()))
 
     # ---- Step 0: determine target dates (per-sec_type) --------------
-    if force:
+    if code_filter is not None:
+        # Single-code mode (--code): the caller already DELETEd this
+        # code's rows from the table, so compute ALL dates for this code
+        # and bypass the per-sec_type skip-filter (sec_types=() at the
+        # insert below keeps every row — dates covered by OTHER codes
+        # would otherwise mask this code's gaps).
+        print("    mode: SINGLE-CODE (full recompute for this code)",
+              flush=True)
+        target_dates_union: Optional[Set] = None
+    elif force:
         print("    mode: FORCE (full recompute)", flush=True)
         print("\n[r0/3] Force mode: truncating mov_ave_rsi...", flush=True)
         await truncate_table_async(conn, RSI_TABLE)
@@ -553,7 +563,7 @@ async def run_rsi(
         table_name=RSI_TABLE,
         key_columns=["sec_type", "code", "date"],
         force=force,
-        sec_types=sec_types,
+        sec_types=() if code_filter is not None else sec_types,
         max_concurrent=max_concurrent,
         label="mov_ave_rsi",
     )

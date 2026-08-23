@@ -15,6 +15,8 @@ import {
   commonGrid,
   commonLegend,
   expiryBlueColor,
+  skewLineColor,
+  SKEW_LINE_WIDTH,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
@@ -40,6 +42,67 @@ const GREEK_UNITS: Record<string, string> = {
   gamma: " per 1% price",
   vega: " per 1% IV",
   rho: " per 1% rate",
+};
+
+/** Greeks with an industry-standard positioning metric (line rendered). */
+type GreekMetricKey = "delta" | "gamma" | "vega";
+
+interface GreekMetricMeta {
+  /** Short tag for the chart line label, e.g. "dPCR". */
+  tag: string;
+  /** Neutral (no-tilt) anchor of the metric. */
+  neutral: number;
+  /** ECharts series name (excluded from the visible legend). */
+  seriesName: string;
+  /** Formula line for the tooltip. */
+  formula: string;
+  /** Interpretation of the current value for the tooltip. */
+  direction: (v: number) => string;
+}
+
+// Mirrors the backend pair-level metrics (analyze/options/compute/
+// greek_delta.py / greek_gamma.py / greek_vega.py) — see those modules
+// for the industry anchors (PCR refinement / GEX dealer-sign convention /
+// 25Δ risk-reversal OI mirror).
+const GREEK_METRIC_META: Record<GreekMetricKey, GreekMetricMeta> = {
+  delta: {
+    tag: "dPCR",
+    neutral: 0.5,
+    seriesName: "Greek dPCR",
+    formula: "dpcr = Σ OI·|Δ| (puts) / Σ OI·|Δ| (all) — whole chain",
+    direction: (v) =>
+      v > 0.5 + 1e-4
+        ? "put-side directional exposure dominates (bearish / hedged book)"
+        : v < 0.5 - 1e-4
+          ? "call-side directional exposure dominates (bullish book)"
+          : "balanced directional book",
+  },
+  gamma: {
+    tag: "GammaBal",
+    neutral: 0,
+    seriesName: "Greek Gamma Bal",
+    formula:
+      "bal = (Σ OI·Γ calls − Σ OI·Γ puts) / Σ OI·Γ (all) — whole chain, GEX sign convention",
+    direction: (v) =>
+      v > 1e-4
+        ? "call OI dominates where gamma lives — long-gamma regime (vol suppression / pin)"
+        : v < -1e-4
+          ? "put OI dominates — short-gamma regime (moves amplify)"
+          : "balanced call/put gamma",
+  },
+  vega: {
+    tag: "VegaBal",
+    neutral: 0,
+    seriesName: "Greek Vega Bal",
+    formula:
+      "bal = (Σ OI·ν calls − Σ OI·ν puts) / Σ OI·ν — OTM wings 0<|Δ|<0.5 only",
+    direction: (v) =>
+      v > 1e-4
+        ? "upside vol demand (calls) — OI mirror of a positive risk reversal"
+        : v < -1e-4
+          ? "downside vol demand (crash hedges) — OI mirror of a negative risk reversal"
+          : "balanced wing vol demand",
+  },
 };
 
 function buildGreekOption(
@@ -170,8 +233,135 @@ function buildGreekOption(
     tooltip: { show: false },
   });
 
+  // Greek positioning metric — a SINGLE vertical line per panel, mirroring
+  // the backend pair-level metrics (analyze/options/compute/greek_*.py).
+  // Each greek answers a DIFFERENT question about the open book:
+  //   delta — direction: delta-weighted put/call ratio dpcr (PCR
+  //           refinement; 0.5 = balanced directional book)
+  //   gamma — convexity regime: GEX-style call-minus-put gamma balance
+  //           (dealer-sign convention; 0 = balanced)
+  //   vega  — vol-demand direction: the same balance on the OTM wings
+  //           (open-interest mirror of the 25Δ risk reversal; 0 = balanced)
+  // theta/rho have no industry-standard positioning skew — no metric line.
+  // The vertical line is drawn at the OI-weighted mean moneyness of the
+  // COMBINED active CALL+PUT book (same anchor as the IV smile's
+  // skewness line); the label/tooltip report the per-greek metric.
+  const ySpan = [yMin - yPad, yMax + yPad];
+
+  const metricMeta: GreekMetricMeta | null =
+    greekKey === "delta" || greekKey === "gamma" || greekKey === "vega"
+      ? GREEK_METRIC_META[greekKey]
+      : null;
+
+  // Metric over ACTIVE contracts (expiry_date >= date), true OI weights
+  // (zero OI = zero vote), matching the backend conventions.
+  const active = valid.filter((r) => r.expiry_date >= dateStr);
+
+  const computeMetric = (): number | null => {
+    if (!metricMeta) return null;
+    let callAmt = 0;
+    let putAmt = 0;
+    for (const r of active) {
+      const g = r[greekKey] as number | null;
+      if (g == null || !Number.isFinite(g)) continue;
+      if (greekKey === "vega") {
+        // OTM wings only: calls 0 < Δ < 0.5, puts −0.5 < Δ < 0.
+        const d = r.delta;
+        if (d == null || !Number.isFinite(d)) continue;
+        if (r.option_type === "CALL" && !(d > 0 && d < 0.5)) continue;
+        if (r.option_type === "PUT" && !(d > -0.5 && d < 0)) continue;
+      }
+      const amt = Math.max(0, r.open_interest || 0) * Math.abs(g);
+      if (r.option_type === "CALL") callAmt += amt;
+      else putAmt += amt;
+    }
+    const total = callAmt + putAmt;
+    if (!(total > 0)) return null;
+    return greekKey === "delta" ? putAmt / total : (callAmt - putAmt) / total;
+  };
+
+  const metric = computeMetric();
+
+  // Combined OI-weighted mean moneyness for the single line position.
+  const totalOi = valid.reduce((s, r) => s + Math.max(1, r.open_interest), 0);
+  const combinedCentroid =
+    totalOi > 0
+      ? valid.reduce(
+          (s, r) => s + Math.max(1, r.open_interest) * (r.strike_price / PRICE_SCALE / S),
+          0,
+        ) / totalOi
+      : 1.0;
+
+  const AXIS_MIN = 0.7;
+  const AXIS_MAX = 1.3;
+  const INSET = 0.015;
+  const lineX = Math.min(AXIS_MAX - INSET, Math.max(AXIS_MIN + INSET, combinedCentroid));
+  const offLeft = combinedCentroid < AXIS_MIN + INSET;
+  const offRight = combinedCentroid > AXIS_MAX - INSET;
+
+  const metricLabel =
+    metric != null ? (metric >= 0 ? `+${metric.toFixed(3)}` : metric.toFixed(3)) : "—";
+  // Color by tilt relative to the metric's neutral (neutral maps to
+  // skewLineColor's 1.0 anchor: below → blue, above → red).
+  const metricColor = skewLineColor(
+    metric != null && metricMeta ? metric - metricMeta.neutral + 1 : 1,
+  );
+  const arrowPrefix = offLeft ? "◀ " : "";
+  const arrowSuffix = offRight ? " ▶" : "";
+
+  const metricTooltipLines = metricMeta
+    ? [
+        `<b>${greekKey.toUpperCase()} Positioning Metric</b>`,
+        `${metricMeta.tag} = ${metricLabel}`,
+        `<div style="opacity:0.7">${
+          metric != null
+            ? metricMeta.direction(metric)
+            : "insufficient OI on the relevant contracts"
+        }</div>`,
+        `<div style="opacity:0.7;margin-top:2px">${metricMeta.formula}</div>`,
+        `<div style="opacity:0.6;margin-top:2px">line @ OI-wtd mean moneyness = ${combinedCentroid.toFixed(3)}${
+          offLeft ? " (true off left, clamped)" : offRight ? " (true off right, clamped)" : ""
+        }</div>`,
+      ]
+    : [];
+
+  if (metricMeta) {
+    series.push({
+      type: "line",
+      name: metricMeta.seriesName,
+      showSymbol: false,
+      data: [
+        [lineX, ySpan[0]],
+        [lineX, ySpan[1]],
+      ],
+      lineStyle: { color: metricColor, type: "solid", width: SKEW_LINE_WIDTH, opacity: 0.85 },
+      silent: false,
+      emphasis: { lineStyle: { width: 2.5, opacity: 1 } },
+      z: 1,
+      tooltip: {
+        show: true,
+        backgroundColor: c.tooltipBg,
+        borderColor: splitColor,
+        textStyle: { color: textColor, fontSize: 11 },
+        formatter: () => metricTooltipLines.join("<br/>"),
+      },
+      label: {
+        show: true,
+        formatter: `${arrowPrefix}${metricMeta.tag}=${metricLabel}${arrowSuffix}`,
+        color: textColor,
+        fontSize: 9,
+        fontWeight: 600,
+        position: "top",
+        distance: 4,
+      },
+    });
+  }
+
   const visibleLegendData = series
-    .filter((s) => !["Zero"].includes((s as { name?: string }).name ?? ""))
+    .filter((s) => {
+      const n = (s as { name?: string }).name ?? "";
+      return n !== "Zero" && !n.startsWith("Greek ");
+    })
     .map((s) => (s as { name: string }).name);
 
   return {

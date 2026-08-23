@@ -8,14 +8,22 @@ and upserts to the appropriate DB tables.
 Called at startup and every 5 minutes (even outside trading hours) so
 CSV data that wasn't loaded during live streaming is recovered
 automatically. Idempotent: ON CONFLICT just updates existing rows.
+
+Date-check pattern (fast-path before reading any CSV content):
+  1. Glob szse_intraday_*.csv files (filenames only — no reading yet)
+  2. Extract dates from filenames (YYYYMMDD prefix)
+  3. Query DB for dates already complete (latest bar >= 15:00)
+  4. Filter files to only those with incomplete dates
+  5. Read ONLY the filtered files
 """
 from __future__ import annotations
 
 import csv
+import re
 import time as _time
-from datetime import datetime
+from datetime import date, datetime, time as dtime
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional, Set
 
 from downloads._common.core import resolve_out_dir, setup_logger
 from _common.db_commons import bulk_upsert
@@ -24,14 +32,79 @@ logger = setup_logger("stream_szse")
 
 BACKFILL_INTERVAL_SEC = 5 * 60  # 5 minutes
 
+# Market close time — a date is "complete" when the latest bar time >= this.
+CLOSE_TIME = dtime(15, 0)
+
 
 def _is_index_code(code: str) -> bool:
     """True if code is a bare 6-digit index code (no exchange suffix)."""
     return "." not in code and code.isdigit() and len(code) == 6
 
 
+def _extract_date_from_filename(filename: Path) -> Optional[date]:
+    """Extract trading date from 'szse_intraday_{YYYYMMDD}_{HHMMSS}.csv'."""
+    m = re.match(r"szse_intraday_(\d{8})_\d{6}\.csv", filename.name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
+def _get_incomplete_dates(conn, all_dates: Set[date]) -> Set[date]:
+    """Return subset of dates that are NOT yet complete in the DB.
+
+    A date is complete when the latest bar time in either
+    stats.stock_intraday_5min or stats.index_intraday_5min
+    is >= 15:00 (CLOSE_TIME).
+
+    Uses a single SQL query with MAX(time) per date for efficiency.
+    """
+    if not all_dates:
+        return set()
+
+    date_list = list(all_dates)
+
+    # Check stock intraday table
+    cur = conn.execute(
+        "SELECT date, MAX(time) AS max_time "
+        "FROM stats.stock_intraday_5min "
+        "WHERE date = ANY(%s) "
+        "GROUP BY date",
+        (date_list,),
+    )
+    rows = cur.fetchall()
+
+    complete_dates: Set[date] = set()
+    for row in rows:
+        max_time = row[1]
+        if max_time is not None and max_time >= CLOSE_TIME:
+            complete_dates.add(row[0])
+
+    # Also check index intraday table (some dates may have only index data)
+    cur2 = conn.execute(
+        "SELECT date, MAX(time) AS max_time "
+        "FROM stats.index_intraday_5min "
+        "WHERE date = ANY(%s) "
+        "GROUP BY date",
+        (date_list,),
+    )
+    rows2 = cur2.fetchall()
+    for row in rows2:
+        max_time = row[1]
+        if max_time is not None and max_time >= CLOSE_TIME:
+            complete_dates.add(row[0])
+
+    return all_dates - complete_dates
+
+
 def backfill_szse_csvs(conn) -> int:
     """Scan all SZSE intraday CSV files and upsert bars to DB.
+
+    Date-check fast-path: filenames are checked first to identify dates
+    that are already complete in the DB (latest bar >= 15:00). Only CSV
+    files for incomplete dates are read.
 
     Each CSV row has: update_time, date, code, name, time,
     open, high, low, close, trading_shares, change, change_pct.
@@ -46,16 +119,56 @@ def backfill_szse_csvs(conn) -> int:
     if not csv_files:
         return 0
 
+    # --- FAST-PATH: Extract dates from filenames (no CSV reading) ---
+    file_dates: Dict[Path, Optional[date]] = {}
+    all_dates: Set[date] = set()
+    for f in csv_files:
+        d = _extract_date_from_filename(f)
+        file_dates[f] = d
+        if d is not None:
+            all_dates.add(d)
+
+    if not all_dates:
+        logger.info("backfill szse: no parseable dates in %d CSVs", len(csv_files))
+        return 0
+
+    logger.info("backfill szse: %d CSVs → %d unique dates, checking completeness",
+                len(csv_files), len(all_dates))
+
+    # --- Filter: only read CSVs for dates NOT yet complete in DB ---
+    incomplete_dates = _get_incomplete_dates(conn, all_dates)
+    if not incomplete_dates:
+        logger.info("backfill szse: all %d dates already complete in DB — skipping all reads",
+                    len(all_dates))
+        return 0
+
+    n_skipped = len(all_dates) - len(incomplete_dates)
+    logger.info("backfill szse: %d dates incomplete (skipping %d complete dates)",
+                len(incomplete_dates), n_skipped)
+
+    # Filter files to only those with incomplete dates
+    filtered_files: List[Path] = []
+    for f in csv_files:
+        d = file_dates.get(f)
+        if d is not None and d in incomplete_dates:
+            filtered_files.append(f)
+
+    if not filtered_files:
+        logger.info("backfill szse: no files for incomplete dates")
+        return 0
+
+    logger.info("backfill szse: reading %d/%d CSV files", len(filtered_files), len(csv_files))
+
     t0 = _time.time()
     total_bars = 0
 
-    # Accumulate rows across all CSVs, then batch-upsert once per table.
+    # Accumulate rows across filtered CSVs, then batch-upsert once per table.
     stock_identity: List[dict] = []
     stock_bars: List[dict] = []
     index_identity: List[dict] = []
     index_bars: List[dict] = []
 
-    for csv_path in csv_files:
+    for csv_path in filtered_files:
         try:
             with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
                 reader = csv.DictReader(f)
@@ -69,12 +182,11 @@ def backfill_szse_csvs(conn) -> int:
                     if not date_str or not time_str:
                         continue
                     try:
-                        from datetime import date as _date, time as _time_mod
-                        bar_date = _date.fromisoformat(date_str)
+                        bar_date = date.fromisoformat(date_str)
                         # Parse HH:MM:SS
                         parts = time_str.split(":")
                         h, m, s = int(parts[0]), int(parts[1]), int(parts[2])
-                        bar_time = _time_mod(h, m, s)
+                        bar_time = dtime(h, m, s)
                     except (ValueError, IndexError):
                         continue
 
@@ -149,7 +261,7 @@ def backfill_szse_csvs(conn) -> int:
 
     elapsed = _time.time() - t0
     logger.info(
-        "backfill szse: %d CSVs → %d stock bars + %d index bars in %.1fs",
-        len(csv_files), len(stock_bars), len(index_bars), elapsed,
+        "backfill szse: %d/%d CSVs → %d stock bars + %d index bars in %.1fs",
+        len(filtered_files), len(csv_files), len(stock_bars), len(index_bars), elapsed,
     )
     return total_bars
