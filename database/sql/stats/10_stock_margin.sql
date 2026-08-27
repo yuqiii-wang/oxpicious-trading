@@ -36,16 +36,24 @@ CREATE TABLE IF NOT EXISTS stats.stock_adjustment (
     adj_low                   NUMERIC(18,6),
     adj_close                 NUMERIC(18,6),
 
-    CONSTRAINT pk_stock_adjustment PRIMARY KEY (date, code),
-    CONSTRAINT fk_stock_adjustment_date_code FOREIGN KEY (date, code) REFERENCES stats.stock_identity(date, code)
-);
+    CONSTRAINT pk_stock_adjustment PRIMARY KEY (code, date),
+    CONSTRAINT fk_stock_adjustment_date_code FOREIGN KEY (code, date) REFERENCES stats.stock_identity(code, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'stock_adjustment', 8);
 
 COMMENT ON TABLE  stats.stock_adjustment               IS 'Stock split / dividend adjustment data. Mirrors stats.etf_adjustment.';
 COMMENT ON COLUMN stats.stock_adjustment.cum_split_factor IS 'Cumulative split factor (1.0 = no split). Multiply raw OHLC by 1/cum_split_factor to back-adjust.';
 COMMENT ON COLUMN stats.stock_adjustment.adj_close     IS 'Split-adjusted close; the frontend uses adj_* when present, otherwise falls back to raw.';
 
-CREATE INDEX IF NOT EXISTS idx_stock_adjustment_code_date
-    ON stats.stock_adjustment (code, date);
+-- Legacy (code, date) index is redundant with the code-first PK — replaced by
+-- a date-first index.
+DROP INDEX IF EXISTS stats.idx_stock_adjustment_code_date;
+
+CREATE INDEX IF NOT EXISTS idx_stock_adjustment_date
+    ON stats.stock_adjustment (date);
 
 CREATE INDEX IF NOT EXISTS idx_stock_adjustment_split_events
     ON stats.stock_adjustment (date)
@@ -68,75 +76,28 @@ CREATE TABLE IF NOT EXISTS stats.stock_margin (
     rq_balance_amt            NUMERIC(24,4) NOT NULL DEFAULT 0,
     total_balance             NUMERIC(24,4) NOT NULL DEFAULT 0,
 
-    CONSTRAINT pk_stock_margin PRIMARY KEY (date, code),
-    CONSTRAINT fk_stock_margin_date_code FOREIGN KEY (date, code) REFERENCES stats.stock_identity(date, code)
-);
+    CONSTRAINT pk_stock_margin PRIMARY KEY (code, date),
+    CONSTRAINT fk_stock_margin_date_code FOREIGN KEY (code, date) REFERENCES stats.stock_identity(code, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'stock_margin', 8);
 
 COMMENT ON TABLE  stats.stock_margin              IS 'Stock margin balances (融资融券). Mirrors stats.etf_liquidity_margin margin fields; trading_shares/trading_amount stay in stock_basic_stats.';
 COMMENT ON COLUMN stats.stock_margin.rz_balance   IS '融资余额 (yuan) — borrowed cash to buy the stock; always non-negative.';
 COMMENT ON COLUMN stats.stock_margin.rq_balance_amt IS '融券余额 (yuan) — borrowed stock value outstanding; SSE source computes as 融券余量 × (open+close)/2 mid price when missing.';
 COMMENT ON COLUMN stats.stock_margin.total_balance IS 'rz_balance + rq_balance_amt — total margin outstanding.';
 
-CREATE INDEX IF NOT EXISTS idx_stock_margin_code_date
-    ON stats.stock_margin (code, date);
+-- Legacy (code, date) index is redundant with the code-first PK — replaced by
+-- a date-first index.
+DROP INDEX IF EXISTS stats.idx_stock_margin_code_date;
 
--- ----------------------------------------------------------------------------
--- View: v_stock_baseline (extended)
---   DROP + recreate to LEFT JOIN the two new tables.
---   Mirrors v_etf_margin structure (identity + basic_stats + adjustment +
---   tech_stats + margin).
--- ----------------------------------------------------------------------------
-DROP VIEW IF EXISTS stats.v_stock_baseline;
-CREATE OR REPLACE VIEW stats.v_stock_baseline AS
-SELECT
-    i.date,
-    i.code,
-    i.name,
-    -- Raw OHLC + pct_change (mirrors etf_basic_stats)
-    b.prev_close,
-    b.open,
-    b.high,
-    b.low,
-    b.close,
-    b.pct_change,
-    b.has_intraday_5mins,
-    -- Stock-specific valuation
-    b.pe,
-    b.is_pe_estimated,
-    -- Trading liquidity (already in stock_basic_stats — kept here for parity
-    -- with v_etf_margin so the frontend can read trading_shares/amount from
-    -- the same view).
-    b.trading_shares,
-    b.trading_amount,
-    -- Adjustment (mirror of etf_adjustment)
-    a.cum_split_factor,
-    a.is_split_event_day,
-    a.action_type,
-    a.implied_dividend_per_share,
-    a.cum_dividend_per_share,
-    a.adj_prev_close,
-    a.adj_open,
-    a.adj_high,
-    a.adj_low,
-    a.adj_close,
-    -- Technical (mirror of etf_tech_stats — already exists as stock_tech_stats)
-    t.ma5,
-    t.ma5_ratio,
-    t.ma20,
-    t.ma60,
-    t.ma120,
-    t.ma255,
-    -- Margin (mirror of etf_liquidity_margin margin fields)
-    m.rz_buy,
-    m.rz_balance,
-    m.rq_sell_qty,
-    m.rq_balance_qty,
-    m.rq_balance_amt,
-    m.total_balance
-FROM stats.stock_identity i
-LEFT JOIN stats.stock_basic_stats b ON i.date = b.date AND i.code = b.code
-LEFT JOIN stats.stock_adjustment  a ON i.date = a.date AND i.code = a.code
-LEFT JOIN stats.stock_tech_stats  t ON i.date = t.date AND i.code = t.code
-LEFT JOIN stats.stock_margin      m ON i.date = m.date AND i.code = m.code;
+CREATE INDEX IF NOT EXISTS idx_stock_margin_date
+    ON stats.stock_margin (date);
 
-COMMENT ON VIEW stats.v_stock_baseline IS 'Reconstructed stock_baseline view: JOIN of stock_identity + stock_basic_stats + stock_adjustment + stock_tech_stats + stock_margin. Mirrors v_etf_margin structure.';
+-- v_stock_baseline: authoritative definition lives in 99_reconstruct_views.sql
+-- (JOIN of stock_identity + stock_basic_stats + stock_tech_stats +
+-- stock_liquidity_margin). The earlier draft view block here was removed —
+-- it referenced stock_basic_stats.trading_shares, which actually lives in
+-- stock_liquidity_margin, and so could not be created.

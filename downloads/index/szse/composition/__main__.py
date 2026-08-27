@@ -45,6 +45,7 @@ Usage:
 """
 from __future__ import annotations
 
+
 import argparse
 import logging
 import re
@@ -57,7 +58,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_TIMEOUT,
     DEFAULT_SHORT_SLEEP_SEC,
     AntiBotProxy,

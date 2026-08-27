@@ -56,6 +56,11 @@ Default scope (incremental, today + last biz day):
 """
 from __future__ import annotations
 
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
 import argparse
 import asyncio
 import datetime

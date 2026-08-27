@@ -7,6 +7,8 @@ use B's daily change to estimate A's close.
 """
 from __future__ import annotations
 
+from _common.build_commons import rec_col
+
 
 async def fetch_index_shared_weights(conn) -> dict:
     """Compute composition shared weight for every (index_a, index_b) pair.
@@ -43,10 +45,11 @@ async def fetch_index_shared_weights(conn) -> dict:
         WHERE h1.code != h2.code
         GROUP BY h1.code, h2.code
     """)
-    result = {}
-    for r in rows:
-        sw = float(r["shared_weight_a"])
-        if sw != sw:  # NaN check
-            continue
-        result[(r["code_a"], r["code_b"])] = sw
+    # Whole-column zip pairing; NaN rows (sum of NULL weights) filtered out
+    result: dict = {}
+    for a, b, sw in zip(rec_col(rows, "code_a"),
+                        rec_col(rows, "code_b"),
+                        rec_col(rows, "shared_weight_a")):
+        if sw == sw:  # NaN check
+            result[(a, b)] = float(sw)
     return result

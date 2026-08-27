@@ -10,7 +10,27 @@ Provides:
 """
 from __future__ import annotations
 
+import math
+
 from ._helpers import _parse_table_name
+
+
+def _copy_clean_value(v):
+    """None-out NaN/NaT sentinels for the COPY binary protocol.
+
+    Pure host logic — importing pandas / building frames here fires cudf
+    fallbacks (DataFrame init + astype + where + itertuples) on EVERY
+    copy_insert_async call.
+    """
+    if v is None:
+        return None
+    # isinstance covers np.float64 too (subclass of float)
+    if isinstance(v, float) and math.isnan(v):
+        return None
+    # NaT (pd.NaT) — duck-check without importing pandas
+    if "NaT" in type(v).__name__:
+        return None
+    return v
 
 
 async def get_existing_keys_async(conn, table_name: str, key_columns: list) -> set:
@@ -166,15 +186,17 @@ async def copy_insert_async(conn, table_name: str, rows: list, columns: list | N
 
     schema, table = _parse_table_name(table_name)
 
-    # Sanitize pandas NaT/NaN → None in bulk via pandas vectorized ops.
-    # COPY's binary protocol encodes dates via toordinal(), which NaT
-    # doesn't support (raises ValueError).
-    import pandas as _pd
-    df = _pd.DataFrame(rows, columns=columns).astype(object)
-    df = df.where(_pd.notna(df), None)
-    # itertuples returns plain tuples (no index, no name) — exactly what
-    # copy_records_to_table expects.
-    records = df.itertuples(index=False, name=None)
+    # Pure-Python record assembly — no pandas. The previous
+    # DataFrame(rows).astype(object).where(notna, None).itertuples() flow
+    # triggered one cudf.pandas fallback chain per call and mis-handles
+    # object-dtype date columns ("Cannot convert a date of object type").
+    # Callers emit rows via records_from_frame which already swept NaN→None;
+    # _copy_clean_value guards any stragglers (NaN float / pd.NaT) since
+    # COPY's binary protocol cannot encode them.
+    records = [
+        tuple(_copy_clean_value(r.get(c)) for c in columns)
+        for r in rows
+    ]
     async with conn.transaction():
         await conn.copy_records_to_table(
             table,

@@ -41,7 +41,11 @@ CREATE TABLE IF NOT EXISTS stats.stock_dividends (
         CHECK (code ~ '^\d{6}\.(SZ|SS|BJ|HK)$'),
     CONSTRAINT chk_stock_dividends_source
         CHECK (source IN ('SSE', 'SZSE', 'BSE', 'HK', 'MANUAL'))
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'stock_dividends', 8);
 
 
 COMMENT ON TABLE  stats.stock_dividends                              IS 'Per-stock dividend (利润分配/分红) history. One row per (code, ex_dividend_date). Source: SSE commonQuery.do (sqlId COMMON_SSE_CP_GPJCTPZ_GPLB_LRFP_FH_L) loaded from {code}_dividend.csv files in temps/sse_archive/. Used by the stock OHLC chart to mark ex-dividend events.';
@@ -61,13 +65,14 @@ COMMENT ON COLUMN stats.stock_dividends.last_updated                  IS 'When t
 
 -- ----------------------------------------------------------------------------
 -- Indexes
---   (a) code-ascending: dominant access pattern — UI stock OHLC chart
---       queries all dividends for a single code to overlay as event markers.
+--   (a) code-ascending lookups (dominant access pattern — UI stock OHLC chart
+--       queries all dividends for a single code to overlay as event markers)
+--       are now served by the PK (code, ex_dividend_date) itself — the legacy
+--       secondary index is dropped.
 --   (b) ex_dividend_date-ascending: cross-stock queries by date (e.g. "all
 --       dividends announced today") — useful for screener-style pages.
 -- ----------------------------------------------------------------------------
-CREATE INDEX IF NOT EXISTS idx_stock_dividends_code_exdate
-    ON stats.stock_dividends (code, ex_dividend_date);
+DROP INDEX IF EXISTS stats.idx_stock_dividends_code_exdate;
 
 CREATE INDEX IF NOT EXISTS idx_stock_dividends_exdate
     ON stats.stock_dividends (ex_dividend_date);

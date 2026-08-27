@@ -10,7 +10,7 @@ plumbing so the source modules stay thin.
 Only the list is scraped — detail links are NOT followed (no per-article
 crawling). Anti-bot behaviour (browser-fingerprint rotation, ``random`` query
 param, host-blocking detection, sleep cadence) is provided by the shared
-``AntiBotProxy`` from ``downloads._common.core``; the inter-request sleep
+``AntiBotProxy`` from ``downloads._common``; the inter-request sleep
 defaults to ``LONG_SLEEP_INTERVAL`` (90s) per the project's anti-bot policy.
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from downloads._common.core import (  # noqa: E402
+from downloads._common import (  # noqa: E402
     AntiBotConfig,
     AntiBotProxy,
     COMMON_BASE_HEADERS,

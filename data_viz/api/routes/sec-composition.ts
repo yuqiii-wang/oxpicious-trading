@@ -2,7 +2,7 @@
  * Sec Composition API routes.
  */
 import { Router, type Request, type Response } from "express";
-import { getSecComposition, getQuarterlyComposition, getLinkedEtfs, getSimilarIndices } from "../services/sec-composition.service.js";
+import { getSecComposition, getQuarterlyComposition, getLinkedEtfs, getSimilarIndices, getIndustryWeightSeries } from "../services/sec-composition.service.js";
 
 const router = Router();
 
@@ -38,6 +38,27 @@ router.get("/quarterly", async (req: Request, res: Response) => {
     res.json(await getQuarterlyComposition(code));
   } catch (err) {
     console.error("[sec-composition/quarterly] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/sec-composition/industry-weight-series?code=159673&industry_id=BANKS
+ *  ONE industry's weight in the security's composition across ALL snapshot
+ *  dates (roughly monthly; denser than the quarterly view). Falls back to the
+ *  tracking index when the ETF has no snapshots. Used by the ETF Holdings
+ *  page's Industry-changes row drill-down. */
+router.get("/industry-weight-series", async (req: Request, res: Response) => {
+  try {
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    const industryId =
+      typeof req.query.industry_id === "string" ? req.query.industry_id : "";
+    if (!code || !industryId) {
+      res.status(400).json({ error: "Missing 'code' or 'industry_id' parameter" });
+      return;
+    }
+    res.json(await getIndustryWeightSeries(code, industryId));
+  } catch (err) {
+    console.error("[sec-composition/industry-weight-series] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

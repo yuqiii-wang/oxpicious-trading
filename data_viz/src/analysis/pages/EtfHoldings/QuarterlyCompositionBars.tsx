@@ -12,13 +12,15 @@
  *   • One bar per quarter; every bar is the SAME HEIGHT — each stacked
  *     segment is the industry's weight NORMALIZED to % of total composition,
  *     so the full stack always sums to exactly 100%.
- *   • One series (one color) per industry, colored via the shared
- *     CompositionPieChart color scheme (MUTED_PALETTE). Colors are assigned
- *     deterministically: industries ordered by weight in the LATEST quarter
- *     (desc; ties/missing resolved by max weight across all quarters), then
- *     MUTED_PALETTE cycles. The SAME industry→color map is handed to the
- *     CompositionPieChart / QuarterlyChangesTable below, so an industry
- *     keeps its color in the bars, the pie and the table.
+ *   • One series (one color) per industry, colored via a WEIGHT-ORDERED BLUE
+ *     RAMP (expiryBlueColor: darkest blue = highest weight in the latest
+ *     quarter, progressively lighter blues for lower weights). Colors are
+ *     assigned deterministically: industries ordered by weight in the LATEST
+ *     quarter (desc; ties/missing resolved by max weight across all
+ *     quarters), then the ramp interpolates #08306b → #c6dbef. The SAME
+ *     industry→color map is handed to the CompositionPieChart /
+ *     QuarterlyChangesTable below, so an industry keeps its color in the
+ *     bars, the pie and the table.
  *   • Every bar carries a TICK indicator: clicking a bar toggles its tick —
  *     a ✓ badge is drawn above ticked bars and unticked bars dim while any
  *     bar is ticked. The panel below the chart switches on the tick count:
@@ -29,7 +31,7 @@
  *         QuarterlyChangesTable, which lists every industry's weight in each
  *         ticked season plus its changes (consecutive Δ + Total Δ).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, Chip, CircularProgress, Stack, Typography } from "@mui/material";
 import { BarChart as BarChartIcon } from "@mui/icons-material";
 import ChartCard from "@/components/ChartCard";
@@ -39,7 +41,7 @@ import QuarterlyChangesTable from "./QuarterlyChangesTable";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
 import { fetchQuarterlyComposition, invalidateCacheForUrl } from "@/lib/api-client";
-import { MUTED_PALETTE, axisColors } from "@/theme/chart-palette";
+import { axisColors, expiryBlueColor } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type {
   QuarterlyCompositionResponse,
@@ -53,7 +55,9 @@ import type {
   SeriesOption,
 } from "echarts";
 
-/** Tooltip caps the industry list to keep the card readable. */
+/** Tooltip caps the industry list to keep the card readable. The list covers
+ *  the UNION of industries across all quarters — an industry absent from the
+ *  hovered quarter shows its LAST AVAILABLE pct (carry-forward). */
 const TOOLTIP_MAX_ROWS = 14;
 
 /** Series name of the ✓-badge overlay (excluded from the legend, silent). */
@@ -75,6 +79,16 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
   // that replaces the old single-bar selection. Exactly 1 tick → composition
   // pie for that season; 2+ ticks → QuarterlyChangesTable comparing seasons.
   const [tickedIdxs, setTickedIdxs] = useState<number[]>([]);
+  // TRUE while ANY Industry-changes row's drill-down is open — the table box
+  // then LOCKS to its collapsed natural height and the drill-down content
+  // scrolls INSIDE it (neither the chart, the table box nor the parent
+  // changes height when a row expands).
+  const [drilldownOpen, setDrilldownOpen] = useState(false);
+  // Collapsed (natural) height of the Industry-changes box — measured
+  // whenever the table renders WITHOUT an open drill-down; the box LOCKS to
+  // this height while expanded so its height never changes.
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  const [tableBaseH, setTableBaseH] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const quarters = useMemo(
@@ -110,13 +124,26 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
     setRefreshKey((k) => k + 1);
   };
 
+  // Measure the Industry-changes box's NATURAL (collapsed) height — only
+  // while no drill-down is open — and reset the open flag when the table
+  // unmounts (ticks dropped below 2), so the chart always restores to 360px.
+  useEffect(() => {
+    if (!drilldownOpen && tableWrapRef.current) {
+      setTableBaseH(tableWrapRef.current.offsetHeight);
+    }
+  }, [tickedIdxs, quarters, drilldownOpen]);
+  useEffect(() => {
+    if (tickedIdxs.length < 2) setDrilldownOpen(false);
+  }, [tickedIdxs.length]);
+
   // ---------------------------------------------------------------------------
   // Deterministic industry → color map (shared with the pie chart).
   //
   // Ordering: weight in the LATEST quarter desc; industries absent from the
   // latest quarter follow, ordered by their max weight across all quarters.
-  // MUTED_PALETTE then cycles — mirroring how the standalone pie chart
-  // assigns colors to its value-sorted slices.
+  // A WEIGHT-ORDERED BLUE RAMP then assigns the DARKEST blue to the highest
+  // weight, progressively lighter blues down the order (expiryBlueColor
+  // interpolates #08306b → #c6dbef across the industries).
   // ---------------------------------------------------------------------------
   const colorByIndustry = useMemo<Record<string, string>>(() => {
     if (quarters.length === 0) return {};
@@ -136,9 +163,31 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
     });
     const map: Record<string, string> = {};
     industries.forEach((ind, i) => {
-      map[ind] = MUTED_PALETTE[i % MUTED_PALETTE.length];
+      map[ind] = expiryBlueColor(i, industries.length);
     });
     return map;
+  }, [quarters]);
+
+  // ---------------------------------------------------------------------------
+  // Per-industry normalized % per quarter (aligned with `quarters` order) —
+  // drives the tooltip's ALWAYS-SHOW behavior: quarters where an industry is
+  // absent fall back to its LAST AVAILABLE value (carry-forward), so the
+  // tooltip lists every industry with a pct for any hovered bar.
+  // ---------------------------------------------------------------------------
+  const normPctByIndustry = useMemo<Map<string, Array<number | null>>>(() => {
+    const m = new Map<string, Array<number | null>>();
+    quarters.forEach((q, idx) => {
+      for (const ind of q.industries) {
+        let arr = m.get(ind.industry);
+        if (!arr) {
+          arr = quarters.map(() => null);
+          m.set(ind.industry, arr);
+        }
+        arr[idx] =
+          q.total_weight_pct > 0 ? (ind.weight_pct / q.total_weight_pct) * 100 : 0;
+      }
+    });
+    return m;
   }, [quarters]);
 
   // ---------------------------------------------------------------------------
@@ -237,28 +286,48 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
           const idx = quarters.findIndex((q) => q.quarter === list[0]?.name);
           const q: QuarterlyCompositionQuarter | undefined = quarters[idx];
           if (!q) return "";
-          const rows = q.industries
-            .slice()
-            .sort((a, b) => b.weight_pct - a.weight_pct)
-            .slice(0, TOOLTIP_MAX_ROWS)
-            .map((ind) => {
-              const pct =
-                q.total_weight_pct > 0
-                  ? (ind.weight_pct / q.total_weight_pct) * 100
-                  : 0;
-              const marker = Object.entries(colorByIndustry).find(([n]) => n === ind.industry);
-              const dot = marker
-                ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${marker[1]};margin-right:4px"></span>`
+          // ALWAYS show every industry's ETF pct: use the hovered quarter's
+          // normalized % when present, else carry FORWARD the last available
+          // value (marked with the quarter it came from). Industries with no
+          // earlier value at all (not in this quarter nor before) render "—".
+          const entries = Array.from(normPctByIndustry.entries()).map(
+            ([industry, arr]) => {
+              let val: number | null = arr[idx] ?? null;
+              let fromQuarter = "";
+              if (val == null) {
+                for (let j = idx - 1; j >= 0; j--) {
+                  if (arr[j] != null) {
+                    val = arr[j];
+                    fromQuarter = quarters[j].quarter;
+                    break;
+                  }
+                }
+              }
+              const color = colorByIndustry[industry];
+              const dot = color
+                ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:4px"></span>`
                 : "";
-              return `${dot}${ind.industry} ${fmtNum(pct, 2)}%`;
-            });
+              const valueHtml =
+                val == null
+                  ? `<span style="opacity:0.4">—</span>`
+                  : `${fmtNum(val, 2)}%` +
+                    (fromQuarter
+                      ? `<span style="opacity:0.55"> (${fromQuarter})</span>`
+                      : "");
+              return { val: val ?? -1, html: `${dot}${industry} ${valueHtml}` };
+            },
+          );
+          const rows = entries
+            .sort((a, b) => b.val - a.val)
+            .slice(0, TOOLTIP_MAX_ROWS)
+            .map((r) => r.html);
           const extra =
-            q.industries.length > TOOLTIP_MAX_ROWS
-              ? `<div style="opacity:0.7;margin-top:2px">… +${q.industries.length - TOOLTIP_MAX_ROWS} more</div>`
+            entries.length > TOOLTIP_MAX_ROWS
+              ? `<div style="opacity:0.7;margin-top:2px">… +${entries.length - TOOLTIP_MAX_ROWS} more</div>`
               : "";
           return (
             `<div style="font-weight:600;margin-bottom:4px">${q.quarter} · snapshot ${q.snapshot_date}</div>` +
-            `<div style="opacity:0.8;margin-bottom:4px">${q.n_holdings} holdings · ${q.industries.length} industries</div>` +
+            `<div style="opacity:0.8;margin-bottom:4px">${q.n_holdings} holdings · ${q.industries.length} industries · absent = last available</div>` +
             rows.join("<br/>") +
             extra +
             `<div style="opacity:0.6;margin-top:4px">Click the bar to tick/untick — 1 tick = pie · 2+ ticks = compare</div>`
@@ -304,7 +373,7 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
       },
       series,
     };
-  }, [quarters, colorByIndustry, themeMode, tickedSet, anyTicked]);
+  }, [quarters, normPctByIndustry, colorByIndustry, themeMode, tickedSet, anyTicked]);
 
   // Bar click → toggle that quarter's TICK (any segment of the stacked bar
   // works — every series shares the same quarter dataIndex). The ticks drive
@@ -387,7 +456,7 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
               sx={{ fontSize: "0.65rem", height: 20 }}
             />
             <Chip
-              label="colors = MUTED_PALETTE (same as composition pie)"
+              label="colors = blue ramp · dark = highest weight"
               size="small"
               variant="outlined"
               sx={{ fontSize: "0.65rem", height: 20 }}
@@ -429,7 +498,23 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
             </Box>
           )}
           {tickedIdxs.length >= 2 && (
-            <Box sx={{ mt: 2 }}>
+            <Box
+              ref={tableWrapRef}
+              sx={{
+                mt: 2,
+                // Drill-down open → LOCK this box to its measured collapsed
+                // (natural) height: the inserted drill-down row makes the
+                // content taller, but it scrolls INSIDE the fixed box. The
+                // bar chart is untouched, so NOTHING (chart / table box /
+                // parent) changes height when a row expands.
+                ...(drilldownOpen &&
+                  tableBaseH > 0 && {
+                    height: tableBaseH,
+                    overflowY: "auto",
+                    pr: 0.5,
+                  }),
+              }}
+            >
               <Typography
                 variant="caption"
                 sx={{ fontSize: "0.75rem", fontWeight: 600, display: "block", mb: 0.5 }}
@@ -440,12 +525,15 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
                   .map((i) => quarters[i]?.quarter)
                   .filter(Boolean)
                   .join(" → ")}{" "}
-                — weights are % of each quarter&apos;s total composition
+                — weights are % of each quarter&apos;s total composition ·
+                click a row for drill-down plots
               </Typography>
               <QuarterlyChangesTable
+                code={code}
                 quarters={quarters}
                 tickedIdxs={tickedIdxs}
                 colorByIndustry={colorByIndustry}
+                onExpandedChange={setDrilldownOpen}
               />
             </Box>
           )}

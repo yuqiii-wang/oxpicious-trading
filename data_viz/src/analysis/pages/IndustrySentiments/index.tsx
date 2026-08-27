@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Industry Sentiments analysis page (default export).
  *
  * Plots each industry's member INDEX VALUES directly, rebased to 100 at the
@@ -729,6 +729,7 @@ export default function IndustrySentimentsPage() {
                   numIndustries={chartDataList.length}
                   chartDataList={chartDataList}
                   selectedIndustryIds={selectedIndustryIds}
+                  selectedItemCodes={selectedItemCodes}
                 />
               )}
             </>

@@ -47,7 +47,6 @@ import {
   listMarginTrendThemes,
   listMarginTrendStrategyThemes,
   getMarginIndustrySeries,
-  getMarginIndustryCorrelation,
   getMarginTrends,
   listFourierFreqsCodes,
   getFourierFreqsChart,
@@ -283,11 +282,13 @@ router.get("/perf-attr/chart", async (req: Request, res: Response) => {
 });
 
 // ---- Industry Sentiments (member index values, rebased to 100 client-side)
-//   NO analysis.industry_sentiments table — the data is queried directly from
-//   stats.index_basic_stats JOIN stats.sec_classification at request time.
-//   The frontend rebases each member index to 100 at the start of the
-//   displayed (zoom) window (scale-invariant comparison across indices with
-//   different absolute price levels).
+//   NO per-code aggregation table — the per-index data is queried directly
+//   from stats.index_basic_stats JOIN stats.sec_classification at request
+//   time; the precomputed mean/var overlay comes from stats.industry_basic_stats
+//   (renamed from analysis.industry_sentiments 2026-08-24, built by
+//   builds.industry). The frontend rebases each member index to 100 at the
+//   start of the displayed (zoom) window (scale-invariant comparison across
+//   indices with different absolute price levels).
 //
 //   GET /api/analysis/industry-sentiments/themes
 //     Returns the L1 sector → L2 industry tree (SectorNode[]) built directly
@@ -353,14 +354,27 @@ router.get("/industry-sentiments/chart-by-code", async (req: Request, res: Respo
   }
 });
 
-// ---- Industry Correlations (pairwise rolling correlation between
-//      industries' mean_price series — drives the Correlation chart on
-//      the IndustrySentiments page when 2+ industries are selected).
+// ---- Industry Correlations (windowed pairwise correlation between
+//      industries' MA curves of mean_close — drives the Correlation chart
+//      on the IndustrySentiments page when 2+ industries are selected).
 //   GET /api/analysis/industry-correlations?industry_ids=BANKS,AI&pool_size=all
-//     Returns IndustryCorrelationsResponse: one row per (date, pair) for
-//     every lexicographic (a<b) pair from the user-selected industry_ids
-//     set, with corr_5d / corr_20d / corr_60d / corr_255d. The frontend
-//     renders one line per pair, with a window toggle (5d/20d/60d/255d).
+//     Returns IndustryCorrelationsResponse: one row per (start_date, pair)
+//     for every lexicographic (a<b) pair from the user-selected industry_ids
+//     set, with corr_ma20_20d / corr_ma60_60d / corr_ma255_255d (Pearson
+//     correlation of the two industries' MA-W curves over the W trading
+//     days starting on start_date; window starts every `interval` trading
+//     days). The frontend renders one line per pair, with a window toggle
+//     (20d/60d/255d).
+//   POST /api/analysis/industry-correlations/run   body:
+//     { industry_ids?: string[], codes?: string[] }
+//     Spawns `python -m analyze.industry_sentiments.corr --industry ...
+//     --code ...` (filtered mode: recompute + upsert ALL windows for the
+//     pairs among the given industries; codes are resolved to industry_ids
+//     Python-side) via the shared WSL py-runner and WAITS for it to exit.
+//     Deduped by a fixed process-id-tag, so a second click while a refresh
+//     is in flight resolves with already_running=true. Running-state is
+//     polled via GET /api/analysis/run-analysis/status (generic tags
+//     endpoint) with INDUSTRY_CORR_RUN_TAG.
 router.get("/industry-correlations", async (req: Request, res: Response) => {
   try {
     const raw = typeof req.query.industry_ids === "string"
@@ -383,6 +397,58 @@ router.get("/industry-correlations", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("[analysis/industry-correlations] error:", err);
     res.status(500).json({ error: String(err) });
+  }
+});
+
+/** Fixed process-id-tag for UI-triggered industry-corr refresh runs —
+ *  one refresh at a time globally (the status endpoint + button spinner
+ *  poll this tag; must match the tag built client-side). */
+export const INDUSTRY_CORR_RUN_TAG = "analysis-run:industry_corr";
+
+/** Parse a string[] body field (industry_ids / codes) — accepts arrays or
+ *  comma-separated strings, drops empties. */
+function parseBodyList(v: unknown): string[] {
+  if (Array.isArray(v)) {
+    return v.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+  }
+  if (typeof v === "string" && v.length > 0) {
+    return v.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  }
+  return [];
+}
+
+router.post("/industry-correlations/run", async (req: Request, res: Response) => {
+  try {
+    const industryIds = parseBodyList(req.body?.industry_ids);
+    const codes = parseBodyList(req.body?.codes);
+    if (industryIds.length + codes.length === 0) {
+      res.status(400).json({
+        success: false,
+        stderr_tail: "Missing 'industry_ids' or 'codes' (at least one entry)",
+      });
+      return;
+    }
+    const args: string[] = [];
+    if (industryIds.length > 0) args.push("--industry", industryIds.join(","));
+    if (codes.length > 0) args.push("--code", codes.join(","));
+    console.log(
+      `[analysis/industry-correlations/run] python -m analyze.industry_sentiments.corr ${args.join(" ")}`,
+    );
+    const result = await runPythonModule(
+      "analyze.industry_sentiments.corr",
+      args,
+      { processIdTag: INDUSTRY_CORR_RUN_TAG },
+    );
+    res.json({
+      success: result.success,
+      already_running: result.already_running === true,
+      process_id_tag: INDUSTRY_CORR_RUN_TAG,
+      stdout_tail: result.stdout.slice(-2000),
+      stderr_tail: result.stderr.slice(-2000),
+    });
+  } catch (err) {
+    console.error("[analysis/industry-correlations/run] error:", err);
+    res.status(500).json({ success: false, stderr_tail: String(err) });
   }
 });
 
@@ -678,10 +744,11 @@ router.get("/pe-and-dividend/stats", async (req: Request, res: Response) => {
   }
 });
 
-// ---- Margin Trends (single-industry RONGZI margin flows, security-pair)
-//   analysis.margin_index_series (VIEW)  — weighted-avg constituent-stock
-//                                          margin per (index_code, date)
-//   analysis.margin_industry_correlation — pairwise security corr
+// ---- Margin Trends (single-industry RONGZI margin flows)
+//   analysis.margin_index_series (TABLE) — weighted-avg constituent-stock
+//                                          margin per (index_code, date),
+//                                          built by Python vectorization
+//   analysis.margin_changes             — trend episodes (shade overlay)
 //
 //   GET /api/analysis/margin-trends/themes
 //     L1 sector → L2 industry tree (industries WITH margin data).
@@ -689,11 +756,8 @@ router.get("/pe-and-dividend/stats", async (req: Request, res: Response) => {
 //     Parallel L1 strategy → L2 theme tree (RIGHT column).
 //   GET /api/analysis/margin-trends/industry-series?industry_id=BANKS&attribution=index
 //     Per-(security, date) margin series for one industry + attribution.
-//     'index' reads the margin_index_series VIEW; 'etf' reads
+//     'index' reads the margin_index_series TABLE; 'etf' reads
 //     stats.etf_liquidity_margin for the industry's ETFs.
-//   GET /api/analysis/margin-trends/industry-correlation?industry_id=BANKS&attribution=index&codes=A,B,C&series=balance&window=60
-//     Precomputed pairwise rolling Pearson corr from
-//     margin_industry_correlation, filtered to the selected codes.
 router.get("/margin-trends/themes", async (req: Request, res: Response) => {
   try {
     const attribution = (req.query.attribution as string | undefined) ?? "index";
@@ -724,27 +788,6 @@ router.get("/margin-trends/industry-series", async (req: Request, res: Response)
     res.json(await getMarginIndustrySeries(industryId, attribution));
   } catch (err) {
     console.error("[analysis/margin-trends/industry-series] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-router.get("/margin-trends/industry-correlation", async (req: Request, res: Response) => {
-  try {
-    const industryId = (req.query.industry_id as string | undefined) ?? "";
-    if (!industryId.trim()) {
-      res.status(400).json({ error: "Missing 'industry_id' parameter" });
-      return;
-    }
-    const attribution = (req.query.attribution as string | undefined) ?? "index";
-    const series = (req.query.series as string | undefined) ?? "balance";
-    const window = (req.query.window as string | undefined) ?? "60";
-    const codesParam = (req.query.codes as string | undefined) ?? "";
-    const codes = codesParam.split(",").map((c) => c.trim()).filter(Boolean);
-    res.json(
-      await getMarginIndustryCorrelation(industryId, attribution, codes, series, window),
-    );
-  } catch (err) {
-    console.error("[analysis/margin-trends/industry-correlation] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

@@ -14,4 +14,5 @@
 \ir 09_sec_map.sql
 \ir 11_sec_info.sql
 \ir 12_futures_baseline.sql
+\ir 13_industry_baseline.sql
 \ir 99_reconstruct_views.sql

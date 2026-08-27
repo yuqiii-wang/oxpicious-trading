@@ -17,7 +17,7 @@
  *         4. Accumulated Total P&L (cumulative realized+unrealized across
  *            periods) — shows the strategy's equity curve over time.
  *
- *     Forecast periods use layered transparent purple. Concentration
+ *     Concentration
  *     hotspots get full opacity.
  *
  * Data comes from /api/strategy/singleton/risks (pre-computed by
@@ -70,13 +70,6 @@ interface RiskPanelProps {
   /** Called when the user clicks a period bar (or clicks it again to toggle
    *  off — payload is null in that case). */
   onPeriodSelect?: (p: SelectedPeriod | null) => void;
-  /** Currently-selected forecast scenario (null = parent seq, no forecast).
-   *  When set, forecast periods (months after forecastDate) are styled with
-   *  layered transparent purple bars instead of green/red. */
-  selectedScenario?: string | null;
-  /** The parent seq's last actual decision date. Periods after this date
-   *  are forecast periods. Null when no forecast is loaded. */
-  forecastDate?: string | null;
 }
 
 const GRADE_COLOR: Record<StrategyRiskGrade, "success" | "info" | "warning" | "error"> = {
@@ -109,43 +102,12 @@ function fmtPct(v: number | null | undefined, digits = 1): string {
   return `${(v * 100).toFixed(digits)}%`;
 }
 
-const FC_PURPLE = "#9575CD";
 const FT_AMP_COLOR = "#0097a7"; // teal — FT amplified strategy reference line
-
-/** Check if a period_value (e.g. "2026-08") is a forecast period — i.e.
- *  its month is strictly after the forecast_date's month. */
-function isForecastPeriod(periodValue: string, forecastDate: string | null | undefined): boolean {
-  if (!forecastDate) return false;
-  // period_value is "YYYY-MM" (month) or "YYYY-Qn" (season) or "YYYY" (year).
-  // For month: compare "YYYY-MM" > forecast month.
-  // For season: compare the season's start month.
-  // For year: compare "YYYY" > forecast year.
-  const fcYM = forecastDate.slice(0, 7); // "YYYY-MM"
-  if (periodValue.length === 7) {
-    // Month: "YYYY-MM"
-    return periodValue > fcYM;
-  }
-  if (periodValue.length === 6) {
-    // Year: "YYYY"
-    return periodValue > fcYM.slice(0, 4);
-  }
-  // Season: "YYYY-Qn" — compare year first, then season
-  const fcYear = fcYM.slice(0, 4);
-  const fcMonth = parseInt(fcYM.slice(5, 7), 10);
-  const fcSeason = Math.floor((fcMonth - 1) / 3) + 1;
-  const pvYear = periodValue.slice(0, 4);
-  const pvSeason = parseInt(periodValue.slice(6, 7), 10);
-  if (pvYear > fcYear) return true;
-  if (pvYear < fcYear) return false;
-  return pvSeason > fcSeason;
-}
 
 export default function RiskPanel({
   risks,
   selectedPeriod = null,
   onPeriodSelect,
-  selectedScenario = null,
-  forecastDate = null,
 }: RiskPanelProps) {
   const themeMode = useStore((s) => s.themeMode);
   const [periodType, setPeriodType] = useState<StrategyPeriodType>("month");
@@ -193,22 +155,12 @@ export default function RiskPanel({
           p.period_value === selectedPeriod.periodValue)
       : -1;
 
-    // Identify forecast periods — when a scenario is selected, periods
-    // whose month is after the forecast_date are forecast and get layered
-    // transparent purple bars instead of green/red.
-    const hasForecast = selectedScenario != null && forecastDate != null;
-    const fcFlags = filtered.map((p) =>
-      hasForecast && isForecastPeriod(p.period_value, forecastDate),
-    );
-
-    // Helper: build bar itemStyle. For forecast periods use purple;
-    // otherwise green (gain) or red (loss). Alpha controls transparency.
-    const barItemStyle = (v: number, isFc: boolean, alpha: number, idx: number) => {
-      const color = isFc ? FC_PURPLE : pnlBarColor(v);
+    // Helper: build bar itemStyle. Green (gain) or red (loss). Alpha controls transparency.
+    const barItemStyle = (v: number, alpha: number, idx: number) => {
       return {
         value: v,
         itemStyle: {
-          color: withAlpha(color, alpha),
+          color: withAlpha(pnlBarColor(v), alpha),
           borderColor: idx === selectedIdx ? c.textColor : "transparent",
           borderWidth: idx === selectedIdx ? 1.5 : 0,
         },
@@ -240,14 +192,10 @@ export default function RiskPanel({
           const idx = arr[0].dataIndex;
           const p = filtered[idx];
           const total = p.realized_pnl + p.unrealized_pnl;
-          const isFc = fcFlags[idx];
           const children: React.ReactNode[] = [];
           children.push(React.createElement(React.Fragment, null,
             React.createElement(tooltipComponents.Bold, null, p.period_value),
             ` (${PERIOD_LABELS[periodType]})`,
-            isFc ? React.createElement("span", {
-              style: { color: FC_PURPLE, fontSize: 10 },
-            }, " [FORECAST]") : null,
           ));
           children.push(React.createElement("br"));
           children.push(`Period Total: ${fmtSigned(total)}`);
@@ -288,11 +236,6 @@ export default function RiskPanel({
           color: c.textColor,
           fontSize: 10,
           rotate: labels.length > 8 ? 35 : 0,
-          formatter: (val: string, i: number) =>
-            fcFlags[i] ? `{fc|${val}}` : val,
-          rich: {
-            fc: { color: FC_PURPLE, fontWeight: 600 },
-          },
         },
       },
       yAxis: [
@@ -316,7 +259,7 @@ export default function RiskPanel({
           cursor: onPeriodSelect ? "pointer" : "default",
           data: maxLossUnrealizedData.map((v, i) =>
             v < 0
-              ? barItemStyle(v, fcFlags[i], 0.4, i)
+              ? barItemStyle(v, 0.4, i)
               : { value: 0, itemStyle: { color: "transparent" } },
           ),
           barWidth: "30%",
@@ -334,7 +277,7 @@ export default function RiskPanel({
           cursor: onPeriodSelect ? "pointer" : "default",
           data: maxGainUnrealizedData.map((v, i) =>
             v > 0
-              ? barItemStyle(v, fcFlags[i], 0.4, i)
+              ? barItemStyle(v, 0.4, i)
               : { value: 0, itemStyle: { color: "transparent" } },
           ),
           barWidth: "30%",
@@ -352,7 +295,7 @@ export default function RiskPanel({
           data: realizedData.map((v, i) => ({
             value: v,
             itemStyle: {
-              color: fcFlags[i] ? FC_PURPLE : pnlBarColor(v),
+              color: pnlBarColor(v),
               opacity: filtered[i].is_concentration_hotspot ? 1.0 : 0.85,
               borderColor: i === selectedIdx ? c.textColor : "transparent",
               borderWidth: i === selectedIdx ? 2 : 0,
@@ -395,7 +338,7 @@ export default function RiskPanel({
         }] : []),
       ],
     };
-  }, [rs, periods, periodType, themeMode, selectedPeriod, onPeriodSelect, selectedScenario, forecastDate]);
+  }, [rs, periods, periodType, themeMode, selectedPeriod, onPeriodSelect]);
 
   if (!rs) {
     return null;

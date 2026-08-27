@@ -37,6 +37,8 @@ import type {
   SimilarIndexRow,
   QuarterlyCompositionResponse,
   QuarterlyCompositionQuarter,
+  IndustryWeightSeriesResponse,
+  IndustryWeightSeriesPoint,
 } from "../../shared/types.js";
 
 interface DbCompositionRow extends QueryResultRow {
@@ -283,6 +285,7 @@ export async function getSecComposition(
 interface DbQuarterlyRow extends QueryResultRow {
   quarter_start: string;
   snapshot_date: string;
+  industry_id: string;
   sector_id: string;
   sector_label: string;
   industry: string;
@@ -313,6 +316,7 @@ async function fetchQuarterlyRows(
     )
     SELECT s.quarter_start::text AS quarter_start,
            s.snapshot_date::text AS snapshot_date,
+           COALESCE(sc.industry_id, '')        AS industry_id,
            COALESCE(sc.sector_id, 'OTHER')   AS sector_id,
            COALESCE(sc.sector_label, '其他') AS sector_label,
            COALESCE(sc.industry_label, '未分类') AS industry,
@@ -331,6 +335,7 @@ async function fetchQuarterlyRows(
          LIMIT 1
       ) sc ON true
      GROUP BY s.quarter_start, s.snapshot_date,
+              COALESCE(sc.industry_id, ''),
               COALESCE(sc.sector_id, 'OTHER'),
               COALESCE(sc.sector_label, '其他'),
               COALESCE(sc.industry_label, '未分类')
@@ -360,6 +365,7 @@ function foldQuarterlyRows(rows: DbQuarterlyRow[]): QuarterlyCompositionQuarter[
     q.total_weight_pct += w;
     q.industries.push({
       industry: r.industry,
+      industry_id: r.industry_id ?? "",
       sector_id: r.sector_id,
       sector_label: r.sector_label,
       weight_pct: w,
@@ -429,6 +435,139 @@ export async function getQuarterlyComposition(
       code: codeParam,
       source: "index",
       quarters: foldQuarterlyRows(directRows),
+    };
+  }
+
+  return empty;
+}
+
+// ----------------------------------------------------------------------------
+//  Industry weight series — ONE industry's weight in a security's composition
+//  across ALL snapshot dates (roughly monthly — denser than the quarterly
+//  latest-per-quarter view). Used by the ETF Holdings page's Industry-changes
+//  row drill-down.
+//
+//  Per snapshot date: the industry's summed raw weight_pct PLUS the snapshot's
+//  total weight_pct (normalization is applied client-side, same formula as
+//  the quarterly table: weight_pct / total_weight_pct * 100).
+//
+//  Fallback chain mirrors getQuarterlyComposition: ETF snapshots → tracking
+//  index snapshots → direct index snapshots.
+// ----------------------------------------------------------------------------
+interface DbIndustryWeightRow extends QueryResultRow {
+  snapshot_date: string;
+  weight_pct: string | number | null;
+  total_weight_pct: string | number | null;
+}
+
+async function fetchIndustryWeightRows(
+  code: string,
+  industryId: string,
+  sourceType: "etf" | "index",
+): Promise<DbIndustryWeightRow[]> {
+  // The code predicate differs by source_type — static strings, no injection
+  // risk (sourceType is a hardcoded literal, not user input).
+  const codePredicate =
+    sourceType === "etf"
+      ? "REGEXP_REPLACE(h.code, '\\.(SZ|SS|SH)$', '') = $1"
+      : "h.code = $1";
+
+  // Per snapshot date: industry-summed weight (incl. snapshots where the
+  // industry is absent → 0) via a FILTERED aggregate, plus the snapshot
+  // total for client-side normalization. The industry match uses the SAME
+  // LATERAL best-row-per-stock classification join as fetchHoldings.
+  const sql = `
+    SELECT h.snapshot_date::text AS snapshot_date,
+           SUM(h.weight_pct) FILTER (WHERE sc.industry_id = $2) AS weight_pct,
+           SUM(h.weight_pct)                                       AS total_weight_pct
+      FROM stats.sec_composition h
+      LEFT JOIN LATERAL (
+        SELECT sc.industry_id
+          FROM stats.sec_classification sc
+         WHERE sc.code = h.stock_code AND sc.type = 'stock'
+         ORDER BY sc.parent_index_weight DESC NULLS LAST, sc.parent_index_code
+         LIMIT 1
+      ) sc ON true
+     WHERE h.source_type = $3
+       AND ${codePredicate}
+     GROUP BY h.snapshot_date
+     ORDER BY h.snapshot_date ASC
+  `;
+  return queryRows<DbIndustryWeightRow>(sql, [code, industryId, sourceType]);
+}
+
+function foldIndustryWeightRows(rows: DbIndustryWeightRow[]): IndustryWeightSeriesPoint[] {
+  return rows
+    // Drop snapshots where the industry is entirely absent (no holdings row
+    // matched — no carry-forward, mirroring the quarterly semantics).
+    .filter((r) => r.weight_pct != null)
+    .map<IndustryWeightSeriesPoint>((r) => ({
+      date: formatDate(r.snapshot_date),
+      weight_pct: Number((toNum(r.weight_pct) ?? 0).toFixed(6)),
+      total_weight_pct: Number((toNum(r.total_weight_pct) ?? 0).toFixed(6)),
+    }));
+}
+
+export async function getIndustryWeightSeries(
+  codeParam: string,
+  industryIdParam: string,
+): Promise<IndustryWeightSeriesResponse> {
+  const stripped = codeParam.replace(SUFFIX_RE, "").trim();
+  const industryId = industryIdParam.trim();
+  const empty: IndustryWeightSeriesResponse = {
+    code: codeParam,
+    industry_id: industryId,
+    industry_label: "",
+    source: "full",
+    points: [],
+  };
+  if (!stripped || !industryId) return empty;
+
+  // Resolve the display label from the INDEX classification (same taxonomy).
+  const labelRows = await queryRows<{ industry_label: string | null }>(
+    `SELECT industry_label FROM stats.sec_classification
+      WHERE industry_id = $1::text AND type = 'index' LIMIT 1`,
+    [industryId],
+  );
+  const industry_label = labelRows[0]?.industry_label ?? "";
+
+  // 1. ETF snapshots.
+  const etfRows = await fetchIndustryWeightRows(stripped, industryId, "etf");
+  if (etfRows.length > 0) {
+    return {
+      code: codeParam,
+      industry_id: industryId,
+      industry_label,
+      source: "full",
+      points: foldIndustryWeightRows(etfRows),
+    };
+  }
+
+  // 2. Tracking index fallback.
+  const idx = await fetchTrackingIndex(stripped);
+  if (idx) {
+    const idxRows = await fetchIndustryWeightRows(idx.code, industryId, "index");
+    if (idxRows.length > 0) {
+      return {
+        code: codeParam,
+        industry_id: industryId,
+        industry_label,
+        source: "index",
+        index_source: { code: idx.code, name: idx.name },
+        points: foldIndustryWeightRows(idxRows),
+      };
+    }
+  }
+
+  // 3. Direct index lookup.
+  const directRows = await fetchIndustryWeightRows(stripped, industryId, "index");
+  if (directRows.length > 0) {
+    return {
+      code: codeParam,
+      industry_id: industryId,
+      industry_label,
+      source: "index",
+      points: foldIndustryWeightRows(directRows),
     };
   }
 

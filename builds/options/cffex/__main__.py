@@ -30,9 +30,15 @@ Usage:
   python -m builds.options.cffex
   python -m builds.options.cffex --start-date 2026-07-01 --end-date 2026-07-31
   python -m builds.options.cffex --force
+  python -m builds.options.cffex --code 000300           (single-underlying test filter)
 """
 from __future__ import annotations
 
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
 import argparse
 import asyncio
 import os
@@ -45,7 +51,6 @@ from typing import List, Optional
 from _common.df_utils._activate import activate
 activate()
 
-import numpy as np
 import pandas as pd
 
 import warnings
@@ -59,8 +64,10 @@ from _common.build_commons import (
     truncate_table_async,
     print_build_header,
     print_wall_time,
+    rec_cols,
     TODAY_STR,
 )
+from builds._commons.code_filter import add_code_arg, normalize_code
 
 setup_utf8_stdout()
 
@@ -124,16 +131,14 @@ async def load_index_ohlcv(
         if not rows:
             return None
 
-        records = [
-            {
-                "date": r["date"],
-                "underlying_code": r["code"],
-                "close": float(r["close"]) if r["close"] is not None else np.nan,
-            }
-            for r in rows
-        ]
-        df = pd.DataFrame(records)
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        # Whole-column extraction; vectorized conversions — never build a
+        # DataFrame from python-date tuples under cudf.pandas (the proxied
+        # __init__ walks every element on a slow path)
+        df = pd.DataFrame(rec_cols(rows))
+        df = df.rename(columns={"code": "underlying_code"})
+        df["underlying_code"] = df["underlying_code"].astype(str)
+        df["close"] = df["close"].astype(float)
+        df["date"] = pd.to_datetime(df["date"])
         return df
 
     except Exception:
@@ -147,6 +152,7 @@ _CFFEX_PREFIXES = ["IO%", "HO%", "MO%", "CO%"]
 async def find_missing_cffex_dates(
     conn,
     source_dates: set[date],
+    code_filter: str | None = None,
 ) -> set[date]:
     """Find dates from source_dates that do NOT already have CFFEX options data.
 
@@ -154,6 +160,10 @@ async def find_missing_cffex_dates(
     this function only checks for rows whose contract_code starts with
     a CFFEX option product prefix (IO, HO, MO, CO). This prevents SZSE
     options data from masking dates that still need CFFEX data.
+
+    With code_filter (bare underlying index code), the check is scoped to
+    that underlying via stats.options_terms — dates loaded for OTHER
+    underlyings no longer mask this underlying's gaps.
     """
     if not source_dates:
         return set()
@@ -162,8 +172,15 @@ async def find_missing_cffex_dates(
     conditions = " OR ".join(
         [f'contract_code LIKE ${i+1}' for i in range(n)]
     )
-    sql = f'SELECT DISTINCT date FROM stats.options_identity WHERE {conditions}'
-    existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES)
+    if code_filter:
+        sql = (
+            f'SELECT DISTINCT date FROM stats.options_terms '
+            f'WHERE underlying_code = ${n+1} AND ({conditions})'
+        )
+        existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES, code_filter)
+    else:
+        sql = f'SELECT DISTINCT date FROM stats.options_identity WHERE {conditions}'
+        existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES)
     existing_dates = {r["date"] for r in existing_rows if r["date"] is not None}
 
     return source_dates - existing_dates
@@ -174,7 +191,14 @@ async def main() -> None:
         description="Build CFFEX options data and insert to database (missing dates only)."
     )
     add_common_build_args(ap)
+    add_code_arg(ap)
     args = ap.parse_args()
+
+    # CFFEX option underlyings are bare 6-digit index codes (e.g. 000300) —
+    # strip the exchange suffix normalize_code may have appended.
+    code_filter = normalize_code(args.code)
+    if code_filter:
+        code_filter = code_filter.split(".")[0]
 
     t0 = time.time()
     print_build_header(
@@ -184,9 +208,16 @@ async def main() -> None:
             "Options trend dir": CFFEX_OPTIONS_TREND_DIR,
             "Futures trend dir": CFFEX_FUTURES_TREND_DIR,
             "Date range":        f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
+            "Code filter":       code_filter or "(none — all underlyings)",
             "Today":             TODAY_STR,
         },
     )
+    if code_filter:
+        print(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}", flush=True)
+        if code_filter not in _INDEX_UNDERLYING_CODES:
+            print("    [CODE FILTER] Not a CFFEX index underlying — nothing to do for CFFEX; skipping", flush=True)
+            print_wall_time(t0)
+            return
 
     # ------------------------------------------------------------------
     # 1. Discover source files and available dates
@@ -226,20 +257,30 @@ async def main() -> None:
 
     try:
         if args.force:
-            print("    [DB] Force mode: truncating existing tables", flush=True)
-            for tbl in (
-                "stats.options_aggregate",
-                "stats.options_volume_oi",
-                "stats.options_greeks",
-                "stats.options_settlement",
-                "stats.options_strike",
-                "stats.options_terms",
-                "stats.options_identity",
-            ):
-                await truncate_table_async(conn, tbl)
+            if code_filter:
+                # Single-code force mode: delete only this underlying's rows
+                # instead of truncating (FK-safe order handled by the helper).
+                print(f"    [DB] Force mode for underlying {code_filter}: deleting existing rows", flush=True)
+                from builds.options.tables import delete_underlying_rows_async
+                await delete_underlying_rows_async(conn, code_filter)
+            else:
+                print("    [DB] Force mode: truncating existing tables", flush=True)
+                for tbl in (
+                    "stats.options_aggregate",
+                    "stats.options_volume_oi",
+                    "stats.options_greeks",
+                    "stats.options_settlement",
+                    "stats.options_strike",
+                    "stats.options_terms",
+                    "stats.options_identity",
+                ):
+                    await truncate_table_async(conn, tbl)
             missing_dates = available_dates
         else:
-            missing_dates = await find_missing_cffex_dates(conn, available_dates)
+            # With --code, only that underlying's dates are checked (via
+            # options_terms) so other underlyings' loaded dates don't mask
+            # this underlying's gaps.
+            missing_dates = await find_missing_cffex_dates(conn, available_dates, code_filter=code_filter)
 
         print(
             f"    [DB] {len(missing_dates)} dates missing from "
@@ -277,6 +318,16 @@ async def main() -> None:
             print("    [INDEX] No index data available — moneyness will be 0", flush=True)
 
         options_df = build_options_df(missing_files, index_ohlcv)
+
+        # Filter to the target underlying if --code is set — BEFORE the
+        # derived columns, whose per-underlying aggregates (volume_pct,
+        # total_volume_underlying, …) are computed within one underlying.
+        if code_filter and len(options_df) > 0:
+            n_before = len(options_df)
+            options_df = options_df[
+                options_df["underlying_code"] == code_filter
+            ].reset_index(drop=True)
+            print(f"    [CODE FILTER] Options rows {n_before:,} → {len(options_df):,} for underlying {code_filter}", flush=True)
 
         if len(options_df) == 0:
             print("    [INFO] No options rows parsed from missing-date files", flush=True)

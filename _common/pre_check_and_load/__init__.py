@@ -31,6 +31,10 @@ from _common.pre_check_and_load.missing_dates import (
     find_missing_keys,
     filter_rows_to_missing_dates_async,
 )
+from _common.pre_check_and_load._legacy import (
+    get_existing_dates_from_db,
+    get_existing_years_from_db,
+)
 
 __all__ = [
     # identity
@@ -44,4 +48,7 @@ __all__ = [
     "filter_rows_to_missing_dates_async",
     "fetch_codes_with_recent_data_async",
     "RECENT_TRADING_DAYS",
+    # legacy DB-scan wrappers (deprecated)
+    "get_existing_dates_from_db",
+    "get_existing_years_from_db",
 ]

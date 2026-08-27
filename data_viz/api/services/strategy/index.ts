@@ -21,15 +21,6 @@ export {
 } from "./risks.js";
 
 export {
-  fetchForecastScenarioDecisions,
-  type ForecastScenarioResponse,
-} from "./forecast-scenario.js";
-
-export {
-  fetchStrategyForecast1m,
-} from "./forecast-1m.js";
-
-export {
   checkExistingStrategy,
 } from "./check-existing.js";
 

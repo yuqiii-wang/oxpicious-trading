@@ -25,6 +25,8 @@ from _common.build_commons import (
     copy_or_upsert_split_async,
     truncate_table_async,
     get_max_table_date_async,
+    rec_col,
+    rec_cols,
 )
 
 # cudf.pandas activation — must run before pandas first import
@@ -50,7 +52,7 @@ async def _load_all_codes(conn) -> list:
     rows = await conn.fetch(
         f'SELECT DISTINCT code FROM {SOURCE_TABLE} WHERE close IS NOT NULL ORDER BY code'
     )
-    return [r["code"] for r in rows]
+    return rec_col(rows, "code")
 
 
 async def _load_close_window(conn, codes: list, start_date: date) -> pd.DataFrame:
@@ -69,9 +71,12 @@ async def _load_close_window(conn, codes: list, start_date: date) -> pd.DataFram
     )
     if not rows:
         return pd.DataFrame(columns=["date", "code", "close"])
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = pd.DataFrame(rec_cols(rows))
+    # Keep date as datetime64 for GPU operations; convert to .dt.date
+    # only at DB write time (avoids cudf fallback on .dt.date accessor).
+    df["date"] = pd.to_datetime(df["date"])
+    # DB data is clean — no errors='coerce' needed
+    df["close"] = df["close"].astype(float)
     df = df.dropna(subset=["close"]).sort_values(["code", "date"]).reset_index(drop=True)
     return df
 
@@ -86,9 +91,9 @@ async def _load_full_close_history(conn, codes: list) -> pd.DataFrame:
     )
     if not rows:
         return pd.DataFrame(columns=["date", "code", "close"])
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = pd.DataFrame(rec_cols(rows))
+    df["date"] = pd.to_datetime(df["date"])
+    df["close"] = df["close"].astype(float)
     df = df.dropna(subset=["close"]).sort_values(["code", "date"]).reset_index(drop=True)
     return df
 
@@ -196,7 +201,11 @@ async def run_tech_stats_chunked(
 
         # Filter to new dates only (incremental mode)
         if not force and max_existing_date is not None:
-            df = df[df["date"] > max_existing_date].reset_index(drop=True)
+            # pd.Timestamp: comparing datetime64[s] (unit inferred from DB
+            # date objects) against a raw datetime.date raises
+            # InvalidComparison on this pandas version.
+            _cutoff = pd.Timestamp(max_existing_date)
+            df = df[df["date"] > _cutoff].reset_index(drop=True)
             if df.empty:
                 if verbose:
                     print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
@@ -212,8 +221,14 @@ async def run_tech_stats_chunked(
             "ema6", "ema10", "ema20", "ema60", "ema120", "ema255",
         ]
         _out_cols = ["date", "code"] + _numeric_cols
-        out_df = df[_out_cols].copy()
+        # Host transfer at the DB boundary: .dt.date on a cudf-backed
+        # frame falls back per element (no GPU Timestamp.date fast
+        # path); on host pandas it is a plain vectorized conversion.
+        out_df = df[_out_cols].to_pandas()
         out_df["code"] = out_df["code"].astype(str)
+        # Convert datetime64 → Python date for DB insertion (avoids
+        # carrying pandas Timestamp into the asyncpg boundary)
+        out_df["date"] = out_df["date"].dt.date
         for _c in _numeric_cols:
             out_df[_c] = out_df[_c].where(out_df[_c].notna(), None)
         rows = out_df.to_dict(orient="records")

@@ -32,6 +32,7 @@ export function IndustrySentimentsPlot({
   numIndustries,
   chartDataList,
   selectedIndustryIds,
+  selectedItemCodes,
 }: PlotProps) {
   const [poolSize, setPoolSize] = useState<PoolSize>("all");
   const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([]);
@@ -323,6 +324,7 @@ export function IndustrySentimentsPlot({
         <Box sx={{ mt: 2, pt: 1, borderTop: 1, borderColor: "divider" }}>
           <CorrelationChart
             industryIds={selectedIndustryIds}
+            codes={selectedItemCodes}
             poolSize={poolSize}
             themeMode={themeMode}
           />

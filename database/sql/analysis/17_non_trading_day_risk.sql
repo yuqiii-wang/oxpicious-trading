@@ -71,20 +71,24 @@ CREATE TABLE analysis.mov_ave_rsi_holiday (
     today_high_low_gap     NUMERIC(18,4) NOT NULL DEFAULT 0.0,
     today_open_close_gap   NUMERIC(18,4) NOT NULL DEFAULT 0.0,
 
-    CONSTRAINT pk_mov_ave_rsi_holiday PRIMARY KEY (sec_type, code, date),
+    CONSTRAINT pk_mov_ave_rsi_holiday PRIMARY KEY (code, sec_type, date),
     CONSTRAINT fk_non_trading_day_risk_expiry
-        FOREIGN KEY (sec_type, code, date)
-        REFERENCES analysis.mov_ave_rsi (sec_type, code, date)
+        FOREIGN KEY (code, sec_type, date)
+        REFERENCES analysis.mov_ave_rsi (code, sec_type, date)
         ON DELETE CASCADE,
     CONSTRAINT chk_mov_ave_rsi_holiday_sec_type
         CHECK (sec_type IN ('etf', 'index', 'stock'))
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (16) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p15
+SELECT public.create_hash_partitions('analysis', 'mov_ave_rsi_holiday', 16);
 
 -- NOTE: no separate (sec_type, code, date) index — the PK already covers
 -- that lookup (same rationale as mov_ave_spreads_detail / mov_ave_rsi).
 
 COMMENT ON TABLE  analysis.mov_ave_rsi_holiday IS
-    'Non-trading-day risk analysis: one row per (sec_type, code, date). '
+    'Non-trading-day risk analysis: one row per (code, sec_type, date). '
     'For each trading day D, captures whether the previous calendar day '
     '(D-1) was a trading day / weekend / holiday / long holiday, the '
     'consecutive non-trading-day count ending on D-1, and today''s '

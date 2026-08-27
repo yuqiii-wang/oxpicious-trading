@@ -76,9 +76,7 @@ export interface DailyRow {
 //  summary) live on the 1:1 strategy_results row. Then all trade_decision rows in
 //  that seq (no code filter needed — the seq is already per-code).
 // ---------------------------------------------------------------------------
-// When scenario is NULL → return the PARENT seq (parent_seq_id IS NULL).
-// When scenario is provided → return the CHILD seq for that scenario.
-// $4 = strategy_name (algo name for binary mode, or portfolio:bb*0.5+macd*0.5 for mixed).
+// $3 = strategy_name (algo name for binary mode, or portfolio:bb*0.5+macd*0.5 for mixed).
 //
 // Priority order for selecting the "latest" run:
 //   1. is_active = TRUE (strategy_identity) — the run the UI loads by default
@@ -86,9 +84,7 @@ export interface DailyRow {
 export const SEQ_SQL = `
   SELECT seq_id, fault_tolerance
   FROM strategy.strategy_identity
-  WHERE sec_type = $1 AND code = $2 AND strategy_name = $4
-    AND (($3::text IS NULL AND parent_seq_id IS NULL)
-         OR ($3::text IS NOT NULL AND scenario = $3))
+  WHERE sec_type = $1 AND code = $2 AND strategy_name = $3
   ORDER BY CASE WHEN is_active THEN 0 ELSE 1 END, seq_no DESC
   LIMIT 1
 `;

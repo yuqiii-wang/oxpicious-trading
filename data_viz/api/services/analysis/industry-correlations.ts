@@ -1,6 +1,7 @@
 /**
- * Industry Correlations - pairwise rolling Pearson correlation between
- * industries' mean_price series.
+ * Industry Correlations - windowed pairwise Pearson correlation between
+ * industries' MA curves of mean_close (grid windows every `interval`
+ * trading days).
  * Extracted from the former analysis.service.ts.
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
@@ -11,13 +12,17 @@ import type {
 } from "../../../shared/types.js";
 
 // ----------------------------------------------------------------------------
-//  Industry Correlations — pairwise rolling Pearson correlation between two
-//  industries' mean_price series, one row per (date, industry_id,
-//  benchmark_industry_id, pool_size). Drives the "Correlation" expandable
-//  chart on the IndustrySentiments page (multi-industry mode only).
+//  Industry Correlations — windowed pairwise Pearson correlation between
+//  two industries' MA curves of mean_close, one row per (start_date,
+//  industry_id, benchmark_industry_id, pool_size, interval). Drives the
+//  "Correlation" expandable chart on the IndustrySentiments page
+//  (multi-industry mode only).
 //
-//  Source: analysis.industry_correlations (built by
-//  analyze_industry_correlations.py from analysis.industry_sentiments).
+//  Source: analysis.industry_correlations (built by the correlations step
+//  of analyze.industry_sentiments from stats.industry_basic_stats.mean_close).
+//  corr_ma{W}_{W}d = Pearson correlation between the two industries' MA-W
+//  curves over the W trading days starting on start_date; window starts sit
+//  on the calendar grid every `interval` (default 20) trading days.
 //
 //  Order convention: rows are stored with industry_id < benchmark_industry_id
 //  (lexicographic, COLLATE "C"). The API returns rows matching either
@@ -32,11 +37,11 @@ import type {
 interface DbIndustryCorrelationRow extends QueryResultRow {
   industry_id: string;
   benchmark_industry_id: string;
-  date: Date | string;
-  industry_mean_corr_5d: number | null;
-  industry_mean_corr_20d: number | null;
-  industry_mean_corr_60d: number | null;
-  industry_mean_corr_255d: number | null;
+  start_date: Date | string;
+  interval: number;
+  corr_ma20_20d: number | null;
+  corr_ma60_60d: number | null;
+  corr_ma255_255d: number | null;
 }
 
 const VALID_INDUSTRY_CORR_POOLS = new Set(["all", "small", "mid", "large"]);
@@ -118,15 +123,15 @@ export async function getIndustryCorrelations(
     SELECT
       industry_id,
       benchmark_industry_id,
-      date,
-      industry_mean_corr_5d,
-      industry_mean_corr_20d,
-      industry_mean_corr_60d,
-      industry_mean_corr_255d
+      start_date,
+      "interval",
+      corr_ma20_20d,
+      corr_ma60_60d,
+      corr_ma255_255d
     FROM analysis.industry_correlations
     WHERE pool_size = $${pairParams.length + 1}::text
       AND (industry_id, benchmark_industry_id) IN (${pairPlaceholders})
-    ORDER BY date ASC, industry_id, benchmark_industry_id
+    ORDER BY start_date ASC, industry_id, benchmark_industry_id
   `;
   const params = [...pairParams, poolSize];
 
@@ -140,12 +145,12 @@ export async function getIndustryCorrelations(
     benchmark_industry_id: r.benchmark_industry_id,
     industry_label: labelMap.get(r.industry_id) ?? r.industry_id,
     benchmark_industry_label: labelMap.get(r.benchmark_industry_id) ?? r.benchmark_industry_id,
-    date: formatDate(r.date),
+    start_date: formatDate(r.start_date),
+    interval: r.interval,
     pool_size: poolSize,
-    corr_5d: toNum(r.industry_mean_corr_5d),
-    corr_20d: toNum(r.industry_mean_corr_20d),
-    corr_60d: toNum(r.industry_mean_corr_60d),
-    corr_255d: toNum(r.industry_mean_corr_255d),
+    corr_ma20_20d: toNum(r.corr_ma20_20d),
+    corr_ma60_60d: toNum(r.corr_ma60_60d),
+    corr_ma255_255d: toNum(r.corr_ma255_255d),
   }));
 
   return {

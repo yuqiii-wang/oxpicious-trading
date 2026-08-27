@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from downloads._common.core import (
+from downloads._common import (
     add_exchange_suffix,
     is_trading_day,
     setup_logger,
@@ -79,8 +79,9 @@ class AssetStream:
         list_url: SSE list endpoint for this type.
         identity_table: FK parent table (e.g. stats.stock_identity).
         intraday_table: bar table (e.g. stats.stock_intraday_5min).
-        code_suffix: exchange suffix appended to codes ('SS' for stocks/ETFs),
-            or None for indices (bare 6-digit code per index_identity CHECK).
+        exchange: canonical exchange code appended to codes ('SS' for
+            stocks/ETFs), or None for indices (bare 6-digit code per
+            index_identity CHECK).
         has_volume: stocks/ETFs record per-bar volume; indices do not
             (index_intraday_5min has no volume column).
         allowed_codes: optional allow-list of bare codes. When set (indices),
@@ -97,7 +98,7 @@ class AssetStream:
     list_url: str
     identity_table: str
     intraday_table: str
-    code_suffix: Optional[str]
+    exchange: Optional[str]
     has_volume: bool
     allowed_codes: Optional[set] = None
     csv_subdir: str = "sse_intraday"
@@ -159,9 +160,9 @@ def aggregate_bars(
     """Aggregate 5 one-minute samples into per-security OHLCV bars.
 
     Drives off the ``asset`` context (AssetStream): stock / ETF bars carry a
-    per-bar volume + code_suffix and land in stats.stock_intraday_5min /
+    per-bar volume + exchange and land in stats.stock_intraday_5min /
     stats.etf_intraday_5min (code WITH exchange suffix, e.g. "600000.SS");
-    index bars carry NO volume / code_suffix and land in
+    index bars carry NO volume / exchange and land in
     stats.index_intraday_5min (bare 6-digit code). The ``asset.buffer`` /
     ``prev_bar_cumvol`` / ``finished_codes`` mutable state is read and updated
     in place.
@@ -197,8 +198,8 @@ def aggregate_bars(
 
     # Stocks AND ETFs share the same row layout (code WITH exchange suffix,
     # per-bar trading_shares derived from cumulative volume delta). Indices
-    # use bare 6-digit codes with no volume / code_suffix columns.
-    is_suffixed = asset.code_suffix is not None
+    # use bare 6-digit codes with no volume / exchange columns.
+    is_suffixed = asset.exchange is not None
     is_stock = asset.name == "stock"  # only stock_identity has is_in_index_or_etf
     identity_rows: List[dict] = []
     bar_rows: List[dict] = []
@@ -254,10 +255,9 @@ def aggregate_bars(
             asset.prev_bar_cumvol[code] = end_cumvol
 
             full_code = add_exchange_suffix(code, "上海")
-            # Exchange suffix: SZ, SS, BJ, or HK are valid.
-            parts = full_code.rsplit(".", 1)
-            code_suffix = parts[-1] if len(parts) == 2 and parts[-1] in ("SZ", "SS", "BJ", "HK") else None
-            identity_row = {"date": trade_date, "code": full_code, "code_suffix": code_suffix, "name": name}
+            # Canonical exchange from the asset context (SS for SSE streams).
+            exchange = asset.exchange
+            identity_row = {"date": trade_date, "code": full_code, "exchange": exchange, "name": name}
             # Only stock_identity has the is_in_index_or_etf column; etf_identity
             # does NOT (would cause a missing-column INSERT error).
             if is_stock and etf_member_codes is not None:
@@ -266,7 +266,7 @@ def aggregate_bars(
             bar_rows.append({
                 "date": trade_date,
                 "code": full_code,
-                "code_suffix": code_suffix,
+                "exchange": exchange,
                 "time": bar_time,
                 "open": o,
                 "high": h,
@@ -277,7 +277,7 @@ def aggregate_bars(
                 "change_pct": change_pct,
             })
         else:
-            # Indices: bare 6-digit code, NO volume / code_suffix columns
+            # Indices: bare 6-digit code, NO volume / exchange columns
             # (index_intraday_5min schema). Codes are already filtered to the
             # existing-index allow-list in fetch_snapshot.
             identity_rows.append({

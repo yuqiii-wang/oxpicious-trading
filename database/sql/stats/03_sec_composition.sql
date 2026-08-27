@@ -32,10 +32,14 @@ CREATE TABLE IF NOT EXISTS stats.sec_composition (
         CHECK (code ~ '^(\d{6}|H\d{5})(\.(SZ|SS|SH))?$'),
     CONSTRAINT chk_sec_composition_source
         CHECK (source_type IN ('etf', 'index'))
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'sec_composition', 8);
 
 
-COMMENT ON TABLE  stats.sec_composition                IS 'ALL constituent holdings per ETF or INDEX per composition snapshot.';
+COMMENT ON TABLE  stats.sec_composition                IS 'ALL constituent holdings per ETF or INDEX per composition snapshot. Native HASH partitioned by code.';
 COMMENT ON COLUMN stats.sec_composition.snapshot_date   IS 'Composition snapshot date (one snapshot per ETF/index, applied forward via merge_asof).';
 COMMENT ON COLUMN stats.sec_composition.code            IS 'ETF code (e.g. 159001.SZ) or index code (e.g. 930606, H30007 for CSI cross-market).';
 COMMENT ON COLUMN stats.sec_composition.source_type     IS 'Data origin: "etf" = ETF holdings, "index" = index composition (CSI closeweight).';

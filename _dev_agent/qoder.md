@@ -26,5 +26,6 @@ activate()
 For temp py and ts script for test or execution, write them in `temp_scripts`, and write output test result, e.g., screenshot, console output, etc. in `temp_scripts` as well.
 
 every db write operation needs to check in _common db funcs.
+For DB changes, always implement sql unless explcitly told not to, and bridge to python code if needed.
 
-be constrained from using for loop and if/else conds, but try to implement pandas native vectorization methods.
+Be constrained from using for loop and if/else conds in python code and dataframe operations, but try to implement pandas native vectorization methods.

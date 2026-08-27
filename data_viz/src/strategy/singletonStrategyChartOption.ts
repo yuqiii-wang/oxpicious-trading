@@ -7,8 +7,9 @@
  *   3. Trading amount bars (secondary y-axis, right)
  *   4. BUY markers (green dots; dark green for top-3 confidence) at fill_price
  *   5. SELL markers (red dots; dark red for top-3 losses) at fill_price
- *   6. Rich tooltip on hover showing full decision details
- *   7. Total return % as a graphic text annotation
+ *   6. LAST DAY SELL marker (purple dot; larger) at the projected fill_price
+ *   7. Rich tooltip on hover showing full decision details
+ *   8. Total return % as a graphic text annotation
  *
  * Normalization: every price-derived series (OHLC, MA5, MA60, B/S marker
  * positions) is rebased so the FIRST BUY fill = 100. The anchor
@@ -39,13 +40,12 @@ import {
   commonGrid,
   commonDataZoom,
 } from "@/theme/chart-palette";
-import { createMarkerTooltipFormatter, createFcSellTooltipFormatter, createFcSellFallbackTooltipFormatter } from "./tooltips";
+import { createMarkerTooltipFormatter } from "./tooltips";
 import type {
   StrategyBacktestResponse,
   StrategyDecision,
   StrategyOhlcRow,
   StrategyPeriodType,
-  StrategyForecast1mResponse,
 } from "@shared/types";
 
 /**
@@ -66,22 +66,6 @@ interface BuildOptionParams {
   themeMode: ThemeMode;
   /** Currently-selected risk period (null = no shading). */
   selectedPeriod?: SelectedPeriod | null;
-  /** 1-month forward forecast (8 scenarios + mean). When present and
-   *  non-empty, the chart appends 20 forecast days to the x-axis and draws:
-   *    - a light-purple ±2σ shade (envelope between lower and upper band)
-   *    - 8 light-purple dashed close-price curves
-   *    - 8 light dashed P&L curves + a mean P&L curve
-   *  Forecast close prices are converted from forecast-norm (base=100 at
-   *  forecast_date close) → backtest-norm (base=100 at first_buy_fill_price)
-   *  via stats.anchor_close / stats.first_buy_fill_price so they align with
-   *  the OHLC frame. P&L (realized_pnl_forecast) is already in backtest-norm
-   *  money and plots directly on the Total P&L y-axis. */
-  forecast?: StrategyForecast1mResponse | null;
-  /** Mutable ref holding the currently-hovered forecast scenario name (or
-   *  null). Updated by a capture-phase mousemove listener in
-   *  SingletonStrategyPage; read by the tooltip formatter to highlight the
-   *  hovered curve and dim the others. */
-  hoveredScenarioRef?: { current: string | null };
 }
 
 /**
@@ -91,11 +75,9 @@ interface BuildOptionParams {
  * selected risk period.
  */
 function dateToPeriodValue(dateStr: string, periodType: StrategyPeriodType): string {
-  // dateStr is "YYYY-MM-DD" (formatDate normalizes to this).
   const y = dateStr.slice(0, 4);
   if (periodType === "year") return y;
-  if (periodType === "month") return dateStr.slice(0, 7); // YYYY-MM
-  // season: Q1=Jan-Mar, Q2=Apr-Jun, Q3=Jul-Sep, Q4=Oct-Dec
+  if (periodType === "month") return dateStr.slice(0, 7);
   const m = parseInt(dateStr.slice(5, 7), 10);
   const q = Math.floor((m - 1) / 3) + 1;
   return `${y}-Q${q}`;
@@ -150,42 +132,14 @@ export function buildSingletonStrategyOption({
   data,
   themeMode,
   selectedPeriod = null,
-  forecast = null,
-  hoveredScenarioRef,
 }: BuildOptionParams): EChartsOption {
   const c = axisColors(themeMode);
   const ohlcDates = data.ohlc.map((r) => r.date);
-
-  // ---- 1-month forward forecast: append 20 forecast day-labels to the
-  // x-axis and pad all existing series with nulls so they don't draw in the
-  // forecast region. Forecast close prices are converted from forecast-norm
-  // (base=100 at forecast_date close) → backtest-norm (base=100 at
-  // first_buy_fill_price) so they align with the OHLC frame.
-  const HORIZON = 20;
-  const fcRows = forecast?.rows ?? [];
-  const fcStats = forecast?.stats ?? null;
-  const hasForecast = fcRows.length > 0 && fcStats != null;
-  // Conversion factor forecast-norm → backtest-norm. Both anchors must be
-  // present; otherwise we skip the price overlay (P&L still plots since it's
-  // already in backtest-norm money).
-  const fcConv = hasForecast && fcStats!.first_buy_fill_price && fcStats!.first_buy_fill_price > 0
-    ? fcStats!.anchor_close / fcStats!.first_buy_fill_price : null;
-
-  // Forecast day labels: "F+1" .. "F+20" (compact; keeps the x-axis readable).
-  const fcLabels = hasForecast
-    ? Array.from({ length: HORIZON }, (_, i) => `F+${i + 1}`)
-    : [];
-  const dates = hasForecast ? [...ohlcDates, ...fcLabels] : ohlcDates;
-  const padLen = hasForecast ? HORIZON : 0;
-  /** Pad an existing series data array with `padLen` nulls (forecast region). */
-  const pad = <T,>(arr: Array<T | null>): Array<T | null> =>
-    padLen > 0 ? [...arr, ...Array<null>(padLen)] : arr;
+  const dates = ohlcDates;
 
   // ---- Selected-period shading: if a risk-analytics bar is selected,
   // compute the OHLC x-axis index range that falls inside that period and
   // shade it green (gain) or red (loss) via a markArea on the OHLC series.
-  // The shade spans the full y-range so it reads as a vertical highlight
-  // band over the period's trading days.
   const periodRange = selectedPeriod
     ? findPeriodRange(dates, selectedPeriod.periodType, selectedPeriod.periodValue)
     : null;
@@ -198,28 +152,23 @@ export function buildSingletonStrategyOption({
   // Python backtest and stored on strategy_results; it's the SAME value each
   // trade_decision.normalized_fill_price is rebased against, so the chart's
   // OHLC/MA frame and the per-decision normalized index stay consistent.
-  // Tooltips keep showing actual prices (from data.ohlc / decision.fill_price).
-  // Trading amount is a volume measure on its own axis and is NOT rebased.
-  // If there is no BUY (first_buy_fill_price is null), fall back to actual
-  // prices (scale=1).
   const normBase = data.summary.first_buy_fill_price;
   const isNormalized = normBase != null && normBase > 0;
   const normScale = isNormalized ? 100 / normBase! : 1;
   const norm = (v: number | null | undefined): number | null =>
     v != null && Number.isFinite(v) ? v * normScale : null;
 
-  // OHLC data: [open, close, low, high] — rebased when normalized. Padded
-  // with nulls over the forecast region (forecast has its own series).
-  const ohlcData = pad(data.ohlc.map((r) =>
-    [norm(r.open), norm(r.close), norm(r.low), norm(r.high)] as Array<number | null>));
+  // OHLC data: [open, close, low, high] — rebased when normalized.
+  const ohlcData = data.ohlc.map((r) =>
+    [norm(r.open), norm(r.close), norm(r.low), norm(r.high)] as Array<number | null>);
 
   // MA lines — rebased in lockstep (same scale) so they stay aligned with
   // the candle closes and keep their relative shape.
-  const ma5Data = pad(data.ohlc.map((r) => norm(r.ma5)));
-  const ma60Data = pad(data.ohlc.map((r) => norm(r.ma60)));
+  const ma5Data = data.ohlc.map((r) => norm(r.ma5));
+  const ma60Data = data.ohlc.map((r) => norm(r.ma60));
 
   // Trading amount bars — NOT rebased (different unit, own y-axis).
-  const amtData = pad(data.ohlc.map((r) => r.trading_amount));
+  const amtData = data.ohlc.map((r) => r.trading_amount);
 
   // Build a date→index map for placing B/S markers on the correct x position.
   const dateIdx = new Map<string, number>();
@@ -232,15 +181,13 @@ export function buildSingletonStrategyOption({
   // Total P&L curve — aligned to OHLC dates (null before first BUY / when
   // no daily row exists). Plotted on its own y-axis (index 2) since it's in
   // normalized money, a different scale from both price (~100) and trading amt.
-  // Padded with nulls over the forecast region (forecast P&L has its own series).
-  const totalPnlData = pad(data.ohlc.map((r) => {
+  const totalPnlData = data.ohlc.map((r) => {
     const daily = dailyByDate.get(r.date);
     return daily ? daily.total_pnl : null;
-  }));
+  });
 
   // Identify top-3 highest-confidence BUYs and top-3 biggest-loss SELLs for
-  // highlight coloring (dark green / dark red). Computed client-side from the
-  // decisions array — same logic as the Python risk pipeline.
+  // highlight coloring (dark green / dark red).
   const topConfBuyNos = new Set<number>();
   data.decisions
     .filter((d) => d.side === "BUY")
@@ -257,27 +204,23 @@ export function buildSingletonStrategyOption({
 
   const DARK_GREEN = "#006400";
   const DARK_RED = "#8B0000";
+  // Last-day sell (final liquidation at the projected price) — purple.
+  const LAST_DAY_SELL_COLOR = "#9575cd";
+  const isLastDaySell = (d: StrategyDecision): boolean =>
+    !!d.signal_reason?.startsWith("LAST DAY SELL");
 
-  // Buy/Sell marker data: [xIndex, fillPrice, decision] — scatter series
-  // use the category index as x so they align with the OHLC bars. The
-  // plotted fillPrice is rebased; the decision object keeps actual prices
-  // (and its precomputed normalized_fill_price) for the tooltip.
-  // FORECAST SELLs are excluded from sellMarkers — they are drawn as purple
-  // dots separately (fcSellData) so the chart doesn't show red S dots in the
-  // forecast region.
-  const FORECAST_SELL_MARKER_PREFIX = "FORECAST SELL";
+  // Separate markers: regular SELLs vs the single LAST DAY SELL.
   const buyMarkers: Array<[number, number, StrategyDecision]> = [];
   const sellMarkers: Array<[number, number, StrategyDecision]> = [];
+  const lastDaySellMarkers: Array<[number, number, StrategyDecision]> = [];
   for (const d of data.decisions) {
     const idx = dateIdx.get(d.exec_date);
     if (idx == null) continue;
-    // Skip forecast sells — rendered as purple dots, not red S markers.
-    if (d.side === "SELL" && d.signal_reason?.startsWith(FORECAST_SELL_MARKER_PREFIX)) {
-      continue;
-    }
     const plotPrice = norm(d.fill_price) ?? d.fill_price;
     if (d.side === "BUY") {
       buyMarkers.push([idx, plotPrice, d]);
+    } else if (isLastDaySell(d)) {
+      lastDaySellMarkers.push([idx, plotPrice, d]);
     } else {
       sellMarkers.push([idx, plotPrice, d]);
     }
@@ -290,12 +233,6 @@ export function buildSingletonStrategyOption({
   const retText = `Total Return: ${retPct >= 0 ? "+" : ""}${fmtPct(retPct)}  (${fmtNum(data.summary.n_buys)}B / ${fmtNum(data.summary.n_sells)}S)${isNormalized && anchorDate ? `  | Base=100 @ ${anchorDate}` : ""}`;
 
   // Tooltip formatter for B/S markers — shows full decision detail.
-  // fill_price is the ACTUAL trade price; the precomputed normalized_fill_price
-  // (base=100 at first BUY) is appended in parentheses when normalization is
-  // on so the user can connect the marker's y-position to its real price.
-  // normalized_mean_buy_price (the cost basis) is shown for SELLs alongside
-  // the realized_pnl so the viewer can see what avg buy price the SELL is
-  // exiting against.
   const markerTooltipFormatter = createMarkerTooltipFormatter({
     upColor: UP_COLOR,
     downColor: DOWN_COLOR,
@@ -305,202 +242,7 @@ export function buildSingletonStrategyOption({
     stripMixPrefix,
   });
 
-  // ---- Forecast series (8 mirror/flip/random curves + 1 mean). Built only when
-  // forecast data is present. Each series is padded with nulls over the OHLC
-  // region so the curve only draws over the 20 forecast days at the right edge.
-  const FC_PURPLE = "#9575CD";
-  const fcShade = withAlphaHex(FC_PURPLE, 0.12);   // ±2σ envelope fill
-  const fcCurve = withAlphaHex(FC_PURPLE, 0.5);    // 8 dashed curves
-  const fcMean = withAlphaHex(FC_PURPLE, 0.9);     // mean curve (solid)
-
-  // Group rows by scenario → {scenario: [20 rows ordered by forecast_day]}.
-  const fcByScenario = new Map<string, typeof fcRows>();
-  for (const r of fcRows) {
-    const arr = fcByScenario.get(r.scenario) ?? [];
-    arr.push(r);
-    fcByScenario.set(r.scenario, arr);
-  }
-  // 10 display scenarios (mean is handled separately as the 11th).
-  // 2 for 255d/20d ratio:            mirror + flip
-  // 2 for 0.5*ratio:                 mirror + flip
-  // 2 for 1:1:                       mirror + flip
-  // 2 for maxstd ratio:              mirror + flip (peak 1y 255d std / 20d)
-  // 2 for 0.5σ random:               random walk + opposite trend
-  const fcOrder = [
-    "mir_255d_std_scale", "flip_255d_std_scale",
-    "mir_255d_std_half_scale", "flip_255d_std_half_scale",
-    "mir_20d_std_scale", "flip_20d_std_scale",
-    "mir_255d_max_std_scale", "flip_255d_max_std_scale",
-    "rand", "rand_opp",
-  ] as const;
-
-  /** Build a padded series: nulls over OHLC region EXCEPT the last actual
-   *  date (which carries the anchor so the curve connects to the last candle)
-   *  + values over the 20 forecast days. */
-  const fcSeries = <T,>(vals: Array<T | null>, anchor: T | null = null): Array<T | null> =>
-    padLen > 0
-      ? [...Array<null>(Math.max(0, ohlcDates.length - 1)), anchor, ...vals]
-      : vals;
-
-  // Convert a forecast close (forecast-norm base=100@forecast_date) to the
-  // backtest-norm frame (base=100@first_buy_fill_price). Returns null when
-  // the conversion anchor is unavailable.
-  const fcCloseToPlot = (v: number): number | null =>
-    fcConv != null ? v * fcConv : null;
-
-  // Anchor = last actual close in backtest-norm (100 * fcConv = anchor_close
-  // rebased to 100@first_buy_fill_price). Prepended to each forecast close
-  // curve at the last OHLC date index so the curve visually connects to the
-  // last actual candle instead of starting disconnected at F+1.
-  const fcAnchor = fcConv != null ? 100 * fcConv : null;
-
-  // Per-scenario close paths (backtest-norm) + PnL paths (already backtest-norm,
-  // starting at last_total_pnl so they connect to the actual Total P&L curve).
-  const fcClose: Record<string, Array<number | null>> = {};
-  const fcPnl: Record<string, number[]> = {};
-  for (const sc of [...fcOrder, "mean"]) {
-    const arr = fcByScenario.get(sc) ?? [];
-    fcClose[sc] = arr.map((r) => fcCloseToPlot(r.close_price));
-    fcPnl[sc] = arr.map((r) => r.realized_pnl_forecast);
-  }
-
-  // ±2σ band: computed from sigma_daily (20d daily log-return std). The band
-  // is a simple ±2σ cumulative drift envelope:
-  //   upper[t] = 100 * exp(2 * sigma * sqrt((t+1)/20))
-  //   lower[t] = 100 * exp(-2 * sigma * sqrt((t+1)/20))
-  // converted to backtest-norm via fcConv. Uses the same stacking trick as
-  // before: lower as transparent base + (upper - lower) as the fill area.
-  const sigmaDaily = fcStats?.sigma_daily ?? 0;
-  const bandLowerRaw: Array<number | null> = [];
-  const bandUpperRaw: Array<number | null> = [];
-  for (let t = 0; t < HORIZON; t++) {
-    const drift = 2 * sigmaDaily * Math.sqrt((t + 1) / HORIZON);
-    const lo = 100 * Math.exp(-drift);
-    const hi = 100 * Math.exp(drift);
-    bandLowerRaw.push(fcCloseToPlot(lo));
-    bandUpperRaw.push(fcCloseToPlot(hi));
-  }
-  const bandLower = fcSeries(bandLowerRaw, fcAnchor);
-  const bandUpper = fcSeries(
-    bandUpperRaw.map((u, i) => {
-      const d = bandLowerRaw[i];
-      return u != null && d != null ? u - d : null;
-    }),
-    0,
-  );
-
-  // Forecast price series: ±2σ band (2 stacked series) + 8 dashed curves +
-  // mean (solid). All on yAxis 0 (price), drawn only over the forecast region.
-  const forecastPriceSeries = hasForecast ? [
-    // ±2σ shade — lower boundary (transparent line, stack base).
-    {
-      name: "Forecast ±2σ",
-      type: "line",
-      data: bandLower,
-      yAxisIndex: 0,
-      stack: "fcBand",
-      symbol: "none",
-      lineStyle: { color: "transparent", width: 0 },
-      showInLegend: false,
-      emphasis: { disabled: true },
-      z: 1,
-    } as EChartsOption["series"] extends Array<infer S> ? S : never,
-    // ±2σ shade — upper fill (transparent line, light-purple area).
-    {
-      name: "Forecast ±2σ",
-      type: "line",
-      data: bandUpper,
-      yAxisIndex: 0,
-      stack: "fcBand",
-      symbol: "none",
-      lineStyle: { color: "transparent", width: 0 },
-      areaStyle: { color: fcShade },
-      emphasis: { disabled: true },
-      z: 2,
-    } as EChartsOption["series"] extends Array<infer S> ? S : never,
-    // 10 dashed scenario curves. triggerLineEvent makes them clickable so
-    // the user can select a scenario by clicking its curve — the handler
-    // in SingletonStrategyPage parses the seriesName to extract the scenario.
-    // emphasis.focus:"self" ensures ONLY the hovered curve gets the emphasis
-    // style. All other series have emphasis.disabled:true so they stay frozen
-    // (no blinking) when the mouse moves over the forecast region.
-    ...fcOrder.map((sc) => ({
-      name: `FC ${sc}`,
-      type: "line" as const,
-      data: fcSeries(fcClose[sc] ?? [], fcAnchor),
-      yAxisIndex: 0,
-      symbol: "none",
-      smooth: false,
-      triggerLineEvent: true,
-      cursor: "pointer",
-      lineStyle: { color: fcCurve, width: 1, type: "dashed" as const },
-      emphasis: {
-        focus: "self" as const,
-        lineStyle: { color: fcMean, width: 2.5, type: "solid" as const },
-      },
-      z: 3,
-    })),
-    // Mean forecast curve (solid, more opaque). Frozen — no emphasis.
-    {
-      name: "FC mean",
-      type: "line",
-      data: fcSeries(fcClose["mean"] ?? [], fcAnchor),
-      yAxisIndex: 0,
-      symbol: "none",
-      smooth: false,
-      lineStyle: { color: fcMean, width: 1.5 },
-      emphasis: { disabled: true },
-      z: 4,
-    } as EChartsOption["series"] extends Array<infer S> ? S : never,
-  ] : [];
-
-  // Forecast P&L series removed from the chart per request. P&L forecast
-  // data still flows to the Risk Analytics panel and Decision Table via
-  // the API response; fcPnl is kept for the forecast-region tooltip.
-
-  // ---- Forecast sell dots. When a scenario is selected, the child seq's
-  // forecast SELL decisions are in data.decisions — plot purple dots at
-  // the SELECTED scenario's close price for each forecast day so the dots
-  // sit exactly ON the scenario's dashed curve (using fill_price, the
-  // worst-case sell fill, left dots visibly below the curve). When no
-  // scenario is selected (parent seq, no forecast decisions), fall back
-  // to the mean forecast rows as a visual reference.
-  const FORECAST_SELL_PREFIX = "FORECAST SELL";
-  const forecastSellDecisions = data.decisions
-    .filter((d) => d.side === "SELL" && d.signal_reason?.startsWith(FORECAST_SELL_PREFIX))
-    .sort((a, b) => a.decision_no - b.decision_no);
-  const fcSellHasDecisions = forecastSellDecisions.length > 0;
-  // Forecast-sell decisions are SPARSE: the algo only emits a SELL on signal
-  // days + the final-liquidation day (F+20). So neither the x-position nor
-  // the y-position can use the array index — both must use the forecast day
-  // parsed from each decision's signal_reason
-  // (format: "FORECAST SELL F+{n}: {scenario} scenario, ..."). The dot is
-  // plotted at the scenario's CLOSE price for that day so it sits exactly ON
-  // the selected dashed curve (fill_price = worst-case sell fill sits below
-  // the close and made the dots appear misaligned with the curve).
-  const fcSellData = fcSellHasDecisions
-    ? forecastSellDecisions.map((d) => {
-        const reason = d.signal_reason ?? "";
-        const dayM = reason.match(/F\+(\d+):/);
-        const scM = reason.match(/:\s+(\S+)\s+scenario,/);
-        const t = dayM ? parseInt(dayM[1], 10) - 1 : null; // 0-based forecast day
-        const sc = scM ? scM[1] : null;
-        const scClose = sc != null && t != null ? fcClose[sc]?.[t] : null;
-        const y = scClose != null ? scClose : (norm(d.fill_price) ?? d.fill_price);
-        const xIdx = t != null ? ohlcDates.length + t : ohlcDates.length;
-        return { value: [xIdx, y], decision: d };
-      }).filter((d) => d.value[1] != null)
-    : (fcByScenario.get("mean") ?? []).map((r, i) => ({
-        value: [ohlcDates.length + i, fcCloseToPlot(r.close_price)],
-        forecastRow: r,
-      })).filter((d) => d.value[1] != null);
-
   return {
-    // Disable ECharts animation. The chart is rebuilt (notMerge:true in
-    // EChart.tsx) whenever selectedPeriod changes (i.e. on every risk-bar
-    // click); with animation on, that re-animates the whole OHLC/MA frame
-    // each click. Turning it off means the shade just appears over the
-    // already-rendered base chart — no "base animation" on bar click.
     animation: false,
     backgroundColor: "transparent",
     title: {
@@ -514,7 +256,7 @@ export function buildSingletonStrategyOption({
     legend: commonLegend(themeMode, {
       data: [
         "OHLC", "MA5", "MA60", "Trading Amt", "Total P&L", "BUY", "SELL",
-        ...(hasForecast ? ["Forecast ±2σ", "FC mean", "FC Sell"] : []),
+        "LAST DAY SELL",
       ],
     }),
     grid: commonGrid({ top: 60, bottom: 50, left: 60, right: 130 }),
@@ -581,46 +323,6 @@ export function buildSingletonStrategyOption({
         const di = arr[0].dataIndex ?? 0;
         const date = dates[di] ?? "";
         const row: StrategyOhlcRow | undefined = data.ohlc[di];
-
-        if (!row && hasForecast) {
-          const fcDay = di - ohlcDates.length;
-          if (fcDay < 0 || fcDay >= HORIZON) return "";
-          const dayLabel = `F+${fcDay + 1}`;
-          const hovered = hoveredScenarioRef?.current ?? null;
-          const children: React.ReactNode[] = [
-            React.createElement("b", { style: { color: FC_PURPLE } }, `${dayLabel} · Forecast`),
-          ];
-          for (const sc of [...fcOrder, "mean"]) {
-            const closeArr = fcClose[sc] ?? [];
-            const pnlArr = fcPnl[sc] ?? [];
-            const closeNorm = closeArr[fcDay];
-            const pnlVal = pnlArr[fcDay];
-            if (closeNorm == null || !Number.isFinite(closeNorm)) continue;
-            const actualClose = isNormalized
-              ? closeNorm / normScale
-              : closeNorm;
-            const pnlStr = pnlVal != null && Number.isFinite(pnlVal)
-              ? ` | P&L: ${pnlVal >= 0 ? "+" : ""}${fmtNum(pnlVal, 2)}`
-              : "";
-            const label = sc === "mean" ? "mean" : sc;
-            if (sc === hovered) {
-              children.push(
-                React.createElement("b", { style: { color: FC_PURPLE, fontSize: 12 } },
-                  `▶ ${label}: ${fmtNum(actualClose, 2)}${pnlStr}`),
-              );
-            } else if (hovered != null) {
-              children.push(
-                React.createElement("span", { style: { opacity: 0.4, fontSize: 10 } },
-                  `${label}: ${fmtNum(actualClose, 2)}${pnlStr}`),
-              );
-            } else {
-              children.push(
-                React.createElement(React.Fragment, null, `${label}: ${fmtNum(actualClose, 2)}${pnlStr}`),
-              );
-            }
-          }
-          return renderReactElement(React.createElement(React.Fragment, null, children));
-        }
         if (!row) return "";
         const children: React.ReactNode[] = [
           tooltipComponents.Header({ children: date }),
@@ -634,12 +336,16 @@ export function buildSingletonStrategyOption({
           } else if (p.seriesName === "MA60") {
             children.push(React.createElement(React.Fragment, null, `${p.marker}MA60: ${fmtNum(row.ma60)}`));
           } else if (p.seriesName === "Trading Amt") {
-            children.push(React.createElement(React.Fragment, null, `${p.marker}Amt: ${fmtNum((p.data as number) / 1e8, 2)}亿`));
+            children.push(React.createElement(React.Fragment, `${p.marker}Amt: ${fmtNum((p.data as number) / 1e8, 2)}亿`));
           }
         }
         const decision = data.decisions.find((d) => d.exec_date === date);
         if (decision) {
-          const sc = decision.side === "BUY" ? UP_COLOR : DOWN_COLOR;
+          const sc = decision.side === "BUY"
+            ? UP_COLOR
+            : isLastDaySell(decision)
+              ? LAST_DAY_SELL_COLOR
+              : DOWN_COLOR;
           children.push(
             React.createElement("b", { style: { color: sc } },
               `${decision.side} #${decision.decision_no}`),
@@ -680,9 +386,6 @@ export function buildSingletonStrategyOption({
     },
     dataZoom: commonDataZoom({}, 60, 100),
     series: [
-      // emphasis.disabled freezes non-forecast series so they don't blink
-      // when the mouse hovers over the forecast region. Only forecast curves
-      // have emphasis enabled (with focus:"self" for granular highlighting).
       {
         ...ohlcSeries(ohlcData, { name: "OHLC", yAxisIndex: 0, z: 10 }),
         emphasis: { disabled: true },
@@ -708,9 +411,6 @@ export function buildSingletonStrategyOption({
         lineStyle: { color: MA60_COLOR, width: 1.2 },
         emphasis: { disabled: true },
         z: 5,
-        // Base-100 reference line: anchors the first BUY fill at y=100 so
-        // the viewer can instantly see gains (above) vs losses (below) from
-        // the entry point. Only drawn when normalization is active.
         ...(isNormalized ? {
           markLine: {
             symbol: "none",
@@ -725,13 +425,6 @@ export function buildSingletonStrategyOption({
             data: [{ yAxis: 100 }],
           },
         } : {}),
-        // Selected-period highlight band — a translucent vertical shade over
-        // the OHLC trading days that fall inside the clicked risk-analytics
-        // period. Green = gain period, red = loss period. Attached to the
-        // MA60 line series (a `line` type reliably renders markArea, whereas
-        // the custom OHLC series does not). Only rendered when a period is
-        // selected AND the OHLC data covers dates in that period. No border —
-        // just the color fill (the "base" shade), per request.
         ...(periodRange && periodShadeColor ? {
           markArea: {
             silent: true,
@@ -772,10 +465,6 @@ export function buildSingletonStrategyOption({
         emphasis: { disabled: true },
         z: 1,
       },
-      // Total P&L curve — cumulative realized + unrealized P&L in normalized
-      // money, plotted on its own y-axis (index 2). Null before the first BUY
-      // (no daily row). Sharpe ratios derived from Δtotal_pnl are shown in the
-      // axis tooltip alongside the daily portfolio state.
       {
         name: "Total P&L",
         type: "line",
@@ -787,7 +476,6 @@ export function buildSingletonStrategyOption({
         emphasis: { disabled: true },
         z: 6,
       },
-      // BUY markers — green dots at fill_price (dark green for top-3 confidence)
       {
         name: "BUY",
         type: "scatter",
@@ -817,7 +505,6 @@ export function buildSingletonStrategyOption({
           distance: -3,
         },
       },
-      // SELL markers — red dots at fill_price (dark red for top-3 losses)
       {
         name: "SELL",
         type: "scatter",
@@ -847,45 +534,35 @@ export function buildSingletonStrategyOption({
           distance: -3,
         },
       },
-      // ---- Forecast sell dots (purple). When a scenario is selected, dots
-      // follow the SELECTED scenario's curve via the forecast SELL decisions'
-      // fill_price. When no scenario is selected, dots fall back to the mean
-      // forecast close prices as a visual reference.
-      ...(hasForecast && fcSellData.length > 0 ? [{
-        name: "FC Sell",
-        type: "scatter" as const,
-        data: fcSellData,
+      {
+        name: "LAST DAY SELL",
+        type: "scatter",
+        data: lastDaySellMarkers.map(([idx, price, d]) => ({
+          value: [idx, price],
+          decision: d,
+          itemStyle: {
+            color: LAST_DAY_SELL_COLOR,
+            borderColor: "#fff",
+            borderWidth: 2,
+          },
+        })),
         xAxisIndex: 0,
         yAxisIndex: 0,
         symbol: "circle",
-        symbolSize: 6,
-        z: 25,
-        itemStyle: {
-          color: fcMean,
-          borderColor: "#fff",
-          borderWidth: 0.5,
-        },
+        symbolSize: 16,
+        z: 30,
+        tooltip: { formatter: markerTooltipFormatter },
         emphasis: { disabled: true },
-        tooltip: {
-          formatter: fcSellHasDecisions
-            ? createFcSellTooltipFormatter({
-                fcPurple: FC_PURPLE,
-                upColor: UP_COLOR,
-                downColor: DOWN_COLOR,
-                textColor: c.textColor,
-                isNormalized,
-                fmtNum,
-                stripMixPrefix,
-              })
-            : createFcSellFallbackTooltipFormatter(),
+        label: {
+          show: true,
+          position: "top",
+          formatter: "LDS",
+          fontSize: 10,
+          fontWeight: 700,
+          color: LAST_DAY_SELL_COLOR,
+          distance: -4,
         },
-      }] : []),
-      // ---- Forecast overlay (10 mirror/flip/random + 1 mean). Appended so
-      // they render above the OHLC/MA frame. ±2σ shade + 10 dashed price
-      // curves + mean (price axis). P&L forecast curves are intentionally
-      // omitted from the chart; P&L forecast data still appears in the
-      // Risk Analytics panel and Decision Table.
-      ...forecastPriceSeries,
+      },
     ],
   };
 }

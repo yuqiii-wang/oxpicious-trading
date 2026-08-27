@@ -12,7 +12,7 @@ from datetime import datetime, time
 from pathlib import Path
 from typing import List, Optional
 
-from downloads._common.core import (
+from downloads._common import (
     resolve_out_dir,
     setup_logger,
 )
@@ -93,7 +93,7 @@ def _prepopulate_finished_codes(
     trade_date,
     finished_codes: set,
     table: str = "stats.stock_intraday_5min",
-    code_suffix_filter: Optional[str] = "SS",
+    exchange_filter: Optional[str] = "SS",
 ) -> None:
     """Query an intraday table to find securities that already have a 15:00
     bar for trade_date. Their bare codes are added to finished_codes.
@@ -101,15 +101,15 @@ def _prepopulate_finished_codes(
     This is called at startup to prevent re-processing securities if the
     script restarts after the market has closed.
 
-    ``table`` selects the intraday table (stock vs index). ``code_suffix_filter``
+    ``table`` selects the intraday table (stock vs index). ``exchange_filter``
     restricts to one exchange for stocks ('SS'); pass None for indices
-    (index_intraday_5min has no code_suffix column and codes are already bare).
+    (index_intraday_5min has no exchange column and codes are already bare).
     """
     query = f"SELECT DISTINCT code FROM {table} WHERE date = %s AND time = %s"
     params: list = [trade_date, CLOSE_TIME]
-    if code_suffix_filter is not None:
-        query += " AND code_suffix = %s"
-        params.append(code_suffix_filter)
+    if exchange_filter is not None:
+        query += " AND exchange = %s"
+        params.append(exchange_filter)
     try:
         with conn.cursor() as cur:
             cur.execute(query, tuple(params))
@@ -145,9 +145,9 @@ def is_intraday_complete(conn, asset: AssetStream, trade_date, threshold: float 
         # Count codes that have a CLOSE_TIME bar
         code_filter = ""
         params: list = [trade_date, CLOSE_TIME]
-        if asset.code_suffix is not None:
-            code_filter = " AND code_suffix = %s"
-            params.append(asset.code_suffix)
+        if asset.exchange is not None:
+            code_filter = " AND exchange = %s"
+            params.append(asset.exchange)
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT COUNT(DISTINCT code) FROM {asset.intraday_table} "
@@ -215,9 +215,9 @@ def get_intraday_progress(conn, asset: AssetStream, trade_date) -> dict:
         # Count codes that have a CLOSE_TIME bar
         code_filter = ""
         params: list = [trade_date, CLOSE_TIME]
-        if asset.code_suffix is not None:
-            code_filter = " AND code_suffix = %s"
-            params.append(asset.code_suffix)
+        if asset.exchange is not None:
+            code_filter = " AND exchange = %s"
+            params.append(asset.exchange)
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT COUNT(DISTINCT code) FROM {asset.intraday_table} "

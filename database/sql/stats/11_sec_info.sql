@@ -72,7 +72,11 @@ CREATE TABLE IF NOT EXISTS stats.sec_info (
 
     CONSTRAINT pk_sec_info PRIMARY KEY (code),
     CONSTRAINT chk_sec_info_code_format CHECK (code ~ '^\d{6}$')
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'sec_info', 8);
 
 COMMENT ON TABLE  stats.sec_info                              IS 'Static fund attributes for SZSE-listed ETFs, loaded from szse_etf_reports identify.csv. One row per fund code (latest-value snapshot). Source: temps/szse_etf_reports/<code>/<code>_<YYYYQn>_identify.csv.';
 COMMENT ON COLUMN stats.sec_info.code                         IS 'Report/folder code, BARE 6-digit (e.g. 150009, 159001). SZSE-listed funds only. JOIN to stats.sec_classification / stats.sec_composition via code || ''.SZ''.';
@@ -165,7 +169,11 @@ CREATE TABLE IF NOT EXISTS stats.sec_reports (
     CONSTRAINT pk_sec_reports PRIMARY KEY (code, report_date),
     CONSTRAINT fk_sec_reports_code FOREIGN KEY (code) REFERENCES stats.sec_info(code),
     CONSTRAINT chk_sec_reports_code_format CHECK (code ~ '^\d{6}$')
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'sec_reports', 8);
 
 COMMENT ON TABLE  stats.sec_reports                          IS 'Per-quarter SZSE ETF report registry. One row per (code, quarter-end). Holds the report header (period, total shares), the asset-allocation MIX (equity/fixed income/cash/derivatives/etc.), and content flags pointing to detail tables. Source: szse_etf_reports identify.csv + asset_portfolio.csv.';
 COMMENT ON COLUMN stats.sec_reports.code                     IS 'Report/folder code, BARE 6-digit (e.g. 150009). FK → sec_info.code. JOIN to sec_composition via code || ''.SZ''.';

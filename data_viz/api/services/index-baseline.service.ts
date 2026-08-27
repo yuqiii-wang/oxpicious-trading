@@ -10,6 +10,7 @@
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { matchesExchange } from "../lib/classify-etf.js";
+import { listClassificationMetaRows } from "./classification-cache.js";
 import type {
   IndexInfo,
   IndexBaselineResponse,
@@ -174,26 +175,14 @@ export async function getIndexBaseline(
 //  Labels (sector_label, industry_label, industry_slug) are DENORMALIZED
 //  onto sec_classification by build_classification.py.
 // ----------------------------------------------------------------------------
-const INDEX_META_SQL = `
-  SELECT sc.code,
-         COALESCE(sc.name, '') AS name,
-         COALESCE(sc.n_days, 0) AS n_days,
-         sc.first_date,
-         sc.last_date,
-         COALESCE(sc.sector_id,       'OTHER')  AS sector_id,
-         COALESCE(sc.sector_label,    '其他')   AS sector_label,
-         COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
-         COALESCE(sc.industry_label,  '未分类')  AS industry_label,
-         COALESCE(sc.industry_slug,   'other')  AS industry_slug,
-         COALESCE(sc.is_industry_not_strategy, TRUE) AS is_industry_not_strategy,
-         COALESCE(sc.exchange, '')               AS exchange,
-         COALESCE(sc.is_dummy, false)             AS is_dummy
-    FROM stats.sec_classification sc
-   WHERE sc.type = 'index'
-     AND sc.is_active = TRUE
-     AND (sc.n_days >= 40 OR sc.is_dummy = true)
-   ORDER BY sc.n_days DESC, sc.code
-`;
+const INDEX_MIN_DAYS = 40;
+
+async function getIndexMetaRows(): Promise<DbIndexMetaRow[]> {
+  // Cached (10-min TTL, shared with other services) — the classification
+  // only changes on the nightly build_classification.py run.
+  const rows = await listClassificationMetaRows("index");
+  return rows.filter((r) => r.n_days >= INDEX_MIN_DAYS || r.is_dummy === true);
+}
 
 // ----------------------------------------------------------------------------
 //  Index themes — build the two-level L1 sector → L2 industry → indices tree
@@ -205,7 +194,7 @@ const INDEX_META_SQL = `
 //  in the parallel strategy tree from listStrategyThemes().
 // ----------------------------------------------------------------------------
 export async function listIndexThemes(exchange?: string | null): Promise<SectorNode[]> {
-  const rows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
+  const rows = await getIndexMetaRows();
   const exFilter = (exchange ?? "").trim() || null;
 
   const sectorMap = new Map<string, {
@@ -274,7 +263,7 @@ export async function listIndexThemes(exchange?: string | null): Promise<SectorN
 //  tree; the difference is only the row filter (is_industry_not_strategy).
 // ----------------------------------------------------------------------------
 export async function listStrategyThemes(exchange?: string | null): Promise<StrategyNode[]> {
-  const rows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
+  const rows = await getIndexMetaRows();
   const exFilter = (exchange ?? "").trim() || null;
 
   const sectorMap = new Map<string, {
@@ -363,8 +352,8 @@ export async function getIndicesCombined(
   // When a code filter is provided, all filters and pagination are bypassed.
   const codeFilter = (q.code ?? "").trim().toUpperCase();
 
-  // 1. Fetch all indices with classification, ordered by n_days DESC.
-  const metaRows = await queryRows<DbIndexMetaRow>(INDEX_META_SQL);
+  // 1. Fetch all indices with classification, ordered by n_days DESC (cached).
+  const metaRows = await getIndexMetaRows();
 
   // 2. Filter by sector+industry OR strategy+theme + exchange (or by exact code).
   //    When sectorFilter is set, industry filtering applies (LEFT column).

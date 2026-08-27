@@ -339,7 +339,8 @@ def compute_iv_and_greeks(
             S, K, T, risk_free_rate, P, is_call, use_gpu=False)
 
     # Exchange-provided delta fallback (CFFEX): fill unsolvable rows.
-    if csv_delta_col is not None and csv_delta_col in df.columns:
+    from _common.df_utils.sanitize import safe_columns
+    if csv_delta_col is not None and csv_delta_col in safe_columns(df):
         csv_delta = df[csv_delta_col].values.astype(np.float64)
         nan_mask = ~np.isfinite(delta)
         delta[nan_mask] = csv_delta[nan_mask]

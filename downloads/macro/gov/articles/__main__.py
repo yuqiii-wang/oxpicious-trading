@@ -4,6 +4,7 @@ All logic lives in :mod:`downloads.macro.gov.articles` (``__init__.py``);
 this module only wires the package so it can be run as
 ``python -m downloads.macro.gov.articles``.
 """
+
 from downloads.macro.gov.articles import main
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ Downloads daily futures/options data from the CFFEX "日统计" page
 
 Browser lifecycle, anti-bot fingerprint rotation and DOM/CSV helpers come
 from the shared module _common.playwright (which reuses the anti-bot
-policy from downloads._common.core).
+policy from downloads._common).
 
 Workflow for each date:
   1. Launch a Playwright browser via _common.playwright.playwright_session
@@ -45,7 +45,7 @@ from _common.playwright import (
     sleep_between_requests,
     wait_for_table_data,
 )
-from downloads._common.core import setup_logger
+from downloads._common import clean_table_cell, setup_logger
 from downloads.futures.cffex.trend.config import (
     BROWSER_TYPE,
     CFFEX_BASE_ORIGIN,
@@ -144,10 +144,13 @@ def _split_csv_futures_options(
         contract = row[0].strip() if row else ""
         if not contract or _is_summary_row(contract):
             continue
+        # canonical output: whitespace-free cells + null tokens ("--" etc.)
+        # rewritten to "" so pandas infers numeric columns as float64
+        cleaned = [clean_table_cell(c) for c in row]
         if _is_option_contract(contract):
-            options_rows.append(row)
+            options_rows.append(cleaned)
         else:
-            futures_rows.append(row)
+            futures_rows.append(cleaned)
 
     def _write_csv(path: Path, header: List[str], data: List[List[str]]) -> None:
         with open(path, "w", encoding=OUTPUT_CSV_ENCODING, newline="") as f:
@@ -179,7 +182,7 @@ def _write_combined_csv(
     with open(combined_path, "w", encoding=OUTPUT_CSV_ENCODING, newline="") as f:
         writer = csv_mod.writer(f)
         for row in raw_rows:
-            writer.writerow(row)
+            writer.writerow([clean_table_cell(c) for c in row])
     return combined_path
 
 

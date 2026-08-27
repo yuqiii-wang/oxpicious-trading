@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from downloads._common.core import (
+from downloads._common import (
     resolve_out_dir,
     setup_logger,
 )
@@ -72,7 +72,7 @@ def load_index_bars_sync(conn, identity_rows: List[dict], bar_rows: List[dict]) 
     """Upsert index identity rows (FK parent) then intraday bars (sync).
 
     Targets ``stats.index_identity`` + ``stats.index_intraday_5min`` — the
-    index counterparts of the stock tables (no code_suffix, no trading_shares).
+    index counterparts of the stock tables (no exchange, no trading_shares).
     """
     if identity_rows:
         seen = set()

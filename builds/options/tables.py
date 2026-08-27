@@ -26,9 +26,12 @@ from __future__ import annotations
 
 from typing import Dict, List
 
+import numpy as np
 import pandas as pd
 
+from _common.build_commons import rec_cols
 from _common.db_commons import copy_insert_async
+from builds._commons.row_emission import records_from_frame
 
 # ---------------------------------------------------------------------------
 # Column split: db table -> {db column: frame column or scalar constant}
@@ -60,7 +63,10 @@ def build_split_tables(
             db_col: (df[src] if isinstance(src, str) else src)
             for db_col, src in mapping.items()
         })
-        return sub.to_dict("records")
+        # zip-based assembly (+ NaN/pd.NA → None sweep) instead of
+        # to_dict("records") — under cudf.pandas each record extraction
+        # from to_dict is a slow-path fallback per row
+        return records_from_frame(sub, np.asarray(sub.columns).tolist())
 
     identity = recs({
         "date": "date",
@@ -160,3 +166,51 @@ async def insert_split_tables(conn, tables: Dict[str, List[dict]]) -> None:
             print(f"    [DB] Inserted {inserted:,} rows into {tbl}", flush=True)
         else:
             print(f"    [DB] No new rows to insert into {tbl}", flush=True)
+
+
+async def delete_underlying_rows_async(conn, underlying_code: str) -> int:
+    """DELETE all rows belonging to one underlying across the 7 options_* tables.
+
+    Used by ``--force --code <underlying>`` to purge only that underlying's
+    rows instead of truncating. The (date, contract_code) → underlying mapping
+    lives in stats.options_terms, so the pairs are captured first and rows are
+    deleted FK-safe: children → terms → identity (FK parent).
+
+    Returns the number of (date, contract_code) pairs purged.
+    """
+    rows = await conn.fetch(
+        "SELECT date, contract_code FROM stats.options_terms "
+        "WHERE underlying_code = $1",
+        underlying_code,
+    )
+    if not rows:
+        return 0
+    # Whole-column extraction (single positional-unpack pass)
+    cols = rec_cols(rows)
+    codes = cols["contract_code"]
+    dates = cols["date"]
+
+    for tbl in (
+        "stats.options_aggregate",
+        "stats.options_volume_oi",
+        "stats.options_greeks",
+        "stats.options_settlement",
+        "stats.options_strike",
+    ):
+        await conn.execute(
+            f"DELETE FROM {tbl} AS t "
+            "USING unnest($1::text[], $2::date[]) AS u(code, dt) "
+            "WHERE t.contract_code = u.code AND t.date = u.dt",
+            codes, dates,
+        )
+    await conn.execute(
+        "DELETE FROM stats.options_terms WHERE underlying_code = $1",
+        underlying_code,
+    )
+    await conn.execute(
+        "DELETE FROM stats.options_identity AS t "
+        "USING unnest($1::text[], $2::date[]) AS u(code, dt) "
+        "WHERE t.contract_code = u.code AND t.date = u.dt",
+        codes, dates,
+    )
+    return len(rows)

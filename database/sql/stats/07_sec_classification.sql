@@ -71,7 +71,6 @@ CREATE TABLE IF NOT EXISTS stats.sec_classification (
 
     has_margin                BOOLEAN       NOT NULL DEFAULT FALSE,
     avg_shares                NUMERIC(24,4) NOT NULL DEFAULT 0,
-    selectivity_rank_score    INTEGER       NOT NULL DEFAULT 0,
 
     parent_index_code         TEXT          NOT NULL DEFAULT '',
     parent_index_weight       NUMERIC(8,4),
@@ -85,7 +84,11 @@ CREATE TABLE IF NOT EXISTS stats.sec_classification (
     CONSTRAINT pk_sec_classification PRIMARY KEY (code, parent_index_code),
     CONSTRAINT chk_sec_classification_type CHECK (type IN ('etf', 'index', 'stock')),
     CONSTRAINT chk_sec_classification_exchange CHECK (exchange IN ('SZ', 'SS', 'GEM', 'STAR', 'BJ', 'HK', 'OVERSEAS'))
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'sec_classification', 8);
 
 
 COMMENT ON TABLE  stats.sec_classification                       IS 'Unified security metadata: ETF + Index + Stock classification + quality metrics. Labels are denormalized so callers need no JOIN to a catalog table. Replaces former etf_meta + index_meta + etf_index_map + stock_industry_map + sec_sector_industry_map.';
@@ -102,7 +105,6 @@ COMMENT ON COLUMN stats.sec_classification.is_industry_not_strategy IS 'TRUE →
 COMMENT ON COLUMN stats.sec_classification.n_days                IS 'Coverage: n_ohlcv_days for ETF, COUNT(*) for index/stock from identity table.';
 COMMENT ON COLUMN stats.sec_classification.has_margin            IS 'ETF only: TRUE if any margin data exists. Populated by build_szse_sse_etf_and_margin.py.';
 COMMENT ON COLUMN stats.sec_classification.avg_shares           IS 'ETF only: average daily volume in shares (converted × 10000 from source 万股). Populated by build_szse_sse_etf_and_margin.py.';
-COMMENT ON COLUMN stats.sec_classification.selectivity_rank_score IS 'ETF only: composite score. Populated by build_szse_sse_etf_and_margin.py.';
 COMMENT ON COLUMN stats.sec_classification.parent_index_code     IS 'Hierarchy: ETF → tracking index code; stock → ONE ROW PER qualifying index (weight >2%, non-BROAD); index → empty string. PK component, never NULL.';
 COMMENT ON COLUMN stats.sec_classification.parent_index_weight   IS 'Stock only: weight_pct of the stock in its parent index. NULL for ETF/index.';
 COMMENT ON COLUMN stats.sec_classification.parent_index_is_primary IS 'TRUE for the single authoritative parent of a security. Stock: row with MAX(parent_index_weight) per code. ETF: TRUE iff ETF name (issuer/manager prefix + legal suffix stripped) exactly matches parent index name. Index: always FALSE (root of hierarchy).';
@@ -155,6 +157,13 @@ CREATE INDEX IF NOT EXISTS idx_sec_classification_owner
     ON stats.sec_classification (owner_id)
     WHERE owner_id IS NOT NULL;
 
+-- Partial covering index for the classification meta rows read by the
+-- data_viz nav trees (see data_viz/api/services/classification-cache.ts):
+-- one DISTINCT ON (code) row per code filtered by type + is_active.
+CREATE INDEX IF NOT EXISTS idx_sec_classification_type_active
+    ON stats.sec_classification (type, code)
+    WHERE is_active = TRUE;
+
 -- ----------------------------------------------------------------------------
 --  Sec Index Tags — multi-classification for indices
 --  An index may carry MULTIPLE (sector_id, industry_id) tags, enabling
@@ -172,7 +181,11 @@ CREATE TABLE IF NOT EXISTS stats.sec_index_tags (
     industry_id               TEXT          NOT NULL,
     is_broad_market           BOOL,
     CONSTRAINT pk_sec_index_tags PRIMARY KEY (code, sector_id, industry_id)
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'sec_index_tags', 8);
 
 COMMENT ON TABLE  stats.sec_index_tags              IS 'Multi-classification tags for indices. Each index can have multiple (sector_id, industry_id) pairs. Primary tag matches sec_classification.sector_id/industry_id.';
 COMMENT ON COLUMN stats.sec_index_tags.code         IS 'Index code (bare 6-digit, e.g. 000300). References sec_classification.code where type=''index''.';
@@ -292,8 +305,12 @@ CREATE TABLE IF NOT EXISTS stats.sec_similars (
     dissimilar_4th_industry_code_sharing_weight_pct NUMERIC(8,4),
     dissimilar_5th_industry_code_sharing_weight_pct NUMERIC(8,4),
 
-    CONSTRAINT pk_sec_similars PRIMARY KEY (date, code, sec_type)
-);
+    CONSTRAINT pk_sec_similars PRIMARY KEY (code, date, sec_type)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'sec_similars', 8);
 
 COMMENT ON TABLE  stats.sec_similars                            IS 'Per (composition_snapshot_date, code, sec_type) top-5 similar codes + top-5 similar (distinct-industry) / dissimilar industry-classified peer codes by MUTUAL shared composition weight. Built by builds.index.exts._sec_similars from stats.sec_composition + stats.sec_classification. `date` is the composition snapshot_date (NOT a trading day). sec_type: index and etf (both populated). Similar industry peers are greedily selected from DIFFERENT industry_ids.';
 COMMENT ON COLUMN stats.sec_similars.date                      IS 'COMPOSITION snapshot_date from stats.sec_composition. One row per (snapshot_date, code, sec_type) — NOT a trading day. Downstream consumers look up the latest row with date <= trading_date per code (same carry-forward pattern as index_exts.stock_num).';

@@ -154,6 +154,9 @@ export default function LiveDataMarketMovementsPage() {
           resp.benchmarks.length > 0 &&
           !resp.benchmarks.some((b) => b.benchmark_code === DEFAULT_BENCHMARK)
         ) {
+          // The dropdown is already restricted to the curated
+          // benchmark_broadmarket industry (flagship broad-market indices),
+          // so the first broad-market entry is the right default.
           const firstBroad = resp.benchmarks.find((b) => b.is_broad_market);
           setBenchmarkCode(
             firstBroad?.benchmark_code ?? resp.benchmarks[0].benchmark_code,

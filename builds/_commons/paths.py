@@ -10,7 +10,6 @@ Usage:
         SZSE_MARGIN_DIR, SSE_MARGIN_DIR, SSE_PE_DIR,
         COMP_DIR, INDEX_COMP_DIR, SZSE_INDEX_COMP_DIR,
         CSINDEX_DIR, CNINDEX_DIR, SHIBOR_DIR, CHINABOND_DIR,
-        SZSE_ETF_PREFIXES, SSE_ETF_PREFIXES,
     )
 """
 from __future__ import annotations
@@ -51,12 +50,6 @@ CHINABOND_DIR      = os.path.join(PROJECT_ROOT, "temps", "chinabond")
 
 # SZSE options source dir (same as szse_trend for trend CSVs)
 SZSE_OPTION_DIR    = SZSE_TREND_DIR
-
-# ---------------------------------------------------------------------------
-# ETF code prefixes — used to distinguish ETFs from stocks in margin CSVs
-# ---------------------------------------------------------------------------
-SZSE_ETF_PREFIXES = ("15", "16")
-SSE_ETF_PREFIXES  = ("510", "511", "512", "513", "515", "516", "518", "56")
 
 # ---------------------------------------------------------------------------
 # SZSE broad-market index codes (supplement CSIndex history)

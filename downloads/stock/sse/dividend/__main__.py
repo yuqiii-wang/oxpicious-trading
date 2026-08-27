@@ -84,6 +84,7 @@ Usage:
 """
 from __future__ import annotations
 
+
 import argparse
 import csv
 from datetime import date
@@ -93,7 +94,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from dateutil.relativedelta import relativedelta
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_TIMEOUT,
     LONG_SLEEP_INTERVAL,
     MIN_VALID_BYTES,
@@ -104,7 +105,7 @@ from downloads._common.core import (
     resolve_out_dir,
     setup_logger,
 )
-from downloads.stock.sse._common.list_endpoint import (
+from downloads._common.exchanges.sse import (
     CSV_ENCODING,
     JSONP_CALLBACK,
     _parse_jsonp,
@@ -393,6 +394,10 @@ def _write_dividend_csv(
         writer.writeheader()
         for r in rows_sorted:
             writer.writerow(r)
+    # canonicalize 证券代码 -> "NNNNNN.SS" + exchange/board/sec_type columns
+    # (no-op when the file has no 证券代码 column)
+    from downloads._common import ensure_canonical_csv
+    ensure_canonical_csv(path, "SS", sec_type="stock")
 
 
 def _read_existing_dividend_rows(path: Path) -> List[Dict[str, Any]]:
@@ -469,7 +474,7 @@ def download_sse_dividends(
         # Reuse the list-endpoint fetcher from the archive module — it hits
         # yunhq.sse.com.cn which needs the full 20s cadence, so build a
         # separate dayk-style proxy for it.
-        from downloads._common.core import DEFAULT_SLEEP_SEC
+        from downloads._common import DEFAULT_SLEEP_SEC
         list_proxy = AntiBotProxy(AntiBotConfig(
             base_sleep_sec=DEFAULT_SLEEP_SEC,
             sleep_jitter=0.3,

@@ -1,10 +1,11 @@
-﻿import { fetchJson } from "./_cache";
+import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
   IndustrySentimentsChartResponse,
   IndustryCorrelationsResponse,
 } from "@shared/types";
+import type { AnalysisRunResponse } from "./analysis-run";
 
 // ---------------------------------------------------------------------------
 //  Analysis Commons — Industry Sentiments (member index values, rebased to 100)
@@ -73,12 +74,14 @@ export function fetchIndustrySentimentsChartByCode(
 }
 
 /**
- * Fetch pairwise rolling correlation time series between selected
- * industries' mean_price series. Returns one row per (date, pair) for
- * every lexicographic (a<b) pair from `industryIds`, with corr_5d /
- * corr_20d / corr_60d / corr_255d. Drives the expandable Correlation chart
- * on the IndustrySentiments page — only enabled when ≥2 industries are
- * selected.
+ * Fetch windowed pairwise correlation time series between selected
+ * industries' MA curves of mean_close. Returns one row per (start_date,
+ * pair) for every lexicographic (a<b) pair from `industryIds`, with
+ * corr_ma20_20d / corr_ma60_60d / corr_ma255_255d (Pearson correlation of
+ * the two industries' MA-W curves over the W trading days starting on
+ * start_date; window starts every `interval` trading days). Drives the
+ * expandable Correlation chart on the IndustrySentiments page — only
+ * enabled when ≥2 industries are selected.
  *
  * `poolSize` selects the same-pool slice for both endpoints (cross-pool
  * comparisons are not materialized). Defaults to 'all'.
@@ -94,4 +97,44 @@ export function fetchIndustryCorrelations(
   return fetchJson<IndustryCorrelationsResponse>(
     `/api/analysis/industry-correlations?${qs}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+//  Correlation refresh trigger.
+//
+//  POST /api/analysis/industry-correlations/run spawns
+//  `python -m analyze.industry_sentiments.corr --industry ... --code ...`
+//  (filtered recompute + upsert for the chosen industries; codes are
+//  resolved to industry_ids Python-side) via the shared py-runner and
+//  waits for it to finish. Drives the refresh button on the Pairwise
+//  Correlation chart. Deduped by a fixed process-id-tag — poll
+//  fetchAnalysisRunStatus([INDUSTRY_CORR_RUN_TAG]) for the spinning state.
+// ---------------------------------------------------------------------------
+/** Fixed process-id-tag for UI-triggered industry-corr refresh runs —
+ *  must match the server-side INDUSTRY_CORR_RUN_TAG. */
+export const INDUSTRY_CORR_RUN_TAG = "analysis-run:industry_corr";
+
+/** Trigger a filtered corr recompute + upsert for the chosen data.
+ *  Resolves when the run finishes (or is deduped — already_running).
+ *  Never throws; failures surface as { success: false, stderr_tail }. */
+export async function runIndustryCorrelationsRefresh(
+  industryIds: ReadonlyArray<string>,
+  codes: ReadonlyArray<string>,
+): Promise<AnalysisRunResponse> {
+  try {
+    const res = await fetch("/api/analysis/industry-correlations/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        industry_ids: [...industryIds],
+        codes: [...codes],
+      }),
+    });
+    if (!res.ok) {
+      return { success: false, stderr_tail: `HTTP ${res.status}` };
+    }
+    return (await res.json()) as AnalysisRunResponse;
+  } catch (e) {
+    return { success: false, stderr_tail: String(e) };
+  }
 }

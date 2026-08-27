@@ -11,6 +11,7 @@ calls ``python -m downloads.etf.szse.archive`` for the daily market archive.
 """
 from __future__ import annotations
 
+
 import argparse
 import sys
 
@@ -69,7 +70,7 @@ def main() -> None:
         )
         print(result)
     elif args.subcommand == "reports":
-        from downloads._common.core import LONG_SLEEP_INTERVAL
+        from downloads._common import LONG_SLEEP_INTERVAL
         from downloads.etf.szse.archive.reports import download_szse_etf_reports
         sleep = args.sleep_sec if args.sleep_sec is not None else LONG_SLEEP_INTERVAL
         result = download_szse_etf_reports(

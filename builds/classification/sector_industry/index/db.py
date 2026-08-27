@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from _common.build_commons import rec_cols
+
 
 async def fetch_index_meta(conn) -> Dict[str, Dict[str, Any]]:
     """Fetch index names + coverage from index_identity.
@@ -18,12 +20,17 @@ async def fetch_index_meta(conn) -> Dict[str, Dict[str, Any]]:
           FROM stats.index_identity
          GROUP BY code
     """)
+    # Whole-column extraction (one positional-unpack pass)
+    cols = rec_cols(rows)
     return {
-        r["code"]: {
-            "name": r["name"] or "",
-            "n_days": int(r["n_days"]),
-            "first_date": r["first_date"],
-            "last_date": r["last_date"],
+        code: {
+            "name": name or "",
+            "n_days": int(n_days),
+            "first_date": first_date,
+            "last_date": last_date,
         }
-        for r in rows
+        for code, name, n_days, first_date, last_date in zip(
+            cols["code"], cols["name"], cols["n_days"],
+            cols["first_date"], cols["last_date"],
+        )
     }

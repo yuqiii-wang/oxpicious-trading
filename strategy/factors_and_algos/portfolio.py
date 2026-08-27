@@ -284,7 +284,7 @@ async def build_algo_portfolio(
     from the algo->weight map (plus ``_ft{N}`` suffix when FT > 0) so the
     portfolio is idempotent (skip-if-already-found).
 
-    After the backtest, risks + forecast are computed for the portfolio
+    After the backtest, risks are computed for the portfolio
     (same as a standalone algo run) — handled by the caller (__main__.py)
     to keep this module focused on the backtest itself.
     """

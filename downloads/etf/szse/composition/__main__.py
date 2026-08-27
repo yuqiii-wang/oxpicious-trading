@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import logging
 import random
 import re
@@ -21,7 +22,7 @@ import requests
 import numpy as np
 import pandas as pd
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_TIMEOUT,
     DEFAULT_START_DATE,
     DEFAULT_SHORT_SLEEP_SEC,
@@ -562,7 +563,9 @@ def convert_md_to_csv(md_path: Path, csv_path: Optional[Path] = None) -> bool:
     for h in rec["holdings"]:
         rows.append({
             "trade_date": rec["trade_date"],
-            "etf_code": rec["etf_code"],
+            # Canonical suffixed code ("NNNNNN.SZ") so builds read the whole
+            # code without any suffix surgery.
+            "etf_code": add_exchange_suffix(rec["etf_code"], "深圳"),
             "etf_name": rec["etf_name"],
             "fund_type": rec["fund_type"],
             "target_index": rec["target_index"],
@@ -626,7 +629,7 @@ def build_composition_csv(md_dir: Path, output_dir: Optional[Path] = None) -> Di
             for h in rec["holdings"]:
                 long_rows.append({
                     "trade_date": rec["trade_date"],
-                    "etf_code": rec["etf_code"],
+                    "etf_code": add_exchange_suffix(rec["etf_code"], "深圳"),
                     "etf_name": rec["etf_name"],
                     "fund_type": rec["fund_type"],
                     "target_index": rec["target_index"],

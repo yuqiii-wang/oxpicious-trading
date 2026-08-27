@@ -16,6 +16,7 @@ import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { matchesExchange, stripExchangeSuffix } from "../lib/classify-etf.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
+import { cachedRows } from "./classification-cache.js";
 import type {
   LiveDataIntradayBar,
   LiveDataBundle,
@@ -42,7 +43,9 @@ interface DbLiveMetaRow extends QueryResultRow {
    *  primary row). Used by the parallel strategy/theme selector. */
   is_industry_not_strategy: boolean;
   exchange: string;
-  /** Number of distinct dates with intraday bars (for sorting / display). */
+  /** Daily coverage from the precomputed sec_classification.n_days column
+   *  (build_classification.py). Used only for ordering — pagination order
+   *  in getLiveDataCombined follows it. NOT a live intraday-bar count. */
   n_dates: number;
   first_date: string;
   last_date: string;
@@ -77,57 +80,73 @@ const TABLES: Record<LiveDataSecType, LiveDataTableConfig> = {
 };
 
 // ----------------------------------------------------------------------------
-//  Meta SQL — fetch all codes of the requested type that have at least one
-//  intraday bar, joined to stats.sec_classification for the L1/L2 taxonomy.
-//  Mirrors STOCK_META_SQL in stock-baseline.service.ts but with an EXISTS
-//  filter on the intraday table so only codes with intraday data are returned.
+//  Meta SQL — one row per ACTIVE code of the requested type that has at
+//  least one intraday bar, with the L1/L2 taxonomy from
+//  stats.sec_classification.
+//
+//  Perf: the previous shape aggregated the WHOLE 5-min table
+//  (COUNT(DISTINCT date) GROUP BY code — 3.1M rows for stocks, ~0.5s warm /
+//  ~2.8s cold per fetch). It now drives from the small classification table
+//  and probes the intraday table per code via JOIN LATERAL ... LIMIT 1:
+//  each probe is partition-pruned by code (hash partition key) and stops at
+//  the first PK index hit, so membership ("has >=1 intraday bar") costs one
+//  btree descent per code (~0.09s total for stocks). A correlated EXISTS
+//  was tested but the planner rewrote it into a merge semi-join scanning the
+//  intraday table (0.8s) — LATERAL LIMIT 1 forces the per-code probe shape.
 //
 //  Deduplication: a stock may have MULTIPLE sec_classification rows (one per
 //  qualifying parent index with weight > 2%, see builds/classification/
-//  __main__.py — PK is (code, parent_index_code)). A naive JOIN would emit
-//  one row per parent index, surfacing duplicates like "000063.SZ · 中兴通讯"
-//  12 times. The LATERAL subquery picks exactly ONE row per code: the row
-//  with parent_index_is_primary = TRUE, falling back to the highest
-//  parent_index_weight. Indices (parent_index_code = '') and ETFs (one-to-one
-//  ETF → tracking index) already have a single row per code, so the LATERAL
-//  LIMIT 1 is a no-op for them.
+//  __main__.py — PK is (code, parent_index_code)). DISTINCT ON (code) picks
+//  exactly ONE row per code: parent_index_is_primary = TRUE first, then the
+//  highest parent_index_weight. Indices (parent_index_code = '') and ETFs
+//  (one-to-one ETF → tracking index) already have a single row per code.
+//
+//  SEMANTICS vs the old GROUP BY shape (accepted trade-off):
+//    • n_dates/first_date/last_date now come from the PRECOMPUTED
+//      sec_classification columns (daily coverage maintained by
+//      build_classification.py) instead of a live COUNT/MIN/MAX over the
+//      intraday table. Consumers only use them for ordering (pagination
+//      order in getLiveDataCombined follows this ORDER BY); n_days is the
+//      same most-data-first proxy.
+//    • Row membership is the same intersection (active classification row
+//      AND >=1 intraday bar) — code sets verified equal on 2026-08-25.
 // ----------------------------------------------------------------------------
 function buildMetaSql(secType: LiveDataSecType): string {
   const cfg = TABLES[secType];
   return `
-    SELECT sc.code,
-           COALESCE(sc.name, '') AS name,
-           COALESCE(sc.sector_id,       'OTHER')  AS sector_id,
-           COALESCE(sc.sector_label,    '其他')   AS sector_label,
-           COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
-           COALESCE(sc.industry_label,  '未分类')  AS industry_label,
-           COALESCE(sc.industry_slug,   'other')  AS industry_slug,
-           COALESCE(sc.is_industry_not_strategy, TRUE) AS is_industry_not_strategy,
-           COALESCE(sc.exchange, '')               AS exchange,
-           x.n_dates,
-           x.first_date,
-           x.last_date
+    SELECT y.code, y.name, y.sector_id, y.sector_label,
+           y.industry_id, y.industry_label, y.industry_slug,
+           y.is_industry_not_strategy, y.exchange,
+           y.n_dates, y.first_date, y.last_date
       FROM (
-        SELECT code,
-               COUNT(DISTINCT date) AS n_dates,
-               MIN(date)::text       AS first_date,
-               MAX(date)::text       AS last_date
-          FROM ${cfg.table}
-         GROUP BY code
-      ) x
-      JOIN LATERAL (
-        SELECT sc.code, sc.name, sc.sector_id, sc.sector_label,
-               sc.industry_id, sc.industry_label, sc.industry_slug,
-               sc.is_industry_not_strategy, sc.exchange
+        SELECT DISTINCT ON (sc.code)
+               sc.code,
+               COALESCE(sc.name, '') AS name,
+               COALESCE(sc.sector_id,       'OTHER')  AS sector_id,
+               COALESCE(sc.sector_label,    '其他')   AS sector_label,
+               COALESCE(sc.industry_id,     'OTHER')  AS industry_id,
+               COALESCE(sc.industry_label,  '未分类')  AS industry_label,
+               COALESCE(sc.industry_slug,   'other')  AS industry_slug,
+               COALESCE(sc.is_industry_not_strategy, TRUE) AS is_industry_not_strategy,
+               COALESCE(sc.exchange, '')               AS exchange,
+               COALESCE(sc.n_days, 0)                  AS n_dates,
+               sc.first_date::text                     AS first_date,
+               sc.last_date::text                      AS last_date
           FROM stats.sec_classification sc
-         WHERE sc.code = x.code AND sc.type = $1
+          JOIN LATERAL (
+            SELECT 1
+              FROM ${cfg.table} t
+             WHERE t.code = sc.code
+             LIMIT 1
+          ) ex ON true
+         WHERE sc.type = $1
            AND sc.is_active = TRUE
-         ORDER BY sc.parent_index_is_primary DESC NULLS LAST,
+         ORDER BY sc.code,
+                  sc.parent_index_is_primary DESC NULLS LAST,
                   sc.parent_index_weight DESC NULLS LAST,
                   sc.parent_index_code
-         LIMIT 1
-      ) sc ON true
-     ORDER BY x.n_dates DESC, sc.code
+      ) y
+     ORDER BY y.n_dates DESC, y.code
   `;
 }
 
@@ -150,6 +169,16 @@ export async function listLiveDataDates(
   };
 }
 
+// Cached meta rows — the per-code intraday probes in buildMetaSql are cheap
+// (~0.1s) but their result only changes as new intraday data lands, so rows
+// are read once per 10-min TTL window and shared by listLiveDataThemes(),
+// listStrategyThemes() and getLiveDataCombined().
+async function getLiveMetaRows(secType: LiveDataSecType): Promise<DbLiveMetaRow[]> {
+  return cachedRows(`live-data:meta:${secType}`, () =>
+    queryRows<DbLiveMetaRow>(buildMetaSql(secType), [secType]),
+  );
+}
+
 // ----------------------------------------------------------------------------
 //  Themes tree — build the L1 sector → L2 industry → codes tree restricted
 //  to codes with intraday data (same shape as listIndexThemes).
@@ -158,9 +187,7 @@ export async function listLiveDataThemes(
   secType: LiveDataSecType,
   exchange?: string | null,
 ): Promise<SectorNode[]> {
-  const rows = await queryRows<DbLiveMetaRow>(buildMetaSql(secType), [
-    secType,
-  ]);
+  const rows = await getLiveMetaRows(secType);
   const exFilter = (exchange ?? "").trim() || null;
 
   const sectorMap = new Map<string, {
@@ -233,9 +260,7 @@ export async function listStrategyThemes(
   secType: LiveDataSecType,
   exchange?: string | null,
 ): Promise<StrategyNode[]> {
-  const rows = await queryRows<DbLiveMetaRow>(buildMetaSql(secType), [
-    secType,
-  ]);
+  const rows = await getLiveMetaRows(secType);
   const exFilter = (exchange ?? "").trim() || null;
 
   const mappedRows = rows
@@ -291,10 +316,8 @@ export async function getLiveDataCombined(
   const exchangeFilter = (q.exchange ?? "").trim() || null;
   const codeFilter = (q.code ?? "").trim().toUpperCase();
 
-  // 1. Fetch all meta rows (codes with intraday data + classification).
-  const metaRows = await queryRows<DbLiveMetaRow>(buildMetaSql(secType), [
-    secType,
-  ]);
+  // 1. Fetch all meta rows (codes with intraday data + classification, cached).
+  const metaRows = await getLiveMetaRows(secType);
 
   // 2. Resolve the requested date — explicit param wins; otherwise use the
   //    latest available date across ALL codes of this type (so the page

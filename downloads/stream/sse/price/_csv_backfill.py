@@ -25,7 +25,7 @@ from datetime import date, datetime, time as dtime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from downloads._common.core import resolve_out_dir, setup_logger
+from downloads._common import resolve_out_dir, setup_logger
 from _common.db_commons import bulk_upsert
 
 from ._io import is_intraday_complete
@@ -174,7 +174,7 @@ def backfill_csv_file(
 
     # For each 5-min window, build a mini-buffer and call aggregate_bars.
     # We use a scratch AssetStream to avoid mutating the live asset state.
-    is_suffixed = asset.code_suffix is not None
+    is_suffixed = asset.exchange is not None
     is_stock = asset.name == "stock"
 
     all_identity: List[dict] = []
@@ -189,7 +189,7 @@ def backfill_csv_file(
             list_url=asset.list_url,
             identity_table=asset.identity_table,
             intraday_table=asset.intraday_table,
-            code_suffix=asset.code_suffix,
+            exchange=asset.exchange,
             has_volume=asset.has_volume,
             allowed_codes=asset.allowed_codes,
             csv_subdir=asset.csv_subdir,

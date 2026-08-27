@@ -20,7 +20,7 @@ from analyze._common import sanitize_for_db_insert
 from analyze.margins.config import (
     TABLE_TECH_STATS,
     TABLE_INDUSTRY_STATS,
-    TABLE_INDUSTRY_CORRELATION,
+    TABLE_INDEX_SERIES,
     SRC_TABLE_ETF,
     SRC_TABLE_STOCK,
     UNIVERSE_RECENT_DAYS,
@@ -29,14 +29,20 @@ from analyze.margins.config import (
     TECH_STATS_INSERT_COLUMNS,
     INDUSTRY_STATS_INSERT_COLUMNS,
     INDUSTRY_STATS_NUMERIC_COLS,
+    INDEX_SERIES_INSERT_COLUMNS,
+    INDEX_SERIES_NUMERIC_COLS,
 )
 from analyze.margins.fetch import (
     fetch_active_rongzi_codes,
     fetch_margin_history,
     fetch_industry_mapping,
     fetch_index_margin_series,
+    fetch_index_series_raw,
 )
-from analyze.margins.compute import compute_tech_stats
+from analyze.margins.compute import (
+    compute_tech_stats,
+    compute_index_margin_series,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -91,15 +97,16 @@ async def detect_missing_dates(
 ) -> tuple[dict, set, set, set]:
     """Detect missing dates per table for incremental mode.
 
-    Returns (target_dates_tech, target_dates_index, target_dates_industry,
-    target_dates_corr). Each value is None in force mode (meaning "all
-    dates"), or a set of missing dates in incremental mode.
+    Returns (target_dates_tech, target_dates_index_series,
+    target_dates_index_tech, target_dates_industry). Each value is None
+    in force mode (meaning "all dates"), or a set of missing dates in
+    incremental mode.
     """
     if force:
         return (
             {st: None for st in sec_types},
             None if run_index else set(),
-            None,
+            None if run_index else set(),
             None,
         )
 
@@ -114,15 +121,27 @@ async def detect_missing_dates(
         print(f"    -> tech_stats[{st}]: {len(missing)} missing dates",
               flush=True)
 
-    # ---- tech_stats[index] ----
-    target_dates_index: set = set()
+    # ---- margin_index_series (built from the RAW source tables) ----
+    target_dates_index_series: set = set()
+    target_dates_index_tech: set = set()
     if run_index:
-        target_dates_index = await find_missing_analysis_dates(
+        target_dates_index_series = await find_missing_analysis_dates(
+            conn, TABLE_INDEX_SERIES,
+            [SRC_TABLE_ETF, SRC_TABLE_STOCK],
+        )
+        print(f"    -> index_series: {len(target_dates_index_series)} "
+              f"missing dates", flush=True)
+
+        # tech_stats[index] is keyed off the margin_index_series TABLE.
+        # Dates missing from the TABLE itself (to be built this run)
+        # will also be missing from tech_stats after the build, so the
+        # union covers both.
+        target_dates_index_tech = await find_missing_analysis_dates(
             conn, TABLE_TECH_STATS,
             SEC_TYPE_SOURCE_TABLES["index"],
             sec_type="index",
-        )
-        print(f"    -> tech_stats[index]: {len(target_dates_index)} "
+        ) | target_dates_index_series
+        print(f"    -> tech_stats[index]: {len(target_dates_index_tech)} "
               f"missing dates", flush=True)
 
     # ---- industry_stats ----
@@ -138,19 +157,9 @@ async def detect_missing_dates(
         print(f"    -> industry_stats: {len(target_dates_industry)} "
               f"missing dates", flush=True)
 
-    # ---- correlations ----
-    target_dates_corr: set = set()
-    if not is_index_only:
-        target_dates_corr = await find_missing_analysis_dates(
-            conn, TABLE_INDUSTRY_CORRELATION,
-            SEC_TYPE_SOURCE_TABLES["index"],
-        )
-        print(f"    -> correlations: {len(target_dates_corr)} missing dates",
-              flush=True)
-
     return (
-        target_dates_tech, target_dates_index,
-        target_dates_industry, target_dates_corr,
+        target_dates_tech, target_dates_index_series,
+        target_dates_index_tech, target_dates_industry,
     )
 
 
@@ -273,7 +282,99 @@ async def run_sec_type(
 
 
 # ---------------------------------------------------------------------------
-#  Index-level tech stats (aggregated from the margin_index_series VIEW)
+#  margin_index_series TABLE build (Python vectorization)
+# ---------------------------------------------------------------------------
+
+async def build_margin_index_series(
+    conn,
+    *,
+    force: bool = True,
+    target_dates: Optional[set] = None,
+) -> None:
+    """Build analysis.margin_index_series — the Python-vectorized
+    replacement for the former VIEW aggregation.
+
+    Fetches RAW margin rows + classification (no in-SQL computation),
+    computes the per-(index_code, date) weighted-average series with
+    pandas (compute_index_margin_series), and inserts.
+
+    Args:
+        conn: asyncpg connection.
+        force: when True, truncate + COPY-insert (full recompute). When
+            False, upsert only target_dates rows (incremental).
+        target_dates: set of missing dates to build (incremental mode).
+            Ignored when ``force`` is True.
+    """
+    if not force and target_dates is not None and len(target_dates) == 0:
+        print("\n  [index-series] up to date; skipping.", flush=True)
+        return
+
+    print("\n  --- margin_index_series TABLE (vectorized build) ---",
+          flush=True)
+
+    # ---- Fetch RAW inputs ---------------------------------------------
+    print("    [a] Fetching raw stock/etf margin rows + classification...",
+          flush=True)
+    dates = None if force else target_dates
+    stock_margin, etf_margin, classification = await fetch_index_series_raw(
+        conn, dates,
+    )
+    print(f"        -> {len(stock_margin):,} stock rows, "
+          f"{len(etf_margin):,} etf rows, "
+          f"{len(classification):,} classification rows", flush=True)
+
+    # ---- Compute weighted-average series (pandas) ----------------------
+    print("    [b] Computing weighted-average index series (pandas)...",
+          flush=True)
+    index_series = compute_index_margin_series(
+        stock_margin, etf_margin, classification,
+    )
+    n_codes = (
+        index_series["index_code"].nunique()
+        if not index_series.empty else 0
+    )
+    print(f"        -> {len(index_series):,} rows across {n_codes:,} "
+          f"index codes", flush=True)
+
+    # ---- Insert --------------------------------------------------------
+    if force:
+        print(f"    [c] Truncating {TABLE_INDEX_SERIES} and inserting...",
+              flush=True)
+        await truncate_table_async(conn, TABLE_INDEX_SERIES)
+        rows_to_write = index_series
+    else:
+        rows_to_write = index_series
+
+    if rows_to_write.empty:
+        print("    -> no rows to insert", flush=True)
+    elif force:
+        rows = sanitize_for_db_insert(
+            rows_to_write,
+            numeric_cols=INDEX_SERIES_NUMERIC_COLS, round_to=4,
+        )
+        n = await copy_insert_async(
+            conn, TABLE_INDEX_SERIES, rows,
+            columns=INDEX_SERIES_INSERT_COLUMNS,
+        )
+        print(f"    -> COPY-inserted {n:,} rows", flush=True)
+    else:
+        rows = sanitize_for_db_insert(
+            rows_to_write[INDEX_SERIES_INSERT_COLUMNS],
+            numeric_cols=INDEX_SERIES_NUMERIC_COLS, round_to=4,
+        )
+        n_copied, n_upserted = await copy_or_upsert_split_async(
+            conn, TABLE_INDEX_SERIES, rows,
+            key_columns=["index_code", "date"],
+        )
+        n = n_copied + n_upserted
+        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+              "upsert"
+        print(f"    -> inserted {n:,} rows via {via}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+#  Index-level tech stats (computed from the margin_index_series TABLE)
 # ---------------------------------------------------------------------------
 
 async def run_index_tech_stats(
@@ -283,19 +384,19 @@ async def run_index_tech_stats(
     target_dates: Optional[set] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Compute + insert sec_type='index' tech_stats from the
-    analysis.margin_index_series VIEW.
+    analysis.margin_index_series TABLE (built by build_margin_index_series).
 
-    The VIEW aggregates constituent stocks' rz_balance / rz_buy by
-    parent_index_weight (weighted-AVERAGE). compute_tech_stats then
-    derives the regime-detection cols (slope_ma5 / zscore_20d) on this
-    AGGREGATED series — the mathematically correct order
-    (aggregate-then-compute; per-stock slopes are non-additive).
+    The TABLE holds the per-(index_code, date) weighted-average of
+    constituent stocks' rz_balance / rz_buy (by parent_index_weight).
+    compute_tech_stats then derives the regime-detection cols (slope_ma5 /
+    zscore_20d) on this AGGREGATED series — the mathematically correct
+    order (aggregate-then-compute; per-stock slopes are non-additive).
 
     Returns (history, tech_stats):
       history     — DataFrame[code, date, rz_balance, rz_buy] (the raw
-                   aggregated index-level series from the VIEW; needed
-                   by the margin_changes step for rz_balance / rz_buy
-                   lookup).
+                   aggregated index-level series read from the TABLE;
+                   needed by the margin_changes step for rz_balance /
+                   rz_buy lookup).
       tech_stats  — DataFrame with the full margin_tech_stats column set
                    (sec_type='index'); also stored in
                    tech_stats_by_sec_type['index'] by the caller. FULL
@@ -307,11 +408,11 @@ async def run_index_tech_stats(
             False, upsert only target_dates rows (incremental).
         target_dates: set of missing dates to write (incremental mode).
     """
-    print("\n  --- sec_type = index (aggregated from "
-          "margin_index_series VIEW) ---", flush=True)
+    print("\n  --- sec_type = index (read from the margin_index_series "
+          "TABLE) ---", flush=True)
 
     print("    [a] Fetching weighted-avg index margin series from "
-          "margin_index_series VIEW...", flush=True)
+          "margin_index_series TABLE...", flush=True)
     history = await fetch_index_margin_series(conn)
     n_codes = history["code"].nunique() if not history.empty else 0
     print(f"        -> {len(history):,} rows, {n_codes:,} index codes",
@@ -437,32 +538,3 @@ async def insert_industry_stats(
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
               "upsert"
         print(f"    -> inserted {n:,} rows via {via}", flush=True)
-
-    # Sanity summary (only in force mode)
-    if force and not industry_stats.empty:
-        await _print_industry_filter_summary(conn)
-
-
-async def _print_industry_filter_summary(conn) -> None:
-    """Print a sanity summary of the industry_stats table after a force insert."""
-    summary = await conn.fetch("""
-        SELECT
-            MAX(stock_count)           AS max_stock_count,
-            MAX(stock_margin_count)     AS max_stock_margin_count,
-            MAX(etf_count)              AS max_etf_count,
-            MAX(etf_margin_count)       AS max_etf_margin_count,
-            SUM(stock_count)            AS tot_stock_count,
-            SUM(stock_margin_count)     AS tot_stock_margin_count,
-            SUM(etf_count)              AS tot_etf_count,
-            SUM(etf_margin_count)       AS tot_etf_margin_count
-        FROM analysis.margin_industry_stats
-    """)
-    r = summary[0]
-    print(f"    [filter summary] max per (date, industry): "
-          f"stock {r['max_stock_margin_count']}/{r['max_stock_count']} "
-          f"active, etf {r['max_etf_margin_count']}/{r['max_etf_count']} "
-          f"active", flush=True)
-    print(f"    [filter summary] total (sum across all rows): "
-          f"stock {r['tot_stock_margin_count']}/{r['tot_stock_count']} "
-          f"active, etf {r['tot_etf_margin_count']}/{r['tot_etf_count']} "
-          f"active", flush=True)

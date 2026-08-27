@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from downloads._common.core import is_trading_day
+from downloads._common import is_trading_day
 
 
 def is_month_start(d: date) -> bool:

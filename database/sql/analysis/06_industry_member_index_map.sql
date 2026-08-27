@@ -54,7 +54,12 @@ CREATE TABLE IF NOT EXISTS analysis.industry_member_index_map (
 
     CONSTRAINT pk_industry_member_index_map PRIMARY KEY
         (industry_id, benchmark_code)
-);
+) PARTITION BY HASH (industry_id);
+
+-- Native hash partitions (8) keyed by industry_id
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'industry_member_index_map', 8);
 
 COMMENT ON TABLE  analysis.industry_member_index_map IS 'Pre-computed mapping of each industry to its NON-BROAD member indices, with composition-derived shared weights frozen at the latest sec_composition snapshot. Used to fast-track analysis.industry_attributions population (weights are constant across dates; only recomputed when compositions change). Built by analyze.industry_sentiments.attributions (step a6, TRUNCATE + INSERT...SELECT).';
 COMMENT ON COLUMN analysis.industry_member_index_map.industry_id IS 'Subject industry_id (from stats.sec_classification type=''index'').';

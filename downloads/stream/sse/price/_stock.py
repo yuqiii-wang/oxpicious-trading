@@ -11,7 +11,7 @@ cumulative volumes across samples) and store the code WITH exchange suffix
 """
 from __future__ import annotations
 
-from downloads.stock.sse._common.list_endpoint import SSE_LIST_URL
+from downloads._common.exchanges.sse import SSE_LIST_URL
 
 from ._io import _prepopulate_finished_codes
 from ._model import AssetStream
@@ -24,7 +24,7 @@ def build_stock_asset() -> AssetStream:
         list_url=SSE_LIST_URL,
         identity_table="stats.stock_identity",
         intraday_table="stats.stock_intraday_5min",
-        code_suffix="SS",
+        exchange="SS",
         has_volume=True,
         allowed_codes=None,
         csv_subdir="sse_intraday",
@@ -36,5 +36,5 @@ def prepopulate_stock_finished_codes(conn, trade_date, finished_codes: set) -> N
     """Pre-populate finished_codes with SSE stocks that already have a 15:00 bar."""
     _prepopulate_finished_codes(
         conn, trade_date, finished_codes,
-        table="stats.stock_intraday_5min", code_suffix_filter="SS",
+        table="stats.stock_intraday_5min", exchange_filter="SS",
     )

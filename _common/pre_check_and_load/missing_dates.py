@@ -26,6 +26,7 @@ Migrated from _common/build_commons.py and _common/db_commons.py.
 from __future__ import annotations
 
 import datetime
+from operator import itemgetter
 from typing import Iterable, Optional, Sequence, Set
 
 from _common._holidays_and_weekdays import recent_trading_day_cutoff
@@ -43,7 +44,7 @@ async def find_missing_dates(
     table: str,
     source_dates: Iterable[datetime.date],
     *,
-    code_suffix: Optional[str] = None,
+    exchange: Optional[str] = None,
 ) -> Set[datetime.date]:
     """Return the subset of ``source_dates`` not already present in ``table``.
 
@@ -58,11 +59,11 @@ async def find_missing_dates(
         conn: asyncpg connection.
         table: schema-qualified table name (e.g. "stats.stock_identity").
         source_dates: iterable of datetime.date values to check.
-        code_suffix: optional suffix filter (e.g. ".SZ", ".SS", ".BJ").
-            When provided, only checks rows whose ``code`` column ends
-            with that suffix. This prevents a date populated for one
-            suffix from masking the same date being missing for another
-            suffix (e.g. SSE loading masking SZSE dates in stock_identity).
+        exchange: optional exchange filter (e.g. "SZ", "SS", "BJ").
+            When provided, only checks rows whose ``exchange`` column
+            equals that value. This prevents a date populated for one
+            exchange from masking the same date being missing for another
+            (e.g. SSE loading masking SZSE dates in stock_identity).
     """
     source_set = set(source_dates)
     if not source_set:
@@ -70,10 +71,10 @@ async def find_missing_dates(
     schema, tbl = _parse_table_name(table)
     from_clause = f'"{schema}"."{tbl}"' if schema else f'"{tbl}"'
 
-    if code_suffix is not None:
+    if exchange is not None:
         existing_rows = await conn.fetch(
-            f'SELECT DISTINCT date FROM {from_clause} WHERE code LIKE $1',
-            f'%{code_suffix}',
+            f'SELECT DISTINCT date FROM {from_clause} WHERE exchange = $1',
+            exchange,
         )
     else:
         existing_rows = await conn.fetch(
@@ -228,7 +229,8 @@ async def filter_rows_to_missing_dates_async(
     """
     if not rows:
         return []
-    source_dates = {r[date_key] for r in rows}
+    # Whole-column extraction (C-level map, no per-element dict access)
+    source_dates = set(map(itemgetter(date_key), rows))
     # Local scope to avoid pulling in the existing-key tuples when we
     # only care about date-level missingness. Scoping by sec_type ensures
     # that a date populated for one sec_type does not mask the same date
@@ -239,7 +241,8 @@ async def filter_rows_to_missing_dates_async(
             sec_type,
         )
         existing_dates = {
-            r[date_key] for r in existing_rows if r[date_key] is not None
+            d for d in map(itemgetter(date_key), existing_rows)
+            if d is not None
         }
         missing = source_dates - existing_dates
     else:
@@ -303,4 +306,4 @@ async def fetch_codes_with_recent_data_async(
         f'GROUP BY "{code_column}"'
     )
     rows = await conn.fetch(query, cutoff)
-    return {r[code_column] for r in rows if r[code_column] is not None}
+    return {c for c in map(itemgetter(code_column), rows) if c is not None}

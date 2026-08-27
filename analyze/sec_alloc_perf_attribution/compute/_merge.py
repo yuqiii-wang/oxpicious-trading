@@ -44,25 +44,45 @@ def merge_subject_with_benchmarks(
 # ---------------------------------------------------------------------------
 #  Step 4: vectorized lookup of precomputed (subject, benchmark) overlap weights
 # ---------------------------------------------------------------------------
+def build_weights_frame(shared_weights: dict) -> pd.DataFrame:
+    """Build the (code, benchmark_code) -> weights lookup frame ONCE.
+
+    ``Series.map`` with a python UDF never compiles on GPU (one
+    [cudf fallback] per call); a left hash-merge on (code,
+    benchmark_code) is cudf-native.
+    """
+    rows = [
+        (sc, bc, cw, bw)
+        for (sc, bc), (cw, bw) in shared_weights.items()
+    ]
+    return pd.DataFrame(
+        rows,
+        columns=["code", "benchmark_code",
+                 "code_sec_shared_weight", "benchmark_sec_shared_weight"],
+    )
+
+
 def attach_shared_weights(
     merged: pd.DataFrame,
-    shared_weights: dict,
+    weights_frame: pd.DataFrame,
     subject_code: str,
 ) -> pd.DataFrame:
     """Attach code_sec_shared_weight + benchmark_sec_shared_weight columns.
 
-    ``shared_weights`` is a dict from fetch_shared_weights():
-        {(subject_code, benchmark_code): (code_wt, bench_wt)}
-
-    Lookup is vectorized via ``Series.map`` returning a tuple per row,
-    then split into two columns. Shared weights come from the latest
-    composition snapshot — same for all dates.
+    ``weights_frame`` comes from build_weights_frame(shared_weights) —
+    built once per run, merged here per subject on (code,
+    benchmark_code).  Shared weights come from the latest composition
+    snapshot — same for all dates.  Absent pairs become NaN (NULL),
+    zero-overlap pairs stay explicit (0, 0) — matching the old
+    Series.map semantics exactly.
     """
-    def _lookup_wt(benchmark_code):
-        pair = shared_weights.get((subject_code, benchmark_code))
-        return pair if pair is not None else (None, None)
-
-    wt = merged["benchmark_code"].map(_lookup_wt)
-    merged["code_sec_shared_weight"] = [w[0] for w in wt]
-    merged["benchmark_sec_shared_weight"] = [w[1] for w in wt]
+    sub_wt = weights_frame[weights_frame["code"] == subject_code][
+        ["benchmark_code", "code_sec_shared_weight",
+         "benchmark_sec_shared_weight"]
+    ]
+    merged = merged.drop(
+        columns=["code_sec_shared_weight",
+                 "benchmark_sec_shared_weight"], errors="ignore"
+    )
+    merged = merged.merge(sub_wt, on="benchmark_code", how="left")
     return merged

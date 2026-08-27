@@ -22,7 +22,77 @@ No hard dependency: no GPU / cuDF missing → CPU pandas, transparently.
 """
 from __future__ import annotations
 
+import os
 import sys
+
+
+def _gpu_compute_smoke_test() -> tuple[int, int, list[str]]:
+    """Run a tiny numeric groupby+merge+sort through cudf.pandas and count
+    how many proxied calls took the GPU (fast) vs CPU (fallback) path.
+
+    Diagnoses the silent-failure mode where the import hook is installed
+    (GPU memory reserved by the CUDA context) but EVERY operation falls
+    back to CPU pandas — the process then looks "GPU active" in nvidia-smi
+    while doing zero GPU compute.
+
+    Uses cudf.pandas' own Profiler (sys.settrace-based) so the counts are
+    exact. Returns (n_gpu_calls, n_cpu_calls, cpu_func_names).
+    """
+    import pandas as pd  # proxied by cudf.pandas at this point
+    from cudf.pandas.profiler import Profiler
+
+    with Profiler() as prof:
+        df = pd.DataFrame(
+            {"k": ["a", "a", "b", "b", "c"], "v": [1.0, 2.0, 3.0, 4.0, 5.0]}
+        )
+        agg = df.groupby("k", as_index=False).agg(m=("v", "mean"))
+        merged = agg.merge(agg, on="k")
+        _ = float(merged.sort_values("m_x")["m_x"].sum())
+
+    n_gpu = n_cpu = 0
+    cpu_funcs: list[str] = []
+    for func_name, calls in prof.per_function_stats.items():
+        n_gpu += len(calls.get("gpu", []))
+        n_cpu += len(calls.get("cpu", []))
+        if calls.get("cpu"):
+            cpu_funcs.append(func_name)
+    return n_gpu, n_cpu, cpu_funcs
+
+
+def _patch_fallback_logger() -> None:
+    """Replace cudf.pandas' log_fallback with a safe stdout printer.
+
+    cudf 26.08's own ``log_fallback`` crashes with IndexError on property
+    fallbacks (``df.columns`` etc.) where ``slow_args`` carries no args
+    tuple — a crash INSIDE the fallback handler that kills the whole
+    process. Our replacement never raises and prints one concise line
+    per fast->slow fallback so blockers are visible in run logs.
+
+    The proxy imports ``log_fallback`` lazily at each fallback
+    (``from ._logger import log_fallback``), so patching the module
+    attribute is effective for all subsequent fallbacks.
+    """
+    try:
+        import cudf.pandas._logger as _cudf_logger
+    except Exception:
+        return
+
+    def _safe_log_fallback(slow_args: tuple, slow_kwargs: dict,
+                           exception: Exception) -> None:
+        caller = slow_args[0] if slow_args else None
+        name = getattr(caller, "__qualname__", None) or (
+            getattr(caller, "__name__", None)
+            if caller is not None else repr(caller)
+        )
+        module = getattr(caller, "__module__", "")
+        full = f"{module}.{name}" if module else str(name)
+        print(
+            f"[cudf fallback] {full}: "
+            f"{type(exception).__name__}: {exception}",
+            flush=True,
+        )
+
+    _cudf_logger.log_fallback = _safe_log_fallback
 
 
 def maybe_enable_cudf_pandas(mode: str = "auto") -> tuple[bool, str]:
@@ -57,16 +127,54 @@ def maybe_enable_cudf_pandas(mode: str = "auto") -> tuple[bool, str]:
     if not info.available:
         return False, f"CPU pandas ({info.reason})"
 
+    # Log every fast->slow fallback to stdout (one "[cudf fallback] ..."
+    # line each — see _patch_fallback_logger). The env var is read
+    # dynamically by the proxy at each op, so setting it here — before
+    # the first pandas op — is enough. Disable by exporting
+    # LOG_FAST_FALLBACK=0.
+    os.environ.setdefault("LOG_FAST_FALLBACK", "1")
+
     try:
-        import cudf.pandas  # noqa: F401  # activates the import hook
+        import cudf.pandas
+
+        # cudf >= 25.x: importing the module does NOT install the import
+        # hook — install() must be called explicitly (that's what the
+        # `python -m cudf.pandas` launcher does). Without this call the
+        # process holds GPU memory (CUDA context from the detector's
+        # allocation smoke test) but every pandas op silently runs on
+        # CPU — exactly "memory reserved, zero compute" in nvidia-smi.
+        cudf.pandas.install()
+        if not getattr(cudf.pandas, "LOADED", False):
+            return False, (
+                "CPU pandas (cudf.pandas.install() did not load the accelerator)"
+            )
     except Exception as exc:
-        return False, f"CPU pandas (cudf.pandas import failed: {exc})"
+        return False, f"CPU pandas (cudf.pandas install failed: {exc})"
+
+    _patch_fallback_logger()
 
     vram_gb = info.vram_total_bytes / 1024**3
-    return True, (
+    desc = (
         f"cudf.pandas active (GPU pandas: {info.device_name}, "
         f"{vram_gb:.0f} GB VRAM, cuDF {info.cudf_version})"
     )
+
+    # Compute smoke test — distinguishes "hook installed" from "ops
+    # actually running on GPU". If CPU(fallback) calls appear even for
+    # this trivially cuDF-compatible workload, something environmental
+    # is blocking GPU compute entirely (driver / CUDA context).
+    try:
+        n_gpu, n_cpu, cpu_funcs = _gpu_compute_smoke_test()
+        if n_cpu == 0 and n_gpu > 0:
+            desc += " | smoke test: GPU compute OK"
+        else:
+            desc += (
+                f" | smoke test: {n_gpu} GPU / {n_cpu} CPU-fallback calls"
+                f" (CPU funcs: {', '.join(sorted(set(cpu_funcs))[:8]) or 'none'})"
+            )
+    except Exception as exc:
+        desc += f" | smoke test FAILED: {exc}"
+    return True, desc
 
 
 __all__ = ["maybe_enable_cudf_pandas"]

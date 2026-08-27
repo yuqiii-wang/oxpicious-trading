@@ -83,13 +83,18 @@ def _count_numeric_cols(df) -> int:
     """Count numeric columns in a pandas or cuDF DataFrame."""
     try:
         import pandas as pd
+        from _common.df_utils.sanitize import safe_columns
         if isinstance(df, pd.DataFrame):
-            return sum(1 for c in df.columns
+            return sum(1 for c in safe_columns(df)
                        if pd.api.types.is_numeric_dtype(df[c]))
     except ImportError:
         pass
     # Fallback: assume all columns are numeric (conservative).
-    return len(df.columns) if hasattr(df, "columns") else 10
+    try:
+        from _common.df_utils.sanitize import safe_columns
+        return len(safe_columns(df)) if hasattr(df, "columns") else 10
+    except Exception:
+        return 10
 
 
 def should_use_gpu(

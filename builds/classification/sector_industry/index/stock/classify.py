@@ -50,7 +50,6 @@ from _common.sec_statics.classification import (
     classify_index,
 )
 
-from builds.classification.sector_industry.exchange import _exchange_from_code
 from builds.classification.sector_industry.index.stock.db import (
     fetch_stock_index_mapping,
     fetch_stock_meta,
@@ -85,7 +84,9 @@ async def classify_stocks(
         stock_meta = {}
 
     for stock_code, meta in stock_meta.items():
-        exchange = _exchange_from_code(stock_code)
+        # Exchange comes straight from the DB column (stats.stock_identity
+        # .exchange) — never derived from the code suffix.
+        exchange = meta["exchange"]
         mappings = stock_index_map.get(stock_code, [])
         # Filter out strategy-primary indices (is_industry_not_strategy=FALSE).
         # These are pure strategy/theme indices (BROAD, DIV, REGION, ...) with
@@ -120,13 +121,10 @@ async def classify_stocks(
                     sector_id = DEFAULT_SECTOR_ID
                     industry_id = DEFAULT_INDUSTRY_ID
                     is_ind = True
-                # Stock exchange comes from the stock code's .SZ/.SS/.BJ
-                # suffix ONLY — A-share stocks held by HK/overseas-themed
-                # indices keep their own exchange (they are still A-share
-                # listed, e.g. 000063.SZ 中兴通讯 held by SHS科技100 is a
-                # SZ-listed A-share, NOT an HK stock).  Actual HK-listed
-                # stocks carry a .HK suffix and are handled by
-                # _exchange_from_code directly.
+                # Stock exchange is the stock_identity.exchange DB column
+                # (A-share listing venue) — HK/overseas-themed indices keep
+                # the stock's own A-share exchange (e.g. 000063.SZ 中兴通讯
+                # held by SHS科技100 is a SZ-listed A-share, NOT an HK stock).
                 stock_exchange = exchange
                 is_primary = (not primary_assigned) and (idx_weight == max_weight)
                 if is_primary:

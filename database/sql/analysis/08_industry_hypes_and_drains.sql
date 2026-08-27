@@ -131,12 +131,17 @@ CREATE TABLE IF NOT EXISTS analysis.industry_hypes_and_drains (
     benchmark_shared_weight       NUMERIC(8,4),
 
     CONSTRAINT pk_industry_hypes_and_drains PRIMARY KEY
-        (date, benchmark_code, period_days, weighting, rank_side, rank),
+        (benchmark_code, date, period_days, weighting, rank_side, rank),
     CONSTRAINT chk_hypes_period_days    CHECK (period_days IN (5, 20, 60, 120, 255, 500)),
     CONSTRAINT chk_hypes_weighting      CHECK (weighting IN ('equal', 'amt')),
     CONSTRAINT chk_hypes_rank_side      CHECK (rank_side IN ('HYPE', 'DRAIN')),
     CONSTRAINT chk_hypes_rank           CHECK (rank BETWEEN 1 AND 5)
-);
+) PARTITION BY HASH (benchmark_code);
+
+-- Native hash partitions (16) keyed by benchmark_code
+-- Native hash partitions (16) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p15
+SELECT public.create_hash_partitions('analysis', 'industry_hypes_and_drains', 16);
 
 -- Indexes:
 --   1. Per-(benchmark_code, period, weighting, date) lookup — the UI fetches
@@ -148,7 +153,7 @@ CREATE INDEX IF NOT EXISTS idx_hypes_bench_period_date
 CREATE INDEX IF NOT EXISTS idx_hypes_industry_bench_period_date
     ON analysis.industry_hypes_and_drains (industry_id, benchmark_code, period_days, weighting, date);
 
-COMMENT ON TABLE  analysis.industry_hypes_and_drains                IS 'Pre-computed top-5 (HYPE) + bottom-5 (DRAIN) industries ranked by hype (industry_return - benchmark_return) relative to a BROAD-MARKET benchmark over a trailing window. One row per (date, benchmark_code, period_days, weighting, rank_side, rank). weighting: equal (metric_value = hype, attribution_type=equal) or amt (metric_value = hype × shared_trading_amt, attribution_type=trading_amt). hype = industry_return_Nd - benchmark_return_Nd where industry_return_Nd = (bench_ret - (1-swf)*non_ind_ret) / swf and swf = benchmark_shared_weight / 100. benchmark_code: any broad-market index (is_broad_market=TRUE in stats.sec_index_tags). Positive=HYPE, negative=DRAIN. Built by analyze.industry_sentiments.hypes_and_drains (internal step, truncate-then-recompute). Depends on analysis.industry_attributions (incl. the 120d column) being populated first.';
+COMMENT ON TABLE  analysis.industry_hypes_and_drains                IS 'Pre-computed top-5 (HYPE) + bottom-5 (DRAIN) industries ranked by hype (industry_return - benchmark_return) relative to a BROAD-MARKET benchmark over a trailing window. One row per (benchmark_code, date, period_days, weighting, rank_side, rank). weighting: equal (metric_value = hype, attribution_type=equal) or amt (metric_value = hype × shared_trading_amt, attribution_type=trading_amt). hype = industry_return_Nd - benchmark_return_Nd where industry_return_Nd = (bench_ret - (1-swf)*non_ind_ret) / swf and swf = benchmark_shared_weight / 100. benchmark_code: any broad-market index (is_broad_market=TRUE in stats.sec_index_tags). Positive=HYPE, negative=DRAIN. Built by analyze.industry_sentiments.hypes_and_drains (internal step, truncate-then-recompute). Depends on analysis.industry_attributions (incl. the 120d column) being populated first.';
 COMMENT ON COLUMN analysis.industry_hypes_and_drains.weighting      IS 'Ranking method: equal = hype (industry_return_Nd - benchmark_return_Nd, attribution_type=equal). amt = hype × shared_trading_amt (absolute yuan impact, attribution_type=trading_amt). The UI toggle switches between these two ranking methods.';
 COMMENT ON COLUMN analysis.industry_hypes_and_drains.metric_value  IS 'Ranking metric. For weighting=equal: hype = industry_return_Nd - benchmark_return_Nd (range ~[-1,1]) where industry_return_Nd = (bench_ret - (1-swf)*non_ind_ret)/swf and swf = benchmark_shared_weight/100. For weighting=amt: hype × shared_trading_amt (absolute yuan, can be ~10^8-10^11). Positive = HYPE, negative = DRAIN in both cases.';
 COMMENT ON COLUMN analysis.industry_hypes_and_drains.shared_trading_amt IS 'Shared stocks trading amount (yuan) = benchmark.trading_amount - benchmark_non_this_industry_trading_amt. NULL when trading amount data is unavailable. Used to compute the amt-weighted metric and for UI tooltip context.';

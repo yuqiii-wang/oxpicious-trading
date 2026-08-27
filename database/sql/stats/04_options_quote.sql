@@ -15,10 +15,15 @@ CREATE TABLE IF NOT EXISTS stats.options_identity (
     contract_code             TEXT          NOT NULL,
     contract_name             TEXT          NOT NULL,
 
-    CONSTRAINT pk_options_identity PRIMARY KEY (date, contract_code)
-);
+    CONSTRAINT pk_options_identity PRIMARY KEY (contract_code, date)
+) PARTITION BY HASH (contract_code);
 
-COMMENT ON TABLE  stats.options_identity              IS 'Options identity: one row per (date, contract_code). PK shared by all options sub-tables.';
+-- Native hash partitions (8) keyed by contract_code
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'options_identity', 8);
+
+COMMENT ON TABLE  stats.options_identity              IS 'Options identity: one row per (date, contract_code). PK (contract_code, date) shared by all options sub-tables. Native HASH partitioned by contract_code.';
 COMMENT ON COLUMN stats.options_identity.contract_code IS 'SZSE option contract code (8-digit numeric string).';
 
 -- ----------------------------------------------------------------------------
@@ -41,9 +46,13 @@ CREATE TABLE IF NOT EXISTS stats.options_terms (
     expiry_date               DATE          NOT NULL,
     days_to_expiry            INTEGER       NOT NULL DEFAULT 0,
 
-    CONSTRAINT pk_options_terms PRIMARY KEY (date, contract_code),
-    CONSTRAINT fk_options_terms_date_contract FOREIGN KEY (date, contract_code) REFERENCES stats.options_identity(date, contract_code)
-);
+    CONSTRAINT pk_options_terms PRIMARY KEY (contract_code, date),
+    CONSTRAINT fk_options_terms_date_contract FOREIGN KEY (contract_code, date) REFERENCES stats.options_identity(contract_code, date)
+) PARTITION BY HASH (contract_code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'options_terms', 8);
 
 COMMENT ON TABLE  stats.options_terms                 IS 'Options underlying and contract terms.';
 COMMENT ON COLUMN stats.options_terms.underlying_code IS 'SZSE: native ETF code (e.g. "159901"). CFFEX: underlying index code (e.g. "000300"). Venues are separated by code space + underlying_target_type.';
@@ -63,9 +72,13 @@ CREATE TABLE IF NOT EXISTS stats.options_strike (
     has_a_suffix              SMALLINT      NOT NULL DEFAULT 0
         CHECK (has_a_suffix IN (0,1)),
 
-    CONSTRAINT pk_options_strike PRIMARY KEY (date, contract_code),
-    CONSTRAINT fk_options_strike_date_contract FOREIGN KEY (date, contract_code) REFERENCES stats.options_identity(date, contract_code)
-);
+    CONSTRAINT pk_options_strike PRIMARY KEY (contract_code, date),
+    CONSTRAINT fk_options_strike_date_contract FOREIGN KEY (contract_code, date) REFERENCES stats.options_identity(contract_code, date)
+) PARTITION BY HASH (contract_code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'options_strike', 8);
 
 COMMENT ON TABLE  stats.options_strike                IS 'Options strike price data (in 厘 = 1/1000 yuan).';
 COMMENT ON COLUMN stats.options_strike.has_a_suffix   IS '1 if contract name carries "A" suffix (=contract adjusted for underlying split/dividend); 0 otherwise.';
@@ -88,9 +101,13 @@ CREATE TABLE IF NOT EXISTS stats.options_settlement (
     underlying_close          NUMERIC(18,4) NOT NULL DEFAULT 0,
     moneyness_ratio           NUMERIC(12,8),
 
-    CONSTRAINT pk_options_settlement PRIMARY KEY (date, contract_code),
-    CONSTRAINT fk_options_settlement_date_contract FOREIGN KEY (date, contract_code) REFERENCES stats.options_identity(date, contract_code)
-);
+    CONSTRAINT pk_options_settlement PRIMARY KEY (contract_code, date),
+    CONSTRAINT fk_options_settlement_date_contract FOREIGN KEY (contract_code, date) REFERENCES stats.options_identity(contract_code, date)
+) PARTITION BY HASH (contract_code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'options_settlement', 8);
 
 COMMENT ON TABLE  stats.options_settlement            IS 'Options daily settlement prices and moneyness.';
 COMMENT ON COLUMN stats.options_settlement.settle    IS 'Daily settlement price in 元/张 (yuan per contract).';
@@ -109,9 +126,13 @@ CREATE TABLE IF NOT EXISTS stats.options_greeks (
     vega                      NUMERIC(18,8),
     rho                       NUMERIC(18,8),
 
-    CONSTRAINT pk_options_greeks PRIMARY KEY (date, contract_code),
-    CONSTRAINT fk_options_greeks_date_contract FOREIGN KEY (date, contract_code) REFERENCES stats.options_identity(date, contract_code)
-);
+    CONSTRAINT pk_options_greeks PRIMARY KEY (contract_code, date),
+    CONSTRAINT fk_options_greeks_date_contract FOREIGN KEY (contract_code, date) REFERENCES stats.options_identity(contract_code, date)
+) PARTITION BY HASH (contract_code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'options_greeks', 8);
 
 COMMENT ON TABLE  stats.options_greeks                IS 'Options Greeks (per-contract, Black-Scholes model).';
 COMMENT ON COLUMN stats.options_greeks.implied_vol   IS 'Black-Scholes implied vol (decimal, not %). NULL if computation failed.';
@@ -128,9 +149,13 @@ CREATE TABLE IF NOT EXISTS stats.options_volume_oi (
     open_interest             NUMERIC(24,4) NOT NULL DEFAULT 0,
     open_interest_wan         NUMERIC(24,4) NOT NULL DEFAULT 0,
 
-    CONSTRAINT pk_options_volume_oi PRIMARY KEY (date, contract_code),
-    CONSTRAINT fk_options_volume_oi_date_contract FOREIGN KEY (date, contract_code) REFERENCES stats.options_identity(date, contract_code)
-);
+    CONSTRAINT pk_options_volume_oi PRIMARY KEY (contract_code, date),
+    CONSTRAINT fk_options_volume_oi_date_contract FOREIGN KEY (contract_code, date) REFERENCES stats.options_identity(contract_code, date)
+) PARTITION BY HASH (contract_code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'options_volume_oi', 8);
 
 COMMENT ON TABLE  stats.options_volume_oi             IS 'Options volume & open interest (contracts).';
 COMMENT ON COLUMN stats.options_volume_oi.open_interest IS 'Open interest at end of day (contracts). Frontend uses this for call/put walls and max-pain.';
@@ -154,33 +179,43 @@ CREATE TABLE IF NOT EXISTS stats.options_aggregate (
     volume_put                NUMERIC(24,4),
     oi_total_call_put_ratio   NUMERIC(18,8),
 
-    CONSTRAINT pk_options_aggregate PRIMARY KEY (date, contract_code),
-    CONSTRAINT fk_options_aggregate_date_contract FOREIGN KEY (date, contract_code) REFERENCES stats.options_identity(date, contract_code)
-);
+    CONSTRAINT pk_options_aggregate PRIMARY KEY (contract_code, date),
+    CONSTRAINT fk_options_aggregate_date_contract FOREIGN KEY (contract_code, date) REFERENCES stats.options_identity(contract_code, date)
+) PARTITION BY HASH (contract_code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'options_aggregate', 8);
 
 COMMENT ON TABLE  stats.options_aggregate            IS 'Options per-underlying aggregate context (one row per (underlying_code, date)).';
 
 -- Indexes
+-- Underlying-code lookups on options_terms (non-PK key path).
 CREATE INDEX IF NOT EXISTS idx_options_quote_underlying_date
     ON stats.options_terms (underlying_code, date);
 
 CREATE INDEX IF NOT EXISTS idx_options_quote_underlying_date_expiry
     ON stats.options_terms (underlying_code, date, expiry_date);
 
-CREATE INDEX IF NOT EXISTS idx_options_quote_contract_date
-    ON stats.options_identity (contract_code, date);
+-- Legacy (contract_code, date) secondary indexes are now redundant with the
+-- code-first PK — drop them and add date-first indexes instead (restores the
+-- cross-contract date scans the old date-first PK used to serve).
+DROP INDEX IF EXISTS stats.idx_options_quote_contract_date;
+DROP INDEX IF EXISTS stats.idx_options_strike_contract_date;
+DROP INDEX IF EXISTS stats.idx_options_settlement_contract_date;
+DROP INDEX IF EXISTS stats.idx_options_greeks_contract_date;
+DROP INDEX IF EXISTS stats.idx_options_volume_oi_contract_date;
+DROP INDEX IF EXISTS stats.idx_options_aggregate_contract_date;
 
-CREATE INDEX IF NOT EXISTS idx_options_strike_contract_date
-    ON stats.options_strike (contract_code, date);
-
-CREATE INDEX IF NOT EXISTS idx_options_settlement_contract_date
-    ON stats.options_settlement (contract_code, date);
-
-CREATE INDEX IF NOT EXISTS idx_options_greeks_contract_date
-    ON stats.options_greeks (contract_code, date);
-
-CREATE INDEX IF NOT EXISTS idx_options_volume_oi_contract_date
-    ON stats.options_volume_oi (contract_code, date);
-
-CREATE INDEX IF NOT EXISTS idx_options_aggregate_contract_date
-    ON stats.options_aggregate (contract_code, date);
+CREATE INDEX IF NOT EXISTS idx_options_identity_date
+    ON stats.options_identity (date);
+CREATE INDEX IF NOT EXISTS idx_options_strike_date
+    ON stats.options_strike (date);
+CREATE INDEX IF NOT EXISTS idx_options_settlement_date
+    ON stats.options_settlement (date);
+CREATE INDEX IF NOT EXISTS idx_options_greeks_date
+    ON stats.options_greeks (date);
+CREATE INDEX IF NOT EXISTS idx_options_volume_oi_date
+    ON stats.options_volume_oi (date);
+CREATE INDEX IF NOT EXISTS idx_options_aggregate_date
+    ON stats.options_aggregate (date);

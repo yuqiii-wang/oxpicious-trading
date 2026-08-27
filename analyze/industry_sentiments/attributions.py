@@ -1085,6 +1085,12 @@ broad_codes AS (
 -- codes (already materialized by the broad-market INSERT; excluding them
 -- avoids PK conflicts). BROAD_* industries (whose members are all
 -- broad-market) thus get NO member-index rows.
+-- EXCEPTION: benchmark_broadmarket is a REAL tag-defined industry whose
+-- members ARE broad-market indices — its membership comes from
+-- stats.sec_index_tags (the curated flagship benchmark set), NOT from the
+-- primary sec_classification columns, so broad-market codes are NOT
+-- excluded for it and shared weights are 0 (tag membership, not
+-- composition-derived).
 member_indices AS (
     SELECT DISTINCT cls.industry_id, h.code AS benchmark_code
     FROM holdings h
@@ -1096,6 +1102,11 @@ member_indices AS (
       AND cls.is_industry_not_strategy = TRUE
       {industry_filter}
       AND h.code NOT IN (SELECT code FROM broad_codes)
+    UNION
+    SELECT t.industry_id, t.code AS benchmark_code
+    FROM stats.sec_index_tags t
+    WHERE t.industry_id = 'benchmark_broadmarket'
+      {tag_industry_filter}
 ),
 -- Total weight per (industry, stock) across ALL same-industry members.
 -- Used to compute industry_shared_weight WITHOUT an expensive holdings
@@ -1161,12 +1172,14 @@ LEFT JOIN benchmark_shared bsw
 def _build_member_index_map_sql(
     industry_filter: str = "",
     on_conflict: str = "",
+    tag_industry_filter: str = "",
 ) -> str:
     """Build the member-index map populate INSERT variant."""
     return _MEMBER_INDEX_MAP_POPULATE_CTE.format(
         composition_ctes=_format_composition_ctes(industry_filter),
         map_table=MAP_TABLE,
         industry_filter=industry_filter,
+        tag_industry_filter=tag_industry_filter,
     ) + on_conflict
 
 
@@ -1191,6 +1204,7 @@ MEMBER_INDEX_MAP_POPULATE_SQL = _build_member_index_map_sql(
 MEMBER_INDEX_MAP_POPULATE_PER_INDUSTRY_SQL = _build_member_index_map_sql(
     industry_filter="AND cls.industry_id = $1::text",
     on_conflict=_MAP_ON_CONFLICT,
+    tag_industry_filter="AND t.industry_id = $1::text",
 )
 
 # --- Phase 2: expand mapping table to per-date rows (simple JOIN) --------
@@ -1510,6 +1524,31 @@ async def needs_rolling_backfill(conn) -> bool:
         return bool(await conn.fetchval(_ROLLING_BACKFILL_CHECK_SQL))
     except Exception:
         return False
+
+
+async def find_missing_attribution_dates(conn) -> Set[datetime.date]:
+    """Return dates present in sec_alloc_perf_attribution but missing from
+    industry_attributions.
+
+    Downstream-date detection for the no-corr mode of
+    analyze.industry_sentiments: when the correlations step is skipped,
+    the incremental target dates for attributions / etf_contribution are
+    the source (perf_attribution) dates that have not been aggregated
+    yet, instead of corr window-end dates.
+    """
+    rows = await conn.fetch("""
+        WITH src AS (
+            SELECT DISTINCT date FROM analysis.sec_alloc_perf_attribution
+        ),
+        got AS (
+            SELECT DISTINCT date FROM analysis.industry_attributions
+        )
+        SELECT s.date
+        FROM src s LEFT JOIN got g ON g.date = s.date
+        WHERE g.date IS NULL
+        ORDER BY s.date
+    """)
+    return {r["date"] for r in rows}
 
 
 # ---------------------------------------------------------------------------

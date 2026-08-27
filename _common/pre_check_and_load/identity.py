@@ -17,7 +17,7 @@ Supported identity table shapes:
 
 Optional filters let callers narrow the query:
   * code=...           -> only rows for this code (e.g. "510050.SS")
-  * code_suffix=...    -> only rows for this exchange (e.g. "SS", "SZ", "BJ")
+  * exchange=...       -> only rows for this exchange (e.g. "SS", "SZ", "BJ")
   * time_value=...     -> only rows for this intraday bar time (e.g. time(15, 0))
 
 When skip_holidays=True (default), the expected date set is generated using
@@ -29,6 +29,7 @@ Migrated from _common/db_commons.py.
 from __future__ import annotations
 
 from datetime import date, time
+from operator import itemgetter
 from typing import Optional, Set
 
 from psycopg import sql
@@ -55,8 +56,8 @@ def _build_identity_where_clause(
     date_column: str,
     code: Optional[str],
     code_column: str,
-    code_suffix: Optional[str],
-    code_suffix_column: str,
+    exchange: Optional[str],
+    exchange_column: str,
     time_value: Optional[time],
     time_column: str,
 ) -> "sql.Composed":
@@ -70,9 +71,9 @@ def _build_identity_where_clause(
     ]
     if code is not None:
         clauses.append(sql.SQL("{col} = %s").format(col=sql.Identifier(code_column)))
-    if code_suffix is not None:
+    if exchange is not None:
         clauses.append(
-            sql.SQL("{col} = %s").format(col=sql.Identifier(code_suffix_column))
+            sql.SQL("{col} = %s").format(col=sql.Identifier(exchange_column))
         )
     if time_value is not None:
         clauses.append(sql.SQL("{col} = %s").format(col=sql.Identifier(time_column)))
@@ -92,15 +93,15 @@ def _build_identity_params(
     start_date: date,
     end_date: date,
     code: Optional[str],
-    code_suffix: Optional[str],
+    exchange: Optional[str],
     time_value: Optional[time],
 ) -> list:
     """Build the positional parameter list matching _build_identity_where_clause."""
     params: list = [start_date, end_date]
     if code is not None:
         params.append(code)
-    if code_suffix is not None:
-        params.append(code_suffix)
+    if exchange is not None:
+        params.append(exchange)
     if time_value is not None:
         params.append(time_value)
     return params
@@ -126,11 +127,11 @@ def check_identity(
     end_date: date,
     *,
     code: Optional[str] = None,
-    code_suffix: Optional[str] = None,
+    exchange: Optional[str] = None,
     time_value: Optional[time] = None,
     date_column: str = "date",
     code_column: str = "code",
-    code_suffix_column: str = "code_suffix",
+    exchange_column: str = "exchange",
     time_column: str = "time",
     skip_holidays: bool = True,
     conn=None,
@@ -145,11 +146,11 @@ def check_identity(
         code: optional filter on the ``code_column`` value (e.g. "510050.SS").
             When omitted, every code is considered -- the function returns
             dates with NO row of ANY code.
-        code_suffix: optional filter on the exchange suffix column
+        exchange: optional filter on the exchange column
             (e.g. "SS", "SZ", "BJ").
         time_value: optional filter on the intraday bar time column
             (datetime.time, e.g. time(15, 0)).
-        date_column, code_column, code_suffix_column, time_column:
+        date_column, code_column, exchange_column, time_column:
             column name overrides for tables with non-standard naming.
         skip_holidays: when True (default), the expected date set excludes
             weekends and CN_HOLIDAYS via _common._holidays_and_weekdays.
@@ -171,12 +172,12 @@ def check_identity(
         start_date=start_date, end_date=end_date,
         date_column=date_column,
         code=code, code_column=code_column,
-        code_suffix=code_suffix, code_suffix_column=code_suffix_column,
+        exchange=exchange, exchange_column=exchange_column,
         time_value=time_value, time_column=time_column,
     )
     params = _build_identity_params(
         start_date=start_date, end_date=end_date,
-        code=code, code_suffix=code_suffix, time_value=time_value,
+        code=code, exchange=exchange, time_value=time_value,
     )
 
     owns_conn = conn is None
@@ -206,11 +207,11 @@ async def check_identity_async(
     end_date: date,
     *,
     code: Optional[str] = None,
-    code_suffix: Optional[str] = None,
+    exchange: Optional[str] = None,
     time_value: Optional[time] = None,
     date_column: str = "date",
     code_column: str = "code",
-    code_suffix_column: str = "code_suffix",
+    exchange_column: str = "exchange",
     time_column: str = "time",
     skip_holidays: bool = True,
 ) -> Set[date]:
@@ -237,9 +238,9 @@ async def check_identity_async(
         clauses.append(f'"{code_column}" = ${placeholder_idx}')
         params.append(code)
         placeholder_idx += 1
-    if code_suffix is not None:
-        clauses.append(f'"{code_suffix_column}" = ${placeholder_idx}')
-        params.append(code_suffix)
+    if exchange is not None:
+        clauses.append(f'"{exchange_column}" = ${placeholder_idx}')
+        params.append(exchange)
         placeholder_idx += 1
     if time_value is not None:
         clauses.append(f'"{time_column}" = ${placeholder_idx}')
@@ -257,7 +258,9 @@ async def check_identity_async(
     )
 
     rows = await conn.fetch(query, *params)
-    present = {r[date_column] for r in rows if r[date_column] is not None}
+    present = {
+        d for d in map(itemgetter(date_column), rows) if d is not None
+    }
     return expected - present
 
 
@@ -281,7 +284,7 @@ def check_identity_years(
     archives). A year is "missing" if it has zero rows in the table within
     the [start_date, end_date] window.
 
-    Args: see :func:`check_identity` (code/time/code_suffix filters do not
+    Args: see :func:`check_identity` (code/time/exchange filters do not
     apply at year granularity).
     """
     years = list(range(start_date.year, end_date.year + 1))

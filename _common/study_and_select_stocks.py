@@ -22,7 +22,9 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
-from downloads._common.core import setup_logger
+import pandas as pd
+
+from downloads._common import setup_logger
 
 logger = setup_logger("study_select_stocks")
 
@@ -41,7 +43,7 @@ ETF_WEIGHT_THRESHOLD = 0.1
 # to the last N days is sufficient to identify which stocks are CURRENTLY in
 # ETFs — without scanning the full multi-year history (~3M+ rows). 30 days
 # covers ~22 trading days and lets Postgres use the
-# (code_suffix, code, date DESC) index efficiently.
+# (exchange, code, date DESC) index efficiently.
 TARGET_LOOKBACK_DAYS = 30
 
 
@@ -96,13 +98,13 @@ def load_target_stocks(
     days. Without the date filter the query walks the full multi-year history
     of stock_identity (~3M+ rows); the filter narrows it to ~22 trading days,
     letting Postgres serve it from the
-    ``idx_stock_identity_suffix_code_date (code_suffix, code, date DESC)
+    ``idx_stock_identity_exchange_code_date (exchange, code, date DESC)
     INCLUDE (name, is_in_index_or_etf)`` index efficiently.
     """
     query = """
         SELECT DISTINCT ON (si.code) si.code, si.name
           FROM stats.stock_identity si
-         WHERE si.code_suffix = 'SZ'
+         WHERE si.exchange = 'SZ'
            AND si.is_in_index_or_etf = TRUE
            AND si.date >= CURRENT_DATE - (%s * INTERVAL '1 day')
          ORDER BY si.code, si.date DESC;
@@ -110,14 +112,11 @@ def load_target_stocks(
     with conn.cursor() as cur:
         cur.execute(query, (lookback_days,))
         rows = cur.fetchall()
-    stocks: List[Tuple[str, str]] = []
-    for r in rows:
-        # r is a tuple (code, name); code is suffixed e.g. "000001.SZ".
-        full_code = r[0]
-        name = r[1] or ""
-        bare = full_code.split(".")[0]
-        stocks.append((bare, name))
-    return stocks
+    # Positional whole-column unpack; vectorized bare-code split via pandas
+    codes, names = zip(*rows)  # rows are (code, name) tuples
+    _df = pd.DataFrame({"code": codes, "name": names})
+    bare = _df["code"].str.split(".").str[0]
+    return list(zip(bare.tolist(), _df["name"].fillna("").tolist()))
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +129,10 @@ def load_yesterday_top_traded_stocks(
     """Return [(bare_code, name), ...] for the top-N SZSE stocks by
     ``trading_amount`` on the most recent trading day.
 
-    "Yesterday" is resolved as MAX(date) in ``stats.stock_basic_stats`` for
-    SZSE codes (the authoritative source of real OHLC trading days — robust
-    to weekends/holidays and immune to placeholder rows with 0 amount that
+    "Yesterday" is resolved as MAX(date) in ``stats.stock_basic_stats``
+    scoped to SZSE via the ``stock_identity.exchange`` join (the
+    authoritative source of real OHLC trading days — robust to
+    weekends/holidays and immune to placeholder rows with 0 amount that
     streaming may insert into ``stock_liquidity_margin`` ahead of the next
     OHLCV build). The trading amount itself is read from
     ``stats.stock_liquidity_margin`` (where trading_shares/trading_amount
@@ -144,17 +144,19 @@ def load_yesterday_top_traded_stocks(
     """
     query = """
         WITH latest AS (
-            SELECT MAX(date) AS d
-              FROM stats.stock_basic_stats
-             WHERE code LIKE '%%.SZ'
+            SELECT MAX(sbs.date) AS d
+              FROM stats.stock_basic_stats sbs
+              JOIN stats.stock_identity six
+                ON six.code = sbs.code AND six.date = sbs.date
+             WHERE six.exchange = 'SZ'
         )
         SELECT slm.code, si.name
           FROM stats.stock_liquidity_margin slm
-          CROSS JOIN latest l
-          LEFT JOIN stats.stock_identity si
+          JOIN stats.stock_identity si
             ON si.code = slm.code AND si.date = slm.date
+           AND si.exchange = 'SZ'
+          CROSS JOIN latest l
          WHERE slm.date = l.d
-           AND slm.code LIKE '%%.SZ'
            AND slm.trading_amount > 0
          ORDER BY slm.trading_amount DESC
          LIMIT %s
@@ -162,10 +164,8 @@ def load_yesterday_top_traded_stocks(
     with conn.cursor() as cur:
         cur.execute(query, (n,))
         rows = cur.fetchall()
-    stocks: List[Tuple[str, str]] = []
-    for r in rows:
-        full_code = r[0]
-        name = r[1] or ""
-        bare = full_code.split(".")[0]
-        stocks.append((bare, name))
-    return stocks
+    # Positional whole-column unpack; vectorized bare-code split via pandas
+    codes, names = zip(*rows)  # rows are (code, name) tuples
+    _df = pd.DataFrame({"code": codes, "name": names})
+    bare = _df["code"].str.split(".").str[0]
+    return list(zip(bare.tolist(), _df["name"].fillna("").tolist()))

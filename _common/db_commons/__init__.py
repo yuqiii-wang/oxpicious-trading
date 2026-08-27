@@ -12,6 +12,7 @@ Submodules:
   - _sync_ops       — synchronous bulk operations and table management
   - _async_ops      — asynchronous bulk operations and table management
   - _copy_or_upsert — copy-or-upsert split for fast-path bulk inserts
+  - _batched_copy   — key-bounded chunked COPY (partition-key chunks)
 
 Uses psycopg for sync connections and asyncpg for async connections.
 """
@@ -52,6 +53,8 @@ __all__ = [
     "copy_or_upsert_split_async",
     "copy_or_upsert_split_pool_async",
     "get_max_table_date_async",
+    # Key-bounded chunked COPY
+    "batched_copy_by_key_async",
 ]
 
 # -- Internal helpers (exported for sibling modules) --
@@ -109,4 +112,9 @@ from ._copy_or_upsert import (
     copy_or_upsert_split_async,
     copy_or_upsert_split_pool_async,
     get_max_table_date_async,
+)
+
+# -- Key-bounded chunked COPY --
+from ._batched_copy import (
+    batched_copy_by_key_async,
 )

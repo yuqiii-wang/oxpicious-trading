@@ -77,6 +77,12 @@ COMMENT ON COLUMN strategy.algo_configs.is_default IS
 
 -- ----------------------------------------------------------------------------
 --  Table: strategy.training_runs — one row per Train Model invocation.
+--
+--  NOT hash-partitioned: process-log registry keyed by a surrogate IDENTITY
+--  (run_id). Partitioning by the identity column itself would only scatter an
+--  append-only log; lookups go through idx_training_runs_key
+--  (sec_type, sec_code, strategy_name, started_at DESC). The per-trial FACT
+--  table training_trials below IS hash-partitioned by run_id.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS strategy.training_runs (
     run_id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -147,7 +153,12 @@ CREATE TABLE IF NOT EXISTS strategy.training_trials (
 
     CONSTRAINT pk_training_trials
         PRIMARY KEY (run_id, loss_type, trial_no, grid_idx)
-);
+) PARTITION BY HASH (run_id);
+
+-- Native hash partitions (8) keyed by run_id
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('strategy', 'training_trials', 8);
 
 CREATE INDEX IF NOT EXISTS idx_training_trials_run
     ON strategy.training_trials (run_id, loss_type, loss);

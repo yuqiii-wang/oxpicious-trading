@@ -7,6 +7,8 @@ factors and adjusted OHLC columns.
 import numpy as np
 import pandas as pd
 
+from _common.df_utils import safe_columns
+
 
 def apply_split_adjustment(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
     """Apply split/dividend adjustment to ETF OHLCV data.
@@ -30,9 +32,9 @@ def apply_split_adjustment(df: pd.DataFrame, verbose: bool = True) -> pd.DataFra
     close_prevs = np.zeros(n_rows, dtype=float)
     is_split = np.zeros(n_rows, dtype=bool)
 
-    codes = df["code"].values
-    closes = df["close"].astype(float).values
-    pcts = df["pct_change"].astype(float).values
+    codes = np.asarray(df["code"])
+    closes = np.asarray(df["close"], dtype="float64")
+    pcts = np.asarray(df["pct_change"], dtype="float64")
 
     n_splits_detected = 0
     start_idx = 0
@@ -78,7 +80,7 @@ def apply_split_adjustment(df: pd.DataFrame, verbose: bool = True) -> pd.DataFra
     is_div_like = evt_mask & (abs_dev < DIV_FACTOR_TOL)
     is_split_like = evt_mask & ~is_div_like
 
-    prev_close_arr = df["prev_close"].astype(float).values
+    prev_close_arr = np.asarray(df["prev_close"], dtype="float64")
     D_from_szse = np.where(
         evt_mask & (close_prevs > 0),
         close_prevs - prev_close_arr,
@@ -93,18 +95,19 @@ def apply_split_adjustment(df: pd.DataFrame, verbose: bool = True) -> pd.DataFra
     act_type[is_split_like] = "split_or_conv"
     df["action_type"] = act_type
 
-    cf = df["cum_split_factor"].values
-    df["adj_prev_close"] = df["prev_close"].astype(float).values * cf
-    df["adj_open"] = df["open"].astype(float).values * cf
-    df["adj_high"] = df["high"].astype(float).values * cf
-    df["adj_low"] = df["low"].astype(float).values * cf
-    df["adj_close"] = df["close"].astype(float).values * cf
+    cf = np.asarray(df["cum_split_factor"], dtype="float64")
+    df["adj_prev_close"] = np.asarray(df["prev_close"], dtype="float64") * cf
+    df["adj_open"] = np.asarray(df["open"], dtype="float64") * cf
+    df["adj_high"] = np.asarray(df["high"], dtype="float64") * cf
+    df["adj_low"] = np.asarray(df["low"], dtype="float64") * cf
+    df["adj_close"] = np.asarray(df["close"], dtype="float64") * cf
 
-    valid = df["close"].astype(float).values > 1e-9
+    valid = np.asarray(df["close"], dtype="float64") > 1e-9
     szse_prevclose_equiv = np.where(
         valid,
-        df["adj_close"].values / (1.0 + df["pct_change"].astype(float).values / 100.0),
-        df["adj_prev_close"].values,
+        np.asarray(df["adj_close"], dtype="float64")
+        / (1.0 + np.asarray(df["pct_change"], dtype="float64") / 100.0),
+        np.asarray(df["adj_prev_close"], dtype="float64"),
     )
     use_equiv = np.zeros(n_rows, dtype=bool)
     cur_code = codes[0]
@@ -116,12 +119,16 @@ def apply_split_adjustment(df: pd.DataFrame, verbose: bool = True) -> pd.DataFra
             if i < n_rows:
                 start_idx = i
                 cur_code = codes[i]
-    df.loc[use_equiv & valid, "adj_prev_close"] = szse_prevclose_equiv[use_equiv & valid]
+    # Column-first whole-array replacement (no boolean .loc addressing;
+    # same overwrite semantics as the old df.loc[mask, col] = vals[mask])
+    _take_equiv = use_equiv & valid
+    df["adj_prev_close"] = np.where(
+        _take_equiv, szse_prevclose_equiv, df["adj_prev_close"])
 
     for col in ["adj_prev_close", "adj_open", "adj_high", "adj_low", "adj_close"]:
         df[col] = df[col].round(6)
 
-    col_order = list(df.columns)
+    col_order = safe_columns(df)
     block_tail = [
         "cum_split_factor", "is_split_event_day",
         "action_type", "implied_dividend_per_share", "cum_dividend_per_share",
@@ -139,7 +146,7 @@ def apply_split_adjustment(df: pd.DataFrame, verbose: bool = True) -> pd.DataFra
     df = df[col_order]
 
     if verbose:
-        n_etfs_affected = int(df.loc[df["is_split_event_day"] == 1, "code"].nunique())
+        n_etfs_affected = int(df["code"][df["is_split_event_day"] == 1].nunique())
         n_div = int(is_div_like.sum())
         n_split = int(is_split_like.sum())
         print(f"    [CORP-ADJ] detected {n_splits_detected} corp-action days "

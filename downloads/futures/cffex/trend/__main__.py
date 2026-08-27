@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+
 import argparse
 import os
 import sys
@@ -55,7 +56,7 @@ from _common.pre_check_and_load.identity import check_identity
 
 setup_utf8_stdout()
 
-from downloads._common.core import setup_logger, resolve_out_dir
+from downloads._common import setup_logger, resolve_out_dir
 from downloads.futures.cffex.trend.config import (
     CFFEX_TREND_URL,
     DOWNLOAD_SLEEP_SEC,

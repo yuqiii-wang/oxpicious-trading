@@ -26,7 +26,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Dict, Optional
 
-from downloads._common.core import (
+from downloads._common import (
     COMMON_BASE_HEADERS,
     DEFAULT_SLEEP_SEC,
     AntiBotConfig,

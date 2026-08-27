@@ -80,6 +80,7 @@ to skip already-fetched data. ``--force`` re-fetches everything.
 
 from __future__ import annotations
 
+
 import csv
 from datetime import date, datetime
 from pathlib import Path
@@ -87,7 +88,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_TIMEOUT,
     DEFAULT_SLEEP_SEC,
     DEFAULT_START_DATE,
@@ -105,7 +106,7 @@ from downloads._common.core import (
     resolve_out_dir,
     setup_logger,
 )
-from downloads.stock.sse._common.list_endpoint import (
+from downloads._common.exchanges.sse import (
     COLUMNS,
     CSV_ENCODING,
     JSONP_CALLBACK,
@@ -370,7 +371,7 @@ def load_target_stocks(conn) -> List[Tuple[str, str]]:
     """Return [(bare_code, name), ...] for SSE stocks held by ETFs.
 
     Mirrors ``stream_szse_price.load_target_stocks`` but filters to SSE codes
-    via ``stock_identity.code_suffix = 'SS'`` (instead of SZSE's ``%.SZ``).
+    via ``stock_identity.exchange = 'SS'`` (instead of SZSE's ``exchange='SZ'``).
     Joins the latest stock_identity snapshot with the latest ETF composition
     snapshot in stats.sec_composition. ``stock_code`` in sec_composition
     carries the exchange suffix (e.g. "600000.SS"), matching stock_identity.code.
@@ -386,7 +387,7 @@ def load_target_stocks(conn) -> List[Tuple[str, str]]:
         # Precompute the latest dates via index-friendly lookups (avoids the
         # expensive MAX(date) subquery scanning pk_stock_identity backward).
         cur.execute(
-            "SELECT MAX(date) FROM stats.stock_identity WHERE code_suffix = 'SS'"
+            "SELECT MAX(date) FROM stats.stock_identity WHERE exchange = 'SS'"
         )
         latest_id_date = cur.fetchone()[0]
         cur.execute(
@@ -403,7 +404,7 @@ def load_target_stocks(conn) -> List[Tuple[str, str]]:
             return []
 
         # Materialize the distinct ETF-held stock_codes first, then merge-join
-        # with stock_identity filtered to the latest date + code_suffix='SS'.
+        # with stock_identity filtered to the latest date + exchange='SS'.
         cur.execute(
             """
             WITH etf_targets AS (
@@ -415,7 +416,7 @@ def load_target_stocks(conn) -> List[Tuple[str, str]]:
             SELECT si.code, si.name
               FROM stats.stock_identity si
               JOIN etf_targets t ON t.stock_code = si.code
-             WHERE si.code_suffix = 'SS'
+             WHERE si.exchange = 'SS'
                AND si.date = %s
              ORDER BY si.code
             """,
@@ -756,6 +757,10 @@ def _write_stats_csv(
         writer.writeheader()
         for r in rows_sorted:
             writer.writerow(r)
+    # canonicalize 证券代码 -> "NNNNNN.SS" + exchange/board/sec_type columns
+    # (no-op for files without a 证券代码 column)
+    from downloads._common import ensure_canonical_csv
+    ensure_canonical_csv(path, "SS", sec_type="stock")
 
 
 def _build_date_grouped_pe_file(
@@ -1231,6 +1236,9 @@ def download_sse_archive(
 
             if ohlcv_rows:
                 _write_rows(trend_file, ohlcv_rows, write_header=True)
+                # canonicalize 证券代码 -> "NNNNNN.SS" + exchange/board/sec_type cols
+                from downloads._common import ensure_canonical_csv
+                ensure_canonical_csv(trend_file, "SS", sec_type="stock")
                 trend_rows_written += len(ohlcv_rows)
                 logger.info(
                     "  -> %s trend: %d rows -> %s",

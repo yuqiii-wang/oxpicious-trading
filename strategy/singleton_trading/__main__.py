@@ -19,16 +19,20 @@ MIXED (weighted blend): ``--algo macd:0.5,bb:0.5``. Two phases:
      the blended backtest under a new ``portfolio:macd*0.5``
      strategy_name.
 
-After both phases, risks + forecast are computed for every strategy_name
+After both phases, risks are computed for every strategy_name
 (sub-algos + portfolio).
 
 Per-(security, date-range) algo params are loaded from
 ``strategy.algo_configs`` (a default row is inserted on first run if none
-exists); trading-layer keys (min_holding_period, buy_notional,
-skip_final_liquidation) come from STRATEGY_PARAMS / CLI.
+exists); trading-layer keys (min_holding_period, buy_notional) come from STRATEGY_PARAMS / CLI.
 """
 from __future__ import annotations
 
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
 import argparse
 import asyncio
 import os
@@ -68,7 +72,7 @@ from strategy._common.fetch import discover_available_codes  # noqa: E402
 # Engine/runner-consumed keys that stay CLI-driven (NOT stored in the DB
 # default algo_configs row). Everything else in the merged params comes from
 # the algo's DEFAULT_PARAMS + the DB row.
-_TRADING_LAYER_KEYS = ("min_holding_period", "buy_notional", "skip_final_liquidation", "fault_tolerance")
+_TRADING_LAYER_KEYS = ("min_holding_period", "buy_notional", "fault_tolerance")
 
 
 def _parse_algo_arg(raw: str) -> dict:
@@ -116,13 +120,6 @@ async def main() -> None:
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument(
-        "--no-forecast", action="store_true",
-        help="Skip the 1-month forecast (10 scenarios + child seqs) and "
-             "instead sell ALL remaining units on the last day "
-             "(FINAL LIQUIDATION). Forecast is on by default (position "
-             "stays open; forecast children take over the sell schedule).",
-    )
-    ap.add_argument(
         "--fault-tolerance", type=float, default=0,
         help="Fault tolerance percentage (0-20). When >0, runs a two-pass "
              "stress test: baseline run finds decision dates, then OHLC is "
@@ -139,14 +136,9 @@ async def main() -> None:
     # Trading-layer params (shared across all algos + the portfolio).
     # fault_tolerance is threaded into params so the two-pass runner in
     # AlgoBase.run_backtest / AlgoSignalCollector.run_backtest picks it up.
-    # skip_final_liquidation: forecast ON → position stays open at the end of
-    # actual OHLC (the forecast child seqs take over the sell schedule over
-    # the 20 forecast days); --no-forecast → the engine sells ALL remaining
-    # units on the last day (FINAL LIQUIDATION) so the run is fully closed.
     trading_layer = {
         "min_holding_period": STRATEGY_PARAMS["min_holding_period"],
         "buy_notional": args.buy_notional,
-        "skip_final_liquidation": not args.no_forecast,
     }
     if ft > 0:
         trading_layer["fault_tolerance"] = ft
@@ -170,10 +162,6 @@ async def main() -> None:
 
             params = dict(STRATEGY_PARAMS)
             params["buy_notional"] = args.buy_notional
-            # Forecast ON → position stays open (forecast children sell);
-            # --no-forecast → FINAL LIQUIDATION sells all remaining units
-            # on the last day (overrides DB algo_configs via strategy_overrides).
-            params["skip_final_liquidation"] = not args.no_forecast
             if ft > 0:
                 params["fault_tolerance"] = ft
 
@@ -221,20 +209,6 @@ async def main() -> None:
                     codes_by_st=codes_by_st, force=args.force,
                     strategy_name=strategy_name,
                 )
-                if not args.no_forecast:
-                    from strategy._1m_forcast.runner import run_forecast
-                    for st in sec_types:
-                        codes_for_st = (
-                            codes_by_st[st] if codes_by_st and st in codes_by_st
-                            else None
-                        )
-                        await run_forecast(
-                            conn=conn, strategy_name=strategy_name,
-                            sec_type=st, codes=codes_for_st,
-                            force=args.force, dry_run=False,
-                        )
-                else:
-                    print("  --no-forecast: skipping 1-month forecast.", flush=True)
         else:
             # ---- MIXED mode: sub-algos + portfolio ----
             from _common.db_commons import get_db_pool_async
@@ -294,28 +268,18 @@ async def main() -> None:
                 )
 
                 if not args.dry_run:
-                    # Risks + forecast for every strategy_name (sub-algos + portfolio).
+                    # Risks for every strategy_name (sub-algos + portfolio).
                     all_names = [
                         append_ft_suffix(n, ft) for n, w in selection.items() if w != 0
                     ] + [pf_name]
                     for sname in all_names:
-                        print(f"\n  --- risks + forecast for '{sname}' [{st}] ---",
+                        print(f"\n  --- risks for '{sname}' [{st}] ---",
                               flush=True)
                         await compute_and_upsert_risks(
                             conn=conn, sec_types=[st],
                             codes_by_st={st: codes}, force=args.force,
                             strategy_name=sname,
                         )
-                        if not args.no_forecast:
-                            from strategy._1m_forcast.runner import run_forecast
-                            await run_forecast(
-                                conn=conn, strategy_name=sname,
-                                sec_type=st, codes=codes,
-                                force=args.force, dry_run=False,
-                            )
-                        else:
-                            print(f"  --no-forecast: skipping forecast for {sname}.",
-                                  flush=True)
     finally:
         if pool is not None:
             try:

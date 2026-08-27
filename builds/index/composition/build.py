@@ -20,6 +20,10 @@ from typing import List, Optional, Set, Tuple
 import pandas as pd
 
 from builds._commons.paths import INDEX_COMP_DIR, SZSE_INDEX_COMP_DIR
+from builds._commons.row_emission import records_from_frame
+from builds._commons.safe_parse import safe_to_numeric
+from _common.df_utils import safe_columns
+from downloads._common import read_csv_gpu_safe
 
 
 def _extract_code_date_from_filename(filename: str) -> Optional[Tuple[str, datetime.date]]:
@@ -41,11 +45,29 @@ def _extract_code_date_from_filename(filename: str) -> Optional[Tuple[str, datet
     return (code, snap_date)
 
 
+def _normalize_code_filter(code_filter: str) -> str:
+    """Reduce a --code value to the bare zfilled index code used in
+    sec_composition (e.g. '000300.SZ' / '300' → '000300')."""
+    return str(code_filter).split(".")[0].strip().zfill(6)
+
+
+def _filter_files_by_code(files: List[str], code_filter: str) -> List[str]:
+    """Keep only composition CSVs whose filename index code matches."""
+    bare = _normalize_code_filter(code_filter)
+    out = []
+    for f in files:
+        key = _extract_code_date_from_filename(f)
+        if key and key[0] == bare:
+            out.append(f)
+    return out
+
+
 async def filter_comp_files_by_missing(
     conn,
     directory: str,
     label: str,
     source_type: str = "index",
+    code_filter: Optional[str] = None,
 ) -> List[str]:
     """Filter composition CSV files to only those with missing (code, snapshot_date) in DB.
 
@@ -57,6 +79,8 @@ async def filter_comp_files_by_missing(
         directory: directory containing *_closeweight_*.csv files
         label: human-readable label for logging
         source_type: source_type column value ('index' for both CSI and SZSE)
+        code_filter: optional single index code — restricts the check (and the
+            files read) to that code only
 
     Returns:
         List of file paths to actually read.
@@ -85,6 +109,14 @@ async def filter_comp_files_by_missing(
 
     print(f"    [{label}] {len(files)} CSV files → {len(source_keys)} unique (code, date) pairs", flush=True)
 
+    if code_filter:
+        bare = _normalize_code_filter(code_filter)
+        files = _filter_files_by_code(files, bare)
+        source_keys = {k for k in source_keys if k[0] == bare}
+        if not source_keys:
+            print(f"    [{label}] no CSVs for code {bare} in {directory}", flush=True)
+            return []
+
     # Check DB for existing pairs
     schema, tbl = "stats", "sec_composition"
     existing_query = f'''
@@ -92,7 +124,13 @@ async def filter_comp_files_by_missing(
         FROM "{schema}"."{tbl}"
         WHERE source_type = $1
     '''
-    existing_rows = await conn.fetch(existing_query, source_type)
+    if code_filter:
+        existing_query += " AND code = $2"
+        existing_rows = await conn.fetch(
+            existing_query, source_type, _normalize_code_filter(code_filter)
+        )
+    else:
+        existing_rows = await conn.fetch(existing_query, source_type)
     existing_keys: Set[Tuple[str, datetime.date]] = {
         (r["code"], r["snapshot_date"]) for r in existing_rows
     }
@@ -142,10 +180,9 @@ def _read_comp_csvs(directory: str, label: str, files: Optional[List[str]] = Non
 
     dfs = []
     for path in files:
-        try:
-            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
-        except Exception:
-            continue
+        # read_csv_gpu_safe: NO encoding kwarg (cudf CPU-fallback trigger);
+        # BOM stripped post-read, keep_default_na=False + na_values=[""]
+        df = read_csv_gpu_safe(path, dtype=str)
         if df is not None and len(df) > 0:
             dfs.append(df)
 
@@ -154,10 +191,10 @@ def _read_comp_csvs(directory: str, label: str, files: Optional[List[str]] = Non
 
     combined = pd.concat(dfs, ignore_index=True)
     for c in ("snapshot_date", "index_code", "stock_code", "stock_name", "weight_pct"):
-        if c not in combined.columns:
+        if c not in safe_columns(combined):
             print(f"    [{label}] WARN: missing column '{c}'", flush=True)
             return pd.DataFrame()
-    combined["weight_pct"] = pd.to_numeric(combined["weight_pct"], errors="coerce").fillna(0.0)
+    combined["weight_pct"] = safe_to_numeric(combined["weight_pct"]).fillna(0.0)
     combined = combined.sort_values(
         ["index_code", "snapshot_date", "weight_pct"],
         ascending=[True, True, False],
@@ -191,11 +228,10 @@ def _build_rows_from_df(combined: pd.DataFrame, label: str) -> list:
             _sub["code"] = str(index_code).strip().zfill(6)
             _sub["source_type"] = "index"
             _sub["stock_name"] = _sub["stock_name"].fillna("").astype(str)
-            rows.extend(
-                _sub[["snapshot_date", "code", "source_type", "rank",
-                      "stock_code", "stock_name", "weight_pct"]]
-                .to_dict(orient="records")
-            )
+            rows.extend(records_from_frame(
+                _sub, ["snapshot_date", "code", "source_type", "rank",
+                       "stock_code", "stock_name", "weight_pct"]
+            ))
 
     if rows:
         n_indices = combined["index_code"].nunique()
@@ -205,29 +241,49 @@ def _build_rows_from_df(combined: pd.DataFrame, label: str) -> list:
     return rows
 
 
-async def build_index_composition_rows(conn=None, force: bool = False) -> list:
+async def build_index_composition_rows(conn=None, force: bool = False,
+                                       code_filter: Optional[str] = None) -> list:
     """Read CSI index composition CSVs and build rows for stats.sec_composition.
 
     With a DB connection, first filters files by missing (code, snapshot_date)
-    before reading any CSV content.
+    before reading any CSV content. With code_filter, only that index's files
+    are considered (both in the DB check and the CSV read).
     """
     if conn is not None and not force:
-        filtered_files = await filter_comp_files_by_missing(conn, INDEX_COMP_DIR, "INDEX-COMP")
+        filtered_files = await filter_comp_files_by_missing(
+            conn, INDEX_COMP_DIR, "INDEX-COMP", code_filter=code_filter
+        )
         combined = _read_comp_csvs(INDEX_COMP_DIR, "INDEX-COMP", files=filtered_files)
+    elif code_filter:
+        all_files = sorted(glob.glob(os.path.join(INDEX_COMP_DIR, "*_closeweight_*.csv")))
+        combined = _read_comp_csvs(
+            INDEX_COMP_DIR, "INDEX-COMP",
+            files=_filter_files_by_code(all_files, code_filter),
+        )
     else:
         combined = _read_comp_csvs(INDEX_COMP_DIR, "INDEX-COMP")
     return _build_rows_from_df(combined, "INDEX-COMP")
 
 
-async def build_szse_index_composition_rows(conn=None, force: bool = False) -> list:
+async def build_szse_index_composition_rows(conn=None, force: bool = False,
+                                            code_filter: Optional[str] = None) -> list:
     """Read SZSE index composition CSVs and build rows for stats.sec_composition.
 
     With a DB connection, first filters files by missing (code, snapshot_date)
-    before reading any CSV content.
+    before reading any CSV content. With code_filter, only that index's files
+    are considered (both in the DB check and the CSV read).
     """
     if conn is not None and not force:
-        filtered_files = await filter_comp_files_by_missing(conn, SZSE_INDEX_COMP_DIR, "SZSE-INDEX-COMP")
+        filtered_files = await filter_comp_files_by_missing(
+            conn, SZSE_INDEX_COMP_DIR, "SZSE-INDEX-COMP", code_filter=code_filter
+        )
         combined = _read_comp_csvs(SZSE_INDEX_COMP_DIR, "SZSE-INDEX-COMP", files=filtered_files)
+    elif code_filter:
+        all_files = sorted(glob.glob(os.path.join(SZSE_INDEX_COMP_DIR, "*_closeweight_*.csv")))
+        combined = _read_comp_csvs(
+            SZSE_INDEX_COMP_DIR, "SZSE-INDEX-COMP",
+            files=_filter_files_by_code(all_files, code_filter),
+        )
     else:
         combined = _read_comp_csvs(SZSE_INDEX_COMP_DIR, "SZSE-INDEX-COMP")
     return _build_rows_from_df(combined, "SZSE-INDEX-COMP")

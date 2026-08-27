@@ -1,168 +1,51 @@
 -- ============================================================================
---  Industry Sentiments — cross-sectional aggregation of REBASED-TO-100 index
---  levels across member indices within each industry, bucketed by pool_size.
+--  Industry Sentiments — derived tables built on top of
+--  analysis.industry_sentiments (whose DDL now lives in
+--  database/sql/stats/13_industry_baseline.sql — migrated 2026-08-24).
 --
---  Table: analysis.industry_sentiments
---    PK: (date, industry_id, pool_size)
---    pool_size ∈ ('small','mid','large','all')
---      small = stock_num < 51    (tight thematic indices, e.g. 中证银行 50)
---      mid   = stock_num 51-180  (mid-cap baskets, e.g. CSI 100/200)
---      large = stock_num > 180   (broad baskets, e.g. CSI 300/500/800/1000)
---      all   = every member index regardless of pool size
---    One row per (date, industry_id, pool_size) slice stores the MEAN and
---    VARIANCE of the rebased-to-100 values across member indices in that slice
---    on that date.
---
---  REBASE CONVENTION (fixed at history start, scale-invariant)
---    Each member index's close series is rebased to 100 at its FIRST available
---    close (history start, per-index first date — indices listed later start
---    at 100 on their own first date). This makes member indices comparable
---    regardless of absolute price level — e.g. CSI 500 (~5500pts) and SSE 50
---    (~2600pts) both start at 100, so a +10% move on either looks equally
---    large. mean_price and var_price are computed across these rebased-to-100
---    values.
---
---    mean_pe and total_trading_amount are computed on RAW values (no rebasing):
---      • PE is already a ratio (scale-invariant) — rebasing would lose the
---        absolute valuation level (you want to see 15x vs 30x, not 100 vs 200).
---        mean_pe = AVG(raw PE) across member indices, NULL PE excluded.
---      • total_trading_amount = SUM(stock_liquidity_margin.trading_amount) across the UNION of
---        stocks from all member indices' active compositions. This captures
---        total industry capital flow (yuan), counting each stock ONCE even if
---        it appears in multiple member indices. Stock trading_amount source:
---        stats.stock_liquidity_margin.trading_amount (in yuan, converted from source CSV
---        成交金额(万元) × 10000). Mirrors etf_liquidity_margin.trading_amount.
---
---    NOTE: the rebased-to-100 ANCHOR for mean_price/var_price is the START OF
---    ALL HISTORY (fixed server-side). The frontend multi-line plot uses a
---    CLIENT-SIDE slider that re-rebases the LINES to the slider's window-start
---    — so the mean/var overlay and the lines are aligned only when the slider
---    is at full range. When the slider narrows, the lines re-rebase but the
---    mean/var overlay stays anchored at history start. This tradeoff was
---    chosen by the user: server-side precompute is cleanest with a single
---    fixed anchor.
---
---    LATEST-SNAPSHOT-ONLY (no temporal filter): stock_num and the stock
---    union for total_trading_amount are looked up from the LATEST
---    sec_composition snapshot per index code, regardless of the row's date.
---    This is a temporal extrapolation — the current composition is used as
---    a proxy for historical membership. Rationale: sec_composition only has
---    a few recent snapshots (from 2026-06-30 onward); filtering on
---    snapshot_date <= date would drop ALL pre-snapshot dates, leaving
---    non-all pool_size slices and total_trading_amount with only ~24 days
---    of history. Using the latest snapshot gives full history. The trading
---    VALUES (close, PE, trading_amount) are all historical — only the
---    stock UNIVERSE and pool_size classification use the latest snapshot.
---
---  BROAD-MARKET INDICES
---    Broad-market benchmarks (CSI 300, SSE 50, etc.) are classified in
---    stats.sec_classification under industry_ids BROAD_CSI, BROAD_SSE,
---    BROAD_SZSE, BROAD_STAR — they appear as 'industries' in the themes tree
---    and are aggregated IDENTICALLY to industry indices (no special handling).
---    The 'all' pool_size slice for BROAD_* industries gives the broad-market
---    aggregate sentiment.
---
---  SOURCE
---    stats.index_basic_stats.close    (raw daily index closes)
---    stats.index_basic_stats.trading_amount   (raw daily trading_amount, yuan)
---    stats.index_valuation.pe         (raw daily PE ratio)
---    JOIN stats.sec_classification    (type='index') for industry membership
---    stats.sec_composition            (stock_num → pool_size classification)
---
---  COMPOSITION-ONLY FILTER
---    Only indices that have at least one snapshot in stats.sec_composition
---    (source_type='index') are included. Indices WITHOUT any composition
---    data are dropped entirely — they contribute nothing to any pool_size
---    slice. pool_size classification is only meaningful for indices whose
---    member count is known, and the 'all' slice reflects compositioned
---    indices only.
+--  Contains:
+--    • analysis.industry_correlations  (rolling pairwise Pearson correlation
+--      of the MEAN rebased-to-100 price series between two industries)
+--    • analysis.industry_attributions  (composition overlap between each
+--      industry and each benchmark index)
+--    • analysis.industry_etf_contribution (per-(date, industry_id, pool_size)
+--      aggregate ETF trading turnover)
 --
 --  POPULATION
---    analyze_industry_sentiments.py (truncate-then-recompute on every run).
---    Rebase point is per-index first-available close (history start). Per
---    (date, industry_id, pool_size), aggregates across member indices in that
---    slice: mean_price + var_price (on rebased-to-100 closes), mean_pe (on
---    raw PE), total_trading_amount (SUM of stock trading_amount values via union of member
---    index compositions). index_count = number of member indices with close
---    data contributing on that date (PE means may be computed over fewer
---    indices when some lack valuation data).
---
---  Register in analysis.analysis_identity (name='industry_sentiments').
+--    builds/industry (baseline stats.industry_basic_stats: incremental /
+--    --force truncate-then-recompute) then analyze/industry_sentiments
+--    (downstream steps, truncate-then-recompute on every run).
 -- ============================================================================
-DROP TABLE IF EXISTS analysis.industry_sentiments;
-
-CREATE TABLE IF NOT EXISTS analysis.industry_sentiments (
-    date                      DATE          NOT NULL,
-    industry_id               TEXT          NOT NULL,
-    pool_size                 TEXT          NOT NULL,  -- 'small' | 'mid' | 'large' | 'all'
-
-    -- Display label (denormalized)
-    industry_label            TEXT          NOT NULL DEFAULT '',
-
-    -- Number of member indices contributing to this (date, industry_id, pool_size) slice.
-    index_count               INTEGER,
-
-    -- Cross-sectional MEAN of rebased-to-100 close values across member indices
-    -- in this slice on this date. 100 = members flat vs history start.
-    mean_price                NUMERIC(12,6),
-
-    -- Cross-sectional VARIANCE of rebased-to-100 close values across member
-    -- indices in this slice on this date. Captures cross-index dispersion
-    -- (how spread out the member indices are on this date).
-    var_price                 NUMERIC(20,6),
-
-    -- Cross-sectional MEAN of raw PE (stats.index_valuation.pe) across member
-    -- indices in this slice on this date. NULL PE values excluded. NULL when
-    -- no member indices have PE data on this date.
-    mean_pe                   NUMERIC(12,6),
-
-    -- Total trading_amount (yuan): SUM of stats.stock_liquidity_margin.trading_amount across
-    -- the UNION of stocks from all member indices' active compositions. Each
-    -- stock counted ONCE (union, not sum-per-index). NULL when no stock trading_amount
-    -- data is available for the union set on this date.
-    total_trading_amount      NUMERIC(24,4),
-
-    CONSTRAINT pk_industry_sentiments PRIMARY KEY (date, industry_id, pool_size),
-    CONSTRAINT chk_industry_sentiments_pool
-        CHECK (pool_size IN ('small', 'mid', 'large', 'all'))
-);
-
--- Indexes for the common access patterns:
---   1. Per-industry + pool_size time series (drives the chart on the
---      IndustrySentiments page).
---   2. Per-date snapshot (drives the latest-date industries list).
-CREATE INDEX IF NOT EXISTS idx_industry_sentiments_industry_pool_date
-    ON analysis.industry_sentiments (industry_id, pool_size, date);
-CREATE INDEX IF NOT EXISTS idx_industry_sentiments_date_industry
-    ON analysis.industry_sentiments (date, industry_id);
-
-COMMENT ON TABLE  analysis.industry_sentiments                IS 'Industry sentiment cross-section: one row per (date, industry_id, pool_size). Aggregates index values across member indices (stats.sec_classification type=''index'' AND industry_id matches AND index has composition data in stats.sec_composition source_type=''index'') in the named pool_size slice. Indices WITHOUT composition data are excluded entirely. mean_price/var_price: rebased-to-100 at each index''s first available close (history start). mean_pe: raw PE from stats.index_valuation. total_trading_amount: SUM of stock_liquidity_margin.trading_amount across the UNION of stocks from member indices'' active compositions (yuan). pool_size: small (stock_num<51), mid (51-180), large (>180), all (every compositioned member). Broad-market industries BROAD_CSI/BROAD_SSE/BROAD_SZSE/BROAD_STAR are aggregated identically. Built by analyze_industry_sentiments.py (truncate-then-recompute).';
-COMMENT ON COLUMN analysis.industry_sentiments.pool_size      IS 'Pool-size slice: small (stock_num<51), mid (51-180), large (>180), all (every member). Classification source: stats.sec_composition (LATEST snapshot per code, no temporal filter — same composition used for all dates).';
-COMMENT ON COLUMN analysis.industry_sentiments.index_count    IS 'Number of distinct member indices with close data contributing to this (date, industry_id, pool_size) slice on this date.';
-COMMENT ON COLUMN analysis.industry_sentiments.mean_price     IS 'AVG(rebased_to_100 close) across member indices in this pool_size slice on this date. Rebased-to-100 at each index''s first available close (history start). 100 = members flat vs their history-start value.';
-COMMENT ON COLUMN analysis.industry_sentiments.var_price      IS 'VARIANCE(rebased_to_100 close) across member indices in this pool_size slice on this date. Captures cross-index dispersion (how spread out the members are).';
-COMMENT ON COLUMN analysis.industry_sentiments.mean_pe        IS 'AVG(raw PE) across member indices in this pool_size slice on this date. Source: stats.index_valuation.pe. NULL PE values excluded from the mean. NULL when no member indices have PE data on this date.';
-COMMENT ON COLUMN analysis.industry_sentiments.total_trading_amount IS 'SUM(stock_liquidity_margin.trading_amount) across the UNION of stocks from all member indices'' compositions (LATEST sec_composition snapshot per code, no temporal filter — same stock universe for all dates) in this pool_size slice on this date. Each stock counted ONCE (union, not sum-per-index). Source: stats.stock_liquidity_margin.trading_amount (in yuan). NULL when no stock trading_amount data is available for the union set on this date.';
 
 -- ============================================================================
---  Industry Correlations — pairwise rolling Pearson correlation of the
---  MEAN rebased-to-100 price series between two industries, bucketed by pool_size.
+--  Industry Correlations — windowed Pearson correlation of the industries'
+--  MA curves, bucketed by pool_size.
 --
 --  Table: analysis.industry_correlations
---    PK: (date, industry_id, benchmark_industry_id, pool_size)
+--    PK: (industry_id, benchmark_industry_id, pool_size, start_date, interval)
 --
 --  SOURCE
---    analysis.industry_sentiments.mean_price     (per-industry mean price series)
+--    stats.industry_basic_stats.mean_close     (per-industry composite close
+--    series — former mean_price, rehooked 2026-08-24)
+--
+--  WINDOW SEMANTICS (corr_ma{W}_{W}d, W in {20, 60, 255})
+--    For each industry, the MA-W curve is the trailing W-trading-day rolling
+--    mean of mean_close. Windows start on the pool calendar grid: start
+--    indices 0, interval, 2*interval, ... (interval defaults to 20 trading
+--    days — the stride between consecutive compute windows). The window for
+--    corr_ma{W}_{W}d spans the W trading days [start_date, start_date + W).
+--    The stored value is the Pearson correlation between the two industries'
+--    MA-W curves over those W dates. Only FULL windows (all W dates present
+--    in the calendar, both industries' MA-W defined on every date of the
+--    window) are materialized; otherwise the column is NULL.
+--
+--    A window's value is final once its last date exists, so rows are
+--    emitted exactly when start_date + W - 1 first appears in the source.
 --
 --  CONVENTION
---    For each pair of industries (A, B) and each pool_size slice P, this
---    table stores the rolling-window Pearson correlation between A's
---    mean_rebased series and B's mean_rebased series on each date where the
---    two industries share enough overlapping history. Both industries are
---    compared in the SAME pool_size slice — a single `pool_size` column
---    captures this (the previous schema carried a redundant
---    `benchmark_industry_pool_size` that was always equal to
---    `industry_pool_size` via a CHECK constraint).
+--    For each pair of industries (A, B) and each pool_size slice P, rows
+--    are keyed by the window START date. Both industries are compared in
+--    the SAME pool_size slice — a single `pool_size` column captures this.
 --
 --    Cross-pool comparisons (e.g. corr(A.small_mean, B.large_mean)) are NOT
 --    materialized — they conflate cross-index size effects with sentiment
@@ -175,12 +58,9 @@ COMMENT ON COLUMN analysis.industry_sentiments.total_trading_amount IS 'SUM(stoc
 --    (lexicographic) to deduplicate (A,B) vs (B,A). The API returns rows
 --    matching either direction of the user-selected industry_ids set.
 --
---  WINDOWS
---    5d / 20d / 60d / 255d rolling windows ending on `date`. NULL when fewer
---    than `window` overlapping (date, mean_rebased) pairs are available.
---
 --  POPULATION
---    analyze_industry_correlations.py (truncate-then-recompute on every run).
+--    analyze.industry_sentiments.correlations (internal step
+--    run_correlations, invoked from __main__ — incremental / force).
 -- ============================================================================
 DROP TABLE IF EXISTS analysis.industry_correlations;
 
@@ -188,52 +68,43 @@ CREATE TABLE IF NOT EXISTS analysis.industry_correlations (
     industry_id                       TEXT          NOT NULL,
     benchmark_industry_id             TEXT          NOT NULL,
     pool_size                         TEXT          NOT NULL,
-    date                              DATE          NOT NULL,
+    start_date                        DATE          NOT NULL,
+    interval                          INTEGER       NOT NULL DEFAULT 20,
 
-    -- Rolling Pearson correlation between the two industries' mean_rebased
-    -- series over the named window ending on `date`. NULL when insufficient
-    -- overlap (< window days) on or before `date`.
-    industry_mean_corr_5d             NUMERIC(8,4),
-    industry_mean_corr_20d            NUMERIC(8,4),
-    industry_mean_corr_60d            NUMERIC(8,4),
-    industry_mean_corr_255d           NUMERIC(8,4),
+    -- Pearson correlation between the two industries' MA-{W} curves over
+    -- the {W}-trading-day window starting on start_date. NULL when the
+    -- window is not full or either industry's MA-W is undefined on any of
+    -- its dates.
+    corr_ma20_20d                     NUMERIC(8,4),
+    corr_ma60_60d                     NUMERIC(8,4),
+    corr_ma255_255d                   NUMERIC(8,4),
 
+    -- No CHECK constraints (pool/interval enums + pair ordering): the
+    -- builder guarantees these; per-row validation only slowed the bulk
+    -- COPY writes. No secondary indexes either — the PK serves the
+    -- per-pair time-series chart; reverse-direction lookups scan the
+    -- PK (757K rows).
     CONSTRAINT pk_industry_correlations PRIMARY KEY
-        (date, industry_id, benchmark_industry_id, pool_size),
-    CONSTRAINT chk_industry_correlations_pool
-        CHECK (pool_size IN ('small', 'mid', 'large', 'all')),
-    -- NOTE: COLLATE "C" forces byte-wise comparison so the lexicographic
-    -- ordering invariant matches Python's default str sort (Python compares
-    -- strings by Unicode code point). The database default collation is
-    -- en_US.UTF-8, where punctuation like '_' sorts BEFORE letters — that
-    -- would mismatch Python's sort and cause CHECK violations on pairs
-    -- like (CONSUMER_ELEC, CONS_GENERAL).
-    CONSTRAINT chk_industry_correlations_order
-        CHECK (industry_id COLLATE "C" < benchmark_industry_id COLLATE "C")
-);
+        (industry_id, benchmark_industry_id, pool_size, start_date, interval)
+) PARTITION BY HASH (industry_id);
 
--- Indexes:
---   1. Per-pair time series (drives the Correlation chart on the
---      IndustrySentiments page — fetch by industry_ids + pool_size).
---   2. Per-date snapshot (drives the latest-date correlation matrix).
-CREATE INDEX IF NOT EXISTS idx_industry_correlations_pair_pool_date
-    ON analysis.industry_correlations
-    (industry_id, benchmark_industry_id, pool_size, date);
-CREATE INDEX IF NOT EXISTS idx_industry_correlations_bench_pair_pool_date
-    ON analysis.industry_correlations
-    (benchmark_industry_id, industry_id, pool_size, date);
-CREATE INDEX IF NOT EXISTS idx_industry_correlations_date
-    ON analysis.industry_correlations (date);
+-- Native hash partitions (32) keyed by industry_id
+-- Native hash partitions (32) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p31
+SELECT public.create_hash_partitions('analysis', 'industry_correlations', 32);
 
-COMMENT ON TABLE  analysis.industry_correlations                            IS 'Pairwise rolling Pearson correlation between two industries'' mean_rebased series (analysis.industry_sentiments.mean_rebased). One row per (date, industry_id, benchmark_industry_id, pool_size). Both industries are compared in the SAME pool_size slice (single pool_size column). Self-pairs (A=B) excluded. Order convention: industry_id < benchmark_industry_id (lexicographic) to deduplicate (A,B) vs (B,A). Only same-pool slices materialized (all, small, mid, large). Built by analyze_industry_correlations.py (truncate-then-recompute).';
+-- Indexes: none beyond the PK (post-indexing not needed — per-pair chart
+-- queries are PK-prefix scans).
+
+COMMENT ON TABLE  analysis.industry_correlations                            IS 'Windowed pairwise Pearson correlation between two industries'' MA curves of mean_close (stats.industry_basic_stats.mean_close, built by builds.industry — former mean_price). One row per (industry_id, benchmark_industry_id, pool_size, start_date, interval). Windows start on the pool calendar grid every `interval` (default 20) trading days; corr_ma{W}_{W}d (W in 20/60/255) correlates the two industries'' MA-W curves over the W trading days starting on start_date. Both industries are compared in the SAME pool_size slice (single pool_size column). Self-pairs (A=B) excluded. Order convention: industry_id < benchmark_industry_id (lexicographic) to deduplicate (A,B) vs (B,A). Only same-pool slices materialized (all, small, mid, large). Built by analyze.industry_sentiments.correlations (internal step, incremental / force).';
 COMMENT ON COLUMN analysis.industry_correlations.industry_id                IS 'Subject industry''s industry_id (lexicographically smaller of the two).';
 COMMENT ON COLUMN analysis.industry_correlations.benchmark_industry_id       IS 'Benchmark industry''s industry_id (lexicographically larger of the two).';
 COMMENT ON COLUMN analysis.industry_correlations.pool_size                  IS 'Pool_size slice in which BOTH industries are compared (cross-pool comparisons are not materialized). small (stock_num<51), mid (51-180), large (>180), all (every member).';
-COMMENT ON COLUMN analysis.industry_correlations.date                       IS 'End date of the rolling correlation window.';
-COMMENT ON COLUMN analysis.industry_correlations.industry_mean_corr_5d      IS 'Pearson correlation between the two industries'' mean_rebased series over the trailing 5 trading days ending on `date`. NULL when < 5 overlapping days on or before `date`.';
-COMMENT ON COLUMN analysis.industry_correlations.industry_mean_corr_20d     IS 'Pearson correlation between the two industries'' mean_rebased series over the trailing 20 trading days ending on `date`. NULL when < 20 overlapping days on or before `date`.';
-COMMENT ON COLUMN analysis.industry_correlations.industry_mean_corr_60d     IS 'Pearson correlation between the two industries'' mean_rebased series over the trailing 60 trading days ending on `date`. NULL when < 60 overlapping days on or before `date`.';
-COMMENT ON COLUMN analysis.industry_correlations.industry_mean_corr_255d    IS 'Pearson correlation between the two industries'' mean_rebased series over the trailing 255 trading days ending on `date`. NULL when < 255 overlapping days on or before `date`.';
+COMMENT ON COLUMN analysis.industry_correlations.start_date                 IS 'Start date of the compute window on the pool calendar grid (grid stride = interval trading days). The window for corr_ma{W}_{W}d spans [start_date, start_date + W).';
+COMMENT ON COLUMN analysis.industry_correlations."interval"                 IS 'Stride in trading days between consecutive window starts on the pool calendar grid (default 20).';
+COMMENT ON COLUMN analysis.industry_correlations.corr_ma20_20d              IS 'Pearson correlation between the two industries'' MA20 curves over the 20 trading days starting on start_date. NULL when the window is not full or either MA20 curve is undefined on any of its dates.';
+COMMENT ON COLUMN analysis.industry_correlations.corr_ma60_60d              IS 'Pearson correlation between the two industries'' MA60 curves over the 60 trading days starting on start_date. NULL when the window is not full or either MA60 curve is undefined on any of its dates.';
+COMMENT ON COLUMN analysis.industry_correlations.corr_ma255_255d            IS 'Pearson correlation between the two industries'' MA255 curves over the 255 trading days starting on start_date. NULL when the window is not full or either MA255 curve is undefined on any of its dates.';
 
 
 -- ============================================================================
@@ -397,7 +268,12 @@ CREATE TABLE IF NOT EXISTS analysis.industry_attributions (
 
     CONSTRAINT pk_industry_attributions PRIMARY KEY
         (industry_id, benchmark_code, date, attribution_type)
-);
+) PARTITION BY HASH (industry_id);
+
+-- Native hash partitions (16) keyed by industry_id
+-- Native hash partitions (16) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p15
+SELECT public.create_hash_partitions('analysis', 'industry_attributions', 16);
 
 -- Indexes:
 --   1. PK (industry_id, benchmark_code, date, attribution_type) serves the
@@ -442,7 +318,7 @@ ON CONFLICT (name) DO UPDATE SET
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('industry_correlations', 'industry_correlations', NULL, NOW(),
-     'Pairwise rolling Pearson correlation between two industries'' mean_price series (analysis.industry_sentiments.mean_price). One row per (date, industry_id, benchmark_industry_id, pool_size) with corr_5d / corr_20d / corr_60d / corr_255d. Both industries are compared in the SAME pool_size slice (single pool_size column). Self-pairs (A=B) excluded. Order convention: industry_id < benchmark_industry_id to deduplicate. Only same-pool slices materialized (all, small, mid, large). Built by analyze_industry_correlations.py (truncate-then-recompute).')
+     'Windowed pairwise Pearson correlation between two industries'' MA curves of mean_close (stats.industry_basic_stats.mean_close, built by builds.industry — former mean_price, rehooked 2026-08-24). One row per (industry_id, benchmark_industry_id, pool_size, start_date, interval) with corr_ma20_20d / corr_ma60_60d / corr_ma255_255d. Windows start on the pool calendar grid every `interval` (default 20) trading days; corr_ma{W}_{W}d correlates the two industries'' MA-W curves over the W trading days starting on start_date. Both industries are compared in the SAME pool_size slice (single pool_size column). Self-pairs (A=B) excluded. Order convention: industry_id < benchmark_industry_id to deduplicate. Only same-pool slices materialized (all, small, mid, large). Built by analyze.industry_sentiments.correlations (internal step, incremental / force).')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,
@@ -539,17 +415,22 @@ CREATE TABLE IF NOT EXISTS analysis.industry_etf_contribution (
     -- pandas rolling(20).mean() per (industry_id, pool_size) group.
     industry_etf_trading_amount_ma20 NUMERIC(24,4),
 
-    CONSTRAINT pk_industry_etf_contribution PRIMARY KEY (date, industry_id, pool_size),
+    CONSTRAINT pk_industry_etf_contribution PRIMARY KEY (industry_id, date, pool_size),
     CONSTRAINT chk_industry_etf_contribution_pool
         CHECK (pool_size IN ('small', 'mid', 'large', 'all'))
-);
+) PARTITION BY HASH (industry_id);
+
+-- Native hash partitions (8) keyed by industry_id
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'industry_etf_contribution', 8);
 
 CREATE INDEX IF NOT EXISTS idx_industry_etf_contribution_industry_pool_date
     ON analysis.industry_etf_contribution (industry_id, pool_size, date);
 CREATE INDEX IF NOT EXISTS idx_industry_etf_contribution_date_industry
     ON analysis.industry_etf_contribution (date, industry_id);
 
-COMMENT ON TABLE  analysis.industry_etf_contribution                        IS 'Per-(date, industry_id, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(code_etf_trading_amount) across member indices from analysis.sec_alloc_perf_attribution (sec_type=''index''). industry_etf_count = COUNT of member indices with non-NULL ETF amount. Each member index contributes its aggregate ETF turnover (precomputed in stats.index_exts). pool_size: small (stock_num<51), mid (51-180), large (>180), all. Built by analyze.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.';
+COMMENT ON TABLE  analysis.industry_etf_contribution                        IS 'Per-(industry_id, date, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(code_etf_trading_amount) across member indices from analysis.sec_alloc_perf_attribution (sec_type=''index''). industry_etf_count = COUNT of member indices with non-NULL ETF amount. Each member index contributes its aggregate ETF turnover (precomputed in stats.index_exts). pool_size: small (stock_num<51), mid (51-180), large (>180), all. Built by analyze.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.';
 COMMENT ON COLUMN analysis.industry_etf_contribution.pool_size              IS 'Pool-size slice: small (stock_num<51), mid (51-180), large (>180), all (every member). Classification source: stats.sec_composition (LATEST snapshot per code).';
 COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_count     IS 'Number of distinct member indices with non-NULL code_etf_trading_amount contributing to this (date, industry_id, pool_size) slice on this date.';
 COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount     IS 'SUM(code_etf_trading_amount) across member indices in this pool_size slice on this date. Source: analysis.sec_alloc_perf_attribution (sec_type=''index'', code_etf_trading_amount = aggregate ETF turnover tracking the member index, precomputed in stats.index_exts). NULL when no member index has ETF trading amount data on this date.';

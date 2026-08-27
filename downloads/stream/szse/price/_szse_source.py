@@ -19,7 +19,7 @@ from typing import List, Optional
 
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     HostStatusTracker,
     build_headers_with_referer,
     safe_get,

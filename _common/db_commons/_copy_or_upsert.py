@@ -8,10 +8,26 @@ Provides:
 """
 from __future__ import annotations
 
+import datetime
 from typing import Optional
 
 from ._helpers import _parse_table_name
 from ._async_ops import copy_insert_async, bulk_upsert_async
+
+
+def _to_date(v) -> datetime.date:
+    """Normalize date/datetime/pd.Timestamp to datetime.date for comparison.
+
+    ``sanitize_for_db_insert`` emits ``datetime.datetime`` for datetime64
+    columns while PostgreSQL MAX() on a DATE column returns ``date`` —
+    comparing the two raises TypeError. Both sides are normalized to the
+    DAY granularity: routing a same-day row to the upsert path is always
+    safe (ON CONFLICT handles new + existing rows); only rows strictly
+    AFTER the max day take the COPY fast path (nothing exists there).
+    """
+    if isinstance(v, datetime.datetime):  # covers pd.Timestamp subclass
+        return v.date()
+    return v  # datetime.date
 
 
 async def copy_or_upsert_split_async(
@@ -59,12 +75,13 @@ async def copy_or_upsert_split_async(
         f'SELECT MAX("{date_column}") AS max_date FROM {from_clause}'
     )
     max_date = row["max_date"] if row and row["max_date"] is not None else None
+    max_day = _to_date(max_date) if max_date is not None else None
 
     # Partition: rows with date > max_date are safely new (no PK conflict)
     copy_batch: list[dict] = []
     upsert_batch: list[dict] = []
     for r in rows:
-        if max_date is not None and r[date_column] <= max_date:
+        if max_day is not None and _to_date(r[date_column]) <= max_day:
             upsert_batch.append(r)
         else:
             copy_batch.append(r)

@@ -45,8 +45,9 @@ export const POOL_COLORS: Record<PoolSize, string> = {
   large: "#388e3c",
 };
 
-/** Available correlation-window selector values. */
-export const CORR_WINDOWS: CorrWindow[] = ["5d", "20d", "60d", "255d"];
+/** Available correlation-window selector values. Each W correlates the two
+ *  industries' MA-W curves over the W trading days starting on start_date. */
+export const CORR_WINDOWS: CorrWindow[] = ["20d", "60d", "255d"];
 
 /** Available rolling-days selector values for the BenchmarkPriceChart shade
  *  overlay. Each value N corresponds to the pre-materialized column

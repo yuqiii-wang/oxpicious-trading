@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Shared types for the Industry Sentiments analysis page sub-modules.
  */
 import type {
@@ -10,8 +10,10 @@ import type { ThemeMode } from "@/store/filters";
 /** Pool-size bucket: small <51, mid 51-180, large >180, all = no filter. */
 export type PoolSize = "all" | "small" | "mid" | "large";
 
-/** Rolling-correlation window selector. */
-export type CorrWindow = "5d" | "20d" | "60d" | "255d";
+/** Correlation window selector — MA-W curves correlated over the W trading
+ *  days starting on start_date (window starts every `interval` trading
+ *  days on the calendar grid). */
+export type CorrWindow = "20d" | "60d" | "255d";
 
 /** Rolling-days selector for the BenchmarkPriceChart shade overlay.
  *  Each value picks one of the 6 pre-materialized
@@ -50,6 +52,11 @@ export interface PlotProps {
    *  Correlation section can fetch pairwise correlation rows from the API).
    *  Empty in single-industry mode. */
   selectedIndustryIds: string[];
+  /** L3-selected member index codes (empty when no L3 chip is selected).
+   *  Passed through to the Correlation section's refresh button (the corr
+   *  runner resolves codes → industry_ids and unions them with
+   *  selectedIndustryIds). */
+  selectedItemCodes: string[];
 }
 
 /** Props for the IndustryBenchmarkAttributionChart component. */
@@ -82,6 +89,10 @@ export interface BenchmarkPriceChartProps {
 /** Props for the CorrelationChart component. */
 export interface CorrelationChartProps {
   industryIds: string[];
+  /** L3-selected member index codes (empty → only industryIds drive the
+   *  refresh). Passed to the corr runner's --code arg; codes are resolved
+   *  to industry_ids Python-side and unioned with industryIds. */
+  codes: string[];
   poolSize: PoolSize;
   themeMode: ThemeMode;
 }

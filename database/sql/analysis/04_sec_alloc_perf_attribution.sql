@@ -33,15 +33,18 @@
 --    code_etf_trading_amount      = subject's own turnover (etf_liquidity_margin.trading_amount)
 --                           when sec_type='etf'; aggregate ETF turnover
 --                           tracking the subject index when sec_type='index'.
---    etf_trading_amount_ratio_benchmark_to_code = GENERATED column =
+--    etf_trading_amount_ratio_benchmark_to_code =
 --      benchmark_etf_trading_amount / code_etf_trading_amount (NULL when either is NULL/0).
---      A ratio ≥ 1 means the benchmark's ETF-market turnover is larger than
---      the subject's. The INVERSE (code_etf_trading_amount / benchmark_etf_trading_amount)
+--      Computed in the PYTHON pipeline (a plain column — GENERATED ALWAYS
+--      columns cost per-row server-side compute on every COPY and block
+--      bulk-load optimizations). A ratio ≥ 1 means the benchmark's ETF-market
+--      turnover is larger than the subject's. The INVERSE
+--      (code_etf_trading_amount / benchmark_etf_trading_amount)
 --      is the subject's SHARE of the benchmark's ETF market and is the
 --      interpretable "proportion" form — computed in the UI as 1/ratio.
 --
 --  STATISTICAL ATTRIBUTION (rolling correlations):
---    corr_5d / corr_20d / corr_60d / corr_255d = rolling Pearson correlation
+--    corr_20d / corr_60d / corr_255d = rolling Pearson correlation
 --      of subject close vs benchmark close over trailing N trading days.
 -- ============================================================================
 
@@ -69,60 +72,66 @@ CREATE TABLE analysis.sec_alloc_perf_attribution (
     -- Subject's own ETF trading_amount (sec_type='etf') OR aggregate ETF trading_amount
     -- tracking the subject index (sec_type='index'). NULL for stocks.
     code_etf_trading_amount                    NUMERIC(16,2),
-    etf_trading_amount_ratio_benchmark_to_code NUMERIC(10,4)
-        GENERATED ALWAYS AS (
-            CASE
-                WHEN benchmark_etf_trading_amount IS NULL OR code_etf_trading_amount IS NULL
-                  OR benchmark_etf_trading_amount = 0 OR code_etf_trading_amount = 0
-                THEN NULL
-                -- Cap at NUMERIC(10,4) max (|ratio| < 10^6). Ratios
-                -- exceeding this (tiny subject ETF trading amount vs a large
-                -- benchmark) are NULL'd to avoid overflow — see the
-                -- matching cap in analyze_sec_alloc_perf_attribution.py.
-                WHEN ABS(benchmark_etf_trading_amount / code_etf_trading_amount) >= 1000000
-                THEN NULL
-                ELSE benchmark_etf_trading_amount / code_etf_trading_amount
-            END
-        ) STORED,
+    -- Ratio computed in Python by the analyze pipeline (mirrors the old
+    -- GENERATED column semantics incl. the |ratio| >= 1e6 cap -> NULL to fit
+    -- NUMERIC(10,4)). Plain column: GENERATED ALWAYS costs per-row server-side
+    -- compute on every COPY and blocks bulk-load optimizations.
+    etf_trading_amount_ratio_benchmark_to_code NUMERIC(10,4),
     -- 5-trading-day moving average of etf_trading_amount_ratio_benchmark_to_code,
     -- populated by analyze_sec_alloc_perf_attribution.py via pandas
     -- rolling(5).mean() per (code, sec_type, benchmark_code) group.
     etf_trading_amount_ratio_benchmark_to_code_ma5 NUMERIC(10,4),
 
-    corr_5d                NUMERIC(8,4),  -- 5-day close correlation between subject and benchmark
-    corr_20d               NUMERIC(8,4),  -- 20-day close correlation between subject and benchmark
-    corr_60d               NUMERIC(8,4),  -- 60-day close correlation between subject and benchmark
-    corr_255d              NUMERIC(8,4),  -- 255-day close correlation between subject and benchmark
+    -- Stride-grid rolling correlations: materialized ONLY on grid dates
+    -- (every 20 trading days on the global index calendar — mirrors
+    -- analysis.industry_correlations' interval=20). Non-grid dates NULL.
+    -- No corr_5d: a 5-day window sampled every 20 trading days aliases
+    -- badly; daily close co-movement is already visible in the price charts.
+    corr_20d               NUMERIC(8,4),  -- trailing 20-day close corr (grid dates only)
+    corr_60d               NUMERIC(8,4),  -- trailing 60-day close corr (grid dates only)
+    corr_255d              NUMERIC(8,4),  -- trailing 255-day close corr (grid dates only)
 
+    -- No CHECK constraints: per-row regex/enum validation costs more on
+    -- bulk COPY than it protects (the loader guarantees code formats).
     CONSTRAINT pk_sec_alloc_perf_attribution
-        PRIMARY KEY (code, date, sec_type, benchmark_code),
-    CONSTRAINT chk_sec_perf_attr_sec_type
-        CHECK (sec_type IN ('stock', 'etf', 'index')),
-    CONSTRAINT chk_sec_perf_attr_code_format CHECK (
-        (sec_type = 'stock' AND code ~ '^\d{6}\.(SZ|SS|BJ)$')
-        OR (sec_type = 'etf'   AND code ~ '^\d{6}\.(SZ|SS|SH)$')
-        OR (sec_type = 'index' AND code ~ '^(\d{6}|H\d{5})$')
-    )
+        PRIMARY KEY (code, date, sec_type, benchmark_code)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'sec_alloc_perf_attribution', 8);
+
+-- NO secondary index in the DDL: the (sec_type, date) index is POST-CREATED
+-- by the pipeline after the bulk COPY (an index maintained live during a
+-- 40M-row load costs far more than one rebuild at the end). The former
+-- (date, code, benchmark_code) index was removed — main chart queries filter
+-- by code via the PK prefix and REGEXP_REPLACE defeats code-position indexes
+-- anyway. Date-existence checks use the tiny dates-map table below.
+
+-- ----------------------------------------------------------------------------
+--  Dates map: one row per date loaded into sec_alloc_perf_attribution.
+--  `code` is the leading PK key (HASH partition key), so date-only scans on
+--  the main table are expensive. Missing-date detection and MAX(date) checks
+--  query this ~1.7K-row map instead of scanning 40M rows. Maintained by the
+--  analyze pipeline after each successful write.
+-- ----------------------------------------------------------------------------
+CREATE TABLE analysis.sec_alloc_perf_attribution_dates (
+    date DATE PRIMARY KEY
 );
 
-CREATE INDEX idx_sec_perf_attr_date_code_benchmark
-    ON analysis.sec_alloc_perf_attribution (date, code, benchmark_code);
-CREATE INDEX idx_sec_perf_attr_sec_type_date
-    ON analysis.sec_alloc_perf_attribution (sec_type, date);
-
-COMMENT ON TABLE  analysis.sec_alloc_perf_attribution                  IS 'Daily composition overlap + ETF-market liquidity + rolling close correlations: one row per (code, date, sec_type, benchmark_code). Stores composition overlap metrics (code_sec_shared_weight, benchmark_sec_shared_weight), ETF-market turnover (benchmark_etf_trading_amount, code_etf_trading_amount, etf_trading_amount_ratio_benchmark_to_code), and rolling close correlations (corr_5d/20d/60d/255d). sec_type ∈ {stock, etf, index}. Composition and ETF trading_amount columns are NULL for stocks.';
+COMMENT ON TABLE  analysis.sec_alloc_perf_attribution                  IS 'Daily composition overlap + ETF-market liquidity + rolling close correlations: one row per (code, date, sec_type, benchmark_code). Stores composition overlap metrics (code_sec_shared_weight, benchmark_sec_shared_weight), ETF-market turnover (benchmark_etf_trading_amount, code_etf_trading_amount, etf_trading_amount_ratio_benchmark_to_code), and rolling close correlations (corr_20d/60d/255d). sec_type ∈ {stock, etf, index}. Composition and ETF trading_amount columns are NULL for stocks.';
+COMMENT ON TABLE  analysis.sec_alloc_perf_attribution_dates            IS 'Dates map: one row per date loaded into sec_alloc_perf_attribution. code is the leading PK/HASH key so date-only scans on the main table are expensive — missing-date detection and MAX(date) checks read this tiny map instead. Maintained by the analyze pipeline after each successful write.';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.sec_type         IS 'Subject security type: stock, etf, or index. Determines which source price table and (for etf/index) which composition source applies.';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.benchmark_code IS 'Benchmark index code (typically one of the 6 broad-market indices: 000300, 000001, 000852, 399001, 399006, 000688, but not constrained).';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.code_sec_shared_weight         IS 'Σ w_subject on stocks held by BOTH securities. The fraction of the subject''s weight that overlaps with the benchmark. NULL for stocks (no internal holdings).';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.benchmark_sec_shared_weight    IS 'Σ w_benchmark on stocks held by BOTH securities. The fraction of the benchmark''s weight that overlaps with the subject. NULL for stocks (no internal holdings).';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.benchmark_etf_trading_amount           IS 'Aggregate ETF turnover (yuan) on this date across ALL ETFs tracking benchmark_code. Source: Σ stats.etf_liquidity_margin.trading_amount where the ETF''s stats.sec_classification.parent_index_code = benchmark_code. NULL when no ETF tracks the benchmark (e.g. 上证指数 000001 has no direct ETF tracking it).';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.code_etf_trading_amount                IS 'Subject''s ETF turnover (yuan). For sec_type=''etf'': the ETF''s own stats.etf_liquidity_margin.trading_amount. For sec_type=''index'': aggregate ETF turnover tracking the subject index (same aggregation as benchmark_etf_trading_amount but keyed on subject code). NULL for stocks and for indices with no tracking ETF.';
-COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.etf_trading_amount_ratio_benchmark_to_code IS 'GENERATED ALWAYS AS (CASE WHEN benchmark_etf_trading_amount IS NULL OR code_etf_trading_amount IS NULL OR benchmark_etf_trading_amount = 0 OR code_etf_trading_amount = 0 THEN NULL WHEN ABS(benchmark_etf_trading_amount / code_etf_trading_amount) >= 1000000 THEN NULL ELSE benchmark_etf_trading_amount / code_etf_trading_amount END). Ratio ≥ 1 means benchmark''s ETF-market turnover exceeds subject''s. NOTE: this is a LIQUIDITY ratio, not a price-attribution proportion. The subject''s SHARE of the benchmark ETF market = 1 / etf_trading_amount_ratio_benchmark_to_code (computed in UI). Capped at |ratio| < 10^6 to fit NUMERIC(10,4); larger ratios (tiny subject ETF turnover vs a large benchmark) are NULL''d — see matching cap in analyze_sec_alloc_perf_attribution.py.';
+COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.etf_trading_amount_ratio_benchmark_to_code IS 'benchmark_etf_trading_amount / code_etf_trading_amount; NULL when either is NULL/0, and capped at |ratio| < 10^6 (NULL beyond) to fit NUMERIC(10,4). Computed by the Python pipeline (was a GENERATED column — removed for bulk-load speed; semantics incl. the cap are mirrored in _etf.py). Ratio ≥ 1 means benchmark''s ETF-market turnover exceeds subject''s. NOTE: this is a LIQUIDITY ratio, not a price-attribution proportion. The subject''s SHARE of the benchmark ETF market = 1 / etf_trading_amount_ratio_benchmark_to_code (computed in UI).';
 COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.etf_trading_amount_ratio_benchmark_to_code_ma5 IS '5-trading-day moving average of etf_trading_amount_ratio_benchmark_to_code. Populated by analyze_sec_alloc_perf_attribution.py via pandas rolling(5).mean() per (code, sec_type, benchmark_code) group (min_periods=1, so the first 4 days of each series use a partial average). NULL when the underlying ratio is NULL for the entire trailing 5-day window. Smooths the noisy daily liquidity ratio so the UI can show a stable trend alongside the raw daily value.';
-COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_5d                IS 'Rolling Pearson correlation of subject close vs benchmark close over trailing 5 trading days (min_periods ≈ 2N/3). NULL when insufficient non-NaN data.';
-COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_20d               IS 'Rolling Pearson correlation of subject close vs benchmark close over trailing 20 trading days (min_periods ≈ 2N/3).';
-COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_60d               IS 'Rolling Pearson correlation of subject close vs benchmark close over trailing 60 trading days (min_periods ≈ 2N/3).';
-COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_255d              IS 'Rolling Pearson correlation of subject close vs benchmark close over trailing 255 trading days (min_periods ≈ 2N/3).';
+COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_20d               IS 'Trailing 20-trading-day Pearson correlation of subject vs benchmark close (min_periods ≈ 2N/3). Stride-20 grid dates only; NULL otherwise.';
+COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_60d               IS 'Trailing 60-trading-day Pearson correlation of subject vs benchmark close (min_periods ≈ 2N/3). Stride-20 grid dates only; NULL otherwise.';
+COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_255d              IS 'Trailing 255-trading-day Pearson correlation of subject vs benchmark close (min_periods ≈ 2N/3). Stride-20 grid dates only; NULL otherwise.';
 
 
 -- ----------------------------------------------------------------------------
@@ -130,7 +139,7 @@ COMMENT ON COLUMN analysis.sec_alloc_perf_attribution.corr_255d              IS 
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('sec_alloc_perf_attribution', 'sec_alloc_perf_attribution', NULL, NOW(),
-     'Daily composition overlap + ETF-market liquidity + rolling close correlations across stocks, ETFs, and sub-indices. Stores code_sec_shared_weight / benchmark_sec_shared_weight (composition overlap from stats.sec_composition), benchmark_etf_trading_amount / code_etf_trading_amount (ETF-market turnover from stats.index_exts), etf_trading_amount_ratio_benchmark_to_code (GENERATED liquidity ratio), and corr_5d/20d/60d/255d (rolling Pearson close-price correlations). Composition and ETF trading_amount columns are NULL for stocks.')
+     'Daily composition overlap + ETF-market liquidity + rolling close correlations across stocks, ETFs, and sub-indices. Stores code_sec_shared_weight / benchmark_sec_shared_weight (composition overlap from stats.sec_composition), benchmark_etf_trading_amount / code_etf_trading_amount (ETF-market turnover from stats.index_exts), etf_trading_amount_ratio_benchmark_to_code (pipeline-computed liquidity ratio), and corr_20d/60d/255d (rolling Pearson close-price correlations). Composition and ETF trading_amount columns are NULL for stocks.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

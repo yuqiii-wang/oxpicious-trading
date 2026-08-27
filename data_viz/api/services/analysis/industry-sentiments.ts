@@ -19,13 +19,13 @@ import type {
 // ============================================================================
 //  Industry Sentiments — member index values, rebased to 100 client-side
 //
-//  NO analysis.industry_sentiments table — the former cross-sectional
-//  aggregation (max / min / mean / median / var of subject_return /
-//  benchmark_return / active_return percentages) has been DROPPED. Mixing
-//  scales across indices with different price levels was misleading, and
-//  the broad-market-removal step was opaque.
+//  The former cross-sectional aggregation table was RENAMED + PROMOTED
+//  (2026-08-24) from analysis.industry_sentiments to
+//  stats.industry_basic_stats (built by builds.industry), with mean_price
+//  rehooked to mean_close and mean_open/high/low added (composite index
+//  OHLC).
 //
-//  NEW APPROACH: each industry's plot shows its member INDEX VALUES directly,
+//  APPROACH: each industry's plot shows its member INDEX VALUES directly,
 //  rebased to 100 at the start of the displayed (zoom) window. Rebased-to-100
 //  makes member indices comparable regardless of absolute price level (e.g.
 //  CSI 500 ~5500pts and SSE 50 ~2600pts plot on a common scale, so a +10%
@@ -36,7 +36,7 @@ import type {
 //    stats.index_basic_stats.close   (raw daily index closes)
 //    JOIN stats.sec_classification    (type='index') for industry membership
 //    stats.sec_composition            (stock_num → pool_size classification)
-//    analysis.industry_sentiments     (precomputed mean/var per pool_size slice)
+//    stats.industry_basic_stats       (precomputed mean/var per pool_size slice)
 //
 //  COMPOSITION-ONLY FILTER
 //    Both endpoints restrict to indices that have at least one
@@ -217,7 +217,7 @@ interface DbIndustrySentimentsAggRow extends QueryResultRow {
   date: Date | string;
   pool_size: "small" | "mid" | "large" | "all";
   index_count: number | null;
-  mean_price: number | null;
+  mean_close: number | null;
   var_price: number | null;
   mean_pe: number | null;
   total_trading_amount: number | null;
@@ -315,12 +315,12 @@ export async function getIndustrySentimentsChart(
       )
     ORDER BY sc.code, ib.date ASC
   `;
-  // Precomputed mean/var aggregation rows from analysis.industry_sentiments.
-  // Returns rows for ALL 4 pool_size slices — the frontend filters to the
-  // user-selected slice for the overlay.
+  // Precomputed mean/var aggregation rows from stats.industry_basic_stats
+  // (built by builds.industry). Returns rows for ALL 4 pool_size slices —
+  // the frontend filters to the user-selected slice for the overlay.
   const aggSql = `
-    SELECT date, pool_size, index_count, mean_price, var_price, mean_pe, total_trading_amount
-    FROM analysis.industry_sentiments
+    SELECT date, pool_size, index_count, mean_close, var_price, mean_pe, total_trading_amount
+    FROM stats.industry_basic_stats
     WHERE industry_id = $1::text
     ORDER BY pool_size, date ASC
   `;
@@ -364,7 +364,7 @@ export async function getIndustrySentimentsChart(
     date: formatDate(r.date),
     pool_size: r.pool_size,
     index_count: r.index_count == null ? null : Number(r.index_count),
-    mean_price: toNum(r.mean_price),
+    mean_close: toNum(r.mean_close),
     var_price: toNum(r.var_price),
     mean_pe: toNum(r.mean_pe),
     total_trading_amount: toNum(r.total_trading_amount),

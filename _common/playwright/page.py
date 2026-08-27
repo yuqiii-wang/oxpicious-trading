@@ -18,7 +18,7 @@ from typing import List, Optional, Sequence, Set
 
 from playwright.sync_api import Page
 
-from downloads._common.core import setup_logger
+from downloads._common import setup_logger
 
 logger = setup_logger("playwright_common")
 

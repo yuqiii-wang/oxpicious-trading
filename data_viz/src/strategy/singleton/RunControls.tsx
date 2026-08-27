@@ -2,7 +2,7 @@
  * RunControls — the action bar for the singleton strategy page.
  *
  * Renders:
- *  - AlgoWeightMenu (per-algo weight sliders + FT + Forecast toggle)
+ *  - AlgoWeightMenu (per-algo weight sliders + FT toggle)
  *  - Run Strategy button (with spinner during execution)
  *  - Train Model SPLIT button (main = nested trainer; side down-triangle
  *    opens Model Configs (DB) / Training Logs — see TrainSplitButton)
@@ -34,8 +34,6 @@ export interface RunControlsProps {
   /** Info note shown while a REMOTE process (started before a page
    *  refresh or in another tab) holds the process-id-tag. */
   remoteNote?: string | null;
-  runWithForecast: boolean;
-  onRunWithForecastChange: (v: boolean) => void;
   onRunClick: () => void;
   training: boolean;
   trainSuccess: boolean;
@@ -56,8 +54,6 @@ export function RunControls(props: RunControlsProps) {
     runSuccess,
     runError,
     remoteNote,
-    runWithForecast,
-    onRunWithForecastChange,
     onRunClick,
     training,
     trainSuccess,
@@ -75,8 +71,6 @@ export function RunControls(props: RunControlsProps) {
         disabled={busy}
         faultTolerance={faultTolerance}
         onFaultToleranceChange={onFaultToleranceChange}
-        runWithForecast={runWithForecast}
-        onRunWithForecastChange={onRunWithForecastChange}
       />
       <Button
         variant="contained"
@@ -115,8 +109,8 @@ export function RunControls(props: RunControlsProps) {
         <Alert severity="info" sx={{ py: 0, flex: 1 }}>
           Running <code>python -m strategy.singleton_trading --algo {serializeSelection(selection)}
         --sec-type{" "}
-        {secType} --codes {searchCode} --force{!runWithForecast ? " --no-forecast" : ""}{faultTolerance > 0 ? ` --fault-tolerance ${faultTolerance}` : ""}</code>…
-        this may take a moment{runWithForecast ? " (forecast adds ~10 child seqs)" : ""}.
+        {secType} --codes {searchCode} --force{faultTolerance > 0 ? ` --fault-tolerance ${faultTolerance}` : ""}</code>…
+        this may take a moment.
         </Alert>
       )}
       {training && (

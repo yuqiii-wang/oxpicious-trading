@@ -10,17 +10,19 @@ The classification carries an ``exchange`` on every row.  Derivation rules:
     - code prefix 899 (北证)                             -> BJ
     - code prefix 000/930/931/932/950/990 (上证/中证)    -> SS
 
-  ETFs (code WITH .SS/.SZ/.BJ/.HK suffix):
-    - listing venue from CSV 上市地 or code suffix
+  ETFs (code WITH .SS/.SZ/.BJ suffix):
+    - listing venue from CSV 上市地 or the DB exchange column
     - override to HK when ETF/parent name matches HK keywords
       (港股通/恒生/沪港深/SHS/港美/沪深港/恒生科技/恒生互联网/...)
     - override to OVERSEAS when ETF's primary sector_id is OVERSEAS
       OR name matches overseas keywords
       (标普/纳斯达克/美国/日经/中概/海外中国/全球中国/金砖/中韩/...)
 
-  STOCKS (code WITH .SS/.SZ/.BJ suffix):
-    - code suffix only — A-share stocks held by HK/overseas-themed
-      indices KEEP their own exchange (they are still A-share listed).
+  STOCKS / UNMATCHED FUNDS (suffixed codes):
+    - stats.stock_identity.exchange / stats.etf_identity.exchange DB column
+      directly (loaded by each leaf's fetch query; never derived from suffix).
+      A-share stocks held by HK/overseas-themed indices KEEP their own
+      exchange (they are still A-share listed).
 
   is_primary_exchange (derived, never set manually — see _is_primary_exchange):
     SS/STAR/SZ/GEM/BJ  -> True   (Greater-China primary)
@@ -119,19 +121,6 @@ def _exchange_from_listed_at(listed_at: str) -> Optional[str]:
     if "北京" in s:
         return "BJ"
     if "香港" in s:
-        return "HK"
-    return None
-
-
-def _exchange_from_code(code: str) -> Optional[str]:
-    """Derive exchange from the suffix in a stock/ETF code (.SS/.SZ/.BJ/.HK)."""
-    if code.endswith(".SZ"):
-        return "SZ"
-    if code.endswith(".SS"):
-        return "SS"
-    if code.endswith(".BJ"):
-        return "BJ"
-    if code.endswith(".HK"):
         return "HK"
     return None
 

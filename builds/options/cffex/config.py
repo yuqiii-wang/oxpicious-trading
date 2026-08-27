@@ -88,9 +88,6 @@ NUMERIC_COLS: tuple[str, ...] = (
     "delta",
 )
 
-# Invalid token values that map to NULL
-_NULL_TOKENS: set[str] = {"", "--", "-", "—", "null", "NULL", "None", "nan", "NaN"}
-
 # ---------------------------------------------------------------------------
 # Contract code parsing
 # ---------------------------------------------------------------------------

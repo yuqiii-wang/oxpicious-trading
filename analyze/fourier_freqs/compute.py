@@ -30,42 +30,56 @@ Key algorithm:
   amplitude=0. This is semantically correct: "no periodic signal, period
   is the entire window with zero amplitude."
 
-GPU note: The FFT is a numpy operation (np.fft.rfft). cuDF does not
-support FFT. GPU acceleration would require cupy.fft, which is not
-currently a project dependency. The should_use_gpu check from
-_common.df_utils is imported per project convention, but the FFT itself
-runs on CPU via numpy regardless. The sliding-window approach
-(stride_tricks + vectorized rfft) is efficient enough for the production
-data volume (~6K stock codes × 6 windows × ~1.7K dates ≈ 12-16 min).
+GPU note: cuDF does NOT implement FFT (any release, incl. 26.08), so the
+spectral transform cannot go through the cudf.pandas proxy. Instead it is
+routed EXPLICITLY to CuPy (cuFFT, GPU) when a CUDA device is present, else
+numpy (CPU) — the same cudf->cupy->cpu cascade used by
+_common.df_utils.rolling_corr for ops cuDF lacks. See _fft.py (shared
+with pattern_score.py, which also uses an FFT-based ACF). The
+sliding-window detrend/stride-stuff stays on the array module
+cudf.pandas chooses (GPU via the proxy when active, else CPU); only the
+rfft itself is routed by hand. When neither CuPy nor the cudf.pandas hook
+is installed the whole pipeline is plain numpy.
 
-Memory note: amplitude_spectrum is held as 1-D numpy array views into
-each (code, range_days) 2-D amplitudes block until the DataFrame is
-written. For index-only this is ~4-5 GB peak (the 2-D blocks stay live
-because the views reference them); for etf+stock the volume is much
-larger, so the populator is run per sec_type and --force truncates first.
-The 1275d window has ~637 bins per row, increasing memory proportionally.
+Memory note: the spectrum columns are held as 1-D numpy array views into
+each (code, range_days) 2-D block until the DataFrame is written — three
+blocks per (code, range_days) now (amplitudes, count, strength), roughly
+tripling the array-view peak vs the amplitude-only era. For index-only
+this was ~4-5 GB with one block; plan accordingly and run per sec_type
+(--sec-type) with --force when memory-bound. The 1275d window has ~637
+bins per row, increasing memory proportionally.
 """
 from __future__ import annotations
 
+import logging
 import numpy as np
 import pandas as pd
 
 from _common.df_utils import should_use_gpu  # noqa: F401 — per project convention
 
+from analyze.fourier_freqs._fft import _rfft
 from analyze.fourier_freqs.config import RANGE_DAYS
+from analyze.fourier_freqs.pattern_score import compute_pattern_scores
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# FFT backend routing lives in _fft.py (shared with pattern_score.py —
+# cuDF implements no FFT, so rfft/irfft are routed cudf->cupy->cpu there).
+# ---------------------------------------------------------------------------
 
 
 # Column order for the output DataFrame (matches the DB table schema).
 OUTPUT_COLUMNS = [
     "sec_type", "code", "freq", "amplitude_close_price",
-    "amplitude_spectrum",
+    "amplitude_spectrum", "count_spectrum", "strength_spectrum",
     "last_date", "range_days",
 ]
 
 # Numeric SCALAR columns for sanitize_for_db_insert.
-# amplitude_spectrum is a list/array column — NOT included here (sanitize
-# only handles scalar numeric columns; the array passes through untouched
-# and is converted to a Python list in __main__._write_rows for asyncpg).
+# The array columns (amplitude/count/strength_spectrum) are NOT included
+# here (sanitize only handles scalar numeric columns); they are converted
+# to Python lists in __main__._write_rows for asyncpg.
 NUMERIC_COLS = ["amplitude_close_price"]
 
 
@@ -100,9 +114,12 @@ def compute_fourier_freqs(
         DataFrame with columns: sec_type, code, freq (int),
         amplitude_close_price (float), amplitude_spectrum (list[float] /
         1-D numpy array — the full one-sided amplitude spectrum, length
-        floor(range_days/2), excluding DC), last_date (date),
-        range_days (int). Empty DataFrame with the correct columns if
-        close_df is empty.
+        floor(range_days/2), excluding DC), count_spectrum and
+        strength_spectrum (same shape/bin alignment — the periodic-pattern
+        audit factors per integer day freq: count = extrema evidence ×
+        ACF coherence, strength = (amp/σ_band) × count; see
+        pattern_score.py), last_date (date), range_days (int). Empty
+        DataFrame with the correct columns if close_df is empty.
     """
     if close_df.empty:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
@@ -122,14 +139,16 @@ def compute_fourier_freqs(
     dates_arr: list[np.ndarray] = []
     range_days_arr: list[np.ndarray] = []
 
-    # Spectrum accumulator: one 1-D numpy array per window (a row of the
-    # 2-D `amplitudes` block for that (code, range_days)). Built via
-    # `list(amplitudes)` (C-level row split) so we don't pay a per-window
-    # Python loop. The views reference the parent 2-D block, keeping it
-    # live until the DataFrame is written (see the memory note above).
-    # Cannot np.concatenate (ragged: N//2 differs per range_days) — kept
-    # as a flat Python list and assigned to the DataFrame column directly.
+    # Spectrum accumulators: one 1-D numpy array per window (a row of the
+    # 2-D block for that (code, range_days)). Built via `list(block)` (C-level
+    # row split) so we don't pay a per-window Python loop. The views
+    # reference the parent 2-D blocks, keeping them live until the
+    # DataFrame is written (see the memory note above). Cannot
+    # np.concatenate (ragged: N//2 differs per range_days) — kept as flat
+    # Python lists and assigned to the DataFrame columns directly.
     spectrums_flat: list[np.ndarray] = []
+    counts_flat: list[np.ndarray] = []
+    strengths_flat: list[np.ndarray] = []
 
     for code, group in close_df.groupby("code", sort=True):
         group = group.sort_values("date").reset_index(drop=True)
@@ -186,7 +205,9 @@ def compute_fourier_freqs(
 
             # Real FFT — vectorized over all windows (axis=1).
             # Output shape: (n_windows, range_days // 2 + 1).
-            fft_result = np.fft.rfft(windows_detrended, axis=1)
+            # cuDF has no FFT -> routed explicitly to CuPy (GPU) when
+            # available, else numpy (CPU). See _rfft.
+            fft_result = _rfft(windows_detrended, axis=1)
             n_freq = fft_result.shape[1]
 
             if n_freq <= 1:
@@ -233,6 +254,12 @@ def compute_fourier_freqs(
                 dom_amps[nan_mask] = 0.0
                 freqs[nan_mask] = range_days
 
+            # Pattern-score separation (count vs amp) on the RAW windows —
+            # bin-aligned with the amplitude block. See pattern_score.py.
+            count_block, strength_block = compute_pattern_scores(
+                windows, amplitudes, range_days
+            )
+
             # Accumulate as typed arrays for efficient concatenation.
             sec_types_arr.append(
                 np.full(n_windows, sec_type, dtype=object)
@@ -246,10 +273,12 @@ def compute_fourier_freqs(
             range_days_arr.append(
                 np.full(n_windows, range_days, dtype=np.int32)
             )
-            # Append each window's full amplitude row (1-D view into the
-            # 2-D `amplitudes` block). Order matches the flat arrays above
-            # (per (code, range_days), per window within the block).
+            # Append each window's full spectrum rows (1-D views into the
+            # 2-D blocks). Order matches the flat arrays above (per
+            # (code, range_days), per window within the block).
             spectrums_flat.extend(list(amplitudes))
+            counts_flat.extend(list(count_block))
+            strengths_flat.extend(list(strength_block))
 
     if not sec_types_arr:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
@@ -260,6 +289,8 @@ def compute_fourier_freqs(
         "freq": np.concatenate(freqs_arr),
         "amplitude_close_price": np.concatenate(amps_arr),
         "amplitude_spectrum": spectrums_flat,
+        "count_spectrum": counts_flat,
+        "strength_spectrum": strengths_flat,
         "last_date": np.concatenate(dates_arr),
         "range_days": np.concatenate(range_days_arr),
     })

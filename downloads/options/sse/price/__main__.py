@@ -16,6 +16,7 @@ profile rotation, random sleep) from ``_download_commons.py``.
 
 from __future__ import annotations
 
+
 import argparse
 import json
 import re
@@ -27,7 +28,7 @@ import requests
 
 import pandas as pd
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_TIMEOUT,
     MIN_VALID_BYTES,
     AntiBotProxy,

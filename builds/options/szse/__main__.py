@@ -46,7 +46,13 @@ Usage:
   python build_szse_options.py
   python build_szse_options.py --start-date 2024-01-01 --end-date 2025-12-31
   python build_szse_options.py --force
+  python build_szse_options.py --code 159915           (single-underlying test filter)
 """
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
 import os, sys, re, time, argparse
 import datetime
 
@@ -60,7 +66,9 @@ activate()
 import numpy as np
 import pandas as pd
 
-from downloads._common.core import read_csv_preferred
+from downloads._common import read_csv_preferred
+from _common.df_utils import safe_columns
+
 from _common.build_commons import (
     setup_utf8_stdout, add_common_build_args, get_db_or_exit,
     parse_num, parse_date, ymd_from_filename, ymd_to_date,
@@ -68,10 +76,15 @@ from _common.build_commons import (
     print_build_header, print_wall_time, PROJECT_ROOT, TODAY_STR,
     truncate_table_async,
 )
+from builds._commons.code_filter import add_code_arg, normalize_code
+from builds._commons.safe_parse import safe_to_numeric
 
 setup_utf8_stdout()
 
 import asyncio
+
+# Epoch anchor for vectorized days_to_expiry math (no date objects in frames)
+_EPOCH = datetime.date(1970, 1, 1)
 
 # ============================================================================
 # Paths
@@ -172,8 +185,27 @@ def compute_expiry_date(trade_date, expiry_month):
 # ============================================================================
 # Build options DataFrame from a given list of source files
 # ============================================================================
+_SZSE_OPT_RENAME = {
+    "前结算价": "prev_settle",
+    "今收盘价": "close",
+    "今结算价": "settle",
+    "涨跌幅（%）": "pct_change",
+    "成交量（张）": "volume",
+    "未平仓量（张）": "open_interest",
+}
+_SZSE_OPT_SRC_COLS = [
+    "date", "合约编码", "合约简称", "标的证券简称（代码）",
+    *_SZSE_OPT_RENAME.keys(),
+]
+
+
 def build_options_df(files, verbose=True):
     """Build a long options DataFrame from the given szse_trend_option_*.csv files.
+
+    Contract attributes are resolved by parsing each UNIQUE 合约简称 /
+    标的证券 value exactly once (host-side) into small lookup frames merged
+    back onto the concatenated frame — no iterrows / per-row dict loops
+    (each element extraction is a cudf.pandas slow-path fallback).
 
     Args:
         files: list of CSV file paths (already filtered to missing dates by caller)
@@ -181,10 +213,9 @@ def build_options_df(files, verbose=True):
     if verbose:
         print(f"    [OPTIONS] reading {len(files)} szse_trend_option_*.csv files", flush=True)
 
-    rows = []
+    frames: list[pd.DataFrame] = []
     n_empty = 0
     n_ok = 0
-    n_parse_fail = 0
 
     for path in files:
         ymd = ymd_from_filename(path, "szse_trend_option_")
@@ -205,66 +236,122 @@ def build_options_df(files, verbose=True):
             n_empty += 1
             continue
 
-        if "合约简称" not in df.columns:
+        if "合约简称" not in safe_columns(df):
             continue
 
         date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
         trade_date_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
 
-        for _, r in df.iterrows():
-            contract_name = str(r.get("合约简称", "")).strip()
-            parsed = parse_contract_name(contract_name)
-
-            if parsed is None:
-                n_parse_fail += 1
-                continue
-
-            underlying_name, underlying_code = parse_underlying_code(r.get("标的证券简称（代码）", ""))
-
-            if underlying_code is None:
-                n_parse_fail += 1
-                continue
-
-            expiry_dt = compute_expiry_date(trade_date_dt, parsed["expiry_month"])
-            days_to_expiry = max(0, (expiry_dt - trade_date_dt).days)
-
-            # All strikes (A-suffix or not) are in the same unit (厘 = 0.001 yuan).
-            # The "A" suffix indicates a contract series adjustment, not a different scale.
-            strike_price_norm = parsed["strike_price"]
-
-            rows.append({
-                "date": date_str,
-                "contract_code": str(r.get("合约编码", "")).strip(),
-                "contract_name": contract_name,
-                "underlying_name": parsed["underlying_name"],
-                "underlying_code": underlying_code,
-                "option_type": parsed["option_type"],
-                "expiry_month": parsed["expiry_month"],
-                "expiry_date": expiry_dt.strftime("%Y-%m-%d"),
-                "days_to_expiry": days_to_expiry,
-                "strike_str": parsed["strike_str"],
-                "strike_price_raw": parsed["strike_price"],
-                "strike_price": strike_price_norm,
-                "has_a_suffix": int(parsed["has_a_suffix"]),
-                "prev_settle": parse_num(r.get("前结算价")),
-                "close": parse_num(r.get("今收盘价")),
-                "settle": parse_num(r.get("今结算价")),
-                "pct_change": parse_num(r.get("涨跌幅（%）")),
-                "volume": parse_num(r.get("成交量（张）")),
-                "open_interest": parse_num(r.get("未平仓量（张）")),
-            })
+        # Scalar broadcast datetime64 date; keep only the columns we use
+        df = df.reindex(columns=[c for c in _SZSE_OPT_SRC_COLS if c != "date"])
+        df["date"] = pd.Timestamp(trade_date_dt.date())
+        frames.append(df)
         n_ok += 1
 
-    if verbose:
-        print(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, {n_parse_fail} parse failures, {len(rows)} rows", flush=True)
-
-    if not rows:
+    if not frames:
+        if verbose:
+            print(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, 0 rows", flush=True)
         return pd.DataFrame()
 
-    out = pd.DataFrame(rows)
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out["expiry_date"] = pd.to_datetime(out["expiry_date"], errors="coerce")
-    out = out.dropna(subset=["date"]).sort_values(["underlying_code", "date", "expiry_month", "strike_price", "option_type"]).reset_index(drop=True)
+    out = pd.concat(frames, ignore_index=True)
+
+    # --- Parse each UNIQUE contract name exactly once (host-side) ---
+    names = np.asarray(out["合约简称"]).astype(object).tolist()
+    parsed_by_name: dict = {}
+    for nm in sorted(set(names)):
+        parsed_by_name[nm] = parse_contract_name(nm)
+    meta_rows = [
+        {
+            "合约简称": nm,
+            "underlying_name": p["underlying_name"],
+            "option_type": p["option_type"],
+            "expiry_month": p["expiry_month"],
+            "strike_str": p["strike_str"],
+            "strike_price_raw": p["strike_price"],
+            "strike_price": p["strike_price"],
+            "has_a_suffix": int(p["has_a_suffix"]),
+        }
+        for nm, p in parsed_by_name.items() if p is not None
+    ]
+    if not meta_rows:
+        if verbose:
+            print(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, "
+                  f"{len(out)} rows dropped as parse failures, 0 rows kept", flush=True)
+        return pd.DataFrame()
+    n_pre = len(out)
+    out = out.merge(pd.DataFrame(meta_rows), on="合约简称", how="inner")
+    n_parse_fail = n_pre - len(out)
+
+    # --- Parse each UNIQUE underlying expression once → bare ETF code ---
+    under_col = "标的证券简称（代码）"
+    raw_under = np.asarray(out[under_col]).astype(object).tolist()
+    code_by_under: dict = {}
+    for u in sorted(set(raw_under)):
+        _n, _c = parse_underlying_code(u)
+        code_by_under[u] = _c
+    under_meta = pd.DataFrame([
+        {under_col: u, "underlying_code": c}
+        for u, c in code_by_under.items() if c is not None
+    ])
+    if not len(under_meta):
+        if verbose:
+            print(f"    [OPTIONS] no parseable underlying codes — 0 rows", flush=True)
+        return pd.DataFrame()
+    n_pre = len(out)
+    out = out.merge(under_meta, on=under_col, how="inner")
+    n_parse_fail += n_pre - len(out)
+
+    # --- Canonical whole-column rename (no row loops): the DB split in
+    # builds.options.tables and the batch dedupe on
+    # (date, contract_code) both expect these names ---
+    out = out.rename(columns={"合约编码": "contract_code", "合约简称": "contract_name"})
+
+    # --- Expiry: third Friday of the expiry month (per unique
+    # (date, expiry_month) pair — host-side, small) ---
+    pairs = out[["date", "expiry_month"]].drop_duplicates()
+    exp_meta_rows = []
+    months_l = np.asarray(pairs["expiry_month"]).astype(object).tolist()
+    dates_l = np.asarray(pd.to_datetime(pairs["date"])).astype(
+        "datetime64[D]").astype(object).tolist()
+    for d, m in zip(dates_l, months_l):
+        mn = _MONTH_MAP.get(m, str(m)[:-1])
+        try:
+            expiry_dt = compute_expiry_date(d, m)
+        except Exception:
+            continue
+        exp_meta_rows.append({
+            "date": pd.Timestamp(d),
+            "expiry_month": m,
+            "_exp_days": (expiry_dt.date() - _EPOCH).days,
+        })
+    if not exp_meta_rows:
+        if verbose:
+            print(f"    [OPTIONS] no computable expiry dates — 0 rows", flush=True)
+        return pd.DataFrame()
+    out = out.merge(
+        pd.DataFrame(exp_meta_rows), on=["date", "expiry_month"], how="inner")
+
+    # --- Numeric columns: source CSVs are clean (downloads guarantees
+    # dtype) — direct numeric conversion, invalid → NaN (= NULL in DB)
+    for src, dst in _SZSE_OPT_RENAME.items():
+        out[dst] = safe_to_numeric(out[src])
+
+    # --- Days to expiry from epoch-day ints; expiry_date → datetime64 ---
+    date_epoch = (
+        pd.to_datetime(out["date"]).astype("int64") // 86_400_000_000_000
+    )
+    out["days_to_expiry"] = (out["_exp_days"] - date_epoch).clip(lower=0)
+    out["expiry_date"] = pd.to_datetime(
+        out["_exp_days"].astype("int64") * 86_400_000_000_000)
+
+    if verbose:
+        print(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, "
+              f"{n_parse_fail} parse failures, {len(out)} rows", flush=True)
+
+    out = out.dropna(subset=["date"])
+    out = out.sort_values(
+        ["underlying_code", "date", "expiry_month", "strike_price", "option_type"]
+    ).reset_index(drop=True)
 
     return out
 
@@ -281,7 +368,7 @@ def load_etf_ohlcv(files, verbose=True):
     if verbose:
         print(f"    [ETF-OHLCV] reading {len(files)} szse_trend_etf_*.csv files", flush=True)
 
-    rows = []
+    parts: list = []
     for path in files:
         ymd = ymd_from_filename(path, "szse_trend_etf_")
         if not ymd:
@@ -292,29 +379,31 @@ def load_etf_ohlcv(files, verbose=True):
             continue
         if df is None or len(df) == 0:
             continue
-        if "证券代码" not in df.columns or "今收" not in df.columns:
+        _csv_cols = safe_columns(df)
+        if "证券代码" not in _csv_cols or "今收" not in _csv_cols:
             continue
         date_str = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}"
-        for _, r in df.iterrows():
-            code = str(r.get("证券代码", "")).strip()
-            code = code.replace(".SZ", "").replace(".SS", "")
-            try:
-                code = str(int(float(code))).zfill(6)
-            except Exception:
-                continue
-            close = parse_num(r.get("今收"))
-            rows.append({
-                "date": date_str,
-                "etf_code": code,
-                "etf_close": close,
-            })
+        # Vectorized code + close parsing (no iterrows — cudf-safe)
+        code_s = df["证券代码"].astype(str).str.strip()
+        code_s = code_s.str.replace(".SZ", "", regex=False).str.replace(".SS", "", regex=False)
+        code_num = pd.to_numeric(code_s, errors="coerce")
+        close_s = safe_to_numeric(df["今收"])
+        m = (code_num.notna() & close_s.notna()).to_numpy()
+        if not bool(m.any()):
+            continue
+        part = pd.DataFrame({
+            "etf_code": code_num[m].astype("Int64").astype(str).str.zfill(6),
+        })
+        part["date"] = date_str
+        part["etf_close"] = close_s[m].astype(float)
+        parts.append(part)
 
-    if not rows:
+    if not parts:
         if verbose:
             print("    [WARN] No ETF OHLCV data loaded for moneyness calculation", flush=True)
         return pd.DataFrame()
 
-    out = pd.DataFrame(rows)
+    out = pd.concat(parts, ignore_index=True)
     out["date"] = pd.to_datetime(out["date"], errors="coerce")
     out = out.dropna(subset=["date"]).sort_values(["etf_code", "date"]).reset_index(drop=True)
 
@@ -426,10 +515,18 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
 # start with CFFEX product prefixes (IO, HO, MO, CO).
 _CFFEX_PREFIXES = ["IO%", "HO%", "MO%", "CO%"]
 
+# CFFEX index-option underlying codes (IO/HO/MO/CO → index codes) — used
+# to skip this SZSE-only builder when --code targets a CFFEX underlying.
+from builds.options.cffex.config import PRODUCT_UNDERLYING as _CFFEX_PRODUCT_UNDERLYING  # noqa: E402
+_CFFEX_INDEX_UNDERLYING_CODES = frozenset(
+    code for code, _name in _CFFEX_PRODUCT_UNDERLYING.values()
+)
+
 
 async def find_missing_szse_dates(
     conn,
     source_dates,
+    code_filter: str | None = None,
 ):
     """Find dates from source_dates that do NOT already have SZSE options data.
 
@@ -437,6 +534,10 @@ async def find_missing_szse_dates(
     table), this function only checks for rows whose contract_code does NOT
     start with a CFFEX option product prefix. This prevents CFFEX options
     data from masking dates that still need SZSE data.
+
+    With code_filter (bare underlying code), the check is scoped to that
+    underlying via stats.options_terms — dates loaded for OTHER underlyings
+    no longer mask this underlying's gaps.
     """
     if not source_dates:
         return set()
@@ -445,8 +546,15 @@ async def find_missing_szse_dates(
     conditions = " AND ".join(
         [f'contract_code NOT LIKE ${i+1}' for i in range(n)]
     )
-    sql = f'SELECT DISTINCT date FROM stats.options_identity WHERE {conditions}'
-    existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES)
+    if code_filter:
+        sql = (
+            f'SELECT DISTINCT date FROM stats.options_terms '
+            f'WHERE underlying_code = ${n+1} AND {conditions}'
+        )
+        existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES, code_filter)
+    else:
+        sql = f'SELECT DISTINCT date FROM stats.options_identity WHERE {conditions}'
+        existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES)
     existing_dates = {r["date"] for r in existing_rows if r["date"] is not None}
 
     return source_dates - existing_dates
@@ -460,7 +568,14 @@ async def main():
         description="Build SZSE ETF Options data and insert to database (missing dates only)."
     )
     add_common_build_args(ap)
+    add_code_arg(ap)
     args = ap.parse_args()
+
+    # SZSE option underlyings are bare 6-digit ETF codes (e.g. 159915) —
+    # strip the exchange suffix normalize_code may have appended.
+    code_filter = normalize_code(args.code)
+    if code_filter:
+        code_filter = code_filter.split(".")[0]
 
     t0 = time.time()
     print_build_header(
@@ -468,9 +583,16 @@ async def main():
         **{
             "Trend dir":  SZSE_TREND_DIR,
             "Date range": f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
+            "Code filter": code_filter or "(none — all underlyings)",
             "Today":      TODAY_STR,
         }
     )
+    if code_filter:
+        print(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}", flush=True)
+        if code_filter in _CFFEX_INDEX_UNDERLYING_CODES:
+            print("    [CODE FILTER] CFFEX index underlying — nothing to do for SZSE; skipping", flush=True)
+            print_wall_time(t0)
+            return
 
     # ------------------------------------------------------------------
     # 1. Discover source files and available dates
@@ -513,19 +635,27 @@ async def main():
 
     try:
         if args.force:
-            print("    [DB] Force mode: truncating existing tables", flush=True)
-            # CASCADE truncates all FK child tables automatically
-            for tbl in ("stats.options_aggregate", "stats.options_volume_oi",
-                        "stats.options_greeks", "stats.options_settlement",
-                        "stats.options_strike", "stats.options_terms",
-                        "stats.options_identity"):
-                await truncate_table_async(conn, tbl)
+            if code_filter:
+                # Single-code force mode: delete only this underlying's rows
+                # instead of truncating (FK-safe order handled by the helper).
+                print(f"    [DB] Force mode for underlying {code_filter}: deleting existing rows", flush=True)
+                from builds.options.tables import delete_underlying_rows_async
+                await delete_underlying_rows_async(conn, code_filter)
+            else:
+                print("    [DB] Force mode: truncating existing tables", flush=True)
+                # CASCADE truncates all FK child tables automatically
+                for tbl in ("stats.options_aggregate", "stats.options_volume_oi",
+                            "stats.options_greeks", "stats.options_settlement",
+                            "stats.options_strike", "stats.options_terms",
+                            "stats.options_identity"):
+                    await truncate_table_async(conn, tbl)
             missing_dates = available_dates
         else:
-            # Query DISTINCT dates from options_identity for SZSE-specific
-            # contracts (excluding CFFEX prefixes). This ensures CFFEX data
-            # doesn't mask dates that still need SZSE data.
-            missing_dates = await find_missing_szse_dates(conn, available_dates)
+            # Query DISTINCT dates for SZSE-specific contracts (excluding
+            # CFFEX prefixes). This ensures CFFEX data doesn't mask dates
+            # that still need SZSE data. With --code, only that underlying's
+            # dates are checked.
+            missing_dates = await find_missing_szse_dates(conn, available_dates, code_filter=code_filter)
 
         print(f"    [DB] {len(missing_dates)} dates missing from stats.options_identity "
               f"(out of {len(available_dates)} available)", flush=True)
@@ -552,6 +682,16 @@ async def main():
         print(f"    → {len(missing_option_files)} option files, {len(missing_etf_files)} ETF files to read", flush=True)
 
         options_df = build_options_df(missing_option_files)
+
+        # Filter to the target underlying if --code is set — BEFORE the
+        # derived columns, whose per-underlying aggregates (volume_pct,
+        # total_volume_underlying, …) are computed within one underlying.
+        if code_filter and len(options_df) > 0:
+            n_before = len(options_df)
+            options_df = options_df[
+                options_df["underlying_code"] == code_filter
+            ].reset_index(drop=True)
+            print(f"    [CODE FILTER] Options rows {n_before:,} → {len(options_df):,} for underlying {code_filter}", flush=True)
 
         if len(options_df) == 0:
             print("    [INFO] No options rows parsed from missing-date files", flush=True)

@@ -7,10 +7,11 @@ https://www.szse.cn/market/trend/index.html. Writes
 DB-first mode: queries ``stats.options_identity`` to find missing trading
 days, skipping dates already in the DB. Also skips dates with local 0-byte
 CSV markers (previously fetched but no data found). Note: options_identity
-has no code_suffix column (PK is date + contract_code), so db_code_suffix
+has no exchange column (PK is date + contract_code), so db_exchange
 is intentionally omitted.
 """
 from __future__ import annotations
+
 
 import random
 from datetime import date
@@ -19,7 +20,7 @@ from typing import Dict, Optional
 
 import requests
 
-from downloads._common.szse_runner import (
+from downloads._common.exchanges.szse import (
     REFERER_TREND,
     build_headers,
     run_szse_download,
@@ -37,8 +38,8 @@ SECURITY_CFGS: Dict[str, Dict[str, str]] = {
 }
 
 # DB-first mode: stats.options_identity has PK (date, contract_code) with NO
-# code_suffix column, so db_code_suffix is intentionally omitted. The
-# check_identity query only filters by date when code/code_suffix are None.
+# exchange column, so db_exchange is intentionally omitted. The
+# check_identity query only filters by date when code/exchange are None.
 DB_TABLE_BY_TYPE: Dict[str, str] = {
     "option": "stats.options_identity",
 }
@@ -85,7 +86,7 @@ def download_szse_trend_option(
         security_types=["option"],
         sleep_sec=sleep_sec,
         session=session,
-        code_suffix=".SZ",
+        exchange="SZ",
         db_table_by_type=DB_TABLE_BY_TYPE,
         skip_empty_markers=True,
     )

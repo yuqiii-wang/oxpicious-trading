@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import logging
 import re
 import time
@@ -11,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 
-from downloads._common.core import (
+from downloads._common import (
     COMMON_BASE_HEADERS,
     DEFAULT_TIMEOUT,
     DEFAULT_START_DATE,
@@ -24,8 +25,9 @@ from downloads._common.core import (
     build_default_session,
     RunStats,
     business_days,
-    _PROJECT_ROOT,
 )
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
 PBOC_BASE = "https://www.pbc.gov.cn"

@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 
 from _common.build_commons import copy_or_upsert_split_async
+from _common.df_utils import safe_columns
+from builds._commons.row_emission import dates_as_date_list, records_from_frame
 
 
 async def insert_daily_to_db(conn, daily_df, verbose=True):
@@ -30,12 +32,9 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
     if daily_df is None or len(daily_df) == 0:
         return 0
 
-    identity_rows = []
-    basic_stats_rows = []
-    valuation_rows = []
-    tech_stats_rows = []
-
-    # Vectorized row construction for 4 tables
+    # Vectorized row construction for 4 tables (no to_dict(orient="records")
+    # / iterrows — under cudf.pandas each element extraction is one
+    # slow-path fallback per row)
     _src = daily_df.copy()
     _src["code"] = _src["code"].astype(str)
     # --- Rename camelCase → snake_case for DB column alignment ---
@@ -44,37 +43,43 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
         "consNumber": "cons_number",
         "indexName": "name",
     })
+    src_cols = safe_columns(_src)
     # Ensure name is never NaN/None (DB column is NOT NULL)
     _src["name"] = _src["name"].where(_src["name"].notna(), "").astype(str)
     # --- Helper: vectorized NaN→None ---
     def _to_db_series(s: pd.Series) -> pd.Series:
         return s.where(s.notna(), None)
-    # --- identity_rows ---
-    identity_rows = _src[["date", "code", "name"]].to_dict(orient="records")
+
+    # date/code emitted via ONE numpy transfer each (datetime.date objects)
+    date_vals = dates_as_date_list(_src["date"])
+    code_vals = np.asarray(_src["code"]).tolist()
+
+    def _emit(cols_without_pk: list) -> list:
+        recs = records_from_frame(_src, cols_without_pk)
+        return [{"date": d, "code": c, **r} for d, c, r in zip(date_vals, code_vals, recs)]
+
     # --- basic_stats_rows ---
     _basic_cols = ["open", "high", "low", "close", "trading_shares", "trading_amount",
                    "change", "change_pct"]
     for _c in _basic_cols:
-        if _c in _src.columns:
+        if _c in src_cols:
             _src[_c] = _to_db_series(_src[_c])
-    if "is_close_estimated" in _src.columns:
+    if "is_close_estimated" in src_cols:
         _src["is_close_estimated"] = _src["is_close_estimated"].fillna(False).astype(bool)
     else:
         _src["is_close_estimated"] = False
-    basic_cols_out = ["date", "code"] + _basic_cols + ["is_close_estimated"]
-    basic_stats_rows = _src[[c for c in basic_cols_out if c in _src.columns]].to_dict(orient="records")
     # --- valuation_rows ---
     _val_cols = ["pe", "cons_number"]
     for _c in _val_cols:
-        if _c in _src.columns:
+        if _c in src_cols:
             _src[_c] = _to_db_series(_src[_c])
-    val_cols_out = ["date", "code"] + [c for c in _val_cols if c in _src.columns]
-    valuation_rows = _src[val_cols_out].to_dict(orient="records")
-    # --- tech_stats_rows ---
-    _tech_cols = ["ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
-                  "ema6", "ema10", "ema20", "ema60", "ema120", "ema255"]
-    tech_cols_out = ["date", "code"] + [c for c in _tech_cols if c in _src.columns]
-    tech_stats_rows = _src[tech_cols_out].to_dict(orient="records")
+
+    identity_rows = _emit(["name"])
+    basic_stats_rows = _emit(
+        [c for c in _basic_cols if c in src_cols] + ["is_close_estimated"])
+    valuation_rows = _emit([_c for _c in _val_cols if _c in src_cols])
+    tech_stats_rows = _emit(["ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
+                             "ema6", "ema10", "ema20", "ema60", "ema120", "ema255"])
 
     pk = ["date", "code"]
     for tbl, rows in [

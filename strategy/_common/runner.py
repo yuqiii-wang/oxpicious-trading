@@ -124,6 +124,21 @@ async def run_one_sec_type(
         }
     )
 
+    # Cap the backtest horizon at the analysis pipeline's last processed
+    # date (MAX(date) in analysis.mov_ave_spreads_detail for this
+    # sec_type). The UI chart renders OHLC from that table, so decisions —
+    # including the LAST DAY SELL — must stay within its date range to
+    # land on visible candles. stats.<sec>_basic_stats can run ahead of the
+    # analysis build (live intraday partial bars), which would otherwise
+    # place the last-day sell beyond the chart's last candlestick.
+    horizon = await conn.fetchval(
+        "SELECT MAX(date) FROM analysis.mov_ave_spreads_detail "
+        "WHERE sec_type = $1",
+        sec_type,
+    )
+    if horizon is not None:
+        print(f"    -> analysis horizon cap: {horizon}", flush=True)
+
     # ---- 1-2. Fetch + backtest (batched for large code sets) --------
     # Group decisions by code so we can write one seq per code.
     decisions_by_code: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
@@ -143,6 +158,14 @@ async def run_one_sec_type(
         if df.empty:
             print(f"    -> batch {bi+1}: no data; skipping.", flush=True)
             continue
+        # Trim to the analysis horizon (vectorized boolean mask) so the
+        # backtest never runs past the dates the chart can render.
+        if horizon is not None:
+            df = df[df["date"] <= horizon]
+            if df.empty:
+                print(f"    -> batch {bi+1}: no rows within the analysis "
+                      f"horizon; skipping.", flush=True)
+                continue
         if n_batches > 1:
             print(f"    -> batch {bi+1}: {len(df):,} rows, "
                   f"{df['code'].nunique()} code(s)", flush=True)

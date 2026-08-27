@@ -84,37 +84,57 @@ interface DbMemberTickRow extends QueryResultRow {
 // ----------------------------------------------------------------------------
 const BENCHMARK_LIST_SQL = `
 WITH
+-- The curated broad-market benchmark set: indices carrying the
+-- hand-authored BROAD/benchmark_broadmarket tag.
+curated AS (
+    SELECT DISTINCT t.code AS benchmark_code
+    FROM stats.sec_index_tags t
+    WHERE t.industry_id = 'benchmark_broadmarket'
+),
 processed AS (
     SELECT DISTINCT a.benchmark_code
     FROM live.sec_alloc_live_attribution a
-    WHERE a.benchmark_code IN (
-        SELECT t.code FROM stats.sec_index_tags t WHERE t.is_broad_market = TRUE
-    )
+    WHERE a.benchmark_code IN (SELECT benchmark_code FROM curated)
 ),
-all_broad AS (
+all_curated_with_data AS (
+    -- Curated benchmarks that have attribution history and intraday data,
+    -- used when the live pipeline hasn't processed them yet.
     SELECT DISTINCT sap.benchmark_code
     FROM analysis.sec_alloc_perf_attribution sap
-    JOIN stats.sec_index_tags t ON t.code = sap.benchmark_code AND t.is_broad_market = TRUE
     WHERE sap.sec_type = 'index'
+      AND sap.benchmark_code IN (SELECT benchmark_code FROM curated)
+      AND EXISTS (
+          SELECT 1 FROM stats.index_intraday_5min i5
+          WHERE i5.code = sap.benchmark_code AND i5.close IS NOT NULL
+          LIMIT 1
+      )
 ),
 bench_codes AS (
     SELECT benchmark_code FROM processed
     UNION
-    SELECT ab.benchmark_code
-    FROM all_broad ab
-    WHERE NOT EXISTS (SELECT 1 FROM processed p WHERE p.benchmark_code = ab.benchmark_code)
-      AND EXISTS (
-          SELECT 1 FROM stats.index_intraday_5min i5
-          WHERE i5.code = ab.benchmark_code AND i5.close IS NOT NULL
-          LIMIT 1
-      )
+    SELECT benchmark_code FROM all_curated_with_data
+),
+-- Legacy fallback: before the classification build materializes the
+-- benchmark_broadmarket tag into stats.sec_index_tags, fall back to the
+-- old is_broad_market selection so the dropdown is never empty.
+legacy_broad AS (
+    SELECT DISTINCT t.code AS benchmark_code
+    FROM stats.sec_index_tags t
+    WHERE t.is_broad_market = TRUE
+),
+final_codes AS (
+    SELECT benchmark_code FROM bench_codes
+    UNION ALL
+    SELECT lb.benchmark_code
+    FROM legacy_broad lb
+    WHERE NOT EXISTS (SELECT 1 FROM stats.sec_index_tags t2 WHERE t2.industry_id = 'benchmark_broadmarket')
 ),
 enriched AS (
     SELECT
         bc.benchmark_code,
         (SELECT name FROM stats.index_identity WHERE code = bc.benchmark_code ORDER BY date DESC LIMIT 1) AS benchmark_name,
         (SELECT BOOL_OR(is_broad_market) FROM stats.sec_index_tags WHERE code = bc.benchmark_code) AS is_broad_market
-    FROM bench_codes bc
+    FROM final_codes bc
 )
 SELECT * FROM enriched
 ORDER BY benchmark_code

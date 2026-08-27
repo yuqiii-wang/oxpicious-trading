@@ -28,8 +28,11 @@ no dummy at all if they already had a real parent) instead of DUMMY_OTHER.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Dict, Tuple
 
+import numpy as np
+
+from _common.build_commons import rec_col
 from _common.sec_statics.classification import (
     DEFAULT_SECTOR_ID,
     classify_etf_by_name,
@@ -37,22 +40,31 @@ from _common.sec_statics.classification import (
 )
 
 
-async def fetch_sec_info_names(conn, etf_codes: list[str]) -> Dict[str, str]:
-    """Fetch the official sec_info.name for the given ETF codes.
+async def fetch_sec_info_names(conn, others: "pd.DataFrame") -> Dict[str, str]:
+    """Fetch the official sec_info.name for OTHER ETFs.
 
     Args:
         conn: asyncpg connection (may be None — returns empty dict).
-        etf_codes: ETF codes WITH exchange suffix (e.g. '159001.SZ',
-                   '150009.SZ'). Only .SZ codes can match sec_info.
+        others: filtered DataFrame of the ETF state (columns include
+                ``code`` and the DB-driven ``exchange``) — ETFs still at
+                DEFAULT_SECTOR_ID.  Only rows whose ``exchange`` is "SZ"
+                can match sec_info; selected vectorized on the frame.
 
     Returns:
         {etf_code: sec_info.name} for codes present in sec_info.
     """
-    if not etf_codes or conn is None:
+    if conn is None or others is None or len(others) == 0:
         return {}
     # sec_info.code is BARE 6-digit; JOIN via code || '.SZ' = etf_code.
-    # Filter to .SZ codes client-side so the query stays index-friendly.
-    sz_codes = [c for c in etf_codes if c.endswith(".SZ")]
+    # Column-first extraction: zero out non-SZ rows on the single ``code``
+    # column via where(), drop them + dedupe, one host-list materialization
+    # at the SQL boundary.
+    sz_codes = np.asarray(
+        others["code"]
+        .where(others["exchange"].eq("SZ"))
+        .dropna()
+        .drop_duplicates()
+    ).tolist()
     if not sz_codes:
         return {}
     rows = await conn.fetch(
@@ -63,7 +75,9 @@ async def fetch_sec_info_names(conn, etf_codes: list[str]) -> Dict[str, str]:
         """,
         sz_codes,
     )
-    return {r["etf_code"]: r["name"] for r in rows if r["name"]}
+    # Whole-column zip pairing with name filter (pure host)
+    return {c: n for c, n in zip(rec_col(rows, "etf_code"),
+                                 rec_col(rows, "name")) if n}
 
 
 def reclassify_other_etfs(

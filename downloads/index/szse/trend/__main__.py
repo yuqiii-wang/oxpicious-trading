@@ -15,6 +15,7 @@ the server returned no data), preventing re-downloading those dates.
 """
 from __future__ import annotations
 
+
 import random
 from datetime import date
 from pathlib import Path
@@ -22,7 +23,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from downloads._common.szse_runner import (
+from downloads._common.exchanges.szse import (
     REFERER_TREND,
     build_headers,
     run_szse_download,
@@ -46,8 +47,8 @@ CODE_FILTER_BY_TYPE: Dict[str, List[str]] = {
     "index": INDEX_CODES_TO_KEEP,
 }
 
-# DB-first mode: stats.index_identity has NO code_suffix column (codes are
-# bare 6-digit like "399001"), so db_code_suffix is intentionally omitted.
+# DB-first mode: stats.index_identity has NO exchange column (codes are
+# bare 6-digit like "399001"), so db_exchange is intentionally omitted.
 DB_TABLE_BY_TYPE: Dict[str, str] = {
     "index": "stats.index_identity",
 }
@@ -94,7 +95,7 @@ def download_szse_trend_index(
         security_types=["index"],
         sleep_sec=sleep_sec,
         session=session,
-        code_suffix=".SZ",
+        exchange="SZ",
         db_table_by_type=DB_TABLE_BY_TYPE,
         code_filter_by_type=CODE_FILTER_BY_TYPE,
         skip_empty_markers=True,

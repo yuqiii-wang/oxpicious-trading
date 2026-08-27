@@ -10,6 +10,11 @@ See ``run.py`` for the pipeline docstring.
 """
 from __future__ import annotations
 
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
 import argparse
 import asyncio
 import os
@@ -39,7 +44,10 @@ from analyze.sec_alloc_perf_attribution.config import (  # noqa: E402
     TABLE,
     TOP_N_NON_BROAD,
 )
-from analyze.sec_alloc_perf_attribution.run import run_perf_attribution  # noqa: E402
+from analyze.sec_alloc_perf_attribution.run import (  # noqa: E402
+    run_corr_update,
+    run_perf_attribution,
+)
 
 
 async def main() -> None:
@@ -47,9 +55,35 @@ async def main() -> None:
         description="Sec alloc perf attribution analysis (Index x Index)."
     )
     add_force_arg(ap)
+    ap.add_argument(
+        "--corr", action="store_true",
+        help="Corr-only build: recompute corr_20d/60d/255d on stride-grid "
+             "dates and upsert them onto existing rows (the main run "
+             "writes rows with corr OFF by default).",
+    )
     args = ap.parse_args()
 
     t0 = time.time()
+
+    if args.corr:
+        print_build_header(
+            "ANALYZE SEC ALLOC PERF ATTRIBUTION — CORR BUILD (grid dates)",
+            table=TABLE,
+            sec_types="index",
+            top_n_non_broad=f"{TOP_N_NON_BROAD}",
+            mode="corr-only (upsert corr_20d/60d/255d on grid dates)",
+        )
+        conn = await get_db_connection_async()
+        try:
+            await run_corr_update(conn)
+        finally:
+            try:
+                await asyncio.wait_for(conn.close(), timeout=10)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        print_wall_time(t0)
+        return
+
     print_build_header(
         "ANALYZE SEC ALLOC PERF ATTRIBUTION (INDEX x INDEX)",
         table=TABLE,

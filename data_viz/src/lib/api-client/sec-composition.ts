@@ -1,9 +1,10 @@
-﻿import { fetchJson } from "./_cache";
+import { fetchJson } from "./_cache";
 import type {
   SecCompositionResponse,
   LinkedEtfsResponse,
   SimilarIndicesResponse,
   QuarterlyCompositionResponse,
+  IndustryWeightSeriesResponse,
 } from "@shared/types";
 
 /** Fetch the composition holdings for a security.
@@ -32,6 +33,22 @@ export function fetchQuarterlyComposition(
   if (code) params.set("code", code);
   const qs = params.toString();
   return fetchJson<QuarterlyCompositionResponse>(`/api/sec-composition/quarterly${qs ? `?${qs}` : ""}`);
+}
+
+/** Fetch ONE industry's weight in a security's composition across ALL
+ *  snapshot dates (roughly monthly; denser than the quarterly view). Used by
+ *  the ETF Holdings page's Industry-changes row drill-down. */
+export function fetchIndustryWeightSeries(
+  code: string,
+  industryId: string,
+): Promise<IndustryWeightSeriesResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (industryId) params.set("industry_id", industryId);
+  const qs = params.toString();
+  return fetchJson<IndustryWeightSeriesResponse>(
+    `/api/sec-composition/industry-weight-series${qs ? `?${qs}` : ""}`,
+  );
 }
 
 /** Fetch ETFs tracking the given index (parent_index_code = code).

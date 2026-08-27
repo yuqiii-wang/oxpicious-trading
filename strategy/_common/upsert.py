@@ -125,7 +125,7 @@ async def insert_strategy_seq(
 
     ``start_date``/``end_date`` are the OHLC period the strategy is run over
     (input); they form the natural business key with strategy_name/sec_type/
-    code/scenario. ``scenario``/``parent_seq_id`` tag forecast child seqs.
+    code. ``parent_seq_id`` links child seqs to their parent run.
     ``fault_tolerance`` is extracted from ``params`` (0 when absent) and
     stored as a metadata column for querying/filtering.
 
@@ -165,9 +165,8 @@ async def _deactivate_other_runs(
     (strategy_name, sec_type, code). Called when a new active run is created
     so only one run is active at a time.
 
-    Also sets is_active = TRUE on children of the new active parent (so
-    forecast scenarios are also "active") and is_active = FALSE on children
-    of deactivated parents.
+    Also sets is_active = TRUE on children of the new active parent and
+    is_active = FALSE on children of deactivated parents.
     """
     # Get old parent seq_ids being deactivated
     old_parents = await conn.fetch(
@@ -202,7 +201,7 @@ async def _deactivate_other_runs(
         strategy_name, sec_type, code, exclude_seq_id,
     )
 
-    # Activate children of the new parent (forecast scenarios)
+    # Activate children of the new parent
     await conn.execute(
         f"""
         UPDATE {SEQ_TABLE}
@@ -377,7 +376,7 @@ async def insert_decisions(
     DECISION_COLUMNS. Missing keys default to None. By default
     ``decision_no`` is assigned here via assign_decision_no() after sorting.
     Pass ``assign_no=False`` to use the ``decision_no`` already set on each
-    row (e.g. when appending forecast decisions that continue numbering
+    row (e.g. when appending decisions that continue numbering
     from the existing actual decisions in the same seq). Each row must
     carry ``normalized_fill_price`` (attached by the backtest).
     """

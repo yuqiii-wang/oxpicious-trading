@@ -33,10 +33,14 @@ CREATE TABLE IF NOT EXISTS analysis.basic_analysis_stats (
     -- this date (abnormal market attention / activity). FALSE by default.
     is_market_hyped   BOOLEAN      NOT NULL DEFAULT FALSE,
 
-    CONSTRAINT pk_basic_analysis_stats PRIMARY KEY (date, code, sec_type),
+    CONSTRAINT pk_basic_analysis_stats PRIMARY KEY (code, date, sec_type),
     CONSTRAINT chk_basic_analysis_stats_sec_type
         CHECK (sec_type IN ('stock', 'etf', 'index'))
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'basic_analysis_stats', 8);
 
 -- Indexes for the common access patterns:
 --   1. Per-security time series (drives per-code charts).
@@ -46,7 +50,7 @@ CREATE INDEX IF NOT EXISTS idx_basic_analysis_stats_code_sec_type_date
 CREATE INDEX IF NOT EXISTS idx_basic_analysis_stats_date
     ON analysis.basic_analysis_stats (date);
 
-COMMENT ON TABLE  analysis.basic_analysis_stats              IS 'Per-(date, code, sec_type) basic analysis flags across all security types (etf / index / stock). One row per trading date per security. PK: (date, code, sec_type) — joins 1:1 with analysis.mov_ave_spreads_detail on the same key. is_market_hyped: boolean flag set by the build script when the security trips the hype criteria on that date. Built by the corresponding analyze build script (truncate-then-recompute).';
+COMMENT ON TABLE  analysis.basic_analysis_stats              IS 'Per-(date, code, sec_type) basic analysis flags across all security types (etf / index / stock). One row per trading date per security. PK: (code, date, sec_type) — joins 1:1 with analysis.mov_ave_spreads_detail on the same key. is_market_hyped: boolean flag set by the build script when the security trips the hype criteria on that date. Built by the corresponding analyze build script (truncate-then-recompute).';
 COMMENT ON COLUMN analysis.basic_analysis_stats.date        IS 'Trading date.';
 COMMENT ON COLUMN analysis.basic_analysis_stats.code        IS 'Security code (etf / index / stock ticker).';
 COMMENT ON COLUMN analysis.basic_analysis_stats.sec_type    IS 'Subject security type: stock, etf, or index. Determines which source price/valuation tables apply (mirrors analysis.mov_ave_spreads_detail.sec_type).';

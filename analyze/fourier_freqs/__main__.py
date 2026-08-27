@@ -31,6 +31,11 @@ Incremental mode rationale
 """
 from __future__ import annotations
 
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
 import argparse
 import asyncio
 import os
@@ -99,6 +104,10 @@ _CHUNK_SIZE = 10_000
 # PK columns for ON CONFLICT in incremental upsert mode.
 _PK_COLUMNS = ["sec_type", "code", "last_date", "range_days"]
 
+# Postgres double-precision array columns — converted ndarray → list in
+# _write_rows before asyncpg encoding.
+_ARRAY_COLUMNS = ("amplitude_spectrum", "count_spectrum", "strength_spectrum")
+
 
 # ---------------------------------------------------------------------------
 #  Missing-date detection (incremental mode)
@@ -114,9 +123,11 @@ async def _find_missing_targets(
     A (code, date, range_days) target needs computation when the code
     has a close on that date with enough prior close history for the
     window (its close-date rank >= range_days), but analysis.fourier_freqs
-    has NO row with a non-NULL amplitude_spectrum at that exact PK.
-    Legacy rows with a NULL spectrum therefore count as missing and are
-    backfilled by the recompute-upsert.
+    has NO row with non-NULL spectrum arrays (amplitude + count +
+    strength) at that exact PK. Legacy rows with a NULL spectrum (or
+    NULL count/strength from before the pattern-score separation)
+    therefore count as missing and are backfilled by the
+    recompute-upsert.
 
     Detecting gaps at the FULL PK granularity (code × date × window) —
     not just distinct dates — catches per-code holes that global
@@ -165,6 +176,8 @@ async def _find_missing_targets(
             AND f.last_date = e.date
             AND f.range_days = e.range_days
             AND f.amplitude_spectrum IS NOT NULL
+            AND f.count_spectrum IS NOT NULL
+            AND f.strength_spectrum IS NOT NULL
         WHERE f.code IS NULL
         """,
         sec_type, codes, list(RANGE_DAYS),
@@ -271,15 +284,16 @@ async def _write_rows(
         chunk = result_df.iloc[
             i * _CHUNK_SIZE : (i + 1) * _CHUNK_SIZE
         ].copy()
-        # Convert amplitude_spectrum from numpy 1-D arrays to Python lists.
+        # Convert the array columns from numpy 1-D arrays to Python lists.
         # asyncpg encodes Python lists as Postgres double-precision arrays
         # but has no codec for numpy arrays. sanitize_for_db_insert only
         # handles scalar numeric cols, so this array→list conversion must
         # happen here (before sanitize). tolist() is C-level — fast.
-        if "amplitude_spectrum" in chunk.columns:
-            chunk["amplitude_spectrum"] = chunk["amplitude_spectrum"].apply(
-                lambda v: v.tolist() if isinstance(v, np.ndarray) else v
-            )
+        for arr_col in _ARRAY_COLUMNS:
+            if arr_col in chunk.columns:
+                chunk[arr_col] = chunk[arr_col].apply(
+                    lambda v: v.tolist() if isinstance(v, np.ndarray) else v
+                )
         rows = sanitize_for_db_insert(
             chunk,
             numeric_cols=NUMERIC_COLS,

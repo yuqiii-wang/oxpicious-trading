@@ -47,6 +47,11 @@ Usage:
 """
 from __future__ import annotations
 
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
 import argparse
 import asyncio
 import csv
@@ -56,6 +61,7 @@ import os
 import re
 import sys
 import time
+from operator import itemgetter
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -145,11 +151,11 @@ def _to_num(val: str) -> Optional[float]:
         return None
 
 
-def _read_dividend_csv(path: str, code_suffix: str, source: str) -> List[Dict[str, Any]]:
+def _read_dividend_csv(path: str, exchange: str, source: str) -> List[Dict[str, Any]]:
     """Read one {code}_dividend.csv and return a list of DB-row dicts.
 
-    The CSV's bare 6-digit code is suffixed with *code_suffix* (``.SS`` for
-    Shanghai, ``.SZ`` for Shenzhen) before insert, matching the format used
+    The CSV's bare 6-digit code is suffixed with *exchange* (``SS`` for
+    Shanghai, ``SZ`` for Shenzhen) before insert, matching the format used
     in ``stats.stock_identity.code``. *source* is set on every row
     (``'SSE'`` or ``'SZSE'``) so the DB's ``source`` column reflects the
     data origin.
@@ -169,7 +175,7 @@ def _read_dividend_csv(path: str, code_suffix: str, source: str) -> List[Dict[st
                 code_raw = str(raw.get("证券代码", "")).strip()
                 if not code_raw or not code_raw.isdigit():
                     continue
-                code = f"{code_raw.zfill(6)}{code_suffix}"
+                code = f"{code_raw.zfill(6)}.{exchange}"
                 row = {
                     "code": code,
                     "name": (raw.get("证券简称") or "").strip() or None,
@@ -195,12 +201,12 @@ def _read_dividend_csv(path: str, code_suffix: str, source: str) -> List[Dict[st
     return rows
 
 
-# Each source directory paired with its code suffix and source label.
-# SSE codes:  600xxx/601xxx/603xxx/605xxx/688xxx → .SS
-# SZSE codes: 000xxx/001xxx/002xxx/003xxx/300xxx/301xxx → .SZ
+# Each source directory paired with its exchange and source label.
+# SSE codes:  600xxx/601xxx/603xxx/605xxx/688xxx → SS
+# SZSE codes: 000xxx/001xxx/002xxx/003xxx/300xxx/301xxx → SZ
 SOURCE_DIRS = [
-    (SSE_ARCHIVE_DIR,  ".SS", "SSE"),
-    (SZSE_ARCHIVE_DIR, ".SZ", "SZSE"),
+    (SSE_ARCHIVE_DIR,  "SS", "SSE"),
+    (SZSE_ARCHIVE_DIR, "SZ", "SZSE"),
 ]
 
 # SSE-exclusive prefixes (6xx). Everything else found in the SZSE dir is
@@ -209,14 +215,14 @@ _SSE_CODE_PREFIXES = ("600", "601", "603", "605", "688")
 
 
 def _resolve_code_source(bare_code: str) -> Tuple[str, str, str]:
-    """Return (archive_dir, code_suffix, source) for a bare 6-digit code.
+    """Return (archive_dir, exchange, source) for a bare 6-digit code.
 
-    SSE prefixes (600/601/603/605/688) → SSE_ARCHIVE_DIR, '.SS', 'SSE'.
-    All others → SZSE_ARCHIVE_DIR, '.SZ', 'SZSE'.
+    SSE prefixes (600/601/603/605/688) → SSE_ARCHIVE_DIR, 'SS', 'SSE'.
+    All others → SZSE_ARCHIVE_DIR, 'SZ', 'SZSE'.
     """
     if bare_code[:3] in _SSE_CODE_PREFIXES:
-        return (SSE_ARCHIVE_DIR, ".SS", "SSE")
-    return (SZSE_ARCHIVE_DIR, ".SZ", "SZSE")
+        return (SSE_ARCHIVE_DIR, "SS", "SSE")
+    return (SZSE_ARCHIVE_DIR, "SZ", "SZSE")
 
 
 # Regex patterns for dividend CSV filenames.
@@ -299,7 +305,8 @@ def _fetch_active_stock_codes() -> Optional[set]:
         conn.close()
     if not rows:
         return None
-    return {r[0] for r in rows}
+    # Whole-column extraction (positional single-column rows)
+    return set(map(itemgetter(0), rows))
 
 
 # ============================================================================
@@ -340,25 +347,25 @@ async def main() -> None:
     # 1. Discover dividend CSV files
     # ------------------------------------------------------------------
     print("\n[1/3] Discovering dividend CSV files …", flush=True)
-    # Build a list of (path, code_suffix, source) tuples. For each stock
+    # Build a list of (path, exchange, source) tuples. For each stock
     # code, only the LATEST CSV (by date suffix) is loaded — older files
     # from previous download dates are ignored. Legacy files without a
     # date suffix are used only when no dated file exists for that code.
     file_specs: List[Tuple[str, str, str]] = []
     if args.code:
         bare = args.code.split(".")[0]
-        archive_dir, suffix, source = _resolve_code_source(bare)
+        archive_dir, exchange, source = _resolve_code_source(bare)
         path = _find_latest_for_code(archive_dir, bare)
         if path is None:
             print(f"    [FATAL] No dividend CSV for {bare} found in "
                   f"{archive_dir}", flush=True)
             sys.exit(1)
-        file_specs.append((path, suffix, source))
+        file_specs.append((path, exchange, source))
     else:
-        for archive_dir, suffix, source in SOURCE_DIRS:
+        for archive_dir, exchange, source in SOURCE_DIRS:
             latest_map = _find_latest_dividend_csvs(archive_dir)
             for code in sorted(latest_map):
-                file_specs.append((latest_map[code], suffix, source))
+                file_specs.append((latest_map[code], exchange, source))
     print(f"    → {len(file_specs)} dividend CSV files found "
           f"(SSE + SZSE)", flush=True)
     if not file_specs:
@@ -406,8 +413,8 @@ async def main() -> None:
     all_rows: List[Dict[str, Any]] = []
     n_files_with_data = 0
     n_files_empty = 0
-    for path, suffix, source in file_specs:
-        rows = _read_dividend_csv(path, suffix, source)
+    for path, exchange, source in file_specs:
+        rows = _read_dividend_csv(path, exchange, source)
         if rows:
             all_rows.extend(rows)
             n_files_with_data += 1

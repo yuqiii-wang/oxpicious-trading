@@ -101,6 +101,39 @@ def _fmt(x) -> str:
 
 
 # ---------------------------------------------------------------------------
+#  Last-day projected sell fill
+# ---------------------------------------------------------------------------
+def _last_day_sell_price(cd: pd.DataFrame, n: int) -> float | None:
+    """Projected last-day SELL fill price (vol-scaled momentum):
+
+        sell = last_close + (std255 / std20) × (ma20 − close_20d_ago)
+
+    ma20 / std20 / std255 are rolling stats of CLOSE PRICE LEVELS over the
+    last 20 / 20 / 255 bars; close_20d_ago is the close 20 trading bars
+    before the last one. The std ratio over price levels ≈ sqrt(255/20)
+    under a random walk, so the term extrapolates the recent 20-day move
+    to a ~1-year horizon: an up-trend sells above the last close, a
+    down-trend below. Returns None when there isn't enough clean history
+    (or std20 = 0) — the caller then falls back to the worst-case OHLC
+    sell fill.
+    """
+    if n < 255:
+        return None
+    closes = cd["close_price"]
+    win20 = closes.iloc[n - 20:n]
+    win255 = closes.iloc[n - 255:n]
+    ma20 = float(win20.mean())
+    std20 = float(win20.std())
+    std255 = float(win255.std())
+    last_close = float(closes.iloc[n - 1])
+    close_20d_ago = float(closes.iloc[n - 21])
+    vals = (ma20, std20, std255, last_close, close_20d_ago)
+    if any(v != v for v in vals) or std20 <= 0.0:
+        return None
+    return last_close + (std255 / std20) * (ma20 - close_20d_ago)
+
+
+# ---------------------------------------------------------------------------
 #  Per-code backtest
 # ---------------------------------------------------------------------------
 def backtest_single_code(
@@ -298,9 +331,6 @@ def backtest_single_code(
             total_qty = total_qty_after
 
     # ---- Final liquidation: sell all remaining total_qty on the last day.
-    # Skipped when params["skip_final_liquidation"] is True — the position
-    # stays open and the 1-month forecast module (_1m_forcast) takes over
-    # the sell schedule over the 20 forecast days.
     skip_final_liq = bool(params.get("skip_final_liquidation", False))
     if total_qty > 0 and n > 0 and anchor_price is not None and not skip_final_liq:
         last_row = cd.iloc[n - 1]
@@ -308,12 +338,25 @@ def backtest_single_code(
         last_high = last_row.get("high_price")
         last_low = last_row.get("low_price")
         last_close = last_row.get("close_price")
-        if pd.notna(last_high) and pd.notna(last_low) and pd.notna(last_close) \
-                and last_high > 0 and last_low > 0 and last_close > 0:
-            fill_price = F.worst_case_sell_fill(
-                float(last_high), float(last_low), float(last_close),
-                band=band,
-            )
+        # A live partial bar may carry a valid close with NULL high/low —
+        # the projected fill (close + vol-scaled momentum) only needs
+        # closes, so liquidate whenever the close is valid. Full OHLC is
+        # only required by the worst-case fallback fill.
+        has_close = pd.notna(last_close) and float(last_close) > 0
+        has_ohlc = (has_close and pd.notna(last_high) and pd.notna(last_low)
+                    and float(last_high) > 0 and float(last_low) > 0)
+        if has_close:
+            # Last-day sell fill: projected price from vol-scaled 20d
+            # momentum (see _last_day_sell_price); the worst-case OHLC
+            # fill is only the fallback when history is insufficient.
+            fill_price = _last_day_sell_price(cd, n)
+            if fill_price is None:
+                fill_price = (
+                    F.worst_case_sell_fill(
+                        float(last_high), float(last_low), float(last_close),
+                        band=band,
+                    ) if has_ohlc else float(last_close)
+                )
             norm_price = F.normalized_price(fill_price, anchor_price)
             slippage = F.sell_slippage(fill_price, float(last_close))
             position_before = F.position_value(total_qty, norm_price)
@@ -342,8 +385,9 @@ def backtest_single_code(
                 "slippage": _round6(slippage),
                 "fee": _round6(0.0),
                 "signal_value": _round6(last_row.get("signal_value")),
-                "signal_reason": (f"FINAL LIQUIDATION: close all remaining "
-                                  f"qty ({qty_sold:.4f}) at worst-case sell"),
+                "signal_reason": ("LAST DAY SELL: liquidate all remaining qty "
+                                  f"({qty_sold:.4f}) at projected fill "
+                                  "close + (std255/std20)×(ma20 − close_20d_ago)"),
             })
             cash = cash_after
             total_qty = 0.0

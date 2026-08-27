@@ -27,6 +27,16 @@ Usage:
   python -m builds.index.composition
   python -m builds.index.composition --force
 """
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
+
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 import time
 
 from _common.build_commons import (
@@ -95,10 +105,10 @@ async def main():
         # (2) Build composition rows from CSI + SZSE CSVs
         # ------------------------------------------------------------------
         print("\n[2/4] Building CSI index composition rows …", flush=True)
-        index_comp_rows = build_index_composition_rows(verbose=True)
+        index_comp_rows = await build_index_composition_rows(conn=conn, force=args.force)
 
         print("\n[3/4] Building SZSE index composition rows …", flush=True)
-        szse_index_comp_rows = build_szse_index_composition_rows(verbose=True)
+        szse_index_comp_rows = await build_szse_index_composition_rows(conn=conn, force=args.force)
 
         all_rows = index_comp_rows + szse_index_comp_rows
         print(f"\n    → total: {len(all_rows):,} index composition rows "

@@ -25,6 +25,7 @@ project convention (Shanghai-listed securities).
 
 from __future__ import annotations
 
+
 import csv
 import json
 import random
@@ -36,7 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_START_DATE,
     DEFAULT_TIMEOUT,
     AntiBotProxy,
@@ -327,6 +328,13 @@ def _download_detail(
         return None, 0
 
     _write_csv(out_file, all_rows, DETAIL_COLUMNS)
+    # canonicalize 证券代码 -> "NNNNNN.SS" + exchange/board/sec_type columns
+    # (margin detail mixes stocks and ETFs -> per-row "auto" inference)
+    from downloads._common import ensure_canonical_csv
+    ensure_canonical_csv(
+        out_file, "SS", sec_type="auto",
+        logger=logger, log_tag="[detail %s] " % ymd,
+    )
     logger.info(
         "[detail %s] saved %d row(s) across %d page(s) -> %s",
         ymd, len(all_rows), page_no, out_file.name,

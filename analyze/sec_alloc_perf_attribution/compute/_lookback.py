@@ -52,13 +52,16 @@ def filter_dataframes_for_lookback(
     lookback_start: datetime.date = recent_trading_day_cutoff(
         LOOKBACK_TRADING_DAYS, ref=min_target
     )
+    # Compare as Timestamp: the DataFrame date columns may be datetime64[s]
+    # (pandas 2.x), which cannot be compared against a bare datetime.date.
+    lookback_start_ts = pd.Timestamp(lookback_start)
 
     def _apply_date_filter(
         df: pd.DataFrame, date_col: str
     ) -> pd.DataFrame:
         if df.empty:
             return df
-        return df[df[date_col] >= lookback_start].copy()
+        return df[df[date_col] >= lookback_start_ts].copy()
 
     sub_filtered = _apply_date_filter(subject_closes, "date")
     idx_filtered = _apply_date_filter(index_closes, "date")

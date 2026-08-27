@@ -5,7 +5,7 @@ page/DOM helpers so Playwright-based downloaders don't duplicate
 browser boilerplate.
 
 Cross-compatibility with the existing anti-bot module
-(downloads._common.core.AntiBotProxy): browser fingerprint rotation
+(downloads._common.AntiBotProxy): browser fingerprint rotation
 and default User-Agent / Accept headers are imported from there, so
 HTTP-based and browser-based downloaders share ONE anti-bot policy.
 

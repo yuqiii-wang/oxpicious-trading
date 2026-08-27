@@ -1,17 +1,16 @@
 /**
  * chartOptions — ECharts option builders for Margin Trends.
  *
- * Two plot builders:
- *   1. buildTrendChartOption — margin trends (top) + close price (bottom)
- *      with synced axisPointer, trend episode shade overlays, and rich
- *      tooltips showing margin/close values + active trend episodes.
- *   2. buildCorrChartOption — pairwise correlation curves with ±1 Y range.
+ * One plot builder:
+ *   buildTrendChartOption — margin trends (top) + close price (bottom)
+ *      with synced axisPointer, trend episode shade overlays, per-episode
+ *      rz_buy_vs_trading_amt_ratio segments (Buy mode, right % axis), and
+ *      rich tooltips showing margin/close values + active trend episodes.
  */
 import React from "react";
 import type { EChartsOption } from "echarts";
 import type {
   MarginIndustrySeriesResponse,
-  MarginIndustryCorrelationResponse,
   MarginTrendsShadeResponse,
   MarginSecurity,
 } from "@shared/types";
@@ -22,13 +21,16 @@ import {
   UP_COLOR,
   DOWN_COLOR,
   axisColors,
-  commonGrid,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import type { MarginAttribution, MarginSeries } from "./constants";
 
 const MUTED_GRAY = MUTED_PALETTE[7] ?? "#999999";
+
+/** Series-name suffix for the RZ buy / turnover ratio (买入占比) overlay
+ *  series rendered on the Buy (融资买入额) plot. */
+const RATIO_SUFFIX = " · 买入占比";
 
 // ---- Types for the pivot data structure ----
 interface PivotResult {
@@ -64,6 +66,8 @@ interface TrendEpisode {
   start: string;
   end: string;
   isUp: boolean;
+  /** rz_buy_vs_trading_amt_ratio (fraction) over the episode window. */
+  ratio: number | null;
 }
 
 function buildTrendMarkArea(
@@ -73,7 +77,10 @@ function buildTrendMarkArea(
   return {
     silent: true,
     itemStyle: { borderWidth: 0 },
-    data: epList.map((ep) => [
+    data: epList.map((ep): [
+      { xAxis: string; itemStyle: { color: string; opacity: number } },
+      { xAxis: string },
+    ] => [
       {
         xAxis: ep.start,
         itemStyle: { color: ep.isUp ? UP_COLOR : DOWN_COLOR, opacity },
@@ -117,6 +124,7 @@ export function buildTrendChartOption(
         start: ep.start_date,
         end: ep.end_date,
         isUp: ep.is_trend_up_not_down,
+        ratio: ep.rz_buy_vs_trading_amt_ratio,
       });
     }
   }
@@ -193,11 +201,48 @@ export function buildTrendChartOption(
       };
     });
 
+  // ---- Top grid: RZ buy / turnover ratio segments (Buy mode only) ----
+  // One dashed horizontal segment per trend episode, drawn at the
+  // episode's rz_buy_vs_trading_amt_ratio level (Σ rz_buy / Σ trading_amount
+  // over the window) on a dedicated right-side % axis. Selected securities
+  // only (matches the trend shade overlay convention).
+  const isBuySeries = series === "buy";
+  const ratioSeries = (isBuySeries
+    ? displaySecurities
+        .filter((sec) => effectiveSelectedSet.has(sec.code))
+        .map((sec) => {
+          const idx = displaySecurities.indexOf(sec);
+          const color = GROUP_MAJOR_COLORS[idx % GROUP_MAJOR_COLORS.length];
+          const eps = trendsByCode.get(sec.code) ?? [];
+          const data = dates.map((d) => {
+            const ep = eps.find((e) => d >= e.start && d <= e.end);
+            const v = ep?.ratio;
+            return v != null && Number.isFinite(v) ? v * 100 : null;
+          });
+          return {
+            name: `${sec.label || sec.code}${RATIO_SUFFIX}`,
+            type: "line" as const,
+            xAxisIndex: 0,
+            yAxisIndex: 2,
+            smooth: false,
+            showSymbol: false,
+            connectNulls: false,
+            data,
+            lineStyle: { width: 1.4, color, type: "dashed" as const, opacity: 0.9 },
+            itemStyle: { color },
+            emphasis: { focus: "series" as const },
+            z: 4,
+          };
+        })
+    : []
+  ).filter((s) => s.data.some((v) => v != null));
+  const hasRatio = ratioSeries.length > 0;
+
   return {
     backgroundColor: "transparent",
     animation: false,
     grid: [
-      { left: 64, right: 24, top: 32, height: "46%" },
+      { left: 64, right: hasRatio ? 56 : 24, top: 32, height: "46%" },
       { left: 64, right: 24, top: "58%", bottom: 28 },
     ],
     axisPointer: {
@@ -227,10 +272,14 @@ export function buildTrendChartOption(
         const idx = arr[0].dataIndex ?? 0;
         const dateStr = dates[idx] ?? "";
         const marginRows = arr
-          .filter((p) => p.seriesName && !p.seriesName.endsWith(CLOSE_SUFFIX))
+          .filter((p) => p.seriesName && !p.seriesName.endsWith(CLOSE_SUFFIX) && !p.seriesName.endsWith(RATIO_SUFFIX))
           .filter((p) => p.value != null && Number.isFinite(p.value as number))
           .sort((a, b) => (b.value as number) - (a.value as number))
           .slice(0, 8);
+        const ratioRows = arr
+          .filter((p) => p.seriesName && p.seriesName.endsWith(RATIO_SUFFIX))
+          .filter((p) => p.value != null && Number.isFinite(p.value as number))
+          .sort((a, b) => (b.value as number) - (a.value as number));
         const closeRows = arr
           .filter((p) => p.seriesName && p.seriesName.endsWith(CLOSE_SUFFIX))
           .filter((p) => p.value != null && Number.isFinite(p.value as number))
@@ -248,7 +297,21 @@ export function buildTrendChartOption(
             ` ${unit}`,
           ]));
         }
-        if (hasMargin && hasClose) {
+        if (hasMargin && ratioRows.length > 0) {
+          children.push(React.createElement("div", {
+            style: { borderTop: `1px solid ${c.splitLineColor}`, margin: "3px 0" },
+          }));
+        }
+        for (const p of ratioRows) {
+          const v = p.value as number;
+          const label = (p.seriesName ?? "").replace(RATIO_SUFFIX, "");
+          children.push(React.createElement(tooltipComponents.Row, null, [
+            React.createElement("span", { style: { color: p.color ?? "" } }, "●"),
+            ` ${label} 买入占比: `,
+            React.createElement(tooltipComponents.Bold, null, `${fmtNum(v, 2)}%`),
+          ]));
+        }
+        if ((hasMargin || ratioRows.length > 0) && hasClose) {
           children.push(React.createElement("div", {
             style: { borderTop: `1px solid ${c.splitLineColor}`, margin: "3px 0" },
           }));
@@ -262,7 +325,7 @@ export function buildTrendChartOption(
             React.createElement(tooltipComponents.Bold, null, fmtNum(v, 2)),
           ]));
         }
-        const trendRows: Array<{ label: string; isUp: boolean; start: string; end: string }> = [];
+        const trendRows: Array<{ label: string; isUp: boolean; start: string; end: string; ratio: number | null }> = [];
         for (const code of selectedCodes) {
           const eps = trendsByCode.get(code);
           if (!eps) continue;
@@ -273,6 +336,7 @@ export function buildTrendChartOption(
                 isUp: ep.isUp,
                 start: ep.start,
                 end: ep.end,
+                ratio: ep.ratio,
               });
             }
           }
@@ -292,10 +356,12 @@ export function buildTrendChartOption(
           const arrow = t.isUp ? "▲" : "▼";
           const dirLabel = t.isUp ? "UP" : "DOWN";
           const color = t.isUp ? UP_COLOR : DOWN_COLOR;
+          const ratioPct = t.ratio != null ? ` · ${(t.ratio * 100).toFixed(2)}%` : "";
           children.push(React.createElement(tooltipComponents.Row, null, [
             React.createElement("span", { style: { color } }, arrow),
             ` ${t.label}: `,
             React.createElement(tooltipComponents.Bold, null, dirLabel),
+            ratioPct,
             " ",
             React.createElement("span", { style: { opacity: 0.7 } }, `(${t.start} → ${t.end})`),
           ]));
@@ -342,110 +408,21 @@ export function buildTrendChartOption(
         axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: number) => fmtNum(v, 0) },
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
+      ...(hasRatio
+        ? [{
+            type: "value" as const,
+            gridIndex: 0,
+            position: "right" as const,
+            scale: true,
+            name: "买入占比 (%)",
+            nameTextStyle: { color: c.textColor, fontSize: 9 },
+            axisLine: { lineStyle: { color: c.axisLineColor } },
+            axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: number) => `${fmtNum(v, 0)}%` },
+            splitLine: { show: false },
+          }]
+        : []),
     ],
-    series: [...marginSeries, ...closeSeries],
+    series: [...marginSeries, ...closeSeries, ...ratioSeries],
   };
 }
 
-// ---- 2nd plot: pairwise correlation ----
-export function buildCorrChartOption(
-  corrData: MarginIndustryCorrelationResponse,
-  displaySecurities: MarginSecurity[],
-  series: MarginSeries,
-  themeMode: ThemeMode,
-): EChartsOption | null {
-  if (corrData.rows.length === 0 || corrData.pairs.length === 0) return null;
-
-  const c = axisColors(themeMode);
-  const dateSet = new Set<string>();
-  const pairMap = new Map<string, Map<string, number | null>>();
-  const labelOf = new Map<string, string>();
-  for (const s of displaySecurities) labelOf.set(s.code, s.label || s.code);
-  for (const r of corrData.rows) {
-    dateSet.add(r.date);
-    const key = `${r.security_code}|${r.benchmark_code}`;
-    if (!pairMap.has(key)) pairMap.set(key, new Map());
-    pairMap.get(key)!.set(r.date, r.corr);
-  }
-  const dates = Array.from(dateSet).sort();
-
-  const echartsSeries = corrData.pairs.map((pair, idx) => {
-    const key = `${pair.security_code}|${pair.benchmark_code}`;
-    const dm = pairMap.get(key);
-    const data = dates.map((d) => dm?.get(d) ?? null);
-    const aLabel = labelOf.get(pair.security_code) ?? pair.security_code;
-    const bLabel = labelOf.get(pair.benchmark_code) ?? pair.benchmark_code;
-    const color = GROUP_MAJOR_COLORS[idx % GROUP_MAJOR_COLORS.length];
-    return {
-      name: `${aLabel} vs ${bLabel}`,
-      type: "line" as const,
-      smooth: false,
-      showSymbol: false,
-      connectNulls: false,
-      data,
-      lineStyle: { width: 1.6, color },
-      itemStyle: { color },
-      z: 3,
-    };
-  });
-
-  return {
-    backgroundColor: "transparent",
-    animation: false,
-    grid: commonGrid({ left: 56, right: 24, bottom: 32 }),
-    legend: {
-      data: echartsSeries.map((s) => s.name),
-      textStyle: { color: c.textColor, fontSize: 10 },
-      top: 0,
-      type: "scroll",
-    },
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
-      formatter: (params: unknown) => {
-        const arr = (Array.isArray(params) ? params : [params]) as Array<{
-          dataIndex?: number;
-          seriesName?: string;
-          value?: number | null;
-          color?: string;
-        }>;
-        if (arr.length === 0) return "";
-        const idx = arr[0].dataIndex ?? 0;
-        const dateStr = dates[idx] ?? "";
-        const children: React.ReactNode[] = [];
-        children.push(React.createElement(tooltipComponents.Header, null, dateStr));
-        for (const p of arr) {
-          if (p.value == null || !Number.isFinite(p.value as number)) continue;
-          const v = p.value as number;
-          const valStr = (v >= 0 ? "+" : "") + fmtNum(v, 3);
-          children.push(React.createElement(tooltipComponents.Row, null, [
-            React.createElement("span", { style: { color: p.color ?? "" } }, "●"),
-            ` ${p.seriesName ?? ""}: `,
-            React.createElement(tooltipComponents.Bold, null, valStr),
-          ]));
-        }
-        return renderReactElement(React.createElement(React.Fragment, null, children));
-      },
-    },
-    xAxis: {
-      type: "category",
-      data: dates,
-      axisLine: { lineStyle: { color: c.axisLineColor } },
-      axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: string) => v.slice(0, 7) },
-      splitLine: { show: false },
-    },
-    yAxis: {
-      type: "value",
-      min: -1,
-      max: 1,
-      name: "Correlation",
-      nameTextStyle: { color: c.textColor, fontSize: 9 },
-      axisLine: { lineStyle: { color: c.axisLineColor } },
-      axisLabel: { color: c.textColor, fontSize: 9, formatter: (v: number) => fmtNum(v, 2) },
-      splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
-    },
-    series: echartsSeries,
-  };
-}

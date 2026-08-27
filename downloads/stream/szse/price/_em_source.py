@@ -20,7 +20,7 @@ import time as _time
 from datetime import datetime, time
 from typing import List, Optional
 
-from downloads._common.core import setup_logger
+from downloads._common import setup_logger
 
 from ._akshare_source import MinuteSample
 

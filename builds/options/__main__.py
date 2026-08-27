@@ -11,14 +11,22 @@ further by underlying_target_type ('ETF' vs 'INDEX').
 
 With --force: truncates all 7 tables ONCE upfront, then runs both
 builders in normal (non-force) mode so they repopulate from scratch.
+With --force --code <underlying>: only that underlying's rows are
+deleted instead of truncating.
 
 Usage:
   python -m builds.options
   python -m builds.options --start-date 2026-07-01 --end-date 2026-07-31
   python -m builds.options --force
+  python -m builds.options --code 159915              (single-underlying test filter)
 """
 from __future__ import annotations
 
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
 import asyncio
 import sys
 import time
@@ -35,13 +43,21 @@ from _common.build_commons import (
 
 setup_utf8_stdout()
 
+from builds._commons.code_filter import add_code_arg, normalize_code
+
 # Re-export for argparse in the parent shell
 import argparse
 _ap = argparse.ArgumentParser(
     description="Build SZSE + CFFEX options data (missing dates only)."
 )
 add_common_build_args(_ap)
+add_code_arg(_ap)
 _args = _ap.parse_args()
+
+# Normalized code filter (e.g. 159915 → 159915.SZ). Sub-builds compare
+# against the BARE underlying_code column, so forward the bare form.
+_code_filter_raw = normalize_code(_args.code)
+code_filter = _code_filter_raw.split(".")[0] if _code_filter_raw else None
 
 
 async def _truncate_all_tables() -> None:
@@ -63,13 +79,31 @@ async def _truncate_all_tables() -> None:
         await conn.close()
 
 
-def _build_child_argv(start_date: str | None, end_date: str | None) -> list[str]:
+async def _purge_for_force(underlying: str | None) -> None:
+    """--force: truncate all 7 options_* tables, or delete only the
+    --code underlying's rows when a code filter is set."""
+    if underlying:
+        from builds.options.tables import delete_underlying_rows_async
+        conn = await get_db_or_exit()
+        try:
+            n = await delete_underlying_rows_async(conn, underlying)
+            print(f"    Deleted {n:,} (date, contract_code) rows of underlying {underlying}", flush=True)
+        finally:
+            await conn.close()
+    else:
+        await _truncate_all_tables()
+
+
+def _build_child_argv(start_date: str | None, end_date: str | None,
+                      child_code: str | None = None) -> list[str]:
     """Build argv list for a child builder (without --force)."""
     argv = [sys.argv[0]]
     if start_date:
         argv += ["--start-date", start_date]
     if end_date:
         argv += ["--end-date", end_date]
+    if child_code:
+        argv += ["--code", child_code]
     return argv
 
 
@@ -81,17 +115,23 @@ async def main() -> None:
         **{
             "Date range":   f"{_args.start_date or '(all)'} → {_args.end_date or '(all)'}",
             "Force rebuild": str(_args.force),
+            "Code filter":  code_filter or "(none — all underlyings)",
             "Today":        TODAY_STR,
         }
     )
+    if code_filter:
+        print(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}", flush=True)
 
-    # --force: truncate all tables ONCE before running both builders
+    # --force: purge tables ONCE before running both builders
     if _args.force:
-        print("\n[FORCE] Truncating all 7 options_* tables …", flush=True)
-        await _truncate_all_tables()
+        if code_filter:
+            print(f"\n[FORCE] Deleting rows of underlying {code_filter} from the 7 options_* tables …", flush=True)
+        else:
+            print("\n[FORCE] Truncating all 7 options_* tables …", flush=True)
+        await _purge_for_force(code_filter)
         print("    Done.", flush=True)
 
-    child_argv = _build_child_argv(_args.start_date, _args.end_date)
+    child_argv = _build_child_argv(_args.start_date, _args.end_date, code_filter)
 
     # ---- 1. SZSE ETF options ----
     print("\n" + "=" * 60, flush=True)

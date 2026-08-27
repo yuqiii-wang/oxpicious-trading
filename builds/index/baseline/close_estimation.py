@@ -9,7 +9,10 @@ available, or carries forward the previous close as a fallback.
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+
+from _common.df_utils import safe_columns
 
 from builds.index.baseline.paths import SHARED_WEIGHT_THRESHOLD
 
@@ -48,11 +51,15 @@ def fill_missing_closes(combined: pd.DataFrame,
     codes = sorted(combined["code"].unique())
     estimated_rows = []
 
-    # Build a lookup: (date, code) -> row data for quick proxy lookup
-    # We need changePct for each (date, code) to use as proxy
-    date_code_lookup = {}
-    for _, row in combined.iterrows():
-        date_code_lookup[(row["date"], row["code"])] = row
+    # Build a lookup: (date, code) -> changePct for quick proxy lookup.
+    # ONE numpy transfer per column (no iterrows — cudf.pandas slow-path
+    # fallback per row). NaN pct values are preserved; consumers re-check
+    # with pd.notna().
+    dts = np.asarray(combined["date"]).tolist()
+    cds = np.asarray(combined["code"]).tolist()
+    pcts = np.asarray(combined["changePct"]).tolist() if "changePct" in safe_columns(combined) \
+        else [None] * len(dts)
+    date_code_lookup = dict(zip(zip(dts, cds), pcts))
 
     # Build per-code proxy mapping: code -> list of (proxy_code, shared_weight) sorted desc
     proxy_map = {}
@@ -102,13 +109,11 @@ def fill_missing_closes(combined: pd.DataFrame,
             for proxy_code, sw in proxies:
                 if sw < SHARED_WEIGHT_THRESHOLD:
                     break  # sorted desc, so no more qualify
-                proxy_row = date_code_lookup.get((missing_date, proxy_code))
-                if proxy_row is not None:
-                    proxy_pct = proxy_row.get("changePct")
-                    if proxy_pct is not None and pd.notna(proxy_pct):
-                        estimated_close = prev_close * (1.0 + float(proxy_pct) / 100.0)
-                        proxy_used = proxy_code
-                        break
+                proxy_pct = date_code_lookup.get((missing_date, proxy_code))
+                if proxy_pct is not None and pd.notna(proxy_pct):
+                    estimated_close = prev_close * (1.0 + float(proxy_pct) / 100.0)
+                    proxy_used = proxy_code
+                    break
 
             if estimated_close is None:
                 # No proxy found — carry forward prev_close

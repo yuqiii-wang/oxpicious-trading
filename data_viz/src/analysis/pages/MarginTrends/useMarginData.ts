@@ -2,24 +2,21 @@
  * useMarginData — custom hook for Margin Trends data fetching and state.
  *
  * Manages:
- *   - Series data (1st plot)
- *   - Correlation data (2nd plot)
- *   - Trend episodes (shade overlay on 1st plot)
- *   - Selected security codes (drives both plots)
+ *   - Series data (main plot)
+ *   - Trend episodes (shade overlay + rz_buy_vs_trading_amt_ratio segments)
+ *   - Selected security codes (highlighting in the plot)
  *   - Single-item mode reset logic
  */
 import { useEffect, useRef, useState } from "react";
 import {
   fetchMarginIndustrySeries,
-  fetchMarginIndustryCorrelation,
   fetchMarginTrends,
 } from "@/lib/api-client";
 import type {
   MarginIndustrySeriesResponse,
-  MarginIndustryCorrelationResponse,
   MarginTrendsShadeResponse,
 } from "@shared/types";
-import type { MarginAttribution, MarginSeries, CorrWindow } from "./constants";
+import type { MarginAttribution, MarginSeries } from "./constants";
 
 /** Compute top-N codes by latest non-null value from series rows. */
 function pickTopCodes(
@@ -48,16 +45,11 @@ function pickTopCodes(
 
 export interface UseMarginDataReturn {
   seriesData: MarginIndustrySeriesResponse | null;
-  corrData: MarginIndustryCorrelationResponse | null;
   trendsData: MarginTrendsShadeResponse | null;
   loadingSeries: boolean;
-  loadingCorr: boolean;
   errorSeries: string | null;
-  errorCorr: string | null;
   series: MarginSeries;
   setSeries: (s: MarginSeries) => void;
-  corrWindow: CorrWindow;
-  setCorrWindow: (w: CorrWindow) => void;
   selectedCodes: string[];
   setSelectedCodes: (codes: string[]) => void;
   isSingleItemMode: boolean;
@@ -71,18 +63,14 @@ export function useMarginData(
   const isSingleItemMode = !!selectedItemCode;
 
   const [seriesData, setSeriesData] = useState<MarginIndustrySeriesResponse | null>(null);
-  const [corrData, setCorrData] = useState<MarginIndustryCorrelationResponse | null>(null);
   const [trendsData, setTrendsData] = useState<MarginTrendsShadeResponse | null>(null);
   const [loadingSeries, setLoadingSeries] = useState(false);
-  const [loadingCorr, setLoadingCorr] = useState(false);
   const [errorSeries, setErrorSeries] = useState<string | null>(null);
-  const [errorCorr, setErrorCorr] = useState<string | null>(null);
 
   const [series, setSeries] = useState<MarginSeries>("balance");
-  const [corrWindow, setCorrWindow] = useState<CorrWindow>(60);
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
 
-  // ---- Load series data (1st plot) when industry / attribution changes ----
+  // ---- Load series data (main plot) when industry / attribution changes ----
   useEffect(() => {
     if (!industryId) {
       setSeriesData(null);
@@ -92,7 +80,6 @@ export function useMarginData(
     let cancelled = false;
     setLoadingSeries(true);
     setErrorSeries(null);
-    setCorrData(null);
     fetchMarginIndustrySeries(industryId, attribution)
       .then((resp) => {
         if (cancelled) return;
@@ -114,7 +101,7 @@ export function useMarginData(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [industryId, attribution]);
 
-  // ---- Load trend episodes (1st plot shade overlay) ----
+  // ---- Load trend episodes (shade overlay + ratio segments) ----
   useEffect(() => {
     if (!industryId) {
       setTrendsData(null);
@@ -138,46 +125,13 @@ export function useMarginData(
     }
   }, [isSingleItemMode, seriesData, series]);
 
-  // ---- Load correlation data (2nd plot) ----
-  useEffect(() => {
-    if (isSingleItemMode) {
-      setCorrData(null);
-      setLoadingCorr(false);
-      return;
-    }
-    if (!industryId || selectedCodes.length < 2) {
-      setCorrData(null);
-      return;
-    }
-    let cancelled = false;
-    setLoadingCorr(true);
-    setErrorCorr(null);
-    fetchMarginIndustryCorrelation(industryId, attribution, selectedCodes, series, corrWindow)
-      .then((resp) => {
-        if (cancelled) return;
-        setCorrData(resp);
-        setLoadingCorr(false);
-      })
-      .catch((e: Error) => {
-        if (cancelled) return;
-        setErrorCorr(e.message);
-        setLoadingCorr(false);
-      });
-    return () => { cancelled = true; };
-  }, [industryId, attribution, selectedCodes, series, corrWindow, isSingleItemMode]);
-
   return {
     seriesData,
-    corrData,
     trendsData,
     loadingSeries,
-    loadingCorr,
     errorSeries,
-    errorCorr,
     series,
     setSeries,
-    corrWindow,
-    setCorrWindow,
     selectedCodes,
     setSelectedCodes,
     isSingleItemMode,

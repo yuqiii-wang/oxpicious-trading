@@ -25,7 +25,7 @@ from datetime import date, datetime, time as dtime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from downloads._common.core import resolve_out_dir, setup_logger
+from downloads._common import resolve_out_dir, setup_logger
 from _common.db_commons import bulk_upsert
 
 logger = setup_logger("stream_szse")
@@ -219,14 +219,14 @@ def backfill_szse_csvs(conn) -> int:
                         })
                     else:
                         # Stock: code has .SZ suffix
-                        code_suffix = "SZ" if ".SZ" in code else None
+                        exchange = "SZ" if ".SZ" in code else None
                         stock_identity.append({
                             "date": bar_date, "code": code,
-                            "code_suffix": code_suffix, "name": name,
+                            "exchange": exchange, "name": name,
                         })
                         stock_bars.append({
                             "date": bar_date, "code": code, "time": bar_time,
-                            "code_suffix": code_suffix,
+                            "exchange": exchange,
                             "open": open_, "high": high, "low": low,
                             "close": close, "trading_shares": trading_shares,
                             "change": change, "change_pct": change_pct,

@@ -20,8 +20,12 @@
  * — sorted by |Total Δ| desc so the biggest movers head the table. Each
  * industry keeps the bar chart's color dot (colorByIndustry) so rows can be
  * matched back to bar segments.
+ *
+ * Every row is CLICKABLE: clicking toggles an expansion row beneath it that
+ * mounts the IndustryDrilldown — two additional plots (dual-axis industry
+ * mean close vs % in this ETF, then the industry's member index curves).
  */
-import { useMemo } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   Box,
   Chip,
@@ -33,6 +37,10 @@ import {
   TableRow,
 } from "@mui/material";
 import {
+  KeyboardArrowDown as KeyboardArrowDownIcon,
+  KeyboardArrowUp as KeyboardArrowUpIcon,
+} from "@mui/icons-material";
+import {
   expandedTableBodyRowSx,
   expandedTableContainerSx,
   expandedTableHeadCellSx,
@@ -41,6 +49,7 @@ import {
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type { QuarterlyCompositionQuarter } from "@shared/types";
+import IndustryDrilldown from "./IndustryDrilldown";
 
 interface Props {
   /** ALL loaded quarters (chronological) — tickedIdxs index into this. */
@@ -49,6 +58,11 @@ interface Props {
   tickedIdxs: number[];
   /** Industry → color map shared with the bar chart (color dot per row). */
   colorByIndustry: Record<string, string>;
+  /** Bare ETF code — passed through to the per-row IndustryDrilldown. */
+  code: string;
+  /** Notified whenever ANY row's drill-down expansion toggles — the parent
+   *  uses this to grow this table panel into an overlay over the bar chart. */
+  onExpandedChange?: (anyExpanded: boolean) => void;
 }
 
 /** Deltas with |v| below this many pp are treated as unchanged. */
@@ -81,6 +95,9 @@ function deltaColor(v: number): string | undefined {
 /** One industry's row in the comparison table. */
 interface ChangesRow {
   industry: string;
+  /** Industry id from sec_classification ('' when 未分类) — drives the
+   *  per-row IndustryDrilldown. */
+  industryId: string;
   /** Per ticked quarter: normalized % — null when absent from that quarter. */
   values: Array<number | null>;
   /** Consecutive deltas (later − earlier; absent counts as 0). */
@@ -93,7 +110,17 @@ export default function QuarterlyChangesTable({
   quarters,
   tickedIdxs,
   colorByIndustry,
+  code,
+  onExpandedChange,
 }: Props) {
+  // Industry labels whose drill-down expansion row is open.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  // Notify the parent whenever the overlay state changes (ANY row open).
+  useEffect(() => {
+    onExpandedChange?.(expanded.size > 0);
+  }, [expanded, onExpandedChange]);
+
   // The ticked quarters in chronological order.
   const ticked = useMemo(
     () => tickedIdxs.map((i) => quarters[i]).filter(Boolean),
@@ -103,6 +130,13 @@ export default function QuarterlyChangesTable({
   const rows = useMemo<ChangesRow[]>(() => {
     if (ticked.length < 2) return [];
     const maps = ticked.map(normalizedWeights);
+    // Label → industry_id (first non-empty id across quarters wins).
+    const ids = new Map<string, string>();
+    for (const q of ticked) {
+      for (const ind of q.industries) {
+        if (ind.industry_id && !ids.has(ind.industry)) ids.set(ind.industry, ind.industry_id);
+      }
+    }
     const industries = new Set<string>();
     for (const m of maps) {
       for (const k of m.keys()) industries.add(k);
@@ -121,7 +155,7 @@ export default function QuarterlyChangesTable({
       const totalDelta = Number(
         (val(values[values.length - 1]) - val(values[0])).toFixed(2),
       );
-      out.push({ industry, values, deltas, totalDelta });
+      out.push({ industry, industryId: ids.get(industry) ?? "", values, deltas, totalDelta });
     }
     // Biggest movers first (|Total Δ| desc); ties by latest weight desc.
     out.sort((a, b) => {
@@ -138,6 +172,17 @@ export default function QuarterlyChangesTable({
 
   const firstVals = rows.map((r) => r.values[0]);
   const lastVals = rows.map((r) => r.values[r.values.length - 1]);
+  // Industry + quarter cols + consecutive Δ cols + Total Δ.
+  const colCount = 1 + ticked.length + (ticked.length - 1) + 1;
+
+  const toggleRow = (industry: string) => {
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (next.has(industry)) next.delete(industry);
+      else next.add(industry);
+      return next;
+    });
+  };
 
   return (
     <TableContainer sx={expandedTableContainerSx(420)}>
@@ -177,86 +222,123 @@ export default function QuarterlyChangesTable({
             const isNew = firstVals[idx] == null && lastVals[idx] != null;
             const isExit = firstVals[idx] != null && lastVals[idx] == null;
             const totalColor = deltaColor(row.totalDelta);
+            const isOpen = expanded.has(row.industry);
             return (
-              <TableRow key={row.industry} sx={expandedTableBodyRowSx(idx)}>
-                <TableCell
+              <Fragment key={row.industry}>
+                <TableRow
+                  hover
+                  onClick={() => toggleRow(row.industry)}
                   sx={{
-                    ...expandedTableNumCellSx,
-                    fontWeight: 600,
-                    position: "sticky",
-                    left: 0,
-                    zIndex: 1,
-                    bgcolor: idx % 2 === 0 ? "background.paper" : "action.hover",
+                    ...expandedTableBodyRowSx(idx),
+                    cursor: "pointer",
+                    "&:hover": { bgcolor: "action.hover" },
+                    ...(isOpen ? { bgcolor: "action.selected" } : {}),
                   }}
                 >
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                    <Box
-                      component="span"
-                      sx={{
-                        display: "inline-block",
-                        width: 8,
-                        height: 8,
-                        borderRadius: "50%",
-                        bgcolor: colorByIndustry[row.industry] ?? "transparent",
-                        border: colorByIndustry[row.industry]
-                          ? undefined
-                          : "1px solid",
-                        borderColor: "divider",
-                        flexShrink: 0,
-                      }}
-                    />
-                    {row.industry}
-                  </Box>
-                </TableCell>
-                {row.values.map((v, i) => (
-                  <TableCell key={i} align="right" sx={expandedTableNumCellSx}>
-                    {v == null ? (
-                      <Box component="span" sx={{ opacity: 0.4 }}>
-                        —
-                      </Box>
-                    ) : (
-                      fmtNum(v, 2)
-                    )}
-                  </TableCell>
-                ))}
-                {row.deltas.map((d, i) => (
                   <TableCell
-                    key={`d-${i}`}
+                    sx={{
+                      ...expandedTableNumCellSx,
+                      fontWeight: 600,
+                      position: "sticky",
+                      left: 0,
+                      zIndex: 1,
+                      bgcolor: idx % 2 === 0 ? "background.paper" : "action.hover",
+                    }}
+                  >
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                      {isOpen ? (
+                        <KeyboardArrowUpIcon sx={{ fontSize: 14, opacity: 0.7 }} />
+                      ) : (
+                        <KeyboardArrowDownIcon sx={{ fontSize: 14, opacity: 0.7 }} />
+                      )}
+                      <Box
+                        component="span"
+                        sx={{
+                          display: "inline-block",
+                          width: 8,
+                          height: 8,
+                          borderRadius: "50%",
+                          bgcolor: colorByIndustry[row.industry] ?? "transparent",
+                          border: colorByIndustry[row.industry]
+                            ? undefined
+                            : "1px solid",
+                          borderColor: "divider",
+                          flexShrink: 0,
+                        }}
+                      />
+                      {row.industry}
+                    </Box>
+                  </TableCell>
+                  {row.values.map((v, i) => (
+                    <TableCell key={i} align="right" sx={expandedTableNumCellSx}>
+                      {v == null ? (
+                        <Box component="span" sx={{ opacity: 0.4 }}>
+                          —
+                        </Box>
+                      ) : (
+                        fmtNum(v, 2)
+                      )}
+                    </TableCell>
+                  ))}
+                  {row.deltas.map((d, i) => (
+                    <TableCell
+                      key={`d-${i}`}
+                      align="right"
+                      sx={{
+                        ...expandedTableNumCellSx,
+                        ...(deltaColor(d) ? { color: deltaColor(d) } : {}),
+                      }}
+                    >
+                      {fmtDelta(d)}
+                    </TableCell>
+                  ))}
+                  <TableCell
                     align="right"
                     sx={{
                       ...expandedTableNumCellSx,
-                      ...(deltaColor(d) ? { color: deltaColor(d) } : {}),
+                      fontWeight: 700,
+                      ...(totalColor ? { color: totalColor } : {}),
                     }}
                   >
-                    {fmtDelta(d)}
+                    {fmtDelta(row.totalDelta)}
+                    {(isNew || isExit) && (
+                      <Chip
+                        label={isNew ? "NEW" : "EXIT"}
+                        size="small"
+                        color={isNew ? "success" : "default"}
+                        variant="outlined"
+                        sx={{
+                          ml: 0.75,
+                          height: 14,
+                          fontSize: "0.55rem",
+                          fontWeight: 700,
+                          letterSpacing: "0.03em",
+                        }}
+                      />
+                    )}
                   </TableCell>
-                ))}
-                <TableCell
-                  align="right"
-                  sx={{
-                    ...expandedTableNumCellSx,
-                    fontWeight: 700,
-                    ...(totalColor ? { color: totalColor } : {}),
-                  }}
-                >
-                  {fmtDelta(row.totalDelta)}
-                  {(isNew || isExit) && (
-                    <Chip
-                      label={isNew ? "NEW" : "EXIT"}
-                      size="small"
-                      color={isNew ? "success" : "default"}
-                      variant="outlined"
+                </TableRow>
+                {isOpen && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={colCount}
                       sx={{
-                        ml: 0.75,
-                        height: 14,
-                        fontSize: "0.55rem",
-                        fontWeight: 700,
-                        letterSpacing: "0.03em",
+                        py: 0.5,
+                        px: 1,
+                        borderBottom: "1px solid",
+                        borderColor: "divider",
                       }}
-                    />
-                  )}
-                </TableCell>
-              </TableRow>
+                    >
+                      <IndustryDrilldown
+                        etfCode={code}
+                        industryId={row.industryId}
+                        industryLabel={row.industry}
+                        color={colorByIndustry[row.industry]}
+                      />
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
             );
           })}
         </TableBody>

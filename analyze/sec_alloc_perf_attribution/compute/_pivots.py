@@ -36,11 +36,11 @@ def prepare_pivots(
                                       values="etf_amount")
             .sort_index()
         )
+        # Keep `date` as datetime64: converting to python date objects
+        # (object dtype) poisons every downstream merge for cudf.  The
+        # asyncpg boundary conversion happens in sanitize_for_db_insert.
         etf_amount_long = etf_amount_wide.stack().reset_index()
         etf_amount_long.columns = ["date", "index_code", "etf_amount"]
-        etf_amount_long["date"] = pd.to_datetime(
-            etf_amount_long["date"]
-        ).dt.date
     else:
         etf_amount_wide = pd.DataFrame()
         etf_amount_long = pd.DataFrame(

@@ -5,7 +5,7 @@ Downloads daily options data from the CFFEX "日统计" page
 
 Browser lifecycle, anti-bot fingerprint rotation and DOM/CSV helpers come
 from the shared module _common.playwright (which reuses the anti-bot
-policy from downloads._common.core).
+policy from downloads._common).
 
 Workflow for each date:
   1. Launch a Playwright browser via _common.playwright.playwright_session
@@ -44,7 +44,7 @@ from _common.playwright import (
     sleep_between_requests,
     wait_for_table_data,
 )
-from downloads._common.core import setup_logger
+from downloads._common import clean_table_cell, setup_logger
 from downloads.options.cffex.trend.config import (
     BROWSER_TYPE,
     CFFEX_BASE_ORIGIN,
@@ -130,7 +130,9 @@ def _filter_to_options(raw_rows: List[List[str]]) -> List[List[str]]:
         if not contract or _is_summary_row(contract):
             continue
         if _is_option_contract(contract):
-            options_rows.append(row)
+            # canonical output: whitespace-free cells + null tokens ("--"
+            # etc.) rewritten to "" so pandas infers numerics as float64
+            options_rows.append([clean_table_cell(c) for c in row])
     return options_rows
 
 

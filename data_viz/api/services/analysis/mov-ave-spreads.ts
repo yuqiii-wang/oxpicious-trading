@@ -571,12 +571,13 @@ const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
     chartFromClause:
       "FROM analysis.mov_ave_spreads_detail d\n" +
       "  JOIN stats.stock_basic_stats b ON b.date = d.date AND b.code = d.code\n" +
+      "  LEFT JOIN stats.stock_liquidity_margin lm ON lm.date = d.date AND lm.code = d.code\n" +
       "  LEFT JOIN stats.stock_tech_stats t ON t.date = d.date AND t.code = d.code",
     priceExpr: "b.close",
     openExpr: "b.open",
     highExpr: "b.high",
     lowExpr: "b.low",
-    tradingAmtExpr: "b.trading_amount",
+    tradingAmtExpr: "lm.trading_amount",
   },
 };
 

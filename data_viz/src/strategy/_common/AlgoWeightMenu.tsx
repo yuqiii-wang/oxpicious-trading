@@ -43,10 +43,6 @@ interface AlgoWeightMenuProps {
   faultTolerance: number;
   /** Callback when fault tolerance changes. */
   onFaultToleranceChange: (ft: number) => void;
-  /** Whether to run forecast scenarios (10 scenarios + child seqs). */
-  runWithForecast: boolean;
-  /** Callback when forecast toggle changes. */
-  onRunWithForecastChange: (v: boolean) => void;
 }
 
 const EPSILON = 1e-6;
@@ -57,8 +53,6 @@ export default function AlgoWeightMenu({
   disabled,
   faultTolerance,
   onFaultToleranceChange,
-  runWithForecast,
-  onRunWithForecastChange,
 }: AlgoWeightMenuProps) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
@@ -231,33 +225,6 @@ export default function AlgoWeightMenu({
                 </Typography>
               </Box>
             </Tooltip>
-          </Box>
-
-          {/* Forecast — runs 10 forecast scenarios + child sequences in
-              addition to the backtest + risks. Toggle on/off. */}
-          <Box sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  checked={runWithForecast}
-                  disabled={disabled}
-                  onChange={(e) => onRunWithForecastChange(e.target.checked)}
-                />
-              }
-              label={
-                <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                  Forecast
-                </Typography>
-              }
-            />
-            <Box sx={{ px: 1, opacity: runWithForecast ? 1 : 0.5 }}>
-              <Typography variant="caption" color="text.secondary">
-                {runWithForecast
-                  ? "10 scenarios + child seqs (adds ~10× runtime)"
-                  : "Sells all remaining units on the last day"}
-              </Typography>
-            </Box>
           </Box>
         </Stack>
       </Popover>

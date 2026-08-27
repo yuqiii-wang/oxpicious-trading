@@ -142,8 +142,12 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
     std_120days       NUMERIC(10,6),
     std_255days       NUMERIC(10,6),
 
-    CONSTRAINT pk_mov_ave_spreads_detail PRIMARY KEY (sec_type, code, date)
-);
+    CONSTRAINT pk_mov_ave_spreads_detail PRIMARY KEY (code, sec_type, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (16) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p15
+SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_detail', 16);
 
 -- NOTE: no separate (sec_type, code, date) index — the PK already covers
 -- that lookup. A duplicate index was previously created here and dropped
@@ -152,7 +156,7 @@ CREATE TABLE analysis.mov_ave_spreads_detail (
 -- (sec_type, code, date) prefix).
 --
 --
-COMMENT ON TABLE  analysis.mov_ave_spreads_detail              IS 'MA-spread detail (WIDE format): one row per (sec_type, code, date) with 9 gap_value columns (5 Price/MA + 4 MA5/MA). sec_type ∈ {etf, index, stock}.';
+COMMENT ON TABLE  analysis.mov_ave_spreads_detail              IS 'MA-spread detail (WIDE format): one row per (code, sec_type, date) with 9 gap_value columns (5 Price/MA + 4 MA5/MA). sec_type ∈ {etf, index, stock}.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail.date         IS 'Business date (trading day).';
@@ -262,10 +266,14 @@ CREATE TABLE analysis.mov_ave_spreads_detail_ema (
     std_120days       NUMERIC(10,6),
     std_255days       NUMERIC(10,6),
 
-    CONSTRAINT pk_mov_ave_spreads_detail_ema PRIMARY KEY (sec_type, code, date)
-);
+    CONSTRAINT pk_mov_ave_spreads_detail_ema PRIMARY KEY (code, sec_type, date)
+) PARTITION BY HASH (code);
 
-COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ema              IS 'EMA-spread detail (WIDE format): one row per (sec_type, code, date) with 9 EMA gap columns (5 Price/EMA + 4 EMA6/EMA) + 5 EMA slope + 5 EMA curvature columns. sec_type ∈ {etf, index, stock}. Source: stats.{etf,index,stock}_tech_stats.ema{6,20,60,120,255}.';
+-- Native hash partitions (16) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p15
+SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_detail_ema', 16);
+
+COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ema              IS 'EMA-spread detail (WIDE format): one row per (code, sec_type, date) with 9 EMA gap columns (5 Price/EMA + 4 EMA6/EMA) + 5 EMA slope + 5 EMA curvature columns. sec_type ∈ {etf, index, stock}. Source: stats.{etf,index,stock}_tech_stats.ema{6,20,60,120,255}.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.sec_type     IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ema.date         IS 'Business date (trading day).';
@@ -440,10 +448,14 @@ CREATE TABLE analysis.mov_ave_spreads_detail_ohlc (
     low_line_slope_1275d  NUMERIC(18,6),
     
     CONSTRAINT pk_mov_ave_spreads_detail_ohlc
-        PRIMARY KEY (sec_type, code, date)
-);
+        PRIMARY KEY (code, sec_type, date)
+) PARTITION BY HASH (code);
 
-COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ohlc              IS 'OHLC detail: one row per (sec_type, code, date) with today_close + rolling window anchors over 7 windows (20/60/120/255/500/750/1275 trading days). Top anchors (high_Wd/low_Wd) are the highest/lowest CLOSE among window dates more than 20% of the window before `date` (value = anchor date close); 2nd anchors (high_2nd_Wd/low_2nd_Wd) are the best local-max/min CLOSE peaks in the same restricted region, separated from the top anchors by more than 20% of the window (value = anchor date INTRADAY high/low). DATE columns record the anchor dates. sec_type ∈ {etf, index, stock}. Source: same DataFrame as mov_ave_spread parent pipeline (no second DB round-trip).';
+-- Native hash partitions (32) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p31
+SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_detail_ohlc', 32);
+
+COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ohlc              IS 'OHLC detail: one row per (code, sec_type, date) with today_close + rolling window anchors over 7 windows (20/60/120/255/500/750/1275 trading days). Top anchors (high_Wd/low_Wd) are the highest/lowest CLOSE among window dates more than 20% of the window before `date` (value = anchor date close); 2nd anchors (high_2nd_Wd/low_2nd_Wd) are the best local-max/min CLOSE peaks in the same restricted region, separated from the top anchors by more than 20% of the window (value = anchor date INTRADAY high/low). DATE columns record the anchor dates. sec_type ∈ {etf, index, stock}. Source: same DataFrame as mov_ave_spread parent pipeline (no second DB round-trip).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.sec_type     IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.date        IS 'Business date (trading day).';
@@ -587,8 +599,12 @@ CREATE TABLE analysis.mov_ave_rsi (
     days_since_last_extreme NUMERIC(10,6),
     date_of_last_extreme DATE,
 
-    CONSTRAINT pk_mov_ave_rsi PRIMARY KEY (sec_type, code, date)
-);
+    CONSTRAINT pk_mov_ave_rsi PRIMARY KEY (code, sec_type, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (16) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p15
+SELECT public.create_hash_partitions('analysis', 'mov_ave_rsi', 16);
 
 -- Migrate: add rsi_60days column to pre-existing installs (CREATE TABLE
 -- includes it for fresh installs, but ADD COLUMN IF NOT EXISTS retro-fits
@@ -616,7 +632,7 @@ ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_500days NUMERIC(10
 -- maintenance cost on every INSERT for zero benefit (PK B-tree already
 -- serves equality + range scans on the (sec_type, code, date) prefix).
 
-COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (6/10/14/20/60/120/255/500 days) + short-term price gaps (2/3 day returns). One row per (sec_type, code, date). sec_type ∈ {etf, index, stock}. analysis.mov_ave_rsi_holiday FK-references this table ON DELETE CASCADE.';
+COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (6/10/14/20/60/120/255/500 days) + short-term price gaps (2/3 day returns). One row per (code, sec_type, date). sec_type ∈ {etf, index, stock}. analysis.mov_ave_rsi_holiday FK-references this table ON DELETE CASCADE.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_rsi.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_rsi.date        IS 'Business date (trading day).';
@@ -726,10 +742,14 @@ CREATE TABLE analysis.mov_ave_trading_amt (
     trading_amt_market_share_vs_ma120   NUMERIC(10,4),
     trading_amt_market_share_vs_ma255   NUMERIC(10,4),
 
-    CONSTRAINT pk_mov_ave_trading_amt PRIMARY KEY (sec_type, code, date)
-);
+    CONSTRAINT pk_mov_ave_trading_amt PRIMARY KEY (code, sec_type, date)
+) PARTITION BY HASH (code);
 
-COMMENT ON TABLE  analysis.mov_ave_trading_amt              IS 'Trading-amount analysis (WIDE format): one row per (sec_type, code, date) with 5 trading-amount MA columns + 5 trading-amount Bollinger band σ columns (rolling population std of trading_amt_maW over W days) + 5 market-share MA columns + 6 slope columns (raw trading_amt_slope + 5 fractional MA slopes) + 5 market-share-vs-MA gap columns. sec_type ∈ {etf, index, stock}. Liquidity-impact ratio columns live in the companion table analysis.mov_ave_trading_amt_ratios.';
+-- Native hash partitions (16) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p15
+SELECT public.create_hash_partitions('analysis', 'mov_ave_trading_amt', 16);
+
+COMMENT ON TABLE  analysis.mov_ave_trading_amt              IS 'Trading-amount analysis (WIDE format): one row per (code, sec_type, date) with 5 trading-amount MA columns + 5 trading-amount Bollinger band σ columns (rolling population std of trading_amt_maW over W days) + 5 market-share MA columns + 6 slope columns (raw trading_amt_slope + 5 fractional MA slopes) + 5 market-share-vs-MA gap columns. sec_type ∈ {etf, index, stock}. Liquidity-impact ratio columns live in the companion table analysis.mov_ave_trading_amt_ratios.';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt.date         IS 'Business date (trading day).';
@@ -848,8 +868,12 @@ CREATE TABLE analysis.mov_ave_trading_amt_ratios (
     trading_amt_ma5_vs_high_low_ma5_ratio        NUMERIC(10,4),
     trading_amt_ma5_vs_overnight_gap_ma5_ratio   NUMERIC(10,4),
 
-    CONSTRAINT pk_mov_ave_trading_amt_ratios PRIMARY KEY (sec_type, code, date)
-);
+    CONSTRAINT pk_mov_ave_trading_amt_ratios PRIMARY KEY (code, sec_type, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (16) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p15
+SELECT public.create_hash_partitions('analysis', 'mov_ave_trading_amt_ratios', 16);
 
 COMMENT ON TABLE  analysis.mov_ave_trading_amt_ratios              IS 'Liquidity-impact ratios (WIDE format): one row per (sec_type, code, date) with 10 capital-per-movement ratio columns — 6 slope ratios ((trading_amt or trading_amt_maW) / 1M yuan) / (price_slope or maW_slope), matching-timescale) + range ratio ((trading_amt / 1M) / (high - low)) + overnight-gap ratio ((trading_amt / 1M) / (open - prev close)) + MA5 versions of both. Reciprocal of the Amihud illiquidity measure: higher = deeper market. sec_type ∈ {etf, index, stock}. Built by analyze.mov_ave_spread (trading_amt_ratios.py).';
 COMMENT ON COLUMN analysis.mov_ave_trading_amt_ratios.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
@@ -993,10 +1017,14 @@ CREATE TABLE analysis.mov_ave_market_hypes (
     min_std_threshold                  NUMERIC(6,4) NOT NULL DEFAULT 30.0,
     std_hype_days                      INTEGER      NOT NULL,
 
-    CONSTRAINT pk_mov_ave_market_hypes PRIMARY KEY (sec_type, code, start_date, end_date, min_checkin_period)
-);
+    CONSTRAINT pk_mov_ave_market_hypes PRIMARY KEY (code, sec_type, start_date, end_date, min_checkin_period)
+) PARTITION BY HASH (code);
 
-COMMENT ON TABLE  analysis.mov_ave_market_hypes              IS 'Market-hype EPISODE detector: one row per (sec_type, code, min_checkin_period, episode) — a CONCATENATED hype episode: a maximal span of trading dates anchored on a maximal run of consecutive hyped dates and extended through the surrounding check-in evidence (the W rows before the run''s first hyped date, back to its first check-in, and the W rows after the last hyped date, to its last check-in). A date is hyped when, within the last min_checkin_period (W) trading rows ending at it, MORE than min_checkin_satisfaction_threshold percent of the dates are check-ins — a check-in being a date whose daily trading_amount exceeds its centered-20-year min_trading_amt_threshold percentile AND whose W-day rolling population σ (std_{W}days) exceeds its centered-20-year min_std_threshold percentile (strict > on both legs; matching timescale: the σ window equals the check-in window). The audit base window is CENTERED on each audited date — ~2550 trading rows (10 trading years) before the date plus ~2550 rows after it (NOT a trailing/rolling-back window); windows with < 255 observations have no thresholds -> the date is not hyped; bases near the start/end of a code''s history are naturally truncated (newest dates have no future rows yet). Episodes are BUCKETED BY SPAN: min_checkin_period is the bucket minimum, the next window the exclusive maximum (20d: 20..59 rows; 60d: 60..119; 120d: 120..254; 255d: 255..5100 = the whole ±10y base) — one calendar turmoil lands in exactly the bucket matching its length. Non-hyped dates leave no footprint; episodes are REBUILT WHOLESALE per sec_type on every run of analyze.mov_ave_spread (new dates shift episode boundaries — the margin_changes precedent). sec_type ∈ {etf, index, stock}; one episode set per check-in window (5/20/60/120/255).';
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'mov_ave_market_hypes', 8);
+
+COMMENT ON TABLE  analysis.mov_ave_market_hypes              IS 'Market-hype EPISODE detector: one row per (code, sec_type, min_checkin_period, episode) — a CONCATENATED hype episode: a maximal span of trading dates anchored on a maximal run of consecutive hyped dates and extended through the surrounding check-in evidence (the W rows before the run''s first hyped date, back to its first check-in, and the W rows after the last hyped date, to its last check-in). A date is hyped when, within the last min_checkin_period (W) trading rows ending at it, MORE than min_checkin_satisfaction_threshold percent of the dates are check-ins — a check-in being a date whose daily trading_amount exceeds its centered-20-year min_trading_amt_threshold percentile AND whose W-day rolling population σ (std_{W}days) exceeds its centered-20-year min_std_threshold percentile (strict > on both legs; matching timescale: the σ window equals the check-in window). The audit base window is CENTERED on each audited date — ~2550 trading rows (10 trading years) before the date plus ~2550 rows after it (NOT a trailing/rolling-back window); windows with < 255 observations have no thresholds -> the date is not hyped; bases near the start/end of a code''s history are naturally truncated (newest dates have no future rows yet). Episodes are BUCKETED BY SPAN: min_checkin_period is the bucket minimum, the next window the exclusive maximum (20d: 20..59 rows; 60d: 60..119; 120d: 120..254; 255d: 255..5100 = the whole ±10y base) — one calendar turmoil lands in exactly the bucket matching its length. Non-hyped dates leave no footprint; episodes are REBUILT WHOLESALE per sec_type on every run of analyze.mov_ave_spread (new dates shift episode boundaries — the margin_changes precedent). sec_type ∈ {etf, index, stock}; one episode set per check-in window (5/20/60/120/255).';
 COMMENT ON COLUMN analysis.mov_ave_market_hypes.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_market_hypes.code         IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_market_hypes.start_date   IS 'Episode start date (inclusive): the earliest date of the episode''s CONCATENATED span — the FIRST check-in within the W-row lookback evidence window ending at the core run''s first hyped date (so episodes start at a turmoil''s first big-move day, not ~W rows later when the trailing satisfaction count finally crosses the threshold).';

@@ -12,18 +12,22 @@
  *   bar). Merged amplitude = sqrt(Σ amp_k²) (band energy), so a crowd of
  *   tiny noise bins cannot inflate the bar the way a plain sum would.
  *
- * Per integer day freq d the chart shows the periodicity audit from its
- * two complementary sides:
+ * Per integer day freq d the chart shows THREE bars — the periodicity
+ * audit with the COUNT and AMP factors SEPARATED (both precomputed in
+ * Python by analyze.fourier_freqs.pattern_score and stored bin-aligned
+ * in analysis.fourier_freqs.count_spectrum / strength_spectrum):
  *   • amp (left y-axis, bars) — energy-merged FFT amplitude (yuan): the
  *     Fourier REFERENCE for which day freqs carry energy.
- *   • pattern score (right y-axis, bars) — the CONSOLIDATED periodic
- *     pattern bar (see patternScore.ts):
- *       score(d) = (amp(d)/σ_band) × recEXT(d) × acfFrac(d)
- *     i.e. noticeability × extrema evidence × ACF coherence. A day freq
- *     that ACTUALLY recurs with noticeable highs and lows — enough
- *     prominent swing extrema at that spacing AND significant
- *     self-similarity at its multiples — shows a peak here; noise and
- *     one-off swings do not. Auditable for d ≤ N/3 (≥ ~3 cycles).
+ *   • count (right y-axis, bars) — the recurrence COUNT factor:
+ *     extrema evidence (prominence-filtered alternating swing highs/lows
+ *     whose full-cycle spacing lands within ±15% of d) × ACF coherence
+ *     (multiples of d with significant autocorrelation ≥ 1.96/√N after
+ *     MA detrending). Says whether the day freq actually REPEATS.
+ *   • strength (right y-axis, bars) — the summarized strength:
+ *     strength(d) = (amp(d)/σ_band) × count(d) — the former consolidated
+ *     "pattern score". A day freq that recurs with noticeable highs and
+ *     lows peaks here; noise and one-off swings do not. 0 (not
+ *     auditable) for d > N/3 (under 3 cycles in the window).
  *
  * The dominant day freq (highest merged amplitude) is highlighted green.
  * X-axis: integer day freqs, descending left→right (long cycles left) —
@@ -31,7 +35,8 @@
  *
  * Tooltips also capture the DIFFERENT REPEAT PERIODS merged into each
  * day freq: the FFT bin range k=kLo..kHi (each bin k is itself a repeat
- * period of k cycles per window that rounds to this day).
+ * period of k cycles per window that rounds to this day), and the
+ * strength decomposition amp/σ_band × count.
  *
  * Cutoff: by default day freqs < 5 are hidden (high-frequency noise on
  * a close-price series); the expand button in the panel header reveals
@@ -51,10 +56,11 @@ import {
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type { FourierFreqsSpectrumRow } from "@shared/types";
-import { auditPatternScores, type PatternScoreAudit } from "./patternScore";
 
-/** Right-axis bar color for the consolidated pattern score. */
-export const SCORE_COLOR = "#ab47bc";
+/** Right-axis bar color for the recurrence count factor. */
+export const COUNT_COLOR = "#ffa726";
+/** Right-axis bar color for the summarized strength (amp × count). */
+export const STRENGTH_COLOR = "#ab47bc";
 
 export interface SpectrumOptionParams {
   row: FourierFreqsSpectrumRow;
@@ -62,10 +68,6 @@ export interface SpectrumOptionParams {
   /** When false (default), hide granular high-freq day freqs (< 5d).
    *  When true, show all day freqs. Toggled by the expand button. */
   expanded: boolean;
-  /** The window's close prices (chronological, ending at the row's
-   *  last_date) — input for the time-domain pattern-score audit. Empty
-   *  when unavailable (score bars then read 0). */
-  closes: readonly number[];
 }
 
 /** All FFT bins whose period rounds to the same integer day. */
@@ -81,16 +83,23 @@ interface DayEntry {
   sumSq: number;
   /** Max single-bin amplitude. */
   maxAmp: number;
+  /** Recurrence count factor of the day (shared by all its bins). */
+  count: number;
+  /** Summarized strength of the day (shared by all its bins). */
+  strength: number;
 }
 
 /** Build the merged day-frequency spectrum option for one range_days. */
 export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption {
-  const { row, themeMode, expanded, closes } = params;
+  const { row, themeMode, expanded } = params;
   const c = axisColors(themeMode);
   const N = row.range_days;
   const spectrum = row.spectrum;
   const totalWindows = row.total_windows;
   const nBins = spectrum.length;
+  // Legacy rows (written before the pattern-score separation) carry no
+  // factor arrays — count/strength bars read 0 with a tooltip hint.
+  const hasFactors = row.count_spectrum.length > 0 && row.strength_spectrum.length > 0;
 
   // Default cutoff: hide day freqs < 5d (high-freq noise on close-price
   // series). The expand button reveals them. Nyquist floor is 2d.
@@ -104,7 +113,7 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
     const day = Math.round(N / k);
     let e = dayMap.get(day);
     if (!e) {
-      e = { kLo: k, kHi: k, nBins: 0, sumSq: 0, maxAmp: 0 };
+      e = { kLo: k, kHi: k, nBins: 0, sumSq: 0, maxAmp: 0, count: 0, strength: 0 };
       dayMap.set(day, e);
     }
     const a = spectrum[i];
@@ -112,13 +121,24 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
     e.nBins += 1;
     e.sumSq += a * a;
     if (a > e.maxAmp) e.maxAmp = a;
+    // Bin-aligned factor arrays share the day's value across its bins —
+    // max is a robust merge (identical by construction).
+    if (hasFactors) {
+      const cv = row.count_spectrum[i] ?? 0;
+      const sv = row.strength_spectrum[i] ?? 0;
+      if (cv > e.count) e.count = cv;
+      if (sv > e.strength) e.strength = sv;
+    }
   }
 
-  // ---- Consolidated pattern-score audit (time domain) -------------------
-  // Computed once per chart from the window's closes + merged amps.
-  const mergedAmps = new Map<number, number>();
-  for (const [day, e] of dayMap) mergedAmps.set(day, Math.sqrt(e.sumSq));
-  const { audits, sigmaBand, nExtrema } = auditPatternScores(closes, mergedAmps, N);
+  // σ_band — total swing energy of the band (periods ≤ N/4); basis for
+  // the amp/σ_band factor shown in the strength decomposition.
+  let sb2 = 0;
+  const bandMaxDay = Math.floor(N / 4);
+  for (const [day, e] of dayMap) {
+    if (day <= bandMaxDay) sb2 += e.sumSq;
+  }
+  const sigmaBand = Math.sqrt(sb2 / 2);
 
   // Visible day freqs (>= MIN_DAY), descending — long cycles left.
   const days = Array.from(dayMap.keys())
@@ -128,7 +148,8 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
 
   const categories: string[] = new Array(nVisible);
   const ampData: number[] = new Array(nVisible);
-  const scoreData: number[] = new Array(nVisible);
+  const countData: number[] = new Array(nVisible);
+  const strengthData: number[] = new Array(nVisible);
   const tipRows: Array<{
     day: number;
     kLo: number;
@@ -136,11 +157,14 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
     nBins: number;
     amp: number;
     maxAmp: number;
-    audit: PatternScoreAudit | undefined;
+    count: number;
+    strength: number;
+    ampNorm: number;
+    auditable: boolean;
     isDom: boolean;
   }> = new Array(nVisible);
 
-  // Dominant day freq (max merged amp) + top-score day freq among the
+  // Dominant day freq (max merged amp) + top-strength day freq among the
   // visible days.
   let domPos = -1;
   let domVal = -Infinity;
@@ -150,10 +174,12 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
     const d = days[j];
     const e = dayMap.get(d)!;
     const amp = Math.sqrt(e.sumSq); // energy-merged amplitude
-    const audit = audits.get(d);
+    const ampNorm = sigmaBand > 0 ? amp / sigmaBand : 0;
+    const auditable = d >= 2 && d <= Math.floor(N / 3);
     categories[j] = `${d}d`;
     ampData[j] = amp;
-    scoreData[j] = audit ? audit.score : 0;
+    countData[j] = e.count;
+    strengthData[j] = e.strength;
     tipRows[j] = {
       day: d,
       kLo: e.kLo,
@@ -161,15 +187,18 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
       nBins: e.nBins,
       amp,
       maxAmp: e.maxAmp,
-      audit,
+      count: e.count,
+      strength: e.strength,
+      ampNorm,
+      auditable,
       isDom: false,
     };
     if (amp > domVal) {
       domVal = amp;
       domPos = j;
     }
-    if (audit && audit.auditable && audit.score > topVal) {
-      topVal = audit.score;
+    if (e.strength > topVal) {
+      topVal = e.strength;
       topPos = j;
     }
   }
@@ -181,19 +210,13 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
 
   const showZoom = nVisible > 40;
 
-  /** Half-circle duration label (day/2, may be a half-integer). */
-  const halfDay = (d: number): string => {
-    const h = d / 2;
-    return Number.isInteger(h) ? `${h}d` : `${h.toFixed(1)}d`;
-  };
-
   return {
     backgroundColor: "transparent",
     animation: false,
     title: {
       text:
         `${N}d window · dominant ≈ ${domDay}d (amp ${domAmpTxt})` +
-        ` · top score ≈ ${topDay}d (${topScoreTxt})` +
+        ` · top strength ≈ ${topDay}d (${topScoreTxt})` +
         (totalWindows > 0 ? ` · ${totalWindows} windows` : ""),
       left: 8,
       top: 4,
@@ -207,7 +230,7 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
       textStyle: { color: c.textColor, fontSize: 9 },
       itemWidth: 10,
       itemHeight: 6,
-      data: ["amp", "pattern score"],
+      data: ["amp", "count", "strength"],
     },
     grid: commonGrid({ top: 56, bottom: showZoom ? 56 : 32, left: 48, right: 48 }),
     tooltip: {
@@ -228,6 +251,17 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
         const t = tipRows[j];
         if (!t) return "";
 
+        const swatch = (name: string, fallback: string): React.ReactNode =>
+          React.createElement("span", {
+            style: {
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              backgroundColor: arr.find((p) => p.seriesName === name)?.color || fallback,
+              marginRight: 4,
+            },
+          });
+
         const lines: React.ReactNode[] = [];
         lines.push(tooltipComponents.Bold({ children: `${t.day}d freq` }));
         if (t.isDom) {
@@ -238,15 +272,7 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
         // Amplitude (left axis) — energy-merged across the day's bins.
         lines.push(
           React.createElement(React.Fragment, { key: "amp" }, [
-            React.createElement("span", {
-              style: {
-                display: "inline-block",
-                width: 8,
-                height: 8,
-                backgroundColor: arr.find((p) => p.seriesName === "amp")?.color || PALETTE_HI,
-                marginRight: 4,
-              },
-            }),
+            swatch("amp", PALETTE_HI),
             "amp: ",
             tooltipComponents.Bold({ children: `${fmtNum(t.amp, 2)} yuan` }),
             t.nBins > 1
@@ -256,56 +282,52 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
           ]),
         );
 
-        // Consolidated pattern score (right axis) — amp/σ_band × extrema
-        // evidence × ACF coherence, with its full decomposition.
-        const a = t.audit;
-        lines.push(
-          React.createElement(React.Fragment, { key: "score" }, [
-            React.createElement("span", {
-              style: {
-                display: "inline-block",
-                width: 8,
-                height: 8,
-                backgroundColor:
-                  arr.find((p) => p.seriesName === "pattern score")?.color || SCORE_COLOR,
-                marginRight: 4,
-              },
-            }),
-            "pattern score: ",
-            tooltipComponents.Bold({
-              children: !a
-                ? "n/a (window closes unavailable)"
-                : a.auditable
-                  ? fmtNum(a.score, 3)
-                  : "— not auditable (< 3 cycles in window)",
-            }),
-            React.createElement("br"),
-          ]),
-        );
-        if (a && a.auditable) {
+        if (!hasFactors) {
+          // Legacy row (pre-separation) — factors not stored.
           lines.push(
             React.createElement(
               "span",
-              { key: "decomp", style: { opacity: 0.85 } },
-              ` = ${fmtNum(a.ampNorm, 2)} amp/σband × ${fmtNum(a.recEXT, 2)} evidence ` +
-                `× ${fmtNum(a.acfFrac, 2)} acf · σband ${fmtNum(sigmaBand, 1)} yuan`,
-            ),
-            React.createElement("br"),
-            React.createElement(
-              "span",
-              { key: "evid", style: { opacity: 0.85 } },
-              `evidence: ${a.evidence} hits / ${a.maxRepeats} possible · ` +
-                `${nExtrema} swing extrema (prominence ≥ 1.5σ)`,
-            ),
-            React.createElement("br"),
-            React.createElement(
-              "span",
-              { key: "acf", style: { opacity: 0.85 } },
-              `acf: ${a.repeats}× cycles (${a.repeats * 2} half-circles of ~${halfDay(t.day)})` +
-                ` · ${a.repeats}/${a.maxRepeats} multiples ≥ 1.96/√N`,
+              { key: "legacy", style: { opacity: 0.85 } },
+              "count/strength: n/a (legacy row — rerun the fourier_freqs builder)",
             ),
             React.createElement("br"),
           );
+        } else {
+          // Count factor (right axis) — extrema evidence × ACF coherence.
+          lines.push(
+            React.createElement(React.Fragment, { key: "count" }, [
+              swatch("count", COUNT_COLOR),
+              "count: ",
+              tooltipComponents.Bold({ children: fmtNum(t.count, 3) }),
+              " — recurrence evidence (extrema hits × ACF multiples)",
+              React.createElement("br"),
+            ]),
+          );
+
+          // Strength (right axis) — (amp/σ_band) × count with decomposition.
+          lines.push(
+            React.createElement(React.Fragment, { key: "strength" }, [
+              swatch("strength", STRENGTH_COLOR),
+              "strength: ",
+              tooltipComponents.Bold({
+                children: t.auditable
+                  ? fmtNum(t.strength, 3)
+                  : "— not auditable (< 3 cycles in window)",
+              }),
+              React.createElement("br"),
+            ]),
+          );
+          if (t.auditable) {
+            lines.push(
+              React.createElement(
+                "span",
+                { key: "decomp", style: { opacity: 0.85 } },
+                ` = ${fmtNum(t.ampNorm, 2)} amp/σband × ${fmtNum(t.count, 2)} count` +
+                  ` · σband ${fmtNum(sigmaBand, 1)} yuan`,
+              ),
+              React.createElement("br"),
+            );
+          }
         }
 
         // The different repeat periods (FFT bins) captured by this day.
@@ -348,11 +370,11 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
       },
       {
         type: "value",
-        name: "pattern score",
-        nameTextStyle: { color: SCORE_COLOR, fontSize: 9 },
+        name: "count / strength",
+        nameTextStyle: { color: STRENGTH_COLOR, fontSize: 9 },
         position: "right",
-        axisLine: { lineStyle: { color: SCORE_COLOR } },
-        axisLabel: { color: SCORE_COLOR, fontSize: 9, formatter: (v: number) => fmtNum(v, 2) },
+        axisLine: { lineStyle: { color: STRENGTH_COLOR } },
+        axisLabel: { color: STRENGTH_COLOR, fontSize: 9, formatter: (v: number) => fmtNum(v, 2) },
         splitLine: { show: false },
       },
     ],
@@ -371,18 +393,28 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
         itemStyle: { opacity: 0.85 },
         z: 2,
       },
-      // Consolidated pattern-score bars (right axis) — the periodic
-      // noticeable-highs-and-lows bar: (amp/σ_band) × extrema evidence
-      // × ACF coherence (see patternScore.ts). Fourier is the
-      // reference; this is the consolidated audit of what actually
-      // recurs with noticeable swings. Zero for d > N/3 (not auditable).
+      // Count bars (right axis) — the recurrence COUNT factor
+      // (extrema evidence × ACF coherence), precomputed in Python and
+      // stored bin-aligned in count_spectrum. Says whether the day
+      // freq actually repeats.
       {
-        name: "pattern score",
+        name: "count",
         type: "bar",
         yAxisIndex: 1,
-        data: scoreData,
-        itemStyle: { color: SCORE_COLOR, opacity: 0.8 },
+        data: countData,
+        itemStyle: { color: COUNT_COLOR, opacity: 0.8 },
         z: 3,
+      },
+      // Strength bars (right axis) — the summarized strength:
+      // (amp/σ_band) × count (the former consolidated pattern score).
+      // Zero for d > N/3 (not auditable).
+      {
+        name: "strength",
+        type: "bar",
+        yAxisIndex: 1,
+        data: strengthData,
+        itemStyle: { color: STRENGTH_COLOR, opacity: 0.8 },
+        z: 4,
       },
     ],
   };

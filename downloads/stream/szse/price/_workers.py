@@ -13,7 +13,7 @@ import time as _time
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from downloads._common.core import (
+from downloads._common import (
     HostStatusTracker,
     add_exchange_suffix,
     is_trading_day,
@@ -159,7 +159,8 @@ async def async_sleep_until(target_dt: datetime, chunk_sec: float = 60.0) -> Non
 async def async_random_sleep(base_sec: float, jitter_factor: float = 0.5) -> None:
     """Async random_sleep. Responds to asyncio cancellation.
 
-    Mirrors ``random_sleep`` from ``_common.core`` but uses ``asyncio.sleep``
+    Mirrors ``random_sleep`` from ``downloads._common.net`` but uses
+    ``asyncio.sleep``
     so the task can be cancelled instantly — no thread to wait for on
     shutdown.
     """

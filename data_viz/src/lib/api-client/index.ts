@@ -38,6 +38,7 @@ export {
 export {
   fetchSecComposition,
   fetchQuarterlyComposition,
+  fetchIndustryWeightSeries,
   fetchLinkedEtfs,
   fetchSimilarIndices,
 } from "./sec-composition";
@@ -81,7 +82,6 @@ export {
   fetchMarginTrendThemes,
   fetchMarginTrendStrategyThemes,
   fetchMarginIndustrySeries,
-  fetchMarginIndustryCorrelation,
   fetchMarginTrends,
 } from "./analysis-margin-trends";
 
@@ -101,6 +101,8 @@ export {
   fetchIndustrySentimentsChart,
   fetchIndustrySentimentsChartByCode,
   fetchIndustryCorrelations,
+  runIndustryCorrelationsRefresh,
+  INDUSTRY_CORR_RUN_TAG,
 } from "./analysis-industry-sentiments";
 
 export {
@@ -153,7 +155,6 @@ export {
 export type {
   StrategyAlgo,
   StrategySelection,
-  ForecastScenarioResponse,
   RunStrategyResult,
   CheckExistingResult,
   TrainConfigRow,
@@ -175,8 +176,6 @@ export {
   selectionLabel,
   fetchSingletonBacktest,
   fetchSingletonRisks,
-  fetchSingletonForecast1m,
-  fetchForecastScenarioDecisions,
   checkExistingStrategy,
   runSingletonStrategy,
   trainStrategyModel,

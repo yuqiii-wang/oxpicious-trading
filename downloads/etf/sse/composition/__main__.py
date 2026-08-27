@@ -49,6 +49,7 @@ Usage:
 """
 from __future__ import annotations
 
+
 import re
 import xml.etree.ElementTree as ET
 from datetime import date, datetime
@@ -58,12 +59,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_SLEEP_SEC,
     DEFAULT_TIMEOUT,
     AntiBotProxy,
     AntiBotConfig,
     RunStats,
+    add_exchange_suffix,
     build_default_session,
     build_headers_with_referer,
     is_valid_file,
@@ -312,7 +314,9 @@ def _pcf_to_combined_rows(
 
         rows.append({
             "trade_date": trade_date,
-            "etf_code": etf_code,
+            # Canonical suffixed code ("NNNNNN.SS") so builds read the whole
+            # code without any suffix surgery.
+            "etf_code": add_exchange_suffix(etf_code, "上海"),
             "etf_name": etf_name,
             "fund_type": fund_type,
             "target_index": "",  # not published in the SSE PCF XML

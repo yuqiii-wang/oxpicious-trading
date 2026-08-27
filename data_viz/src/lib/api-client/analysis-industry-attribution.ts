@@ -1,4 +1,4 @@
-﻿import { fetchJson } from "./_cache";
+import { fetchJson } from "./_cache";
 import type {
   IndustryBenchmarkAttributionResponse,
   IndustryAttributionBenchmarksResponse,
@@ -98,7 +98,7 @@ export function fetchAllIndustriesAttribution(
 /** Fetch pre-computed top-5 (HYPE) + bottom-5 (DRAIN) industries ranked by
  *  attribution contribution to a COMPOSITE broad-market benchmark (MAIN or
  *  INNOV). Returns the 10 ranked industries + composite benchmark price series
- *  + each industry's mean_price series. Drives the "Hypes & Drains" sub-toggle
+ *  + each industry's mean_close series. Drives the "Hypes & Drains" sub-toggle
  *  in "Market Trend" mode.
  *  weighting: 'equal' (raw attribution contribution) or 'amt'
  *  (contribution × shared_trading_amt). Default: 'equal'. */

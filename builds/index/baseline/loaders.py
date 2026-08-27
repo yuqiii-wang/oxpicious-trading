@@ -13,8 +13,13 @@ trading_amount, change, changePct, pe, consNumber):
                                399303 / 399310 / 399311)
 
 All loaders:
-  • Read raw CSVs with dtype=str and encoding="utf-8-sig".
-  • Apply parse_num to numeric columns and parse_date to the date column.
+  • Read raw CSVs via downloads.read_csv_gpu_safe (dtype=str, NO encoding
+    kwarg — an `encoding=` kwarg forces a cudf CPU fallback on EVERY file;
+    the utf-8-sig BOM is stripped from the first column name after read).
+  • Vectorized parsing: safe_to_numeric for numeric columns and
+    safe_to_datetime for the date column — NEVER Series.apply(parse_num)
+    (each apply() attempt is a Numba JIT failure → one slow-path fallback
+    per element under cudf.pandas).
   • Convert source-native units to the "yuan everywhere" DB convention.
   • Add a `code` column equal to `indexCode` for grouping / existing_keys.
 """
@@ -22,21 +27,40 @@ from __future__ import annotations
 
 import glob
 import os
+import re
+from typing import Optional
 
+import numpy as np
 import pandas as pd
 
-from _common.build_commons import parse_num, parse_date
+from downloads._common import read_csv_gpu_safe
+
+from builds._commons.safe_parse import safe_to_datetime, safe_to_numeric
 
 from builds.index.baseline.paths import (
     SZSE_ARCHIVE_DIR, SZSE_TREND_DIR, SSE_TREND_DIR, CNINDEX_DIR,
     SZSE_INDEX_CODES, VALID_CODE_RE,
 )
 
+# Snapshot filenames carry their snapshot date: *_YYYYMMDD.csv
+_FILE_DATE_RE = re.compile(r"_(\d{8})\.csv$")
+
+
+def _snapshot_file_date(path: str) -> Optional[str]:
+    """'…/szse_index_20260803.csv' → '2026-08-03'; None when no date in name."""
+    m = _FILE_DATE_RE.search(os.path.basename(path))
+    if not m:
+        return None
+    ymd = m.group(1)
+    return f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:]}"
+
 
 # ============================================================================
 # Load SZSE index daily CSVs (archive + trend) → CSIndex schema
 # ============================================================================
-def load_szse_index_history(verbose: bool = True) -> list:
+def load_szse_index_history(verbose: bool = True,
+                            code_filter: str | None = None,
+                            skip_dates: Optional[set] = None) -> list:
     """Load SZSE index daily CSVs (archive + trend) and map to CSIndex schema.
 
     Scans two directories for per-date index CSV files:
@@ -48,19 +72,34 @@ def load_szse_index_history(verbose: bool = True) -> list:
     columns to the CSIndex history schema so they can be concatenated with
     CSIndex DataFrames.
 
+    When *code_filter* is set, only rows for that one index are kept AND the
+    CSV is byte-prefiltered to lines containing the code token (the 指数代码
+    column carries bare 6-digit codes), so whole-market snapshots are never
+    parsed during --code builds. *skip_dates* (dates that already have a DB
+    row for this code) additionally lets a fully-covered snapshot be skipped
+    WITHOUT reading it — a snapshot file can only ever contribute the single
+    row (file_date, code).
+
     Returns a list of per-code DataFrames. Returns an empty list if no files
     are found.
     """
+    # Single-code builds restricted to SZSE-published indices only; other
+    # codes never appear in these files at all.
+    if code_filter is not None:
+        if code_filter not in SZSE_INDEX_CODES:
+            return []
+        keep_codes = {code_filter}
+        filter_token: Optional[str] = code_filter
+    else:
+        keep_codes = set(SZSE_INDEX_CODES)
+        filter_token = None
+
     archive_files = sorted(glob.glob(os.path.join(SZSE_ARCHIVE_DIR, "szse_index_*.csv")))
     trend_files = sorted(glob.glob(os.path.join(SZSE_TREND_DIR, "szse_trend_index_*.csv")))
-    all_files = archive_files + trend_files
 
     if verbose:
         print(f"    [SZSE] {len(archive_files)} archive + {len(trend_files)} trend "
               f"index CSVs found", flush=True)
-
-    if not all_files:
-        return []
 
     # Column rename map: SZSE Chinese → CSIndex schema
     RENAME = {
@@ -77,32 +116,42 @@ def load_szse_index_history(verbose: bool = True) -> list:
     }
 
     dfs = []
-    for path in all_files:
-        try:
-            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
-        except Exception:
+    n_skipped_covered = 0
+    for path in archive_files + trend_files:
+        # Date-gate: snapshots whose only possible row is already in DB cost
+        # nothing — no open, no read, no parse.
+        fdate = _snapshot_file_date(path)
+        if skip_dates is not None and fdate is not None and fdate in skip_dates:
+            n_skipped_covered += 1
             continue
+
+        df = read_csv_gpu_safe(path, dtype=str, code=filter_token)
         if df is None or len(df) == 0:
             continue
 
         df = df.rename(columns=RENAME)
 
-        # Filter to the indexes we want
+        _cols = np.asarray(df.columns).tolist()
+        if "indexCode" not in _cols or "date" not in _cols:
+            continue
+
+        # Filter to the indexes we want (exact equality after the superset
+        # byte prefilter)
         df["indexCode"] = df["indexCode"].astype(str).str.strip()
-        df = df[df["indexCode"].isin(SZSE_INDEX_CODES)].copy()
+        df = df[df["indexCode"].isin(keep_codes)].copy()
         if len(df) == 0:
             continue
 
-        # Parse numerics
+        # Parse numerics (vectorized — one GPU kernel per column)
         for col in ["prev_close", "open", "high", "low", "close", "trading_amount", "changePct"]:
-            if col in df.columns:
-                df[col] = df[col].apply(parse_num)
+            if col in _cols:
+                df[col] = safe_to_numeric(df[col])
         # SZSE 成交金额(亿元) → yuan to match the "yuan everywhere" DB convention.
-        if "trading_amount" in df.columns:
+        if "trading_amount" in _cols:
             df["trading_amount"] = df["trading_amount"] * 1e8  # 亿元 → yuan
 
         # Parse date
-        df["date"] = df["date"].apply(parse_date)
+        df["date"] = safe_to_datetime(df["date"])
         df = df.dropna(subset=["date"])
 
         # Compute absolute change = close - prev_close
@@ -117,6 +166,10 @@ def load_szse_index_history(verbose: bool = True) -> list:
         df["code"] = df["indexCode"]
 
         dfs.append(df)
+
+    if n_skipped_covered and verbose:
+        print(f"    [SZSE] date-gate skipped {n_skipped_covered} snapshots "
+              f"(rows already in DB)", flush=True)
 
     if not dfs:
         if verbose:
@@ -143,7 +196,9 @@ def load_szse_index_history(verbose: bool = True) -> list:
 # ============================================================================
 # Load SSE index trend CSVs → CSIndex schema
 # ============================================================================
-def load_sse_index_history(verbose: bool = True) -> list:
+def load_sse_index_history(verbose: bool = True,
+                           code_filter: str | None = None,
+                           skip_dates: Optional[set] = None) -> list:
     """Load SSE index trend daily CSVs and map to CSIndex schema.
 
     Scans ``temps/sse_trend/sse_trend_index_YYYYMMDD.csv`` for per-date SSE
@@ -153,12 +208,25 @@ def load_sse_index_history(verbose: bool = True) -> list:
     成交金额(万元), 市盈率.
 
     SSE trend data provides TODAY's EOD snapshot — it supplements CSIndex
-    history/1m data (which may lag by a day). No code filtering is applied;
-    the build's existing_keys mask handles deduplication.
+    history/1m data (which may lag by a day).
+
+    When *code_filter* is set, the CSV is byte-prefiltered to lines containing
+    the canonical code token ("NNNNNN.SS" — the 证券代码 column carries
+    suffixed codes), and *skip_dates* lets fully-covered snapshots be skipped
+    WITHOUT reading them.
 
     Returns a list of per-code DataFrames. Returns an empty list if no files
     are found.
     """
+    # SSE snapshot files only ever carry ".SS"-suffixed codes; anything else
+    # (e.g. SZSE/CNINDEX codes) cannot match any line.
+    if code_filter is not None:
+        filter_token: Optional[str] = f"{code_filter}.SS"
+        keep_bare_codes = {code_filter}
+    else:
+        filter_token = None
+        keep_bare_codes = None
+
     trend_files = sorted(glob.glob(os.path.join(SSE_TREND_DIR, "sse_trend_index_*.csv")))
 
     if verbose:
@@ -184,29 +252,38 @@ def load_sse_index_history(verbose: bool = True) -> list:
     }
 
     dfs = []
+    n_skipped_covered = 0
     for path in trend_files:
-        try:
-            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
-        except Exception:
+        # Date-gate: snapshots whose only possible row is already in DB cost
+        # nothing — no open, no read, no parse.
+        fdate = _snapshot_file_date(path)
+        if skip_dates is not None and fdate is not None and fdate in skip_dates:
+            n_skipped_covered += 1
             continue
+
+        df = read_csv_gpu_safe(path, dtype=str, code=filter_token)
         if df is None or len(df) == 0:
             continue
 
         df = df.rename(columns=RENAME)
 
-        # Parse numerics
+        _cols = np.asarray(df.columns).tolist()
+        if "indexCode" not in _cols or "date" not in _cols:
+            continue
+
+        # Parse numerics (vectorized — one GPU kernel per column)
         for col in ["prev_close", "open", "high", "low", "close",
                      "trading_shares", "trading_amount", "changePct", "pe"]:
-            if col in df.columns:
-                df[col] = df[col].apply(parse_num)
+            if col in _cols:
+                df[col] = safe_to_numeric(df[col])
         # SSE 成交量(万股) → shares; 成交金额(万元) → yuan (CSIndex uses yuan)
-        if "trading_shares" in df.columns:
+        if "trading_shares" in _cols:
             df["trading_shares"] = df["trading_shares"] * 1e4  # 万股 → shares
-        if "trading_amount" in df.columns:
+        if "trading_amount" in _cols:
             df["trading_amount"] = df["trading_amount"] * 1e4  # 万元 → yuan
 
         # Parse date
-        df["date"] = df["date"].apply(parse_date)
+        df["date"] = safe_to_datetime(df["date"])
         df = df.dropna(subset=["date"])
 
         # Compute absolute change = close - prev_close
@@ -215,11 +292,23 @@ def load_sse_index_history(verbose: bool = True) -> list:
         # Field not provided by SSE index data
         df["consNumber"] = None
 
-        # code column (used by build_daily_df for grouping + existing_keys check)
-        df["code"] = df["indexCode"].astype(str).str.strip()
+        # code column (used by build_daily_df for grouping + existing_keys
+        # check). Canonical CSV codes carry the ".SS" suffix; the index DB
+        # convention is the bare 6-digit code — strip the suffix (one
+        # vectorized op, satisfies chk_index_identity_code_format).
+        df["code"] = df["indexCode"].astype(str).str.split(".").str[0]
+        # Exact equality after the superset byte prefilter
+        if keep_bare_codes is not None:
+            df = df[df["code"].isin(keep_bare_codes)].copy()
+            if len(df) == 0:
+                continue
         df["indexName"] = df["indexName"].fillna("")
 
         dfs.append(df)
+
+    if n_skipped_covered and verbose:
+        print(f"    [SSE] date-gate skipped {n_skipped_covered} snapshots "
+              f"(rows already in DB)", flush=True)
 
     if not dfs:
         if verbose:
@@ -245,7 +334,8 @@ def load_sse_index_history(verbose: bool = True) -> list:
 # ============================================================================
 # Load CNINDEX (国证指数) daily CSVs → CSIndex schema
 # ============================================================================
-def load_cnindex_history(verbose: bool = True) -> list:
+def load_cnindex_history(verbose: bool = True,
+                         code_filter: str | None = None) -> list:
     """Load CNINDEX daily history CSVs and map to CSIndex schema.
 
     Scans ``temps/cnindex_archive`` for ``{code}_history.csv`` files produced
@@ -262,7 +352,12 @@ def load_cnindex_history(verbose: bool = True) -> list:
     Returns a list of per-code DataFrames, each with a ``code`` column added.
     Returns an empty list if no files are found.
     """
-    history_files = sorted(glob.glob(os.path.join(CNINDEX_DIR, "*_history.csv")))
+    # Per-code files: a single-code build only ever needs its own file.
+    if code_filter is not None:
+        history_files = sorted(glob.glob(
+            os.path.join(CNINDEX_DIR, f"{code_filter}_history.csv")))
+    else:
+        history_files = sorted(glob.glob(os.path.join(CNINDEX_DIR, "*_history.csv")))
     if verbose:
         print(f"    [CNINDEX] {len(history_files)} history CSVs in {CNINDEX_DIR}",
               flush=True)
@@ -271,12 +366,11 @@ def load_cnindex_history(verbose: bool = True) -> list:
 
     dfs = []
     for path in history_files:
-        try:
-            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
-        except Exception:
-            continue
+        df = read_csv_gpu_safe(path, dtype=str)
         if df is None or len(df) == 0:
             continue
+
+        _cols = np.asarray(df.columns).tolist()
 
         code = os.path.basename(path).replace("_history.csv", "")
         if not VALID_CODE_RE.match(code):
@@ -285,10 +379,10 @@ def load_cnindex_history(verbose: bool = True) -> list:
 
         for col in ["open", "high", "low", "close", "trading_shares",
                      "trading_amount", "change", "changePct", "pe", "consNumber"]:
-            if col in df.columns:
-                df[col] = df[col].apply(parse_num)
+            if col in _cols:
+                df[col] = safe_to_numeric(df[col])
 
-        df["date"] = df["date"].apply(parse_date)
+        df["date"] = safe_to_datetime(df["date"])
         df = df.dropna(subset=["date"])
 
         dfs.append(df)
@@ -301,7 +395,9 @@ def load_cnindex_history(verbose: bool = True) -> list:
     if verbose:
         for df in dfs:
             code = df["code"].iloc[0]
-            name = df["indexName"].iloc[0] if "indexName" in df.columns and len(df) else ""
+            cols = np.asarray(df.columns).tolist()
+            has_name = "indexName" in cols and len(df)
+            name = df["indexName"].iloc[0] if has_name else ""
             print(f"    [CNINDEX] {code} {name}: {len(df)} dates "
                   f"({df['date'].min()} → {df['date'].max()})", flush=True)
 

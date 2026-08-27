@@ -1,9 +1,8 @@
-﻿import { fetchJson } from "./_cache";
+import { fetchJson } from "./_cache";
 import type {
   MaSpreadSecType,
   StrategyBacktestResponse,
   StrategyRiskResponse,
-  StrategyForecast1mResponse,
   StrategyDecision,
 } from "@shared/types";
 
@@ -17,7 +16,7 @@ import type {
 //  "portfolio:macd*0.5" (built by portfolioName(), mirrors the Python
 //  portfolio_name() in strategy/factors_and_algos/portfolio.py).
 //
-//  The resolved strategy_name drives the DATA load (backtest/risks/forecast
+//  The resolved strategy_name drives the DATA load (backtest/risks
 //  SQL-filter on strategy_name). The Run button passes the SERIALIZED
 //  selection ("macd:0.5,bb:0.5") to Python's --algo arg, which
 //  the Python _parse_algo_arg already understands.
@@ -115,7 +114,6 @@ export function selectionLabel(
 export function fetchSingletonBacktest(
   code: string,
   secType: MaSpreadSecType,
-  scenario: string | null = null,
   selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
   ft: number = 0,
 ): Promise<StrategyBacktestResponse> {
@@ -123,7 +121,6 @@ export function fetchSingletonBacktest(
   const params = new URLSearchParams();
   if (code) params.set("code", code);
   if (secType) params.set("sec_type", secType);
-  if (scenario) params.set("scenario", scenario);
   params.set("strategy_name", strategyName);
   const qs = params.toString();
   return fetchJson<StrategyBacktestResponse>(
@@ -134,7 +131,6 @@ export function fetchSingletonBacktest(
 export function fetchSingletonRisks(
   code: string,
   secType: MaSpreadSecType,
-  scenario: string | null = null,
   selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
   ft: number = 0,
 ): Promise<StrategyRiskResponse> {
@@ -142,68 +138,10 @@ export function fetchSingletonRisks(
   const params = new URLSearchParams();
   if (code) params.set("code", code);
   if (secType) params.set("sec_type", secType);
-  if (scenario) params.set("scenario", scenario);
   params.set("strategy_name", strategyName);
   const qs = params.toString();
   return fetchJson<StrategyRiskResponse>(
     `/api/strategy/singleton/risks${qs ? `?${qs}` : ""}`,
-  );
-}
-
-/** 1-month forward sell-confidence forecast (7 sigma scenarios + mean). */
-export function fetchSingletonForecast1m(
-  code: string,
-  secType: MaSpreadSecType,
-  selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
-  ft: number = 0,
-): Promise<StrategyForecast1mResponse> {
-  const strategyName = selectionToStrategyName(selection, ft);
-  const params = new URLSearchParams();
-  if (code) params.set("code", code);
-  if (secType) params.set("sec_type", secType);
-  params.set("strategy_name", strategyName);
-  const qs = params.toString();
-  return fetchJson<StrategyForecast1mResponse>(
-    `/api/strategy/singleton/forecast${qs ? `?${qs}` : ""}`,
-  );
-}
-
-/** Lightweight forecast-only decisions for a scenario (20 SELL rows + summary).
- *  Used when switching forecast scenarios to avoid reloading the entire
- *  parent backtest (OHLC + actual decisions + daily are reused from cache). */
-export interface ForecastScenarioResponse {
-  code: string;
-  sec_type: string;
-  scenario: string;
-  forecast_decisions: StrategyDecision[];
-  summary: {
-    n_buys: number;
-    n_sells: number;
-    realized_pnl: number;
-    final_cash: number;
-    total_return_pct: number;
-    total_buy_cost: number;
-    first_buy_date: string | null;
-    first_buy_fill_price: number | null;
-  };
-}
-
-export function fetchForecastScenarioDecisions(
-  code: string,
-  secType: MaSpreadSecType,
-  scenario: string,
-  selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
-  ft: number = 0,
-): Promise<ForecastScenarioResponse> {
-  const strategyName = selectionToStrategyName(selection, ft);
-  const params = new URLSearchParams();
-  if (code) params.set("code", code);
-  if (secType) params.set("sec_type", secType);
-  if (scenario) params.set("scenario", scenario);
-  params.set("strategy_name", strategyName);
-  const qs = params.toString();
-  return fetchJson<ForecastScenarioResponse>(
-    `/api/strategy/singleton/forecast-decisions${qs ? `?${qs}` : ""}`,
   );
 }
 
@@ -315,7 +253,6 @@ export async function checkExistingStrategy(
 export async function runSingletonStrategy(
   code: string,
   secType: MaSpreadSecType,
-  forecast: boolean = true,
   selection: StrategySelection = DEFAULT_STRATEGY_SELECTION,
   ft: number = 0,
   force: boolean = true,
@@ -325,7 +262,6 @@ export async function runSingletonStrategy(
   const params = new URLSearchParams();
   if (code) params.set("code", code);
   if (secType) params.set("sec_type", secType);
-  params.set("forecast", String(forecast));
   params.set("algo", serialized);
   if (ft && ft > 0) params.set("fault_tolerance", String(ft));
   if (!force) params.set("force", "false");

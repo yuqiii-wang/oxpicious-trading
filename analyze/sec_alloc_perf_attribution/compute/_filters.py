@@ -16,7 +16,7 @@ from analyze.sec_alloc_perf_attribution.config import TABLE
 async def filter_target_dates(conn, target_dates):
     """Return target_dates minus dates already present in TABLE.
 
-    The find_missing_analysis_dates pre-check in __main__.py already
+    The dates-map-based missing-date detection in run.py already
     filters target_dates, but this catches any edge cases where dates
     were partially populated.
     """

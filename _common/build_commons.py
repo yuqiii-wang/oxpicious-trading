@@ -199,6 +199,31 @@ def parse_time(val) -> Optional[datetime.time]:
 
 
 # ============================================================================
+# DB Record → column helpers — whole-column extraction (no per-row iteration)
+# ============================================================================
+# asyncpg Records are C-level tuples; extracting columns via per-element dict
+# access ([r["col"] for r in rows] / {c: ... for c in ...} / [dict(r)...])
+# pays a name-hash + Python-frame cost PER ELEMENT. These helpers unpack
+# whole columns in a single pass instead. Never iterate records row-wise to
+# build columns.
+def rec_col(rows: Sequence, name: str) -> list:
+    """One whole column from DB Records: C-level map, zero python frames."""
+    from operator import itemgetter
+    return list(map(itemgetter(name), rows))
+
+
+def rec_cols(rows: Sequence) -> "dict[str, list]":
+    """ALL columns at once via positional unpack (one pass over the rows).
+
+    Returns {} for empty input. Keys follow the SELECT order of row 0.
+    """
+    if not rows:
+        return {}
+    columns = list(zip(*rows))
+    return dict(zip(rows[0].keys(), columns))
+
+
+# ============================================================================
 # Filename / date-range helpers — duplicated in 3+ build scripts
 # ============================================================================
 def ymd_from_filename(path: str, prefix: str = "") -> Optional[str]:

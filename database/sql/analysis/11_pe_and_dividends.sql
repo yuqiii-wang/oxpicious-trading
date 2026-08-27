@@ -89,10 +89,14 @@ CREATE TABLE IF NOT EXISTS analysis.pe_and_dividends (
     -- NULL when close <= 0 or no dividend data in the trailing 365d window.
     dividend_yield  NUMERIC(10,6),
 
-    CONSTRAINT pk_pe_and_dividends PRIMARY KEY (sec_type, code, date),
+    CONSTRAINT pk_pe_and_dividends PRIMARY KEY (code, sec_type, date),
     CONSTRAINT chk_pe_and_dividends_sec_type
         CHECK (sec_type IN ('stock', 'etf', 'index'))
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (16) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p15
+SELECT public.create_hash_partitions('analysis', 'pe_and_dividends', 16);
 
 -- Idempotent migration for existing DBs that already have the table from a
 -- prior schema version (with close/pe columns). ADD COLUMN IF NOT EXISTS is
@@ -108,14 +112,15 @@ ALTER TABLE analysis.pe_and_dividends
 --   1. Per-security time series (drives per-code valuation charts).
 --   2. Per-date snapshot (drives the latest-date cross-sectional view).
 --   3. sec_type-scoped scan (test runs populate sec_type='index' first).
-CREATE INDEX IF NOT EXISTS idx_pe_and_dividends_code_sec_type_date
-    ON analysis.pe_and_dividends (code, sec_type, date);
+-- idx_pe_and_dividends_code_sec_type_date (code, sec_type, date) dropped:
+-- identical to the code-first PK, which already serves per-code lookups.
+DROP INDEX IF EXISTS analysis.idx_pe_and_dividends_code_sec_type_date;
 CREATE INDEX IF NOT EXISTS idx_pe_and_dividends_date
     ON analysis.pe_and_dividends (date);
 CREATE INDEX IF NOT EXISTS idx_pe_and_dividends_sec_type_date
     ON analysis.pe_and_dividends (sec_type, date);
 
-COMMENT ON TABLE  analysis.pe_and_dividends              IS 'Per-(sec_type, code, date) valuation analytics: pe_ma20 (20-day MA of PE, index-only) and dividend_yield (trailing-12m D/P, fractional ratio). Close and raw PE are NOT stored here — they live in stats (index_basic_stats.close, index_valuation.pe, etf_basic_stats.close, stock_basic_stats.close). Mirrors mov_ave_spreads_detail shape (joins 1:1 on sec_type, code, date). pe_ma20: pandas rolling(20).mean() of stats.index_valuation.pe per code (index-only, NULL for etf/stock). dividend_yield: stock=SUM(stock_dividends.dividend_per_share_pre_tax over trailing 365d)/close; etf=SUM(etf_adjustment.implied_dividend_per_share over trailing 365d)/close; index=SUM(weight_fraction × constituent stock trailing-12m DPS) / close using LATEST sec_composition snapshot (source_type=''index'', temporal extrapolation). Built by analyze.pe_and_dividends (truncate-then-recompute); all INSERTs in Python per project rule.';
+COMMENT ON TABLE  analysis.pe_and_dividends              IS 'Per-(code, sec_type, date) valuation analytics: pe_ma20 (20-day MA of PE, index-only) and dividend_yield (trailing-12m D/P, fractional ratio). Close and raw PE are NOT stored here — they live in stats (index_basic_stats.close, index_valuation.pe, etf_basic_stats.close, stock_basic_stats.close). Mirrors mov_ave_spreads_detail shape (joins 1:1 on sec_type, code, date). pe_ma20: pandas rolling(20).mean() of stats.index_valuation.pe per code (index-only, NULL for etf/stock). dividend_yield: stock=SUM(stock_dividends.dividend_per_share_pre_tax over trailing 365d)/close; etf=SUM(etf_adjustment.implied_dividend_per_share over trailing 365d)/close; index=SUM(weight_fraction × constituent stock trailing-12m DPS) / close using LATEST sec_composition snapshot (source_type=''index'', temporal extrapolation). Built by analyze.pe_and_dividends (truncate-then-recompute); all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.pe_and_dividends.sec_type      IS 'Subject security type: index, etf, or stock. Determines which source PE/dividend tables apply (mirrors analysis.mov_ave_spreads_detail.sec_type).';
 COMMENT ON COLUMN analysis.pe_and_dividends.code          IS 'Security code (bare index code e.g. 000300; ETF/stock ticker with exchange suffix e.g. 159001.SZ / 600008.SS).';
 COMMENT ON COLUMN analysis.pe_and_dividends.date          IS 'Trading date.';
@@ -280,10 +285,14 @@ CREATE TABLE IF NOT EXISTS analysis.pe_and_dividend_stats (
     -- as the month-end `date`. Drives bold styling on the Last Div cell.
     dividend_issued_this_month BOOLEAN NOT NULL DEFAULT FALSE,
 
-    CONSTRAINT pk_pe_and_dividend_stats PRIMARY KEY (sec_type, code, date, is_active),
+    CONSTRAINT pk_pe_and_dividend_stats PRIMARY KEY (code, sec_type, date, is_active),
     CONSTRAINT chk_pe_and_dividend_stats_sec_type
         CHECK (sec_type IN ('stock', 'etf', 'index'))
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'pe_and_dividend_stats', 8);
 
 -- Idempotent migration for existing DBs. The DROP TABLE + CREATE TABLE
 -- above handles fresh installs and the prior is_latest → is_active rename;
@@ -317,10 +326,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_pe_and_dividend_stats_latest
 
 -- Secondary index for per-code time-series retrieval (all monthly snapshots
 -- for a code, ignoring the is_active flag — drives the valuation-band chart).
-CREATE INDEX IF NOT EXISTS idx_pe_and_dividend_stats_code_sec_type_date
-    ON analysis.pe_and_dividend_stats (code, sec_type, date);
+-- idx_pe_and_dividend_stats_code_sec_type_date (code, sec_type, date) dropped:
+-- a prefix of the code-first PK, which already serves per-code lookups.
+DROP INDEX IF EXISTS analysis.idx_pe_and_dividend_stats_code_sec_type_date;
 
-COMMENT ON TABLE  analysis.pe_and_dividend_stats                  IS 'Monthly 5-year rolling stats snapshot of PE and dividend_yield. One row per (sec_type, code, month-end trading date, is_active). is_active=TRUE for the most recent monthly snapshot per code (enforced by partial unique index uq_pe_and_dividend_stats_latest). min_pe_5y/max_pe_5y: rolling 5y (~1275 trading days) min/max of stats.index_valuation.pe (index-only, NULL for etf/stock). dividend_var_5y: rolling 5y population std (ddof=0) of dividend_yield x100 as a percentage. last_dividend_per_share: rolling record of the latest single dividend_per_share_pre_tax as of the month-end (stock/etf; NULL for index). dividend_issued_this_month: TRUE if any ex_dividend_date falls in the same (year, month) as the month-end. dividend_stability_5y: frequency-robust stability score (0-100) of per-share dividend AMOUNT over trailing 5 calendar years (annualized per year so payment-frequency changes do not create artificial gaps; CV-based: stability=(1-min(CV,1))×100). Updated MONTHLY by analyze.pe_and_dividends.stats (internal step). All INSERTs/UPDATEs in Python per project rule.';
+COMMENT ON TABLE  analysis.pe_and_dividend_stats                  IS 'Monthly 5-year rolling stats snapshot of PE and dividend_yield. One row per (code, sec_type, month-end trading date, is_active). is_active=TRUE for the most recent monthly snapshot per code (enforced by partial unique index uq_pe_and_dividend_stats_latest). min_pe_5y/max_pe_5y: rolling 5y (~1275 trading days) min/max of stats.index_valuation.pe (index-only, NULL for etf/stock). dividend_var_5y: rolling 5y population std (ddof=0) of dividend_yield x100 as a percentage. last_dividend_per_share: rolling record of the latest single dividend_per_share_pre_tax as of the month-end (stock/etf; NULL for index). dividend_issued_this_month: TRUE if any ex_dividend_date falls in the same (year, month) as the month-end. dividend_stability_5y: frequency-robust stability score (0-100) of per-share dividend AMOUNT over trailing 5 calendar years (annualized per year so payment-frequency changes do not create artificial gaps; CV-based: stability=(1-min(CV,1))×100). Updated MONTHLY by analyze.pe_and_dividends.stats (internal step). All INSERTs/UPDATEs in Python per project rule.';
 COMMENT ON COLUMN analysis.pe_and_dividend_stats.sec_type         IS 'Subject security type: index, etf, or stock.';
 COMMENT ON COLUMN analysis.pe_and_dividend_stats.code             IS 'Security code (bare index code e.g. 000300; ETF/stock ticker with exchange suffix e.g. 159001.SZ / 600008.SS).';
 COMMENT ON COLUMN analysis.pe_and_dividend_stats.date             IS 'Month-end trading date (last trading day of the month). One snapshot per month per (sec_type, code).';

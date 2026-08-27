@@ -62,12 +62,14 @@ def attach_etf_amounts(
 #  Step 7: capped ratio + grouped rolling MA(5) via shared grouped_rolling_agg
 # ---------------------------------------------------------------------------
 def compute_ma5_ratio(merged: pd.DataFrame) -> pd.DataFrame:
-    """Compute etf_trading_amount_ratio_benchmark_to_code_ma5.
+    """Compute etf_trading_amount_ratio_benchmark_to_code + its MA5.
 
-    Mirrors the SQL GENERATED ratio logic (NULL when either amount is
-    NULL or zero), PLUS a cap at |ratio| < 1e6 to match the SQL column's
-    NUMERIC(10,4) limit. Then compute rolling(5).mean() per benchmark_code
-    group with min_periods=1 so the first 4 days get a partial average.
+    The ratio mirrors the OLD SQL GENERATED column's semantics (NULL
+    when either amount is NULL or zero) PLUS a cap at |ratio| < 1e6 to
+    match the NUMERIC(10,4) limit — the column is now a plain column
+    computed here (GENERATED ALWAYS cost per-row server-side compute on
+    every COPY). Then compute rolling(5).mean() per benchmark_code group
+    with min_periods=1 so the first 4 days get a partial average.
 
     Uses the shared ``grouped_rolling_agg`` helper (Cython-compiled
     groupby.rolling().mean() — no Python lambda callback per group).
@@ -80,7 +82,7 @@ def compute_ma5_ratio(merged: pd.DataFrame) -> pd.DataFrame:
     )
     with np.errstate(divide="ignore", invalid="ignore"):
         raw_ratio = bench_amt / code_amt
-    merged["_ratio"] = np.where(
+    merged["etf_trading_amount_ratio_benchmark_to_code"] = np.where(
         bench_amt.isna() | code_amt.isna()
         | (bench_amt == 0) | (code_amt == 0)
         | (np.abs(raw_ratio) >= RATIO_CAP),
@@ -89,9 +91,9 @@ def compute_ma5_ratio(merged: pd.DataFrame) -> pd.DataFrame:
     )
 
     ma5 = grouped_rolling_agg(
-        merged, "benchmark_code", "_ratio",
+        merged, "benchmark_code",
+        "etf_trading_amount_ratio_benchmark_to_code",
         window=5, min_periods=1, agg="mean",
     )
     merged["etf_trading_amount_ratio_benchmark_to_code_ma5"] = ma5
-    merged = merged.drop(columns=["_ratio"])
     return merged

@@ -70,6 +70,14 @@ ALTER ROLE postgres SET search_path TO stats, analysis, strategy, public;
 --   RESULTS (dates, total_buy_cost, first-buy anchor, P&L summary) live on
 --   strategy_results (1:1). Splitting identity from results keeps strategy_identity
 --   stable across recomputes and concentrates display fields in one place.
+--
+--   NOT hash-partitioned: PostgreSQL requires every UNIQUE constraint on a
+--   partitioned table to include the partition key. The natural business key
+--   uq_strategy_identity_natural (strategy_name, sec_type, code, start_date,
+--   end_date) excludes seq_id, so partitioning by seq_id would force dropping
+--   that uniqueness (which the idempotent find_seq_id re-run logic depends
+--   on). Tiny registry table (~15MB). All seq_id-keyed child fact tables
+--   below ARE hash-partitioned by seq_id.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS strategy.strategy_identity (
     seq_id                BIGINT        GENERATED ALWAYS AS IDENTITY,
@@ -95,36 +103,22 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_identity (
 
     CONSTRAINT pk_strategy_identity PRIMARY KEY (seq_id),
     -- Natural business key (PK/FK-aligned uniqueness): one seq per
-    -- (strategy_name, sec_type, code, period, scenario). seq_no is a
-    -- display counter only — NOT part of uniqueness — so re-running an
-    -- algo over the same period is idempotent (skip) and a new period
-    -- just inserts a new seq.
+    -- (strategy_name, sec_type, code, period). seq_no is a display
+    -- counter only — NOT part of uniqueness — so re-running an algo
+    -- over the same period is idempotent (skip) and a new period just
+    -- inserts a new seq.
     CONSTRAINT uq_strategy_identity_natural
         UNIQUE (strategy_name, sec_type, code, start_date, end_date)
 );
 
--- Idempotent migration: add parent_seq_id + scenario for forecast child seqs.
--- Each forecast scenario (mir_255d_std_scale, flip_255d_std_scale, ...) gets its own child seq that
--- carries a full copy of the parent's actual decisions + that scenario's
--- forecast sells, enabling per-scenario risk + return + decision table.
-ALTER TABLE strategy.strategy_identity
-    ADD COLUMN IF NOT EXISTS parent_seq_id BIGINT;
-
-ALTER TABLE strategy.strategy_identity
-    ADD COLUMN IF NOT EXISTS scenario TEXT;
-
+-- Idempotent cleanup: drop forecast-related columns (parent_seq_id, scenario)
+-- that were added for forecast child seqs. These columns no longer exist.
 ALTER TABLE strategy.strategy_identity
     DROP CONSTRAINT IF EXISTS fk_strategy_identity_parent;
-
+DROP INDEX IF EXISTS idx_strategy_identity_parent;
 ALTER TABLE strategy.strategy_identity
-    ADD CONSTRAINT fk_strategy_identity_parent
-        FOREIGN KEY (parent_seq_id)
-        REFERENCES strategy.strategy_identity(seq_id)
-        ON DELETE CASCADE;
-
-CREATE INDEX IF NOT EXISTS idx_strategy_identity_parent
-    ON strategy.strategy_identity(parent_seq_id)
-    WHERE parent_seq_id IS NOT NULL;
+    DROP COLUMN IF EXISTS parent_seq_id,
+    DROP COLUMN IF EXISTS scenario;
 
 -- Idempotent migration: add start_date / end_date to strategy_identity for
 -- existing DBs (the columns are already in the CREATE TABLE above for fresh
@@ -159,10 +153,9 @@ ALTER TABLE strategy.strategy_identity
 
 -- Replace the (strategy_name, seq_no, sec_type, code) unique constraint with
 -- the NATURAL business key: (strategy_name, sec_type, code, start_date,
--- end_date, COALESCE(scenario, '')). seq_no is now a display counter only.
--- This makes the "skip if already found in strategy_identity" check (used
--- by the async multi-algo runner) align 1:1 with the unique constraint, and
--- lets forecast child seqs (non-NULL scenario) coexist with the parent.
+-- end_date). seq_no is now a display counter only. This makes the
+-- "skip if already found in strategy_identity" check (used by the async
+-- multi-algo runner) align 1:1 with the unique constraint.
 ALTER TABLE strategy.strategy_identity
     DROP CONSTRAINT IF EXISTS uq_strategy_identity_name_no_type_code;
 ALTER TABLE strategy.strategy_identity
@@ -170,13 +163,10 @@ ALTER TABLE strategy.strategy_identity
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_strategy_identity_natural
     ON strategy.strategy_identity
-    (strategy_name, sec_type, code, start_date, end_date, COALESCE(scenario, ''));
+    (strategy_name, sec_type, code, start_date, end_date);
 
 COMMENT ON COLUMN strategy.strategy_identity.start_date IS 'OHLC period start (df.date.min()) — the date the strategy is run FROM. Part of the natural business key (with end_date) so re-running over the same period is idempotent. Mirrors strategy_results.start_date but that is the OUTPUT (min exec_date); this is the INPUT period.';
 COMMENT ON COLUMN strategy.strategy_identity.end_date IS 'OHLC period end (df.date.max()) — the date the strategy is run TO. NULL = open-ended (rare). Part of the natural business key with start_date.';
-
-COMMENT ON COLUMN strategy.strategy_identity.parent_seq_id IS 'NULL for actual backtest seqs. For forecast child seqs: points to the parent actual backtest seq. Child seqs carry a full copy of actual decisions + scenario-specific forecast sells.';
-COMMENT ON COLUMN strategy.strategy_identity.scenario IS 'NULL for actual backtest seqs. For forecast child seqs: the scenario name (mir_255d_std_scale, flip_255d_std_scale, mir_255d_std_half_scale, flip_255d_std_half_scale, mir_20d_std_scale, flip_20d_std_scale, rand, rand_opp).';
 
 -- Idempotent migration: add fault_tolerance column for the stress-test
 -- feature. When > 0, the backtest was run with adverse OHLC perturbation
@@ -264,7 +254,12 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_results (
             (first_buy_date IS NOT NULL AND first_buy_fill_price IS NOT NULL
              AND first_buy_fill_price > 0)
         )
-);
+) PARTITION BY HASH (seq_id);
+
+-- Native hash partitions (8) keyed by seq_id
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('strategy', 'strategy_results', 8);
 
 COMMENT ON TABLE  strategy.strategy_results                  IS '1:1 with strategy_identity. Holds run RESULTS: dates, total_buy_cost, the first-buy normalization anchor, and P&L summary (moved from strategy_identity / strategy_risks).';
 COMMENT ON COLUMN strategy.strategy_results.seq_id           IS 'PK + FK → strategy_identity.seq_id (1:1).';
@@ -306,7 +301,10 @@ CREATE TABLE IF NOT EXISTS strategy.trade_decision (
 
     side                      TEXT          NOT NULL
         CHECK (side IN ('BUY', 'SELL')),
-    qty                       NUMERIC(12,4) NOT NULL CHECK (qty > 0),
+    -- qty represents confidence in 0-100 (BUY) / sold fraction of position
+    -- (SELL). qty = 0 is a valid no-op SELL (legacy rows where the sold
+    -- fraction rounds to 0.0000 at NUMERIC(12,4) precision).
+    qty                       NUMERIC(12,4) NOT NULL CHECK (qty >= 0),
 
     exec_date                 DATE          NOT NULL,
 
@@ -359,7 +357,12 @@ CREATE TABLE IF NOT EXISTS strategy.trade_decision (
     CONSTRAINT pk_trade_decision PRIMARY KEY (seq_id, decision_no),
     CONSTRAINT fk_trade_decision_seq FOREIGN KEY (seq_id)
         REFERENCES strategy.strategy_identity(seq_id) ON DELETE CASCADE
-);
+) PARTITION BY HASH (seq_id);
+
+-- Native hash partitions (8) keyed by seq_id
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('strategy', 'trade_decision', 8);
 
 COMMENT ON TABLE  strategy.trade_decision                  IS 'Ordered trade decisions within a strategy_identity (per-code). ALL financial metrics in normalized units (base=100 at first BUY). position_after >= 0 enforced at DB level (long-only).';
 COMMENT ON COLUMN strategy.trade_decision.seq_id          IS 'FK → strategy_identity.seq_id. Identifies the (strategy, code) run this decision belongs to.';
@@ -428,7 +431,6 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_daily (
     close_price         NUMERIC(18,6) NOT NULL,
     normalized_close    NUMERIC(18,6) NOT NULL,  -- close / first_buy_fill_price * 100
 
-    normalized_mean_buy_price NUMERIC(18,6) NOT NULL,
     normalized_mean_buy_period NUMERIC(18,6) NOT NULL,
 
 
@@ -457,7 +459,12 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_daily (
         REFERENCES strategy.strategy_identity(seq_id) ON DELETE CASCADE,
     CONSTRAINT fk_strategy_daily_decision FOREIGN KEY (seq_id, decision_no)
         REFERENCES strategy.trade_decision(seq_id, decision_no) ON DELETE SET NULL
-);
+) PARTITION BY HASH (seq_id);
+
+-- Native hash partitions (32) keyed by seq_id (largest strategy table, ~3.3GB)
+-- Native hash partitions (32) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p31
+SELECT public.create_hash_partitions('strategy', 'strategy_daily', 32);
 
 COMMENT ON TABLE  strategy.strategy_daily              IS 'Daily portfolio state per (seq_id, trade_date). unrealized_pnl = (total_qty/100) * (normalized_close - cost_basis_norm) — as if all remaining position sold at the day''s close. Computed from OHLC series + decisions by the backtest runner.';
 COMMENT ON COLUMN strategy.strategy_daily.seq_id       IS 'FK → strategy_identity.seq_id.';
@@ -475,8 +482,9 @@ COMMENT ON COLUMN strategy.strategy_daily.return_rate  IS 'ANNUALIZED return on 
 COMMENT ON COLUMN strategy.strategy_daily.is_decision_day IS 'TRUE if a BUY or SELL decision was executed on this day.';
 COMMENT ON COLUMN strategy.strategy_daily.decision_no  IS 'decision_no of the trade executed on this day (FK → trade_decision). NULL if no decision. ON DELETE SET NULL.';
 
-CREATE INDEX IF NOT EXISTS idx_strategy_daily_seq_date
-    ON strategy.strategy_daily (seq_id, trade_date);
+-- idx_strategy_daily_seq_date dropped: (seq_id, trade_date) is exactly the PK,
+-- which already serves per-seq time-series lookups.
+DROP INDEX IF EXISTS strategy.idx_strategy_daily_seq_date;
 
 CREATE INDEX IF NOT EXISTS idx_strategy_daily_decision
     ON strategy.strategy_daily (seq_id, decision_no)
@@ -495,8 +503,7 @@ ALTER TABLE strategy.strategy_daily
     ADD COLUMN IF NOT EXISTS normalized_mean_buy_period NUMERIC(18,6)
     NOT NULL DEFAULT 0;
 
-COMMENT ON COLUMN strategy.strategy_daily.normalized_mean_buy_price IS 'Weighted-avg BUY normalized_fill_price carried from the last decision (mirrors trade_decision.normalized_mean_buy_price). BUY → post-BUY weighted average; SELL → pre-SELL cost basis (constant across partial SELLs); resets to 0 when total_qty reaches 0.';
-COMMENT ON COLUMN strategy.strategy_daily.normalized_mean_buy_period IS 'Weighted-avg BUY period in calendar days since the first BUY (first BUY = 0), weighted on remaining qty. Mirrors normalized_mean_buy_price in the TIME dimension: BUY → (tq_before·period + qty·this_buy_period) / tq_after; SELL → unchanged (proportional reduction); resets to 0 on full liquidation. Mean holding time = (trade_date − first_buy_date).days − this value; used as the mean buy time to derive per-holding-period return.';
+COMMENT ON COLUMN strategy.strategy_daily.normalized_mean_buy_period IS 'Weighted-avg BUY period in calendar days since the first BUY (first BUY = 0), weighted on remaining qty. Mirrors cost_basis_norm (the weighted-avg BUY normalized price) in the TIME dimension: BUY → (tq_before·period + qty·this_buy_period) / tq_after; SELL → unchanged (proportional reduction); resets to 0 on full liquidation. Mean holding time = (trade_date − first_buy_date).days − this value; used as the mean buy time to derive per-holding-period return.';
 
 -- Idempotent migration: add return_rate column to strategy_daily for existing
 -- DBs (the column is already in the CREATE TABLE above for fresh DBs).
@@ -702,7 +709,12 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_risks (
     CONSTRAINT chk_risk_drawdown_3rd_val CHECK (
         drawdown_3rd_val IS NULL OR drawdown_3rd_val <= 0
     )
-);
+) PARTITION BY HASH (seq_id);
+
+-- Native hash partitions (8) keyed by seq_id
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('strategy', 'strategy_risks', 8);
 
 -- ----------------------------------------------------------------------------
 -- Idempotent migration (part A): add the drawdown date columns BEFORE the
@@ -830,7 +842,12 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_risk_period (
     CONSTRAINT chk_risk_period_share CHECK (
         period_share IS NULL OR (period_share >= 0 AND period_share <= 1)
     )
-);
+) PARTITION BY HASH (seq_id);
+
+-- Native hash partitions (8) keyed by seq_id
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('strategy', 'strategy_risk_period', 8);
 
 -- Idempotent migration (part B): add unrealized_pnl BEFORE the COMMENTs
 --   below (COMMENT ON COLUMN requires the column to exist on pre-existing
@@ -866,8 +883,9 @@ COMMENT ON COLUMN strategy.strategy_risk_period.is_counter_trend IS 'TRUE if thi
 CREATE INDEX IF NOT EXISTS idx_strategy_risks_code
     ON strategy.strategy_risks (code);
 
-CREATE INDEX IF NOT EXISTS idx_strategy_risk_period_seq_code_type
-    ON strategy.strategy_risk_period (seq_id, code, period_type, period_value);
+-- idx_strategy_risk_period_seq_code_type dropped: (seq_id, code, period_type,
+-- period_value) is exactly the PK, which already serves those lookups.
+DROP INDEX IF EXISTS strategy.idx_strategy_risk_period_seq_code_type;
 
 CREATE INDEX IF NOT EXISTS idx_strategy_risk_period_hotspot
     ON strategy.strategy_risk_period (seq_id, code)
@@ -903,7 +921,12 @@ CREATE TABLE IF NOT EXISTS strategy.strategy_risk_factors (
         PRIMARY KEY (seq_id, code, component, sub_key),
     CONSTRAINT fk_risk_factors_seq FOREIGN KEY (seq_id)
         REFERENCES strategy.strategy_identity(seq_id) ON DELETE CASCADE
-);
+) PARTITION BY HASH (seq_id);
+
+-- Native hash partitions (8) keyed by seq_id
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('strategy', 'strategy_risk_factors', 8);
 
 COMMENT ON TABLE  strategy.strategy_risk_factors IS 'Per-factor contribution to risk_score. One row per (seq, code, component, sub_key). SUM(contribution) = strategy_risks.risk_score.';
 COMMENT ON COLUMN strategy.strategy_risk_factors.component    IS 'realized / unrealized / streak / period_asymmetry / period_tail.';

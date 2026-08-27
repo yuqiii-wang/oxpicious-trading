@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from downloads._common.core import (
+from downloads._common import (
     MIN_VALID_BYTES,
     is_valid_file,
     read_csv_preferred,

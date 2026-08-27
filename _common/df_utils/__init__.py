@@ -134,9 +134,17 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "compute_moving_averages": ("_common.df_utils.rolling", "compute_moving_averages"),
     "compute_emas": ("_common.df_utils.rolling", "compute_emas"),
     "grouped_rolling_agg": ("_common.df_utils.rolling", "grouped_rolling_agg"),
+    # Pairwise rolling corr — CuPy fallback for the op cuDF lacks
+    "pairwise_rolling_corr": ("_common.df_utils.rolling_corr", "pairwise_rolling_corr"),
+    # Return CuPy pooled VRAM to the driver after a GPU burst
+    "release_cupy_pool": ("_common.df_utils.rolling_corr", "release_cupy_pool"),
     # Grouped diff / shift helpers
     "grouped_diff": ("_common.df_utils.groupby", "grouped_diff"),
     "grouped_shift": ("_common.df_utils.groupby", "grouped_shift"),
+    # NaN/inf/None sanitization for asyncpg bulk upsert
+    "sanitize_for_db_insert": ("_common.df_utils.sanitize", "sanitize_for_db_insert"),
+    # GPU-safe column-name materialization (avoids cudf Index fallback)
+    "safe_columns": ("_common.df_utils.sanitize", "safe_columns"),
     # Black-Scholes IV + Greeks (vectorized, CPU/GPU routed)
     "bs_price_greeks": ("_common.df_utils.black_scholes", "bs_price_greeks"),
     "solve_iv_newton": ("_common.df_utils.black_scholes", "solve_iv_newton"),

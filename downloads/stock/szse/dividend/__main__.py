@@ -77,6 +77,7 @@ Usage:
 """
 from __future__ import annotations
 
+
 import argparse
 import base64
 import csv
@@ -89,7 +90,7 @@ import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_TIMEOUT,
     SUPER_LONG_SLEEP_INTERVAL,
     MIN_VALID_BYTES,
@@ -131,7 +132,7 @@ DIVIDEND_COLUMNS: List[str] = [
 ]
 
 # SZSE-exclusive code prefixes (000/001 also used by SSE indices, but here we
-# only query codes sourced from stats.stock_identity with code_suffix='SZ',
+# only query codes sourced from stats.stock_identity with exchange='SZ',
 # so ambiguity is resolved upstream by the DB).
 SZSE_CODE_PREFIXES = ("000", "001", "002", "003", "300", "301")
 
@@ -337,14 +338,14 @@ def load_target_szse_stocks(conn) -> List[Tuple[str, str]]:
     """Return [(bare_code, name), ...] for SZSE stocks held by ETFs.
 
     Mirrors ``downloads.stock.sse.archive.load_target_stocks`` but filters
-    to SZSE codes via ``stock_identity.code_suffix = 'SZ'``. Joins the latest
+    to SZSE codes via ``stock_identity.exchange = 'SZ'``. Joins the latest
     stock_identity snapshot with the latest ETF composition snapshot in
     ``stats.sec_composition``. ``stock_code`` in sec_composition carries the
     exchange suffix (e.g. "000001.SZ"), matching stock_identity.code.
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT MAX(date) FROM stats.stock_identity WHERE code_suffix = 'SZ'"
+            "SELECT MAX(date) FROM stats.stock_identity WHERE exchange = 'SZ'"
         )
         latest_id_date = cur.fetchone()[0]
         cur.execute(
@@ -371,7 +372,7 @@ def load_target_szse_stocks(conn) -> List[Tuple[str, str]]:
             SELECT si.code, si.name
               FROM stats.stock_identity si
               JOIN etf_targets t ON t.stock_code = si.code
-             WHERE si.code_suffix = 'SZ'
+             WHERE si.exchange = 'SZ'
                AND si.date = %s
              ORDER BY si.code
             """,
@@ -392,18 +393,18 @@ def _load_all_szse_stocks_from_db(conn) -> List[Tuple[str, str]]:
     """Return [(bare_code, name), ...] for ALL SZSE stocks in stock_identity.
 
     Used when ``--no-etf-filter`` is set. Queries the latest stock_identity
-    date for code_suffix='SZ' and returns every stock on that date.
+    date for exchange='SZ' and returns every stock on that date.
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT MAX(date) FROM stats.stock_identity WHERE code_suffix = 'SZ'"
+            "SELECT MAX(date) FROM stats.stock_identity WHERE exchange = 'SZ'"
         )
         latest_date = cur.fetchone()[0]
         if latest_date is None:
             return []
         cur.execute(
             "SELECT code, name FROM stats.stock_identity "
-            "WHERE code_suffix = 'SZ' AND date = %s ORDER BY code",
+            "WHERE exchange = 'SZ' AND date = %s ORDER BY code",
             (latest_date,),
         )
         rows = cur.fetchall()

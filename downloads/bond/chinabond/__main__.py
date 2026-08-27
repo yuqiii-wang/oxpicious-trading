@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import logging
 import re
 import time
@@ -9,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     MIN_VALID_BYTES,
     EMPTY_HTML_MAX_BYTES,
     DEFAULT_TIMEOUT,
@@ -345,6 +346,9 @@ def download_chinabond(
                     if ok:
                         if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
                             stats.files.append(str(fpath))
+                            # Canonical CSV next to every xlsx — builds read
+                            # CSV ONLY (missing csv = downloads bug).
+                            convert_xlsx_to_csv(fpath, logger=logger, log_tag=str(yitem.year))
                         stats.downloaded += 1
                     else:
                         if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
@@ -387,6 +391,9 @@ def download_chinabond(
                     if ok:
                         if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):
                             stats.files.append(str(fpath))
+                            # Canonical CSV next to every xlsx — builds read
+                            # CSV ONLY (missing csv = downloads bug).
+                            convert_xlsx_to_csv(fpath, logger=logger, log_tag=str(ditem.day))
                         stats.downloaded += 1
                     else:
                         if is_valid_file(fpath, min_bytes=MIN_VALID_BYTES):

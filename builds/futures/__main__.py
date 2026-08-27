@@ -15,15 +15,22 @@ Missing-data detection flow:
   7. Bulk upsert into stats.futures_identity + stats.futures_basic_stats
 
 With --force: truncate both tables first, so all source dates are treated
-as missing.
+as missing. With --force --code <contract>: only that contract's rows are
+deleted instead of truncating.
 
 Usage:
   python -m builds.futures
   python -m builds.futures --start-date 2024-01-01 --end-date 2026-07-23
   python -m builds.futures --force
+  python -m builds.futures --code IF2609              (single-contract test filter)
 """
 from __future__ import annotations
 
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
 import os
 import sys
 import time
@@ -51,6 +58,12 @@ from _common.build_commons import (
     print_wall_time,
     TODAY_STR,
 )
+from builds._commons.code_filter import (
+    add_code_arg,
+    find_missing_dates_code_aware,
+    normalize_code,
+)
+from builds._commons.row_emission import records_from_frame
 
 setup_utf8_stdout()
 
@@ -71,7 +84,14 @@ async def main() -> None:
         description="Build CFFEX futures baseline data and insert to database (missing dates only)."
     )
     add_common_build_args(ap)
+    add_code_arg(ap)
     args = ap.parse_args()
+
+    # CFFEX contract codes (e.g. IF2609) carry no exchange suffix — strip
+    # whatever normalize_code may have appended to a bare code.
+    code_filter = normalize_code(args.code)
+    if code_filter:
+        code_filter = code_filter.split(".")[0]
 
     t0 = time.time()
     print_build_header(
@@ -79,9 +99,12 @@ async def main() -> None:
         **{
             "CFFEX archive dir": CFFEX_ARCHIVE_DIR,
             "Date range":       f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
+            "Code filter":      code_filter or "(none — all contracts)",
             "Today":            TODAY_STR,
         }
     )
+    if code_filter:
+        print(f"    [CODE FILTER] Restricting build to single contract: {code_filter}", flush=True)
 
     # ------------------------------------------------------------------
     # 1. Discover source files and available dates
@@ -122,10 +145,27 @@ async def main() -> None:
 
     try:
         if args.force:
-            print("    [DB] Force mode: truncating existing tables", flush=True)
-            await truncate_table_async(conn, "stats.futures_basic_stats")
-            await truncate_table_async(conn, "stats.futures_identity")
+            if code_filter:
+                # Single-code force mode: delete only this contract's rows
+                # (FK child first, identity last) instead of truncating.
+                print(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code", flush=True)
+                await conn.execute(
+                    "DELETE FROM stats.futures_basic_stats WHERE code = $1", code_filter
+                )
+                await conn.execute(
+                    "DELETE FROM stats.futures_identity WHERE code = $1", code_filter
+                )
+            else:
+                print("    [DB] Force mode: truncating existing tables", flush=True)
+                await truncate_table_async(conn, "stats.futures_basic_stats")
+                await truncate_table_async(conn, "stats.futures_identity")
             missing_dates = available_dates
+        elif code_filter:
+            # Single-code mode: only check this contract's dates so dates
+            # loaded for OTHER contracts don't mask this code's gaps.
+            missing_dates = await find_missing_dates_code_aware(
+                conn, "stats.futures_identity", available_dates, code_filter
+            )
         else:
             missing_dates = await find_missing_dates(
                 conn, "stats.futures_identity", available_dates
@@ -162,6 +202,17 @@ async def main() -> None:
 
         identity_df, basic_df = build_futures_df(missing_files, verbose=True)
 
+        # Filter to the target contract if --code is set
+        if code_filter:
+            if len(identity_df) > 0:
+                n_before = len(identity_df)
+                identity_df = identity_df[identity_df["code"] == code_filter].reset_index(drop=True)
+                print(f"    [CODE FILTER] Identity rows {n_before:,} → {len(identity_df):,} for code {code_filter}", flush=True)
+            if len(basic_df) > 0:
+                n_before = len(basic_df)
+                basic_df = basic_df[basic_df["code"] == code_filter].reset_index(drop=True)
+                print(f"    [CODE FILTER] Basic-stats rows {n_before:,} → {len(basic_df):,} for code {code_filter}", flush=True)
+
         if identity_df.empty or basic_df.empty:
             print("    [INFO] No futures rows parsed from missing-date files", flush=True)
             print_wall_time(t0)
@@ -196,9 +247,12 @@ async def main() -> None:
             subset=["date", "code"], keep="last"
         )
 
-        # Build row dicts for bulk upsert
-        identity_rows: List[dict] = identity_db.to_dict("records")
-        basic_rows: List[dict] = basic_db.to_dict("records")
+        # Build row dicts for bulk upsert (zip-based assembly, no
+        # to_dict("records") — cudf.pandas falls back once per row)
+        identity_rows: List[dict] = records_from_frame(
+            identity_db, np.asarray(identity_db.columns).tolist())
+        basic_rows: List[dict] = records_from_frame(
+            basic_db, np.asarray(basic_db.columns).tolist())
 
         pk_cols = ["date", "code"]
 

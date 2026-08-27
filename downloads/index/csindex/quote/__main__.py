@@ -10,6 +10,7 @@ fetched (1m window only; PE/intraday stay nightly-owned).
 """
 from __future__ import annotations
 
+
 import argparse
 
 from .runner import download_index

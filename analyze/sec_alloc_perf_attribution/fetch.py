@@ -8,9 +8,42 @@ from __future__ import annotations
 import datetime
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from analyze.sec_alloc_perf_attribution.config import TOP_N_NON_BROAD
+
+
+# ---------------------------------------------------------------------------
+#  GPU-safe frame construction from asyncpg rows
+#
+#  asyncpg returns python objects (datetime.date, Decimal, str).  Building
+#  ``pd.DataFrame([dict(r) for r in rows])`` from them creates OBJECT-dtype
+#  columns — cudf's constructor rejects object dates (MixedTypeError) and
+#  falls back to a CPU pandas frame whose string columns are arrow-backed
+#  ExtensionArrays.  From that point EVERY downstream op runs on CPU
+#  (unique/isin/==/map/join all print [cudf fallback]).
+#
+#  Instead, build each column as a TYPED numpy array (or python str list,
+#  which the cudf constructor turns into a native cudf string column) so
+#  the DataFrame is constructed cudf-native on the GPU:
+#    - dates   -> np.datetime64 (numpy converts date objects on the host,
+#                 no pandas/cudf involvement)
+#    - numerics-> float64 (Decimal -> float via list comp)
+#    - codes   -> python str list (cudf string column)
+#  No ``pd.to_datetime``/``pd.to_numeric`` calls needed at all.
+# ---------------------------------------------------------------------------
+def _dates_ns(rows, key: str) -> np.ndarray:
+    return np.asarray(
+        [r[key] for r in rows], dtype="datetime64[D]"
+    ).astype("datetime64[ns]")
+
+
+def _floats(rows, key: str) -> np.ndarray:
+    return np.asarray(
+        [float(r[key]) if r[key] is not None else np.nan for r in rows],
+        dtype="float64",
+    )
 
 
 async def fetch_codes_with_composition(conn) -> set:
@@ -213,9 +246,11 @@ async def fetch_index_closes(
             columns=["benchmark_code", "date", "benchmark_close"]
         )
 
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"])
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = pd.DataFrame({
+        "benchmark_code": [r["benchmark_code"] for r in rows],
+        "date": _dates_ns(rows, "date"),
+        "close": _floats(rows, "close"),
+    })
     df = df.sort_values(["benchmark_code", "date"]).reset_index(drop=True)
     # Rename close -> benchmark_close for clarity (used for rolling correlation).
     df = df.rename(columns={"close": "benchmark_close"})
@@ -291,9 +326,11 @@ async def fetch_index_subject_closes(
             columns=["code", "date", "subject_close"]
         )
 
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"])
-    df["subject_close"] = pd.to_numeric(df["subject_close"], errors="coerce")
+    df = pd.DataFrame({
+        "code": [r["code"] for r in rows],
+        "date": _dates_ns(rows, "date"),
+        "subject_close": _floats(rows, "subject_close"),
+    })
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
     return df[["code", "date", "subject_close"]]
 
@@ -357,7 +394,9 @@ async def fetch_etf_amount_by_index(
     if not rows:
         return pd.DataFrame(columns=["index_code", "date", "etf_amount"])
 
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"])
-    df["etf_amount"] = pd.to_numeric(df["etf_amount"], errors="coerce")
+    df = pd.DataFrame({
+        "index_code": [r["index_code"] for r in rows],
+        "date": _dates_ns(rows, "date"),
+        "etf_amount": _floats(rows, "etf_amount"),
+    })
     return df[["index_code", "date", "etf_amount"]]

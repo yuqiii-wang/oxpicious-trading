@@ -472,6 +472,10 @@ export interface SecCompositionResponse {
 /** One industry's aggregated weight within a quarterly snapshot. */
 export interface QuarterlyIndustryWeight {
   industry: string;
+  /** Industry id from sec_classification (type='stock') — shared taxonomy
+   *  with index classifications; '' when the industry is 未分类/OTHER.
+   *  Used to drill into per-industry stats (industry_basic_stats etc.). */
+  industry_id: string;
   sector_id: string;
   sector_label: string;
   /** Sum of raw weight_pct across the industry's holdings (≈% of NAV). */
@@ -506,6 +510,41 @@ export interface QuarterlyCompositionResponse {
   };
   /** Chronological quarters with data. */
   quarters: QuarterlyCompositionQuarter[];
+}
+
+// ----------------------------------------------------------------------------
+// Industry weight series — ONE industry's weight in a security's composition
+// across ALL snapshot dates (roughly monthly; denser than the quarterly view).
+// Used by the ETF Holdings page's Industry-changes row drill-down: the right
+// y-axis of the dual-axis plot (industry mean_close on the left axis).
+// ----------------------------------------------------------------------------
+/** One snapshot date's weight for the requested industry. */
+export interface IndustryWeightSeriesPoint {
+  /** Snapshot date (YYYY-MM-DD). */
+  date: string;
+  /** Sum of raw weight_pct across the industry's holdings (≈% of NAV). */
+  weight_pct: number;
+  /** Sum of raw weight_pct across ALL holdings in this snapshot (≈100). */
+  total_weight_pct: number;
+}
+
+export interface IndustryWeightSeriesResponse {
+  /** The requested ETF code (echoed back). */
+  code: string;
+  /** The requested industry_id (echoed back). */
+  industry_id: string;
+  /** Display label for the industry (from index classification; may be ''). */
+  industry_label: string;
+  /** Same fallback semantics as QuarterlyCompositionResponse.source. */
+  source: "full" | "index";
+  /** Populated only when `source === "index"`. */
+  index_source?: {
+    code: string;
+    name: string;
+  };
+  /** Chronological snapshot points (snapshots without the industry are
+   *  absent — no carry-forward). */
+  points: IndustryWeightSeriesPoint[];
 }
 
 // ----------------------------------------------------------------------------
@@ -1264,9 +1303,26 @@ export interface FourierFreqsSpectrumRow {
    *  k is range_days / k. The dominant bin is argmax(spectrum) + 1.
    *  Per-day-freq REPEAT counts are NOT derived from this array (the
    *  bin index k trivially equals k cycles per window — a definitional
-   *  constant, not a measurement); they are audited client-side from
-   *  the price window via autocorrelation (see repeatCounts.ts). */
+   *  constant, not a measurement); the periodic-pattern recurrence
+   *  audit is precomputed in Python and stored in count_spectrum /
+   *  strength_spectrum below. */
   spectrum: number[];
+  /** Periodic-pattern audit — the recurrence COUNT factor per FFT bin,
+   *  bin-aligned with spectrum (element i = bin k=i+1, whose integer
+   *  day period is round(range_days/k); all bins of a day share the
+   *  day's value). count(d) = extrema evidence × ACF coherence
+   *  (prominence-filtered alternating-extrema hits over max possible
+   *  cycles, capped 1; × fraction of multiples m·d with biased
+   *  acf ≥ 1.96/√N after MA detrending). 0 outside days 2..N/2.
+   *  Empty on legacy rows written before the column existed. */
+  count_spectrum: number[];
+  /** Periodic-pattern audit — the summarized STRENGTH per FFT bin,
+   *  bin-aligned with spectrum: strength(d) = (amp(d) / σ_band) ×
+   *  count(d), where amp(d) is the energy-merged FFT amplitude of the
+   *  day and σ_band = sqrt(Σ_{d′≤N/4} amp(d′)² / 2). This IS the
+   *  former consolidated "pattern score". 0 where not auditable
+   *  (d > N/3 — under 3 cycles in the window). Empty on legacy rows. */
+  strength_spectrum: number[];
   /** Number of sliding windows (dates) analyzed for this (code,
    *  range_days). Title context only. */
   total_windows: number;
@@ -1285,21 +1341,20 @@ export interface FourierFreqsSpectrumResponse {
 
 // ----------------------------------------------------------------------------
 //  Analysis Derivatives — Margin Trends (single-industry RONGZI margin flows)
-//    analysis.margin_index_series (VIEW)  — weighted-avg constituent-stock
-//                                           margin per (index_code, date)
-//    analysis.margin_industry_correlation — pairwise security corr
+//    analysis.margin_index_series (TABLE) — weighted-avg constituent-stock
+//                                           margin per (index_code, date),
+//                                           built by Python vectorization
+//    analysis.margin_changes             — trend episodes (shade overlay)
 //
 //  RONGZI (融资 / cash-borrow) only — RONQIN (融券 / sec borrow) EXCLUDED.
 //  Two series: margin_balance (rz_balance, yuan, STOCK) and margin_buy
 //  (rz_buy, yuan, FLOW). Attribution: 'index' (weighted-avg stock margin
-//  via the VIEW) or 'etf' (the ETF's own margin from etf_liquidity_margin).
+//  via the TABLE) or 'etf' (the ETF's own margin from etf_liquidity_margin).
 //
-//  Single-industry page layout (2 plots):
+//  Single-industry page layout (1 plot):
 //    1. Margin trends — one line per security (indices or ETFs) in the
-//       industry; toggle Balance | Buy.
-//    2. Pairwise correlation — one line per selected security pair, read
-//       from margin_industry_correlation (precomputed); window toggle
-//       5/20/60/120/255d. Requires ≥2 securities selected.
+//       industry; toggle Balance | Buy. Trend-episode shades + per-episode
+//       rz_buy_vs_trading_amt_ratio (on the Buy chart).
 // ----------------------------------------------------------------------------
 export type MarginAttributionType = "index" | "etf";
 
@@ -1336,43 +1391,16 @@ export interface MarginIndustrySeriesResponse {
   rows: MarginSeriesRow[];
 }
 
-/** One security pair found in margin_industry_correlation for the
- *  selected codes. Order: security_code < benchmark_code (COLLATE "C"). */
-export interface MarginCorrPair {
-  security_code: string;
-  benchmark_code: string;
-}
-
-/** One daily correlation value for one security pair. */
-export interface MarginCorrRow {
-  date: string;
-  security_code: string;
-  benchmark_code: string;
-  /** Pearson correlation in [-1, +1]; null when fewer than 2 overlapping
-   *  dates in the window. */
-  corr: number | null;
-}
-
-/** Response for GET /api/analysis/margin-trends/industry-correlation.
- *  Precomputed pairwise rolling Pearson correlation from
- *  analysis.margin_industry_correlation, filtered to the selected codes. */
-export interface MarginIndustryCorrelationResponse {
-  industry_id: string;
-  attribution: MarginAttributionType;
-  /** 'balance' (融资余额) or 'buy' (融资买入额). */
-  series: "balance" | "buy";
-  /** Rolling window in trading days (5/20/60/120/255). */
-  window: number;
-  pairs: MarginCorrPair[];
-  rows: MarginCorrRow[];
-}
-
 /** Margin trend episode for the margin trends shade overlay. */
 export interface MarginTrendEpisode {
   code: string;
   start_date: string;
   end_date: string;
   is_trend_up_not_down: boolean;
+  /** Σ rz_buy / Σ trading_amount over the episode window (fraction, e.g.
+   *  0.12 = 12% of turnover from rongzi buys). Null when trading_amount
+   *  is unavailable. Plotted on the Buy (融资买入额) chart. */
+  rz_buy_vs_trading_amt_ratio: number | null;
 }
 
 /** Response for GET /api/analysis/margin-trends/trends. */
@@ -1482,8 +1510,8 @@ export interface PerfAttrChartRow {
   /** Benchmark index close on this date. */
   benchmark_close: number | null;
   /** Rolling Pearson correlation of subject close vs benchmark close over the
-   *  trailing N trading days. NULL when fewer than N non-NaN closes in window. */
-  corr_5d: number | null;
+   *  trailing N trading days. NULL when fewer than N non-NaN closes in window.
+   *  Materialized only on stride-20 grid dates (every 20 trading days). */
   corr_20d: number | null;
   corr_60d: number | null;
   corr_255d: number | null;
@@ -1519,7 +1547,8 @@ export interface LinkedEtfName {
 //  (member index values rebased-to-100 client-side + server-side mean/var
 //   per pool_size slice, anchored at history start)
 //
-//    analysis.industry_sentiments (PK: date, industry_id, pool_size)
+//    stats.industry_basic_stats (PK: industry_id, date, pool_size) — renamed
+//    from analysis.industry_sentiments (2026-08-24), now built by builds.industry.
 //
 //    Each industry's plot shows its member INDEX VALUES directly, rebased to
 //    100 at the start of the displayed (zoom) window. Rebased-to-100 makes
@@ -1530,7 +1559,7 @@ export interface LinkedEtfName {
 //
 //    ADDITIONALLY, the server precomputes MEAN and VARIANCE of rebased-to-100
 //    values across member indices, per (date, industry_id, pool_size) slice.
-//    pool_size ∈ ('small' <51 stocks, 'mid' <301, 'large' otherwise, 'all').
+//    pool_size ∈ ('small' <51 stocks, 'mid' 51-180, 'large' >180, 'all').
 //    The MEAN anchor is the START OF ALL HISTORY (per-index first available
 //    close) — a fixed server-side point. When the client-side slider narrows,
 //    the lines re-rebase to the slider's window-start but the mean/var overlay
@@ -1570,7 +1599,7 @@ export interface IndustrySentimentsIndex {
   rows: IndustrySentimentsIndexRow[];
 }
 
-/** One per-date aggregation row for a pool_size slice. mean_price and
+/** One per-date aggregation row for a pool_size slice. mean_close and
  *  var_price are computed across rebased-to-100 close values of member
  *  indices in this pool_size slice on this date (anchored at history start).
  *  mean_pe and total_trading_amount are computed on RAW values (no rebasing). */
@@ -1580,9 +1609,10 @@ export interface IndustrySentimentsAggRow {
   /** Number of member indices with close data contributing to this slice on
    *  this date. PE/amount means may be computed over fewer indices. */
   index_count: number | null;
-  /** AVG(rebased_to_100 close) across member indices in this slice.
-   *  100 = members flat vs history start. NULL when no members in slice. */
-  mean_price: number | null;
+  /** AVG(rebased_to_100 close) across member indices in this slice — the
+   *  composite index close (former mean_price). 100 = members flat vs
+   *  history start. NULL when no members in slice. */
+  mean_close: number | null;
   /** VARIANCE(rebased_to_100 close) across member indices in this slice.
    *  NULL when fewer than 2 members (can't compute variance). */
   var_price: number | null;
@@ -1623,15 +1653,19 @@ export interface IndustrySentimentsChartResponse {
 }
 
 // ----------------------------------------------------------------------------
-//  Industry Correlations — pairwise rolling Pearson correlation between two
-//  industries' mean_price series (analysis.industry_sentiments.mean_price).
-//  Drives the expandable Correlation chart on the IndustrySentiments page
-//  (multi-industry mode only — Correlation button is disabled when fewer
-//  than 2 industries are selected).
+//  Industry Correlations — windowed pairwise Pearson correlation between
+//  two industries' MA curves of mean_close (stats.industry_basic_stats.
+//  mean_close). Drives the expandable Correlation chart on the
+//  IndustrySentiments page (multi-industry mode only — Correlation button
+//  is disabled when fewer than 2 industries are selected).
 //
-//  Source: analysis.industry_correlations (built by
-//  analyze_industry_correlations.py). One row per (date, pair, pool_size)
-//  with corr_5d / corr_20d / corr_60d / corr_255d.
+//  Source: analysis.industry_correlations (built by the correlations step
+//  of analyze.industry_sentiments). One row per (start_date, pair,
+//  pool_size, interval) with corr_ma20_20d / corr_ma60_60d /
+//  corr_ma255_255d: corr_ma{W}_{W}d is the Pearson correlation between
+//  the two industries' MA-W curves over the W trading days starting on
+//  start_date. Window starts sit on the calendar grid every `interval`
+//  (default 20) trading days.
 //
 //  Order convention: rows are stored with industry_id < benchmark_industry_id
 //  (lexicographic, COLLATE "C") to deduplicate (A,B) vs (B,A). The API
@@ -1642,9 +1676,10 @@ export interface IndustrySentimentsChartResponse {
 //  which both industries are compared. Cross-pool comparisons are not
 //  materialized (see SQL comments for why).
 // ----------------------------------------------------------------------------
-/** One pairwise correlation row — the rolling Pearson correlation between
- *  industry_id and benchmark_industry_id's mean_price series at `date`
- *  over 4 trailing windows. NULL (corr_*) when insufficient overlap. */
+/** One pairwise correlation row — the Pearson correlation between
+ *  industry_id and benchmark_industry_id's MA-W curves over the W trading
+ *  days starting on start_date. NULL (corr_ma*) when the window is not
+ *  full or either MA curve is undefined on any window date. */
 export interface IndustryCorrelationRow {
   /** Subject industry (lexicographically smaller). */
   industry_id: string;
@@ -1656,19 +1691,27 @@ export interface IndustryCorrelationRow {
   industry_label: string;
   /** Display label for the benchmark industry. */
   benchmark_industry_label: string;
-  /** End date of the rolling window (YYYY-MM-DD). */
-  date: string;
+  /** Start date of the compute window on the calendar grid (YYYY-MM-DD).
+   *  The window for corr_ma{W}_{W}d spans [start_date, start_date + W). */
+  start_date: string;
+  /** Stride in trading days between consecutive window starts (default
+   *  20). */
+  interval: number;
   /** Pool_size slice (same for both industries — cross-pool is not
    *  materialized). small / mid / large / all. */
   pool_size: "small" | "mid" | "large" | "all";
-  /** 5-day rolling Pearson correlation. NULL when < 5 overlapping days. */
-  corr_5d: number | null;
-  /** 20-day rolling Pearson correlation. NULL when < 20 overlapping days. */
-  corr_20d: number | null;
-  /** 60-day rolling Pearson correlation. NULL when < 60 overlapping days. */
-  corr_60d: number | null;
-  /** 255-day rolling Pearson correlation. NULL when < 255 overlapping days. */
-  corr_255d: number | null;
+  /** Pearson correlation between the two industries' MA20 curves over the
+   *  20 trading days starting on start_date. NULL when the window is not
+   *  full. */
+  corr_ma20_20d: number | null;
+  /** Pearson correlation between the two industries' MA60 curves over the
+   *  60 trading days starting on start_date. NULL when the window is not
+   *  full. */
+  corr_ma60_60d: number | null;
+  /** Pearson correlation between the two industries' MA255 curves over
+   *  the 255 trading days starting on start_date. NULL when the window is
+   *  not full. */
+  corr_ma255_255d: number | null;
 }
 
 /** Response for GET /api/analysis/industry-correlations?industry_ids=...
@@ -1678,9 +1721,9 @@ export interface IndustryCorrelationsResponse {
   industry_ids: string[];
   /** Pool_size slice used. */
   pool_size: "small" | "mid" | "large" | "all";
-  /** Pairwise correlation rows — one per (date, lexicographic pair) where
-   *  both endpoints are in industry_ids. Empty when the analysis hasn't
-   *  been run or no pairs have enough overlapping history. */
+  /** Pairwise correlation rows — one per (start_date, lexicographic pair)
+   *  where both endpoints are in industry_ids. Empty when the analysis
+   *  hasn't been run or no pairs have enough overlapping history. */
   correlations: IndustryCorrelationRow[];
 }
 
@@ -2568,69 +2611,6 @@ export interface StrategyRiskResponse {
   periods: StrategyRiskPeriod[];
   /** Risk score contribution factors (empty when no risk_seq). */
   risk_factors: StrategyRiskFactor[];
-}
-
-// ===========================================================================
-//  1-month forward sell-confidence forecast (strategy.forecast_1m +
-//  forecast_1m_stats). Computed by `python -m strategy._1m_forcast`.
-// ===========================================================================
-
-/** One row of strategy.forecast_1m (one scenario × one forecast day).
- *  8 display scenarios + 1 computed mean:
- *    mir_255d_std_scale/flip_255d_std_scale         — 255d/20d std ratio: mirror + flip
- *    mir_255d_std_half_scale/flip_255d_std_half_scale — 0.5*255d/20d ratio: mirror + flip
- *    mir_20d_std_scale/flip_20d_std_scale           — 1:1 (20d baseline) ratio: mirror + flip
- *    mir_255d_max_std_scale/flip_255d_max_std_scale — peak 1y 255d std / 20d ratio: mirror + flip
- *    rand/rand_opp                                  — 0.5σ random walk + opposite trend
- *    mean                                           — average of all 8 per day (drives the sell schedule) */
-export interface StrategyForecast1mRow {
-  scenario: "mir_255d_std_scale" | "flip_255d_std_scale"
-          | "mir_255d_std_half_scale" | "flip_255d_std_half_scale"
-          | "mir_20d_std_scale" | "flip_20d_std_scale"
-          | "mir_255d_max_std_scale" | "flip_255d_max_std_scale"
-          | "rand" | "rand_opp" | "mean";
-  forecast_day: number;       // 1..20
-  open_price: number;         // synthetic OHLC (base=100 at forecast_date close)
-  high_price: number;
-  low_price: number;
-  close_price: number;
-  daily_return: number;
-  trading_amt: number | null; // NULL when underlying has no trading_amount col
-  rsi: number | null;         // simulated RSI (0-100)
-  sell_fraction: number;      // of ORIGINAL position; sums to 1.0 per scenario
-  sell_confidence: number;    // 0-100 fraction of REMAINING; day 20 = 100
-  realized_pnl_forecast: number; // cumulative realized P&L (backtest-norm money, starts at last_total_pnl)
-  scenario_weight: number | null; // always NULL in mirror/flip model
-}
-
-/** The 1:1 strategy.forecast_1m_stats row (20d + 255d historical context). */
-export interface StrategyForecast1mStats {
-  forecast_date: string;
-  sigma_daily: number;        // 20d daily log-return std
-  sigma_255d: number;         // 255d daily log-return std (for mirror/flip scale ratios)
-  oc_gap_mean: number;
-  oc_gap_std: number;
-  hl_gap_mean: number;
-  hl_gap_std: number;
-  amt_mean: number | null;
-  amt_std: number | null;
-  amt_hl_corr: number | null;
-  rsi_6: number | null;
-  rsi_10: number | null;
-  rsi_14: number | null;
-  rsi_20: number | null;
-  anchor_close: number;
-  first_buy_fill_price: number | null;
-  last_total_pnl: number;     // backtest's final total_pnl (P&L forecast offset)
-}
-
-export interface StrategyForecast1mResponse {
-  code: string;
-  sec_type: MaSpreadSecType;
-  seq_id: number;
-  forecast_date: string;
-  rows: StrategyForecast1mRow[];
-  stats: StrategyForecast1mStats | null;
 }
 
 // ----------------------------------------------------------------------------

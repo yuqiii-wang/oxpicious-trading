@@ -3,7 +3,9 @@
 Segments the rz_balance curve into sustained UP / DOWN trends using
 ``margin_balance_slope_ma5`` sign as the direction signal, bridges short
 opposite-direction gaps, and applies a zscore-magnitude significance
-filter. Also computes per-episode Wilder RSI(14) and OHLC margin balance.
+filter. Emits per-episode ``new_buy`` (rz_buy on the end_date) plus the
+internal ``sum_rz_buy`` helper consumed by trading_amt.py for the
+rz_buy_vs_trading_amt_ratio.
 
 DIRECTION comes from slope_ma5 SIGN (the actual balance movement).
 Zscore is NOT used for direction — it measures how anomalous the slope
@@ -33,7 +35,6 @@ from analyze.margins.changes.constants import (
     BRIDGE_GAP_DAYS,
     INSERT_COLUMNS,
     MIN_TREND_DAYS,
-    RSI_WINDOW,
     ZSCORE_MAJORITY_THRESHOLD,
 )
 
@@ -66,11 +67,13 @@ def detect_trend_episodes(
         sec_type: 'etf' | 'stock' | 'index'.
 
     Returns:
-        DataFrame with INSERT_COLUMNS. One row per trend episode.
-        Empty if no trends.
+        DataFrame with INSERT_COLUMNS plus the internal ``sum_rz_buy``
+        helper (Σ rz_buy over the window — consumed by trading_amt.py;
+        dropped at DB write time). One row per trend episode. Empty if
+        no trends.
     """
     if history.empty or tech_stats.empty:
-        return pd.DataFrame(columns=INSERT_COLUMNS)
+        return pd.DataFrame(columns=INSERT_COLUMNS + ["sum_rz_buy"])
 
     # Merge history (rz_balance, rz_buy) with tech_stats (slope_ma5 +
     # zscore_20d) on (code, date). Inner join — only rows present in
@@ -83,7 +86,7 @@ def detect_trend_episodes(
         how="inner",
     )
     if work.empty:
-        return pd.DataFrame(columns=INSERT_COLUMNS)
+        return pd.DataFrame(columns=INSERT_COLUMNS + ["sum_rz_buy"])
 
     # Sort by (code, date) for correct temporal ordering within each code.
     work = work.sort_values(["code", "date"]).reset_index(drop=True)
@@ -93,46 +96,28 @@ def detect_trend_episodes(
         cleaned = pd.to_numeric(work[col], errors="coerce")
         work[col] = cleaned.where(cleaned > 0)
 
-    # ---- Compute Wilder RSI(14) on rz_balance per code ---------------
-    work["__bal_ffill"] = work.groupby("code", sort=False)["rz_balance"].ffill()
-    work["__delta"] = work.groupby("code", sort=False)["__bal_ffill"].diff()
-    work["__gain"] = work["__delta"].where(work["__delta"] > 0, 0.0)
-    work["__loss"] = (-work["__delta"]).where(work["__delta"] < 0, 0.0)
-    alpha = 1.0 / RSI_WINDOW
-    # Use direct groupby.ewm (no lambda) for GPU-compatible computation.
-    # groupby.ewm() returns MultiIndex (code, orig_idx) — drop code level.
-    grp = work.groupby("code", sort=False)
-    work["__avg_gain"] = grp["__gain"].ewm(
-        alpha=alpha, adjust=False, min_periods=RSI_WINDOW
-    ).mean().droplevel(0)
-    work["__avg_loss"] = grp["__loss"].ewm(
-        alpha=alpha, adjust=False, min_periods=RSI_WINDOW
-    ).mean().droplevel(0)
-    work["__rsi"] = 100.0 - 100.0 / (1.0 + work["__avg_gain"] / work["__avg_loss"])
-
     # ---- Step 1: Assign raw direction from slope_ma5 sign ------------
     slope_ma5 = work["margin_balance_slope_ma5"]
     work["__dir_raw"] = np.where(slope_ma5 > 0, 1.0, np.where(slope_ma5 < 0, -1.0, np.nan))
 
     # ---- Step 2: Initial segmentation (raw) --------------------------
-    work["__dir_key_raw"] = work["__dir_raw"].map(
-        {1.0: "U", -1.0: "D"}.get
-    ).fillna("X")
-    work["__dir_changed_raw"] = work.groupby("code", sort=False)["__dir_key_raw"].transform(
-        lambda s: s != s.shift(1)
-    )
+    # Numeric dir key: 1.0 (U), -1.0 (D), 0.0 (X/break — NaN filled).
+    # Keeping the key NUMERIC (not "U"/"D"/"X" strings) makes the whole
+    # segmentation stencil GPU-native: no Series.map(dict.get) CPU
+    # fallback, no null-propagation traps in string comparisons
+    # (cudf's Kleene logic yields null for value != null).
+    work["__dir_key_raw"] = work["__dir_raw"].fillna(0.0)
+    prev_key = work.groupby("code", sort=False)["__dir_key_raw"].shift(1).fillna(999.0)
+    work["__dir_changed_raw"] = work["__dir_key_raw"] != prev_key
     work["__seg_id_raw"] = work.groupby("code", sort=False)["__dir_changed_raw"].cumsum()
 
     # ---- Step 3: Bridge short opposite-direction gaps ----------------
     _bridge_gaps(work)
 
     # ---- Step 4: Re-segment with bridged directions ------------------
-    work["__dir_key"] = work["__dir_bridged"].map(
-        {1.0: "U", -1.0: "D"}.get
-    ).fillna("X")
-    work["__dir_changed"] = work.groupby("code", sort=False)["__dir_key"].transform(
-        lambda s: s != s.shift(1)
-    )
+    work["__dir_key"] = work["__dir_bridged"].fillna(0.0)
+    prev_key_b = work.groupby("code", sort=False)["__dir_key"].shift(1).fillna(999.0)
+    work["__dir_changed"] = work["__dir_key"] != prev_key_b
     work["__seg_id"] = work.groupby("code", sort=False)["__dir_changed"].cumsum()
 
     # ---- Step 5: Aggregate per final segment + filter ----------------
@@ -220,19 +205,18 @@ def _bridge_gaps(work: pd.DataFrame) -> None:
 def _aggregate_and_filter(work: pd.DataFrame, sec_type: str) -> pd.DataFrame:
     """Aggregate per-segment metrics, apply filters, and build output."""
     # zscore_significant: |zscore_20d| > 0 (MAGNITUDE only, not sign).
-    work["__zscore_sig"] = work["margin_balance_slope_zscore_20d"].abs() > 0
+    # fillna(0) before the comparison keeps the boolean result null-free
+    # under cudf (null > 0 would propagate null instead of False).
+    work["__zscore_sig"] = (
+        work["margin_balance_slope_zscore_20d"].abs().fillna(0.0) > 0
+    )
 
     segments = work.groupby(["code", "__seg_id"], sort=False).agg(
         start_date=("date", "first"),
         end_date=("date", "last"),
         days_of_trend=("date", "count"),
         direction=("__dir_bridged", "first"),
-        start_balance=("rz_balance", "first"),
-        end_balance=("rz_balance", "last"),
-        high_balance=("rz_balance", "max"),
-        low_balance=("rz_balance", "min"),
-        total_buy=("rz_buy", "sum"),
-        rsi_mean=("__rsi", "mean"),
+        sum_rz_buy=("rz_buy", "sum"),
         zscore_sig_count=("__zscore_sig", "sum"),
     ).reset_index()
 
@@ -243,28 +227,30 @@ def _aggregate_and_filter(work: pd.DataFrame, sec_type: str) -> pd.DataFrame:
     ].copy()
 
     if segments.empty:
-        return pd.DataFrame(columns=INSERT_COLUMNS)
+        return pd.DataFrame(columns=INSERT_COLUMNS + ["sum_rz_buy"])
 
     # Filter 2: zscore magnitude significance (majority of days).
     sig_ratio = segments["zscore_sig_count"] / segments["days_of_trend"]
     segments = segments[sig_ratio > ZSCORE_MAJORITY_THRESHOLD].copy()
 
     if segments.empty:
-        return pd.DataFrame(columns=INSERT_COLUMNS)
+        return pd.DataFrame(columns=INSERT_COLUMNS + ["sum_rz_buy"])
 
-    # ---- Compute episode metrics -------------------------------------
-    segments["netting_buy"] = (
-        segments["end_balance"] - segments["start_balance"]
-    ) - segments["total_buy"]
-    segments["rsi_trend"] = segments["rsi_mean"]
-    segments["is_trend_up_not_down"] = segments["direction"] > 0
-
-    # OHLC margin balance: open = first day, close = last day,
-    # high = max, low = min over the trend window.
-    segments["open_margin_balance"] = segments["start_balance"]
-    segments["close_margin_balance"] = segments["end_balance"]
-    segments["high_margin_balance"] = segments["high_balance"]
-    segments["low_margin_balance"] = segments["low_balance"]
+    # ---- new_buy: rz_buy on the episode end_date --------------------
+    # groupby "last" would SKIP trailing NaN (a 0/NULL end-date rz_buy
+    # would leak the previous day's value), so mark each segment's final
+    # row explicitly via a shift(-1) key-change stencil. The shifted
+    # keys are fillna'd to sentinels so the != comparisons stay
+    # null-free under cudf (Kleene logic: value != null -> null).
+    next_code = work["code"].shift(-1).fillna("")
+    next_seg = work["__seg_id"].shift(-1).fillna(-1.0)
+    is_last_row = (work["code"] != next_code) | (work["__seg_id"] != next_seg)
+    end_rows = work[is_last_row][["code", "__seg_id", "rz_buy"]].rename(
+        columns={"rz_buy": "new_buy"}
+    )
+    segments = segments.merge(
+        end_rows, on=["code", "__seg_id"], how="left"
+    ).drop(columns=["__seg_id"])
 
     out = pd.DataFrame({
         "code": segments["code"],
@@ -272,18 +258,10 @@ def _aggregate_and_filter(work: pd.DataFrame, sec_type: str) -> pd.DataFrame:
         "start_date": segments["start_date"],
         "end_date": segments["end_date"],
         "days_of_trend": segments["days_of_trend"].astype(int),
-        "is_trend_up_not_down": segments["is_trend_up_not_down"],
-        "netting_buy": segments["netting_buy"],
-        "rsi_trend": segments["rsi_trend"],
-        "ratio_rsi_margin_vs_price": np.nan,
-        "open_margin_balance": segments["open_margin_balance"],
-        "high_margin_balance": segments["high_margin_balance"],
-        "low_margin_balance": segments["low_margin_balance"],
-        "close_margin_balance": segments["close_margin_balance"],
-        "ratio_open_margin_vs_price": np.nan,
-        "ratio_high_margin_vs_price": np.nan,
-        "ratio_low_margin_vs_price": np.nan,
-        "ratio_close_margin_vs_price": np.nan,
+        "is_trend_up_not_down": segments["direction"] > 0,
+        "new_buy": segments["new_buy"],
+        "rz_buy_vs_trading_amt_ratio": segments["sum_rz_buy"] * np.nan,
+        "sum_rz_buy": segments["sum_rz_buy"],
     })
 
     return out

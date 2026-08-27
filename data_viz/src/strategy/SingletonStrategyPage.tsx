@@ -63,8 +63,6 @@ export default function SingletonStrategyPage() {
   const [checkingPk, setCheckingPk] = useState(false);
   const [pkModalOpen, setPkModalOpen] = useState(false);
   const [existingRun, setExistingRun] = useState<CheckExistingResult | null>(null);
-  // Forecast toggle for Run Strategy
-  const [runWithForecast, setRunWithForecast] = useState(true);
 
   // Train Model state (Optuna _optm_engine)
   const [training, setTraining] = useState(false);
@@ -91,21 +89,15 @@ export default function SingletonStrategyPage() {
   const {
     backtest,
     risks,
-    forecast,
     loading,
     error,
     selectedPeriod,
-    selectedScenario,
-    forecastScenarios,
     displayBacktest,
     backtestRef,
-    forecastRef,
-    hoveredScenarioRef,
     setSelectedPeriod,
-    setSelectedScenario,
     reload,
   } = useStrategyData(
-    nav.searchCode, nav.secType, selection, faultTolerance, runWithForecast,
+    nav.searchCode, nav.secType, selection, faultTolerance,
   );
 
   // ---- Remote-process recovery (process-id-tag status poll) --------------
@@ -139,7 +131,6 @@ export default function SingletonStrategyPage() {
           setRemoteRunning(false);
           setRemoteNote(null);
           setRunSuccess(true);
-          setSelectedScenario(null);
           reload(nav.searchCode, nav.secType);
         }
         if (trainActive) {
@@ -160,7 +151,7 @@ export default function SingletonStrategyPage() {
     void poll();
     const timer = setInterval(poll, 5_000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [runTag, trainTag, nav.searchCode, nav.secType, reload, setSelectedScenario]);
+  }, [runTag, trainTag, nav.searchCode, nav.secType, reload]);
 
   // Chart interaction handlers
   const {
@@ -170,11 +161,7 @@ export default function SingletonStrategyPage() {
     handleChartReady,
   } = useChartInteractions(
     displayBacktest,
-    forecast,
     backtestRef,
-    forecastRef,
-    hoveredScenarioRef,
-    setSelectedScenario,
   );
 
   // Chart option
@@ -182,10 +169,8 @@ export default function SingletonStrategyPage() {
     if (!displayBacktest) return null;
     return buildSingletonStrategyOption({
       data: displayBacktest, themeMode, selectedPeriod,
-      forecast: forecast && forecast.rows.length > 0 ? forecast : null,
-      hoveredScenarioRef,
     });
-  }, [displayBacktest, themeMode, selectedPeriod, forecast]);
+  }, [displayBacktest, themeMode, selectedPeriod]);
 
   // Run Strategy handler
   const handleRun = useCallback(async (force: boolean = false) => {
@@ -195,7 +180,7 @@ export default function SingletonStrategyPage() {
     setRunSuccess(false);
     try {
       const result = await runSingletonStrategy(
-        nav.searchCode, nav.secType, runWithForecast, selection, faultTolerance,
+        nav.searchCode, nav.secType, selection, faultTolerance,
         force,
         singletonRunTag(nav.searchCode, nav.secType, selection, faultTolerance),
       );
@@ -206,7 +191,6 @@ export default function SingletonStrategyPage() {
         setRemoteRunning(true);
       } else if (result.success) {
         setRunSuccess(true);
-        setSelectedScenario(null);
       } else {
         const tail = result.stderr.split("\n").slice(-5).join("\n");
         setRunError(`Exit code ${result.exitCode}: ${tail || "see server logs"}`);
@@ -216,7 +200,7 @@ export default function SingletonStrategyPage() {
     } finally {
       setRunning(false);
     }
-  }, [nav.searchCode, nav.secType, running, remoteRunning, runWithForecast, selection, faultTolerance, setSelectedScenario]);
+  }, [nav.searchCode, nav.secType, running, remoteRunning, selection, faultTolerance]);
 
   // Pre-check for PK existence
   const handleRunClick = useCallback(async () => {
@@ -306,8 +290,6 @@ export default function SingletonStrategyPage() {
                 runSuccess={runSuccess}
                 runError={runError}
                 remoteNote={remoteNote}
-                runWithForecast={runWithForecast}
-                onRunWithForecastChange={setRunWithForecast}
                 onRunClick={handleRunClick}
                 training={training || remoteTraining}
                 trainSuccess={trainSuccess}
@@ -391,8 +373,6 @@ export default function SingletonStrategyPage() {
                   risks={risks}
                   selectedPeriod={selectedPeriod}
                   onPeriodSelect={setSelectedPeriod}
-                  selectedScenario={selectedScenario}
-                  forecastDate={forecast?.forecast_date ?? null}
                 />
               )}
 
@@ -400,9 +380,6 @@ export default function SingletonStrategyPage() {
               {!loading && backtest && backtest.decisions.length > 0 && (
                 <DecisionTable
                   decisions={backtest.decisions}
-                  forecastScenarios={forecastScenarios}
-                  selectedScenario={selectedScenario}
-                  onScenarioChange={setSelectedScenario}
                   faultTolerance={backtest.fault_tolerance ?? 0}
                 />
               )}

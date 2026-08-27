@@ -22,7 +22,7 @@ from ._constants import (
     TRADING_END,
     TRADING_START,
 )
-from downloads._common.core import setup_logger
+from downloads._common import setup_logger
 
 logger = setup_logger("csindex_stream")
 

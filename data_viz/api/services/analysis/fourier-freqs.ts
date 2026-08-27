@@ -374,6 +374,8 @@ interface DbSpectrumRow extends QueryResultRow {
   freq: number;
   amplitude_close_price: number;
   amplitude_spectrum: number[] | null;
+  count_spectrum: number[] | null;
+  strength_spectrum: number[] | null;
   last_date: Date | string;
 }
 
@@ -431,6 +433,8 @@ export async function getFourierFreqsSpectrum(
       f.freq,
       f.amplitude_close_price,
       f.amplitude_spectrum,
+      f.count_spectrum,
+      f.strength_spectrum,
       f.last_date
     FROM analysis.fourier_freqs f, resolved r
     WHERE f.sec_type = $2
@@ -488,15 +492,17 @@ export async function getFourierFreqsSpectrum(
 
   const spectrums: FourierFreqsSpectrumRow[] = specRows.map((r) => {
     const rd = Number(r.range_days);
-    const rawSpectrum = Array.isArray(r.amplitude_spectrum)
-      ? r.amplitude_spectrum.map((v) => (typeof v === "number" ? v : Number(v) || 0))
-      : [];
+    const toNumArr = (v: number[] | null): number[] =>
+      Array.isArray(v) ? v.map((x) => (typeof x === "number" ? x : Number(x) || 0)) : [];
+    const rawSpectrum = toNumArr(r.amplitude_spectrum);
 
     return {
       range_days: rd,
       freq: Number(r.freq),
       amplitude: toNum(r.amplitude_close_price) ?? 0,
       spectrum: rawSpectrum,
+      count_spectrum: toNumArr(r.count_spectrum),
+      strength_spectrum: toNumArr(r.strength_spectrum),
       total_windows: totalWindowsMap.get(rd) || 0,
     };
   });

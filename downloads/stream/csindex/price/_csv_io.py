@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from downloads._common.core import resolve_out_dir, setup_logger
+from downloads._common import resolve_out_dir, setup_logger
 from _common.db_commons import bulk_upsert
 
 from ._constants import CSV_COLUMNS

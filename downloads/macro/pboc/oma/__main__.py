@@ -36,6 +36,7 @@ Usage:
 """
 from __future__ import annotations
 
+
 import argparse
 import csv as _csv
 import re
@@ -47,7 +48,7 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 
-from downloads._common.core import (
+from downloads._common import (
     COMMON_BASE_HEADERS,
     DEFAULT_TIMEOUT,
     AntiBotProxy,

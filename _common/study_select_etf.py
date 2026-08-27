@@ -32,7 +32,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
-from downloads._common.core import strip_exchange_suffix
+from downloads._common import strip_exchange_suffix
 from _common.db_commons import get_db_connection
 
 # ---------------------------------------------------------------------------

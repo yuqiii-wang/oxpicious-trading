@@ -73,14 +73,22 @@ export async function runAnalysisForSecurity(
 
 /** Running-state of analysis-run process tags — polled on mount (so a
  *  page refresh restores the spinner while a remote run continues) and
- *  while a run started elsewhere is in flight. */
+ *  while a run started elsewhere is in flight.
+ *
+ *  Deliberately BYPASSES the response cache (plain fetch): this is a live
+ *  liveness poll, and a cached answer would freeze the spinner state (and
+ *  stale "not running") for the cache TTL. */
 export async function fetchAnalysisRunStatus(
   tags: ReadonlyArray<string>,
 ): Promise<Record<string, boolean>> {
   if (tags.length === 0) return {};
   const qs = `process_id_tag=${encodeURIComponent(tags.join(","))}`;
-  const resp = await fetchJson<{ status: Record<string, boolean> }>(
-    `/api/analysis/run-analysis/status?${qs}`,
-  );
-  return resp.status ?? {};
+  try {
+    const resp = await fetch(`/api/analysis/run-analysis/status?${qs}`);
+    if (!resp.ok) return {};
+    const json = (await resp.json()) as { status?: Record<string, boolean> };
+    return json.status ?? {};
+  } catch {
+    return {};
+  }
 }

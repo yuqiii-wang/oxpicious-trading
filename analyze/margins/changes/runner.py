@@ -1,21 +1,17 @@
 """Pipeline entry point for margin_changes.
 
-Orchestrates the full margin trend detection pipeline:
+Orchestrates the margin trend detection pipeline:
 
   1. For each sec_type present in ``tech_stats_by_sec_type``, run
      ``detect_trend_episodes`` on the in-memory rz_balance + slope data
      (no DB round-trip for source data — reuses what the caller already
      fetched for the tech_stats step).
-  2. Fetch price RSI(14) from ``analysis.mov_ave_rsi`` (index only) and
-     compute ``ratio_rsi_margin_vs_price`` per episode.
-  3. Fetch price OHLC from ``stats.{index,etf,stock}_basic_stats`` for
-     ALL sec_types present in the episodes, and compute the 4 OHLC
-     margin/price ratios per episode.
-  4. Truncate ``analysis.margin_changes`` and COPY-insert the final
+  2. Fetch trading_amount from ``stats.{stock,etf}_liquidity_margin``
+     + ``stats.index_basic_stats`` and compute
+     ``rz_buy_vs_trading_amt_ratio`` per episode.
+  3. Truncate ``analysis.margin_changes`` and COPY-insert the final
      episodes DataFrame.
-  5. Compute forward price forcasts (5d/20d/60d highs, lows, days-to-
-     extremes) and store in ``analysis.margin_hype_to_price_forcasts``.
-  6. Upsert the ``margin_changes`` row in ``analysis.analysis_identity``.
+  4. Upsert the ``margin_changes`` row in ``analysis.analysis_identity``.
 
 Always truncates + recomputes when called — new dates shift trend
 boundaries, so a partial upsert would leave stale trends in the table.
@@ -29,14 +25,9 @@ from analyze._common import upsert_analysis_identity
 from analyze.margins.changes.constants import DESCRIPTION, INSERT_COLUMNS
 from analyze.margins.changes.db_io import truncate_and_insert
 from analyze.margins.changes.detection import detect_trend_episodes
-from analyze.margins.changes.forcasts import run_margin_forcasts
-from analyze.margins.changes.price_ohlc import (
-    compute_price_ohlc_ratio,
-    fetch_price_ohlc,
-)
-from analyze.margins.changes.price_rsi import (
-    compute_price_rsi_ratio,
-    fetch_price_rsi,
+from analyze.margins.changes.trading_amt import (
+    compute_trading_amt_ratio,
+    fetch_trading_amt,
 )
 
 
@@ -52,6 +43,12 @@ async def run_margin_changes(
     Reuses the in-memory ``histories`` + ``tech_stats_by_sec_type``
     collected by the pipeline (no DB round-trip for source data). Always
     truncates + recomputes — new dates shift trend boundaries.
+
+    Pipeline steps:
+      1. Detect trend episodes per sec_type (slope_ma5 sign + bridging).
+      2. Fetch trading_amount and compute rz_buy_vs_trading_amt_ratio.
+      3. Truncate + COPY-insert episodes into margin_changes.
+      4. Upsert analysis_identity row.
 
     Upserts its OWN analysis_identity row (margin_changes) internally.
 
@@ -85,39 +82,23 @@ async def run_margin_changes(
         print("    -> no trend episodes detected; writing empty table.",
               flush=True)
         await truncate_and_insert(conn, pd.DataFrame(columns=INSERT_COLUMNS))
-        # Also truncate forcasts and write empty.
-        await run_margin_forcasts(
-            conn, pd.DataFrame(columns=["code", "sec_type", "start_date", "end_date"])
-        )
     else:
         episodes_df = pd.concat(all_episodes, ignore_index=True)
 
-        # Fetch price RSI from mov_ave_rsi for the ratio computation.
-        print("    Fetching price RSI from mov_ave_rsi (index only)...",
-              flush=True)
-        price_rsi = await fetch_price_rsi(conn)
-        print(f"        -> {len(price_rsi):,} price RSI rows", flush=True)
-
-        episodes_df = compute_price_rsi_ratio(episodes_df, price_rsi)
-
-        # Fetch price OHLC from basic_stats tables for the OHLC ratio
-        # computation. Works for ALL sec_types (index / etf / stock).
+        # Fetch trading_amount for all sec_types and compute the
+        # rz_buy_vs_trading_amt_ratio ratio (Σ rz_buy / Σ trading_amount).
         sec_types_present = list(episodes_df["sec_type"].unique())
-        print(f"    Fetching price OHLC from basic_stats "
+        print("    Fetching trading_amount for ratio computation "
               f"({', '.join(sec_types_present)})...", flush=True)
-        price_ohlc = await fetch_price_ohlc(conn, sec_types_present)
-        print(f"        -> {len(price_ohlc):,} price OHLC rows", flush=True)
+        trading_amt = await fetch_trading_amt(conn, sec_types_present)
+        print(f"        -> {len(trading_amt):,} trading_amount rows",
+              flush=True)
 
-        episodes_df = compute_price_ohlc_ratio(episodes_df, price_ohlc)
+        episodes_df = compute_trading_amt_ratio(episodes_df, trading_amt)
 
         n = await truncate_and_insert(conn, episodes_df)
         print(f"    -> COPY-inserted {n:,} rows into margin_changes",
               flush=True)
-
-        # Compute forward price forcasts (5d/20d/60d).
-        # Reuses the episodes_df (with code, sec_type, start_date, end_date)
-        # to fetch forward closes and compute highs/lows/days-to-extremes.
-        await run_margin_forcasts(conn, episodes_df)
 
     # Upsert the analysis_identity row.
     await upsert_analysis_identity(

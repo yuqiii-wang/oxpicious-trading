@@ -1,19 +1,18 @@
-﻿/**
- * MarginTrendsCharts — the 2-plot single-industry margin trends view.
+/**
+ * MarginTrendsCharts — the single-plot single-industry margin trends view.
  *
- * Layout (top → bottom):
- *   1. Margin trends — one line per security (indices or ETFs) in the
- *      industry. Toggle Balance | Buy. Selected securities (for the 2nd
- *      plot) are highlighted; the rest render as muted background lines.
- *   2. Pairwise correlation — one line per selected security pair, read
- *      from analysis.margin_industry_correlation (precomputed). Window
- *      toggle 5/20/60/120/255d. Requires ≥2 securities selected.
+ * Layout:
+ *   Margin trends — one line per security (indices or ETFs) in the
+ *   industry. Toggle Balance | Buy. Selected securities are highlighted;
+ *   the rest render as muted background lines. Trend-episode shades
+ *   (markArea) overlay selected series; in Buy mode each episode also
+ *   draws its rz_buy_vs_trading_amt_ratio as dashed segments on a
+ *   dedicated right-side % axis. A synced close-price grid sits below.
  *
  * Controls:
- *   • Attribution toggle: Index | ETF (drives both plots; reloads series)
- *   • Series toggle: Balance | Buy (1st plot value + 2nd plot corr column)
- *   • Window toggle: 5d | 20d | 60d | 120d | 255d — sits beside the 2nd plot
- *   • Security multi-select (Autocomplete): pick ≥2 securities for 2nd plot
+ *   • Attribution toggle: Index | ETF (reloads series)
+ *   • Series toggle: Balance | Buy (plot value)
+ *   • Security multi-select (Autocomplete): highlight securities
  *
  * Refactored: data logic → useMarginData hook, ECharts option builders → chartOptions.
  */
@@ -24,37 +23,30 @@ import {
   Box,
   Chip,
   CircularProgress,
-  Stack,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import EChart from "@/components/EChart";
 import type { EChartsOption } from "echarts";
 import type { MarginSecurity } from "@shared/types";
 import { useMarginData } from "./useMarginData";
-import { buildTrendChartOption, buildCorrChartOption, pivotSeriesData } from "./chartOptions";
+import { buildTrendChartOption, pivotSeriesData } from "./chartOptions";
 import type { MarginTrendsChartsProps } from "./types";
-import { CORR_WINDOWS, SERIES_OPTIONS } from "./constants";
-import type { MarginSeries, CorrWindow } from "./constants";
+import { SERIES_OPTIONS } from "./constants";
+import type { MarginSeries } from "./constants";
 
 export function MarginTrendsCharts({ industryId, themeMode, attribution, selectedItemCode }: MarginTrendsChartsProps) {
   const isSingleItemMode = !!selectedItemCode;
 
   const {
     seriesData,
-    corrData,
     trendsData,
     loadingSeries,
-    loadingCorr,
     errorSeries,
-    errorCorr,
     series,
     setSeries,
-    corrWindow,
-    setCorrWindow,
     selectedCodes,
     setSelectedCodes,
   } = useMarginData(industryId, attribution, selectedItemCode);
@@ -92,11 +84,6 @@ export function MarginTrendsCharts({ industryId, themeMode, attribution, selecte
       selectedItemCode,
     );
   }, [seriesData, seriesPivot, displaySecurities, selectedCodes, attribution, series, themeMode, trendsData, isSingleItemMode, selectedItemCode]);
-
-  const corrOption: EChartsOption | null = useMemo(() => {
-    if (!corrData || corrData.rows.length === 0 || corrData.pairs.length === 0) return null;
-    return buildCorrChartOption(corrData, displaySecurities, series, themeMode);
-  }, [corrData, displaySecurities, series, themeMode]);
 
   // ---- Autocomplete value ----
   const selectedSecs: MarginSecurity[] = useMemo(() => {
@@ -149,9 +136,10 @@ export function MarginTrendsCharts({ industryId, themeMode, attribution, selecte
             }}
             renderTags={(value, getTagProps) =>
               value.map((opt, idx) => {
-                const tagProps = getTagProps({ index: idx });
+                const { key: tagKey, ...tagProps } = getTagProps({ index: idx });
                 return (
                   <Chip
+                    key={tagKey}
                     {...tagProps}
                     label={opt.label || opt.code}
                     size="small"
@@ -165,10 +153,8 @@ export function MarginTrendsCharts({ industryId, themeMode, attribution, selecte
                 {...params}
                 placeholder={
                   selectedCodes.length === 0
-                    ? "Select ≥2 securities for correlation"
-                    : selectedCodes.length < 2
-                      ? `Select ${2 - selectedCodes.length} more for correlation`
-                      : "Add or remove securities"
+                    ? "Select securities to highlight"
+                    : "Add or remove securities"
                 }
               />
             )}
@@ -182,83 +168,32 @@ export function MarginTrendsCharts({ industryId, themeMode, attribution, selecte
           Failed to load series: {errorSeries}
         </Alert>
       )}
-      {errorCorr && (
-        <Alert severity="error" sx={{ py: 0.5 }}>
-          Failed to load correlation: {errorCorr}
-        </Alert>
-      )}
 
-      {/* ---- 1st plot: margin trends ---- */}
+      {/* ---- Main plot: margin trends ---- */}
       {loadingSeries && (
         <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
           <CircularProgress size={28} />
         </Box>
       )}
       {!loadingSeries && seriesData && seriesData.rows.length > 0 && (
-        <Stack spacing={1.5}>
-          <Box>
-            <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
-              {seriesData.industry_label} — {attribution === "index" ? "Index" : "ETF"}{" "}
-              RONGZI {series === "balance" ? "Balance (融资余额)" : "Buy (融资买入额)"}{" "}
-              + Close Price
-              {isSingleItemMode && selectedItemCode && (
-                <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                  · {selectedItemCode}
-                </Typography>
-              )}
-              {!isSingleItemMode && selectedCodes.length > 0 && (
-                <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                  ({seriesData.securities.length} securities; {selectedCodes.length} selected)
-                </Typography>
-              )}
-            </Typography>
-            {trendsOption && <EChart option={trendsOption} height={460} />}
-          </Box>
-
-          {/* ---- 2nd plot: pairwise correlation (hidden in single-item mode) ---- */}
-          {!isSingleItemMode && (
-          <Box>
-            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.5, flexWrap: "wrap" }}>
-              <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                Pairwise {series === "balance" ? "Balance" : "Buy"} Correlation ({corrWindow}d)
-                {corrData && corrData.pairs.length > 0 && (
-                  <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                    ({corrData.pairs.length} pairs)
-                  </Typography>
-                )}
+        <Box>
+          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+            {seriesData.industry_label} — {attribution === "index" ? "Index" : "ETF"}{" "}
+            RONGZI {series === "balance" ? "Balance (融资余额)" : "Buy (融资买入额)"}{" "}
+            + Close Price
+            {isSingleItemMode && selectedItemCode && (
+              <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                · {selectedItemCode}
               </Typography>
-              <ToggleButtonGroup
-                value={corrWindow}
-                exclusive
-                size="small"
-                onChange={(_, v: CorrWindow | null) => v && setCorrWindow(v)}
-              >
-                {CORR_WINDOWS.map((w) => (
-                  <ToggleButton key={w} value={w}>{w}d</ToggleButton>
-                ))}
-              </ToggleButtonGroup>
-            </Box>
-            {selectedCodes.length < 2 ? (
-              <Tooltip title="Correlation needs at least 2 selected securities.">
-                <Alert severity="info" sx={{ py: 0.5 }}>
-                  Select at least 2 securities above to see their pairwise correlation.
-                </Alert>
-              </Tooltip>
-            ) : loadingCorr ? (
-              <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-                <CircularProgress size={28} />
-              </Box>
-            ) : corrData && corrData.rows.length === 0 ? (
-              <Alert severity="warning" sx={{ py: 0.5 }}>
-                No correlation rows for the selected securities under {attribution} attribution.
-                Try a different attribution or security set.
-              </Alert>
-            ) : (
-              corrOption && <EChart option={corrOption} height={300} />
             )}
-          </Box>
-          )}
-        </Stack>
+            {!isSingleItemMode && selectedCodes.length > 0 && (
+              <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                ({seriesData.securities.length} securities; {selectedCodes.length} selected)
+              </Typography>
+            )}
+          </Typography>
+          {trendsOption && <EChart option={trendsOption} height={560} />}
+        </Box>
       )}
 
       {!loadingSeries && !errorSeries && seriesData && seriesData.rows.length === 0 && (

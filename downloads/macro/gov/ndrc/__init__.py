@@ -33,7 +33,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from bs4 import BeautifulSoup  # noqa: E402
 
-from downloads._common.core import COMMON_BASE_HEADERS, DEFAULT_TIMEOUT  # noqa: E402
+from downloads._common import COMMON_BASE_HEADERS, DEFAULT_TIMEOUT  # noqa: E402
 from downloads.macro.gov.main_gov import (  # noqa: E402
     SourceConfig,
     parse_date_str,
@@ -187,7 +187,7 @@ def fetch_ndrc_pages(
         # only has ~40 pages so this naturally bounds the sweep. Using the
         # DEFAULT_START_DATE here keeps the fetcher self-contained; the
         # orchestrator re-applies the user's --start-date filter afterwards.
-        from downloads._common.core import DEFAULT_START_DATE as _FLOOR
+        from downloads._common import DEFAULT_START_DATE as _FLOOR
         floor = parse_date_str(_FLOOR)
         if oldest is not None and floor is not None and oldest <= floor:
             logger.info("  reached %s floor on page %d -> stopping", _FLOOR, page)

@@ -36,6 +36,16 @@ Usage:
   python -m builds.index.exts             # incremental (missing dates only)
   python -m builds.index.exts --force     # full recompute
 """
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
+
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 import argparse
 import asyncio
 import time

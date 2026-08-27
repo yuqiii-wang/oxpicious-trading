@@ -6,7 +6,7 @@ archives raw snapshots to ``temps/sse_index_intraday/sse_index_intraday_YYYYMMDD
 and aggregates 5 one-minute samples into OHLC bars for
 ``stats.index_intraday_5min`` (FK parent ``stats.index_identity``).
 
-Index bars carry NO ``trading_shares`` / ``code_suffix`` columns (the
+Index bars carry NO ``trading_shares`` / ``exchange`` columns (the
 ``index_intraday_5min`` schema has no volume field) and store the code BARE
 (e.g. ``000001``), matching ``index_identity``'s CHECK constraint.
 
@@ -16,8 +16,8 @@ already have daily history for is streamed.
 """
 from __future__ import annotations
 
-from downloads._common.core import setup_logger
-from downloads.stock.sse._common.list_endpoint import SSE_INDEX_LIST_URL
+from downloads._common import setup_logger
+from downloads._common.exchanges.sse import SSE_INDEX_LIST_URL
 
 from ._io import _prepopulate_finished_codes
 from ._model import AssetStream
@@ -37,7 +37,7 @@ def build_index_asset(allowed_codes: set) -> AssetStream:
         list_url=SSE_INDEX_LIST_URL,
         identity_table="stats.index_identity",
         intraday_table="stats.index_intraday_5min",
-        code_suffix=None,
+        exchange=None,
         has_volume=False,
         allowed_codes=allowed_codes,
         csv_subdir="sse_index_intraday",
@@ -49,7 +49,7 @@ def prepopulate_index_finished_codes(conn, trade_date, finished_codes: set) -> N
     """Pre-populate finished_codes with SSE indices that already have a 15:00 bar."""
     _prepopulate_finished_codes(
         conn, trade_date, finished_codes,
-        table="stats.index_intraday_5min", code_suffix_filter=None,
+        table="stats.index_intraday_5min", exchange_filter=None,
     )
 
 

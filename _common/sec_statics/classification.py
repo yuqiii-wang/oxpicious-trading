@@ -258,6 +258,17 @@ STRATEGY_RULES: List[Tuple[str, str, str, str, List[str]]] = [
     # BSE (北证) — split from the CSI catch-all
     ("BROAD", "宽基", "BROAD_BSE", "北证", ["北证"]),
 
+    # BROAD_BENCHMARK ("benchmark_broadmarket") — an EXPLICIT, hand-authored
+    # tag (NOT auto-classified by name; empty keywords) grouping the
+    # flagship broad-market indices used as live-data benchmarks
+    # (000001 上证指数, 000016 上证50, 000688 科创50, 000300 沪深300).
+    # Carried as a SECONDARY tag alongside each index's primary BROAD series
+    # theme so the UI can group/filter "the broad-market benchmark set"
+    # independently of which board series they track.  is_broad_market is
+    # driven by the PRIMARY BROAD classification, so these still appear in
+    # the Market Movements broad-market benchmark dropdown.
+    ("BROAD", "宽基", "benchmark_broadmarket", "宽基基准", []),
+
     # CNI (国证) — China National Index (国证指数有限公司), a separate index
     # provider from CSI (中证).  Real index data is ingested from cnindex.com.cn
     # (国证2000 399303, 国证A50 399310, 国证1000 399311); ETFs tracking 国证

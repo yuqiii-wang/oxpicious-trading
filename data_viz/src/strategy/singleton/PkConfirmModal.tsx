@@ -76,7 +76,7 @@ export function PkConfirmModal(props: PkConfirmModalProps) {
         )}
         <DialogContentText sx={{ mt: 2 }}>
           Do you want to force a re-run? This will delete the existing
-          results and compute fresh backtest + forecast data.
+          results and compute fresh backtest + risk data.
         </DialogContentText>
       </DialogContent>
       <DialogActions>

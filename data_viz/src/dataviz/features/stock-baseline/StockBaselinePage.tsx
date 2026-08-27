@@ -251,6 +251,15 @@ export default function StockBaselinePage() {
         onThemeChange={handleThemeChange}
         loading={navLoading}
         itemKind="Stock"
+        selectedItemCode={searchCode}
+        onItemSelected={(code) => {
+          // Clicking an L3 stock chip loads exactly that stock (same path as
+          // the code search bar).
+          setError(null);
+          setSearchCode(code);
+          setPage(1);
+        }}
+        onClearItemSelection={handleClearSearch}
       />
 
       {loading && (

@@ -62,19 +62,20 @@ Usage:
 """
 from __future__ import annotations
 
+
 import argparse
 import locale as _locale
 import sys
 import time as _time
 from datetime import datetime
 
-from downloads._common.core import (
+from downloads._common import (
     HostStatusTracker,
     build_default_session,
     is_trading_day,
     setup_logger,
 )
-from downloads.stock.sse._common.list_endpoint import SSE_HEADERS
+from downloads._common.exchanges.sse import SSE_HEADERS
 from _common.db_commons import get_db_connection
 from _common.study_and_select_stocks import (
     ETF_WEIGHT_THRESHOLD,
@@ -200,8 +201,8 @@ def stream(
 
     # Pre-populate finished_codes from DB: securities that already have a
     # 15:00 bar for today. This prevents re-processing if the script restarts
-    # after close. Done per asset (stock/ETF filter code_suffix='SS'; index
-    # has no code_suffix column).
+    # after close. Done per asset (stock/ETF filter exchange='SS'; index
+    # has no exchange column).
     today = datetime.now().date()
     if is_trading_day(today):
         for asset in assets:

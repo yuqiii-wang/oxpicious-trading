@@ -12,7 +12,7 @@ from typing import Dict, Tuple
 
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_SLEEP_SEC,
     COMMON_BASE_HEADERS,
     AntiBotProxy,

@@ -1,7 +1,7 @@
 """_common.playwright.browser — Configurable Playwright browser launcher.
 
 Shares the anti-bot policy with the existing anti-bot module
-(downloads._common.core.AntiBotProxy): the default User-Agent / Accept
+(downloads._common.AntiBotProxy): the default User-Agent / Accept
 headers and the browser fingerprint profile rotation are imported from
 there, so HTTP-based and browser-based downloaders rotate through the
 SAME fingerprint pool and the anti-bot policy stays defined in one place.
@@ -23,7 +23,7 @@ from playwright.sync_api import (
     sync_playwright,
 )
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_ACCEPT,
     DEFAULT_ACCEPT_LANG,
     DEFAULT_USER_AGENT,

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     MIN_VALID_BYTES,
     DEFAULT_SLEEP_SEC,
     AntiBotProxy,

@@ -1,3 +1,4 @@
+
 import random
 from datetime import date, datetime, timedelta
 from io import BytesIO
@@ -7,14 +8,14 @@ from typing import Dict, List, Optional
 import pandas as pd
 import requests
 
-from downloads._common.szse_runner import (
+from downloads._common.exchanges.szse import (
     BASE_URL,
     REFERER_MARGIN,
     build_headers,
     run_szse_download,
     resolve_out_dir,
 )
-from downloads._common.core import (
+from downloads._common import (
     MIN_VALID_BYTES,
     EMPTY_HTML_MAX_BYTES,
     DEFAULT_START_DATE,
@@ -196,7 +197,7 @@ def download_szse_margin(
         security_types=security_types,
         sleep_sec=sleep_sec,
         session=session,
-        code_suffix=".SZ",
+        exchange="SZ",
         skip_empty_markers=True,
     )
 

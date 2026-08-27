@@ -22,7 +22,9 @@ from __future__ import annotations
 import datetime
 from typing import Any, Dict, List
 
-from _common.build_commons import bulk_upsert_async, truncate_table_async
+from _common.build_commons import (
+    bulk_upsert_async, truncate_table_async, rec_col,
+)
 
 
 # ============================================================================
@@ -75,7 +77,7 @@ _SEC_INFO_COLS = [
 async def fetch_existing_sec_info(conn) -> Dict[str, datetime.date]:
     """Return {code: last_report_date} for all rows currently in sec_info."""
     rows = await conn.fetch("SELECT code, last_report_date FROM stats.sec_info")
-    return {r["code"]: r["last_report_date"] for r in rows}
+    return dict(zip(rec_col(rows, "code"), rec_col(rows, "last_report_date")))
 
 
 def build_sec_info_rows(
@@ -129,7 +131,7 @@ async def upsert_sec_info(conn, rows: List[Dict[str, Any]], force: bool,
 async def fetch_existing_sec_reports(conn) -> set:
     """Return {(code, report_date)} pairs already in sec_reports."""
     rows = await conn.fetch("SELECT code, report_date FROM stats.sec_reports")
-    return {(r["code"], r["report_date"]) for r in rows}
+    return set(zip(rec_col(rows, "code"), rec_col(rows, "report_date")))
 
 
 def build_sec_reports_rows(
@@ -175,7 +177,7 @@ async def fetch_existing_composition_keys(conn) -> set:
     """Return {(code, snapshot_date)} pairs already in sec_composition."""
     rows = await conn.fetch(
         "SELECT DISTINCT code, snapshot_date FROM stats.sec_composition")
-    return {(r["code"], r["snapshot_date"]) for r in rows}
+    return set(zip(rec_col(rows, "code"), rec_col(rows, "snapshot_date")))
 
 
 def build_composition_rows(

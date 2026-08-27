@@ -23,6 +23,8 @@ import datetime
 import os
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
+
 from _common.build_commons import PROJECT_ROOT
 from _common.sec_statics.classification import DEFAULT_SECTOR_ID
 
@@ -93,11 +95,17 @@ async def build_classification(
     # which embeds the tracking index/theme verbatim — retry classification
     # with it.  Runs BEFORE create_dummy_indices so re-classified ETFs join
     # their proper industry's dummy group instead of DUMMY_OTHER.
-    other_codes = [c for c, v in etfs.items()
-                   if v.get("sector_id", DEFAULT_SECTOR_ID) == DEFAULT_SECTOR_ID]
-    if other_codes:
-        sec_info_names = await fetch_sec_info_names(conn, other_codes)
-        reclassify_other_etfs(etfs, sec_info_names, verbose)
+    #
+    # The state dict is the final JSON/DB shape — intermediate filtering
+    # works on a DataFrame: materialize once, apply the OTHER mask, and
+    # hand the filtered frame (with code as a column) to the fetch.
+    if etfs:
+        etf_state = pd.DataFrame.from_dict(etfs, orient="index")
+        others = etf_state[etf_state["sector_id"].eq(DEFAULT_SECTOR_ID)]
+        if not others.empty:
+            sec_info_names = await fetch_sec_info_names(
+                conn, others.reset_index(names="code"))
+            reclassify_other_etfs(etfs, sec_info_names, verbose)
 
     # --- 2c. Create industry dummy indices for orphan ETFs ---
     # ETFs with no parent_index_code (not in CSV, or unmatched funds) get

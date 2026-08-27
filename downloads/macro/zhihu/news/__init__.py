@@ -42,7 +42,7 @@ Usage::
 
 Anti-bot behaviour (browser-fingerprint rotation, ``random`` query param,
 host-blocking detection, sleep cadence) is provided by the shared
-``AntiBotProxy`` from ``downloads._common.core``. Trading days are enumerated
+``AntiBotProxy`` from ``downloads._common``. Trading days are enumerated
 via ``_common._holidays_and_weekdays`` so holidays and weekends are skipped.
 API credentials are read from ``ZHIHU_API_KEY`` in the project-root ``.env``.
 """
@@ -69,7 +69,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 import requests  # noqa: E402
 
-from downloads._common.core import (  # noqa: E402
+from downloads._common import (  # noqa: E402
     AntiBotConfig,
     AntiBotProxy,
     DEFAULT_START_DATE,

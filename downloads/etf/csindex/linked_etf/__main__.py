@@ -52,6 +52,7 @@ Usage:
 """
 from __future__ import annotations
 
+
 import json
 import logging
 from datetime import date
@@ -61,7 +62,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_SLEEP_SEC,
     AntiBotConfig,
     AntiBotProxy,

@@ -55,9 +55,14 @@ from typing import Optional, Set
 
 import datetime
 
+import pandas as pd
+
 from _common.build_commons import (
     copy_or_upsert_split_async,
+    rec_col,
+    rec_cols,
 )
+from builds._commons.row_emission import records_from_frame
 
 TABLE = "stats.sec_similars"
 SOURCE_TABLE = "stats.sec_composition"
@@ -388,7 +393,7 @@ async def _build_for_sec_type(conn, sec_type: str, force: bool) -> None:
         src=SOURCE_TABLE, source_type=source_type, sec_type=sec_type,
     )
     rows = await conn.fetch(sql, dates_param)
-    n_codes = len(set(r["code"] for r in rows))
+    n_codes = len(set(rec_col(rows, "code")))
     print(f"{tag} -> {len(rows):,} rows across {n_codes} {sec_type}s "
           f"across {len(dates_param)} snapshot dates", flush=True)
 
@@ -398,7 +403,9 @@ async def _build_for_sec_type(conn, sec_type: str, force: bool) -> None:
         print(f"{tag} -> no data to insert.", flush=True)
         return
 
-    data = [{col: r[col] for col in COLUMNS} for r in rows]
+    # Whole-column extraction + column-major row emission (no per-row dict walks)
+    df = pd.DataFrame(rec_cols(rows))
+    data = records_from_frame(df, COLUMNS)
     n_copied, n_upserted = await copy_or_upsert_split_async(
         conn, TABLE, data,
         key_columns=["date", "code", "sec_type"],

@@ -64,20 +64,26 @@ CREATE TABLE IF NOT EXISTS analysis.industry_hypes_seasonal (
     peak_metric_value NUMERIC(24,6),
 
     CONSTRAINT pk_industry_hypes_seasonal PRIMARY KEY
-        (season_qkey, benchmark_code, period_days, weighting, rank_side, rank),
+        (benchmark_code, season_qkey, period_days, weighting, rank_side, rank),
     CONSTRAINT chk_seasonal_period_days  CHECK (period_days IN (5, 20, 60, 120, 255, 500)),
     CONSTRAINT chk_seasonal_weighting    CHECK (weighting IN ('equal', 'amt')),
     CONSTRAINT chk_seasonal_rank_side    CHECK (rank_side IN ('HYPE', 'DRAIN')),
     CONSTRAINT chk_seasonal_rank         CHECK (rank BETWEEN 1 AND 5),
     CONSTRAINT chk_seasonal_month        CHECK (season_month BETWEEN 1 AND 12)
-);
+) PARTITION BY HASH (benchmark_code);
 
-CREATE INDEX IF NOT EXISTS idx_hypes_seasonal_bench_period
-    ON analysis.industry_hypes_seasonal (benchmark_code, period_days);
+-- Native hash partitions (8) keyed by benchmark_code
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'industry_hypes_seasonal', 8);
+
+-- idx_hypes_seasonal_bench_period (benchmark_code, period_days) dropped: the
+-- code-first PK prefix already serves benchmark_code-filtered lookups.
+DROP INDEX IF EXISTS analysis.idx_hypes_seasonal_bench_period;
 CREATE INDEX IF NOT EXISTS idx_hypes_seasonal_industry
     ON analysis.industry_hypes_seasonal (industry_id, benchmark_code, period_days);
 
-COMMENT ON TABLE  analysis.industry_hypes_seasonal IS 'Seasonal (monthly) top-5 HYPE + bottom-5 DRAIN industry rankings. One row per (season_qkey, benchmark_code, period_days, rank_side, rank). peak_metric_value = MAX (HYPE) or MIN (DRAIN) of the per-date metric_value within the month. Built by analyze.industry_sentiments.hypes_and_drains after the per-date table. The Market Trend chart uses this to determine which industry curves to show (daily plot, seasonal ranking selection with fading/disappearing logic).';
+COMMENT ON TABLE  analysis.industry_hypes_seasonal IS 'Seasonal (monthly) top-5 HYPE + bottom-5 DRAIN industry rankings. One row per (benchmark_code, season_qkey, period_days, rank_side, rank). peak_metric_value = MAX (HYPE) or MIN (DRAIN) of the per-date metric_value within the month. Built by analyze.industry_sentiments.hypes_and_drains after the per-date table. The Market Trend chart uses this to determine which industry curves to show (daily plot, seasonal ranking selection with fading/disappearing logic).';
 
 COMMENT ON COLUMN analysis.industry_hypes_seasonal.season_qkey IS 'Calendar month key, format YYYY-MM (e.g. 2026-08 for August 2026).';
 COMMENT ON COLUMN analysis.industry_hypes_seasonal.season_month IS 'Calendar month number 1..12.';

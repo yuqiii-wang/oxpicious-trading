@@ -37,11 +37,16 @@ from typing import Optional, Set
 
 import datetime
 
+import pandas as pd
+
 from _common.build_commons import (
     copy_or_upsert_split_async,
     truncate_table_async,
     find_missing_dates,
+    rec_col,
+    rec_cols,
 )
+from builds._commons.row_emission import records_from_frame
 
 TABLE_INDEX = "stats.index_exts"
 TABLE_INDUSTRY = "stats.etf_trading_amt"
@@ -132,7 +137,7 @@ async def build_index_exts(conn, force: bool = False) -> None:
     else:
         rows = await conn.fetch(sql_index)
     print(f"    -> {len(rows):,} rows across "
-          f"{len(set(r['code'] for r in rows))} indices "
+          f"{len(set(rec_col(rows, 'code')))} indices "
           f"(only indices with linked ETFs — joined via sec_classification)",
           flush=True)
 
@@ -141,16 +146,12 @@ async def build_index_exts(conn, force: bool = False) -> None:
     if not rows:
         print("    -> no data to insert.", flush=True)
     else:
-        data = [
-            {
-                "date": r["date"],
-                "code": r["code"],
-                "etf_num": r["etf_num"],
-                "total_etf_trading_amount": r["total_etf_trading_amount"],
-                "total_etf_trading_amount_ma5": r["total_etf_trading_amount_ma5"],
-            }
-            for r in rows
-        ]
+        # Whole-column extraction + column-major row emission
+        df = pd.DataFrame(rec_cols(rows))
+        data = records_from_frame(
+            df, ["date", "code", "etf_num",
+                 "total_etf_trading_amount", "total_etf_trading_amount_ma5"],
+        )
         n_copied, n_upserted = await copy_or_upsert_split_async(
             conn, TABLE_INDEX, data, key_columns=["date", "code"],
         )

@@ -14,8 +14,13 @@ CREATE TABLE IF NOT EXISTS analysis.options_expiry_identity (
     expiry_date               DATE          NOT NULL,
 
     CONSTRAINT pk_options_expiry_identity
-        PRIMARY KEY (date, option_type, underlying_code, expiry_date)
-);
+        PRIMARY KEY (underlying_code, date, option_type, expiry_date)
+) PARTITION BY HASH (underlying_code);
+
+-- Native hash partitions (8) keyed by underlying_code
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'options_expiry_identity', 8);
 
 CREATE TABLE IF NOT EXISTS analysis.options_skewness_stats (
     date                      DATE          NOT NULL,
@@ -52,23 +57,29 @@ CREATE TABLE IF NOT EXISTS analysis.options_skewness_stats (
     corr_skewness_ma60_vs_spot_ma60       NUMERIC(10,4),
 
     CONSTRAINT pk_options_skewness_stats
-        PRIMARY KEY (date, option_type, underlying_code, expiry_date, skew_type),
+        PRIMARY KEY (underlying_code, date, option_type, expiry_date, skew_type),
     CONSTRAINT fk_options_skewness_stats_expiry
-        FOREIGN KEY (date, option_type, underlying_code, expiry_date)
+        FOREIGN KEY (underlying_code, date, option_type, expiry_date)
         REFERENCES analysis.options_expiry_identity
-            (date, option_type, underlying_code, expiry_date)
-);
+            (underlying_code, date, option_type, expiry_date)
+) PARTITION BY HASH (underlying_code);
+
+-- Native hash partitions (8) keyed by underlying_code
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'options_skewness_stats', 8);
 
 -- Indexes for common access patterns:
 --   1. Per-underlying time series (panel loads one underlying's history).
 --   2. Per-expiry scan (all dates of one expiry group).
-CREATE INDEX IF NOT EXISTS idx_options_skewness_stats_underlying_date
-    ON analysis.options_skewness_stats (underlying_code, date);
+-- idx_options_skewness_stats_underlying_date (underlying_code, date) dropped:
+-- a prefix of the underlying_code-first PK, which already serves per-underlying lookups.
+DROP INDEX IF EXISTS analysis.idx_options_skewness_stats_underlying_date;
 
 CREATE INDEX IF NOT EXISTS idx_options_skewness_stats_expiry
     ON analysis.options_skewness_stats (underlying_code, expiry_date, date);
 
-COMMENT ON TABLE  analysis.options_skewness_stats              IS 'Per-(date, option_type, underlying_code, expiry_date, skew_type) store of precomputed rolling skewness statistics for option expiry groups, for multiple skew data sources separated by skew_type: oi_moneyness = OI-weighted mean moneyness (strike_price / underlying_close) — a positioning metric; iv_smile = OI-weighted 3rd standardized moment of implied vol across strikes (from stats.options_greeks) — a pricing metric; greek_delta = delta-weighted put/call OI ratio dpcr (whole chain, neutral 0.5); greek_gamma = normalized GEX-style call-minus-put gamma balance (whole chain, neutral 0); greek_vega = OTM-wing vega balance (0<|delta|<0.5 wings, neutral 0 — the open-interest mirror of the 25d risk reversal). The greek_* metrics are PAIR-level CALL-vs-PUT contrasts (CALL and PUT rows of a pair hold the SAME value), weighted by open_interest with zero OI = zero vote; theta/rho have no industry-standard positioning skew and are not computed. Rolling windows (5/20/60 days) compute MA, STD, gap-from-neutral (skewness_MA − neutral; neutral = 1 / 0.5 / 0 by type), slope of gap, and correlation with spot (price-space basis: underlying_close × skewness for oi_moneyness/iv_smile, underlying_close × (1 + (skewness − neutral) × 0.10) for greek_*). FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.';
+COMMENT ON TABLE  analysis.options_skewness_stats              IS 'Per-(underlying_code, date, option_type, expiry_date, skew_type) store of precomputed rolling skewness statistics for option expiry groups, for multiple skew data sources separated by skew_type: oi_moneyness = OI-weighted mean moneyness (strike_price / underlying_close) — a positioning metric; iv_smile = OI-weighted 3rd standardized moment of implied vol across strikes (from stats.options_greeks) — a pricing metric; greek_delta = delta-weighted put/call OI ratio dpcr (whole chain, neutral 0.5); greek_gamma = normalized GEX-style call-minus-put gamma balance (whole chain, neutral 0); greek_vega = OTM-wing vega balance (0<|delta|<0.5 wings, neutral 0 — the open-interest mirror of the 25d risk reversal). The greek_* metrics are PAIR-level CALL-vs-PUT contrasts (CALL and PUT rows of a pair hold the SAME value), weighted by open_interest with zero OI = zero vote; theta/rho have no industry-standard positioning skew and are not computed. Rolling windows (5/20/60 days) compute MA, STD, gap-from-neutral (skewness_MA − neutral; neutral = 1 / 0.5 / 0 by type), slope of gap, and correlation with spot (price-space basis: underlying_close × skewness for oi_moneyness/iv_smile, underlying_close × (1 + (skewness − neutral) × 0.10) for greek_*). FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_skewness_stats.date                    IS 'Trading date.';
 COMMENT ON COLUMN analysis.options_skewness_stats.option_type            IS 'Option type: CALL or PUT. For pair-level metrics (greek_*, and the OI/IV-skew tables) the CALL and PUT rows of the same group hold the SAME value.';
 COMMENT ON COLUMN analysis.options_skewness_stats.underlying_code        IS 'Underlying code (unified index codes; SZSE ETF options mapped via ETF->Index, e.g. 159919->000300).';
@@ -155,7 +166,7 @@ ALTER TABLE analysis.options_skewness_stats
     DROP CONSTRAINT IF EXISTS pk_options_skewness_stats;
 ALTER TABLE analysis.options_skewness_stats
     ADD CONSTRAINT pk_options_skewness_stats
-        PRIMARY KEY (date, option_type, underlying_code, expiry_date, skew_type);
+        PRIMARY KEY (underlying_code, date, option_type, expiry_date, skew_type);
 
 CREATE TABLE IF NOT EXISTS analysis.options_oi_stats (
     date                      DATE          NOT NULL,
@@ -169,20 +180,26 @@ CREATE TABLE IF NOT EXISTS analysis.options_oi_stats (
     corr_put_call_ratio_vs_spot_ma60  NUMERIC(10,2),
 
     CONSTRAINT pk_options_oi_stats
-        PRIMARY KEY (date, option_type, underlying_code, expiry_date),
+        PRIMARY KEY (underlying_code, date, option_type, expiry_date),
     CONSTRAINT fk_options_oi_stats_expiry
-        FOREIGN KEY (date, option_type, underlying_code, expiry_date)
+        FOREIGN KEY (underlying_code, date, option_type, expiry_date)
         REFERENCES analysis.options_expiry_identity
-            (date, option_type, underlying_code, expiry_date)
-);
+            (underlying_code, date, option_type, expiry_date)
+) PARTITION BY HASH (underlying_code);
 
-CREATE INDEX IF NOT EXISTS idx_options_oi_stats_underlying_date
-    ON analysis.options_oi_stats (underlying_code, date);
+-- Native hash partitions (8) keyed by underlying_code
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'options_oi_stats', 8);
+
+-- idx_options_oi_stats_underlying_date (underlying_code, date) dropped:
+-- a prefix of the underlying_code-first PK, which already serves per-underlying lookups.
+DROP INDEX IF EXISTS analysis.idx_options_oi_stats_underlying_date;
 
 CREATE INDEX IF NOT EXISTS idx_options_oi_stats_expiry
     ON analysis.options_oi_stats (underlying_code, expiry_date, date);
 
-COMMENT ON TABLE  analysis.options_oi_stats                       IS 'Per-(date, option_type, underlying_code, expiry_date) store of precomputed options OI-related statistics for expiry groups. Stores MA5/MA20/MA60 whole-period cumulative correlation between put/call OI ratio and underlying spot price. FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.';
+COMMENT ON TABLE  analysis.options_oi_stats                       IS 'Per-(underlying_code, date, option_type, expiry_date) store of precomputed options OI-related statistics for expiry groups. Stores MA5/MA20/MA60 whole-period cumulative correlation between put/call OI ratio and underlying spot price. FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_oi_stats.date                    IS 'Trading date.';
 COMMENT ON COLUMN analysis.options_oi_stats.option_type            IS 'Option type: CALL or PUT.';
 COMMENT ON COLUMN analysis.options_oi_stats.underlying_code         IS 'Underlying code (unified index codes; SZSE ETF options mapped via ETF->Index).';
@@ -224,20 +241,26 @@ CREATE TABLE IF NOT EXISTS analysis.options_iv_skew_stats (
     corr_rr25_ma60_vs_spot_ma60  NUMERIC(10,2),
 
     CONSTRAINT pk_options_iv_skew_stats
-        PRIMARY KEY (date, option_type, underlying_code, expiry_date),
+        PRIMARY KEY (underlying_code, date, option_type, expiry_date),
     CONSTRAINT fk_options_iv_skew_stats_expiry
-        FOREIGN KEY (date, option_type, underlying_code, expiry_date)
+        FOREIGN KEY (underlying_code, date, option_type, expiry_date)
         REFERENCES analysis.options_expiry_identity
-            (date, option_type, underlying_code, expiry_date)
-);
+            (underlying_code, date, option_type, expiry_date)
+) PARTITION BY HASH (underlying_code);
 
-CREATE INDEX IF NOT EXISTS idx_options_iv_skew_stats_underlying_date
-    ON analysis.options_iv_skew_stats (underlying_code, date);
+-- Native hash partitions (8) keyed by underlying_code
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'options_iv_skew_stats', 8);
+
+-- idx_options_iv_skew_stats_underlying_date (underlying_code, date) dropped:
+-- a prefix of the underlying_code-first PK, which already serves per-underlying lookups.
+DROP INDEX IF EXISTS analysis.idx_options_iv_skew_stats_underlying_date;
 
 CREATE INDEX IF NOT EXISTS idx_options_iv_skew_stats_expiry
     ON analysis.options_iv_skew_stats (underlying_code, expiry_date, date);
 
-COMMENT ON TABLE  analysis.options_iv_skew_stats              IS 'Per-(date, option_type, underlying_code, expiry_date) store of implied-volatility skew statistics for option expiry groups, derived from implied_vol in stats.options_greeks (calibrated from option premiums via Black-76). All IV/skew values are in vol points (percent). Unlike options_skewness_stats (OI-weighted mean moneyness — a positioning metric), this is a pricing metric. FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.';
+COMMENT ON TABLE  analysis.options_iv_skew_stats              IS 'Per-(underlying_code, date, option_type, expiry_date) store of implied-volatility skew statistics for option expiry groups, derived from implied_vol in stats.options_greeks (calibrated from option premiums via Black-76). All IV/skew values are in vol points (percent). Unlike options_skewness_stats (OI-weighted mean moneyness — a positioning metric), this is a pricing metric. FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_iv_skew_stats.atm_iv       IS 'IV (vol points, %) of the contract with moneyness (strike/spot) closest to 1.0 in the expiry group.';
 COMMENT ON COLUMN analysis.options_iv_skew_stats.iv_call25    IS 'IV (vol points, %) of the OTM CALL contract with delta nearest 0.25.';
 COMMENT ON COLUMN analysis.options_iv_skew_stats.iv_put25     IS 'IV (vol points, %) of the OTM PUT contract with delta nearest -0.25.';
@@ -273,20 +296,26 @@ CREATE TABLE IF NOT EXISTS analysis.options_walls (
     threshold                 NUMERIC(8,4),    -- threshold value (80pct: 0.80 putPct; large_num: 0.70 mean ratio)
 
     CONSTRAINT pk_options_walls
-        PRIMARY KEY (date, option_type, underlying_code, expiry_date, wall_type),
+        PRIMARY KEY (underlying_code, date, option_type, expiry_date, wall_type),
     CONSTRAINT fk_options_walls_expiry
-        FOREIGN KEY (date, option_type, underlying_code, expiry_date)
+        FOREIGN KEY (underlying_code, date, option_type, expiry_date)
         REFERENCES analysis.options_expiry_identity
-            (date, option_type, underlying_code, expiry_date)
-);
+            (underlying_code, date, option_type, expiry_date)
+) PARTITION BY HASH (underlying_code);
 
-CREATE INDEX IF NOT EXISTS idx_options_walls_underlying_date
-    ON analysis.options_walls (underlying_code, date);
+-- Native hash partitions (8) keyed by underlying_code
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'options_walls', 8);
+
+-- idx_options_walls_underlying_date (underlying_code, date) dropped:
+-- a prefix of the underlying_code-first PK, which already serves per-underlying lookups.
+DROP INDEX IF EXISTS analysis.idx_options_walls_underlying_date;
 
 CREATE INDEX IF NOT EXISTS idx_options_walls_expiry
     ON analysis.options_walls (underlying_code, expiry_date, date);
 
-COMMENT ON TABLE  analysis.options_walls                       IS 'Per-(date, option_type, underlying_code, expiry_date, wall_type) store of precomputed options wall levels. Two wall types: 80pct (boundary where one side dominates ≥80% of total OI at each strike, interpolated across strikes) and large_num (strike with the max OI among those exceeding 70% of the mean OI across all strikes in the expiry group). For CALL walls the wall_strike acts as support (price tends to stay above), for PUT walls as resistance (price tends to stay below). FK -> analysis.options_expiry_identity. Built by analyze.options.';
+COMMENT ON TABLE  analysis.options_walls                       IS 'Per-(underlying_code, date, option_type, expiry_date, wall_type) store of precomputed options wall levels. Two wall types: 80pct (boundary where one side dominates ≥80% of total OI at each strike, interpolated across strikes) and large_num (strike with the max OI among those exceeding 70% of the mean OI across all strikes in the expiry group). For CALL walls the wall_strike acts as support (price tends to stay above), for PUT walls as resistance (price tends to stay below). FK -> analysis.options_expiry_identity. Built by analyze.options.';
 COMMENT ON COLUMN analysis.options_walls.date                  IS 'Trading date.';
 COMMENT ON COLUMN analysis.options_walls.option_type           IS 'Option type: CALL or PUT.';
 COMMENT ON COLUMN analysis.options_walls.underlying_code       IS 'Underlying code (unified index codes).';

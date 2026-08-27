@@ -1,35 +1,4 @@
-"""ETF code classification helpers (SZSE vs SSE, money-market filter)."""
-from builds.etf.paths import SZSE_ETF_PREFIXES, SSE_ETF_PREFIXES
-
-
-def is_szse_etf_code(code):
-    s = str(code).strip()
-    if "." in s:
-        s = s.split(".")[0]
-    try:
-        s = str(int(float(s))).zfill(6)
-    except Exception:
-        pass
-    return len(s) == 6 and s.isdigit() and s[:2] in SZSE_ETF_PREFIXES
-
-
-def is_sse_etf_code(code):
-    s = str(code).strip()
-    if "." in s:
-        s = s.split(".")[0]
-    try:
-        s = str(int(float(s))).zfill(6)
-    except Exception:
-        pass
-    return len(s) == 6 and s.isdigit() and any(s.startswith(p) for p in SSE_ETF_PREFIXES)
-
-
-def get_exchange_for_etf(code):
-    if is_szse_etf_code(code):
-        return "SZ"
-    if is_sse_etf_code(code):
-        return "SS"
-    return None
+"""ETF helpers (money-market / bond ETF filter)."""
 
 
 # ---------------------------------------------------------------------------

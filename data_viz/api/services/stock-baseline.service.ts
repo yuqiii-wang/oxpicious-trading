@@ -39,6 +39,7 @@ import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { matchesExchange, stripExchangeSuffix } from "../lib/classify-etf.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
+import { listClassificationMetaRows } from "./classification-cache.js";
 import type {
   StockBaselineResponse,
   StockBaselineRow,
@@ -276,63 +277,32 @@ export async function getStockBaseline(
 //    • A stock may have MULTIPLE sec_classification rows (one per qualifying
 //      parent index). The LATERAL subquery picks the highest-weight row so
 //      each stock gets exactly one (sector_id, industry_id) pair.
-//    • Only rows with non-NULL close are counted toward n_days — this
-//      excludes bogus identity-only rows (e.g. historical "test" entries on
-//      2026-07-23/24) that would otherwise inflate the count and override
-//      the real stock name via MAX(name).
-//    • name is resolved as the most frequent non-NULL name (mode) — robust
-//      against a few bogus "test"/"test2" rows.
-//    • Filters out stocks with fewer than MIN_DAYS rows so the selector
-//      doesn't show transient/new listings with no chartable history.
+//  OPTIMIZATION (was: STOCK_META_SQL aggregating stock_identity ×
+//  stock_basic_stats with COUNT/MIN/MAX/mode() per code on EVERY call —
+//  millions of daily rows scanned per nav fetch).  The precomputed
+//  sec_classification columns (name, n_days, first_date, last_date) already
+//  carry the same information, populated by build_classification.py.  Rows
+//  are read once per 10-min TTL window (see classification-cache.ts) and
+//  shared by listStockThemes(), listStrategyThemes() and getStocksCombined().
+//
+//  NOTE: n_days is the build-time count from stock_identity rather than a
+//  live COUNT — equivalent for the nav/selector use case.  DISTINCT ON
+//  (code) picks the primary/highest-weight parent row for stocks with
+//  multiple sec_classification rows.
 // ----------------------------------------------------------------------------
 const MIN_DAYS = 40;
 
-const STOCK_META_SQL = `
-  WITH ohlc_rows AS (
-    SELECT si.code, si.date, si.name
-      FROM stats.stock_identity si
-      LEFT JOIN stats.stock_basic_stats b
-             ON si.date = b.date AND si.code = b.code
-     WHERE b.close IS NOT NULL
-  )
-  SELECT o.code                                       AS code,
-         -- Pick the most frequent non-NULL name (mode) — robust against a
-         -- few bogus "test"/"test2" rows that would otherwise shadow the
-         -- real name (e.g. 000002.SZ has 2 "test2" rows mixed with 1100+
-         -- "万科Ａ" rows; mode() correctly returns "万科Ａ").
-         mode() WITHIN GROUP (ORDER BY o.name)         AS name,
-         COUNT(*)                                       AS n_days,
-         MIN(o.date)::text                              AS first_date,
-         MAX(o.date)::text                              AS last_date,
-         COALESCE(MAX(sc.sector_id),       'OTHER')    AS sector_id,
-         COALESCE(MAX(sc.sector_label),     '其他')     AS sector_label,
-         COALESCE(MAX(sc.industry_id),      'OTHER')    AS industry_id,
-         COALESCE(MAX(sc.industry_label),   '未分类')    AS industry_label,
-         COALESCE(MAX(sc.industry_slug),    'other')    AS industry_slug,
-         COALESCE(BOOL_OR(sc.is_industry_not_strategy), TRUE) AS is_industry_not_strategy,
-         COALESCE(MAX(sc.exchange), '')                 AS exchange
-    FROM ohlc_rows o
-    LEFT JOIN LATERAL (
-      SELECT sc.sector_id, sc.sector_label, sc.industry_id, sc.industry_label,
-             sc.industry_slug, sc.is_industry_not_strategy, sc.exchange,
-             sc.is_active
-        FROM stats.sec_classification sc
-       WHERE sc.code = o.code AND sc.type = 'stock'
-       ORDER BY sc.parent_index_weight DESC NULLS LAST, sc.parent_index_code
-       LIMIT 1
-    ) sc ON true
-   GROUP BY o.code
-  HAVING COUNT(*) >= ${MIN_DAYS}
-     AND COALESCE(BOOL_OR(sc.is_active), TRUE)
-   ORDER BY n_days DESC, o.code
-`;
+async function getStockMetaRows(): Promise<DbStockMetaRow[]> {
+  const rows = await listClassificationMetaRows("stock");
+  return rows.filter((r) => r.n_days >= MIN_DAYS);
+}
 
 // ----------------------------------------------------------------------------
 //  Stock themes — build the two-level L1 sector → L2 industry → stocks tree
 //  from the precomputed classification columns in sec_classification.
 // ----------------------------------------------------------------------------
 export async function listStockThemes(exchange?: string | null): Promise<SectorNode[]> {
-  const rows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
+  const rows = await getStockMetaRows();
   const exFilter = (exchange ?? "").trim() || null;
 
   const sectorMap = new Map<string, {
@@ -405,7 +375,7 @@ export async function listStockThemes(exchange?: string | null): Promise<SectorN
 //  as the canonical identifier.
 // ----------------------------------------------------------------------------
 export async function listStrategyThemes(exchange?: string | null): Promise<StrategyNode[]> {
-  const rows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
+  const rows = await getStockMetaRows();
   const exFilter = (exchange ?? "").trim() || null;
 
   const mappedRows = rows
@@ -465,8 +435,8 @@ export async function getStocksCombined(
   const codeFilterBare = rawCodeFilter.replace(/\.(SS|SZ|SH|BJ)$/i, "");
   const codeFilterHasSuffix = codeFilterBare !== rawCodeFilter;
 
-  // 1. Fetch all stocks with classification, ordered by n_days DESC.
-  const metaRows = await queryRows<DbStockMetaRow>(STOCK_META_SQL);
+  // 1. Fetch all stocks with classification, ordered by n_days DESC (cached).
+  const metaRows = await getStockMetaRows();
 
   // 2. Filter by sector/industry/strategy/theme + exchange (or by exact
   //    code when codeFilter is set).  metaRows are already ordered by

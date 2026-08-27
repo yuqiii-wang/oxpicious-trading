@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Amt Envelope chart — rendered when an Amt/MA pair is selected.
  *
  * Shows trading_amount BARS + a slim envelope of all 5 trading_amt_ma lines
@@ -30,6 +30,7 @@ import {
   hypeEpisodesToMarkArea,
   HYPE_ACCENT_COLOR,
   HYPE_SHADE_COLOR,
+  type HypeMarkAreaDatum,
 } from "./hypeBands";
 import { buildAmtTooltipFormatter } from "./tooltipFormatter";
 
@@ -54,9 +55,10 @@ export interface BuildAmtEnvelopeOptionArgs {
   ohlcMode?: OhlcMode;
   /** Bollinger multiplier k in MA ± k × σ. Default 2.0; 0 = hidden. */
   bollingerK?: number;
-  /** Enabled market-hype check-in window (trading days) — null/undefined =
-   *  off. When set, hyped date periods are shaded light purple. */
-  hypeWindow?: number | null;
+  /** ENABLED market-hype check-in windows (trading days) — empty/null =
+   *  off. Each enabled window's hyped date periods are shaded light
+   *  purple; multiple windows' shades overlap (stacking darker). */
+  hypeWindows?: number[] | null;
   /** Market-hype episodes keyed by check-in window. Source:
    *  analysis.mov_ave_market_hypes — episodes are date spans, so no
    *  index-alignment with pair.rows is required. */
@@ -75,7 +77,7 @@ export function buildAmtEnvelopeOption({
   themeMode,
   ohlcMode = "absolute",
   bollingerK = 2,
-  hypeWindow = null,
+  hypeWindows = null,
   hypeEpisodes = null,
 }: BuildAmtEnvelopeOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
@@ -149,17 +151,21 @@ export function buildAmtEnvelopeOption({
   const echartsSeries: NonNullable<EChartsOption["series"]> = [];
 
   // ---- Market-hype shading (light purple over hyped periods) ------------
-  // Active only when a hype window button is enabled AND episode data was
-  // fetched for this code. Episodes are date spans (first/last satisfied
-  // dates of each hyped run), so they apply directly as markArea
-  // rectangles — no index-alignment with the pair's rows needed.
-  // Attached to the invisible "_hlBase" band series (z=0, price y-axis) so
-  // the shade sits behind everything and spans the full plot height.
-  const hypeW = hypeWindow ?? null;
-  const hypeMarkAreaData =
-    hypeW != null && hypeEpisodes != null
-      ? hypeEpisodesToMarkArea(hypeEpisodes[hypeW])
-      : [];
+  // Active per ENABLED hype window button (multi-select) with episode data
+  // for this code. Episodes are date spans (first/last satisfied dates of
+  // each hyped run), so they apply directly as markArea rectangles — no
+  // index-alignment with the pair's rows needed. Each enabled window gets
+  // its own series carrying its markArea (z=0, price y-axis) so the shade
+  // sits behind everything, spans the full plot height, and the Hyped(Wd)
+  // legend entry toggles that window's shading individually; overlapping
+  // windows' shades stack darker.
+  const hypeMarkAreaByWindow = new Map<number, HypeMarkAreaDatum[]>();
+  if (hypeEpisodes != null) {
+    for (const w of hypeWindows ?? []) {
+      const data = hypeEpisodesToMarkArea(hypeEpisodes[w]);
+      if (data.length > 0) hypeMarkAreaByWindow.set(w, data);
+    }
+  }
 
   // Lowkey high-low band
   const hlBase: Array<number | null> = lows.slice();
@@ -180,15 +186,6 @@ export function buildAmtEnvelopeOption({
     lineStyle: { opacity: 0 },
     yAxisIndex: 0,
     z: 0,
-    ...(hypeMarkAreaData.length > 0
-      ? {
-          markArea: {
-            silent: true as const,
-            itemStyle: { borderWidth: 0 },
-            data: hypeMarkAreaData,
-          },
-        }
-      : {}),
   });
   echartsSeries.push({
     type: "line",
@@ -370,17 +367,25 @@ export function buildAmtEnvelopeOption({
   if (showBoll) {
     legendData.push(`Amt Upper (+${bollingerK}σ)`, `Amt Lower (−${bollingerK}σ)`);
   }
-  if (hypeMarkAreaData.length > 0 && hypeW != null) {
-    legendData.push(`Hyped(${hypeW}d)`);
-    // Cosmetic legend marker for the hype shading (light purple rect).
+  // Per-window market-hype shading series (light purple rect legend
+  // marker + that window's markArea). The markArea lives ON this series,
+  // so clicking the legend entry toggles that window's shading;
+  // overlapping windows' shades stack darker.
+  for (const [w, data] of hypeMarkAreaByWindow) {
+    legendData.push(`Hyped(${w}d)`);
     echartsSeries.push({
       type: "scatter",
-      name: `Hyped(${hypeW}d)`,
+      name: `Hyped(${w}d)`,
       data: [null],
       symbol: "rect",
       symbolSize: [10, 8],
       itemStyle: { color: HYPE_ACCENT_COLOR, opacity: 0.45, borderColor: HYPE_SHADE_COLOR },
       z: 0,
+      markArea: {
+        silent: true as const,
+        itemStyle: { borderWidth: 0 },
+        data,
+      },
     });
   }
 

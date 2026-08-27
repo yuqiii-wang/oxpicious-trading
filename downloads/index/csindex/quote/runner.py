@@ -29,7 +29,7 @@ import pandas as pd
 
 from _common._holidays_and_weekdays import is_trading_day
 
-from downloads._common.core import (
+from downloads._common import (
     MIN_VALID_BYTES,
     DEFAULT_START_DATE,
     AntiBotProxy,

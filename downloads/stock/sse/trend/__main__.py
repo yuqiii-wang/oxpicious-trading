@@ -8,10 +8,11 @@ For HISTORICAL per-stock data, use ``downloads.stock.sse.archive``.
 """
 from __future__ import annotations
 
+
 import argparse
 
-from downloads.stock.sse._common.list_endpoint import SSE_LIST_URL
-from downloads.stock.sse._common.snapshot import run_snapshot_download
+from downloads._common.exchanges.sse import SSE_LIST_URL
+from downloads._common.exchanges.sse import run_snapshot_download
 
 
 if __name__ == "__main__":

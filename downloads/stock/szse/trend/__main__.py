@@ -4,11 +4,12 @@ Uses CATALOGID=1815_stock_snapshot, TABKEY=tab1 from
 https://www.szse.cn/market/trend/index.html. Writes
 ``szse_trend_stock_{YYYYMMDD}.xlsx/.csv`` under ``temps/sse_trend/``.
 
-DB-first mode: queries ``stats.stock_identity`` (code_suffix='SZ') to find
+DB-first mode: queries ``stats.stock_identity`` (exchange='SZ') to find
 missing trading days, skipping dates already in the DB. Also skips dates
 with local 0-byte CSV markers (previously fetched but no data found).
 """
 from __future__ import annotations
+
 
 import random
 from datetime import date
@@ -17,7 +18,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from downloads._common.szse_runner import (
+from downloads._common.exchanges.szse import (
     REFERER_TREND,
     build_headers,
     run_szse_download,
@@ -80,9 +81,9 @@ def download_szse_trend_stock(
         security_types=["stock"],
         sleep_sec=sleep_sec,
         session=session,
-        code_suffix=".SZ",
+        exchange="SZ",
         db_table_by_type=DB_TABLE_BY_TYPE,
-        db_code_suffix="SZ",
+        db_exchange="SZ",
         skip_empty_markers=True,
     )
 

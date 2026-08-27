@@ -4,6 +4,7 @@ All download logic lives in :mod:`downloads.macro.gov.ndrc` (``__init__.py``);
 this module only wires the package so it can be run as
 ``python -m downloads.macro.gov.ndrc``.
 """
+
 from downloads.macro.gov.ndrc import main
 
 if __name__ == "__main__":

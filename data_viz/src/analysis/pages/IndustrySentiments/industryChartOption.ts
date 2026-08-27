@@ -168,7 +168,7 @@ export function buildIndustryChartOption(
     for (const a of data.aggregation) {
       if (a.pool_size !== poolSize) continue;
       aggByDate.set(a.date, {
-        mean: a.mean_price,
+        mean: a.mean_close,
         var: a.var_price,
         count: a.index_count,
       });
@@ -258,7 +258,7 @@ export function buildIndustryChartOption(
       const aggByDate = new Map<string, { mean: number | null; var: number | null }>();
       for (const a of agg.aggregation) {
         if (a.pool_size !== poolSize) continue;
-        aggByDate.set(a.date, { mean: a.mean_price, var: a.var_price });
+        aggByDate.set(a.date, { mean: a.mean_close, var: a.var_price });
       }
       const meanAligned: Array<number | null> = allDates.map(
         (d) => aggByDate.get(d)?.mean ?? null,

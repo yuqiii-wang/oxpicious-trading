@@ -14,7 +14,7 @@ from the identity rows (handled in ``_model.aggregate_bars``).
 """
 from __future__ import annotations
 
-from downloads.stock.sse._common.list_endpoint import SSE_FUND_LIST_URL
+from downloads._common.exchanges.sse import SSE_FUND_LIST_URL
 
 from ._io import _prepopulate_finished_codes
 from ._model import AssetStream
@@ -27,7 +27,7 @@ def build_etf_asset() -> AssetStream:
         list_url=SSE_FUND_LIST_URL,
         identity_table="stats.etf_identity",
         intraday_table="stats.etf_intraday_5min",
-        code_suffix="SS",
+        exchange="SS",
         has_volume=True,
         allowed_codes=None,
         csv_subdir="sse_etf_intraday",
@@ -39,5 +39,5 @@ def prepopulate_etf_finished_codes(conn, trade_date, finished_codes: set) -> Non
     """Pre-populate finished_codes with SSE ETFs that already have a 15:00 bar."""
     _prepopulate_finished_codes(
         conn, trade_date, finished_codes,
-        table="stats.etf_intraday_5min", code_suffix_filter="SS",
+        table="stats.etf_intraday_5min", exchange_filter="SS",
     )

@@ -125,15 +125,14 @@ async def fetch_margin_history(
 
 
 # ---------------------------------------------------------------------------
-#  Index-level margin series — aggregated from the margin_index_series VIEW
+#  Index-level margin series — read from the margin_index_series TABLE
 # ---------------------------------------------------------------------------
 
 async def fetch_index_margin_series(conn) -> pd.DataFrame:
     """Fetch the per-(index_code, date) aggregated RONGZI margin series from
-    the ``analysis.margin_index_series`` VIEW.
+    the ``analysis.margin_index_series`` TABLE (built by Python
+    vectorization — build_margin_index_series; was a VIEW).
 
-    The VIEW aggregates constituent stocks' rz_balance / rz_buy by
-    ``parent_index_weight`` (weighted-AVERAGE — see 12_margin.sql header).
     This is the source of the sec_type='index' rows in margin_tech_stats:
     the regime-detection cols (slope / zscore) are computed on this
     AGGREGATED series in Python (aggregate-then-compute — slope is a ratio
@@ -145,11 +144,6 @@ async def fetch_index_margin_series(conn) -> pd.DataFrame:
     (e.g. '000970'); ``rz_balance`` = index_margin_balance (weighted-avg
     yuan); ``rz_buy`` = index_margin_buy (weighted-avg yuan, FLOW).
     Sorted by (code, date).
-
-    No universe filter is applied here — the VIEW already excludes index
-    codes with no constituent margin activity, and the per-code
-    MIN_HISTORY_DAYS guard in hypes._detect_episodes_for_code filters
-    sparse / freshly-listed indices downstream.
 
     Args:
         conn: asyncpg connection.
@@ -183,6 +177,110 @@ async def fetch_index_margin_series(conn) -> pd.DataFrame:
             ],
         }
     )
+
+
+# ---------------------------------------------------------------------------
+#  Index-series build — RAW unaggregated inputs (no in-SQL computation)
+# ---------------------------------------------------------------------------
+
+async def fetch_index_series_raw(
+    conn,
+    dates: Set[datetime.date] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Fetch RAW unaggregated inputs for the margin_index_series build.
+
+    Deliberately does NO aggregation in SQL — the weighted-average
+    computation runs as pandas vectorization in
+    ``analyze.margins.compute.compute_index_margin_series``. Only plain
+    SELECTs (optionally date-filtered) here.
+
+    Returns (stock_margin, etf_margin, classification):
+      stock_margin   — DataFrame[code, date, rz_balance, rz_buy] for ALL
+                       stock codes (NO universe filter — index aggregation
+                       needs every constituent with a margin row, unlike
+                       the per-code tech-stats universe). Sorted by
+                       (code, date).
+      etf_margin     — same shape, ALL etf codes.
+      classification — DataFrame[code, type, parent_index_code,
+                       parent_index_weight, parent_index_is_primary,
+                       industry_id] for every sec_classification row of
+                       type ∈ {'stock', 'etf', 'index'} (branch routing,
+                       weights, and the index_code → industry_id map are
+                       derived in pandas).
+
+    Args:
+        conn: asyncpg connection.
+        dates: when non-None, only fetch margin rows whose date is in this
+            set (incremental mode). None = full history (force mode).
+    """
+    date_clause = ""
+    params: list = []
+    if dates is not None:
+        date_clause = "WHERE date = ANY($1::date[])"
+        params.append(sorted(dates))
+
+    async def _fetch_margin(table: str) -> pd.DataFrame:
+        rows = await conn.fetch(
+            f"""
+            SELECT code, date, rz_balance, rz_buy
+            FROM {table}
+            {date_clause}
+            ORDER BY code, date
+            """,
+            *params,
+        )
+        if not rows:
+            return pd.DataFrame(columns=["code", "date", "rz_balance", "rz_buy"])
+        return pd.DataFrame(
+            {
+                "code": [r["code"] for r in rows],
+                "date": [r["date"] for r in rows],
+                "rz_balance": [
+                    float(r["rz_balance"]) if r["rz_balance"] is not None else None
+                    for r in rows
+                ],
+                "rz_buy": [
+                    float(r["rz_buy"]) if r["rz_buy"] is not None else None
+                    for r in rows
+                ],
+            }
+        )
+
+    stock_margin = await _fetch_margin(SRC_TABLE_STOCK)
+    etf_margin = await _fetch_margin(SRC_TABLE_ETF)
+
+    cls_rows = await conn.fetch(
+        """
+        SELECT
+            code,
+            type,
+            parent_index_code,
+            parent_index_weight,
+            parent_index_is_primary,
+            industry_id
+        FROM stats.sec_classification
+        WHERE type IN ('stock', 'etf', 'index')
+        """
+    )
+    classification = pd.DataFrame(
+        {
+            "code": [r["code"] for r in cls_rows],
+            "type": [r["type"] for r in cls_rows],
+            "parent_index_code": [r["parent_index_code"] for r in cls_rows],
+            "parent_index_weight": [
+                float(r["parent_index_weight"])
+                if r["parent_index_weight"] is not None
+                else None
+                for r in cls_rows
+            ],
+            "parent_index_is_primary": [
+                r["parent_index_is_primary"] for r in cls_rows
+            ],
+            "industry_id": [r["industry_id"] for r in cls_rows],
+        }
+    )
+
+    return stock_margin, etf_margin, classification
 
 
 # ---------------------------------------------------------------------------

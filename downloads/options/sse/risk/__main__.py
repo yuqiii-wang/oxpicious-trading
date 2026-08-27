@@ -16,6 +16,7 @@ from ``_download_szse_sse_commons.py`` and ``_download_commons.py``.
 
 from __future__ import annotations
 
+
 from datetime import date
 from pathlib import Path
 from typing import Optional, Set
@@ -23,7 +24,7 @@ from typing import Optional, Set
 import requests
 
 from _common.pre_check_and_load import check_identity
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_START_DATE,
     DEFAULT_TIMEOUT,
     MIN_VALID_BYTES,
@@ -115,7 +116,6 @@ def download_sse_options_risk(
     sleep_sec: float = 5.0,
     session: Optional[requests.Session] = None,
     db_table: str = "stats.options_identity",
-    db_code_suffix: str = "SS",
 ) -> dict:
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), "sse_options_risk", out_root)
     sess = session or requests.Session()
@@ -137,9 +137,9 @@ def download_sse_options_risk(
     # yet in the DB; dates outside this set are skipped (already built).
     db_missing: Set[date] = set()
     if db_table:
-        db_missing = check_identity(
-            db_table, _start, _end, code_suffix=db_code_suffix,
-        )
+        # options_identity has no exchange column (PK is date +
+        # contract_code), so the check is date-only.
+        db_missing = check_identity(db_table, _start, _end)
 
     stats = RunStats()
 

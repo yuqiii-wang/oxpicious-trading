@@ -1,4 +1,4 @@
-﻿/**
+/**
  * DecisionTable — expandable trade-decisions table for any strategy backtest.
  *
  * Renders as an MUI Accordion (collapsed by default) with a summary showing
@@ -47,7 +47,7 @@
  */
 import {
   Accordion, AccordionDetails, AccordionSummary,
-  Box, Chip, MenuItem, Select, Tooltip, Typography,
+  Box, Chip, Tooltip, Typography,
 } from "@mui/material";
 import { Fragment, type ReactNode } from "react";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
@@ -171,50 +171,29 @@ interface DecisionTableProps {
   /** Accordion expanded state. Defaults to false (collapsed). */
   defaultExpanded?: boolean;
   maxHeight?: number;
-  /** Available forecast scenario names (e.g. ["mir_255d_std_scale", "flip_255d_std_scale", ...]).
-   * When non-empty, a scenario dropdown is rendered. */
-  forecastScenarios?: string[];
-  /** Currently selected scenario (null = parent seq, no forecast). */
-  selectedScenario?: string | null;
-  /** Callback when the user selects a different scenario. */
-  onScenarioChange?: (scenario: string | null) => void;
   /** Fault tolerance percentage (0-20) applied to this run. 0 = baseline.
    *  When >0, the Conf cell tooltip shows the baseline vs stressed
    *  confidence comparison. */
   faultTolerance?: number;
 }
 
+/** Light purple accent for the last-day sell (final liquidation at the
+ *  projected price — signal_reason starts with "LAST DAY SELL"). */
+const LAST_DAY_SELL_COLOR = "#9575cd";
+const LAST_DAY_SELL_ROW_BG = "rgba(149, 117, 205, 0.12)";
+const isLastDaySell = (d: StrategyDecision): boolean =>
+  !!d.signal_reason?.startsWith("LAST DAY SELL");
+
 export default function DecisionTable({
   decisions,
   defaultExpanded = false,
   maxHeight = 400,
-  forecastScenarios = [],
-  selectedScenario = null,
-  onScenarioChange,
   faultTolerance = 0,
 }: DecisionTableProps) {
   if (decisions.length === 0) return null;
 
   const nBuys = decisions.filter((d) => d.side === "BUY").length;
   const nSells = decisions.filter((d) => d.side === "SELL").length;
-
-  // Forecast decisions are SELL rows whose signal_reason starts with
-  // "FORECAST SELL" (written by strategy._1m_forcast.decisions). When a
-  // scenario is selected, the child seq's decisions include forecast sells
-  // for that scenario.
-  const FORECAST_PREFIX = "FORECAST SELL";
-  const firstForecastIdx = decisions.findIndex(
-    (d) => d.signal_reason?.startsWith(FORECAST_PREFIX),
-  );
-  const hasForecastDelimiter = firstForecastIdx >= 0;
-  const nForecast = hasForecastDelimiter
-    ? decisions.length - firstForecastIdx
-    : 0;
-  const nActualSells = nSells - nForecast;
-
-  // Whether to show the scenario dropdown. Shown when scenarios are available
-  // AND the callback is provided.
-  const showScenarioDropdown = forecastScenarios.length > 0 && onScenarioChange;
 
   return (
     <Accordion
@@ -234,20 +213,7 @@ export default function DecisionTable({
           </Typography>
           <Chip label={`${decisions.length}`} size="small" sx={{ fontSize: "0.7rem" }} />
           <Chip label={`${nBuys} BUY`} size="small" color="success" variant="outlined" sx={{ fontSize: "0.7rem" }} />
-          <Chip label={`${nActualSells} SELL`} size="small" color="error" variant="outlined" sx={{ fontSize: "0.7rem" }} />
-          {hasForecastDelimiter && (
-            <Chip
-              label={`${nForecast} FORECAST SELL`}
-              size="small"
-              sx={{
-                fontSize: "0.7rem",
-                bgcolor: "rgba(149, 117, 205, 0.18)",
-                color: "#9575CD",
-                border: "1px solid rgba(149, 117, 205, 0.5)",
-                fontWeight: 600,
-              }}
-            />
-          )}
+          <Chip label={`${nSells} SELL`} size="small" color="error" variant="outlined" sx={{ fontSize: "0.7rem" }} />
         </Box>
       </AccordionSummary>
       <AccordionDetails sx={{ p: 1 }}>
@@ -348,96 +314,11 @@ export default function DecisionTable({
                 const meanBuyTooltip = d.side === "SELL"
                   ? `Cost basis used for realized_pnl: ${d.normalized_mean_buy_price.toFixed(2)} (${meanBuyDelta >= 0 ? "+" : ""}${meanBuyDelta.toFixed(2)} from entry). Sell Norm ${d.normalized_fill_price.toFixed(2)} ${d.normalized_fill_price >= d.normalized_mean_buy_price ? "≥" : "<"} Mean Buy ⇒ ${d.normalized_fill_price >= d.normalized_mean_buy_price ? "winning" : "losing"} trade`
                   : `Post-BUY weighted-avg cost basis: ${d.normalized_mean_buy_price.toFixed(2)} (${meanBuyDelta >= 0 ? "+" : ""}${meanBuyDelta.toFixed(2)} from entry)`;
-                const isForecastRow = d.signal_reason?.startsWith(FORECAST_PREFIX);
                 return (
                   <Fragment key={d.decision_no}>
-                    {hasForecastDelimiter && i === firstForecastIdx && (
-                      <tr>
-                        <td
-                          colSpan={13}
-                          style={{
-                            bgcolor: "rgba(149, 117, 205, 0.12)",
-                            backgroundColor: "rgba(149, 117, 205, 0.12)",
-                            borderTop: "2px solid rgba(149, 117, 205, 0.6)",
-                            borderBottom: "2px solid rgba(149, 117, 205, 0.6)",
-                            padding: "4px 8px",
-                          }}
-                        >
-                          <Box sx={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 1 }}>
-                            <Typography
-                              component="span"
-                              sx={{
-                                fontWeight: 700,
-                                color: "#9575CD",
-                                fontSize: "0.7rem",
-                                letterSpacing: "0.05em",
-                              }}
-                            >
-                              ── FORECAST ·
-                            </Typography>
-                            {showScenarioDropdown ? (
-                              <Select
-                                size="small"
-                                value={selectedScenario ?? ""}
-                                onChange={(e) => {
-                                  const v = e.target.value;
-                                  onScenarioChange!(v === "" ? null : v);
-                                }}
-                                sx={{
-                                  fontSize: "0.7rem",
-                                  fontWeight: 600,
-                                  color: "#9575CD",
-                                  minWidth: 140,
-                                  height: 24,
-                                  "& .MuiSelect-select": { py: 0.25, px: 1 },
-                                  "& .MuiOutlinedInput-notchedOutline": {
-                                    borderColor: "rgba(149, 117, 205, 0.5)",
-                                  },
-                                  "&:hover .MuiOutlinedInput-notchedOutline": {
-                                    borderColor: "rgba(149, 117, 205, 0.8)",
-                                  },
-                                }}
-                              >
-                                <MenuItem value="" sx={{ fontSize: "0.75rem" }}>
-                                  (actual only)
-                                </MenuItem>
-                                {forecastScenarios.map((sc) => (
-                                  <MenuItem key={sc} value={sc} sx={{ fontSize: "0.75rem" }}>
-                                    {sc}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            ) : (
-                              <Typography
-                                component="span"
-                                sx={{
-                                  fontWeight: 700,
-                                  color: "#9575CD",
-                                  fontSize: "0.7rem",
-                                  letterSpacing: "0.05em",
-                                }}
-                              >
-                                sell schedule ({nForecast} days)
-                              </Typography>
-                            )}
-                            <Typography
-                              component="span"
-                              sx={{
-                                fontWeight: 700,
-                                color: "#9575CD",
-                                fontSize: "0.7rem",
-                                letterSpacing: "0.05em",
-                              }}
-                            >
-                              ──
-                            </Typography>
-                          </Box>
-                        </td>
-                      </tr>
-                    )}
-                    <tr style={isForecastRow ? { backgroundColor: "rgba(149, 117, 205, 0.05)" } : undefined}>
+                    <tr style={isLastDaySell(d) ? { backgroundColor: LAST_DAY_SELL_ROW_BG } : undefined}>
                       <td>{d.decision_no}</td>
-                      <td style={{ color: d.side === "BUY" ? "#4caf50" : "#f44336", fontWeight: 700 }}>
+                      <td style={{ color: d.side === "BUY" ? "#4caf50" : isLastDaySell(d) ? LAST_DAY_SELL_COLOR : "#f44336", fontWeight: 700 }}>
                         {d.side}
                       </td>
                       <td>{d.exec_date}</td>
@@ -545,7 +426,6 @@ export default function DecisionTable({
                           overflow: "hidden",
                           textOverflow: "ellipsis",
                           whiteSpace: "nowrap",
-                          color: isForecastRow ? "#9575CD" : undefined,
                         }}
                       >
                         {(() => {
@@ -677,69 +557,6 @@ export default function DecisionTable({
                   </Fragment>
                 );
               })}
-              {/* When no forecast decisions are shown (parent seq) but
-                  scenarios are available, render a dropdown row at the end
-                  so the user can select a scenario to view its forecast. */}
-              {showScenarioDropdown && !hasForecastDelimiter && (
-                <tr>
-                  <td
-                    colSpan={13}
-                    style={{
-                      bgcolor: "rgba(149, 117, 205, 0.08)",
-                      backgroundColor: "rgba(149, 117, 205, 0.08)",
-                      borderTop: "1px dashed rgba(149, 117, 205, 0.4)",
-                      padding: "4px 8px",
-                    }}
-                  >
-                    <Box sx={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 1 }}>
-                      <Typography
-                        component="span"
-                        sx={{
-                          fontWeight: 600,
-                          color: "#9575CD",
-                          fontSize: "0.7rem",
-                          letterSpacing: "0.05em",
-                        }}
-                      >
-                        View forecast scenario:
-                      </Typography>
-                      <Select
-                        size="small"
-                        value={selectedScenario ?? ""}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          onScenarioChange!(v === "" ? null : v);
-                        }}
-                        displayEmpty
-                        renderValue={(v) => v === "" ? "(select…)" : v as string}
-                        sx={{
-                          fontSize: "0.7rem",
-                          fontWeight: 600,
-                          color: "#9575CD",
-                          minWidth: 140,
-                          height: 24,
-                          "& .MuiSelect-select": { py: 0.25, px: 1 },
-                          "& .MuiOutlinedInput-notchedOutline": {
-                            borderColor: "rgba(149, 117, 205, 0.5)",
-                          },
-                          "&:hover .MuiOutlinedInput-notchedOutline": {
-                            borderColor: "rgba(149, 117, 205, 0.8)",
-                          },
-                        }}
-                      >
-                        <MenuItem value="" sx={{ fontSize: "0.75rem" }}>
-                          (actual only)
-                        </MenuItem>
-                        {forecastScenarios.map((sc) => (
-                          <MenuItem key={sc} value={sc} sx={{ fontSize: "0.75rem" }}>
-                            {sc}
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </Box>
-                  </td>
-                </tr>
-              )}
             </tbody>
           </Box>
         </Box>

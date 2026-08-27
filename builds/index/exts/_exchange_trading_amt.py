@@ -28,11 +28,16 @@ stats.exchange_trading_amt are (re)computed and upserted.
 
 Force mode (force=True): truncate the table first, then full recompute.
 """
+import pandas as pd
+
 from _common.build_commons import (
     copy_or_upsert_split_async,
     truncate_table_async,
     find_missing_keys,
+    rec_col,
+    rec_cols,
 )
+from builds._commons.row_emission import records_from_frame
 
 TABLE = "stats.exchange_trading_amt"
 
@@ -72,18 +77,20 @@ async def build_exchange_trading_amt(conn, force: bool = False) -> None:
         ORDER BY ec.exchange, ibs.date
     """
     rows = await conn.fetch(sql_rows)
-    print(f"    -> {len(rows):,} desired (date, exchange) rows across "
-          f"{len(set(r['exchange'] for r in rows))} exchanges", flush=True)
+    # Whole-column frame — all downstream filtering/emission is vectorized
+    df_all = pd.DataFrame(rec_cols(rows))
+    print(f"    -> {len(df_all):,} desired (date, exchange) rows across "
+          f"{df_all['exchange'].nunique()} exchanges", flush=True)
 
     # ---- Step 2: detect missing pairs or truncate -----------------
     if force:
         print(f"\n[EXCH_AMT] Force mode: truncating {TABLE}...", flush=True)
         await truncate_table_async(conn, TABLE)
-        target_rows = rows
+        target_df = df_all
     else:
         print(f"\n[EXCH_AMT] Detecting missing (date, exchange) pairs...",
               flush=True)
-        source_keys = {(r["date"], r["exchange"]) for r in rows}
+        source_keys = set(zip(rec_col(rows, "date"), rec_col(rows, "exchange")))
         missing_keys = await find_missing_keys(
             conn, TABLE, ["date", "exchange"], source_keys
         )
@@ -92,25 +99,19 @@ async def build_exchange_trading_amt(conn, force: bool = False) -> None:
         if not missing_keys:
             print("    -> DB is up to date; nothing to do.", flush=True)
             return
-        target_rows = [
-            r for r in rows
-            if (r["date"], r["exchange"]) in missing_keys
-        ]
+        # Vectorized membership filter via composite string keys (never a
+        # per-row tuple-in-set scan)
+        missing_set = {f"{d}|{e}" for d, e in missing_keys}
+        composite = df_all["date"].astype(str) + "|" + df_all["exchange"].astype(str)
+        target_df = df_all[composite.isin(missing_set)].reset_index(drop=True)
 
     # ---- Step 3: upsert ------------------------------------------
     print(f"\n[EXCH_AMT] Upserting into {TABLE}...", flush=True)
-    if not target_rows:
+    EMIT_COLS = ["date", "exchange", "index_code", "total_trading_amount"]
+    if len(target_df) == 0:
         print("    -> no data to insert.", flush=True)
     else:
-        data = [
-            {
-                "date": r["date"],
-                "exchange": r["exchange"],
-                "index_code": r["index_code"],
-                "total_trading_amount": r["total_trading_amount"],
-            }
-            for r in target_rows
-        ]
+        data = records_from_frame(target_df, EMIT_COLS)
         n_copied, n_upserted = await copy_or_upsert_split_async(
             conn, TABLE, data, key_columns=["date", "exchange"],
         )

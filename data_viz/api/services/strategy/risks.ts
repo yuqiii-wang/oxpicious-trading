@@ -88,8 +88,6 @@ interface RiskFactorRow {
   ratio: string | number | null;
 }
 
-// When scenario is NULL → return the PARENT seq's risks.
-// When scenario is provided → return the CHILD seq's risks for that scenario.
 const RISK_SEQ_SQL = `
   SELECT r.seq_id, r.code,
          i.total_realized_pnl, i.total_abs_pnl, i.n_sells, i.n_buys,
@@ -121,9 +119,7 @@ const RISK_SEQ_SQL = `
     ON g1.seq_id = r.seq_id AND g1.decision_no = r.pnl_gain_1st_decision_no
   LEFT JOIN strategy.trade_decision l1
     ON l1.seq_id = r.seq_id AND l1.decision_no = r.pnl_loss_1st_decision_no
-  WHERE s.sec_type = $1 AND r.code = $2 AND s.strategy_name = $4
-    AND (($3::text IS NULL AND s.parent_seq_id IS NULL)
-         OR ($3::text IS NOT NULL AND s.scenario = $3))
+  WHERE s.sec_type = $1 AND r.code = $2 AND s.strategy_name = $3
   ORDER BY CASE WHEN s.is_active THEN 0 ELSE 1 END, s.seq_no DESC
   LIMIT 1
 `;
@@ -241,15 +237,12 @@ function mapRiskFactor(r: RiskFactorRow): StrategyRiskFactor {
 export async function fetchStrategyRisks(
   rawCode: string,
   rawSecType: string | undefined | null,
-  scenario: string | undefined | null = null,
   strategyName: string = DEFAULT_STRATEGY_NAME,
 ): Promise<StrategyRiskResponse> {
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
 
   // 1. Fetch the latest risk_seq row for this (sec_type, code).
-  //    When scenario is provided, fetch the child seq's risks; otherwise
-  //    fetch the parent seq's risks.
-  const seqRows = await queryRows<RiskSeqRow>(RISK_SEQ_SQL, [secType, rawCode, scenario, strategyName]);
+  const seqRows = await queryRows<RiskSeqRow>(RISK_SEQ_SQL, [secType, rawCode, strategyName]);
 
   if (seqRows.length === 0) {
     return { code: rawCode, sec_type: secType, risk_seq: null, periods: [], risk_factors: [] };

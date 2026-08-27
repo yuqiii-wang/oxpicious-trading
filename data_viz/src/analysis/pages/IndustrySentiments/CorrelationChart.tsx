@@ -1,26 +1,37 @@
 /**
  * Correlation chart — expandable section below the main multi-line chart.
  *
- * Renders one line per industry pair, showing the rolling Pearson
- * correlation of the two industries' mean_price series over the
- * user-selected window (5d / 20d / 60d / 255d). Hover shows the
- * correlation value(s) at the hovered date.
+ * Renders one line per industry pair, showing the windowed Pearson
+ * correlation of the two industries' MA curves of mean_close over the
+ * user-selected window (20d / 60d / 255d): corr_ma{W}_{W}d correlates the
+ * two industries' MA-W curves over the W trading days starting on each
+ * grid start_date (window starts every `interval` — default 20 — trading
+ * days). Hover shows the correlation value(s) at the hovered start date.
  *
  * Auto-expanded by the parent plot when 2+ industries are selected — there
  * are no pairs to correlate below that threshold. This component is only
  * rendered inside the Collapse when open.
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
   CircularProgress,
+  IconButton,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from "@mui/material";
+import RefreshIcon from "@mui/icons-material/Refresh";
 import EChart from "@/components/EChart";
-import { fetchIndustryCorrelations } from "@/lib/api-client";
+import {
+  fetchIndustryCorrelations,
+  runIndustryCorrelationsRefresh,
+  fetchAnalysisRunStatus,
+  INDUSTRY_CORR_RUN_TAG,
+  invalidateCacheForPrefix,
+} from "@/lib/api-client";
 import type { IndustryCorrelationsResponse } from "@shared/types";
 import type { EChartsOption } from "echarts";
 import {
@@ -36,6 +47,7 @@ import { CORR_WINDOWS } from "./constants";
 
 export function CorrelationChart({
   industryIds,
+  codes,
   poolSize,
   themeMode,
 }: CorrelationChartProps) {
@@ -43,6 +55,81 @@ export function CorrelationChart({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [window, setWindow] = useState<CorrWindow>("60d");
+
+  // ---- Refresh (filtered corr recompute for the chosen data) ----
+  // POST /industry-correlations/run spawns
+  // `python -m analyze.industry_sentiments.corr --industry ... --code ...`
+  // and WAITS for it; while waiting the button spins (and polls the tag
+  // status so a page refresh restores the spinner). On success the data
+  // is refetched (refreshTick bumps the fetch effect's deps).
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const industryIdsRef = useRef(industryIds);
+  const codesRef = useRef(codes);
+  industryIdsRef.current = industryIds;
+  codesRef.current = codes;
+
+  // True between "the run tag was seen running" and "seen finished" — gates
+  // the poll's finish-transition side effect (cache invalidate + refetch) so
+  // it fires once per completed run, including runs deduped (already_running)
+  // or started before a page refresh (spinner restore path).
+  const wasRunningRef = useRef(false);
+
+  // Poll the run tag while refreshing — also on mount once, so a run
+  // started elsewhere (or a page refresh mid-run) restores the spinner.
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const st = await fetchAnalysisRunStatus([INDUSTRY_CORR_RUN_TAG]);
+        if (cancelled) return;
+        const running = Boolean(st[INDUSTRY_CORR_RUN_TAG]);
+        if (wasRunningRef.current && !running) {
+          // A tracked run just finished — drop cached GET rows for this
+          // endpoint (TTL-cached, no version check) and refetch fresh.
+          invalidateCacheForPrefix("/api/analysis/industry-correlations");
+          setRefreshTick((n) => n + 1);
+        }
+        wasRunningRef.current = running;
+        setRefreshing(running);
+      } catch {
+        /* status is best-effort */
+      }
+    };
+    void poll();
+    if (!refreshing) return;
+    const t = setInterval(() => { void poll(); }, 3000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [refreshing]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshError(null);
+    setRefreshing(true);
+    wasRunningRef.current = true;
+    const result = await runIndustryCorrelationsRefresh(
+      industryIdsRef.current,
+      codesRef.current,
+    );
+    if (result.already_running) {
+      // A run with the same tag is already in flight — keep the spinner
+      // polling; the poll effect invalidates + refetches when it finishes.
+      return;
+    }
+    setRefreshing(false);
+    wasRunningRef.current = false;
+    if (!result.success) {
+      setRefreshError(
+        `Corr recompute failed${result.stderr_tail ? `: ${result.stderr_tail.slice(-300)}` : ""}`,
+      );
+      return;
+    }
+    // Recompute done — drop the cached GET response (this endpoint is
+    // TTL-cached with no version check, so without invalidation the
+    // refetch would serve the pre-run rows for up to 10 min).
+    invalidateCacheForPrefix("/api/analysis/industry-correlations");
+    setRefreshTick((n) => n + 1);
+  }, []);
 
   // Stable key for the fetch effect — refetch when industry set or pool changes.
   const idsKey = industryIds.slice().sort().join(",");
@@ -67,13 +154,13 @@ export function CorrelationChart({
       });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idsKey, poolSize]);
+  }, [idsKey, poolSize, refreshTick]);
 
   // Build the chart option — one line per industry pair, plotting the
-  // rolling correlation for the user-selected window over time. Tooltip
-  // shows all 4 windows' values at the hovered date (richer than just the
-  // selected window — lets the user compare short vs long-term co-movement
-  // at a glance without toggling windows).
+  // windowed correlation for the user-selected window over time. Tooltip
+  // shows all 3 windows' values at the hovered start date (richer than
+  // just the selected window — lets the user compare short vs long-term
+  // co-movement at a glance without toggling windows).
   const option = useMemo<EChartsOption | null>(() => {
     if (!data || data.correlations.length === 0) return null;
     const c = axisColors(themeMode);
@@ -94,23 +181,22 @@ export function CorrelationChart({
       arr.push(row);
     }
     const sortedPairs = Array.from(pairKeys).sort();
-    // Sorted union of all pair dates — X axis.
+    // Sorted union of all pair window start dates — X axis.
     const allDatesSet = new Set<string>();
-    for (const row of data.correlations) allDatesSet.add(row.date);
+    for (const row of data.correlations) allDatesSet.add(row.start_date);
     const allDates = Array.from(allDatesSet).sort();
 
     // Selected window column → numeric value.
-    const windowCol: Record<CorrWindow, "corr_5d" | "corr_20d" | "corr_60d" | "corr_255d"> = {
-      "5d": "corr_5d",
-      "20d": "corr_20d",
-      "60d": "corr_60d",
-      "255d": "corr_255d",
+    const windowCol: Record<CorrWindow, "corr_ma20_20d" | "corr_ma60_60d" | "corr_ma255_255d"> = {
+      "20d": "corr_ma20_20d",
+      "60d": "corr_ma60_60d",
+      "255d": "corr_ma255_255d",
     };
 
     const series: Array<Record<string, unknown>> = sortedPairs.map((key, i) => {
       const rows = byPair.get(key)!;
       const byDate = new Map<string, typeof rows[number]>();
-      for (const r of rows) byDate.set(r.date, r);
+      for (const r of rows) byDate.set(r.start_date, r);
       const pair = rows[0];
       const labelA = pair.industry_label || pair.industry_id;
       const labelB = pair.benchmark_industry_label || pair.benchmark_industry_id;
@@ -164,7 +250,7 @@ export function CorrelationChart({
           children.push(React.createElement(tooltipComponents.Header, null, dateStr));
           children.push(React.createElement("div", {
             style: { marginTop: 2, opacity: 0.7 },
-          }, "Pairwise rolling Pearson correlation of mean_price series"));
+          }, "Pairwise Pearson correlation of MA curves (window starts every 20 trading days)"));
           children.push(React.createElement("div", { style: { marginTop: 4 } },
             React.createElement("div", {
               style: { display: "flex", justifyContent: "space-between", gap: 8, opacity: 0.55, fontSize: "0.85em" },
@@ -188,7 +274,7 @@ export function CorrelationChart({
             });
             if (!key) continue;
             const rows = byPair.get(key)!;
-            const r = rows.find((x) => x.date === dateStr);
+            const r = rows.find((x) => x.start_date === dateStr);
             if (!r) continue;
             const pairIdx = sortedPairs.indexOf(key);
             const color = MUTED_PALETTE[pairIdx % MUTED_PALETTE.length];
@@ -209,10 +295,9 @@ export function CorrelationChart({
               React.createElement("span", {
                 style: { display: "flex", gap: 6, alignItems: "baseline" },
               },
-                makeChip("5d", r.corr_5d),
-                makeChip("20d", r.corr_20d),
-                makeChip("60d", r.corr_60d),
-                makeChip("255d", r.corr_255d),
+                makeChip("20d", r.corr_ma20_20d),
+                makeChip("60d", r.corr_ma60_60d),
+                makeChip("255d", r.corr_ma255_255d),
               ),
             ));
           }
@@ -258,19 +343,45 @@ export function CorrelationChart({
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1, flexWrap: "wrap", gap: 1 }}>
         <Typography variant="body2" sx={{ fontWeight: 600 }}>
           Pairwise Correlation of Industry Mean Sentiments
-          {data ? ` — ${numPairs} pair${numPairs === 1 ? "" : "s"} · ${data.correlations.length.toLocaleString()} rows · pool=${poolSize}` : ""}
+          {data ? ` — ${numPairs} pair${numPairs === 1 ? "" : "s"} · ${data.correlations.length.toLocaleString()} rows · pool=${poolSize} · stride=${data.correlations[0]?.interval ?? 20}d` : ""}
         </Typography>
-        <ToggleButtonGroup
-          value={window}
-          exclusive
-          size="small"
-          onChange={(_, v: CorrWindow | null) => v && setWindow(v)}
-        >
-          {CORR_WINDOWS.map((w) => (
-            <ToggleButton key={w} value={w}>{w}</ToggleButton>
-          ))}
-        </ToggleButtonGroup>
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <ToggleButtonGroup
+            value={window}
+            exclusive
+            size="small"
+            onChange={(_, v: CorrWindow | null) => v && setWindow(v)}
+          >
+            {CORR_WINDOWS.map((w) => (
+              <ToggleButton key={w} value={w}>{w}</ToggleButton>
+            ))}
+          </ToggleButtonGroup>
+          <Tooltip
+            title={
+              refreshing
+                ? "Recomputing correlations for the chosen industries…"
+                : "Recompute + upsert correlations for the chosen industries / indices"
+            }
+          >
+            {/* span wrapper: Tooltip needs a DOM child when the button is disabled */}
+            <span>
+              <IconButton
+                size="small"
+                onClick={() => { void handleRefresh(); }}
+                disabled={refreshing}
+                aria-label="Recompute correlations for chosen data"
+              >
+                {refreshing
+                  ? <CircularProgress size={18} />
+                  : <RefreshIcon fontSize="small" />}
+              </IconButton>
+            </span>
+          </Tooltip>
+        </Box>
       </Box>
+      {refreshError && (
+        <Alert severity="error" sx={{ py: 0.5 }}>{refreshError}</Alert>
+      )}
       {loading && (
         <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
           <CircularProgress size={24} />
@@ -285,8 +396,10 @@ export function CorrelationChart({
       {!loading && !error && !option && (
         <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
           <Typography variant="body2" color="text.secondary">
-            No correlation data available for the selected industries. Run{" "}
-            <code>analyze_industry_correlations.py</code> to populate.
+            No correlation data available for the selected industries. Click the{" "}
+            <RefreshIcon sx={{ fontSize: 13, verticalAlign: "-2px" }} /> button to
+            recompute them, or run{" "}
+            <code>python -m analyze.industry_sentiments.corr</code>.
           </Typography>
         </Box>
       )}

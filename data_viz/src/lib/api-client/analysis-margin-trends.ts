@@ -1,18 +1,17 @@
-﻿import { fetchJson } from "./_cache";
+import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
   MarginIndustrySeriesResponse,
-  MarginIndustryCorrelationResponse,
   MarginTrendsShadeResponse,
   MarginAttributionType,
 } from "@shared/types";
 
 // ---------------------------------------------------------------------------
 //  Analysis Derivatives — Margin Trends (single-industry RONGZI margin flows)
-//  Two endpoints feed the 2-plot page:
-//    industry-series     — per-(security, date) margin series (1st plot)
-//    industry-correlation — precomputed pairwise corr for selected codes (2nd plot)
+//  Endpoints feeding the single-plot page:
+//    industry-series — per-(security, date) margin series
+//    trends          — trend episodes (shade overlay + ratio)
 // ---------------------------------------------------------------------------
 export function fetchMarginTrendThemes(
   attribution: MarginAttributionType = "index",
@@ -36,24 +35,6 @@ export function fetchMarginIndustrySeries(
   const qs = params.toString();
   return fetchJson<MarginIndustrySeriesResponse>(
     `/api/analysis/margin-trends/industry-series?${qs}`,
-  );
-}
-
-export function fetchMarginIndustryCorrelation(
-  industryId: string,
-  attribution: MarginAttributionType,
-  codes: string[],
-  series: "balance" | "buy",
-  window: number,
-): Promise<MarginIndustryCorrelationResponse> {
-  const params = new URLSearchParams();
-  params.set("industry_id", industryId);
-  params.set("attribution", attribution);
-  params.set("codes", codes.join(","));
-  params.set("series", series);
-  params.set("window", String(window));
-  return fetchJson<MarginIndustryCorrelationResponse>(
-    `/api/analysis/margin-trends/industry-correlation?${params.toString()}`,
   );
 }
 

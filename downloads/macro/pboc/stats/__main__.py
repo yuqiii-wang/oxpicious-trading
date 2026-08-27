@@ -38,6 +38,7 @@ Usage:
 """
 from __future__ import annotations
 
+
 import argparse
 import csv as _csv
 import json
@@ -48,7 +49,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from downloads._common.core import (
+from downloads._common import (
     LONG_SLEEP_INTERVAL,
     setup_logger,
     resolve_out_dir,

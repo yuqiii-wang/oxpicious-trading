@@ -35,7 +35,6 @@ export type RunStrategyResult = RunScriptResult;
 export async function runStrategyScript(
   rawCode: string,
   rawSecType: string | undefined | null,
-  forecast: boolean = true,
   serializedAlgo: string = DEFAULT_STRATEGY_NAME,
   faultTolerance: number = 0,
   force: boolean = true,
@@ -48,7 +47,6 @@ export async function runStrategyScript(
   // _parse_algo_arg in strategy/singleton_trading/__main__.py.
   const args = ["--algo", serializedAlgo, "--sec-type", secType, "--codes", code];
   if (force) args.push("--force");
-  if (!forecast) args.push("--no-forecast");
   if (faultTolerance && faultTolerance > 0) {
     // Clamp to the supported range (0-20) for safety.
     const ft = Math.max(0, Math.min(20, Number(faultTolerance) || 0));

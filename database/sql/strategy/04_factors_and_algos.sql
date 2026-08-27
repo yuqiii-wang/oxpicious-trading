@@ -63,10 +63,15 @@ CREATE TABLE IF NOT EXISTS strategy.algo_configs (
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_algo_configs
-        PRIMARY KEY (sec_type, sec_code, strategy_name, start_date, end_date),
+        PRIMARY KEY (sec_code, sec_type, strategy_name, start_date, end_date),
     -- end_date must not precede start_date (a range must be well-formed).
     CONSTRAINT chk_algo_configs_date_order CHECK (end_date >= start_date)
-);
+) PARTITION BY HASH (sec_code);
+
+-- Native hash partitions (8) keyed by sec_code
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('strategy', 'algo_configs', 8);
 
 -- Lookup index: find the active row for a (sec_type, sec_code, strategy_name)
 -- at a given target date. The PK already covers an exact equality lookup on

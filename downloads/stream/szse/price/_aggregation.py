@@ -1,7 +1,7 @@
 """SZSE 5-minute OHLCV aggregation — stock and index bar builders.
 
 Aggregates 1-minute samples (from any of the four API sources) into 5-minute
-OHLCV bars. Stock bars include ``trading_shares`` and ``code_suffix``;
+OHLCV bars. Stock bars include ``trading_shares`` and ``exchange``;
 index bars omit both (matching the ``index_intraday_5min`` schema).
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, time
 from typing import Dict, List, Optional, Tuple
 
-from downloads._common.core import add_exchange_suffix
+from downloads._common import add_exchange_suffix
 
 from ._akshare_source import MinuteSample
 
@@ -101,9 +101,8 @@ def aggregate_5min(
         return [], [], None
 
     full_code = add_exchange_suffix(bare_code, "深圳")
-    # Exchange suffix: SZ, SS, BJ, or HK are valid.
-    parts = full_code.rsplit(".", 1)
-    code_suffix = parts[-1] if len(parts) == 2 and parts[-1] in ("SZ", "SS", "BJ", "HK") else None
+    # Canonical exchange (SZ for SZSE streams).
+    exchange = "SZ" if full_code.endswith(".SZ") else None
 
     # Derive trade_date from the samples' own dates (remote source logged
     # date), NOT from the local request time. Use the latest date so multi-day
@@ -160,14 +159,14 @@ def aggregate_5min(
         identity_rows.append({
             "date": derived_date,
             "code": full_code,
-            "code_suffix": code_suffix,
+            "exchange": exchange,
             "name": name,
             "is_in_index_or_etf": True,
         })
         bar_rows.append({
             "date": derived_date,
             "code": full_code,
-            "code_suffix": code_suffix,
+            "exchange": exchange,
             "time": wend,
             "open": o,
             "high": h,
@@ -198,7 +197,7 @@ def aggregate_index_5min(
     """Aggregate 1-minute index samples into 5-minute OHLC bars (no volume).
 
     Mirrors ``aggregate_5min`` but emits rows for ``stats.index_intraday_5min``
-    which has NO trading_shares / code_suffix columns and stores the code BARE
+    which has NO trading_shares / exchange columns and stores the code BARE
     (e.g. "399001", not "399001.SZ").
 
     The trade_date is derived from the samples' own datetimes (remote source

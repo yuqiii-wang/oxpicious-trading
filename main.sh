@@ -35,10 +35,13 @@ done
 # builds.stock includes tech_stats (MA/EMA) as an internal final step.
 # builds.index includes composition (CSI+SZSE) → baseline (CSIndex daily) as
 # sequential phases — composition must run before baseline.
+# builds.industry (stats.industry_basic_stats) must run AFTER builds.index —
+# it aggregates index baseline OHLC across member indices per industry.
 for m in \
   builds.stock \
   builds.etf \
   builds.index \
+  builds.industry \
   builds.bond \
   builds.options \
   builds.futures
@@ -46,14 +49,16 @@ do
   python -m "$m"
 done
 
-# analyze, run daily. industry_correlations + sec_alloc_perf_attribution +
-# industry_attributions + industry_etf_contribution are now internal steps of
-# industry_sentiments (run automatically after the sentiments table is
-# repopulated, reusing the same DB connection; sec_alloc_perf_attribution is
-# the producer that the attributions + etf_contribution aggregations read
-# from). mov_ave_rsi is now an internal step of mov_ave_spread (runs
-# automatically after the detail + peaks_and_floors tables are repopulated,
-# reusing the same DB connection and source price DataFrame).
+# analyze, run daily. The industry baseline now lives in
+# stats.industry_basic_stats (built by builds.industry above);
+# industry_correlations + sec_alloc_perf_attribution + industry_attributions
+# + industry_etf_contribution are internal steps of industry_sentiments (run
+# automatically reading from the baseline table, reusing the same DB
+# connection; sec_alloc_perf_attribution is the producer that the
+# attributions + etf_contribution aggregations read from). mov_ave_rsi is
+# now an internal step of mov_ave_spread (runs automatically after the
+# detail + peaks_and_floors tables are repopulated, reusing the same DB
+# connection and source price DataFrame).
 for m in \
   analyze.industry_sentiments \
   analyze.mov_ave_spread \
@@ -111,3 +116,5 @@ python -m downloads.stream.cnindex.price
 # for strategy — discover all available secs in analysis.mov_ave_spreads_detail,
 # backtest them, then compute internal risk metrics for every run.
 python -m strategy.singleton_trading
+
+cd data_viz && npm run dev

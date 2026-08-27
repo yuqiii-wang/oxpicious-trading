@@ -24,7 +24,6 @@ export {
   listMarginTrendThemes,
   listMarginTrendStrategyThemes,
   getMarginIndustrySeries,
-  getMarginIndustryCorrelation,
   getMarginTrends,
 } from "./margin-trends.js";
 export {

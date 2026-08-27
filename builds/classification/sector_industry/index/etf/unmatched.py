@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from _common.build_commons import rec_cols
 from _common.sec_statics.classification import (
     DEFAULT_SECTOR_ID,
     DEFAULT_INDUSTRY_ID,
@@ -30,7 +31,6 @@ from _common.sec_statics.classification import (
 )
 
 from builds.classification.sector_industry.exchange import (
-    _exchange_from_code,
     _is_hk_name,
     _is_overseas_name,
 )
@@ -78,14 +78,21 @@ async def fetch_unmatched_funds(conn) -> list[dict]:
         return []
     rows = await conn.fetch(
         """
-        SELECT v.code, MAX(v.name) AS name
+        SELECT v.code,
+               MAX(v.name)     AS name,
+               MAX(e.exchange) AS exchange
           FROM stats.v_etf_margin v
+          LEFT JOIN stats.etf_identity e ON v.code = e.code
          GROUP BY v.code
         HAVING COUNT(v.date) >= 40
          ORDER BY v.code
         """
     )
-    return [{"code": r["code"], "name": r["name"]} for r in rows]
+    # Whole-column extraction + zip-dict row assembly (no per-row record access).
+    # exchange comes straight from the DB column (never derived from suffix).
+    cols = rec_cols(rows)
+    return [{"code": c, "name": n, "exchange": x}
+            for c, n, x in zip(cols["code"], cols["name"], cols["exchange"])]
 
 
 def classify_unmatched_funds(
@@ -99,9 +106,10 @@ def classify_unmatched_funds(
     funds.  CSV-mapped ETFs are never overwritten.
 
     Strategy:
-      1. For each fund code in all_funds not already in etfs, strip A/B
-         suffix from structured-fund names (e.g. '中证100A' → '中证100') to
-         expose the underlying index keyword.
+      1. For each fund code in all_funds not already in etfs, use its name
+         as-is — structured-fund share-class suffixes ('中证100A' →
+         '中证100') were already stripped at download-conversion time by
+         clean_fund_share_class_names, so builds receive pre-cleaned names.
       2. Classify by industry rules first (classify_index), then strategy
          rules (classify_index_strategy).  Industry takes precedence.
       3. Funds that match neither → sector_id=OTHER (left as-is, but they
@@ -117,33 +125,15 @@ def classify_unmatched_funds(
         if code in etfs:
             continue  # CSV-mapped ETF — skip
         name = fund["name"] or ""
-
-        # Strip A/B share suffix from structured-fund names to expose the
-        # underlying index/theme keyword.  Examples:
-        #   '中证100A' → '中证100'  → BROAD/BROAD_CSI300
-        #   '深成指A'  → '深成指'   → BROAD/BROAD_SZSE
-        #   '沪深300B' → '沪深300' → BROAD/BROAD_CSI300
-        #   '券商A'    → '券商'    → FIN/BROKERS
-        #   '1000A'    → '1000'    → BROAD/BROAD_CSI1000
-        #   '消费收益' → '消费收益' (no A/B suffix, kept as-is)
-        clean_name = name
-        # Strip trailing 'A级'/'B级' first (two-char suffix)
-        if clean_name.endswith(("A级", "B级")):
-            clean_name = clean_name[:-2]
-        # Strip trailing 'A'/'B' when preceded by CJK or digit (structured
-        # fund share-class suffix).  Avoid stripping from English-ended names.
-        elif (clean_name and clean_name[-1] in ("A", "B")
-              and len(clean_name) >= 2
-              and (("\u4e00" <= clean_name[-2] <= "\u9fff")
-                   or clean_name[-2].isdigit())):
-            clean_name = clean_name[:-1]
+        # Names arrive pre-cleaned: share-class suffixes ('中证100A',
+        # '券商A级', ...) were removed during download-CSV conversion.
 
         # Classify: industry rules first, then strategy rules, then numeric.
         sector_id = DEFAULT_SECTOR_ID
         industry_id = DEFAULT_INDUSTRY_ID
         is_ind = True
 
-        (cls_sector, _, cls_industry, _), cls_is_ind = _classify_fund_by_name(clean_name)
+        (cls_sector, _, cls_industry, _), cls_is_ind = _classify_fund_by_name(name)
         if cls_sector != DEFAULT_SECTOR_ID:
             sector_id = cls_sector
             industry_id = cls_industry
@@ -152,12 +142,14 @@ def classify_unmatched_funds(
         else:
             n_other += 1
 
-        # Determine exchange from code suffix, then override to HK/OVERSEAS
-        # when the fund name indicates a HK or non-Greater-China underlying
-        # (e.g. 港股通LOF, 纳指LOF, 标普500).  The sector_id check (done above)
-        # is the primary signal for OVERSEAS; the name check is a fallback
-        # for funds whose classification fell through to OTHER.
-        exchange = _exchange_from_code(code) or ""
+        # Exchange comes from the DB column (stats.etf_identity.exchange,
+        # loaded in fetch_unmatched_funds) — never derived from the code
+        # suffix.  Then override to HK/OVERSEAS when the fund name indicates
+        # a HK or non-Greater-China underlying (e.g. 港股通LOF, 纳指LOF,
+        # 标普500).  The sector_id check (done above) is the primary signal
+        # for OVERSEAS; the name check is a fallback for funds whose
+        # classification fell through to OTHER.
+        exchange = fund.get("exchange") or ""
         if sector_id == "OVERSEAS":
             exchange = "OVERSEAS"
         elif _is_hk_name(name):
@@ -171,7 +163,7 @@ def classify_unmatched_funds(
         # their OVERSEAS sub-industry, not under the themed domestic industry
         # that matched first (e.g., 标普医药 → OVERSEAS_US, not HC/PHARMA_BROAD).
         if exchange == "OVERSEAS" and sector_id != "OVERSEAS":
-            strat_sector, _, strat_industry, _ = classify_index_strategy(clean_name)
+            strat_sector, _, strat_industry, _ = classify_index_strategy(name)
             if strat_sector == "OVERSEAS":
                 sector_id = strat_sector
                 industry_id = strat_industry

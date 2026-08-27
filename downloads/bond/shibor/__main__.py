@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import logging
 import re
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     MIN_VALID_BYTES,
     EMPTY_HTML_MAX_BYTES,
     DEFAULT_TIMEOUT,
@@ -529,6 +530,9 @@ def download_shibor(
                 if saved:
                     stats.downloaded += 1
                     stats.files.append(str(fpath))
+                    # Canonical CSV must exist next to every xlsx — builds
+                    # read CSV ONLY (a missing csv is a downloads bug).
+                    convert_xlsx_to_csv(fpath, logger=logger, log_tag=tag)
                 else:
                     stats.failed += 1
 

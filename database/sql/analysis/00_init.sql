@@ -4,6 +4,7 @@
 --  Usage: psql -d "oxpicious-stats" -f analysis/00_init.sql
 -- ============================================================================
 
+\ir ../00_partition_utils.sql
 \ir 01_analysis_schema.sql
 \ir 02_analysis_identity.sql
 \ir 03_mov_ave_spreads.sql

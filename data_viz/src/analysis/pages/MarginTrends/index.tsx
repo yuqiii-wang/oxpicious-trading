@@ -5,19 +5,18 @@
  *   • Header — title + subtitle + Refresh
  *   • SecClassificationNav — single-select industry (no multi-select, no L3
  *     code chips). Only ONE industry can be selected at a time.
- *   • MarginTrendsCharts — 2 plots for the selected industry:
- *       1. Margin trends — one line per security (indices or ETFs); toggle
- *          Index | ETF attribution, Balance | Buy series. Selected securities
- *          are highlighted; the rest are muted background lines.
- *       2. Pairwise correlation — one line per selected security pair, read
- *          from analysis.margin_industry_correlation (precomputed). Window
- *          toggle 5/20/60/120/255d. Requires ≥2 securities selected.
+ *   • MarginTrendsCharts — the plot for the selected industry:
+ *       Margin trends — one line per security (indices or ETFs); toggle
+ *       Index | ETF attribution, Balance | Buy series. Selected securities
+ *       are highlighted; the rest are muted background lines. Trend-episode
+ *       shades + per-episode rz_buy_vs_trading_amt_ratio (Buy mode).
  *
  * Backed by:
- *   analysis.margin_index_series (VIEW)  — 'index' series (weighted-avg
- *                                          constituent-stock margin)
+ *   analysis.margin_index_series (TABLE) — 'index' series (weighted-avg
+ *                                          constituent-stock margin, built
+ *                                          by Python vectorization)
  *   stats.etf_liquidity_margin           — 'etf' series
- *   analysis.margin_industry_correlation — precomputed pairwise corr
+ *   analysis.margin_changes              — trend episodes
  *
  * RONGZI (融资 / cash-borrow) only — RONQIN (融券 / sec borrow) EXCLUDED.
  */
@@ -182,11 +181,11 @@ export default function MarginTrendsPage() {
             </Typography>
           </Box>
           <Typography variant="body2" color="text.secondary">
-            Single-industry RONGZI (融资 / cash-borrow) margin flows. 1st plot:
-            per-security margin trends (toggle Index | ETF, Balance | Buy).
-            2nd plot: pairwise correlation between selected securities (≥2),
-            read from the precomputed margin_industry_correlation table. RONQIN
-            (融券 / sec borrow) is excluded. Select ONE industry to begin.
+            Single-industry RONGZI (融资 / cash-borrow) margin flows:
+            per-security margin trends (toggle Index | ETF, Balance | Buy)
+            with trend-episode shades and per-episode rz_buy / trading-amount
+            ratio (Buy mode). RONQIN (融券 / sec borrow) is excluded.
+            Select ONE industry to begin.
           </Typography>
         </Box>
         <RefreshButton

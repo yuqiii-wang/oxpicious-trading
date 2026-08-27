@@ -14,6 +14,7 @@ Uses AntiBotProxy with LONG_SLEEP_INTERVAL (90s) for anti-bot protection.
 
 from __future__ import annotations
 
+
 import io
 import shutil
 import zipfile
@@ -23,7 +24,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_TIMEOUT,
     EMPTY_HTML_MAX_BYTES,
     LONG_SLEEP_INTERVAL,
@@ -31,6 +32,7 @@ from downloads._common.core import (
     AntiBotConfig,
     AntiBotProxy,
     build_headers_with_referer,
+    clean_table_cell,
     is_error_html,
     is_valid_file,
     resolve_out_dir,
@@ -164,10 +166,13 @@ def _split_csv_futures_options(
         contract = row[0].strip()
         if not contract or _is_summary_row(contract):
             continue
+        # canonical output: whitespace-free cells + null tokens ("--" etc.)
+        # rewritten to "" so pandas infers numeric columns as float64
+        cleaned = [clean_table_cell(c) for c in row]
         if _is_option_contract(contract):
-            options_rows.append(row)
+            options_rows.append(cleaned)
         else:
-            futures_rows.append(row)
+            futures_rows.append(cleaned)
 
     def _write_csv(path: Path, header: List[str], data: List[List[str]]) -> None:
         import csv as csv_mod

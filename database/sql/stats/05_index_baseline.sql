@@ -15,12 +15,16 @@ CREATE TABLE IF NOT EXISTS stats.index_identity (
     code                      TEXT          NOT NULL,
     name                      TEXT          NOT NULL,
 
-    CONSTRAINT pk_index_identity PRIMARY KEY (date, code),
+    CONSTRAINT pk_index_identity PRIMARY KEY (code, date),
     CONSTRAINT chk_index_identity_code_format
         CHECK (code ~ '^(\d{6}|H\d{5})$')
-);
+) PARTITION BY HASH (code);
 
-COMMENT ON TABLE  stats.index_identity                 IS 'Index identity: one row per (date, index_code). PK shared by all index sub-tables.';
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'index_identity', 8);
+
+COMMENT ON TABLE  stats.index_identity                 IS 'Index identity: one row per (date, index_code). PK (code, date) shared by all index sub-tables. Native HASH partitioned by code.';
 COMMENT ON COLUMN stats.index_identity.code            IS 'Index code, e.g. "000300" (CSI300), "H30007" (chip industry).';
 
 -- ----------------------------------------------------------------------------
@@ -41,9 +45,13 @@ CREATE TABLE IF NOT EXISTS stats.index_basic_stats (
     is_close_estimated         BOOLEAN       NOT NULL DEFAULT FALSE,
     has_intraday_5mins         BOOLEAN       NOT NULL DEFAULT FALSE,
 
-    CONSTRAINT pk_index_basic_stats PRIMARY KEY (date, code),
-    CONSTRAINT fk_index_basic_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.index_identity(date, code)
-);
+    CONSTRAINT pk_index_basic_stats PRIMARY KEY (code, date),
+    CONSTRAINT fk_index_basic_stats_date_code FOREIGN KEY (code, date) REFERENCES stats.index_identity(code, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'index_basic_stats', 8);
 
 
 COMMENT ON TABLE  stats.index_basic_stats                    IS 'Index daily OHLCV + trading_shares + trading_amount + change metrics.';
@@ -64,9 +72,13 @@ CREATE TABLE IF NOT EXISTS stats.index_valuation (
     pe                        NUMERIC(10,4),
     cons_number               NUMERIC(10,0),
 
-    CONSTRAINT pk_index_valuation PRIMARY KEY (date, code),
-    CONSTRAINT fk_index_valuation_date_code FOREIGN KEY (date, code) REFERENCES stats.index_identity(date, code)
-);
+    CONSTRAINT pk_index_valuation PRIMARY KEY (code, date),
+    CONSTRAINT fk_index_valuation_date_code FOREIGN KEY (code, date) REFERENCES stats.index_identity(code, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'index_valuation', 8);
 
 COMMENT ON TABLE  stats.index_valuation                    IS 'Index valuation metrics: PE ratio + constituent count.';
 COMMENT ON COLUMN stats.index_valuation.pe                IS 'Price-to-earnings ratio (PE).';
@@ -92,9 +104,13 @@ CREATE TABLE IF NOT EXISTS stats.index_tech_stats (
     ema120                    NUMERIC(18,4),
     ema255                    NUMERIC(18,4),
 
-    CONSTRAINT pk_index_tech_stats PRIMARY KEY (date, code),
-    CONSTRAINT fk_index_tech_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.index_identity(date, code)
-);
+    CONSTRAINT pk_index_tech_stats PRIMARY KEY (code, date),
+    CONSTRAINT fk_index_tech_stats_date_code FOREIGN KEY (code, date) REFERENCES stats.index_identity(code, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'index_tech_stats', 8);
 
 -- Idempotent migration: add EMA columns to pre-existing tables.
 -- CREATE TABLE IF NOT EXISTS does not add new columns to an existing
@@ -152,9 +168,13 @@ CREATE TABLE IF NOT EXISTS stats.index_intraday_5min (
     change                    NUMERIC(18,4),
     change_pct                NUMERIC(10,4),
 
-    CONSTRAINT pk_index_intraday_5min PRIMARY KEY (date, code, time),
-    CONSTRAINT fk_index_intraday_5min_date_code FOREIGN KEY (date, code) REFERENCES stats.index_identity(date, code)
-);
+    CONSTRAINT pk_index_intraday_5min PRIMARY KEY (code, date, time),
+    CONSTRAINT fk_index_intraday_5min_date_code FOREIGN KEY (code, date) REFERENCES stats.index_identity(code, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'index_intraday_5min', 8);
 
 COMMENT ON TABLE  stats.index_intraday_5min                    IS 'Index 5-minute intraday OHLCV bars.';
 COMMENT ON COLUMN stats.index_intraday_5min.time               IS 'Bar end time (HH:MM:SS).';
@@ -168,17 +188,29 @@ COMMENT ON COLUMN stats.index_intraday_5min.change_pct         IS 'Percentage ch
 -- Indexes
 DROP INDEX IF EXISTS stats.idx_index_baseline_code_date;
 
+-- (a) Per-code lookups (latest first); INCLUDE (name) lets the
+--     Index Only Scan return the name without heap fetches.
+--     (Plain (code, date) prefix is now served by the PK itself.)
 CREATE INDEX IF NOT EXISTS idx_index_identity_code_date
     ON stats.index_identity (code, date DESC) INCLUDE (name);
 
-CREATE INDEX IF NOT EXISTS idx_index_basic_stats_code_date
-    ON stats.index_basic_stats (code, date);
+-- Date-first scans across all codes (the old date-first PK served these;
+-- PK is now (code, date) so an explicit date index restores the pattern).
+CREATE INDEX IF NOT EXISTS idx_index_identity_date
+    ON stats.index_identity (date);
 
-CREATE INDEX IF NOT EXISTS idx_index_valuation_code_date
-    ON stats.index_valuation (code, date);
+-- Legacy (code, date) secondary indexes are now redundant with the
+-- code-first PK — drop them and add date-first indexes instead.
+DROP INDEX IF EXISTS stats.idx_index_basic_stats_code_date;
+DROP INDEX IF EXISTS stats.idx_index_valuation_code_date;
+DROP INDEX IF EXISTS stats.idx_index_tech_stats_code_date;
+DROP INDEX IF EXISTS stats.idx_index_intraday_5min_code_date_time;
 
-CREATE INDEX IF NOT EXISTS idx_index_tech_stats_code_date
-    ON stats.index_tech_stats (code, date);
-
-CREATE INDEX IF NOT EXISTS idx_index_intraday_5min_code_date_time
-    ON stats.index_intraday_5min (code, date, time);
+CREATE INDEX IF NOT EXISTS idx_index_basic_stats_date
+    ON stats.index_basic_stats (date);
+CREATE INDEX IF NOT EXISTS idx_index_valuation_date
+    ON stats.index_valuation (date);
+CREATE INDEX IF NOT EXISTS idx_index_tech_stats_date
+    ON stats.index_tech_stats (date);
+CREATE INDEX IF NOT EXISTS idx_index_intraday_5min_date
+    ON stats.index_intraday_5min (date);

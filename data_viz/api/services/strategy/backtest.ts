@@ -124,7 +124,6 @@ export interface StrategyBacktestResponse {
 export async function runSingletonBacktest(
   rawCode: string,
   rawSecType: string | undefined | null,
-  scenario: string | undefined | null = null,
   strategyName: string = DEFAULT_STRATEGY_NAME,
 ): Promise<StrategyBacktestResponse> {
   const secType = (rawSecType as MaSpreadSecType) ?? "index";
@@ -152,9 +151,7 @@ export async function runSingletonBacktest(
   }));
 
   // 2. Fetch the latest strategy_seq for this (sec_type, code) from the DB.
-  //    When scenario is provided, fetch the child seq for that scenario;
-  //    otherwise fetch the parent seq (parent_seq_id IS NULL).
-  const seqRows = await queryRows<SeqRow>(SEQ_SQL, [secType, rawCode, scenario, strategyName]);
+  const seqRows = await queryRows<SeqRow>(SEQ_SQL, [secType, rawCode, strategyName]);
 
   // No backtest run found — return chart-only response with empty decisions.
   if (seqRows.length === 0) {

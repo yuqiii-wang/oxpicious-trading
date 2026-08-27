@@ -4,9 +4,10 @@ Uses CATALOGID=1815_stock, TABKEY=tab1 from
 https://www.szse.cn/market/trend/archive/index.html. Writes
 ``szse_stock_{YYYYMMDD}.xlsx/.csv`` under ``temps/sse_archive/``.
 
-DB-first mode: queries ``stats.stock_identity`` (code_suffix='SZ').
+DB-first mode: queries ``stats.stock_identity`` (exchange='SZ').
 """
 from __future__ import annotations
+
 
 import random
 from datetime import date
@@ -15,8 +16,8 @@ from typing import Dict, Optional
 
 import requests
 
-from downloads._common.core import DEFAULT_START_DATE
-from downloads._common.szse_runner import (
+from downloads._common import DEFAULT_START_DATE
+from downloads._common.exchanges.szse import (
     REFERER_ARCHIVE,
     build_headers,
     run_szse_download,
@@ -83,9 +84,9 @@ def download_szse_archive_stock(
         security_types=["stock"],
         sleep_sec=sleep_sec,
         session=session,
-        code_suffix=".SZ",
+        exchange="SZ",
         db_table_by_type=DB_TABLE_BY_TYPE,
-        db_code_suffix="SZ",
+        db_exchange="SZ",
     )
 
 

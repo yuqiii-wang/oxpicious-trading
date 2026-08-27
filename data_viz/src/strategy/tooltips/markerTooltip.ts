@@ -20,10 +20,18 @@ export function createMarkerTooltipFormatter({
   stripMixPrefix,
 }: CreateMarkerTooltipFormatterParams): (params: unknown) => string {
   return (params: unknown): string => {
-    const p = params as { data?: { decision?: StrategyDecision } };
+    const p = params as {
+      data?: { decision?: StrategyDecision };
+      seriesName?: string;
+    };
     const d = p.data?.decision;
     if (!d) return "";
-    const sideColor = d.side === "BUY" ? upColor : downColor;
+    const isLastDay = p.seriesName === "LAST DAY SELL";
+    const sideColor = d.side === "BUY"
+      ? upColor
+      : isLastDay
+        ? "#9575cd"
+        : downColor;
     const confidence = d.side === "BUY"
       ? d.qty
       : d.total_qty_before > 0

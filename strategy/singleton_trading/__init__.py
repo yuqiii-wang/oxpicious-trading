@@ -40,13 +40,13 @@ from strategy._common.constants import (  # noqa: F401
 # are intentionally NOT here — they belong to the algo + the DB config.
 #
 #   - min_holding_period, buy_notional — consumed by strategy._trading.engine
-#   - skip_final_liquidation — True: the 1-month forecast module (_1m_forcast)
-#     takes over the sell schedule over the 20 forecast days; the position
-#     stays open at the end of the actual OHLC data.
+#   - skip_final_liquidation — False (default): all remaining position is
+#     liquidated on the last bar at the projected last-day sell price
+#     (see _last_day_sell_price in strategy._trading.engine).
 STRATEGY_PARAMS = {
     "min_holding_period": 5,
     "buy_notional": DEFAULT_BUY_NOTIONAL,
-    "skip_final_liquidation": True,
+    "skip_final_liquidation": False,
 }
 
 

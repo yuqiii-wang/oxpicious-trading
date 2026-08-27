@@ -16,6 +16,7 @@ cleaned up before the trend fallback runs.
 """
 from __future__ import annotations
 
+
 import random
 from datetime import date
 from pathlib import Path
@@ -23,8 +24,8 @@ from typing import Dict, List, Optional
 
 import requests
 
-from downloads._common.core import DEFAULT_START_DATE, DEFAULT_SLEEP_SEC
-from downloads._common.szse_runner import (
+from downloads._common import DEFAULT_START_DATE, DEFAULT_SLEEP_SEC
+from downloads._common.exchanges.szse import (
     REFERER_ARCHIVE,
     REFERER_TREND,
     build_headers,
@@ -117,7 +118,7 @@ def download_szse_archive_index(
         security_types=["index"],
         sleep_sec=sleep_sec,
         session=session,
-        code_suffix=".SZ",
+        exchange="SZ",
         code_filter_by_type=CODE_FILTER_BY_TYPE,
         skip_empty_markers=True,
         fallback_params_builder=_build_trend_fallback_params,

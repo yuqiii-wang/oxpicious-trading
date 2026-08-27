@@ -22,8 +22,6 @@ import {
   runStrategyScript,
   runTrainingScript,
   checkExistingStrategy,
-  fetchStrategyForecast1m,
-  fetchForecastScenarioDecisions,
   fetchTrainInfo,
   DEFAULT_STRATEGY_NAME,
 } from "../services/strategy/index.js";
@@ -38,11 +36,6 @@ function parseParams(req: Request) {
   const code = typeof req.query.code === "string" ? req.query.code.trim() : "";
   const rawSecType = typeof req.query.sec_type === "string"
     ? req.query.sec_type.trim().toLowerCase() : "index";
-  // Optional scenario query param: when provided, fetch the child seq for
-  // that forecast scenario (e.g. mir_255d_std_scale, flip_255d_std_scale, ...). When absent/empty,
-  // fetch the parent seq (actual backtest only, no forecast).
-  const scenario = typeof req.query.scenario === "string"
-    ? req.query.scenario.trim() || null : null;
   // strategy_name query param: the DB strategy_name to filter on. This is
   // EITHER an algo name (macd — binary mode)
   // OR a portfolio name (portfolio:macd*0.5 — mixed mode). Falls back
@@ -53,12 +46,12 @@ function parseParams(req: Request) {
     ? req.query.strategy_name.trim()
     : (typeof req.query.algo === "string" ? req.query.algo.trim().toLowerCase() : "");
   const strategyName = rawStrategyName || DEFAULT_STRATEGY_NAME;
-  return { code, rawSecType, scenario, strategyName };
+  return { code, rawSecType, strategyName };
 }
 
 router.get("/singleton/backtest", async (req: Request, res: Response) => {
   try {
-    const { code, rawSecType, scenario, strategyName } = parseParams(req);
+    const { code, rawSecType, strategyName } = parseParams(req);
     if (!code) {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
@@ -67,7 +60,7 @@ router.get("/singleton/backtest", async (req: Request, res: Response) => {
       res.status(400).json({ error: `Invalid sec_type: ${rawSecType}. Expected etf/index/stock.` });
       return;
     }
-    const result = await runSingletonBacktest(code, rawSecType as MaSpreadSecType, scenario, strategyName);
+    const result = await runSingletonBacktest(code, rawSecType as MaSpreadSecType, strategyName);
     res.json(result);
   } catch (err) {
     console.error("[strategy/singleton/backtest] error:", err);
@@ -77,7 +70,7 @@ router.get("/singleton/backtest", async (req: Request, res: Response) => {
 
 router.get("/singleton/risks", async (req: Request, res: Response) => {
   try {
-    const { code, rawSecType, scenario, strategyName } = parseParams(req);
+    const { code, rawSecType, strategyName } = parseParams(req);
     if (!code) {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
@@ -86,7 +79,7 @@ router.get("/singleton/risks", async (req: Request, res: Response) => {
       res.status(400).json({ error: `Invalid sec_type: ${rawSecType}. Expected etf/index/stock.` });
       return;
     }
-    const result = await fetchStrategyRisks(code, rawSecType as MaSpreadSecType, scenario, strategyName);
+    const result = await fetchStrategyRisks(code, rawSecType as MaSpreadSecType, strategyName);
     res.json(result);
   } catch (err) {
     console.error("[strategy/singleton/risks] error:", err);
@@ -96,7 +89,7 @@ router.get("/singleton/risks", async (req: Request, res: Response) => {
 
 // Check if a strategy run already exists for the natural key.
 // GET /api/strategy/singleton/check?sec_type=index&code=000970&strategy_name=macd
-// Returns { exists: true, seq_id, seq_no, start_date, end_date, scenario, status }
+// Returns { exists: true, seq_id, seq_no, start_date, end_date, status }
 // or { exists: false } if no run exists yet.
 router.get("/singleton/check", async (req: Request, res: Response) => {
   try {
@@ -132,9 +125,6 @@ router.post("/singleton/run", async (req: Request, res: Response) => {
       res.status(400).json({ error: `Invalid sec_type: ${rawSecType}. Expected etf/index/stock.` });
       return;
     }
-    // forecast toggle: default true. When false, passes --no-forecast to
-    // skip the 1-month forecast (10 scenarios + child seqs) for faster runs.
-    const forecast = req.query.forecast !== "false";
     // algo query param: serialized selection like "macd:0.5,bb:0.5"
     // (understood by Python's _parse_algo_arg). Falls back to the default
     // binary algo (macd) when absent.
@@ -159,7 +149,7 @@ router.post("/singleton/run", async (req: Request, res: Response) => {
     const processIdTag = typeof req.query.process_id_tag === "string"
       ? req.query.process_id_tag.trim() : undefined;
     const result = await runStrategyScript(
-      code, rawSecType as MaSpreadSecType, forecast, algo, faultTolerance, force,
+      code, rawSecType as MaSpreadSecType, algo, faultTolerance, force,
       processIdTag,
     );
     res.json(result);
@@ -248,59 +238,6 @@ router.get("/singleton/train-info", async (req: Request, res: Response) => {
     res.json(result);
   } catch (err) {
     console.error("[strategy/singleton/train-info] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-// 1-month forward sell-confidence forecast (7 sigma scenarios + mean).
-// GET /api/strategy/singleton/forecast?sec_type=index&code=000036&strategy_name=macd
-router.get("/singleton/forecast", async (req: Request, res: Response) => {
-  try {
-    const { code, rawSecType, strategyName } = parseParams(req);
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    if (!VALID_SEC_TYPES.has(rawSecType)) {
-      res.status(400).json({ error: `Invalid sec_type: ${rawSecType}. Expected etf/index/stock.` });
-      return;
-    }
-    const result = await fetchStrategyForecast1m(code, rawSecType as MaSpreadSecType, strategyName);
-    res.json(result);
-  } catch (err) {
-    console.error("[strategy/singleton/forecast] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-// Lightweight forecast-only decisions endpoint for scenario switching.
-// GET /api/strategy/singleton/forecast-decisions?sec_type=index&code=000922&scenario=flip_255d_std_scale&strategy_name=macd
-// Returns ONLY the 20 forecast SELL decisions from the child seq + the child's
-// summary. The UI merges these with the cached parent backtest to avoid a
-// full OHLC/actual-decisions reload when switching forecast scenarios.
-router.get("/singleton/forecast-decisions", async (req: Request, res: Response) => {
-  try {
-    const { code, rawSecType, scenario, strategyName } = parseParams(req);
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    if (!VALID_SEC_TYPES.has(rawSecType)) {
-      res.status(400).json({ error: `Invalid sec_type: ${rawSecType}. Expected etf/index/stock.` });
-      return;
-    }
-    if (!scenario) {
-      res.status(400).json({ error: "Missing 'scenario' parameter" });
-      return;
-    }
-    const result = await fetchForecastScenarioDecisions(code, rawSecType as MaSpreadSecType, scenario, strategyName);
-    if (result === null) {
-      res.status(404).json({ error: `No child seq found for scenario '${scenario}'` });
-      return;
-    }
-    res.json(result);
-  } catch (err) {
-    console.error("[strategy/singleton/forecast-decisions] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

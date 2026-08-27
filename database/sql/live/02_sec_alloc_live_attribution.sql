@@ -5,7 +5,7 @@
 --  Two tables, split by computation weight:
 --
 --  1) live.sec_alloc_live_prev_ref   (STATIC REFERENCE — heavy, once per date)
---     One row per (benchmark_code, date, code, sec_type). All "*prev_date*"
+--     One row per (code, benchmark_code, date, sec_type). All "*prev_date*"
 --     reference values (prev-day close, prev-day trading amount, normalized
 --     trading-amount market-share weight) are computed ONCE per (benchmark,
 --     date) from PREVIOUS trading day data only. The tick table never
@@ -110,11 +110,24 @@ CREATE TABLE IF NOT EXISTS live.sec_alloc_live_prev_ref (
     code_sec_shared_weight        NUMERIC(12,8),
 
     CONSTRAINT pk_sec_alloc_live_prev_ref
-        PRIMARY KEY (benchmark_code, date, code, sec_type),
+        PRIMARY KEY (code, benchmark_code, date, sec_type),
     CONSTRAINT chk_sec_alloc_live_prev_ref_sec_type
         CHECK (sec_type IN ('stock', 'etf', 'index'))
-);
+) PARTITION BY HASH (code);
 
+-- Native hash partitions (8) keyed by code (member)
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('live', 'sec_alloc_live_prev_ref', 8);
+
+-- Indexes:
+--   1. (benchmark_code, date): the dominant roster pattern — fetch ALL
+--      members of a (benchmark, date) + the ref-missing NOT EXISTS probe.
+--      (PK is code-first for hash partitioning, so it cannot serve this.)
+--   2. (industry_id, benchmark_code, date): industry drill-down.
+--   3. (date): date-scoped cleanup / delete.
+CREATE INDEX IF NOT EXISTS idx_sec_alloc_live_prev_ref_bench_date
+    ON live.sec_alloc_live_prev_ref (benchmark_code, date);
 CREATE INDEX IF NOT EXISTS idx_sec_alloc_live_prev_ref_ind_bench_dt
     ON live.sec_alloc_live_prev_ref (industry_id, benchmark_code, date);
 CREATE INDEX IF NOT EXISTS idx_sec_alloc_live_prev_ref_date
@@ -150,7 +163,12 @@ CREATE TABLE IF NOT EXISTS live.sec_alloc_live_attribution (
         PRIMARY KEY (code, date, time, sec_type, benchmark_code),
     CONSTRAINT chk_sec_alloc_live_sec_type
         CHECK (sec_type IN ('stock', 'etf', 'index'))
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (32) keyed by code (largest live table, ~7.4GB)
+-- Native hash partitions (32) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p31
+SELECT public.create_hash_partitions('live', 'sec_alloc_live_attribution', 32);
 
 CREATE INDEX IF NOT EXISTS idx_sec_alloc_live_attr_bench_dt
     ON live.sec_alloc_live_attribution (benchmark_code, date, time);
@@ -160,7 +178,7 @@ CREATE INDEX IF NOT EXISTS idx_sec_alloc_live_attr_ind_bench_dt
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE  live.sec_alloc_live_prev_ref IS 'Static per-date reference for live attribution: prev trading day closes, prev-day trading amounts, and the normalized trading-amount market-share weight (code_trading_amount_weight, Σ = 1 per benchmark+date). One row per (benchmark_code, date, code, sec_type). Heavy prev-date computation happens ONCE here; the tick table (live.sec_alloc_live_attribution) never recomputes it. Member universe mirrors analysis.sec_alloc_perf_attribution (latest snapshot, code_sec_shared_weight > 0, active classification, non-BROAD industry).';
+COMMENT ON TABLE  live.sec_alloc_live_prev_ref IS 'Static per-date reference for live attribution: prev trading day closes, prev-day trading amounts, and the normalized trading-amount market-share weight (code_trading_amount_weight, Σ = 1 per benchmark+date). One row per (code, benchmark_code, date, sec_type). Heavy prev-date computation happens ONCE here; the tick table (live.sec_alloc_live_attribution) never recomputes it. Member universe mirrors analysis.sec_alloc_perf_attribution (latest snapshot, code_sec_shared_weight > 0, active classification, non-BROAD industry).';
 COMMENT ON COLUMN live.sec_alloc_live_prev_ref.prev_date IS 'The reference previous trading day all prev-date columns are computed against: latest date < the live date. Stored explicitly to make the liquidity-weight semantics unambiguous.';
 COMMENT ON COLUMN live.sec_alloc_live_prev_ref.code_prev_date_trading_amount IS 'Member''s trading amount (yuan) on prev_date, from stats.index_basic_stats.trading_amount. The RAW liquidity weight source; NULL members are excluded from the weighted (renormalized) aggregate.';
 COMMENT ON COLUMN live.sec_alloc_live_prev_ref.code_trading_amount_weight IS 'Member share of Σ prev-day trading amounts across the benchmark''s eligible member universe (0..1, Σ = 1 per benchmark+date after renormalizing over non-NULL amounts). Constant across all ticks of one date. Computed ONCE here (heavy); joined by the tick table for weighted aggregation.';

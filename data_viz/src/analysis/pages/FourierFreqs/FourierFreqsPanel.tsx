@@ -11,13 +11,15 @@
  *     below. The IndexPanel is imported as-is — no re-implementation.
  *   • BELOW — one day-frequency spectrum chart per range_days window
  *     (20/60/255/500/750/1275), laid out in a responsive grid. For the
- *     selected date, each chart shows per integer day freq: amp bars
- *     (left axis — energy-merged FFT amplitude, the Fourier REFERENCE
- *     for which day freqs carry energy) and pattern-score bars (right
- *     axis — the CONSOLIDATED periodic-pattern audit:
- *     (amp/σ_band) × extrema evidence × ACF coherence, see
- *     patternScore.ts). A day freq that actually recurs with
- *     noticeable highs and lows shows a score peak; noise does not.
+ *     selected date, each chart shows per integer day freq THREE bars:
+ *     amp bars (left axis — energy-merged FFT amplitude, the Fourier
+ *     REFERENCE for which day freqs carry energy), count bars (right
+ *     axis — the recurrence COUNT factor: extrema evidence × ACF
+ *     coherence) and strength bars (right axis — the summarized
+ *     strength: (amp/σ_band) × count, the former consolidated pattern
+ *     score). The factors are precomputed in Python
+ *     (analyze.fourier_freqs.pattern_score) and stored bin-aligned in
+ *     analysis.fourier_freqs.count_spectrum / strength_spectrum.
  *     FFT bins whose period rounds to the same integer day are MERGED
  *     into one bar; the dominant day freq (max merged amp) is
  *     highlighted green.
@@ -164,30 +166,11 @@ export function FourierFreqsPanel({
 
   const spectrumOptions = useMemo(() => {
     if (!spectrum || spectrum.spectrums.length === 0) return [];
-    // Window closes (chronological, ending at the effective date) for
-    // the time-domain ACF repeat audit — sliced from the SAME
-    // trading-day series the FFT windows were built on. Null closes
-    // (no trading that day) are dropped so the series stays indexed by
-    // actual trading days.
-    const rows = bundle?.rows ?? [];
-    let end = rows.length;
-    if (effectiveDate) {
-      const i = rows.findIndex((r) => r.date === effectiveDate);
-      if (i >= 0) end = i + 1;
-    }
-    return spectrum.spectrums.map((row) => {
-      const start = Math.max(0, end - row.range_days);
-      const closes: number[] = [];
-      for (let i = start; i < end; i++) {
-        const v = rows[i].close;
-        if (v != null) closes.push(v);
-      }
-      return {
-        range_days: row.range_days,
-        option: buildSpectrumOption({ row, themeMode, expanded, closes }),
-      };
-    });
-  }, [spectrum, themeMode, expanded, bundle, effectiveDate]);
+    return spectrum.spectrums.map((row) => ({
+      range_days: row.range_days,
+      option: buildSpectrumOption({ row, themeMode, expanded }),
+    }));
+  }, [spectrum, themeMode, expanded]);
 
   return (
     <Stack spacing={1.5}>
@@ -231,9 +214,9 @@ export function FourierFreqsPanel({
             ? `Click any date on the plot above to refresh these spectra. ` +
               `X-axis: integer day freqs (FFT bins rounding to the same day are merged). ` +
               `Bars (left) = merged FFT amplitude — the Fourier reference. ` +
-              `Bars (right) = pattern score — the consolidated periodic-pattern bar: ` +
-              `(amp/σ_band) × extrema evidence × ACF coherence. A day freq that ` +
-              `actually recurs with noticeable highs and lows peaks here.`
+              `Bars (right) = count — recurrence evidence (extrema hits × ACF multiples), ` +
+              `and strength — the summarized bar: (amp/σ_band) × count. A day freq that ` +
+              `actually recurs with noticeable highs and lows peaks in strength.`
             : "Click any date on the plot above to show its spectrum."
         }
         action={
@@ -293,12 +276,14 @@ export function FourierFreqsPanel({
         )}
         <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: "block" }}>
           amp bars (left): energy-merged FFT amplitude per day freq — the Fourier reference
-          (dominant in green). pattern-score bars (right): consolidated periodic-pattern audit —
-          (amp/σ_band) × extrema evidence (prominence-filtered swing extrema whose full-cycle
-          spacing lands within ±15% of the day freq) × ACF coherence (multiples of the day freq
-          with significant autocorrelation ≥ 1.96/√N after MA detrending). Noise scores ~0 at
+          (dominant in green). count bars (right): recurrence evidence — prominence-filtered
+          swing-extrema hits (full-cycle spacing within ±15% of the day freq) × ACF coherence
+          (multiples with significant autocorrelation ≥ 1.96/√N after MA detrending).
+          strength bars (right): the summarized bar — (amp/σ_band) × count. Noise scores ~0 at
           every day freq; a recurring noticeable-swing pattern peaks. Periods over ⅓ of the window
-          are not auditable (under 3 cycles). Windows 20/60/255/500/750/1275d.
+          are not auditable (under 3 cycles). Windows 20/60/255/500/750/1275d. Count and strength
+          are precomputed in Python (analyze.fourier_freqs.pattern_score) and stored in
+          analysis.fourier_freqs.
           {!expanded && " · Day freqs < 5d hidden by default — use the expand button to show all."}
         </Typography>
       </ChartCard>

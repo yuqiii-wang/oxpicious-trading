@@ -71,15 +71,20 @@ CREATE TABLE IF NOT EXISTS analysis.futures_ext (
     gap_max_price_vs_underlying_over_20days        NUMERIC(18,4),
     gap_max_price_vs_underlying_over_60days        NUMERIC(18,4),
 
-    CONSTRAINT pk_futures_ext PRIMARY KEY (date, code),
-    CONSTRAINT fk_futures_ext_date_code FOREIGN KEY (date, code) REFERENCES stats.futures_identity(date, code)
-);
+    CONSTRAINT pk_futures_ext PRIMARY KEY (code, date),
+    CONSTRAINT fk_futures_ext_date_code FOREIGN KEY (code, date) REFERENCES stats.futures_identity(code, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'futures_ext', 8);
 
 -- Indexes for common access patterns:
 --   1. Per-contract time series.
 --   2. Per-underlying cross-sectional scan (all contracts of a product).
-CREATE INDEX IF NOT EXISTS idx_futures_ext_code_date
-    ON analysis.futures_ext (code, date);
+-- idx_futures_ext_code_date (code, date) dropped:
+-- identical to the code-first PK, which already serves per-contract lookups.
+DROP INDEX IF EXISTS analysis.idx_futures_ext_code_date;
 
 CREATE INDEX IF NOT EXISTS idx_futures_ext_underlying_date
     ON analysis.futures_ext (underlying_code, date);
@@ -112,7 +117,7 @@ ALTER TABLE analysis.futures_ext
     ADD COLUMN IF NOT EXISTS gap_max_price_vs_underlying_over_20days NUMERIC(18,4),
     ADD COLUMN IF NOT EXISTS gap_max_price_vs_underlying_over_60days NUMERIC(18,4);
 
-COMMENT ON TABLE  analysis.futures_ext                          IS 'Futures basis and correlation analysis. One row per (date, code) comparing futures price against underlying (index close for index futures, treasury yield-derived bond price for bond futures). gap_price_vs_underlying = (futures_close - underlying_price) / underlying_price (basis). gap_changing_rate = day-over-day change in the basis (1st-order derivative: negative = converging, positive = diverging). corr = 20-day rolling correlation. gap_max_price_vs_underlying_over_Ndays = rolling maximum of the basis over N trailing trading days per contract. Built by analyze.futures; all INSERTs in Python per project rule.';
+COMMENT ON TABLE  analysis.futures_ext                          IS 'Futures basis and correlation analysis. One row per (code, date) comparing futures price against underlying (index close for index futures, treasury yield-derived bond price for bond futures). gap_price_vs_underlying = (futures_close - underlying_price) / underlying_price (basis). gap_changing_rate = day-over-day change in the basis (1st-order derivative: negative = converging, positive = diverging). corr = 20-day rolling correlation. gap_max_price_vs_underlying_over_Ndays = rolling maximum of the basis over N trailing trading days per contract. Built by analyze.futures; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.futures_ext.date                     IS 'Trading date.';
 COMMENT ON COLUMN analysis.futures_ext.code                     IS 'Futures contract code, e.g. "IC2607", "T2609". FK -> stats.futures_identity.';
 COMMENT ON COLUMN analysis.futures_ext.underlying_code          IS 'Underlying asset code: index futures map to stock index codes (e.g. IF->000300); bond futures use synthetic codes (e.g. T->T10).';

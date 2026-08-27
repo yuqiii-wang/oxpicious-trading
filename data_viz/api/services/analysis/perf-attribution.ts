@@ -433,7 +433,6 @@ interface DbPerfAttrChartRow extends QueryResultRow {
   code_etf_num: number | null;
   subject_close: number | null;
   benchmark_close: number | null;
-  corr_5d: number | null;
   corr_20d: number | null;
   corr_60d: number | null;
   corr_255d: number | null;
@@ -478,7 +477,6 @@ export async function getPerfAttrChart(
               a.code_etf_trading_amount,
               ieb.etf_num AS benchmark_etf_num,
               iec.etf_num AS code_etf_num,
-              a.corr_5d,
               a.corr_20d,
               a.corr_60d,
               a.corr_255d,
@@ -535,7 +533,6 @@ export async function getPerfAttrChart(
       code_etf_num: r.code_etf_num == null ? null : Number(r.code_etf_num),
       subject_close: toNum(r.subject_close),
       benchmark_close: toNum(r.benchmark_close),
-      corr_5d: toNum(r.corr_5d),
       corr_20d: toNum(r.corr_20d),
       corr_60d: toNum(r.corr_60d),
       corr_255d: toNum(r.corr_255d),

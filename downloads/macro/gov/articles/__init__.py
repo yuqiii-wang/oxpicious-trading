@@ -11,7 +11,7 @@ keyed by the URL content slug) so subsequent runs only fetch new articles.
 Only matched articles are crawled — detail links for titles with no keyword
 hit are NOT visited. Anti-bot behaviour (browser-fingerprint rotation,
 ``random`` query param, host-blocking detection, sleep cadence) is provided
-by the shared ``AntiBotProxy`` from ``downloads._common.core``; the
+by the shared ``AntiBotProxy`` from ``downloads._common``; the
 inter-request sleep defaults to ``LONG_SLEEP_INTERVAL`` (90s).
 
 Outputs (under ``temps/gov_news/``):
@@ -46,7 +46,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from downloads._common.core import (  # noqa: E402
+from downloads._common import (  # noqa: E402
     AntiBotConfig,
     AntiBotProxy,
     COMMON_BASE_HEADERS,

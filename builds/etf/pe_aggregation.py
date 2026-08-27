@@ -10,6 +10,12 @@ This sums earnings (linear, correct) rather than PE ratios. Loss-making
 constituents (NULL PE in stock_basic_stats) are excluded from both
 numerator and denominator.
 
+CODE ALIGNMENT: every code in this module is kept WITH its exchange
+suffix ("000001.SZ"). Canonical composition CSVs (download conversion)
+and stock_basic_stats both carry suffixed codes, so all joins read the
+whole code — no stripping, no suffix resolution, no prefix inference.
+Rows failing the canonical-code validation regexes are dropped.
+
 Uses the cuDF router (should_use_gpu) for the merge + groupby-agg
 steps, which operate on ~20M+ rows (constituents × dates) — well above
 the GPU breakeven threshold.
@@ -19,41 +25,31 @@ import re
 import numpy as np
 import pandas as pd
 
+from _common.build_commons import rec_cols
 from _common.df_utils import should_use_gpu
 
-# Regex to strip exchange suffixes for cross-table joins.
-_SUFFIX_RE = re.compile(r"\.(SS|SZ|SH|BJ|HK)$")
-
-
-def _strip_suffix(code: str) -> str:
-    if not code:
-        return code
-    return _SUFFIX_RE.sub("", str(code).upper())
-
-
-def _normalize_codes(df: pd.DataFrame, col: str) -> None:
-    """Strip exchange suffix from a code column in-place."""
-    if col in df.columns:
-        df[col] = df[col].apply(_strip_suffix)
+# Valid (suffixed) canonical code forms: constituent stocks (A-share +
+# cross-border holdings) and composition-source ETFs (SSE/SZSE listings)
+VALID_STOCK_RE = r"^\d{6}\.(SS|SZ|BJ|HK|SH)$"
+VALID_ETF_RE = r"^\d{6}\.(SS|SZ)$"
 
 
 async def fetch_stock_pe(conn, stock_codes=None, dates=None):
     """Fetch per-(date, code) PE from stats.stock_basic_stats.
 
     Args:
-        stock_codes: optional list of bare 6-digit stock codes (no suffix).
+        stock_codes: optional list of SUFFIXED stock codes ("000001.SZ"),
+            matching stock_basic_stats.code directly.
             If None, fetches all (large — ~6.8M rows).
         dates: optional list of datetime.date to filter. If None, all dates.
 
-    Returns DataFrame with columns: date, code (bare, no suffix), pe.
+    Returns DataFrame with columns: date, code (suffixed, as stored), pe.
     """
     conditions = ["pe IS NOT NULL", "pe > 0"]
     params = []
 
     if stock_codes is not None and stock_codes:
-        conditions.append(
-            "REGEXP_REPLACE(code, '\\.(SS|SZ|SH|BJ|HK)$', '') = ANY($1::text[])"
-        )
+        conditions.append("code = ANY($1::text[])")
         params.append(sorted(stock_codes))
 
     if dates is not None and dates:
@@ -71,10 +67,13 @@ async def fetch_stock_pe(conn, stock_codes=None, dates=None):
     if not rows:
         return pd.DataFrame(columns=["date", "code", "pe"])
 
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+    # Whole-column extraction (rec_cols: one positional-unpack pass);
+    # codes returned as stored (suffixed) — no string surgery here.
+    # Dates stay datetime64 — object date columns poison every downstream
+    # GPU op (each access falls back to CPU with a MixedTypeError).
+    df = pd.DataFrame(rec_cols(rows))
+    df["date"] = pd.to_datetime(df["date"]).astype("datetime64[us]")
     df["pe"] = pd.to_numeric(df["pe"], errors="coerce")
-    _normalize_codes(df, "code")
     df = df.dropna(subset=["pe"])
     df = df[df["pe"] > 0]
     return df
@@ -94,11 +93,12 @@ def compute_etf_pe_harmonic(
     snapshot for all dates, mirroring the index dividend_yield pattern).
 
     Args:
-        etf_dates_df: DataFrame with columns code (etf code with suffix),
+        etf_dates_df: DataFrame with columns code (etf code WITH suffix),
             date. Defines the (etf, date) pairs to compute PE for.
-        composition_df: DataFrame with columns etf_code, stock_code,
-            weight_fraction. Latest snapshot per ETF.
-        stock_pe_df: DataFrame with columns date, code (bare stock code),
+        composition_df: DataFrame with columns etf_code (WITH suffix),
+            stock_code (WITH suffix), weight_fraction. Latest snapshot
+            per ETF.
+        stock_pe_df: DataFrame with columns date, code (suffixed),
             pe. Per-date stock PE.
         verbose: print progress + cuDF router decisions.
 
@@ -110,16 +110,12 @@ def compute_etf_pe_harmonic(
             print("    [ETF-PE] empty input — skipping PE aggregation", flush=True)
         return pd.DataFrame(columns=["code", "date", "pe"])
 
-    # Prepare: strip suffixes from etf_codes in etf_dates_df and composition.
+    # All sides are suffixed codes — direct joins, no bare-key juggling.
     # Keep dates as datetime64 (NOT .dt.date — Python date objects break cuDF).
     etf_dates = etf_dates_df[["code", "date"]].copy()
-    etf_dates["etf_code_bare"] = etf_dates["code"].apply(_strip_suffix)
     etf_dates["date"] = pd.to_datetime(etf_dates["date"])
 
-    comp = composition_df.copy()
-    comp["etf_code_bare"] = comp["etf_code"].apply(_strip_suffix)
-    comp["stock_code_bare"] = comp["stock_code"].apply(_strip_suffix)
-    comp = comp[["etf_code_bare", "stock_code_bare", "weight_fraction"]]
+    comp = composition_df[["etf_code", "stock_code", "weight_fraction"]].copy()
 
     stock_pe = stock_pe_df[["date", "code", "pe"]].copy()
     stock_pe["date"] = pd.to_datetime(stock_pe["date"])
@@ -128,7 +124,8 @@ def compute_etf_pe_harmonic(
     # Result: one row per (etf, constituent, date) — the Cartesian product
     # of composition pairs × dates. This is the large intermediate (~20M rows)
     # that benefits from GPU.
-    unique_etf_dates = etf_dates[["etf_code_bare", "date"]].drop_duplicates()
+    unique_etf_dates = etf_dates.rename(
+        columns={"code": "etf_code"})[["etf_code", "date"]].drop_duplicates()
 
     if verbose:
         print(f"    [ETF-PE] {len(comp):,} (etf, stock) composition pairs, "
@@ -138,7 +135,7 @@ def compute_etf_pe_harmonic(
     # Merge composition with etf_dates to get (etf, stock, date) triples
     # then merge with stock_pe on (stock_code, date) to get PE per constituent.
     # The merge is the compute-intensive step — use cuDF if worthwhile.
-    merge_left = comp.merge(unique_etf_dates, on="etf_code_bare", how="inner")
+    merge_left = comp.merge(unique_etf_dates, on="etf_code", how="inner")
 
     if verbose:
         print(f"    [ETF-PE] {len(merge_left):,} (etf, stock, date) triples "
@@ -150,13 +147,13 @@ def compute_etf_pe_harmonic(
 
     merged = merge_left.merge(
         stock_pe,
-        left_on=["stock_code_bare", "date"],
+        left_on=["stock_code", "date"],
         right_on=["code", "date"],
         how="inner",
     )
     merged["w_over_pe"] = merged["weight_fraction"] / merged["pe"]
     result = merged.groupby(
-        ["etf_code_bare", "date"], sort=False
+        ["etf_code", "date"], sort=False
     ).agg(
         sum_w=("weight_fraction", "sum"),
         sum_w_over_pe=("w_over_pe", "sum"),
@@ -172,10 +169,7 @@ def compute_etf_pe_harmonic(
         np.nan,
     )
 
-    # Map back to full etf codes with suffixes
-    code_map = etf_dates[["code", "etf_code_bare"]].drop_duplicates("etf_code_bare")
-    result = result.merge(code_map, on="etf_code_bare", how="inner")
-    result = result[["code", "date", "pe"]]
+    result = result.rename(columns={"etf_code": "code"})[["code", "date", "pe"]]
 
     if verbose:
         n_non_null = result["pe"].notna().sum()
@@ -192,7 +186,13 @@ def extract_latest_composition(comp_long: pd.DataFrame) -> pd.DataFrame:
     and hasn't inserted it into the DB yet. Falls back to querying the DB
     via fetch_latest_etf_composition otherwise.
 
-    Returns DataFrame with columns: etf_code, stock_code, weight_fraction.
+    Args:
+        comp_long: combined per-file composition frame (canonical CSVs:
+            etf_code and stock_code both already suffixed — the download
+            conversion guarantees it; rows failing validation are dropped).
+
+    Returns DataFrame with columns: etf_code (WITH suffix), stock_code
+    (WITH suffix), weight_fraction.
     """
     if comp_long is None or comp_long.empty:
         return pd.DataFrame(columns=["etf_code", "stock_code", "weight_fraction"])
@@ -225,14 +225,18 @@ def extract_latest_composition(comp_long: pd.DataFrame) -> pd.DataFrame:
         0.0,
     )
 
-    # Filter to valid stock codes
-    comp_latest["stock_code_bare"] = comp_latest["stock_code"].apply(
-        lambda s: str(s).split(".")[0].zfill(6) if s else ""
-    )
+    # Canonical composition CSVs carry SUFFIXED etf_code and stock_code —
+    # read them whole and validate (no splitting, no mapping).
+    comp_latest["etf_code"] = comp_latest["etf_code"].astype(str).str.strip()
     comp_latest = comp_latest[
-        comp_latest["stock_code_bare"].str.match(r"^\d{6}$")
+        comp_latest["etf_code"].str.match(VALID_ETF_RE)
     ]
 
-    return comp_latest[["etf_code", "stock_code", "weight_fraction"]].rename(
-        columns={"etf_code": "etf_code"}
-    )
+    # Stock codes are already suffixed by the canonical CSVs — validate
+    # and keep as-is (no stripping, no prefix inference).
+    comp_latest["stock_code"] = comp_latest["stock_code"].astype(str).str.strip()
+    comp_latest = comp_latest[
+        comp_latest["stock_code"].str.match(VALID_STOCK_RE)
+    ]
+
+    return comp_latest[["etf_code", "stock_code", "weight_fraction"]]

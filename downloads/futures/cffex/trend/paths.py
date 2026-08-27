@@ -14,7 +14,7 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from downloads._common.core import resolve_out_dir
+from downloads._common import resolve_out_dir
 from downloads.futures.cffex.trend.config import TREND_DIRNAME
 
 

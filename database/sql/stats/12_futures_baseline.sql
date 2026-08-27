@@ -36,10 +36,14 @@ CREATE TABLE IF NOT EXISTS stats.futures_identity (
     underlying_name           TEXT          NOT NULL,
     days_to_expiry            INTEGER       NOT NULL DEFAULT 0,
 
-    CONSTRAINT pk_futures_identity PRIMARY KEY (date, code),
+    CONSTRAINT pk_futures_identity PRIMARY KEY (code, date),
     CONSTRAINT chk_futures_identity_code_format
         CHECK (code ~ '^(IC|IF|IH|IM|T|TF|TL|TS)[0-9]{4}$')
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'futures_identity', 8);
 
 COMMENT ON TABLE  stats.futures_identity              IS 'Futures identity: one row per (date, contract_code). PK shared by all futures sub-tables. Source: CFFEX archive CSV files (temps/cffex_archive/YYYYMM/YYYYMMDD_futures.csv).';
 COMMENT ON COLUMN stats.futures_identity.code          IS 'Futures contract code, e.g. "IC2607" (CSI500 July 2026), "T2609" (10Y Treasury Sep 2026).';
@@ -74,9 +78,13 @@ CREATE TABLE IF NOT EXISTS stats.futures_basic_stats (
     open_interest_change      NUMERIC(24,4),
     delta                     NUMERIC(18,8),
 
-    CONSTRAINT pk_futures_basic_stats PRIMARY KEY (date, code),
-    CONSTRAINT fk_futures_basic_stats_date_code FOREIGN KEY (date, code) REFERENCES stats.futures_identity(date, code)
-);
+    CONSTRAINT pk_futures_basic_stats PRIMARY KEY (code, date),
+    CONSTRAINT fk_futures_basic_stats_date_code FOREIGN KEY (code, date) REFERENCES stats.futures_identity(code, date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('stats', 'futures_basic_stats', 8);
 
 COMMENT ON TABLE  stats.futures_basic_stats               IS 'Futures daily OHLCV + settlement + volume + open interest. Source: CFFEX archive CSV columns mapped by builds/futures/loader.py.';
 COMMENT ON COLUMN stats.futures_basic_stats.open          IS 'Opening price (今开盘).';
@@ -133,10 +141,14 @@ COMMENT ON COLUMN stats.futures_identity.days_to_expiry IS 'Calendar days from t
 
 -- ----------------------------------------------------------------------------
 -- Indexes for futures_identity
+--   Legacy (code, date) index is redundant with the code-first PK — replaced
+--   by a date-first index.
 -- ----------------------------------------------------------------------------
 
-CREATE INDEX IF NOT EXISTS idx_futures_identity_code_date
-    ON stats.futures_identity (code, date);
+DROP INDEX IF EXISTS stats.idx_futures_identity_code_date;
+
+CREATE INDEX IF NOT EXISTS idx_futures_identity_date
+    ON stats.futures_identity (date);
 
 CREATE INDEX IF NOT EXISTS idx_futures_identity_product_date
     ON stats.futures_identity (product_code, date);
@@ -151,8 +163,10 @@ CREATE INDEX IF NOT EXISTS idx_futures_identity_underlying_date
 -- Indexes for futures_basic_stats
 -- ----------------------------------------------------------------------------
 
-CREATE INDEX IF NOT EXISTS idx_futures_basic_stats_code_date
-    ON stats.futures_basic_stats (code, date);
+DROP INDEX IF EXISTS stats.idx_futures_basic_stats_code_date;
+
+CREATE INDEX IF NOT EXISTS idx_futures_basic_stats_date
+    ON stats.futures_basic_stats (date);
 
 CREATE INDEX IF NOT EXISTS idx_futures_basic_stats_settlement
     ON stats.futures_basic_stats (settlement_price);

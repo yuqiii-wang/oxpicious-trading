@@ -60,7 +60,12 @@ CREATE TABLE IF NOT EXISTS analysis.intraday_industry_market_movements (
     -- directly without recomputing on every render.
     industry_price_pct_vs_benchmark_price_pct  FLOAT,
     PRIMARY KEY (industry_id, date, time, benchmark_code)
-);
+) PARTITION BY HASH (industry_id);
+
+-- Native hash partitions (8) keyed by industry_id
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'intraday_industry_market_movements', 8);
 
 -- Idempotent migration for existing DBs that already have the table from a
 -- prior schema version (without this column). ADD COLUMN IF NOT EXISTS is
@@ -81,7 +86,11 @@ CREATE TABLE IF NOT EXISTS analysis.intraday_index_market_movements (
         REFERENCES analysis.intraday_industry_market_movements
         (industry_id, date, time, benchmark_code)
         ON DELETE CASCADE
-);
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'intraday_index_market_movements', 8);
 
 CREATE INDEX IF NOT EXISTS idx_intraday_ind_mm_bench_dt
     ON analysis.intraday_industry_market_movements (benchmark_code, date, time);

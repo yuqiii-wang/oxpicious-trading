@@ -41,7 +41,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[4]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from downloads._common.core import COMMON_BASE_HEADERS, DEFAULT_START_DATE, LONG_SLEEP_INTERVAL  # noqa: E402
+from downloads._common import COMMON_BASE_HEADERS, DEFAULT_START_DATE, LONG_SLEEP_INTERVAL  # noqa: E402
 from downloads.macro.gov.main_gov import (  # noqa: E402
     SourceConfig,
     download_source,

@@ -51,6 +51,16 @@ Usage:
   python -m builds.index.baseline
   python -m builds.index.baseline --force   (rebuild all daily tables)
 """
+
+# resource pre-check -- exit early when sys/GPU memory is insufficient
+from _common.pre_check import pre_check
+
+pre_check()
+
+# cudf.pandas activation — must run before pandas first import
+from _common.df_utils._activate import activate
+activate()
+
 import argparse
 import asyncio
 import time
@@ -64,6 +74,7 @@ from _common.build_commons import (
 
 setup_utf8_stdout()
 
+from builds._commons.code_filter import add_code_arg, normalize_code
 from builds.index.baseline.paths import CSINDEX_DIR
 from builds.index.baseline.shared_weights import fetch_index_shared_weights
 from builds.index.baseline.build_daily import build_daily_df
@@ -76,6 +87,7 @@ from builds.index.baseline.db_insert import insert_daily_to_db
 async def main():
     ap = argparse.ArgumentParser()
     add_common_build_args(ap)
+    add_code_arg(ap)
     ap.add_argument(
         "--refresh-estimated-days",
         type=int,
@@ -92,14 +104,23 @@ async def main():
     )
     args = ap.parse_args()
 
+    # Index codes are bare 6-digit codes (e.g. 000300) — strip the
+    # exchange suffix normalize_code may have appended.
+    code_filter = normalize_code(args.code)
+    if code_filter:
+        code_filter = code_filter.split(".")[0]
+
     t0 = time.time()
     print_build_header(
         "BUILD CSINDEX DAILY  ·  missing-data-only → DATABASE",
         **{
             "CSIndex dir": CSINDEX_DIR,
+            "Code filter": code_filter or "(none — all indices)",
             "Today":       TODAY_STR,
         }
     )
+    if code_filter:
+        print(f"    [CODE FILTER] Restricting build to single index: {code_filter}", flush=True)
 
     # ------------------------------------------------------------------
     # 1. Connect to DB and query existing keys
@@ -109,14 +130,33 @@ async def main():
 
     try:
         if args.force:
-            print("    [DB] Force mode: truncating existing daily tables", flush=True)
-            # NOTE: stats.index_intraday_5min is owned by stream_sse_price.py
-            # (real-time SSE streaming) and is intentionally NOT truncated here.
-            for tbl in ("stats.index_tech_stats",
-                        "stats.index_valuation", "stats.index_basic_stats",
-                        "stats.index_identity"):
-                await truncate_table_async(conn, tbl)
-            existing_daily_keys = set()
+            if code_filter:
+                # Single-code force mode: DELETE only this index's rows
+                # (FK children first, identity last) instead of truncating.
+                print(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code", flush=True)
+                for tbl in ("stats.index_tech_stats",
+                            "stats.index_valuation", "stats.index_basic_stats",
+                            "stats.index_identity"):
+                    await conn.execute(f"DELETE FROM {tbl} WHERE code = $1", code_filter)
+                existing_daily_keys = set()
+            else:
+                print("    [DB] Force mode: truncating existing daily tables", flush=True)
+                # NOTE: stats.index_intraday_5min is owned by stream_sse_price.py
+                # (real-time SSE streaming) and is intentionally NOT truncated here.
+                for tbl in ("stats.index_tech_stats",
+                            "stats.index_valuation", "stats.index_basic_stats",
+                            "stats.index_identity"):
+                    await truncate_table_async(conn, tbl)
+                existing_daily_keys = set()
+        elif code_filter:
+            # Single-code mode: only check this index's (date, code) pairs
+            # so dates loaded for OTHER indices don't mask this code's gaps.
+            key_rows = await conn.fetch(
+                "SELECT date, code FROM stats.index_tech_stats WHERE code = $1",
+                code_filter,
+            )
+            existing_daily_keys = {(r["date"], r["code"]) for r in key_rows}
+            print(f"    [DB] {len(existing_daily_keys):,} existing (date, code) pairs in stats.index_tech_stats for code {code_filter}", flush=True)
         else:
             # Use index_tech_stats (the LAST table in the insert sequence) for
             # the existing-keys check, NOT index_identity. Each table's upsert
@@ -174,7 +214,11 @@ async def main():
         print(f"    [DB] {len(shared_weights):,} index shared-weight pairs loaded "
               f"for close estimation", flush=True)
 
-        daily_df = build_daily_df(existing_daily_keys, shared_weights=shared_weights)
+        daily_df = build_daily_df(existing_daily_keys, shared_weights=shared_weights,
+                                  code_filter=code_filter)
+
+        # (--code filtering is pushed down into build_daily_df / loaders —
+        # only this code's source files are ever read.)
 
         # ------------------------------------------------------------------
         # 3. Insert to database

@@ -28,7 +28,7 @@ except ImportError as _e:  # pragma: no cover
         "Install with: pip install curl_cffi"
     ) from _e
 
-from downloads._common.core import LONG_SLEEP_INTERVAL
+from downloads._common import LONG_SLEEP_INTERVAL
 
 
 PBOC_BASE = "https://www.pbc.gov.cn"

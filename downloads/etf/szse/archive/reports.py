@@ -14,7 +14,7 @@ Workflow per ETF:
 Anti-bot: uses LONG_SLEEP_INTERVAL (90s) between HTTP requests as the
 SZSE disclosure endpoint blocks on request volume.
 
-ETF universe source: ``stats.etf_identity`` (code_suffix='SZ'). The DB
+ETF universe source: ``stats.etf_identity`` (exchange='SZ'). The DB
 stores codes as ``160812.SZ``; the bare 6-digit code is sent to the API.
 
 Output layout::
@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from downloads._common.core import (
+from downloads._common import (
     DEFAULT_START_DATE,
     DEFAULT_TIMEOUT,
     LONG_SLEEP_INTERVAL,
@@ -275,7 +275,7 @@ def fetch_sz_etf_codes(
                         "  ORDER BY c.parent_index_is_primary DESC"
                         "  LIMIT 1"
                         ") sc ON TRUE "
-                        "WHERE i.code_suffix = 'SZ' "
+                        "WHERE i.exchange = 'SZ' "
                         "ORDER BY i.code DESC"
                     )
                 else:
@@ -290,7 +290,7 @@ def fetch_sz_etf_codes(
                         "  ORDER BY c.parent_index_is_primary DESC"
                         "  LIMIT 1"
                         ") sc ON TRUE "
-                        "WHERE i.code_suffix = 'SZ' "
+                        "WHERE i.exchange = 'SZ' "
                         "ORDER BY i.code DESC"
                     )
             else:
@@ -299,7 +299,7 @@ def fetch_sz_etf_codes(
                 # since this branch returns ALL active SZ ETFs.
                 cur.execute(
                     "SELECT i.code, i.name FROM stats.etf_identity i "
-                    "WHERE i.code_suffix = 'SZ' "
+                    "WHERE i.exchange = 'SZ' "
                     "  AND EXISTS ("
                     "    SELECT 1 FROM stats.sec_classification c"
                     "    WHERE c.code = i.code"

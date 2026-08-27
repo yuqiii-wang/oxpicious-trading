@@ -30,11 +30,13 @@
  *      lows (the floor) from history, converging and stopping at the
  *      clicked date (two points determining a line).
  *   5. Market Hype section beneath the OHLC Window row — a "Market Hype"
- *      row label with 2 check-in window buttons (20/60d,
+ *      row label with check-in window buttons (5/20/60/120/255d,
  *      period-column aligned, same chip style as every other button
- *      row). Clicking one shades the chart's hyped date periods with a
- *      light purple markArea (analysis.mov_ave_market_hypes); the
- *      caption below reports the latest date's hyped state.
+ *      row). Clicking toggles that window's light purple markArea over
+ *      the chart's hyped date periods (analysis.mov_ave_market_hypes);
+ *      MULTIPLE windows can be enabled at once — overlapping shades
+ *      stack darker. The caption below reports each enabled window's
+ *      stats and the latest date's hyped state.
  *   6. Date-range slider at the bottom of the plot — drives all 9 pairs
  *      (they share one date axis).
  *
@@ -175,10 +177,18 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // this date. Clicking the same date again clears it.
   const [ohlcClickIdx, setOhlcClickIdx] = useState<number | null>(null);
 
-  // Enabled market-hype check-in window (trading days) — null = off.
+  // ENABLED market-hype check-in windows (trading days) — empty = off.
   // Selected via the Market Hype button row beneath the OHLC Window row;
-  // shades the chart's hyped date periods light purple.
-  const [hypeWindow, setHypeWindow] = useState<number | null>(null);
+  // each enabled window shades the chart's hyped date periods light
+  // purple (multi-select — overlapping windows' shades stack darker).
+  const [hypeWindows, setHypeWindows] = useState<number[]>([]);
+
+  // Toggle one hype check-in window in the enabled set (multi-select).
+  const toggleHypeWindow = useCallback((w: number) => {
+    setHypeWindows((prev) =>
+      prev.includes(w) ? prev.filter((x) => x !== w) : [...prev, w],
+    );
+  }, []);
 
   // Fetch chart data on mount and whenever the code/sec_type changes.
   useEffect(() => {
@@ -301,34 +311,63 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     return m;
   }, [hypeEpisodes, lastChartDate]);
 
-  // Stats for the caption under the selected hype window: number of hyped
-  // TRADING days in the full history (episode spans), the per-leg check-in
-  // day counts (amt / σ legs — diagnostics for which leg drove the
-  // episodes), and the last hyped date.
-  const hypeSelectedStats = useMemo(() => {
-    if (hypeWindow == null || hypeEpisodes == null) return null;
-    const eps = hypeEpisodes[hypeWindow] ?? [];
-    let count = 0;
-    let amtDays = 0;
-    let stdDays = 0;
-    let lastDate: string | null = null;
-    let hasLegData = false;
-    for (const ep of eps) {
-      count += ep.hypeDays;
-      if (ep.tradingAmtHypeDays != null && ep.stdHypeDays != null) {
-        hasLegData = true;
-        amtDays += ep.tradingAmtHypeDays;
-        stdDays += ep.stdHypeDays;
+  // Stats for the caption under the hype buttons, per ENABLED window:
+  // number of hyped TRADING days in the full history (episode spans), the
+  // per-leg check-in day counts (amt / σ legs — diagnostics for which leg
+  // drove the episodes), and the last hyped date.
+  const hypeWindowStats = useMemo(() => {
+    const m = new Map<
+      number,
+      {
+        count: number;
+        amtDays: number | null;
+        stdDays: number | null;
+        lastDate: string | null;
       }
-      if (lastDate == null || ep.endDate > lastDate) lastDate = ep.endDate;
+    >();
+    if (hypeEpisodes == null) return m;
+    for (const w of HYPE_WINDOWS) {
+      if (!hypeWindows.includes(w)) continue;
+      const eps = hypeEpisodes[w] ?? [];
+      let count = 0;
+      let amtDays = 0;
+      let stdDays = 0;
+      let lastDate: string | null = null;
+      let hasLegData = false;
+      for (const ep of eps) {
+        count += ep.hypeDays;
+        if (ep.tradingAmtHypeDays != null && ep.stdHypeDays != null) {
+          hasLegData = true;
+          amtDays += ep.tradingAmtHypeDays;
+          stdDays += ep.stdHypeDays;
+        }
+        if (lastDate == null || ep.endDate > lastDate) lastDate = ep.endDate;
+      }
+      m.set(w, {
+        count,
+        amtDays: hasLegData ? amtDays : null,
+        stdDays: hasLegData ? stdDays : null,
+        lastDate,
+      });
     }
-    return {
-      count,
-      amtDays: hasLegData ? amtDays : null,
-      stdDays: hasLegData ? stdDays : null,
-      lastDate,
-    };
-  }, [hypeWindow, hypeEpisodes]);
+    return m;
+  }, [hypeWindows, hypeEpisodes]);
+
+  // Exclusive upper bound (trading days) of a hype window's episode-span
+  // bucket: the window's own length as the minimum, the next window as the
+  // exclusive maximum (255d's tail is 5100 = the whole ±10y base).
+  const hypeBucketUpper = useCallback((w: number): number => {
+    const next =
+      HYPE_WINDOWS[HYPE_WINDOWS.indexOf(w as (typeof HYPE_WINDOWS)[number]) + 1] ??
+      5100;
+    return next - 1;
+  }, []);
+
+  // Enabled hype windows in HYPE_WINDOWS order (stable caption ordering).
+  const enabledHypeWindows = useMemo(
+    () => HYPE_WINDOWS.filter((w) => hypeWindows.includes(w)),
+    [hypeWindows],
+  );
 
   // Clamp selectedPairIdx to valid range.
   const safePairIdx = Math.min(selectedPairIdx, Math.max(0, pairs.length - 1));
@@ -664,17 +703,19 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
             </Typography>
           )}
 
-          {/* ---- Market Hype buttons ----
+          {/* ---- Market Hype buttons (multi-select) ----
               Same layout and chip style as the OHLC Window row: full-width
               row label on its own line, then the check-in window buttons
               (5/20/60/120/255d) aligned with the pair chips' MA columns —
               each window doubles as an episode-span BUCKET (its own length
               as the minimum, the next window as the exclusive maximum), so
               each calendar turmoil lands in exactly the bucket matching
-              its length. Clicking a button shades the chart's hyped date
-              periods light purple (clicking the active one again turns the
-              shading off). The latest date's hyped state is reported in
-              the caption below, not on the buttons. */}
+              its length. Clicking a button toggles that window's light
+              purple shading of the chart's hyped date periods — MULTIPLE
+              windows can be enabled at once and their shades overlap
+              (stacking darker where they coincide). The latest date's
+              hyped state is reported in the caption below, not on the
+              buttons. */}
           <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
             {/* Row label */}
             <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
@@ -683,8 +724,8 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                 component="span"
                 sx={{
                   fontSize: "0.65rem",
-                  color: hypeWindow != null ? "primary.main" : "text.secondary",
-                  fontWeight: hypeWindow != null ? 700 : 400,
+                  color: hypeWindows.length > 0 ? "primary.main" : "text.secondary",
+                  fontWeight: hypeWindows.length > 0 ? 700 : 400,
                 }}
               >
                 Market Hype
@@ -697,43 +738,37 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                 size="small"
                 clickable
                 disabled={!hasHypeData}
-                color={hypeWindow === w ? "primary" : "default"}
-                variant={hypeWindow === w ? "filled" : "outlined"}
-                onClick={() =>
-                  setHypeWindow((prev) => (prev === w ? null : w))
-                }
+                color={hypeWindows.includes(w) ? "primary" : "default"}
+                variant={hypeWindows.includes(w) ? "filled" : "outlined"}
+                onClick={() => toggleHypeWindow(w)}
                 sx={{ gridColumn: col + 1, ...PERIOD_CHIP_SX }}
               />
             ))}
           </Box>
-          {hypeWindow != null && (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
-            >
-              light purple shading marks hyped periods ({hypeWindow}d bucket
-              · episodes spanning {hypeWindow}-
-              {(HYPE_WINDOWS[HYPE_WINDOWS.indexOf(hypeWindow as (typeof HYPE_WINDOWS)[number]) + 1] ?? 5100) - 1}
-              trading days · trading amt + volatility check-ins vs their
-              centered 20y (±10y) percentiles)
-              {hypeSelectedStats
-                ? ` · ${hypeSelectedStats.count} hyped ${
-                    hypeSelectedStats.count === 1 ? "day" : "days"
-                  }` +
-                  (hypeSelectedStats.amtDays != null &&
-                  hypeSelectedStats.stdDays != null
-                    ? ` (amt ${hypeSelectedStats.amtDays} · σ ${hypeSelectedStats.stdDays})`
+          {enabledHypeWindows.map((w) => {
+            const st = hypeWindowStats.get(w);
+            return (
+              <Typography
+                key={w}
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+              >
+                light purple shading marks hyped periods ({w}d bucket ·
+                episodes spanning {w}-{hypeBucketUpper(w)} trading days ·
+                trading amt + volatility check-ins vs their centered 20y
+                (±10y) percentiles){st ? ` · ${st.count} hyped ${
+                  st.count === 1 ? "day" : "days"
+                }` +
+                  (st.amtDays != null && st.stdDays != null
+                    ? ` (amt ${st.amtDays} · σ ${st.stdDays})`
                     : "") +
-                  (hypeSelectedStats.lastDate
-                    ? ` · last ${hypeSelectedStats.lastDate}`
-                    : "")
+                  (st.lastDate ? ` · last ${st.lastDate}` : "")
                 : ""}
-              {latestHypeFlags.get(hypeWindow) === true
-                ? " · currently hyped"
-                : ""}
-            </Typography>
-          )}
+                {latestHypeFlags.get(w) === true ? " · currently hyped" : ""}
+              </Typography>
+            );
+          })}
           {!hasHypeData && (
             <Typography
               variant="caption"
@@ -757,7 +792,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                   themeMode,
                   ohlcMode,
                   bollingerK,
-                  hypeWindow,
+                  hypeWindows,
                   hypeEpisodes: chartData?.hypeEpisodes ?? null,
                 })
               : buildPairOption({
@@ -770,7 +805,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                   ohlcWindow,
                   ohlcClickIdx,
                   ohlcRows: chartData?.ohlc ?? null,
-                  hypeWindow,
+                  hypeWindows,
                   hypeEpisodes: chartData?.hypeEpisodes ?? null,
                 })
           }

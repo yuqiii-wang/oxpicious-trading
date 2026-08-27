@@ -1,22 +1,22 @@
 /**
- * Margin Trends analysis service — INDUSTRY-LEVEL, SECURITY-PAIR.
+ * Margin Trends analysis service — INDUSTRY-LEVEL.
  *
- * Two endpoints feed the 2-plot single-industry page:
+ * Two endpoints feed the single-industry margin trends page:
  *   • themes / strategy-themes — L1 sector → L2 industry tree from
  *     analysis.margin_industry_stats (industries WITH margin data only)
  *   • industry-series — per-(security, date) margin series for ONE
  *     industry + attribution. 'index' reads the margin_index_series
- *     VIEW (weighted-avg constituent-stock margin); 'etf' reads
- *     stats.etf_liquidity_margin for the industry's ETFs.
- *   • industry-correlation — precomputed pairwise rolling Pearson
- *     correlation from analysis.margin_industry_correlation, filtered
- *     to the user-selected security codes.
+ *     TABLE (weighted-avg constituent-stock margin, built by Python
+ *     vectorization); 'etf' reads stats.etf_liquidity_margin for the
+ *     industry's ETFs.
+ *   • trends — sustained UP/DOWN trend episodes from
+ *     analysis.margin_changes (shade overlay on the series plot).
  *
  * Sources:
  *   analysis.margin_industry_stats        — industry tree (themes)
- *   analysis.margin_index_series (VIEW)   — 'index' series
+ *   analysis.margin_index_series (TABLE)  — 'index' series
  *   stats.etf_liquidity_margin            — 'etf' series
- *   analysis.margin_industry_correlation  — pairwise corr (precomputed)
+ *   analysis.margin_changes               — trend episodes
  *
  * RONGZI (融资 / cash-borrow) only — RONQIN (融券 / sec borrow) EXCLUDED.
  */
@@ -25,12 +25,9 @@ import type { QueryResultRow } from "pg";
 import { buildStrategyThemesFromRows } from "../_shared.js";
 import type {
   MarginIndustrySeriesResponse,
-  MarginIndustryCorrelationResponse,
   MarginTrendsShadeResponse,
   MarginSeriesRow,
   MarginSecurity,
-  MarginCorrPair,
-  MarginCorrRow,
   MarginAttributionType,
   SectorNode,
   IndustryNode,
@@ -71,13 +68,6 @@ interface DbSecurityRow extends QueryResultRow {
   name: string;
 }
 
-interface DbCorrRow extends QueryResultRow {
-  date: Date | string;
-  security_code: string;
-  benchmark_code: string;
-  corr: string | number | null;
-}
-
 // ----------------------------------------------------------------------------
 //  META_SQL — one row per industry that has rows in
 //  analysis.margin_industry_stats, JOINed with stats.sec_classification
@@ -109,7 +99,7 @@ const META_SQL = `
 
 // ----------------------------------------------------------------------------
 //  ITEMS_SQL — securities per industry, parametrized by attribution.
-//    attribution='index' → distinct index_code from margin_index_series VIEW
+//    attribution='index' → distinct index_code from margin_index_series TABLE
 //    attribution='etf'   → ETF codes from sec_classification
 //  Returns (industry_id, code, name) for populating the L3 items[] in each
 //  IndustryNode, so SecClassificationNav shows non-zero counts + clickable
@@ -246,10 +236,10 @@ export async function listMarginTrendStrategyThemes(): Promise<StrategyNode[]> {
 // ----------------------------------------------------------------------------
 //  getMarginIndustrySeries — per-(security, date) margin series for ONE
 //  industry + ONE attribution. Returns the securities list (codes + labels)
-//  and the full daily series, so the 1st plot can render one line per
-//  security and the 2nd plot can offer a security multi-select.
+//  and the full daily series, so the series plot can render one line per
+//  security.
 //
-//  attribution='index' → analysis.margin_index_series VIEW (weighted-avg
+//  attribution='index' → analysis.margin_index_series TABLE (weighted-avg
 //    constituent-stock margin per index_code). Securities = distinct
 //    index_code values with their sec_classification.name label.
 //  attribution='etf'   → stats.etf_liquidity_margin for the industry's
@@ -378,91 +368,6 @@ export async function getMarginIndustrySeries(
 }
 
 // ----------------------------------------------------------------------------
-//  getMarginIndustryCorrelation — precomputed pairwise rolling Pearson
-//  correlation from analysis.margin_industry_correlation, filtered to the
-//  user-selected security codes. Returns all pairs among the selected
-//  codes (security_code < benchmark_code) and their per-date corr values
-//  for the chosen series + window.
-//
-//  The corr column name is built from validated series + window values
-//  (corr_balance_60d / corr_buy_255d / …) — safe to interpolate.
-// ----------------------------------------------------------------------------
-const VALID_WINDOWS = new Set([5, 20, 60, 120, 255]);
-
-export async function getMarginIndustryCorrelation(
-  rawIndustryId: string,
-  rawAttribution: string,
-  rawCodes: string[],
-  rawSeries: string,
-  rawWindow: string | number,
-): Promise<MarginIndustryCorrelationResponse> {
-  const industryId = (rawIndustryId ?? "").trim();
-  if (!industryId) {
-    throw new Error("industry_id is required.");
-  }
-  const attribution: MarginAttributionType =
-    rawAttribution === "etf" ? "etf" : "index";
-  const series: "balance" | "buy" = rawSeries === "buy" ? "buy" : "balance";
-  const window = Number(rawWindow);
-  if (!VALID_WINDOWS.has(window)) {
-    throw new Error(`Invalid window: ${rawWindow}. Must be one of 5,20,60,120,255.`);
-  }
-  const codes = (rawCodes ?? []).map((c) => c.trim()).filter(Boolean);
-  if (codes.length < 2) {
-    return {
-      industry_id: industryId,
-      attribution,
-      series,
-      window,
-      pairs: [],
-      rows: [],
-    };
-  }
-
-  const corrCol = `corr_${series}_${window}d`;
-  const sql = `
-    SELECT date, security_code, benchmark_code, ${corrCol} AS corr
-    FROM analysis.margin_industry_correlation
-    WHERE industry_id = $1::text
-      AND attribution_type = $2::text
-      AND security_code = ANY($3::text[])
-      AND benchmark_code = ANY($3::text[])
-    ORDER BY date, security_code, benchmark_code
-  `;
-  const rows = await queryRows<DbCorrRow>(sql, [industryId, attribution, codes]);
-
-  const corrRows: MarginCorrRow[] = rows.map((r) => ({
-    date: formatDate(r.date),
-    security_code: r.security_code,
-    benchmark_code: r.benchmark_code,
-    corr: toNum(r.corr),
-  }));
-
-  // Distinct pairs (preserve first-seen order).
-  const seen = new Set<string>();
-  const pairs: MarginCorrPair[] = [];
-  for (const r of rows) {
-    const key = `${r.security_code}|${r.benchmark_code}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      pairs.push({
-        security_code: r.security_code,
-        benchmark_code: r.benchmark_code,
-      });
-    }
-  }
-
-  return {
-    industry_id: industryId,
-    attribution,
-    series,
-    window,
-    pairs,
-    rows: corrRows,
-  };
-}
-
-// ----------------------------------------------------------------------------
 //  getMarginTrends — sustained UP/DOWN TREND EPISODES for the securities in
 //  ONE industry + ONE attribution, from analysis.margin_changes. Returns
 //  (code, start_date, end_date, is_trend_up_not_down) per episode so the
@@ -476,6 +381,7 @@ interface DbTrendRow extends QueryResultRow {
   start_date: Date | string;
   end_date: Date | string;
   is_trend_up_not_down: boolean;
+  rz_buy_vs_trading_amt_ratio: string | number | null;
 }
 
 const INDEX_TRENDS_SQL = `
@@ -484,7 +390,8 @@ const INDEX_TRENDS_SQL = `
     FROM analysis.margin_index_series
     WHERE industry_id = $1::text
   )
-  SELECT t.code, t.start_date, t.end_date, t.is_trend_up_not_down
+  SELECT t.code, t.start_date, t.end_date, t.is_trend_up_not_down,
+         t.rz_buy_vs_trading_amt_ratio
   FROM analysis.margin_changes t
   JOIN industry_codes ic ON ic.code = t.code
   WHERE t.sec_type = 'index'
@@ -500,7 +407,8 @@ const ETF_TRENDS_SQL = `
       AND sc.parent_index_is_primary = TRUE
       AND sc.is_active = TRUE
   )
-  SELECT t.code, t.start_date, t.end_date, t.is_trend_up_not_down
+  SELECT t.code, t.start_date, t.end_date, t.is_trend_up_not_down,
+         t.rz_buy_vs_trading_amt_ratio
   FROM analysis.margin_changes t
   JOIN industry_codes ic ON ic.code = t.code
   WHERE t.sec_type = 'etf'
@@ -526,6 +434,7 @@ export async function getMarginTrends(
     start_date: formatDate(r.start_date),
     end_date: formatDate(r.end_date),
     is_trend_up_not_down: r.is_trend_up_not_down,
+    rz_buy_vs_trading_amt_ratio: toNum(r.rz_buy_vs_trading_amt_ratio),
   }));
 
   return {

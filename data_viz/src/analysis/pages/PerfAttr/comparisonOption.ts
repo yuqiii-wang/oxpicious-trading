@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Build the ECharts option for the Subject vs Benchmark close-price
  * comparison (two-line chart). Uses the /api/analysis/perf-attr/chart
  * endpoint which returns the full date series of subject_close +
@@ -16,9 +16,10 @@
  *   • subject close (or % change)  • benchmark close (or % change)
  *   • active return / spread (subj − bench) — computed client-side from
  *     close-price diffs (returns are no longer stored in the DB).
- *   • corr_5d / corr_20d / corr_60d / corr_255d — the Pearson correlation
- *     between the two close-price series over the trailing 5 / 20 / 60 /
- *     255 trading days ending at the hovered date.
+ *   • corr_20d / corr_60d / corr_255d — the Pearson correlation
+ *     between the two close-price series over the trailing 20 / 60 /
+ *     255 trading days ending at the hovered date (materialized on
+ *     stride-20 grid dates only; NULL elsewhere).
  */
 import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
@@ -57,7 +58,6 @@ export function buildComparisonOption(
     const prev = benchmarkCloses[i - 1];
     return prev == null ? null : v - prev;
   });
-  const corr5d = data.rows.map((r) => r.corr_5d);
   const corr20d = data.rows.map((r) => r.corr_20d);
   const corr60d = data.rows.map((r) => r.corr_60d);
   const corr255d = data.rows.map((r) => r.corr_255d);
@@ -180,7 +180,6 @@ export function buildComparisonOption(
         const sr = subjectReturns[idx];
         const br = benchmarkReturns[idx];
         const ar = sr == null || br == null ? null : sr - br;
-        const c5 = corr5d[idx];
         const c20 = corr20d[idx];
         const c60 = corr60d[idx];
         const c255 = corr255d[idx];
@@ -208,9 +207,9 @@ export function buildComparisonOption(
         return `
           <div style="font-weight:600">${dates[idx]}</div>
           ${valueLines}
-          <div style="margin-top:2px;opacity:0.85">Rolling close correlation:</div>
-          <div style="opacity:0.85">  5d: <b style="color:${corrColor(c5)}">${c5 == null ? "—" : fmtNum(c5, 4)}</b>  ·  20d: <b style="color:${corrColor(c20)}">${c20 == null ? "—" : fmtNum(c20, 4)}</b></div>
-          <div style="opacity:0.85">  60d: <b style="color:${corrColor(c60)}">${c60 == null ? "—" : fmtNum(c60, 4)}</b>  ·  255d: <b style="color:${corrColor(c255)}">${c255 == null ? "—" : fmtNum(c255, 4)}</b></div>
+          <div style="margin-top:2px;opacity:0.85">Rolling close correlation (stride-20 grid):</div>
+          <div style="opacity:0.85">  20d: <b style="color:${corrColor(c20)}">${c20 == null ? "—" : fmtNum(c20, 4)}</b>  ·  60d: <b style="color:${corrColor(c60)}">${c60 == null ? "—" : fmtNum(c60, 4)}</b></div>
+          <div style="opacity:0.85">  255d: <b style="color:${corrColor(c255)}">${c255 == null ? "—" : fmtNum(c255, 4)}</b></div>
         `;
       },
     },

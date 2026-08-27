@@ -12,24 +12,27 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import date as _date
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
+# Epoch anchor for vectorized days_to_expiry math (no date objects in frames)
+_EPOCH = _date(1970, 1, 1)
+
 from builds.futures.config import (
     COL_MAP,
-    NUMERIC_COLS,
     PRODUCT_NAMES,
     PRODUCT_TYPES,
     PRODUCT_UNDERLYING,
-    _NULL_TOKENS,
     compute_expiry_date,
     normalize_contract_year_month,
     parse_contract_code,
 )
 from builds.futures.paths import CFFEX_ARCHIVE_DIR, FUTURES_CSV_PATTERN
+from downloads._common import read_csv_gpu_safe
 
 # Regex to extract YYYYMMDD from filename like "20260701_futures.csv"
 _FILENAME_DATE_RE = re.compile(r"(\d{8})")
@@ -81,84 +84,56 @@ def filter_files_by_dates(
 ) -> List[str]:
     """Filter futures CSV files to only those whose date is in target_dates.
 
-    Args:
-        files: list of file paths
-        target_dates: set of pd.Timestamp dates to keep
-
-    Returns:
-        Filtered list of file paths.
+    Fully vectorized: the YYYYMMDD token is regex-extracted from ALL paths
+    in ONE Series.str pass and matched against the target set via isin —
+    no per-file Python loop, no list append; kept paths go straight from
+    the boolean mask to a numpy ``.tolist()``.
     """
-    target_ymd = {d.strftime("%Y%m%d") for d in target_dates}
-    out: List[str] = []
-    for path in files:
-        ymd = ymd_from_futures_filename(path)
-        if ymd and ymd in target_ymd:
-            out.append(path)
-    return out
+    if not files or not target_dates:
+        return []
+    # target dates → YYYYMMDD strings without a Python loop (datetime64 →
+    # "YYYY-MM-DD" → strip "-")
+    d64 = np.asarray(sorted(target_dates), dtype="datetime64[D]")
+    target_ymd = set(np.char.replace(d64.astype("U10"), "-", ""))
+
+    paths = pd.Series(files, dtype="object")
+    # (\d{8})_futures.csv anchored at the end — separator-agnostic and
+    # equivalent to ymd_from_futures_filename (stem must be exactly 8 digits)
+    ymd = paths.str.extract(r"(\d{8})_futures\.csv$", expand=False)
+    keep = ymd.notna() & ymd.isin(target_ymd)
+    return np.asarray(paths[keep], dtype=object).tolist()
 
 
 def _read_one_csv(filepath: str) -> Optional[pd.DataFrame]:
     """Read a single futures CSV file and return a clean DataFrame.
 
-    Handles:
-      - UTF-8 BOM (files saved with BOM from download step)
-      - Trailing whitespace in contract codes (older files)
-      - "--" as null value for numeric columns
-      - Numeric coercion for all numeric columns
+    Source CSVs are generated canonical by downloads (whitespace-free cells,
+    null tokens already ""), so the read is PLAIN — no dtype argument, no
+    post-parse coercion. pandas auto-inference lands every column on its
+    final type (str contract ids, float64 numerics); a column that cannot
+    be inferred cleanly is a downloads bug, fixed at the generator.
 
     Returns DataFrame or None if file is empty/unreadable.
     """
     try:
-        df = pd.read_csv(filepath, dtype=str, encoding="utf-8-sig", keep_default_na=False)
+        df = read_csv_gpu_safe(filepath)
     except Exception:
-        try:
-            df = pd.read_csv(filepath, dtype=str, encoding="utf-8", keep_default_na=False)
-        except Exception:
-            return None
+        return None
 
     if df is None or len(df) == 0:
         return None
 
-    # Strip whitespace from all string columns
-    df = df.apply(lambda c: c.str.strip() if c.dtype == "object" else c)
-
     # Check for required column
-    if "合约代码" not in df.columns:
+    if "合约代码" not in np.asarray(df.columns).tolist():
         return None
 
-    # Filter out rows with empty/whitespace-only contract codes
-    df = df[df["合约代码"].notna()].copy()
-    df = df[df["合约代码"].str.len() > 0].copy()
+    # Filter out rows with empty contract codes (one vectorized str op)
+    df = df[df["合约代码"].astype(str).str.len() > 0]
     if df.empty:
         return None
 
     # Rename columns
-    df = df.rename(columns=COL_MAP)
-
-    # Convert numeric columns
-    for col in NUMERIC_COLS:
-        if col in df.columns:
-            # First replace null tokens with NaN
-            df[col] = df[col].apply(
-                lambda v: np.nan if str(v).strip() in _NULL_TOKENS else v
-            )
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # Drop rows with invalid codes (can't parse product)
-    if "code" in df.columns:
-        valid_mask = df["code"].apply(_is_valid_code)
-        df = df[valid_mask].copy()
-
-    return df if not df.empty else None
-
-
-def _is_valid_code(code: str) -> bool:
-    """Check if a contract code has a valid product prefix."""
-    try:
-        parse_contract_code(code)
-        return True
-    except ValueError:
-        return False
+    return df.rename(columns=COL_MAP)
 
 
 def build_futures_df(
@@ -166,6 +141,13 @@ def build_futures_df(
     verbose: bool = True,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Build identity and basic_stats DataFrames from a list of futures CSV files.
+
+    Row construction is fully vectorized: per-file frames carry a scalar
+    ``date`` broadcast and are concatenated ONCE; contract attributes are
+    resolved by parsing each UNIQUE code exactly once (host-side) into a
+    small lookup frame that is merged back on ``code`` — no iterrows /
+    per-row dict loops (each element extraction is a cudf.pandas
+    slow-path fallback).
 
     Args:
         files: list of *_futures.csv file paths to read
@@ -185,11 +167,9 @@ def build_futures_df(
     if verbose:
         print(f"    [FUTURES] reading {len(files)} *_futures.csv files", flush=True)
 
-    all_identity_rows: List[dict] = []
-    all_basic_rows: List[dict] = []
+    frames: list[pd.DataFrame] = []
     n_empty = 0
     n_ok = 0
-    n_parse_fail = 0
 
     for filepath in files:
         ymd = ymd_from_futures_filename(filepath)
@@ -204,82 +184,73 @@ def build_futures_df(
             n_empty += 1
             continue
 
-        date_str = date_ts.strftime("%Y-%m-%d")
-
-        for _, row in df.iterrows():
-            code = str(row.get("code", "")).strip()
-            try:
-                product_code, contract_month = parse_contract_code(code)
-            except ValueError:
-                n_parse_fail += 1
-                continue
-
-            contract_year_month = normalize_contract_year_month(contract_month)
-            contract_type = PRODUCT_TYPES.get(product_code, "unknown")
-            name = PRODUCT_NAMES.get(product_code, product_code)
-            underlying_code, underlying_name = PRODUCT_UNDERLYING.get(
-                product_code, ("", "")
-            )
-
-            expiry_date = compute_expiry_date(contract_month, contract_type)
-            days_to_expiry = max(0, (expiry_date - date_ts.date()).days)
-
-            # Identity row
-            all_identity_rows.append({
-                "date": date_ts.date(),
-                "code": code,
-                "product_code": product_code,
-                "contract_month": contract_month,
-                "contract_year_month": contract_year_month,
-                "contract_type": contract_type,
-                "name": name,
-                "underlying_code": underlying_code,
-                "underlying_name": underlying_name,
-                "days_to_expiry": days_to_expiry,
-            })
-
-            # Basic stats row
-            basic_row = {
-                "date": date_ts.date(),
-                "code": code,
-            }
-            for col in (
-                "open", "high", "low", "close",
-                "settlement_price", "prev_settlement",
-                "change", "change_pct",
-                "trading_shares", "trading_amount",
-                "open_interest", "open_interest_change",
-                "delta",
-            ):
-                basic_row[col] = row.get(col, np.nan)
-            all_basic_rows.append(basic_row)
-
+        # Scalar broadcast: datetime64 column (never object date lists)
+        df["date"] = pd.Timestamp(date_ts.date())
+        frames.append(df)
         n_ok += 1
 
-    if verbose:
-        print(
-            f"    [FUTURES] {n_ok} files with data, {n_empty} empty, "
-            f"{n_parse_fail} parse failures, "
-            f"{len(all_identity_rows)} identity rows, {len(all_basic_rows)} basic_stats rows",
-            flush=True,
-        )
+    identity_cols = [
+        "date", "code", "product_code", "contract_month",
+        "contract_year_month", "contract_type", "name",
+        "underlying_code", "underlying_name", "days_to_expiry",
+    ]
+    basic_cols = [
+        "date", "code", "open", "high", "low", "close",
+        "settlement_price", "prev_settlement", "change", "change_pct",
+        "trading_shares", "trading_amount",
+        "open_interest", "open_interest_change", "delta",
+    ]
+    if not frames:
+        return pd.DataFrame(columns=identity_cols), pd.DataFrame(columns=basic_cols)
 
-    if not all_identity_rows:
-        empty_id = pd.DataFrame(columns=[
-            "date", "code", "product_code", "contract_month",
-            "contract_year_month", "contract_type", "name",
-            "underlying_code", "underlying_name", "days_to_expiry",
-        ])
-        empty_bs = pd.DataFrame(columns=[
-            "date", "code", "open", "high", "low", "close",
-            "settlement_price", "prev_settlement", "change", "change_pct",
-            "trading_shares", "trading_amount",
-            "open_interest", "open_interest_change", "delta",
-        ])
-        return empty_id, empty_bs
+    all_df = pd.concat(frames, ignore_index=True)
 
-    identity_df = pd.DataFrame(all_identity_rows)
-    identity_df = identity_df.sort_values(
+    # Parse each UNIQUE contract code exactly once (host-side); invalid
+    # codes are dropped via the inner merge (counted as parse failures).
+    uniq_codes = sorted(set(np.asarray(all_df["code"]).tolist()))
+    meta_rows: list[dict] = []
+    n_invalid_contracts = 0
+    for c in uniq_codes:
+        try:
+            product_code, contract_month = parse_contract_code(c)
+        except ValueError:
+            n_invalid_contracts += 1
+            continue
+        contract_type = PRODUCT_TYPES.get(product_code, "unknown")
+        expiry_date = compute_expiry_date(contract_month, contract_type)
+        meta_rows.append({
+            "code": c,
+            "product_code": product_code,
+            "contract_month": contract_month,
+            "contract_year_month": normalize_contract_year_month(contract_month),
+            "contract_type": contract_type,
+            "name": PRODUCT_NAMES.get(product_code, product_code),
+            "underlying_code": PRODUCT_UNDERLYING.get(product_code, ("", ""))[0],
+            "underlying_name": PRODUCT_UNDERLYING.get(product_code, ("", ""))[1],
+            "_exp_days": (expiry_date - _EPOCH).days,
+        })
+    if not meta_rows:
+        if verbose:
+            print(
+                f"    [FUTURES] {n_ok} files with data, {n_empty} empty, "
+                f"all {n_invalid_contracts} contracts invalid — no rows",
+                flush=True,
+            )
+        return pd.DataFrame(columns=identity_cols), pd.DataFrame(columns=basic_cols)
+
+    # Inner merge attaches parsed attrs + drops rows whose code is invalid
+    merged_df = all_df.merge(pd.DataFrame(meta_rows), on="code", how="inner")
+    n_parse_fail = len(all_df) - len(merged_df)
+
+    # days_to_expiry: expiry epoch-days (per-contract constant) minus the
+    # row's trade-date epoch days, clamped at 0 — fully vectorized, no
+    # python-date objects inside any DataFrame.
+    d_epoch = (
+        pd.to_datetime(merged_df["date"]).astype("int64") // 86_400_000_000_000
+    )
+    merged_df["days_to_expiry"] = (merged_df["_exp_days"] - d_epoch).clip(lower=0)
+
+    identity_df = merged_df[identity_cols].sort_values(
         ["date", "code"]
     ).reset_index(drop=True)
     # Dedupe by (date, code) — keep first
@@ -287,13 +258,20 @@ def build_futures_df(
         subset=["date", "code"], keep="first"
     ).reset_index(drop=True)
 
-    basic_df = pd.DataFrame(all_basic_rows)
-    basic_df = basic_df.sort_values(
+    basic_cols_present = [c for c in basic_cols if c in np.asarray(merged_df.columns).tolist()]
+    basic_df = merged_df[basic_cols_present].reindex(columns=basic_cols).sort_values(
         ["date", "code"]
     ).reset_index(drop=True)
-    # Dedupe by (date, code) — keep first
     basic_df = basic_df.drop_duplicates(
         subset=["date", "code"], keep="first"
     ).reset_index(drop=True)
+
+    if verbose:
+        print(
+            f"    [FUTURES] {n_ok} files with data, {n_empty} empty, "
+            f"{n_parse_fail} rows dropped as parse failures ({n_invalid_contracts} contracts), "
+            f"{len(identity_df)} identity rows, {len(basic_df)} basic_stats rows",
+            flush=True,
+        )
 
     return identity_df, basic_df

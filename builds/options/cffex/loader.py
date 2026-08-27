@@ -23,21 +23,21 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+# Epoch anchor for vectorized days_to_expiry math (no date objects in frames)
+_EPOCH = date(1970, 1, 1)
+
 from builds.options.cffex.config import (
     COL_MAP,
-    NUMERIC_COLS,
-    PRODUCT_NAMES,
     PRODUCT_UNDERLYING,
-    PRODUCT_TYPES,
-    _NULL_TOKENS,
     compute_expiry_date,
     parse_contract_code,
 )
+from downloads._common import read_csv_gpu_safe
 from builds.options.cffex.paths import (
     glob_options_files,
     ymd_from_options_filename,
 )
-from _common.build_commons import parse_num
+from builds._commons.safe_parse import safe_to_datetime
 
 
 # ---------------------------------------------------------------------------
@@ -60,69 +60,56 @@ def filter_files_by_dates(
 ) -> List[str]:
     """Filter options CSV files to only those whose date is in target_dates.
 
-    Args:
-        files: list of file paths
-        target_dates: set of date objects to keep
-
-    Returns:
-        Filtered list of file paths.
+    Fully vectorized: the YYYYMMDD token is regex-extracted from ALL paths
+    in ONE Series.str pass and matched against the target set via isin —
+    no per-file Python loop, no list append; kept paths go straight from
+    the boolean mask to a numpy ``.tolist()``.
     """
-    target_ymd = {d.strftime("%Y%m%d") for d in target_dates}
-    out: List[str] = []
-    for path in files:
-        ymd = ymd_from_options_filename(path)
-        if ymd and ymd in target_ymd:
-            out.append(path)
-    return out
+    if not files or not target_dates:
+        return []
+    # target dates → YYYYMMDD strings without a Python loop (datetime64 →
+    # "YYYY-MM-DD" → strip "-")
+    d64 = np.asarray(sorted(target_dates), dtype="datetime64[D]")
+    target_ymd = set(np.char.replace(d64.astype("U10"), "-", ""))
+
+    paths = pd.Series(files, dtype="object")
+    # (\d{8})_options.csv anchored at the end — separator-agnostic and
+    # equivalent to ymd_from_options_filename (stem must be exactly 8 digits)
+    ymd = paths.str.extract(r"(\d{8})_options\.csv$", expand=False)
+    keep = ymd.notna() & ymd.isin(target_ymd)
+    return np.asarray(paths[keep], dtype=object).tolist()
 
 
 def _read_one_csv(filepath: str) -> Optional[pd.DataFrame]:
     """Read a single options CSV file and return a clean DataFrame.
 
-    Handles:
-      - UTF-8 BOM (files saved with BOM from download step)
-      - Trailing whitespace in contract codes
-      - "--" as null value for numeric columns
-      - Numeric coercion for all numeric columns
+    Source CSVs are generated canonical by downloads (whitespace-free cells,
+    null tokens already ""), so the read is PLAIN — no dtype argument, no
+    post-parse coercion. pandas auto-inference lands every column on its
+    final type (str contract ids, float64 numerics); a column that cannot
+    be inferred cleanly is a downloads bug, fixed at the generator.
 
     Returns DataFrame or None if file is empty/unreadable.
     """
     try:
-        df = pd.read_csv(filepath, dtype=str, encoding="utf-8-sig", keep_default_na=False)
+        df = read_csv_gpu_safe(filepath)
     except Exception:
-        try:
-            df = pd.read_csv(filepath, dtype=str, encoding="utf-8", keep_default_na=False)
-        except Exception:
-            return None
+        return None
 
     if df is None or len(df) == 0:
         return None
 
-    # Strip whitespace from all string columns
-    df = df.apply(lambda c: c.str.strip() if c.dtype == "object" else c)
-
     # Check for required column
-    if "合约代码" not in df.columns:
+    if "合约代码" not in np.asarray(df.columns).tolist():
         return None
 
-    # Filter out rows with empty/whitespace-only contract codes
-    df = df[df["合约代码"].notna()].copy()
-    df = df[df["合约代码"].str.len() > 0].copy()
+    # Filter out rows with empty contract codes (one vectorized str op)
+    df = df[df["合约代码"].astype(str).str.len() > 0]
     if df.empty:
         return None
 
     # Rename columns
-    df = df.rename(columns=COL_MAP)
-
-    # Convert numeric columns
-    for col in NUMERIC_COLS:
-        if col in df.columns:
-            df[col] = df[col].apply(
-                lambda v: np.nan if str(v).strip() in _NULL_TOKENS else v
-            )
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    return df if not df.empty else None
+    return df.rename(columns=COL_MAP)
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +167,12 @@ def build_options_df(
 ) -> pd.DataFrame:
     """Build a long options DataFrame from CFFEX options CSV files.
 
+    Contract attributes (product/underlying/type/strike/expiry) are
+    resolved by parsing each UNIQUE contract code exactly once (host-side)
+    into a small lookup frame merged back on ``contract_code`` — no
+    iterrows / per-row dict loops (each element extraction is a cudf.pandas
+    slow-path fallback).
+
     Args:
         files: list of *_options.csv file paths (already filtered to missing dates)
         index_ohlcv: DataFrame with (date, underlying_code, close) for moneyness
@@ -191,10 +184,9 @@ def build_options_df(
     if verbose:
         print(f"    [CFFEX OPTIONS] reading {len(files)} *_options.csv files", flush=True)
 
-    rows: List[dict] = []
+    frames: list[pd.DataFrame] = []
     n_empty = 0
     n_ok = 0
-    n_parse_fail = 0
 
     for filepath in files:
         ymd = ymd_from_options_filename(filepath)
@@ -209,126 +201,84 @@ def build_options_df(
             n_empty += 1
             continue
 
-        for _, r in df.iterrows():
-            contract_code = str(r.get("contract_code", "")).strip()
-            try:
-                parsed = parse_contract_code(contract_code)
-            except ValueError:
-                n_parse_fail += 1
-                continue
-
-            product = parsed["product"]
-            month = parsed["month"]
-            option_type = parsed["option_type"]
-            strike = parsed["strike"]
-            strike_str = parsed["strike_str"]
-
-            # Get product info
-            product_name = PRODUCT_NAMES.get(product, product)
-            contract_type = PRODUCT_TYPES.get(product, "index")
-            underlying_code, underlying_name = PRODUCT_UNDERLYING.get(
-                product, ("", "")
-            )
-
-            # Compute expiry date (4th Wednesday)
-            try:
-                expiry_date = compute_expiry_date(trade_date, month)
-                days_to_expiry = max(0, (expiry_date - trade_date).days)
-            except Exception:
-                expiry_date = trade_date
-                days_to_expiry = 0
-
-            row = {
-                # Identity fields
-                "date": trade_date,
-                "contract_code": contract_code,
-                "contract_name": contract_code,  # CFFEX uses code as name
-
-                # Terms fields
-                "underlying_code": underlying_code,
-                "underlying_name": underlying_name,
-                "option_type": option_type,
-                "expiry_month": month,
-                "expiry_date": expiry_date,
-                "days_to_expiry": days_to_expiry,
-
-                # Strike fields
-                "strike_str": strike_str,
-                "strike_price_raw": strike,
-                "strike_price": strike,
-                "has_a_suffix": 0,  # CFFEX doesn't use A-suffix
-
-                # Settlement fields
-                "prev_settle": r.get("prev_settle"),
-                "close": r.get("close"),
-                "settle": r.get("settle"),
-                "pct_change": r.get("change_pct"),
-                "underlying_close": np.nan,  # filled later from index data
-                "moneyness_ratio": np.nan,    # filled later
-
-                # Volume/OI fields
-                "volume": r.get("volume"),
-                "open_interest": r.get("open_interest"),
-
-                # Greeks (from CSV)
-                "csv_delta": r.get("delta"),  # raw CSV delta
-
-                # Aggregate fields (computed later)
-                "volume_wan": np.nan,
-                "open_interest_wan": np.nan,
-                "prev_settle_norm": np.nan,
-                "close_norm": np.nan,
-                "settle_norm": np.nan,
-                "total_volume_underlying": np.nan,
-                "total_oi_underlying": np.nan,
-                "volume_pct": np.nan,
-                "open_interest_pct": np.nan,
-                "oi_call_put_ratio": np.nan,
-                "vol_call_put_ratio": np.nan,
-                "open_interest_call": np.nan,
-                "open_interest_put": np.nan,
-                "volume_call": np.nan,
-                "volume_put": np.nan,
-                "oi_total_call_put_ratio": np.nan,
-
-                # Greeks (computed later)
-                "implied_vol": np.nan,
-                "delta": np.nan,
-                "theta": np.nan,
-                "gamma": np.nan,
-                "vega": np.nan,
-                "rho": np.nan,
-            }
-            rows.append(row)
+        # Scalar broadcast: datetime64 column (never object date lists)
+        df["date"] = pd.Timestamp(trade_date)
+        frames.append(df)
         n_ok += 1
 
-    if verbose:
-        print(
-            f"    [CFFEX OPTIONS] {n_ok} files with data, {n_empty} empty, "
-            f"{n_parse_fail} parse failures, {len(rows)} rows",
-            flush=True,
-        )
-
-    if not rows:
+    if not frames:
         return pd.DataFrame()
 
-    out = pd.DataFrame(rows)
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
-    out["expiry_date"] = pd.to_datetime(out["expiry_date"], errors="coerce")
-    out = out.dropna(subset=["date"]).sort_values(
+    out = pd.concat(frames, ignore_index=True)
+    out["date"] = safe_to_datetime(out["date"])
+    out = out.dropna(subset=["date"])
+
+    # Parse each UNIQUE contract code exactly once (host-side). Expiry for
+    # CFFEX index options depends only on the contract month (4th Wednesday),
+    # so it is a per-contract constant stored as epoch days.
+    uniq_codes = sorted(set(np.asarray(out["contract_code"]).tolist()))
+    meta_rows: list[dict] = []
+    n_invalid_contracts = 0
+    for code in uniq_codes:
+        try:
+            parsed = parse_contract_code(code)
+        except ValueError:
+            n_invalid_contracts += 1
+            continue
+        product = parsed["product"]
+        month = parsed["month"]
+        underlying_code, underlying_name = PRODUCT_UNDERLYING.get(product, ("", ""))
+        expiry_date = compute_expiry_date(_EPOCH, month)  # month-only constant
+        meta_rows.append({
+            "contract_code": code,
+            "contract_name": code,  # CFFEX uses code as name
+            "underlying_code": underlying_code,
+            "underlying_name": underlying_name,
+            "option_type": parsed["option_type"],
+            "expiry_month": month,
+            "strike_str": parsed["strike_str"],
+            "strike_price_raw": parsed["strike"],
+            "strike_price": parsed["strike"],
+            "has_a_suffix": 0,  # CFFEX doesn't use A-suffix
+            "_exp_days": (expiry_date - _EPOCH).days,
+        })
+    if not meta_rows:
+        return pd.DataFrame()
+    n_pre_merge = len(out)
+    out = out.merge(pd.DataFrame(meta_rows), on="contract_code", how="inner")
+    # rows dropped by the inner merge = invalid-contract rows
+    n_parse_fail = n_pre_merge - len(out)
+
+    # Days to expiry from epoch-day ints; expiry_date back to datetime64
+    date_epoch = (
+        pd.to_datetime(out["date"]).astype("int64") // 86_400_000_000_000
+    )
+    out["days_to_expiry"] = (out["_exp_days"] - date_epoch).clip(lower=0)
+    out["expiry_date"] = pd.to_datetime(
+        out["_exp_days"].astype("int64") * 86_400_000_000_000)
+
+    # CSV delta may be absent entirely (older exports) — keep the column
+    # contract that compute_iv_and_greeks expects.
+    if "csv_delta" not in np.asarray(out.columns).tolist():
+        out["csv_delta"] = np.nan
+
+    out = out.sort_values(
         ["underlying_code", "date", "expiry_date", "strike_price", "option_type"]
     ).reset_index(drop=True)
 
-    # --- Fill underlying_close from index data ---
+    # --- Fill underlying_close from index data (vectorized merge — no
+    # per-row .apply over a python-dict lookup) ---
     if index_ohlcv is not None and len(index_ohlcv) > 0:
         # index_ohlcv should have columns: date, underlying_code, close
         index_map = index_ohlcv.copy()
-        index_map["date"] = pd.to_datetime(index_map["date"], errors="coerce")
-        # Build a lookup: (date, underlying_code) → close
-        index_lookup = index_map.set_index(["date", "underlying_code"])["close"].to_dict()
-        out["underlying_close"] = out.apply(
-            lambda r: index_lookup.get((r["date"], r["underlying_code"]), np.nan),
-            axis=1,
+        index_map["date"] = safe_to_datetime(index_map["date"])
+        index_map = index_map.dropna(subset=["date"])
+        index_map = index_map.drop_duplicates(
+            subset=["date", "underlying_code"], keep="last"
+        ).rename(columns={"close": "underlying_close"})
+        out = out.drop(columns=["underlying_close"], errors="ignore").merge(
+            index_map[["date", "underlying_code", "underlying_close"]],
+            on=["date", "underlying_code"], how="left",
         )
         # Compute moneyness
         out["moneyness_ratio"] = np.where(
@@ -340,9 +290,19 @@ def build_options_df(
         out["underlying_close"] = 0.0
         out["moneyness_ratio"] = 0.0
 
+    if verbose:
+        print(
+            f"    [CFFEX OPTIONS] {n_ok} files with data, {n_empty} empty, "
+            f"{n_invalid_contracts} invalid contracts "
+            f"({n_parse_fail} rows dropped), {len(out)} rows",
+            flush=True,
+        )
+
     # --- Add derived columns ---
     out["volume_wan"] = out["volume"] / 10000.0
     out["open_interest_wan"] = out["open_interest"] / 10000.0
+    # 涨跌2 (change vs prev settle in %) feeds stats.options_settlement.pct_change
+    out["pct_change"] = out["change_pct"]
     out["prev_settle_norm"] = out["prev_settle"]
     out["close_norm"] = out["close"]
     out["settle_norm"] = out["settle"]
@@ -384,8 +344,8 @@ def build_options_df(
     ratios["oi_call_put_ratio"] = np.where(ratios["put_oi"] > 0, ratios["call_oi"] / ratios["put_oi"], np.nan)
     ratios["vol_call_put_ratio"] = np.where(ratios["put_vol"] > 0, ratios["call_vol"] / ratios["put_vol"], np.nan)
 
-    # Drop pre-existing ratio columns to avoid merge suffix conflicts
-    out = out.drop(columns=["oi_call_put_ratio", "vol_call_put_ratio"])
+    # Drop pre-existing ratio columns if present, to avoid merge suffix conflicts
+    out = out.drop(columns=["oi_call_put_ratio", "vol_call_put_ratio"], errors="ignore")
 
     out = out.merge(
         ratios[["date", "underlying_code", "strike_price", "oi_call_put_ratio", "vol_call_put_ratio"]],

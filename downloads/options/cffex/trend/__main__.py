@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+
 import argparse
 import shutil
 import sys
@@ -46,7 +47,7 @@ from _common.db_commons import get_db_connection
 
 setup_utf8_stdout()
 
-from downloads._common.core import setup_logger, resolve_out_dir
+from downloads._common import setup_logger, resolve_out_dir
 from downloads.options.cffex.trend.config import (
     CFFEX_TREND_URL,
     DOWNLOAD_SLEEP_SEC,

@@ -14,7 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from downloads._common.core import setup_logger
+from downloads._common import setup_logger
 
 logger = setup_logger("stream_szse")
 
