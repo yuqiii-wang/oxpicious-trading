@@ -10,7 +10,11 @@ import pandas as pd
 from _common.df_utils import safe_columns
 
 
-def apply_split_adjustment(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
+def apply_split_adjustment(
+    df: pd.DataFrame,
+    verbose: bool = True,
+    adj_seeds: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Apply split/dividend adjustment to ETF OHLCV data.
 
     Detects corp-action events by comparing raw close-to-close returns
@@ -21,6 +25,14 @@ def apply_split_adjustment(df: pd.DataFrame, verbose: bool = True) -> pd.DataFra
     Adds columns: cum_split_factor, is_split_event_day, action_type,
     implied_dividend_per_share, cum_dividend_per_share,
     adj_prev_close, adj_open, adj_high, adj_low, adj_close.
+
+    *adj_seeds* (columns: code, cum_factor, cum_dividend) restores
+    corp-action continuity when the frame was window-truncated at the DB
+    fetch (B3): cum factors/dividends are forward products, and the seed
+    carries the stored state of each code's last pre-window row, so
+    scaling the recomputed products by it reproduces full-history values
+    exactly. Codes absent from the seed frame are treated as unseeded
+    (factor 1.0 / dividend 0.0).
     """
     if df is None or len(df) == 0:
         return df
@@ -89,6 +101,27 @@ def apply_split_adjustment(df: pd.DataFrame, verbose: bool = True) -> pd.DataFra
     df["implied_dividend_per_share"] = np.where(is_div_like, np.round(D_from_szse, 6), 0.0)
 
     df["cum_dividend_per_share"] = df.groupby("code", sort=False)["implied_dividend_per_share"].cumsum().round(6)
+
+    # B3 seed: continue each code's forward products from its pre-window
+    # stored state (recomputed window products start at 1.0 / 0.0; the
+    # stored seed row state completes them — see docstring). The merge
+    # (how="left") preserves row count and order, so the `codes` array
+    # stays aligned.
+    if adj_seeds is not None and len(adj_seeds):
+        df = df.merge(
+            adj_seeds.rename(columns={
+                "cum_factor": "_seed_factor",
+                "cum_dividend": "_seed_dividend"}),
+            on="code", how="left",
+        )
+        df["cum_split_factor"] = df["cum_split_factor"] * df["_seed_factor"].fillna(1.0)
+        df["cum_dividend_per_share"] = (
+            df["cum_dividend_per_share"] + df["_seed_dividend"].fillna(0.0)
+        ).round(6)
+        df = df.drop(columns=["_seed_factor", "_seed_dividend"])
+        if verbose:
+            print(f"    [CORP-ADJ] seeded {len(adj_seeds):,} codes with their "
+                  f"pre-window cum factor/dividend state", flush=True)
 
     act_type = np.full(n_rows, "", dtype=object)
     act_type[is_div_like] = "dividend"

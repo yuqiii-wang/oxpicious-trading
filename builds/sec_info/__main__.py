@@ -27,9 +27,19 @@ With --force: truncate sec_info + sec_reports + sec_owners first, then load
 all.  sec_composition is NEVER force-cleared here (only missing snapshots are
 added — builds.etf owns the ETF composition truncation).
 
+With --date YYYY-MM-DD: single-report-quarter rebuild — every parsed
+collection is restricted to that quarter-end report date, and the sec_info /
+sec_reports missing-data skips are bypassed (rows are refreshed through the
+normal upsert paths; no truncation, no deletes).  The sec_owners
+truncate+rebuild is skipped (date-independent registry — run without --date
+to refresh it).  sec_composition keeps its missing-snapshot guard in every
+mode: the top-10 source never overwrites snapshots already loaded by
+builds.etf.  Mutually exclusive with --force.
+
 Usage:
   python -m builds.sec_info              # incremental (missing data only)
   python -m builds.sec_info --force      # truncate sec_info + sec_reports + sec_owners, reload all
+  python -m builds.sec_info --date 2025-12-31  # force one report quarter-end (upsert refresh, no truncate)
   python -m builds.sec_info --no-owners  # skip sec_owners rebuild
   python -m builds.sec_info --no-composition  # skip top10 → sec_composition injection
 """
@@ -49,7 +59,8 @@ from typing import Any, Dict, List
 
 from _common.build_commons import (
     setup_utf8_stdout, get_db_or_exit, print_build_header,
-    add_force_arg, TODAY_STR,
+    add_force_arg, add_date_arg, parse_date_arg,
+    enforce_date_force_exclusion, forced_date_scope, TODAY_STR,
 )
 
 setup_utf8_stdout()
@@ -162,10 +173,21 @@ async def main():
     ap.add_argument("--no-composition", action="store_true",
                     help="Skip top10_holdings → sec_composition injection")
     add_force_arg(ap)
+    add_date_arg(ap)
     args = ap.parse_args()
 
+    # --date mode: mutual exclusion + parse (SystemExit 2 on bad input).
+    # The forced quarter-end is validated against the parsed report dates
+    # after the CSV scan, before any DB work (forced_date_scope exits(1)).
+    enforce_date_force_exclusion(args)
+    forced = parse_date_arg(args.date)
+    if forced is not None:
+        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
+
     t0 = datetime.datetime.now()
-    mode = "FORCE (truncate + reload)" if args.force else "incremental (missing data)"
+    mode = ("FORCE (truncate + reload)" if args.force else
+            f"DATE MODE (single-date refresh: {forced})" if forced is not None else
+            "incremental (missing data)")
     print_build_header(
         "BUILD SEC INFO  ·  SZSE ETF reports + owner registry",
         **{
@@ -189,6 +211,27 @@ async def main():
     print(f"    [CSV] {n_codes} funds, {n_reports} report quarters, "
           f"{n_top10} top10 snapshots ({n_top10_rows} holdings rows)", flush=True)
 
+    # --- 1b. --date scope: restrict every parsed collection to the forced
+    #     quarter-end report date (validated before any DB work) ---
+    if forced is not None:
+        available_dates = {r["report_date"] for r in report_rows}
+        target_dates = forced_date_scope(
+            available_dates, forced,
+            source_label="SZSE ETF report CSVs (quarter-end report dates)")
+        latest_per_code = {c: i for c, i in latest_per_code.items()
+                           if i["report_date"] in target_dates}
+        report_rows = [r for r in report_rows
+                       if r["report_date"] in target_dates]
+        top10_snapshots = [s for s in top10_snapshots
+                           if s["snapshot_date"] in target_dates]
+        n_codes = len(latest_per_code)
+        n_reports = len(report_rows)
+        n_top10 = len(top10_snapshots)
+        n_top10_rows = sum(len(s["holdings"]) for s in top10_snapshots)
+        print(f"    [DATE MODE] Restricted to {forced}: {n_codes} funds, "
+              f"{n_reports} report quarters, {n_top10} top10 snapshots "
+              f"({n_top10_rows} holdings rows)", flush=True)
+
     # --- 2. Connect to DB ---
     print("\n[2/4] Connecting to database …", flush=True)
     conn = await get_db_or_exit()
@@ -197,6 +240,10 @@ async def main():
         # --- 3. sec_owners (truncate + rebuild) ---
         if args.no_owners:
             print("\n[3/4] sec_owners: --no-owners, skipping", flush=True)
+        elif forced is not None:
+            print(f"\n[3/4] sec_owners: DATE MODE {forced}, skipping "
+                  f"(date-independent registry rebuild — run without --date "
+                  f"to refresh)", flush=True)
         else:
             print("\n[3/4] Rebuilding stats.sec_owners …", flush=True)
             owners = _parse_owners_from_json()
@@ -205,12 +252,20 @@ async def main():
         # --- 4. sec_info (latest snapshot per code, missing-data) ---
         print("\n[4/4] Upserting stats.sec_info + sec_reports + sec_composition …",
               flush=True)
-        existing_info = await fetch_existing_sec_info(conn)
+        # --date mode bypasses the missing-data skips: the skip filters see
+        # "nothing existing", so every parsed row of the forced date is
+        # re-written through the normal upsert path (force stays False →
+        # no truncation, no deletes).
+        bypass = forced is not None
+        if bypass:
+            print("    [DB] DATE MODE: sec_info/sec_reports missing-data "
+                  "skips bypassed — forced-date rows re-upserted", flush=True)
+        existing_info = {} if bypass else await fetch_existing_sec_info(conn)
         info_rows = build_sec_info_rows(latest_per_code, existing_info, args.force)
         await upsert_sec_info(conn, info_rows, args.force)
 
-        # --- sec_reports (missing-data unless --force) ---
-        existing_reports = await fetch_existing_sec_reports(conn)
+        # --- sec_reports (missing-data unless --force / --date) ---
+        existing_reports = set() if bypass else await fetch_existing_sec_reports(conn)
         report_rows_to_write = build_sec_reports_rows(report_rows, existing_reports, args.force)
         await upsert_sec_reports(conn, report_rows_to_write, args.force)
 
@@ -220,6 +275,10 @@ async def main():
                   flush=True)
         else:
             existing_comp = await fetch_existing_composition_keys(conn)
+            if forced is not None:
+                print("    [DB] DATE MODE: sec_composition keeps its "
+                      "missing-snapshot guard (builds.etf full snapshots are "
+                      "never overwritten by the top-10 source)", flush=True)
             comp_rows = build_composition_rows(top10_snapshots, existing_comp)
             await inject_top10_composition(conn, comp_rows)
 
@@ -241,4 +300,8 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

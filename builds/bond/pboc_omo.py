@@ -44,7 +44,7 @@ def build_pboc_omo_df(start_date=None, end_date=None, verbose=True):
 
     rows = []
     for pub_date, sub in inst.groupby(inst["pub_date"].dt.normalize()):
-        sub = sub.reset_index(drop=True)
+        # no reset_index: .iloc[0] below is positional — labels are irrelevant
         repo_entries = sub[sub["instrument"] == "reverse_repo"]
         has_reverse_repo: bool = len(repo_entries) > 0
 
@@ -85,11 +85,14 @@ def build_pboc_omo_df(start_date=None, end_date=None, verbose=True):
         return pd.DataFrame()
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
-
-    df = df.sort_values(["date", "omo_has_reverse_repo"], ascending=[True, False])
-    df = df.drop_duplicates(subset=["date"], keep="first").reset_index(drop=True)
-    df = df[df["omo_has_reverse_repo"] == True].reset_index(drop=True)
+    df = df.dropna(subset=["date"])
+    # Only reverse-repo records feed the OMO table — apply the flag filter
+    # FIRST so the per-date dedup needs neither a flag sort nor a second
+    # re-filter (stable sort keeps first-occurrence order within a date).
+    df = df[df["omo_has_reverse_repo"] == True]
+    df = df.sort_values("date", kind="stable") \
+           .drop_duplicates(subset=["date"], keep="first") \
+           .reset_index(drop=True)
     df = df.drop(columns=["omo_has_reverse_repo"])
 
     if verbose:
@@ -127,7 +130,6 @@ def build_pboc_outright_repo_df(start_date=None, end_date=None, verbose=True):
             print(f"    [PBOC-OUTRIGHT] no outright_repo instruments in range", flush=True)
         return pd.DataFrame()
 
-    inst = inst.reset_index(drop=True)
     inst["outright_repo_marker"] = 1
     inst["outright_repo_tenor_days"] = inst["tenor"].map(parse_duration_to_days)
     inst["outright_repo_tenor_label"] = inst["tenor"].fillna("")
@@ -144,7 +146,9 @@ def build_pboc_outright_repo_df(start_date=None, end_date=None, verbose=True):
             "outright_repo_serial"]
     df = inst[keep].copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    # no sort/reset here — groupby(as_index=False) re-sorts by date and
+    # returns a fresh index
+    df = df.dropna(subset=["date"])
 
     df = df.groupby("date", as_index=False).agg({
         "outright_repo_marker":          "max",
@@ -153,7 +157,6 @@ def build_pboc_outright_repo_df(start_date=None, end_date=None, verbose=True):
         "outright_repo_tenor_label":     lambda s: "|".join(s.astype(str)),
         "outright_repo_serial":          lambda s: "|".join(s.astype(str)),
     })
-    df = df.sort_values("date").reset_index(drop=True)
 
     if verbose:
         if len(df):
@@ -185,7 +188,6 @@ def build_pboc_mlf_df(start_date=None, end_date=None, verbose=True):
             print(f"    [PBOC-MLF] no MLF instruments in range", flush=True)
         return pd.DataFrame()
 
-    inst = inst.reset_index(drop=True)
     inst["mlf_marker"] = 1
     inst["mlf_tenor_days"] = inst["tenor"].map(parse_duration_to_days)
     inst["mlf_tenor_label"] = inst["tenor"].fillna("")
@@ -201,7 +203,9 @@ def build_pboc_mlf_df(start_date=None, end_date=None, verbose=True):
             "mlf_tenor_days", "mlf_tenor_label", "mlf_serial"]
     df = inst[keep].copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    # no sort/reset here — groupby(as_index=False) re-sorts by date and
+    # returns a fresh index
+    df = df.dropna(subset=["date"])
 
     df = df.groupby("date", as_index=False).agg({
         "mlf_marker":        "max",
@@ -210,7 +214,6 @@ def build_pboc_mlf_df(start_date=None, end_date=None, verbose=True):
         "mlf_tenor_label":   lambda s: "|".join(s.astype(str)),
         "mlf_serial":        lambda s: "|".join(s.astype(str)),
     })
-    df = df.sort_values("date").reset_index(drop=True)
 
     if verbose:
         if len(df):

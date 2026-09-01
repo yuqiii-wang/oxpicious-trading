@@ -78,7 +78,7 @@ VALIDATED AGAINST REAL DB VOLUMES
   analysis.mov_ave_spreads_detail 1,527,468 rows  -> GPU (merge_asof)
   analysis.mov_ave_rsi              648,230 rows  -> GPU (groupby_diff + ewm)
   analysis.sec_alloc_perf_attribution 43,692,229 rows -> GPU (rolling_corr)
-  analysis.industry_sentiments      356,636 rows  -> GPU (groupby_agg)
+  stats.industry_basic_stats        356,636 rows  -> GPU (groupby_agg)
 
 All production workloads are well above the conservative breakeven for
 their respective op types, so the router will select GPU whenever CUDA

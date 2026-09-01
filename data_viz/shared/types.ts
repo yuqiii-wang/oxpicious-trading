@@ -594,7 +594,7 @@ export interface LinkedEtfsResponse {
 // ----------------------------------------------------------------------------
 // Similar Indices — top-3 similar codes + top-3 similar/dissimilar
 // industry-classified peer codes by mutual shared composition weight.
-// Source: stats.sec_similars (built by builds.index.exts._sec_similars).
+// Source: stats.sec_similars (built by builds.index._sec_similars).
 // `date` is the index COMPOSITION snapshot_date (quarterly), looked up via
 // latest-snapshot-<=today. Sharing weight is MUTUAL/symmetric:
 //   (SUM(A.weight_pct) + SUM(B.weight_pct)) / 2 over shared constituents.
@@ -751,7 +751,7 @@ export interface LatestDatesResponse {
   sec_composition: string;
   /** MAX(date) from stats.v_stock_baseline */
   stock_baseline: string;
-  /** MAX(date) from analysis.intraday_industry_market_movements (analysis) or stats.index_intraday_5min (raw) */
+  /** MAX(date) from live.sec_alloc_live_attribution or stats.index_intraday_5min (raw) */
   intraday_movements: string;
 }
 
@@ -818,30 +818,34 @@ export interface MovAveSpreadDetailRow {
   trading_amount: number | null;
   /**
    * The biz date of the most recent local turning point (high/low) detected
-   * by price_slope sign change (from analysis.mov_ave_rsi). Carried forward
-   * from each turning point until the next one. NULL when no preceding
-   * turning point exists (early history before the first turn) or when no
-   * mov_ave_rsi row exists for this date.
+   * by price_slope sign change within the last 500 trading days (from
+   * analysis.mov_ave_rsi). Carried forward from each turning point until the
+   * next one. NULL when no turning point exists in the 500-trading-day
+   * lookback window (early history before the first turn, or the most
+   * recent extreme is older than 500 trading days) or when no mov_ave_rsi
+   * row exists for this date.
    *
    * Shared across all 9 pairs for a given date — describes the price curve,
    * not a specific MA pair. The frontend plots a small green up-triangle
    * marker at each unique extreme date and surfaces this in the tooltip.
    */
-  date_of_last_extreme: string | null;
+  date_of_last_extreme_500days: string | null;
   /**
-   * Signed fractional gap from the most recent local turning point:
-   * (price[t] - extreme_price) / extreme_price (from analysis.mov_ave_rsi).
-   * Sign indicates the type of the last extreme: positive = last extreme was
-   * a local MIN (price rebounded upward), negative = last extreme was a
-   * local MAX (price fell). NULL when no preceding turning point exists.
+   * Signed fractional gap from the most recent local turning point within
+   * the last 500 trading days: (price[t] - extreme_price) / extreme_price
+   * (from analysis.mov_ave_rsi). Sign indicates the type of the last
+   * extreme: positive = last extreme was a local MIN (price rebounded
+   * upward), negative = last extreme was a local MAX (price fell). NULL
+   * when no turning point exists in the 500-trading-day lookback window.
    */
-  gap_since_last_extreme: number | null;
+  gap_since_last_extreme_500days: number | null;
   /**
-   * Trading days since the most recent local turning point (from
-   * analysis.mov_ave_rsi). 0 on the extreme row itself. NULL when no
-   * preceding turning point exists.
+   * Trading days since the most recent local turning point within the last
+   * 500 trading days (from analysis.mov_ave_rsi). 0 on the extreme row
+   * itself. NULL when no turning point exists in the 500-trading-day
+   * lookback window.
    */
-  days_since_last_extreme: number | null;
+  days_since_last_extreme_500days: number | null;
   /**
    * Wilder Relative Strength Index over 6 trading days (alpha=1/6, ewm
    * adjust=False, min_periods=6). 0..100. NULL until 6 consecutive
@@ -942,17 +946,31 @@ export interface MovAveSpreadDetailRow {
 /**
  * Rolling-window OHLC extrema for one date — one row per date, index-aligned
  * with every pair's rows (all pairs share one date axis, so a single copy
- * serves all 23 pair series). Source: analysis.mov_ave_spreads_detail_ohlc.
+ * serves all 23 pair series). Source: analysis.mov_ave_spreads_detail_ohlc
+ * — the table is LONG format (one row per (code, sec_type, date, period)
+ * with generic *_over_period columns); the API joins it once per period and
+ * aliases the columns back to the per-window names below, so the response
+ * shape is unchanged.
  *
- * For each window W ∈ {20, 60, 120, 255, 500, 750, 1275}:
+ * For each window W ∈ {20, 60, 120, 255, 500, 750, 1275} (the table's
+ * `period`):
  *   open_Wd           — open price on the W-th trading day before `date`
- *   high_Wd           — max high over the W trading days ending on `date`
- *   high_date_Wd      — date the window max high occurred
- *   high_2nd_Wd       — second local-max peak (≥ 20%·W cooldown from top)
+ *   high_Wd           — top-high anchor: highest CLOSE among window dates
+ *                       more than 20%·W before `date`
+ *   high_date_Wd      — date of the top-high anchor
+ *   high_2nd_Wd       — second local-max peak (≥ 20%·W cooldown after the
+ *                       top; candidates scored from today backwards with
+ *                       exponential recency decay, half-life = the window,
+ *                       so the nearer-today peak wins unless the far one is
+ *                       proportionally higher; value = INTRADAY high)
  *   high_2nd_date_Wd  — date of the second peak
- *   low_Wd            — min low over the W trading days ending on `date`
- *   low_date_Wd       — date the window min low occurred
- *   low_2nd_Wd        — second local-min trough (≥ 20%·W cooldown)
+ *   low_Wd            — lowest-low anchor: lowest CLOSE among window dates
+ *                       more than 20%·W before `date`
+ *   low_date_Wd       — date of the lowest-low anchor
+ *   low_2nd_Wd        — second local-min trough (≥ 20%·W cooldown after the
+ *                       bottom; recency-decay scored from today backwards,
+ *                       so a far trough must be proportionally lower to beat
+ *                       a nearer one; value = INTRADAY low)
  *   low_2nd_date_Wd   — date of the second trough
  *
  * The (top, 2nd) high pairs determine the "roof" trendline and the (top,
@@ -1160,6 +1178,88 @@ export interface MovAveSpreadChartResponse {
 }
 
 // ----------------------------------------------------------------------------
+//  Analysis Commons — Forecast buckets (analysis_forecasts schema)
+//    mov_rsi / mov_std — bucket-definition (motivation) tables, each row
+//      linking 1:1 via forecast_id to its forecast_results row.
+//    Served by GET /api/analysis/mov-ave-spread/forecast — the MA-Spread
+//    panel's second plot: a config→result table beneath the spread chart.
+// ----------------------------------------------------------------------------
+
+/** Which bucket family the forecast table shows. */
+export type ForecastKind = "mov_rsi" | "mov_std";
+
+/** The forecast_results numeric columns: mean forward fractional changes
+ *  at all 4 horizons; close-based max/min forward changes + the mean
+ *  within-window close swing amplitude (max_low_change_ratio) at the
+ *  5d/20d/60d horizons only; per-horizon P(>1% reversal) and occurrence
+ *  counts. */
+export interface ForecastResultCols {
+  ave_next_change: number | null;
+  ave_next_5d_change: number | null;
+  ave_next_20d_change: number | null;
+  ave_next_60d_change: number | null;
+  max_5d_change: number | null;
+  max_20d_change: number | null;
+  max_60d_change: number | null;
+  min_5d_change: number | null;
+  min_20d_change: number | null;
+  min_60d_change: number | null;
+  max_low_change_ratio_5d: number | null;
+  max_low_change_ratio_20d: number | null;
+  max_low_change_ratio_60d: number | null;
+  reverse_prob: number | null;
+  reverse_prob_5d: number | null;
+  reverse_prob_20d: number | null;
+  reverse_prob_60d: number | null;
+  /** Bucket days with a valid {n}-day forward change — the mean/prob
+   *  denominator per horizon. NULL for pre-migration rows. */
+  occurrence_count_next: number | null;
+  occurrence_count_5d: number | null;
+  occurrence_count_20d: number | null;
+  occurrence_count_60d: number | null;
+}
+
+/** One mov_rsi bucket row (RSI extreme-percentile bucket) + its results.
+ *  Bucket key: (stat_month, rsi_window, side, pct, is_market_hyped). */
+export interface MovRsiForecastRow extends ForecastResultCols {
+  stat_month: string;
+  rsi_window: number;
+  side: "top" | "bottom";
+  pct: number;
+  is_market_hyped: boolean;
+}
+
+/** One mov_std bucket row (Bollinger-breach bucket) + its results.
+ *  Bucket key: (stat_month, ma_window, k, side, is_market_hyped). */
+export interface MovStdForecastRow extends ForecastResultCols {
+  stat_month: string;
+  ma_window: number;
+  k: number;
+  side: "upper" | "lower";
+  is_market_hyped: boolean;
+  /** Mean fractional close excursion beyond the band over breach days. */
+  mean_excess_close: number | null;
+  /** Mean fractional intraday excursion (high for upper / low for lower)
+   *  over breach days with a usable extreme; NULL when none. */
+  mean_excess_max: number | null;
+  /** Max fractional intraday excursion (deepest single-day spike). */
+  max_excess_max: number | null;
+}
+
+/** Response for GET /forecast?sec_type=&code=&kind=[&month=] — ONE
+ *  stat_month (latest when month is omitted) of one code's buckets of the
+ *  requested kind, plus every stat_month available for the code (DESC) for
+ *  the UI's month selector. */
+export interface ForecastResponse {
+  kind: ForecastKind;
+  code: string;
+  sec_type: string;
+  /** All distinct stat_months (YYYY-MM-DD) with rows for this code, DESC. */
+  months: string[];
+  rows: MovRsiForecastRow[] | MovStdForecastRow[];
+}
+
+// ----------------------------------------------------------------------------
 //  Analysis Commons — PE & Dividend Yield (per-(sec_type, code, date) valuation)
 //    analysis.pe_and_dividends          — daily pe_ma20 + dividend_yield
 //    analysis.pe_and_dividend_stats     — monthly 5y rolling stats snapshot
@@ -1245,98 +1345,92 @@ export interface PeAndDividendCodesResponse {
 }
 
 // ----------------------------------------------------------------------------
-//  Analysis Commons — Fourier Frequencies (dominant cycle via real FFT)
-//    analysis.fourier_freqs — per-(sec_type, code, last_date, range_days)
-//    dominant cycle period (freq, trading days) + amplitude (yuan) from a
-//    real FFT on the trailing range_days close prices.
+//  Analysis Commons — Recurring Cycles (recurring rise/drop periodicity)
+//    analysis.recurring_cycles — per-(sec_type, code, last_date, range_days)
+//    recurring rise/drop periodicity: every integer day period d (2..N/2)
+//    audited for RECURRENCE in the time domain (extrema evidence × ACF
+//    coherence, amplitude-gated). Headline period_days = argmax of strength.
 //    Currently populated for sec_type='index' only.
-export type FourierFreqsSecType = "index";
+export type RecurringCyclesSecType = "index";
 
-/** One (last_date, range_days) row from analysis.fourier_freqs. */
-export interface FourierFreqsChartRow {
-  /** Last trading date of the FFT window (YYYY-MM-DD). */
+/** One (last_date, range_days) row from analysis.recurring_cycles. */
+export interface RecurringCyclesChartRow {
+  /** Last trading date of the window (YYYY-MM-DD). */
   last_date: string;
-  /** Window size in trading days (20 | 60 | 255 | 500 | 750). */
+  /** Window size in trading days (20 | 60 | 255 | 500 | 750 | 1275). */
   range_days: number;
-  /** Dominant cycle PERIOD in trading days (NOT cycles-per-day). */
-  freq: number;
-  /** Amplitude of the dominant component in yuan (half peak-to-peak). */
-  amplitude: number;
+  /** Recurring rise/drop period in trading days (argmax of strength);
+   *  0 = no recurring period detected. */
+  period_days: number;
+  /** strength(d*) at period_days d* (0 when period_days = 0). */
+  strength: number;
 }
 
-/** Response for GET /api/analysis/fourier-freqs/chart. */
-export interface FourierFreqsChartResponse {
+/** Response for GET /api/analysis/recurring-cycles/chart. */
+export interface RecurringCyclesChartResponse {
   code: string;
   name: string;
-  rows: FourierFreqsChartRow[];
+  rows: RecurringCyclesChartRow[];
 }
 
-/** One code row from analysis.fourier_freqs (codes endpoint). */
-export interface FourierFreqsCodeRow {
+/** One code row from analysis.recurring_cycles (codes endpoint). */
+export interface RecurringCyclesCodeRow {
   code: string;
   name: string;
   first_date: string;
   last_date: string;
   n_dates: number;
-  /** Latest dominant cycle period per range_days (key=range_days). */
-  latest_freq: Record<number, number | null>;
+  /** Latest recurring period per range_days (key=range_days). */
+  latest_period: Record<number, number | null>;
 }
 
-/** Response for GET /api/analysis/fourier-freqs/codes. */
-export interface FourierFreqsCodesResponse {
-  codes: FourierFreqsCodeRow[];
+/** Response for GET /api/analysis/recurring-cycles/codes. */
+export interface RecurringCyclesCodesResponse {
+  codes: RecurringCyclesCodeRow[];
 }
 
-/** One (range_days) row from the spectrum endpoint — the FULL one-sided
- *  amplitude spectrum for a single (code, last_date) and window size. */
-export interface FourierFreqsSpectrumRow {
+/** One (range_days) row from the spectrum endpoint — the per-day recurring
+ *  periodicity factors for a single (code, last_date) and window size. */
+export interface RecurringCyclesSpectrumRow {
   /** Window size in trading days (20 | 60 | 255 | 500 | 750 | 1275). */
   range_days: number;
-  /** Dominant cycle PERIOD in trading days (= round(range_days / k*),
-   *  where k* is the bin with the highest amplitude). */
-  freq: number;
-  /** Amplitude of the dominant component in yuan (= max(spectrum)). */
+  /** Recurring rise/drop period in trading days (argmax of strength + 2
+   *  day offset); 0 = no recurring period detected. */
+  period_days: number;
+  /** strength(d*) at period_days d* (0 when period_days = 0). */
+  strength: number;
+  /** count(d*) at period_days d* — the raw recurrence evidence. */
+  count_factor: number;
+  /** amplitude(d*) at period_days d* — energy-merged FFT amplitude (yuan). */
   amplitude: number;
-  /** Full one-sided amplitude spectrum, length = floor(range_days/2).
-   *  Element i = |X[i+1]| × 2 / range_days — the amplitude of FFT bin
-   *  k=i+1, EXCLUDING DC (k=0). The corresponding cycle period for bin
-   *  k is range_days / k. The dominant bin is argmax(spectrum) + 1.
-   *  Per-day-freq REPEAT counts are NOT derived from this array (the
-   *  bin index k trivially equals k cycles per window — a definitional
-   *  constant, not a measurement); the periodic-pattern recurrence
-   *  audit is precomputed in Python and stored in count_spectrum /
-   *  strength_spectrum below. */
-  spectrum: number[];
-  /** Periodic-pattern audit — the recurrence COUNT factor per FFT bin,
-   *  bin-aligned with spectrum (element i = bin k=i+1, whose integer
-   *  day period is round(range_days/k); all bins of a day share the
-   *  day's value). count(d) = extrema evidence × ACF coherence
-   *  (prominence-filtered alternating-extrema hits over max possible
-   *  cycles, capped 1; × fraction of multiples m·d with biased
-   *  acf ≥ 1.96/√N after MA detrending). 0 outside days 2..N/2.
-   *  Empty on legacy rows written before the column existed. */
+  /** Per-day energy-merged FFT amplitude (yuan), DAY-ALIGNED: element j =
+   *  day period d = j + 2; length = floor(range_days/2) − 1 (days 2..N/2).
+   *  The Fourier REFERENCE for the amp bars — NOT recurrence evidence. */
+  amplitude_spectrum: number[];
+  /** Per-day recurrence COUNT factor, day-aligned like amplitude_spectrum:
+   *  count(d) = extrema evidence × ACF coherence (prominence-filtered
+   *  alternating-extrema hits over max possible cycles, capped 1; ×
+   *  fraction of multiples m·d with biased acf ≥ 1.96/√N after MA
+   *  detrending). Says WHETHER price actually repeated that spacing. */
   count_spectrum: number[];
-  /** Periodic-pattern audit — the summarized STRENGTH per FFT bin,
-   *  bin-aligned with spectrum: strength(d) = (amp(d) / σ_band) ×
-   *  count(d), where amp(d) is the energy-merged FFT amplitude of the
-   *  day and σ_band = sqrt(Σ_{d′≤N/4} amp(d′)² / 2). This IS the
-   *  former consolidated "pattern score". 0 where not auditable
-   *  (d > N/3 — under 3 cycles in the window). Empty on legacy rows. */
+  /** Per-day summarized recurring STRENGTH, day-aligned:
+   *  strength(d) = (amp(d)/σ_band) × count(d), 0 for d > N/3 (under 3
+   *  cycles in the window). period_days = argmax + 2. */
   strength_spectrum: number[];
   /** Number of sliding windows (dates) analyzed for this (code,
    *  range_days). Title context only. */
   total_windows: number;
 }
 
-/** Response for GET /api/analysis/fourier-freqs/spectrum.
+/** Response for GET /api/analysis/recurring-cycles/spectrum.
  *  Up to 6 rows (one per range_days) for one (code, last_date). */
-export interface FourierFreqsSpectrumResponse {
+export interface RecurringCyclesSpectrumResponse {
   code: string;
   name: string;
   /** The last_date these spectra are for. When the request omitted
    *  last_date, this is the latest available date for the code. */
   last_date: string;
-  spectrums: FourierFreqsSpectrumRow[];
+  spectrums: RecurringCyclesSpectrumRow[];
 }
 
 // ----------------------------------------------------------------------------
@@ -1999,9 +2093,9 @@ export interface IndustryHypesAndDrainsResponse {
 // ----------------------------------------------------------------------------
 //  Intraday Movements — per-5-min-tick % change vs previous trading day's
 //  close for the benchmark + ALL industries (shaded areas) + member indices.
-//  Pre-computed by analyze.intraday_industry_sentiments into
-//  analysis.intraday_industry_market_movements (parent, industry aggregate) +
-//  analysis.intraday_index_market_movements (child, individual index).
+//  Populated by python -m live.sec_alloc_live_attribution into
+//  live.sec_alloc_live_attribution (per-tick member + benchmark %) with
+//  industry aggregates computed at query time from live.sec_alloc_live_prev_ref.
 //
 //  Top plot: benchmark_price_pct line + per-industry SHADED AREAS
 //  (industry_price_pct with areaStyle). Clicking a 5-min tick selects it

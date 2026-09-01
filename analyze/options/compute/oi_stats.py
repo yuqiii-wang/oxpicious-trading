@@ -12,7 +12,7 @@ import pandas as pd
 
 from _common.df_utils import grouped_rolling_agg
 from analyze.options.compute._shared import (
-    _compute_mean_expiry_dates,
+    _apply_open_expiry_collapse,
     _expanding_corr,
 )
 
@@ -44,19 +44,9 @@ def compute_options_oi_stats(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=OI_RESULT_COLUMNS)
 
     # ---- Apply open-expiry collapsing to match expiry_identity FK ----
-    df = df.copy()
-    dataset_max_date = df["date"].max()
-
-    # Compute mean expiry date per (option_type, underlying_code)
-    mean_map = _compute_mean_expiry_dates(df)
-
-    # Identify open rows (expiry_date > max date in dataset)
-    open_mask = df["expiry_date"] > dataset_max_date
-    if open_mask.any():
-        df.loc[open_mask, "expiry_date"] = df.loc[open_mask].apply(
-            lambda r: mean_map.get((r["option_type"], r["underlying_code"]), r["expiry_date"]),
-            axis=1,
-        )
+    # Vectorized shared helper (merge + where); downstream groupbys
+    # re-aggregate the collapsed rows.
+    df = _apply_open_expiry_collapse(df.copy())
 
     # Group key for the ratio computation (option_type excluded — ratio
     # is a property of the expiry group, not a single option type).

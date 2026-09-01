@@ -26,11 +26,17 @@ Missing-data detection flow:
 With --force: truncate all 7 options_* tables first, so all source dates
 are treated as missing.
 
+With --date YYYY-MM-DD: scope the run to that single date and bypass the DB
+missing-date skip — the date is always (re)processed and rows already in the
+DB are refreshed through the ON CONFLICT upsert write path (no truncation,
+no deletes). Mutually exclusive with --force.
+
 Usage:
   python -m builds.options.cffex
   python -m builds.options.cffex --start-date 2026-07-01 --end-date 2026-07-31
   python -m builds.options.cffex --force
   python -m builds.options.cffex --code 000300           (single-underlying test filter)
+  python -m builds.options.cffex --date 2026-08-28       (force single-date rebuild, no DB skip)
 """
 from __future__ import annotations
 
@@ -66,7 +72,12 @@ from _common.build_commons import (
     print_wall_time,
     rec_cols,
     TODAY_STR,
+    enforce_date_force_exclusion,
+    parse_date_arg,
+    forced_date_scope,
+    bulk_upsert_async,
 )
+from _common.df_utils import epoch_col_to_dt64
 from builds._commons.code_filter import add_code_arg, normalize_code
 
 setup_utf8_stdout()
@@ -116,7 +127,7 @@ async def load_index_ohlcv(
     try:
         rows = await conn.fetch(
             """
-            SELECT date, code, close
+            SELECT extract(epoch from date)::float8 AS date, code, close::float8 AS close
             FROM stats.index_basic_stats
             WHERE code = ANY($1)
               AND date >= $2
@@ -131,14 +142,14 @@ async def load_index_ohlcv(
         if not rows:
             return None
 
-        # Whole-column extraction; vectorized conversions — never build a
-        # DataFrame from python-date tuples under cudf.pandas (the proxied
-        # __init__ walks every element on a slow path)
+        # Whole-column extraction; vectorized conversions — the date
+        # column arrives as float8 epoch (extract(epoch) in SQL) and is
+        # materialized as datetime64[us] in ONE host pass.
         df = pd.DataFrame(rec_cols(rows))
         df = df.rename(columns={"code": "underlying_code"})
         df["underlying_code"] = df["underlying_code"].astype(str)
         df["close"] = df["close"].astype(float)
-        df["date"] = pd.to_datetime(df["date"])
+        df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
         return df
 
     except Exception:
@@ -186,6 +197,26 @@ async def find_missing_cffex_dates(
     return source_dates - existing_dates
 
 
+# ============================================================================
+# --date mode writer
+# ============================================================================
+async def upsert_split_tables_date_mode(conn, tables) -> None:
+    """Upsert each split table (FK parent first) for --date mode.
+
+    insert_split_tables' plain COPY is conflict-free only because rows are
+    PK-checked missing dates upstream; --date mode intentionally re-processes
+    rows that may already exist (refresh semantics), so every table is
+    written with a bulk ON CONFLICT (date, contract_code) DO UPDATE upsert
+    instead — no truncation, no deletes.
+    """
+    for tbl, rows in tables.items():
+        if not rows:
+            print(f"    [DB] No rows to upsert into {tbl}", flush=True)
+            continue
+        n = await bulk_upsert_async(conn, tbl, rows, key_columns=["date", "contract_code"])
+        print(f"    [DB] Upserted {n:,} rows into {tbl}", flush=True)
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(
         description="Build CFFEX options data and insert to database (missing dates only)."
@@ -193,6 +224,15 @@ async def main() -> None:
     add_common_build_args(ap)
     add_code_arg(ap)
     args = ap.parse_args()
+
+    # --date / --force are mutually exclusive; parse the forced single date.
+    # When set, the date also supersedes any explicit --start/--end range so
+    # discovery/loading is scoped to this single day.
+    enforce_date_force_exclusion(args)
+    forced_date = parse_date_arg(args.date)
+    if forced_date:
+        args.start_date = forced_date.isoformat()
+        args.end_date = forced_date.isoformat()
 
     # CFFEX option underlyings are bare 6-digit index codes (e.g. 000300) —
     # strip the exchange suffix normalize_code may have appended.
@@ -218,6 +258,8 @@ async def main() -> None:
             print("    [CODE FILTER] Not a CFFEX index underlying — nothing to do for CFFEX; skipping", flush=True)
             print_wall_time(t0)
             return
+    if forced_date:
+        print(f"[DATE MODE] Forced single-date build: {forced_date}", flush=True)
 
     # ------------------------------------------------------------------
     # 1. Discover source files and available dates
@@ -276,6 +318,11 @@ async def main() -> None:
                 ):
                     await truncate_table_async(conn, tbl)
             missing_dates = available_dates
+        elif forced_date:
+            # --date mode: bypass the DB missing-date skip — the forced date
+            # is ALWAYS (re)processed; rows already in the DB are refreshed
+            # through the ON CONFLICT upsert path in step 4 (no deletes).
+            missing_dates = forced_date_scope(available_dates, forced_date)
         else:
             # With --code, only that underlying's dates are checked (via
             # options_terms) so other underlyings' loaded dates don't mask
@@ -335,6 +382,14 @@ async def main() -> None:
             return
 
         print(f"    → {len(options_df):,} options rows  ·  {options_df['underlying_code'].nunique()} underlyings", flush=True)
+        # Host boundary: .dt.date is NOT implemented in cuDF — the object-date
+        # column assigned back cascades MixedTypeError / "Fast-to-slow
+        # transfer is blocked" on every later op. Convert to host pandas
+        # ONCE (asyncpg DATE codec needs datetime.date, all conversions
+        # below are then proxy-free).
+        if hasattr(options_df, "to_pandas"):  # GPU frame → host at DB boundary
+            options_df = options_df.to_pandas()
+
         print(f"    → date range: {options_df['date'].min().date()} → {options_df['date'].max().date()}", flush=True)
 
         # ------------------------------------------------------------------
@@ -350,14 +405,20 @@ async def main() -> None:
         # Dedupe within batch
         options_db = options_db.drop_duplicates(subset=["date", "contract_code"], keep="last")
 
-        # Split into the 7 options_* tables and COPY-insert (rows are
-        # PK-checked missing dates only, so COPY is conflict-free).
+        # Split into the 7 options_* tables: plain COPY-insert when rows
+        # are PK-checked missing dates (conflict-free), ON CONFLICT upsert
+        # in --date mode (rows may already exist → refreshed, not duplicated).
         from builds.options.tables import build_split_tables, insert_split_tables
 
         tables = build_split_tables(
             options_db, underlying_target_type="INDEX", exchange="CFFEX",
         )
-        await insert_split_tables(conn, tables)
+        if forced_date:
+            # --date refresh: rows may already exist → ON CONFLICT upsert
+            # (plain COPY in insert_split_tables would hit PK conflicts)
+            await upsert_split_tables_date_mode(conn, tables)
+        else:
+            await insert_split_tables(conn, tables)
 
     finally:
         await conn.close()
@@ -380,4 +441,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

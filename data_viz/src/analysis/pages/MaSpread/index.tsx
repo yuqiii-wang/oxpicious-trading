@@ -1,4 +1,4 @@
-﻿/**
+/**
  * MA-Spread analysis page (default export).
  *
  * Layout mirrors the other analysis-commons pages (PerfAttr, IndustrySentiments):
@@ -74,7 +74,7 @@ export default function MaSpreadPage() {
   const [strategyId, setStrategyId] = useState<string | null>(null);
   const [themeSlug, setThemeSlug] = useState<string | null>(null);
 
-  const [secType, setSecType] = useState<MaSpreadSecType>("etf");
+  const [secType, setSecType] = useState<MaSpreadSecType>("index");
   const [sectors, setSectors] = useState<SectorNode[]>([]);
   const [codesData, setCodesData] = useState<MovAveSpreadCodesResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -343,8 +343,8 @@ export default function MaSpreadPage() {
               if (v) setSecType(v as MaSpreadSecType);
             }}
           >
-            <ToggleButton value="etf">ETF</ToggleButton>
             <ToggleButton value="index">Index</ToggleButton>
+            <ToggleButton value="etf">ETF</ToggleButton>
             <ToggleButton value="stock">Stock</ToggleButton>
           </ToggleButtonGroup>
           <CodeSearchBar

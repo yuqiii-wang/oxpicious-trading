@@ -155,10 +155,10 @@ interface DbChartRow extends QueryResultRow {
   std_120days: number | null;
   std_255days: number | null;
   // Last-extreme columns from analysis.mov_ave_rsi (joined on
-  // sec_type + code + date). date_of_last_extreme is a DATE column.
-  date_of_last_extreme: Date | string | null;
-  gap_since_last_extreme: number | null;
-  days_since_last_extreme: number | null;
+  // sec_type + code + date). date_of_last_extreme_500days is a DATE column.
+  date_of_last_extreme_500days: Date | string | null;
+  gap_since_last_extreme_500days: number | null;
+  days_since_last_extreme_500days: number | null;
   // Wilder RSI columns (0..100, NULL until N periods) from
   // analysis.mov_ave_rsi — surfaced in the chart tooltip.
   rsi_6days: number | null;
@@ -237,8 +237,9 @@ interface DbChartRow extends QueryResultRow {
   ema_std_60days: number | null;
   ema_std_120days: number | null;
   ema_std_255days: number | null;
-  // Rolling OHLC columns from analysis.mov_ave_spreads_detail_ohlc (alias ohlc).
-  // Shows the Open, High, Low for the selected MA's window.
+  // Rolling OHLC columns from analysis.mov_ave_spreads_detail_ohlc (LONG
+  // format: joined once per period and aliased back to per-window names —
+  // see ohlcSelectSql). Shows the Open, High, Low for the selected MA's window.
   open_20d: number | null;
   high_20d: number | null;
   low_20d: number | null;
@@ -258,7 +259,8 @@ interface DbChartRow extends QueryResultRow {
   high_750d: number | null;
   low_750d: number | null;
   // Rolling-window OHLC extrema from analysis.mov_ave_spreads_detail_ohlc
-  // (alias ohlc) — used by the top-level `ohlc` array (roof/floor trendline
+  // (LONG format: joined once per period, aliased back — see ohlcSelectSql)
+  // — used by the top-level `ohlc` array (roof/floor trendline
   // overlay). Per window W: the date of the window max high, the second
   // local-max peak + date, the date of the window min low, and the second
   // local-min trough + date. DATE columns arrive as Date | string.
@@ -735,6 +737,39 @@ export async function listMovAveSpreadCodes(
 //  …alongside the 9 precomputed gap_value columns. Client-side, we fan each
 //  row out into 9 pair series entries (short_value, long_value, gap_value).
 // ----------------------------------------------------------------------------
+
+// analysis.mov_ave_spreads_detail_ohlc is LONG format — one row per
+// (sec_type, code, date, period) with generic *_over_period columns. Join it
+// once per period (PK-probed index lookup each) and alias the generic columns
+// back to the per-window names the API response has always used, so the
+// response shape (DbChartRow / ohlc array / the whole UI) stays unchanged.
+const OHLC_PERIODS = [20, 60, 120, 255, 500, 750, 1275] as const;
+
+// Generic column stems of the long-format OHLC table.
+const OHLC_STEMS = [
+  "open", "high", "high_date", "low", "low_date",
+  "high_2nd", "high_2nd_date", "low_2nd", "low_2nd_date",
+  "high_line_slope", "low_line_slope",
+] as const;
+
+function ohlcSelectSql(): string {
+  return OHLC_PERIODS.map((p) =>
+    OHLC_STEMS.map((stem) => `ohlc${p}.${stem}_over_period AS ${stem}_${p}d`)
+      .join(",\n      ")
+  ).join(",\n      ");
+}
+
+function ohlcJoinSql(): string {
+  return OHLC_PERIODS.map(
+    (p) =>
+      `LEFT JOIN analysis.mov_ave_spreads_detail_ohlc ohlc${p}\n` +
+      `      ON ohlc${p}.sec_type = d.sec_type\n` +
+      `     AND ohlc${p}.code = d.code\n` +
+      `     AND ohlc${p}.date = d.date\n` +
+      `     AND ohlc${p}.period = ${p}`,
+  ).join("\n    ");
+}
+
 function buildChartSql(secType: MaSpreadSecType): string {
   const src = SEC_SOURCES[secType];
   return `
@@ -772,38 +807,11 @@ function buildChartSql(secType: MaSpreadSecType): string {
       ema.std_5days AS ema_std_5days, ema.std_20days AS ema_std_20days,
       ema.std_60days AS ema_std_60days, ema.std_120days AS ema_std_120days,
       ema.std_255days AS ema_std_255days,
-      rsi.date_of_last_extreme,
-      rsi.gap_since_last_extreme,
-      rsi.days_since_last_extreme,
+      rsi.date_of_last_extreme_500days,
+      rsi.gap_since_last_extreme_500days,
+      rsi.days_since_last_extreme_500days,
       rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days,
-      ohlc.open_20d, ohlc.high_20d, ohlc.low_20d,
-      ohlc.open_60d, ohlc.high_60d, ohlc.low_60d,
-      ohlc.open_120d, ohlc.high_120d, ohlc.low_120d,
-      ohlc.open_255d, ohlc.high_255d, ohlc.low_255d,
-      ohlc.open_500d, ohlc.high_500d, ohlc.low_500d,
-      ohlc.open_750d, ohlc.high_750d, ohlc.low_750d,
-      ohlc.high_date_20d, ohlc.high_2nd_20d, ohlc.high_2nd_date_20d,
-      ohlc.low_date_20d, ohlc.low_2nd_20d, ohlc.low_2nd_date_20d,
-      ohlc.high_date_60d, ohlc.high_2nd_60d, ohlc.high_2nd_date_60d,
-      ohlc.low_date_60d, ohlc.low_2nd_60d, ohlc.low_2nd_date_60d,
-      ohlc.high_date_120d, ohlc.high_2nd_120d, ohlc.high_2nd_date_120d,
-      ohlc.low_date_120d, ohlc.low_2nd_120d, ohlc.low_2nd_date_120d,
-      ohlc.high_date_255d, ohlc.high_2nd_255d, ohlc.high_2nd_date_255d,
-      ohlc.low_date_255d, ohlc.low_2nd_255d, ohlc.low_2nd_date_255d,
-      ohlc.high_date_500d, ohlc.high_2nd_500d, ohlc.high_2nd_date_500d,
-      ohlc.low_date_500d, ohlc.low_2nd_500d, ohlc.low_2nd_date_500d,
-      ohlc.high_date_750d, ohlc.high_2nd_750d, ohlc.high_2nd_date_750d,
-      ohlc.low_date_750d, ohlc.low_2nd_750d, ohlc.low_2nd_date_750d,
-      ohlc.high_date_1275d, ohlc.high_2nd_1275d, ohlc.high_2nd_date_1275d,
-      ohlc.low_date_1275d, ohlc.low_2nd_1275d, ohlc.low_2nd_date_1275d,
-      ohlc.open_1275d, ohlc.high_1275d, ohlc.low_1275d,
-      ohlc.high_line_slope_20d, ohlc.low_line_slope_20d,
-      ohlc.high_line_slope_60d, ohlc.low_line_slope_60d,
-      ohlc.high_line_slope_120d, ohlc.low_line_slope_120d,
-      ohlc.high_line_slope_255d, ohlc.low_line_slope_255d,
-      ohlc.high_line_slope_500d, ohlc.low_line_slope_500d,
-      ohlc.high_line_slope_750d, ohlc.low_line_slope_750d,
-      ohlc.high_line_slope_1275d, ohlc.low_line_slope_1275d
+      ${ohlcSelectSql()}
     ${src.chartFromClause}
     LEFT JOIN analysis.mov_ave_trading_amt ta
       ON ta.sec_type = d.sec_type AND ta.code = d.code AND ta.date = d.date
@@ -811,8 +819,7 @@ function buildChartSql(secType: MaSpreadSecType): string {
       ON ema.sec_type = d.sec_type AND ema.code = d.code AND ema.date = d.date
     LEFT JOIN analysis.mov_ave_rsi rsi
       ON rsi.sec_type = d.sec_type AND rsi.code = d.code AND rsi.date = d.date
-    LEFT JOIN analysis.mov_ave_spreads_detail_ohlc ohlc
-      ON ohlc.sec_type = d.sec_type AND ohlc.code = d.code AND ohlc.date = d.date
+    ${ohlcJoinSql()}
     WHERE d.sec_type = $2
       AND REGEXP_REPLACE(d.code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
     ORDER BY d.date ASC
@@ -1059,12 +1066,12 @@ export async function getMovAveSpreadChart(
     const amtStd120 = pickTradingAmtStd(r, 120);
     const amtStd255 = pickTradingAmtStd(r, 255);
     // Last-extreme fields (from analysis.mov_ave_rsi) — shared across all 9
-    // pairs for a given date. date_of_last_extreme is a DATE column.
-    const dateOfLastExtreme = r.date_of_last_extreme != null
-      ? formatDate(r.date_of_last_extreme)
+    // pairs for a given date. date_of_last_extreme_500days is a DATE column.
+    const dateOfLastExtreme = r.date_of_last_extreme_500days != null
+      ? formatDate(r.date_of_last_extreme_500days)
       : null;
-    const gapSinceLastExtreme = toNum(r.gap_since_last_extreme);
-    const daysSinceLastExtreme = toNum(r.days_since_last_extreme);
+    const gapSinceLastExtreme = toNum(r.gap_since_last_extreme_500days);
+    const daysSinceLastExtreme = toNum(r.days_since_last_extreme_500days);
     // Wilder RSI (6/10/14/20 days) — shared across all 9 pairs for a given
     // date (describes the price curve, not a specific MA pair).
     const rsi6 = toNum(r.rsi_6days);
@@ -1118,9 +1125,9 @@ export async function getMovAveSpreadChart(
         high,
         low,
         trading_amount: tradingAmount,
-        date_of_last_extreme: dateOfLastExtreme,
-        gap_since_last_extreme: gapSinceLastExtreme,
-        days_since_last_extreme: daysSinceLastExtreme,
+        date_of_last_extreme_500days: dateOfLastExtreme,
+        gap_since_last_extreme_500days: gapSinceLastExtreme,
+        days_since_last_extreme_500days: daysSinceLastExtreme,
         rsi_6days: rsi6,
         rsi_10days: rsi10,
         rsi_14days: rsi14,
@@ -1198,9 +1205,9 @@ export async function getMovAveSpreadChart(
         high,
         low,
         trading_amount: tradingAmount,
-        date_of_last_extreme: dateOfLastExtreme,
-        gap_since_last_extreme: gapSinceLastExtreme,
-        days_since_last_extreme: daysSinceLastExtreme,
+        date_of_last_extreme_500days: dateOfLastExtreme,
+        gap_since_last_extreme_500days: gapSinceLastExtreme,
+        days_since_last_extreme_500days: daysSinceLastExtreme,
         rsi_6days: rsi6,
         rsi_10days: rsi10,
         rsi_14days: rsi14,
@@ -1276,9 +1283,9 @@ export async function getMovAveSpreadChart(
         high,
         low,
         trading_amount: tradingAmount,
-        date_of_last_extreme: dateOfLastExtreme,
-        gap_since_last_extreme: gapSinceLastExtreme,
-        days_since_last_extreme: daysSinceLastExtreme,
+        date_of_last_extreme_500days: dateOfLastExtreme,
+        gap_since_last_extreme_500days: gapSinceLastExtreme,
+        days_since_last_extreme_500days: daysSinceLastExtreme,
         rsi_6days: rsi6,
         rsi_10days: rsi10,
         rsi_14days: rsi14,

@@ -61,6 +61,7 @@ from _common.db_commons import (  # noqa: E402
     copy_or_upsert_split_async,
     copy_insert_async,
 )
+from _common.df_utils import to_py_dates  # noqa: E402
 
 setup_utf8_stdout()
 
@@ -123,6 +124,40 @@ from analyze.options.compute import (  # noqa: E402
 _CHUNK_SIZE = 10000
 
 
+async def _fk_filter(conn, result_df: pd.DataFrame) -> pd.DataFrame:
+    """Anti-join result rows against the options_expiry_identity key set.
+
+    All options_* output tables carry FK (date, option_type,
+    underlying_code, expiry_date) -> options_expiry_identity. Source-filter
+    drift between the identity pipeline (_SKEWNESS_VALID_WHERE) and the
+    per-pipeline fetches (e.g. _IV_SKEW_VALID_WHERE) can emit result rows
+    the identity never registered; COPY would crash with
+    ForeignKeyViolationError mid-write, so drop them deterministically
+    (set membership on the identity key tuples).
+    """
+    ident_rows = await conn.fetch(
+        f"SELECT date, option_type, underlying_code, expiry_date "
+        f"FROM {EXPIRY_IDENTITY_TABLE}"
+    )
+    if not ident_rows:
+        return result_df
+    ident_keys = set(tuple(r) for r in ident_rows)
+    pk_df = result_df[EXPIRY_PK_COLUMNS].copy()
+    pk_df = to_py_dates(
+        pk_df,
+        [c for c in EXPIRY_PK_COLUMNS
+         if pd.api.types.is_datetime64_any_dtype(pk_df[c])],
+    )
+    mask = pd.MultiIndex.from_frame(pk_df).isin(ident_keys)
+    n_before = len(result_df)
+    result_df = result_df.loc[mask].reset_index(drop=True)
+    if len(result_df) != n_before:
+        print(f"  FK filter: dropped {n_before - len(result_df):,} of "
+              f"{n_before:,} rows not in options_expiry_identity",
+              flush=True)
+    return result_df
+
+
 async def _write_rows(
     conn,
     result_df: pd.DataFrame,
@@ -148,6 +183,17 @@ async def _write_rows(
         print("  no rows to write", flush=True)
         return 0
 
+    # ---- FK safety: drop rows absent from options_expiry_identity ------
+    # All options_* output tables carry FK (underlying_code, date,
+    # option_type, expiry_date) -> options_expiry_identity. Source-filter
+    # drift between the identity pipeline (_SKEWNESS_VALID_WHERE) and the
+    # per-pipeline fetches (e.g. _IV_SKEW_VALID_WHERE) can emit result
+    # rows the identity never registered (observed: stale 2026-03-30
+    # expiry ETF contracts still quoted on 2026-08-24..26). COPY would
+    # crash with ForeignKeyViolationError mid-write; filter deterministically
+    # instead (anti-join against the identity key set).
+    result_df = await _fk_filter(conn, result_df)
+
     if force:
         if force_delete_where:
             print(f"  Deleting rows ({force_delete_where}) from "
@@ -165,12 +211,18 @@ async def _write_rows(
 
         if target_pairs is not None:
             n_before = len(result_df)
-            result_df = result_df[
-                result_df.apply(
-                    lambda r: tuple(r[c] for c in pk_columns) in target_pairs,
-                    axis=1,
-                )
-            ].reset_index(drop=True)
+            # Vectorized PK membership filter (B-A4): materialize the PK
+            # date columns as python dates (ONE numpy pass each — the
+            # target_pairs tuples hold datetime.date objects), then a
+            # single MultiIndex.isin instead of per-row apply.
+            pk_df = result_df[pk_columns].copy()
+            pk_df = to_py_dates(
+                pk_df,
+                [c for c in pk_columns
+                 if pd.api.types.is_datetime64_any_dtype(pk_df[c])],
+            )
+            mask = pd.MultiIndex.from_frame(pk_df).isin(target_pairs)
+            result_df = result_df.loc[mask].reset_index(drop=True)
             print(f"  Incremental filter: {len(result_df):,} of "
                   f"{n_before:,} rows are in target pairs", flush=True)
 
@@ -246,10 +298,9 @@ async def _run_expiry_identity_pipeline(
         print("    no data; skipping.", flush=True)
         return 0
 
-    # Create DataFrame from tuples
+    # Create DataFrame from tuples (date objects already materialized in
+    # fetch via to_py_dates — no .dt.date round-trip needed here).
     df = pd.DataFrame(rows, columns=EXPIRY_PK_COLUMNS)
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
 
     target_pairs = None
     if not force:
@@ -266,12 +317,7 @@ async def _run_expiry_identity_pipeline(
             )
         except Exception:
             pass
-        all_pairs = set(
-            (r["date"], r["option_type"],
-             r["underlying_code"], r["expiry_date"])
-            for _, r in df.iterrows()
-        )
-        target_pairs = all_pairs - existing
+        target_pairs = set(rows) - existing
         if len(target_pairs) == 0:
             print("    -> expiry_identity is up to date; nothing to do.",
                   flush=True)
@@ -713,4 +759,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

@@ -5,7 +5,7 @@
  * live date) for:
  *   • the benchmark itself (drives the DEFAULT prev-day bar), and
  *   • EVERY member index of the benchmark's universe (from
- *     analysis.intraday_index_market_movements for the date), each carrying
+ *     live.sec_alloc_live_prev_ref for the date), each carrying
  *     its industry_id — the client aggregates per-industry candles as the
  *     MEAN of member %s (equal-weight, same semantics as the page's
  *     industry_price_pct).

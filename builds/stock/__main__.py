@@ -25,4 +25,8 @@ import asyncio
 from builds.stock.pipeline.main import main
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

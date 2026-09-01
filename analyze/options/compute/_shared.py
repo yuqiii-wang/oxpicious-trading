@@ -27,34 +27,106 @@ _DELTA_OTM_MAX = 0.5
 _SMILE_MIN_CONTRACTS = 3
 
 
+def _mean_expiry_dates_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Mean expiry_date per (option_type, underlying_code) — vectorized.
+
+    The mean is taken over the DISTINCT expiry dates of each group
+    (unweighted), rounded to the nearest day — the exact semantics of
+    the former per-group ``apply(drop_duplicates().mean())`` +
+    ``fromordinal(int(round(v)))`` map, computed on day-ordinal floats
+    (an integer day offset between ordinal and epoch-day counts cancels
+    exactly in the mean, so the rounded result is identical).
+
+    Args:
+        df: DataFrame with columns option_type, underlying_code,
+            expiry_date (datetime64 preferred; object dates converted).
+
+    Returns:
+        DataFrame [option_type, underlying_code, mean_expiry_date]
+        (datetime64[ns]), one row per (option_type, underlying_code).
+    """
+    uniq = df[["option_type", "underlying_code", "expiry_date"]].drop_duplicates()
+    if not pd.api.types.is_datetime64_any_dtype(uniq["expiry_date"]):
+        uniq["expiry_date"] = pd.to_datetime(uniq["expiry_date"])
+    # ONE host numpy pass: datetime64 -> day ordinals (epoch days).
+    ord_arr = (
+        uniq["expiry_date"].to_numpy()
+        .astype("datetime64[D]").astype(np.int64)
+    )
+    uniq = uniq.assign(_ord=ord_arr)
+    means = (
+        uniq.groupby(["option_type", "underlying_code"], sort=False)["_ord"]
+        .mean()
+        .reset_index()
+    )
+    mean_days = np.round(
+        means["_ord"].to_numpy(dtype=np.float64)
+    ).astype(np.int64)
+    means["mean_expiry_date"] = mean_days.astype("datetime64[D]")
+    return means[["option_type", "underlying_code", "mean_expiry_date"]]
+
+
+def _apply_open_expiry_collapse(
+    df: pd.DataFrame,
+    dataset_max_date=None,
+) -> pd.DataFrame:
+    """Replace open groups' expiry_date with the mean expiry_date.
+
+    Vectorized replacement for the former per-row
+    ``.loc[open_mask].apply(lambda r: mean_map.get(...), axis=1)``
+    collapse (B-A4): the per-(option_type, underlying_code) mean frame
+    is LEFT-joined once and the open rows are swapped via a single
+    ``where`` — zero per-element proxy dispatch.
+
+    Args:
+        df: DataFrame with columns date, option_type, underlying_code,
+            expiry_date (datetime64).
+        dataset_max_date: max(date) of the dataset; computed from ``df``
+            when None.
+
+    Returns:
+        DataFrame with open expiry groups collapsed to the mean
+        expiry_date (same row order and column set as the input).
+    """
+    if df.empty:
+        return df
+    if dataset_max_date is None:
+        dataset_max_date = df["date"].max()
+    means = _mean_expiry_dates_frame(df)
+    out = df.merge(
+        means, on=["option_type", "underlying_code"], how="left",
+    )
+    open_mask = out["expiry_date"] > dataset_max_date
+    if open_mask.any():
+        out["expiry_date"] = out["expiry_date"].where(
+            ~open_mask, out["mean_expiry_date"]
+        )
+    return out.drop(columns=["mean_expiry_date"])
+
+
 def _compute_mean_expiry_dates(df: pd.DataFrame) -> dict:
     """Compute mean expiry_date per (option_type, underlying_code).
+
+    Vectorized (see _mean_expiry_dates_frame); kept as a dict for the
+    callers that need a lookup map.
 
     Args:
         df: DataFrame with columns option_type, underlying_code, expiry_date.
 
     Returns:
-        dict mapping (option_type, underlying_code) -> mean expiry_date.
+        dict mapping (option_type, underlying_code) -> mean expiry_date
+        (datetime.date).
     """
-    # Convert to ordinal for numeric mean computation
-    result = df.copy()
-    result["_expiry_ordinal"] = result["expiry_date"].apply(
-        lambda d: d.toordinal() if hasattr(d, "toordinal") else pd.Timestamp(d).toordinal()
+    means = _mean_expiry_dates_frame(df)
+    keys = np.asarray(means["option_type"].to_numpy()).tolist()
+    codes = np.asarray(means["underlying_code"].to_numpy()).tolist()
+    dates = (
+        means["mean_expiry_date"].to_numpy()
+        .astype("datetime64[D]").astype(object).tolist()
     )
-
-    mean_ordinals = (
-        result.groupby(_EXPIRY_TYPE_UNDERLYING_KEY)["_expiry_ordinal"]
-        .apply(lambda g: g.drop_duplicates().mean())
-        .to_dict()
-    )
-
-    mean_dates = {}
-    for k, v in mean_ordinals.items():
-        if pd.notna(v):
-            mean_dates[k] = pd.Timestamp.fromordinal(int(round(v))).date()
-        else:
-            mean_dates[k] = None
-    return mean_dates
+    return {
+        (ot, uc): d for ot, uc, d in zip(keys, codes, dates)
+    }
 
 
 def _collapse_open_expiry_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -64,18 +136,7 @@ def _collapse_open_expiry_rows(df: pd.DataFrame) -> pd.DataFrame:
     expiry_date > dataset max date get the per-(option_type, underlying_code)
     mean expiry date.
     """
-    data = df.copy()
-    dataset_max_date = data["date"].max()
-    mean_map = _compute_mean_expiry_dates(data)
-    open_mask = data["expiry_date"] > dataset_max_date
-    if open_mask.any():
-        data.loc[open_mask, "expiry_date"] = data.loc[open_mask].apply(
-            lambda r: mean_map.get(
-                (r["option_type"], r["underlying_code"]), r["expiry_date"]
-            ),
-            axis=1,
-        )
-    return data
+    return _apply_open_expiry_collapse(df.copy())
 
 
 def _compute_full_history_slope(group: pd.DataFrame, col: str) -> float:

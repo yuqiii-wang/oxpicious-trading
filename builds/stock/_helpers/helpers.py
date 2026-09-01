@@ -6,7 +6,8 @@ Contains:
 - Per-file stock CSV reader (_read_one) — reads via the canonical
   downloads._common.read_csv_gpu_safe loader
 - Missing-rows builder (build_missing_rows)
-- DB write helpers (_to_db, _to_db_series, _compute_eps_vec)
+- DB write helper (_to_db_series; NaN→None at emission is handled by
+  records_from_frame + _nan_to_none)
 """
 from __future__ import annotations
 
@@ -415,16 +416,6 @@ def build_missing_rows(
 
 
 # Shared DB helper functions used by __main__.py
-def _to_db(v) -> object:
-    """Convert NaN/NA to None for asyncpg."""
-    if v is None or v is pd.NA:
-        return None
-    try:
-        if isinstance(v, float) and np.isnan(v):
-            return None
-    except (TypeError, ValueError):
-        pass
-    return v
 
 
 def _to_db_series(s: pd.Series) -> pd.Series:
@@ -487,14 +478,3 @@ def records_from_frame(df: pd.DataFrame, cols: list[str]) -> list[dict]:
         return []
     col_lists = [_nan_to_none(np.asarray(df[c]).tolist()) for c in cols]
     return [dict(zip(cols, vals)) for vals in zip(*col_lists)]
-
-
-def _compute_eps_vec(close: pd.Series, pe: pd.Series) -> pd.Series:
-    """Vectorized EPS: close / pe rounded to 6 decimals, else None.
-
-    Computes float-native (masked divide, no object-dtype intermediate —
-    the old object-Series constructor triggered cudf fallbacks), then
-    converts NaN→None once on the host frame (asyncpg None semantics)."""
-    mask = close.notna() & pe.notna() & (pe > 0)
-    vals = (close.astype(float) / pe.astype(float)).where(mask).round(6)
-    return vals.astype(object).where(vals.notna(), None)

@@ -3,9 +3,9 @@
  *
  * Pre-computed per-5-min-tick % change vs previous trading day's close,
  * decomposed to industry + individual-index level. Data is populated by
- * analyze.intraday_industry_sentiments (Python) into
- * analysis.intraday_industry_market_movements (parent) +
- * analysis.intraday_index_market_movements (child).
+ * python -m live.sec_alloc_live_attribution (Python) into
+ * live.sec_alloc_live_attribution (per-tick values) +
+ * live.sec_alloc_live_prev_ref (prev-day reference weights).
  *
  * Layout (three plots, reactive to clicks):
  *   • Top plot    — Benchmark intraday 5-min % line + per-industry SHADED
@@ -28,7 +28,11 @@
  * "latest tick" attribution — the middle plot is reactive to the clicked
  * 5-min tick (anchored to latest_time on load AND re-anchored whenever a
  * refresh brings new data; the x-axis stays the static full-day range
- * 09:30–15:30 — no zoom/slider). Auto-refreshes every 5
+ * 09:30–15:30 — no zoom/slider). A DATE SELECTOR in the control bar lists
+ * every available date (raw intraday ∪ live tick dates, newest first);
+ * picking a historical date freezes all fetches to that day and pauses the
+ * 5-min live pipeline runs (selecting the newest entry returns to live
+ * mode). Auto-refreshes every 5
  * minutes during Asia/Shanghai trading hours (09:30–11:30, 13:00–15:00);
  * the refresh is SILENT — charts stay mounted and identical payloads are
  * dropped, so only genuinely new data triggers a repaint. Each refresh
@@ -57,6 +61,7 @@ import { useStore } from "@/store/filters";
 import {
   fetchIntradayMovements,
   fetchIntradayMovementsBenchmarks,
+  fetchIntradayMovementsDates,
   fetchIntradayMovementsPrevDayOhlc,
   fetchIndicesCombined,
   fetchSecAllocLiveAttribution,
@@ -98,6 +103,11 @@ export default function LiveDataMarketMovementsPage() {
   const themeMode = useStore((s) => s.themeMode);
   const [benchmarks, setBenchmarks] = useState<BenchmarkOption[]>([]);
   const [benchmarkCode, setBenchmarkCode] = useState<string>(DEFAULT_BENCHMARK);
+  // Date selector: null = LATEST available date (server resolves it on every
+  // fetch, so day rollover is picked up automatically). A concrete date
+  // freezes the page on that historical day.
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
   const [data, setData] = useState<IntradayMovementsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -167,7 +177,17 @@ export default function LiveDataMarketMovementsPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // Fetch intraday movements on mount, on benchmark change, on refresh.
+  // "Latest" view = no explicit date picked (or the picked one IS the newest
+  // roster entry). In that mode fetches pass date=null so the SERVER
+  // re-resolves the newest date on every fetch/refresh (day rollover-safe),
+  // and the 5-min auto-refresh + pipeline run are allowed. A historical
+  // date freezes all fetches to that exact day and skips the pipeline run.
+  const isLatestView = selectedDate === null || selectedDate === availableDates[0];
+  const fetchDate = isLatestView ? null : selectedDate;
+  const isLatestViewRef = useRef(isLatestView);
+  isLatestViewRef.current = isLatestView;
+
+  // Fetch intraday movements on mount, on benchmark/date change, on refresh.
   // SILENT refresh: the blocking spinner (which unmounts the charts) only
   // happens when there is nothing to paint yet (first load) or the
   // benchmark switched. The 5-min auto-refresh and manual Refresh keep
@@ -185,7 +205,7 @@ export default function LiveDataMarketMovementsPage() {
       dataRef.current === null || dataRef.current.benchmark_code !== benchmarkCode;
     if (needsBlockingLoad) setLoading(true);
     setError(null);
-    fetchIntradayMovements(benchmarkCode, null)
+    fetchIntradayMovements(benchmarkCode, fetchDate)
       .then((resp) => {
         if (cancelled) return;
         // Drop identical payloads (e.g. refresh fired but the pipeline has
@@ -210,20 +230,38 @@ export default function LiveDataMarketMovementsPage() {
         setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [benchmarkCode, refreshKey]);
+  }, [benchmarkCode, fetchDate, refreshKey]);
 
-  // Reset the industry drill-down when the benchmark changes — the new
-  // benchmark may not cover the previously clicked industry, and the bottom
-  // plot should be empty until an industry bar is clicked.
+  // Reset the industry drill-down + date selection when the benchmark
+  // changes — the new benchmark may not cover the previously clicked
+  // industry, and its date roster differs (backfill gaps). The bottom plot
+  // should be empty until an industry bar is clicked, and the page returns
+  // to the LATEST date of the new benchmark.
   useEffect(() => {
     setSelectedIndustryId(null);
     setSelectedMemberCode(null);
+    setSelectedDate(null);
+    setAvailableDates([]);
+  }, [benchmarkCode]);
+
+  // Fetch the date roster (raw intraday dates UNION live tick dates, newest
+  // first) for the selected benchmark — drives the date selector dropdown.
+  useEffect(() => {
+    let cancelled = false;
+    fetchIntradayMovementsDates(benchmarkCode)
+      .then((resp) => {
+        if (!cancelled) setAvailableDates(resp.dates);
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableDates([]);
+      });
+    return () => { cancelled = true; };
   }, [benchmarkCode]);
 
   // Fetch the raw prev-trading-day OHLC of the benchmark + all member
-  // indices (same latest date as the intraday payload — date=null picks
+  // indices (same date resolution as the intraday payload — date=null picks
   // the latest for the benchmark on both endpoints). Refetches on
-  // benchmark change and on every refresh cycle.
+  // benchmark/date change and on every refresh cycle.
   useEffect(() => {
     if (!benchmarkCode) {
       lastOhlcSigRef.current = null;
@@ -231,7 +269,7 @@ export default function LiveDataMarketMovementsPage() {
       return;
     }
     let cancelled = false;
-    fetchIntradayMovementsPrevDayOhlc(benchmarkCode, null)
+    fetchIntradayMovementsPrevDayOhlc(benchmarkCode, fetchDate)
       .then((resp) => {
         if (cancelled) return;
         // Signature guard — skip setState on identical payloads so the
@@ -246,7 +284,7 @@ export default function LiveDataMarketMovementsPage() {
         if (!cancelled) setPrevDayOhlc(null);
       });
     return () => { cancelled = true; };
-  }, [benchmarkCode, refreshKey]);
+  }, [benchmarkCode, fetchDate, refreshKey]);
 
   // Fetch live attribution aggregates (weighted/equal per industry) for the
   // selected tick. Refetches on benchmark/date/tick change and on every
@@ -292,18 +330,23 @@ export default function LiveDataMarketMovementsPage() {
     invalidateCacheForPrefix("/api/live-data/intraday-movements");
     invalidateCacheForPrefix("/api/live-data/sec-alloc-live/attribution");
     setRefreshKey((k) => k + 1);
-    await runSecAllocLivePipeline();
+    // Historical-date view: the pipeline appends LIVE ticks for the newest
+    // date only — running it for a frozen historical day is pointless.
+    if (isLatestViewRef.current) {
+      await runSecAllocLivePipeline();
+    }
     invalidateCacheForPrefix("/api/live-data/intraday-movements");
     invalidateCacheForPrefix("/api/live-data/sec-alloc-live/attribution");
     setRefreshKey((k) => k + 1);
   }, []);
 
   // Auto-refresh every 5 minutes, but only during Asia/Shanghai trading
-  // hours. Re-checks on every fire so the interval can stay armed outside
-  // trading hours without doing unnecessary work.
+  // hours AND while viewing the LATEST date (a frozen historical day must
+  // not trigger pipeline runs). Re-checks on every fire so the interval can
+  // stay armed outside trading hours without doing unnecessary work.
   useEffect(() => {
     const timer = setInterval(() => {
-      if (isWithinTradingHours()) void triggerRefresh();
+      if (isWithinTradingHours() && isLatestViewRef.current) void triggerRefresh();
     }, AUTO_REFRESH_MS);
     return () => clearInterval(timer);
   }, [triggerRefresh]);
@@ -673,6 +716,24 @@ export default function LiveDataMarketMovementsPage() {
             />
           )}
         />
+        <Autocomplete
+          size="small"
+          sx={{ minWidth: 150 }}
+          disableClearable
+          options={availableDates.length > 0 ? availableDates : selectedDate ? [selectedDate] : []}
+          value={selectedDate ?? availableDates[0] ?? ""}
+          onChange={(_e, v) => {
+            if (v) setSelectedDate(v === availableDates[0] ? null : v);
+          }}
+          renderInput={(params) => (
+            <TextField
+              {...params}
+              label={isLatestView ? "Date (latest)" : "Date (historical — live refresh paused)"}
+              variant="outlined"
+              size="small"
+            />
+          )}
+        />
         <ToggleButtonGroup
           size="small"
           exclusive
@@ -710,11 +771,13 @@ export default function LiveDataMarketMovementsPage() {
           <Button
             size="small"
             variant="outlined"
-            disabled={refRunning}
+            disabled={refRunning || !isLatestView}
             onClick={() => { void handleBuildRef(); }}
             startIcon={refRunning ? <CircularProgress size={12} /> : null}
             sx={{ height: 26, minWidth: 0, px: 1, fontSize: "0.7rem" }}
-            title="Runs the full yday-ref chain: (1) targeted downloads — only codes whose CSVs lack the prev trading day are fetched; (2) builds.index.baseline --refresh-estimated-days — rebuild estimated daily rows; (3) live.sec_alloc_live_attribution --mode ref — heavy prev-day ref + weighted tick upgrades. Deduped by process-id-tag. The 5-min equal-weight refresh runs independently."
+            title={isLatestView
+              ? "Runs the full yday-ref chain: (1) targeted downloads — only codes whose CSVs lack the prev trading day are fetched; (2) builds.index.baseline --refresh-estimated-days — rebuild estimated daily rows; (3) live.sec_alloc_live_attribution --mode ref — heavy prev-day ref + weighted tick upgrades. Deduped by process-id-tag. The 5-min equal-weight refresh runs independently."
+              : "Only available on the latest date — switch the date selector back to the newest entry."}
           >
             {refRunning ? "Building Yday Ref…" : "Build Yday Ref"}
           </Button>

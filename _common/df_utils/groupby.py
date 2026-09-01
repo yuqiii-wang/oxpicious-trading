@@ -99,9 +99,9 @@ def grouped_diff(
 
     work = df.sort_values(group_keys) if sort else df
 
-    # Log GPU decision for awareness (no branching).
-    if should_use_gpu(work, op_type="groupby_diff"):
-        print(f"    [cuDF router] {len(work):,} rows — groupby_diff (GPU-worthy)", flush=True)
+    # Log GPU decision for awareness (no branching). The router prints
+    # the decision once per unique (op_type, shape) — no extra line here.
+    should_use_gpu(work, op_type="groupby_diff")
 
     # Single code path — cudf.pandas accelerates transparently.
     for in_col, out_col in pairs:
@@ -168,9 +168,9 @@ def grouped_shift(
 
     work = df.sort_values(group_keys) if sort else df
 
-    # Log GPU decision for awareness (no branching).
-    if should_use_gpu(work, op_type="groupby_shift"):
-        print(f"    [cuDF router] {len(work):,} rows — groupby_shift (GPU-worthy)", flush=True)
+    # Log GPU decision for awareness (no branching). The router prints
+    # the decision once per unique (op_type, shape) — no extra line here.
+    should_use_gpu(work, op_type="groupby_shift")
 
     # Single code path — cudf.pandas accelerates transparently.
     for in_col, out_col in pairs:

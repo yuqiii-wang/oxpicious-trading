@@ -23,9 +23,15 @@ With --force: DELETE FROM stats.sec_composition WHERE source_type='index'
 first (ETF composition rows are preserved — they are owned by
 builds.etf). Then read ALL source CSVs and insert.
 
+With --date YYYY-MM-DD: single-snapshot-date rebuild — only composition
+CSVs whose snapshot date matches are read and the missing-pair skip is
+bypassed, so rows already in the DB are refreshed through the upsert
+path (no DELETE, no truncation). Mutually exclusive with --force.
+
 Usage:
   python -m builds.index.composition
   python -m builds.index.composition --force
+  python -m builds.index.composition --date 2026-08-14   (force one snapshot date)
 """
 
 # resource pre-check -- exit early when sys/GPU memory is insufficient
@@ -42,6 +48,7 @@ import time
 from _common.build_commons import (
     setup_utf8_stdout, add_common_build_args, get_db_or_exit,
     copy_or_upsert_split_async,
+    enforce_date_force_exclusion, parse_date_arg, forced_date_scope,
     print_build_header, print_wall_time,
     PROJECT_ROOT, TODAY_STR,
 )
@@ -54,6 +61,7 @@ from builds._commons.paths import INDEX_COMP_DIR, SZSE_INDEX_COMP_DIR
 from builds.index.composition import (
     build_index_composition_rows,
     build_szse_index_composition_rows,
+    available_snapshot_dates,
 )
 
 
@@ -66,12 +74,27 @@ async def main():
     add_common_build_args(ap)
     args = ap.parse_args()
 
+    # --date mode: mutual exclusion + parse (SystemExit 2 on bad input),
+    # then validate the forced snapshot date against the composition CSV
+    # filenames (CSI + SZSE union) before any DB work. exits(1) when the
+    # date has no source snapshot.
+    enforce_date_force_exclusion(args)
+    forced = parse_date_arg(args.date)
+    if forced is not None:
+        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
+        forced_date_scope(
+            available_snapshot_dates(),
+            forced,
+            source_label="composition CSV filenames",
+        )
+
     t0 = time.time()
     print_build_header(
         "BUILD INDEX COMPOSITION (CSI + SZSE)  ·  missing-data-only → stats.sec_composition",
         **{
             "CSI comp dir":  INDEX_COMP_DIR,
             "SZSE comp dir": SZSE_INDEX_COMP_DIR,
+            "Forced date":   str(forced) if forced else "(none)",
             "Today":         TODAY_STR,
         }
     )
@@ -105,10 +128,12 @@ async def main():
         # (2) Build composition rows from CSI + SZSE CSVs
         # ------------------------------------------------------------------
         print("\n[2/4] Building CSI index composition rows …", flush=True)
-        index_comp_rows = await build_index_composition_rows(conn=conn, force=args.force)
+        index_comp_rows = await build_index_composition_rows(
+            conn=conn, force=args.force, forced_date=forced)
 
         print("\n[3/4] Building SZSE index composition rows …", flush=True)
-        szse_index_comp_rows = await build_szse_index_composition_rows(conn=conn, force=args.force)
+        szse_index_comp_rows = await build_szse_index_composition_rows(
+            conn=conn, force=args.force, forced_date=forced)
 
         all_rows = index_comp_rows + szse_index_comp_rows
         print(f"\n    → total: {len(all_rows):,} index composition rows "
@@ -118,7 +143,9 @@ async def main():
         # (3) Filter to missing (code, snapshot_date) pairs and insert
         # ------------------------------------------------------------------
         print("\n[4/4] Filtering to missing pairs and inserting …", flush=True)
-        if not args.force and existing_comp_keys:
+        # --date mode bypasses the missing-pair filter: every row built from
+        # the forced snapshot date is (re)written via the upsert path.
+        if not args.force and existing_comp_keys and not forced:
             n_before = len(all_rows)
             all_rows = [
                 r for r in all_rows
@@ -151,4 +178,8 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

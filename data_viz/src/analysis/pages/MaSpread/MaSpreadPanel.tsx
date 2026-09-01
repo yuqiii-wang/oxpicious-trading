@@ -63,12 +63,14 @@ import { fmtNum, fmtPct } from "@/lib/series";
 import { fetchMovAveSpreadChart, invalidateCacheForUrl } from "@/lib/api-client";
 import type { OhlcMode } from "@/lib/ohlc";
 import type {
+  ForecastKind,
   MovAveSpreadChartResponse,
   MovAveSpreadPairSeries,
 } from "@shared/types";
 import type { PanelProps } from "./types";
 import { OHLC_WINDOWS, HYPE_WINDOWS } from "./constants";
 import { buildPairOption, buildAmtEnvelopeOption, type TradingAmtMode } from "./chartOption";
+import { ForecastTable } from "./ForecastTable";
 
 /** Bollinger multiplier options for the top-right dropdown (0.0 … 3.0, step 0.5).
  *  0.0 = band hidden; 2.0 = standard Bollinger. */
@@ -183,6 +185,11 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // purple (multi-select — overlapping windows' shades stack darker).
   const [hypeWindows, setHypeWindows] = useState<number[]>([]);
 
+  // 2nd-plot selector (beneath the spread chart): which forecast bucket
+  // table to show — "" = none, "mov_rsi" = RSI extreme-percentile
+  // buckets, "mov_std" = Bollinger-breach buckets (analysis_forecasts).
+  const [forecastKind, setForecastKind] = useState<ForecastKind | "">("");
+
   // Toggle one hype check-in window in the enabled set (multi-select).
   const toggleHypeWindow = useCallback((w: number) => {
     setHypeWindows((prev) =>
@@ -217,7 +224,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
 
   // Track the hovered date index via ECharts' `updateAxisPointer` event so we
   // can draw a single last-extreme triangle at the hovered date's
-  // date_of_last_extreme. Fires only when the axis pointer snaps to a new
+  // date_of_last_extreme_500days. Fires only when the axis pointer snaps to a new
   // category (date), not on every pixel move — low overhead.
   const handleAxisPointer = useCallback((params: unknown) => {
     const p = params as {
@@ -844,6 +851,60 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
               : fmtPct(latestSummary.gap_value * 100, 2)}
           </Box>
         </Typography>
+      )}
+
+      {/* ---- 2nd plot: forecast bucket table (analysis_forecasts) ----
+          Dropdown beneath the spread chart selects which bucket family to
+          show — RSI extreme-percentile buckets (mov_rsi) or Bollinger
+          breach buckets (mov_std). Selecting one mounts ForecastTable,
+          which lists the latest 12 stat_months of this code's buckets
+          (config + is_market_hyped [+ excess cols] → forecast results). */}
+      {!loading && !error && (
+        <Box sx={{ mt: 1.5 }}>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography
+              variant="caption"
+              sx={{
+                fontSize: "0.65rem",
+                color: forecastKind ? "primary.main" : "text.secondary",
+                fontWeight: forecastKind ? 700 : 400,
+              }}
+            >
+              Forecast
+            </Typography>
+            <Select
+              size="small"
+              value={forecastKind}
+              onChange={(e) => setForecastKind(e.target.value as ForecastKind | "")}
+              sx={{
+                height: 26,
+                fontSize: "0.7rem",
+                "& .MuiSelect-select": { py: 0.25, px: 1, fontSize: "0.7rem" },
+              }}
+            >
+              <MenuItem value="" sx={{ fontSize: "0.7rem", py: 0.25 }}>
+                off
+              </MenuItem>
+              <MenuItem value="mov_rsi" sx={{ fontSize: "0.7rem", py: 0.25 }}>
+                RSI extremes (mov_rsi)
+              </MenuItem>
+              <MenuItem value="mov_std" sx={{ fontSize: "0.7rem", py: 0.25 }}>
+                Bollinger breach (mov_std)
+              </MenuItem>
+            </Select>
+            {forecastKind && (
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.62rem" }}>
+                one stat_month at a time (selector defaults to latest) · mean/high/low
+                forward change + P(&gt;1% reversal)
+              </Typography>
+            )}
+          </Stack>
+          {forecastKind && (
+            <Box sx={{ mt: 0.75 }}>
+              <ForecastTable code={code} secType={secType} kind={forecastKind} />
+            </Box>
+          )}
+        </Box>
       )}
     </ChartCard>
   );

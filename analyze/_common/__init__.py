@@ -34,6 +34,7 @@ from analyze._common.upsert import (
     batched_copy_by_date,
     batched_upsert_by_date,
     build_and_insert_chunked,
+    build_and_insert_chunked_df,
 )
 
 __all__ = [
@@ -43,4 +44,5 @@ __all__ = [
     "batched_upsert_by_date",
     "batched_copy_by_date",
     "build_and_insert_chunked",
+    "build_and_insert_chunked_df",
 ]

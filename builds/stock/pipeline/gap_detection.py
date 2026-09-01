@@ -146,8 +146,14 @@ async def collect_missing_file_pairs(
     all_files: list[tuple[str, str, str]],
     force: bool = False,
     code_filter: str | None = None,
+    force_dates: set[date] | None = None,
 ) -> list[tuple[str, str]]:
     """Per-suffix missing-date detection → (path, market) pairs to read.
+
+    DATE MODE (force_dates set, --date runs): return only files whose
+    filename date is in force_dates — ALL DB max-date gating is bypassed
+    so the forced date is always re-read (rows already in the DB are
+    refreshed through the normal upsert write paths; no truncation).
 
     ALL-MISSING-DATES (force): every file is read — no SQL at all.
     When code_filter is set the callers filter rows to that code at read
@@ -157,6 +163,17 @@ async def collect_missing_file_pairs(
     LATEST-MISSING-DATES (default): tail-only comparison per exchange
     suffix — read only files newer than the suffix's DB max date.
     """
+    if force_dates:
+        missing_file_pairs: list[tuple[str, str]] = []
+        for path, market, _suffix in all_files:
+            d = file_date_from_path(path)
+            if d is not None and d in force_dates:
+                missing_file_pairs.append((path, market))
+        print(f"    [DATE MODE] forced date(s) {sorted(force_dates)} → "
+              f"{len(missing_file_pairs)} source files to read "
+              f"(DB max-date checks bypassed)", flush=True)
+        return missing_file_pairs
+
     if force:
         mode = "ALL-MISSING-DATES"
         label = f"reading all {len(all_files)} source files" + \

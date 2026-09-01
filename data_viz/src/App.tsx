@@ -11,13 +11,14 @@ import LiveDataIndexPage from "@/live/pages/LiveDataIndexPage";
 import LiveDataEtfPage from "@/live/pages/LiveDataEtfPage";
 import LiveDataStockPage from "@/live/pages/LiveDataStockPage";
 import LiveDataMarketMovementsPage from "@/live/pages/LiveDataMarketMovementsPage";
+import LiveDataTradingSignalsPage from "@/live/pages/LiveDataTradingSignalsPage";
 import CommonsPage from "@/analysis/pages/CommonsPage";
 import DerivativesPage from "@/analysis/pages/DerivativesPage";
 import CompositesPage from "@/analysis/pages/CompositesPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
 import PeAndDividendPage from "@/analysis/pages/PeAndDividendPage";
-import FourierFreqsPage from "@/analysis/pages/FourierFreqsPage";
+import RecurringCyclesPage from "@/analysis/pages/RecurringCycles";
 import EtfHoldingsPage from "@/analysis/pages/EtfHoldingsPage";
 import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
@@ -39,6 +40,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/live/market-movements" replace />} />
           <Route path="/live" element={<Navigate to="/live/market-movements" replace />} />
           <Route path="/live/market-movements" element={<LiveDataMarketMovementsPage />} />
+          <Route path="/live/trading-signals" element={<LiveDataTradingSignalsPage />} />
           <Route path="/live/index" element={<LiveDataIndexPage />} />
           <Route path="/live/etf" element={<LiveDataEtfPage />} />
           <Route path="/live/stock" element={<LiveDataStockPage />} />
@@ -54,7 +56,7 @@ export default function App() {
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
           <Route path="/analysis/commons/industry-sentiments" element={<IndustrySentimentsPage />} />
           <Route path="/analysis/commons/pe-dividend" element={<PeAndDividendPage />} />
-          <Route path="/analysis/commons/fourier-freqs" element={<FourierFreqsPage />} />
+          <Route path="/analysis/commons/recurring-cycles" element={<RecurringCyclesPage />} />
           <Route path="/analysis/commons/etf-holdings" element={<EtfHoldingsPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/derivatives/margin-trends" element={<MarginTrendsPage />} />

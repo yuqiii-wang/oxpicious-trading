@@ -1,6 +1,8 @@
 """Step 7 — sec_composition insert (missing (code, snapshot_date) pairs only)."""
 from __future__ import annotations
 
+import datetime
+
 from typing import Optional
 
 import numpy as np
@@ -12,17 +14,23 @@ from builds._commons.row_emission import dates_as_date_list
 # Canonical suffixed ETF code ("NNNNNN.SZ"/"NNNNNN.SS") — composition CSVs
 # are written with whole suffixed etf_code by the download conversion.
 VALID_ETF_RE = r"^\d{6}\.(SS|SZ)$"
+# Canonical suffixed constituent code — stock_identity/stock_basic_stats all
+# use suffixed codes, so sec_composition.stock_code must carry the suffix too.
+VALID_STOCK_RE = r"^\d{6}\.(SS|SZ|BJ|HK|SH)$"
 
 
 async def insert_composition(
     conn,
     comp_long: Optional[pd.DataFrame],
     code_filter: str | None,
+    forced_date: datetime.date | None = None,
 ) -> None:
     """Build ETF holdings rows from comp_long and upsert missing snapshots.
 
     Codes arrive canonical and suffixed in the CSVs — read whole; rows
-    failing validation are dropped.
+    failing validation are dropped. ``forced_date`` (--date mode) keeps
+    that snapshot date's rows as write candidates even when already stored
+    (upsert overwrites; no deletes).
     """
     print("\n[7/7] Inserting ETF composition data (missing snapshots only) …", flush=True)
 
@@ -47,22 +55,24 @@ async def insert_composition(
     if comp_long is not None and len(comp_long) > 0:
         comp_eq = comp_long[comp_long["cash_sub_flag"] != "必须"].copy()
         if len(comp_eq) > 0:
-            comp_eq["_shares"] = pd.to_numeric(comp_eq["shares"], errors="coerce").fillna(0.0)
+            # shares read as float64 by the composition dtype map (one-pass)
+            comp_eq["_shares"] = comp_eq["shares"].astype(float).fillna(0.0)
             comp_eq["_w"] = comp_eq["_shares"].abs()
-            # Valid stock codes only (vectorized)
+            # Valid stock codes only (vectorized). CSVs carry SUFFIXED
+            # stock_code — keep whole (no stripping); the suffix is required
+            # for joins against stock_identity / stock_basic_stats.
             comp_eq["stock_code"] = comp_eq["stock_code"].astype(str).str.strip()
-            comp_eq["_sc"] = comp_eq["stock_code"].str.split(".").str[0].str.zfill(6)
             comp_eq = comp_eq[
-                (comp_eq["_sc"].str.len() == 6) & comp_eq["_sc"].str.isdigit()
+                comp_eq["stock_code"].str.match(VALID_STOCK_RE)
             ]
             # Group weight totals; skip all-cash/zero-weight snapshots
             gk = ["etf_code", "trade_date"]
             comp_eq["_total_w"] = comp_eq.groupby(gk)["_w"].transform("sum")
             comp_eq = comp_eq[comp_eq["_total_w"] > 0]
-            # Normalize trade_date → Timestamps; drop NaT rows
-            comp_eq = comp_eq.assign(
-                _ts=pd.to_datetime(comp_eq["trade_date"], errors="coerce"))
-            comp_eq = comp_eq[comp_eq["_ts"].notna()]
+            # trade_date is already datetime64 (build_composition parsed it
+            # and dropped NaT) — to_datetime(errors="coerce") on a Series is
+            # a cudf fallback (non-scalar arg)
+            comp_eq = comp_eq[comp_eq["trade_date"].notna()]
             # Codes arrive canonical + suffixed — validate whole, keep as-is.
             comp_eq = comp_eq[
                 comp_eq["etf_code"].astype(str).str.strip().str.match(VALID_ETF_RE)
@@ -78,16 +88,22 @@ async def insert_composition(
             # Drop snapshots already in the DB — vectorized string-key build:
             # whole-column concat (no zip of python lists).
             snap_keys = comp_eq["code"].astype(str) + "|" + \
-                comp_eq["_ts"].dt.strftime("%Y-%m-%d")
-            comp_eq = comp_eq[~snap_keys.isin(existing_comp_str_keys)].reset_index(drop=True)
+                comp_eq["trade_date"].dt.strftime("%Y-%m-%d")
+            stale = snap_keys.isin(existing_comp_str_keys)
+            if forced_date is not None:
+                # --date refresh: the forced snapshot date is re-upserted
+                # even when already stored (upsert overwrites, no deletes).
+                stale = stale & (
+                    comp_eq["trade_date"] != pd.Timestamp(forced_date))
+            comp_eq = comp_eq[~stale].reset_index(drop=True)
 
             n_etfs_kept = int(comp_eq["code"].nunique()) if len(comp_eq) else 0
             if len(comp_eq) > 0:
                 # Zip-dict assembly (no to_dict — cudf.pandas fallback per row)
-                snap_l = dates_as_date_list(comp_eq["_ts"])
+                snap_l = dates_as_date_list(comp_eq["trade_date"])
                 code_l = np.asarray(comp_eq["code"], dtype=object).tolist()
                 rank_l = np.asarray(comp_eq["rank"]).tolist()
-                sc_l = np.asarray(comp_eq["_sc"], dtype=object).tolist()
+                sc_l = np.asarray(comp_eq["stock_code"], dtype=object).tolist()
                 sn_l = np.asarray(comp_eq["stock_name"]).tolist()
                 wp_l = np.asarray(comp_eq["weight_pct"]).tolist()
                 holdings_rows.extend({

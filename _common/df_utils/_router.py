@@ -80,19 +80,18 @@ _logged_decisions: set[tuple[str, int, int]] = set()
 
 
 def _count_numeric_cols(df) -> int:
-    """Count numeric columns in a pandas or cuDF DataFrame."""
+    """Count numeric columns in a pandas or cuDF DataFrame.
+
+    Host-pure (B-A3): ONE ``df.dtypes`` metadata transfer — per-column
+    ``pd.api.types.is_numeric_dtype(df[c])`` dispatched through the
+    cudf.pandas proxy per column and fell back on every frame holding
+    object-date columns (measured 1,616 fallbacks per single-code run).
+    """
     try:
-        import pandas as pd
-        from _common.df_utils.sanitize import safe_columns
-        if isinstance(df, pd.DataFrame):
-            return sum(1 for c in safe_columns(df)
-                       if pd.api.types.is_numeric_dtype(df[c]))
-    except ImportError:
-        pass
-    # Fallback: assume all columns are numeric (conservative).
-    try:
-        from _common.df_utils.sanitize import safe_columns
-        return len(safe_columns(df)) if hasattr(df, "columns") else 10
+        from _common.df_utils.sanitize import host_dtypes, safe_columns
+        return sum(
+            1 for dt in host_dtypes(df) if dt.kind in "fiu"
+        ) if hasattr(df, "dtypes") else len(safe_columns(df))
     except Exception:
         return 10
 

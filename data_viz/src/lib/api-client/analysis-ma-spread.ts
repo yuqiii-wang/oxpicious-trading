@@ -1,10 +1,12 @@
-﻿import { fetchJson } from "./_cache";
+import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
   MovAveSpreadCodesResponse,
   MovAveSpreadChartResponse,
   MaSpreadSecType,
+  ForecastKind,
+  ForecastResponse,
 } from "@shared/types";
 
 // ---------------------------------------------------------------------------
@@ -67,5 +69,25 @@ export function fetchMovAveSpreadChart(
   const qs = params.toString();
   return fetchJson<MovAveSpreadChartResponse>(
     `/api/analysis/mov-ave-spread/chart${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Forecast buckets table (2nd plot beneath the spread chart): ONE stat_month
+ *  of one code's mov_rsi / mov_std buckets joined 1:1 with their
+ *  analysis_forecasts.forecast_results columns. When `month` is omitted the
+ *  latest stat_month is returned; the response lists all available months. */
+export function fetchMovAveSpreadForecast(
+  code: string,
+  secType: MaSpreadSecType,
+  kind: ForecastKind,
+  month?: string | null,
+): Promise<ForecastResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  params.set("kind", kind);
+  if (month) params.set("month", month);
+  return fetchJson<ForecastResponse>(
+    `/api/analysis/mov-ave-spread/forecast?${params.toString()}`,
   );
 }

@@ -45,8 +45,10 @@ __all__ = [
     "truncate_table",
     # Async API
     "get_existing_keys_async",
+    "get_latest_dates_async",
     "bulk_upsert_async",
     "copy_insert_async",
+    "csv_copy_from_frame_async",
     "ensure_table_exists_async",
     "truncate_table_async",
     # Copy-or-upsert split
@@ -101,8 +103,10 @@ from ._sync_ops import (
 # -- Async API --
 from ._async_ops import (
     get_existing_keys_async,
+    get_latest_dates_async,
     bulk_upsert_async,
     copy_insert_async,
+    csv_copy_from_frame_async,
     ensure_table_exists_async,
     truncate_table_async,
 )

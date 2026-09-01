@@ -17,13 +17,14 @@ AGGREGATION
   NOTE: an ETF that tracks multiple member indices in the SAME industry would
   be counted once per tracked index. In practice most ETFs track exactly ONE
   index, so double-counting is rare. This mirrors the
-  industry_sentiments.total_trading_amount pattern.
+  stats.industry_basic_stats.total_trading_amount pattern (SUM across
+  member indices, built by builds.industry).
 
 POOL_SIZE
-  Same classification as industry_sentiments:
+  Same classification as builds.industry (stats.industry_basic_stats):
     small = stock_num < 51, mid = 51-180, large = > 180, all = every member.
-  stock_num = COUNT(DISTINCT stock_code) from stats.sec_composition (same as
-  industry_sentiments __main__.py POOL_UNION_TEMP_SQL).
+  stock_num = COUNT(DISTINCT stock_code) from stats.sec_composition (same
+  as builds.industry __main__.py POOL_UNION_TEMP_SQL).
 
 MA5
   industry_etf_trading_amount_ma5 = 5-trading-day moving average, computed in
@@ -60,7 +61,9 @@ import pandas as pd
 from _common.build_commons import (
     truncate_table_async,
     copy_or_upsert_split_async,
+    rec_cols,
 )
+from _common.df_utils import epoch_col_to_dt64, to_py_dates
 from analyze._common import (
     grouped_rolling_agg,
     sanitize_for_db_insert,
@@ -174,7 +177,7 @@ pool_rows AS (
     FROM index_info WHERE stock_num IS NOT NULL AND stock_num > 180
 )
 SELECT
-    ea.date,
+    extract(epoch from ea.date)::float8 AS date,
     pr.industry_id,
     pr.industry_label,
     pr.pool_size,
@@ -287,23 +290,18 @@ async def run_etf_contribution(
     print("\n[e4/5] Computing 5-day & 20-day MA per (industry_id, "
           "pool_size)...", flush=True)
     t_ma = time.time()
-    df = pd.DataFrame({
-        "date": [r["date"] for r in rows],
-        "industry_id": [r["industry_id"] for r in rows],
-        "industry_label": [r["industry_label"] for r in rows],
-        "pool_size": [r["pool_size"] for r in rows],
-        "industry_etf_count": [
-            int(r["industry_etf_count"]) if r["industry_etf_count"] is not None else None
-            for r in rows
-        ],
-        "industry_etf_trading_amount": [
-            float(r["industry_etf_trading_amount"])
-            if r["industry_etf_trading_amount"] is not None else None
-            for r in rows
-        ],
-    })
-    # Ensure date is datetime for proper sorting.
-    df["date"] = pd.to_datetime(df["date"])
+    # Whole-column extraction via the shared helper (C-level itemgetter
+    # map + one positional unpack — never a per-row python loop; see
+    # project convention for DB Record -> column extraction). dtypes are
+    # then assigned with single vectorized casts: count as nullable
+    # Int64 (COUNT bigint, asyncpg-safe), amount float (NUMERIC Decimal
+    # -> float64).
+    df = pd.DataFrame(rec_cols(rows))
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["industry_etf_count"] = df["industry_etf_count"].astype("Int64")
+    df["industry_etf_trading_amount"] = (
+        df["industry_etf_trading_amount"].astype(float)
+    )
     # Sort by (industry_id, pool_size, date) so rolling window is correct.
     df = df.sort_values(["industry_id", "pool_size", "date"]).reset_index(drop=True)
     # Compute MA per (industry_id, pool_size) group via the shared
@@ -320,8 +318,9 @@ async def run_etf_contribution(
         df, grp_keys, "industry_etf_trading_amount",
         window=20, min_periods=1, agg="mean", sort=False,
     )
-    # Convert date back to datetime.date for asyncpg.
-    df["date"] = df["date"].dt.date
+    # Convert date to python datetime.date for asyncpg — ONE host numpy
+    # pass (a cudf-backed .dt.date falls back per element).
+    to_py_dates(df, ["date"])
     print(f"    -> MA5 / MA20 computed for {len(df):,} rows "
           f"({time.time() - t_ma:.1f}s)", flush=True)
 

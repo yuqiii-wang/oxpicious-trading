@@ -16,6 +16,11 @@ Missing-data detection flow:
 With --force: truncate all 7 options_* tables first, so all source dates are
 treated as missing.
 
+With --date YYYY-MM-DD: scope the run to that single date and bypass the DB
+missing-date skip — the date is always (re)processed and rows already in the
+DB are refreshed through the ON CONFLICT upsert write path (no truncation,
+no deletes). Mutually exclusive with --force.
+
 Parses key fields from 合约简称 (contract name):
   • 标的名称 (underlying_name) - e.g., "深证100ETF"
   • 期权类型 (option_type) - 购=CALL, 沽=PUT
@@ -47,6 +52,7 @@ Usage:
   python build_szse_options.py --start-date 2024-01-01 --end-date 2025-12-31
   python build_szse_options.py --force
   python build_szse_options.py --code 159915           (single-underlying test filter)
+  python build_szse_options.py --date 2026-08-28       (force single-date rebuild, no DB skip)
 """
 
 # resource pre-check -- exit early when sys/GPU memory is insufficient
@@ -75,6 +81,8 @@ from _common.build_commons import (
     glob_source_files,
     print_build_header, print_wall_time, PROJECT_ROOT, TODAY_STR,
     truncate_table_async,
+    enforce_date_force_exclusion, parse_date_arg, forced_date_scope,
+    bulk_upsert_async,
 )
 from builds._commons.code_filter import add_code_arg, normalize_code
 from builds._commons.safe_parse import safe_to_numeric
@@ -222,6 +230,20 @@ def build_options_df(files, verbose=True):
         if not ymd:
             continue
 
+        # Byte-level emptiness pre-check: cuDF raises EmptyDataError on
+        # header-only (or zero-byte) files and falls back to pandas per
+        # read (~28 lines per run). Skip them before parsing.
+        try:
+            _fsize = os.path.getsize(path)
+            with open(path, "rb") as _fh:
+                _head = _fh.read(65536).replace(b"\r\n", b"\n")
+        except OSError:
+            continue
+        _nl = _head.find(b"\n")
+        if _nl == -1 or (_head[_nl + 1:].strip() == b"" and _fsize <= len(_head)):
+            n_empty += 1
+            continue
+
         try:
             df = read_csv_preferred(path, dtype={"合约编码": str, "合约简称": str, "标的证券简称（代码）": str})
         except Exception:
@@ -309,10 +331,11 @@ def build_options_df(files, verbose=True):
     # --- Expiry: third Friday of the expiry month (per unique
     # (date, expiry_month) pair — host-side, small) ---
     pairs = out[["date", "expiry_month"]].drop_duplicates()
+    if hasattr(pairs, "to_pandas"):  # tiny host-side loop → no proxies
+        pairs = pairs.to_pandas()
     exp_meta_rows = []
     months_l = np.asarray(pairs["expiry_month"]).astype(object).tolist()
-    dates_l = np.asarray(pd.to_datetime(pairs["date"])).astype(
-        "datetime64[D]").astype(object).tolist()
+    dates_l = pd.to_datetime(pairs["date"]).dt.date.tolist()
     for d, m in zip(dates_l, months_l):
         mn = _MONTH_MAP.get(m, str(m)[:-1])
         try:
@@ -404,7 +427,7 @@ def load_etf_ohlcv(files, verbose=True):
         return pd.DataFrame()
 
     out = pd.concat(parts, ignore_index=True)
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out["date"] = pd.to_datetime(out["date"], errors="coerce").astype("datetime64[ns]")
     out = out.dropna(subset=["date"]).sort_values(["etf_code", "date"]).reset_index(drop=True)
 
     if verbose:
@@ -430,6 +453,11 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
 
     df = df.copy()
 
+    # cudf.pandas-safe: datetime merge/group hits a cudf concat bug
+    # ("all inputs must be Index" — pandas-backed DatetimeArray cannot be
+    # transformed), so merge/group on a string date key instead.
+    df["_date_key"] = df["date"].dt.strftime("%Y-%m-%d")
+
     df["volume_wan"] = df["volume"] / 10000.0
     df["open_interest_wan"] = df["open_interest"] / 10000.0
 
@@ -438,8 +466,11 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
     df["settle_norm"] = df["settle"] / 100.0
 
     if etf_ohlcv is not None and len(etf_ohlcv) > 0:
-        df_merged = df.merge(etf_ohlcv, left_on=["date", "underlying_code"],
-                            right_on=["date", "etf_code"], how="left")
+        etf = etf_ohlcv.copy()
+        etf["_date_key"] = etf["date"].dt.strftime("%Y-%m-%d")
+        df_merged = df.merge(etf[["_date_key", "etf_code", "etf_close"]],
+                            left_on=["_date_key", "underlying_code"],
+                            right_on=["_date_key", "etf_code"], how="left")
         df["underlying_close"] = df_merged["etf_close"].fillna(0.0)
         df["moneyness_ratio"] = np.where(df["underlying_close"] > 0,
                                          df["strike_price"] / df["underlying_close"], 0.0)
@@ -447,7 +478,7 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
         df["underlying_close"] = 0.0
         df["moneyness_ratio"] = 0.0
 
-    grouped = df.groupby(["date", "underlying_code"])
+    grouped = df.groupby(["_date_key", "underlying_code"])
 
     df["total_volume_underlying"] = grouped["volume"].transform("sum")
     df["total_oi_underlying"] = grouped["open_interest"].transform("sum")
@@ -457,20 +488,21 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
     df["open_interest_pct"] = np.where(df["total_oi_underlying"] > 0,
                                        df["open_interest"] / df["total_oi_underlying"] * 100.0, 0.0)
 
-    call_oi = df[df["option_type"] == "CALL"].groupby(["date", "underlying_code", "strike_price"])["open_interest"].sum().reset_index().rename(columns={"open_interest": "call_oi"})
-    put_oi = df[df["option_type"] == "PUT"].groupby(["date", "underlying_code", "strike_price"])["open_interest"].sum().reset_index().rename(columns={"open_interest": "put_oi"})
-    call_vol = df[df["option_type"] == "CALL"].groupby(["date", "underlying_code", "strike_price"])["volume"].sum().reset_index().rename(columns={"volume": "call_vol"})
-    put_vol = df[df["option_type"] == "PUT"].groupby(["date", "underlying_code", "strike_price"])["volume"].sum().reset_index().rename(columns={"volume": "put_vol"})
+    _grp_keys = ["_date_key", "underlying_code", "strike_price"]
+    call_oi = df[df["option_type"] == "CALL"].groupby(_grp_keys)["open_interest"].sum().reset_index().rename(columns={"open_interest": "call_oi"})
+    put_oi = df[df["option_type"] == "PUT"].groupby(_grp_keys)["open_interest"].sum().reset_index().rename(columns={"open_interest": "put_oi"})
+    call_vol = df[df["option_type"] == "CALL"].groupby(_grp_keys)["volume"].sum().reset_index().rename(columns={"volume": "call_vol"})
+    put_vol = df[df["option_type"] == "PUT"].groupby(_grp_keys)["volume"].sum().reset_index().rename(columns={"volume": "put_vol"})
 
-    ratios = pd.merge(call_oi, put_oi, on=["date", "underlying_code", "strike_price"], how="outer")
-    ratios = pd.merge(ratios, call_vol, on=["date", "underlying_code", "strike_price"], how="outer")
-    ratios = pd.merge(ratios, put_vol, on=["date", "underlying_code", "strike_price"], how="outer")
+    ratios = pd.merge(call_oi, put_oi, on=_grp_keys, how="outer")
+    ratios = pd.merge(ratios, call_vol, on=_grp_keys, how="outer")
+    ratios = pd.merge(ratios, put_vol, on=_grp_keys, how="outer")
 
     ratios["oi_call_put_ratio"] = np.where(ratios["put_oi"] > 0, ratios["call_oi"] / ratios["put_oi"], np.nan)
     ratios["vol_call_put_ratio"] = np.where(ratios["put_vol"] > 0, ratios["call_vol"] / ratios["put_vol"], np.nan)
 
-    df = df.merge(ratios[["date", "underlying_code", "strike_price", "oi_call_put_ratio", "vol_call_put_ratio"]],
-                  on=["date", "underlying_code", "strike_price"], how="left")
+    df = df.merge(ratios[["_date_key", "underlying_code", "strike_price", "oi_call_put_ratio", "vol_call_put_ratio"]],
+                  on=_grp_keys, how="left")
 
     df["oi_call_put_ratio"] = df["oi_call_put_ratio"].fillna(0.0)
     df["vol_call_put_ratio"] = df["vol_call_put_ratio"].fillna(0.0)
@@ -480,10 +512,12 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
     df["volume_call"] = np.where(df["option_type"] == "CALL", df["volume"], 0.0)
     df["volume_put"] = np.where(df["option_type"] == "PUT", df["volume"], 0.0)
 
-    call_total = df.groupby(["date", "underlying_code"])["open_interest_call"].transform("sum")
-    put_total = df.groupby(["date", "underlying_code"])["open_interest_put"].transform("sum")
+    call_total = df.groupby(["_date_key", "underlying_code"])["open_interest_call"].transform("sum")
+    put_total = df.groupby(["_date_key", "underlying_code"])["open_interest_put"].transform("sum")
 
     df["oi_total_call_put_ratio"] = np.where(put_total > 0, call_total / put_total, 0.0)
+
+    df = df.drop(columns=["_date_key"])
 
     if verbose:
         print(f"    → Computing implied volatility and Greeks for {len(df):,} rows …", flush=True)
@@ -561,6 +595,26 @@ async def find_missing_szse_dates(
 
 
 # ============================================================================
+# --date mode writer
+# ============================================================================
+async def upsert_split_tables_date_mode(conn, tables) -> None:
+    """Upsert each split table (FK parent first) for --date mode.
+
+    insert_split_tables' plain COPY is conflict-free only because rows are
+    PK-checked missing dates upstream; --date mode intentionally re-processes
+    rows that may already exist (refresh semantics), so every table is
+    written with a bulk ON CONFLICT (date, contract_code) DO UPDATE upsert
+    instead — no truncation, no deletes.
+    """
+    for tbl, rows in tables.items():
+        if not rows:
+            print(f"    [DB] No rows to upsert into {tbl}", flush=True)
+            continue
+        n = await bulk_upsert_async(conn, tbl, rows, key_columns=["date", "contract_code"])
+        print(f"    [DB] Upserted {n:,} rows into {tbl}", flush=True)
+
+
+# ============================================================================
 # Main pipeline
 # ============================================================================
 async def main():
@@ -570,6 +624,15 @@ async def main():
     add_common_build_args(ap)
     add_code_arg(ap)
     args = ap.parse_args()
+
+    # --date / --force are mutually exclusive; parse the forced single date.
+    # When set, the date also supersedes any explicit --start/--end range so
+    # discovery/loading is scoped to this single day.
+    enforce_date_force_exclusion(args)
+    forced_date = parse_date_arg(args.date)
+    if forced_date:
+        args.start_date = forced_date.isoformat()
+        args.end_date = forced_date.isoformat()
 
     # SZSE option underlyings are bare 6-digit ETF codes (e.g. 159915) —
     # strip the exchange suffix normalize_code may have appended.
@@ -593,6 +656,8 @@ async def main():
             print("    [CODE FILTER] CFFEX index underlying — nothing to do for SZSE; skipping", flush=True)
             print_wall_time(t0)
             return
+    if forced_date:
+        print(f"[DATE MODE] Forced single-date build: {forced_date}", flush=True)
 
     # ------------------------------------------------------------------
     # 1. Discover source files and available dates
@@ -650,6 +715,11 @@ async def main():
                             "stats.options_identity"):
                     await truncate_table_async(conn, tbl)
             missing_dates = available_dates
+        elif forced_date:
+            # --date mode: bypass the DB missing-date skip — the forced date
+            # is ALWAYS (re)processed; rows already in the DB are refreshed
+            # through the ON CONFLICT upsert path in step 4 (no deletes).
+            missing_dates = forced_date_scope(available_dates, forced_date)
         else:
             # Query DISTINCT dates for SZSE-specific contracts (excluding
             # CFFEX prefixes). This ensures CFFEX data doesn't mask dates
@@ -704,6 +774,16 @@ async def main():
         etf_ohlcv = load_etf_ohlcv(missing_etf_files)
         options_df = add_derived_columns(options_df, etf_ohlcv)
 
+        # Host boundary: .dt.date is NOT implemented in cuDF — the object-date
+        # column assigned back cascades MixedTypeError / "Fast-to-slow
+        # transfer is blocked" on every later op. Convert to host pandas
+        # ONCE (asyncpg DATE codec needs datetime.date, all conversions
+        # below are then proxy-free). Must happen AFTER add_derived_columns:
+        # merging a real-pandas frame with a cudf.pandas proxy frame trips
+        # "TypeError: all inputs must be Index" inside the merge.
+        if hasattr(options_df, "to_pandas"):  # GPU frame → host at DB boundary
+            options_df = options_df.to_pandas()
+
         # ------------------------------------------------------------------
         # 4. Insert to database
         # ------------------------------------------------------------------
@@ -720,14 +800,20 @@ async def main():
         # PKs (multiple files may produce the same contract row).
         options_db = options_db.drop_duplicates(subset=["date", "contract_code"], keep="last")
 
-        # Split into the 7 options_* tables and COPY-insert (rows are
-        # PK-checked missing dates only, so COPY is conflict-free).
+        # Split into the 7 options_* tables: plain COPY-insert when rows
+        # are PK-checked missing dates (conflict-free), ON CONFLICT upsert
+        # in --date mode (rows may already exist → refreshed, not duplicated).
         from builds.options.tables import build_split_tables, insert_split_tables
 
         tables = build_split_tables(
             options_db, underlying_target_type="ETF", exchange="SZSE",
         )
-        await insert_split_tables(conn, tables)
+        if forced_date:
+            # --date refresh: rows may already exist → ON CONFLICT upsert
+            # (plain COPY in insert_split_tables would hit PK conflicts)
+            await upsert_split_tables_date_mode(conn, tables)
+        else:
+            await insert_split_tables(conn, tables)
 
     finally:
         await conn.close()
@@ -744,4 +830,8 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

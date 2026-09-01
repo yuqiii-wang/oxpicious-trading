@@ -38,6 +38,12 @@ Pipeline
 
 ``run_corr_update(conn)`` (the ``--corr`` sub-command) recomputes
 corr_20d/60d/255d for grid dates and upserts them onto existing rows.
+
+``run_etf_backfill(conn)`` (the ``--etf`` sub-command) attaches
+ETF amounts + ratio + MA5 from ``stats.index_exts`` onto EXISTING rows
+in-place (year-chunked UPDATE) — used when rows were written before
+``builds.index`` (exts phase) populated index_exts, avoiding a full --force
+recompute of the 55M-row table.
 """
 from __future__ import annotations
 
@@ -64,6 +70,7 @@ from analyze.sec_alloc_perf_attribution.config import (
     ANALYSIS_NAME,
     CORR_WINDOWS,
     DATES_MAP_TABLE,
+    RATIO_CAP,
     SEC_TYPE_DATE_INDEX,
     SEC_TYPE_DATE_INDEX_SQL,
     TABLE,
@@ -200,6 +207,166 @@ async def run_corr_update(conn) -> None:
     )
     print(f"    -> corr build total: {n:,} rows", flush=True)
     print(f"\n  corr build wall time: {time.time() - t0:.1f}s", flush=True)
+
+
+# ---------------------------------------------------------------------------
+#  ETF-only backfill (--etf sub-command)
+# ---------------------------------------------------------------------------
+# Extended lookback (calendar days) before each chunk start so the MA5
+# window (5 trading dates per (code, sec_type, benchmark_code)) sees the
+# trailing 4 rows from the previous chunk. 20 calendar days covers the
+# longest CN market holiday (Spring Festival ~8 days) with margin.
+_MA5_LOOKBACK_CALENDAR_DAYS: int = 20
+
+# Per-chunk ETF backfill: attach index_exts amounts + capped ratio + MA5.
+# Mirrors compute/_etf.py EXACTLY (attach_etf_amounts + compute_ma5_ratio):
+#   * benchmark_etf_trading_amount = index_exts.amount keyed on
+#     (date, benchmark_code); NULL when no ETF tracks the benchmark.
+#   * code_etf_trading_amount      = index_exts.amount keyed on
+#     (date, code) — index subjects only (mirrors the sec_type='index'
+#     guard in attach_etf_amounts; the table currently holds only
+#     sec_type='index' rows anyway).
+#   * ratio = bench/code, NULL when either is NULL/0 or |ratio| >= RATIO_CAP
+#     (the cap is applied BEFORE the MA5 window, like compute_ma5_ratio).
+#   * ma5 = avg(ratio) over the trailing 5 DATES per
+#     (code, sec_type, benchmark_code), NULL-skipping (pandas
+#     rolling(5, min_periods=1) semantics). The pipeline's grouped
+#     rolling is per row-window within benchmark group sorted stably by
+#     benchmark_code over date-major rows == trailing 5 dates per
+#     (code, sec_type, benchmark_code).
+# Chunked by calendar year (restartable, observable progress); each
+# chunk joins an extra 20-day lookback before chunk_start so rows at
+# the chunk head get correct trailing windows. Idempotent: re-running
+# rewrites the same values.
+# NOTE: the UPDATE joins on the PK (code, date, sec_type, benchmark_code),
+# NOT ctid — ctid is only unique WITHIN each hash partition, so on the
+# partitioned parent rows in different partitions can share a ctid and
+# a ctid join cross-matches tuples between partitions (silently swapped
+# ETF amounts).
+ETF_BACKFILL_CHUNK_SQL = """
+WITH joined AS (
+    SELECT p.code, p.date, p.sec_type, p.benchmark_code,
+           b.total_etf_trading_amount AS bench_amt,
+           CASE WHEN p.sec_type = 'index'
+                THEN c.total_etf_trading_amount END AS code_amt
+    FROM {table} p
+    LEFT JOIN stats.index_exts b
+           ON b.date = p.date AND b.code = p.benchmark_code
+    LEFT JOIN stats.index_exts c
+           ON c.date = p.date AND c.code = p.code
+    WHERE p.sec_type = 'index'
+      AND p.date <= $2::date
+      AND p.date >= $3::date
+),
+calc AS (
+    SELECT j.code, j.date, j.sec_type, j.benchmark_code,
+           j.bench_amt, j.code_amt,
+           CASE WHEN j.bench_amt IS NULL OR j.code_amt IS NULL
+                     OR j.bench_amt = 0 OR j.code_amt = 0
+                     OR abs(j.bench_amt / NULLIF(j.code_amt, 0)) >= {ratio_cap}
+                THEN NULL
+                ELSE j.bench_amt / NULLIF(j.code_amt, 0) END AS ratio
+    FROM joined j
+),
+win AS (
+    SELECT code, date, sec_type, benchmark_code,
+           bench_amt, code_amt, ratio,
+           avg(ratio) OVER (
+               PARTITION BY code, sec_type, benchmark_code
+               ORDER BY date
+               ROWS BETWEEN 4 PRECEDING AND CURRENT ROW
+           ) AS ma5
+    FROM calc
+)
+UPDATE {table} p
+SET benchmark_etf_trading_amount               = win.bench_amt,
+    code_etf_trading_amount                    = win.code_amt,
+    etf_trading_amount_ratio_benchmark_to_code = win.ratio,
+    etf_trading_amount_ratio_benchmark_to_code_ma5 = win.ma5
+FROM win
+WHERE p.code = win.code
+  AND p.date = win.date
+  AND p.sec_type = win.sec_type
+  AND p.benchmark_code = win.benchmark_code
+  AND p.date >= $1::date
+""".format(table=TABLE, ratio_cap=RATIO_CAP)
+
+
+async def run_etf_backfill(conn) -> None:
+    """ETF-only backfill (``--etf`` sub-command): populate
+    benchmark_etf_trading_amount, code_etf_trading_amount,
+    etf_trading_amount_ratio_benchmark_to_code (+ _ma5) on EXISTING rows
+    from ``stats.index_exts`` — without recomputing weights or corr.
+
+    Rationale: rows written by the main pipeline BEFORE
+    ``builds.index`` (exts phase) populated ``stats.index_exts`` carry NULL ETF
+    amounts. A full ``--force`` recompute of the 55M-row table just to
+    attach amounts is wasteful — the amounts are a pure function of
+    (date, code) from index_exts, so they can be attached in-place with
+    one UPDATE per year chunk. MA5 is recomputed per (code, sec_type,
+    benchmark_code) over a trailing-5-date window with a 20-calendar-day
+    lookback before each chunk (see ETF_BACKFILL_CHUNK_SQL).
+    """
+    t0 = time.time()
+    print("\n" + "=" * 78, flush=True)
+    print("  SEC ALLOC PERF ATTRIBUTION — ETF-ONLY BACKFILL (from index_exts)",
+          flush=True)
+    print("=" * 78, flush=True)
+
+    bounds = await conn.fetchrow(
+        f"SELECT min(date) AS min_date, max(date) AS max_date "
+        f"FROM {DATES_MAP_TABLE}"
+    )
+    min_date: Optional[datetime.date] = bounds["min_date"]
+    max_date: Optional[datetime.date] = bounds["max_date"]
+    if min_date is None or max_date is None:
+        print("    -> dates map empty (no rows in the main table); "
+              "run the main pipeline first.", flush=True)
+        return
+
+    print(f"    -> backfilling ETF columns for {min_date} .. {max_date} "
+          f"(year chunks, {_MA5_LOOKBACK_CALENDAR_DAYS}d MA5 lookback)",
+          flush=True)
+
+    for year in range(min_date.year, max_date.year + 1):
+        chunk_start = max(datetime.date(year, 1, 1), min_date)
+        chunk_end = min(datetime.date(year, 12, 31), max_date)
+        ext_start = chunk_start - datetime.timedelta(
+            days=_MA5_LOOKBACK_CALENDAR_DAYS
+        )
+        t_chunk = time.time()
+        status = await conn.execute(
+            ETF_BACKFILL_CHUNK_SQL, chunk_start, chunk_end, ext_start
+        )
+        print(f"    -> {year}: {status} ({time.time() - t_chunk:.1f}s)",
+              flush=True)
+
+    # Verification: populated counts + PK-join mismatch audit (a row is a
+    # mismatch when the index_exts join hits but the stored value differs).
+    ver = await conn.fetchrow(
+        f"SELECT count(*) AS total, "
+        f"count(benchmark_etf_trading_amount) AS n_bench, "
+        f"count(code_etf_trading_amount) AS n_code, "
+        f"count(etf_trading_amount_ratio_benchmark_to_code) AS n_ratio, "
+        f"count(etf_trading_amount_ratio_benchmark_to_code_ma5) AS n_ma5 "
+        f"FROM {TABLE}"
+    )
+    print(f"    -> verification: {dict(ver)}", flush=True)
+    n_mismatch: int = int(await conn.fetchval(
+        f"SELECT count(*) FROM {TABLE} p "
+        f"LEFT JOIN stats.index_exts b "
+        f"       ON b.date = p.date AND b.code = p.benchmark_code "
+        f"LEFT JOIN stats.index_exts c "
+        f"       ON c.date = p.date AND c.code = p.code "
+        f"WHERE p.benchmark_etf_trading_amount "
+        f"      IS DISTINCT FROM b.total_etf_trading_amount "
+        f"   OR p.code_etf_trading_amount IS DISTINCT FROM "
+        f"      CASE WHEN p.sec_type = 'index' "
+        f"           THEN c.total_etf_trading_amount END"
+    ))
+    print(f"    -> PK-join mismatch audit: {n_mismatch} rows differ "
+          f"from index_exts", flush=True)
+    print(f"\n  etf backfill wall time: {time.time() - t0:.1f}s", flush=True)
 
 
 async def run_perf_attribution(

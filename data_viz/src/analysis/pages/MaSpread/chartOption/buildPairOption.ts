@@ -230,6 +230,43 @@ function trendlineSegment(
   return [[s, vs], [clickIdx, vc]];
 }
 
+/**
+ * Rolling window extreme of `values` over the window [max(0, i-w+1), i]
+ * (partial windows at the series start, same region rule as the DB
+ * anchors). side=1 → rolling max, side=-1 → rolling min. Null/NaN inputs
+ * are skipped; a window with no valid value yields null. Monotonic-deque,
+ * O(n) — every index enters and leaves the deque at most once.
+ */
+function rollingExtremes(
+  values: Array<number | null>,
+  w: number,
+  side: 1 | -1,
+): Array<number | null> {
+  const n = values.length;
+  const out: Array<number | null> = new Array(n).fill(null);
+  // Deque holds indices whose values are monotonic toward the head
+  // (head = current extreme candidate).
+  const dq: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const v = values[i];
+    if (v != null && Number.isFinite(v)) {
+      // Pop dominated tail entries (ties keep the earliest index).
+      while (
+        dq.length > 0
+        && (values[dq[dq.length - 1]] as number) * side <= v * side
+      ) {
+        dq.pop();
+      }
+      dq.push(i);
+    }
+    // Drop candidates that fell out of the window.
+    const lo = Math.max(0, i - w + 1);
+    while (dq.length > 0 && dq[0] < lo) dq.shift();
+    out[i] = dq.length > 0 ? values[dq[0]] : null;
+  }
+  return out;
+}
+
 /** Format a yuan amount as 亿元 (100M yuan). */
 function fmtAmtYi(v: number | null | undefined, digits = 2): string {
   if (v == null || !Number.isFinite(v)) return "—";
@@ -267,9 +304,9 @@ export function buildPairOption({
   const highs = rows.map((r) => r.high);
   const lows = rows.map((r) => r.low);
   const tradingAmts = rows.map((r) => r.trading_amount);
-  const dateOfLastExtreme = rows.map((r) => r.date_of_last_extreme ?? null);
-  const gapSinceLastExtreme = rows.map((r) => r.gap_since_last_extreme ?? null);
-  const daysSinceLastExtreme = rows.map((r) => r.days_since_last_extreme ?? null);
+  const dateOfLastExtreme = rows.map((r) => r.date_of_last_extreme_500days ?? null);
+  const gapSinceLastExtreme = rows.map((r) => r.gap_since_last_extreme_500days ?? null);
+  const daysSinceLastExtreme = rows.map((r) => r.days_since_last_extreme_500days ?? null);
   const rsi6 = rows.map((r) => r.rsi_6days ?? null);
   const rsi10 = rows.map((r) => r.rsi_10days ?? null);
   const rsi14 = rows.map((r) => r.rsi_14days ?? null);
@@ -458,8 +495,11 @@ export function buildPairOption({
 
   if (ohlcAligned && ohlcW != null && ohlcRows != null) {
     const fields = ohlcRows.map((r) => pickOhlcWinFields(r, ohlcW));
-    ohlcHighLine = fields.map((f) => f.high);
-    ohlcLowLine = fields.map((f) => f.low);
+    // High/Low bound curves: the true rolling MAX/MIN WITHIN the window
+    // (intraday high / low of each date) — NOT the (top, 2nd) anchor
+    // values, which only drive the Roof/Floor trendlines below.
+    ohlcHighLine = rollingExtremes(highs, ohlcW, 1);
+    ohlcLowLine = rollingExtremes(lows, ohlcW, -1);
     ohlcWinArrays = {
       open: fields.map((f) => f.open),
       high: fields.map((f) => f.high),
@@ -675,8 +715,9 @@ export function buildPairOption({
 
   // ---- OHLC-window overlay series ---------------------------------------
   if (ohlcAligned && ohlcW != null) {
-    // Rolling window envelope: the max-high / min-low of the window ending
-    // at each date (dashed, subtle) — visualizes the enabled period.
+    // Rolling window bound envelope: the max-high / min-low WITHIN the
+    // window ending at each date (dashed, subtle) — visualizes the
+    // enabled period and bounds every bar in it.
     echartsSeries.push({
       type: "line",
       name: `High(${ohlcW}d)`,

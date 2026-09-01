@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS stats.index_basic_stats (
     change                     NUMERIC(18,4),
     change_pct                 NUMERIC(10,4),
     is_close_estimated         BOOLEAN       NOT NULL DEFAULT FALSE,
+    is_ohl_estimated           BOOLEAN       NOT NULL DEFAULT FALSE,
     has_intraday_5mins         BOOLEAN       NOT NULL DEFAULT FALSE,
 
     CONSTRAINT pk_index_basic_stats PRIMARY KEY (code, date),
@@ -53,6 +54,10 @@ CREATE TABLE IF NOT EXISTS stats.index_basic_stats (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'index_basic_stats', 8);
 
+-- Idempotent migration: add is_ohl_estimated to pre-existing tables.
+ALTER TABLE stats.index_basic_stats
+    ADD COLUMN IF NOT EXISTS is_ohl_estimated BOOLEAN NOT NULL DEFAULT FALSE;
+
 
 COMMENT ON TABLE  stats.index_basic_stats                    IS 'Index daily OHLCV + trading_shares + trading_amount + change metrics.';
 COMMENT ON COLUMN stats.index_basic_stats.trading_shares             IS 'Index trading volume in shares (交易量).';
@@ -60,6 +65,7 @@ COMMENT ON COLUMN stats.index_basic_stats.trading_amount     IS 'Index trading t
 COMMENT ON COLUMN stats.index_basic_stats.change             IS 'Absolute price change from previous close.';
 COMMENT ON COLUMN stats.index_basic_stats.change_pct         IS 'Percentage change from previous close (%).';
 COMMENT ON COLUMN stats.index_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index (highest composition shared weight > 60%). If no proxy index qualifies, prev_close is carried forward.';
+COMMENT ON COLUMN stats.index_basic_stats.is_ohl_estimated  IS 'TRUE when open/high/low were synthesized (not from source CSV) because the source row carries close-only data (CSIndex publishes no intraday OHLC for thematic-index history before 2024-10-24). Synthesis: open = previous close of the same code (NULL when no predecessor exists), high = low = close. FALSE when any real OHLC component came from the source.';
 COMMENT ON COLUMN stats.index_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) in stats.index_intraday_5min.';
 
 -- ----------------------------------------------------------------------------

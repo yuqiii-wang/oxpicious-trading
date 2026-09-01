@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from _common.df_utils import to_py_dates
 from analyze.futures.config import (
     BOND_PRODUCT_TENOR,
     INDEX_PRODUCT_UNDERLYING,
@@ -54,7 +55,10 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
         return pd.DataFrame(columns=_empty_cols)
 
     df = pd.DataFrame([dict(r) for r in fut_rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+    # python-date contract (serialization boundary) via the host-pass
+    # helper — .dt.date is NOT implemented by cuDF (per-element fallback)
+    df["date"] = pd.to_datetime(df["date"])
+    df = to_py_dates(df, ["date"])
     df["futures_close"] = pd.to_numeric(df["futures_close"], errors="coerce")
 
     # Initialize columns that may not be populated
@@ -74,7 +78,8 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
     idx_rows = await conn.fetch(index_close_sql, index_underlyings)
     if idx_rows:
         index_close_df = pd.DataFrame([dict(r) for r in idx_rows])
-        index_close_df["date"] = pd.to_datetime(index_close_df["date"]).dt.date
+        index_close_df["date"] = pd.to_datetime(index_close_df["date"])
+        index_close_df = to_py_dates(index_close_df, ["date"])
         index_close_df["close"] = pd.to_numeric(
             index_close_df["close"], errors="coerce"
         )
@@ -103,7 +108,8 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
     tr_rows = await conn.fetch(treasury_sql)
     if tr_rows:
         treasury_df = pd.DataFrame([dict(r) for r in tr_rows])
-        treasury_df["date"] = pd.to_datetime(treasury_df["date"]).dt.date
+        treasury_df["date"] = pd.to_datetime(treasury_df["date"])
+        treasury_df = to_py_dates(treasury_df, ["date"])
         for col in yield_cols:
             treasury_df[col] = pd.to_numeric(
                 treasury_df[col], errors="coerce"

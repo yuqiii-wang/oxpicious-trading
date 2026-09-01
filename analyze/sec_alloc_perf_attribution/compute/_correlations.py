@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from _common.df_utils import to_py_dates
 from analyze.sec_alloc_perf_attribution.config import CORR_WINDOWS
 
 
@@ -52,7 +53,11 @@ def compute_rolling_correlations(
         ).corr(sub_aligned)
         corr_long = corr_wide.stack().reset_index()
         corr_long.columns = ["date", "benchmark_code", f"corr_{N}d"]
-        corr_long["date"] = pd.to_datetime(corr_long["date"]).dt.date
+        # date is datetime64 (pivot index) — convert to python dates with
+        # ONE host numpy pass (a cudf-backed .dt.date falls back per
+        # element; merged carries object dates so this keeps merge dtypes
+        # aligned).
+        to_py_dates(corr_long, ["date"])
         merged = merged.merge(
             corr_long, on=["date", "benchmark_code"], how="left"
         )

@@ -59,9 +59,25 @@ def _gpu_compute_smoke_test() -> tuple[int, int, list[str]]:
     return n_gpu, n_cpu, cpu_funcs
 
 
+_MSG_MAX = 240
+
+
+def _short(exception: Exception) -> str:
+    """One-line exception message, capped at ``_MSG_MAX`` chars.
+
+    Some cuDF errors embed the full arg list in the message (e.g.
+    ``pandas.concat`` raising ``can only concatenate objects which are
+    instances of {...} [then 1000x <class 'pandas.DataFrame'>]``) —
+    printing it verbatim spams megabyte-long log lines.
+    """
+    msg = " ".join(str(exception).split())
+    if len(msg) > _MSG_MAX:
+        msg = msg[:_MSG_MAX] + f"... [truncated, {len(msg)} chars total]"
+    return msg
+
+
 def _patch_fallback_logger() -> None:
     """Replace cudf.pandas' log_fallback with a safe stdout printer.
-
     cudf 26.08's own ``log_fallback`` crashes with IndexError on property
     fallbacks (``df.columns`` etc.) where ``slow_args`` carries no args
     tuple — a crash INSIDE the fallback handler that kills the whole
@@ -86,9 +102,26 @@ def _patch_fallback_logger() -> None:
         )
         module = getattr(caller, "__module__", "")
         full = f"{module}.{name}" if module else str(name)
+        # Optional caller location (CUDF_FALLBACK_TRACE=1): first stack
+        # frame outside cudf/pandas/proxy internals — the user code that
+        # triggered the fast->slow fallback.
+        where = ""
+        if os.environ.get("CUDF_FALLBACK_TRACE") == "1":
+            import inspect
+            frame = inspect.currentframe()
+            while frame is not None:
+                f_name = frame.f_code.co_filename
+                if ("cudf" not in f_name and "pandas" not in f_name
+                        and "_cudf_pandas" not in f_name):
+                    where = (
+                        f" @ {os.path.basename(f_name)}:"
+                        f"{frame.f_lineno}"
+                    )
+                    break
+                frame = frame.f_back
         print(
-            f"[cudf fallback] {full}: "
-            f"{type(exception).__name__}: {exception}",
+            f"[cudf fallback] {full}{where}: "
+            f"{type(exception).__name__}: {_short(exception)}",
             flush=True,
         )
 

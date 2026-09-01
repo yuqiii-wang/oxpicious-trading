@@ -35,7 +35,10 @@ from __future__ import annotations
 import asyncio
 
 from _common.build_commons import copy_insert_async, copy_or_upsert_split_async
+from _common.db_commons import csv_copy_from_frame_async
+from _common.df_utils import host_array
 from _common.pre_check_and_load.missing_dates import (
+    filter_frame_to_missing_dates_async,
     filter_rows_to_missing_dates_async,
 )
 
@@ -394,23 +397,36 @@ def group_df_by_date_chunks(
     """
     if df.empty:
         return []
-    # Per-date row counts, sorted by date ascending.
+    # Per-date row counts, sorted by date ascending. The sizes Series and
+    # its index are unwrapped to RAW host arrays ONCE (B-A1): iterating
+    # ``.items()`` on the proxy Series and per-chunk ``isin()`` calls with
+    # proxy Timestamps each fall back under cudf.pandas (~1 fallback per
+    # chunk; ~70 chunks per stock-scale insert). Slices of the host
+    # datetime64 array are cast to ns — cudf isin() does not support the
+    # ``us`` unit and falls back with "Unsupported dtype datetime64[us]".
     date_sizes = df.groupby("date", sort=True).size()
-    date_groups: list = []
-    current: list = []
+    dates_host = host_array(date_sizes.index.to_numpy())
+    sizes_host = host_array(date_sizes.to_numpy())
+    # Chunk bounds as (lo, hi) index ranges into the sorted dates array —
+    # a single date is never split across chunks.
+    bounds: list = []
+    start = 0
     current_rows = 0
-    for d, size in date_sizes.items():
-        if current and current_rows + size > chunk_target_rows:
-            date_groups.append(current)
-            current = [d]
-            current_rows = size
+    for i in range(dates_host.size):
+        if start < i and current_rows + sizes_host[i] > chunk_target_rows:
+            bounds.append((start, i))
+            start = i
+            current_rows = sizes_host[i]
         else:
-            current.append(d)
-            current_rows += size
-    if current:
-        date_groups.append(current)
-    # Materialize sub-frames via boolean indexing (one pass per chunk).
-    return [df[df["date"].isin(dates)] for dates in date_groups]
+            current_rows += sizes_host[i]
+    if start < dates_host.size:
+        bounds.append((start, dates_host.size))
+    # Materialize sub-frames via isin() on a datetime64[ns] slice —
+    # hits the GPU hash join (no fallback).
+    return [
+        df[df["date"].isin(dates_host[lo:hi].astype("datetime64[ns]"))]
+        for lo, hi in bounds
+    ]
 
 
 async def _filter_per_sec_type_chunk(conn, table_name, rows, sec_types):
@@ -487,9 +503,7 @@ async def build_and_insert_chunked(
         df: source DataFrame (already filtered to target dates by the
             caller). Must have a ``date`` column and a ``sec_type`` column.
         build_fn: callable(sub_df) -> list[dict]. Assembles + sanitizes
-            one chunk's rows. For mov_ave_spreads_detail this is
-            ``lambda sub: build_detail_rows(sub, pf_rows=all_pf_rows)``;
-            for mov_ave_rsi it is ``sanitize_rsi_rows``.
+            one chunk's rows. For mov_ave_rsi it is ``sanitize_rsi_rows``.
         table_name: target table (schema-qualified).
         key_columns: PK columns (used by the skip-filter; COPY itself
             doesn't need them).
@@ -531,7 +545,7 @@ async def build_and_insert_chunked(
               flush=True)
         return await _build_and_insert_parallel(
             conn, pool, sub_frames, build_fn, table_name,
-            sec_types_set, concurrency, n_chunks, prefix,
+            sec_types_set, concurrency, n_chunks, prefix, force,
         )
     else:
         print(f"{prefix}build+insert: {n_chunks} date-chunks "
@@ -539,13 +553,13 @@ async def build_and_insert_chunked(
               flush=True)
         return await _build_and_insert_sequential(
             conn, sub_frames, build_fn, table_name,
-            sec_types_set, n_chunks, prefix,
+            sec_types_set, n_chunks, prefix, force,
         )
 
 
 async def _build_and_insert_sequential(
     conn, sub_frames, build_fn, table_name,
-    sec_types_set, n_chunks, prefix,
+    sec_types_set, n_chunks, prefix, force,
 ):
     """Sequential build + COPY on a single connection."""
     total = 0
@@ -553,9 +567,14 @@ async def _build_and_insert_sequential(
         rows = build_fn(sub)
         if not rows:
             continue
-        rows = await _filter_per_sec_type_chunk(
-            conn, table_name, rows, sec_types_set,
-        )
+        # In force mode the table was just truncated — the per-sec_type
+        # missing-date filter is a guaranteed no-op AND its
+        # ``SELECT DISTINCT date`` scan would re-read every row inserted
+        # so far (O(chunks²) serial DB work). Skip it entirely.
+        if not force:
+            rows = await _filter_per_sec_type_chunk(
+                conn, table_name, rows, sec_types_set,
+            )
         if not rows:
             continue
         n = await copy_insert_async(conn, table_name, rows)
@@ -567,7 +586,7 @@ async def _build_and_insert_sequential(
 
 async def _build_and_insert_parallel(
     conn, pool, sub_frames, build_fn, table_name,
-    sec_types_set, concurrency, n_chunks, prefix,
+    sec_types_set, concurrency, n_chunks, prefix, force,
 ):
     """Parallel build + COPY: build sequentially, COPY in parallel.
 
@@ -600,10 +619,14 @@ async def _build_and_insert_parallel(
         rows = build_fn(sub)
         if not rows:
             continue
-        # Skip-filter on main conn (fast single SQL per sec_type).
-        rows = await _filter_per_sec_type_chunk(
-            conn, table_name, rows, sec_types_set,
-        )
+        # Skip-filter on main conn (fast single SQL per sec_type). In
+        # force mode the table was just truncated — skip it (its
+        # ``SELECT DISTINCT date`` scan re-reads every row inserted so
+        # far, O(chunks²) serial DB work while COPY workers idle).
+        if not force:
+            rows = await _filter_per_sec_type_chunk(
+                conn, table_name, rows, sec_types_set,
+            )
         if not rows:
             continue
         # Submit to a parallel COPY worker. The semaphore blocks if too
@@ -613,3 +636,178 @@ async def _build_and_insert_parallel(
 
     results = await asyncio.gather(*copy_tasks)
     return sum(results)
+
+
+# ============================================================================
+#  build_and_insert_chunked_df — DataFrame build + CSV COPY insert
+# ============================================================================
+#
+#  DataFrame-flavored sibling of build_and_insert_chunked: ``build_fn``
+#  returns a (long-format) DataFrame instead of row dicts and the insert
+#  goes through ``csv_copy_from_frame_async`` (COPY ... FORMAT csv) instead
+#  of per-value binary record encoding. This removes the two dominant
+#  client-side costs of the dict path:
+#    - per-row dict construction (to_dict / dict-of-None sweeps)
+#    - asyncpg's per-value Python binary encoding (~6s per 100k x 81-col
+#      chunk; the same rows COPY from CSV text in ~0.5s)
+#
+#  The wide→long melt multiplies rows (e.g. x7 periods for the OHLC
+#  table), so the default chunk is smaller (wide rows) and the in-flight
+#  concurrency is capped lower — each in-flight chunk holds its long
+#  frame PLUS its rendered CSV bytes (~100 MB+ at stock scale).
+# ============================================================================
+
+# Wide rows per date-chunk for the df path (before any melt). With a x7
+# melt (OHLC) that is ~175k long rows ≈ ~110 MB of CSV bytes per chunk.
+DEFAULT_DF_CHUNK_TARGET_ROWS = 25_000
+
+# Cap on parallel CSV-copy chunks: each holds frame + CSV bytes in
+# memory while streaming.
+DEFAULT_DF_MAX_CONCURRENT = 4
+
+
+async def _filter_frame_per_sec_type_chunk(conn, table_name, long_df, sec_types_set):
+    """Per-sec_type skip-filter for a single chunk's long DataFrame.
+
+    Splits ``long_df`` by sec_type and drops dates already present in the
+    target table (scoped per-sec_type). In force mode the table was just
+    truncated, so this is a no-op (kept as a safety net). An empty
+    ``sec_types_set`` (single-code mode) keeps every row.
+    """
+    if long_df is None or len(long_df) == 0 or not sec_types_set:
+        return long_df
+    parts = []
+    for st, group in long_df.groupby("sec_type", sort=False):
+        if st not in sec_types_set:
+            parts.append(group)
+            continue
+        filtered = await filter_frame_to_missing_dates_async(
+            conn, table_name, group, sec_type=st,
+        )
+        if filtered is not None and len(filtered):
+            parts.append(filtered)
+    if not parts:
+        return long_df.iloc[0:0]
+    import pandas as pd
+
+    return pd.concat(parts, ignore_index=True)
+
+
+async def build_and_insert_chunked_df(
+    conn,
+    pool,
+    df,
+    build_fn,
+    *,
+    table_name: str,
+    force: bool,
+    sec_types,
+    chunk_target_rows: int = DEFAULT_DF_CHUNK_TARGET_ROWS,
+    max_concurrent: int = DEFAULT_DF_MAX_CONCURRENT,
+    label: str = "",
+) -> int:
+    """Build a long-format DataFrame per date-chunk and CSV-COPY it.
+
+    Same memory-bounding producer-consumer shape as
+    :func:`build_and_insert_chunked` (date-bounded chunks, build
+    sequentially on the caller's loop, COPY in parallel across pool
+    connections) but:
+      - ``build_fn(sub_df)`` returns a DataFrame (e.g. the wide→long
+        melt) — no per-row dicts;
+      - chunks are inserted via ``csv_copy_from_frame_async`` — vectorized
+        client encoding, 10x+ less CPU than binary record assembly;
+      - a smaller default chunk (25k wide rows) and a lower concurrency
+        cap (4) bound the per-chunk frame + CSV-bytes memory after the
+        wide→long melt multiplies the rows.
+
+    Args:
+        conn: asyncpg connection (skip-filter; COPY when sequential).
+        pool: asyncpg pool for parallel COPY (None → sequential).
+        df: wide source DataFrame (``date`` + ``sec_type`` columns).
+        build_fn: callable(sub_df) -> DataFrame.
+        table_name: target table (schema-qualified).
+        force: when True the table is pre-truncated (skip-filter no-op).
+        sec_types: sec_type values for the per-sec_type skip-filter;
+            empty → keep every row (single-code mode).
+        chunk_target_rows: wide rows per date-chunk.
+        max_concurrent: parallel COPY tasks (capped by pool max_size).
+        label: progress-message prefix.
+
+    Returns:
+        Total rows inserted (long rows).
+    """
+    if df is None or len(df) == 0:
+        return 0
+    sub_frames = group_df_by_date_chunks(df, chunk_target_rows)
+    n_chunks = len(sub_frames)
+    prefix = f"      {label} " if label else "      "
+
+    sec_types_set = set(sec_types)
+    use_parallel = pool is not None and max_concurrent > 1 and n_chunks > 1
+
+    total = 0
+    if use_parallel:
+        pool_max = getattr(pool, "_maxsize", max_concurrent)
+        concurrency = max(1, min(max_concurrent, n_chunks, pool_max))
+        print(f"{prefix}build+insert (df): {n_chunks} date-chunks "
+              f"(~{chunk_target_rows:,} wide rows/chunk), parallel CSV COPY "
+              f"({concurrency} concurrent, pool max_size={pool_max})",
+              flush=True)
+        sem = asyncio.Semaphore(concurrency)
+        lock = asyncio.Lock()
+        total_counter = [0]
+        copy_tasks: list = []
+
+        async def _copy_worker(chunk_idx, long_df):
+            async with sem:
+                async with pool.acquire() as pool_conn:
+                    n = await csv_copy_from_frame_async(
+                        pool_conn, table_name, long_df,
+                    )
+                async with lock:
+                    total_counter[0] += n
+                    so_far = total_counter[0]
+                print(f"{prefix}chunk {chunk_idx}/{n_chunks}: COPY "
+                      f"{n:,} rows (cumulative {so_far:,})", flush=True)
+                return n
+
+        for i, sub in enumerate(sub_frames, start=1):
+            long_df = build_fn(sub)
+            if long_df is None or len(long_df) == 0:
+                continue
+            # Force mode: table pre-truncated — the per-sec_type missing-
+            # date filter is a guaranteed no-op and its ``SELECT DISTINCT
+            # date`` scan re-reads every row inserted so far (O(chunks²)
+            # serial DB work while COPY workers idle). Skip it entirely.
+            if not force:
+                long_df = await _filter_frame_per_sec_type_chunk(
+                    conn, table_name, long_df, sec_types_set,
+                )
+            if long_df is None or len(long_df) == 0:
+                continue
+            task = asyncio.create_task(_copy_worker(i, long_df))
+            copy_tasks.append(task)
+
+        results = await asyncio.gather(*copy_tasks)
+        total = sum(results)
+    else:
+        print(f"{prefix}build+insert (df): {n_chunks} date-chunks "
+              f"(~{chunk_target_rows:,} wide rows/chunk), sequential "
+              f"(CSV COPY)", flush=True)
+        for i, sub in enumerate(sub_frames, start=1):
+            long_df = build_fn(sub)
+            if long_df is None or len(long_df) == 0:
+                continue
+            # Force mode: table pre-truncated — skip the no-op filter
+            # (same O(chunks²) scan reasoning as the parallel branch).
+            if not force:
+                long_df = await _filter_frame_per_sec_type_chunk(
+                    conn, table_name, long_df, sec_types_set,
+                )
+            if long_df is None or len(long_df) == 0:
+                continue
+            n = await csv_copy_from_frame_async(conn, table_name, long_df)
+            total += n
+            print(f"{prefix}chunk {i}/{n_chunks}: COPY {n:,} rows "
+                  f"(cumulative {total:,})", flush=True)
+    return total

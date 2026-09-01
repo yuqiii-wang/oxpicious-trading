@@ -50,7 +50,7 @@ from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
 )
-from _common.df_utils import grouped_rolling_agg
+from _common.df_utils import column_subset, grouped_rolling_agg
 from analyze._common import (
     build_and_insert_chunked,
     upsert_analysis_identity,
@@ -70,6 +70,7 @@ from analyze.mov_ave_spread.config import (
     TRADING_AMT_STD_COLUMNS,
     TRADING_AMT_TABLE,
 )
+from analyze.mov_ave_spread.helpers import null_if_overflow_counted
 
 TRADING_AMT_STD_WINDOWS = (5, 20, 60, 120, 255)
 
@@ -159,12 +160,13 @@ def sanitize_trading_amt_rows(df: pd.DataFrame) -> list[dict]:
 
     nulled = {}
     for c in numeric_cols:
-        before = int(out[c].isna().sum())
         if c in wide_cols:
-            out[c] = _null_if_overflow_wide(out[c])
+            clean, n = null_if_overflow_counted(
+                out[c], max_abs=NUMERIC_WIDE_MAX_ABS, scale=4,
+            )
         else:
-            out[c] = _null_if_overflow(out[c])
-        n = int(out[c].isna().sum()) - before
+            clean, n = null_if_overflow_counted(out[c], scale=4)
+        out[c] = clean
         if n > 0:
             nulled[c] = n
     if nulled:
@@ -174,21 +176,6 @@ def sanitize_trading_amt_rows(df: pd.DataFrame) -> list[dict]:
               f"{len(nulled)} column(s): {per}", flush=True)
 
     return sanitize_for_db_insert(out, numeric_cols=numeric_cols)
-
-
-NUMERIC_MAX_ABS = 10000.0
-
-
-def _null_if_overflow(series):
-    s = pd.to_numeric(series, errors="coerce")
-    mask = s.isna() | ~np.isfinite(s) | (s.abs().round(4) >= NUMERIC_MAX_ABS)
-    return s.where(~mask)
-
-
-def _null_if_overflow_wide(series):
-    s = pd.to_numeric(series, errors="coerce")
-    mask = s.isna() | ~np.isfinite(s) | (s.abs().round(4) >= NUMERIC_WIDE_MAX_ABS)
-    return s.where(~mask)
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +236,7 @@ async def run_trading_amt(
         + list(TRADING_AMT_MA_SLOPE_COLUMNS)
         + list(TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS)
     ))
-    available = [c for c in needed_cols if c in df.columns]
+    available = column_subset(df, needed_cols)
     ta_df = df[available].copy()
 
     if ta_df.empty:

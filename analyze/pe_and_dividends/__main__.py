@@ -49,7 +49,6 @@ import datetime
 import os
 import sys
 import time
-import re
 
 # Ensure project root is on sys.path so ``_common`` is importable.
 sys.path.insert(
@@ -78,6 +77,8 @@ activate()
 
 import pandas as pd  # noqa: E402
 
+from analyze._common.sanitize import sanitize_for_db_insert  # noqa: E402
+from _common.df_utils.sanitize import safe_columns  # noqa: E402
 from analyze._common import upsert_analysis_identity  # noqa: E402
 from analyze.pe_and_dividends.config import (  # noqa: E402
     ANALYSIS_NAME,
@@ -107,21 +108,31 @@ from analyze.pe_and_dividends.compute import (  # noqa: E402
 )
 
 
-# Regex to strip exchange suffixes from stock codes for cross-table joins.
-_SUFFIX_RE = re.compile(r"\.(SS|SZ|SH|BJ|HK)$")
-
-
-def _strip_suffix(code: str) -> str:
-    """Strip exchange suffix (.SS/.SZ/.SH/.BJ/.HK) from a code string."""
-    if not code:
-        return code
-    return _SUFFIX_RE.sub("", code.upper())
-
-
 def _normalize_stock_codes(df, col: str) -> None:
-    """Normalize a stock-code column in-place by stripping exchange suffixes."""
-    if col in df.columns:
-        df[col] = df[col].apply(_strip_suffix)
+    """Normalize a stock-code column in-place by stripping exchange suffixes.
+
+    Vectorized str ops (two kernels total) — replaces the former per-row
+    .apply, which paid one proxy Series.__getitem__ fallback per cell."""
+    if col in safe_columns(df):
+        df[col] = df[col].str.upper().str.replace(
+            r"\.(SS|SZ|SH|BJ|HK)$", "", regex=True
+        )
+
+
+def _detail_db_rows(detail_df: pd.DataFrame) -> list[dict]:
+    """Materialize the detail frame for asyncpg: the frame keeps its
+    datetime64 ``date`` column until sanitize extracts it host-side
+    (``date_cols=["date"]`` → python date objects) so cuDF never sees an
+    object-date column (pre-converting poisoned every subsequent frame op
+    with MixedTypeError fallbacks). NaN/inf → NULL sanitize. The
+    datetime64 ``detail_df`` itself stays untouched so the monthly-stats
+    compute can reuse it."""
+    return sanitize_for_db_insert(
+        detail_df,
+        numeric_cols=["pe_ma20", "dividend_yield"],
+        round_to=6,
+        date_cols=["date"],
+    )
 
 
 async def _process_index(
@@ -208,11 +219,12 @@ async def _process_index(
 
     # ---- Build + insert detail rows --------------------------------------
     print(f"  [{st}] Building detail rows...", flush=True)
-    detail_rows = build_detail_rows(close_df, pe_ma20, dy_df, st)
-    print(f"  [{st}]   {len(detail_rows):,} detail rows", flush=True)
+    detail_df = build_detail_rows(close_df, pe_ma20, dy_df, st)
+    print(f"  [{st}]   {len(detail_df):,} detail rows", flush=True)
 
     n_detail = await _write_detail(
-        conn, st, detail_rows, force=force, target_dates=target_dates_detail,
+        conn, st, _detail_db_rows(detail_df), force=force,
+        target_dates=target_dates_detail,
     )
 
     # ---- Compute + insert monthly stats ----------------------------------
@@ -221,8 +233,10 @@ async def _process_index(
     # Single-code mode always recomputes the code's stats rows.
     if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
         print(f"  [{st}] Computing monthly 5y rolling stats...", flush=True)
-        detail_df = pd.DataFrame(detail_rows)
-        pe_df = close_df[["code", "date", "pe"]].copy() if "pe" in close_df.columns else None
+        pe_df = (
+            close_df[["code", "date", "pe"]].copy()
+            if "pe" in safe_columns(close_df) else None
+        )
 
         stats_rows = compute_monthly_stats(
             detail_df, pe_df, comp_df, div_df, trading_dates, st
@@ -287,20 +301,20 @@ async def _process_etf(
     print(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values", flush=True)
 
     # Compute dividend_yield
-    dy_df = compute_simple_dividend_yield(close_df, div_events, trading_dates)
+    dy_df = compute_simple_dividend_yield(close_df, div_events)
 
     # Build + insert detail rows
-    detail_rows = build_detail_rows(close_df, pe_ma20, dy_df, st)
-    print(f"  [{st}]   {len(detail_rows):,} detail rows", flush=True)
+    detail_df = build_detail_rows(close_df, pe_ma20, dy_df, st)
+    print(f"  [{st}]   {len(detail_df):,} detail rows", flush=True)
 
     n_detail = await _write_detail(
-        conn, st, detail_rows, force=force, target_dates=target_dates_detail,
+        conn, st, _detail_db_rows(detail_df), force=force,
+        target_dates=target_dates_detail,
     )
 
     # Monthly stats
     if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
         print(f"  [{st}] Computing monthly 5y rolling stats...", flush=True)
-        detail_df = pd.DataFrame(detail_rows)
         stats_rows = compute_monthly_stats(
             detail_df, pe_df, None, div_events, trading_dates, st
         )
@@ -365,20 +379,20 @@ async def _process_stock(
     print(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values", flush=True)
 
     # Compute dividend_yield
-    dy_df = compute_simple_dividend_yield(close_df, div_df, trading_dates)
+    dy_df = compute_simple_dividend_yield(close_df, div_df)
 
     # Build + insert detail rows
-    detail_rows = build_detail_rows(close_df, pe_ma20, dy_df, st)
-    print(f"  [{st}]   {len(detail_rows):,} detail rows", flush=True)
+    detail_df = build_detail_rows(close_df, pe_ma20, dy_df, st)
+    print(f"  [{st}]   {len(detail_df):,} detail rows", flush=True)
 
     n_detail = await _write_detail(
-        conn, st, detail_rows, force=force, target_dates=target_dates_detail,
+        conn, st, _detail_db_rows(detail_df), force=force,
+        target_dates=target_dates_detail,
     )
 
     # Monthly stats
     if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
         print(f"  [{st}] Computing monthly 5y rolling stats...", flush=True)
-        detail_df = pd.DataFrame(detail_rows)
         stats_rows = compute_monthly_stats(
             detail_df, pe_df, None, div_df, trading_dates, st
         )
@@ -701,4 +715,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

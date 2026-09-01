@@ -31,9 +31,17 @@ Missing-data detection flow (DB-first):
 With --force: truncate all 8 debt_* tables first, so all source dates are
 treated as missing.
 
+With --date YYYY-MM-DD: build ONLY that single date and bypass the DB
+missing-date skip — the date is (re)built even if already present (existing
+rows are refreshed through the normal upsert path; no truncation, no
+deletes). The PBoC OMA table keeps its full truncate+reload (scoping it to
+one date would wipe the other announcements). Mutually exclusive with
+--force.
+
 Usage:
   python -m builds.bond
   python -m builds.bond --start-date 2024-01-01 --end-date 2026-07-14
+  python -m builds.bond --date 2026-07-14
   python -m builds.bond --force
 
 Prerequisite:
@@ -57,6 +65,9 @@ import pandas as pd
 
 from _common.build_commons import (
     add_common_build_args,
+    enforce_date_force_exclusion,
+    parse_date_arg,
+    forced_date_scope,
     copy_or_upsert_split_async,
     get_db_or_exit,
     glob_source_files,
@@ -208,6 +219,18 @@ async def main():
     add_common_build_args(ap)
     args = ap.parse_args()
 
+    # --date / --force are mutually exclusive; parse the forced date early.
+    enforce_date_force_exclusion(args)
+    forced = parse_date_arg(args.date)
+    # Single-date scope: every date-driven reader below is restricted to the
+    # forced date. PBoC OMA (step 2b) is exempt — it always truncates+
+    # reloads the whole table, so scoping it to one date would wipe all
+    # other OMA rows.
+    oma_start, oma_end = args.start_date, args.end_date
+    if forced is not None:
+        # Single-date scope overrides any explicit --start-date/--end-date.
+        args.start_date = args.end_date = forced.isoformat()
+
     t0 = time.time()
     print_build_header(
         "BUILD DEBT MARKET BASELINE  ·  missing-dates-only → DATABASE",
@@ -221,6 +244,8 @@ async def main():
             "Today":          TODAY_STR,
         }
     )
+    if forced is not None:
+        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
 
     if not os.path.exists(PBOC_INSTRUMENTS_CSV):
         # Non-fatal: OMA reload can still proceed. The debt_* tables just
@@ -261,7 +286,9 @@ async def main():
         # (2b) Always reload PBoC OMA (small dataset, no FK to debt_identity)
         # ------------------------------------------------------------------
         print("\n[2b/5] Reloading PBoC OMA announcements (always truncate+insert) …", flush=True)
-        oma_df = build_oma_df(args.start_date, args.end_date, verbose=True)
+        # --date mode keeps the CLI range here (full reload by default) so
+        # the truncate below never shrinks the table to a single date.
+        oma_df = build_oma_df(oma_start, oma_end, verbose=True)
         # Always truncate so the table matches the latest CSV exactly. The
         # dataset is small (~15 rows) and announcements may occur on non-
         # trading days, so the missing-dates-only logic does not apply.
@@ -300,7 +327,20 @@ async def main():
         if file_dates:
             all_available_dates |= file_dates
 
-        if args.force:
+        if forced is not None:
+            # --date mode: bypass the DB missing-date skip — the forced date
+            # is ALWAYS processed (existing rows refresh via the upsert path
+            # below; no truncation, no deletes). The default discovery only
+            # reads the LATEST SHIBOR/China bond yearly file, so augment the
+            # discovered dates with the forced year's files first — otherwise
+            # a historical date would be reported as having no source data.
+            all_available_dates |= discover_dates_from_latest_files(
+                filter_files_by_missing_years(shibor_files_all, {forced}),
+                filter_files_by_missing_years(chinabond_files_all, {forced}),
+            )
+            missing_dates = forced_date_scope(all_available_dates, forced)
+            existing_dates_set = set()
+        elif args.force:
             existing_dates_set = set()
             missing_dates = all_available_dates
         else:
@@ -350,14 +390,16 @@ async def main():
                                            files=missing_chinabond_files)
 
         # After reading SHIBOR/China bond, check for additional dates not in
-        # the instruments CSV (e.g., trading days with SHIBOR data but no OMO)
-        for df in [shibor_df, chinabond_df]:
-            if df is not None and len(df) > 0:
-                extra_dates = set(df["date"].dt.date.tolist()) - existing_dates_set
-                if extra_dates:
-                    missing_dates = missing_dates | extra_dates
-                    print(f"    → Found {len(extra_dates)} additional missing dates "
-                          f"from SHIBOR/China bond (not in instruments CSV)", flush=True)
+        # the instruments CSV (e.g., trading days with SHIBOR data but no OMO).
+        # --date mode pins the scope to the forced date — no extra dates.
+        if forced is None:
+            for df in [shibor_df, chinabond_df]:
+                if df is not None and len(df) > 0:
+                    extra_dates = set(df["date"].dt.date.tolist()) - existing_dates_set
+                    if extra_dates:
+                        missing_dates = missing_dates | extra_dates
+                        print(f"    → Found {len(extra_dates)} additional missing dates "
+                              f"from SHIBOR/China bond (not in instruments CSV)", flush=True)
 
         # ------------------------------------------------------------------
         # (5) Filter to missing dates and insert

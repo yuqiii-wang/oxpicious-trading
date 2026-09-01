@@ -18,6 +18,7 @@ import { Router, type Request, type Response } from "express";
 import {
   listMovAveSpreadCodes,
   getMovAveSpreadChart,
+  getForecastTable,
   listMovAveSpreadThemes,
   listMovAveSpreadStrategyThemes,
   listPerfAttrCodes,
@@ -48,11 +49,11 @@ import {
   listMarginTrendStrategyThemes,
   getMarginIndustrySeries,
   getMarginTrends,
-  listFourierFreqsCodes,
-  getFourierFreqsChart,
-  getFourierFreqsSpectrum,
-  listFourierFreqsThemes,
-  listFourierFreqsStrategyThemes,
+  listRecurringCyclesCodes,
+  getRecurringCyclesChart,
+  getRecurringCyclesSpectrum,
+  listRecurringCyclesThemes,
+  listRecurringCyclesStrategyThemes,
   getFuturesExt,
 } from "../services/analysis/index.js";
 import {
@@ -99,7 +100,7 @@ function parseExchange(req: Request): string | null {
 /** Analysis mains that support single-security recomputation (--code). */
 const RUNNABLE_ANALYSIS_MODULES = new Set([
   "mov_ave_spread",
-  "fourier_freqs",
+  "recurring_cycles",
   "pe_and_dividends",
 ]);
 
@@ -176,6 +177,29 @@ router.get("/mov-ave-spread/chart", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("[analysis/mov-ave-spread/chart] error:", err);
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Forecast buckets table (2nd plot beneath the spread chart) ----
+// GET /api/analysis/mov-ave-spread/forecast?sec_type=etf&code=510050&kind=mov_rsi
+//   kind ∈ {mov_rsi, mov_std} — returns ONE stat_month of the code's bucket
+//   rows (bucket config + is_market_hyped + excess cols for mov_std) joined
+//   1:1 with their analysis_forecasts.forecast_results columns. Optional
+//   `month=YYYY-MM-DD` picks the stat_month; when omitted the latest one is
+//   returned. The response's `months` lists every available stat_month.
+router.get("/mov-ave-spread/forecast", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;
+    const month = typeof req.query.month === "string" ? req.query.month : null;
+    res.json(await getForecastTable(parseSecType(req), code, kind, month));
+  } catch (err) {
+    console.error("[analysis/mov-ave-spread/forecast] error:", err);
+    res.status(400).json({ error: String(err) });
   }
 });
 
@@ -811,58 +835,61 @@ router.get("/margin-trends/trends", async (req: Request, res: Response) => {
   }
 });
 
-// ---- Fourier Frequencies (dominant cycle via real FFT on close prices)
-//   analysis.fourier_freqs — per-(sec_type, code, last_date, range_days)
-//   dominant cycle period (freq, trading days) + amplitude (yuan).
-//   Currently populated for sec_type='index' only.
+// ---- Recurring Cycles (recurring rise/drop periodicity of close prices)
+//   analysis.recurring_cycles — per-(sec_type, code, last_date, range_days)
+//   recurring rise/drop periodicity: every integer day period d (2..N/2)
+//   audited for RECURRENCE in the time domain (extrema evidence × ACF
+//   coherence, amplitude-gated); headline period_days = argmax of strength
+//   (0 = no recurring period). Currently populated for sec_type='index' only.
 //
-//   GET /api/analysis/fourier-freqs/codes?sec_type=index
-//     Returns FourierFreqsCodesResponse: list of codes with first/last date,
-//     n_dates, and the latest dominant freq per range_days.
-//   GET /api/analysis/fourier-freqs/chart?sec_type=index&code=000300
-//     Returns FourierFreqsChartResponse: per-(last_date, range_days) freq +
-//     amplitude rows for one security.
-//   GET /api/analysis/fourier-freqs/themes?sec_type=index
+//   GET /api/analysis/recurring-cycles/codes?sec_type=index
+//     Returns RecurringCyclesCodesResponse: list of codes with first/last
+//     date, n_dates, and the latest recurring period per range_days.
+//   GET /api/analysis/recurring-cycles/chart?sec_type=index&code=000300
+//     Returns RecurringCyclesChartResponse: per-(last_date, range_days)
+//     period_days + strength rows for one security.
+//   GET /api/analysis/recurring-cycles/themes?sec_type=index
 //     Returns the L1 sector → L2 industry → items tree for SecClassificationNav,
-//     filtered to codes that have rows in analysis.fourier_freqs.
-//   GET /api/analysis/fourier-freqs/strategy-themes?sec_type=index
+//     filtered to codes that have rows in analysis.recurring_cycles.
+//   GET /api/analysis/recurring-cycles/strategy-themes?sec_type=index
 //     Parallel L1 strategy → L2 theme tree (RIGHT column).
-router.get("/fourier-freqs/codes", async (req: Request, res: Response) => {
+router.get("/recurring-cycles/codes", async (req: Request, res: Response) => {
   try {
-    res.json(await listFourierFreqsCodes(
+    res.json(await listRecurringCyclesCodes(
       parseSecType(req),
       undefined, undefined, undefined, undefined,
       parseExchange(req),
     ));
   } catch (err) {
-    console.error("[analysis/fourier-freqs/codes] error:", err);
+    console.error("[analysis/recurring-cycles/codes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-router.get("/fourier-freqs/chart", async (req: Request, res: Response) => {
+router.get("/recurring-cycles/chart", async (req: Request, res: Response) => {
   try {
     const code = parseCode(req);
     if (!code) {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
     }
-    res.json(await getFourierFreqsChart(code, parseSecType(req)));
+    res.json(await getRecurringCyclesChart(code, parseSecType(req)));
   } catch (err) {
-    console.error("[analysis/fourier-freqs/chart] error:", err);
+    console.error("[analysis/recurring-cycles/chart] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-//   GET /api/analysis/fourier-freqs/spectrum?sec_type=index&code=000300&last_date=2026-01-08
-//     Returns FourierFreqsSpectrumResponse: the FULL one-sided amplitude
-//     spectrum for ONE (code, last_date) across ALL 5 range_days windows.
-//     last_date is optional — when omitted, defaults to the latest available
-//     date for that code (so the page has an initial spectrum before the
-//     user clicks a date on the top index price plot). Drives the per-date
-//     spectrum bar charts below the top price plot on the Fourier
-//     Frequencies page.
-router.get("/fourier-freqs/spectrum", async (req: Request, res: Response) => {
+//   GET /api/analysis/recurring-cycles/spectrum?sec_type=index&code=000300&last_date=2026-01-08
+//     Returns RecurringCyclesSpectrumResponse: the per-day recurring
+//     periodicity factors (amplitude / count / strength spectra, day-aligned:
+//     element j = day j+2) for ONE (code, last_date) across ALL range_days
+//     windows. last_date is optional — when omitted, defaults to the latest
+//     available date for that code (so the page has an initial spectrum
+//     before the user clicks a date on the top index price plot). Drives the
+//     per-date bar charts below the top price plot on the Recurring Cycles
+//     page.
+router.get("/recurring-cycles/spectrum", async (req: Request, res: Response) => {
   try {
     const code = parseCode(req);
     if (!code) {
@@ -871,27 +898,27 @@ router.get("/fourier-freqs/spectrum", async (req: Request, res: Response) => {
     }
     const rawDate = typeof req.query.last_date === "string" ? req.query.last_date.trim() : "";
     const lastDate = rawDate || null;
-    res.json(await getFourierFreqsSpectrum(code, parseSecType(req), lastDate));
+    res.json(await getRecurringCyclesSpectrum(code, parseSecType(req), lastDate));
   } catch (err) {
-    console.error("[analysis/fourier-freqs/spectrum] error:", err);
+    console.error("[analysis/recurring-cycles/spectrum] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-router.get("/fourier-freqs/themes", async (req: Request, res: Response) => {
+router.get("/recurring-cycles/themes", async (req: Request, res: Response) => {
   try {
-    res.json(await listFourierFreqsThemes(parseSecType(req), parseExchange(req)));
+    res.json(await listRecurringCyclesThemes(parseSecType(req), parseExchange(req)));
   } catch (err) {
-    console.error("[analysis/fourier-freqs/themes] error:", err);
+    console.error("[analysis/recurring-cycles/themes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
 
-router.get("/fourier-freqs/strategy-themes", async (req: Request, res: Response) => {
+router.get("/recurring-cycles/strategy-themes", async (req: Request, res: Response) => {
   try {
-    res.json(await listFourierFreqsStrategyThemes(parseSecType(req), parseExchange(req)));
+    res.json(await listRecurringCyclesStrategyThemes(parseSecType(req), parseExchange(req)));
   } catch (err) {
-    console.error("[analysis/fourier-freqs/strategy-themes] error:", err);
+    console.error("[analysis/recurring-cycles/strategy-themes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

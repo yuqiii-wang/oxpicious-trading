@@ -52,9 +52,9 @@ async def hourly_cycle(
     once: bool,
 ) -> str:
     """One iteration of hourly mode. Returns "continue" or "break"."""
-    # ---- Guard: before AFTERNOON_START (13:30) on a trading day, the market
-    # hasn't opened yet — no data to fetch. Sleep until the session starts
-    # instead of wasting 2+ hours on pointless API calls returning 0 bars. ---
+    # ---- Guard: before AFTERNOON_START (16:00, post-close) on a trading
+    # day, no data to fetch yet. Sleep until the start time instead of
+    # wasting 2+ hours on pointless API calls returning 0 bars. ---
     if trading_today and now.time() < AFTERNOON_START:
         _ast_dt = datetime.combine(today, AFTERNOON_START)
         logger.info(
@@ -111,7 +111,7 @@ async def hourly_cycle(
     total_bars = n_idx_bars + n_stock_bars
     if total_bars == 0:
         if now.time() >= CLOSE_TIME:
-            # Post-close: jump directly to next trading day's 13:30
+            # Post-close: jump directly to next trading day's 16:00
             # (afternoon-only streamer).
             nxt = next_afternoon_start(current_biz_day)
         else:
@@ -129,7 +129,7 @@ async def hourly_cycle(
 
     # If every active stock has reached CLOSE_TIME, no more data will arrive
     # today. Since this streamer is afternoon-only, sleep directly until the
-    # next trading day's 13:30 instead of wasting a wake cycle at 09:30.
+    # next trading day's 16:00 instead of wasting a wake cycle at 09:30.
     still_unfinished = [(c, nm) for (c, nm) in active_stocks
                         if _not_finished(latest_bar_time.get(c))]
     if not still_unfinished:

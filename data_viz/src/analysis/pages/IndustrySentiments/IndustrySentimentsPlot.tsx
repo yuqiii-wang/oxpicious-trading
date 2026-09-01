@@ -8,7 +8,6 @@ import {
   Box,
   Chip,
   Checkbox,
-  Collapse,
   Stack,
   TextField,
   ToggleButton,
@@ -37,14 +36,6 @@ export function IndustrySentimentsPlot({
   const [poolSize, setPoolSize] = useState<PoolSize>("all");
   const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([]);
   const [meanOnly, setMeanOnly] = useState(false);
-
-  // ---- Correlation expandable section ----
-  // Auto-expands when 2+ industries are selected. The parent ChartCard
-  // reveals a second chart showing pairwise rolling correlations (one line
-  // per industry pair). The chart plots the SELECTED INDUSTRIES' MEAN values
-  // being correlated; the tooltip on hover shows the correlation value(s)
-  // at the hovered date.
-  const correlationEnabled = selectedIndustryIds.length >= 2;
 
   // Single-industry overlay: render the merged mean + ±1σ band from
   // data.aggregation. Only in single-industry mode.
@@ -320,16 +311,18 @@ export function IndustrySentimentsPlot({
           />
         </Box>
       )}
-      <Collapse in={correlationEnabled} timeout="auto" unmountOnExit>
-        <Box sx={{ mt: 2, pt: 1, borderTop: 1, borderColor: "divider" }}>
-          <CorrelationChart
-            industryIds={selectedIndustryIds}
-            codes={selectedItemCodes}
-            poolSize={poolSize}
-            themeMode={themeMode}
-          />
-        </Box>
-      </Collapse>
+      {/* Pairwise correlation — always visible beneath the main plot.
+          The chart itself renders a hint when fewer than 2 industries are
+          selected, and auto-triggers the on-demand corr recompute when the
+          selected pair has no materialized rows yet. */}
+      <Box sx={{ mt: 2, pt: 1, borderTop: 1, borderColor: "divider" }}>
+        <CorrelationChart
+          industryIds={selectedIndustryIds}
+          codes={selectedItemCodes}
+          poolSize={poolSize}
+          themeMode={themeMode}
+        />
+      </Box>
     </ChartCard>
   );
 }

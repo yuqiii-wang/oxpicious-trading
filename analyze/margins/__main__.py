@@ -55,12 +55,19 @@ from __future__ import annotations
 from _common.pre_check import pre_check
 
 pre_check()
-import argparse
-import asyncio
-import datetime
-import os
-import sys
-import time
+
+# cudf.pandas activation — must run before pandas first import. Imports
+# below (analyze._common, _common.build_commons, ...) transitively import
+# pandas, so activate() MUST come before them.
+from _common.df_utils._activate import activate  # noqa: E402
+activate()
+
+import argparse  # noqa: E402
+import asyncio  # noqa: E402
+import datetime  # noqa: E402
+import os  # noqa: E402
+import sys  # noqa: E402
+import time  # noqa: E402
 
 # Ensure project root is on sys.path so ``_common`` is importable when run
 # directly via ``python -m analyze.margins`` or as a script.
@@ -93,10 +100,6 @@ from analyze.margins.config import (  # noqa: E402
 )
 
 setup_utf8_stdout()
-
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
 
 # Now safe to import modules that use pandas
 import pandas as pd  # noqa: E402
@@ -347,4 +350,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

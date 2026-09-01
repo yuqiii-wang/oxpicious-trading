@@ -10,9 +10,8 @@
  *     industry_id / is_industry_not_strategy / prev-day share weights.
  *
  * Industry-level aggregates are computed AT QUERY TIME (equal-weight AVG of
- * member pcts per (industry, tick) — identical semantics to the old
- * pre-computed analysis.intraday_industry_market_movements), so NO analyze
- * recompute pass is required for this page.
+ * member pcts per (industry, tick)), so NO analyze recompute pass is required
+ * for this page.
  *
  * Three SQL queries per request (all run in parallel):
  *   1. BENCHMARK_SERIES_SQL — benchmark_price_pct per 5-min tick (top plot
@@ -254,6 +253,156 @@ ORDER BY b.time, b.industry_id
 `;
 
 // ----------------------------------------------------------------------------
+//  SQL: Fallback industry % change — equal-weight industry aggregates computed
+//  on-the-fly from the RAW intraday table when the live tick table has no rows
+//  for the target date (the live pipeline is LATEST-date-scoped by design, so
+//  a benchmark whose latest raw date lags the global latest — or any date the
+//  live keeper never reached — would otherwise render benchmark line but NO
+//  industry shades). Mirrors the live pipeline's ref-less FALLBACK semantics:
+//  member universe = active classification indices/ETFs with a non-BROAD
+//  industry (benchmark itself excluded); prev close = the member's latest
+//  close strictly before the target date from stats.index_basic_stats (same
+//  source as BENCHMARK_SERIES_FALLBACK_SQL and the live pipeline's weighted
+//  ref — the raw intraday table's historical code coverage can lag the
+//  classification universe); pct = close/prev_close - 1 (FRACTION, same
+//  scale as live rows).
+//  $1 = benchmark_code, $2 = date
+// ----------------------------------------------------------------------------
+const INDUSTRY_SERIES_FALLBACK_SQL = `
+WITH cls AS (
+    SELECT DISTINCT ON (code)
+        code,
+        industry_id,
+        is_industry_not_strategy
+    FROM stats.sec_classification
+    WHERE is_active = TRUE
+      AND industry_id IS NOT NULL AND industry_id <> ''
+    ORDER BY code
+),
+universe AS (
+    SELECT
+        sc.code,
+        cls.industry_id,
+        COALESCE(cls.is_industry_not_strategy, TRUE) AS is_industry_not_strategy
+    FROM stats.sec_classification sc
+    JOIN cls ON cls.code = sc.code
+    WHERE sc.is_active = TRUE
+      AND sc.type IN ('index', 'etf')
+      AND cls.industry_id NOT LIKE 'BROAD_%'
+      AND sc.code <> $1::text
+),
+prev_d AS (
+    SELECT MAX(date) AS d
+    FROM stats.index_basic_stats
+    WHERE date < $2::date AND close IS NOT NULL
+),
+member_prev_close AS (
+    SELECT b.code, b.close AS prev_close
+    FROM stats.index_basic_stats b
+    WHERE b.date = (SELECT d FROM prev_d)
+      AND b.close IS NOT NULL AND b.close::text <> 'NaN'
+      AND b.code IN (SELECT code FROM universe)
+),
+bench_prev_close AS (
+    SELECT close AS prev_close
+    FROM stats.index_basic_stats
+    WHERE code = $1::text
+      AND date = (SELECT d FROM prev_d)
+      AND close IS NOT NULL AND close::text <> 'NaN'
+    LIMIT 1
+),
+bench_ticks AS (
+    SELECT bb.time, (bb.close / bpc.prev_close - 1) AS bench_pct
+    FROM stats.index_intraday_5min bb
+    CROSS JOIN bench_prev_close bpc
+    WHERE bb.code = $1::text
+      AND bb.date = $2::date
+      AND bb.close IS NOT NULL AND bb.close::text <> 'NaN'
+),
+member_ticks AS (
+    SELECT i5.code, i5.time,
+           (i5.close / mp.prev_close - 1) AS pct
+    FROM stats.index_intraday_5min i5
+    JOIN member_prev_close mp ON mp.code = i5.code
+    WHERE i5.date = $2::date
+      AND i5.close IS NOT NULL AND i5.close::text <> 'NaN'
+)
+SELECT
+    m.time::text                            AS time,
+    u.industry_id,
+    BOOL_OR(u.is_industry_not_strategy)     AS is_industry_not_strategy,
+    COALESCE(sc.industry_label, u.industry_id) AS industry_label,
+    AVG(m.pct)::float8                      AS industry_price_pct,
+    (AVG(m.pct) - MAX(bt.bench_pct))::float8 AS industry_price_pct_vs_benchmark
+FROM member_ticks m
+JOIN universe u ON u.code = m.code
+LEFT JOIN bench_ticks bt ON bt.time = m.time
+LEFT JOIN LATERAL (
+    SELECT industry_label
+    FROM stats.sec_classification
+    WHERE industry_id = u.industry_id AND type = 'index'
+    LIMIT 1
+) sc ON true
+GROUP BY m.time, u.industry_id, sc.industry_label
+ORDER BY m.time, u.industry_id
+`;
+
+// ----------------------------------------------------------------------------
+//  SQL: Fallback member index % change — per (code, tick) pcts computed from
+//  the RAW intraday table (same universe/prev-close semantics as the industry
+//  fallback above). Drives the bottom plot when live tick rows are missing.
+//  $1 = benchmark_code, $2 = date
+// ----------------------------------------------------------------------------
+const MEMBER_SERIES_FALLBACK_SQL = `
+WITH cls AS (
+    SELECT DISTINCT ON (code)
+        code,
+        industry_id
+    FROM stats.sec_classification
+    WHERE is_active = TRUE
+      AND industry_id IS NOT NULL AND industry_id <> ''
+    ORDER BY code
+),
+universe AS (
+    SELECT sc.code, cls.industry_id
+    FROM stats.sec_classification sc
+    JOIN cls ON cls.code = sc.code
+    WHERE sc.is_active = TRUE
+      AND sc.type IN ('index', 'etf')
+      AND cls.industry_id NOT LIKE 'BROAD_%'
+      AND sc.code <> $1::text
+),
+prev_d AS (
+    SELECT MAX(date) AS d
+    FROM stats.index_basic_stats
+    WHERE date < $2::date AND close IS NOT NULL
+),
+member_prev_close AS (
+    SELECT b.code, b.close AS prev_close
+    FROM stats.index_basic_stats b
+    WHERE b.date = (SELECT d FROM prev_d)
+      AND b.close IS NOT NULL AND b.close::text <> 'NaN'
+      AND b.code IN (SELECT code FROM universe)
+)
+SELECT
+    i5.time::text                     AS time,
+    i5.code,
+    COALESCE(ii.name, i5.code)        AS code_name,
+    u.industry_id,
+    (i5.close / mp.prev_close - 1)::float8 AS code_price_pct
+FROM stats.index_intraday_5min i5
+JOIN universe u ON u.code = i5.code
+JOIN member_prev_close mp ON mp.code = i5.code
+LEFT JOIN LATERAL (
+    SELECT name FROM stats.index_identity
+    WHERE code = i5.code ORDER BY date DESC LIMIT 1
+) ii ON true
+WHERE i5.date = $2::date
+  AND i5.close IS NOT NULL AND i5.close::text <> 'NaN'
+ORDER BY i5.time, u.industry_id, i5.code
+`;
+
+// ----------------------------------------------------------------------------
 //  SQL: Member index % change per (code, tick, industry) — ALL members with
 //  tick rows (index/etf members; stocks carry no ticks by design).
 //  $1 = date, $2 = benchmark_code
@@ -387,8 +536,29 @@ export async function getIntradayMovements(
   );
   const validTickTimes = new Set(rawTickRows.map((r) => r.time));
   effectiveBenchRows = effectiveBenchRows.filter((r) => validTickTimes.has(r.time));
-  const filteredIndustryRows = industryRows.filter((r) => validTickTimes.has(r.time));
-  const filteredMemberRows = memberRows.filter((r) => validTickTimes.has(r.time));
+  let filteredIndustryRows = industryRows.filter((r) => validTickTimes.has(r.time));
+  let filteredMemberRows = memberRows.filter((r) => validTickTimes.has(r.time));
+
+  // Step 3b: if the live tick table has NO industry/member rows for the
+  // target date (the live pipeline is latest-GLOBAL-date-scoped, so a
+  // benchmark whose latest raw date lags the global latest — e.g. its own
+  // 09-01 ticks not ingested yet — never gets live rows), compute the
+  // industry aggregates + member pcts on-the-fly from the RAW intraday
+  // table (same ref-less fallback semantics as the live pipeline).
+  if (filteredIndustryRows.length === 0) {
+    const fbIndustryRows = await queryRows<DbIndustryTickRow>(
+      INDUSTRY_SERIES_FALLBACK_SQL,
+      [benchmarkCode, targetDate],
+    );
+    filteredIndustryRows = fbIndustryRows.filter((r) => validTickTimes.has(r.time));
+  }
+  if (filteredMemberRows.length === 0) {
+    const fbMemberRows = await queryRows<DbMemberTickRow>(
+      MEMBER_SERIES_FALLBACK_SQL,
+      [benchmarkCode, targetDate],
+    );
+    filteredMemberRows = fbMemberRows.filter((r) => validTickTimes.has(r.time));
+  }
 
   if (effectiveBenchRows.length === 0) {
     return {
@@ -469,4 +639,38 @@ export async function listIntradayMovementsBenchmarks(): Promise<{
     benchmark_name: r.benchmark_name ?? r.benchmark_code,
     is_broad_market: r.is_broad_market === null ? null : Boolean(r.is_broad_market),
   }));
+}
+
+// ----------------------------------------------------------------------------
+//  listIntradayMovementsDates — distinct dates available for ONE benchmark
+//  (union of raw intraday bars + live tick rows), newest first. Drives the
+//  page's date selector.
+//  $1 = benchmark_code
+// ----------------------------------------------------------------------------
+const DATES_SQL = `
+SELECT DISTINCT date::text AS date
+FROM (
+    SELECT date
+    FROM stats.index_intraday_5min
+    WHERE code = $1::text AND close IS NOT NULL
+    UNION
+    SELECT date
+    FROM live.sec_alloc_live_attribution
+    WHERE benchmark_code = $1::text
+) d
+ORDER BY date DESC
+`;
+
+export async function listIntradayMovementsDates(
+  rawBenchmarkCode: string,
+): Promise<string[]> {
+  const benchmarkCode = (rawBenchmarkCode ?? "").trim();
+  if (!benchmarkCode) {
+    throw new Error("Missing 'benchmark_code' parameter");
+  }
+  interface DbDateRow extends QueryResultRow {
+    date: string;
+  }
+  const rows = await queryRows<DbDateRow>(DATES_SQL, [benchmarkCode]);
+  return rows.map((r) => r.date);
 }

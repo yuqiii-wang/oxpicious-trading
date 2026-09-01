@@ -250,6 +250,68 @@ async def filter_rows_to_missing_dates_async(
     return [r for r in rows if r[date_key] in missing]
 
 
+async def filter_frame_to_missing_dates_async(
+    conn,
+    table: str,
+    df,
+    date_key: str = "date",
+    *,
+    sec_type: Optional[str] = None,
+):
+    """DataFrame-flavored :func:`filter_rows_to_missing_dates_async`.
+
+    Same contract (per-sec_type skip-filter of dates already present in
+    ``table``) but operates on a DataFrame and returns the filtered
+    DataFrame — no per-row dicts. The ``date`` column must be
+    datetime64[ns] (the pipeline's native dtype); the ``isin`` on a
+    datetime64[ns] host array hits the GPU hash join under cudf.pandas.
+
+    Args:
+        conn: asyncpg connection.
+        table: target analysis table (schema-qualified).
+        df: DataFrame to filter (must carry ``date_key`` and, when the
+            per-sec_type scoping is used, only rows of one ``sec_type``).
+        date_key: column holding the date value (default ``"date"``).
+        sec_type: scope the existing-date query to this sec_type value.
+
+    Returns:
+        New DataFrame containing only rows whose date is missing from
+        the table (empty frame when ``df`` is empty or everything is
+        already present).
+    """
+    if df is None or len(df) == 0:
+        return df
+    import numpy as np
+    import pandas as pd
+
+    from _common.df_utils import host_array
+
+    if sec_type is not None:
+        existing_rows = await conn.fetch(
+            f'SELECT DISTINCT "{date_key}" FROM {table} WHERE sec_type = $1',
+            sec_type,
+        )
+        existing_dates = {
+            d for d in map(itemgetter(date_key), existing_rows)
+            if d is not None
+        }
+    else:
+        existing_rows = await conn.fetch(
+            f'SELECT DISTINCT "{date_key}" FROM {table}'
+        )
+        existing_dates = {
+            d for d in map(itemgetter(date_key), existing_rows)
+            if d is not None
+        }
+    if not existing_dates:
+        return df
+    # Host datetime64[ns] anti-join — vectorized, no per-row Python.
+    missing_arr = np.array(sorted(existing_dates), dtype="datetime64[ns]")
+    dates_host = host_array(df[date_key].to_numpy()).astype("datetime64[ns]")
+    mask = ~np.isin(dates_host, missing_arr)
+    return df[pd.Series(mask, index=df.index)]
+
+
 # ============================================================================
 # Recent-data pre-filter -- used by analyze_* scripts to skip stale securities
 # ============================================================================

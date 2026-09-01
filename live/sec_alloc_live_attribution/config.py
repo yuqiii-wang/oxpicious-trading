@@ -77,7 +77,7 @@ ADVISORY_LOCK_KEY: Final[int] = 482311001  # arbitrary stable constant
 REF_ADVISORY_LOCK_KEY: Final[int] = 482311002  # arbitrary stable constant
 
 # Broad-market industry_ids excluded from the member universe (they are
-# benchmarks, not industries — same list as intraday_industry_sentiments).
+# benchmarks, not industries).
 BROAD_EXCLUDED: Final[tuple[str, ...]] = (
     "BROAD_CSI", "BROAD_SSE", "BROAD_SZSE", "BROAD_STAR", "BROAD",
 )

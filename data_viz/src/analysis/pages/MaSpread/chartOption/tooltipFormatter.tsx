@@ -424,7 +424,7 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
         React.createElement(Row, {
           key: "leGap",
           style: { color: leHex, opacity: 0.9 },
-        }, `gap_since_last_extreme: ${leGap != null && Number.isFinite(leGap) ? fmtPct(leGap * 100, 2) : "—"} · days_since_last_extreme: ${leDays != null && Number.isFinite(leDays) ? Math.round(leDays) : "—"}`),
+        }, `gap_since_last_extreme_500days: ${leGap != null && Number.isFinite(leGap) ? fmtPct(leGap * 100, 2) : "—"} · days_since_last_extreme_500days: ${leDays != null && Number.isFinite(leDays) ? Math.round(leDays) : "—"}`),
       );
       if (leMark != null && Number.isFinite(leMark)) {
         children.push(

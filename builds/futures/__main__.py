@@ -18,9 +18,15 @@ With --force: truncate both tables first, so all source dates are treated
 as missing. With --force --code <contract>: only that contract's rows are
 deleted instead of truncating.
 
+With --date YYYY-MM-DD: build ONLY that single date and bypass the DB
+missing-date skip — the date is (re)built even if already present (existing
+rows are refreshed through the normal upsert path; no truncation, no
+deletes). Mutually exclusive with --force.
+
 Usage:
   python -m builds.futures
   python -m builds.futures --start-date 2024-01-01 --end-date 2026-07-23
+  python -m builds.futures --date 2026-07-23           (force single-date rebuild)
   python -m builds.futures --force
   python -m builds.futures --code IF2609              (single-contract test filter)
 """
@@ -35,6 +41,7 @@ import os
 import sys
 import time
 import argparse
+from datetime import date as _date
 from typing import List
 
 import warnings
@@ -50,6 +57,9 @@ import pandas as pd
 from _common.build_commons import (
     setup_utf8_stdout,
     add_common_build_args,
+    enforce_date_force_exclusion,
+    parse_date_arg,
+    forced_date_scope,
     get_db_or_exit,
     find_missing_dates,
     truncate_table_async,
@@ -64,6 +74,7 @@ from builds._commons.code_filter import (
     normalize_code,
 )
 from builds._commons.row_emission import records_from_frame
+from _common.df_utils import to_py_dates
 
 setup_utf8_stdout()
 
@@ -87,6 +98,13 @@ async def main() -> None:
     add_code_arg(ap)
     args = ap.parse_args()
 
+    # --date / --force are mutually exclusive; parse the forced date early.
+    enforce_date_force_exclusion(args)
+    forced = parse_date_arg(args.date)
+    if forced is not None:
+        # Single-date scope overrides any explicit --start-date/--end-date.
+        args.start_date = args.end_date = forced.isoformat()
+
     # CFFEX contract codes (e.g. IF2609) carry no exchange suffix — strip
     # whatever normalize_code may have appended to a bare code.
     code_filter = normalize_code(args.code)
@@ -105,6 +123,8 @@ async def main() -> None:
     )
     if code_filter:
         print(f"    [CODE FILTER] Restricting build to single contract: {code_filter}", flush=True)
+    if forced is not None:
+        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
 
     # ------------------------------------------------------------------
     # 1. Discover source files and available dates
@@ -117,15 +137,15 @@ async def main() -> None:
         print("    [FATAL] No futures CSV files found", flush=True)
         sys.exit(1)
 
-    # Extract available dates from filenames (convert to datetime.date for DB comparison)
-    from datetime import date as _date
+    # Extract available dates from filenames (stdlib date — no proxied
+    # Timestamp .date() calls, one PER FILE under cudf.pandas)
     available_dates: set[_date] = set()
     for f in all_files:
         ymd = ymd_from_futures_filename(f)
         if ymd:
             d = ymd_to_date(ymd)
             if d is not None:
-                available_dates.add(d.date() if hasattr(d, 'date') else d)
+                available_dates.add(d)
 
     # Apply date range filter
     if args.start_date:
@@ -144,7 +164,12 @@ async def main() -> None:
     conn = await get_db_or_exit()
 
     try:
-        if args.force:
+        if forced is not None:
+            # --date mode: bypass the DB missing-date skip — the forced date
+            # is ALWAYS processed (rows already in the DB are refreshed via
+            # the upsert path below; no truncation, no deletes).
+            missing_dates = forced_date_scope(available_dates, forced)
+        elif args.force:
             if code_filter:
                 # Single-code force mode: delete only this contract's rows
                 # (FK child first, identity last) instead of truncating.
@@ -202,15 +227,16 @@ async def main() -> None:
 
         identity_df, basic_df = build_futures_df(missing_files, verbose=True)
 
-        # Filter to the target contract if --code is set
+        # Filter to the target contract if --code is set (boolean-mask
+        # results are fresh frames; DB emission is index-blind — no reindex)
         if code_filter:
             if len(identity_df) > 0:
                 n_before = len(identity_df)
-                identity_df = identity_df[identity_df["code"] == code_filter].reset_index(drop=True)
+                identity_df = identity_df[identity_df["code"] == code_filter]
                 print(f"    [CODE FILTER] Identity rows {n_before:,} → {len(identity_df):,} for code {code_filter}", flush=True)
             if len(basic_df) > 0:
                 n_before = len(basic_df)
-                basic_df = basic_df[basic_df["code"] == code_filter].reset_index(drop=True)
+                basic_df = basic_df[basic_df["code"] == code_filter]
                 print(f"    [CODE FILTER] Basic-stats rows {n_before:,} → {len(basic_df):,} for code {code_filter}", flush=True)
 
         if identity_df.empty or basic_df.empty:
@@ -232,12 +258,16 @@ async def main() -> None:
         # ------------------------------------------------------------------
         print("\n[DB] Inserting data …", flush=True)
 
-        # Convert dates to datetime.date for asyncpg
+        # Convert dates to datetime.date for asyncpg — keep the columns
+        # datetime64 until this boundary, then ONE host numpy pass per
+        # column (a cudf-backed .dt.date falls back per element).
         identity_db = identity_df.copy()
-        identity_db["date"] = pd.to_datetime(identity_db["date"]).dt.date
+        identity_db["date"] = pd.to_datetime(identity_db["date"])
+        to_py_dates(identity_db, ["date"])
 
         basic_db = basic_df.copy()
-        basic_db["date"] = pd.to_datetime(basic_db["date"]).dt.date
+        basic_db["date"] = pd.to_datetime(basic_db["date"])
+        to_py_dates(basic_db, ["date"])
 
         # Dedupe within batch to avoid ON CONFLICT issues
         identity_db = identity_db.drop_duplicates(
@@ -314,4 +344,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

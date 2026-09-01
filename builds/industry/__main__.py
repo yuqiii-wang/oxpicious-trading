@@ -36,6 +36,12 @@ Default (incremental) mode:
 --force mode:
   Truncates stats.industry_basic_stats first, then recomputes and inserts
   all rows.
+
+--date YYYY-MM-DD mode:
+  Recomputes and upserts ONLY that single date (it must exist in
+  stats.index_identity), bypassing the missing-date skip — existing rows
+  are refreshed through the upsert path (no truncation, no deletes).
+  Mutually exclusive with --force.
 """
 from __future__ import annotations
 
@@ -71,6 +77,10 @@ from _common.build_commons import (  # noqa: E402
     find_missing_analysis_dates,
     filter_rows_to_missing_dates_async,
     add_force_arg,
+    add_date_arg,
+    enforce_date_force_exclusion,
+    parse_date_arg,
+    forced_date_scope,
     rec_col,
     rec_cols,
 )
@@ -84,7 +94,7 @@ activate()
 
 import pandas as pd  # noqa: E402
 
-from _common.df_utils import sanitize_for_db_insert  # noqa: E402
+from _common.df_utils import epoch_col_to_dt64, sanitize_for_db_insert, to_py_dates  # noqa: E402
 from builds.industry.config import TABLE  # noqa: E402
 from builds.industry.compute import (  # noqa: E402
     rebase_ohlc,
@@ -129,7 +139,7 @@ _LOAD_INDEX_DATA_SQL_TEMPLATE = """
         GROUP BY code
     ){first_close_cte}
     SELECT
-        ib.date,
+        extract(epoch from ib.date)::float8 AS date,
         ib.code,
         sc.industry_id,
         COALESCE(sc.industry_label, sc.industry_id) AS industry_label,
@@ -241,23 +251,21 @@ POOL_UNION_TEMP_SQL = """
 # dates are aggregated (the _pu temp table is date-independent).
 _POOL_AMOUNT_JOIN_SQL_FULL = """
     SELECT
-        slm.date,
+        extract(epoch from slm.date)::float8 AS date,
         pu.industry_id,
-        pu.industry_label,
         pu.pool_size,
         SUM(slm.trading_amount) AS total_trading_amount
     FROM _pu pu
     JOIN stats.stock_liquidity_margin slm
         ON slm.code = pu.stock_code
     WHERE slm.trading_amount IS NOT NULL
-    GROUP BY slm.date, pu.industry_id, pu.industry_label, pu.pool_size
+    GROUP BY slm.date, pu.industry_id, pu.pool_size
 """
 
 _POOL_AMOUNT_JOIN_SQL_INCREMENTAL = """
     SELECT
-        slm.date,
+        extract(epoch from slm.date)::float8 AS date,
         pu.industry_id,
-        pu.industry_label,
         pu.pool_size,
         SUM(slm.trading_amount) AS total_trading_amount
     FROM _pu pu
@@ -265,7 +273,7 @@ _POOL_AMOUNT_JOIN_SQL_INCREMENTAL = """
         ON slm.code = pu.stock_code
     WHERE slm.trading_amount IS NOT NULL
       AND slm.date = ANY($1::date[])
-    GROUP BY slm.date, pu.industry_id, pu.industry_label, pu.pool_size
+    GROUP BY slm.date, pu.industry_id, pu.pool_size
 """
 
 
@@ -275,7 +283,12 @@ async def main() -> None:
                     "OHLC mean/var per date x industry x pool_size)."
     )
     add_force_arg(ap)
+    add_date_arg(ap)
     args = ap.parse_args()
+
+    # --date / --force are mutually exclusive; parse the forced date early.
+    enforce_date_force_exclusion(args)
+    forced = parse_date_arg(args.date)
 
     t0 = time.time()
     print_build_header(
@@ -283,13 +296,32 @@ async def main() -> None:
         "(composite rebased-to-100 OHLC per date x industry x pool_size)",
         index_table=TABLE,
         mode="FORCE (full recompute)" if args.force
+             else f"DATE MODE (forced single date: {forced})" if forced is not None
              else "incremental (missing dates only)",
     )
+    if forced is not None:
+        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
 
     conn = await get_db_connection_async()
     try:
         # ---- Step 0: determine target dates -------------------------------
-        if args.force:
+        if forced is not None:
+            # --date mode: bypass the DB missing-date skip — the forced date
+            # is ALWAYS recomputed and upserted (existing rows refresh via
+            # the upsert path below; no truncation, no deletes). The date
+            # must exist in the source identity table, else there is no
+            # source data to aggregate for it.
+            print(f"    -> --date mode: checking stats.index_identity for "
+                  f"{forced}...", flush=True)
+            id_rows = await conn.fetch(
+                "SELECT DISTINCT date FROM stats.index_identity WHERE date = $1",
+                forced,
+            )
+            target_dates = forced_date_scope(
+                {r["date"] for r in id_rows}, forced,
+                source_label="stats.index_identity",
+            )
+        elif args.force:
             print("\n[0/6] Force mode: truncating industry_basic_stats...",
                   flush=True)
             await truncate_table_async(conn, TABLE)
@@ -349,11 +381,16 @@ async def main() -> None:
         df["close"] = df["close"].astype(float)
         df["pe"] = df["pe"].astype(float)
         df["stock_num"] = df["stock_num"].astype("Int64")
-        # datetime64 date column — GPU-native through the whole pipeline.
-        # Object-dtype python dates would raise cuDF MixedTypeError and
-        # poison the frame into CPU fallbacks (see compute.py docstring).
-        # Converted back to python dates only at the DB-insert boundary.
-        df["date"] = pd.to_datetime(df["date"])
+        # datetime64[ns] date column — GPU-native through the whole
+        # pipeline. The date column arrives as NATIVE float8
+        # (extract(epoch) in SQL) and epoch_col_to_dt64 materializes the
+        # explicit [ns] unit in ONE host pass. Object-dtype python dates
+        # would raise cuDF MixedTypeError and poison the frame into CPU
+        # fallbacks (see compute.py docstring). Converted back to python
+        # dates only at the DB-insert boundary. [ns] pins the resolution
+        # (cudf.pandas dtype would otherwise depend on backend — a
+        # mixed-resolution merge breaks under cudf.pandas).
+        df["date"] = epoch_col_to_dt64(df["date"], unit="ns", index=df.index)
         # Drop rows with NaN/zero close (can't rebase from zero).
         df = df[df["close"].notna() & (df["close"] > 0)].copy()
 
@@ -429,8 +466,10 @@ async def main() -> None:
         # Whole-column extraction; NULLs arrive as None → NaN via float dtype
         amt_df = pd.DataFrame(rec_cols(amt_rows))
         amt_df["total_trading_amount"] = amt_df["total_trading_amount"].astype(float)
-        # Match the main frame's datetime64 date dtype for a GPU-native merge.
-        amt_df["date"] = pd.to_datetime(amt_df["date"])
+        # Match the main frame's datetime64[ns] date dtype for a
+        # GPU-native merge (epoch over float8 -> explicit [ns] unit).
+        amt_df["date"] = epoch_col_to_dt64(
+            amt_df["date"], unit="ns", index=amt_df.index)
 
         # ---- Step 6: merge + upsert ---------------------------------------
         print(f"\n[6/6] Merging index-level + stock-level aggregates, "
@@ -446,15 +485,15 @@ async def main() -> None:
             result = result.merge(
                 amt_df, on=["date", "industry_id", "pool_size"], how="left"
             )
-            # Rows without stock amount data get NULL total_trading_amount
-            result["total_trading_amount"] = result["total_trading_amount"].where(
-                result["total_trading_amount"].notna(), other=None
-            )
-        # DB-insert boundary: asyncpg needs python datetime.date objects.
-        result["date"] = result["date"].dt.date
+            # Rows without stock amount data keep NaN — the numeric pass
+            # of sanitize_for_db_insert below converts NaN/inf -> None
+            # (asyncpg SQL NULL); a pre-boundary .where(notna, None) would
+            # cast the column to object and poison subsequent cudf ops.
         # Partition-key-major layout: sort by industry_id (the table's
         # HASH partition key) so downstream sanitize + writes stream
         # whole-industry runs — matching the key-batched write pattern.
+        # Sorts while date is still datetime64 (GPU-native sort); the
+        # python-date conversion below must come AFTER it.
         result = result.sort_values(
             ["industry_id", "date", "pool_size"]
         ).reset_index(drop=True)
@@ -462,6 +501,11 @@ async def main() -> None:
         print(f"    -> {len(result):,} total rows | "
               f"{n_with_amt:,} with total_trading_amount | "
               f"{len(result) - n_with_amt:,} without (NULL)", flush=True)
+
+        # DB-insert boundary: asyncpg needs python datetime.date objects —
+        # ONE host numpy pass (a cudf-backed .dt.date falls back per
+        # element).
+        to_py_dates(result, ["date"])
 
         # Sanitize the aggregated result for asyncpg upsert. Replaces the
         # per-row iterrows dict construction (with manual float()/int()
@@ -481,7 +525,9 @@ async def main() -> None:
         # find_missing_analysis_dates pre-check in Step 0 already filters
         # target_dates, but this catches any edge cases). In force mode the
         # table was truncated so every row is new — skip the check.
-        if not args.force:
+        # --date mode bypasses it too: already-present forced-date rows must
+        # be REFRESHED via the upsert below, not skipped.
+        if not args.force and forced is None:
             n_before = len(data)
             data = await filter_rows_to_missing_dates_async(conn, TABLE, data)
             n_skipped = n_before - len(data)
@@ -522,4 +568,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

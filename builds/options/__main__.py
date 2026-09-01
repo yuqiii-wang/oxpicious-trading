@@ -14,11 +14,18 @@ builders in normal (non-force) mode so they repopulate from scratch.
 With --force --code <underlying>: only that underlying's rows are
 deleted instead of truncating.
 
+With --date YYYY-MM-DD: both builders are scoped to that single date
+and the DB missing-date skip is bypassed — the date is always
+(re)processed and rows already in the DB are refreshed through the
+upsert write paths (no truncation, no deletes). Mutually exclusive
+with --force.
+
 Usage:
   python -m builds.options
   python -m builds.options --start-date 2026-07-01 --end-date 2026-07-31
   python -m builds.options --force
   python -m builds.options --code 159915              (single-underlying test filter)
+  python -m builds.options --date 2026-08-28          (force single-date rebuild, no DB skip)
 """
 from __future__ import annotations
 
@@ -39,6 +46,8 @@ from _common.build_commons import (
     print_wall_time,
     TODAY_STR,
     setup_utf8_stdout,
+    enforce_date_force_exclusion,
+    parse_date_arg,
 )
 
 setup_utf8_stdout()
@@ -53,6 +62,15 @@ _ap = argparse.ArgumentParser(
 add_common_build_args(_ap)
 add_code_arg(_ap)
 _args = _ap.parse_args()
+
+# --date / --force are mutually exclusive; parse the forced single date.
+# When set, the date also supersedes any explicit --start/--end range so
+# downstream discovery/loading is scoped to this single day.
+enforce_date_force_exclusion(_args)
+forced_date = parse_date_arg(_args.date)
+if forced_date:
+    _args.start_date = forced_date.isoformat()
+    _args.end_date = forced_date.isoformat()
 
 # Normalized code filter (e.g. 159915 → 159915.SZ). Sub-builds compare
 # against the BARE underlying_code column, so forward the bare form.
@@ -95,7 +113,8 @@ async def _purge_for_force(underlying: str | None) -> None:
 
 
 def _build_child_argv(start_date: str | None, end_date: str | None,
-                      child_code: str | None = None) -> list[str]:
+                      child_code: str | None = None,
+                      forced_date: str | None = None) -> list[str]:
     """Build argv list for a child builder (without --force)."""
     argv = [sys.argv[0]]
     if start_date:
@@ -104,6 +123,8 @@ def _build_child_argv(start_date: str | None, end_date: str | None,
         argv += ["--end-date", end_date]
     if child_code:
         argv += ["--code", child_code]
+    if forced_date:
+        argv += ["--date", forced_date]
     return argv
 
 
@@ -121,6 +142,8 @@ async def main() -> None:
     )
     if code_filter:
         print(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}", flush=True)
+    if forced_date:
+        print(f"[DATE MODE] Forced single-date build: {forced_date}", flush=True)
 
     # --force: purge tables ONCE before running both builders
     if _args.force:
@@ -131,7 +154,10 @@ async def main() -> None:
         await _purge_for_force(code_filter)
         print("    Done.", flush=True)
 
-    child_argv = _build_child_argv(_args.start_date, _args.end_date, code_filter)
+    child_argv = _build_child_argv(
+        _args.start_date, _args.end_date, code_filter,
+        forced_date.isoformat() if forced_date else None,
+    )
 
     # ---- 1. SZSE ETF options ----
     print("\n" + "=" * 60, flush=True)
@@ -169,4 +195,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

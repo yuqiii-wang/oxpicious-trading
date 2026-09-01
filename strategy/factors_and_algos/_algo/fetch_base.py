@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from _common.df_utils import to_py_dates
 from strategy._common.constants import (  # noqa: F401
     SEC_TYPE_BASIC_STATS_TABLE,
     SEC_TYPE_TECH_STATS_TABLE,
@@ -39,7 +40,11 @@ def rows_to_df(rows, numeric_cols) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+    # python-date contract (serialization boundary) via the host-pass
+    # helper — .dt.date is NOT implemented by cuDF (per-element fallback
+    # + object-poison risk while the column is still being built).
+    df["date"] = pd.to_datetime(df["date"])
+    df = to_py_dates(df, ["date"])
     for c in numeric_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")

@@ -1,20 +1,22 @@
 """Internal RSI step for analyze.mov_ave_spread.
 
-Wilder RSI (6/10/14/20/60/120/255/500 days) + short-term price gaps
+Wilder RSI (6/10/14/20/60 days) + short-term price gaps
 (2/3 day returns) + last-extreme gap/days columns for ETF + Index + Stock.
 One row per (sec_type, code, date) in analysis.mov_ave_rsi.
 
 RSI uses Wilder's smoothing (EWM alpha=1/N, adjust=False, min_periods=N).
 gap_Ndays = (price[t] - price[t-N]) / price[t-N] (N-day price return).
 
-gap_since_last_extreme = (price[t] - extreme_price) / extreme_price, where
-extreme_price is the price at the most recent local turning point (high/
-low) detected by price_slope sign change. Sign indicates the type of the
-last extreme: positive = last extreme was a MIN, negative = last extreme
-was a MAX.
+gap_since_last_extreme_500days = (price[t] - extreme_price) / extreme_price,
+where extreme_price is the price at the most recent local turning point
+(high/low) detected by price_slope sign change WITHIN the last 500 trading
+days of the code history. Sign indicates the type of the last extreme:
+positive = last extreme was a MIN, negative = last extreme was a MAX.
 
-days_since_last_extreme = trading days since the most recent local turning
-point. NULL when no preceding turning point exists.
+days_since_last_extreme_500days = trading days since that turning point.
+All three _500days columns are NULL when no turning point exists in the
+500-trading-day lookback window (early history, or the most recent
+extreme is older than 500 trading days).
 
 Source prices: ETF = COALESCE(etf_adjustment.adj_close,
 etf_basic_stats.close); index = index_basic_stats.close; stock =
@@ -55,6 +57,7 @@ from _common.build_commons import (
     find_missing_analysis_dates,
 )
 from _common.df_utils import grouped_diff, grouped_shift
+from analyze.mov_ave_spread.helpers import null_if_overflow_counted
 from analyze._common import (
     build_and_insert_chunked,
     upsert_analysis_identity,
@@ -73,21 +76,26 @@ RSI_ANALYSIS_NAME = "mov_ave_rsi"
 RSI_DESCRIPTION = (
     "Wilder Relative Strength Index (RSI) + short-term price-gap analysis "
     "+ last-extreme gap/days (ETF + Index + Stock). For each security and "
-    "business date, computes Wilder RSI for 8 windows (rsi_6days / "
-    "rsi_10days / rsi_14days / rsi_20days / rsi_60days / rsi_120days / "
-    "rsi_255days / rsi_500days) using Wilder's exponential smoothing "
+    "business date, computes Wilder RSI for 5 windows (rsi_6days / "
+    "rsi_10days / rsi_14days / rsi_20days / rsi_60days) using Wilder's "
+    "exponential smoothing "
     "(EWM alpha=1/N, adjust=False, min_periods=N; RSI = "
     "100 - 100/(1+RS) where RS = avg_gain/avg_loss over the per-code "
     "N-day gain/loss series; RSI=100 on pure uptrend, 0 on pure "
     "downtrend, NULL when flat), plus 2 short-term price-gap columns "
     "(gap_2days / gap_3days) defined as the N-day price return "
-    "(price[t]-price[t-N])/price[t-N], plus 2 last-extreme columns "
-    "(gap_since_last_extreme / days_since_last_extreme) computed from the "
-    "most recent local turning point (high/low) detected by price_slope "
-    "sign change. gap_since_last_extreme = "
+    "(price[t]-price[t-N])/price[t-N], plus 3 last-extreme columns "
+    "(gap_since_last_extreme_500days / days_since_last_extreme_500days / "
+    "date_of_last_extreme_500days) computed from the most recent local "
+    "turning point (high/low) detected by price_slope sign change WITHIN "
+    "the last 500 trading days of the code history. "
+    "gap_since_last_extreme_500days = "
     "(price[t]-extreme_price)/extreme_price; sign indicates the type of "
     "the last extreme (positive = MIN, negative = MAX). "
-    "days_since_last_extreme = trading days since the last turning point. "
+    "days_since_last_extreme_500days = trading days since that turning "
+    "point. All three are NULL when no turning point exists in the "
+    "500-trading-day lookback window (early history, or the most recent "
+    "extreme is older than 500 trading days). "
     "The sec_type column discriminates the source universe ('etf' | "
     "'index' | 'stock'); ETF price uses COALESCE(etf_adjustment.adj_close, "
     "etf_basic_stats.close), index uses index_basic_stats.close, stock "
@@ -95,16 +103,19 @@ RSI_DESCRIPTION = (
 )
 
 # RSI windows (Wilder smoothing). 14 is the classic Wilder default; 6/10/20
-# are common shorter/longer variants; 60 (~3 trading months), 120 (~half
-# trading year), 255 (~1 trading year, matches MA255), and 500 (~2 trading
-# years) are progressively longer-term momentum windows that smooth out
-# short-term noise — useful for trend-confirmation alongside the shorter
-# windows. Note: 500-day RSI will be NULL for recent IPOs / ETFs with
-# < 500 rows of history.
-RSI_WINDOWS = (6, 10, 14, 20, 60, 120, 255, 500)
+# are common shorter/longer variants; 60 (~3 trading months) is a longer-term
+# momentum window that smooths out short-term noise — useful for trend-
+# confirmation alongside the shorter windows.
+RSI_WINDOWS = (6, 10, 14, 20, 60)
 
 # N-day price-return windows for the gap columns.
 GAP_WINDOWS = (2, 3)
+
+# Lookback window (trading days) for the last-extreme columns: only turning
+# points within the last EXTREME_LOOKBACK_DAYS valid trading days of a
+# code's history are considered — rows whose most recent extreme is older
+# get NULL gap/days/date (mirrors the _500days column names).
+EXTREME_LOOKBACK_DAYS = 500
 
 # NUMERIC(10,6) overflow guard (|value| must be < 10^4 after rounding to 6dp).
 # RSI is bounded 0..100; gap columns are ratios nullified when the
@@ -172,9 +183,18 @@ def compute_rsi_and_gaps(
     # ignore_na=True: null-price rows (NaN gain/loss) are skipped by the
     # EWM, so they neither increment the smoothing nor propagate NaN
     # forward — RSI carries the last non-null value through gaps.
+    # Group bounds computed once (contiguous (sec_type, code) blocks) and
+    # shared by all 5×2 EWM kernel calls below.
+    group_bounds = _host_group_bounds(df, grp) if len(df) else None
     for w in rsi_windows:
-        avg_gain = _grouped_ewm_pandas(gain, df, grp, 1.0 / w, w, ignore_na=True)
-        avg_loss = _grouped_ewm_pandas(loss, df, grp, 1.0 / w, w, ignore_na=True)
+        avg_gain = _grouped_ewm_pandas(
+            gain, df, grp, 1.0 / w, w, ignore_na=True,
+            group_bounds=group_bounds,
+        )
+        avg_loss = _grouped_ewm_pandas(
+            loss, df, grp, 1.0 / w, w, ignore_na=True,
+            group_bounds=group_bounds,
+        )
         df[f"rsi_{w}days"] = _rsi_from_avgs(avg_gain, avg_loss)
 
     # gap_Wdays = (price[t] - price[t-W]) / price[t-W] via shared
@@ -207,24 +227,23 @@ def sanitize_rsi_rows(df: pd.DataFrame) -> list[dict]:
     rsi_cols = [f"rsi_{w}days" for w in RSI_WINDOWS]
     gap_cols = [f"gap_{w}days" for w in GAP_WINDOWS]
     extreme_cols = [
-        "gap_since_last_extreme",
-        "days_since_last_extreme",
-        "date_of_last_extreme",
+        "gap_since_last_extreme_500days",
+        "days_since_last_extreme_500days",
+        "date_of_last_extreme_500days",
     ]
     out_cols = ["sec_type", "code", "date"] + rsi_cols + gap_cols + extreme_cols
     out = df[out_cols].copy()
 
-    # date_of_last_extreme is a DATE column (non-numeric) — exclude from
-    # the NUMERIC(10,6) overflow guard + numeric sanitization.
-    non_numeric = ("sec_type", "code", "date", "date_of_last_extreme")
+    # date_of_last_extreme_500days is a DATE column (non-numeric) — exclude
+    # from the NUMERIC(10,6) overflow guard + numeric sanitization.
+    non_numeric = ("sec_type", "code", "date", "date_of_last_extreme_500days")
     numeric_cols = [c for c in out_cols if c not in non_numeric]
 
     # Overflow guard (safety net; RSI is 0..100, gaps near-zero-nulled).
     nulled = {}
     for c in numeric_cols:
-        before = int(out[c].isna().sum())
-        out[c] = _null_if_overflow(out[c])
-        n = int(out[c].isna().sum()) - before
+        clean, n = null_if_overflow_counted(out[c])
+        out[c] = clean
         if n > 0:
             nulled[c] = n
     if nulled:
@@ -233,16 +252,19 @@ def sanitize_rsi_rows(df: pd.DataFrame) -> list[dict]:
         print(f"    -> NUMERIC(10,6) overflow-guard nulled {total:,} value(s) "
               f"across {len(nulled)} column(s): {per}", flush=True)
 
-    # date_of_last_extreme is a DATE column — convert NaT -> None so asyncpg
-    # serializes NULL (asyncpg cannot serialize pd.NaT). Cast to object dtype
-    # so None stays None (not converted back to NaT).
-    out["date_of_last_extreme"] = (
-        out["date_of_last_extreme"]
-        .astype(object)
-        .where(pd.notna(out["date_of_last_extreme"]), None)
+    # date_of_last_extreme_500days stays datetime64 in the frame — the
+    # shared sanitize_for_db_insert M-branch converts DATE columns to
+    # python datetime.date host-side (NaT -> None) via its ``date_cols``
+    # argument. NEVER pre-cast it to object with
+    # ``astype(object).where(pd.notna(...), None)`` — under cudf.pandas
+    # every call there falls back (astype datetimelike->object TypeError,
+    # pd.notna NotImplementedError, where MixedTypeError) and poisons
+    # the column for the rest of the frame.
+    return sanitize_for_db_insert(
+        out,
+        numeric_cols=numeric_cols,
+        date_cols=["date", "date_of_last_extreme_500days"],
     )
-
-    return sanitize_for_db_insert(out, numeric_cols=numeric_cols)
 
 
 # ---------------------------------------------------------------------------
@@ -268,18 +290,11 @@ def _rsi_from_avgs(avg_gain, avg_loss):
     down_only = (avg_gain == 0) & (avg_loss > 0)
     rsi = rsi.where(~down_only, 0.0)
 
-    flat = (avg_gain == 0) & (avg_loss == 0)
-    rsi = rsi.where(~flat, np.nan)
+    # flat (avg_gain == 0 AND avg_loss == 0) needs no override: rs = 0/0
+    # evaluates to NaN on both backends, so rsi is already NaN there.
+    # The former ``rsi.where(~flat, np.nan)`` triggered a cudf
+    # MixedTypeError fallback (np.nan as `other` on a nullable column).
     return rsi
-
-
-def _null_if_overflow(series):
-    """Null values whose |abs| >= NUMERIC_MAX_ABS (would overflow
-    NUMERIC(10,6)). Mirrors analyze.mov_ave_spread.helpers.null_if_overflow.
-    """
-    s = pd.to_numeric(series, errors="coerce")
-    mask = s.isna() | ~np.isfinite(s) | (s.abs().round(6) >= NUMERIC_MAX_ABS)
-    return s.where(~mask)
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +304,70 @@ def _null_if_overflow(series):
 #  and shifts (gap_Ndays) ARE cuDF-accelerated via the shared helpers.
 # ---------------------------------------------------------------------------
 
-def _grouped_ewm_pandas(s, df, grp, alpha, min_periods, ignore_na=False):
+# Below this row count the pandas Cython groupby-ewm beats the device
+# round-trip (2 × ~8 B/row transfers + launch) — stay on pandas.
+_EWM_GPU_MIN_ROWS = 200_000
+
+
+def _host_group_bounds(df: pd.DataFrame, grp: list[str]):
+    """(starts, ends) int64 host arrays of contiguous group row ranges.
+
+    Caller guarantees df is sorted by [*grp, date] (compute_rsi_and_gaps
+    sorts), so groups are contiguous blocks; a row starts a new group
+    when any key differs from the previous row. Unwraps the proxy
+    ndarrays ONCE at the pandas→numpy boundary (B-A1 rule #1).
+    """
+    from _common.df_utils import host_array
+
+    n = len(df)
+    sec = host_array(df["sec_type"].to_numpy())
+    code = host_array(df["code"].to_numpy())
+    change = np.empty(n, dtype=np.bool_)
+    change[0] = True
+    if n > 1:
+        np.logical_or(sec[1:] != sec[:-1], code[1:] != code[:-1],
+                      out=change[1:])
+    pos = np.flatnonzero(change)
+    return pos.astype(np.int64), np.append(pos[1:], n).astype(np.int64)
+
+
+def _grouped_ewm_gpu(s, df, alpha, min_periods, group_bounds):
+    """Fused CUDA grouped EWM (adjust=False, ignore_na=True), one launch.
+
+    Transfers only the value column + group bounds to VRAM, runs the
+    kernel, and returns a REAL pandas Series (``pd.Series._fsproxy_slow``
+    — B-A1 rule #2) aligned positionally to df.index (groups contiguous
+    ⇒ kernel output row order == df row order, same contract the pandas
+    path's reset_index+reindex achieves).
+    """
+    import cupy as cp
+    from _common.df_utils import host_array
+    from analyze.mov_ave_spread._kernels.ewm import grouped_ewm_mean
+
+    x = host_array(
+        pd.to_numeric(s, errors="coerce").to_numpy()
+    ).astype("float64")
+    starts, ends = group_bounds
+    dev = grouped_ewm_mean(
+        cp.asarray(x), cp.asarray(starts), cp.asarray(ends),
+        alpha=alpha, min_periods=min_periods,
+    )
+    # Unwrap the proxy index ONCE — the REAL pandas Series ctor would
+    # otherwise dispatch on the proxy RangeIndex (RangeIndex._typ
+    # AttributeError fallback).
+    return pd.Series._fsproxy_slow(
+        dev.get(), index=host_array(df.index)
+    )
+
+
+def _grouped_ewm_pandas(s, df, grp, alpha, min_periods, ignore_na=False,
+                        group_bounds=None):
     """Grouped EWM mean (Wilder smoothing) aligned to df.index.
+
+    GPU route: when ``ignore_na=True`` with precomputed contiguous group
+    bounds and a large frame, the fused ``ewm.cpp`` kernel replaces the
+    pandas Cython ``groupby.ewm`` CPU fallback (32 fallback lines/run on
+    the 6.6M-row stock leg); any failure falls back to pandas.
 
     ``groupby(keys).ewm(alpha, adjust=False, min_periods).mean()`` returns a
     MultiIndex Series (group keys + original index). Strip the group-key
@@ -300,6 +377,19 @@ def _grouped_ewm_pandas(s, df, grp, alpha, min_periods, ignore_na=False):
     (neither incrementing the smoothing nor propagating NaN forward) — used
     so null-price rows don't corrupt RSI for subsequent non-null rows.
     """
+    if (
+        ignore_na
+        and group_bounds is not None
+        and len(df) >= _EWM_GPU_MIN_ROWS
+    ):
+        try:
+            return _grouped_ewm_gpu(s, df, alpha, min_periods, group_bounds)
+        except Exception as e:  # noqa: BLE001 — any GPU failure → pandas
+            print(
+                f"      [ewm kernel] GPU route failed "
+                f"({type(e).__name__}: {e}) — pandas fallback",
+                flush=True,
+            )
     keys = [df[k] for k in grp]
     res = (
         s.groupby(keys, sort=False)
@@ -315,8 +405,8 @@ def _grouped_ewm_pandas(s, df, grp, alpha, min_periods, ignore_na=False):
 # ---------------------------------------------------------------------------
 
 def _compute_since_last_extreme(df: pd.DataFrame) -> pd.DataFrame:
-    """Add gap_since_last_extreme + days_since_last_extreme +
-    date_of_last_extreme columns.
+    """Add gap_since_last_extreme_500days + days_since_last_extreme_500days +
+    date_of_last_extreme_500days columns.
 
     A turning point (extreme) is where ``price_slope`` changes sign,
     identifying a local high (max) or low (min) in the price curve:
@@ -325,17 +415,23 @@ def _compute_since_last_extreme(df: pd.DataFrame) -> pd.DataFrame:
 
     For each row, finds the most recent preceding turning point per
     (sec_type, code) and computes:
-      - gap_since_last_extreme = (price[t] - extreme_price) / extreme_price.
-        Sign indicates the type of the last extreme: positive = last
-        extreme was a local MIN (price rebounded upward), negative = last
-        extreme was a local MAX (price fell). NULL when no preceding
-        extreme exists.
-      - days_since_last_extreme = trading days since the last extreme
-        (0 on the extreme row itself). NULL when no preceding extreme.
-      - date_of_last_extreme = the biz date of the most recent turning
-        point (the date on which extreme_price was observed). Carried
-        forward from each turning point until the next one. NULL when no
-        preceding extreme exists.
+      - gap_since_last_extreme_500days = (price[t] - extreme_price) /
+        extreme_price. Sign indicates the type of the last extreme:
+        positive = last extreme was a local MIN (price rebounded upward),
+        negative = last extreme was a local MAX (price fell). NULL when no
+        extreme exists in the lookback window.
+      - days_since_last_extreme_500days = trading days since the last
+        extreme (0 on the extreme row itself). NULL when no extreme exists
+        in the lookback window.
+      - date_of_last_extreme_500days = the biz date of the most recent
+        turning point (the date on which extreme_price was observed).
+        Carried forward from each turning point until the next one. NULL
+        when no extreme exists in the lookback window.
+
+    BOUNDED LOOKBACK: only turning points within the last
+    EXTREME_LOOKBACK_DAYS valid trading days of the code history are
+    considered — rows whose most recent extreme is older than that get
+    NULL in all three columns (the _500days naming contract).
 
     Requires ``price_slope`` column (1st derivative of price, available
     from the parent mov_ave_spread source DataFrame). Called after
@@ -367,8 +463,8 @@ def _compute_since_last_extreme(df: pd.DataFrame) -> pd.DataFrame:
     # Only increments on rows with non-null price — null/no-data rows get the
     # same position as the preceding non-null row (day increment = 0), but
     # they do NOT interrupt the extreme forward-fill below. This ensures
-    # days_since_last_extreme stays constant across null/no-data rows while
-    # the extreme (and its date) carries forward uninterrupted.
+    # days_since_last_extreme_500days stays constant across null/no-data
+    # rows while the extreme (and its date) carries forward uninterrupted.
     grp_keys = [df[k] for k in grp]
     has_price = df["price"].notna()
     valid_pos = (
@@ -386,8 +482,15 @@ def _compute_since_last_extreme(df: pd.DataFrame) -> pd.DataFrame:
         valid_pos.where(is_extreme)
         .groupby(grp_keys, sort=False).ffill()
     )
-    extreme_date = (
-        df["date"].where(is_extreme)
+    # where-with-None on datetime64 = MixedTypeError poison under
+    # cudf.pandas. Do the where + ffill on day-ordinal floats (exact in
+    # float64) and convert back at the end via to_datetime(unit="s")
+    # (NaN → NaT). All ops cuDF-native.
+    day_ord = (
+        df["date"].astype("datetime64[s]").astype("int64") / 86400.0
+    )
+    extreme_ord = (
+        day_ord.where(is_extreme)
         .groupby(grp_keys, sort=False).ffill()
     )
 
@@ -398,7 +501,6 @@ def _compute_since_last_extreme(df: pd.DataFrame) -> pd.DataFrame:
         | (extreme_price.abs() < 1e-12)
         | ~np.isfinite(gap)
     )
-    df["gap_since_last_extreme"] = gap.where(~gap_mask)
 
     # days = current valid position - extreme position.
     # Null/no-data rows share the previous non-null row's valid_pos, so the
@@ -406,11 +508,21 @@ def _compute_since_last_extreme(df: pd.DataFrame) -> pd.DataFrame:
     # forward-fill is not interrupted.
     days = (valid_pos - extreme_pos).astype(float)
     days_mask = extreme_pos.isna()
-    df["days_since_last_extreme"] = days.where(~days_mask)
 
-    # date_of_last_extreme — forward-filled biz date of the last extreme.
-    # NULL for rows before the first turning point in each code.
-    df["date_of_last_extreme"] = extreme_date.where(~days_mask)
+    # Bounded lookback: rows whose most recent extreme is older than
+    # EXTREME_LOOKBACK_DAYS valid trading days fall outside the _500days
+    # window — all three columns NULL there. (NaN > N is False, so the
+    # no-extreme rows are handled by days_mask alone.)
+    in_window = ~(days_mask | (days > EXTREME_LOOKBACK_DAYS))
+
+    df["gap_since_last_extreme_500days"] = gap.where(in_window & ~gap_mask)
+    df["days_since_last_extreme_500days"] = days.where(in_window)
+
+    # date_of_last_extreme_500days — forward-filled biz date of the last
+    # extreme. NULL outside the lookback window / before the first turn.
+    df["date_of_last_extreme_500days"] = pd.to_datetime(
+        extreme_ord.where(in_window) * 86400.0, unit="s"
+    )
 
     # Drop the temporary helper column (not part of mov_ave_rsi schema).
     df = df.drop(columns=["_next_slope"])
@@ -443,8 +555,9 @@ async def run_rsi(
       1. Determine target dates (per-sec_type) by checking missing dates
          in analysis.mov_ave_rsi against source identity tables. In force
          mode, truncate the table instead.
-      2. Compute Wilder RSI (8 windows) + gaps (2 windows) + last-extreme
-         columns (gap_since_last_extreme, days_since_last_extreme) over
+      2. Compute Wilder RSI (5 windows) + gaps (2 windows) + last-extreme
+         columns (gap_since_last_extreme_500days,
+         days_since_last_extreme_500days) over
          the FULL per-code history, then filter to target_dates.
       3. Upsert into analysis.mov_ave_rsi (chunked by date).
       4. Upsert analysis.analysis_identity registry.
@@ -469,11 +582,11 @@ async def run_rsi(
     # many extra columns (OHLC, MAs, slopes, stds) that are irrelevant
     # here. price_slope is needed for turning-point (last extreme)
     # detection. Rows with NULL price are KEPT (not dropped): RSI / gap
-    # columns will be NULL for them, but days_since_last_extreme and
-    # date_of_last_extreme carry forward uninterrupted (day increment = 0
-    # on null-price rows). This ensures the API LEFT JOIN always finds a
-    # mov_ave_rsi row for every detail date, so the UI never misses a
-    # date_of_last_extreme after a no-data gap.
+    # columns will be NULL for them, but days_since_last_extreme_500days and
+    # date_of_last_extreme_500days carry forward uninterrupted (day
+    # increment = 0 on null-price rows). This ensures the API LEFT JOIN
+    # always finds a mov_ave_rsi row for every detail date, so the UI never
+    # misses a date_of_last_extreme_500days after a no-data gap.
     rsi_df = df[["sec_type", "code", "date", "price", "price_slope"]].copy()
     n_null_price = int(rsi_df["price"].isna().sum())
     if n_null_price > 0:

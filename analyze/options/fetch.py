@@ -9,18 +9,34 @@ of all expiry dates is computed. Contract rows where expiry_date >
 dataset_max_date (still open/not matured) get their expiry_date replaced
 with this mean. This collapses all open expiry groups into a single
 representative group.
+
+B-A4 / B-A2 conventions:
+  - dates stay ``datetime64`` from fetch through compute (cuDF-native
+    groupby/sort/compare); python ``date`` objects are materialized ONCE
+    per column via :func:`_common.df_utils.to_py_dates` only at the
+    tuple-return boundary (PK detection) — never ``.dt.date``.
+  - the open-expiry collapse is the shared vectorized
+    :func:`analyze.options.compute._shared._apply_open_expiry_collapse`
+    (merge + ``where``), not a per-row ``apply``.
+  - missing-PK detection is a vectorized anti-join
+    (``merge(..., indicator=True)``), not ``iterrows``.
 """
 from __future__ import annotations
 
 import pandas as pd
-import numpy as np
 
+from _common.build_commons import rec_cols
+from _common.df_utils import epoch_col_to_dt64, to_py_dates
+from analyze.options.compute._shared import _apply_open_expiry_collapse
 from analyze.options.config import (
     SKEWNESS_TABLE_NAME,
     EXPIRY_IDENTITY_TABLE,
     WALLS_TABLE_NAME,
     IV_SKEW_TABLE_NAME,
 )
+
+# PK columns shared by the expiry-group tables.
+_PK_COLUMNS = ["date", "option_type", "underlying_code", "expiry_date"]
 
 # Map sec_type filter to underlying_target_type column values.
 # sec_type='index' -> underlying_target_type IN ('INDEX')
@@ -37,6 +53,17 @@ def _sec_type_where(sec_type: str | None) -> str:
     if target is None:
         return ""
     return f"AND t.underlying_target_type = '{target}'"
+
+
+def _records_frame(rows, columns: list[str]) -> pd.DataFrame:
+    """Build a DataFrame from asyncpg records via ``rec_cols``.
+
+    One positional-unpack pass over the rows (repo convention from
+    ``_common.build_commons``) instead of a per-row ``dict(r)`` for
+    multi-million-row fetches. ``columns`` re-orders/selects by name
+    (keys follow the SELECT order).
+    """
+    return pd.DataFrame(rec_cols(rows), columns=columns)
 
 
 # ---- Skewness stats fetchers -----------------------------------------------
@@ -63,6 +90,8 @@ async def fetch_options_skewness_rows(conn, sec_type: str | None = None) -> pd.D
 
     Returns raw contract-level data; compute.py aggregates to expiry-group
     level (OI-weighted mean moneyness) before rolling calculations.
+    Dates stay datetime64 (compute boundary); conversion to python dates
+    happens only at the DB-write boundary.
 
     Args:
         conn: async DB connection.
@@ -71,11 +100,11 @@ async def fetch_options_skewness_rows(conn, sec_type: str | None = None) -> pd.D
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
         SELECT
-            t.date,
+            extract(epoch from t.date)::float8 AS date,
             t.contract_code,
             t.option_type,
             t.underlying_code,
-            t.expiry_date,
+            extract(epoch from t.expiry_date)::float8 AS expiry_date,
             k.strike_price,
             s.underlying_close,
             v.open_interest
@@ -94,12 +123,55 @@ async def fetch_options_skewness_rows(conn, sec_type: str | None = None) -> pd.D
     if not rows:
         return pd.DataFrame(columns=SKEWNESS_FETCH_COLUMNS)
 
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+    df = _records_frame(rows, SKEWNESS_FETCH_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
     for col in ("strike_price", "underlying_close", "open_interest"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
+
+
+def _missing_pk_tuples(
+    collapsed: pd.DataFrame,
+    existing_rows,
+    pk_columns: list[str],
+) -> list[tuple]:
+    """Vectorized missing-PK detection via anti-join.
+
+    Args:
+        collapsed: DataFrame with the candidate PK rows (datetime64
+            date columns).
+        existing_rows: asyncpg records of the existing PK rows (or []).
+        pk_columns: PK column names.
+
+    Returns:
+        List of PK tuples (python ``date`` objects in the date columns)
+        present in ``collapsed`` but not among ``existing_rows``.
+    """
+    date_cols = [c for c in pk_columns if c in ("date", "expiry_date")]
+    if existing_rows:
+        existing = _records_frame(existing_rows, pk_columns)
+        for c in date_cols:
+            # Existing PK rows come from tables whose date columns are
+            # still DATE — select them with extract(epoch)::float8 (see
+            # the fetchers) so both anti-join sides share the same
+            # datetime64[us] unit.
+            existing[c] = epoch_col_to_dt64(existing[c],
+                                            index=existing.index)
+        merged = collapsed.merge(
+            existing[pk_columns].drop_duplicates(),
+            on=pk_columns, how="left", indicator=True,
+        )
+        missing = merged.loc[
+            merged["_merge"] == "left_only", pk_columns
+        ].copy()
+    else:
+        missing = collapsed[pk_columns].copy()
+
+    # ONE host numpy pass per date column at the tuple boundary.
+    missing = to_py_dates(missing, date_cols)
+    return list(zip(*[missing[c].tolist() for c in pk_columns]))
 
 
 async def fetch_missing_skewness_groups(
@@ -129,7 +201,9 @@ async def fetch_missing_skewness_groups(
     """
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
-        SELECT DISTINCT t.date, t.option_type, t.underlying_code, t.expiry_date
+        SELECT DISTINCT extract(epoch from t.date)::float8 AS date,
+               t.option_type, t.underlying_code,
+               extract(epoch from t.expiry_date)::float8 AS expiry_date
         FROM stats.options_terms t
         JOIN stats.options_strike k
           ON k.date = t.date AND k.contract_code = t.contract_code
@@ -139,46 +213,36 @@ async def fetch_missing_skewness_groups(
           ON v.date = t.date AND v.contract_code = t.contract_code
         WHERE {_SKEWNESS_VALID_WHERE}
           {sec_filter}
-        ORDER BY t.date, t.option_type, t.underlying_code, t.expiry_date
+        ORDER BY date, option_type, underlying_code, expiry_date
     """
     rows = await conn.fetch(sql)
     if not rows:
         return []
 
-    # Convert to DataFrame and apply collapse
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+    df = _records_frame(rows, _PK_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
 
-    # Apply open expiry collapse
-    collapsed = _collapse_open_expiry_df(df)
+    # Vectorized open expiry collapse + unique PK rows
+    collapsed = _apply_open_expiry_collapse(df)[_PK_COLUMNS].drop_duplicates()
 
-    # Check which PKs are missing from the target table
-    existing_pks = set()
+    existing_pks: list = []
     try:
         type_filter = ""
         if skew_type is not None:
             type_filter = " WHERE skew_type = $1"
-        existing_rows = await conn.fetch(
-            f"SELECT date, option_type, underlying_code, expiry_date "
+        existing_pks = await conn.fetch(
+            f"SELECT extract(epoch from date)::float8 AS date, "
+            f"option_type, underlying_code, "
+            f"extract(epoch from expiry_date)::float8 AS expiry_date "
             f"FROM {table_name}{type_filter}",
             *( [skew_type] if skew_type is not None else [] ),
-        )
-        existing_pks = set(
-            (r["date"], r["option_type"],
-             r["underlying_code"], r["expiry_date"])
-            for r in existing_rows
         )
     except Exception:
         pass
 
-    missing = []
-    for _, r in collapsed.iterrows():
-        pk = (r["date"], r["option_type"], r["underlying_code"], r["expiry_date"])
-        if pk not in existing_pks:
-            missing.append(pk)
-
-    return missing
+    return _missing_pk_tuples(collapsed, existing_pks, _PK_COLUMNS)
 
 
 async def fetch_expiry_identity_rows(conn, sec_type: str | None = None) -> list:
@@ -195,7 +259,9 @@ async def fetch_expiry_identity_rows(conn, sec_type: str | None = None) -> list:
     """
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
-        SELECT DISTINCT t.date, t.option_type, t.underlying_code, t.expiry_date
+        SELECT DISTINCT extract(epoch from t.date)::float8 AS date,
+               t.option_type, t.underlying_code,
+               extract(epoch from t.expiry_date)::float8 AS expiry_date
         FROM stats.options_terms t
         JOIN stats.options_strike k
           ON k.date = t.date AND k.contract_code = t.contract_code
@@ -203,84 +269,30 @@ async def fetch_expiry_identity_rows(conn, sec_type: str | None = None) -> list:
           ON s.date = t.date AND s.contract_code = t.contract_code
         WHERE {_SKEWNESS_VALID_WHERE}
           {sec_filter}
-        ORDER BY t.date, t.option_type, t.underlying_code, t.expiry_date
+        ORDER BY date, option_type, underlying_code, expiry_date
     """
     rows = await conn.fetch(sql)
     if not rows:
         return []
 
-    # Convert to DataFrame for collapse
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+    df = _records_frame(rows, _PK_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
 
-    # Apply open expiry collapse
-    collapsed = _collapse_open_expiry_df(df)
+    # Vectorized open expiry collapse + unique PK rows
+    collapsed = _apply_open_expiry_collapse(df)[_PK_COLUMNS].drop_duplicates()
 
-    return [
-        (r["date"], r["option_type"], r["underlying_code"], r["expiry_date"])
-        for _, r in collapsed.iterrows()
-    ]
-
-
-def _collapse_open_expiry_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply open expiry collapse to a DataFrame with expiry_date column.
-
-    For each (option_type, underlying_code), computes the mean of all
-    expiry dates. Rows with expiry_date > max(date) get their
-    expiry_date replaced with this mean. Then re-aggregates to unique
-    (date, option_type, underlying_code, expiry_date) rows.
-
-    Args:
-        df: DataFrame with columns: date, option_type, underlying_code,
-            expiry_date (and possibly others).
-
-    Returns:
-        DataFrame with open expiry groups collapsed to mean expiry_date,
-        containing only unique (date, option_type, underlying_code,
-        expiry_date) tuples.
-    """
-    if df.empty:
-        return df
-
-    dataset_max_date = df["date"].max()
-
-    # Convert expiry_date to numeric (ordinal) for mean computation
-    result = df.copy()
-    result["_expiry_ordinal"] = result["expiry_date"].apply(
-        lambda d: d.toordinal() if hasattr(d, "toordinal") else pd.Timestamp(d).toordinal()
-    )
-
-    # Compute mean expiry ordinal per (option_type, underlying_code)
-    mean_ordinals = (
-        result.groupby(["option_type", "underlying_code"])["_expiry_ordinal"]
-        .apply(lambda g: g.drop_duplicates().mean())
-        .to_dict()
-    )
-
-    # Convert mean ordinals back to dates
-    mean_map = {}
-    for k, v in mean_ordinals.items():
-        if pd.notna(v):
-            mean_map[k] = pd.Timestamp.fromordinal(int(round(v))).date()
-        else:
-            mean_map[k] = None
-
-    # Replace expiry_date for open rows
-    open_mask = result["expiry_date"] > dataset_max_date
-
-    if open_mask.any():
-        result.loc[open_mask, "expiry_date"] = result.loc[open_mask].apply(
-            lambda r: mean_map.get(
-                (r["option_type"], r["underlying_code"]),
-                r["expiry_date"],
-            ),
-            axis=1,
+    # Materialize python dates (ONE numpy pass per column), then tuples.
+    collapsed = to_py_dates(collapsed, ["date", "expiry_date"])
+    return list(
+        zip(
+            collapsed["date"].tolist(),
+            collapsed["option_type"].tolist(),
+            collapsed["underlying_code"].tolist(),
+            collapsed["expiry_date"].tolist(),
         )
-
-    # Return unique PK combinations
-    pk_cols = ["date", "option_type", "underlying_code", "expiry_date"]
-    return result[pk_cols].drop_duplicates().reset_index(drop=True)
+    )
 
 
 # ---- OI stats fetchers ---------------------------------------------------
@@ -298,6 +310,8 @@ async def fetch_oi_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
         date, contract_code, option_type, underlying_code,
         expiry_date, open_interest, underlying_close
 
+    Dates stay datetime64 (compute boundary).
+
     Args:
         conn: async DB connection.
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
@@ -305,11 +319,11 @@ async def fetch_oi_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
         SELECT
-            t.date,
+            extract(epoch from t.date)::float8 AS date,
             t.contract_code,
             t.option_type,
             t.underlying_code,
-            t.expiry_date,
+            extract(epoch from t.expiry_date)::float8 AS expiry_date,
             v.open_interest,
             s.underlying_close
         FROM stats.options_terms t
@@ -327,9 +341,10 @@ async def fetch_oi_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=OI_FETCH_COLUMNS)
 
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+    df = _records_frame(rows, OI_FETCH_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
     for col in ("open_interest", "underlying_close"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
@@ -364,6 +379,8 @@ async def fetch_iv_skew_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
         strike_price, underlying_close, open_interest, implied_vol,
         delta, theta, gamma, vega, rho
 
+    Dates stay datetime64 (compute boundary).
+
     Args:
         conn: async DB connection.
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
@@ -371,11 +388,11 @@ async def fetch_iv_skew_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
         SELECT
-            t.date,
+            extract(epoch from t.date)::float8 AS date,
             t.contract_code,
             t.option_type,
             t.underlying_code,
-            t.expiry_date,
+            extract(epoch from t.expiry_date)::float8 AS expiry_date,
             k.strike_price,
             s.underlying_close,
             v.open_interest,
@@ -402,9 +419,10 @@ async def fetch_iv_skew_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=IV_SKEW_FETCH_COLUMNS)
 
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+    df = _records_frame(rows, IV_SKEW_FETCH_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
     for col in ("strike_price", "underlying_close", "open_interest",
                 "implied_vol", "delta", "theta", "gamma", "vega", "rho"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -438,7 +456,9 @@ async def fetch_missing_iv_skew_groups(
     """
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
-        SELECT DISTINCT t.date, t.option_type, t.underlying_code, t.expiry_date
+        SELECT DISTINCT extract(epoch from t.date)::float8 AS date,
+               t.option_type, t.underlying_code,
+               extract(epoch from t.expiry_date)::float8 AS expiry_date
         FROM stats.options_terms t
         JOIN stats.options_strike k
           ON k.date = t.date AND k.contract_code = t.contract_code
@@ -450,43 +470,35 @@ async def fetch_missing_iv_skew_groups(
           ON g.date = t.date AND g.contract_code = t.contract_code
         WHERE {_IV_SKEW_VALID_WHERE}
           {sec_filter}
-        ORDER BY t.date, t.option_type, t.underlying_code, t.expiry_date
+        ORDER BY date, option_type, underlying_code, expiry_date
     """
     rows = await conn.fetch(sql)
     if not rows:
         return []
 
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+    df = _records_frame(rows, _PK_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
 
-    collapsed = _collapse_open_expiry_df(df)
+    collapsed = _apply_open_expiry_collapse(df)[_PK_COLUMNS].drop_duplicates()
 
-    existing_pks = set()
+    existing_pks: list = []
     try:
         type_filter = ""
         if skew_type is not None:
             type_filter = " WHERE skew_type = $1"
-        existing_rows = await conn.fetch(
-            f"SELECT date, option_type, underlying_code, expiry_date "
+        existing_pks = await conn.fetch(
+            f"SELECT extract(epoch from date)::float8 AS date, "
+            f"option_type, underlying_code, "
+            f"extract(epoch from expiry_date)::float8 AS expiry_date "
             f"FROM {table_name}{type_filter}",
             *( [skew_type] if skew_type is not None else [] ),
-        )
-        existing_pks = set(
-            (r["date"], r["option_type"],
-             r["underlying_code"], r["expiry_date"])
-            for r in existing_rows
         )
     except Exception:
         pass
 
-    missing = [
-        (r["date"], r["option_type"], r["underlying_code"], r["expiry_date"])
-        for _, r in collapsed.iterrows()
-        if (r["date"], r["option_type"],
-            r["underlying_code"], r["expiry_date"]) not in existing_pks
-    ]
-    return missing
+    return _missing_pk_tuples(collapsed, existing_pks, _PK_COLUMNS)
 
 
 # ---- Options walls fetchers -----------------------------------------------
@@ -504,6 +516,8 @@ async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.Data
         date, contract_code, option_type, underlying_code,
         expiry_date, strike_price, open_interest
 
+    Dates stay datetime64 (compute boundary).
+
     Args:
         conn: async DB connection.
         sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
@@ -511,11 +525,11 @@ async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.Data
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
         SELECT
-            t.date,
+            extract(epoch from t.date)::float8 AS date,
             t.contract_code,
             t.option_type,
             t.underlying_code,
-            t.expiry_date,
+            extract(epoch from t.expiry_date)::float8 AS expiry_date,
             k.strike_price,
             v.open_interest
         FROM stats.options_terms t
@@ -531,9 +545,10 @@ async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.Data
     if not rows:
         return pd.DataFrame(columns=WALLS_FETCH_COLUMNS)
 
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+    df = _records_frame(rows, WALLS_FETCH_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
     for col in ("strike_price", "open_interest"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
@@ -551,7 +566,9 @@ async def fetch_missing_walls_groups(
     """
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
-        SELECT DISTINCT t.date, t.option_type, t.underlying_code, t.expiry_date
+        SELECT DISTINCT extract(epoch from t.date)::float8 AS date,
+               t.option_type, t.underlying_code,
+               extract(epoch from t.expiry_date)::float8 AS expiry_date
         FROM stats.options_terms t
         JOIN stats.options_strike k
           ON k.date = t.date AND k.contract_code = t.contract_code
@@ -559,46 +576,43 @@ async def fetch_missing_walls_groups(
           ON v.date = t.date AND v.contract_code = t.contract_code
         WHERE k.strike_price > 0
           {sec_filter}
-        ORDER BY t.date, t.option_type, t.underlying_code, t.expiry_date
+        ORDER BY date, option_type, underlying_code, expiry_date
     """
     rows = await conn.fetch(sql)
     if not rows:
         return []
 
-    # Convert to DataFrame and apply collapse
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["expiry_date"] = pd.to_datetime(df["expiry_date"]).dt.date
+    df = _records_frame(rows, _PK_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
 
-    # Apply open expiry collapse
-    collapsed = _collapse_open_expiry_df(df)
+    collapsed = _apply_open_expiry_collapse(df)[_PK_COLUMNS].drop_duplicates()
 
-    # Check which PKs are missing from the walls table
-    existing_pks = set()
+    existing_pks: list = []
     try:
-        existing_rows = await conn.fetch(
-            f"SELECT date, option_type, underlying_code, expiry_date, wall_type "
+        existing_pks = await conn.fetch(
+            f"SELECT extract(epoch from date)::float8 AS date, "
+            f"option_type, underlying_code, "
+            f"extract(epoch from expiry_date)::float8 AS expiry_date, "
+            f"wall_type "
             f"FROM {WALLS_TABLE_NAME}"
-        )
-        existing_pks = set(
-            (r["date"], r["option_type"],
-             r["underlying_code"], r["expiry_date"],
-             r["wall_type"])
-            for r in existing_rows
         )
     except Exception:
         pass
 
-    # Need both wall types for each (date, option_type, underlying, expiry)
+    # Each expiry group needs both wall types: duplicate the candidate
+    # PK frame per wall type (vectorized; 2 copies), THEN anti-join on
+    # the full 5-column PK so a group missing only one wall type is
+    # detected per type.
     from analyze.options.config import WALL_TYPE_80PCT, WALL_TYPE_LARGE_NUM
-    wall_types = [WALL_TYPE_80PCT, WALL_TYPE_LARGE_NUM]
-
-    missing = []
-    for _, r in collapsed.iterrows():
-        for wt in wall_types:
-            pk = (r["date"], r["option_type"], r["underlying_code"],
-                  r["expiry_date"], wt)
-            if pk not in existing_pks:
-                missing.append(pk)
-
-    return missing
+    candidates = pd.concat(
+        [
+            collapsed.assign(wall_type=WALL_TYPE_80PCT),
+            collapsed.assign(wall_type=WALL_TYPE_LARGE_NUM),
+        ],
+        ignore_index=True,
+    )
+    return _missing_pk_tuples(
+        candidates, existing_pks, _PK_COLUMNS + ["wall_type"],
+    )

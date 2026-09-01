@@ -23,12 +23,14 @@ COMBINED_COLS = [
     "stock_code", "stock_name", "shares", "cash_sub_flag", "market",
 ]
 
-# Column dtypes: strings for code/label columns; numerics auto-infer as
-# float64 (no per-cell parsing needed downstream).
+# Column dtypes: one-pass dtype contract — final dtypes assigned AT PARSE
+# TIME (str code/label columns; float64 numerics; a parse error would be a
+# downloads bug and stop the run).
 _DTYPE_STR_COLS = (
     "trade_date", "etf_code", "etf_name", "fund_type", "target_index",
     "stock_code", "stock_name", "cash_sub_flag", "market",
 )
+_DTYPE_FLOAT_COLS = ("nav_per_unit", "min_unit_nav", "shares")
 
 
 def _read_one(path: str) -> pd.DataFrame | None:
@@ -36,7 +38,10 @@ def _read_one(path: str) -> pd.DataFrame | None:
     try:
         df = pd.read_csv(
             path,
-            dtype={c: str for c in _DTYPE_STR_COLS},
+            dtype={
+                **{c: str for c in _DTYPE_STR_COLS},
+                **{c: "float64" for c in _DTYPE_FLOAT_COLS},
+            },
             keep_default_na=False,
             na_values=[""],
         )
@@ -50,13 +55,39 @@ def _read_one(path: str) -> pd.DataFrame | None:
     return df
 
 
-def build_composition(verbose=True, code=None):
-    """Read all per-file composition CSVs and return (comp_long, comp_universe).
+_FILENAME_PREFIX = "szse_etf_comp_"
+
+
+def _filename_comp_key(path: str) -> str | None:
+    """'szse_etf_comp_YYYYMMDD_<bare6>.csv' → '<bare6>|<YYYYMMDD>'.
+
+    The DB gate keys are built the same way from stats.sec_composition
+    (code stripped to its bare 6-digit part + snapshot_date), so a file
+    whose (code, snapshot) pair already exists can be skipped without
+    being opened.
+    """
+    base = os.path.basename(path)
+    if not base.startswith(_FILENAME_PREFIX) or not base.endswith(".csv"):
+        return None
+    parts = base[len(_FILENAME_PREFIX):-len(".csv")].split("_")
+    if len(parts) != 2 or len(parts[0]) != 8 or len(parts[1]) != 6:
+        return None
+    return parts[1] + "|" + parts[0]
+
+
+def build_composition(verbose=True, code=None, existing_ymd_keys=None):
+    """Read per-file composition CSVs and return (comp_long, comp_universe).
 
     When *code* is set (canonical "NNNNNN.SZ/.SS" or bare 6-digit), only that
     ETF's per-file CSVs are read: filenames end with the bare code
     (``szse_etf_comp_YYYYMMDD_<code>.csv``), so a --code build never parses
     other ETFs' holdings.
+
+    When *existing_ymd_keys* is a set of ``"<bare6>|<YYYYMMDD>"`` strings
+    (the (code, snapshot_date) pairs already in stats.sec_composition),
+    matching files are skipped BEFORE any read/parse — the gate-first fix
+    for the nightly run (a full parse of all 16K files costs ~172s; a
+    nightly incremental parses only the 1-2 new snapshots).
 
     No CSV output — caller inserts directly to database.
     """
@@ -66,8 +97,16 @@ def build_composition(verbose=True, code=None):
             os.path.join(COMP_DIR, f"szse_etf_comp_*_{bare}.csv")))
     else:
         files = sorted(glob.glob(os.path.join(COMP_DIR, "szse_etf_comp_*.csv")))
+    if existing_ymd_keys is not None:
+        n_all = len(files)
+        files = [f for f in files
+                 if (k := _filename_comp_key(f)) is None
+                 or k not in existing_ymd_keys]
+        if verbose and n_all - len(files):
+            print(f"    [COMP] DB gate: skipped {n_all - len(files)} of "
+                  f"{n_all} per-file CSVs (snapshots already in DB)", flush=True)
     if verbose:
-        print(f"    [COMP] {len(files)} per-file CSVs in {COMP_DIR}", flush=True)
+        print(f"    [COMP] {len(files)} per-file CSVs to read in {COMP_DIR}", flush=True)
 
     counts = Counter()
     dfs = []

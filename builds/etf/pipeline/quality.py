@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from _common.build_commons import bulk_upsert_async, rec_cols
+from _common.df_utils import safe_columns
 from builds._commons.row_emission import records_from_frame
 
 
@@ -14,7 +15,7 @@ async def upsert_quality_metrics(conn, uni_df: pd.DataFrame, merged: pd.DataFram
     # Avg trading volume per code — groupby → merge into the output frame
     # (vectorized; never a host dict hop).
     avg_vol = None
-    if "trading_shares" in merged.columns:
+    if "trading_shares" in safe_columns(merged):
         avg_vol = merged.groupby("code", as_index=False)["trading_shares"].mean()
 
     # Existing PKs from sec_classification drive parent_index_code — also a
@@ -49,7 +50,7 @@ async def upsert_quality_metrics(conn, uni_df: pd.DataFrame, merged: pd.DataFram
 
     if len(parent_df):
         out = out.merge(parent_df, on="code", how="left")
-    if "parent_index_code" not in out.columns:
+    if "parent_index_code" not in safe_columns(out):
         out["parent_index_code"] = ""
     else:
         out["parent_index_code"] = out["parent_index_code"].fillna("").astype(str)

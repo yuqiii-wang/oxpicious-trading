@@ -23,10 +23,10 @@ Outputs (under ``temps/gov_news/``):
 
 Usage::
 
-    python -m downloads.macro.gov.articles                       # full backfill
+    python -m downloads.macro.gov.articles                       # incremental (latest missing dates only)
     python -m downloads.macro.gov.articles --start-date 2025-01-01
     python -m downloads.macro.gov.articles --max-articles 5       # test run
-    python -m downloads.macro.gov.articles --force                # re-fetch all
+    python -m downloads.macro.gov.articles --force                # full re-crawl
 """
 from __future__ import annotations
 
@@ -57,6 +57,7 @@ from downloads._common import (  # noqa: E402
     resolve_out_dir,
     setup_logger,
 )
+from downloads.macro.gov.main_gov import latest_csv_date, read_csv_rows  # noqa: E402
 
 # ----------------------------------------------------------------------------
 # Constants
@@ -305,6 +306,11 @@ def download_articles(
 ) -> Dict[str, Any]:
     """Scan gov_news titles for keyword matches and crawl matched detail pages.
 
+    By default the run is **incremental**: when ``articles_index.csv`` already
+    exists, only matched titles on/after its latest ``pub_date`` are scanned
+    (same-day additions are re-checked; cached ``.md`` files skip re-fetches).
+    ``--force`` re-scans all titles and re-fetches every matched detail page.
+
     Returns a summary dict with counts and output paths.
     """
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), OUTPUT_DIRNAME, out_root)
@@ -313,6 +319,13 @@ def download_articles(
     csv_path = Path(titles_csv) if titles_csv else out_dir / TITLES_FILENAME
 
     start = datetime.strptime(start_date or DEFAULT_START_DATE, "%Y-%m-%d").date()
+
+    # Incremental state: latest pub_date already present in the index CSV.
+    index_floor: Optional[date] = None
+    if not force:
+        index_floor = latest_csv_date(read_csv_rows(index_path))
+        if index_floor is not None:
+            logger.info("Incremental: index has data up to %s — only newer titles scanned", index_floor)
 
     # 1. Load keywords + build reverse map
     keywords = load_keywords()
@@ -335,14 +348,17 @@ def download_articles(
         pd = datetime.strptime(row["pub_date"], "%Y-%m-%d").date()
         if pd < start:
             continue
+        if index_floor is not None and pd < index_floor:
+            continue
         cats = extract_categories(row.get("title", ""), rev_map)
         if not cats:
             continue
         matched.append((row, cats))
 
     logger.info(
-        "Matched %d / %d titles (start=%s)%s",
+        "Matched %d / %d titles (start=%s, index_floor=%s)%s",
         len(matched), len(titles), start,
+        index_floor if index_floor is not None else "-",
         f" — capping to {max_articles}" if max_articles else "",
     )
 
@@ -456,6 +472,8 @@ def download_articles(
 
     summary = {
         "matched": len(matched),
+        "mode": "incremental" if index_floor is not None else "full",
+        "index_floor": str(index_floor) if index_floor is not None else None,
         "fetched": fetched,
         "skipped_cached": skipped_cached,
         "failed": failed,

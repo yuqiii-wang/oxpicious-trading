@@ -43,6 +43,7 @@ def detect_trend_episodes(
     history: pd.DataFrame,
     tech_stats: pd.DataFrame,
     sec_type: str,
+    trading_amt: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Detect sustained UP/DOWN trend episodes on the rz_balance curve.
 
@@ -59,18 +60,25 @@ def detect_trend_episodes(
     STATISTICALLY SIGNIFICANT slope (|zscore_20d| > 0). The zscore SIGN
     is NOT checked against direction — only its MAGNITUDE (significance).
 
+    TRADING AMT: when ``trading_amt`` is given (daily rows for THIS
+    sec_type: [code, date, trading_amount]), it is equality-joined onto
+    the daily rows on (code, date) and summed per segment — Σ over the
+    episode's [start_date, end_date] (episodes are contiguous daily-row
+    segments, so no asof join is needed; cudf has no merge_asof).
+
     Args:
         history: DataFrame[code, date, rz_balance, rz_buy] — raw margin
             history for this sec_type.
         tech_stats: DataFrame with columns [code, date,
             margin_balance_slope_ma5, margin_balance_slope_zscore_20d].
         sec_type: 'etf' | 'stock' | 'index'.
+        trading_amt: optional daily trading_amount rows for this
+            sec_type ([code, date, trading_amount]).
 
     Returns:
         DataFrame with INSERT_COLUMNS plus the internal ``sum_rz_buy``
-        helper (Σ rz_buy over the window — consumed by trading_amt.py;
-        dropped at DB write time). One row per trend episode. Empty if
-        no trends.
+        helper (Σ rz_buy over the window; dropped at DB write time).
+        One row per trend episode. Empty if no trends.
     """
     if history.empty or tech_stats.empty:
         return pd.DataFrame(columns=INSERT_COLUMNS + ["sum_rz_buy"])
@@ -87,6 +95,16 @@ def detect_trend_episodes(
     )
     if work.empty:
         return pd.DataFrame(columns=INSERT_COLUMNS + ["sum_rz_buy"])
+
+    # ---- Daily trading_amount (equality join — cudf-native) ----------
+    if trading_amt is not None and not trading_amt.empty:
+        work = work.merge(
+            trading_amt[["code", "date", "trading_amount"]],
+            on=["code", "date"],
+            how="left",
+        )
+    else:
+        work["trading_amount"] = np.nan
 
     # Sort by (code, date) for correct temporal ordering within each code.
     work = work.sort_values(["code", "date"]).reset_index(drop=True)
@@ -217,8 +235,14 @@ def _aggregate_and_filter(work: pd.DataFrame, sec_type: str) -> pd.DataFrame:
         days_of_trend=("date", "count"),
         direction=("__dir_bridged", "first"),
         sum_rz_buy=("rz_buy", "sum"),
+        sum_trading_amt=("trading_amount", "sum"),
         zscore_sig_count=("__zscore_sig", "sum"),
     ).reset_index()
+
+    # cudf groupby.sum over an ALL-NULL column yields null (pandas yields
+    # 0.0) — rz_buy is cleaned 0/NULL -> NaN, so an episode with no
+    # positive rz_buy days must sum to 0.0 to keep ratio parity.
+    segments["sum_rz_buy"] = segments["sum_rz_buy"].fillna(0.0)
 
     # Filter 1: drop breaks (direction NaN) + short trends.
     segments = segments[
@@ -260,7 +284,12 @@ def _aggregate_and_filter(work: pd.DataFrame, sec_type: str) -> pd.DataFrame:
         "days_of_trend": segments["days_of_trend"].astype(int),
         "is_trend_up_not_down": segments["direction"] > 0,
         "new_buy": segments["new_buy"],
-        "rz_buy_vs_trading_amt_ratio": segments["sum_rz_buy"] * np.nan,
+        # NULLIF guard: Σ trading_amount must be > 0 (all-NaN segments
+        # sum to 0.0 under skipna — same NULL as the former asof-join's
+        # unmatched-episode NaN).
+        "rz_buy_vs_trading_amt_ratio": (
+            segments["sum_rz_buy"] / segments["sum_trading_amt"]
+        ).where(segments["sum_trading_amt"] > 0),
         "sum_rz_buy": segments["sum_rz_buy"],
     })
 

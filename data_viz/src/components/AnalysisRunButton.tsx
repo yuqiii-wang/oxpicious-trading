@@ -2,7 +2,7 @@
  * AnalysisRunButton — per-security "build this security" refresh button.
  *
  * Rendered in the header (ChartCard action slot) of every per-security
- * analysis panel (MA-Spread / Fourier Freqs / PE & Dividend). Clicking it
+ * analysis panel (MA-Spread / Recurring Cycles / PE & Dividend). Clicking it
  * runs the panel's Python analysis main for THIS security only:
  *
  *   python -m analyze.<module> --sec-type <secType> --code <code>

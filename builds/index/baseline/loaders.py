@@ -46,7 +46,7 @@ from builds.index.baseline.paths import (
 _FILE_DATE_RE = re.compile(r"_(\d{8})\.csv$")
 
 
-def _snapshot_file_date(path: str) -> Optional[str]:
+def snapshot_file_date(path: str) -> Optional[str]:
     """'…/szse_index_20260803.csv' → '2026-08-03'; None when no date in name."""
     m = _FILE_DATE_RE.search(os.path.basename(path))
     if not m:
@@ -55,12 +55,31 @@ def _snapshot_file_date(path: str) -> Optional[str]:
     return f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:]}"
 
 
+def _fmt_date_range(series) -> str:
+    """'(min → max)' date range via ONE np.asarray host transfer.
+
+    Formatting the proxied Series scalars directly (f"{s.min()}") triggers
+    a date.__format__ cudf fallback per scalar; numpy datetime64[D] str()
+    is proxy-free."""
+    d = np.asarray(series).astype("datetime64[D]")
+    return f"{d.min()} → {d.max()}" if d.size else "(none)"
+
+
+def _code_list(frame) -> list:
+    """Distinct codes (appearance order) via one np.asarray host transfer.
+
+    Series.unique() on cudf-parsed string columns falls back to CPU
+    (ExtensionArrays) and iterating its result falls back per element."""
+    return list(dict.fromkeys(np.asarray(frame["code"]).tolist()))
+
+
 # ============================================================================
 # Load SZSE index daily CSVs (archive + trend) → CSIndex schema
 # ============================================================================
 def load_szse_index_history(verbose: bool = True,
                             code_filter: str | None = None,
-                            skip_dates: Optional[set] = None) -> list:
+                            latest_dates: Optional[dict] = None,
+                            forced_date: Optional[str] = None) -> list:
     """Load SZSE index daily CSVs (archive + trend) and map to CSIndex schema.
 
     Scans two directories for per-date index CSV files:
@@ -75,10 +94,14 @@ def load_szse_index_history(verbose: bool = True,
     When *code_filter* is set, only rows for that one index are kept AND the
     CSV is byte-prefiltered to lines containing the code token (the 指数代码
     column carries bare 6-digit codes), so whole-market snapshots are never
-    parsed during --code builds. *skip_dates* (dates that already have a DB
-    row for this code) additionally lets a fully-covered snapshot be skipped
-    WITHOUT reading it — a snapshot file can only ever contribute the single
-    row (file_date, code).
+    parsed during --code builds. *latest_dates* ({code: "YYYY-MM-DD"} latest
+    DB date per code) lets a snapshot be skipped WITHOUT reading it when its
+    filename date is already covered by every keep code — a snapshot file can
+    only ever contribute the single row (file_date, code).
+
+    *forced_date* (--date mode, "YYYY-MM-DD") bypasses the DB-covered gate
+    for that date: the forced snapshot is ALWAYS read (its rows are refreshed
+    through the upsert path), while other snapshots are scoped out.
 
     Returns a list of per-code DataFrames. Returns an empty list if no files
     are found.
@@ -115,13 +138,28 @@ def load_szse_index_history(verbose: bool = True,
         "成交金额(亿元)": "trading_amount",
     }
 
+    def _covered(fdate: Optional[str]) -> bool:
+        """Snapshot fully covered by the DB → skip without reading."""
+        if forced_date is not None:
+            # --date mode: only the forced snapshot is in scope — read it
+            # regardless of DB state (the missing-date skip is bypassed so
+            # its rows are refreshed); other snapshots cannot contribute
+            # rows that survive the single-date filter.
+            return fdate is not None and fdate != forced_date
+        if not fdate or not latest_dates:
+            return False
+        return all(
+            fdate <= latest_dates[c]
+            for c in keep_codes if c in latest_dates
+        ) and all(c in latest_dates for c in keep_codes)
+
     dfs = []
     n_skipped_covered = 0
     for path in archive_files + trend_files:
         # Date-gate: snapshots whose only possible row is already in DB cost
         # nothing — no open, no read, no parse.
-        fdate = _snapshot_file_date(path)
-        if skip_dates is not None and fdate is not None and fdate in skip_dates:
+        fdate = snapshot_file_date(path)
+        if _covered(fdate):
             n_skipped_covered += 1
             continue
 
@@ -157,10 +195,12 @@ def load_szse_index_history(verbose: bool = True,
         # Compute absolute change = close - prev_close
         df["change"] = (df["close"] - df["prev_close"]).round(4)
 
-        # Fields not provided by SZSE index data
-        df["trading_shares"] = None
-        df["pe"] = None
-        df["consNumber"] = None
+        # Fields not provided by SZSE index data — np.nan keeps the columns
+        # float64; None creates object dtype that breaks pd.concat against
+        # the float64 CSIndex frames (MixedTypeError cascade downstream)
+        df["trading_shares"] = np.nan
+        df["pe"] = np.nan
+        df["consNumber"] = np.nan
 
         # code column (used by build_daily_df for grouping + existing_keys check)
         df["code"] = df["indexCode"]
@@ -183,14 +223,14 @@ def load_szse_index_history(verbose: bool = True,
     combined = combined.drop_duplicates(subset=["date", "code"], keep="last")
 
     if verbose:
-        for code in sorted(combined["code"].unique()):
+        for code in _code_list(combined):
             sub = combined[combined["code"] == code]
             name = sub["indexName"].iloc[0] if len(sub) else ""
             print(f"    [SZSE] {code} {name}: {len(sub)} dates "
-                  f"({sub['date'].min()} → {sub['date'].max()})", flush=True)
+                  f"({_fmt_date_range(sub['date'])})", flush=True)
 
     # Return per-code DataFrames (same structure as CSIndex history files)
-    return [combined[combined["code"] == code].copy() for code in combined["code"].unique()]
+    return [combined[combined["code"] == code].copy() for code in _code_list(combined)]
 
 
 # ============================================================================
@@ -198,7 +238,8 @@ def load_szse_index_history(verbose: bool = True,
 # ============================================================================
 def load_sse_index_history(verbose: bool = True,
                            code_filter: str | None = None,
-                           skip_dates: Optional[set] = None) -> list:
+                           latest_dates: Optional[dict] = None,
+                           forced_date: Optional[str] = None) -> list:
     """Load SSE index trend daily CSVs and map to CSIndex schema.
 
     Scans ``temps/sse_trend/sse_trend_index_YYYYMMDD.csv`` for per-date SSE
@@ -212,8 +253,11 @@ def load_sse_index_history(verbose: bool = True,
 
     When *code_filter* is set, the CSV is byte-prefiltered to lines containing
     the canonical code token ("NNNNNN.SS" — the 证券代码 column carries
-    suffixed codes), and *skip_dates* lets fully-covered snapshots be skipped
-    WITHOUT reading them.
+    suffixed codes), and *latest_dates* ({code: "YYYY-MM-DD"} latest
+    DB date per code) lets a snapshot be skipped WITHOUT reading it when its
+    filename date is already covered for the filtered code. *forced_date*
+    (--date mode, "YYYY-MM-DD") never lets the gate skip the forced snapshot
+    — its rows are refreshed through the upsert path.
 
     Returns a list of per-code DataFrames. Returns an empty list if no files
     are found.
@@ -254,10 +298,17 @@ def load_sse_index_history(verbose: bool = True,
     dfs = []
     n_skipped_covered = 0
     for path in trend_files:
-        # Date-gate: snapshots whose only possible row is already in DB cost
-        # nothing — no open, no read, no parse.
-        fdate = _snapshot_file_date(path)
-        if skip_dates is not None and fdate is not None and fdate in skip_dates:
+        # Date-gate: in single-code mode a snapshot whose only possible row
+        # is already in DB is skipped without being read. Market-wide the
+        # file is small (~200 rows) and always read — its rows feed both the
+        # fresh tail and the estimation grid. --date mode never skips the
+        # forced snapshot (missing-date skip bypassed for that date).
+        fdate = snapshot_file_date(path)
+        if (code_filter is not None and latest_dates
+                and fdate is not None
+                and latest_dates.get(code_filter) is not None
+                and fdate <= latest_dates[code_filter]
+                and fdate != forced_date):
             n_skipped_covered += 1
             continue
 
@@ -289,8 +340,8 @@ def load_sse_index_history(verbose: bool = True,
         # Compute absolute change = close - prev_close
         df["change"] = (df["close"] - df["prev_close"]).round(4)
 
-        # Field not provided by SSE index data
-        df["consNumber"] = None
+        # Field not provided by SSE index data (float64 — see SZSE note)
+        df["consNumber"] = np.nan
 
         # code column (used by build_daily_df for grouping + existing_keys
         # check). Canonical CSV codes carry the ".SS" suffix; the index DB
@@ -324,11 +375,11 @@ def load_sse_index_history(verbose: bool = True,
     if verbose:
         print(f"    [SSE] loaded {len(combined)} rows across "
               f"{combined['date'].nunique()} dates, "
-              f"{combined['code'].nunique()} codes "
-              f"({combined['date'].min()} → {combined['date'].max()})", flush=True)
+              f"{len(_code_list(combined))} codes "
+              f"({_fmt_date_range(combined['date'])})", flush=True)
 
     # Return per-code DataFrames (same structure as CSIndex history files)
-    return [combined[combined["code"] == code].copy() for code in combined["code"].unique()]
+    return [combined[combined["code"] == code].copy() for code in _code_list(combined)]
 
 
 # ============================================================================
@@ -399,6 +450,6 @@ def load_cnindex_history(verbose: bool = True,
             has_name = "indexName" in cols and len(df)
             name = df["indexName"].iloc[0] if has_name else ""
             print(f"    [CNINDEX] {code} {name}: {len(df)} dates "
-                  f"({df['date'].min()} → {df['date'].max()})", flush=True)
+                  f"({_fmt_date_range(df['date'])})", flush=True)
 
     return dfs

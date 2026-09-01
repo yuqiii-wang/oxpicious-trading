@@ -10,9 +10,7 @@ from builds.stock._helpers.helpers import (
     _read_one,
     discover_source_files,
     build_missing_rows,
-    _to_db,
     _to_db_series,
-    _compute_eps_vec,
     _nan_to_none,
     dates_as_date_list,
     records_from_frame,
@@ -35,7 +33,7 @@ __all__ = [
     "_safe_to_datetime", "_safe_to_numeric", "_safe_columns",
     "_file_has_data", "_peek_csv_max_date", "_read_one",
     "discover_source_files", "build_missing_rows",
-    "_to_db", "_to_db_series", "_compute_eps_vec",
+    "_to_db_series",
     "dates_as_date_list", "records_from_frame", "_nan_to_none",
     # pe_processing
     "PE_ESTIMATE_MAX_MONTHS",

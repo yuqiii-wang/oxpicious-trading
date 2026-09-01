@@ -3,6 +3,7 @@
  * Extracted from the former analysis.service.ts.
  */
 export { listMovAveSpreadCodes, getMovAveSpreadChart, listMovAveSpreadThemes, listMovAveSpreadStrategyThemes } from "./mov-ave-spreads.js";
+export { getForecastTable } from "./analysis-forecasts.js";
 export { listPerfAttrCodes, getPerfAttrAttribution, listPerfAttrThemes, getPerfAttrChart, listPerfAttrStrategyThemes } from "./perf-attribution.js";
 export { listIndustrySentimentsThemes, listIndustrySentimentsStrategyThemes, getIndustrySentimentsChart, getIndustrySentimentsChartByCode } from "./industry-sentiments.js";
 export { getIndustryCorrelations } from "./industry-correlations.js";
@@ -11,7 +12,7 @@ export { getAllIndustriesAttribution, getMemberIndexAttribution } from "./indust
 export { getIndustryBenchmarkAttribution, listIndustryAttributionBenchmarks } from "./industry-benchmark-attribution.js";
 export { getIndustryEtfPriceSeries, getIndustryEtfContributionBars } from "./industry-etf-contribution.js";
 export { getIndustryHypesAndDrains } from "./industry-hypes-and-drains.js";
-export { getIntradayMovements, listIntradayMovementsBenchmarks } from "./intraday-movements.js";
+export { getIntradayMovements, listIntradayMovementsBenchmarks, listIntradayMovementsDates } from "./intraday-movements.js";
 export { getIntradayMovementsPrevDayOhlc } from "./intraday-movements-prev-day-ohlc.js";
 export {
   listPeAndDividendCodes,
@@ -27,10 +28,10 @@ export {
   getMarginTrends,
 } from "./margin-trends.js";
 export {
-  listFourierFreqsCodes,
-  getFourierFreqsChart,
-  getFourierFreqsSpectrum,
-  listFourierFreqsThemes,
-  listFourierFreqsStrategyThemes,
-} from "./fourier-freqs.js";
+  listRecurringCyclesCodes,
+  getRecurringCyclesChart,
+  getRecurringCyclesSpectrum,
+  listRecurringCyclesThemes,
+  listRecurringCyclesStrategyThemes,
+} from "./recurring-cycles.js";
 export { getFuturesExt } from "./analysis-futures.service.js";

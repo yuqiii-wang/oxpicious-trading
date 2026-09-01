@@ -2,10 +2,11 @@
 
 The list page https://www.ndrc.gov.cn/xwdt/xwfb/ uses classic HTML pagination
 (``index.html`` = page 1, ``index_1.html`` = page 2, …, ~40 pages). Each list
-item is an ``<a>`` whose parent carries the publish date (``YYYY/MM/DD``). We
-paginate newest-to-oldest until the oldest date on a page falls before
-``--start-date`` (default 2020-01-01) or the page returns no items, then write
-the titles to CSV.
+item is an ``<a>`` whose parent carries the publish date (``YYYY/MM/DD``). By
+default the run is incremental: pagination (newest-to-oldest) stops as soon as
+the last date already available in the titles CSV is reached. ``--force`` does
+a full backfill to the start-date floor (default 2020-01-01). Either way the
+run ends when a page returns no items. Titles are then written to CSV.
 
 Only the list is scraped — detail links are NOT followed (no per-article
 crawling). Anti-bot, CSV writing, and caching are provided by the shared
@@ -33,7 +34,11 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from bs4 import BeautifulSoup  # noqa: E402
 
-from downloads._common import COMMON_BASE_HEADERS, DEFAULT_TIMEOUT  # noqa: E402
+from downloads._common import (  # noqa: E402
+    COMMON_BASE_HEADERS,
+    DEFAULT_START_DATE,
+    DEFAULT_TIMEOUT,
+)
 from downloads.macro.gov.main_gov import (  # noqa: E402
     SourceConfig,
     parse_date_str,
@@ -127,21 +132,20 @@ def fetch_ndrc_pages(
     session: Any,
     proxy: Any,
     config: SourceConfig,
+    floor: Optional[date] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """Paginate the NDRC list newest-to-oldest and accumulate raw items.
 
     Stops when a page returns no items, the host is blocked, or the oldest
-    date on a page is on/before the backfill floor. The floor is read from
-    the orchestrator via the cached-file convention is not applicable here, so
-    we stop at the earliest date available (the site goes back to ~2017, well
-    past the default 2020-01-01 floor); the orchestrator's parse_fn + filter
-    enforces the precise floor afterwards.
-
-    Returns the accumulated raw items (newest-first across pages), or None on
-    hard failure of the first page.
+    date on a page is on/before the stop date: *floor* (incremental mode —
+    the last pub_date already available in the titles CSV) when given, else
+    the 2020-01-01 backfill floor. The stop page may straddle the boundary;
+    the orchestrator re-filters and dedupes against the existing CSV.
     """
     headers = dict(COMMON_BASE_HEADERS)
     headers["Referer"] = config.list_url
+
+    stop_floor = floor if floor is not None else parse_date_str(DEFAULT_START_DATE)
 
     all_items: List[Dict[str, Any]] = []
     for page in range(1, MAX_PAGES + 1):
@@ -183,14 +187,11 @@ def fetch_ndrc_pages(
             newest.strftime("%Y-%m-%d") if newest else "-",
         )
 
-        # Stop once we've gone past the default 2020-01-01 floor — the site
-        # only has ~40 pages so this naturally bounds the sweep. Using the
-        # DEFAULT_START_DATE here keeps the fetcher self-contained; the
-        # orchestrator re-applies the user's --start-date filter afterwards.
-        from downloads._common import DEFAULT_START_DATE as _FLOOR
-        floor = parse_date_str(_FLOOR)
-        if oldest is not None and floor is not None and oldest <= floor:
-            logger.info("  reached %s floor on page %d -> stopping", _FLOOR, page)
+        # Stop once we've reached the already-downloaded range (incremental)
+        # or the backfill floor — pages are newest-first, so this bounds the
+        # sweep. The stop page's tail is deduped/filtered by the orchestrator.
+        if stop_floor is not None and oldest is not None and oldest <= stop_floor:
+            logger.info("  reached last-available date %s on page %d -> stopping", stop_floor, page)
             break
 
     logger.info("[%s] fetched %d items across pages", config.name, len(all_items))

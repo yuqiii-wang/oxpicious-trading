@@ -37,7 +37,7 @@ VALIDATED WORKLOADS (DB row counts at refactor time)
   analysis.mov_ave_spreads_detail    1,527,468  -> GPU (merge + groupby_diff)
   analysis.mov_ave_rsi                  648,230  -> GPU (groupby_diff + ewm)
   analysis.sec_alloc_perf_attribution 43,692,229 -> GPU (rolling_corr)
-  analysis.industry_sentiments          356,636  -> GPU (groupby_agg)
+  stats.industry_basic_stats          356,636  -> GPU (groupby_agg)
 
 All production workloads are well above the conservative breakeven for
 their respective op_types, so the router selects GPU whenever CUDA +
@@ -143,8 +143,27 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "grouped_shift": ("_common.df_utils.groupby", "grouped_shift"),
     # NaN/inf/None sanitization for asyncpg bulk upsert
     "sanitize_for_db_insert": ("_common.df_utils.sanitize", "sanitize_for_db_insert"),
+    # datetime64 -> python date object columns (DB-write boundary)
+    "to_py_dates": ("_common.df_utils.sanitize", "to_py_dates"),
     # GPU-safe column-name materialization (avoids cudf Index fallback)
     "safe_columns": ("_common.df_utils.sanitize", "safe_columns"),
+    # host-pure column membership (replaces `c in df.columns`)
+    "column_subset": ("_common.df_utils.sanitize", "column_subset"),
+    # proxy ndarray/Series -> RAW host numpy unwrap (B-A1 convention)
+    "host_array": ("_common.df_utils.sanitize", "host_array"),
+    # column dtypes as raw numpy dtypes (ONE metadata transfer)
+    "host_dtypes": ("_common.df_utils.sanitize", "host_dtypes"),
+    # host-pure NaN/None/NaT mask (replaces proxied pd.isna on ndarrays)
+    "host_isna": ("_common.df_utils.sanitize", "host_isna"),
+    # float8 epoch-seconds column -> datetime64[unit] (DB read boundary;
+    # default [us] = DB convention, unit="ns" only at wide-op sites)
+    "epoch_col_to_dt64": ("_common.df_utils.sanitize", "epoch_col_to_dt64"),
+    # float8 epoch-seconds -> RAW host datetime64[ns] ndarray (wide-op
+    # DB-read boundary; proxy-safe unwrap included)
+    "epoch_ns_array": ("_common.df_utils.sanitize", "epoch_ns_array"),
+    # align any date-like to datetime64[unit] (concat/merge/merge_asof
+    # boundary — replaces scattered pd.to_datetime().astype() idioms)
+    "to_dt64": ("_common.df_utils.sanitize", "to_dt64"),
     # Black-Scholes IV + Greeks (vectorized, CPU/GPU routed)
     "bs_price_greeks": ("_common.df_utils.black_scholes", "bs_price_greeks"),
     "solve_iv_newton": ("_common.df_utils.black_scholes", "solve_iv_newton"),

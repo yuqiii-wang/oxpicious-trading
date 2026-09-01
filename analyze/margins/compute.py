@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from _common.df_utils import grouped_rolling_agg
+from _common.df_utils import grouped_rolling_agg, safe_columns
 
 
 # ---- Regime-detection windows ---------------------------------------------
@@ -198,11 +198,16 @@ def compute_industry_stats(
     # Outer-join the stock and etf aggregations on (date, industry_id).
     # An industry might have stocks but no ETFs (or vice versa) on a given
     # date — fill missing side with 0.
+    # Host-pure membership via safe_columns — `in f.columns` is a proxied
+    # Index.__contains__ that falls back ("transfer blocking") under
+    # cudf.pandas.
     stock_agg = next(
-        (f for f in out_frames if "stock_margin_balance" in f.columns), None
+        (f for f in out_frames
+         if "stock_margin_balance" in safe_columns(f)), None
     )
     etf_agg = next(
-        (f for f in out_frames if "etf_margin_balance" in f.columns), None
+        (f for f in out_frames
+         if "etf_margin_balance" in safe_columns(f)), None
     )
 
     if stock_agg is not None and etf_agg is not None:

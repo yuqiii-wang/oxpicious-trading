@@ -25,7 +25,9 @@ activate()
 
 For temp py and ts script for test or execution, write them in `temp_scripts`, and write output test result, e.g., screenshot, console output, etc. in `temp_scripts` as well.
 
-every db write operation needs to check in _common db funcs.
+every db write operation needs to check in `_common` db funcs.
 For DB changes, always implement sql unless explcitly told not to, and bridge to python code if needed.
+
+For new feature change, if test is required, add `--sec-type index` in python execution so that only index is used; if margin is involved, use `--sec-type etf` in python execution; unless full data rebuild is required.
 
 Be constrained from using for loop and if/else conds in python code and dataframe operations, but try to implement pandas native vectorization methods.

@@ -19,6 +19,18 @@ flags for all of them (mirroring the convention used by ``pboc.repo_news`` and
 Each step can be skipped via ``--skip-news`` / ``--skip-ndrc`` / ``--skip-articles``.
 ``--max-articles N`` caps the article crawl (for testing).
 
+By default every step is **incremental** — only the latest missing dates are
+checked against what the output files already contain:
+
+  * gov.news — if ``gov_news_titles.csv`` exists, only items on/after its
+    latest ``pub_date`` are parsed (merged back, deduped by URL).
+  * gov.ndrc — pagination stops at the last date already available in
+    ``ndrc_news_titles.csv`` instead of paging back to 2020-01-01.
+  * gov.articles — only keyword-matched titles on/after the latest date in
+    ``articles_index.csv`` are scanned (cached ``.md`` files skip re-fetches).
+
+``--force`` purges the incremental state and does a full backfill / re-crawl.
+
 Usage::
 
     python -m downloads.macro.gov.news                          # full pipeline
@@ -74,13 +86,22 @@ logger = setup_logger("gov_news")
 # ----------------------------------------------------------------------------
 # Fetcher
 # ----------------------------------------------------------------------------
-def fetch_gov_json(session: Any, proxy: Any, config: SourceConfig) -> Optional[List[Dict[str, Any]]]:
+def fetch_gov_json(
+    session: Any,
+    proxy: Any,
+    config: SourceConfig,
+    floor: Optional[date] = None,
+) -> Optional[List[Dict[str, Any]]]:
     """Fetch the ``ZCJD_QZ.json`` title list via the shared anti-bot proxy.
 
     Returns the parsed list of items, or None on hard failure. Retries on
     transient network errors with exponential backoff; the proxy handles
     browser-fingerprint rotation, the ``random`` query param, host-blocking
     detection, and the inter-request sleep cadence.
+
+    *floor* (last pub_date already in the CSV) is unused here — the list is a
+    single JSON fetch that always returns everything; the orchestrator applies
+    the incremental date floor at parse time.
     """
     headers = dict(COMMON_BASE_HEADERS)
     headers["Referer"] = config.list_url
@@ -150,7 +171,8 @@ def main() -> None:
     parser.add_argument("--out-root", type=str, default=None,
                         help="Output root dir. Default: <project>/temps/<source>")
     parser.add_argument("--force", action="store_true",
-                        help="Force re-fetch of today's raw snapshots / all article detail pages.")
+                        help="Full backfill: re-fetch all pages / re-crawl all article details "
+                             "(default: incremental, only latest missing dates).")
     parser.add_argument("--skip-news", action="store_true",
                         help="Skip the gov.cn 政策解读 title-list step.")
     parser.add_argument("--skip-ndrc", action="store_true",

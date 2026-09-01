@@ -10,6 +10,7 @@ read CSV → parse columns → build identity + basic_stats → bulk upsert into
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
 import re
 from datetime import date as _date
@@ -54,14 +55,18 @@ def ymd_from_futures_filename(filepath: str | os.PathLike) -> Optional[str]:
     return m.group(1)
 
 
-def ymd_to_date(ymd: str) -> Optional[pd.Timestamp]:
-    """Convert YYYYMMDD string to pandas Timestamp.
+def ymd_to_date(ymd: str) -> Optional[dt.date]:
+    """Convert YYYYMMDD string to a HOST datetime.date.
+
+    Pure stdlib parse — never route filename dates through pd.Timestamp:
+    under cudf.pandas every proxied ``.date()`` call on the result is one
+    fallback PER FILE (was 1,574 lines for the CFFEX archive alone).
 
     Returns None on invalid input.
     """
     try:
-        return pd.to_datetime(ymd, format="%Y%m%d")
-    except Exception:
+        return dt.datetime.strptime(ymd, "%Y%m%d").date()
+    except (ValueError, TypeError):
         return None
 
 
@@ -184,8 +189,8 @@ def build_futures_df(
             n_empty += 1
             continue
 
-        # Scalar broadcast: datetime64 column (never object date lists)
-        df["date"] = pd.Timestamp(date_ts.date())
+        # Scalar broadcast: datetime64 column (date_ts is a HOST datetime.date)
+        df["date"] = pd.Timestamp(date_ts)
         frames.append(df)
         n_ok += 1
 

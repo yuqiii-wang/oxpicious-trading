@@ -37,6 +37,16 @@ _MARGIN_RENAME = {
 _MARGIN_COLS = ["rz_buy", "rz_balance", "rq_sell_qty",
                 "rq_balance_qty", "rq_balance_amt", "total_balance"]
 
+# One-pass dtype contract: final dtypes assigned AT PARSE TIME (downloads
+# conversion writes plain normalized floats; a parse error is a downloads
+# bug and stops the run). SSE detail CSVs lack 融券余额(元)/融资融券余额(元)
+# — read_csv ignores dtype keys absent from a file; those columns are
+# materialized as 0.0 after concat.
+_MARGIN_DTYPES = {
+    "证券代码": str, "证券简称": str, "sec_type": str, "exchange": str,
+    **{c: "float64" for c in _MARGIN_RENAME if c != "证券代码"},
+}
+
 
 def _scan_margin_dir(scan_dir, file_prefix, label, verbose=True, files=None, code=None):
     """Read canonical per-date margin CSVs; return (frames, n_ok, n_empty).
@@ -62,11 +72,7 @@ def _scan_margin_dir(scan_dir, file_prefix, label, verbose=True, files=None, cod
         # and stops the run instead of being miscounted as an "empty"
         # file. Legit empties (missing/placeholder exports) come back
         # as None/empty frames WITHOUT raising.
-        df = read_build_csv(
-            path,
-            dtype={"证券代码": str, "证券简称": str, "sec_type": str, "exchange": str},
-            code=code,
-        )
+        df = read_build_csv(path, dtype=_MARGIN_DTYPES, code=code)
         if df is None or len(df) == 0:
             n_empty += 1
             continue

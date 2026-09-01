@@ -36,11 +36,11 @@ RoundState = Dict[str, object]
 
 
 def next_afternoon_start(biz_day) -> datetime:
-    """First datetime strictly after ``biz_day`` at AFTERNOON_START (13:30).
+    """First datetime strictly after ``biz_day`` at AFTERNOON_START (16:00).
 
     Used by hourly mode when all stocks have reached close or no bars were
     produced — this streamer is afternoon-only, so it sleeps directly to the
-    next trading day's 13:30 instead of waking at 09:30.
+    next trading day's 16:00 instead of waking at 09:30.
     """
     next_day = biz_day + timedelta(days=1)
     while not is_trading_day(next_day):

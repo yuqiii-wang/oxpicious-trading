@@ -18,60 +18,11 @@ import pandas as pd
 
 from analyze.options.compute._shared import (
     _EXPIRY_GROUP_KEY,
-    _EXPIRY_TYPE_UNDERLYING_KEY,
-    _compute_mean_expiry_dates,
+    _apply_open_expiry_collapse,
     _finalize_skew_result,
     _rolling_skew_suite,
 )
 from analyze.options.config import SKEWNESS_RESULT_COLUMNS, SKEW_TYPE_MONEYNESS
-
-
-def _apply_open_expiry_collapse(
-    agg: pd.DataFrame,
-    dataset_max_date,
-) -> pd.DataFrame:
-    """Replace expiry_date for open groups with mean expiry_date.
-
-    For each (option_type, underlying_code), compute the mean of all
-    expiry dates. For rows where expiry_date > dataset_max_date (still
-    open/not matured), set expiry_date to this mean. Then re-aggregate
-    so collapsed groups are properly summed.
-
-    Args:
-        agg: DataFrame with columns date, option_type, underlying_code,
-            expiry_date, w_sum, wm_sum, underlying_close.
-        dataset_max_date: Maximum date in the dataset (open = expiry_date > this).
-
-    Returns:
-        DataFrame with open expiry groups collapsed to mean expiry_date.
-    """
-    if agg.empty:
-        return agg
-
-    # Compute mean expiry date per (option_type, underlying_code)
-    mean_map = _compute_mean_expiry_dates(agg)
-
-    # Identify open rows
-    open_mask = agg["expiry_date"] > dataset_max_date
-
-    if open_mask.any():
-        # Replace expiry_date for open rows
-        agg.loc[open_mask, "expiry_date"] = agg.loc[open_mask].apply(
-            lambda r: mean_map.get((r["option_type"], r["underlying_code"]), r["expiry_date"]),
-            axis=1,
-        )
-
-        # Re-aggregate: collapse rows that now share the same (date, option_type, underlying_code, expiry_date)
-        agg = (
-            agg.groupby(["date"] + _EXPIRY_GROUP_KEY, as_index=False, sort=False)
-            .agg(
-                w_sum=("w_sum", "sum"),
-                wm_sum=("wm_sum", "sum"),
-                underlying_close=("underlying_close", "first"),
-            )
-        )
-
-    return agg
 
 
 def compute_options_skewness_stats(df: pd.DataFrame) -> pd.DataFrame:
@@ -114,8 +65,20 @@ def compute_options_skewness_stats(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # ---- Step 2b: collapse open expiry groups to mean expiry_date ------
+    # Vectorized shared helper (merge + where). Re-aggregate only when
+    # open rows existed so collapsed groups are properly summed.
     dataset_max_date = agg["date"].max()
+    has_open = bool((agg["expiry_date"] > dataset_max_date).any())
     agg = _apply_open_expiry_collapse(agg, dataset_max_date)
+    if has_open:
+        agg = (
+            agg.groupby(["date"] + _EXPIRY_GROUP_KEY, as_index=False, sort=False)
+            .agg(
+                w_sum=("w_sum", "sum"),
+                wm_sum=("wm_sum", "sum"),
+                underlying_close=("underlying_close", "first"),
+            )
+        )
 
     agg["skewness"] = agg["wm_sum"] / agg["w_sum"]
     agg = agg.drop(columns=["w_sum", "wm_sum"])

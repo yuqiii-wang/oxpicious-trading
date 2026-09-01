@@ -14,9 +14,9 @@ Two operating modes, switched by wall-clock time on trading days:
     looping rounds until every stock reaches CLOSE_TIME (15:00). This is
     the original end-of-day sweep behavior.
 
-Afternoon-only start: the streamer does NOT run during the morning session.
-On trading days it waits until 13:30 before entering the main loop, so all
-API calls are focused on the afternoon trading session (13:30–15:00).
+Afternoon-only start: the streamer does NOT run during the trading session.
+On trading days it waits until 16:00 (after close) before entering the main
+loop, so all API calls are focused on post-close data.
 
 Architecture (split across this package):
   * ``_constants.py``  — modes cutoffs, sampling sizes, per-source cooldowns.

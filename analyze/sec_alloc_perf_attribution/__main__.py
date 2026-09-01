@@ -46,6 +46,7 @@ from analyze.sec_alloc_perf_attribution.config import (  # noqa: E402
 )
 from analyze.sec_alloc_perf_attribution.run import (  # noqa: E402
     run_corr_update,
+    run_etf_backfill,
     run_perf_attribution,
 )
 
@@ -61,9 +62,36 @@ async def main() -> None:
              "dates and upsert them onto existing rows (the main run "
              "writes rows with corr OFF by default).",
     )
+    ap.add_argument(
+        "--etf", action="store_true",
+        help="ETF-only backfill: attach benchmark_etf_trading_amount / "
+             "code_etf_trading_amount / ratio (+ MA5) from "
+             "stats.index_exts onto EXISTING rows in-place (year-chunked "
+             "UPDATE). For rows written before builds.index's exts phase "
+             "populated index_exts — avoids a full --force recompute.",
+    )
     args = ap.parse_args()
 
     t0 = time.time()
+
+    if args.etf:
+        print_build_header(
+            "ANALYZE SEC ALLOC PERF ATTRIBUTION — ETF-ONLY BACKFILL",
+            table=TABLE,
+            sec_types="index",
+            top_n_non_broad=f"{TOP_N_NON_BROAD}",
+            mode="etf-only (in-place attach from stats.index_exts)",
+        )
+        conn = await get_db_connection_async()
+        try:
+            await run_etf_backfill(conn)
+        finally:
+            try:
+                await asyncio.wait_for(conn.close(), timeout=10)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        print_wall_time(t0)
+        return
 
     if args.corr:
         print_build_header(
@@ -109,4 +137,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

@@ -10,7 +10,7 @@ import type {
 //  the "Market Movements" tab on the Live Data page. TTL-only cache — use
 //  the Refresh button to bypass.
 // ---------------------------------------------------------------------------
-/** List benchmark codes that appear in analysis.intraday_industry_market_movements
+/** List benchmark codes that appear in live.sec_alloc_live_attribution
  *  (broad-market benchmarks sorted first). Drives the benchmark dropdown. */
 export function fetchIntradayMovementsBenchmarks(): Promise<{
   benchmarks: Array<{
@@ -20,6 +20,18 @@ export function fetchIntradayMovementsBenchmarks(): Promise<{
   }>;
 }> {
   return fetchJson(`/api/live-data/intraday-movements/benchmarks`);
+}
+
+/** Distinct dates available for ONE benchmark (raw intraday bars UNION live
+ *  tick rows), newest first. Drives the Market Movements date selector. */
+export function fetchIntradayMovementsDates(
+  benchmarkCode: string,
+): Promise<{ benchmark_code: string; dates: string[] }> {
+  const params = new URLSearchParams();
+  if (benchmarkCode) params.set("benchmark_code", benchmarkCode);
+  return fetchJson(
+    `/api/live-data/intraday-movements/dates?${params.toString()}`,
+  );
 }
 
 /** Full Intraday Movements payload for ONE (benchmark, date).

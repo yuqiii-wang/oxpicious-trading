@@ -728,7 +728,7 @@ export default function IndustrySentimentsPage() {
                   multiIndustry={multiIndustry}
                   numIndustries={chartDataList.length}
                   chartDataList={chartDataList}
-                  selectedIndustryIds={selectedIndustryIds}
+                  selectedIndustryIds={effectiveIndustryIds}
                   selectedItemCodes={selectedItemCodes}
                 />
               )}

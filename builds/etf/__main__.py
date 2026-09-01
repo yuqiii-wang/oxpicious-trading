@@ -38,10 +38,15 @@ With --force: truncate stats.etf_identity and DELETE FROM stats.sec_composition
 WHERE source_type='etf' (index composition rows preserved), then read ALL
 source CSVs (DB empty → full-history scope).
 
+With --date YYYY-MM-DD: single-date forced rebuild — the date is processed
+even when already in the DB (existing rows refreshed via the normal upsert
+write paths; no truncation, no deletes). Mutually exclusive with --force.
+
 Usage:
   python -m builds.etf
   python -m builds.etf --start-date 2024-01-01 --end-date 2025-06-30
   python -m builds.etf --force
+  python -m builds.etf --date 2025-06-27          (force-rebuild this one date)
   python -m builds.etf --code 159919.SZ           (single-ETF test filter)
 """
 
@@ -60,6 +65,7 @@ activate()
 
 from _common.build_commons import (
     setup_utf8_stdout, add_common_build_args,
+    enforce_date_force_exclusion, parse_date_arg,
 )
 setup_utf8_stdout()
 
@@ -77,10 +83,19 @@ async def main() -> None:
     args = ap.parse_args()
     # Resolve once so pipeline stages share the canonical suffixed code.
     args.resolved_code = normalize_code(args.code)
+    # --date: reject the --date + --force combo and validate the value
+    # BEFORE any work starts (SystemExit 2 on misuse); the pipeline
+    # consumes args.forced_date.
+    enforce_date_force_exclusion(args)
+    args.forced_date = parse_date_arg(args.date)
 
     from builds.etf.pipeline.main import run
     await run(args)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

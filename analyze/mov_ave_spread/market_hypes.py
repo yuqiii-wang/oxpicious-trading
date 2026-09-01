@@ -141,6 +141,7 @@ import numpy as np
 import pandas as pd
 
 from _common.build_commons import copy_insert_async
+from _common.df_utils import column_subset, host_array, safe_columns
 from analyze._common import (
     sanitize_for_db_insert,
     upsert_analysis_identity,
@@ -297,7 +298,8 @@ def compute_market_hypes(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     # Defensive guard: no liquidity source -> no hype flags at all.
-    if "trading_amount" not in df.columns:
+    # Host-pure membership (proxied Index.__contains__ falls back).
+    if "trading_amount" not in set(safe_columns(df)):
         for w in HYPE_CHECKIN_PERIODS:
             df[_is_hyped_col(w)] = pd.Series(False, index=df.index)
             df[_checkin_col(w)] = pd.Series(0.0, index=df.index)
@@ -321,7 +323,7 @@ def compute_market_hypes(df: pd.DataFrame) -> pd.DataFrame:
     # ---- Per-window volatility leg + check-in count + satisfaction.
     for w in HYPE_CHECKIN_PERIODS:
         std_col = HYPE_STD_COLUMN_BY_PERIOD[w]
-        if std_col not in df.columns:
+        if std_col not in set(safe_columns(df)):
             continue
         std = pd.to_numeric(df[std_col], errors="coerce")
         std_threshold = _grouped_rolling_quantile(
@@ -409,10 +411,16 @@ def _episode_rows_for_window(
     """
     hi = HYPE_EPISODE_SPAN_MAX[w]
 
-    hyped = df[_is_hyped_col(w)].fillna(False).astype(bool).to_numpy()
-    checkin = df[_checkin_col(w)].fillna(0.0).to_numpy() > 0.0
-    amt_ok = df[_AMT_OK_TMP].fillna(0.0).to_numpy() > 0.0
-    std_ok = df[_std_ok_col(w)].fillna(0.0).to_numpy() > 0.0
+    # Unwrap ONCE at the pandas→numpy boundary (B-A1 convention): the
+    # whole episode detection below is raw host numpy — proxied arrays
+    # from .to_numpy() would dispatch every downstream op through the
+    # cudf fast/slow machinery.
+    hyped = host_array(
+        df[_is_hyped_col(w)].fillna(False).astype(bool).to_numpy()
+    ).astype(bool)
+    checkin = host_array(df[_checkin_col(w)].fillna(0.0).to_numpy()) > 0.0
+    amt_ok = host_array(df[_AMT_OK_TMP].fillna(0.0).to_numpy()) > 0.0
+    std_ok = host_array(df[_std_ok_col(w)].fillna(0.0).to_numpy()) > 0.0
 
     # ---- Runs of consecutive hyped rows (cores) ---------------------
     # Positions of hyped rows; a new run starts wherever consecutive
@@ -465,9 +473,9 @@ def _episode_rows_for_window(
     amt_cs = np.concatenate(([0], np.cumsum(amt_ok, dtype=np.int64)))
     std_cs = np.concatenate(([0], np.cumsum(std_ok, dtype=np.int64)))
 
-    # sec_type / code values per group for the output rows.
-    sec_vals = df["sec_type"].to_numpy()
-    code_vals = df["code"].to_numpy()
+    # sec_type / code values per group for the output rows (host arrays).
+    sec_vals = host_array(df["sec_type"].to_numpy())
+    code_vals = host_array(df["code"].to_numpy())
 
     rows: list[dict] = []
     prev_end_by_group: dict[int, int] = {}
@@ -501,6 +509,11 @@ def _episode_rows_for_window(
             rows.append({
                 "sec_type": sec_vals[xs],
                 "code": code_vals[xs],
+                # np.datetime64 straight from the host numpy array — the
+                # frame is built column-wise with datetime64[ns] date
+                # columns (object-date proxy columns poison every
+                # downstream op with MixedTypeError fallbacks);
+                # sanitize_for_db_insert's M-branch converts per chunk.
                 "start_date": dates[xs],
                 "end_date": dates[xe],
                 "min_checkin_period": w,
@@ -553,14 +566,17 @@ def hype_episodes(df: pd.DataFrame) -> pd.DataFrame:
         df["sec_type"].ne(df["sec_type"].shift())
         | df["code"].ne(df["code"].shift())
     )
-    group_codes = np.cumsum(new_group.to_numpy()) - 1
-    group_starts = np.flatnonzero(new_group.to_numpy())
+    # Row 0's shift() leaves an NA -> nullable bool; ``to_numpy(dtype=bool)``
+    # fast path requires no nulls (else cudf fallback), so fill first.
+    new_group_host = host_array(new_group.fillna(True).to_numpy(dtype=bool))
+    group_codes = np.cumsum(new_group_host) - 1
+    group_starts = np.flatnonzero(new_group_host)
     group_ends = np.concatenate((group_starts[1:], [n])) - 1
-    dates = df["date"].to_numpy()
+    dates = host_array(df["date"].to_numpy())
 
     all_rows: list[dict] = []
     for w in HYPE_CHECKIN_PERIODS:
-        if _is_hyped_col(w) not in df.columns:
+        if _is_hyped_col(w) not in set(safe_columns(df)):
             continue
         all_rows.extend(
             _episode_rows_for_window(
@@ -574,17 +590,37 @@ def hype_episodes(df: pd.DataFrame) -> pd.DataFrame:
 
     if not all_rows:
         return pd.DataFrame(columns=out_cols)
-    out = pd.DataFrame(all_rows, columns=out_cols)
-    # Normalize the span dates to python datetime.date for asyncpg
-    # (numpy-indexed datetime64 values arrive as np.datetime64, which
-    # asyncpg cannot encode; .dt.date also tolerates object-date input).
-    out["start_date"] = pd.to_datetime(out["start_date"]).dt.date
-    out["end_date"] = pd.to_datetime(out["end_date"]).dt.date
-    # groupby-free assembly may yield object dtypes on some backends —
-    # force the key/count dtypes.
-    out["min_checkin_period"] = out["min_checkin_period"].astype("int64")
-    for c in ("hype_days", "trading_amt_hype_days", "std_hype_days"):
-        out[c] = out[c].astype("int64")
+    # Column-wise ctor with EXPLICIT dtypes (a dict-row ctor infers object
+    # dtype for the date values -> object-date proxy columns trigger
+    # MixedTypeError fallbacks in every getitem/setitem/astype/reindex).
+    # Dates stay GPU-native datetime64[ns]; sanitize_for_db_insert's
+    # M-branch converts them to asyncpg-native values per COPY chunk.
+    n_rows = len(all_rows)
+    out = pd.DataFrame({
+        "sec_type": [r["sec_type"] for r in all_rows],
+        "code": [r["code"] for r in all_rows],
+        "start_date": np.array(
+            [r["start_date"] for r in all_rows], dtype="datetime64[ns]",
+        ),
+        "end_date": np.array(
+            [r["end_date"] for r in all_rows], dtype="datetime64[ns]",
+        ),
+        "min_checkin_period": np.fromiter(
+            (r["min_checkin_period"] for r in all_rows),
+            dtype=np.int64, count=n_rows,
+        ),
+        "hype_days": np.fromiter(
+            (r["hype_days"] for r in all_rows), dtype=np.int64, count=n_rows,
+        ),
+        "trading_amt_hype_days": np.fromiter(
+            (r["trading_amt_hype_days"] for r in all_rows),
+            dtype=np.int64, count=n_rows,
+        ),
+        "std_hype_days": np.fromiter(
+            (r["std_hype_days"] for r in all_rows),
+            dtype=np.int64, count=n_rows,
+        ),
+    })
     return out
 
 
@@ -761,7 +797,7 @@ async def run_market_hypes(
         ["sec_type", "code", "date", "trading_amount"]
         + [HYPE_STD_COLUMN_BY_PERIOD[w] for w in HYPE_CHECKIN_PERIODS]
     ))
-    available = [c for c in needed_cols if c in df.columns]
+    available = column_subset(df, needed_cols)
     hype_df = df[available].copy()
 
     if hype_df.empty:

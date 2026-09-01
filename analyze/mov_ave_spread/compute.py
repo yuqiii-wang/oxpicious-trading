@@ -1,25 +1,29 @@
 """Pure pandas transformation logic for analyze.mov_ave_spread.
 
-Builds the wide-format detail rows (one row per sec_type, code, date)
+Builds the wide-format detail frame (one row per sec_type, code, date)
 with 9 gap columns + 12 slope/curvature columns.
 
 Broken into smaller, cuDF-friendly steps:
   - _assemble_detail_columns: vectorized gap + slope/curv + std assembly
   - _null_overflow_columns: NUMERIC(10,6) overflow guard
-  - build_detail_rows: orchestrates the steps + sanitizes for DB insert
+  - build_detail_frame: orchestrates the steps, returns a DataFrame for
+    the CSV COPY writer (csv_copy_from_frame_async) — no per-row dicts
 """
 from __future__ import annotations
 
 import pandas as pd
 
-from analyze._common.sanitize import sanitize_for_db_insert
+from _common.df_utils import safe_columns
 from analyze.mov_ave_spread.config import (
     TRADING_AMT_MA_COLUMNS,
     TRADING_AMT_MARKET_SHARE_MA_COLUMNS,
     TRADING_AMT_MA_SLOPE_COLUMNS,
     TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS,
 )
-from analyze.mov_ave_spread.helpers import gap_col, null_if_overflow
+from analyze.mov_ave_spread.helpers import (
+    gap_col,
+    null_if_overflow_counted,
+)
 
 
 def _assemble_detail_columns(
@@ -102,37 +106,40 @@ def _null_overflow_columns(
     """
     from analyze.mov_ave_spread.config import NUMERIC_WIDE_MAX_ABS
 
-    numeric_cols = [c for c in out_df.columns if c not in non_numeric_cols]
+    # Host-pure column list (iterating a proxied Index falls back under
+    # cudf.pandas).
+    numeric_cols = [c for c in safe_columns(out_df) if c not in non_numeric_cols]
     nulled_counts = {}
     for c in numeric_cols:
         if c in wide_numeric_cols:
-            before_na = int(out_df[c].isna().sum())
-            out_df[c] = null_if_overflow(
+            clean, n = null_if_overflow_counted(
                 out_df[c], max_abs=NUMERIC_WIDE_MAX_ABS, scale=4,
             )
         else:
-            before_na = int(out_df[c].isna().sum())
-            out_df[c] = null_if_overflow(out_df[c])
-        n = int(out_df[c].isna().sum()) - before_na
+            clean, n = null_if_overflow_counted(out_df[c])
+        out_df[c] = clean
         if n > 0:
             nulled_counts[c] = n
     return nulled_counts
 
 
-def build_detail_rows(df: pd.DataFrame):
+def build_detail_frame(df: pd.DataFrame) -> pd.DataFrame:
     """For each (sec_type, code, date) row, compute all 9 gap values and
-    emit a wide-format dict list suitable for bulk_upsert into
-    analysis.mov_ave_spreads_detail.
+    return the wide-format detail DataFrame ready for
+    ``csv_copy_from_frame_async`` (COPY ... FORMAT csv).
 
-    Orchestrates 3 smaller steps:
+    Orchestrates 2 smaller steps:
       1. _assemble_detail_columns — vectorized column assembly
       2. _null_overflow_columns — NUMERIC(10,6) overflow guard for gap /
          slope / curvature / std columns, NUMERIC(24,4) overflow guard
-         for trading_amt_ma* columns.
-      3. sanitize_for_db_insert — NaN/inf/None + to_dict
+         for trading_amt_ma* columns. Also nulls NaN/±inf — the CSV
+         writer renders NaN as an empty field (SQL NULL), so no
+         sanitize_for_db_insert pass is needed (the old dict path's
+         astype(object).where + to_dict cost ~3s of client CPU per
+         100k-row chunk for zero benefit here).
     """
     if df.empty:
-        return []
+        return df.iloc[0:0]
 
     # Step 1: assemble all detail columns (vectorized).
     out_df = _assemble_detail_columns(df)
@@ -152,6 +159,4 @@ def build_detail_rows(df: pd.DataFrame):
         print(f"    -> overflow-guard nulled {total:,} value(s) across "
               f"{len(nulled_counts)} column(s): {per_col}", flush=True)
 
-    # Step 3: sanitize for DB insert (NaN/inf -> None + to_dict).
-    numeric_cols = [c for c in out_df.columns if c not in non_numeric_cols]
-    return sanitize_for_db_insert(out_df, numeric_cols=numeric_cols)
+    return out_df

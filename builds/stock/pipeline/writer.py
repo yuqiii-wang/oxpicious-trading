@@ -30,35 +30,17 @@ def build_identity_rows(
     _id_df = combined_db[["date", "code", "name"]].copy()
     _id_df["code"] = _id_df["code"].astype(str)
     # exchange + board come straight from the canonical CSV ``exchange`` /
-    # ``board`` columns carried by every loader. Downloads data is trusted:
-    # any missing or unexpected value means the download/conversion layer
-    # produced an invalid row -> hard fail, never paper over it here.
-    _ex = combined_db["exchange"].astype(str)
-    _bad_ex = ~_ex.isin(["SZ", "SS", "BJ"])
-    if bool(_bad_ex.any()):
-        _n = int(_bad_ex.sum())
-        _first_code = str(combined_db["code"][_bad_ex].iloc[0])
-        raise ValueError(
-            f"[STOCK-ID] unexpected exchange={_ex[_bad_ex].iloc[0]!r} "
-            f"(code {_first_code}, {_n} rows) — downloads conversion is wrong"
-        )
-    _id_df["exchange"] = _ex
+    # ``board`` columns carried by every loader. Downloads data is assumed
+    # correct — no runtime whitelist; a genuinely invalid value surfaces as
+    # a DB-level failure and stops the run.
+    _id_df["exchange"] = combined_db["exchange"]
     _cols = _safe_columns(combined_db)
     if "board" not in _cols:
         raise ValueError(
             "[STOCK-ID] canonical pipeline lost the `board` column — "
             "loader bug, fix the loader instead of deriving a fallback"
         )
-    _board = combined_db["board"].astype(str)
-    _bad_board = (_board == "") | (_board == "None") | (_board == "nan")
-    if bool(_bad_board.any()):
-        _n = int(_bad_board.sum())
-        _first_code = str(combined_db["code"][_bad_board].iloc[0])
-        raise ValueError(
-            f"[STOCK-ID] blank board for code {_first_code} ({_n} rows) — "
-            "downloads must always emit exchange/board per row"
-        )
-    _id_df["board"] = _board
+    _id_df["board"] = combined_db["board"]
     _id_df["name"] = _id_df["name"].where(_id_df["name"].notna(), "")
     _id_df["name"] = _id_df["name"].astype(str)
 

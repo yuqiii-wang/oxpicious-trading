@@ -16,6 +16,9 @@
 --   One row per (code, snapshot_date, rank).
 --   - For ETFs (source_type='etf'): code = "159001.SZ" (6-digit + exchange suffix)
 --   - For indices (source_type='index'): code = "930606" (bare 6-digit index code)
+--   stock_code = constituent code WITH exchange suffix ("000001.SZ"), matching
+--   the convention of stock_identity / stock_basic_stats (suffix required so
+--   joins against those tables need no stripping).
 --   rank = 1 is the largest weight; rank can exceed 5 for full composition data.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS stats.sec_composition (
@@ -54,3 +57,26 @@ CREATE INDEX IF NOT EXISTS idx_sec_composition_stock
 
 CREATE INDEX IF NOT EXISTS idx_sec_composition_source
     ON stats.sec_composition (source_type);
+
+-- ----------------------------------------------------------------------------
+-- Data migration: stock_code bare -> suffixed.
+-- Historical rows were written with bare 6-digit stock_code; the convention
+-- is now suffixed ("000001.SZ") to match stock_identity/stock_basic_stats.
+-- Suffix mapping by first digit (idempotent: only bare codes are touched):
+--   5/6/9 -> .SS  (SSE stocks + funds + B-shares)
+--   4/8   -> .BJ  (BSE)
+--   else  -> .SZ  (SZSE stocks 0/2/3 + funds 1)
+-- ----------------------------------------------------------------------------
+UPDATE stats.sec_composition
+   SET stock_code = stock_code || CASE LEFT(stock_code, 1)
+                      WHEN '5' THEN '.SS'
+                      WHEN '6' THEN '.SS'
+                      WHEN '9' THEN '.SS'
+                      WHEN '4' THEN '.BJ'
+                      WHEN '8' THEN '.BJ'
+                      ELSE '.SZ'
+                   END
+ WHERE stock_code ~ '^\d{6}$';
+
+COMMENT ON COLUMN stats.sec_composition.stock_code
+    IS 'Constituent code WITH exchange suffix (e.g. 000001.SZ), matching stock_identity/stock_basic_stats.';

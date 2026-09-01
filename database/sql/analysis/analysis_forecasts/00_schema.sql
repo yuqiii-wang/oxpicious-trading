@@ -1,0 +1,51 @@
+-- ============================================================================
+--  Schema: analysis_forecasts
+--
+--  Monthly per-security FORECAST (forecast) analysis: one row per
+--  (sec_type, code, stat_month, bucket) where stat_month is a completed
+--  calendar month-end DATE. Each bucket summarizes a TRAILING 5-YEAR
+--  window (stat_month - 5 years, stat_month] of daily data for that
+--  security — i.e. a monthly snapshot of how the security's own extreme
+--  days (RSI percentiles / Bollinger breaches) behaved over the window
+--  and what the forward changes after those days looked like.
+--
+--  Layout (motivation / result split):
+--    - 01_forecast_results.sql — analysis_forecasts.forecast_results:
+--      the RESULT data only (mean / high / low forward changes for
+--      next, 5d, 20d, 60d horizons + per-horizon >1% reversal
+--      probabilities), keyed by the surrogate forecast_id.
+--    - 02_mov_rsi_mov_std.sql — analysis_forecasts.mov_rsi and
+--      analysis_forecasts.mov_std: the MOTIVATION (bucket-defining)
+--      columns. Each motivation row carries a forecast_id that links to
+--      its forecast_results row (1:1, indexed, NOT NULL).
+--
+--  Population convention:
+--    - `python -m analyze.analysis_forecasts` computes one snapshot per
+--      completed month, incrementally (only stat_months missing from
+--      the mov_* tables are computed; completed-month results are
+--      immutable because closes / RSI / MA / std inside the window are
+--      historical facts).
+--    - `--force` deletes the sec_type's mov_* rows (and their
+--      forecast_results rows) and recomputes every target stat_month.
+--    - Rows are emitted ONLY where the bucket day-count > 0 (empty
+--      buckets — e.g. a code with no valid RSI in the window — have
+--      no row in either table).
+--
+--  Change semantics (shared by all horizons):
+--    next (1d) change    = (close[t+1] - close[t]) / close[t]
+--    5d/20d/60d change   = (close[t+N] - close[t]) / close[t]
+--    (signed fractional ratios, e.g. 0.05 = +5%; computed per code on
+--    its own trading-day sequence — calendar gaps do not count as rows)
+--
+--    reverse change      = the move AGAINST the bucket's extreme side:
+--      top / upper (overbought / above upper band): change < -1%
+--      counts as a reversal;
+--      bottom / lower (oversold / below lower band): change > +1%
+--      counts as a reversal.
+--    reverse_prob_{n}    = P(n-day change is a reverse change > 1%)
+--                          over bucket days with a valid n-day change.
+-- ============================================================================
+
+CREATE SCHEMA IF NOT EXISTS analysis_forecasts;
+
+COMMENT ON SCHEMA analysis_forecasts IS 'Monthly per-security forecast analysis: motivation tables (mov_rsi / mov_std) hold the extreme-day bucket definitions per (sec_type, code, stat_month, bucket); forecast_results holds the forward-change result data keyed by forecast_id (1:1 with each motivation row). Each row summarizes a trailing 5-year window of daily data. Populated incrementally by python -m analyze.analysis_forecasts.';

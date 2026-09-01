@@ -60,6 +60,7 @@ export {
   fetchMovAveSpreadThemes,
   fetchMovAveSpreadStrategyThemes,
   fetchMovAveSpreadChart,
+  fetchMovAveSpreadForecast,
 } from "./analysis-ma-spread";
 
 export {
@@ -71,12 +72,12 @@ export {
 } from "./analysis-pe-and-dividend";
 
 export {
-  fetchFourierFreqsCodes,
-  fetchFourierFreqsThemes,
-  fetchFourierFreqsStrategyThemes,
-  fetchFourierFreqsChart,
-  fetchFourierFreqsSpectrum,
-} from "./analysis-fourier-freqs";
+  fetchRecurringCyclesCodes,
+  fetchRecurringCyclesThemes,
+  fetchRecurringCyclesStrategyThemes,
+  fetchRecurringCyclesChart,
+  fetchRecurringCyclesSpectrum,
+} from "./analysis-recurring-cycles";
 
 export {
   fetchMarginTrendThemes,
@@ -129,6 +130,7 @@ export {
 
 export {
   fetchIntradayMovementsBenchmarks,
+  fetchIntradayMovementsDates,
   fetchIntradayMovements,
   fetchIntradayMovementsPrevDayOhlc,
 } from "./intraday-movements";

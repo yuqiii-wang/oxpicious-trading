@@ -14,6 +14,7 @@ Aggregates daily-frequency data sources into the 8 debt_* tables:
 Usage:
   python -m builds.bond
   python -m builds.bond --start-date 2024-01-01 --end-date 2026-07-14
+  python -m builds.bond --date 2026-07-14          (force single-date rebuild)
   python -m builds.bond --force
 
 See builds/bond/pipeline.py for the full missing-data detection flow.
@@ -42,4 +43,8 @@ from builds.bond.pipeline import main
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

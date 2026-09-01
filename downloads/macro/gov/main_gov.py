@@ -70,8 +70,13 @@ class SourceConfig:
     raw_min_bytes: int = 1000
 
 
-# Type aliases for the source-provided callables.
-FetchFn = Callable[[Any, AntiBotProxy, SourceConfig], Optional[List[Dict[str, Any]]]]
+# Type aliases for the source-provided callables. ``fetch_fn`` receives
+# ``floor`` — the last pub_date already available in the titles CSV (None on a
+# full backfill) — so paginating fetchers can stop at already-downloaded dates.
+FetchFn = Callable[
+    [Any, AntiBotProxy, SourceConfig, Optional[date]],
+    Optional[List[Dict[str, Any]]],
+]
 ParseFn = Callable[[List[Dict[str, Any]], date], List[Dict[str, str]]]
 
 
@@ -148,6 +153,23 @@ def write_csv(rows: List[Dict[str, str]], out_path: Path, columns: List[str]) ->
         writer.writerows(rows)
 
 
+def read_csv_rows(path: Path) -> List[Dict[str, str]]:
+    """Read an existing titles CSV into row dicts; empty list if missing/broken."""
+    if not path.exists() or not path.is_file():
+        return []
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            return list(csv.DictReader(f))
+    except OSError:
+        return []
+
+
+def latest_csv_date(rows: List[Dict[str, str]]) -> Optional[date]:
+    """Return the max parseable pub_date among *rows*, or None if none."""
+    dates = [d for d in (parse_date_str(r.get("pub_date", "")) for r in rows) if d is not None]
+    return max(dates) if dates else None
+
+
 def filter_sort_rows(
     rows: List[Dict[str, str]],
     start: date,
@@ -191,10 +213,14 @@ def download_source(
 ) -> Dict[str, Any]:
     """Download a source's title list and write it to CSV.
 
+    By default the run is **incremental**: when the titles CSV already exists,
+    the latest available ``pub_date`` in it becomes the floor — only rows on/after
+    that date are parsed (merged back into the existing CSV, deduped by URL) and
+    the fetcher is told to stop at already-downloaded dates. ``--force`` purges
+    the incremental state and does a full backfill to *start_date* instead.
+
     The raw item list is cached per run-date as ``<name>_raw_<YYYY-MM-DD>.json``
-    and re-used on subsequent same-day runs unless *force* is set. The combined
-    titles CSV (``config.csv_filename``) is rewritten every run from the
-    (cached or fresh) raw items.
+    and re-used on subsequent same-day runs unless *force* is set.
     """
     out_dir = resolve_out_dir(str(Path(__file__).resolve()), config.out_dirname, out_root)
     start = datetime.strptime(start_date or DEFAULT_START_DATE, "%Y-%m-%d").date()
@@ -202,9 +228,18 @@ def download_source(
     raw_path = out_dir / f"{config.name}_raw_{today_str}.json"
     csv_path = out_dir / config.csv_filename
 
+    # Incremental state: latest pub_date already present in the titles CSV.
+    existing_rows: List[Dict[str, str]] = []
+    csv_floor: Optional[date] = None
+    if not force:
+        existing_rows = read_csv_rows(csv_path)
+        csv_floor = latest_csv_date(existing_rows)
+    parse_start = max(start, csv_floor) if csv_floor is not None else start
+
     logger.info(
-        "%s: start=%s sleep=%.1fs -> %s",
+        "%s: start=%s sleep=%.1fs -> %s%s",
         config.name, start, sleep_sec, out_dir,
+        f" (incremental from {csv_floor})" if csv_floor is not None else " (full backfill)",
     )
 
     session, proxy = make_session_and_proxy(sleep_sec)
@@ -215,7 +250,7 @@ def download_source(
         raw_items = load_json(raw_path)
 
     if raw_items is None:
-        raw_items = fetch_fn(session, proxy, config)
+        raw_items = fetch_fn(session, proxy, config, csv_floor)
         if raw_items is None:
             logger.error("[%s] fetch failed; no CSV written", config.name)
             return {
@@ -229,8 +264,8 @@ def download_source(
             config.name, raw_path.name, len(raw_items),
         )
 
-    parsed_rows = parse_fn(raw_items, start)
-    rows = filter_sort_rows(parsed_rows, start, config.csv_columns)
+    parsed_rows = parse_fn(raw_items, parse_start)
+    rows = filter_sort_rows(existing_rows + parsed_rows, start, config.csv_columns)
     write_csv(rows, csv_path, config.csv_columns)
 
     if rows:
@@ -241,6 +276,8 @@ def download_source(
 
     summary = {
         "name": config.name,
+        "mode": "incremental" if csv_floor is not None else "full",
+        "incremental_floor": str(csv_floor) if csv_floor is not None else None,
         "downloaded": 1,
         "raw_items": len(raw_items),
         "rows": len(rows),

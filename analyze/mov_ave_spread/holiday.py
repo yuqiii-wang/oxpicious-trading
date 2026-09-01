@@ -49,6 +49,7 @@ from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
 )
+from _common.df_utils import column_subset, host_array
 from analyze._common import (
     build_and_insert_chunked,
     upsert_analysis_identity,
@@ -103,44 +104,50 @@ def _build_calendar_df(
     """
     start = min_date - timedelta(days=CALENDAR_BUFFER_DAYS)
     end = max_date + timedelta(days=CALENDAR_BUFFER_DAYS)
-    days = (end - start).days + 1
-    dates = [start + timedelta(days=i) for i in range(days)]
+    n = (end - start).days + 1
+    # Plain python dates — ALL arithmetic below is host-pure. (The former
+    # implementation passed proxy Timestamps in and built ``dates`` with
+    # ``start + timedelta(days=i)`` — one _Timestamp.__add__ cudf fallback
+    # per calendar day, ~2,460 per stock-scale run.)
+    dates = [start + timedelta(days=i) for i in range(n)]
 
-    df = pd.DataFrame({"date": dates})
-    df["is_trading"] = df["date"].apply(is_trading_day)
-    df["is_holiday"] = df["date"].isin(CN_HOLIDAYS)
+    # Host-pure classification via python set membership / function calls
+    # (the former ``df["date"].apply(...)`` dispatched through cudf's
+    # UDF-JIT attempt and fell back per call).
+    is_trading_arr = np.fromiter(
+        (is_trading_day(d) for d in dates), dtype=bool, count=n
+    )
+    is_holiday_arr = np.fromiter(
+        (d in CN_HOLIDAYS for d in dates), dtype=bool, count=n
+    )
     # is_weekend: D is a weekend (Sat/Sun) that was NOT an adjusted workday.
     # Independent of is_holiday — a day can be both weekend AND holiday
     # (e.g., a holiday that falls on a Saturday).
-    df["is_weekend"] = (
-        df["date"].apply(lambda d: d.weekday() >= 5)
-        & ~df["date"].isin(CN_ADJUSTED_WORKDAYS)
+    is_weekend_arr = np.fromiter(
+        (d.weekday() >= 5 and d not in CN_ADJUSTED_WORKDAYS for d in dates),
+        dtype=bool, count=n,
     )
 
     # Consecutive non-trading day streak (ending on each date).
     # We track the current streak length and reset on trading days.
-    is_trading_arr = df["is_trading"].values
-    streak = np.zeros(len(df), dtype=np.int32)
+    streak = np.zeros(n, dtype=np.int32)
     current = 0
-    for i in range(len(df)):
+    for i in range(n):
         if is_trading_arr[i]:
             current = 0
         else:
             current += 1
         streak[i] = current
-    df["non_trading_streak"] = streak
 
     # Identify long holiday periods: any non-trading streak >= threshold
     # that contains at least one CN_HOLIDAY date. Mark all days in that
     # streak as is_long_holiday = True.
-    holiday_arr = df["is_holiday"].values
-    is_long = np.zeros(len(df), dtype=bool)
+    is_long = np.zeros(n, dtype=bool)
 
     # We need to identify streaks that are "long holidays":
     # Walk through the data, tracking each non-trading streak's start/end
     # and whether it contains a holiday.
     i = 0
-    n = len(df)
     while i < n:
         if is_trading_arr[i]:
             i += 1
@@ -149,7 +156,7 @@ def _build_calendar_df(
         streak_start = i
         has_holiday = False
         while i < n and not is_trading_arr[i]:
-            if holiday_arr[i]:
+            if is_holiday_arr[i]:
                 has_holiday = True
             i += 1
         streak_end = i  # exclusive end
@@ -157,8 +164,16 @@ def _build_calendar_df(
         if streak_len >= LONG_HOLIDAY_MIN_DAYS and has_holiday:
             is_long[streak_start:streak_end] = True
 
-    df["is_long_holiday"] = is_long
-    return df
+    # datetime64[ns] date column from the start — the merge key needs no
+    # object-dtype ``pd.to_datetime`` conversion (a cudf fallback source).
+    return pd.DataFrame({
+        "date": np.array(dates, dtype="datetime64[D]").astype("datetime64[ns]"),
+        "is_trading": is_trading_arr,
+        "is_weekend": is_weekend_arr,
+        "is_holiday": is_holiday_arr,
+        "non_trading_streak": streak,
+        "is_long_holiday": is_long,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -174,51 +189,66 @@ def compute_holiday_metrics(df: pd.DataFrame) -> pd.DataFrame:
       - Compute today_high_low_gap and today_open_close_gap from OHLC
 
     The calendar is built once for the full date range, then joined
-    to the source DataFrame via a map (O(1) per row).
+    to the source DataFrame via ONE left-merge on the previous calendar
+    day (vectorized — no per-row dict lookups under cudf.pandas).
     """
     if df.empty:
         return df
 
     df = df.sort_values(["sec_type", "code", "date"]).reset_index(drop=True)
 
-    min_date = df["date"].min()
-    max_date = df["date"].max()
+    # Host-pure min/max: Series.min()/max() return proxy Timestamps whose
+    # timedelta arithmetic in _build_calendar_df falls back per call.
+    dates_host = host_array(df["date"].to_numpy())
+    min_date: date = dates_host.min().astype("datetime64[D]").item()
+    max_date: date = dates_host.max().astype("datetime64[D]").item()
     calendar_df = _build_calendar_df(min_date, max_date)
 
-    # Build a date → (is_trading, is_weekend, is_holiday, is_long_holiday,
-    # non_trading_streak) lookup.
-    cal_indexed = calendar_df.set_index("date")
-    cal_lookup = cal_indexed[
-        ["is_trading", "is_weekend", "is_holiday",
-         "is_long_holiday", "non_trading_streak"]
-    ].to_dict("index")
-
-    # Previous calendar day for each row.
-    df["_prev_date"] = df["date"] - timedelta(days=1)
-
-    # Map each row's prev_date to its classification.
-    # We use .map() with a dict for O(1) lookup per row.
-    prev_trading = df["_prev_date"].map(
-        lambda d: cal_lookup.get(d, {}).get("is_trading", False)
-    )
-    prev_weekend = df["_prev_date"].map(
-        lambda d: cal_lookup.get(d, {}).get("is_weekend", False)
-    )
-    prev_holiday = df["_prev_date"].map(
-        lambda d: cal_lookup.get(d, {}).get("is_holiday", False)
-    )
-    prev_long_holiday = df["_prev_date"].map(
-        lambda d: cal_lookup.get(d, {}).get("is_long_holiday", False)
-    )
-    prev_streak = df["_prev_date"].map(
-        lambda d: cal_lookup.get(d, {}).get("non_trading_streak", 0)
+    # Previous calendar day for each row (datetime64-normalized so the
+    # merge key matches the calendar's date column regardless of the
+    # source date dtype). int64-seconds arithmetic — datetime64 -
+    # Timedelta is a cuDF fast-path fallback.
+    df["_prev_date"] = pd.to_datetime(
+        df["date"].astype("datetime64[s]").astype("int64") - 86400,
+        unit="s",
     )
 
-    df["is_prev_day_trading"] = prev_trading.fillna(False).astype(bool)
-    df["is_prev_day_weekend"] = prev_weekend.fillna(False).astype(bool)
-    df["is_prev_day_holiday"] = prev_holiday.fillna(False).astype(bool)
-    df["is_prev_day_long_holiday"] = prev_long_holiday.fillna(False).astype(bool)
-    df["non_trading_day_count"] = prev_streak.fillna(0).astype(int)
+    # One left-merge on _prev_date: the calendar's classification
+    # columns are renamed directly to the output names (rows whose
+    # prev day predates the buffered calendar stay NaN → filled below).
+    cal = calendar_df.rename(columns={
+        "date": "_prev_date",
+        "is_trading": "is_prev_day_trading",
+        "is_weekend": "is_prev_day_weekend",
+        "is_holiday": "is_prev_day_holiday",
+        "is_long_holiday": "is_prev_day_long_holiday",
+        "non_trading_streak": "non_trading_day_count",
+    })
+    cal["_prev_date"] = pd.to_datetime(cal["_prev_date"])
+    df = df.merge(
+        cal[[
+            "_prev_date", "is_prev_day_trading", "is_prev_day_weekend",
+            "is_prev_day_holiday", "is_prev_day_long_holiday",
+            "non_trading_day_count",
+        ]],
+        on="_prev_date", how="left",
+    )
+
+    df["is_prev_day_trading"] = (
+        df["is_prev_day_trading"].fillna(False).astype(bool)
+    )
+    df["is_prev_day_weekend"] = (
+        df["is_prev_day_weekend"].fillna(False).astype(bool)
+    )
+    df["is_prev_day_holiday"] = (
+        df["is_prev_day_holiday"].fillna(False).astype(bool)
+    )
+    df["is_prev_day_long_holiday"] = (
+        df["is_prev_day_long_holiday"].fillna(False).astype(bool)
+    )
+    df["non_trading_day_count"] = (
+        df["non_trading_day_count"].fillna(0).astype(int)
+    )
 
     # Today's intraday gaps.
     # today_high_low_gap = (high - low) / close
@@ -321,7 +351,7 @@ async def run_holiday(
 
     # Select only the columns holiday needs.
     needed_cols = ["sec_type", "code", "date", "price", "open", "high", "low"]
-    available = [c for c in needed_cols if c in df.columns]
+    available = column_subset(df, needed_cols)
     holiday_df = df[available].copy()
 
     if holiday_df.empty:

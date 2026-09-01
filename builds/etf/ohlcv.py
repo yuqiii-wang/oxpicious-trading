@@ -19,7 +19,7 @@ import pandas as pd
 
 from downloads._common import read_build_csv
 from _common.build_commons import ymd_from_filename
-from _common.df_utils import safe_columns
+from _common.df_utils import host_array, safe_columns
 from builds.etf.paths import (
     SZSE_ARCHIVE_DIR, SZSE_TREND_DIR, SSE_TREND_DIR,
 )
@@ -44,6 +44,18 @@ _OHLCV_RENAME = {
 # downstream conditions branch on the DB-driven column — never on code-suffix
 # string ops.
 _OHLCV_OUT_COLS = ["date"] + list(_OHLCV_RENAME.values()) + ["volume_wan"]
+
+# One-pass dtype contract: final dtypes assigned AT PARSE TIME — str ids +
+# float64 numerics (downloads conversion writes plain normalized floats;
+# a parse error here is a downloads bug and stops the run). Both volume
+# column spellings are listed; read_csv ignores keys absent from a file.
+_OHLCV_DTYPES = {
+    "证券代码": str, "证券简称": str, "sec_type": str, "exchange": str,
+    "前收": "float64", "开盘": "float64", "最高": "float64",
+    "最低": "float64", "今收": "float64", "涨跌幅（%）": "float64",
+    "成交金额(万元)": "float64", "成交量（万份）": "float64",
+    "成交量(万股)": "float64",
+}
 
 
 def _scan_ohlcv_dir(scan_dir, file_prefix, volume_col, files=None, code=None):
@@ -73,11 +85,7 @@ def _scan_ohlcv_dir(scan_dir, file_prefix, volume_col, files=None, code=None):
         # propagates and stops the run instead of being miscounted as
         # an "empty" file. Legit empties (missing/placeholder exports)
         # come back as None/empty frames WITHOUT raising.
-        df = read_build_csv(
-            path,
-            dtype={"证券代码": str, "证券简称": str, "sec_type": str, "exchange": str},
-            code=code,
-        )
+        df = read_build_csv(path, dtype=_OHLCV_DTYPES, code=code)
         if df is None or len(df) == 0:
             n_empty += 1
             continue
@@ -193,8 +201,11 @@ def build_ohlcv_df(verbose=True, ohlcv_files=None, code=None):
     if verbose:
         n_szse = int(out["exchange"].eq("SZ").sum())
         n_sse = int(out["exchange"].eq("SS").sum())
+        # host unwrap ONCE (Timestamp.date has no cudf fast path)
+        d0 = str(host_array(out["date"].min()).astype("datetime64[D]"))
+        d1 = str(host_array(out["date"].max()).astype("datetime64[D]"))
         print(f"    [OHLCV] final rows: {len(out):,}  "
               f"unique codes: {out['code'].nunique()}  "
               f"SZSE (.SZ): {n_szse:,}  SSE (.SS): {n_sse:,}  "
-              f"date range: {out['date'].min().date()} → {out['date'].max().date()}", flush=True)
+              f"date range: {d0} → {d1}", flush=True)
     return out

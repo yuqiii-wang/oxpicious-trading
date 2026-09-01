@@ -22,7 +22,9 @@ from _common.build_commons import (
     fetch_codes_with_recent_data_async,
     RECENT_TRADING_DAYS,
     recent_trading_day_cutoff,
+    rec_cols,
 )
+from _common.df_utils import epoch_col_to_dt64
 
 from analyze.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
 from analyze.mov_ave_spread.helpers import (
@@ -63,14 +65,16 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
         return """
             SELECT
                 i.code,
-                i.date,
-                COALESCE(a.adj_close, b.close) AS price,
-                COALESCE(a.adj_open, b.open)   AS open,
-                COALESCE(a.adj_low, b.low)     AS low,
-                COALESCE(a.adj_high, b.high)   AS high,
-                t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
-                t.ema6, t.ema20, t.ema60, t.ema120, t.ema255,
-                m.trading_amount
+                extract(epoch from i.date)::float8 AS date,
+                COALESCE(a.adj_close, b.close)::float8 AS price,
+                COALESCE(a.adj_open, b.open)::float8   AS open,
+                COALESCE(a.adj_low, b.low)::float8     AS low,
+                COALESCE(a.adj_high, b.high)::float8   AS high,
+                t.ma5::float8, t.ma20::float8, t.ma60::float8,
+                t.ma120::float8, t.ma255::float8,
+                t.ema6::float8, t.ema20::float8, t.ema60::float8,
+                t.ema120::float8, t.ema255::float8,
+                m.trading_amount::float8
             FROM stats.etf_identity i
             JOIN stats.etf_basic_stats b ON b.date = i.date AND b.code = i.code
             LEFT JOIN stats.etf_adjustment a ON a.date = i.date AND a.code = i.code
@@ -83,14 +87,16 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
         return """
             SELECT
                 i.code,
-                i.date,
-                b.close AS price,
-                b.open  AS open,
-                b.low   AS low,
-                b.high  AS high,
-                t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
-                t.ema6, t.ema20, t.ema60, t.ema120, t.ema255,
-                b.trading_amount
+                extract(epoch from i.date)::float8 AS date,
+                b.close::float8 AS price,
+                b.open::float8  AS open,
+                b.low::float8   AS low,
+                b.high::float8  AS high,
+                t.ma5::float8, t.ma20::float8, t.ma60::float8,
+                t.ma120::float8, t.ma255::float8,
+                t.ema6::float8, t.ema20::float8, t.ema60::float8,
+                t.ema120::float8, t.ema255::float8,
+                b.trading_amount::float8
             FROM stats.index_identity i
             JOIN stats.index_basic_stats b ON b.date = i.date AND b.code = i.code
             JOIN stats.index_tech_stats  t ON t.date = i.date AND t.code = i.code
@@ -101,14 +107,16 @@ def _fetch_sql_for_sec_type(sec_type: str) -> str:
         return """
             SELECT
                 i.code,
-                i.date,
-                b.close AS price,
-                b.open  AS open,
-                b.low   AS low,
-                b.high  AS high,
-                t.ma5, t.ma20, t.ma60, t.ma120, t.ma255,
-                t.ema6, t.ema20, t.ema60, t.ema120, t.ema255,
-                m.trading_amount
+                extract(epoch from i.date)::float8 AS date,
+                b.close::float8 AS price,
+                b.open::float8  AS open,
+                b.low::float8   AS low,
+                b.high::float8  AS high,
+                t.ma5::float8, t.ma20::float8, t.ma60::float8,
+                t.ma120::float8, t.ma255::float8,
+                t.ema6::float8, t.ema20::float8, t.ema60::float8,
+                t.ema120::float8, t.ema255::float8,
+                m.trading_amount::float8
             FROM stats.stock_identity i
             JOIN stats.stock_basic_stats b ON b.date = i.date AND b.code = i.code
             JOIN stats.stock_tech_stats  t ON t.date = i.date AND t.code = i.code
@@ -317,9 +325,20 @@ async def fetch_source_data(
                                      "trading_amt_market_share_vs_ma60",
                                      "trading_amt_market_share_vs_ma120",
                                      "trading_amt_market_share_vs_ma255"])
-    # asyncpg.Record -> dict so pandas picks up column names (not integer indices).
-    df = pd.DataFrame([dict(r) for r in rows])
-    n_loaded_codes = df["code"].nunique() if "code" in df.columns else 0
+    # One positional-unpack pass over the asyncpg records (repo
+    # convention) — the per-row ``dict(r)`` construction is O(rows)
+    # python and per-row proxy dispatch under cudf.pandas. All three
+    # sec_types share the same SELECT column order.
+    df = pd.DataFrame(rec_cols(rows), columns=[
+        "code", "date", "price", "open", "low", "high",
+        "ma5", "ma20", "ma60", "ma120", "ma255",
+        "ema6", "ema20", "ema60", "ema120", "ema255",
+        "trading_amount",
+    ])
+    # df is always constructed with the explicit column list above, so
+    # "code" exists even when rows is empty (avoids the proxied
+    # Index.__contains__ fallback under cudf.pandas).
+    n_loaded_codes = df["code"].nunique()
     if n_loaded_codes < len(active_codes):
         # Some active codes had identity rows but no joined basic_stats /
         # tech_stats rows — they are dropped by the INNER JOINs.
@@ -329,14 +348,19 @@ async def fetch_source_data(
     # Tag every row with its sec_type so downstream detail/summary rows
     # carry the discriminant column required by the new schema.
     df["sec_type"] = sec_type
-    # Ensure date column is python date (not datetime) for clean serialization
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    # Coerce numeric columns to float (asyncpg returns Decimal for NUMERIC)
-    for col in ("price", "open", "low", "high", "ma5", "ma20", "ma60",
-                "ma120", "ma255",
-                "ema6", "ema20", "ema60", "ema120", "ema255",
-                "trading_amount"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    # Dates stay datetime64[us] through ALL compute (B-A2 convention):
+    # the date column arrives as NATIVE float8 (extract(epoch) in SQL) and
+    # epoch_col_to_dt64 materializes datetime64[us] in ONE host pass — an
+    # object py-date column would poison every downstream GPU op (each
+    # getitem/sort/groupby falls back with "Cannot convert a date of
+    # object type" — 30k+ fallbacks/run at stock scale). python dates are
+    # materialized only inside sanitize_for_db_insert at the write
+    # boundary (datetime64[us] → datetime, NaT → None — asyncpg accepts
+    # datetime for DATE columns, see _common.db_commons._to_date).
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    # Numeric columns arrive as native float64 via the ::float8 SQL casts
+    # (asyncpg NUMERIC → Python Decimal → object column would make every
+    # pd.to_numeric fall back per column) — no post-parse conversion.
     # Compute slope (1st derivative) and curvature (2nd derivative) per code.
     # This is computed over the FULL per-code history so the diff() values
     # are correct for the first target date of each code (incremental mode).
@@ -380,7 +404,11 @@ async def fetch_source_data(
     # ---- Incremental filter: keep only target_dates rows ----------------
     if target_dates is not None and len(target_dates) > 0:
         n_before = len(df)
-        df = df[df["date"].isin(target_dates)].reset_index(drop=True)
+        # datetime64 ndarray comparison — isin with a python-date SET
+        # falls back (values won't convert); with a datetime64 ndarray it
+        # hits the GPU hash join.
+        td64 = pd.to_datetime(sorted(target_dates)).values
+        df = df[df["date"].isin(td64)].reset_index(drop=True)
         print(f"      incremental filter: {len(df):,} of {n_before:,} rows "
               f"are in target_dates (slope/curv context rows dropped)",
               flush=True)

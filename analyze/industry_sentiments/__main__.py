@@ -129,20 +129,20 @@ async def _up_to_date_checks(conn, t0: float) -> None:
     """Post-detection checks for the 'no missing target dates' branch.
 
     Even when no incremental target dates are missing, the attributions
-    table might need a rolling-column backfill (e.g., after adding
-    benchmark_non_this_industry_rolling_* columns via ALTER TABLE — the
-    incremental date filter would miss historical dates), and the
-    hypes_and_drains table might be empty (first run after the SQL
-    migration). Exits after the checks (prints wall time + returns).
+    table might have rows with NULL rolling price columns (e.g. after
+    adding benchmark_non_this_industry_rolling_* columns via ALTER TABLE,
+    or an interrupted pre-transaction run) — detected by
+    needs_rolling_backfill and fixed with a full attributions recompute.
+    The hypes_and_drains table might also be empty (first run after the
+    SQL migration). Exits after the checks (prints wall time + returns).
     """
     if await needs_rolling_backfill(conn):
-        print("    -> industry_attributions needs rolling-column "
-              "backfill — running attributions backfill...",
+        print("    -> industry_attributions has NULL rolling price "
+              "columns — running full attributions recompute...",
               flush=True)
-        await run_attributions(conn, backfill=True)
-        # Backfill just refreshed the rolling price columns (incl.
-        # 120d) — recompute hypes_and_drains so rankings reflect the
-        # new data.
+        await run_attributions(conn, force=True)
+        # Recompute refreshed ALL columns (incl. rolling prices) —
+        # rebuild hypes_and_drains so rankings reflect the data.
         await run_hypes_and_drains(conn, force=True)
     else:
         n_hd = await conn.fetchval(
@@ -172,9 +172,36 @@ async def main() -> None:
              "'python -m analyze.industry_sentiments.corr' separately "
              "instead.",
     )
+    ap.add_argument(
+        "--etf-only", action="store_true",
+        help="Run ONLY the etf_contribution step (force=True: truncate "
+             "analysis.industry_etf_contribution and recompute all rows). "
+             "Use after backfilling sec_alloc_perf_attribution ETF "
+             "columns in-place (analyze.sec_alloc_perf_attribution --etf) "
+             "— the incremental path would otherwise skip it because no "
+             "attribution dates are missing.",
+    )
     args = ap.parse_args()
 
     t0 = time.time()
+
+    conn = await get_db_connection_async()
+    if args.etf_only:
+        print_build_header(
+            "ANALYZE INDUSTRY SENTIMENTS — ETF CONTRIBUTION ONLY",
+            source_table=BASELINE_TABLE,
+            mode="etf-only (truncate + full recompute of "
+                 "industry_etf_contribution)",
+        )
+        try:
+            await run_etf_contribution(conn, force=True)
+        finally:
+            try:
+                await asyncio.wait_for(conn.close(), timeout=10)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        print_wall_time(t0)
+        return
     print_build_header(
         "ANALYZE INDUSTRY SENTIMENTS "
         "(downstream steps; baseline source: stats.industry_basic_stats)",
@@ -183,7 +210,6 @@ async def main() -> None:
              else "incremental (missing dates only)",
     )
 
-    conn = await get_db_connection_async()
     try:
         ran_perf = False  # step 2 already executed in step 0?
         # ---- Step 0: determine target dates -------------------------------
@@ -303,4 +329,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

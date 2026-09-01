@@ -225,7 +225,7 @@ CREATE INDEX IF NOT EXISTS idx_sec_index_tags_sector_industry
 --   Per (composition_snapshot_date, code, sec_type) top-5 similar codes,
 --   top-5 similar industry-classified peer codes (from DIFFERENT industries),
 --   and top-5 dissimilar industry-classified peer codes by mutual shared
---   composition weight. Built by builds.index.exts._sec_similars from
+--   composition weight. Built by builds.index._sec_similars from
 --   stats.sec_composition + stats.sec_classification.
 --
 --   sec_type: 'index' and 'etf'. PK includes sec_type so both coexist.
@@ -312,7 +312,7 @@ CREATE TABLE IF NOT EXISTS stats.sec_similars (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'sec_similars', 8);
 
-COMMENT ON TABLE  stats.sec_similars                            IS 'Per (composition_snapshot_date, code, sec_type) top-5 similar codes + top-5 similar (distinct-industry) / dissimilar industry-classified peer codes by MUTUAL shared composition weight. Built by builds.index.exts._sec_similars from stats.sec_composition + stats.sec_classification. `date` is the composition snapshot_date (NOT a trading day). sec_type: index and etf (both populated). Similar industry peers are greedily selected from DIFFERENT industry_ids.';
+COMMENT ON TABLE  stats.sec_similars                            IS 'Per (composition_snapshot_date, code, sec_type) top-5 similar codes + top-5 similar (distinct-industry) / dissimilar industry-classified peer codes by MUTUAL shared composition weight. Built by builds.index._sec_similars from stats.sec_composition + stats.sec_classification. `date` is the composition snapshot_date (NOT a trading day). sec_type: index and etf (both populated). Similar industry peers are greedily selected from DIFFERENT industry_ids.';
 COMMENT ON COLUMN stats.sec_similars.date                      IS 'COMPOSITION snapshot_date from stats.sec_composition. One row per (snapshot_date, code, sec_type) — NOT a trading day. Downstream consumers look up the latest row with date <= trading_date per code (same carry-forward pattern as index_exts.stock_num).';
 COMMENT ON COLUMN stats.sec_similars.code                      IS 'Subject code (e.g. 000300, 931382 for index; 510050.SS for ETF). The security whose composition we are finding similars FOR.';
 COMMENT ON COLUMN stats.sec_similars.sec_type                  IS 'Security type: index or etf. Discriminates index-vs-index vs ETF-vs-ETF similarity computations. Each sec_type is computed independently from sec_composition with matching source_type.';

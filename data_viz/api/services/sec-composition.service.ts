@@ -698,7 +698,7 @@ export async function getLinkedEtfs(
 //  Similar Indices — top-5 similar codes + top-5 similar/dissimilar
 //  industry-classified peer codes by MUTUAL shared composition weight for a
 //  given subject index. Reads stats.sec_similars (sec_type='index', built by
-//  builds.index.exts._sec_similars from stats.sec_composition +
+//  builds.index._sec_similars from stats.sec_composition +
 //  stats.sec_classification).
 //
 //  `date` in sec_similars is the COMPOSITION snapshot_date (quarterly,

@@ -8,9 +8,9 @@ to fetch intraday ticks for index codes that are missing or stale in
 
 Afternoon-only start + exclusion
 --------------------------------
-CSIndex starts at 13:30 (``CSINDEX_START_TIME``) on trading days, focusing
-on the afternoon trading session. At the start of each trading day — AFTER
-13:30 — CSIndex queries ``stats.index_intraday_5min`` for codes that already
+CSIndex starts at 16:00 (``CSINDEX_START_TIME``, after close) on trading
+days, focusing on post-close data. At the start of each trading day — AFTER
+16:00 — CSIndex queries ``stats.index_intraday_5min`` for codes that already
 have bars today. Those are the indices SSE (and SZSE) is actively streaming.
 CSIndex excludes them from its download list, so it only fetches indices
 that SSE does NOT cover (typically 930xxx/931xxx CSIndex-published indices).
@@ -120,9 +120,9 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
       4. Sleep until next 30-min boundary.
 
     SSE head start: On each new trading day, CSIndex waits until
-    ``CSINDEX_START_TIME`` (09:40, 10 min after SSE's 09:30 open) before
-    its first loop. This gives SSE time to produce its first bars, so
-    CSIndex can query which codes SSE is streaming and exclude them.
+    ``CSINDEX_START_TIME`` (16:00, post-close) before its first loop. This
+    gives SSE/SZSE time to produce their bars, so CSIndex can query which
+    codes they are streaming and exclude them.
 
     CSV backfill: At startup and every 5 minutes outside trading hours,
     archived CSVs are loaded to DB to recover data lost to DB failures.
@@ -177,7 +177,7 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                 _sleep_chunks(wait_sec)
                 continue
 
-            # --- New trading day: wait until CSINDEX_START_TIME (13:30), then gather
+            # --- New trading day: wait until CSINDEX_START_TIME (16:00), then gather
             #     which codes SSE/SZSE is streaming (codes with bars today). ---
             if current_biz_day != today:
                 now_dt = datetime.now()
@@ -186,7 +186,7 @@ def stream(once: bool = False, single_code: Optional[str] = None) -> None:
                     wait_sec = (start_dt - now_dt).total_seconds()
                     logger.info(
                         "New trading day %s; waiting %.0fs until %s "
-                        "(afternoon-only start; morning data already captured).",
+                        "(post-close start; intraday data already captured).",
                         today, wait_sec, CSINDEX_START_TIME,
                     )
                     _sleep_chunks(wait_sec)

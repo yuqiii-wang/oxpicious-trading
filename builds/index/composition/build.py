@@ -8,6 +8,13 @@ Date-check pattern (fast-path before reading any CSV content):
   3. Query DB for existing (code, snapshot_date) pairs
   4. Filter files to only those with missing pairs
   5. Read ONLY the filtered files
+
+--date mode (forced_date set): steps 3-4 are bypassed — only files whose
+snapshot date equals forced_date are read and ALL their rows are emitted
+(existing (code, snapshot_date) pairs are refreshed by the caller's upsert
+write path; no deletes, no truncation). available_snapshot_dates() exposes
+the filename-discovered snapshot dates so orchestrators can validate the
+forced date (forced_date_scope exits(1) when it has no source data).
 """
 from __future__ import annotations
 
@@ -62,12 +69,33 @@ def _filter_files_by_code(files: List[str], code_filter: str) -> List[str]:
     return out
 
 
+def available_snapshot_dates(code_filter: Optional[str] = None) -> Set[datetime.date]:
+    """Snapshot dates discovered from composition CSV filenames (CSI + SZSE).
+
+    Host-only filename scan — no CSV content is read. Used by the
+    orchestrators to validate a --date forced build: the forced date must
+    exist among the discovered snapshot dates (forced_date_scope exits(1)
+    otherwise). With code_filter, only that index's files are considered.
+    """
+    dates: Set[datetime.date] = set()
+    bare = _normalize_code_filter(code_filter) if code_filter else None
+    for directory in (INDEX_COMP_DIR, SZSE_INDEX_COMP_DIR):
+        if not os.path.isdir(directory):
+            continue
+        for f in glob.glob(os.path.join(directory, "*_closeweight_*.csv")):
+            key = _extract_code_date_from_filename(f)
+            if key and (bare is None or key[0] == bare):
+                dates.add(key[1])
+    return dates
+
+
 async def filter_comp_files_by_missing(
     conn,
     directory: str,
     label: str,
     source_type: str = "index",
     code_filter: Optional[str] = None,
+    forced_date: Optional[datetime.date] = None,
 ) -> List[str]:
     """Filter composition CSV files to only those with missing (code, snapshot_date) in DB.
 
@@ -81,6 +109,9 @@ async def filter_comp_files_by_missing(
         source_type: source_type column value ('index' for both CSI and SZSE)
         code_filter: optional single index code — restricts the check (and the
             files read) to that code only
+        forced_date: --date mode — bypass the DB missing-pair skip and return
+            ONLY the snapshot files at this date (always rebuilt; existing
+            rows are refreshed by the caller's upsert write path)
 
     Returns:
         List of file paths to actually read.
@@ -116,6 +147,19 @@ async def filter_comp_files_by_missing(
         if not source_keys:
             print(f"    [{label}] no CSVs for code {bare} in {directory}", flush=True)
             return []
+
+    # --date mode: bypass the DB missing-pair skip entirely — the forced
+    # snapshot date is ALWAYS (re)built and its existing rows are refreshed
+    # by the caller's upsert write path (no deletes, no truncation).
+    # Restrict to the snapshot files at the forced date only.
+    if forced_date is not None:
+        forced_files = [
+            f for f in files
+            if any(d == forced_date for _, d in file_to_keys.get(f, ()))
+        ]
+        print(f"    [{label}] DATE MODE {forced_date}: {len(forced_files)} snapshot "
+              f"file(s) to read (missing-pair skip bypassed)", flush=True)
+        return forced_files
 
     # Check DB for existing pairs
     schema, tbl = "stats", "sec_composition"
@@ -202,8 +246,16 @@ def _read_comp_csvs(directory: str, label: str, files: Optional[List[str]] = Non
     return combined
 
 
-def _build_rows_from_df(combined: pd.DataFrame, label: str) -> list:
-    """Convert a combined composition DataFrame into sec_composition row dicts."""
+def _build_rows_from_df(combined: pd.DataFrame, label: str,
+                        default_suffix: Optional[str] = None) -> list:
+    """Convert a combined composition DataFrame into sec_composition row dicts.
+
+    ``default_suffix``: exchange suffix appended to bare 6-digit stock codes
+    (e.g. ".SZ" for SZSE index closeweight CSVs, which carry bare codes).
+    None keeps stock_code as-is (CSI CSVs arrive pre-suffixed and validated).
+    sec_composition.stock_code must be suffixed to match stock_identity /
+    stock_basic_stats for downstream joins.
+    """
     if combined.empty:
         return []
 
@@ -222,6 +274,8 @@ def _build_rows_from_df(combined: pd.DataFrame, label: str) -> list:
             (_sub["sc_stripped"].str.len() == 6) &
             _sub["sc_stripped"].str.isdigit()
         ].copy()
+        if default_suffix:
+            _sub["stock_code"] = _sub["sc_stripped"] + default_suffix
         if len(_sub) > 0:
             _sub["rank"] = range(1, len(_sub) + 1)
             _sub["snapshot_date"] = snap_date_obj
@@ -242,16 +296,21 @@ def _build_rows_from_df(combined: pd.DataFrame, label: str) -> list:
 
 
 async def build_index_composition_rows(conn=None, force: bool = False,
-                                       code_filter: Optional[str] = None) -> list:
+                                       code_filter: Optional[str] = None,
+                                       forced_date: Optional[datetime.date] = None) -> list:
     """Read CSI index composition CSVs and build rows for stats.sec_composition.
 
     With a DB connection, first filters files by missing (code, snapshot_date)
     before reading any CSV content. With code_filter, only that index's files
-    are considered (both in the DB check and the CSV read).
+    are considered (both in the DB check and the CSV read). With forced_date
+    (--date mode), only that snapshot date's files are read and the
+    missing-pair skip is bypassed (rows already in the DB are refreshed by
+    the caller's upsert).
     """
     if conn is not None and not force:
         filtered_files = await filter_comp_files_by_missing(
-            conn, INDEX_COMP_DIR, "INDEX-COMP", code_filter=code_filter
+            conn, INDEX_COMP_DIR, "INDEX-COMP", code_filter=code_filter,
+            forced_date=forced_date,
         )
         combined = _read_comp_csvs(INDEX_COMP_DIR, "INDEX-COMP", files=filtered_files)
     elif code_filter:
@@ -266,16 +325,21 @@ async def build_index_composition_rows(conn=None, force: bool = False,
 
 
 async def build_szse_index_composition_rows(conn=None, force: bool = False,
-                                            code_filter: Optional[str] = None) -> list:
+                                            code_filter: Optional[str] = None,
+                                            forced_date: Optional[datetime.date] = None) -> list:
     """Read SZSE index composition CSVs and build rows for stats.sec_composition.
 
     With a DB connection, first filters files by missing (code, snapshot_date)
     before reading any CSV content. With code_filter, only that index's files
-    are considered (both in the DB check and the CSV read).
+    are considered (both in the DB check and the CSV read). With forced_date
+    (--date mode), only that snapshot date's files are read and the
+    missing-pair skip is bypassed (rows already in the DB are refreshed by
+    the caller's upsert).
     """
     if conn is not None and not force:
         filtered_files = await filter_comp_files_by_missing(
-            conn, SZSE_INDEX_COMP_DIR, "SZSE-INDEX-COMP", code_filter=code_filter
+            conn, SZSE_INDEX_COMP_DIR, "SZSE-INDEX-COMP", code_filter=code_filter,
+            forced_date=forced_date,
         )
         combined = _read_comp_csvs(SZSE_INDEX_COMP_DIR, "SZSE-INDEX-COMP", files=filtered_files)
     elif code_filter:
@@ -286,4 +350,4 @@ async def build_szse_index_composition_rows(conn=None, force: bool = False,
         )
     else:
         combined = _read_comp_csvs(SZSE_INDEX_COMP_DIR, "SZSE-INDEX-COMP")
-    return _build_rows_from_df(combined, "SZSE-INDEX-COMP")
+    return _build_rows_from_df(combined, "SZSE-INDEX-COMP", default_suffix=".SZ")

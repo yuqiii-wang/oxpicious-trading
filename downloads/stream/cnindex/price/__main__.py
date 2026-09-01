@@ -15,10 +15,10 @@ same as SSE/SZSE/CSIndex streamers) and upserted into
 ``stats.index_intraday_5min`` (+ ``stats.index_identity`` as FK parent).
 
 Scheduling (two time points per trading day):
-  - Before 14:00: sleep and wait.
-  - 14:00–15:30 (1st window): check DB for existing data; if none, fetch
-    once per index. Then sleep until 15:30.
-  - After 15:30 (2nd window): fetch once per index (final closing data).
+  - Before 16:00: sleep and wait.
+  - 16:00–16:30 (1st window): check DB for existing data; if none, fetch
+    once per index. Then sleep until 16:30.
+  - After 16:30 (2nd window): fetch once per index (final closing data).
     Then sleep until next day.
 
 Usage:
@@ -72,9 +72,9 @@ from _common._holidays_and_weekdays import is_trading_day
 
 logger = setup_logger("cnindex_stream")
 
-# Scheduling time points (two fetch windows per trading day).
-FIRST_WINDOW_START = time(14, 0)    # 1st fetch: 14:00–15:30
-SECOND_WINDOW_START = time(15, 30)  # 2nd fetch: after 15:30
+# Scheduling time points (two fetch windows per trading day, post-close).
+FIRST_WINDOW_START = time(16, 0)    # 1st fetch: 16:00–16:30
+SECOND_WINDOW_START = time(16, 30)  # 2nd fetch: after 16:30
 
 # Non-trading-day sleep cadence (checked periodically).
 NON_TRADING_SLEEP_SEC = 30 * 60  # 30 min
@@ -406,10 +406,10 @@ def stream(
     """Main streaming loop with two-time-point scheduling.
 
     Per trading day:
-      - Before 14:00: sleep and wait.
-      - 14:00–15:30 (1st window): check DB for existing data per code; if
-        no data, fetch once per index. Then sleep until 15:30.
-      - After 15:30 (2nd window): fetch once per index. Then sleep until
+      - Before 16:00: sleep and wait.
+      - 16:00–16:30 (1st window): check DB for existing data per code; if
+        no data, fetch once per index. Then sleep until 16:30.
+      - After 16:30 (2nd window): fetch once per index. Then sleep until
         next day.
 
     ``--once`` bypasses scheduling and does an immediate fetch of all codes.
@@ -431,8 +431,8 @@ def stream(
 
     # Per-day state: reset at the start of each new day.
     current_biz_day: Optional[date] = None
-    first_fetch_done = False   # 1st window (14:00–15:30) fetch completed
-    second_fetch_done = False  # 2nd window (after 15:30) fetch completed
+    first_fetch_done = False   # 1st window (16:00–16:30) fetch completed
+    second_fetch_done = False  # 2nd window (after 16:30) fetch completed
 
     try:
         while True:
@@ -479,12 +479,12 @@ def stream(
                 _sleep_chunked(NON_TRADING_SLEEP_SEC)
                 continue
 
-            # --- Before 14:00: sleep until 1st window ---
+            # --- Before 16:00: sleep until 1st window ---
             if now_time < FIRST_WINDOW_START:
                 _sleep_until(FIRST_WINDOW_START, "(1st fetch window)")
                 continue
 
-            # --- 1st window (14:00 – 15:30): check DB, fetch missing ---
+            # --- 1st window (16:00 – 16:30): check DB, fetch missing ---
             if now_time < SECOND_WINDOW_START:
                 if not first_fetch_done:
                     logger.info("=== 1st window @ %s: checking DB for existing data ===",
@@ -515,7 +515,7 @@ def stream(
                 _sleep_until(SECOND_WINDOW_START, "(2nd fetch window)")
                 continue
 
-            # --- 2nd window (after 15:30): fetch all codes ---
+            # --- 2nd window (after 16:30): fetch all codes ---
             if not second_fetch_done:
                 logger.info("=== 2nd window @ %s: fetching all codes (final) ===",
                             datetime.now().strftime("%H:%M:%S"))

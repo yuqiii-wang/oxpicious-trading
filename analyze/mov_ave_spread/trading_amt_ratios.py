@@ -109,7 +109,7 @@ from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
 )
-from _common.df_utils import grouped_rolling_agg
+from _common.df_utils import column_subset, grouped_rolling_agg
 from analyze._common import (
     build_and_insert_chunked,
     upsert_analysis_identity,
@@ -130,6 +130,7 @@ from analyze.mov_ave_spread.config import (
     TRADING_AMT_RATIOS_TABLE,
     TRADING_AMT_SLOPE_VS_PRICE_RATIO_COLUMNS,
 )
+from analyze.mov_ave_spread.helpers import null_if_overflow_counted
 
 # Transient (not persisted) intermediate columns: daily intraday range,
 # daily overnight gap, and their 5-day MAs. Used as ratio denominators.
@@ -337,9 +338,10 @@ def sanitize_trading_amt_ratios_rows(df: pd.DataFrame) -> list[dict]:
 
     nulled = {}
     for c in numeric_cols:
-        before = int(out[c].isna().sum())
-        out[c] = _null_if_overflow(out[c])
-        n = int(out[c].isna().sum()) - before
+        clean, n = null_if_overflow_counted(
+            out[c], max_abs=TRADING_AMT_RATIOS_MAX_ABS, scale=4,
+        )
+        out[c] = clean
         if n > 0:
             nulled[c] = n
     if nulled:
@@ -349,16 +351,6 @@ def sanitize_trading_amt_ratios_rows(df: pd.DataFrame) -> list[dict]:
               f"{len(nulled)} column(s): {per}", flush=True)
 
     return sanitize_for_db_insert(out, numeric_cols=numeric_cols)
-
-
-def _null_if_overflow(series):
-    s = pd.to_numeric(series, errors="coerce")
-    mask = (
-        s.isna()
-        | ~np.isfinite(s)
-        | (s.abs().round(4) >= TRADING_AMT_RATIOS_MAX_ABS)
-    )
-    return s.where(~mask)
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +411,7 @@ async def run_trading_amt_ratios(
         + list(TRADING_AMT_MA_COLUMNS)
         + list(TRADING_AMT_PRICE_SLOPE_SOURCE_COLUMNS)
     ))
-    available = [c for c in needed_cols if c in df.columns]
+    available = column_subset(df, needed_cols)
     ta_df = df[available].copy()
 
     if ta_df.empty:

@@ -103,6 +103,7 @@ SELECT
     o.close,
     o.pct_change,
     o.eps,
+    o.is_ohl_estimated,
     o.has_intraday_5mins,
     -- Adjustment
     a.cum_split_factor,
@@ -234,6 +235,7 @@ SELECT
     bs.trading_amount,
     bs.change,
     bs.change_pct,
+    bs.is_ohl_estimated,
     bs.has_intraday_5mins,
     -- Valuation
     v.pe,
@@ -277,6 +279,7 @@ SELECT
     b.low,
     b.close,
     b.pct_change,
+    b.is_ohl_estimated,
     b.has_intraday_5mins,
     -- Stock-specific valuation
     b.pe,

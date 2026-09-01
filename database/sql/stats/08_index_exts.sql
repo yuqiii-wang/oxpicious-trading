@@ -113,7 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_etf_trading_amt_date
 --   Exchange labels follow the stats.sec_classification.exchange convention
 --   (SZ/SS/BJ/HK/OVERSEAS), NOT the verbose SZSE/SSE names.
 --
---   Built by builds.index.exts._exchange_trading_amt from
+--   Built by builds.index._exchange_trading_amt from
 --   stats.index_basic_stats of the representative indices. Consumed by the
 --   Perf-Attr "Exchange Trading Amt" view.
 -- ----------------------------------------------------------------------------
@@ -141,7 +141,7 @@ ALTER TABLE stats.exchange_trading_amt DROP CONSTRAINT IF EXISTS fk_exchange_tra
 ALTER TABLE stats.exchange_trading_amt ADD CONSTRAINT fk_exchange_trading_amt_date_code
     FOREIGN KEY (index_code, date) REFERENCES stats.index_identity(code, date);
 
-COMMENT ON TABLE  stats.exchange_trading_amt             IS 'Per-(date, exchange) aggregate trading turnover (yuan), proxied by ONE representative broad-market index per exchange. Hardcoded: SZ (SZSE) -> 399001 (深证成指), SS (SSE) -> 000001 (上证指数). total_trading_amount = stats.index_basic_stats.trading_amount of the representative index. Built by builds.index.exts._exchange_trading_amt.';
+COMMENT ON TABLE  stats.exchange_trading_amt             IS 'Per-(date, exchange) aggregate trading turnover (yuan), proxied by ONE representative broad-market index per exchange. Hardcoded: SZ (SZSE) -> 399001 (深证成指), SS (SSE) -> 000001 (上证指数). total_trading_amount = stats.index_basic_stats.trading_amount of the representative index. Built by builds.index._exchange_trading_amt.';
 COMMENT ON COLUMN stats.exchange_trading_amt.exchange             IS 'Exchange code (matches stats.sec_classification.exchange convention: SZ=SZSE, SS=SSE). Part of PK (exchange, date). Each exchange is represented by exactly one benchmark index (see index_code).';
 COMMENT ON COLUMN stats.exchange_trading_amt.index_code          IS 'Representative index code whose trading_amount is used as this exchange''s total_trading_amount on this date. Hardcoded: SZ->399001 (深证成指), SS->000001 (上证指数). FK references stats.index_identity(code, date).';
 COMMENT ON COLUMN stats.exchange_trading_amt.total_trading_amount IS 'Trading turnover (yuan) of the representative index on this date. Source: stats.index_basic_stats.trading_amount. Rows where the representative index has no trading_amount (estimated-close gaps) are NOT inserted.';

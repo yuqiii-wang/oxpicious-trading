@@ -5,6 +5,8 @@ Provides:
   - get_existing_keys_async() — query existing key tuples (async)
   - bulk_upsert_async() — efficient async bulk insert/update with conflict handling
   - copy_insert_async() — bulk-insert via PostgreSQL COPY (fastest path)
+  - csv_copy_from_frame_async() — bulk-insert a DataFrame via COPY csv
+    (vectorized client encoding — no per-row dicts)
   - ensure_table_exists_async() — create table if not exists (async)
   - truncate_table_async() — clear all data from table (async)
 """
@@ -50,6 +52,50 @@ async def get_existing_keys_async(conn, table_name: str, key_columns: list) -> s
     rows = await conn.fetch(query)
 
     return set(tuple(row[c] for c in key_columns) for row in rows)
+
+
+async def get_latest_dates_async(
+    conn,
+    table_name: str,
+    key_columns: list,
+    date_column: str = "date",
+) -> dict:
+    """Get the latest (MAX) date per key from a table (async).
+
+    Cheap latest-missing-date detection: instead of loading every
+    (date, key) pair (millions of rows), a single GROUP BY returns one row
+    per key. Safe as a completeness check when rows are inserted per table
+    in one transaction (bulk_upsert_async) — a key's max date >= d implies
+    the row at d exists, so only dates AFTER the max can be missing.
+
+    Args:
+        conn: asyncpg connection.
+        table_name: schema-qualified table name (e.g. "stats.index_tech_stats").
+        key_columns: key column(s) to group by (e.g. ["code"]).
+        date_column: date column name (default "date").
+
+    Returns:
+        dict mapping key -> max date. With a single key column the key is
+        the bare value; with multiple key columns it is a tuple.
+    """
+    if not key_columns:
+        return {}
+
+    schema, table = _parse_table_name(table_name)
+    from_clause = f'"{schema}"."{table}"' if schema else f'"{table}"'
+    keys_sql = ", ".join([f'"{c}"' for c in key_columns])
+    rows = await conn.fetch(
+        f'SELECT {keys_sql}, MAX("{date_column}") AS max_date '
+        f'FROM {from_clause} GROUP BY {keys_sql}'
+    )
+
+    if len(key_columns) == 1:
+        k = key_columns[0]
+        return {r[k]: r["max_date"] for r in rows if r["max_date"] is not None}
+    return {
+        tuple(r[c] for c in key_columns): r["max_date"]
+        for r in rows if r["max_date"] is not None
+    }
 
 
 async def bulk_upsert_async(
@@ -205,6 +251,95 @@ async def copy_insert_async(conn, table_name: str, rows: list, columns: list | N
             columns=columns,
         )
     return len(rows)
+
+
+async def csv_copy_from_frame_async(
+    conn, table_name: str, df, columns: list | None = None,
+) -> int:
+    """Bulk-insert a DataFrame via PostgreSQL COPY ... FORMAT csv.
+
+    DataFrame-flavored alternative to :func:`copy_insert_async`. The
+    client renders the frame to CSV text with whole-column numpy/pandas
+    C code instead of encoding one binary value at a time in Python
+    (``copy_records_to_table`` costs ~6s of per-value Python encoding per
+    100k x 81-col chunk; the same rows stream to the server in ~0.5s as
+    CSV — the server was never the bottleneck, the client was).
+
+    Deterministic, cudf.pandas-safe rendering:
+      - date columns are pre-rendered to ISO "YYYY-MM-DD" strings with
+        ``np.datetime_as_string`` (host numpy) so neither pandas nor cudf
+        datetime formatting can reach to_csv and diverge on the wire
+        format; NaT renders as an empty field;
+      - other columns keep their native dtype; NaN/None render as empty
+        fields, which PostgreSQL COPY csv reads as NULL;
+      - the frame passed to to_csv is rebuilt from host numpy arrays, so
+        host pandas does the encoding regardless of whether the input
+        frame was GPU-backed.
+
+    SAFE ONLY when the target is guaranteed conflict-free (truncated
+    table / PK-filtered missing dates) — same contract as
+    ``copy_insert_async``. For upsert scenarios use ``bulk_upsert_async``.
+
+    Args:
+        conn: asyncpg connection.
+        table_name: target table (schema-qualified, e.g.
+            "analysis.mov_ave_spreads_detail_ohlc").
+        df: DataFrame whose columns (after optional reordering via
+            ``columns``) match the target table.
+        columns: optional explicit column order; defaults to df.columns.
+
+    Returns:
+        Number of rows inserted (``len(df)``).
+    """
+    if df is None or len(df) == 0:
+        return 0
+
+    schema, table = _parse_table_name(table_name)
+
+    import io
+
+    import numpy as np
+    import pandas as pd
+
+    from _common.df_utils import host_array, safe_columns
+
+    # Under cudf.pandas the `pandas` module is a proxy: every ctor call
+    # first attempts cuDF (NotImplementedError on copy=False → fallback)
+    # and every to_csv first uploads the whole frame to VRAM before
+    # failing back to pandas. This function is pure host-CPU CSV
+    # rendering, so unwrap the REAL pandas module once and build the
+    # frame + to_csv entirely outside the proxy dispatcher (zero
+    # fallbacks, zero GPU transfers).
+    real_pd = getattr(pd, "_fsproxy_slow", pd)
+
+    cols = list(columns) if columns is not None else safe_columns(df)
+    if not cols:
+        return 0
+
+    data = {}
+    for c in cols:
+        arr = host_array(df[c].to_numpy())
+        if arr.dtype.kind == "M":  # datetime64 — ISO date text, NaT -> NULL
+            s = np.datetime_as_string(arr, unit="D").astype(object)
+            s[np.isnat(arr)] = None
+            data[c] = s
+        else:
+            data[c] = arr
+    clean = real_pd.DataFrame(data, columns=cols)
+
+    buf = io.BytesIO()
+    clean.to_csv(buf, index=False, header=False, na_rep="")
+    buf.seek(0)
+
+    async with conn.transaction():
+        await conn.copy_to_table(
+            table,
+            schema_name=schema if schema else None,
+            columns=cols,
+            source=buf,
+            format="csv",
+        )
+    return len(df)
 
 
 async def ensure_table_exists_async(conn, table_name: str, create_sql: str) -> None:

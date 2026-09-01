@@ -19,7 +19,8 @@ for m in \
   downloads.options.szse.trend \
   downloads.options.cffex.trend \
   downloads.macro.pboc.lpr_news \
-  downloads.macro.zhihu.news
+  downloads.macro.zhihu.news \
+  downloads.macro.gov.news
 do
   python -m "$m"
 done
@@ -27,14 +28,20 @@ done
 # download, run on every biz date 19:00 (cont.)
 for m in \
   downloads.index.csindex.quote
-do
+do 
   python -m "$m"
 done
 
 # build combined CSVs
 # builds.stock includes tech_stats (MA/EMA) as an internal final step.
-# builds.index includes composition (CSI+SZSE) → baseline (CSIndex daily) as
-# sequential phases — composition must run before baseline.
+# builds.index runs three sequential phases — composition (CSI+SZSE) →
+# baseline (CSIndex daily) → exts (stats.index_exts + ETF/exchange trading
+# amt + sec similars). Composition must run before baseline; exts must run
+# after baseline (exchange_trading_amt is driven by index_basic_stats).
+# builds.index's exts phase (stats.index_exts.total_etf_trading_amount)
+# feeds sec_alloc_perf_attribution.code_etf_trading_amount, which
+# analyze.industry_sentiments' etf_contribution step aggregates into
+# analysis.industry_etf_contribution (Industry Sentiments ETF chart).
 # builds.industry (stats.industry_basic_stats) must run AFTER builds.index —
 # it aggregates index baseline OHLC across member indices per industry.
 for m in \
@@ -58,7 +65,11 @@ done
 # attributions + etf_contribution aggregations read from). mov_ave_rsi is
 # now an internal step of mov_ave_spread (runs automatically after the
 # detail + peaks_and_floors tables are repopulated, reusing the same DB
-# connection and source price DataFrame).
+# connection and source price DataFrame). analysis_forecasts reads
+# analysis.mov_ave_rsi + analysis.mov_ave_spreads_detail (mov_ave_spread
+# above) + stats.*_tech_stats, so it must run after mov_ave_spread; it is
+# incremental at completed-month granularity (no-ops until a new month
+# closes).
 for m in \
   analyze.industry_sentiments \
   analyze.mov_ave_spread \
@@ -74,7 +85,13 @@ fi
 # optional to run on daily
 if [ "${FORCE_DOWNLOADS:-0}" = "1" ] || { [ "$_is_biz_date" = "1" ] && [ "$_cur_hm" -ge 1900 ]; }; then
 for m in \
-  analyze.fourier_freqs
+  analyze.recurring_cycles
+do
+  python -m "$m"
+done
+
+for m in \
+  analyze.analysis_forecasts
 do
   python -m "$m"
 done
@@ -100,7 +117,6 @@ python -m downloads.etf.szse.archive
 python -m downloads.index.szse.archive
 python -m downloads.stock.sse.archive
 python -m downloads.index.cnindex.archive
-python -m downloads.macro.gov.news
 python -m downloads.futures.cffex.archive
 
 # build, run once

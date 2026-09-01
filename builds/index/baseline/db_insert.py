@@ -5,7 +5,8 @@ pairs by build_daily) into the four daily index_* tables:
 
   • stats.index_identity    (date, code, name)
   • stats.index_basic_stats (date, code, OHLCV, trading_shares, trading_amount,
-                             change, change_pct, is_close_estimated)
+                             change, change_pct, is_close_estimated,
+                             is_ohl_estimated)
   • stats.index_valuation   (date, code, pe, cons_number)
   • stats.index_tech_stats  (date, code, MAs)
 
@@ -68,6 +69,10 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
         _src["is_close_estimated"] = _src["is_close_estimated"].fillna(False).astype(bool)
     else:
         _src["is_close_estimated"] = False
+    if "is_ohl_estimated" in src_cols:
+        _src["is_ohl_estimated"] = _src["is_ohl_estimated"].fillna(False).astype(bool)
+    else:
+        _src["is_ohl_estimated"] = False
     # --- valuation_rows ---
     _val_cols = ["pe", "cons_number"]
     for _c in _val_cols:
@@ -76,7 +81,8 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
 
     identity_rows = _emit(["name"])
     basic_stats_rows = _emit(
-        [c for c in _basic_cols if c in src_cols] + ["is_close_estimated"])
+        [c for c in _basic_cols if c in src_cols]
+        + ["is_close_estimated", "is_ohl_estimated"])
     valuation_rows = _emit([_c for _c in _val_cols if _c in src_cols])
     tech_stats_rows = _emit(["ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
                              "ema6", "ema10", "ema20", "ema60", "ema120", "ema255"])

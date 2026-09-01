@@ -89,24 +89,16 @@ def compute_ref_rows(
     # Convert boolean column
     df["is_industry_not_strategy"] = df["is_industry_not_strategy"].astype(bool)
 
-    # Convert prev_trading_amount: NaN → None, else float
+    # Convert nullable numeric columns to real None. MUST cast to object
+    # dtype first: on float dtype, assigning None stores NaN, which asyncpg
+    # writes as numeric-NaN (NOT NULL) — poisoning IS NULL checks and
+    # SUM(weight*pct) weighted aggregates at query time.
     amt_col = "prev_trading_amount"
-    df[amt_col] = pd.to_numeric(df[amt_col], errors="coerce")
-    df[amt_col] = df[amt_col].where(df[amt_col].notna(), None)
-    # Keep non-None values as float (to_numeric already produced float)
-
-    # Convert code_trading_amount_weight: None/NaN → None, float values as-is
     w_col = "code_trading_amount_weight"
-    df[w_col] = pd.to_numeric(df[w_col], errors="coerce")
-    # Replace all NaN (incl. those from pd.to_numeric(None)) with None
-    df.loc[df[w_col].isna(), w_col] = None
-
-    # Convert code_sec_shared_weight: None/NaN → None, float values as-is
-    # COALESCE'd to 0 in SQL so missing SAP rows get 0 (not NULL)
     sw_col = "code_sec_shared_weight"
-    df[sw_col] = pd.to_numeric(df[sw_col], errors="coerce")
-    # Replace all NaN with None
-    df.loc[df[sw_col].isna(), sw_col] = None
+    for col in (amt_col, w_col, sw_col):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        df[col] = df[col].astype(object).where(df[col].notna(), None)
 
     # Select and rename columns to match _REF_ROW_COLUMNS order
     _col_map = {

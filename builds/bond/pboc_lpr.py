@@ -43,15 +43,15 @@ def build_lpr_df(start_date=None, end_date=None, verbose=True):
 
     keep = ["date", "lpr_1y", "lpr_5y"]
     df = df[keep].copy()
-    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
-    # Drop duplicates on date (keep last — should never happen with proper downloads)
-    df = df.drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
+    # (NaN dates already dropped above) one sort → dedup; the trailing
+    # start/end masks below yield fresh frames — no reindex needed
+    df = df.sort_values("date", kind="stable") \
+           .drop_duplicates(subset=["date"], keep="last")
 
     if start_date:
         df = df[df["date"] >= pd.Timestamp(start_date)]
     if end_date:
         df = df[df["date"] <= pd.Timestamp(end_date)]
-    df = df.reset_index(drop=True)
 
     if verbose:
         if len(df):

@@ -65,6 +65,11 @@ export function CorrelationChart({
   const [refreshing, setRefreshing] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  // Last (selection, pool) key the auto-recompute ran for — guards the
+  // auto-trigger below so a pair that legitimately has no rows after a
+  // recompute doesn't loop (the key only changes when the user changes the
+  // selection or pool, which allows one fresh attempt).
+  const autoRunKeyRef = useRef<string | null>(null);
   const industryIdsRef = useRef(industryIds);
   const codesRef = useRef(codes);
   industryIdsRef.current = industryIds;
@@ -146,6 +151,18 @@ export function CorrelationChart({
         if (cancelled) return;
         setData(resp);
         setLoading(false);
+        // Auto-trigger the on-demand recompute when the selected pair has no
+        // materialized rows yet — same flow as the manual refresh button
+        // (filtered corr recompute + upsert, then invalidate + refetch via
+        // refreshTick). Once per (selection, pool) key: if the recompute
+        // legitimately yields no rows, the guard prevents a loop.
+        if (resp.correlations.length === 0) {
+          const key = `${idsKey}|${poolSize}`;
+          if (autoRunKeyRef.current !== key) {
+            autoRunKeyRef.current = key;
+            void handleRefresh();
+          }
+        }
       })
       .catch((e: Error) => {
         if (cancelled) return;
@@ -337,6 +354,10 @@ export function CorrelationChart({
   const numPairs = data
     ? new Set(data.correlations.map((r) => `${r.industry_id}|${r.benchmark_industry_id}`)).size
     : 0;
+  // Fewer than 2 effective industries (industries + strategy themes +
+  // L3-derived) — no pairs exist to correlate; show a hint instead of
+  // fetching (the API would reject the request).
+  const insufficient = industryIds.length < 2;
 
   return (
     <Box>
@@ -345,63 +366,76 @@ export function CorrelationChart({
           Pairwise Correlation of Industry Mean Sentiments
           {data ? ` — ${numPairs} pair${numPairs === 1 ? "" : "s"} · ${data.correlations.length.toLocaleString()} rows · pool=${poolSize} · stride=${data.correlations[0]?.interval ?? 20}d` : ""}
         </Typography>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <ToggleButtonGroup
-            value={window}
-            exclusive
-            size="small"
-            onChange={(_, v: CorrWindow | null) => v && setWindow(v)}
-          >
-            {CORR_WINDOWS.map((w) => (
-              <ToggleButton key={w} value={w}>{w}</ToggleButton>
-            ))}
-          </ToggleButtonGroup>
-          <Tooltip
-            title={
-              refreshing
-                ? "Recomputing correlations for the chosen industries…"
-                : "Recompute + upsert correlations for the chosen industries / indices"
-            }
-          >
-            {/* span wrapper: Tooltip needs a DOM child when the button is disabled */}
-            <span>
-              <IconButton
-                size="small"
-                onClick={() => { void handleRefresh(); }}
-                disabled={refreshing}
-                aria-label="Recompute correlations for chosen data"
-              >
-                {refreshing
-                  ? <CircularProgress size={18} />
-                  : <RefreshIcon fontSize="small" />}
-              </IconButton>
-            </span>
-          </Tooltip>
-        </Box>
+        {!insufficient && (
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <ToggleButtonGroup
+              value={window}
+              exclusive
+              size="small"
+              onChange={(_, v: CorrWindow | null) => v && setWindow(v)}
+            >
+              {CORR_WINDOWS.map((w) => (
+                <ToggleButton key={w} value={w}>{w}</ToggleButton>
+              ))}
+            </ToggleButtonGroup>
+            <Tooltip
+              title={
+                refreshing
+                  ? "Recomputing correlations for the chosen industries…"
+                  : "Recompute + upsert correlations for the chosen industries / indices"
+              }
+            >
+              {/* span wrapper: Tooltip needs a DOM child when the button is disabled */}
+              <span>
+                <IconButton
+                  size="small"
+                  onClick={() => { void handleRefresh(); }}
+                  disabled={refreshing}
+                  aria-label="Recompute correlations for chosen data"
+                >
+                  {refreshing
+                    ? <CircularProgress size={18} />
+                    : <RefreshIcon fontSize="small" />}
+                </IconButton>
+              </span>
+            </Tooltip>
+          </Box>
+        )}
       </Box>
-      {refreshError && (
-        <Alert severity="error" sx={{ py: 0.5 }}>{refreshError}</Alert>
-      )}
-      {loading && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-          <CircularProgress size={24} />
-        </Box>
-      )}
-      {error && (
-        <Alert severity="error" sx={{ py: 0.5 }}>Failed to load correlations: {error}</Alert>
-      )}
-      {!loading && !error && option && (
-        <EChart option={option} height={360} />
-      )}
-      {!loading && !error && !option && (
+      {insufficient ? (
         <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
           <Typography variant="body2" color="text.secondary">
-            No correlation data available for the selected industries. Click the{" "}
-            <RefreshIcon sx={{ fontSize: 13, verticalAlign: "-2px" }} /> button to
-            recompute them, or run{" "}
-            <code>python -m analyze.industry_sentiments.corr</code>.
+            Select 2+ industries (or tick index chips from 2+ industries) to see
+            the windowed pairwise correlation of their mean-sentiment curves.
           </Typography>
         </Box>
+      ) : (
+        <>
+          {refreshError && (
+            <Alert severity="error" sx={{ py: 0.5 }}>{refreshError}</Alert>
+          )}
+          {loading && (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
+              <CircularProgress size={24} />
+            </Box>
+          )}
+          {error && (
+            <Alert severity="error" sx={{ py: 0.5 }}>Failed to load correlations: {error}</Alert>
+          )}
+          {!loading && !error && option && (
+            <EChart option={option} height={360} />
+          )}
+          {!loading && !error && !option && (
+            <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
+              <Typography variant="body2" color="text.secondary">
+                No correlation data available for the selected industries. Click the{" "}
+                <RefreshIcon sx={{ fontSize: 13, verticalAlign: "-2px" }} /> button to
+                recompute them, or run{" "}
+                <code>python -m analyze.industry_sentiments.corr</code>.
+              </Typography>
+            </Box>
+          )}
+        </>
       )}
     </Box>
   );

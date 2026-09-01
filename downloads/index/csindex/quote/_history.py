@@ -62,10 +62,14 @@ def _normalize_export_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def clean_date(val: Any) -> str:
-    """Normalize a date value to YYYYMMDD string.
+    """Normalize a date value to YYYYMMDD string (INTERNAL join key only).
 
     Handles: "20240101", "20240101.0" (from numeric conversion),
     "2024-01-01" (hyphenated), Excel date serials (45292).
+
+    NOTE: CSV OUTPUT must be ISO "YYYY-MM-DD" (canonical downloads contract
+    — builds parse with a single to_datetime(format="%Y-%m-%d") fast path).
+    Use _to_iso_date_str on the date column right before writing any CSV.
     """
     s = str(val).strip()
     if not s or s == "nan":
@@ -84,6 +88,17 @@ def clean_date(val: Any) -> str:
                 return dt.strftime("%Y%m%d")
         except ValueError:
             pass
+    return s
+
+
+def _to_iso_date_str(s: str) -> str:
+    """Compact YYYYMMDD (from clean_date) → ISO YYYY-MM-DD for CSV output.
+
+    Idempotent on already-ISO values; empty strings stay empty.
+    """
+    s = str(s).strip()
+    if len(s) == 8 and s.isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:]}"
     return s
 
 
@@ -165,6 +180,11 @@ def build_history_csv(
     ]
     final_cols = [c for c in preferred_cols if c in df.columns]
     df = df[final_cols]
+
+    # Canonical CSV contract: date column is ISO YYYY-MM-DD in the output
+    # (compact keys were only for the PE join above)
+    if "date" in df.columns:
+        df["date"] = df["date"].map(_to_iso_date_str)
 
     out_file = out_dir / f"{index_code}_history.csv"
     df.to_csv(out_file, index=False, encoding="utf-8-sig")
@@ -261,6 +281,10 @@ def append_missing_dates_to_csv(
     sort_key = df_combined[comb_date_col].apply(clean_date)
     df_combined = df_combined.assign(_sort_key=sort_key)
     df_combined = df_combined.sort_values("_sort_key").drop(columns=["_sort_key"]).reset_index(drop=True)
+
+    # Canonical CSV contract: ISO date in the output (normalize BOTH the
+    # appended rows and any legacy compact rows already in the csv)
+    df_combined[comb_date_col] = df_combined[comb_date_col].map(_to_iso_date_str)
 
     df_combined.to_csv(csv_path, index=False, encoding="utf-8-sig")
     return n_missing

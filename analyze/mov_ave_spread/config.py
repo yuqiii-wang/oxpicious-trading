@@ -339,122 +339,112 @@ OHLC_ANALYSIS_NAME = "mov_ave_spread_ohlc"
 
 # OHLC windows (trading days). Each window W produces 5 columns:
 #   open_Wd      — open price on the W-th trading day before `date`
-#   high_Wd      — top-high anchor: the highest CLOSE among window dates
-#                  MORE THAN 20% of W trading days before `date`; the
-#                  stored value is that anchor date's CLOSE
-#   low_Wd       — lowest-low anchor: the lowest CLOSE among window dates
-#                  MORE THAN 20% of W trading days before `date`; the
-#                  stored value is that anchor date's CLOSE
-#   high_2nd_Wd  — second-high anchor: the best local-max CLOSE peak in
-#                  the same restricted region lying MORE THAN 20% of W
-#                  trading days AFTER the top anchor (the 2nd date is
-#                  always later than the top date — roof line runs
-#                  forward in time); the stored value is that anchor
-#                  date's INTRADAY HIGH
-#   low_2nd_Wd   — second-low anchor: the best local-min CLOSE trough in
-#                  the same restricted region lying MORE THAN 20% of W
-#                  trading days AFTER the bottom anchor (the 2nd date is
-#                  always later than the top date — floor line runs
-#                  forward in time); the stored value is that anchor
-#                  date's INTRADAY LOW
-# Anchor dates are selected on CLOSE; when the unconstrained extreme lies
-# within 20% of the window from `date`, the next-best qualifying date is
-# used ("search other dates"). NULL when no qualifying date exists.
+#   high_Wd      — top-high anchor: the MAXIMUM valid CLOSE in the 1st
+#                  HALF of the window; the stored value is that anchor
+#                  date's CLOSE
+#   low_Wd       — top-low anchor: the MINIMUM valid CLOSE in the 1st
+#                  half; the stored value is that anchor date's CLOSE
+#   high_2nd_Wd  — second-high anchor: the MAXIMUM valid CLOSE in the
+#                  2nd HALF of the window; the stored value is that
+#                  anchor date's INTRADAY HIGH
+#   low_2nd_Wd   — second-low anchor: the MINIMUM valid CLOSE in the
+#                  2nd half; the stored value is that anchor date's
+#                  INTRADAY LOW
+# HALF-SPLIT ANCHORS: the window [date-W+1, date] is cut in half —
+# h = L // 2 with L the window length in trading-day positions (for odd
+# L the 2nd half gets the extra day); the 1st extreme is the max/min
+# valid CLOSE of the 1st half and the 2nd extreme the max/min valid
+# CLOSE of the 2nd half. Ties go to the earliest date; NaN closes are
+# skipped. The halves are disjoint and ordered, so the 2nd anchor date
+# is ALWAYS strictly after the 1st anchor date wherever both exist.
+# The columns are NULL when the window has fewer than 2 positions or
+# the half holds no valid close.
 OHLC_WINDOWS = (20, 60, 120, 255, 500, 750, 1275)
 
-# Cooldown fraction used for BOTH separations: (a) anchor-vs-today —
-# anchor dates must be MORE THAN OHLC_COOLDOWN_PCT × W trading days
-# before the row `date`; (b) 2nd-vs-top — the 2nd anchor must lie
-# strictly AFTER the top anchor, MORE THAN OHLC_COOLDOWN_PCT × W trading
-# days later (so the roof/floor line always runs forward in time).
-# e.g., for a 20d window, anchors sit > 4 trading days from today and
-# the 2nd anchor > 4 trading days after the top anchor.
-OHLC_COOLDOWN_PCT = 0.20
-
-# All output column names in the order they appear in the table.
-# Per window W: open_Wd, high_Wd, high_date_Wd, low_Wd, low_date_Wd,
-#                 high_2nd_Wd, high_2nd_date_Wd, low_2nd_Wd, low_2nd_date_Wd,
-#                 high_line_slope_Wd, low_line_slope_Wd
-# DATE columns are the (high/low/2nd-peak/2nd-trough) date within the
-# rolling window — when the max/min/2nd-extreme occurred.
+# DB schema (LONG format): one row per (sec_type, code, date, period) —
+# the per-period columns in table order (after the PK columns sec_type,
+# code, date). period ∈ OHLC_WINDOWS. The internal compute pipeline keeps
+# the WIDE per-window layout (OHLC_WIDE_COLUMNS below, one column set per
+# window on a (sec_type, code, date) frame) and melts to this long schema
+# only at the DB-write boundary (ohlc.build_ohlc_long_frame).
 OHLC_COLUMNS = (
     "today_close",
-    # Window 20
-    "open_20d",   "high_20d",   "high_date_20d",
-    "low_20d",    "low_date_20d",
-    "high_2nd_20d", "high_2nd_date_20d",
-    "low_2nd_20d",  "low_2nd_date_20d",
-    "high_line_slope_20d", "low_line_slope_20d",
-    # Window 60
-    "open_60d",   "high_60d",   "high_date_60d",
-    "low_60d",    "low_date_60d",
-    "high_2nd_60d", "high_2nd_date_60d",
-    "low_2nd_60d",  "low_2nd_date_60d",
-    "high_line_slope_60d", "low_line_slope_60d",
-    # Window 120
-    "open_120d",  "high_120d",  "high_date_120d",
-    "low_120d",   "low_date_120d",
-    "high_2nd_120d", "high_2nd_date_120d",
-    "low_2nd_120d",  "low_2nd_date_120d",
-    "high_line_slope_120d", "low_line_slope_120d",
-    # Window 255
-    "open_255d",  "high_255d",  "high_date_255d",
-    "low_255d",   "low_date_255d",
-    "high_2nd_255d", "high_2nd_date_255d",
-    "low_2nd_255d",  "low_2nd_date_255d",
-    "high_line_slope_255d", "low_line_slope_255d",
-    # Window 500
-    "open_500d",  "high_500d",  "high_date_500d",
-    "low_500d",   "low_date_500d",
-    "high_2nd_500d", "high_2nd_date_500d",
-    "low_2nd_500d",  "low_2nd_date_500d",
-    "high_line_slope_500d", "low_line_slope_500d",
-    # Window 750
-    "open_750d",  "high_750d",  "high_date_750d",
-    "low_750d",   "low_date_750d",
-    "high_2nd_750d", "high_2nd_date_750d",
-    "low_2nd_750d",  "low_2nd_date_750d",
-    "high_line_slope_750d", "low_line_slope_750d",
-    # Window 1275
-    "open_1275d", "high_1275d", "high_date_1275d",
-    "low_1275d",  "low_date_1275d",
-    "high_2nd_1275d", "high_2nd_date_1275d",
-    "low_2nd_1275d",  "low_2nd_date_1275d",
-    "high_line_slope_1275d", "low_line_slope_1275d",
+    "open_over_period",
+    "high_over_period",
+    "high_date_over_period",
+    "low_over_period",
+    "low_date_over_period",
+    "high_2nd_over_period",
+    "high_2nd_date_over_period",
+    "low_2nd_over_period",
+    "low_2nd_date_over_period",
+    "high_line_slope_over_period",
+    "low_line_slope_over_period",
 )
 
-# Subset of OHLC_COLUMNS that are DATE type (not numeric). Used by
-# sanitize_ohlc_rows to skip the overflow-guard and DATE columns from
-# numeric conversion. Also used for ALTER TABLE migration generation.
+
+# Internal WIDE per-window compute column names (pre-melt) for window W:
+#   open_Wd, high_Wd, high_date_Wd, low_Wd, low_date_Wd,
+#   high_2nd_Wd, high_2nd_date_Wd, low_2nd_Wd, low_2nd_date_Wd,
+#   high_line_slope_Wd, low_line_slope_Wd
+def ohlc_wide_columns(w: int) -> tuple:
+    return (
+        f"open_{w}d", f"high_{w}d", f"high_date_{w}d",
+        f"low_{w}d", f"low_date_{w}d",
+        f"high_2nd_{w}d", f"high_2nd_date_{w}d",
+        f"low_2nd_{w}d", f"low_2nd_date_{w}d",
+        f"high_line_slope_{w}d", f"low_line_slope_{w}d",
+    )
+
+
+OHLC_WIDE_COLUMNS = tuple(
+    c for w in OHLC_WINDOWS for c in ohlc_wide_columns(w)
+)
+
+# DATE-type subsets. Used by the melt / sanitize logic to skip numeric
+# conversion for the anchor-date columns.
 OHLC_DATE_COLUMNS = tuple(
-    c for c in OHLC_COLUMNS
-    if "_date_" in c or c.endswith("_date")
+    c for c in OHLC_COLUMNS if "_date_" in c
+)
+OHLC_WIDE_DATE_COLUMNS = tuple(
+    c for c in OHLC_WIDE_COLUMNS if "_date_" in c
 )
 
-# Subset of OHLC_COLUMNS that are numeric (NUMERIC(18,6)).
+# Numeric (NUMERIC(18,6)) columns of the wide internal layout.
+OHLC_WIDE_NUMERIC_COLUMNS = tuple(
+    c for c in OHLC_WIDE_COLUMNS
+    if c not in OHLC_WIDE_DATE_COLUMNS
+)
+
+# Numeric (NUMERIC(18,6)) columns of the long schema.
 OHLC_NUMERIC_COLUMNS = tuple(
     c for c in OHLC_COLUMNS
     if c not in OHLC_DATE_COLUMNS
 )
 
 OHLC_DESCRIPTION = (
-    "OHLC detail analysis (ETF + Index + Stock). For each security and "
-    "business date (the clicked date / today), stores today_close plus "
-    "rolling window anchors over 7 windows (20/60/120/255/500/750/1275 "
-    "trading days): open_Wd is the open price on the W-th trading day "
-    "before date; high_Wd / low_Wd are the top-high / lowest-low anchors "
-    "— the highest / lowest CLOSE among window dates MORE THAN 20% of "
-    "the window before date (value = that date's close; when the "
-    "unconstrained extreme is closer to date, the next-best qualifying "
-    "date is used); high_2nd_Wd / low_2nd_Wd are the second anchors — "
-    "the best local-max/min CLOSE peaks in the same restricted region, "
-    "separated by more than 20% of the window from the top anchors "
-    "(value = that date's INTRADAY high/low). The 28 DATE columns "
-    "(high_date_Wd, low_date_Wd, high_2nd_date_Wd, low_2nd_date_Wd per "
-    "window) record the anchor dates. Source: same DataFrame as the "
-    "mov_ave_spread parent pipeline (no second DB round-trip). The "
-    "sec_type column discriminates the source universe ('etf' | 'index' "
-    "| 'stock')."
+    "OHLC detail analysis (ETF + Index + Stock), LONG format: one row "
+    "per (security, business date, period) with period ∈ {20, 60, 120, "
+    "255, 500, 750, 1275} trading days. Stores today_close plus the "
+    "rolling-window anchors for that period. The window "
+    "[date-period+1, date] is cut in HALF (h = L // 2 in trading-day "
+    "positions; for odd L the 2nd half gets the extra day). "
+    "high_over_period / low_over_period are the top anchors: the "
+    "MAXIMUM / MINIMUM valid CLOSE of the 1st half (ties -> earliest "
+    "date; value = that date's close). "
+    "high_2nd_over_period / low_2nd_over_period are the second anchors: "
+    "the MAXIMUM / MINIMUM valid CLOSE of the 2nd half (value = that "
+    "date's INTRADAY high/low). The halves are disjoint and ordered, so "
+    "the 2nd anchor date is ALWAYS strictly after the 1st anchor date "
+    "wherever both exist. NaN closes are skipped; a half with no valid "
+    "close NULLs its anchor, and windows with fewer than 2 positions "
+    "have no anchors. The "
+    "columns (high_date_over_period, "
+    "low_date_over_period, high_2nd_date_over_period, "
+    "low_2nd_date_over_period) record the anchor dates. Source: same "
+    "DataFrame as the mov_ave_spread parent pipeline (no second DB "
+    "round-trip). The sec_type column discriminates the source universe "
+    "('etf' | 'index' | 'stock')."
 )
 
 

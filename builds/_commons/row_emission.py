@@ -17,22 +17,37 @@ builds emit DB rows without cudf.pandas fallbacks:
 """
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import pandas as pd
+
+
+# Hoisted proxy-attribute constants — NEVER access pd.NA / pd.NaT inside a
+# per-element loop: under cudf.pandas `pd` is a proxy module, so every
+# attribute lookup goes through getattr_real_or_wrapped (module_accelerator),
+# which internally constructs/hashes pathlib.Path objects. 13M elements × 2
+# lookups ≈ 310s of pure proxy overhead (py-spy, 2026-08-28 ETF run).
+_NA = pd.NA
+_NAT = pd.NaT
+
+
+def _sweep_float(a: np.ndarray) -> np.ndarray:
+    """Vectorized NaN→None for float columns (no per-element Python loop)."""
+    out = a.astype(object)
+    out[np.isnan(a)] = None
+    return out
 
 
 def nan_to_none(vals: list) -> list:
     """Post-emission NA sweep over a Python list: NaN/pd.NA/pd.NaT → None."""
     out = []
+    append = out.append
     for v in vals:
-        if v is None or v is pd.NA or v is pd.NaT:
-            out.append(None)
+        if v is None or v is _NA or v is _NAT:
+            append(None)
         elif isinstance(v, float):
-            out.append(None if math.isnan(v) else v)
+            append(None if v != v else v)
         else:
-            out.append(v)
+            append(v)
     return out
 
 
@@ -45,7 +60,13 @@ def records_from_frame(df: pd.DataFrame, cols: list[str]) -> list[dict]:
     """
     if not cols:
         return []
-    col_lists = [nan_to_none(np.asarray(df[c]).tolist()) for c in cols]
+    col_lists: list[list] = []
+    for c in cols:
+        a = np.asarray(df[c])
+        if a.dtype.kind == "f":  # float32/float64 — vectorized sweep
+            col_lists.append(_sweep_float(a).tolist())
+        else:  # object/bool/int/nullable-dtypes — loop with hoisted constants
+            col_lists.append(nan_to_none(a.tolist()))
     return [dict(zip(cols, vals)) for vals in zip(*col_lists)]
 
 

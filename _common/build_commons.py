@@ -53,6 +53,7 @@ from _common.db_commons import (
     get_db_connection_async,
     get_db_pool_async,
     get_existing_keys_async,
+    get_latest_dates_async,
     get_max_table_date_async,
     bulk_upsert_async,
     copy_insert_async,
@@ -276,16 +277,77 @@ def iso_to_ymd(iso_date: str) -> str:
 # Common argparse — duplicated in 5/8 build scripts
 # ============================================================================
 def add_common_build_args(parser: argparse.ArgumentParser) -> None:
-    """Add the --start-date / --end-date / --force flags used by every
-    date-driven build script.
+    """Add the --start-date / --end-date / --force / --date flags used by
+    every date-driven build script.
 
     Call after creating the parser; scripts may add their own additional
-    arguments before or after.
+    arguments before or after. ``--date`` forces a single-date build —
+    see :func:`add_date_arg` for the exact semantics; the consuming
+    pipeline must plumb the parsed value through its missing-date logic.
     """
     parser.add_argument("--start-date", default=None, help="YYYY-MM-DD inclusive")
     parser.add_argument("--end-date",   default=None, help="YYYY-MM-DD inclusive")
     parser.add_argument("--force", action="store_true",
                         help="Rebuild all data (truncate target tables first)")
+    add_date_arg(parser)
+
+
+def add_date_arg(parser: argparse.ArgumentParser) -> None:
+    """Add the ``--date`` flag: force (re)build ONLY this date's data.
+
+    Default runs process the latest missing dates only. With ``--date
+    YYYY-MM-DD`` the run is restricted to that single date AND the DB
+    missing-date skip is bypassed — the date is rebuilt even if already
+    present (existing rows are refreshed through the normal upsert write
+    paths; no truncation, no deletes). Mutually exclusive with ``--force``.
+    """
+    parser.add_argument(
+        "--date", default=None, metavar="YYYY-MM-DD",
+        help="Force (re)build ONLY this date (even if already in the DB); "
+             "single-date scope. Mutually exclusive with --force.",
+    )
+
+
+def parse_date_arg(value: Optional[str]) -> Optional[datetime.date]:
+    """Validate a --date value ('YYYY-MM-DD') → datetime.date, or None.
+
+    SystemExit(2) with a clear message on malformed input (argparse-style
+    usage error, distinct from the runtime exit(1) of forced_date_scope).
+    """
+    if value is None:
+        return None
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        print(f"[ARG-ERROR] --date expects YYYY-MM-DD, got {value!r}",
+              file=sys.stderr, flush=True)
+        raise SystemExit(2)
+
+
+def enforce_date_force_exclusion(args) -> None:
+    """--date and --force are mutually exclusive (SystemExit 2)."""
+    if getattr(args, "date", None) and getattr(args, "force", False):
+        print("[ARG-ERROR] --date and --force are mutually exclusive "
+              "(--date already scopes and forces a single date)",
+              file=sys.stderr, flush=True)
+        raise SystemExit(2)
+
+
+def forced_date_scope(
+    available_dates: Set[datetime.date],
+    forced: datetime.date,
+    source_label: str = "source files",
+) -> Set[datetime.date]:
+    """Target-date set for --date mode: {forced} when it has source data.
+
+    SystemExit(1) with a clear message when the forced date has no data
+    in the discovered sources (nothing to load or build).
+    """
+    if forced in available_dates:
+        return {forced}
+    print(f"[FATAL] --date {forced}: no data for this date in {source_label}",
+          file=sys.stderr, flush=True)
+    raise SystemExit(1)
 
 
 # ============================================================================

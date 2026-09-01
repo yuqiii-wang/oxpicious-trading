@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 from _common.build_commons import rec_cols
-from _common.df_utils import should_use_gpu
+from _common.df_utils import epoch_col_to_dt64, should_use_gpu
 
 # Valid (suffixed) canonical code forms: constituent stocks (A-share +
 # cross-border holdings) and composition-source ETFs (SSE/SZSE listings)
@@ -58,7 +58,7 @@ async def fetch_stock_pe(conn, stock_codes=None, dates=None):
 
     where = " AND ".join(conditions)
     rows = await conn.fetch(f"""
-        SELECT date, code, pe
+        SELECT extract(epoch from date)::float8 AS date, code, pe::float8 AS pe
         FROM stats.stock_basic_stats
         WHERE {where}
         ORDER BY code, date ASC
@@ -69,11 +69,14 @@ async def fetch_stock_pe(conn, stock_codes=None, dates=None):
 
     # Whole-column extraction (rec_cols: one positional-unpack pass);
     # codes returned as stored (suffixed) — no string surgery here.
-    # Dates stay datetime64 — object date columns poison every downstream
-    # GPU op (each access falls back to CPU with a MixedTypeError).
+    # The date column arrives as NATIVE float8 (extract(epoch) in SQL)
+    # and is materialized as datetime64[us] via epoch_col_to_dt64 —
+    # object date columns poison every downstream GPU op (each access
+    # falls back to CPU with a MixedTypeError). pe::float8 in SQL →
+    # float64 directly (NUMERIC would surface as Python Decimals whose
+    # conversion falls back per column).
     df = pd.DataFrame(rec_cols(rows))
-    df["date"] = pd.to_datetime(df["date"]).astype("datetime64[us]")
-    df["pe"] = pd.to_numeric(df["pe"], errors="coerce")
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     df = df.dropna(subset=["pe"])
     df = df[df["pe"] > 0]
     return df
@@ -202,7 +205,8 @@ def extract_latest_composition(comp_long: pd.DataFrame) -> pd.DataFrame:
     if comp_eq.empty:
         return pd.DataFrame(columns=["etf_code", "stock_code", "weight_fraction"])
 
-    comp_eq["_shares"] = pd.to_numeric(comp_eq["shares"], errors="coerce").fillna(0.0)
+    # shares read as float64 by the composition dtype map (one-pass)
+    comp_eq["_shares"] = comp_eq["shares"].astype(float).fillna(0.0)
     comp_eq["_w"] = comp_eq["_shares"].abs()
 
     # For each ETF, take the latest snapshot date

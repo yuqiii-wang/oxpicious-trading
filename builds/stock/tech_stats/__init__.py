@@ -5,11 +5,15 @@ stats.stock_basic_stats.close, storing results in stats.stock_tech_stats.
 
 OPTIMIZED: Only loads the minimal lookback window from source and
 computes indicators only for NEW dates (date > MAX(date) in the target
-table). Full history is only loaded on --force.
+table). Full history is only loaded on --force. With --date
+(target_dates) the lookback window ENDS at the newest target date and
+only rows ON the target date(s) are (re)computed and upserted — no
+truncation, existing rows are refreshed via the normal upsert path.
 
 Usage:
     # As standalone module:
     python -m builds.stock.tech_stats
+    python -m builds.stock.tech_stats --date 2026-08-28   # refresh one date
 
     # Integrated into builds.stock:
     from builds.stock.tech_stats import run_tech_stats_chunked
@@ -33,7 +37,7 @@ from _common.build_commons import (
 from _common.df_utils._activate import activate
 activate()
 
-from _common.df_utils import compute_moving_averages, compute_emas
+from _common.df_utils import compute_moving_averages, compute_emas, epoch_col_to_dt64
 import pandas as pd
 
 TABLE = "stats.stock_tech_stats"
@@ -55,26 +59,37 @@ async def _load_all_codes(conn) -> list:
     return rec_col(rows, "code")
 
 
-async def _load_close_window(conn, codes: list, start_date: date) -> pd.DataFrame:
-    """Load close data for given codes from start_date onward.
+async def _load_close_window(conn, codes: list, start_date: date,
+                             end_date: date | None = None) -> pd.DataFrame:
+    """Load close data for given codes from start_date onward (optionally
+    capped at end_date — used by --date target mode so no rows beyond the
+    newest target are pulled).
 
     Only loads the minimal window needed for indicator computation
     (lookback + new dates), not the full history.
     """
-    rows = await conn.fetch(
-        f'SELECT date, code, close FROM {SOURCE_TABLE} '
+    query = (
+        f'SELECT extract(epoch from date)::float8 AS date, code, '
+        f'close::float8 AS close FROM {SOURCE_TABLE} '
         f'WHERE code = ANY($1::text[]) '
         f'  AND close IS NOT NULL '
         f'  AND date >= $2 '
-        f'ORDER BY code, date ASC',
-        sorted(codes), start_date,
     )
+    if end_date is not None:
+        query += '  AND date <= $3 '
+    query += 'ORDER BY code, date ASC'
+    if end_date is not None:
+        rows = await conn.fetch(query, sorted(codes), start_date, end_date)
+    else:
+        rows = await conn.fetch(query, sorted(codes), start_date)
     if not rows:
         return pd.DataFrame(columns=["date", "code", "close"])
     df = pd.DataFrame(rec_cols(rows))
-    # Keep date as datetime64 for GPU operations; convert to .dt.date
-    # only at DB write time (avoids cudf fallback on .dt.date accessor).
-    df["date"] = pd.to_datetime(df["date"])
+    # Date arrives as float8 epoch (extract(epoch) in SQL) ->
+    # datetime64[us] in ONE host pass (epoch_col_to_dt64); converted to
+    # python dates only at DB write time (avoids cudf fallback on the
+    # .dt.date accessor).
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     # DB data is clean — no errors='coerce' needed
     df["close"] = df["close"].astype(float)
     df = df.dropna(subset=["close"]).sort_values(["code", "date"]).reset_index(drop=True)
@@ -84,7 +99,8 @@ async def _load_close_window(conn, codes: list, start_date: date) -> pd.DataFram
 async def _load_full_close_history(conn, codes: list) -> pd.DataFrame:
     """Load ALL close history for given codes (force mode only)."""
     rows = await conn.fetch(
-        f'SELECT date, code, close FROM {SOURCE_TABLE} '
+        f'SELECT extract(epoch from date)::float8 AS date, code, '
+        f'close::float8 AS close FROM {SOURCE_TABLE} '
         f'WHERE code = ANY($1::text[]) AND close IS NOT NULL '
         f'ORDER BY code, date ASC',
         sorted(codes),
@@ -92,7 +108,7 @@ async def _load_full_close_history(conn, codes: list) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=["date", "code", "close"])
     df = pd.DataFrame(rec_cols(rows))
-    df["date"] = pd.to_datetime(df["date"])
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     df["close"] = df["close"].astype(float)
     df = df.dropna(subset=["close"]).sort_values(["code", "date"]).reset_index(drop=True)
     return df
@@ -115,6 +131,7 @@ async def run_tech_stats_chunked(
     force: bool = False,
     chunk_size: int = DEFAULT_CHUNK_CODES,
     verbose: bool = True,
+    target_dates: Optional[set[date]] = None,
 ) -> int:
     """Compute tech stats (MA/EMA) for all stocks and upsert missing rows.
 
@@ -131,11 +148,21 @@ async def run_tech_stats_chunked(
       3. Compute indicators on full history.
       4. Insert all rows.
 
+    Date-target mode (target_dates set, --date runs):
+      1. No truncation and NO DB max-date skip — the target dates are
+         always recomputed.
+      2. Load the lookback window ENDING at the newest target date.
+      3. Compute indicators on that window.
+      4. Keep only rows whose date is in target_dates and upsert them
+         (existing rows are refreshed; history is never rewritten).
+
     Args:
         conn: asyncpg connection (must remain open)
         force: if True, truncate TABLE and recompute all rows
         chunk_size: number of codes per chunk
         verbose: print progress messages
+        target_dates: restrict computation to exactly these dates
+            (--date mode); ignored when force is True
 
     Returns:
         Total number of rows upserted.
@@ -150,6 +177,24 @@ async def run_tech_stats_chunked(
             print(f"    [TECH-STATS] Force mode: truncating {TABLE}…", flush=True)
         await truncate_table_async(conn, TABLE)
         max_existing_date: Optional[date] = None
+    elif target_dates:
+        # --date target mode: bypass the incremental max-date skip
+        # entirely; the window ENDS at the newest target so no rows
+        # beyond it are pulled, and the output filter below keeps only
+        # the target dates themselves.
+        _t_min: date = min(target_dates)
+        _t_max: date = max(target_dates)
+        window_start = _t_min - timedelta(days=_LOOKBACK_CALENDAR_DAYS)
+        max_existing_date = None
+        if verbose:
+            print(f"    [TECH-STATS] Date-target mode: recomputing "
+                  f"{len(target_dates)} date(s) {_t_min} → {_t_max} "
+                  f"(no truncation, upsert refresh)…", flush=True)
+            print(f"    [TECH-STATS] Loading lookback window: "
+                  f"{window_start} → {_t_max} "
+                  f"({_LOOKBACK_CALENDAR_DAYS} calendar days ≈ "
+                  f"{_LOOKBACK_TRADING_DAYS} trading days)…",
+                  flush=True)
     else:
         max_existing_date = await get_max_table_date_async(conn, TABLE)
         if max_existing_date is not None and verbose:
@@ -161,6 +206,13 @@ async def run_tech_stats_chunked(
                   f"({_LOOKBACK_CALENDAR_DAYS} calendar days ≈ "
                   f"{_LOOKBACK_TRADING_DAYS} trading days)…",
                   flush=True)
+
+    # Timestamp cutoffs for the date-target output filter (datetime64[s/us]
+    # column vs raw datetime.date raises InvalidComparison on this pandas
+    # version — same reason the incremental filter uses pd.Timestamp).
+    _target_cutoffs: list[pd.Timestamp] = (
+        [pd.Timestamp(d) for d in sorted(target_dates)] if target_dates else []
+    )
 
     # ------------------------------------------------------------------
     # 2. Load all codes
@@ -182,9 +234,14 @@ async def run_tech_stats_chunked(
         chunk = all_codes[i:i + chunk_size]
         chunk_idx = i // chunk_size + 1
 
-        # Load data: minimal lookback window for incremental, full history for force
-        if force or max_existing_date is None:
+        # Load data: minimal lookback window for incremental, full history
+        # for force, lookback-ending-at-target for date-target mode
+        if force or (not target_dates and max_existing_date is None):
             df = await _load_full_close_history(conn, chunk)
+        elif target_dates:
+            df = await _load_close_window(
+                conn, chunk, window_start, end_date=_t_max
+            )
         else:
             lookback_start = max_existing_date - timedelta(days=_LOOKBACK_CALENDAR_DAYS)
             df = await _load_close_window(conn, chunk, lookback_start)
@@ -212,6 +269,16 @@ async def run_tech_stats_chunked(
                           f"{chunk[0]}..{chunk[-1]}: 0 new rows "
                           f"(all dates ≤ {max_existing_date})",
                           flush=True)
+                continue
+        elif target_dates and not force:
+            # Date-target mode: keep ONLY the target dates' rows — the
+            # lookback rows feeding the indicators are not written.
+            df = df[df["date"].isin(_target_cutoffs)].reset_index(drop=True)
+            if df.empty:
+                if verbose:
+                    print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
+                          f"{chunk[0]}..{chunk[-1]}: 0 rows on the target "
+                          f"date(s) — nothing to upsert", flush=True)
                 continue
 
         # Build rows dict — vectorized: column-wise NaN→None conversion,

@@ -77,14 +77,17 @@ import pandas as pd
 from _common.build_commons import (
     copy_or_upsert_split_async,
     truncate_table_async,
+    rec_col,
+    rec_cols,
 )
 from _common.db_commons import batched_copy_by_key_async
+from _common.df_utils import epoch_col_to_dt64
 from analyze._common import upsert_analysis_identity
 from _common.df_utils.rolling_corr import release_cupy_pool
 
 
 def _cupy_available() -> bool:
-    """Cached CuPy + CUDA device check (same probe as fourier_freqs._fft)."""
+    """Cached CuPy + CUDA device check (same probe as recurring_cycles._fft)."""
     global _CUPY_OK
     if _CUPY_OK is None:
         try:
@@ -435,7 +438,8 @@ async def run_correlations(
           flush=True)
     if filtered:
         rows = await conn.fetch(f"""
-            SELECT date, industry_id, pool_size, mean_close
+            SELECT extract(epoch from date)::float8 AS date,
+                   industry_id, pool_size, mean_close
             FROM {BASELINE_TABLE}
             WHERE mean_close IS NOT NULL
               AND industry_id = ANY($1)
@@ -443,31 +447,34 @@ async def run_correlations(
         """, sorted(industry_ids))
     else:
         rows = await conn.fetch(f"""
-            SELECT date, industry_id, pool_size, mean_close
+            SELECT extract(epoch from date)::float8 AS date,
+                   industry_id, pool_size, mean_close
             FROM {BASELINE_TABLE}
             WHERE mean_close IS NOT NULL
             ORDER BY industry_id, pool_size, date
         """)
+    n_series = len(set(zip(rec_col(rows, "industry_id"),
+                           rec_col(rows, "pool_size"))))
     print(f"      -> {len(rows):,} rows across "
-          f"{len(set((r['industry_id'], r['pool_size']) for r in rows))} "
-          f"(industry, pool_size) series", flush=True)
+          f"{n_series} (industry, pool_size) series", flush=True)
 
     if not rows:
         print("      -> no data; skipping correlations step.", flush=True)
         return
 
-    df = pd.DataFrame(
-        {
-            "date": [r["date"] for r in rows],
-            "industry_id": [r["industry_id"] for r in rows],
-            "pool_size": [r["pool_size"] for r in rows],
-            "mean_close": [float(r["mean_close"]) for r in rows],
-        }
-    )
-    # datetime64 for GPU-native ops throughout (object python dates
-    # would poison every downstream op into CPU fallbacks). Converted
-    # back to python dates only in the emitted rows (asyncpg boundary).
-    df["date"] = pd.to_datetime(df["date"])
+    # Whole-column extraction via the shared helper (C-level itemgetter
+    # map + one positional unpack — never a per-row python loop; see
+    # project convention for DB Record -> column extraction).
+    df = pd.DataFrame(rec_cols(rows))
+    # datetime64[us] for GPU-native ops throughout — the date column
+    # arrives as native float8 (extract(epoch) in SQL) and is
+    # materialized via epoch_col_to_dt64 in ONE host pass (object python
+    # dates would poison every downstream op into CPU fallbacks).
+    # Converted back to python dates only in the emitted rows (asyncpg
+    # boundary). mean_close arrives as Decimal (NUMERIC) — one
+    # vectorized float cast replaces the former per-row float() loop.
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["mean_close"] = df["mean_close"].astype(float)
 
     # ---- Steps 2+3: per-pool wide matrix + windowed corr stacks -----
     # Partition-key batching — see module docstring. One pivot + ONE

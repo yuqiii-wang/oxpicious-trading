@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from _common.build_commons import copy_or_upsert_split_async
-from _common.df_utils import safe_columns
+from _common.df_utils import host_array, safe_columns
 from builds._commons.row_emission import dates_as_date_list, records_from_frame
 
 
@@ -16,8 +16,13 @@ def filter_missing_rows(
     split_mask: np.ndarray,
     in_range: np.ndarray,
     pe_null_hit: np.ndarray,
+    forced_mask: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, int]:
     """Keep = missing ∪ corp-resync ∪ PE-backfill rows (∩ date range).
+
+    With ``forced_mask`` (--date mode) every masked row is kept as well —
+    existing rows for the forced date are refreshed through the upsert
+    write path (no deletes, no truncation).
 
     PE-null rows are kept only when the incremental PE computation actually
     produced a value.  Dates stay datetime64 here — Python dates are
@@ -28,21 +33,31 @@ def filter_missing_rows(
     """
     print("\n[6/7] Filtering to missing (date, code) pairs and inserting …", flush=True)
 
-    hit = pd.Series(split_mask, index=merged.index)
-    n_resync_codes = int(merged["code"][hit].nunique())
+    # raw ndarray boolean mask — a real-pandas bool Series aligned against
+    # the proxy index is a cudf fallback (Unsupported type ndarray)
+    n_resync_codes = int(merged["code"][split_mask].nunique()) \
+        if split_mask.any() else 0
     if n_resync_codes:
-        print(f"    [CORP-RESYNC] {n_resync_codes} codes with corp-action "
-              f"events — re-upserting ALL their rows (not just missing)", flush=True)
+        print(f"    [CORP-RESYNC] {n_resync_codes} codes with NEW corp-action "
+              f"events — re-upserting their rows from the earliest new event "
+              f"onward (adjustment values after a corp action change)", flush=True)
     if pe_null_hit.any():
         print(f"    [PE-BACKFILL] {int(pe_null_hit.sum()):,} existing rows with NULL PE "
               f"— re-upserting those that got a value", flush=True)
 
     keep = (~exists | split_mask) & in_range
-    keep |= pe_null_hit & merged["pe"].notna().to_numpy() & in_range
+    if forced_mask is not None:
+        # --date mode: forced-date rows are always write candidates —
+        # existing rows are refreshed via the upsert write path.
+        keep |= forced_mask & in_range
+    # host unwrap once (proxy-subclass .to_numpy() dispatches every numpy op)
+    keep |= pe_null_hit & host_array(merged["pe"].notna()) & in_range
 
     n_total = len(merged)
-    out = merged[keep].reset_index(drop=True)
-    out = out.copy()
+    # boolean-mask filtering already yields a fresh frame — no reset_index
+    # (downstream emits rows via records_from_frame, which is index-blind)
+    # and no defensive .copy() (write_split_tables copies at its own boundary).
+    out = merged[keep]
     # NOTE: date stays datetime64 here — object-date columns poison every
     # subsequent GPU op (each access = one MixedTypeError CPU fallback).
     # Python dates are produced at the emission boundary in
@@ -80,14 +95,8 @@ async def write_split_tables(conn, merged_missing: pd.DataFrame, force: bool) ->
 
     # exchange comes straight from the canonical CSV column carried through
     # the whole pipeline (never re-derived from code suffixes). Downloads
-    # data is trusted: an unexpected value is a pipeline bug -> hard fail.
-    _bad_ex = ~src["exchange"].isin(["SZ", "SS", "SH"])
-    if bool(_bad_ex.any()):
-        _ex_val = str(src["exchange"][_bad_ex].iloc[0])
-        raise ValueError(
-            f"[ETF-WRITE] unexpected exchange={_ex_val!r} in canonical CSV "
-            f"({int(_bad_ex.sum())} rows) — downloads conversion is wrong"
-        )
+    # data is assumed correct — no runtime whitelist; a genuinely invalid
+    # exchange surfaces as a DB-level failure and stops the run.
 
     # identity + basic + tech + adjustment + liquidity row batches.
     # Columns stay float/str/datetime64 on the frame — the former

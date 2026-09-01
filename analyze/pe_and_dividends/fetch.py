@@ -27,9 +27,11 @@ import pandas as pd
 
 from _common.build_commons import (
     fetch_codes_with_recent_data_async,
+    rec_cols,
     RECENT_TRADING_DAYS,
     recent_trading_day_cutoff,
 )
+from _common.df_utils import epoch_col_to_dt64
 
 from analyze.pe_and_dividends.config import SEC_TYPE_IDENTITY_TABLE
 
@@ -67,9 +69,9 @@ async def fetch_index_pe_and_close(
         """
         SELECT
             b.code,
-            b.date,
-            b.close,
-            v.pe
+            extract(epoch from b.date)::float8 AS date,
+            b.close::float8 AS close,
+            v.pe::float8 AS pe
         FROM stats.index_basic_stats b
         LEFT JOIN stats.index_valuation v
             ON v.date = b.date AND v.code = b.code
@@ -81,11 +83,14 @@ async def fetch_index_pe_and_close(
     )
     if not rows:
         return pd.DataFrame(columns=["code", "date", "close", "pe"])
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    for col in ("close", "pe"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
+    # Whole-column positional unpack (rec_cols) — no per-row dict access.
+    # The date column arrives as NATIVE float8 (extract(epoch) in SQL) and
+    # is materialized as datetime64[us] BEFORE the ctor (epoch_col_to_dt64)
+    # — the frame is cuDF-representable from construction, never
+    # object-poisoned, with an explicit unit.
+    cols = rec_cols(rows)
+    cols["date"] = epoch_col_to_dt64(cols["date"])
+    return pd.DataFrame(cols, columns=["code", "date", "close", "pe"])
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +122,7 @@ async def fetch_latest_index_composition(
         SELECT
             sc.code AS index_code,
             sc.stock_code,
-            sc.weight_pct
+            sc.weight_pct::float8 AS weight_pct
         FROM stats.sec_composition sc
         JOIN latest ld
             ON sc.code = ld.code AND sc.snapshot_date = ld.max_date
@@ -129,8 +134,8 @@ async def fetch_latest_index_composition(
     )
     if not rows:
         return pd.DataFrame(columns=["index_code", "stock_code", "weight_pct"])
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["weight_pct"] = pd.to_numeric(df["weight_pct"], errors="coerce")
+    # weight_pct arrives as float8 (::float8 cast) — no to_numeric needed.
+    df = pd.DataFrame(rec_cols(rows))
     # Drop rows with null stock_code or weight_pct
     df = df.dropna(subset=["stock_code", "weight_pct"])
     return df
@@ -161,7 +166,9 @@ async def fetch_stock_dividends(
         # Fetch all — small table (~12K rows)
         rows = await conn.fetch(
             """
-            SELECT code, ex_dividend_date, dividend_per_share_pre_tax
+            SELECT code,
+                   extract(epoch from ex_dividend_date)::float8 AS ex_dividend_date,
+                   dividend_per_share_pre_tax::float8 AS dividend_per_share_pre_tax
             FROM stats.stock_dividends
             WHERE dividend_per_share_pre_tax IS NOT NULL
               AND dividend_per_share_pre_tax > 0
@@ -172,7 +179,9 @@ async def fetch_stock_dividends(
         # Filter by stripped code match (handles mixed suffix conventions)
         rows = await conn.fetch(
             """
-            SELECT code, ex_dividend_date, dividend_per_share_pre_tax
+            SELECT code,
+                   extract(epoch from ex_dividend_date)::float8 AS ex_dividend_date,
+                   dividend_per_share_pre_tax::float8 AS dividend_per_share_pre_tax
             FROM stats.stock_dividends
             WHERE dividend_per_share_pre_tax IS NOT NULL
               AND dividend_per_share_pre_tax > 0
@@ -185,12 +194,14 @@ async def fetch_stock_dividends(
         return pd.DataFrame(
             columns=["code", "ex_dividend_date", "dividend_per_share_pre_tax"]
         )
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["ex_dividend_date"] = pd.to_datetime(df["ex_dividend_date"]).dt.date
-    df["dividend_per_share_pre_tax"] = pd.to_numeric(
-        df["dividend_per_share_pre_tax"], errors="coerce"
+    # Whole-column positional unpack; date column pre-converted to
+    # datetime64[us] via epoch_col_to_dt64 (never object-date in the ctor).
+    cols = rec_cols(rows)
+    cols["ex_dividend_date"] = epoch_col_to_dt64(cols["ex_dividend_date"])
+    return pd.DataFrame(
+        cols,
+        columns=["code", "ex_dividend_date", "dividend_per_share_pre_tax"],
     )
-    return df
 
 
 # ---------------------------------------------------------------------------
@@ -213,10 +224,10 @@ async def fetch_etf_close_and_dividends(
         """
         SELECT
             b.code,
-            b.date,
-            b.close,
-            b.pe,
-            COALESCE(a.implied_dividend_per_share, 0) AS implied_dividend_per_share
+            extract(epoch from b.date)::float8 AS date,
+            b.close::float8 AS close,
+            b.pe::float8 AS pe,
+            COALESCE(a.implied_dividend_per_share, 0)::float8 AS implied_dividend_per_share
         FROM stats.etf_basic_stats b
         LEFT JOIN stats.etf_adjustment a
             ON a.date = b.date AND a.code = b.code
@@ -230,11 +241,12 @@ async def fetch_etf_close_and_dividends(
         return pd.DataFrame(
             columns=["code", "date", "close", "pe", "implied_dividend_per_share"]
         )
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    for col in ("close", "pe", "implied_dividend_per_share"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
+    cols = rec_cols(rows)
+    cols["date"] = epoch_col_to_dt64(cols["date"])
+    return pd.DataFrame(
+        cols,
+        columns=["code", "date", "close", "pe", "implied_dividend_per_share"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +263,9 @@ async def fetch_stock_close(
         return pd.DataFrame(columns=["code", "date", "close", "pe"])
     rows = await conn.fetch(
         """
-        SELECT code, date, close, pe
+        SELECT code,
+               extract(epoch from date)::float8 AS date,
+               close::float8 AS close, pe::float8 AS pe
         FROM stats.stock_basic_stats
         WHERE code = ANY($1::text[])
           AND close IS NOT NULL
@@ -261,11 +275,9 @@ async def fetch_stock_close(
     )
     if not rows:
         return pd.DataFrame(columns=["code", "date", "close", "pe"])
-    df = pd.DataFrame([dict(r) for r in rows])
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
-    df["pe"] = pd.to_numeric(df["pe"], errors="coerce")
-    return df
+    cols = rec_cols(rows)
+    cols["date"] = epoch_col_to_dt64(cols["date"])
+    return pd.DataFrame(cols, columns=["code", "date", "close", "pe"])
 
 
 # ---------------------------------------------------------------------------

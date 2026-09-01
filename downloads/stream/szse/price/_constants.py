@@ -19,9 +19,9 @@ from downloads._common import (
 HOURLY_MODE_CUTOFF = time(15, 30)
 
 # Afternoon-only start: the streamer waits until this time on trading days
-# before entering the main loop. Morning-session data (09:30–11:30) is
-# already captured by other streamers; we focus on the afternoon session.
-AFTERNOON_START = time(13, 30)
+# before entering the main loop. Morning/intraday data is already captured
+# by other streamers; we focus on post-close data.
+AFTERNOON_START = time(16, 0)
 
 # SZSE indices always streamed every hour during hourly mode. These are the
 # flagship SZSE indices that were missing from live data (399001 深证成指,

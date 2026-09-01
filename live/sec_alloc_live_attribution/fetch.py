@@ -199,21 +199,23 @@ async def find_live_tick_pairs(
 #  HEAVY fetch: member universe + prev-day reference values for ONE
 #  (benchmark, date) ref pair.
 #
-#  Split prev-row selection (IMPORTANT — stats.index_basic_stats contains
-#  literal NaN numerics for trading_amount on some dates, and IS NOT NULL
-#  does NOT filter them out):
-#    • prev close/prev_date: latest row with close IS NOT NULL per member
-#      (close is clean — 0 NaN) → consistent pct base.
-#    • prev trading_amount: latest row with a REAL amount (NOT NULL AND
-#      text <> 'NaN') within a bounded 14-day lookback → liquidity weight
-#      as-of. Amount and close may come from different dates; that is
-#      intentional (weights are relative liquidity shares, pct must not
-#      mix bases). Members without a real amount in the lookback get NULL
-#      amount/weight — excluded from the weighted aggregate (renormalized
-#      at query time) but still usable for the equal-weighted aggregate.
+#  All prev-day reference values are scoped to ONE resolved prev date —
+#  the latest close-bearing date strictly before the live date (resolved
+#  ONCE via the prev_d CTE so every join is an exact-date equality and no
+#  multi-year history scan ever happens). IMPORTANT —
+#  stats.index_basic_stats contains literal NaN numerics for
+#  trading_amount on some dates, and IS NOT NULL does NOT filter them out:
+#    • prev close/prev_date: the member's row ON the resolved prev date
+#      (close is clean — 0 NaN) → consistent pct base. Members without a
+#      row on that date are dropped from the ref.
+#    • prev trading_amount: the member's row ON the same resolved prev
+#      date with a REAL amount (NOT NULL AND text <> 'NaN'). Members
+#      without a real amount on that date get NULL amount/weight —
+#      excluded from the weighted aggregate (renormalized at query time)
+#      but still usable for the equal-weighted aggregate.
 #
-#  Benchmark prev close = benchmark's latest close date strictly before
-#  the live date (independent of member prev dates).
+#  Benchmark prev close = benchmark's close on the same resolved prev
+#  date (independent row, same date as the members).
 # ----------------------------------------------------------------------------
 _REF_MEMBERS_SQL = """
 WITH universe AS (
@@ -266,39 +268,44 @@ shared AS (
     WHERE mc.code != $1::text
     GROUP BY mc.code
 ),
+prev_d AS (
+    -- Single resolved prev date: latest close-bearing date strictly
+    -- before the live date. One global resolution (not per member) —
+    -- every prev-value CTE below is an exact-date equality on it.
+    SELECT MAX(date) AS d
+    FROM stats.index_basic_stats
+    WHERE date < $2::date
+      AND close IS NOT NULL
+),
 member_prev_close AS (
-    SELECT DISTINCT ON (u.member_code)
+    SELECT
         u.member_code,
-        b.date                       AS prev_date,
-        b.close                      AS prev_close
+        b.date  AS prev_date,
+        b.close AS prev_close
     FROM universe u
     JOIN stats.index_basic_stats b
         ON b.code = u.member_code
-       AND b.date < $2::date
+       AND b.date = (SELECT d FROM prev_d)
        AND b.close IS NOT NULL
-    ORDER BY u.member_code, b.date DESC
 ),
 member_prev_amt AS (
-    SELECT DISTINCT ON (u.member_code)
+    SELECT
         u.member_code,
-        b.trading_amount             AS prev_trading_amount
+        b.trading_amount         AS prev_trading_amount
     FROM universe u
     JOIN stats.index_basic_stats b
         ON b.code = u.member_code
-       AND b.date < $2::date
-       AND b.date > $2::date - INTERVAL '14 days'
+       AND b.date = (SELECT d FROM prev_d)
        AND b.trading_amount IS NOT NULL
        AND b.trading_amount::text <> 'NaN'
-    ORDER BY u.member_code, b.date DESC
 ),
 bench_prev AS (
     SELECT close AS bench_prev_close
     FROM stats.index_basic_stats
     WHERE code = $1::text
-      AND date < $2::date
+      AND date = (SELECT d FROM prev_d)
       AND close IS NOT NULL
       AND close::text <> 'NaN'
-    ORDER BY date DESC
     LIMIT 1
 )
 SELECT
@@ -356,15 +363,29 @@ async def fetch_ref_members(
 #  tick row: either a genuinely missing (code, time) row, or an existing
 #  FALLBACK row (is_without_trading_amt = TRUE) that can now be UPGRADED to
 #  a ref-based weighted row. Drives the light 5-min incremental pass.
+#
+#  Scoped to the single LATEST intraday date (target CTE first, same
+#  pattern as the pair queries above) — without the date constant the
+#  planner seq-scans the whole multi-million-row tick table per
+#  correlated NOT EXISTS; with it the (benchmark_code, date, time) index
+#  applies and only the live date's rows are touched. Historical dates
+#  are intentionally out of scope: the pipeline is latest-date-scoped
+#  by design (the live/fallback process owns older fallback rows).
 # ----------------------------------------------------------------------------
 _PAIRS_WITH_MISSING_TICKS_SQL = """
+WITH target AS MATERIALIZED (
+    SELECT MAX(date) AS d
+    FROM stats.index_intraday_5min
+    WHERE close IS NOT NULL
+)
 SELECT DISTINCT r.benchmark_code, r.date
 FROM live.sec_alloc_live_prev_ref r
 JOIN stats.index_intraday_5min i5
     ON i5.code = r.code
    AND i5.date = r.date
    AND i5.close IS NOT NULL
-WHERE ($1::text[] IS NULL OR r.benchmark_code = ANY($1::text[]))
+WHERE r.date = (SELECT d FROM target)
+  AND ($1::text[] IS NULL OR r.benchmark_code = ANY($1::text[]))
   AND NOT EXISTS (
       SELECT 1
       FROM live.sec_alloc_live_attribution t
@@ -478,9 +499,11 @@ async def fetch_missing_ticks(
 #    • the advisory lock is held by another instance (fallback-only mode),
 #    • or the heavy ref build produced 0 rows for the pair.
 #
-#  Prev-close basis = the member's LAST 5-min bar close of its latest
-#  intraday date strictly BEFORE the live date (self-contained in
-#  stats.index_intraday_5min — no basic_stats dependency). Benchmark prev
+#  Prev-close basis = the member's LAST 5-min bar close ON the resolved
+#  prev intraday date (single latest close-bearing date strictly before
+#  the live date, resolved ONCE via the prev_d CTE — one-day scans only,
+#  never a multi-day history sweep) from stats.index_intraday_5min
+#  itself (self-contained — no basic_stats dependency). Benchmark prev
 #  close likewise. Rows are written with is_without_trading_amt = TRUE;
 #  they are upgraded in place (PK upsert) to FALSE once the ref exists.
 #  Anti-join skips (code, time) rows already present with ANY flag —
@@ -499,27 +522,34 @@ WITH universe AS (
       AND sc.industry_id <> ALL($4::text[])
       AND sc.code != $1::text
 ),
+prev_d AS (
+    -- Single resolved prev intraday date (latest close-bearing date
+    -- strictly before the live date) — one global resolution, all
+    -- prev-value CTEs below are exact-date one-day scans on it.
+    SELECT MAX(date) AS d
+    FROM stats.index_intraday_5min
+    WHERE date < $2::date
+      AND close IS NOT NULL
+),
 member_prev_close AS (
     SELECT DISTINCT ON (code)
         code,
         close AS prev_close
     FROM stats.index_intraday_5min
-    WHERE date < $2::date
-      AND date > $2::date - INTERVAL '14 days'
+    WHERE date = (SELECT d FROM prev_d)
       AND close IS NOT NULL
       AND close::text <> 'NaN'
       AND code IN (SELECT member_code FROM universe)
-    ORDER BY code, date DESC, time DESC
+    ORDER BY code, time DESC
 ),
 bench_prev_close AS (
     SELECT close AS prev_close
     FROM stats.index_intraday_5min
     WHERE code = $1::text
-      AND date < $2::date
-      AND date > $2::date - INTERVAL '14 days'
+      AND date = (SELECT d FROM prev_d)
       AND close IS NOT NULL
       AND close::text <> 'NaN'
-    ORDER BY date DESC, time DESC
+    ORDER BY time DESC
     LIMIT 1
 ),
 bench_bars AS (

@@ -62,13 +62,12 @@ def build_oma_df(start_date=None, end_date=None, verbose=True):
     keep = ["date", "title", "type", "content", "detail_url",
             "keywords", "serial_year", "serial_no", "detail_slug"]
     df = df[keep].copy()
-    df = df.sort_values(["date", "title"]).reset_index(drop=True)
+    df = df.sort_values(["date", "title"])
 
     if start_date:
         df = df[df["date"] >= pd.Timestamp(start_date)]
     if end_date:
         df = df[df["date"] <= pd.Timestamp(end_date)]
-    df = df.reset_index(drop=True)
 
     if verbose:
         if len(df):

@@ -65,20 +65,22 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
     tags: ["ETF", "Index", "Stock", "PE", "dividend yield", "valuation", "5y stats"],
   },
   {
-    slug: "fourier-freqs",
-    title: "Fourier Frequencies",
+    slug: "recurring-cycles",
+    title: "Recurring Cycles",
     description:
-      "Per-security dominant cycle detection via real FFT on trailing close " +
-      "prices. For each trading date, takes the trailing range_days window " +
-      "(20/60/255/500/750 days), detrends, applies numpy.rfft, and stores " +
-      "the dominant cycle period (freq, in trading days) + its amplitude. " +
-      "The chart plots freq over time, one line per window size — revealing " +
-      "cycle-regime shifts (e.g. a 255-day window whose dominant period " +
-      "collapses from ~60d to ~20d signals a shift from quarterly to " +
-      "monthly cyclicality). Y-axis is log-scaled. Index only for now; " +
-      "ETF/Stock pending the Python populator. Backed by " +
-      "analysis.fourier_freqs.",
-    tags: ["Index", "FFT", "cycle period", "frequency analysis", "amplitude"],
+      "Per-security recurring rise/drop periodicity — a time-domain " +
+      "recurrence audit, not raw FFT amplitude. For each trading date and " +
+      "window (20/60/255/500/750/1275 days), closes are MA-detrended and " +
+      "scored per candidate period (2–60 days): recurrence count from " +
+      "prominence-filtered swing extrema aligned to the period, coherence " +
+      "from ACF at period multiples, and FFT amplitude as the magnitude " +
+      "reference. strength = amplitude × recurrence-count factor; the " +
+      "headlined recurring period is the strength argmax, so a period only " +
+      "wins when rises/drops actually repeat at that interval. Bar charts " +
+      "show the day-aligned amplitude / count / strength spectra with the " +
+      "recurring period highlighted. Index only for now. Backed by " +
+      "analysis.recurring_cycles.",
+    tags: ["Index", "recurring period", "cycle", "ACF", "extrema", "FFT"],
   },
   {
     slug: "etf-holdings",

@@ -7,7 +7,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from _common.df_utils import grouped_diff, grouped_rolling_agg
+from _common.df_utils import (
+    grouped_diff,
+    grouped_rolling_agg,
+    host_array,
+    safe_columns,
+)
 from analyze.mov_ave_spread.config import (
     EMA_WINDOWS,
     MA_WINDOWS,
@@ -25,9 +30,8 @@ def null_if_overflow(
     *,
     max_abs: float = NUMERIC_MAX_ABS,
     scale: int = 6,
-) -> pd.Series:
-    """Return a copy of ``series`` with values that would overflow a
-    NUMERIC column replaced by NaN (later converted to None).
+) -> np.ndarray:
+    """Return ``series`` values with overflow-risky entries nulled to NaN.
 
     Default: NUMERIC(10,6) — values with absolute value < 10^4 after
     rounding to 6 decimal places. Override ``max_abs``/``scale`` for
@@ -46,10 +50,63 @@ def null_if_overflow(
       - trading_amt_ma* columns (NUMERIC(24,4)) — pass max_abs=NUMERIC_WIDE_
         MAX_ABS, scale=4. Daily trading_amount for a high-turnover index can
         reach ~10^13 yuan; NUMERIC(10,6) would overflow.
+
+    Host-pure (B-A3): data leaves the proxy Series ONCE via ``to_numpy``
+    + :func:`_common.df_utils.host_array`; the mask (NaN / inf /
+    |rounded| >= max_abs) is computed in raw host numpy. Returns a plain
+    float64 ndarray — assign directly with ``df[col] = result`` (the
+    former proxied to_numeric/isna/abs/round/where chain cost ~5 cudf
+    fallbacks per column).
     """
-    s = pd.to_numeric(series, errors="coerce")
-    mask = s.isna() | ~np.isfinite(s) | (s.abs().round(scale) >= max_abs)
-    return s.where(~mask)
+    arr = _to_float64_host(series)
+    bad = ~np.isfinite(arr) | (np.abs(np.round(arr, scale)) >= max_abs)
+    out = arr.copy()
+    out[bad] = np.nan
+    return out
+
+
+def _to_float64_host(series: pd.Series) -> np.ndarray:
+    """Series -> RAW host float64 ndarray, coercing non-numeric junk.
+
+    Fast path: float columns skip ``pd.to_numeric`` entirely (one fewer
+    proxied dispatch per column — the columns reaching the overflow
+    guards are computed floats in practice). ``na_value=np.nan`` keeps
+    nullable/missing columns on the cudf fast path — a plain
+    ``to_numpy(dtype=np.float64)`` raises ValueError on missing values
+    and falls back per column (~630 fallbacks per stock-scale run).
+    Object/other dtypes take the to_numeric-coerce path.
+    """
+    try:
+        return host_array(
+            series.to_numpy(dtype=np.float64, na_value=np.nan)
+        )
+    except (TypeError, ValueError):
+        return host_array(
+            pd.to_numeric(series, errors="coerce").to_numpy(
+                dtype=np.float64, na_value=np.nan
+            )
+        )
+
+
+def null_if_overflow_counted(
+    series: pd.Series,
+    *,
+    max_abs: float = NUMERIC_MAX_ABS,
+    scale: int = 6,
+) -> tuple[np.ndarray, int]:
+    """:func:`null_if_overflow` + the number of values newly nulled.
+
+    The count is derived from the same host mask (positions that were
+    not NaN before and are NaN after — inf / overflow / coercion) at
+    zero extra proxy dispatch, replacing the former per-column
+    ``isna().sum()`` before/after proxied pairs.
+    """
+    arr = _to_float64_host(series)
+    was_nan = np.isnan(arr)
+    bad = ~np.isfinite(arr) | (np.abs(np.round(arr, scale)) >= max_abs)
+    out = arr.copy()
+    out[bad] = np.nan
+    return out, int((bad & ~was_nan).sum())
 
 
 def safe_ratio(num, den):
@@ -248,7 +305,8 @@ def compute_trading_amt_mas(df: pd.DataFrame) -> pd.DataFrame:
     rolling-mean computation runs inside Cython and is cuDF-compatible
     (same pattern as compute_rolling_stds).
     """
-    if "trading_amount" not in df.columns:
+    # Host-pure membership (proxied Index.__contains__ falls back).
+    if "trading_amount" not in set(safe_columns(df)):
         # Defensive: fetch_source_data always returns the column, but if a
         # caller passes a DataFrame without it (e.g. a unit-test stub),
         # emit NULL columns so downstream assembly doesn't KeyError.
@@ -310,7 +368,7 @@ def compute_trading_amt_market_share_mas(
     window needs up to 255 prior rows, so the caller passes the FULL
     per-code history and the result is filtered to target_dates downstream.
     """
-    if "trading_amount" not in df.columns or not denominator_by_date:
+    if "trading_amount" not in set(safe_columns(df)) or not denominator_by_date:
         # Defensive: emit NULL columns so downstream assembly doesn't KeyError.
         for col in TRADING_AMT_MARKET_SHARE_MA_COLUMNS:
             df[col] = np.nan
@@ -436,7 +494,7 @@ def compute_trading_amt_market_share_vs_mas(
     Adds columns: trading_amt_market_share_vs_ma5, _vs_ma20, _vs_ma60,
     _vs_ma120, _vs_ma255.
     """
-    if "trading_amount" not in df.columns or not denominator_by_date:
+    if "trading_amount" not in set(safe_columns(df)) or not denominator_by_date:
         # Defensive: emit NULL columns so downstream assembly doesn't KeyError.
         for col in TRADING_AMT_MARKET_SHARE_VS_MA_COLUMNS:
             df[col] = np.nan
@@ -473,7 +531,7 @@ def gap_col(df: pd.DataFrame, num_col: str, den_col: str) -> pd.Series:
     Returns None where num/den is NaN, where the denominator is zero or
     denormalized (|den| < 1e-12, which would produce a huge or non-finite
     ratio), or where the result is non-finite. The null_if_overflow pass
-    in build_detail_rows is the final safety net for any ratio that still
+    in build_detail_frame is the final safety net for any ratio that still
     exceeds the NUMERIC(10,6) range.
     """
     num = df[num_col]

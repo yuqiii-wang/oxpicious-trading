@@ -101,13 +101,14 @@ def build_shibor_df(start_date=None, end_date=None, verbose=True, files=None):
     big = big.groupby("日期", as_index=False).agg(agg_dict)
     big = big.rename(columns={"日期": "date"})
     big["date"] = pd.to_datetime(big["date"], errors="coerce")
-    big = big.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    # groupby(as_index=False) already sorted by date and returned a fresh
+    # index — no re-sort/reset; the trailing masks yield fresh frames
+    big = big.dropna(subset=["date"])
 
     if start_date:
         big = big[big["date"] >= pd.Timestamp(start_date)]
     if end_date:
         big = big[big["date"] <= pd.Timestamp(end_date)]
-    big = big.reset_index(drop=True)
 
     if verbose:
         if len(big):

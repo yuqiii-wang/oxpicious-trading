@@ -19,10 +19,10 @@ STALE_THRESHOLD_MIN = 30
 TRADING_START = time(9, 25)
 TRADING_END = time(15, 5)
 
-# CSIndex afternoon-only start: the streamer waits until 13:30 on trading
-# days before entering the main loop, so API calls focus on the afternoon
-# trading session (13:30–15:00). Morning data is already captured by SSE/SZSE.
-CSINDEX_START_TIME = time(13, 30)
+# CSIndex post-close start: the streamer waits until 16:00 on trading days
+# before entering the main loop, so API calls focus on post-close data.
+# Intraday data is already captured by SSE/SZSE.
+CSINDEX_START_TIME = time(16, 0)
 
 # Bond indices (name contains '债') are skipped in CSIndex streaming — they
 # typically lack meaningful intraday tick data on csindex.com.cn.

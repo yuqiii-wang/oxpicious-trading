@@ -11,6 +11,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from _common.build_commons import rec_col
+from _common.df_utils import epoch_ns_array
 from analyze.sec_alloc_perf_attribution.config import TOP_N_NON_BROAD
 
 
@@ -27,18 +29,14 @@ from analyze.sec_alloc_perf_attribution.config import TOP_N_NON_BROAD
 #  Instead, build each column as a TYPED numpy array (or python str list,
 #  which the cudf constructor turns into a native cudf string column) so
 #  the DataFrame is constructed cudf-native on the GPU:
-#    - dates   -> np.datetime64 (numpy converts date objects on the host,
-#                 no pandas/cudf involvement)
+#    - dates   -> float8 epoch-seconds in SQL (extract(epoch)::float8)
+#                 materialized as RAW host datetime64[ns] via
+#                 epoch_ns_array (wide-op boundary — ns matches the
+#                 pandas-native Timestamps these frames merge against)
 #    - numerics-> float64 (Decimal -> float via list comp)
 #    - codes   -> python str list (cudf string column)
 #  No ``pd.to_datetime``/``pd.to_numeric`` calls needed at all.
 # ---------------------------------------------------------------------------
-def _dates_ns(rows, key: str) -> np.ndarray:
-    return np.asarray(
-        [r[key] for r in rows], dtype="datetime64[D]"
-    ).astype("datetime64[ns]")
-
-
 def _floats(rows, key: str) -> np.ndarray:
     return np.asarray(
         [float(r[key]) if r[key] is not None else np.nan for r in rows],
@@ -231,8 +229,8 @@ async def fetch_index_closes(
         )
         SELECT
             b.code AS benchmark_code,
-            b.date,
-            b.close
+            extract(epoch from b.date)::float8 AS date,
+            b.close::float8 AS close
         FROM stats.index_basic_stats b
         JOIN kept_codes kc ON kc.code = b.code
         WHERE 1=1 {date_where}
@@ -248,7 +246,7 @@ async def fetch_index_closes(
 
     df = pd.DataFrame({
         "benchmark_code": [r["benchmark_code"] for r in rows],
-        "date": _dates_ns(rows, "date"),
+        "date": epoch_ns_array(rec_col(rows, "date")),
         "close": _floats(rows, "close"),
     })
     df = df.sort_values(["benchmark_code", "date"]).reset_index(drop=True)
@@ -311,8 +309,8 @@ async def fetch_index_subject_closes(
         )
         SELECT
             b.code,
-            b.date,
-            b.close AS subject_close
+            extract(epoch from b.date)::float8 AS date,
+            b.close::float8 AS subject_close
         FROM stats.index_basic_stats b
         JOIN subject_codes sc ON sc.code = b.code
         WHERE 1=1 {date_where}
@@ -328,7 +326,7 @@ async def fetch_index_subject_closes(
 
     df = pd.DataFrame({
         "code": [r["code"] for r in rows],
-        "date": _dates_ns(rows, "date"),
+        "date": epoch_ns_array(rec_col(rows, "date")),
         "subject_close": _floats(rows, "subject_close"),
     })
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
@@ -383,7 +381,9 @@ async def fetch_etf_amount_by_index(
         params.append(start_date)
 
     sql = f"""
-        SELECT code AS index_code, date, total_etf_trading_amount AS etf_amount
+        SELECT code AS index_code,
+               extract(epoch from date)::float8 AS date,
+               total_etf_trading_amount::float8 AS etf_amount
         FROM stats.index_exts
         WHERE total_etf_trading_amount IS NOT NULL
         {date_where}
@@ -396,7 +396,7 @@ async def fetch_etf_amount_by_index(
 
     df = pd.DataFrame({
         "index_code": [r["index_code"] for r in rows],
-        "date": _dates_ns(rows, "date"),
+        "date": epoch_ns_array(rec_col(rows, "date")),
         "etf_amount": _floats(rows, "etf_amount"),
     })
     return df[["index_code", "date", "etf_amount"]]

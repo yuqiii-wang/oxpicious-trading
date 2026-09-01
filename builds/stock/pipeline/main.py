@@ -2,19 +2,25 @@
 
 Builds combined individual-stock OHLCV + PE + margin data and inserts it
 into stats.stock_identity / stock_basic_stats / stock_liquidity_margin
-(missing dates only; --force rebuilds everything).
+(missing dates only; --force rebuilds everything; --date YYYY-MM-DD
+forces a single-date build — the date is ALWAYS processed even if the
+DB already has it, rows are refreshed through the normal upsert paths,
+no truncation / no deletes).
 """
 from __future__ import annotations
 
 import asyncio
 import time
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
 from _common.build_commons import (
+    enforce_date_force_exclusion,
+    forced_date_scope,
     get_db_or_exit,
     get_db_pool_async,
+    parse_date_arg,
     print_build_header,
     print_wall_time,
     truncate_table_async,
@@ -96,16 +102,21 @@ async def purge_for_force(conn, code_filter: str | None) -> None:
         await truncate_table_async(conn, "stats.stock_identity")
 
 
-async def _run_tech_stats_step(conn, args, code_filter: str | None) -> None:
+async def _run_tech_stats_step(conn, args, code_filter: str | None,
+                               forced: date | None = None) -> None:
     """Run tech stats only when behind basic_stats (single cheap
     max-date check) — a no-op tech-stats run costs ~15s of lookback
-    loading, so skip it when there is nothing new to compute."""
+    loading, so skip it when there is nothing new to compute.
+
+    --date mode (forced): bypass the max-date skip and recompute ONLY
+    the forced date's rows via the runner's target_dates mechanism —
+    never a full --force-style history recompute."""
     if code_filter:
         # In single-code mode, skip full tech-stats scan (it processes
         # all codes). The target code's existing tech stats remain valid.
         print(f"    [TECH-STATS] Skipped in single-code mode ({code_filter})", flush=True)
         return
-    if not args.force:
+    if not args.force and forced is None:
         row = await conn.fetchrow(
             "SELECT "
             "  (SELECT MAX(date) FROM stats.stock_basic_stats) AS max_basic, "
@@ -120,7 +131,8 @@ async def _run_tech_stats_step(conn, args, code_filter: str | None) -> None:
     print("\n[5/5] Computing stock tech stats (MA/EMA) …", flush=True)
     from builds.stock.tech_stats import run_tech_stats_chunked
     tech_total = await run_tech_stats_chunked(
-        conn, force=args.force, chunk_size=500
+        conn, force=args.force, chunk_size=500,
+        target_dates={forced} if forced is not None else None,
     )
     print(f"    [TECH-STATS] Total rows upserted into stats.stock_tech_stats: "
           f"{tech_total:,}", flush=True)
@@ -146,8 +158,16 @@ def _update_history_range(combined: pd.DataFrame,
 
 async def main() -> None:
     args = parse_args()
+    enforce_date_force_exclusion(args)
+    forced = parse_date_arg(args.date)
     code_filter: str | None = normalize_code(args.code)
     t0 = time.time()
+    if forced is not None:
+        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
+        # Restrict discovery + the SSE archive loader to the single date
+        # BEFORE any source scanning happens below.
+        args.start_date = forced.isoformat()
+        args.end_date = forced.isoformat()
     if code_filter:
         print(f"    [CODE FILTER] Restricting build to single stock: {code_filter}", flush=True)
 
@@ -206,6 +226,13 @@ async def main() -> None:
 
     history_start: date | None = min(disc.available_dates) if disc.available_dates else None
     history_end: date | None = max(disc.available_dates) if disc.available_dates else None
+    if forced is not None:
+        # --date clamps discovery (and thus this range) to the single day,
+        # which would starve the step-4d PE estimation of any baseline:
+        # the estimator only looks STRICTLY before the target date. Widen
+        # the start to the estimator's own lookback window — rows are
+        # still only WRITTEN for the forced date.
+        history_start = forced - timedelta(days=31 * PE_ESTIMATE_MAX_MONTHS)
     if history_start and history_end:
         print(f"    → history date range: {history_start} → {history_end}",
               flush=True)
@@ -220,9 +247,16 @@ async def main() -> None:
     try:
         if args.force:
             await purge_for_force(conn, code_filter)
-        missing_dates = await detect_missing_dates(
-            conn, disc.loadable_dates, code_filter, args.force
-        )
+        if forced is not None:
+            # --date: bypass missing-date detection entirely — the forced
+            # date is ALWAYS processed. Rows already in the DB are
+            # refreshed through the normal upsert write paths; the
+            # --force purge above can never run here (mutually exclusive).
+            missing_dates = forced_date_scope(disc.loadable_dates, forced)
+        else:
+            missing_dates = await detect_missing_dates(
+                conn, disc.loadable_dates, code_filter, args.force
+            )
 
         # ------------------------------------------------------------------
         # 3. Filter source files to only missing dates and build rows
@@ -232,6 +266,7 @@ async def main() -> None:
             print(f"\n[3/4] Reading source CSVs for {len(missing_dates)} missing dates …", flush=True)
             missing_file_pairs = await collect_missing_file_pairs(
                 conn, disc.all_files, args.force, code_filter,
+                force_dates=missing_dates if forced is not None else None,
             )
             print(f"    → {len(missing_file_pairs)} source CSV files to read (all suffixes)", flush=True)
             combined = build_missing_rows(missing_file_pairs, verbose=True, code=code_filter)
@@ -240,9 +275,14 @@ async def main() -> None:
         # 3b. Load SSE archive historical OHLCV (per-stock {code}_trend.csv)
         #     — incremental: file mtime + per-code DB max date
         # ------------------------------------------------------------------
+        # --date: pass force=True so the loader's mtime/per-code DB-max
+        # gating cannot skip the forced date's rows. The load stays
+        # restricted to the single date via start/end (rows are filtered
+        # to that day inside the loader) — pure upsert refresh downstream,
+        # no truncation.
         archive_df = await load_sse_archive(
             conn, args.start_date, args.end_date, args.limit,
-            args.force, code_filter,
+            args.force or forced is not None, code_filter,
         )
         if len(archive_df) > 0:
             if len(combined) > 0:
@@ -268,6 +308,13 @@ async def main() -> None:
         margin_avail_dates = margin_loadable_dates(
             disc.szse_margin_files + disc.sse_margin_files
         )
+        if forced is not None:
+            # --date: the gap checks below scan margin_available_dates and
+            # UNION their findings into the target set — left unrestricted
+            # they would pull historical repair dates into a single-date
+            # run. Restrict the check window to the forced date;
+            # missing_dates already guarantees the date is targeted.
+            margin_avail_dates &= missing_dates
         mg = await detect_margin_gaps(
             conn, margin_avail_dates, missing_dates, code_filter, args.force,
             disc.szse_margin_files, disc.sse_margin_files,
@@ -330,7 +377,7 @@ async def main() -> None:
 
         if len(combined) == 0 and not margin_target_dates:
             print("    [INFO] No new rows to insert", flush=True)
-            await _run_tech_stats_step(conn, args, code_filter)
+            await _run_tech_stats_step(conn, args, code_filter, forced)
             print_wall_time(t0)
             return
 
@@ -367,13 +414,14 @@ async def main() -> None:
         else:
             margin_df = None
 
-        # Filter to target code if --code is set
+        # Filter to target code if --code is set (mask results are fresh
+        # frames; DB emission is index-blind — no reindex)
         if code_filter and len(combined) > 0:
             n_before = len(combined)
-            combined = combined[combined["code"] == code_filter].reset_index(drop=True)
+            combined = combined[combined["code"] == code_filter]
             print(f"    [CODE FILTER] Filtered combined from {n_before:,} → {len(combined):,} rows for code {code_filter}", flush=True)
         if code_filter and margin_df is not None and len(margin_df) > 0:
-            margin_df = margin_df[margin_df["code"] == code_filter].reset_index(drop=True)
+            margin_df = margin_df[margin_df["code"] == code_filter]
 
         # Stock source loaders never estimate close — default the flag to
         # False when no loader produced it (mirrors builds/etf pattern).
@@ -404,7 +452,7 @@ async def main() -> None:
         if (combined_db is None or len(combined_db) == 0) and n_margin_rows == 0:
             print("    [INFO] No new OHLCV/PE/margin rows to insert "
                   "(all missing dates are holidays/empty)", flush=True)
-            await _run_tech_stats_step(conn, args, code_filter)
+            await _run_tech_stats_step(conn, args, code_filter, forced)
             print_wall_time(t0)
             return
 
@@ -493,7 +541,7 @@ async def main() -> None:
         # ------------------------------------------------------------------
         # 5. Compute tech stats (MA/EMA) for all stocks
         # ------------------------------------------------------------------
-        await _run_tech_stats_step(conn, args, code_filter)
+        await _run_tech_stats_step(conn, args, code_filter, forced)
 
     finally:
         await conn.close()

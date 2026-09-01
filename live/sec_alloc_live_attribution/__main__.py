@@ -39,10 +39,14 @@ ref modes; ignored in live mode). Respects the same latest-date scope.
 from __future__ import annotations
 
 
-# resource pre-check -- exit early when sys/GPU memory is insufficient
+# resource pre-check -- exit early when sys/GPU memory is insufficient.
+# This pipeline is pure asyncpg DB I/O (no cudf/GPU work) — the GPU VRAM
+# check is skipped so the 5-min UI-keeper run is never killed by heavy
+# GPU-resident jobs holding the card (which silently starved the Market
+# Movements page of live tick rows).
 from _common.pre_check import pre_check
 
-pre_check()
+pre_check(require_gpu=False)
 import argparse
 import asyncio
 import os
@@ -348,4 +352,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

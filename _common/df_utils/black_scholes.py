@@ -317,6 +317,15 @@ def compute_iv_and_greeks(
     """
     from _common.df_utils import should_use_gpu
 
+    # Host boundary: `.values` on a cudf-backed Series yields a PROXY
+    # ndarray — every numpy ufunc inside solve_iv_newton then probes the
+    # cuDF fast path and falls back (~1.6k fallback lines per small run,
+    # incl. "cupy does not support str" for the option_type column).
+    # Converting the frame to host pandas ONCE makes all extraction and
+    # downstream numpy math proxy-free.
+    if hasattr(df, "to_pandas"):
+        df = df.to_pandas()
+
     S = df["underlying_close"].values.astype(np.float64) / price_scale
     K = df["strike_price"].values.astype(np.float64) / price_scale
     P = df["settle"].values.astype(np.float64) / opt_scale

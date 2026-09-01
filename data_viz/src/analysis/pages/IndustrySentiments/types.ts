@@ -48,9 +48,10 @@ export interface PlotProps {
    *  per-industry aggregation sets for the multi-industry mean overlay. Empty
    *  in single-industry mode (the merged `data.aggregation` is used instead). */
   chartDataList: IndustrySentimentsChartResponse[];
-  /** Selected industry IDs (passed through from the page so the auto-expanded
-   *  Correlation section can fetch pairwise correlation rows from the API).
-   *  Empty in single-industry mode. */
+  /** Effective industry IDs driving the correlation plot (selected industries
+   *  + strategy themes + industries derived from L3 codes — the same set the
+   *  merged chart fetches). The always-visible Correlation section fetches
+   *  pairwise correlation rows from the API for these. */
   selectedIndustryIds: string[];
   /** L3-selected member index codes (empty when no L3 chip is selected).
    *  Passed through to the Correlation section's refresh button (the corr

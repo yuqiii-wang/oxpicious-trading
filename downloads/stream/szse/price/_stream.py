@@ -9,7 +9,7 @@ implementation in ``stream()``:
   * FULL MODE (at/after 15:30): the full ETF-member stock list, rounds until
     every stock reaches CLOSE_TIME (15:00).
 
-Afternoon-only start (13:30); no morning-session fetching. See ``__main__.py``
+Afternoon-only start (16:00, post-close); no intraday-session fetching. See ``__main__.py``
 for the full architecture description (worker layout, aggregation, anti-bot).
 """
 from __future__ import annotations
@@ -81,8 +81,8 @@ async def stream(
 
     try:
         # --- Afternoon-only start: on trading days, wait until AFTERNOON_START
-        # (13:30) before entering the main loop. Morning-session data is
-        # already captured by other streamers; we focus on afternoon. ---
+        # (16:00, post-close) before entering the main loop. Intraday data is
+        # already captured by other streamers; we focus on post-close data. ---
         _fs_now = datetime.now()
         _fs_today = _fs_now.date()
         if is_trading_day(_fs_today) and _fs_now.time() < AFTERNOON_START:

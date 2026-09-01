@@ -72,7 +72,8 @@ from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
 )
-from _common.df_utils import should_use_gpu
+from _common.df_utils import column_subset, should_use_gpu
+from analyze.mov_ave_spread.helpers import null_if_overflow_counted
 from analyze._common import (
     build_and_insert_chunked,
     upsert_analysis_identity,
@@ -199,9 +200,8 @@ def sanitize_ema_rows(df: pd.DataFrame) -> list[dict]:
     # raw differences that can overflow for high-priced assets.
     nulled = {}
     for c in numeric_cols:
-        before = int(out[c].isna().sum())
-        out[c] = _null_if_overflow(out[c])
-        n = int(out[c].isna().sum()) - before
+        clean, n = null_if_overflow_counted(out[c])
+        out[c] = clean
         if n > 0:
             nulled[c] = n
     if nulled:
@@ -211,15 +211,6 @@ def sanitize_ema_rows(df: pd.DataFrame) -> list[dict]:
               f"across {len(nulled)} column(s): {per}", flush=True)
 
     return sanitize_for_db_insert(out, numeric_cols=numeric_cols)
-
-
-def _null_if_overflow(series):
-    """Null values whose |abs| >= NUMERIC_MAX_ABS (would overflow
-    NUMERIC(10,6)). Mirrors analyze.mov_ave_spread.helpers.null_if_overflow.
-    """
-    s = pd.to_numeric(series, errors="coerce")
-    mask = s.isna() | ~np.isfinite(s) | (s.abs().round(6) >= NUMERIC_MAX_ABS)
-    return s.where(~mask)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +287,7 @@ async def run_ema(
     )
     # Only select columns that actually exist in the DataFrame (defensive
     # — the parent always provides them, but a unit-test stub might not).
-    available = [c for c in needed_cols if c in df.columns]
+    available = column_subset(df, needed_cols)
     ema_df = df[available].copy()
 
     if ema_df.empty:

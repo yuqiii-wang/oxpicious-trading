@@ -111,7 +111,7 @@ from _common.df_utils._activate import activate
 activate()
 
 from analyze._common import (  # noqa: E402
-    build_and_insert_chunked,
+    build_and_insert_chunked_df,
     upsert_analysis_identity,
 )
 from analyze.mov_ave_spread.config import (  # noqa: E402
@@ -130,7 +130,7 @@ from analyze.mov_ave_spread.config import (  # noqa: E402
     TRADING_AMT_TABLE,
 )
 from analyze.mov_ave_spread.fetch import fetch_source_data  # noqa: E402
-from analyze.mov_ave_spread.compute import build_detail_rows  # noqa: E402
+from analyze.mov_ave_spread.compute import build_detail_frame  # noqa: E402
 from analyze.mov_ave_spread.rsi import run_rsi, RSI_TABLE  # noqa: E402
 from analyze.mov_ave_spread.ema import run_ema  # noqa: E402
 from analyze.mov_ave_spread.ohlc import run_ohlc, find_ohlc_repair_dates  # noqa: E402
@@ -172,13 +172,13 @@ async def _process_one_sec_type(
         print(f"\n  [{st}] Computing + inserting detail rows (FORCE mode, all dates)...",
               flush=True)
         detail_df = df
-        n_detail = await build_and_insert_chunked(
+        n_detail = await build_and_insert_chunked_df(
             conn, pool, detail_df,
-            lambda sub: build_detail_rows(sub),
+            lambda sub: build_detail_frame(sub),
             table_name=DETAIL_TABLE,
-            key_columns=["sec_type", "code", "date"],
             force=force,
             sec_types=(st,),
+            chunk_target_rows=100_000,  # wide table — no melt, keep big chunks
             max_concurrent=max_concurrent,
             label=f"detail[{st}]",
         )
@@ -204,13 +204,13 @@ async def _process_one_sec_type(
         print(f"  [{st}]   building {len(detail_df):,} detail rows "
               f"(COPY per chunk)", flush=True)
 
-        n_detail = await build_and_insert_chunked(
+        n_detail = await build_and_insert_chunked_df(
             conn, pool, detail_df,
-            lambda sub: build_detail_rows(sub),
+            lambda sub: build_detail_frame(sub),
             table_name=DETAIL_TABLE,
-            key_columns=["sec_type", "code", "date"],
             force=force,
             sec_types=(st,),
+            chunk_target_rows=100_000,  # wide table — no melt, keep big chunks
             max_concurrent=max_concurrent,
             label=f"detail[{st}]",
         )
@@ -303,13 +303,13 @@ async def _process_single_code(
         return 0
 
     # ---- Step 3: detail + all internal steps -----------------------------
-    n_detail = await build_and_insert_chunked(
+    n_detail = await build_and_insert_chunked_df(
         conn, pool, df,
-        lambda sub: build_detail_rows(sub),
+        lambda sub: build_detail_frame(sub),
         table_name=DETAIL_TABLE,
-        key_columns=["sec_type", "code", "date"],
         force=False,
         sec_types=(),  # bypass per-sec_type skip-filter (rows pre-deleted)
+        chunk_target_rows=100_000,  # wide table — no melt, keep big chunks
         max_concurrent=max_concurrent,
         label=f"detail[{st}:{code}]",
     )
@@ -586,4 +586,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    from _common.post_check import post_check
+    try:
+        asyncio.run(main())
+    finally:
+        post_check()

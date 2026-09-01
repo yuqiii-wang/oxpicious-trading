@@ -317,41 +317,44 @@ ALTER TABLE analysis.mov_ave_spreads_detail_ema ADD COLUMN IF NOT EXISTS std_120
 ALTER TABLE analysis.mov_ave_spreads_detail_ema ADD COLUMN IF NOT EXISTS std_255days NUMERIC(10,6);
 
 -- ----------------------------------------------------------------------------
---  Table: analysis.mov_ave_spreads_detail_ohlc  (OHLC summary per window)
---    One row per (sec_type, code, date) with today_close + rolling OHLC
---    stats over 7 windows (20/60/120/255/500/750/1275 trading days).
+--  Table: analysis.mov_ave_spreads_detail_ohlc  (OHLC summary per period,
+--  LONG format)
+--    One row per (sec_type, code, date, period): today_close plus rolling
+--    OHLC stats for that period. period ∈ {20, 60, 120, 255, 500, 750,
+--    1275} trading days. The per-window column names collapse into one
+--    generic *_over_period column set — no duplicated names per window.
 --
 --  Columns:
---    sec_type, code, date              — PK; identifies the asset universe
---                                        (etf vs index), ticker, and date
+--    sec_type, code, date, period       — PK; identifies the asset universe
+--                                         (etf vs index), ticker, date, and
+--                                         the rolling-window size
 --    today_close                        — close price on `date`
---    For each window W ∈ {20, 60, 120, 255, 500, 750, 1275}:
---      open_Wd      — open price on the W-th trading day before `date`
---      high_Wd      — top-high anchor: highest CLOSE among window dates
---                     MORE THAN 20% of W trading days before `date`
---                     (value = that anchor date's close)
---      low_Wd       — lowest-low anchor: lowest CLOSE among window dates
---                     MORE THAN 20% of W trading days before `date`
---                     (value = that anchor date's close)
---      high_2nd_Wd  — second-high anchor: best local-max CLOSE peak in
---                     the same restricted region lying > 20% of W
---                     trading days AFTER the top anchor (2nd date is
---                     always later than the top date — roof line runs
---                     forward in time)
---                     (value = that anchor date's INTRADAY HIGH)
---      low_2nd_Wd   — second-low anchor: best local-min CLOSE trough in
---                     the same restricted region lying > 20% of W
---                     trading days AFTER the bottom anchor (2nd date is
---                     always later than the top date — floor line runs
---                     forward in time)
---                     (value = that anchor date's INTRADAY LOW)
+--    open_over_period      — open price on the period-th trading day
+--                            before `date`
+--    high_over_period      — top-high anchor: MAXIMUM valid CLOSE in the
+--                            1st HALF of the window (value = that anchor
+--                            date's close)
+--    low_over_period       — lowest-low anchor: MINIMUM valid CLOSE in the
+--                            1st half (value = that anchor date's close)
+--    high_2nd_over_period  — second-high anchor: MAXIMUM valid CLOSE in the
+--                            2nd HALF of the window (2nd date is always
+--                            later than the top date — the halves are
+--                            disjoint and ordered, so the roof line runs
+--                            forward in time)
+--                            (value = that anchor date's INTRADAY HIGH)
+--    low_2nd_over_period   — second-low anchor: MINIMUM valid CLOSE in the
+--                            2nd half (2nd date is always later than the
+--                            top date — the floor line runs forward in
+--                            time)
+--                            (value = that anchor date's INTRADAY LOW)
 --
---  Anchor dates are selected on CLOSE; when the unconstrained extreme
---  lies within 20% of the window from `date`, the next-best qualifying
---  date is used ("search other dates"). Columns are NULL when no
---  qualifying date exists (e.g. history shorter than 20% of W + 1 rows);
---  2nd anchors are also NULL when no qualifying second peak/trough
---  exists.
+--  HALF-SPLIT ANCHORS: the window [date-period+1, date] is cut in half —
+--  h = L // 2 with L the window length in trading-day positions (for odd
+--  L the 2nd half gets the extra day); the 1st extreme is the max/min
+--  valid CLOSE of the 1st half and the 2nd extreme the max/min valid
+--  CLOSE of the 2nd half. Ties go to the earliest date; NaN closes are
+--  skipped. Columns are NULL when the window has fewer than 2 positions
+--  or the half holds no valid close.
 --  Populated by the internal OHLC step of `analyze.mov_ave_spread`
 --  (see ohlc.py). Reuses the same source DataFrame as the parent
 --  pipeline — no second DB round-trip.
@@ -362,190 +365,55 @@ CREATE TABLE analysis.mov_ave_spreads_detail_ohlc (
     date              DATE         NOT NULL,
 
     today_close       NUMERIC(18,6) NOT NULL,
+    period            INTEGER      NOT NULL,  -- window size in trading days
 
-    open_20d          NUMERIC(18,6),
-    high_20d          NUMERIC(18,6),
-    high_date_20d    DATE,
-    low_20d           NUMERIC(18,6),
-    low_date_20d     DATE,
-    high_2nd_20d          NUMERIC(18,6),
-    high_2nd_date_20d     DATE,
-    low_2nd_20d           NUMERIC(18,6),
-    low_2nd_date_20d     DATE,
-    high_line_slope_20d NUMERIC(18,6),
-    low_line_slope_20d  NUMERIC(18,6),
+    open_over_period          NUMERIC(18,6),
+    high_over_period          NUMERIC(18,6),
+    high_date_over_period    DATE,
+    low_over_period           NUMERIC(18,6),
+    low_date_over_period     DATE,
+    high_2nd_over_period          NUMERIC(18,6),
+    high_2nd_date_over_period     DATE,
+    low_2nd_over_period           NUMERIC(18,6),
+    low_2nd_date_over_period     DATE,
+    high_line_slope_over_period NUMERIC(18,6),
+    low_line_slope_over_period  NUMERIC(18,6),
 
-    open_60d          NUMERIC(18,6),
-    high_60d          NUMERIC(18,6),
-    high_date_60d    DATE,
-    low_60d           NUMERIC(18,6),
-    low_date_60d     DATE,
-    high_2nd_60d          NUMERIC(18,6),
-    high_2nd_date_60d     DATE,
-    low_2nd_60d           NUMERIC(18,6),
-    low_2nd_date_60d     DATE,
-    high_line_slope_60d NUMERIC(18,6),
-    low_line_slope_60d  NUMERIC(18,6),
-
-    open_120d         NUMERIC(18,6),
-    high_120d         NUMERIC(18,6),
-    high_date_120d    DATE,
-    low_120d          NUMERIC(18,6),
-    low_date_120d     DATE,
-    high_2nd_120d         NUMERIC(18,6),
-    high_2nd_date_120d     DATE,
-    low_2nd_120d          NUMERIC(18,6),
-    low_2nd_date_120d     DATE,
-    high_line_slope_120d NUMERIC(18,6),
-    low_line_slope_120d  NUMERIC(18,6),
-
-    open_255d         NUMERIC(18,6),
-    high_255d         NUMERIC(18,6),
-    high_date_255d    DATE,
-    low_255d          NUMERIC(18,6),
-    low_date_255d     DATE,
-    high_2nd_255d         NUMERIC(18,6),
-    high_2nd_date_255d     DATE,
-    low_2nd_255d          NUMERIC(18,6),
-    low_2nd_date_255d     DATE,
-    high_line_slope_255d NUMERIC(18,6),
-    low_line_slope_255d  NUMERIC(18,6),
-
-    open_500d         NUMERIC(18,6),
-    high_500d         NUMERIC(18,6),
-    high_date_500d    DATE,
-    low_500d          NUMERIC(18,6),
-    low_date_500d     DATE,
-    high_2nd_500d         NUMERIC(18,6),
-    high_2nd_date_500d     DATE,
-    low_2nd_500d          NUMERIC(18,6),
-    low_2nd_date_500d     DATE,
-    high_line_slope_500d NUMERIC(18,6),
-    low_line_slope_500d  NUMERIC(18,6),
-
-    open_750d         NUMERIC(18,6),
-    high_750d         NUMERIC(18,6),
-    high_date_750d    DATE,
-    low_750d          NUMERIC(18,6),
-    low_date_750d     DATE,
-    high_2nd_750d         NUMERIC(18,6),
-    high_2nd_date_750d     DATE,
-    low_2nd_750d          NUMERIC(18,6),
-    low_2nd_date_750d     DATE,
-    high_line_slope_750d NUMERIC(18,6),
-    low_line_slope_750d  NUMERIC(18,6),
-
-    open_1275d         NUMERIC(18,6),
-    high_1275d         NUMERIC(18,6),
-    high_date_1275d    DATE,
-    low_1275d          NUMERIC(18,6),
-    low_date_1275d     DATE,
-    high_2nd_1275d         NUMERIC(18,6),
-    high_2nd_date_1275d     DATE,
-    low_2nd_1275d          NUMERIC(18,6),
-    low_2nd_date_1275d     DATE,
-    high_line_slope_1275d NUMERIC(18,6),
-    low_line_slope_1275d  NUMERIC(18,6),
     
     CONSTRAINT pk_mov_ave_spreads_detail_ohlc
-        PRIMARY KEY (code, sec_type, date)
+        PRIMARY KEY (code, sec_type, date, period)
 ) PARTITION BY HASH (code);
 
 -- Native hash partitions (32) keyed by code — created via the shared util
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p31
 SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_detail_ohlc', 32);
 
-COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ohlc              IS 'OHLC detail: one row per (code, sec_type, date) with today_close + rolling window anchors over 7 windows (20/60/120/255/500/750/1275 trading days). Top anchors (high_Wd/low_Wd) are the highest/lowest CLOSE among window dates more than 20% of the window before `date` (value = anchor date close); 2nd anchors (high_2nd_Wd/low_2nd_Wd) are the best local-max/min CLOSE peaks in the same restricted region, separated from the top anchors by more than 20% of the window (value = anchor date INTRADAY high/low). DATE columns record the anchor dates. sec_type ∈ {etf, index, stock}. Source: same DataFrame as mov_ave_spread parent pipeline (no second DB round-trip).';
+-- LONG format: one row per (code, sec_type, date, period). The per-window
+-- columns collapse into a single generic *_over_period column set keyed by
+-- `period` ∈ {20, 60, 120, 255, 500, 750, 1275} trading days.
+COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ohlc              IS 'OHLC detail (LONG format): one row per (code, sec_type, date, period) with today_close + rolling-window anchors per period ∈ {20,60,120,255,500,750,1275} trading days. HALF-SPLIT ANCHORS: the period window [date-period+1, date] is cut in half — h = L // 2 in trading-day positions (for odd L the 2nd half gets the extra day). Top anchors (high_over_period/low_over_period): the MAXIMUM/MINIMUM valid CLOSE of the 1st half (ties -> earliest date; value = anchor date close). 2nd anchors (high_2nd_over_period/low_2nd_over_period): the MAXIMUM/MINIMUM valid CLOSE of the 2nd half (value = anchor date INTRADAY high/low). The halves are disjoint and ordered, so the 2nd anchor date is ALWAYS strictly after the 1st anchor date wherever both exist. NaN closes are skipped; a half with no valid close NULLs its anchor, and windows with fewer than 2 positions have no anchors. DATE columns record the anchor dates. sec_type ∈ {etf, index, stock}. Source: same DataFrame as mov_ave_spread parent pipeline (no second DB round-trip).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.sec_type     IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.date        IS 'Business date (trading day).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.today_close IS 'Close price on `date` (COALESCE(adj_close, close) for ETFs; close for index/stock). NOT NULL.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_20d   IS 'Open price on the 20th trading day before `date`. NULL if fewer than 20 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_20d   IS 'Top-high anchor: highest CLOSE among the 20d-window dates more than 20% of the window (> 4 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_20d    IS 'Lowest-low anchor: lowest CLOSE among the 20d-window dates more than 20% of the window (> 4 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_20d IS 'Second-high anchor: best local-max CLOSE peak in the 20d-window restricted region, > 4 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_20d  IS 'Second-low anchor: best local-min CLOSE trough in the 20d-window restricted region, > 4 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_60d   IS 'Open price on the 60th trading day before `date`. NULL if fewer than 60 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_60d   IS 'Top-high anchor: highest CLOSE among the 60d-window dates more than 20% of the window (> 12 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_60d    IS 'Lowest-low anchor: lowest CLOSE among the 60d-window dates more than 20% of the window (> 12 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_60d IS 'Second-high anchor: best local-max CLOSE peak in the 60d-window restricted region, > 12 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_60d  IS 'Second-low anchor: best local-min CLOSE trough in the 60d-window restricted region, > 12 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_120d  IS 'Open price on the 120th trading day before `date`. NULL if fewer than 120 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_120d  IS 'Top-high anchor: highest CLOSE among the 120d-window dates more than 20% of the window (> 24 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_120d   IS 'Lowest-low anchor: lowest CLOSE among the 120d-window dates more than 20% of the window (> 24 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_120d IS 'Second-high anchor: best local-max CLOSE peak in the 120d-window restricted region, > 24 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_120d  IS 'Second-low anchor: best local-min CLOSE trough in the 120d-window restricted region, > 24 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_255d  IS 'Open price on the 255th trading day before `date`. NULL if fewer than 255 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_255d  IS 'Top-high anchor: highest CLOSE among the 255d-window dates more than 20% of the window (> 51 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_255d   IS 'Lowest-low anchor: lowest CLOSE among the 255d-window dates more than 20% of the window (> 51 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_255d IS 'Second-high anchor: best local-max CLOSE peak in the 255d-window restricted region, > 51 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_255d  IS 'Second-low anchor: best local-min CLOSE trough in the 255d-window restricted region, > 51 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_500d  IS 'Open price on the 500th trading day before `date`. NULL if fewer than 500 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_500d  IS 'Top-high anchor: highest CLOSE among the 500d-window dates more than 20% of the window (> 100 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_500d   IS 'Lowest-low anchor: lowest CLOSE among the 500d-window dates more than 20% of the window (> 100 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_500d IS 'Second-high anchor: best local-max CLOSE peak in the 500d-window restricted region, > 100 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_500d  IS 'Second-low anchor: best local-min CLOSE trough in the 500d-window restricted region, > 100 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_750d  IS 'Open price on the 750th trading day before `date`. NULL if fewer than 750 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_750d  IS 'Top-high anchor: highest CLOSE among the 750d-window dates more than 20% of the window (> 150 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_750d   IS 'Lowest-low anchor: lowest CLOSE among the 750d-window dates more than 20% of the window (> 150 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_750d IS 'Second-high anchor: best local-max CLOSE peak in the 750d-window restricted region, > 150 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_750d  IS 'Second-low anchor: best local-min CLOSE trough in the 750d-window restricted region, > 150 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_1275d  IS 'Open price on the 1275th trading day before `date` (~5 trading years). NULL if fewer than 1275 prior rows exist.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_1275d  IS 'Top-high anchor: highest CLOSE among the 1275d-window dates more than 20% of the window (> 255 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_1275d   IS 'Lowest-low anchor: lowest CLOSE among the 1275d-window dates more than 20% of the window (> 255 trading days) before `date`; value = the anchor date close. NULL when no qualifying date exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_1275d IS 'Second-high anchor: best local-max CLOSE peak in the 1275d-window restricted region, > 255 trading days from the top anchor; value = the anchor date INTRADAY HIGH. NULL when no qualifying second peak exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_1275d  IS 'Second-low anchor: best local-min CLOSE trough in the 1275d-window restricted region, > 255 trading days from the bottom anchor; value = the anchor date INTRADAY LOW. NULL when no qualifying second trough exists.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.period      IS 'Rolling-window size in trading days: one of {20, 60, 120, 255, 500, 750, 1275}. Part of the PK — the long format stores one row per (code, sec_type, date, period).';
 
--- Comments on the new DATE columns (when the rolling max/min/2nd-extreme occurred).
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_20d    IS 'Business date on which the rolling max(high) over the preceding 20 trading days occurred. NULL when fewer than 20 prior rows exist or all highs in the window are NaN.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_20d     IS 'Business date on which the rolling min(low) over the preceding 20 trading days occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_20d IS 'Business date of the second distinct local-maximum peak in the 20d window (>= 20% cooldown = 4 days from the top peak). NULL when no qualifying second peak exists.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_20d  IS 'Business date of the second distinct local-minimum trough in the 20d window (>= 20% cooldown = 4 days from the bottom trough).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_60d    IS 'Business date on which the rolling max(high) over the preceding 60 trading days occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_60d     IS 'Business date on which the rolling min(low) over the preceding 60 trading days occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_60d IS 'Business date of the second distinct local-maximum peak in the 60d window (>= 20% cooldown = 12 days from the top peak).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_60d  IS 'Business date of the second distinct local-minimum trough in the 60d window (>= 20% cooldown = 12 days from the bottom trough).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_120d   IS 'Business date on which the rolling max(high) over the preceding 120 trading days occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_120d    IS 'Business date on which the rolling min(low) over the preceding 120 trading days occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_120d IS 'Business date of the second distinct local-maximum peak in the 120d window (>= 20% cooldown = 24 days).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_120d  IS 'Business date of the second distinct local-minimum trough in the 120d window (>= 20% cooldown = 24 days).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_255d   IS 'Business date on which the rolling max(high) over the preceding 255 trading days (~1 trading year) occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_255d    IS 'Business date on which the rolling min(low) over the preceding 255 trading days occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_255d IS 'Business date of the second distinct local-maximum peak in the 255d window (>= 20% cooldown = 51 days).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_255d  IS 'Business date of the second distinct local-minimum trough in the 255d window (>= 20% cooldown = 51 days).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_500d   IS 'Business date on which the rolling max(high) over the preceding 500 trading days (~2 trading years) occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_500d    IS 'Business date on which the rolling min(low) over the preceding 500 trading days occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_500d IS 'Business date of the second distinct local-maximum peak in the 500d window (>= 20% cooldown = 100 days).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_500d  IS 'Business date of the second distinct local-minimum trough in the 500d window (>= 20% cooldown = 100 days).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_750d   IS 'Business date on which the rolling max(high) over the preceding 750 trading days (~3 trading years) occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_750d    IS 'Business date on which the rolling min(low) over the preceding 750 trading days occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_750d IS 'Business date of the second distinct local-maximum peak in the 750d window (>= 20% cooldown = 150 days).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_750d  IS 'Business date of the second distinct local-minimum trough in the 750d window (>= 20% cooldown = 150 days).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_1275d  IS 'Business date on which the rolling max(high) over the preceding 1275 trading days (~5 trading years) occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_1275d   IS 'Business date on which the rolling min(low) over the preceding 1275 trading days occurred.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_1275d IS 'Business date of the second distinct local-maximum peak in the 1275d window (>= 20% cooldown = 255 days).';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_1275d  IS 'Business date of the second distinct local-minimum trough in the 1275d window (>= 20% cooldown = 255 days).';
-
--- Comments on the roof/floor line-slope columns.
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_20d  IS 'Slope of the roof line through the two high anchors (high_20d close -> high_2nd_20d intraday high), in price units per trading day: (high_2nd_20d - high_20d) / (trading days between the two anchor dates). Negative = descending roof. NULL when either anchor is absent.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_20d   IS 'Slope of the floor line through the two low anchors (low_20d close -> low_2nd_20d intraday low), in price units per trading day: (low_2nd_20d - low_20d) / (trading days between the two anchor dates). Positive = ascending floor. NULL when either anchor is absent.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_60d  IS 'Slope of the roof line through the two high anchors of the 60d window, in price units per trading day. Negative = descending roof.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_60d   IS 'Slope of the floor line through the two low anchors of the 60d window, in price units per trading day. Positive = ascending floor.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_120d IS 'Slope of the roof line through the two high anchors of the 120d window, in price units per trading day. Negative = descending roof.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_120d  IS 'Slope of the floor line through the two low anchors of the 120d window, in price units per trading day. Positive = ascending floor.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_255d IS 'Slope of the roof line through the two high anchors of the 255d window, in price units per trading day. Negative = descending roof.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_255d  IS 'Slope of the floor line through the two low anchors of the 255d window, in price units per trading day. Positive = ascending floor.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_500d IS 'Slope of the roof line through the two high anchors of the 500d window, in price units per trading day. Negative = descending roof.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_500d  IS 'Slope of the floor line through the two low anchors of the 500d window, in price units per trading day. Positive = ascending floor.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_750d IS 'Slope of the roof line through the two high anchors of the 750d window, in price units per trading day. Negative = descending roof.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_750d  IS 'Slope of the floor line through the two low anchors of the 750d window, in price units per trading day. Positive = ascending floor.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_1275d IS 'Slope of the roof line through the two high anchors of the 1275d window, in price units per trading day. Negative = descending roof.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_1275d  IS 'Slope of the floor line through the two low anchors of the 1275d window, in price units per trading day. Positive = ascending floor.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.open_over_period   IS 'Open price on the period-th trading day before `date`. NULL if fewer than `period` prior rows exist.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_over_period   IS 'Top-high anchor: the MAXIMUM valid CLOSE in the 1st HALF of the period window ([date-period+1, date] cut in half, h = L // 2; ties -> earliest date); value = the anchor date close. NULL when the half holds no valid close.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_over_period IS 'Business date of the top-high anchor (max valid CLOSE of the window''s 1st half). NULL when the half holds no valid close.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_over_period    IS 'Lowest-low anchor: the MINIMUM valid CLOSE in the 1st HALF of the period window (ties -> earliest date); value = the anchor date close. NULL when the half holds no valid close.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_over_period IS 'Business date of the lowest-low anchor (min valid CLOSE of the window''s 1st half). NULL when the half holds no valid close.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_over_period IS 'Second-high anchor: the MAXIMUM valid CLOSE in the 2nd HALF of the period window (ties -> earliest date); value = the anchor date INTRADAY HIGH. The 2nd half is strictly after the 1st, so this date is always after the top-high anchor date. NULL when the half holds no valid close.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_over_period IS 'Business date of the second-high anchor (always strictly after the top-high anchor date). NULL when the half holds no valid close.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_over_period  IS 'Second-low anchor: the MINIMUM valid CLOSE in the 2nd HALF of the period window (ties -> earliest date); value = the anchor date INTRADAY LOW. The 2nd half is strictly after the 1st, so this date is always after the lowest-low anchor date. NULL when the half holds no valid close.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_over_period IS 'Business date of the second-low anchor (always strictly after the lowest-low anchor date). NULL when the half holds no valid close.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_over_period IS 'Slope of the roof line through the two high anchors of this period (high_over_period close -> high_2nd_over_period intraday high), in price units per trading day: (high_2nd_over_period - high_over_period) / (trading days between the two anchor dates). Signed; the 2nd anchor always lies after the top in time. NULL when either anchor is absent.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_over_period  IS 'Slope of the floor line through the two low anchors of this period (low_over_period close -> low_2nd_over_period intraday low), in price units per trading day. Signed; the 2nd anchor always lies after the bottom in time. NULL when either anchor is absent.';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_rsi  (per-asset+date Wilder RSI + short-term gaps)
 --    One row per (sec_type, code, date). Stores Wilder's Relative Strength
---    Index for 4 windows (6/10/14/20 days) and 2 short-term price-gap
+--    Index for 5 windows (6/10/14/20/60 days) and 2 short-term price-gap
 --    (N-day return) columns (2/3 days).
 --
 --  RSI formula (Wilder's smoothing — EWM with alpha = 1/N, adjust=False):
@@ -581,23 +449,19 @@ CREATE TABLE analysis.mov_ave_rsi (
     date            DATE         NOT NULL,
 
     -- Wilder RSI columns (0..100, NULL until N periods).
-    -- Windows: 6 / 10 / 14 (classic Wilder) / 20 / 60 / 120 (~half trading
-    -- year) / 255 (~1 trading year, matches MA255) / 500 (~2 trading years).
+    -- Windows: 6 / 10 / 14 (classic Wilder) / 20 / 60 (~3 trading months).
     rsi_6days       NUMERIC(10,6),
     rsi_10days      NUMERIC(10,6),
     rsi_14days      NUMERIC(10,6),
     rsi_20days      NUMERIC(10,6),
     rsi_60days      NUMERIC(10,6),
-    rsi_120days     NUMERIC(10,6),
-    rsi_255days     NUMERIC(10,6),
-    rsi_500days     NUMERIC(10,6),
 
     -- 2 short-term price-gap (N-day return) columns
     gap_2days       NUMERIC(10,6), -- sign indicates last extreme is max or min
     gap_3days       NUMERIC(10,6), -- sign indicates last extreme is max or min 
-    gap_since_last_extreme NUMERIC(10,6), -- sign indicates last extreme is max or min
-    days_since_last_extreme NUMERIC(10,6),
-    date_of_last_extreme DATE,
+    gap_since_last_extreme_500days NUMERIC(10,6), -- sign indicates last extreme is max or min
+    days_since_last_extreme_500days NUMERIC(10,6),
+    date_of_last_extreme_500days DATE,
 
     CONSTRAINT pk_mov_ave_rsi PRIMARY KEY (code, sec_type, date)
 ) PARTITION BY HASH (code);
@@ -615,16 +479,29 @@ SELECT public.create_hash_partitions('analysis', 'mov_ave_rsi', 16);
 -- gain/loss observations. Built by analyze.mov_ave_spread (rsi.py).
 ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_60days NUMERIC(10,6);
 
--- Migrate: add rsi_120days / rsi_255days / rsi_500days columns to pre-existing
--- installs. Wilder RSI over 120 / 255 / 500 trading days (alpha=1/N,
--- ewm adjust=False, min_periods=N) — progressively longer-term momentum
--- windows complementing the classic 14-day Wilder default. 255 days ≈ 1
--- trading year (matches the MA255 window); 500 days ≈ 2 trading years.
--- 0..100. NULL until N consecutive gain/loss observations. Built by
--- analyze.mov_ave_spread (rsi.py).
-ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_120days NUMERIC(10,6);
-ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_255days NUMERIC(10,6);
-ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_500days NUMERIC(10,6);
+-- Migrate: drop rsi_120days / rsi_255days / rsi_500days columns (removed
+-- from the schema and the calculation — the analysis_forecasts mov_rsi
+-- module only uses windows 6/10/14/20/60). Safe on fresh installs where
+-- the columns never existed. Existing values are discarded; no recompute
+-- needed since no consumer reads them.
+ALTER TABLE analysis.mov_ave_rsi DROP COLUMN IF EXISTS rsi_120days;
+ALTER TABLE analysis.mov_ave_rsi DROP COLUMN IF EXISTS rsi_255days;
+ALTER TABLE analysis.mov_ave_rsi DROP COLUMN IF EXISTS rsi_500days;
+
+-- Migrate: replace the unbounded last-extreme columns (gap_since_last_extreme
+-- / days_since_last_extreme / date_of_last_extreme — "most recent turning
+-- point ever") with 500-trading-day bounded variants. The _500days columns
+-- only look at turning points within the last 500 trading days of the code's
+-- history: NULL when the most recent extreme is older than 500 trading days
+-- (or no extreme exists yet). SEMANTICS CHANGE — the old unbounded columns
+-- are dropped and existing values must be recomputed by re-running
+-- analyze.mov_ave_spread in force mode (rsi.py step truncates mov_ave_rsi).
+ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS gap_since_last_extreme_500days NUMERIC(10,6);
+ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS days_since_last_extreme_500days NUMERIC(10,6);
+ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS date_of_last_extreme_500days DATE;
+ALTER TABLE analysis.mov_ave_rsi DROP COLUMN IF EXISTS gap_since_last_extreme;
+ALTER TABLE analysis.mov_ave_rsi DROP COLUMN IF EXISTS days_since_last_extreme;
+ALTER TABLE analysis.mov_ave_rsi DROP COLUMN IF EXISTS date_of_last_extreme;
 
 -- NOTE: no separate (sec_type, code, date) index — the PK already covers
 -- that lookup (same rationale as mov_ave_spreads_detail above). A duplicate
@@ -632,7 +509,7 @@ ALTER TABLE analysis.mov_ave_rsi ADD COLUMN IF NOT EXISTS rsi_500days NUMERIC(10
 -- maintenance cost on every INSERT for zero benefit (PK B-tree already
 -- serves equality + range scans on the (sec_type, code, date) prefix).
 
-COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (6/10/14/20/60/120/255/500 days) + short-term price gaps (2/3 day returns). One row per (code, sec_type, date). sec_type ∈ {etf, index, stock}. analysis.mov_ave_rsi_holiday FK-references this table ON DELETE CASCADE.';
+COMMENT ON TABLE  analysis.mov_ave_rsi             IS 'Wilder RSI (6/10/14/20/60 days) + short-term price gaps (2/3 day returns). One row per (code, sec_type, date). sec_type ∈ {etf, index, stock}. analysis.mov_ave_rsi_holiday FK-references this table ON DELETE CASCADE.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.sec_type    IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_rsi.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_rsi.date        IS 'Business date (trading day).';
@@ -641,14 +518,11 @@ COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_10days  IS 'Wilder RSI over 10 tradin
 COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_14days  IS 'Wilder RSI over 14 trading days (alpha=1/14, ewm adjust=False, min_periods=14) — the classic Wilder window. 0..100. NULL until 14 periods.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_20days  IS 'Wilder RSI over 20 trading days (alpha=1/20, ewm adjust=False, min_periods=20). 0..100. NULL until 20 periods.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_60days  IS 'Wilder RSI over 60 trading days (alpha=1/60, ewm adjust=False, min_periods=60) — a longer-term momentum window complementing the classic 14-day Wilder default. 0..100. NULL until 60 consecutive gain/loss observations. Computed by analyze.mov_ave_spread (rsi.py) using the same Wilder EWM recurrence as the other RSI windows (delta = price[t]-price[t-1] is cuDF-accelerated via grouped_diff; the per-window EWM stays on pandas because cuDF lacks grouped-ewm support — see rsi.py for the documented rationale).';
-COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_120days IS 'Wilder RSI over 120 trading days (alpha=1/120, ewm adjust=False, min_periods=120) — a half-trading-year momentum window. 0..100. NULL until 120 consecutive gain/loss observations. Computed by analyze.mov_ave_spread (rsi.py) using the same Wilder EWM recurrence as the other RSI windows.';
-COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_255days IS 'Wilder RSI over 255 trading days (alpha=1/255, ewm adjust=False, min_periods=255) — a ~1-trading-year momentum window matching the MA255 window. 0..100. NULL until 255 consecutive gain/loss observations. Computed by analyze.mov_ave_spread (rsi.py) using the same Wilder EWM recurrence as the other RSI windows.';
-COMMENT ON COLUMN analysis.mov_ave_rsi.rsi_500days IS 'Wilder RSI over 500 trading days (alpha=1/500, ewm adjust=False, min_periods=500) — a ~2-trading-year long-term momentum window. 0..100. NULL until 500 consecutive gain/loss observations. Computed by analyze.mov_ave_spread (rsi.py) using the same Wilder EWM recurrence as the other RSI windows. Useful for very long-term trend confirmation on indices and mature stocks; will be NULL for most recent IPOs / ETFs with < 500 rows of history.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.gap_2days   IS '2-day price return: (price[t] - price[t-2]) / price[t-2]. Signed fractional ratio. NULL for the first 2 rows of each code.';
 COMMENT ON COLUMN analysis.mov_ave_rsi.gap_3days   IS '3-day price return: (price[t] - price[t-3]) / price[t-3]. Signed fractional ratio. NULL for the first 3 rows of each code.';
-COMMENT ON COLUMN analysis.mov_ave_rsi.gap_since_last_extreme IS 'Signed fractional gap from the most recent local turning point (high/low) detected by price_slope sign change: (price[t] - extreme_price) / extreme_price. Sign indicates the type of the last extreme: positive = last extreme was a local MIN (price rebounded upward since the trough), negative = last extreme was a local MAX (price fell since the peak). NULL when no preceding turning point exists for the code (early history before the first turn).';
-COMMENT ON COLUMN analysis.mov_ave_rsi.days_since_last_extreme IS 'Trading days since the most recent local turning point (high/low) detected by price_slope sign change. 0 on the extreme row itself. NULL when no preceding turning point exists for the code.';
-COMMENT ON COLUMN analysis.mov_ave_rsi.date_of_last_extreme IS 'The biz date of the most recent local turning point (high/low) detected by price_slope sign change — i.e. the date on which the extreme_price referenced by gap_since_last_extreme was observed. Carried forward (forward-filled) from each turning point until the next one. NULL when no preceding turning point exists for the code (early history before the first turn).';
+COMMENT ON COLUMN analysis.mov_ave_rsi.gap_since_last_extreme_500days IS 'Signed fractional gap from the most recent local turning point (high/low) detected by price_slope sign change WITHIN the last 500 trading days of the code history: (price[t] - extreme_price) / extreme_price. Sign indicates the type of the last extreme: positive = last extreme was a local MIN (price rebounded upward since the trough), negative = last extreme was a local MAX (price fell since the peak). NULL when no turning point exists in the 500-trading-day lookback window (early history before the first turn, or the most recent extreme is older than 500 trading days).';
+COMMENT ON COLUMN analysis.mov_ave_rsi.days_since_last_extreme_500days IS 'Trading days since the most recent local turning point (high/low) detected by price_slope sign change within the last 500 trading days. 0 on the extreme row itself. NULL when no turning point exists in the 500-trading-day lookback window (or the most recent extreme is older than 500 trading days).';
+COMMENT ON COLUMN analysis.mov_ave_rsi.date_of_last_extreme_500days IS 'The biz date of the most recent local turning point (high/low) detected by price_slope sign change within the last 500 trading days — i.e. the date on which the extreme_price referenced by gap_since_last_extreme_500days was observed. Carried forward (forward-filled) from each turning point until the next one. NULL when no turning point exists in the 500-trading-day lookback window (early history before the first turn, or the most recent extreme is older than 500 trading days).';
 
 
 -- ----------------------------------------------------------------------------
