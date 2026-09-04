@@ -25,15 +25,21 @@ For each window W ending on `date` (= "today" / the clicked date):
                   anchors, same formula on the low side; positive =
                   ascending floor
 
-HALF-SPLIT ANCHORS: the window [date-W+1, date] is cut in half —
-h = L // 2 with L the window length in trading-day positions (for odd L
-the 2nd half gets the extra day); the 1st extreme is the max/min valid
-CLOSE of the 1st half and the 2nd extreme the max/min valid CLOSE of
-the 2nd half.  Ties go to the earliest date; NaN closes are skipped.
-The halves are disjoint and ordered, so the 2nd anchor date is ALWAYS
-strictly after the 1st anchor date wherever both exist.  No anchors
-when the window has fewer than 2 positions; a half with no valid close
-NULLs its anchor independently.
+HALF-SPLIT ANCHORS + DYNAMIC 2nd RANGE: the window [date-W+1, date]
+is cut in half — h = L // 2 with L the window length in trading-day
+positions (for odd L the 2nd half gets the extra day).  The 1st
+extreme is the max/min valid CLOSE of the 1st half.  Ties go to the
+earliest date; NaN closes are skipped.
+
+The 2nd extreme is NOT confined to the 2nd half — instead its search
+range starts at [1st_anchor_position + ceil(0.10*W), window_end], so
+the 10% time-distance gap is enforced CONSTRUCTIVELY.  This means the
+2nd anchor can be anywhere from the 10% mark after the 1st anchor to
+the window end (not just the 2nd half).  When the 1st anchor is too
+close to the window end (1st_pos + 0.10*W > window_end), only the 2nd
+anchor is NULLed while the 1st anchor stays valid.  Both values
+(1st = close, 2nd = intraday high/low) and slopes are recorded only
+when BOTH anchors exist.
 
 today_close is the close price on `date` (COALESCE(adj_close, close) for
 ETFs; close for index/stock). NOT NULL.
@@ -283,28 +289,38 @@ def _compute_group_ohlc_columns(
 
     # Explicit per-row sweep: clearer diagnostics than a stateless
     # callback at zero cost here (reference-only A/B path).
+    # Two-phase computation: 1st anchor in the 1st half, then 2nd
+    # anchor from the DYNAMIC range [top + 10%*W, b] — the gap is
+    # enforced constructively (no post-filter needed).
     rel_max: np.ndarray = np.full(n, np.nan)
     rel_min: np.ndarray = np.full(n, np.nan)
     rel_2nd_max: np.ndarray = np.full(n, np.nan)
     rel_2nd_min: np.ndarray = np.full(n, np.nan)
+    gap: int = max(1, int(0.10 * w))
     for i in range(n):
         s: int = int(window_starts[i])
         h: int = (i - s + 1) // 2
         if h < 1:
             continue
         mid: int = s + h
-        # _half_extreme_pos returns the offset within [lo..hi]; the 2nd
-        # half's offsets are re-based to the window start (mid - s) so
-        # every rel_* position is window-relative (0 = s) — what the
-        # _map_positions_to_* helpers expect.
+        # Phase 1 — 1st anchor in the 1st half [s, mid-1]
         rel_max[i] = _half_extreme_pos(close_arr, s, mid - 1, 1.0)
-        rel_2nd_max[i] = (
-            _half_extreme_pos(close_arr, mid, i, 1.0) + (mid - s)
-        )
         rel_min[i] = _half_extreme_pos(close_arr, s, mid - 1, -1.0)
-        rel_2nd_min[i] = (
-            _half_extreme_pos(close_arr, mid, i, -1.0) + (mid - s)
-        )
+        # Convert to GLOBAL positions for Phase 2 search range
+        if not np.isnan(rel_max[i]):
+            top_max_abs: int = s + int(rel_max[i])
+            lo2_max: int = top_max_abs + gap
+            if lo2_max <= i:
+                offset = _half_extreme_pos(close_arr, lo2_max, i, 1.0)
+                # offset = rel. position within [lo2_max, i]; convert to
+                # window-relative (offset from s): offset + (lo2_max - s)
+                rel_2nd_max[i] = offset + (lo2_max - s)
+        if not np.isnan(rel_min[i]):
+            top_min_abs: int = s + int(rel_min[i])
+            lo2_min: int = top_min_abs + gap
+            if lo2_min <= i:
+                offset = _half_extreme_pos(close_arr, lo2_min, i, -1.0)
+                rel_2nd_min[i] = offset + (lo2_min - s)
 
     high_date_vals = _map_positions_to_dates(rel_max, window_starts, dates_arr)
     high_vals = _map_positions_to_values(rel_max, window_starts, close_arr)
@@ -329,7 +345,9 @@ def _compute_group_ohlc_columns(
     # -- roof/floor line slopes through the two anchors --
     # Both anchor positions are window-relative, so their difference is
     # the trading-day distance between the anchors regardless of the
-    # window start.
+    # window start.  The 10% gap is enforced constructively (2nd anchor
+    # searched from top + 10%*W to b), so sec - top >= gap wherever both
+    # exist.
     high_slope_vals: np.ndarray = _anchor_line_slope(
         high_vals, high_2nd_vals, rel_max, rel_2nd_max
     )

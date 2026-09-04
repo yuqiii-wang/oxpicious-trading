@@ -1,4 +1,4 @@
-﻿/**
+/**
  * PeAndDividendPanel — one card per code: the EXACT data-viz baseline plot
  * for the security on top, monthly PE & Dividend stats table beneath.
  *
@@ -63,6 +63,7 @@ import {
   expandedTableHeadCellSx,
   expandedTableNumCellSx,
 } from "@/shared/styles/expanded-table-styles";
+import useTableHeaderFilters, { type HeaderFilterDef } from "@/hooks/table-header-filters";
 
 /** Format a YYYY-MM-DD date as a short YYYY-MM string for month display. */
 function fmtMonth(dateStr: string): string {
@@ -73,6 +74,21 @@ function fmtMonth(dateStr: string): string {
 function monthKey(dateStr: string): string {
   return dateStr.slice(0, 7);
 }
+
+/** Opt-in per-column header filters — Month is a date-range selector (month
+ *  granularity over the month-end snapshot dates), Active is a discrete
+ *  label (ticks), the rolling 5y metrics are continuous magnitudes
+ *  (numeric range). */
+const FILTER_DEFS: HeaderFilterDef<PeAndDividendStatsRow>[] = [
+  { key: "month", label: "Month", type: "date", granularity: "month", value: (r) => r.date.slice(0, 7) },
+  { key: "active", label: "Active", type: "ticks", value: (r) => (r.is_active ? "latest" : "earlier") },
+  { key: "min_pe", label: "Min PE 5y", type: "range", value: (r) => r.min_pe_5y },
+  { key: "max_pe", label: "Max PE 5y", type: "range", value: (r) => r.max_pe_5y },
+  { key: "div_var", label: "Div Var 5y", type: "range", value: (r) => r.dividend_var_5y },
+  { key: "last_div", label: "Last Div", type: "range", value: (r) => r.last_dividend_per_share },
+  { key: "div_stab", label: "Div Stability 5y", type: "range", value: (r) => r.dividend_stability_5y },
+];
+const DEF_BY_KEY = new Map(FILTER_DEFS.map((d) => [d.key, d]));
 
 export function PeAndDividendPanel({
   code,
@@ -159,6 +175,13 @@ export function PeAndDividendPanel({
   // ---- Stats table: highlight + scroll-into-view --------------------------
   // Find the stats row whose month-end is the latest one <= clickedDate.
   const statsRows: PeAndDividendStatsRow[] = statsData?.rows ?? [];
+
+  // Opt-in header filters over the monthly snapshots (reset on scope change).
+  const { filtered: visibleStatsRows, menuFor } = useTableHeaderFilters(
+    FILTER_DEFS,
+    statsRows,
+    [code, secType, refreshKey],
+  );
 
   // Whether this security has PE & dividend analysis rows — drives the bold
   // highlight of the per-security build button (AnalysisRunButton). Loading
@@ -277,17 +300,31 @@ export function PeAndDividendPanel({
             <Table size="small" stickyHeader>
               <TableHead>
                 <TableRow>
-                  <TableCell sx={expandedTableHeadCellSx}>Month</TableCell>
-                  <TableCell sx={expandedTableHeadCellSx} align="center">Active</TableCell>
-                  <TableCell sx={expandedTableHeadCellSx} align="right">Min PE 5y</TableCell>
-                  <TableCell sx={expandedTableHeadCellSx} align="right">Max PE 5y</TableCell>
-                  <TableCell sx={expandedTableHeadCellSx} align="right">Div Var 5y</TableCell>
-                  <TableCell sx={expandedTableHeadCellSx} align="right">Last Div</TableCell>
-                  <TableCell sx={expandedTableHeadCellSx} align="right">Div Stability 5y</TableCell>
+                  <TableCell sx={expandedTableHeadCellSx}>
+                    {menuFor(DEF_BY_KEY.get("month")!)}
+                  </TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="center">
+                    {menuFor(DEF_BY_KEY.get("active")!)}
+                  </TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="right">
+                    {menuFor(DEF_BY_KEY.get("min_pe")!)}
+                  </TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="right">
+                    {menuFor(DEF_BY_KEY.get("max_pe")!)}
+                  </TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="right">
+                    {menuFor(DEF_BY_KEY.get("div_var")!)}
+                  </TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="right">
+                    {menuFor(DEF_BY_KEY.get("last_div")!)}
+                  </TableCell>
+                  <TableCell sx={expandedTableHeadCellSx} align="right">
+                    {menuFor(DEF_BY_KEY.get("div_stab")!)}
+                  </TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
-                {statsRows.map((r, idx) => {
+                {visibleStatsRows.map((r, idx) => {
                   const isHighlighted = r.date === highlightedStatsRowDate;
                   const isActive = r.is_active;
                   // Bold the Last Div cell when a dividend was issued in

@@ -1179,18 +1179,19 @@ export interface MovAveSpreadChartResponse {
 
 // ----------------------------------------------------------------------------
 //  Analysis Commons — Forecast buckets (analysis_forecasts schema)
-//    mov_rsi / mov_std — bucket-definition (motivation) tables, each row
-//      linking 1:1 via forecast_id to its forecast_results row.
+//    mov_rsi / mov_std / mov_gap — bucket-definition (motivation) tables,
+//      each row linking 1:1 via forecast_id to its forecast_results row.
 //    Served by GET /api/analysis/mov-ave-spread/forecast — the MA-Spread
 //    panel's second plot: a config→result table beneath the spread chart.
 // ----------------------------------------------------------------------------
 
 /** Which bucket family the forecast table shows. */
-export type ForecastKind = "mov_rsi" | "mov_std";
+export type ForecastKind = "mov_rsi" | "mov_std" | "mov_gap";
 
-/** The forecast_results numeric columns: mean forward fractional changes
- *  at all 4 horizons; close-based max/min forward changes + the mean
- *  within-window close swing amplitude (max_low_change_ratio) at the
+/** The forecast_results numeric columns: mean + std-dev of the forward
+ *  fractional changes at all 4 horizons; close-based max/min forward
+ *  changes + the best-to-worst n-day outcome ratio
+ *  (max_low_change_ratio — not a within-window path swing) at the
  *  5d/20d/60d horizons only; per-horizon P(>1% reversal) and occurrence
  *  counts. */
 export interface ForecastResultCols {
@@ -1198,6 +1199,12 @@ export interface ForecastResultCols {
   ave_next_5d_change: number | null;
   ave_next_20d_change: number | null;
   ave_next_60d_change: number | null;
+  /** Std-dev of the n-day forward fractional change over the same
+   *  bucket days as the ave (NULL for pre-std_change rows). */
+  std_next_change: number | null;
+  std_next_5d_change: number | null;
+  std_next_20d_change: number | null;
+  std_next_60d_change: number | null;
   max_5d_change: number | null;
   max_20d_change: number | null;
   max_60d_change: number | null;
@@ -1220,23 +1227,33 @@ export interface ForecastResultCols {
 }
 
 /** One mov_rsi bucket row (RSI extreme-percentile bucket) + its results.
- *  Bucket key: (stat_month, rsi_window, side, pct, is_market_hyped). */
+ *  Bucket key: (stat_month, rsi_window, side, pct, cooldown_days,
+ *  is_market_hyped). */
 export interface MovRsiForecastRow extends ForecastResultCols {
   stat_month: string;
   rsi_window: number;
   side: "top" | "bottom";
   pct: number;
+  cooldown_days: number;
   is_market_hyped: boolean;
+  /** TRUE when the bucket already has signal day(s) in
+   *  analysis_signals.signals (config match + date inside stat_month). */
+  in_signals: boolean;
 }
 
 /** One mov_std bucket row (Bollinger-breach bucket) + its results.
- *  Bucket key: (stat_month, ma_window, k, side, is_market_hyped). */
+ *  Bucket key: (stat_month, ma_window, k, side, cooldown_days,
+ *  is_market_hyped). */
 export interface MovStdForecastRow extends ForecastResultCols {
   stat_month: string;
   ma_window: number;
   k: number;
   side: "upper" | "lower";
+  cooldown_days: number;
   is_market_hyped: boolean;
+  /** TRUE when the bucket already has signal day(s) in
+   *  analysis_signals.signals (config match + date inside stat_month). */
+  in_signals: boolean;
   /** Mean fractional close excursion beyond the band over breach days. */
   mean_excess_close: number | null;
   /** Mean fractional intraday excursion (high for upper / low for lower)
@@ -1246,17 +1263,34 @@ export interface MovStdForecastRow extends ForecastResultCols {
   max_excess_max: number | null;
 }
 
-/** Response for GET /forecast?sec_type=&code=&kind=[&month=] — ONE
- *  stat_month (latest when month is omitted) of one code's buckets of the
- *  requested kind, plus every stat_month available for the code (DESC) for
- *  the UI's month selector. */
+/** One mov_gap bucket row (N-day price-return extreme-percentile bucket)
+ *  + its results. Bucket key: (stat_month, gap_window, side, pct,
+ *  cooldown_days, is_market_hyped). */
+export interface MovGapForecastRow extends ForecastResultCols {
+  stat_month: string;
+  gap_window: number;
+  side: "top" | "bottom";
+  pct: number;
+  cooldown_days: number;
+  is_market_hyped: boolean;
+  /** TRUE when the bucket already has signal day(s) in
+   *  analysis_signals.signals (config match + date inside stat_month). */
+  in_signals: boolean;
+}
+
+/** Response for GET /forecast?sec_type=&code=&kind=[&month=] — the code's
+ *  buckets of the requested kind joined 1:1 with their forecast_results
+ *  columns. `month` is a START month: rows cover every stat_month >= month
+ *  (only the latest stat_month when month is omitted). `months` lists every
+ *  stat_month available for the code (DESC) for the UI's start-month
+ *  selector. */
 export interface ForecastResponse {
   kind: ForecastKind;
   code: string;
   sec_type: string;
   /** All distinct stat_months (YYYY-MM-DD) with rows for this code, DESC. */
   months: string[];
-  rows: MovRsiForecastRow[] | MovStdForecastRow[];
+  rows: MovRsiForecastRow[] | MovStdForecastRow[] | MovGapForecastRow[];
 }
 
 // ----------------------------------------------------------------------------
@@ -1403,6 +1437,15 @@ export interface RecurringCyclesSpectrumRow {
   count_factor: number;
   /** amplitude(d*) at period_days d* — energy-merged FFT amplitude (yuan). */
   amplitude: number;
+  /** Poisson audit at period_days d*: −log10 of the Bonferroni-adjusted
+   *  tail p-value P(Poisson(λ̂₀) ≥ hits) — how far the observed
+   *  swing-hit count exceeds the empirically calibrated chance
+   *  expectation λ̂₀. 0 = not significant; ≥ 1.30 ⇔ p < 0.05;
+   *  ≥ 2.0 ⇔ p < 0.01. 0 when period_days = 0. */
+  significance: number;
+  /** hits(d*)/λ̂₀(d*) — observed prominence-filtered swing-hit count over
+   *  the Poisson null expectation at the headline period. */
+  evidence_ratio: number;
   /** Per-day energy-merged FFT amplitude (yuan), DAY-ALIGNED: element j =
    *  day period d = j + 2; length = floor(range_days/2) − 1 (days 2..N/2).
    *  The Fourier REFERENCE for the amp bars — NOT recurrence evidence. */
@@ -1417,6 +1460,23 @@ export interface RecurringCyclesSpectrumRow {
    *  strength(d) = (amp(d)/σ_band) × count(d), 0 for d > N/3 (under 3
    *  cycles in the window). period_days = argmax + 2. */
   strength_spectrum: number[];
+  /** Per-day Poisson-audit significance, day-aligned like
+   *  strength_spectrum: −log10 of the Bonferroni-adjusted tail p-value
+   *  P(Poisson(λ̂₀(d)) ≥ hits(d)) vs the calibrated chance hit rate;
+   *  0 where not auditable (d > N/3) or not significant (p ≥ 0.05);
+   *  capped at 300. Empty when the row predates the audit. */
+  significance_spectrum: number[];
+  /** Per-day OBSERVED prominence-filtered swing-hit count (integral
+   *  values), day-aligned like significance_spectrum: element j = day
+   *  period d = j + 2. The raw recEXT numerator (uncapped) — the
+   *  observed side of the Poisson audit table (hits vs λ̂₀ vs p).
+   *  Empty when the row predates the audit. */
+  hits_spectrum: number[];
+  /** Per-day chance expectation λ̂₀(d) of the point-process null,
+   *  day-aligned like hits_spectrum: the empirically calibrated
+   *  expected hit rate n_pool × g(pool-bin, d) the observed hits are
+   *  tested against. Empty when the row predates the audit. */
+  lam0_spectrum: number[];
   /** Number of sliding windows (dates) analyzed for this (code,
    *  range_days). Title context only. */
   total_windows: number;

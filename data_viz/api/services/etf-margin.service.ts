@@ -12,7 +12,7 @@
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { stripExchangeSuffix, matchesExchange } from "../lib/classify-etf.js";
+import { stripExchangeSuffix, matchesExchange, codeVariants } from "../lib/classify-etf.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
 import { cachedRows } from "./classification-cache.js";
 import type {
@@ -205,7 +205,7 @@ const META_SQL_FOR_CODE = `
     FROM stats.v_etf_margin v
     LEFT JOIN stats.sec_classification m ON v.code = m.code AND m.type = 'etf'
     LEFT JOIN stats.sec_classification mi ON mi.code = m.parent_index_code AND mi.type = 'index'
-   WHERE REGEXP_REPLACE(v.code, '\\.(SZ|SS|SH)$', '') = $1
+   WHERE v.code = ANY($1::text[])
    GROUP BY v.code
 `;
 
@@ -338,7 +338,7 @@ export async function getEtfMarginCombined(
   //    browse-list threshold remains in place for listThemes() to keep the
   //    dropdown free of one-day / delisted entries.
   const metaRows = codeFilter
-    ? await queryRows<DbEtfMetaRow>(META_SQL_FOR_CODE, [codeFilter])
+    ? await queryRows<DbEtfMetaRow>(META_SQL_FOR_CODE, [codeVariants(codeFilter)])
     : await getEtfMetaRows();
 
   // 2. Filter by sector + industry + exchange (or by exact code when codeFilter is set).
@@ -417,11 +417,15 @@ export async function getEtfMarginCombined(
   }
 
   // 5. Fetch row data for the wanted ETFs (with date filtering)
+  // Expand stripped page codes to all DB-side suffix variants so
+  // code = ANY(...) drives the (code, date) index instead of a
+  // REGEXP_REPLACE full scan.
+  const pageCodeVariants = pageCodes.flatMap((c) => codeVariants(c));
   const params: unknown[] = [];
   let paramIdx = 1;
 
-  params.push(pageCodes);
-  const whereParts: string[] = [`REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = ANY($${paramIdx++}::text[])`];
+  params.push(pageCodeVariants);
+  const whereParts: string[] = [`code = ANY($${paramIdx++}::text[])`];
   const startDate = toDateParam(q.start_date);
   const endDate = toDateParam(q.end_date);
   if (startDate) {

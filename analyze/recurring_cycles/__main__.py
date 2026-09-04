@@ -96,9 +96,9 @@ from analyze.recurring_cycles.compute import (  # noqa: E402
 )
 
 
-# Chunk size for COPY / upsert. 10K because each row carries three
+# Chunk size for COPY / upsert. 10K because each row carries four
 # spectrum arrays (up to ~636 doubles each for range_days=1275). At 10K
-# rows × ~15 KB/row-dict ≈ 150 MB per chunk — safe alongside the
+# rows × ~20 KB/row-dict ≈ 200 MB per chunk — safe alongside the
 # multi-GB result_df held during the write.
 _CHUNK_SIZE = 10_000
 
@@ -107,7 +107,10 @@ _PK_COLUMNS = ["sec_type", "code", "last_date", "range_days"]
 
 # Postgres double-precision array columns — converted ndarray → list in
 # _write_rows before asyncpg encoding.
-_ARRAY_COLUMNS = ("amplitude_spectrum", "count_spectrum", "strength_spectrum")
+_ARRAY_COLUMNS = (
+    "amplitude_spectrum", "count_spectrum", "strength_spectrum",
+    "significance_spectrum", "hits_spectrum", "lam0_spectrum",
+)
 
 # Codes per compute+write batch (see process_sec_type): bounds the
 # spectra-accumulator host memory to a few GB per batch.
@@ -129,7 +132,13 @@ async def _find_missing_targets(
     has a close on that date with enough prior close history for the
     window (its close-date rank >= range_days), but
     analysis.recurring_cycles has NO row with non-NULL spectrum arrays
-    (amplitude + count + strength) at that exact PK.
+    (amplitude + count + strength + significance + hits + lam0) at that
+    exact PK. The significance check predates the Poisson audit — rows
+    written before it carry NULL significance_spectrum and are picked up
+    as gaps; the hits/lam0 check (added with the Poisson audit TABLE)
+    likewise backfills rows written before the raw observed/expected
+    spectra were stored — a plain incremental run backfills all of it
+    without --force.
 
     Detecting gaps at the FULL PK granularity (code × date × window) —
     not just distinct dates — catches per-code holes that global
@@ -180,6 +189,9 @@ async def _find_missing_targets(
             AND f.amplitude_spectrum IS NOT NULL
             AND f.count_spectrum IS NOT NULL
             AND f.strength_spectrum IS NOT NULL
+            AND f.significance_spectrum IS NOT NULL
+            AND f.hits_spectrum IS NOT NULL
+            AND f.lam0_spectrum IS NOT NULL
         WHERE f.code IS NULL
         """,
         sec_type, codes, list(RANGE_DAYS),
@@ -455,7 +467,9 @@ async def main() -> None:
                     "(sec_type, code, last_date, range_days): per-day "
                     "recurrence audit (extrema evidence × ACF coherence, "
                     "amplitude-gated) with the headline top-strength "
-                    "period."
+                    "period, plus the Poisson significance audit "
+                    "(sig = −log10 Bonferroni p of the hit count vs the "
+                    "calibrated chance rate)."
     )
     ap.add_argument(
         "--sec-type", choices=("index", "etf", "stock"), default=None,

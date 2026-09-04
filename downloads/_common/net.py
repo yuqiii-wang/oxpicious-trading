@@ -285,20 +285,41 @@ class HostStatus:
 
 
 class HostStatusTracker:
+    # A 4xx-blocked host is auto-unblocked after this much quiet time, so a
+    # transient rate-limit (e.g. OSS 403 mid-sweep) doesn't poison the whole
+    # process run.  If the retry also 4xx's, record_error re-blocks with a
+    # fresh cooldown timer.
+    BLOCK_COOLDOWN_SEC: float = 600.0
+    # HTTP codes that mean genuine anti-bot blocking / rate limiting.  A 404
+    # is a legitimate per-resource miss (e.g. an index with no closeweight.xls
+    # on the OSS bucket) and must NOT block the whole host.
+    BLOCKING_STATUS_CODES: frozenset = frozenset({403, 429})
+
     def __init__(self):
         self._host_status: Dict[str, HostStatus] = {}
 
     def is_blocked(self, url: str) -> bool:
         host = self._extract_host(url)
         status = self._host_status.get(host)
-        return status is not None and status.blocked
+        if status is None or not status.blocked:
+            return False
+        if time.time() - status.last_error_time >= self.BLOCK_COOLDOWN_SEC:
+            status.blocked = False
+            status.blocked_reason = ""
+            logger = setup_logger("host_tracker")
+            logger.warning(
+                "Host %s auto-unblocked after %.0fs cooldown, resuming requests",
+                host, self.BLOCK_COOLDOWN_SEC,
+            )
+            return False
+        return True
 
     def record_error(self, url: str, status_code: int, reason: str = "") -> None:
         host = self._extract_host(url)
         status = self._host_status.setdefault(host, HostStatus())
         status.error_count += 1
         status.last_error_time = time.time()
-        if 400 <= status_code < 500:
+        if status_code in self.BLOCKING_STATUS_CODES:
             status.blocked = True
             status.blocked_reason = reason or f"HTTP {status_code}"
             logger = setup_logger("host_tracker")

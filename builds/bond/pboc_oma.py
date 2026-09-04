@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import pandas as pd
 
+from builds._commons.safe_parse import safe_to_datetime
 from builds.bond.paths import PBOC_OMA_CSV
 
 
@@ -49,7 +51,10 @@ def build_oma_df(start_date=None, end_date=None, verbose=True):
         return pd.DataFrame()
 
     df = df.rename(columns={"pub_date": "date"})
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    # clean format fast path (pd.to_datetime(errors="coerce") is not
+    # implemented in cuDF); [ns] keeps real-pandas paths working if the
+    # frame is ever unwrapped downstream
+    df["date"] = safe_to_datetime(df["date"]).astype("datetime64[ns]")
     df = df.dropna(subset=["date"])
 
     # Exclude primary dealer news from the database load
@@ -65,9 +70,9 @@ def build_oma_df(start_date=None, end_date=None, verbose=True):
     df = df.sort_values(["date", "title"])
 
     if start_date:
-        df = df[df["date"] >= pd.Timestamp(start_date)]
+        df = df[df["date"] >= np.datetime64(start_date, "ns")]
     if end_date:
-        df = df[df["date"] <= pd.Timestamp(end_date)]
+        df = df[df["date"] <= np.datetime64(end_date, "ns")]
 
     if verbose:
         if len(df):

@@ -34,6 +34,11 @@ import {
 } from "../services/analysis/index.js";
 import { runPythonModule, getPythonProcessStatus, isPythonProcessRunning } from "../services/py-runner.service.js";
 import { getSecAllocLiveAttribution } from "../services/sec-alloc-live-attribution.service.js";
+import {
+  fetchTradingSignalConfigs,
+  fetchTriggeredSignals,
+  fetchTradingSignalDates,
+} from "../services/trading-signals.service.js";
 
 const router = Router();
 
@@ -348,5 +353,155 @@ router.get("/sec-alloc-live/run/status", async (req: Request, res: Response) => 
     res.status(500).json({ error: String(err) });
   }
 });
+
+// ---------------------------------------------------------------------------
+//  Trading Signals (analysis scheme) — live breach records for the
+//  analysis_signals threshold set.
+// ---------------------------------------------------------------------------
+
+/** Asia/Shanghai "biz today" (YYYY-MM-DD) — UTC+8 year-round, so the
+ *  wall-clock date is built from the UTC offset regardless of the API
+ *  server's own timezone. Mirrors the UI's live-markets biz-day logic. */
+function shanghaiToday(): string {
+  const now = new Date();
+  const utc = now.getTime() + now.getTimezoneOffset() * 60_000;
+  const sh = new Date(utc + 8 * 60 * 60_000);
+  return sh.toISOString().slice(0, 10);
+}
+
+const TRADING_SIGNALS_RUN_TAG = "trading-signals:run";
+const TRADING_SIGNALS_RUN_ANALYSIS_TAG = "trading-signals:run-analysis";
+
+/** POST /api/live-data/trading-signals/run
+ *  body: { sec_types?: string[] } — spawns
+ *  `python -m live.live_signals --sec-type <csv>` (batch mode: every code
+ *  with ACTIVE analysis_signals configs of the given sec_types; codes
+ *  without intraday price are skipped server-side). Fired by the page's
+ *  Refresh button and the once-per-biz-day 13:30 scheduler. Deduped by
+ *  process-id-tag. */
+router.post("/trading-signals/run", async (req: Request, res: Response) => {
+  const valid = new Set(["index", "etf", "stock"]);
+  const secTypes = Array.isArray(req.body?.sec_types)
+    ? (req.body.sec_types as unknown[]).filter(
+        (s): s is string => typeof s === "string" && valid.has(s),
+      )
+    : [];
+  if (secTypes.length === 0) secTypes.push("index");
+  const tag = TRADING_SIGNALS_RUN_TAG;
+  try {
+    const result = await runPythonModule(
+      "live.live_signals",
+      ["--sec-type", secTypes.join(",")],
+      { processIdTag: tag },
+    );
+    res.json({
+      success: result.success,
+      sec_types: secTypes,
+      process_id_tag: tag,
+      already_running: result.already_running === true,
+      stdout_tail: result.stdout.slice(-2000),
+      stderr_tail: result.stderr.slice(-2000),
+    });
+  } catch (err) {
+    console.error("[live-data/trading-signals/run] error:", err);
+    res.status(500).json({ success: false, stderr_tail: String(err) });
+  }
+});
+
+/** POST /api/live-data/trading-signals/run-analysis
+ *  body: { sec_types?: string[] } — spawns
+ *  `python -m analyze.analysis_signals --live --sec-type <csv>`: the
+ *  analysis-signal pipeline + day-close mirror (every not-yet-recorded
+ *  signal day becomes ONE live.live_signals observation at that day's
+ *  close, time 15:00, is_day_close_trigger = TRUE). Fired by the page's
+ *  old-date refresh when no intraday data exists for that date. Deduped
+ *  by process-id-tag. */
+router.post("/trading-signals/run-analysis", async (req: Request, res: Response) => {
+  const valid = new Set(["index", "etf", "stock"]);
+  const secTypes = Array.isArray(req.body?.sec_types)
+    ? (req.body.sec_types as unknown[]).filter(
+        (s): s is string => typeof s === "string" && valid.has(s),
+      )
+    : [];
+  if (secTypes.length === 0) secTypes.push("index");
+  const tag = TRADING_SIGNALS_RUN_ANALYSIS_TAG;
+  try {
+    const result = await runPythonModule(
+      "analyze.analysis_signals",
+      ["--live", "--sec-type", secTypes.join(",")],
+      { processIdTag: tag },
+    );
+    res.json({
+      success: result.success,
+      sec_types: secTypes,
+      process_id_tag: tag,
+      already_running: result.already_running === true,
+      stdout_tail: result.stdout.slice(-2000),
+      stderr_tail: result.stderr.slice(-2000),
+    });
+  } catch (err) {
+    console.error("[live-data/trading-signals/run-analysis] error:", err);
+    res.status(500).json({ success: false, stderr_tail: String(err) });
+  }
+});
+
+/** GET /api/live-data/trading-signals/run/status
+ *  → { status: { [tag]: boolean } } — running-state of BOTH run tags
+ *  (intraday run + analysis day-close run) so a page refresh can restore
+ *  the Refresh button's spinning state. */
+router.get("/trading-signals/run/status", async (_req: Request, res: Response) => {
+  try {
+    res.json({ status: getPythonProcessStatus([
+      TRADING_SIGNALS_RUN_TAG,
+      TRADING_SIGNALS_RUN_ANALYSIS_TAG,
+    ]) });
+  } catch (err) {
+    console.error("[live-data/trading-signals/run/status] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** GET /api/live-data/trading-signals/configs?sec_type=index
+ *  → { sec_type, configs: [{signal_type, signal_sub_type, n_configs}] } —
+ *  the ACTIVE analysis_signals configs (signal menu; default = all). */
+router.get("/trading-signals/configs", async (req: Request, res: Response) => {
+  try {
+    const secType = typeof req.query.sec_type === "string"
+      ? req.query.sec_type : "index";
+    const configs = await fetchTradingSignalConfigs(secType);
+    res.json({ sec_type: secType, configs });
+  } catch (err) {
+    const status = (err as { status?: number })?.status ?? 500;
+    console.error("[live-data/trading-signals/configs] error:", err);
+    res.status(status).json({ error: String(err) });
+  }
+});
+
+/** GET /api/live-data/trading-signals?sec_type=index&date=YYYY-MM-DD
+ *  → { sec_type, date (resolved: param || biz today), available_dates,
+ *      signals: [...] } — one day's triggered breaches, confidence DESC. */
+router.get("/trading-signals", async (req: Request, res: Response) => {
+  try {
+    const secType = typeof req.query.sec_type === "string"
+      ? req.query.sec_type : "index";
+    const dateParam = typeof req.query.date === "string"
+      && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+      ? req.query.date
+      : shanghaiToday();
+    const [signals, availableDates] = await Promise.all([
+      fetchTriggeredSignals(secType, dateParam),
+      fetchTradingSignalDates(secType),
+    ]);
+    res.json({ sec_type: sec_type_valid(secType), date: dateParam, available_dates: availableDates, signals });
+  } catch (err) {
+    const status = (err as { status?: number })?.status ?? 500;
+    console.error("[live-data/trading-signals] error:", err);
+    res.status(status).json({ error: String(err) });
+  }
+});
+
+function sec_type_valid(v: string): string {
+  return ["index", "etf", "stock"].includes(v) ? v : "index";
+}
 
 export default router;

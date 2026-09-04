@@ -654,7 +654,11 @@ async def run_rsi(
 
     if target_dates_union is not None and len(target_dates_union) > 0:
         n_before = len(rsi_df)
-        rsi_df = rsi_df[rsi_df["date"].isin(target_dates_union)].reset_index(drop=True)
+        # datetime64 ndarray comparison — isin with a python-date SET
+        # never matches a datetime64 column (fetch.py incremental-filter
+        # convention).
+        td64 = pd.to_datetime(sorted(target_dates_union)).values
+        rsi_df = rsi_df[rsi_df["date"].isin(td64)].reset_index(drop=True)
         print(f"    -> incremental filter: {len(rsi_df):,} of {n_before:,} "
               f"rows are in target_dates_union", flush=True)
 

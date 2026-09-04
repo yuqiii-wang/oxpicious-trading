@@ -16,7 +16,7 @@
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { stripExchangeSuffix, matchesExchange } from "../../lib/classify-etf.js";
+import { stripExchangeSuffix, matchesExchange, codeVariants } from "../../lib/classify-etf.js";
 import { stripped } from "./_shared.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
 import type {
@@ -278,7 +278,7 @@ function buildChartSql(secType: PeAndDividendSecType): string {
       d.dividend_yield
     ${src.chartFromClause}
     WHERE d.sec_type = $2
-      AND REGEXP_REPLACE(d.code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+      AND d.code = ANY($1::text[])
     ORDER BY d.date ASC
   `;
 }
@@ -288,7 +288,7 @@ function buildNameSql(secType: PeAndDividendSecType): string {
   return `
     SELECT DISTINCT ON (code) code, name
     FROM ${src.identityTable}
-    WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+    WHERE code = ANY($1::text[])
     ORDER BY code, date DESC
   `;
 }
@@ -301,8 +301,8 @@ export async function getPeAndDividendChart(
   const target = stripped(rawCode);
 
   const [chartRows, nameRows] = await Promise.all([
-    queryRows<DbChartRow>(buildChartSql(secType), [target, secType]),
-    queryRows<{ name: string | null }>(buildNameSql(secType), [target]),
+    queryRows<DbChartRow>(buildChartSql(secType), [codeVariants(target), secType]),
+    queryRows<{ name: string | null }>(buildNameSql(secType), [codeVariants(target)]),
   ]);
 
   const name = nameRows[0]?.name ?? "";
@@ -337,7 +337,7 @@ function buildStatsSql(): string {
       dividend_issued_this_month
     FROM analysis.pe_and_dividend_stats
     WHERE sec_type = $2
-      AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+      AND code = ANY($1::text[])
     ORDER BY date DESC
   `;
 }
@@ -350,8 +350,8 @@ export async function listPeAndDividendStats(
   const target = stripped(rawCode);
 
   const [statsRows, nameRows] = await Promise.all([
-    queryRows<DbStatsRow>(buildStatsSql(), [target, secType]),
-    queryRows<{ name: string | null }>(buildNameSql(secType), [target]),
+    queryRows<DbStatsRow>(buildStatsSql(), [codeVariants(target), secType]),
+    queryRows<{ name: string | null }>(buildNameSql(secType), [codeVariants(target)]),
   ]);
 
   const name = nameRows[0]?.name ?? "";

@@ -7,20 +7,21 @@ IDENTICAL (same anchor positions, values, dates and NULL handling):
 
   region(i, w)     = [max(0, i-w+1), i]             (close-based, FULL
                     window — no cooldown truncation)
-  SPLIT            = the region cut in half: h = L // 2 with L the
-                    region length; the 1st half is [a, a+h-1] and the
-                    2nd half is [a+h, i] (for odd L the 2nd half gets
-                    the extra day).  No anchors when L < 2.
-  1st anchor       = the max (high side) / min (low side) valid CLOSE
-                    in the 1st half — value = that date's CLOSE, ties
-                    -> earliest date; NULL when the half holds no
-                    valid close.
-  2nd anchor       = the max / min valid CLOSE in the 2nd half —
-                    value = that date's INTRADAY HIGH/LOW, ties ->
-                    earliest date; NULL when the half holds no valid
-                    close.  The halves are disjoint and ordered, so
-                    the 2nd anchor date is ALWAYS strictly after the
-                    1st anchor date wherever both exist.
+  1st anchor       = argmax (max/min sign-space) of valid CLOSE in the
+                    1st half [a, a+h-1] where h = L // 2.  Ties ->
+                    earliest date.  NULL when the half holds no valid
+                    close.
+  2nd anchor       = argmax of valid CLOSE in [top + ceil(0.10*W), b] —
+                    the 10% time-distance gap is enforced CONSTRUCTIVELY
+                    by shifting the 2nd anchor's search range so the
+                    result is guaranteed to be >= 10% of W after the 1st
+                    anchor.  Ties -> earliest.  NULL when the dynamic
+                    range has no valid close OR when the 1st anchor is
+                    too close to b (top + 0.10*W > b).  The 1st anchor
+                    stays valid in that case.
+
+Everything is plain NumPy per (sec_type, code) group — no cuDF
+rolling-apply CPU fallback anywhere.
 
 How the O(n*w) reference sweep becomes O(n log w) array ops:
 
@@ -132,56 +133,79 @@ def _gather_date(dates: np.ndarray, pos: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-#  Half-split anchors (max/min close per window half)
+#  Half-split anchors (max/min close per window) with dynamic 2nd range
 # ---------------------------------------------------------------------------
 def _select_anchor_positions(
     a: np.ndarray,
     b: np.ndarray,
+    w: int,
     has_ext: np.ndarray,
     V: np.ndarray,
     svals: np.ndarray,
     vtbl: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Positions of the (1st-half, 2nd-half) anchors, or -1 when absent.
+    """Positions of the (1st, 2nd) anchors, or -1 when absent.
 
-    The region [a, b] (b = the row itself, "today") is cut in half:
-    h = (b - a + 1) // 2; the 1st anchor is the sign-space argmax of the
-    valid closes in [a, a+h-1] and the 2nd anchor the argmax in
-    [a+h, b] (for the max side svals = close; the min side passes
-    svals = -close so ONE argmax rule serves both).  Ties go to the
-    earliest position (first-occurrence argmax).  No anchors when the
-    region has fewer than 2 positions (h < 1); a half with no valid
-    close yields -1 for its anchor independently (NaN closes are -inf
-    in svals, so the half's argmax range comes back empty).
+    Phase 1 — 1st anchor: the sign-space argmax of valid closes in the
+    1st half of the region [a, b], i.e. [a, a+h-1] where
+    h = (b - a + 1) // 2.  Ties go to the earliest position.
+
+    Phase 2 — 2nd anchor: after locating the 1st anchor at ``top``,
+    the 2nd anchor is the argmax in [top + ceil(0.10*W), b] — the
+    10% time-distance gap is enforced CONSTRUCTIVELY by starting
+    the 2nd search 10% of the window AFTER the 1st anchor.  If the
+    1st anchor is so close to ``b`` that top + ceil(0.10*W) > b, the
+    2nd anchor comes back -1 but the 1st anchor remains valid.
 
     ``vtbl`` is the sparse argmax table over ``svals[V]`` — the valid-
-    close positions — so each half query is a plain range argmax.
+    close positions — so each query is a plain range argmax.  NaN
+    closes are -inf in svals and therefore skipped.  Ties -> earliest.
+
+    Args:
+      a: int ndarray of window-start positions.
+      b: int ndarray of row positions (window end).
+      w: rolling window size in trading days.
+      has_ext: bool ndarray — True when the window has any valid close.
+      V: sorted int ndarray of valid-close group positions.
+      svals: float ndarray of sign-space values at ALL positions.
+      vtbl: sparse argmax table over svals[V].
     """
     n_rows: int = len(a)
     if len(V) == 0:
         z: np.ndarray = np.full(n_rows, -1, dtype=np.int64)
         return z, z.copy()
 
-    # -- split point: h >= 1 positions in the 1st half --
+    # Phase 1 — 1st anchor in the 1st half [a, a+h-1]
     h: np.ndarray = (b - a + 1) // 2
-    ok: np.ndarray = has_ext & (h >= 1)
-    mid: np.ndarray = a + h
+    ok1: np.ndarray = has_ext & (h >= 1)
+    mid: np.ndarray = a + h  # exclusive end of the 1st half
 
-    # -- valid-close spans of both halves, in V-index space --
     j1lo: np.ndarray = np.searchsorted(V, a, side="left")
     j1hi: np.ndarray = np.searchsorted(V, mid, side="left") - 1
-    j2lo: np.ndarray = np.searchsorted(V, mid, side="left")
-    j2hi: np.ndarray = np.searchsorted(V, b, side="right") - 1
-
     q1: np.ndarray = _range_argmax(
         vtbl, svals[V],
-        np.where(ok, j1lo, -1), np.where(ok, j1hi, -1), ok,
+        np.where(ok1, j1lo, -1), np.where(ok1, j1hi, -1), ok1,
     )
-    q2: np.ndarray = _range_argmax(
-        vtbl, svals[V],
-        np.where(ok, j2lo, -1), np.where(ok, j2hi, -1), ok,
-    )
-    return _gather_pos(V, q1), _gather_pos(V, q2)
+    top: np.ndarray = _gather_pos(V, q1)  # -1 when 1st half empty
+
+    # Phase 2 — 2nd anchor from dynamic range [top + 0.10*W, b]
+    # Enforce the 10% time-distance gap construction.
+    gap: int = max(1, int(0.10 * w))  # at least 1 trading day
+    j2lo_abs: np.ndarray = top + gap  # absolute start positions
+    j2hi_abs: np.ndarray = b          # absolute end positions
+    ok2: np.ndarray = (top >= 0) & (j2lo_abs <= b)
+    if not ok2.any():
+        sec: np.ndarray = np.full(n_rows, -1, dtype=np.int64)
+    else:
+        j2lo: np.ndarray = np.searchsorted(V, j2lo_abs, side="left")
+        j2hi: np.ndarray = np.searchsorted(V, j2hi_abs, side="right") - 1
+        q2: np.ndarray = _range_argmax(
+            vtbl, svals[V],
+            np.where(ok2, j2lo, -1), np.where(ok2, j2hi, -1), ok2,
+        )
+        sec = _gather_pos(V, q2)  # -1 when dynamic range has no valid close
+
+    return top, sec
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +269,7 @@ def compute_group_anchors_all_windows(
             has_ext: np.ndarray = nv > 0
 
             top, sec = _select_anchor_positions(
-                a, b, has_ext, V, svals, vtbl,
+                a, b, w, has_ext, V, svals, vtbl,
             )
             out[f"{tag}_{w}d"] = _gather_float(close, top)
             out[f"{tag}_date_{w}d"] = _gather_date(dates, top)
@@ -253,9 +277,10 @@ def compute_group_anchors_all_windows(
             out[f"{tag}_2nd_date_{w}d"] = _gather_date(dates, sec)
             # Roof/floor line slope through the two anchors, in price
             # units per trading day: (2nd value - top value) / (2nd pos -
-            # top pos).  The halves are disjoint, so sec > top wherever
-            # both exist; NaN when either anchor is absent or the 2nd
-            # anchor's intraday value is NaN (matching {tag}_2nd_{w}d).
+            # top pos).  The 10% time-distance gap is enforced
+            # constructively (2nd anchor searched from top + 0.10*W to b),
+            # so sec - top >= 0.10*W > 0 wherever both exist.  NaN when
+            # either anchor is absent.
             slope: np.ndarray = np.full(n, np.nan)
             ok2: np.ndarray = (top >= 0) & (sec >= 0)
             if ok2.any():
@@ -270,7 +295,9 @@ def compute_group_anchors_all_windows(
     # the proxied constructor walks columns of host ndarrays element-by-
     # element through the cudf fast path; the real class materializes
     # instantly and the per-code frames are batched by the caller.
-    real_pd_df = pd.DataFrame._fsproxy_slow
+    # Under plain (non-proxied) pandas there is no _fsproxy_slow — fall
+    # back to the class itself (it IS the real class then).
+    real_pd_df = getattr(pd.DataFrame, "_fsproxy_slow", pd.DataFrame)
     # Unwrap the proxy index ONCE — the REAL ctor would otherwise
     # dispatch on the proxy Index (Index._typ AttributeError fallback).
     return real_pd_df(out, index=host_array(g.index))

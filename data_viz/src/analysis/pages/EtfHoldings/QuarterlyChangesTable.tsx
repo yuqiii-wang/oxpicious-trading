@@ -49,6 +49,7 @@ import {
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type { QuarterlyCompositionQuarter } from "@shared/types";
+import useTableHeaderFilters, { type HeaderFilterDef } from "@/hooks/table-header-filters";
 import IndustryDrilldown from "./IndustryDrilldown";
 
 interface Props {
@@ -105,6 +106,13 @@ interface ChangesRow {
   /** Last ticked − first ticked. */
   totalDelta: number;
 }
+
+/** Opt-in header filter — the only column-wide dimension here is the
+ *  industry label (a discrete set → ticks); the per-ticked-quarter weight /
+ *  delta columns are dynamic per selection and stay unfiltered. */
+const FILTER_DEFS: HeaderFilterDef<ChangesRow>[] = [
+  { key: "industry", label: "Industry", type: "ticks", value: (r) => r.industry },
+];
 
 export default function QuarterlyChangesTable({
   quarters,
@@ -168,10 +176,16 @@ export default function QuarterlyChangesTable({
     return out;
   }, [ticked]);
 
+  // Industry tick filter — BEFORE the early return (rules of hooks); the
+  // filter resets when the ticked-quarter selection changes.
+  const { filtered: visibleRows, menuFor } = useTableHeaderFilters(
+    FILTER_DEFS,
+    rows,
+    [tickedIdxs],
+  );
+
   if (ticked.length < 2) return null;
 
-  const firstVals = rows.map((r) => r.values[0]);
-  const lastVals = rows.map((r) => r.values[r.values.length - 1]);
   // Industry + quarter cols + consecutive Δ cols + Total Δ.
   const colCount = 1 + ticked.length + (ticked.length - 1) + 1;
 
@@ -197,7 +211,7 @@ export default function QuarterlyChangesTable({
                 zIndex: 3,
               }}
             >
-              Industry
+              {menuFor(FILTER_DEFS[0])}
             </TableCell>
             {ticked.map((q) => (
               <TableCell key={q.quarter} align="right" sx={expandedTableHeadCellSx}>
@@ -218,9 +232,11 @@ export default function QuarterlyChangesTable({
           </TableRow>
         </TableHead>
         <TableBody>
-          {rows.map((row, idx) => {
-            const isNew = firstVals[idx] == null && lastVals[idx] != null;
-            const isExit = firstVals[idx] != null && lastVals[idx] == null;
+          {visibleRows.map((row, idx) => {
+            // NEW = absent from the first ticked quarter, present in the
+            // last; EXIT = the reverse (per-row — filter-safe indices).
+            const isNew = row.values[0] == null && row.values[row.values.length - 1] != null;
+            const isExit = row.values[0] != null && row.values[row.values.length - 1] == null;
             const totalColor = deltaColor(row.totalDelta);
             const isOpen = expanded.has(row.industry);
             return (

@@ -19,10 +19,23 @@
  *     recurs with noticeable highs and lows peaks here; one-off swings,
  *     trends, and noise do not. 0 (not auditable) for d > N/3 (under 3
  *     cycles in the window).
+ *   • significance (right y-axis, bars) — the POISSON AUDIT of the
+ *     recurrence evidence: −log10 of the Bonferroni-adjusted tail
+ *     p-value P(Poisson(λ̂₀) ≥ hits), where hits(d) is the observed
+ *     prominence-filtered swing-hit count and λ̂₀(d) the chance
+ *     expectation of a point-process null, empirically calibrated on
+ *     random-walk + stochastic-vol price nulls (validated FPR ≤ 5%,
+ *     power 99%+ on synthetic 20d cycles). 0 = not significant; the
+ *     dashed markline at 1.301 marks p < 0.05 (≥ 2.0 ⇔ p < 0.01).
+ *     Zero for d > N/3. Separates a REAL repeated rise/drop pattern
+ *     from the deterministic count factor, which scores ~0.83 on pure
+ *     noise (study: temp_scripts/study_rc_poisson*.py).
  *
  * The RECURRING period (row.period_days = argmax of strength) is
  * highlighted green — the headline answer to "at what spacing does this
- * security's price repeatedly rise and drop". The X-axis is integer day
+ * security's price repeatedly rise and drop" — with its audit verdict
+ * (significance tier + evidence ratio vs the chance rate) in the title
+ * and tooltip. The X-axis is integer day
  * periods, descending left→right (long cycles left) — the conventional
  * spectrum layout (low frequency → high frequency).
  *
@@ -51,6 +64,18 @@ import type { RecurringCyclesSpectrumRow } from "@shared/types";
 export const COUNT_COLOR = "#ffa726";
 /** Right-axis bar color for the summarized recurring strength (amp × count). */
 export const STRENGTH_COLOR = "#ab47bc";
+/** Right-axis bar color for the Poisson-audit significance (−log10 p). */
+export const SIG_COLOR = "#26c6da";
+/** −log10(0.05): the Bonferroni significance threshold drawn as markline. */
+export const SIG05 = 1.30103;
+
+/** p-value tier for a stored significance value (−log10 Bonferroni p). */
+function pTier(sig: number): string {
+  if (sig >= 2.0) return "p<0.01";
+  if (sig >= SIG05) return "p<0.05";
+  if (sig >= 1.0) return "p<0.1";
+  return "n.s.";
+}
 
 export interface SpectrumOptionParams {
   row: RecurringCyclesSpectrumRow;
@@ -71,6 +96,7 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
   const ampSpec = row.amplitude_spectrum;
   const countSpec = row.count_spectrum;
   const strengthSpec = row.strength_spectrum;
+  const sigSpec = row.significance_spectrum ?? [];
   const nDays = ampSpec.length;
 
   // Default cutoff: hide day periods < 5d (high-freq noise on close-price
@@ -98,11 +124,13 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
   const ampData: number[] = new Array(nVisible);
   const countData: number[] = new Array(nVisible);
   const strengthData: number[] = new Array(nVisible);
+  const sigData: number[] = new Array(nVisible);
   const tipRows: Array<{
     day: number;
     amp: number;
     count: number;
     strength: number;
+    sig: number;
     ampNorm: number;
     auditable: boolean;
     isDom: boolean;
@@ -116,17 +144,20 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
     const amp = ampSpec[j] ?? 0;
     const count = countSpec[j] ?? 0;
     const strength = strengthSpec[j] ?? 0;
+    const sig = sigSpec[j] ?? 0;
     const ampNorm = sigmaBand > 0 ? amp / sigmaBand : 0;
     const auditable = d >= 2 && d <= Math.floor(N / 3);
     categories[v] = `${d}d`;
     ampData[v] = amp;
     countData[v] = count;
     strengthData[v] = strength;
+    sigData[v] = sig;
     tipRows[v] = {
       day: d,
       amp,
       count,
       strength,
+      sig,
       ampNorm,
       auditable,
       isDom: d === domDay && domDay > 0,
@@ -137,7 +168,11 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
   const domIdx = domPos >= 0 ? nVisible - 1 - domPos : -1; // visible-array index
   const domTxt =
     domDay > 0
-      ? `recurring period ≈ ${domDay}d (strength ${fmtNum(row.strength, 3)} · amp ${fmtNum(row.amplitude, 2)})`
+      ? `recurring period ≈ ${domDay}d (strength ${fmtNum(row.strength, 3)} · amp ${fmtNum(row.amplitude, 2)})` +
+        ` · audit ${pTier(row.significance)}` +
+        (row.evidence_ratio > 0
+          ? ` · evidence ${fmtNum(row.evidence_ratio, 1)}× null`
+          : "")
       : "no recurring period detected";
 
   const showZoom = nVisible > 40;
@@ -161,7 +196,7 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
       textStyle: { color: c.textColor, fontSize: 9 },
       itemWidth: 10,
       itemHeight: 6,
-      data: ["amp", "count", "strength"],
+      data: ["amp", "count", "strength", "significance"],
     },
     grid: commonGrid({ top: 56, bottom: showZoom ? 56 : 32, left: 48, right: 48 }),
     tooltip: {
@@ -246,11 +281,37 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
           );
         }
 
+        // Significance (right axis) — the Poisson audit of the hit
+        // count vs the calibrated chance rate λ̂₀.
+        lines.push(
+          React.createElement(React.Fragment, { key: "sig" }, [
+            swatch("significance", SIG_COLOR),
+            "significance: ",
+            tooltipComponents.Bold({ children: fmtNum(t.sig, 3) }),
+            ` — Poisson audit ${t.auditable ? pTier(t.sig) : "— not auditable"}` +
+              ` (−log10 Bonferroni p; ≥ ${fmtNum(SIG05, 2)} ⇔ p<0.05)`,
+            React.createElement("br"),
+          ]),
+        );
+        if (t.isDom && row.evidence_ratio > 0) {
+          lines.push(
+            React.createElement(
+              "span",
+              { key: "ev", style: { opacity: 0.85 } },
+              `evidence: swing-hits ${fmtNum(row.evidence_ratio, 2)}× the ` +
+                `chance expectation λ̂₀ at the recurring period`,
+            ),
+            React.createElement("br"),
+          );
+        }
+
         lines.push(
           React.createElement(
             "span",
             { style: { opacity: 0.85 } },
-            "a period scores only when price REPEATED its rise/drop spacing",
+            "a period scores only when price REPEATED its rise/drop spacing" +
+              " — the significance bars flag when the repetition beats the" +
+              " empirically calibrated chance rate",
           ),
         );
 
@@ -284,7 +345,7 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
       },
       {
         type: "value",
-        name: "count / strength",
+        name: "count / strength / sig",
         nameTextStyle: { color: STRENGTH_COLOR, fontSize: 9 },
         position: "right",
         axisLine: { lineStyle: { color: STRENGTH_COLOR } },
@@ -330,6 +391,32 @@ export function buildSpectrumOption(params: SpectrumOptionParams): EChartsOption
           },
         })),
         z: 4,
+      },
+      // Significance bars (right axis) — the Poisson audit: −log10 of
+      // the Bonferroni-adjusted tail p of the swing-hit count vs the
+      // empirically calibrated chance rate λ̂₀. The dashed markline is
+      // the p<0.05 threshold (≥ 1.301); bars above it flag day periods
+      // whose rise/drop repetition is statistically real, not chance.
+      {
+        name: "significance",
+        type: "bar",
+        yAxisIndex: 1,
+        data: sigData,
+        itemStyle: { color: SIG_COLOR, opacity: 0.85 },
+        z: 5,
+        markLine: {
+          silent: true,
+          symbol: "none",
+          animation: false,
+          lineStyle: { color: SIG_COLOR, type: "dashed", width: 1, opacity: 0.7 },
+          label: {
+            color: SIG_COLOR,
+            fontSize: 8,
+            formatter: "p<0.05",
+            position: "insideEndTop",
+          },
+          data: [{ yAxis: SIG05 }],
+        },
       },
     ],
   };

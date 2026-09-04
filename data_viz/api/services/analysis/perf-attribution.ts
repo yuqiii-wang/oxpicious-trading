@@ -4,7 +4,7 @@
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { stripExchangeSuffix } from "../../lib/classify-etf.js";
+import { stripExchangeSuffix, codeVariants } from "../../lib/classify-etf.js";
 import { stripped } from "./_shared.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
 import type {
@@ -166,13 +166,13 @@ export async function getPerfAttrAttribution(
         $3::date,
         (SELECT MAX(date) FROM analysis.sec_alloc_perf_attribution
          WHERE sec_type = $1::text
-           AND REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $2::text)
+           AND code = ANY($2::text[]))
       ) AS max_date
     ),
     subject_name AS (
       SELECT DISTINCT ON (code) code, name
       FROM ${nameTable}
-      WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $2::text
+      WHERE code = ANY($2::text[])
       ORDER BY code, date DESC
     )
     SELECT
@@ -227,15 +227,15 @@ export async function getPerfAttrAttribution(
       WHERE code = a.benchmark_code
     ) bm ON true
     WHERE a.sec_type = $1::text
-      AND REGEXP_REPLACE(a.code, '\\.(SZ|SS|SH)$', '') = $2::text
+      AND a.code = ANY($2::text[])
       AND a.date = ld.max_date
     ORDER BY a.benchmark_code
   `;
   const [attrRows, nameRows] = await Promise.all([
-    queryRows<DbPerfAttrAttributionRow>(sql, [secType, target, date ?? null]),
+    queryRows<DbPerfAttrAttributionRow>(sql, [secType, codeVariants(target), date ?? null]),
     queryRows<{ name: string | null }>(
-      `SELECT DISTINCT ON (code) code, name FROM ${nameTable} WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1::text ORDER BY code, date DESC`,
-      [target],
+      `SELECT DISTINCT ON (code) code, name FROM ${nameTable} WHERE code = ANY($1::text[]) ORDER BY code, date DESC`,
+      [codeVariants(target)],
     ),
   ]);
 
@@ -488,14 +488,14 @@ export async function getPerfAttrChart(
        LEFT JOIN stats.index_exts ieb ON ieb.date = a.date AND ieb.code = a.benchmark_code
        LEFT JOIN stats.index_exts iec ON iec.date = a.date AND iec.code = a.code
        WHERE a.sec_type = $1::text
-         AND REGEXP_REPLACE(a.code, '\\.(SZ|SS|SH)$', '') = $2::text
+         AND a.code = ANY($2::text[])
          AND a.benchmark_code = $3::text
        ORDER BY a.date ASC`,
-      [secType, target, benchmarkCode],
+      [secType, codeVariants(target), benchmarkCode],
     ),
     queryRows<{ name: string | null }>(
-      `SELECT DISTINCT ON (code) code, name FROM ${nameTable} WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1::text ORDER BY code, date DESC`,
-      [target],
+      `SELECT DISTINCT ON (code) code, name FROM ${nameTable} WHERE code = ANY($1::text[]) ORDER BY code, date DESC`,
+      [codeVariants(target)],
     ),
     queryRows<{ name: string | null }>(
       `SELECT DISTINCT ON (code) code, name FROM stats.index_identity WHERE code = $1::text ORDER BY code, date DESC`,

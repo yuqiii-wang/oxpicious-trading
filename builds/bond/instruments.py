@@ -9,8 +9,10 @@ from __future__ import annotations
 import os
 import re
 
+import numpy as np
 import pandas as pd
 
+from builds._commons.safe_parse import safe_to_datetime
 from builds.bond.paths import PBOC_INSTRUMENTS_CSV
 
 
@@ -59,7 +61,7 @@ def load_pboc_instruments_df(csv_path: str = PBOC_INSTRUMENTS_CSV,
                       f"run `python download_pboc_repo_news.py --reparse` first.", flush=True)
             return pd.DataFrame()
         df = pd.read_csv(csv_path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
-        df["pub_date"] = pd.to_datetime(df["pub_date"], errors="coerce")
+        df["pub_date"] = safe_to_datetime(df["pub_date"]).astype("datetime64[ns]")
         df = df.dropna(subset=["pub_date"])
         df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
         df["rate"] = pd.to_numeric(df["rate"], errors="coerce")
@@ -69,8 +71,10 @@ def load_pboc_instruments_df(csv_path: str = PBOC_INSTRUMENTS_CSV,
     if df is None or len(df) == 0:
         return df
     df = df.copy()
+    # np.datetime64 bounds: pd.Timestamp(start_date) takes the cudf slow
+    # path per comparison (proxy Timestamp cannot transform)
     if start_date:
-        df = df[df["pub_date"] >= pd.Timestamp(start_date)]
+        df = df[df["pub_date"] >= np.datetime64(start_date, "ns")]
     if end_date:
-        df = df[df["pub_date"] <= pd.Timestamp(end_date)]
+        df = df[df["pub_date"] <= np.datetime64(end_date, "ns")]
     return df

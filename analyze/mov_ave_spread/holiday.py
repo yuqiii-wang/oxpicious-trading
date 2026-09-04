@@ -411,8 +411,12 @@ async def run_holiday(
 
     if target_dates_union is not None and len(target_dates_union) > 0:
         n_before = len(holiday_df)
+        # datetime64 ndarray comparison — isin with a python-date SET
+        # never matches a datetime64 column (fetch.py incremental-filter
+        # convention).
+        td64 = pd.to_datetime(sorted(target_dates_union)).values
         holiday_df = holiday_df[
-            holiday_df["date"].isin(target_dates_union)
+            holiday_df["date"].isin(td64)
         ].reset_index(drop=True)
         print(f"    -> incremental filter: {len(holiday_df):,} of "
               f"{n_before:,} rows are in target_dates_union", flush=True)

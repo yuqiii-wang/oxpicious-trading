@@ -37,7 +37,7 @@
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { matchesExchange, stripExchangeSuffix } from "../lib/classify-etf.js";
+import { matchesExchange, stripExchangeSuffix, codeVariants } from "../lib/classify-etf.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "./_shared.js";
 import { listClassificationMetaRows } from "./classification-cache.js";
 import type {
@@ -95,8 +95,6 @@ interface DbStockMetaRow extends QueryResultRow {
   exchange: string;
 }
 
-const SUFFIX_RE = /\.(SZ|SS|BJ)$/;
-
 // ----------------------------------------------------------------------------
 //  Dividend fetch helper — reads stats.stock_dividends for one or many codes.
 //
@@ -144,11 +142,11 @@ function mapDividendRow(r: DbStockDividendRow): StockDividend {
 export async function getStockDividends(codeParam: string): Promise<StockDividend[]> {
   const code = codeParam.trim();
   if (!code) return [];
-  const hasSuffix = SUFFIX_RE.test(code);
-  // Match suffixed code directly; for bare codes, strip suffix in DB.
-  const predicate = hasSuffix ? "code = $1" : "REGEXP_REPLACE(code, '\\.(SZ|SS|BJ)$', '') = $1";
-  const sql = `${DIVIDEND_SELECT_SQL} WHERE ${predicate} ORDER BY ex_dividend_date ASC`;
-  const rows = await queryRows<DbStockDividendRow>(sql, [code]);
+  // code = ANY(variants) keeps idx_stock_dividends_code_exdate usable for
+  // both suffixed and bare inputs (bare 6-digit codes would otherwise fall
+  // back to a REGEXP_REPLACE full scan).
+  const sql = `${DIVIDEND_SELECT_SQL} WHERE code = ANY($1::text[]) ORDER BY ex_dividend_date ASC`;
+  const rows = await queryRows<DbStockDividendRow>(sql, [codeVariants(code)]);
   return rows.map(mapDividendRow);
 }
 
@@ -178,15 +176,11 @@ export async function getStockBaseline(
     return { code: codeParam, name: "", dates: [], rows: [], dividends: [] };
   }
 
-  // Use exact match when the input already carries an exchange suffix
-  // (index-friendly — idx_stock_basic_stats_code_date); fall back to
-  // REGEXP_REPLACE for bare 6-digit codes.
-  const hasSuffix = SUFFIX_RE.test(code);
-  const codePredicate = hasSuffix ? "code = $1" : "REGEXP_REPLACE(code, '\\.(SZ|SS|BJ)$', '') = $1";
-
-  const params: unknown[] = [code];
+  // code = ANY(variants) keeps the (code, date) index usable for both
+  // suffixed ("600519.SS") and bare ("600519") inputs.
+  const params: unknown[] = [codeVariants(code)];
   let paramIdx = 2;
-  const whereParts: string[] = [codePredicate];
+  const whereParts: string[] = ["code = ANY($1::text[])"];
   // Skip rows with NULL OHLC (identity-only rows like the historical
   // "test"/"test2" entries — they have no matching stock_basic_stats row).
   whereParts.push("close IS NOT NULL");

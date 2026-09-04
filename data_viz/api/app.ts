@@ -9,6 +9,9 @@ import express, {
   type NextFunction,
 } from "express";
 import cors from "cors";
+// gzip responses — the MA-Spread chart JSON alone is ~64 MB uncompressed;
+// compression cuts the transfer through the vite proxy chain by ~5-10x.
+import compression from "compression";
 
 import debtBaselineRoutes from "./routes/debt-baseline.js";
 import szseOptionsRoutes from "./routes/szse-options.js";
@@ -25,6 +28,7 @@ import cacheRoutes from "./routes/cache.js";
 const app: express.Application = express();
 
 app.use(cors());
+app.use(compression());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 

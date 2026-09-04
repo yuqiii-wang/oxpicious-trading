@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 
 from downloads._common import read_build_csv
+from builds._commons.safe_parse import safe_to_datetime
+from _common.df_utils import safe_columns
 from builds.bond.paths import SHIBOR_DIR
 
 SHIBOR_TENOR_MAP = [
@@ -52,16 +54,20 @@ def read_shibor_csv(path):
         return None
     if df is None or len(df) == 0:
         return None
-    if "日期" not in df.columns:
+    # safe_columns: `col in df.columns` is a cudf fallback PER CHECK
+    cols = safe_columns(df)
+    if "日期" not in cols:
         return None
     df["日期"] = df["日期"].astype(str).str.strip()
     df = df[df["日期"].str.match(r"^\d{4}-\d{2}-\d{2}$", na=False)]
     if len(df) == 0:
         return None
-    df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
+    # ISO-guaranteed by the regex above — clean format fast path
+    # (pd.to_datetime(errors="coerce") is not implemented in cuDF)
+    df["日期"] = safe_to_datetime(df["日期"]).astype("datetime64[ns]")
     df = df.dropna(subset=["日期"])
     for src_col, _ in SHIBOR_TENOR_MAP:
-        if src_col in df.columns:
+        if src_col in cols:
             df[src_col] = pd.to_numeric(df[src_col], errors="coerce")
     return df
 
@@ -93,29 +99,33 @@ def build_shibor_df(start_date=None, end_date=None, verbose=True, files=None):
         return pd.DataFrame()
     big = pd.concat(all_chunks, ignore_index=True)
     big = big.sort_values("日期")
-    rename = {src: tgt for src, tgt in SHIBOR_TENOR_MAP if src in big.columns}
-    keep_cols = ["日期"] + [src for src, _ in SHIBOR_TENOR_MAP if src in big.columns]
+    cols = safe_columns(big)
+    rename = {src: tgt for src, tgt in SHIBOR_TENOR_MAP if src in cols}
+    keep_cols = ["日期"] + [src for src, _ in SHIBOR_TENOR_MAP if src in cols]
     big = big[keep_cols].rename(columns=rename)
-    agg_dict = {tgt: lambda s: s.dropna().iloc[-1] if len(s.dropna()) else np.nan
-                for _, tgt in SHIBOR_TENOR_MAP if tgt in big.columns}
-    big = big.groupby("日期", as_index=False).agg(agg_dict)
     big = big.rename(columns={"日期": "date"})
-    big["date"] = pd.to_datetime(big["date"], errors="coerce")
+    # re-check AFTER the rename — agg keys are the TARGET tenor names
+    cols = safe_columns(big)
+    agg_dict = {tgt: lambda s: s.dropna().iloc[-1] if len(s.dropna()) else np.nan
+                for _, tgt in SHIBOR_TENOR_MAP if tgt in cols}
+    big = big.groupby("date", as_index=False).agg(agg_dict)
+    # already datetime64 — passthrough (no cuDF to_datetime coercion)
+    big["date"] = safe_to_datetime(big["date"])
     # groupby(as_index=False) already sorted by date and returned a fresh
     # index — no re-sort/reset; the trailing masks yield fresh frames
     big = big.dropna(subset=["date"])
 
     if start_date:
-        big = big[big["date"] >= pd.Timestamp(start_date)]
+        big = big[big["date"] >= np.datetime64(start_date, "ns")]
     if end_date:
-        big = big[big["date"] <= pd.Timestamp(end_date)]
+        big = big[big["date"] <= np.datetime64(end_date, "ns")]
 
     if verbose:
         if len(big):
             print(f"    [SHIBOR] {len(big)} daily SHIBOR records "
                   f"(skipped {n_bad} bad chunks), "
                   f"{big['date'].min().date()} → {big['date'].max().date()}", flush=True)
-            if "shibor_o_n" in big.columns and big["shibor_o_n"].notna().any():
+            if "shibor_o_n" in safe_columns(big) and big["shibor_o_n"].notna().any():
                 print(f"    [SHIBOR] O/N range: {big['shibor_o_n'].min():.4f}% → "
                       f"{big['shibor_o_n'].max():.4f}%", flush=True)
         else:

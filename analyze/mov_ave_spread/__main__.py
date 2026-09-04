@@ -110,6 +110,9 @@ setup_utf8_stdout()
 from _common.df_utils._activate import activate
 activate()
 
+import pandas as pd  # noqa: E402  (post-activate; used by the detail
+#                     incremental target-date filter)
+
 from analyze._common import (  # noqa: E402
     build_and_insert_chunked_df,
     upsert_analysis_identity,
@@ -196,8 +199,12 @@ async def _process_one_sec_type(
         detail_df = df
         if len(target_dates_st) > 0:
             n_before = len(detail_df)
+            # datetime64 ndarray comparison — isin with a python-date SET
+            # never matches a datetime64 column (fetch.py incremental-
+            # filter convention).
+            td64 = pd.to_datetime(sorted(target_dates_st)).values
             detail_df = detail_df[
-                detail_df["date"].isin(target_dates_st)
+                detail_df["date"].isin(td64)
             ].reset_index(drop=True)
             print(f"  [{st}]   incremental filter: {len(detail_df):,} of "
                   f"{n_before:,} rows are in target_dates", flush=True)

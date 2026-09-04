@@ -182,11 +182,12 @@ router.get("/mov-ave-spread/chart", async (req: Request, res: Response) => {
 
 // ---- Forecast buckets table (2nd plot beneath the spread chart) ----
 // GET /api/analysis/mov-ave-spread/forecast?sec_type=etf&code=510050&kind=mov_rsi
-//   kind ∈ {mov_rsi, mov_std} — returns ONE stat_month of the code's bucket
-//   rows (bucket config + is_market_hyped + excess cols for mov_std) joined
-//   1:1 with their analysis_forecasts.forecast_results columns. Optional
-//   `month=YYYY-MM-DD` picks the stat_month; when omitted the latest one is
-//   returned. The response's `months` lists every available stat_month.
+//   kind ∈ {mov_rsi, mov_std, mov_gap} — returns the code's bucket rows
+//   (bucket config incl. cooldown_days + is_market_hyped + excess cols for
+//   mov_std, read from forecast_results.config) joined 1:1 with their
+//   analysis_forecasts.forecast_results columns. ALL stat_months are
+//   returned; optional `month=YYYY-MM-DD` narrows to stat_months >= month.
+//   The response's `months` lists every available stat_month.
 router.get("/mov-ave-spread/forecast", async (req: Request, res: Response) => {
   try {
     const code = parseCode(req);

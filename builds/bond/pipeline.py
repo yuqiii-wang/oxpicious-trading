@@ -61,7 +61,18 @@ import re
 import time
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
+
+from builds._commons.row_emission import dates_as_date_list, records_from_frame
+
+
+def _host(df):
+    """Unwrap a cudf-backed frame to host pandas ONCE before numpy
+    extraction (dates_as_date_list / records_from_frame). Frames stay
+    cudf-dispatched through all processing — host conversion happens
+    only at this final boundary."""
+    return df.to_pandas() if hasattr(df, "to_pandas") else df
 
 from _common.build_commons import (
     add_common_build_args,
@@ -181,20 +192,22 @@ def discover_dates_from_latest_files(shibor_files, chinabond_files, verbose=Fals
     if shibor_latest:
         df = read_shibor_csv(shibor_latest)
         if df is not None and len(df) > 0:
-            d = pd.to_datetime(df["日期"], errors="coerce").dropna().dt.date
-            dates |= set(d.tolist())
-            if verbose and len(d):
+            # ONE numpy pass on the host frame — Series .dt.date on a
+            # cudf-backed frame is a slow path per element
+            d_list = dates_as_date_list(_host(df)["日期"])
+            dates |= set(d_list)
+            if verbose and d_list:
                 print(f"    [SHIBOR] latest file {os.path.basename(shibor_latest)}: "
-                      f"max date={d.max()}", flush=True)
+                      f"max date={max(d_list)}", flush=True)
     chinabond_latest = latest_file_by_year(chinabond_files)
     if chinabond_latest:
         df = read_chinabond_csv(chinabond_latest)
         if df is not None and len(df) > 0:
-            d = pd.to_datetime(df["日期"], errors="coerce").dropna().dt.date
-            dates |= set(d.tolist())
-            if verbose and len(d):
+            d_list = dates_as_date_list(_host(df)["日期"])
+            dates |= set(d_list)
+            if verbose and d_list:
                 print(f"    [CHINABOND] latest file {os.path.basename(chinabond_latest)}: "
-                      f"max date={d.max()}", flush=True)
+                      f"max date={max(d_list)}", flush=True)
     return dates
 
 
@@ -294,9 +307,13 @@ async def main():
         # trading days, so the missing-dates-only logic does not apply.
         await truncate_table_async(conn, "stats.pboc_oma")
         if oma_df is not None and len(oma_df) > 0:
-            oma_rows = oma_df.copy()
-            oma_rows["date"] = oma_rows["date"].dt.date
-            await insert_rows(conn, "stats.pboc_oma", oma_rows.to_dict("records"),
+            # Host unwrap + records_from_frame: datetime64 dates emit as
+            # datetime.date (M-branch), NaN→None swept — no object-date
+            # column, no to_dict("records") per-row proxy extraction
+            oma_rows = _host(oma_df)
+            oma_cols = np.asarray(oma_rows.columns).tolist()
+            await insert_rows(conn, "stats.pboc_oma",
+                              records_from_frame(oma_rows, oma_cols),
                               ["date", "title"])
         else:
             print(f"    [DB] No OMA rows to insert into stats.pboc_oma", flush=True)
@@ -308,13 +325,14 @@ async def main():
         inst_df = load_pboc_instruments_df(verbose=True)
         all_available_dates = set()
         if inst_df is not None and len(inst_df) > 0:
-            all_available_dates.update(inst_df["pub_date"].dt.date.tolist())
+            all_available_dates.update(dates_as_date_list(_host(inst_df)["pub_date"]))
 
         # LPR announcements are monthly — their dates must also be present
         # in debt_identity for the FK to hold.
         lpr_dates_only_df = build_lpr_df(verbose=False)
         if lpr_dates_only_df is not None and len(lpr_dates_only_df) > 0:
-            all_available_dates.update(lpr_dates_only_df["date"].dt.date.tolist())
+            all_available_dates.update(
+                dates_as_date_list(_host(lpr_dates_only_df)["date"]))
 
         # Augment available dates with the latest SHIBOR + China bond file
         # dates. Without this, the early-exit below would fire whenever the
@@ -395,7 +413,8 @@ async def main():
         if forced is None:
             for df in [shibor_df, chinabond_df]:
                 if df is not None and len(df) > 0:
-                    extra_dates = set(df["date"].dt.date.tolist()) - existing_dates_set
+                    extra_dates = set(
+                        dates_as_date_list(_host(df)["date"])) - existing_dates_set
                     if extra_dates:
                         missing_dates = missing_dates | extra_dates
                         print(f"    → Found {len(extra_dates)} additional missing dates "
@@ -410,16 +429,21 @@ async def main():
         identity_rows = [{"date": d} for d in sorted(missing_dates)]
         await insert_rows(conn, "stats.debt_identity", identity_rows, ["date"])
 
-        # Helper: filter a frame to missing dates, convert to rows for insert
+        # Helper: filter a frame to missing dates, convert to rows for insert.
+        # Frames stay cudf-dispatched through processing; the host unwrap
+        # happens ONCE here before numpy filtering, and records_from_frame
+        # emits datetime.date + NaN→None at the DB boundary (no .dt.date
+        # object-date column, no to_dict("records") per-row extraction).
         def df_to_missing_rows(df, date_col="date"):
             if df is None or len(df) == 0:
                 return []
-            df = df.copy()
-            df[date_col] = df[date_col].dt.date
-            df = df[df[date_col].isin(missing_dates)]
+            df = _host(df)
+            missing_d64 = np.asarray(sorted(missing_dates), dtype="datetime64[D]")
+            d = np.asarray(df[date_col]).astype("datetime64[D]")
+            df = df.loc[np.isin(d, missing_d64)]
             if len(df) == 0:
                 return []
-            return df.to_dict("records")
+            return records_from_frame(df, np.asarray(df.columns).tolist())
 
         # Insert each source table, filtered to missing dates
         table_source_pairs = [

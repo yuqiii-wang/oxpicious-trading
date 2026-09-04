@@ -85,7 +85,8 @@ from _common.build_commons import (
     bulk_upsert_async,
 )
 from builds._commons.code_filter import add_code_arg, normalize_code
-from builds._commons.safe_parse import safe_to_numeric
+from builds._commons.safe_parse import safe_to_numeric, safe_to_datetime
+from builds._commons.row_emission import dates_as_date_list
 
 setup_utf8_stdout()
 
@@ -266,7 +267,10 @@ def build_options_df(files, verbose=True):
 
         # Scalar broadcast datetime64 date; keep only the columns we use
         df = df.reindex(columns=[c for c in _SZSE_OPT_SRC_COLS if c != "date"])
-        df["date"] = pd.Timestamp(trade_date_dt.date())
+        # numpy datetime64[ns] — a pd.Timestamp scalar takes the cudf slow
+        # path and lands the column as datetime64[s], breaking the
+        # ns-epoch math below
+        df["date"] = np.datetime64(trade_date_dt.date(), "ns")
         frames.append(df)
         n_ok += 1
 
@@ -335,7 +339,9 @@ def build_options_df(files, verbose=True):
         pairs = pairs.to_pandas()
     exp_meta_rows = []
     months_l = np.asarray(pairs["expiry_month"]).astype(object).tolist()
-    dates_l = pd.to_datetime(pairs["date"]).dt.date.tolist()
+    # dates_as_date_list: ONE numpy pass (Series .dt.date is NOT implemented
+    # in cuDF → per-element slow path + object-date poison)
+    dates_l = dates_as_date_list(pairs["date"])
     for d, m in zip(dates_l, months_l):
         mn = _MONTH_MAP.get(m, str(m)[:-1])
         try:
@@ -343,7 +349,7 @@ def build_options_df(files, verbose=True):
         except Exception:
             continue
         exp_meta_rows.append({
-            "date": pd.Timestamp(d),
+            "date": np.datetime64(d, "ns"),
             "expiry_month": m,
             "_exp_days": (expiry_dt.date() - _EPOCH).days,
         })
@@ -359,9 +365,12 @@ def build_options_df(files, verbose=True):
     for src, dst in _SZSE_OPT_RENAME.items():
         out[dst] = safe_to_numeric(out[src])
 
-    # --- Days to expiry from epoch-day ints; expiry_date → datetime64 ---
+    # --- Days to expiry from epoch-day ints; expiry_date → datetime64.
+    # The [ns] cast is unit-explicit: astype("int64") of a datetime64
+    # column yields the column's own unit (seconds under a [s] column),
+    # so the ns-per-day divisor is only correct after normalizing to [ns].
     date_epoch = (
-        pd.to_datetime(out["date"]).astype("int64") // 86_400_000_000_000
+        out["date"].astype("datetime64[ns]").astype("int64") // 86_400_000_000_000
     )
     out["days_to_expiry"] = (out["_exp_days"] - date_epoch).clip(lower=0)
     out["expiry_date"] = pd.to_datetime(
@@ -427,7 +436,9 @@ def load_etf_ohlcv(files, verbose=True):
         return pd.DataFrame()
 
     out = pd.concat(parts, ignore_index=True)
-    out["date"] = pd.to_datetime(out["date"], errors="coerce").astype("datetime64[ns]")
+    # ISO YYYY-MM-DD from filename-derived date_str — clean fast path
+    # (pd.to_datetime with errors="coerce" is not implemented in cuDF)
+    out["date"] = safe_to_datetime(out["date"]).astype("datetime64[ns]")
     out = out.dropna(subset=["date"]).sort_values(["etf_code", "date"]).reset_index(drop=True)
 
     if verbose:
@@ -769,7 +780,10 @@ async def main():
             return
 
         print(f"    → {len(options_df):,} options rows  ·  {options_df['underlying_code'].nunique()} underlyings", flush=True)
-        print(f"    → date range: {options_df['date'].min().date()} → {options_df['date'].max().date()}", flush=True)
+        # ONE numpy pass — Timestamp.date on a GPU-backed proxy Timestamp
+        # takes the cudf slow path per call
+        _d_range = dates_as_date_list(options_df["date"])
+        print(f"    → date range: {min(_d_range)} → {max(_d_range)}", flush=True)
 
         etf_ohlcv = load_etf_ohlcv(missing_etf_files)
         options_df = add_derived_columns(options_df, etf_ohlcv)
@@ -789,12 +803,11 @@ async def main():
         # ------------------------------------------------------------------
         print("\n[4/4] Inserting data to database …", flush=True)
 
-        # Convert dates to datetime.date for asyncpg DATE codec.
-        # asyncpg requires datetime.date instances; passing str raises
-        # "expected a date instance, got 'str'".
+        # Dates stay datetime64 on the frame: a .dt.date object column
+        # poisons every later cudf op with MixedTypeError fallbacks. The
+        # datetime64 columns are emitted as datetime.date by
+        # records_from_frame's numpy M-branch (asyncpg DATE codec).
         options_db = options_df.copy()
-        options_db["date"] = options_db["date"].dt.date
-        options_db["expiry_date"] = options_db["expiry_date"].dt.date
 
         # Dedupe within the batch to avoid duplicate (date, contract_code)
         # PKs (multiple files may produce the same contract row).

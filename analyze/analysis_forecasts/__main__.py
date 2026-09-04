@@ -15,35 +15,50 @@ schema (see database/sql/analysis/analysis_forecasts/):
     max_excess_max; band inputs join from
     analysis.mov_ave_spreads_detail / stats.*_tech_stats).
 
+  - mov_gap: per (sec_type, code, stat_month, gap_window, side, pct,
+    is_market_hyped) N-day price-return extreme-percentile bucket
+    definitions (gap_{W}days W ∈ {2, 3} joins from analysis.mov_ave_rsi).
+
+  - base_rates: per (sec_type, code, stat_month, period) the
+    UNCONDITIONAL same-window base rates (mean n-day forward change +
+    P(change < -1%) / P(change > +1%) over ALL of the code's window
+    trading days) — the reference the bucket results are read against
+    (lift).
+
   - forecast_results: the result data (mean forward changes at
     next/5d/20d/60d horizons; close-based max/min forward changes and
-    the within-window close swing amplitude max_low_change_ratio at the
+    the best-to-worst n-day outcome ratio max_low_change_ratio at the
     5d/20d/60d horizons; per-horizon >1% reversal probabilities),
-    keyed by forecast_id; every mov_rsi / mov_std row links 1:1 to its
-    result row via forecast_id.
+    keyed by forecast_id; every mov_rsi / mov_std / mov_gap row links
+    1:1 to its result rows via forecast_id.
 
 Pipeline per sec_type (index / etf / stock):
   1. Fetch active-universe codes (recent-data pre-filter).
-  2. Incremental: detect stat_months missing from each mov_* table
-     (month-level DISTINCT stat_month check — completed-month snapshots
-     are immutable, so no recomputation of present months). ``--force``
-     deletes the sec_type's mov_* rows AND their linked forecast_results
-     rows, then recomputes every target month.
+  2. Incremental: stat_months missing from each target table are
+     computed, and the most recent REFRESH_MONTHS completed months are
+     REFRESHED each run (deleted + recomputed — a month written right
+     after month-end carries permanently truncated 20d/60d occurrence
+     counts because its forward windows were not complete yet).
+     ``--force`` deletes the sec_type's mov_* rows AND their linked
+     forecast_results rows (plus base_rates), then recomputes every
+     target month.
   3. Fetch the joined long input frame (price / high / low / ma / rsi /
-     std columns; date >= earliest needed window start), the compact
-     market-hype EPISODES list, and compute per-code forward changes
-     (1/5/20/60 trading days).
+     gap / std columns; date >= earliest needed window start), the
+     compact market-hype EPISODES list, and compute per-code forward
+     changes (1/5/20/60 trading days).
   4. Scatter to (date × code) wide matrices + the market-hype flag
      matrix and run the vectorized monthly aggregation engines
-     (compute_rsi / compute_std), writing month-major batches:
-     forecast_id allocated from the identity sequence, then COPY into
-     forecast_results + the mov_* table in ONE transaction per month
-     (no pre-clear DELETEs — months are only written when missing or
-     after force deletion; atomicity keeps the 1:1 link crash-safe).
+     (compute_rsi / compute_std / compute_gap / compute_base), writing
+     month-major batches: forecast_id allocated from the identity
+     sequence, then COPY into forecast_results + the mov_* table in
+     ONE transaction per month (no pre-clear DELETEs — months are only
+     written when missing or after force/refresh deletion; atomicity
+     keeps the 1:1 link crash-safe).
   5. Upsert analysis.analysis_identity.
 
 Row emission contract: buckets with day_count = 0 emit NO row (a code
-without valid RSI / MA+std in a window simply has no buckets that month).
+without valid RSI / MA+std in a window simply has no buckets that
+month); base-rate rows are emitted only where base_count > 0.
 """
 from __future__ import annotations
 
@@ -57,7 +72,7 @@ import asyncio
 import os
 import sys
 import time
-from datetime import timedelta
+from datetime import date, timedelta
 
 # Ensure project root is on sys.path so ``_common`` is importable when run
 # directly via ``python -m analyze.analysis_forecasts`` or as a script.
@@ -90,16 +105,25 @@ from analyze.analysis_forecasts.config import (  # noqa: E402
     TABLE_FORECAST,
     TABLE_MOV_RSI,
     TABLE_MOV_STD,
+    TABLE_MOV_GAP,
+    TABLE_BASE_RATE,
     ANALYSIS_NAME_RSI,
     ANALYSIS_NAME_STD,
+    ANALYSIS_NAME_GAP,
+    ANALYSIS_NAME_BASE_RATE,
     DESCRIPTION_RSI,
     DESCRIPTION_STD,
+    DESCRIPTION_GAP,
+    DESCRIPTION_BASE_RATE,
     SEC_TYPES,
     MOV_RSI_COLUMNS,
     MOV_STD_COLUMNS,
+    MOV_GAP_COLUMNS,
     RSI_WINDOWS,
     MA_WINDOWS,
+    GAP_WINDOWS,
     N_MONTHS,
+    REFRESH_MONTHS,
     WINDOW_YEARS,
 )
 from analyze.analysis_forecasts.fetch import (  # noqa: E402
@@ -123,42 +147,91 @@ from analyze.analysis_forecasts.wide import (  # noqa: E402
 )
 from analyze.analysis_forecasts.compute_rsi import compute_rsi_results  # noqa: E402
 from analyze.analysis_forecasts.compute_std import compute_std_results  # noqa: E402
+from analyze.analysis_forecasts.compute_gap import compute_gap_results  # noqa: E402
+from analyze.analysis_forecasts.compute_base import compute_base_rate_rows  # noqa: E402
 
 
-# Max rows per COPY chunk (a full stock-universe month of rsi buckets is
-# <= 64 × ~5,400 ≈ 345K rows; chunk to bound peak dict memory).
+# Max period rows per COPY chunk (a full stock-universe month of rsi
+# buckets is <= 64 × ~5,400 ≈ 345K buckets → 1.38M period rows; chunk
+# 100K period rows = 25K buckets per chunk).
 _WRITE_CHUNK = 100_000
 
+# Each forecast bucket expands to 4 period rows (next / 5d / 20d / 60d).
+_PERIODS = 4
+
 # Identity sequence backing forecast_results.forecast_id (GENERATED BY
-# DEFAULT AS IDENTITY → <table>_<column>_seq). Allocated in blocks so a
-# whole chunk of linked mov/result rows is written with one round-trip.
+# DEFAULT AS IDENTITY → <table>_<column>_seq). Allocated one per
+# bucket (NOT per period row), shared across all 4 periods.
 _FORECAST_ID_SEQ = "analysis_forecasts.forecast_results_forecast_id_seq"
 
 
 # ---------------------------------------------------------------------------
-#  Incremental month detection
+#  Incremental month detection + refresh-window deletion
 # ---------------------------------------------------------------------------
 
-async def _missing_stat_months(
+async def _compute_months(
     conn,
     table: str,
     sec_type: str,
     specs: list[MonthSpec],
-) -> list[MonthSpec]:
-    """Target spec months not yet present in ``table`` for this sec_type.
+) -> tuple[list[MonthSpec], list[date]]:
+    """(compute, refreshed) — the spec months to (re)compute for
+    ``table`` / sec_type.
 
-    Month-level check (DISTINCT stat_month): completed-month snapshots are
-    immutable — closes / RSI / MA / std inside a window are historical
-    facts and the window is anchored at the month-end, so present months
-    are never recomputed. Codes listed AFTER a month was computed are
-    backfilled by --force.
+    compute = stat_months MISSING from the table plus the PRESENT
+    months inside the refresh window (the most recent REFRESH_MONTHS
+    completed months). A month written right after month-end carries
+    permanently truncated 20d/60d occurrence counts — its forward
+    windows were not complete yet at write time — so present
+    refresh-window months are deleted and recomputed on every run
+    (the caller performs the deletion). Truly missing months need no
+    delete.
+
+    Returns the compute list (spec order) and the refreshed months'
+    dates (empty when nothing present needs a refresh).
     """
     rows = await conn.fetch(
         f"SELECT DISTINCT stat_month FROM {table} WHERE sec_type = $1",
         sec_type,
     )
-    present = {r["stat_month"] for r in rows}
-    return [s for s in specs if s.stat_month not in present]
+    present: set[date] = {r["stat_month"] for r in rows}
+    refresh_set = {s.stat_month for s in specs[-REFRESH_MONTHS:]}
+    refreshed = [
+        s.stat_month for s in specs
+        if s.stat_month in present and s.stat_month in refresh_set
+    ]
+    compute = [
+        s for s in specs
+        if s.stat_month not in present or s.stat_month in refresh_set
+    ]
+    return compute, refreshed
+
+
+async def _delete_months(
+    conn,
+    table: str,
+    sec_type: str,
+    months: list[date],
+    *,
+    linked_results: bool,
+) -> None:
+    """Delete the given stat_months' rows of ``table`` (sec_type-scoped)
+    — plus, for the mov_* tables, the forecast_results rows they link
+    to (base_rates has no link)."""
+    if not months:
+        return
+    if linked_results:
+        await conn.execute(
+            f"DELETE FROM {TABLE_FORECAST} f USING {table} m "
+            f"WHERE m.forecast_id = f.forecast_id AND m.sec_type = $1 "
+            f"AND m.stat_month = ANY($2::date[])",
+            sec_type, months,
+        )
+    await conn.execute(
+        f"DELETE FROM {table} WHERE sec_type = $1 "
+        f"AND stat_month = ANY($2::date[])",
+        sec_type, months,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -166,16 +239,18 @@ async def _missing_stat_months(
 # ---------------------------------------------------------------------------
 
 async def _delete_sec_type(conn, sec_type: str) -> None:
-    """Delete a sec_type's mov_rsi / mov_std rows and the
-    forecast_results rows they link to."""
-    for mov_table in (TABLE_MOV_RSI, TABLE_MOV_STD):
+    """Delete a sec_type's mov_rsi / mov_std / mov_gap rows, the
+    forecast_results rows they link to, and its base_rates rows."""
+    for table, linked in ((TABLE_MOV_RSI, True), (TABLE_MOV_STD, True),
+                          (TABLE_MOV_GAP, True), (TABLE_BASE_RATE, False)):
+        if linked:
+            await conn.execute(
+                f"DELETE FROM {TABLE_FORECAST} f USING {table} m "
+                f"WHERE m.forecast_id = f.forecast_id AND m.sec_type = $1",
+                sec_type,
+            )
         await conn.execute(
-            f"DELETE FROM {TABLE_FORECAST} f USING {mov_table} m "
-            f"WHERE m.forecast_id = f.forecast_id AND m.sec_type = $1",
-            sec_type,
-        )
-        await conn.execute(
-            f"DELETE FROM {mov_table} WHERE sec_type = $1", sec_type
+            f"DELETE FROM {table} WHERE sec_type = $1", sec_type
         )
 
 
@@ -192,40 +267,40 @@ async def _write_month(
     """Write one month-batch of bucket rows to the mov table + its linked
     forecast_results rows.
 
-    Pure COPY, NO pre-clear: a month reaches this function only when it
-    is missing from the mov table (incremental) or after --force already
-    deleted the sec_type's rows, so re-clearing would be pure full-scan
-    overhead on the partitioned tables (no stat_month index — the PK
-    leads with code). Crash safety comes from transactional atomicity
-    instead: the id allocation + both COPYs run in ONE transaction, so a
-    crash mid-month rolls back both tables together (no orphan
-    forecast_results rows, no half-written months). forecast_ids are
-    allocated per chunk from the identity sequence and mirrored into
-    both tables (1:1 link); the identity column is GENERATED BY DEFAULT
-    so explicit ids are accepted.
+    ``rows`` is (4·R,) period rows emitted by ``build_result_rows`` —
+    bucket-major (4 consecutive rows per bucket). Allocates R forecast_ids
+    (one per bucket) and shares each across the 4 period rows, then
+    splits into R mov_rows + 4·R result_rows and COPYs both tables in
+    ONE transaction per chunk. Pure COPY, NO pre-clear. Crash safety
+    comes from transactional atomicity.
+
+    Returns the number of BUCKETS written (R, not 4·R).
     """
     if not rows:
         return 0
-    total = 0
-    for i in range(0, len(rows), _WRITE_CHUNK):
-        chunk = rows[i : i + _WRITE_CHUNK]
+    n_total_buckets = 0
+    # Chunk must be a multiple of 4 (complete bucket groups) — trim.
+    chunk_size = _WRITE_CHUNK - (_WRITE_CHUNK % _PERIODS)
+    for i in range(0, len(rows), chunk_size):
+        chunk = rows[i : i + chunk_size]
+        n_buckets = len(chunk) // _PERIODS
         async with conn.transaction():
             ids = [
                 r[0] for r in await conn.fetch(
                     f"SELECT nextval('{_FORECAST_ID_SEQ}') "
                     f"FROM generate_series(1, $1::int)",
-                    len(chunk),
+                    n_buckets,
                 )
             ]
-            for row, fid in zip(chunk, ids):
-                row["forecast_id"] = fid
+            # Assign each forecast_id to its 4 consecutive period rows.
+            for bi, fid in enumerate(ids):
+                for j in range(_PERIODS):
+                    chunk[bi * _PERIODS + j]["forecast_id"] = fid
             mov_rows, result_rows = split_forecast_rows(chunk, mov_columns)
-            # copy_insert_async opens its own inner transaction block —
-            # under the outer one it becomes a savepoint, still atomic.
             await copy_insert_async(conn, TABLE_FORECAST, result_rows)
             await copy_insert_async(conn, mov_table, mov_rows)
-        total += len(chunk)
-    return total
+        n_total_buckets += n_buckets
+    return n_total_buckets
 
 
 # ---------------------------------------------------------------------------
@@ -238,14 +313,15 @@ async def _process_sec_type(
     specs: list[MonthSpec],
     *,
     force: bool,
-) -> tuple[int, int]:
-    """Process one sec_type end-to-end. Returns (mov_rsi, mov_std) rows written."""
+) -> tuple[int, int, int, int]:
+    """Process one sec_type end-to-end.
+    Returns (mov_rsi, mov_std, mov_gap) bucket rows + base_rates rows."""
     print(f"\n  [{sec_type}] Fetching active codes...", flush=True)
     codes = sorted(await fetch_active_codes(conn, sec_type))
     print(f"  [{sec_type}]   {len(codes):,} active codes", flush=True)
     if not codes:
         print(f"  [{sec_type}]   no active codes; skipping.", flush=True)
-        return 0, 0
+        return 0, 0, 0, 0
 
     # ---- Emittable-month bound -------------------------------------------
     # The full-window gate (below) means a snapshot month can emit rows
@@ -271,31 +347,54 @@ async def _process_sec_type(
     # ---- Determine target months (incremental / force) -------------------
     if force:
         print(f"  [{sec_type}] FORCE mode: deleting existing {sec_type} "
-              f"mov rows + linked forecast_results...", flush=True)
+              f"mov rows + linked forecast_results + base_rates...",
+              flush=True)
         await _delete_sec_type(conn, sec_type)
-        missing_rsi, missing_std = list(specs), list(specs)
+        compute_rsi = compute_std = compute_gap = compute_base = list(specs)
     else:
-        missing_rsi = await _missing_stat_months(conn, TABLE_MOV_RSI,
-                                                 sec_type, specs)
-        missing_std = await _missing_stat_months(conn, TABLE_MOV_STD,
-                                                 sec_type, specs)
-        print(f"  [{sec_type}]   missing months: rsi={len(missing_rsi)} "
-              f"std={len(missing_std)} of {len(specs)}", flush=True)
-    if not missing_rsi and not missing_std:
+        compute_rsi, refresh_rsi = await _compute_months(
+            conn, TABLE_MOV_RSI, sec_type, specs)
+        compute_std, refresh_std = await _compute_months(
+            conn, TABLE_MOV_STD, sec_type, specs)
+        compute_gap, refresh_gap = await _compute_months(
+            conn, TABLE_MOV_GAP, sec_type, specs)
+        compute_base, refresh_base = await _compute_months(
+            conn, TABLE_BASE_RATE, sec_type, specs)
+        # Refresh-window months present in the DB: delete + recompute
+        # (their long-horizon forward windows were not complete at
+        # first write).
+        await _delete_months(conn, TABLE_MOV_RSI, sec_type, refresh_rsi,
+                             linked_results=True)
+        await _delete_months(conn, TABLE_MOV_STD, sec_type, refresh_std,
+                             linked_results=True)
+        await _delete_months(conn, TABLE_MOV_GAP, sec_type, refresh_gap,
+                             linked_results=True)
+        await _delete_months(conn, TABLE_BASE_RATE, sec_type, refresh_base,
+                             linked_results=False)
+        print(f"  [{sec_type}]   months to compute: "
+              f"rsi={len(compute_rsi)} std={len(compute_std)} "
+              f"gap={len(compute_gap)} base={len(compute_base)} "
+              f"of {len(specs)} (+ refresh of the last "
+              f"{REFRESH_MONTHS})", flush=True)
+    if not compute_rsi and not compute_std and not compute_gap \
+            and not compute_base:
         print(f"  [{sec_type}]   up to date; skipping.", flush=True)
-        return 0, 0
+        return 0, 0, 0, 0
 
     # ---- Fetch inputs (bounded to the earliest needed window start) ------
-    todo = {s.stat_month: s for s in missing_rsi + missing_std}
+    todo = {
+        s.stat_month: s
+        for s in compute_rsi + compute_std + compute_gap + compute_base
+    }
     since = min(s.lower for s in todo.values())
     print(f"  [{sec_type}] Fetching joined inputs (price / high / low / "
-          f"ma / rsi / std) for {len(codes):,} codes since "
+          f"ma / rsi / gap / std) for {len(codes):,} codes since "
           f"{since.isoformat()}...", flush=True)
     df = await fetch_analysis_inputs(conn, sec_type, codes, since)
     print(f"  [{sec_type}]   {len(df):,} (code, date) rows", flush=True)
     if df.empty:
         print(f"  [{sec_type}]   no source data; skipping.", flush=True)
-        return 0, 0
+        return 0, 0, 0, 0
     episodes = await fetch_hyped_episodes(conn, sec_type, since)
     print(f"  [{sec_type}]   {len(episodes):,} market-hype episodes",
           flush=True)
@@ -321,14 +420,23 @@ async def _process_sec_type(
     }
     windows_rsi = [
         windows_by_month[m] for m in
-        (s.stat_month for s in missing_rsi) if m in windows_by_month
+        (s.stat_month for s in compute_rsi) if m in windows_by_month
     ]
     windows_std = [
         windows_by_month[m] for m in
-        (s.stat_month for s in missing_std) if m in windows_by_month
+        (s.stat_month for s in compute_std) if m in windows_by_month
+    ]
+    windows_gap = [
+        windows_by_month[m] for m in
+        (s.stat_month for s in compute_gap) if m in windows_by_month
+    ]
+    windows_base = [
+        windows_by_month[m] for m in
+        (s.stat_month for s in compute_base) if m in windows_by_month
     ]
 
-    n_rsi = n_std = 0
+    n_rsi = n_std = n_gap = 0
+    n_base = 0
 
     # ---- Stage 1: RSI extreme buckets -------------------------------------
     if windows_rsi:
@@ -374,7 +482,37 @@ async def _process_sec_type(
                   f"wrote {n:,} rows", flush=True)
         del std_mats
 
-    return n_rsi, n_std
+    # ---- Stage 3: Gap extreme buckets --------------------------------------
+    if windows_gap:
+        print(f"  [{sec_type}] Computing gap extreme buckets "
+              f"(windows={list(GAP_WINDOWS)}) for {len(windows_gap)} "
+              f"months...", flush=True)
+        gap_mats = {
+            f"gap_{w}": scatter_column(df, f"gap_{w}days", shape, didx, cidx)
+            for w in GAP_WINDOWS
+        }
+        for stat_month, rows in compute_gap_results(
+            gap_mats, chg, windows_gap, grid_codes, sec_type, hype,
+            first_ord,
+        ):
+            n = await _write_month(conn, TABLE_MOV_GAP, MOV_GAP_COLUMNS, rows)
+            n_gap += n
+            print(f"    [{stat_month}] mov_gap + forecast_results: "
+                  f"wrote {n:,} rows", flush=True)
+        del gap_mats
+
+    # ---- Stage 4: unconditional base rates ---------------------------------
+    if windows_base:
+        print(f"  [{sec_type}] Computing base rates for "
+              f"{len(windows_base)} months...", flush=True)
+        for stat_month, rows in compute_base_rate_rows(
+            chg, windows_base, grid_codes, sec_type, first_ord,
+        ):
+            await copy_insert_async(conn, TABLE_BASE_RATE, rows)
+            n_base += len(rows)
+        print(f"    base_rates: wrote {n_base:,} rows", flush=True)
+
+    return n_rsi, n_std, n_gap, n_base
 
 
 # ---------------------------------------------------------------------------
@@ -386,15 +524,18 @@ async def main() -> None:
         description="Analysis Forecasts (ETF + Index + Stock). Monthly "
                     "per-security forecast analysis over a trailing "
                     "5-year window: analysis_forecasts.mov_rsi (RSI "
-                    "extreme-percentile buckets) and mov_std "
-                    "(Bollinger-breach buckets) hold the motivation "
-                    "cols; forecast_results (linked 1:1 via forecast_id) "
-                    "holds the result data — mean forward changes at "
-                    "next/5d/20d/60d horizons; close-based max/min "
-                    "forward changes and the within-window close "
-                    "swing amplitude (max_low_change_ratio) at the "
-                    "5d/20d/60d "
-                    "horizons; per-horizon >1% reversal probabilities."
+                    "extreme-percentile buckets), mov_std (Bollinger-"
+                    "breach buckets) and mov_gap (gap-extreme buckets) "
+                    "hold the motivation cols; forecast_results (linked "
+                    "1:1 via forecast_id) holds the result data — mean "
+                    "forward changes at next/5d/20d/60d horizons; "
+                    "close-based max/min forward changes and the "
+                    "best-to-worst n-day outcome ratio "
+                    "(max_low_change_ratio) at the 5d/20d/60d horizons; "
+                    "per-horizon >1% reversal probabilities; base_rates "
+                    "holds the unconditional same-window reference "
+                    "(mean change + P(<-1%) / P(>+1%) over all window "
+                    "days)."
     )
     ap.add_argument(
         "--sec-type", choices=SEC_TYPES, default=None,
@@ -414,23 +555,27 @@ async def main() -> None:
 
     t0 = time.time()
     print_build_header(
-        "ANALYZE FORECASTS (monthly RSI-extreme + Bollinger-breach "
-        "forecasts)",
-        tables=f"{TABLE_FORECAST}, {TABLE_MOV_RSI}, {TABLE_MOV_STD}",
+        "ANALYZE FORECASTS (monthly RSI-extreme + Bollinger-breach + "
+        "gap-extreme forecasts)",
+        tables=f"{TABLE_FORECAST}, {TABLE_MOV_RSI}, {TABLE_MOV_STD}, "
+               f"{TABLE_MOV_GAP}, {TABLE_BASE_RATE}",
         sec_types=", ".join(sec_types),
         months=f"{args.months} (window {specs[0].lower} .. "
                f"{specs[-1].stat_month})",
         mode="FORCE (delete + recompute all target months)" if force
-        else "incremental (missing stat_months only)",
+        else f"incremental (missing stat_months + refresh of the last "
+             f"{REFRESH_MONTHS})",
     )
 
     conn = await get_db_connection_async()
     try:
-        total_rsi = total_std = 0
+        total_rsi = total_std = total_gap = total_base = 0
         for st in sec_types:
-            r, s = await _process_sec_type(conn, st, specs, force=force)
+            r, s, g, b = await _process_sec_type(conn, st, specs, force=force)
             total_rsi += r
             total_std += s
+            total_gap += g
+            total_base += b
 
             if r or force:
                 await upsert_analysis_identity(
@@ -442,15 +587,28 @@ async def main() -> None:
                     conn, name=ANALYSIS_NAME_STD,
                     detail_name=ANALYSIS_NAME_STD, description=DESCRIPTION_STD,
                 )
+            if g or force:
+                await upsert_analysis_identity(
+                    conn, name=ANALYSIS_NAME_GAP,
+                    detail_name=ANALYSIS_NAME_GAP, description=DESCRIPTION_GAP,
+                )
+            if b or force:
+                await upsert_analysis_identity(
+                    conn, name=ANALYSIS_NAME_BASE_RATE,
+                    detail_name=ANALYSIS_NAME_BASE_RATE,
+                    description=DESCRIPTION_BASE_RATE,
+                )
 
-        if total_rsi == 0 and total_std == 0 and not force:
+        if total_rsi == 0 and total_std == 0 and total_gap == 0 \
+                and total_base == 0 and not force:
             print("\n  DB is up to date; nothing to do.", flush=True)
             print_wall_time(t0)
             return
 
-        print(f"\n  TOTAL: {total_rsi:,} mov_rsi rows + "
-              f"{total_std:,} mov_std rows written (with linked "
-              f"forecast_results rows)", flush=True)
+        print(f"\n  TOTAL: {total_rsi:,} mov_rsi + {total_std:,} mov_std "
+              f"+ {total_gap:,} mov_gap rows written (with linked "
+              f"forecast_results rows) + {total_base:,} base_rates rows",
+              flush=True)
         print_wall_time(t0)
     finally:
         try:

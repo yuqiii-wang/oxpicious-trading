@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 
 from downloads._common import read_build_csv
+from builds._commons.safe_parse import safe_to_datetime
+from _common.df_utils import safe_columns
 from builds.bond.paths import CHINABOND_DIR
 
 CHINABOND_TENOR_MAP = [
@@ -61,13 +63,17 @@ def read_chinabond_csv(path):
         return None
     if df is None or len(df) == 0:
         return None
-    if "日期" not in df.columns or "标准期限说明" not in df.columns or "收益率(%)" not in df.columns:
+    # safe_columns: `col in df.columns` is a cudf fallback PER CHECK
+    cols = safe_columns(df)
+    if "日期" not in cols or "标准期限说明" not in cols or "收益率(%)" not in cols:
         return None
     df["日期"] = df["日期"].astype(str).str.strip().str.replace("/", "-", regex=False)
     df = df[df["日期"].str.match(r"^\d{4}-\d{2}-\d{2}$", na=False)]
     if len(df) == 0:
         return None
-    df["日期"] = pd.to_datetime(df["日期"], errors="coerce")
+    # ISO-guaranteed by the regex above — clean format fast path
+    # (pd.to_datetime(errors="coerce") is not implemented in cuDF)
+    df["日期"] = safe_to_datetime(df["日期"]).astype("datetime64[ns]")
     df = df.dropna(subset=["日期"])
     df["标准期限说明"] = df["标准期限说明"].astype(str).str.strip().str.lower()
     df["收益率(%)"] = pd.to_numeric(df["收益率(%)"], errors="coerce")
@@ -104,11 +110,14 @@ def build_chinabond_df(start_date=None, end_date=None, verbose=True, files=None)
     if not all_chunks:
         return pd.DataFrame()
     big = pd.concat(all_chunks, ignore_index=True)
-    rename = {src: tgt for src, tgt in CHINABOND_TENOR_MAP if src in big.columns}
-    keep_cols = ["日期"] + [src for src, _ in CHINABOND_TENOR_MAP if src in big.columns]
+    cols = safe_columns(big)
+    rename = {src: tgt for src, tgt in CHINABOND_TENOR_MAP if src in cols}
+    keep_cols = ["日期"] + [src for src, _ in CHINABOND_TENOR_MAP if src in cols]
     big = big[keep_cols].rename(columns=rename)
     big = big.rename(columns={"日期": "date"})
-    tenor_cols = [tgt for _, tgt in CHINABOND_TENOR_MAP if tgt in big.columns]
+    # re-check AFTER the rename — agg keys are the TARGET tenor names
+    cols = safe_columns(big)
+    tenor_cols = [tgt for _, tgt in CHINABOND_TENOR_MAP if tgt in cols]
     agg_dict = {c: lambda s: s.dropna().iloc[-1] if len(s.dropna()) else np.nan
                 for c in tenor_cols}
     big = big.groupby("date", as_index=False).agg(agg_dict)
@@ -116,16 +125,16 @@ def build_chinabond_df(start_date=None, end_date=None, verbose=True, files=None)
     # index — no re-sort/reset; the trailing masks yield fresh frames
 
     if start_date:
-        big = big[big["date"] >= pd.Timestamp(start_date)]
+        big = big[big["date"] >= np.datetime64(start_date, "ns")]
     if end_date:
-        big = big[big["date"] <= pd.Timestamp(end_date)]
+        big = big[big["date"] <= np.datetime64(end_date, "ns")]
 
     if verbose:
         if len(big):
             print(f"    [CHINABOND] {len(big)} daily yield-curve records "
                   f"(skipped {n_bad} bad files), "
                   f"{big['date'].min().date()} → {big['date'].max().date()}", flush=True)
-            if "cb_1y" in big.columns and big["cb_1y"].notna().any():
+            if "cb_1y" in safe_columns(big) and big["cb_1y"].notna().any():
                 print(f"    [CHINABOND] 1Y yield range: "
                       f"{big['cb_1y'].min():.4f}% → {big['cb_1y'].max():.4f}%", flush=True)
         else:

@@ -28,6 +28,7 @@
  */
 import { queryRows, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
+import { codeVariants } from "../lib/classify-etf.js";
 import type {
   SecCompositionResponse,
   SecCompositionHolding,
@@ -99,16 +100,11 @@ async function fetchHoldings(
   sourceType: "etf" | "index",
   date?: string,
 ): Promise<DbCompositionRow[]> {
-  // The code predicate differs by source_type — static strings, no injection
-  // risk (sourceType is a hardcoded literal, not user input).
-  const codePredicate =
-    sourceType === "etf"
-      ? "REGEXP_REPLACE(h.code, '\\.(SZ|SS|SH)$', '') = $1"
-      : "h.code = $1";
-  const latestCodePredicate =
-    sourceType === "etf"
-      ? "REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1"
-      : "code = $1";
+  // code = ANY(variants) keeps the (code, …) PK prefix index-usable for BOTH
+  // source types (etf codes carry a suffix, index codes are bare — the bare
+  // variant covers the index rows).
+  const codePredicate = "h.code = ANY($1::text[])";
+  const latestCodePredicate = "code = ANY($1::text[])";
 
   // Seasonal constraint: latest snapshot WITHIN the quarter containing `date`.
   // Both the `latest` subquery and the outer WHERE must carry the filter so
@@ -120,7 +116,7 @@ async function fetchHoldings(
   const outerDateFilter = hasDate
     ? "AND h.snapshot_date >= date_trunc('quarter', $3::date) AND h.snapshot_date < date_trunc('quarter', $3::date) + interval '3 months'"
     : "";
-  const params: unknown[] = hasDate ? [code, sourceType, date] : [code, sourceType];
+  const params: unknown[] = hasDate ? [codeVariants(code), sourceType, date] : [codeVariants(code), sourceType];
 
   const sql = `
     SELECT h.snapshot_date,
@@ -173,10 +169,10 @@ async function fetchTrackingIndex(
        LEFT JOIN stats.sec_classification si
          ON si.code = sc.parent_index_code AND si.type = 'index'
       WHERE sc.type = 'etf'
-        AND REGEXP_REPLACE(sc.code, '\\.(SZ|SS|SH)$', '') = $1
+        AND sc.code = ANY($1::text[])
         AND sc.parent_index_code <> ''
       LIMIT 1`,
-    [strippedEtfCode],
+    [codeVariants(strippedEtfCode)],
   );
   if (rows.length === 0) return null;
   return { code: rows[0].index_code, name: rows[0].index_name ?? "" };
@@ -297,12 +293,8 @@ async function fetchQuarterlyRows(
   code: string,
   sourceType: "etf" | "index",
 ): Promise<DbQuarterlyRow[]> {
-  // The code predicate differs by source_type — static strings, no injection
-  // risk (sourceType is a hardcoded literal, not user input).
-  const codePredicate =
-    sourceType === "etf"
-      ? "REGEXP_REPLACE(h.code, '\\.(SZ|SS|SH)$', '') = $1"
-      : "h.code = $1";
+  // code = ANY(variants) keeps the (code, …) PK prefix index-usable (see fetchHoldings).
+  const codePredicate = "h.code = ANY($1::text[])";
 
   const sql = `
     WITH snaps AS (
@@ -311,7 +303,7 @@ async function fetchQuarterlyRows(
              snapshot_date
         FROM stats.sec_composition
        WHERE source_type = $2
-         AND REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1
+         AND code = ANY($1::text[])
        ORDER BY date_trunc('quarter', snapshot_date), snapshot_date DESC
     )
     SELECT s.quarter_start::text AS quarter_start,
@@ -341,7 +333,7 @@ async function fetchQuarterlyRows(
               COALESCE(sc.industry_label, '未分类')
      ORDER BY s.quarter_start, SUM(h.weight_pct) DESC
   `;
-  return queryRows<DbQuarterlyRow>(sql, [code, sourceType]);
+  return queryRows<DbQuarterlyRow>(sql, [codeVariants(code), sourceType]);
 }
 
 /** Fold raw grouped rows into the per-quarter response shape. */
@@ -465,12 +457,8 @@ async function fetchIndustryWeightRows(
   industryId: string,
   sourceType: "etf" | "index",
 ): Promise<DbIndustryWeightRow[]> {
-  // The code predicate differs by source_type — static strings, no injection
-  // risk (sourceType is a hardcoded literal, not user input).
-  const codePredicate =
-    sourceType === "etf"
-      ? "REGEXP_REPLACE(h.code, '\\.(SZ|SS|SH)$', '') = $1"
-      : "h.code = $1";
+  // code = ANY(variants) keeps the (code, …) PK prefix index-usable (see fetchHoldings).
+  const codePredicate = "h.code = ANY($1::text[])";
 
   // Per snapshot date: industry-summed weight (incl. snapshots where the
   // industry is absent → 0) via a FILTERED aggregate, plus the snapshot
@@ -493,7 +481,7 @@ async function fetchIndustryWeightRows(
      GROUP BY h.snapshot_date
      ORDER BY h.snapshot_date ASC
   `;
-  return queryRows<DbIndustryWeightRow>(sql, [code, industryId, sourceType]);
+  return queryRows<DbIndustryWeightRow>(sql, [codeVariants(code), industryId, sourceType]);
 }
 
 function foldIndustryWeightRows(rows: DbIndustryWeightRow[]): IndustryWeightSeriesPoint[] {

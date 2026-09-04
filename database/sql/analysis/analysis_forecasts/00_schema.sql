@@ -18,13 +18,21 @@
 --      analysis_forecasts.mov_std: the MOTIVATION (bucket-defining)
 --      columns. Each motivation row carries a forecast_id that links to
 --      its forecast_results row (1:1, indexed, NOT NULL).
+--    - 03_mov_gap.sql — analysis_forecasts.mov_gap: a third motivation
+--      table (N-day price-return extreme-percentile buckets).
+--    - 04_base_rates.sql — analysis_forecasts.base_rates: the
+--      UNCONDITIONAL same-window base rates (mean forward change +
+--      P(<-1%) / P(>+1%) over all window days) the bucket results are
+--      read against.
 --
 --  Population convention:
 --    - `python -m analyze.analysis_forecasts` computes one snapshot per
---      completed month, incrementally (only stat_months missing from
---      the mov_* tables are computed; completed-month results are
---      immutable because closes / RSI / MA / std inside the window are
---      historical facts).
+--      completed month, incrementally (stat_months missing from the
+--      mov_* / base_rates tables are computed; the most recent
+--      REFRESH_MONTHS snapshots are refreshed each run — the
+--      forward-change RESULT half needs post-month-end prices that do
+--      not all exist yet when a month is first written, so its
+--      long-horizon occurrence counts fill in only on refresh).
 --    - `--force` deletes the sec_type's mov_* rows (and their
 --      forecast_results rows) and recomputes every target stat_month.
 --    - Rows are emitted ONLY where the bucket day-count > 0 (empty

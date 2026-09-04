@@ -283,10 +283,10 @@ async def main() -> None:
 
     # Apply date range filter
     if args.start_date:
-        start_d = pd.to_datetime(args.start_date).date()
+        start_d = date.fromisoformat(args.start_date)
         available_dates = {d for d in available_dates if d >= start_d}
     if args.end_date:
-        end_d = pd.to_datetime(args.end_date).date()
+        end_d = date.fromisoformat(args.end_date)
         available_dates = {d for d in available_dates if d <= end_d}
 
     print(f"    → {len(available_dates)} unique dates available in range", flush=True)
@@ -382,11 +382,11 @@ async def main() -> None:
             return
 
         print(f"    → {len(options_df):,} options rows  ·  {options_df['underlying_code'].nunique()} underlyings", flush=True)
-        # Host boundary: .dt.date is NOT implemented in cuDF — the object-date
-        # column assigned back cascades MixedTypeError / "Fast-to-slow
-        # transfer is blocked" on every later op. Convert to host pandas
-        # ONCE (asyncpg DATE codec needs datetime.date, all conversions
-        # below are then proxy-free).
+        # Host boundary: a host-backed proxy frame still dispatches ops with
+        # cudf implementations through the GPU path, so the frame must keep
+        # only GPU-convertible dtypes (datetime64 dates, no object columns).
+        # Python dates are emitted at the very last extraction step by
+        # records_from_frame's numpy M-branch.
         if hasattr(options_df, "to_pandas"):  # GPU frame → host at DB boundary
             options_df = options_df.to_pandas()
 
@@ -397,10 +397,11 @@ async def main() -> None:
         # ------------------------------------------------------------------
         print("\n[4/4] Inserting data to database …", flush=True)
 
-        # Convert dates to datetime.date for asyncpg
+        # Dates stay datetime64 on the frame: a .dt.date object column
+        # poisons every later cudf op with MixedTypeError fallbacks. The
+        # datetime64 columns are emitted as datetime.date by
+        # records_from_frame's numpy M-branch (asyncpg DATE codec).
         options_db = options_df.copy()
-        options_db["date"] = options_db["date"].dt.date
-        options_db["expiry_date"] = options_db["expiry_date"].dt.date
 
         # Dedupe within batch
         options_db = options_db.drop_duplicates(subset=["date", "contract_code"], keep="last")

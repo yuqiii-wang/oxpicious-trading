@@ -12,8 +12,9 @@ Pipeline
      from index_basic_stats LEFT JOIN index_valuation JOIN sec_classification
      (compositioned indices only; synthetic DUMMY_* indices skipped when
      empty), stock_num via LATERAL sec_composition latest-snapshot (no date
-     filter — temporal extrapolation). In incremental mode, filters to
-     target_dates PLUS one first-close row per code (rebase anchor); in
+     filter — temporal extrapolation). pe == 0 is treated as no-data (NULL)
+     so the mean never averages a 0-marker in. In incremental mode, filters
+     to target_dates PLUS one first-close row per code (rebase anchor); in
      force mode, loads full history.
   2. Rebase each code's OHLC to 100 at its first available close (single
      per-index scale factor applied to open/high/low/close — the composite
@@ -380,6 +381,11 @@ async def main() -> None:
         df["low"] = df["low"].astype(float)
         df["close"] = df["close"].astype(float)
         df["pe"] = df["pe"].astype(float)
+        # PE == 0 is a "no data" marker, never a real valuation (impossible
+        # for a price>0 index; SZSE-style loss-making marker). Treat as NULL
+        # so aggregate_by_pool's mean SKIPS it — a slice with no usable PE
+        # lands NULL (empty in the UI), never 0.
+        df["pe"] = df["pe"].where(df["pe"] != 0)
         df["stock_num"] = df["stock_num"].astype("Int64")
         # datetime64[ns] date column — GPU-native through the whole
         # pipeline. The date column arrives as NATIVE float8

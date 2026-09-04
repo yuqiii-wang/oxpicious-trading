@@ -58,6 +58,8 @@ def _add_stale_empty_markers(
     out_dir: Path,
     prefixes: List[str],
     present_by_prefix: Dict[str, Set[date]],
+    *,
+    ext_glob: str = "*.csv",
 ) -> None:
     """Treat only STALE empty-marker dates as present (already tried).
 
@@ -65,14 +67,21 @@ def _add_stale_empty_markers(
     data) newer than EMPTY_MARKER_RETRY_DAYS are left out so the download
     plan retries them — recent "no data" responses usually just mean the
     exchange export was not published yet when first requested.
+
+    Scans both all files (min_bytes=0) and valid files (min_bytes=MIN_VALID_BYTES)
+    to correctly isolate 0-byte empty markers from real data files.
     """
-    empty_marker_dates = scan_present_day_keys(
-        out_dir, prefixes=prefixes, min_bytes=0, ext_glob="*.csv",
+    all_files = scan_present_day_keys(
+        out_dir, prefixes=prefixes, min_bytes=0, ext_glob=ext_glob,
+    )
+    valid_files = scan_present_day_keys(
+        out_dir, prefixes=prefixes, min_bytes=MIN_VALID_BYTES, ext_glob=ext_glob,
     )
     retry_cutoff = date.today() - timedelta(days=EMPTY_MARKER_RETRY_DAYS)
     for p in prefixes:
-        markers = empty_marker_dates.get(p, set())
-        stale_markers = {d for d in markers if d <= retry_cutoff}
+        # Empty markers = files that exist but are too small to be valid
+        empty_markers = all_files.get(p, set()) - valid_files.get(p, set())
+        stale_markers = {d for d in empty_markers if d <= retry_cutoff}
         present_by_prefix[p] |= stale_markers
 
 
@@ -131,6 +140,17 @@ def build_day_download_plan(
         # NOT in the identity table; the present set is the complement within
         # all_dates. skip_holidays matches the weekdays_only filter so the
         # expected-date generation matches all_dates.
+        #
+        # IMPORTANT: DB-first alone is not sufficient because identity tables
+        # are shared across multiple downloaders (archive, trend, etc.). A
+        # date marked "present" in stats.stock_identity by the archive
+        # downloader does NOT mean the trend downloader has its own CSV file
+        # for that date. So we cross-check the DB-derived present set against
+        # local valid xlsx files — a date is truly present only when BOTH
+        # the DB has it AND this downloader has a local file. Stale empty
+        # markers (0-byte files older than EMPTY_MARKER_RETRY_DAYS) are also
+        # treated as present regardless of DB state, since they represent a
+        # confirmed "server returned no data" result from THIS downloader.
         from _common.pre_check_and_load import check_identity
         missing_dates = check_identity(
             db_table, start_date, end_date,
@@ -138,8 +158,17 @@ def build_day_download_plan(
             exchange=db_exchange,
             skip_holidays=weekdays_only,
         )
-        present_set = set(all_dates) - missing_dates
-        present_by_prefix: Dict[str, Set[date]] = {p: set(present_set) for p in prefixes}
+        present_from_db = set(all_dates) - missing_dates
+
+        # Cross-check with local valid xlsx files — this downloader must
+        # actually have a file for the date to be truly cached.
+        local_valid = scan_present_day_keys(
+            out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
+        )
+        present_by_prefix: Dict[str, Set[date]] = {
+            p: present_from_db & local_valid.get(p, set())
+            for p in prefixes
+        }
         if skip_empty_markers:
             _add_stale_empty_markers(out_dir, prefixes, present_by_prefix)
     else:
@@ -221,8 +250,18 @@ def build_year_download_plan(
             db_table, start_date, end_date,
             date_column=db_date_column,
         )
-        present_years_set = set(years) - missing_years
-        present_by_prefix: Dict[str, Set[int]] = {p: set(present_years_set) for p in prefixes}
+        present_from_db = set(years) - missing_years
+
+        # Cross-check with local valid year files — a year is truly present
+        # only when BOTH the DB has it AND this downloader has a local file
+        # for that year. Same shared-table issue as per-day plans.
+        local_valid = scan_present_year_keys(
+            out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
+        )
+        present_by_prefix: Dict[str, Set[int]] = {
+            p: present_from_db & local_valid.get(p, set())
+            for p in prefixes
+        }
     else:
         present_by_prefix = scan_present_year_keys(
             out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
@@ -305,10 +344,21 @@ def build_chunk_download_plan(
             )
         else:
             missing_dates = set()
-        # A chunk (cs, ce) is "present" if ce is NOT in the missing set.
-        present_by_prefix: Dict[str, Set[Tuple[date, date]]] = {
+        # A chunk (cs, ce) is "present from DB" if ce is NOT in the missing set.
+        present_from_db_by_prefix: Dict[str, Set[Tuple[date, date]]] = {
             p: {(cs, ce) for (cs, ce) in chunks_by_type.get(tk, []) if ce not in missing_dates}
             for p, tk in zip(prefixes, type_keys)
+        }
+
+        # Cross-check with local valid chunk files — a chunk is truly present
+        # only when BOTH the DB says it's done AND this downloader has the
+        # local file. Same shared-table issue as per-day plans.
+        local_valid = scan_present_chunk_keys(
+            out_dir, prefixes=prefixes, min_bytes=min_bytes, ext_glob=ext_glob,
+        )
+        present_by_prefix: Dict[str, Set[Tuple[date, date]]] = {
+            p: present_from_db_by_prefix.get(p, set()) & local_valid.get(p, set())
+            for p in prefixes
         }
     else:
         present_by_prefix = scan_present_chunk_keys(

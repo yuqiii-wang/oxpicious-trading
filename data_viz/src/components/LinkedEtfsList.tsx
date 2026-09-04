@@ -1,4 +1,4 @@
-﻿/**
+/**
  * LinkedEtfsList — paginated table of ETFs tracking the given index.
  *
  * Shown on the Index Baseline page beside the Composition pie chart.
@@ -6,7 +6,8 @@
  * (IndexPanel) controls `open` / `onToggle` so the parent card can expand
  * to fit the table.
  *
- * Pagination: 10 ETFs per page (MUI Pagination control below the table).
+ * Pagination: 10 ETFs per page (MUI Pagination control below the table),
+ * applied AFTER the opt-in per-column header filters (useTableHeaderFilters).
  *
  * Data source: /api/sec-composition/linked-etfs?code=<index code>, which
  * queries stats.sec_classification (type='etf', parent_index_code = code)
@@ -34,7 +35,8 @@ import { Link as LinkIcon } from "@mui/icons-material";
 import RefreshButton from "@/components/RefreshButton";
 import { fetchLinkedEtfs, invalidateCacheForUrl } from "@/lib/api-client";
 import { fmtNum } from "@/lib/series";
-import type { LinkedEtfsResponse } from "@shared/types";
+import type { LinkedEtfRow, LinkedEtfsResponse } from "@shared/types";
+import useTableHeaderFilters, { type HeaderFilterDef } from "@/hooks/table-header-filters";
 import {
   expandedTableAggCellSx,
   expandedTableBodyCellSx,
@@ -42,6 +44,27 @@ import {
   expandedTableContainerSx,
   expandedTableHeadCellSx,
 } from "@/shared/styles/expanded-table-styles";
+
+/** Opt-in per-column header filters — discrete labels (exchange, industry)
+ *  filter by ticks; continuous magnitudes (close, amounts, days) by numeric
+ *  range; latest_date by a date range. Code / Name / Total ETF Amt (an
+ *  index-level metric, not per-ETF) have no filter. */
+const FILTER_DEFS: HeaderFilterDef<LinkedEtfRow>[] = [
+  { key: "exchange", label: "Exch", type: "ticks", value: (e) => e.exchange || null },
+  { key: "industry", label: "Industry", type: "ticks", value: (e) => e.industry_label || null },
+  { key: "latest_close", label: "Close", type: "range", value: (e) => e.latest_close },
+  {
+    key: "trading_amt",
+    label: "Trading Amt (亿)",
+    type: "range",
+    // Filter on the 亿元 value the cell displays.
+    value: (e) => (e.latest_trading_amount != null ? e.latest_trading_amount / 1e8 : null),
+  },
+  { key: "aum", label: "Valuation Amt (亿)", type: "range", value: (e) => e.aum_yi },
+  { key: "latest_date", label: "Latest Date", type: "date", value: (e) => e.latest_date || null },
+  { key: "n_days", label: "Days", type: "range", value: (e) => (e.n_days > 0 ? e.n_days : null) },
+];
+const DEF_BY_KEY = new Map(FILTER_DEFS.map((d) => [d.key, d]));
 
 interface Props {
   /** Bare index code (e.g. "000300") — passed through to the API. */
@@ -122,9 +145,18 @@ export default function LinkedEtfsList({
   };
 
   const totalEtfs = data?.etfs.length ?? 0;
-  const totalPages = Math.max(1, Math.ceil(totalEtfs / PAGE_SIZE));
+  // Header filters apply BEFORE pagination — the pager and the table show
+  // only rows matching every enabled column's filter (aggregation row keeps
+  // its all-ETF sums, computed above from data.etfs unfiltered).
+  const { filtered: filteredEtfs, menuFor, anyActive } = useTableHeaderFilters(
+    FILTER_DEFS,
+    data?.etfs ?? [],
+    [code, refreshKey],
+  );
+  const visibleEtfs = filteredEtfs.length;
+  const totalPages = Math.max(1, Math.ceil(visibleEtfs / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const pagedEtfs = (data?.etfs ?? []).slice(
+  const pagedEtfs = filteredEtfs.slice(
     (currentPage - 1) * PAGE_SIZE,
     currentPage * PAGE_SIZE,
   );
@@ -230,7 +262,9 @@ export default function LinkedEtfsList({
                     useFlexGap
                   >
                     <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
-                      {data.etfs.length} ETF{data.etfs.length === 1 ? "" : "s"} tracking {data.index_code}
+                      {anyActive
+                        ? `${visibleEtfs} of ${totalEtfs} ETF${totalEtfs === 1 ? "" : "s"} (filtered) tracking ${data.index_code}`
+                        : `${totalEtfs} ETF${totalEtfs === 1 ? "" : "s"} tracking ${data.index_code}`}
                     </Typography>
                   </Stack>
                   <TableContainer sx={expandedTableContainerSx(460)}>
@@ -239,15 +273,29 @@ export default function LinkedEtfsList({
                         <TableRow>
                           <TableCell sx={expandedTableHeadCellSx}>Code</TableCell>
                           <TableCell sx={expandedTableHeadCellSx}>Name</TableCell>
-                          <TableCell sx={expandedTableHeadCellSx}>Exch</TableCell>
-                          <TableCell sx={expandedTableHeadCellSx} align="right">Close</TableCell>
-                          <TableCell sx={expandedTableHeadCellSx} align="right">Trading Amt (亿)</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx}>
+                            {menuFor(DEF_BY_KEY.get("exchange")!)}
+                          </TableCell>
+                          <TableCell sx={expandedTableHeadCellSx} align="right">
+                            {menuFor(DEF_BY_KEY.get("latest_close")!)}
+                          </TableCell>
+                          <TableCell sx={expandedTableHeadCellSx} align="right">
+                            {menuFor(DEF_BY_KEY.get("trading_amt")!)}
+                          </TableCell>
                           <TableCell sx={expandedTableHeadCellSx} align="right">Total ETF Amt (亿)</TableCell>
                           <TableCell sx={expandedTableHeadCellSx} align="right">Amt MA5 (亿)</TableCell>
-                          <TableCell sx={expandedTableHeadCellSx} align="right">Valuation Amt (亿)</TableCell>
-                          <TableCell sx={expandedTableHeadCellSx}>Latest Date</TableCell>
-                          <TableCell sx={expandedTableHeadCellSx} align="right">Days</TableCell>
-                          <TableCell sx={expandedTableHeadCellSx}>Industry</TableCell>
+                          <TableCell sx={expandedTableHeadCellSx} align="right">
+                            {menuFor(DEF_BY_KEY.get("aum")!)}
+                          </TableCell>
+                          <TableCell sx={expandedTableHeadCellSx}>
+                            {menuFor(DEF_BY_KEY.get("latest_date")!)}
+                          </TableCell>
+                          <TableCell sx={expandedTableHeadCellSx} align="right">
+                            {menuFor(DEF_BY_KEY.get("n_days")!)}
+                          </TableCell>
+                          <TableCell sx={expandedTableHeadCellSx}>
+                            {menuFor(DEF_BY_KEY.get("industry")!)}
+                          </TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>

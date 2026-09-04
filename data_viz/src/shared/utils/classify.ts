@@ -20,6 +20,18 @@ export function stripExchangeSuffix(code: string): string {
 }
 
 /**
+ * All DB-side formats a stripped code may exist as (index codes are bare,
+ * etf/stock codes carry an exchange suffix). Pass the array as
+ * `code = ANY($n::text[])` so the (code, …) PK prefix drives an index scan —
+ * a `REGEXP_REPLACE(code, ...) = $1` predicate defeats the index and forces
+ * a full scan of every partition.
+ */
+export function codeVariants(strippedCode: string): string[] {
+  const s = String(strippedCode || "").trim();
+  return [s, `${s}.SS`, `${s}.SZ`, `${s}.BJ`, `${s}.HK`, `${s}.SH`];
+}
+
+/**
  * Exchange group mapping — maps the UI filter value to the set of
  * sec_classification.exchange column values that belong to that exchange.
  * SS includes STAR (科创板), SZ includes GEM (创业板) — both are sub-boards

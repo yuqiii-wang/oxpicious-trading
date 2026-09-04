@@ -147,6 +147,19 @@ export {
 } from "./sec-alloc-live";
 
 export {
+  runTradingSignals,
+  runTradingSignalsAnalysis,
+  fetchTradingSignalsRunStatus,
+  fetchTradingSignalConfigs,
+  fetchTradingSignals,
+  type TradingSignalsRunResponse,
+  type TradingSignalConfig,
+  type TradingSignalConfigsResponse,
+  type TradingSignal,
+  type TradingSignalsResponse,
+} from "./trading-signals";
+
+export {
   runAnalysisForSecurity,
   fetchAnalysisRunStatus,
   analysisRunTag,

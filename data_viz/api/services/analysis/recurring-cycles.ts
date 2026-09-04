@@ -5,7 +5,9 @@
  * range_days) recurring rise/drop periodicity: every integer day period d
  * (2..N/2) audited for RECURRENCE in the time domain (extrema evidence ×
  * ACF coherence, amplitude-gated); headline period_days = argmax of
- * strength (0 = no recurring period detected).
+ * strength (0 = no recurring period detected). Rows also carry the
+ * Poisson significance audit (−log10 Bonferroni p of the swing-hit count
+ * vs the empirically calibrated chance rate λ̂₀).
  *
  * Currently populated for sec_type='index' only (the Python populator
  * is run with --sec-type index first). The service accepts a sec_type
@@ -16,7 +18,7 @@
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { stripExchangeSuffix, matchesExchange } from "../../lib/classify-etf.js";
+import { stripExchangeSuffix, matchesExchange, codeVariants } from "../../lib/classify-etf.js";
 import { stripped } from "./_shared.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
 import type {
@@ -227,7 +229,7 @@ function buildChartSql(): string {
     SELECT last_date, range_days, period_days, strength
     FROM analysis.recurring_cycles
     WHERE sec_type = $2
-      AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+      AND code = ANY($1::text[])
     ORDER BY last_date ASC, range_days ASC
   `;
 }
@@ -236,7 +238,7 @@ function buildNameSql(secType: RecurringCyclesSecType): string {
   return `
     SELECT DISTINCT ON (code) code, name
     FROM ${IDENTITY_TABLE[secType]}
-    WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+    WHERE code = ANY($1::text[])
     ORDER BY code, date DESC
   `;
 }
@@ -249,8 +251,8 @@ export async function getRecurringCyclesChart(
   const target = stripped(rawCode);
 
   const [chartRows, nameRows] = await Promise.all([
-    queryRows<DbChartRow>(buildChartSql(), [target, secType]),
-    queryRows<{ name: string | null }>(buildNameSql(secType), [target]),
+    queryRows<DbChartRow>(buildChartSql(), [codeVariants(target), secType]),
+    queryRows<{ name: string | null }>(buildNameSql(secType), [codeVariants(target)]),
   ]);
 
   const name = nameRows[0]?.name ?? "";
@@ -380,9 +382,14 @@ interface DbSpectrumRow extends QueryResultRow {
   strength: string | number;
   count_factor: string | number;
   amplitude: string | number;
+  significance: string | number | null;
+  evidence_ratio: string | number | null;
   amplitude_spectrum: number[] | null;
   count_spectrum: number[] | null;
   strength_spectrum: number[] | null;
+  significance_spectrum: number[] | null;
+  hits_spectrum: number[] | null;
+  lam0_spectrum: number[] | null;
   last_date: Date | string;
 }
 
@@ -408,7 +415,7 @@ export async function getRecurringCyclesSpectrum(
       SELECT last_date, range_days
       FROM analysis.recurring_cycles
       WHERE sec_type = $2
-        AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+        AND code = ANY($1::text[])
     ),
     -- Get distinct range_days for this code
     all_range_days AS (
@@ -441,13 +448,18 @@ export async function getRecurringCyclesSpectrum(
       f.strength,
       f.count_factor,
       f.amplitude,
+      f.significance,
+      f.evidence_ratio,
       f.amplitude_spectrum,
       f.count_spectrum,
       f.strength_spectrum,
+      f.significance_spectrum,
+      f.hits_spectrum,
+      f.lam0_spectrum,
       f.last_date
     FROM analysis.recurring_cycles f, resolved r
     WHERE f.sec_type = $2
-      AND REGEXP_REPLACE(f.code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+      AND f.code = ANY($1::text[])
       AND f.last_date = r.d
       AND f.amplitude_spectrum IS NOT NULL
     ORDER BY f.range_days ASC
@@ -459,16 +471,16 @@ export async function getRecurringCyclesSpectrum(
     SELECT range_days, COUNT(*) AS cnt
     FROM analysis.recurring_cycles
     WHERE sec_type = $1
-      AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $2::text
+      AND code = ANY($2::text[])
     GROUP BY range_days
   `;
 
   const nameSql = buildNameSql(secType);
 
   const [specRows, windowCountRows, nameRows] = await Promise.all([
-    queryRows<DbSpectrumRow>(spectrumSql, [target, secType, lastDate]),
-    queryRows<DbWindowCountRow>(windowCountSql, [secType, target]),
-    queryRows<{ name: string | null }>(nameSql, [target]),
+    queryRows<DbSpectrumRow>(spectrumSql, [codeVariants(target), secType, lastDate]),
+    queryRows<DbWindowCountRow>(windowCountSql, [secType, codeVariants(target)]),
+    queryRows<{ name: string | null }>(nameSql, [codeVariants(target)]),
   ]);
 
   const name = nameRows[0]?.name ?? "";
@@ -484,8 +496,8 @@ export async function getRecurringCyclesSpectrum(
       `SELECT COALESCE(MAX(last_date)::text, NULL) AS d
        FROM analysis.recurring_cycles
        WHERE sec_type = $2
-         AND REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text`,
-      [target, secType],
+         AND code = ANY($1::text[])`,
+      [codeVariants(target), secType],
     );
     resolvedDateStr = maxDateRow[0]?.d ? formatDate(maxDateRow[0].d) : "";
   }
@@ -507,9 +519,16 @@ export async function getRecurringCyclesSpectrum(
       strength: toNum(r.strength) ?? 0,
       count_factor: toNum(r.count_factor) ?? 0,
       amplitude: toNum(r.amplitude) ?? 0,
+      // Rows predating the Poisson audit have NULL scalars → 0 and an
+      // empty significance spectrum (the chart renders no sig bars).
+      significance: toNum(r.significance) ?? 0,
+      evidence_ratio: toNum(r.evidence_ratio) ?? 0,
       amplitude_spectrum: toNumArr(r.amplitude_spectrum),
       count_spectrum: toNumArr(r.count_spectrum),
       strength_spectrum: toNumArr(r.strength_spectrum),
+      significance_spectrum: toNumArr(r.significance_spectrum),
+      hits_spectrum: toNumArr(r.hits_spectrum),
+      lam0_spectrum: toNumArr(r.lam0_spectrum),
       total_windows: totalWindowsMap.get(rd) || 0,
     };
   });

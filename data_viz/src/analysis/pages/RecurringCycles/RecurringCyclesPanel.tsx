@@ -55,6 +55,7 @@ import {
   invalidateCacheForUrl,
 } from "@/lib/api-client";
 import { buildSpectrumOption } from "./spectrumOption";
+import { PoissonAuditTable } from "./PoissonAuditTable";
 import type { PanelProps } from "./types";
 import type {
   IndexBundle,
@@ -215,10 +216,12 @@ export function RecurringCyclesPanel({
             ? `Click any date on the plot above to refresh these charts. ` +
               `X-axis: integer day periods. Bars (left) = amp — merged FFT ` +
               `amplitude, the Fourier reference. Bars (right) = count — ` +
-              `recurrence evidence (extrema hits × ACF multiples), and ` +
-              `strength — the summarized bar: (amp/σ_band) × count. A day ` +
-              `period scores only when the price REPEATED its rise/drop ` +
-              `spacing; the recurring period peaks in strength (green).`
+              `recurrence evidence (extrema hits × ACF multiples), ` +
+              `strength — the summarized bar: (amp/σ_band) × count, and ` +
+              `significance — the Poisson audit (−log10 p; dashed line = ` +
+              `p<0.05). A day period scores only when the price REPEATED ` +
+              `its rise/drop spacing AND the repetition beats the chance ` +
+              `rate; the recurring period peaks in strength (green).`
             : "Click any date on the plot above to show its spectrum."
         }
         action={
@@ -281,14 +284,45 @@ export function RecurringCyclesPanel({
           count bars (right): recurrence evidence — prominence-filtered swing-extrema hits
           (full-cycle spacing within ±15% of the day period) × ACF coherence (multiples with
           significant autocorrelation ≥ 1.96/√N after MA detrending). strength bars (right): the
-          summarized bar — (amp/σ_band) × count. One-off swings, trends, and noise score ~0 at
-          every day period; a recurring noticeable-swing pattern peaks. The green bar marks the
-          RECURRING period (argmax of strength). Periods over ⅓ of the window are not auditable
-          (under 3 cycles). Windows 20/60/255/500/750/1275d. Spectra are precomputed in Python
-          (analyze.recurring_cycles.pattern_score) and stored in analysis.recurring_cycles.
+          summarized bar — (amp/σ_band) × count. significance bars (right): the Poisson audit —
+          −log10 of the Bonferroni-adjusted p-value of the swing-hit count vs its empirically
+          calibrated chance expectation λ̂₀ (point-process null on random-walk + stochastic-vol
+          price nulls); bars above the dashed p&lt;0.05 line mark day periods whose repeated
+          rise/drop pattern is statistically real rather than chance. One-off swings, trends, and
+          noise score ~0 at every day period; a recurring noticeable-swing pattern peaks. The
+          green bar marks the RECURRING period (argmax of strength); its audit verdict
+          (significance tier · evidence × null) is in each chart title. Periods over ⅓ of the
+          window are not auditable (under 3 cycles). Windows 20/60/255/500/750/1275d. Spectra are
+          precomputed in Python (analyze.recurring_cycles.pattern_score) and stored in
+          analysis.recurring_cycles.
           {!expanded && " · Day periods < 5d hidden by default — use the expand button to show all."}
         </Typography>
       </ChartCard>
+
+      {/* ---- Poisson audit table: observed vs expected vs p ---------- */}
+      {!spectrumLoading &&
+        !spectrumError &&
+        spectrum != null &&
+        spectrum.spectrums.length > 0 && (
+          <ChartCard
+            title={`Poisson Audit${effectiveDate ? ` · ${effectiveDate}` : ""}`}
+            subtitle={
+              `Per auditable day period (d ≤ window/3): hits — observed ` +
+              `swing-hit count; λ̂₀ — the calibrated chance expectation ` +
+              `(point-process null); ×null — evidence hits/λ̂₀; −log10 p / ` +
+              `p — the Bonferroni-adjusted Poisson tail (≥ 1.30 ⇔ p<0.05, ` +
+              `≥ 2.0 ⇔ p<0.01). Sorted by significance — the day periods ` +
+              `whose repeated rise/drop spacing beats chance surface ` +
+              `first. ◆ green = the recurring period (strength argmax). ` +
+              `Column headers carry filters (ticks / numeric ranges).`
+            }
+          >
+            <PoissonAuditTable
+              spectrums={spectrum.spectrums}
+              scopeKey={`${code}-${effectiveDate}`}
+            />
+          </ChartCard>
+        )}
     </Stack>
   );
 }

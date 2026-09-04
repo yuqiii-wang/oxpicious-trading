@@ -4,7 +4,7 @@
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { stripExchangeSuffix, matchesExchange } from "../../lib/classify-etf.js";
+import { stripExchangeSuffix, matchesExchange, codeVariants } from "../../lib/classify-etf.js";
 import { stripped } from "./_shared.js";
 import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
 import type {
@@ -525,10 +525,12 @@ function pickEmaStd(r: DbChartRow, window: number): number | null {
 interface SecSource {
   /** Schema-qualified identity table for the asset name lookup. */
   identityTable: string;
-  /** FROM clause for the chart query — already includes the JOINs needed to
-   *  recover price + all 5 MAs alongside the 9 gap columns. The detail
-   *  table alias is `d` and is filtered by `d.sec_type = $2`. */
-  chartFromClause: string;
+  /** Correlated LATERAL join blocks for the chart query's per-date 1:1
+   *  lookups (basic_stats INNER + adjustment/liquidity_margin/tech_stats
+   *  LEFT). Each subquery ends with OFFSET 0 so the planner cannot flatten
+   *  it into a hash join (which would seq-scan every partition — the
+   *  original perf disaster). The detail-table alias is `d`. */
+  chartLaterals: string;
   /** SQL expression for the per-row price column. */
   priceExpr: string;
   /** SQL expression for the open column. */
@@ -541,15 +543,37 @@ interface SecSource {
   tradingAmtExpr: string;
 }
 
+/** One correlated LATERAL block: latest single row of `table` for the
+ *  driving detail row `d` on (code, date[, sec_type]). OFFSET 0 prevents
+ *  lateral flattening into a hash join. `inner` makes it an INNER join
+ *  (drops driving rows with no match — used for the required basic_stats). */
+function lateral(
+  alias: string,
+  table: string,
+  withSecType: boolean,
+  inner: boolean,
+): string {
+  const cond = withSecType
+    ? `x.sec_type = d.sec_type AND x.code = d.code AND x.date = d.date`
+    : `x.code = d.code AND x.date = d.date`;
+  return (
+    `${inner ? "JOIN" : "LEFT JOIN"} LATERAL (\n` +
+    `        SELECT * FROM ${table} x\n` +
+    `        WHERE ${cond}\n` +
+    `        OFFSET 0\n` +
+    `      ) ${alias} ON TRUE`
+  );
+}
+
 const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
   etf: {
     identityTable: "stats.etf_identity",
-    chartFromClause:
-      "FROM analysis.mov_ave_spreads_detail d\n" +
-      "  JOIN stats.etf_basic_stats   b ON b.date = d.date AND b.code = d.code\n" +
-      "  LEFT JOIN stats.etf_adjustment a ON a.date = d.date AND a.code = d.code\n" +
-      "  LEFT JOIN stats.etf_liquidity_margin lm ON lm.date = d.date AND lm.code = d.code\n" +
-      "  LEFT JOIN stats.etf_tech_stats  t ON t.date = d.date AND t.code = d.code",
+    chartLaterals: [
+      lateral("b", "stats.etf_basic_stats", false, true),
+      lateral("a", "stats.etf_adjustment", false, false),
+      lateral("lm", "stats.etf_liquidity_margin", false, false),
+      lateral("t", "stats.etf_tech_stats", false, false),
+    ].join("\n    "),
     priceExpr: "COALESCE(a.adj_close, b.close)",
     openExpr: "COALESCE(a.adj_open, b.open)",
     highExpr: "COALESCE(a.adj_high, b.high)",
@@ -558,10 +582,10 @@ const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
   },
   index: {
     identityTable: "stats.index_identity",
-    chartFromClause:
-      "FROM analysis.mov_ave_spreads_detail d\n" +
-      "  JOIN stats.index_basic_stats b ON b.date = d.date AND b.code = d.code\n" +
-      "  LEFT JOIN stats.index_tech_stats t ON t.date = d.date AND t.code = d.code",
+    chartLaterals: [
+      lateral("b", "stats.index_basic_stats", false, true),
+      lateral("t", "stats.index_tech_stats", false, false),
+    ].join("\n    "),
     priceExpr: "b.close",
     openExpr: "b.open",
     highExpr: "b.high",
@@ -570,11 +594,11 @@ const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
   },
   stock: {
     identityTable: "stats.stock_identity",
-    chartFromClause:
-      "FROM analysis.mov_ave_spreads_detail d\n" +
-      "  JOIN stats.stock_basic_stats b ON b.date = d.date AND b.code = d.code\n" +
-      "  LEFT JOIN stats.stock_liquidity_margin lm ON lm.date = d.date AND lm.code = d.code\n" +
-      "  LEFT JOIN stats.stock_tech_stats t ON t.date = d.date AND t.code = d.code",
+    chartLaterals: [
+      lateral("b", "stats.stock_basic_stats", false, true),
+      lateral("lm", "stats.stock_liquidity_margin", false, false),
+      lateral("t", "stats.stock_tech_stats", false, false),
+    ].join("\n    "),
     priceExpr: "b.close",
     openExpr: "b.open",
     highExpr: "b.high",
@@ -586,68 +610,71 @@ const SEC_SOURCES: Record<MaSpreadSecType, SecSource> = {
 // ----------------------------------------------------------------------------
 //  listMovAveSpreadCodes — one row per asset code with first/last date,
 //  n_dates, and the latest snapshot of all 9 gap_values (for sparkline /
-//  sort). Server-side: DISTINCT ON (code) picks the latest wide detail row
-//  per code; the 9 gap columns are passed through to TypeScript, which
-//  assembles them into the latest_gaps array.
+//  sort). Server-side: ONE full scan of the detail partition computes the
+//  per-code aggregates (code_dates + code_ranges merged into `agg`); the
+//  latest wide row and the latest name are then recovered with per-code
+//  LATERAL PK/index lookups (OFFSET 0 anti-flatten) instead of two more
+//  full scans (DISTINCT ON / 18-column MIN+MAX) — the original 3-scan
+//  version took 12.6s on stock.
 // ----------------------------------------------------------------------------
 function buildCodesSql(secType: MaSpreadSecType): string {
   const src = SEC_SOURCES[secType];
   return `
-    WITH latest_name AS (
-      SELECT DISTINCT ON (code) code, name
-      FROM ${src.identityTable}
-      ORDER BY code, date DESC
-    ),
-    code_dates AS (
+    WITH agg AS (
       SELECT
         code,
-        MIN(date) AS first_date,
-        MAX(date) AS last_date,
-        COUNT(DISTINCT date) AS n_dates
-      FROM analysis.mov_ave_spreads_detail
-      WHERE sec_type = $1
-      GROUP BY code
-    ),
-    latest_row AS (
-      SELECT DISTINCT ON (code) *
-      FROM analysis.mov_ave_spreads_detail
-      WHERE sec_type = $1
-      ORDER BY code, date DESC
-    ),
-    code_ranges AS (
-      SELECT
-        code,
-        GREATEST(
-          MAX(price_vs_ma5), MAX(price_vs_ma20), MAX(price_vs_ma60),
-          MAX(price_vs_ma120), MAX(price_vs_ma255),
-          MAX(ma5_vs_ma20), MAX(ma5_vs_ma60), MAX(ma5_vs_ma120), MAX(ma5_vs_ma255)
-        ) AS max_gain,
-        LEAST(
-          MIN(price_vs_ma5), MIN(price_vs_ma20), MIN(price_vs_ma60),
-          MIN(price_vs_ma120), MIN(price_vs_ma255),
-          MIN(ma5_vs_ma20), MIN(ma5_vs_ma60), MIN(ma5_vs_ma120), MIN(ma5_vs_ma255)
-        ) AS max_loss
+        MIN(date)  AS first_date,
+        MAX(date)  AS last_date,
+        COUNT(DISTINCT date) AS n_dates,
+        MAX(price_vs_ma5) AS mx_p5, MAX(price_vs_ma20) AS mx_p20,
+        MAX(price_vs_ma60) AS mx_p60, MAX(price_vs_ma120) AS mx_p120,
+        MAX(price_vs_ma255) AS mx_p255,
+        MAX(ma5_vs_ma20) AS mx_5_20, MAX(ma5_vs_ma60) AS mx_5_60,
+        MAX(ma5_vs_ma120) AS mx_5_120, MAX(ma5_vs_ma255) AS mx_5_255,
+        MIN(price_vs_ma5) AS mn_p5, MIN(price_vs_ma20) AS mn_p20,
+        MIN(price_vs_ma60) AS mn_p60, MIN(price_vs_ma120) AS mn_p120,
+        MIN(price_vs_ma255) AS mn_p255,
+        MIN(ma5_vs_ma20) AS mn_5_20, MIN(ma5_vs_ma60) AS mn_5_60,
+        MIN(ma5_vs_ma120) AS mn_5_120, MIN(ma5_vs_ma255) AS mn_5_255
       FROM analysis.mov_ave_spreads_detail
       WHERE sec_type = $1
       GROUP BY code
     )
     SELECT
-      cd.code,
+      a.code,
       COALESCE(n.name, '')   AS name,
-      cd.first_date,
-      cd.last_date,
-      cd.n_dates,
+      a.first_date,
+      a.last_date,
+      a.n_dates,
       lr.price_vs_ma5, lr.price_vs_ma20, lr.price_vs_ma60,
       lr.price_vs_ma120, lr.price_vs_ma255,
       lr.ma5_vs_ma20, lr.ma5_vs_ma60, lr.ma5_vs_ma120, lr.ma5_vs_ma255,
-      cr.max_gain,
-      cr.max_loss,
-      (cr.max_gain - cr.max_loss) AS max_spread
-    FROM code_dates cd
-    LEFT JOIN latest_name n  ON n.code  = cd.code
-    LEFT JOIN latest_row lr ON lr.code = cd.code
-    LEFT JOIN code_ranges cr ON cr.code = cd.code
-    ORDER BY (cr.max_gain - cr.max_loss) DESC NULLS LAST, cd.code
+      GREATEST(a.mx_p5, a.mx_p20, a.mx_p60, a.mx_p120, a.mx_p255,
+               a.mx_5_20, a.mx_5_60, a.mx_5_120, a.mx_5_255) AS max_gain,
+      LEAST(a.mn_p5, a.mn_p20, a.mn_p60, a.mn_p120, a.mn_p255,
+            a.mn_5_20, a.mn_5_60, a.mn_5_120, a.mn_5_255)    AS max_loss,
+      (GREATEST(a.mx_p5, a.mx_p20, a.mx_p60, a.mx_p120, a.mx_p255,
+                a.mx_5_20, a.mx_5_60, a.mx_5_120, a.mx_5_255)
+       - LEAST(a.mn_p5, a.mn_p20, a.mn_p60, a.mn_p120, a.mn_p255,
+               a.mn_5_20, a.mn_5_60, a.mn_5_120, a.mn_5_255)) AS max_spread
+    FROM agg a
+    LEFT JOIN LATERAL (
+      SELECT d.price_vs_ma5, d.price_vs_ma20, d.price_vs_ma60,
+             d.price_vs_ma120, d.price_vs_ma255,
+             d.ma5_vs_ma20, d.ma5_vs_ma60, d.ma5_vs_ma120, d.ma5_vs_ma255
+      FROM analysis.mov_ave_spreads_detail d
+      WHERE d.sec_type = $1 AND d.code = a.code AND d.date = a.last_date
+      OFFSET 0
+    ) lr ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT x.name
+      FROM ${src.identityTable} x
+      WHERE x.code = a.code
+      ORDER BY x.date DESC
+      LIMIT 1
+      OFFSET 0
+    ) n ON TRUE
+    ORDER BY max_spread DESC NULLS LAST, a.code
   `;
 }
 
@@ -760,19 +787,31 @@ function ohlcSelectSql(): string {
 }
 
 function ohlcJoinSql(): string {
+  // Correlated LATERAL per period — the OFFSET 0 anti-flatten marker keeps
+  // the planner from rewriting these into hash joins that seq-scan every
+  // ohlc partition (the original plan took 96s on stock). Each lookup is a
+  // direct PK hit on (code, sec_type, date, period).
   return OHLC_PERIODS.map(
     (p) =>
-      `LEFT JOIN analysis.mov_ave_spreads_detail_ohlc ohlc${p}\n` +
-      `      ON ohlc${p}.sec_type = d.sec_type\n` +
-      `     AND ohlc${p}.code = d.code\n` +
-      `     AND ohlc${p}.date = d.date\n` +
-      `     AND ohlc${p}.period = ${p}`,
+      `LEFT JOIN LATERAL (\n` +
+      `        SELECT * FROM analysis.mov_ave_spreads_detail_ohlc o${p}\n` +
+      `        WHERE o${p}.sec_type = d.sec_type\n` +
+      `     AND o${p}.code = d.code\n` +
+      `     AND o${p}.date = d.date\n` +
+      `     AND o${p}.period = ${p}\n` +
+      `        OFFSET 0\n` +
+      `      ) ohlc${p} ON TRUE`,
   ).join("\n    ");
 }
 
 function buildChartSql(secType: MaSpreadSecType): string {
   const src = SEC_SOURCES[secType];
   return `
+    WITH d AS MATERIALIZED (
+      SELECT * FROM analysis.mov_ave_spreads_detail
+      WHERE sec_type = $1
+        AND code = ANY($2::text[])
+    )
     SELECT
       d.date,
       ${src.priceExpr} AS price,
@@ -812,16 +851,24 @@ function buildChartSql(secType: MaSpreadSecType): string {
       rsi.days_since_last_extreme_500days,
       rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days,
       ${ohlcSelectSql()}
-    ${src.chartFromClause}
-    LEFT JOIN analysis.mov_ave_trading_amt ta
-      ON ta.sec_type = d.sec_type AND ta.code = d.code AND ta.date = d.date
-    LEFT JOIN analysis.mov_ave_spreads_detail_ema ema
-      ON ema.sec_type = d.sec_type AND ema.code = d.code AND ema.date = d.date
-    LEFT JOIN analysis.mov_ave_rsi rsi
-      ON rsi.sec_type = d.sec_type AND rsi.code = d.code AND rsi.date = d.date
+    FROM d
+    ${src.chartLaterals}
+    LEFT JOIN LATERAL (
+        SELECT * FROM analysis.mov_ave_trading_amt x
+        WHERE x.sec_type = d.sec_type AND x.code = d.code AND x.date = d.date
+        OFFSET 0
+      ) ta ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT * FROM analysis.mov_ave_spreads_detail_ema x
+        WHERE x.sec_type = d.sec_type AND x.code = d.code AND x.date = d.date
+        OFFSET 0
+      ) ema ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT * FROM analysis.mov_ave_rsi x
+        WHERE x.sec_type = d.sec_type AND x.code = d.code AND x.date = d.date
+        OFFSET 0
+      ) rsi ON TRUE
     ${ohlcJoinSql()}
-    WHERE d.sec_type = $2
-      AND REGEXP_REPLACE(d.code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
     ORDER BY d.date ASC
   `;
 }
@@ -843,8 +890,8 @@ function buildHypeEpisodesSql(): string {
       h.trading_amt_hype_days,
       h.std_hype_days
     FROM analysis.mov_ave_market_hypes h
-    WHERE h.sec_type = $2
-      AND REGEXP_REPLACE(h.code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
+    WHERE h.sec_type = $1
+      AND h.code = ANY($2::text[])
     ORDER BY h.min_checkin_period, h.start_date
   `;
 }
@@ -852,10 +899,11 @@ function buildHypeEpisodesSql(): string {
 function buildNameSql(secType: MaSpreadSecType): string {
   const src = SEC_SOURCES[secType];
   return `
-    SELECT DISTINCT ON (code) code, name
-    FROM ${src.identityTable}
-    WHERE REGEXP_REPLACE(code, '\\.(SZ|SS|BJ|HK)$', '') = $1::text
-    ORDER BY code, date DESC
+    SELECT x.name
+    FROM ${src.identityTable} x
+    WHERE x.code = ANY($1::text[])
+    ORDER BY x.date DESC
+    LIMIT 1
   `;
 }
 
@@ -983,12 +1031,13 @@ export async function getMovAveSpreadChart(
 ): Promise<MovAveSpreadChartResponse> {
   const secType = normalizeSecType(rawSecType);
   const target = stripped(rawCode);
+  const variants = codeVariants(target);
 
   // Fetch chart rows + name + market-hype episodes in parallel.
   const [chartRows, nameRows, hypeEpisodeRows] = await Promise.all([
-    queryRows<DbChartRow>(buildChartSql(secType), [target, secType]),
-    queryRows<{ name: string | null }>(buildNameSql(secType), [target]),
-    queryRows<DbHypeEpisodeRow>(buildHypeEpisodesSql(), [target, secType]),
+    queryRows<DbChartRow>(buildChartSql(secType), [secType, variants]),
+    queryRows<{ name: string | null }>(buildNameSql(secType), [variants]),
+    queryRows<DbHypeEpisodeRow>(buildHypeEpisodesSql(), [secType, variants]),
   ]);
 
   const name = nameRows[0]?.name ?? "";

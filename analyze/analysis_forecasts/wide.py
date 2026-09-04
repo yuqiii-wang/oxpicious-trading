@@ -16,9 +16,15 @@ Pipeline per sec_type:
      + reverse flags shared by both engines.
   5. ``month_row_windows`` — per stat month, the [lo, hi) grid-row range
      of its trailing 5-year window.
-  6. ``aggregate_horizon`` — per-code mean/high/low/reverse-prob stats of
-     one forward horizon over a bucket mask (shared by both engines).
-  7. ``split_forecast_rows`` — split computed bucket rows into the
+  6. ``aggregate_horizons_sparse`` — batched per-(code, config) mean/
+     std/high/low/reverse-prob stats of ALL forward horizons over the SPARSE
+     trigger-cell lists of a stacked (T, C, K) bucket mask (shared by
+     both engines; bincount/reduceat — work scales with the trigger
+     count, not the dense tensor).
+  7. ``build_result_rows`` — expand one batch's gathered aggregates into
+     the forecast_results fields of its emitted rows (vectorized — no
+     per-row scalar rounding calls).
+  8. ``split_forecast_rows`` — split computed bucket rows into the
      motivation (mov_rsi / mov_std) and result (forecast_results) dicts.
 """
 from __future__ import annotations
@@ -34,7 +40,9 @@ from _common.df_utils import host_array
 
 from analyze.analysis_forecasts.config import (
     FORWARD_HORIZONS,
+    MM_HORIZONS,
     N_MONTHS,
+    PERIOD_FOR_HORIZON,
     REVERSE_THRESHOLD,
     RESULT_COLUMNS,
     WINDOW_YEARS,
@@ -288,9 +296,9 @@ def build_change_matrices(
 
     Note: max_low_change_ratio is NOT computed here — it is derived at
     write time from the row's own max/min forward changes as
-    (1 + max) / (1 + min), which equals max(close[t+1..t+n]) /
-    min(close[t+1..t+n]) without needing forward price windows (the
-    per-month grid cannot see past the month end anyway).
+    (1 + max) / (1 + min): the best-to-worst n-day ENDPOINT outcome
+    ratio across the bucket's trigger days (the extrema generally come
+    from DIFFERENT trigger days — NOT a within-window path swing).
     """
     mats: dict[str, np.ndarray] = {}
     for n in FORWARD_HORIZONS:
@@ -304,28 +312,6 @@ def build_change_matrices(
         mats["DN"] = np.where(nc1 < -REVERSE_THRESHOLD, 1.0, 0.0)
         mats["UP"] = np.where(nc1 > REVERSE_THRESHOLD, 1.0, 0.0)
     return mats
-
-
-def horizon_flags(
-    chg: dict[str, np.ndarray],
-    lo: int,
-    hi: int,
-) -> dict[str, np.ndarray]:
-    """Per-horizon reversal flag matrices for one window slice.
-
-    Returns (per horizon n) DN_{n} / UP_{n}: 1.0 where the n-day forward
-    change < -REVERSE_THRESHOLD (reversal after an overbought / upper
-    day) or > +REVERSE_THRESHOLD (reversal after an oversold / lower
-    day), else 0.0. NC0_{n} is 0.0 on invalid days, so flags are
-    naturally 0.0 there.
-    """
-    flags: dict[str, np.ndarray] = {}
-    for n in FORWARD_HORIZONS:
-        NC0 = chg[f"NC0_{n}"][lo:hi]
-        with np.errstate(invalid="ignore"):
-            flags[f"DN_{n}"] = np.where(NC0 < -REVERSE_THRESHOLD, 1.0, 0.0)
-            flags[f"UP_{n}"] = np.where(NC0 > REVERSE_THRESHOLD, 1.0, 0.0)
-    return flags
 
 
 def apply_cooldown(mask: np.ndarray, cooldown_days: int) -> np.ndarray:
@@ -357,35 +343,202 @@ def apply_cooldown(mask: np.ndarray, cooldown_days: int) -> np.ndarray:
     return out
 
 
-def aggregate_horizon(
-    mask: np.ndarray,
-    NC0: np.ndarray,
-    FIN: np.ndarray,
-    flag: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Per-code aggregates of one forward horizon over a bucket mask.
+# Per-horizon aggregate bundle returned by ``aggregate_horizons_sparse``
+# (each member a (C, P) array): occurrence counts, sum of changes, sum of
+# SQUARED changes, max / min change (None at the next-day horizon), and
+# reversal count.
+HorizonAgg = tuple[np.ndarray, np.ndarray, np.ndarray,
+                   np.ndarray | None, np.ndarray | None, np.ndarray]
+
+
+def aggregate_horizons_sparse(
+    st: np.ndarray,
+    sc: np.ndarray,
+    flat: np.ndarray,
+    C: int,
+    P: int,
+    side: str,
+    NC0s: dict[int, np.ndarray],
+    FINs: dict[int, np.ndarray],
+) -> dict[int, HorizonAgg]:
+    """Per-(code, config) aggregates of ALL forward horizons over the
+    SPARSE trigger cells of one (side, hyped) subset.
+
+    Vectorized replacement of the legacy per-config 2-D
+    ``aggregate_horizon``: the subset is a list of trigger cells (row,
+    col, flat = col·P + config) instead of a dense (T, C, P) tensor, so
+    every reduction scales with the ACTUAL trigger count E (bucket
+    density ≈ 1–25%) instead of T·C·P. All groups are accumulated with
+    np.bincount; the max/min forward-change extrema (MM_HORIZONS only —
+    the next-day horizon has none) use one argsort of the flat group ids
+    + np.maximum/minimum.reduceat over the group-contiguous sorted cells.
 
     Args:
-        mask: (T, C) bucket bool matrix.
-        NC0:  (T, C) n-day forward change with NaN→0 (einsum-safe).
-        FIN:  (T, C) validity bool (day has a finite n-day change).
-        flag: (T, C) 0/1 reversal flag for the bucket side.
+        st:   (E,) grid-row index of each subset cell (ASCENDING order
+              after the caller's stable argsort of ``flat``).
+        sc:   (E,) code index of each subset cell (same order).
+        flat: (E,) group id = code·P + config, ASCENDING (the sort key).
+        C:    number of codes.
+        P:    number of configs in this side batch.
+        side: bucket side — "top"/"upper" reverse on change < -1%,
+              "bottom"/"lower" on change > +1% (REVERSE_THRESHOLD).
+        NC0s: per horizon n — (T, C) n-day forward change, 0.0 on
+              invalid days (build_change_matrices), so unweighted sums
+              over all cells are the valid-day sums.
+        FINs: per horizon n — (T, C) validity bool (finite n-day change).
 
-    Returns (per code, arrays of len C):
-        cnt — bucket days with a valid n-day forward change;
+    Returns (per horizon n, each (C, P)) — a HorizonAgg bundle:
+        cnt — bucket days with a valid n-day forward change (int);
         s   — sum of the n-day changes over those days;
-        hi  — max n-day change over those days (-inf when cnt == 0);
-        lo  — min n-day change over those days (+inf when cnt == 0);
-        rev — count of >1% reversal days among those days.
+        s2  — sum of SQUARED n-day changes over those days (invalid days
+              contribute 0.0 — NC0 semantics), the E[x²] half of the
+              std_change numerator sqrt(E[x²] − E[x]²);
+        hi  — max n-day change (-inf where cnt == 0; None for the
+              next-day horizon — no MM columns);
+        lo  — min n-day change (+inf where cnt == 0; None likewise);
+        rev — count of >1% reversal days among those days (int).
     """
-    valid = mask & FIN
-    cnt = valid.sum(axis=0)
-    s = np.einsum("ij,ij->j", mask, NC0)  # NC0 is 0.0 on invalid days
-    with np.errstate(invalid="ignore"):
-        hi = np.max(np.where(valid, NC0, -np.inf), axis=0)
-        lo = np.min(np.where(valid, NC0, np.inf), axis=0)
-    rev = np.einsum("ij,ij->j", mask, flag)
-    return cnt, s, hi, lo, rev
+    CP = C * P
+    # Group scaffolding over the group-ascending cells: one sort shared
+    # by every horizon's extrema reduction.
+    bounds = np.flatnonzero(flat[1:] != flat[:-1]) + 1
+    starts = np.concatenate(([0], bounds))
+    gid = flat[starts]
+    rev_top = side in ("top", "upper")
+
+    out: dict[int, HorizonAgg] = {}
+    for n in FORWARD_HORIZONS:
+        g = NC0s[n][st, sc]          # 0.0 on invalid days (NC0 semantics)
+        v = FINs[n][st, sc]
+        cnt = np.bincount(flat[v], minlength=CP)
+        s = np.bincount(flat, weights=g, minlength=CP)
+        # g is 0.0 on invalid days, so the all-cell squared sum equals
+        # the valid-day squared sum (the std E[x²] pass — same trick as
+        # the mean sum above).
+        s2 = np.bincount(flat, weights=g * g, minlength=CP)
+        # Reversal at a cell: NC0 is 0.0 on invalid days, so the
+        # threshold compare is False there — matches the legacy dense
+        # 0/1 flag einsum exactly.
+        rv = (g < -REVERSE_THRESHOLD) if rev_top else (g > REVERSE_THRESHOLD)
+        rev = np.bincount(flat[rv], minlength=CP)
+        if n in MM_HORIZONS:
+            hi = np.full(CP, -np.inf)
+            lo = np.full(CP, np.inf)
+            # Groups with no valid cell keep the ±inf default (the
+            # legacy where(..., ±inf).max semantics).
+            hi[gid] = np.maximum.reduceat(np.where(v, g, -np.inf), starts)
+            lo[gid] = np.minimum.reduceat(np.where(v, g, np.inf), starts)
+            out[n] = (cnt.reshape(C, P), s.reshape(C, P), s2.reshape(C, P),
+                      hi.reshape(C, P), lo.reshape(C, P),
+                      rev.reshape(C, P))
+        else:
+            out[n] = (cnt.reshape(C, P), s.reshape(C, P), s2.reshape(C, P),
+                      None, None, rev.reshape(C, P))
+    return out
+
+
+def _round_none(arr: np.ndarray) -> list[float | None]:
+    """float array → rounded 6dp list with non-finite → None (the
+    legacy per-row round6 semantics, vectorized)."""
+    r = np.round(np.where(np.isfinite(arr), arr, np.nan), 6)
+    return [None if x != x else x for x in r.tolist()]
+
+
+def build_result_rows(
+    agg: dict[int, HorizonAgg],
+    kk: np.ndarray,
+    ii: np.ndarray,
+    base: list[dict],
+) -> list[dict]:
+    """Expand one emit batch into (4 × R) result payload dicts — one per
+    (bucket × period) combination. Each dict carries the motivation
+    fields + config + period + the CONSOLIDATED forecast_results
+    columns (no period suffix; the ``period`` key carries that role).
+
+    forecast_id is NOT assigned here — callers allocate one per bucket
+    and share it across the 4 period rows (1:4 mov → forecast_results).
+
+    Args:
+        agg: aggregate_horizons_sparse output.
+        kk:  (R,) config axis of the emit positions.
+        ii:  (R,) code axis of the emit positions.
+        base: (R,) motivation dicts (bucket keys + config JSONB).
+
+    Returns:
+        (4·R,) dicts — 4 period rows per bucket (next → 5d → 20d → 60d),
+        period-major (all 4 periods of bucket 0, then all 4 of bucket 1,
+        ...) so the caller can stride by 4 to group periods per bucket.
+    """
+    R = kk.size
+    # First gather all horizon payloads (vectorized per horizon)...
+    horizon_payloads: dict[int, dict[str, list | float | None]] = {}
+    for n in FORWARD_HORIZONS:
+        period = PERIOD_FOR_HORIZON[n]
+        cnt, s, s2, hi, lo, rev = agg[n]
+        cn = cnt[ii, kk]          # (R,) occurrence counts
+        pos = cn > 0
+
+        mean_raw = np.divide(
+            s[ii, kk], cn, out=np.full(R, np.nan), where=pos)
+        ave = _round_none(mean_raw)
+        # Population std over the SAME valid days as ave_change:
+        # sqrt(E[x²] − E[x]²), floored at 0 (rounding-guard). s2 has
+        # invalid days contributing 0 and cn is the valid-day count, so
+        # s2/cn is exactly E[x²] over valid days. pos == False keeps the
+        # NaN → None chain (mean_raw NaN → var NaN → _round_none None).
+        var = np.divide(
+            s2[ii, kk], cn, out=np.full(R, np.nan), where=pos) \
+            - mean_raw ** 2
+        std = _round_none(np.sqrt(np.maximum(var, 0.0)))
+
+        if n in MM_HORIZONS:
+            hi_v = hi[ii, kk]    # (R,) max n-day forward change
+            lo_v = lo[ii, kk]    # (R,) min n-day forward change
+            max_vals = _round_none(hi_v)
+            min_vals = _round_none(lo_v)
+            mlr_vals = _round_none(np.divide(
+                1 + hi_v, 1 + lo_v,
+                out=np.full(R, np.nan),
+                where=pos & (lo_v > -1),
+            ))
+        else:
+            max_vals = [None] * R
+            min_vals = [None] * R
+            mlr_vals = [None] * R
+
+        rev_vals = _round_none(np.divide(
+            rev[ii, kk], cn, out=np.full(R, np.nan), where=pos))
+        occ_vals = cn.tolist()
+
+        horizon_payloads[n] = {
+            "period": period,
+            "ave": ave,
+            "std": std,
+            "max": max_vals,
+            "min": min_vals,
+            "mlr": mlr_vals,
+            "rev": rev_vals,
+            "occ": occ_vals,
+        }
+
+    # ...then emit bucket-major: [b0-next, b0-5d, b0-20d, b0-60d,
+    # b1-next, ...] so forecast_id can stride by 4.
+    out: list[dict] = []
+    for r_idx, b in enumerate(base):
+        for n in FORWARD_HORIZONS:
+            p = horizon_payloads[n]
+            out.append({
+                **b,                          # motivation fields + config
+                "period": p["period"],
+                "ave_change": p["ave"][r_idx],
+                "std_change": p["std"][r_idx],
+                "max_change": p["max"][r_idx],
+                "min_change": p["min"][r_idx],
+                "occurrence_count": p["occ"][r_idx],
+                "max_low_change_ratio": p["mlr"][r_idx],
+                "reverse_prob": p["rev"][r_idx],
+            })
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -405,11 +558,24 @@ def split_forecast_rows(
 ) -> tuple[list[dict], list[dict]]:
     """Split computed bucket rows into the two write targets.
 
-    Each computed bucket row carries the bucket keys, motivation cols,
-    result cols and the allocated forecast_id. Returns:
-        mov_rows    — dicts with ``mov_columns`` (mov_rsi / mov_std)
-        result_rows — dicts with RESULT_COLUMNS (forecast_results)
+    Input: (4·R,) dicts emitted by ``build_result_rows`` — bucket-major
+    (4 consecutive period rows per bucket), each dict carries the full
+    motivation fields + config + period + consolidated result columns.
+
+    Returns:
+        mov_rows    — (R,) dicts: UNIQUE rows per bucket (the 1st of
+                      each 4-row group), filtered to ``mov_columns``
+                      (mov_rsi / mov_std columns). The forecast_id was
+                      already assigned by the caller (1 per bucket,
+                      shared across all 4 period rows).
+        result_rows — (4·R,) dicts: every input row filtered to
+                      ``RESULT_COLUMNS`` (forecast_results columns).
     """
-    mov_rows = [{k: r[k] for k in mov_columns} for r in rows]
-    result_rows = [{k: r[k] for k in RESULT_COLUMNS} for r in rows]
+    mov_rows = [
+        {k: rows[i][k] for k in mov_columns}
+        for i in range(0, len(rows), 4)   # 1 per bucket
+    ]
+    result_rows = [
+        {k: r[k] for k in RESULT_COLUMNS} for r in rows
+    ]
     return mov_rows, result_rows

@@ -10,6 +10,7 @@ Loads, per sec_type, the joined long-format input frame:
             metrics stay in one consistent price space,
   ma_{W}  — from stats.{sec_type}_tech_stats (ma5/20/60/120/255),
   rsi_{W} — from analysis.mov_ave_rsi (Wilder RSI columns),
+  gap_{W} — from analysis.mov_ave_rsi (N-day price-return columns),
   std_{W} — from analysis.mov_ave_spreads_detail (Bollinger sigma).
 
 Plus the compact market-hype EPISODES list
@@ -38,6 +39,7 @@ from _common.df_utils import epoch_col_to_dt64, grouped_shift
 
 from analyze.analysis_forecasts.config import (
     FORWARD_HORIZONS,
+    GAP_WINDOWS,
     MA_WINDOWS,
     RSI_WINDOWS,
     SEC_TYPE_IDENTITY_TABLE,
@@ -48,6 +50,7 @@ _COLUMNS = (
     ["code", "date", "price", "high", "low"]
     + [f"ma_{w}days" for w in MA_WINDOWS]
     + [f"rsi_{w}days" for w in RSI_WINDOWS]
+    + [f"gap_{w}days" for w in GAP_WINDOWS]
     + [f"std_{w}days" for w in MA_WINDOWS]
 )
 
@@ -168,6 +171,9 @@ async def fetch_analysis_inputs(
     rsi_cols = ",\n       ".join(
         f"r.rsi_{w}days::float8 AS rsi_{w}days" for w in RSI_WINDOWS
     )
+    gap_cols = ",\n       ".join(
+        f"r.gap_{w}days::float8 AS gap_{w}days" for w in GAP_WINDOWS
+    )
     std_cols = ",\n       ".join(
         f"d.std_{w}days::float8 AS std_{w}days" for w in MA_WINDOWS
     )
@@ -179,6 +185,7 @@ async def fetch_analysis_inputs(
                {low_expr}::float8 AS low,
                {ma_cols},
                {rsi_cols},
+               {gap_cols},
                {std_cols}
         FROM {base}
         LEFT JOIN stats.{sec_type}_tech_stats t

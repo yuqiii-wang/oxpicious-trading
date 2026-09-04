@@ -55,15 +55,18 @@ def records_from_frame(df: pd.DataFrame, cols: list[str]) -> list[dict]:
     """Row dicts for DB upserts WITHOUT to_dict(orient="records").
 
     Deterministic dtypes: float columns arrive as Python float, bool as
-    bool, Int64/object columns as their element types; date columns should
-    be pre-normalized to datetime.date via dates_as_date_list.
+    bool, Int64/object columns as their element types; datetime64 columns
+    are converted to datetime.date in ONE numpy pass (keep dates datetime64
+    on the frame — an object-date column poisons every cudf op).
     """
     if not cols:
         return []
     col_lists: list[list] = []
     for c in cols:
         a = np.asarray(df[c])
-        if a.dtype.kind == "f":  # float32/float64 — vectorized sweep
+        if a.dtype.kind == "M":  # datetime64 → datetime.date (asyncpg DATE)
+            col_lists.append(a.astype("datetime64[D]").astype(object).tolist())
+        elif a.dtype.kind == "f":  # float32/float64 — vectorized sweep
             col_lists.append(_sweep_float(a).tolist())
         else:  # object/bool/int/nullable-dtypes — loop with hoisted constants
             col_lists.append(nan_to_none(a.tolist()))

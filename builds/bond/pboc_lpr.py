@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import pandas as pd
 
+from builds._commons.safe_parse import safe_to_datetime
 from builds.bond.paths import PBOC_LPR_CSV
 
 
@@ -36,7 +38,7 @@ def build_lpr_df(start_date=None, end_date=None, verbose=True):
         return pd.DataFrame()
 
     df = df.rename(columns={"pub_date": "date"})
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["date"] = safe_to_datetime(df["date"]).astype("datetime64[ns]")
     df = df.dropna(subset=["date"])
     df["lpr_1y"] = pd.to_numeric(df["lpr_1y"], errors="coerce")
     df["lpr_5y"] = pd.to_numeric(df["lpr_5y"], errors="coerce")
@@ -49,9 +51,9 @@ def build_lpr_df(start_date=None, end_date=None, verbose=True):
            .drop_duplicates(subset=["date"], keep="last")
 
     if start_date:
-        df = df[df["date"] >= pd.Timestamp(start_date)]
+        df = df[df["date"] >= np.datetime64(start_date, "ns")]
     if end_date:
-        df = df[df["date"] <= pd.Timestamp(end_date)]
+        df = df[df["date"] <= np.datetime64(end_date, "ns")]
 
     if verbose:
         if len(df):

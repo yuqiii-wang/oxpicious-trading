@@ -201,8 +201,10 @@ def build_options_df(
             n_empty += 1
             continue
 
-        # Scalar broadcast: datetime64 column (never object date lists)
-        df["date"] = pd.Timestamp(trade_date)
+        # Scalar broadcast: numpy datetime64[ns]. A pd.Timestamp scalar takes
+        # the cudf slow path (2 fallbacks/file) AND lands the column as
+        # datetime64[s], which breaks the ns-epoch math below.
+        df["date"] = np.datetime64(trade_date, "ns")
         frames.append(df)
         n_ok += 1
 
@@ -249,9 +251,12 @@ def build_options_df(
     # rows dropped by the inner merge = invalid-contract rows
     n_parse_fail = n_pre_merge - len(out)
 
-    # Days to expiry from epoch-day ints; expiry_date back to datetime64
+    # Days to expiry from epoch-day ints; expiry_date back to datetime64.
+    # The [ns] cast is unit-explicit: astype("int64") of a datetime64 column
+    # yields the column's own unit (seconds under a [s] column), so the
+    # ns-per-day divisor is only correct after normalizing to [ns].
     date_epoch = (
-        pd.to_datetime(out["date"]).astype("int64") // 86_400_000_000_000
+        out["date"].astype("datetime64[ns]").astype("int64") // 86_400_000_000_000
     )
     out["days_to_expiry"] = (out["_exp_days"] - date_epoch).clip(lower=0)
     out["expiry_date"] = pd.to_datetime(

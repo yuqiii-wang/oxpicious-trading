@@ -12,16 +12,22 @@ Key algorithm — per code and window size N:
   3. compute_pattern_scores merges the bin amplitudes into integer day
      periods and audits RECURRENCE per day d in the TIME domain:
      count(d) = alternating-extrema evidence × ACF coherence;
-     strength(d) = (amp(d)/σ_band) × count(d).
+     strength(d) = (amp(d)/σ_band) × count(d); and the POISSON AUDIT
+     sig(d) = −log10 Bonferroni p of the raw extrema hit count vs the
+     empirically calibrated chance rate λ̂₀ (point-process null,
+     poisson_calibration.json) — 0 = not significant, ≥ 1.30 ⇔
+     p < 0.05 (validated FPR ≤ 5%, power 99%+ on synthetic cycles).
   4. Headline: period_days = argmax of the strength spectrum (+2 day
      offset); strength / count_factor / amplitude are that day's
-     factor values. 0 = NO recurring rise/drop period detected (all
-     strengths 0 — flat window, pure trend, or one-off swings).
-  5. The three per-day spectra (amplitude/count/strength, index j =
-     day j+2, length N//2 − 1) are stored as Postgres double-precision
-     arrays and drive the per-date recurring-cycle bar charts on the
-     Recurring Cycles page (one chart per range_days window, reactive
-     to a clicked date on the top index price plot).
+     factor values, significance the audit −log10(p_bonf) there and
+     evidence_ratio = hits/λ̂₀. 0 = NO recurring rise/drop period
+     detected (all strengths 0 — flat window, pure trend, or one-off
+     swings).
+  5. The four per-day spectra (amplitude/count/strength/significance,
+     index j = day j+2, length N//2 − 1) are stored as Postgres
+     double-precision arrays and drive the per-date recurring-cycle
+     bar charts on the Recurring Cycles page (one chart per range_days
+     window, reactive to a clicked date on the top index price plot).
 
 GPU note: cuDF does NOT implement FFT, so the spectral transform is
 routed EXPLICITLY to CuPy (cuFFT, GPU) when available, else numpy (CPU)
@@ -32,7 +38,8 @@ CPU); only the rfft/irfft are routed by hand.
 
 Memory note: the spectrum columns are held as 1-D numpy array views into
 each (code, range_days) 2-D block until the DataFrame is written —
-three blocks per (code, range_days) (amplitudes, count, strength). For
+six blocks per (code, range_days) (amplitudes, count, strength, sig,
+hits, lam0). For
 index-only this was ~4-5 GB with the old bin-aligned blocks; the
 day-aligned blocks are the same size (N//2 − 1 vs N//2 columns). Run
 per sec_type (--sec-type) with --force when memory-bound.
@@ -67,15 +74,20 @@ def _host_array(x: np.ndarray) -> np.ndarray:
 # Column order for the output DataFrame (matches the DB table schema).
 OUTPUT_COLUMNS = [
     "sec_type", "code", "period_days", "strength", "count_factor",
-    "amplitude", "amplitude_spectrum", "count_spectrum",
-    "strength_spectrum", "last_date", "range_days",
+    "amplitude", "significance", "evidence_ratio",
+    "amplitude_spectrum", "count_spectrum",
+    "strength_spectrum", "significance_spectrum",
+    "hits_spectrum", "lam0_spectrum",
+    "last_date", "range_days",
 ]
 
 # Numeric SCALAR columns for sanitize_for_db_insert.
-# The array columns (amplitude/count/strength_spectrum) are NOT included
-# here (sanitize only handles scalar numeric columns); they are converted
-# to Python lists in __main__._write_rows for asyncpg.
-NUMERIC_COLS = ["strength", "count_factor", "amplitude"]
+# The array columns (amplitude/count/strength/significance/hits/lam0
+# _spectrum) are NOT included here (sanitize only handles scalar numeric
+# columns); they are converted to Python lists in __main__._write_rows
+# for asyncpg.
+NUMERIC_COLS = ["strength", "count_factor", "amplitude",
+                "significance", "evidence_ratio"]
 
 
 def compute_recurring_cycles(
@@ -110,10 +122,12 @@ def compute_recurring_cycles(
 
     Returns:
         DataFrame with columns: sec_type, code, period_days (int; 0 =
-        no recurring period), strength / count_factor / amplitude
-        (float — the top-strength day's factors, 0 when period_days is
-        0), amplitude_spectrum / count_spectrum / strength_spectrum
-        (per-day arrays, index j = day j+2, length floor(N/2) − 1),
+        no recurring period), strength / count_factor / amplitude /
+        significance / evidence_ratio (float — the top-strength day's
+        factor values plus the Poisson audit at that day, 0 when
+        period_days is 0), amplitude_spectrum / count_spectrum /
+        strength_spectrum / significance_spectrum (per-day arrays,
+        index j = day j+2, length floor(N/2) − 1),
         last_date (date), range_days (int). Empty DataFrame with the
         correct columns if close_df is empty.
     """
@@ -134,6 +148,8 @@ def compute_recurring_cycles(
     strengths_arr: list[np.ndarray] = []
     counts_arr: list[np.ndarray] = []
     amps_arr: list[np.ndarray] = []
+    sigs_arr: list[np.ndarray] = []
+    evs_arr: list[np.ndarray] = []
     dates_arr: list[np.ndarray] = []
     range_days_arr: list[np.ndarray] = []
 
@@ -147,6 +163,9 @@ def compute_recurring_cycles(
     spectrums_flat: list[np.ndarray] = []
     counts_flat: list[np.ndarray] = []
     strengths_flat: list[np.ndarray] = []
+    sigs_flat: list[np.ndarray] = []
+    hits_flat: list[np.ndarray] = []
+    lams_flat: list[np.ndarray] = []
 
     codes_seen = 0
     for code, group in close_df.groupby("code", sort=True):
@@ -234,8 +253,10 @@ def compute_recurring_cycles(
                 )
 
             # Per-day recurring periodicity factors (amp / count /
-            # strength), day-aligned: element j = day j + 2.
-            amp_block, count_block, strength_block = compute_pattern_scores(
+            # strength / poisson-audit sig), day-aligned: element j =
+            # day j + 2. hits/lam blocks back the evidence ratio.
+            (amp_block, count_block, strength_block, sig_block,
+             hits_block, lam_block) = compute_pattern_scores(
                 windows, bin_amplitudes, range_days
             )
 
@@ -244,14 +265,30 @@ def compute_recurring_cycles(
             # 0 = no recurring period (all strengths 0: flat window,
             # pure trend, or one-off swings — count gates them out).
             top_idx = np.argmax(strength_block, axis=1)
-            top_strength = strength_block[np.arange(n_windows), top_idx]
+            rows = np.arange(n_windows)
+            top_strength = strength_block[rows, top_idx]
             has_recur = top_strength > 0
             periods = np.where(has_recur, top_idx + 2, 0).astype(np.int32)
 
-            top_count = count_block[np.arange(n_windows), top_idx]
-            top_amp = amp_block[np.arange(n_windows), top_idx]
+            top_count = count_block[rows, top_idx]
+            top_amp = amp_block[rows, top_idx]
             top_count = np.where(has_recur, top_count, 0.0)
             top_amp = np.where(has_recur, top_amp, 0.0)
+
+            # Poisson-audit headline scalars at the strength argmax:
+            # significance = −log10(p_bonf) there; evidence_ratio =
+            # observed hits / chance expectation λ̂₀ (0 when no period /
+            # no calibration). hit counts are integral (cumsum of ±1).
+            top_sig = sig_block[rows, top_idx]
+            top_hits = hits_block[rows, top_idx]
+            top_lam = lam_block[rows, top_idx]
+            top_ev = np.divide(
+                top_hits, top_lam,
+                out=np.zeros(n_windows), where=top_lam > 0,
+            )
+            top_sig = np.where(has_recur, top_sig, 0.0)
+            top_ev = np.where(has_recur, top_ev, 0.0)
+            top_ev = np.nan_to_num(top_ev, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Accumulate as typed arrays for efficient concatenation.
             sec_types_arr.append(
@@ -264,6 +301,8 @@ def compute_recurring_cycles(
             strengths_arr.append(top_strength.astype(np.float64))
             counts_arr.append(top_count.astype(np.float64))
             amps_arr.append(top_amp.astype(np.float64))
+            sigs_arr.append(top_sig.astype(np.float64))
+            evs_arr.append(top_ev.astype(np.float64))
             dates_arr.append(window_dates)
             range_days_arr.append(
                 np.full(n_windows, range_days, dtype=np.int32)
@@ -274,6 +313,9 @@ def compute_recurring_cycles(
             spectrums_flat.extend(list(amp_block))
             counts_flat.extend(list(count_block))
             strengths_flat.extend(list(strength_block))
+            sigs_flat.extend(list(sig_block))
+            hits_flat.extend(list(hits_block))
+            lams_flat.extend(list(lam_block))
 
     if not sec_types_arr:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
@@ -291,9 +333,14 @@ def compute_recurring_cycles(
         "strength": np.concatenate(strengths_arr),
         "count_factor": np.concatenate(counts_arr),
         "amplitude": np.concatenate(amps_arr),
+        "significance": np.concatenate(sigs_arr),
+        "evidence_ratio": np.concatenate(evs_arr),
         "amplitude_spectrum": spectrums_flat,
         "count_spectrum": counts_flat,
         "strength_spectrum": strengths_flat,
+        "significance_spectrum": sigs_flat,
+        "hits_spectrum": hits_flat,
+        "lam0_spectrum": lams_flat,
         "last_date": np.concatenate(dates_arr),
         "range_days": np.concatenate(range_days_arr),
     })

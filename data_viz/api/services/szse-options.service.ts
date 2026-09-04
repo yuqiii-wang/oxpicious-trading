@@ -7,7 +7,7 @@
  */
 import { queryRows, toDateParam, formatDate, toNum } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
-import { stripExchangeSuffix } from "../lib/classify-etf.js";
+import { stripExchangeSuffix, codeVariants } from "../lib/classify-etf.js";
 import type {
   OptionsRow,
   OptionsUnderlying,
@@ -248,11 +248,10 @@ export async function getEtfOhlcv(
   // ---- ETF mode (default): v_etf_margin with the native ETF code ----
   const targetCode = cleanedCode;
 
-  const params: unknown[] = [];
+  const params: unknown[] = [codeVariants(targetCode)];
   const where: string[] = [
-    `REGEXP_REPLACE(code, '\\.(SZ|SS|SH)$', '') = $1`,
+    `code = ANY($1::text[])`,
   ];
-  params.push(targetCode);
   let i = 2;
 
   if (sd) {

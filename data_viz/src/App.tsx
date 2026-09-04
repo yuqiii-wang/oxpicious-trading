@@ -25,12 +25,16 @@ import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
 import OptionsAnalysisPage from "@/analysis/pages/OptionsAnalysis";
 import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
 import { useSecAllocLivePipeline } from "@/live/hooks/useSecAllocLivePipeline";
+import { useTradingSignalsSchedule } from "@/live/hooks/useTradingSignalsSchedule";
 
 export default function App() {
   // App-root keeper: run the live sec-alloc attribution pipeline every
   // 5 min during trading hours regardless of the active route, so the
   // Market Movements tables stay fresh even when that page isn't open.
   useSecAllocLivePipeline();
+  // App-root keeper: fire the trading-signals run ONCE per biz day at
+  // 13:30 Asia/Shanghai (catches up when the app starts after 13:30).
+  useTradingSignalsSchedule();
 
   return (
     <Router>

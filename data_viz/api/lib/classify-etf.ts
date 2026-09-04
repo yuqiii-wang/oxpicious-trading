@@ -9,6 +9,7 @@
  */
 export {
   stripExchangeSuffix,
+  codeVariants,
   matchesExchange,
   EXCHANGE_OPTIONS,
   PRIMARY_EXCHANGE_OPTIONS,
