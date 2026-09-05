@@ -260,11 +260,26 @@ async def run_trading_amt(
         target_dates_union: Optional[Set] = None
     elif force:
         print("    mode: FORCE (full recompute)", flush=True)
-        print("\n[t0/4] Force mode: truncating mov_ave_trading_amt...",
-              flush=True)
-        await truncate_table_async(conn, TRADING_AMT_TABLE)
+        if sec_type is not None:
+            # Per-sec_type scope: DELETE only this sec_type's rows — the
+            # parent loop calls run_trading_amt once per sec_type, so a
+            # whole-table TRUNCATE here would wipe the other sec_types'
+            # rows (in a --sec-type scoped run they are NOT rebuilt).
+            print(f"\n[t0/4] Force mode: deleting {sec_type} rows from "
+                  "mov_ave_trading_amt...", flush=True)
+            status = await conn.execute(
+                f"DELETE FROM {TRADING_AMT_TABLE} WHERE sec_type = $1",
+                sec_type,
+            )
+            n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
+            print(f"    -> deleted {n_del:,} rows; will recompute all "
+                  f"{sec_type} rows", flush=True)
+        else:
+            print("\n[t0/4] Force mode: truncating mov_ave_trading_amt...",
+                  flush=True)
+            await truncate_table_async(conn, TRADING_AMT_TABLE)
+            print("    -> truncated; will recompute all rows", flush=True)
         target_dates_union: Optional[Set] = None
-        print("    -> truncated; will recompute all rows", flush=True)
     else:
         print("    mode: incremental (missing dates only)", flush=True)
         print("\n[t0/4] Detecting missing dates PER-sec_type "

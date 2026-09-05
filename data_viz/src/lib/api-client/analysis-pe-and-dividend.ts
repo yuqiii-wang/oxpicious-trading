@@ -6,6 +6,7 @@ import type {
   PeAndDividendCodesResponse,
   PeAndDividendChartResponse,
   PeAndDividendStatsResponse,
+  PeAndDividendStreaksResponse,
 } from "@shared/types";
 
 // ---------------------------------------------------------------------------
@@ -78,5 +79,21 @@ export function fetchPeAndDividendStats(
   const qs = params.toString();
   return fetchJson<PeAndDividendStatsResponse>(
     `/api/analysis/pe-and-dividend/stats${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Band-BREAK excursion streaks of the code's pe_ma20 / dividend_yield
+ *  series (analysis.pe_and_dividend_pct_streaks, side derived at query
+ *  time), flat for ALL (metric, period, pct_type) combos. */
+export function fetchPeAndDividendStreaks(
+  code: string,
+  secType: PeAndDividendSecType,
+): Promise<PeAndDividendStreaksResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  const qs = params.toString();
+  return fetchJson<PeAndDividendStreaksResponse>(
+    `/api/analysis/pe-and-dividend/streaks${qs ? `?${qs}` : ""}`,
   );
 }

@@ -25,7 +25,7 @@ ANALYSIS_DESCRIPTION = (
     "TWO benchmark classes are materialized: "
     "(1) BROAD-MARKET benchmarks — HYBRID aggregation: "
     "industry_shared_weight = SUM(code_sec_shared_weight) across member "
-    "indices from analysis.sec_alloc_perf_attribution (own-weight on "
+    "indices from stats.cross_stats sec_type='index' rows (own-weight on "
     "shared stocks in percent, can exceed 100, self-pairs excluded); "
     "benchmark_shared_weight = benchmark weight on the UNION of industry "
     "member stocks from stats.sec_composition (latest snapshot, bounded "
@@ -33,7 +33,7 @@ ANALYSIS_DESCRIPTION = (
     "to avoid double-counting stocks held by multiple members). "
     "(2) MEMBER-INDEX benchmarks — each industry's OWN member indices are "
     "also inserted as benchmarks (computed directly from sec_composition, "
-    "NOT from sec_alloc_perf_attribution which only keeps top-3 per "
+    "NOT from the cross_stats pair grain which only keeps top-3 per "
     "industry). industry_shared_weight = SUM over other same-industry "
     "members N of N's weight on stocks shared with the member index M; "
     "benchmark_shared_weight = M's weight on the industry stock union "
@@ -43,7 +43,7 @@ ANALYSIS_DESCRIPTION = (
     "snapshot for all dates (weight_pct is stored as a percent, not a "
     "fraction). Built by analyze.industry_sentiments.attributions "
     "(internal step, truncate-then-recompute via server-side "
-    "INSERT...SELECT). Depends on analysis.sec_alloc_perf_attribution "
+    "INSERT...SELECT). Depends on stats.cross_stats (sec_type='index') "
     "being populated first."
 )
 

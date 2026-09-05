@@ -14,33 +14,26 @@ from typing import Set
 # ---------------------------------------------------------------------------
 
 # Guard: bail out early if the upstream table is empty / missing.
+# Source is the stats.cross_stats INDUSTRY grain (built by builds.cross_stats
+# from the pair rows) — it feeds the broad-market INSERT.
 COUNT_SOURCE_SQL = """
     SELECT COUNT(*) AS n
-    FROM analysis.sec_alloc_perf_attribution
-    WHERE sec_type = 'index'
+    FROM stats.cross_stats
+    WHERE sec_type = 'industry'
 """
 
 # Lightweight preview: distinct industries + benchmarks that will appear in
-# the output (without running the full GROUP BY). Scans the source table
-# once but avoids the expensive hash aggregate. Restricted to broad-market
-# benchmarks — only these are materialized in industry_attributions.
+# the output. The source is already at industry grain (code = industry_id),
+# so no GROUP BY is needed. Restricted to broad-market benchmarks — only
+# these are materialized in industry_attributions.
 PREVIEW_DIMENSIONS_SQL = """
     SELECT
-        COUNT(DISTINCT cls.industry_id) AS n_industries,
-        COUNT(DISTINCT sa.benchmark_code) AS n_benchmarks
-    FROM analysis.sec_alloc_perf_attribution sa
-    JOIN (
-        SELECT DISTINCT code, industry_id
-        FROM stats.sec_classification
-        WHERE type = 'index'
-          AND industry_id IS NOT NULL
-          AND industry_id <> ''
-          AND is_active = TRUE
-          AND is_industry_not_strategy = TRUE
-    ) cls ON cls.code = sa.code
-    WHERE sa.sec_type = 'index'
-      AND sa.code_sec_shared_weight IS NOT NULL
-      AND sa.benchmark_code IN (
+        COUNT(DISTINCT cs.code) AS n_industries,
+        COUNT(DISTINCT cs.benchmark_code) AS n_benchmarks
+    FROM stats.cross_stats cs
+    WHERE cs.sec_type = 'industry'
+      AND cs.code_sec_shared_weight IS NOT NULL
+      AND cs.benchmark_code IN (
           SELECT code FROM stats.sec_index_tags WHERE is_broad_market = TRUE
       )
 """
@@ -136,18 +129,19 @@ async def needs_rolling_backfill(conn) -> bool:
 
 
 async def find_missing_attribution_dates(conn) -> Set[datetime.date]:
-    """Return dates present in sec_alloc_perf_attribution but missing from
-    industry_attributions.
+    """Return dates present in stats.cross_stats (industry grain) but
+    missing from industry_attributions.
 
     Downstream-date detection for the no-corr mode of
     analyze.industry_sentiments: when the correlations step is skipped,
     the incremental target dates for attributions / etf_contribution are
-    the source (perf_attribution) dates that have not been aggregated
-    yet, instead of corr window-end dates.
+    the source (cross_stats) dates that have not been aggregated yet,
+    instead of corr window-end dates.
     """
     rows = await conn.fetch("""
         WITH src AS (
-            SELECT DISTINCT date FROM analysis.sec_alloc_perf_attribution
+            SELECT DISTINCT date FROM stats.cross_stats
+            WHERE sec_type = 'industry'
         ),
         got AS (
             SELECT DISTINCT date FROM analysis.industry_attributions

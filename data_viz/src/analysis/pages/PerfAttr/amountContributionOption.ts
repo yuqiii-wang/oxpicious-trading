@@ -19,7 +19,7 @@
  * The tooltip surfaces the bench/code liquidity ratio (DB-GENERATED
  * etf_trading_amount_ratio_benchmark_to_code), the subject's share (1/ratio), AND
  * the 5-day moving average of the ratio (etf_trading_amount_ratio_benchmark_to_code_ma5,
- * precomputed by analyze_sec_alloc_perf_attribution.py) as a dedicated line
+ * precomputed by builds.cross_stats) as a dedicated line
  * — the former standalone MA5 chart has been consolidated into this tooltip.
  * Shares the same date range (slider-sliced `filteredChartData`) as the
  * close-price plot.

@@ -21,10 +21,9 @@ light ticks appended every 5-min run):
     between SUM(ref.weight * tick.pct) and AVG(tick.pct) at QUERY TIME.
 
 Sources:
-  analysis.sec_alloc_perf_attribution — member universe per benchmark
+  stats.sec_classification            — member universe + industry_id mapping
   stats.index_basic_stats             — prev-day close + trading_amount
   stats.index_intraday_5min           — 5-min tick closes
-  stats.sec_classification            — industry_id mapping
 """
 from typing import Final
 
@@ -47,10 +46,9 @@ PIPELINE_DESCRIPTION: Final[str] = (
     "(designed to be triggered every 5 min during trading hours by the "
     "Market Movements UI). Industry-level weighted (SUM weight*pct) and "
     "equal-weighted (AVG pct) aggregates are computed at query time. "
-    "Sources: analysis.sec_alloc_perf_attribution (member universe), "
+    "Sources: stats.sec_classification (member universe), "
     "stats.index_basic_stats (prev-day close + trading_amount), "
-    "stats.index_intraday_5min (tick closes), stats.sec_classification "
-    "(industry tags)."
+    "stats.index_intraday_5min (tick closes)."
 )
 
 # sec_type currently supported for BENCHMARK scope (mirrors the intraday

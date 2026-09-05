@@ -19,12 +19,12 @@
  * NOT included here — it remains a separate ChartCard below.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Box, Stack, ToggleButton, ToggleButtonGroup } from "@mui/material";
+import { Alert, Box, Stack } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
-import type { OptionsRow } from "@shared/types";
-import { buildCohorts, buildCells, remapCells } from "./bandData";
+import type { OptionsRow, OptionsWallRow } from "@shared/types";
+import { buildCohorts, buildCells, buildZoneWalls, remapCells, remapZones } from "./bandData";
 import { buildDailyOi, buildExpiryMarkers } from "./sharedData";
 import { buildPcRatioOptionWithBroken } from "./pcRatioOption";
 import { buildOiTrendOptionWithBroken } from "./oiTrendOption";
@@ -32,15 +32,16 @@ import { buildBandsOption } from "./bandsOption";
 import { useDataZoomSync } from "./useDataZoomSync";
 import CohortSelector from "./cohortSelector";
 import { breakArraysAtGaps, safeMa } from "@/lib/series";
-import { type WallMode, WALL_MODE_LABELS } from "./bandData";
 
 export const CHART_GROUP = "options-trend";
 
 interface Props {
   rows: OptionsRow[];
+  /** Zone walls (analysis.options_walls, wall_type='zone') for the underlying. */
+  walls?: OptionsWallRow[];
 }
 
-export default function OptionsTrendPanel({ rows }: Props) {
+export default function OptionsTrendPanel({ rows, walls = [] }: Props) {
   const themeMode = useStore((s) => s.themeMode);
   const { buildDataZoom, buildInsideDataZoom, handleDataZoom } = useDataZoomSync();
 
@@ -51,7 +52,6 @@ export default function OptionsTrendPanel({ rows }: Props) {
   const cohorts = useMemo(() => buildCohorts(rows), [rows]);
   const [cohortMode, setCohortMode] = useState<"active" | "history">("active");
   const [monthFilter, setMonthFilter] = useState<"all" | string>("all");
-  const [wallMode, setWallMode] = useState<WallMode>("80pct");
 
   const lastDate = useMemo(() => {
     let mx = "";
@@ -206,9 +206,17 @@ export default function OptionsTrendPanel({ rows }: Props) {
   }, [daily]);
 
   // Build bands with cells remapped to broken date indices
+  const realExpiries = useMemo(() => new Set(rows.map((r) => r.expiry_date)), [rows]);
   const built = useMemo(() => {
     if (selectedExpiryKeys.length === 0) return null;
     const raw = buildCells(rows, selectedExpiryKeys, allDates);
+    // Zone walls follow the same expiry selection — the collapsed open
+    // chain group (pseudo expiry not in the real expiry set) covers the
+    // open cohorts.
+    const rawZones = buildZoneWalls(walls, selectedExpiryKeys, allDates, {
+      realExpiries,
+      includeOpenChain: selectedExpiryKeys.some((k) => k >= lastDate),
+    });
     if (brokenData.dates.length !== allDates.length) {
       const { cells: remappedCells, spot: remappedSpot } = remapCells(
         raw.cells,
@@ -216,11 +224,18 @@ export default function OptionsTrendPanel({ rows }: Props) {
         allDates,
         brokenData.dates,
       );
-      return { dates: brokenData.dates, cells: remappedCells, spot: remappedSpot, oiMax: raw.oiMax };
+      const remappedZones = remapZones(rawZones, allDates, brokenData.dates);
+      return {
+        dates: brokenData.dates,
+        cells: remappedCells,
+        spot: remappedSpot,
+        oiMax: raw.oiMax,
+        zones: remappedZones,
+      };
     }
-    return raw;
+    return { ...raw, zones: rawZones };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, selectedExpiryKeysKey, allDates, brokenData.dates]);
+  }, [rows, walls, realExpiries, selectedExpiryKeysKey, lastDate, allDates, brokenData.dates]);
 
   if (cohorts.length === 0 || daily.length === 0) {
     return (
@@ -259,30 +274,6 @@ export default function OptionsTrendPanel({ rows }: Props) {
             onMonthFilterChange={setMonthFilter}
             availableMonths={availableMonths}
           />
-          <ToggleButtonGroup
-            size="small"
-            exclusive
-            value={wallMode}
-            onChange={(_, v: WallMode | null) => {
-              if (v) setWallMode(v);
-            }}
-            sx={{
-              ml: "auto",
-              bgcolor: "background.paper",
-              "& .MuiToggleButton-root": {
-                px: 1.5,
-                py: 0.25,
-                fontSize: "0.7rem",
-                minWidth: 80,
-              },
-            }}
-          >
-            {(["80pct", "large_num"] as WallMode[]).map((mode) => (
-              <ToggleButton key={mode} value={mode}>
-                {WALL_MODE_LABELS[mode]}
-              </ToggleButton>
-            ))}
-          </ToggleButtonGroup>
         </Box>
 
         {/* Chart 1: Expiry OI Bands (top) */}
@@ -295,7 +286,7 @@ export default function OptionsTrendPanel({ rows }: Props) {
               themeMode,
               dataZoomOpt,
               expiryMarkers,
-              wallMode,
+              built.zones,
             )}
             height={340}
             group={CHART_GROUP}

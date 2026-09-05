@@ -13,6 +13,11 @@
  *     window (20/60/255/500/750/1275).
  *   • Pagination — PAGE_SIZE codes per page.
  *
+ * Data flow: the page loads only the two navigation trees (served from the
+ * analysis.recurring_cycles_codes registry — never a recurring_cycles scan).
+ * Every recurring-cycles data fetch carries `code` in the filter (panel-level
+ * spectrum query → PK-index-driven read of analysis.recurring_cycles).
+ *
  * Backed by analysis.recurring_cycles (sec_type='index').
  */
 import { useEffect, useMemo, useState } from "react";
@@ -32,14 +37,12 @@ import RefreshButton from "@/components/RefreshButton";
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import { useStore } from "@/store/filters";
 import {
-  fetchRecurringCyclesCodes,
   fetchRecurringCyclesThemes,
   fetchRecurringCyclesStrategyThemes,
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
 import type {
   RecurringCyclesSecType,
-  RecurringCyclesCodesResponse,
   SectorNode,
   StrategyNode,
 } from "@shared/types";
@@ -61,7 +64,6 @@ export default function RecurringCyclesPage() {
   const [themeSlug, setThemeSlug] = useState<string | null>(null);
 
   const [sectors, setSectors] = useState<SectorNode[]>([]);
-  const [codesData, setCodesData] = useState<RecurringCyclesCodesResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -71,7 +73,6 @@ export default function RecurringCyclesPage() {
   // Reset selection on exchange change.
   useEffect(() => {
     setSectors([]);
-    setCodesData(null);
     setError(null);
     setSectorId(null);
     setIndustrySlug(null);
@@ -82,20 +83,22 @@ export default function RecurringCyclesPage() {
     setPage(1);
   }, [exchange]);
 
-  // Load themes + codes whenever exchange changes or refresh is bumped.
+  // Load the navigation trees whenever exchange changes or refresh is
+  // bumped. Both are served from the analysis.recurring_cycles_codes
+  // registry (no recurring_cycles table scan). All recurring-cycles DATA
+  // fetches happen per code in RecurringCyclesPanel with `code` in the
+  // query — never here.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     Promise.all([
       fetchRecurringCyclesThemes(SEC_TYPE, exchange),
-      fetchRecurringCyclesCodes(SEC_TYPE, exchange),
       fetchRecurringCyclesStrategyThemes(SEC_TYPE, exchange),
     ])
-      .then(([t, c, st]) => {
+      .then(([t, st]) => {
         if (cancelled) return;
         setSectors(t);
-        setCodesData(c);
         setStrategies(st);
         if (sectorId && !t.some((s) => s.sector_id === sectorId)) {
           setSectorId(null);
@@ -187,43 +190,36 @@ export default function RecurringCyclesPage() {
     setExchange(ex);
   };
 
+  // Page items are derived from the navigation trees (each tree item
+  // carries { code, name }). No separate codes query: the per-code data
+  // is fetched inside RecurringCyclesPanel with `code` in the filter.
   const { pageCodes, totalCodes } = useMemo(() => {
-    const all = codesData?.codes ?? [];
+    const norm = (c: string) => c.toUpperCase().replace(/\.(SS|SZ|SH|BJ|HK)$/i, "");
     if (searchCode) {
-      const norm = searchCode.toUpperCase().replace(/\.(SS|SZ|SH|BJ|HK)$/i, "");
-      const match = all.find(
-        (c) => c.code.toUpperCase().replace(/\.(SS|SZ|SH|BJ|HK)$/i, "") === norm,
-      );
+      const want = norm(searchCode);
+      const match =
+        sectors
+          .flatMap((s) => s.industries.flatMap((ind) => ind.items))
+          .concat(strategies.flatMap((s) => s.industries.flatMap((t) => t.items)))
+          .find((it) => norm(it.code) === want) ?? null;
       return { pageCodes: match ? [match] : [], totalCodes: match ? 1 : 0 };
     }
-    if (strategyId) {
-      const strategyCodes = new Set<string>();
-      const strat = strategies.find((s) => s.sector_id === strategyId);
-      if (strat) {
-        for (const theme of strat.industries) {
-          if (!themeSlug || theme.industry_slug === themeSlug || theme.industry_id === themeSlug) {
-            for (const item of theme.items) {
-              strategyCodes.add(item.code);
-            }
-          }
-        }
-      }
-      const wanted = all.filter((c) => strategyCodes.has(c.code));
-      return { pageCodes: wanted, totalCodes: wanted.length };
-    }
-    const wantedSet = new Set<string>();
-    for (const s of sectors) {
-      if (sectorId && s.sector_id !== sectorId) continue;
-      for (const ind of s.industries) {
-        if (industrySlug && ind.industry_slug !== industrySlug) continue;
-        for (const item of ind.items) {
-          wantedSet.add(item.code);
-        }
-      }
-    }
-    const wanted = all.filter((c) => wantedSet.has(c.code));
+    const items = strategyId
+      ? strategies
+          .filter((s) => s.sector_id === strategyId)
+          .flatMap((s) => s.industries)
+          .filter((t) => !themeSlug || t.industry_slug === themeSlug || t.industry_id === themeSlug)
+          .flatMap((t) => t.items)
+      : sectors
+          .filter((s) => !sectorId || s.sector_id === sectorId)
+          .flatMap((s) => s.industries)
+          .filter((ind) => !industrySlug || ind.industry_slug === industrySlug)
+          .flatMap((ind) => ind.items);
+    const wanted = Array.from(new Map(items.map((it) => [it.code, it])).values()).sort((a, b) =>
+      a.code.localeCompare(b.code),
+    );
     return { pageCodes: wanted, totalCodes: wanted.length };
-  }, [codesData, sectors, strategies, sectorId, industrySlug, strategyId, themeSlug, searchCode]);
+  }, [sectors, strategies, sectorId, industrySlug, strategyId, themeSlug, searchCode]);
 
   const totalPages = Math.max(1, Math.ceil(totalCodes / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);

@@ -13,18 +13,24 @@
  * is run with --sec-type index first). The service accepts a sec_type
  * param for forward-compatibility but the page is index-only.
  *
- * Mirrors the pe-and-dividends service shape (codes + chart + themes +
+ * PERFORMANCE CONTRACT: analysis.recurring_cycles is a 55 GB partitioned
+ * table (per-row spectra arrays) — NO page-load query may scan it. The
+ * "codes with data" universe comes from analysis.recurring_cycles_codes
+ * (a ~8K-row registry maintained by the Python populator), and every
+ * recurring_cycles read is code-filtered so the (code, sec_type, last_date,
+ * range_days) PK index drives it (the UI passes `code` in the filter —
+ * spectrum/chart endpoints).
+ *
+ * Mirrors the pe-and-dividends service shape (chart + themes +
  * strategy-themes) so the page can reuse SecClassificationNav verbatim.
  */
 import { queryRows, formatDate, toNum } from "../../lib/db.js";
 import type { QueryResultRow } from "pg";
 import { stripExchangeSuffix, matchesExchange, codeVariants } from "../../lib/classify-etf.js";
 import { stripped } from "./_shared.js";
-import { buildStrategyThemesFromRows, matchesClassification } from "../_shared.js";
+import { buildStrategyThemesFromRows } from "../_shared.js";
 import type {
   RecurringCyclesSecType,
-  RecurringCyclesCodeRow,
-  RecurringCyclesCodesResponse,
   RecurringCyclesChartResponse,
   RecurringCyclesChartRow,
   RecurringCyclesSpectrumResponse,
@@ -58,15 +64,6 @@ const META_TYPE: Record<RecurringCyclesSecType, string> = {
 // ----------------------------------------------------------------------------
 //  DB row types
 // ----------------------------------------------------------------------------
-interface DbCodeRow extends QueryResultRow {
-  code: string;
-  name: string;
-  first_date: Date | string;
-  last_date: Date | string;
-  n_dates: number;
-  range_days: number;
-  latest_period: number | null;
-}
 
 interface DbChartRow extends QueryResultRow {
   last_date: Date | string;
@@ -88,55 +85,16 @@ interface DbMetaRow extends QueryResultRow {
 }
 
 // ----------------------------------------------------------------------------
-//  listRecurringCyclesCodes — one row per code with first/last date, n_dates,
-//  and the latest recurring period per range_days. Pivots the range_days
-//  values into a latest_period map so the codes list stays one-row-per-code.
+//  Meta SQL shared by themes + strategy-themes. Returns one row per code
+//  registered in analysis.recurring_cycles_codes (the populated-codes
+//  registry maintained by the Python populator — never scan the 55 GB
+//  recurring_cycles table on a page load) with its precomputed L1/L2
+//  classification from stats.sec_classification.
 // ----------------------------------------------------------------------------
-function buildCodesSql(secType: RecurringCyclesSecType): string {
-  return `
-    WITH latest_name AS (
-      SELECT DISTINCT ON (code) code, name
-      FROM ${IDENTITY_TABLE[secType]}
-      ORDER BY code, date DESC
-    ),
-    code_dates AS (
-      SELECT
-        code,
-        MIN(last_date) AS first_date,
-        MAX(last_date) AS last_date,
-        COUNT(DISTINCT last_date) AS n_dates
-      FROM analysis.recurring_cycles
-      WHERE sec_type = $1
-      GROUP BY code
-    ),
-    latest_row AS (
-      SELECT DISTINCT ON (code, range_days) code, range_days, period_days
-      FROM analysis.recurring_cycles
-      WHERE sec_type = $1
-      ORDER BY code, range_days, last_date DESC
-    )
-    SELECT
-      cd.code,
-      COALESCE(n.name, '')  AS name,
-      cd.first_date,
-      cd.last_date,
-      cd.n_dates,
-      lr.range_days,
-      lr.period_days        AS latest_period
-    FROM code_dates cd
-    LEFT JOIN latest_name n  ON n.code  = cd.code
-    LEFT JOIN latest_row lr  ON lr.code = cd.code
-    ORDER BY cd.code, lr.range_days
-  `;
-}
-
-/** Meta SQL shared by themes + strategy-themes. Returns one row per code
- *  in analysis.recurring_cycles (filtered by sec_type) with its precomputed
- *  L1/L2 classification from stats.sec_classification. */
 const META_SQL = `
   WITH rc_codes AS (
-    SELECT DISTINCT code
-    FROM analysis.recurring_cycles
+    SELECT code
+    FROM analysis.recurring_cycles_codes
     WHERE sec_type = $1::text
   )
   SELECT
@@ -153,71 +111,6 @@ const META_SQL = `
   LEFT JOIN stats.sec_classification m ON m.code = sc.code AND m.type = $2::text
   WHERE COALESCE(m.is_active, TRUE) = TRUE
 `;
-
-export async function listRecurringCyclesCodes(
-  rawSecType: string | undefined | null,
-  sector?: string | null,
-  industry?: string | null,
-  strategy?: string | null,
-  theme?: string | null,
-  rawExchange?: string | null,
-): Promise<RecurringCyclesCodesResponse> {
-  const secType = normalizeSecType(rawSecType);
-  const sectorFilter = (sector ?? "").trim();
-  const industryFilter = (industry ?? "").trim();
-  const strategyFilter = (strategy ?? "").trim();
-  const themeFilter = (theme ?? "").trim();
-  const hasClassFilter = !!(sectorFilter || industryFilter || strategyFilter || themeFilter);
-  const exFilter = (rawExchange ?? "").trim() || null;
-  const needMeta = hasClassFilter || !!exFilter;
-
-  const rows = await queryRows<DbCodeRow>(buildCodesSql(secType), [secType]);
-
-  let classMap: Map<string, DbMetaRow> | null = null;
-  if (needMeta) {
-    const metaType = META_TYPE[secType];
-    const metaRows = await queryRows<DbMetaRow>(META_SQL, [secType, metaType]);
-    classMap = new Map<string, DbMetaRow>();
-    for (const m of metaRows) {
-      const code = stripExchangeSuffix(m.code);
-      if (!code) continue;
-      classMap.set(code, m);
-    }
-  }
-
-  // Collapse the per-range_days rows into one code row with a
-  // latest_period map.
-  const byCode = new Map<string, RecurringCyclesCodeRow>();
-  for (const r of rows) {
-    const code = stripped(r.code);
-    if (classMap) {
-      const meta = classMap.get(code);
-      if (hasClassFilter && (!meta || !matchesClassification(meta, sectorFilter, industryFilter, strategyFilter, themeFilter))) {
-        continue;
-      }
-      if (exFilter && (!meta || !matchesExchange(meta.exchange, exFilter))) {
-        continue;
-      }
-    }
-    let entry = byCode.get(code);
-    if (!entry) {
-      entry = {
-        code,
-        name: r.name ?? "",
-        first_date: formatDate(r.first_date),
-        last_date: formatDate(r.last_date),
-        n_dates: Number(r.n_dates) || 0,
-        latest_period: {},
-      };
-      byCode.set(code, entry);
-    }
-    const rd = Number(r.range_days);
-    if (Number.isFinite(rd)) {
-      entry.latest_period[rd] = toNum(r.latest_period);
-    }
-  }
-  return { codes: Array.from(byCode.values()) };
-}
 
 // ----------------------------------------------------------------------------
 //  getRecurringCyclesChart — per-(last_date, range_days) recurring period +
@@ -533,5 +426,13 @@ export async function getRecurringCyclesSpectrum(
     };
   });
 
-  return { code: target, name, last_date: resolvedDateStr, spectrums };
+  return {
+    code: target,
+    name,
+    last_date: resolvedDateStr,
+    spectrums,
+    // Backend arg for the shared ExpandedTable — filters stay DISABLED by
+    // default for this endpoint.
+    enable_filters: false,
+  };
 }

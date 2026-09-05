@@ -103,8 +103,8 @@ async def run_attributions(
     inserts are small).
 
     Pipeline
-      1. Guard: if BOTH sec_alloc_perf_attribution is empty AND there are
-         no member indices with composition data, exit gracefully.
+      1. Guard: if BOTH the stats.cross_stats industry grain is empty AND
+         there are no member indices with composition data, exit gracefully.
       2. Preview: report distinct industries x benchmarks + member indices.
       3. Incremental only: prune target dates to genuinely missing dates
          (skip + return when nothing remains).
@@ -139,19 +139,20 @@ async def run_attributions(
               flush=True)
 
     # ---- Step 1: guard — check upstream + member-index availability --
-    # The broad-market INSERT needs sec_alloc_perf_attribution; the
+    # The broad-market INSERT needs the stats.cross_stats INDUSTRY grain
+    # (built by builds.cross_stats from the pair rows); the
     # member-index INSERT only needs sec_composition. Only exit if BOTH
     # are empty (nothing to materialize at all).
     n_src = await conn.fetchval(COUNT_SOURCE_SQL)
     n_members = await conn.fetchval(COUNT_MEMBER_INDICES_SQL)
     if not n_src and not n_members:
-        print("\n[a1/6] sec_alloc_perf_attribution has no index rows AND "
+        print("\n[a1/6] stats.cross_stats has no industry rows AND "
               "no member indices with composition data — nothing to "
               "materialize. Skipping attributions step.", flush=True)
         return
-    print(f"\n[a1/6] Source analysis.sec_alloc_perf_attribution: "
-          f"{n_src:,} index rows | {n_members} non-broad member indices "
-          f"with composition data.", flush=True)
+    print(f"\n[a1/6] Source stats.cross_stats (sec_type='industry'): "
+          f"{n_src:,} industry-grain rows | {n_members} non-broad member "
+          f"indices with composition data.", flush=True)
 
     # ---- Step 2: preview dimensions ----------------------------------
     print("\n[a2/6] Previewing output dimensions...", flush=True)

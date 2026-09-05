@@ -8,18 +8,20 @@ broad-market benchmarks AND the industry's own member indices.
 Populates analysis.industry_attributions with one row per
 (date, industry_id, benchmark_code). Benchmarks come from two sources:
 
-  (A) BROAD-MARKET benchmarks (from analysis.sec_alloc_perf_attribution):
+  (A) BROAD-MARKET benchmarks (from the stats.cross_stats INDUSTRY grain):
 
     industry_shared_weight  = SUM(code_sec_shared_weight) across the member
-                              indices in the industry, sourced from
-                              analysis.sec_alloc_perf_attribution (sec_type
-                              ='index'). Each member contributes its OWN
+                              indices in the industry, precomputed by
+                              builds.cross_stats into the industry-grain
+                              rows (code_sec_shared_weight there = SUM of
+                              the members' pair-grain shared weights).
+                              Each member contributes its OWN
                               weight on stocks shared with the benchmark, so
                               the sum is a clean "total member overlap" (can
                               exceed 1.0 — expected when summing multiple
                               member portfolios). Self-pairs (member ==
                               benchmark) are already excluded by
-                              sec_alloc_perf_attribution.
+                              builds.cross_stats.
 
     benchmark_shared_weight = benchmark's weight on the UNION of stocks held
                               by ANY industry member (latest sec_composition
@@ -27,8 +29,8 @@ Populates analysis.industry_attributions with one row per
                               no double-counting even when multiple members
                               hold the same stock. In percent (0-100),
                               bounded [0, 100]. Recomputed from
-                              sec_composition (NOT summed from
-                              sec_alloc_perf_attribution) because a naive
+                              sec_composition (NOT taken from
+                              stats.cross_stats) because a naive
                               SUM of benchmark_sec_shared_weight across
                               members would double-count stocks held by
                               multiple members.
@@ -41,7 +43,7 @@ Populates analysis.industry_attributions with one row per
     the member index M. benchmark_shared_weight = M's weight on the
     industry stock union (typically ~100 since M is fully contained in its
     own industry). This is computed directly from sec_composition because
-    sec_alloc_perf_attribution only keeps the top-3 non-broad indices per
+    the cross_stats pair grain only keeps the top-3 non-broad indices per
     industry as benchmarks — not enough for "all member indices".
 
     Broad-market codes are EXCLUDED from member-index rows (already
@@ -88,12 +90,12 @@ IMPLEMENTATION
   has) are skipped instead of conflicting.
 
 DEPENDENCY
-  The broad-market INSERT reads analysis.sec_alloc_perf_attribution, which
-  is populated by analyze.sec_alloc_perf_attribution. If that table is
-  empty (the upstream analysis has not been run), the broad-market INSERT
+  The broad-market INSERT reads the stats.cross_stats INDUSTRY grain, which
+  is populated by builds.cross_stats. If that grain is
+  empty (the upstream build has not been run), the broad-market INSERT
   produces no rows but the member-index INSERT still runs (it reads
   sec_composition directly). The step exits gracefully only if
-  sec_alloc_perf_attribution is empty AND there are no member indices.
+  stats.cross_stats has no industry rows AND there are no member indices.
 
 This package is an INTERNAL step of analyze.industry_sentiments — it is
 invoked from __main__.py after the sentiments + correlations steps,

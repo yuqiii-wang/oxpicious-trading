@@ -24,7 +24,10 @@ import {
 } from "@/theme/chart-palette";
 import type { ThemeMode } from "@/store/filters";
 import type { EChartsOption } from "echarts";
-import type { MovAveSpreadHypeEpisodes, MovAveSpreadPairSeries } from "@shared/types";
+import type {
+  MovAveSpreadHypeEpisodes,
+  MovAveSpreadPairSeries,
+} from "@shared/types";
 import type { OhlcMode } from "@/lib/ohlc";
 import {
   hypeEpisodesToMarkArea,
@@ -32,6 +35,16 @@ import {
   HYPE_SHADE_COLOR,
   type HypeMarkAreaDatum,
 } from "./hypeBands";
+import {
+  computeStreakBandWindow,
+  streakShadeMarkAreas,
+  STREAK_HIGH_ACCENT_COLOR,
+  STREAK_LOW_ACCENT_COLOR,
+  STREAK_HIGH_SHADE_COLOR,
+  STREAK_LOW_SHADE_COLOR,
+  type LongBandStreak,
+  type StreakMarkAreaDatum,
+} from "@/shared/charts/streakBands";
 import { buildAmtTooltipFormatter } from "./tooltipFormatter";
 
 /** Trading-amount MA windows in canonical order. */
@@ -63,6 +76,23 @@ export interface BuildAmtEnvelopeOptionArgs {
    *  analysis.mov_ave_market_hypes — episodes are date spans, so no
    *  index-alignment with pair.rows is required. */
   hypeEpisodes?: MovAveSpreadHypeEpisodes | null;
+  /** The anchor window's WHOLE-WINDOW long horizontal break streaks (one
+   *  per side, or null when that side has no streak starting in the
+   *  window) — the window's same-side DB streaks merged into one span,
+   *  computed in the panel. Drawn as ONE darker horizontal band from the
+   *  window's constant band edge to the merged extreme, over the span's
+   *  own price dates. */
+  longStreaks?: { high: LongBandStreak[]; low: LongBandStreak[] } | null;
+  /** Selected streak lookback window (trading rows) — null/undefined = the
+   *  High/Low Streaks row is off (no shading). */
+  streakPeriod?: number | null;
+  /** Selected streak band tightness (percent) — only used together with
+   *  streakPeriod. */
+  streakPct?: number | null;
+  /** Anchor index into pair.rows for the streak band window — the trailing
+   *  streakPeriod rows BEFORE (and incl.) this row; null = latest row.
+   *  Driven by clicking a chart date. */
+  streakAnchorIdx?: number | null;
 }
 
 /** Format a yuan amount as 亿元 (100M yuan). */
@@ -79,6 +109,10 @@ export function buildAmtEnvelopeOption({
   bollingerK = 2,
   hypeWindows = null,
   hypeEpisodes = null,
+  longStreaks = null,
+  streakPeriod = null,
+  streakPct = null,
+  streakAnchorIdx = null,
 }: BuildAmtEnvelopeOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
@@ -166,6 +200,38 @@ export function buildAmtEnvelopeOption({
       if (data.length > 0) hypeMarkAreaByWindow.set(w, data);
     }
   }
+
+  // ---- High/low streak shading (purple above / yellow below the band) ---
+  // Active when BOTH nested buttons are picked (period then pct). DEFAULT
+  // view (no chart date clicked): the LATEST date's trailing streakPeriod-
+  // row window is filled with its top/bottom pct% price zones — light
+  // purple from the window's high_val up to its max high, light yellow
+  // from its min low down to low_val. Clicking a chart date ANCHORS the
+  // window to that date (the trailing rows before it). The break streak is
+  // the WHOLE-WINDOW LONG HORIZONTAL band per side — the in-window DB
+  // streaks merged into one span — drawn ONE step darker from the window's
+  // constant band edge to the merged extreme, painted after the zone rect
+  // so it sits on top where they coincide (the fractured per-DB-streak
+  // rects of the previous design are gone). All values are raw prices (the
+  // price y-axis stays raw in every display mode). Two series (high + low
+  // side, z=0 price y-axis, behind everything) — legend entries toggle
+  // each side.
+  const streakData: { high: StreakMarkAreaDatum[]; low: StreakMarkAreaDatum[] } | null =
+    streakPeriod != null && streakPct != null
+      ? (() => {
+          const win = computeStreakBandWindow(
+            rows,
+            streakPeriod,
+            streakPct,
+            streakAnchorIdx,
+          );
+          if (win == null) return null;
+          return streakShadeMarkAreas(win, longStreaks);
+        })()
+      : null;
+  const streakLabel = streakPeriod != null && streakPct != null
+    ? `Streak(${streakPeriod}d·${streakPct}%)`
+    : "";
 
   // Lowkey high-low band
   const hlBase: Array<number | null> = lows.slice();
@@ -387,6 +453,54 @@ export function buildAmtEnvelopeOption({
         data,
       },
     });
+  }
+
+  // Per-side high/low streak shading series (rect legend marker + that
+  // side's markArea: light window zone + the darker whole-window long
+  // streak band) — same
+  // toggle-per-legend-entry pattern as the hype shading above. Both sides
+  // always carry the window zone rect when the combo is selected.
+  if (streakData != null) {
+    const streakSides: Array<{
+      hasData: boolean;
+      name: string;
+      accent: string;
+      shade: string;
+      data: StreakMarkAreaDatum[];
+    }> = [
+      {
+        hasData: streakData.high.length > 0,
+        name: `High ${streakLabel}`,
+        accent: STREAK_HIGH_ACCENT_COLOR,
+        shade: STREAK_HIGH_SHADE_COLOR,
+        data: streakData.high,
+      },
+      {
+        hasData: streakData.low.length > 0,
+        name: `Low ${streakLabel}`,
+        accent: STREAK_LOW_ACCENT_COLOR,
+        shade: STREAK_LOW_SHADE_COLOR,
+        data: streakData.low,
+      },
+    ];
+    for (const s of streakSides) {
+      if (!s.hasData) continue;
+      legendData.push(s.name);
+      echartsSeries.push({
+        type: "scatter",
+        name: s.name,
+        data: [null],
+        symbol: "rect",
+        symbolSize: [10, 8],
+        itemStyle: { color: s.accent, opacity: 0.45, borderColor: s.shade },
+        z: 0,
+        markArea: {
+          silent: true as const,
+          itemStyle: { borderWidth: 0 },
+          data: s.data,
+        },
+      });
+    }
   }
 
   const grid = commonGrid({ left: 55, right: 65, bottom: 50 });

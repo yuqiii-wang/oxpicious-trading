@@ -303,7 +303,11 @@ def pairwise_rolling_corr(
     if t_len == 0 or n_ind == 0:
         return np.full((t_len, n_ind, n_ind), np.nan)
 
-    arr = wide.to_numpy(dtype=np.float64)
+    # na_value must be explicit: under the cudf.pandas hook the fast path
+    # otherwise raises "cannot convert ... with missing values" on NaN-bearing
+    # frames and pays a fast->slow fallback (logged as [cudf fallback]) on
+    # EVERY call; with na_value the GPU->host conversion stays on the fast path.
+    arr = wide.to_numpy(dtype=np.float64, na_value=np.nan)
     pair_window_ops = max(1, t_len * n_ind * n_ind)
 
     # numpy-kernel threshold: the THEORETICAL rolling_corr breakeven

@@ -28,9 +28,24 @@
 --                       across the bucket's trigger days (NOT a
 --                       within-window path swing)
 --                       NULL for period='next' or when no valid days
---    reverse_prob     — P(n-day change is a REVERSAL > 1% against the
---                       bucket side), over bucket days with a valid
---                       n-day forward change
+--    reverse_prob     — P(n-day change is a REVERSAL beyond the row's
+--                       reverse_threshold against the bucket side),
+--                       over bucket days with a valid n-day forward
+--                       change
+--    reverse_threshold — the reversal bar reverse_prob was computed
+--                       against (fractional). ADAPTIVE since the
+--                       2026-09 std-threshold study:
+--                       reverse_threshold = k_n · σ(code, stat_month,
+--                       n) where σ = population std of the n-day
+--                       forward changes over ALL of the code's window
+--                       days (the base_rates population) and k_n per
+--                       horizon {next: 0.5, 5d: 0.75, 20d: 1.0, 60d:
+--                       1.0} — at k·σ the no-edge reversal rate is
+--                       Φ(−k) at EVERY horizon, which de-saturates the
+--                       20d/60d probabilities the legacy fixed 1% bar
+--                       pinned at ≈1.0. Falls back to the fixed 0.01
+--                       bar where σ is degenerate. Legacy rows
+--                       (pre-migration / "fixed" mode) carry 0.01.
 --
 --  High/low and max_low_change_ratio are NULL when the denominator is 0
 --  or min_change ≤ -1.0 (division guard).
@@ -74,12 +89,20 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_results (
     -- NULL for period='next' or when no valid days.
     max_low_change_ratio NUMERIC(10,6),
 
-    -- P(forward change reverses > 1% against the bucket side) over
-    -- bucket days with a valid n-day forward change.
+    -- P(forward change reverses beyond reverse_threshold against the
+    -- bucket side) over bucket days with a valid n-day forward change.
     -- NUMERIC(8,6): probability ∈ [0,1] but exactly 1.0 must fit —
     -- NUMERIC(6,6) (scale 6 ⇒ |v| < 1) would overflow on all-reverse
     -- buckets.
     reverse_prob        NUMERIC(8,6),
+
+    -- The reversal bar (fractional) this row's reverse_prob was
+    -- computed against: adaptive k_n · σ(code, stat_month, n) in "std"
+    -- mode (σ = population std of the code's window n-day forward
+    -- changes; k_n = {next: 0.5, 5d: 0.75, 20d: 1.0, 60d: 1.0}), or the
+    -- legacy fixed 0.01 fallback / mode. Column default 0.01 covers
+    -- rows written before the adaptive bar existed.
+    reverse_threshold   NUMERIC(8,6) NOT NULL DEFAULT 0.01,
 
     CONSTRAINT pk_forecast_results PRIMARY KEY (forecast_id, period)
 ) PARTITION BY HASH (forecast_id);
@@ -91,9 +114,18 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_results (
 SELECT public.create_hash_partitions('analysis_forecasts', 'forecast_results', 16);
 
 -- ----------------------------------------------------------------------------
+--  Idempotent migration (pre-existing installs) — ADD COLUMN propagates
+--  to all hash partitions; pre-existing rows keep the legacy fixed 1%
+--  bar they were computed at (0.01 = the column default). The adaptive
+--  values arrive when the forecasts run is rebuilt (--force).
+-- ----------------------------------------------------------------------------
+ALTER TABLE analysis_forecasts.forecast_results
+    ADD COLUMN IF NOT EXISTS reverse_threshold NUMERIC(8,6) NOT NULL DEFAULT 0.01;
+
+-- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_forecasts.forecast_results IS 'Normalized forecast RESULT data. One row per (forecast_id, period) — each forecast bucket from mov_rsi/mov_std has up to 4 rows (period: next/5d/20d/60d). Carries the mean / std-dev / max / min forward fractional changes (max/min NULL for period=next), per-period occurrence count, within-window close swing amplitude (max_low_change_ratio, NULL for period=next), and per-period >1% reversal probabilities. config JSONB carries per-bucket motivation data duplicated across all 4 period rows of the same forecast_id. Partitioned by HASH(forecast_id). Populated by python -m analyze.analysis_forecasts.';
+COMMENT ON TABLE analysis_forecasts.forecast_results IS 'Normalized forecast RESULT data. One row per (forecast_id, period) — each forecast bucket from mov_rsi/mov_std has up to 4 rows (period: next/5d/20d/60d). Carries the mean / std-dev / max / min forward fractional changes (max/min NULL for period=next), per-period occurrence count, within-window close swing amplitude (max_low_change_ratio, NULL for period=next), and per-period reversal probabilities computed against the row''s adaptive reverse_threshold (k·σ of the code''s window n-day forward changes per horizon; legacy fixed 1% fallback — see reverse_threshold). config JSONB carries per-bucket motivation data duplicated across all 4 period rows of the same forecast_id. Partitioned by HASH(forecast_id). Populated by python -m analyze.analysis_forecasts.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.forecast_id IS 'Surrogate identity PK. Allocated by the writer (python -m analyze.analysis_forecasts) and mirrored into the motivation row of analysis_forecasts.mov_rsi / mov_std.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.period IS 'Forward horizon period: ''next'' (next-day), ''5d'' (5 trading days), ''20d'' (20 trading days), ''60d'' (60 trading days). PK member.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.config IS 'JSONB config for per-bucket motivation data that varies by analysis type. Duplicated across all 4 period rows of the same forecast_id. mov_std rows store breach magnitude metrics here: {"mean_excess_close": float, "mean_excess_max": float|null, "max_excess_max": float|null}. mov_rsi rows are NULL (no config data yet). All fractional: 0.012 = 1.2%.';
@@ -103,4 +135,5 @@ COMMENT ON COLUMN analysis_forecasts.forecast_results.max_change IS 'Maximum n-t
 COMMENT ON COLUMN analysis_forecasts.forecast_results.min_change IS 'Minimum n-trading-day forward fractional change (close-based) over bucket days with a valid n-day forward change. NULL for period=''next'' (no 1-day max/min) or when none.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.occurrence_count IS 'Number of bucket days with a valid n-trading-day forward change — the denominator of ave_change / reverse_prob.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.max_low_change_ratio IS '(1 + max_change) / (1 + min_change) = max(close[t+1..t+n]) / min(close[t+1..t+n]) — the within-window close swing amplitude derived from the row''s max/min forward changes. NULL for period=''next'' or when no valid days (or min_change <= -1).';
-COMMENT ON COLUMN analysis_forecasts.forecast_results.reverse_prob IS 'Probability that a bucket day (with valid n-day change) REVERSES by more than 1% against the bucket side: n-day change < -1% for top/upper buckets, > +1% for bottom/lower buckets.';
+COMMENT ON COLUMN analysis_forecasts.forecast_results.reverse_prob IS 'Probability that a bucket day (with valid n-day change) REVERSES beyond the row''s reverse_threshold against the bucket side: n-day change < −reverse_threshold for top/upper buckets, > +reverse_threshold for bottom/lower buckets.';
+COMMENT ON COLUMN analysis_forecasts.forecast_results.reverse_threshold IS 'The fractional reversal bar this row''s reverse_prob was computed against: k_n · σ(code, stat_month, n) where σ = population std of the n-day forward changes over ALL of the code''s trailing-window days (base_rates population) and k_n per horizon (next 0.5, 5d 0.75, 20d 1.0, 60d 1.0 — selected by temp_scripts/study_reverse_threshold.py, before/after era split + rolling M-1 P90 gate OOS). Falls back to the fixed 0.01 (1%) bar where σ is degenerate; pre-adaptive rows carry 0.01.';

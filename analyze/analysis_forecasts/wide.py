@@ -44,6 +44,9 @@ from analyze.analysis_forecasts.config import (
     N_MONTHS,
     PERIOD_FOR_HORIZON,
     REVERSE_THRESHOLD,
+    REVERSE_THRESHOLD_MODE,
+    REVERSE_THRESHOLD_STD_K,
+    REVERSE_THRESHOLD_STD_MIN_DAYS,
     RESULT_COLUMNS,
     WINDOW_YEARS,
 )
@@ -286,14 +289,6 @@ def build_change_matrices(
       NC0_{n} — next_change_{n}d with NaN→0 (einsum-safe sums)
       FIN_{n} — validity bool (day has a finite n-day forward change)
 
-    Plus the next-day reversal flags:
-      DN      — 1.0 where next-day change < -REVERSE_THRESHOLD else 0.0
-                (reversal after an OVERBOUGHT / upper-breach day)
-      UP      — 1.0 where next-day change > +REVERSE_THRESHOLD else 0.0
-                (reversal after an OVERSOLD / lower-breach day)
-
-    NaN comparisons are False, so DN/UP are naturally 0.0 on invalid days.
-
     Note: max_low_change_ratio is NOT computed here — it is derived at
     write time from the row's own max/min forward changes as
     (1 + max) / (1 + min): the best-to-worst n-day ENDPOINT outcome
@@ -306,12 +301,69 @@ def build_change_matrices(
         fin = np.isfinite(nc)
         mats[f"NC0_{n}"] = np.where(fin, nc, 0.0)
         mats[f"FIN_{n}"] = fin
-
-    nc1 = scatter_column(df, "next_change_1d", shape, didx, cidx)
-    with np.errstate(invalid="ignore"):
-        mats["DN"] = np.where(nc1 < -REVERSE_THRESHOLD, 1.0, 0.0)
-        mats["UP"] = np.where(nc1 > REVERSE_THRESHOLD, 1.0, 0.0)
     return mats
+
+
+# ---------------------------------------------------------------------------
+#  Adaptive reverse threshold (per code, stat month, horizon)
+# ---------------------------------------------------------------------------
+
+def window_sigmas(
+    NC0s: dict[int, np.ndarray],
+    FINs: dict[int, np.ndarray],
+) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray]]:
+    """Per-horizon population σ and valid-day count of the window's
+    forward changes, per code — (C,) arrays.
+
+    σ is the dispersion of the n-day forward changes over ALL of the
+    code's window days (the base_rates population — NOT the bucket
+    days), the same quantity base_ave_change averages over. NaN σ where
+    the code has no valid window day.
+    """
+    sigma: dict[int, np.ndarray] = {}
+    cnts: dict[int, np.ndarray] = {}
+    for n in FORWARD_HORIZONS:
+        fin = FINs[n]
+        cnt = fin.sum(axis=0)
+        # NC0 is 0.0 on invalid days — masked sums equal valid-day sums
+        # (same trick as aggregate_horizons_sparse).
+        g = np.where(fin, NC0s[n], 0.0)
+        s = g.sum(axis=0)
+        s2 = (g * g).sum(axis=0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            var = s2 / cnt - (s / cnt) ** 2
+        sig = np.sqrt(np.maximum(var, 0.0))
+        sigma[n] = np.where(cnt > 0, sig, np.nan)
+        cnts[n] = cnt
+    return sigma, cnts
+
+
+def reverse_thresholds(
+    sigma: dict[int, np.ndarray],
+    cnts: dict[int, np.ndarray],
+) -> dict[int, np.ndarray]:
+    """Per-horizon (C,) reversal bar for one stat month's window.
+
+    "std" mode: thr[n] = REVERSE_THRESHOLD_STD_K[n] · σ_n — adaptive per
+    code/horizon (no look-ahead: the window ends at the stat month).
+    "fixed" mode or degenerate σ (non-finite / ≤ 0 / fewer than
+    REVERSE_THRESHOLD_STD_MIN_DAYS valid days): the legacy constant
+    REVERSE_THRESHOLD. Returned arrays are finite everywhere, so
+    threshold comparisons never see NaN.
+    """
+    thr: dict[int, np.ndarray] = {}
+    for n in FORWARD_HORIZONS:
+        if REVERSE_THRESHOLD_MODE != "std":
+            thr[n] = np.full(cnts[n].shape, REVERSE_THRESHOLD)
+            continue
+        k = REVERSE_THRESHOLD_STD_K[n]
+        ok = (
+            np.isfinite(sigma[n])
+            & (sigma[n] > 0)
+            & (cnts[n] >= REVERSE_THRESHOLD_STD_MIN_DAYS)
+        )
+        thr[n] = np.where(ok, k * sigma[n], REVERSE_THRESHOLD)
+    return thr
 
 
 def apply_cooldown(mask: np.ndarray, cooldown_days: int) -> np.ndarray:
@@ -360,6 +412,7 @@ def aggregate_horizons_sparse(
     side: str,
     NC0s: dict[int, np.ndarray],
     FINs: dict[int, np.ndarray],
+    thr_n: dict[int, np.ndarray],
 ) -> dict[int, HorizonAgg]:
     """Per-(code, config) aggregates of ALL forward horizons over the
     SPARSE trigger cells of one (side, hyped) subset.
@@ -380,12 +433,15 @@ def aggregate_horizons_sparse(
         flat: (E,) group id = code·P + config, ASCENDING (the sort key).
         C:    number of codes.
         P:    number of configs in this side batch.
-        side: bucket side — "top"/"upper" reverse on change < -1%,
-              "bottom"/"lower" on change > +1% (REVERSE_THRESHOLD).
+        side: bucket side — "top"/"upper" reverse on change < −thr,
+              "bottom"/"lower" on change > +thr, with thr = the code's
+              adaptive reverse threshold for that horizon
+              (reverse_thresholds output).
         NC0s: per horizon n — (T, C) n-day forward change, 0.0 on
               invalid days (build_change_matrices), so unweighted sums
               over all cells are the valid-day sums.
         FINs: per horizon n — (T, C) validity bool (finite n-day change).
+        thr_n: per horizon n — (C,) reversal bar (reverse_thresholds).
 
     Returns (per horizon n, each (C, P)) — a HorizonAgg bundle:
         cnt — bucket days with a valid n-day forward change (int);
@@ -396,7 +452,8 @@ def aggregate_horizons_sparse(
         hi  — max n-day change (-inf where cnt == 0; None for the
               next-day horizon — no MM columns);
         lo  — min n-day change (+inf where cnt == 0; None likewise);
-        rev — count of >1% reversal days among those days (int).
+        rev — count of reversal days (change beyond the code's bar
+              against the bucket side) among those days (int).
     """
     CP = C * P
     # Group scaffolding over the group-ascending cells: one sort shared
@@ -419,7 +476,8 @@ def aggregate_horizons_sparse(
         # Reversal at a cell: NC0 is 0.0 on invalid days, so the
         # threshold compare is False there — matches the legacy dense
         # 0/1 flag einsum exactly.
-        rv = (g < -REVERSE_THRESHOLD) if rev_top else (g > REVERSE_THRESHOLD)
+        thr_cell = thr_n[n][sc]
+        rv = (g < -thr_cell) if rev_top else (g > thr_cell)
         rev = np.bincount(flat[rv], minlength=CP)
         if n in MM_HORIZONS:
             hi = np.full(CP, -np.inf)
@@ -449,6 +507,7 @@ def build_result_rows(
     kk: np.ndarray,
     ii: np.ndarray,
     base: list[dict],
+    thr_n: dict[int, np.ndarray],
 ) -> list[dict]:
     """Expand one emit batch into (4 × R) result payload dicts — one per
     (bucket × period) combination. Each dict carries the motivation
@@ -463,6 +522,9 @@ def build_result_rows(
         kk:  (R,) config axis of the emit positions.
         ii:  (R,) code axis of the emit positions.
         base: (R,) motivation dicts (bucket keys + config JSONB).
+        thr_n: per horizon n — (C,) reversal bar (reverse_thresholds);
+              emitted as the row's ``reverse_threshold`` (the bar that
+              row's reverse_prob was computed against).
 
     Returns:
         (4·R,) dicts — 4 period rows per bucket (next → 5d → 20d → 60d),
@@ -509,6 +571,9 @@ def build_result_rows(
         rev_vals = _round_none(np.divide(
             rev[ii, kk], cn, out=np.full(R, np.nan), where=pos))
         occ_vals = cn.tolist()
+        # The row's reversal bar (per code, horizon — constant across a
+        # window's configs).
+        rt_vals = _round_none(thr_n[n][ii])
 
         horizon_payloads[n] = {
             "period": period,
@@ -519,6 +584,7 @@ def build_result_rows(
             "mlr": mlr_vals,
             "rev": rev_vals,
             "occ": occ_vals,
+            "rt": rt_vals,
         }
 
     # ...then emit bucket-major: [b0-next, b0-5d, b0-20d, b0-60d,
@@ -537,6 +603,7 @@ def build_result_rows(
                 "occurrence_count": p["occ"][r_idx],
                 "max_low_change_ratio": p["mlr"][r_idx],
                 "reverse_prob": p["rev"][r_idx],
+                "reverse_threshold": p["rt"][r_idx],
             })
     return out
 

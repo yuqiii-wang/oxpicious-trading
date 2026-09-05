@@ -32,14 +32,21 @@ extreme is the max/min valid CLOSE of the 1st half.  Ties go to the
 earliest date; NaN closes are skipped.
 
 The 2nd extreme is NOT confined to the 2nd half — instead its search
-range starts at [1st_anchor_position + ceil(0.10*W), window_end], so
-the 10% time-distance gap is enforced CONSTRUCTIVELY.  This means the
-2nd anchor can be anywhere from the 10% mark after the 1st anchor to
-the window end (not just the 2nd half).  When the 1st anchor is too
-close to the window end (1st_pos + 0.10*W > window_end), only the 2nd
+range starts at [1st_anchor_position + gap, window_end] where
+gap = ohlc_second_gap_td(W) = ceil(0.20*W) with a 20-trading-day floor
+for W >= 60 (config.py), so the time-distance gap is enforced
+CONSTRUCTIVELY.  This means the 2nd anchor can be anywhere from the
+gap mark after the 1st anchor to the window end (not just the 2nd
+half).  When the 1st anchor is too close to the window end
+(1st_pos + gap > window_end), only the 2nd
 anchor is NULLed while the 1st anchor stays valid.  Both values
 (1st = close, 2nd = intraday high/low) and slopes are recorded only
 when BOTH anchors exist.
+
+MIGRATION NOTE (2026-09): the gap was ceil(0.10*W) before.  SEMANTICS
+CHANGE — rows written by the 10% rule are not detectable by
+find_ohlc_repair_dates and must be recomputed via a --force rebuild
+of this OHLC step.
 
 today_close is the close price on `date` (COALESCE(adj_close, close) for
 ETFs; close for index/stock). NOT NULL.
@@ -118,6 +125,7 @@ from analyze.mov_ave_spread.config import (
     OHLC_WIDE_DATE_COLUMNS,
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
+    ohlc_second_gap_td,
     ohlc_wide_columns,
 )
 from analyze.mov_ave_spread.ohlc_vector import (
@@ -217,9 +225,10 @@ def _anchor_line_slope(
 
     ``rel_top`` / ``rel_second`` are window-relative anchor positions
     from the reference sweep (NaN when the anchor is absent).  The two
-    anchors live in DISJOINT window halves, so wherever both anchors
-    exist the denominator is > 0.  NaN when either anchor or either
-    value is absent.
+    anchors are separated by at least the constructive gap
+    (ohlc_second_gap_td), so wherever both anchors exist the
+    denominator is > 0.  NaN when either anchor or either value is
+    absent.
     """
     rt: np.ndarray = np.asarray(rel_top, dtype=np.float64)
     r2: np.ndarray = np.asarray(rel_second, dtype=np.float64)
@@ -249,11 +258,12 @@ def _compute_group_ohlc_columns(
     [s, i] is cut in half — h = L // 2 with L = i - s + 1; the 1st
     anchor is the max (high side) / min (low side) valid CLOSE of the
     1st half [s, s+h-1] and the 2nd anchor the max/min valid CLOSE of
-    the 2nd half [s+h, i].  No anchors when L < 2; a half with no
-    valid close NULLs its anchor independently.
+    the DYNAMIC range [1st_pos + gap, i] (gap = ohlc_second_gap_td(w);
+    not confined to the 2nd half).  No anchors when L < 2; a half with
+    no valid close NULLs its anchor independently.
 
       - top high:  max close of the 1st half; value = that date's CLOSE.
-      - 2nd high:  max close of the 2nd half; value = that date's
+      - 2nd high:  max close of the dynamic range; value = that date's
                    INTRADAY HIGH.
       - top low / 2nd low: the mirror rules on the min side.
 
@@ -290,13 +300,14 @@ def _compute_group_ohlc_columns(
     # Explicit per-row sweep: clearer diagnostics than a stateless
     # callback at zero cost here (reference-only A/B path).
     # Two-phase computation: 1st anchor in the 1st half, then 2nd
-    # anchor from the DYNAMIC range [top + 10%*W, b] — the gap is
-    # enforced constructively (no post-filter needed).
+    # anchor from the DYNAMIC range [top + gap, b] — the gap
+    # (ohlc_second_gap_td(w)) is enforced constructively (no
+    # post-filter needed).
     rel_max: np.ndarray = np.full(n, np.nan)
     rel_min: np.ndarray = np.full(n, np.nan)
     rel_2nd_max: np.ndarray = np.full(n, np.nan)
     rel_2nd_min: np.ndarray = np.full(n, np.nan)
-    gap: int = max(1, int(0.10 * w))
+    gap: int = ohlc_second_gap_td(w)
     for i in range(n):
         s: int = int(window_starts[i])
         h: int = (i - s + 1) // 2
@@ -345,9 +356,9 @@ def _compute_group_ohlc_columns(
     # -- roof/floor line slopes through the two anchors --
     # Both anchor positions are window-relative, so their difference is
     # the trading-day distance between the anchors regardless of the
-    # window start.  The 10% gap is enforced constructively (2nd anchor
-    # searched from top + 10%*W to b), so sec - top >= gap wherever both
-    # exist.
+    # window start.  The gap (ohlc_second_gap_td(w)) is enforced
+    # constructively (2nd anchor searched from top + gap to b), so
+    # sec - top >= gap wherever both exist.
     high_slope_vals: np.ndarray = _anchor_line_slope(
         high_vals, high_2nd_vals, rel_max, rel_2nd_max
     )

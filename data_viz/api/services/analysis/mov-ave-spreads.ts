@@ -14,6 +14,7 @@ import type {
   MovAveSpreadChartResponse,
   MovAveSpreadDetailRow,
   MovAveSpreadHypeEpisodes,
+  MovAveSpreadHighLowStreak,
   MovAveSpreadOhlcRow,
   MovAveSpreadPairSeries,
   MovAveSpreadPairKind,
@@ -896,6 +897,50 @@ function buildHypeEpisodesSql(): string {
   `;
 }
 
+/** SQL for the high/low band-BREAK excursion streaks of one (sec_type,
+ *  code), straight from analysis.mov_ave_high_low_pct_streaks (PK
+ *  (sec_type, code, date_year_month, period, pct_type, start_date,
+ *  end_date)). The streak SIDE (high leg vs low leg) is not stored — it is
+ *  derived here by joining the band row of the streak's END month
+ *  (date_trunc('month', s.end_date)) and comparing the streak's end close
+ *  against that band: each streak day is tested against its OWN month's
+ *  band (so the end-month band row is guaranteed to exist) and a streak
+ *  never switches sides, so the end day's own-month band decides exactly.
+ *  Fetched once per chart request for ALL (period, pct_type) combos — the
+ *  client filters by its nested period→pct selection. */
+function buildStreaksSql(): string {
+  return `
+    SELECT
+      s.period,
+      s.pct_type,
+      s.start_date,
+      s.end_date,
+      s.open,
+      s.close,
+      s.high,
+      s.low,
+      b.high_val AS band_high,
+      b.low_val AS band_low,
+      s.day_count,
+      s.std_dev,
+      s.daily_ave_trading_amt,
+      CASE
+        WHEN s.close > b.high_val THEN 'high'
+        WHEN s.close < b.low_val THEN 'low'
+      END AS side
+    FROM analysis.mov_ave_high_low_pct_streaks s
+    JOIN analysis.mov_ave_high_low_pct b
+      ON b.sec_type = s.sec_type
+      AND b.code = s.code
+      AND b.date_year_month = date_trunc('month', s.end_date)::date
+      AND b.period = s.period
+      AND b.pct_type = s.pct_type
+    WHERE s.sec_type = $1
+      AND s.code = ANY($2::text[])
+    ORDER BY s.period, s.pct_type, s.start_date
+  `;
+}
+
 function buildNameSql(secType: MaSpreadSecType): string {
   const src = SEC_SOURCES[secType];
   return `
@@ -1025,6 +1070,53 @@ function toHypeEpisodes(rows: DbHypeEpisodeRow[]): MovAveSpreadHypeEpisodes {
   return out;
 }
 
+/** One streak row from analysis.mov_ave_high_low_pct_streaks joined with
+ *  its end-month band (see buildStreaksSql). side is NULL only if the
+ *  end close fell exactly on a band boundary — never expected. */
+interface DbStreakRow {
+  period: number;
+  pct_type: number;
+  start_date: Date | string;
+  end_date: Date | string;
+  open: number | string | null;
+  close: number | string | null;
+  high: number | string | null;
+  low: number | string | null;
+  band_high: number | string | null;
+  band_low: number | string | null;
+  day_count: number;
+  std_dev: number | string | null;
+  daily_ave_trading_amt: number | string | null;
+  side: string | null;
+}
+
+/** Map the streak rows into the response's FLAT per-streak array
+ *  (ascending by period, pctType, startDate; rows with an unusable side
+ *  are dropped). */
+function toStreaks(rows: DbStreakRow[]): MovAveSpreadHighLowStreak[] {
+  const out: MovAveSpreadHighLowStreak[] = [];
+  for (const r of rows) {
+    if (r.side !== "high" && r.side !== "low") continue;
+    out.push({
+      period: r.period,
+      pctType: r.pct_type,
+      startDate: formatDate(r.start_date),
+      endDate: formatDate(r.end_date),
+      side: r.side,
+      open: toNum(r.open) ?? 0,
+      close: toNum(r.close) ?? 0,
+      high: toNum(r.high) ?? 0,
+      low: toNum(r.low) ?? 0,
+      bandHigh: toNum(r.band_high) ?? 0,
+      bandLow: toNum(r.band_low) ?? 0,
+      dayCount: r.day_count,
+      stdDev: toNum(r.std_dev) ?? 0,
+      dailyAveTradingAmt: toNum(r.daily_ave_trading_amt) ?? 0,
+    });
+  }
+  return out;
+}
+
 export async function getMovAveSpreadChart(
   rawCode: string,
   rawSecType: string | undefined | null,
@@ -1033,11 +1125,13 @@ export async function getMovAveSpreadChart(
   const target = stripped(rawCode);
   const variants = codeVariants(target);
 
-  // Fetch chart rows + name + market-hype episodes in parallel.
-  const [chartRows, nameRows, hypeEpisodeRows] = await Promise.all([
+  // Fetch chart rows + name + market-hype episodes + high/low streaks in
+  // parallel.
+  const [chartRows, nameRows, hypeEpisodeRows, streakRows] = await Promise.all([
     queryRows<DbChartRow>(buildChartSql(secType), [secType, variants]),
     queryRows<{ name: string | null }>(buildNameSql(secType), [variants]),
     queryRows<DbHypeEpisodeRow>(buildHypeEpisodesSql(), [secType, variants]),
+    queryRows<DbStreakRow>(buildStreaksSql(), [secType, variants]),
   ]);
 
   const name = nameRows[0]?.name ?? "";
@@ -1396,6 +1490,10 @@ export async function getMovAveSpreadChart(
     // drives the light-purple hyped-period shading (spans, so no
     // index-alignment with the pair rows is needed).
     hypeEpisodes: toHypeEpisodes(hypeEpisodeRows),
+    // High/low band-break excursion streaks, flat across all
+    // (period, pct_type) combos — drives the nested High/Low Streaks
+    // button row's horizontal span shading.
+    highLowStreaks: toStreaks(streakRows),
   };
 }
 

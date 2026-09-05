@@ -1,25 +1,34 @@
-"""Options wall levels per expiry group (analysis.options_walls).
+"""Options wall zones per expiry group (analysis.options_walls).
 
-Two wall types:
-  80pct    — contiguous zone from one end of the chain where one side
-             dominates >= 80% of total OI at each strike, interpolated
-             boundary at the threshold.
-  large_num — strike with the max OI among those exceeding 70% of the
-             mean OI across all strikes in the expiry group.
+Single wall type:
+  zone — strength-scored OI wall ZONE with lifecycle: strikes with
+         OI >= 2% of chain OI are clustered into adjacent-strike
+         zones (<= 2 empty strike intervals apart); the dominant
+         zone per side is emitted with wall_low/high/center (raw
+         strike units), mass_share (zone OI / chain OI, eligible
+         >= 6%), gap_pct (signed center-vs-spot distance), a
+         lifecycle state machine (ACTIVE / ERODED / BREACHED) with
+         day-over-day >=50% strike-range overlap persistence
+         (days_persisted), and a strength score
+         = mass_share * exp(-max(gap_pct,0)/8)
+           * (1 + 0.25*min(days_persisted,20)/20).
+         Thresholds empirically calibrated on 4,115 (date,
+         nearest-expiry) observations 2020-2026 — see
+         analyze/options/config.py ZONE_* constants.
 
-Fully vectorized (B-A4 refactor): the former per-expiry-group Python
-loop (2 inner groupbys + dict(zip) + sorted(set) per group — the 47k
-RuntimeError storm under cudf.pandas) is replaced by wide
-groupby-transform passes over the whole frame:
+(The legacy 80pct and large_num wall types were removed — the zone
+wall supersedes them; both were positioning boundaries without OI
+mass, spot reference or persistence, none of which carried
+predictive power in the 2020-2026 hold-rate study.)
 
-  - one CALL/PUT outer-merge on (key, strike) builds the union frame
-    with per-strike call/put OI and put_pct;
-  - the 80pct walls use "min/max row-number among threshold-breaking
-    rows" via groupby-transform (NaN = whole chain qualifies), then
-    ONE self-merge per boundary row for the interpolated strike;
-  - the large_num walls use a groupby-transform mean + stable
-    descending sort + drop_duplicates (first-max = lowest strike on
-    ties, matching the former dict-iteration order).
+Fully vectorized: wide groupby-transform / run-length cumsum passes
+over the whole frame — no per-group Python loops (cudf.pandas safe):
+
+  - one CALL/PUT outer-merge on (key, strike) builds the union frame;
+  - zone clustering uses a groupby diff/run-length cumsum (break
+    where the strike gap exceeds N intervals), one named agg per
+    zone, a groupby idxmax dominant pick, and a shift-based
+    day-over-day overlap match for the lifecycle.
 """
 from __future__ import annotations
 
@@ -31,118 +40,259 @@ from analyze.options.compute._shared import _apply_open_expiry_collapse
 
 _WALLS_GROUP_KEY = ["date", "underlying_code", "expiry_date"]
 
+# Lifecycle sort/match key: zone identity within one underlying+expiry.
+_ZONE_LIFECYCLE_KEY = ["underlying_code", "expiry_date", "option_type"]
 
-def _boundary_rows(
+
+def _zone_walls(
     union: pd.DataFrame,
-    anchors: pd.DataFrame,
-    rn_col: str,
-    value_cols: list[str],
+    spot: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Attach the union rows at per-group row numbers ``rn_col``.
+    """Strength-scored OI wall zones per (group, side) — wall_type='zone'.
 
-    One left-merge per call: ``anchors`` carries the group key columns
-    plus ``rn_col`` (a row number within the group, as produced by
-    cumcount on the strike-sorted union frame); the returned frame adds
-    each column of ``value_cols`` from the matching union row.
+    Clustering (per expiry group, per side):
+      1. chain OI = total (call+put) OI across ALL strikes of the group;
+      2. a strike enters a zone only if its side OI >= ZONE_MIN_STRIKE_MASS
+         of chain OI;
+      3. consecutive selected strikes merge into one zone while the gap
+         between them is <= ZONE_MERGE_MAX_GAPS strike intervals (the
+         interval is the per-group median strike diff);
+      4. per (group, side) the zone with the max total OI is the
+         DOMINANT wall zone (ties -> lowest strikes via idxmax order).
+
+    Eligibility: mass_share >= ZONE_ELIGIBLE_MASS_SHARE AND the zone
+    center within ZONE_MAX_GAP_PCT of spot (rows without spot are
+    dropped — gap/state would be undefined).
+
+    Lifecycle (sorted by underlying, expiry, side, date; one row per
+    group+side+date after the dominant pick): the previous trading
+    row's zone matches when the strike-range overlap >= 50% of the
+    smaller range; matched rows continue their persistence run
+    (days_persisted), else a new run starts at 1. State: BREACHED when
+    spot is beyond the zone edge, else ERODED when mass fell below
+    ZONE_ERODE_RATIO of the previous row's mass, else ACTIVE.
+
+    Args:
+        union: strike-sorted union frame (group key + strike_price +
+            call_oi + put_oi, zero-filled, total OI > 0).
+        spot: [date, underlying_code, _spot] median underlying close
+            per (date, underlying).
+
+    Returns:
+        DataFrame with WALLS_RESULT_COLUMNS rows for wall_type='zone'
+        (CALL and PUT), possibly empty.
     """
-    look = union[_WALLS_GROUP_KEY + ["_rn"] + value_cols]
-    return anchors.merge(
-        look,
-        left_on=_WALLS_GROUP_KEY + [rn_col],
-        right_on=_WALLS_GROUP_KEY + ["_rn"],
-        how="left",
+    from analyze.options.config import (
+        WALL_TYPE_ZONE,
+        WALL_STATE_ACTIVE,
+        WALL_STATE_ERODED,
+        WALL_STATE_BREACHED,
+        ZONE_MIN_STRIKE_MASS,
+        ZONE_MERGE_MAX_GAPS,
+        ZONE_ELIGIBLE_MASS_SHARE,
+        ZONE_MAX_GAP_PCT,
+        ZONE_ERODE_RATIO,
+        ZONE_PERSIST_MATCH,
+        ZONE_GAP_DECAY,
+        ZONE_PERSIST_WINDOW,
+        ZONE_PERSIST_BONUS,
+        PRICE_SCALE,
     )
 
+    u = union
+    gkeys = _WALLS_GROUP_KEY
 
-def _large_num_walls(
-    side: pd.DataFrame,
-    oi_col: str,
-) -> pd.DataFrame:
-    """Large-num wall per group for one option type's strike frame.
+    # ---- chain OI + per-group strike interval ---------------------------
+    u = u.copy()
+    u["_chain_oi"] = u.groupby(gkeys, sort=False)[
+        "call_oi"
+    ].transform("sum") + u.groupby(gkeys, sort=False)["put_oi"].transform(
+        "sum"
+    )
+    prev_strike = u.groupby(gkeys, sort=False)["strike_price"].shift(1)
+    u["_sdiff"] = u["strike_price"] - prev_strike
+    # median of consecutive diffs ~= one strike interval (NaN-safe: the
+    # first row of each group and single-strike groups stay NaN -> 0,
+    # so any real gap breaks the zone there).
+    interval = (
+        u.groupby(gkeys, sort=False)["_sdiff"]
+        .median()
+        .reset_index()
+        .rename(columns={"_sdiff": "_interval"})
+    )
+    interval["_interval"] = interval["_interval"].fillna(0.0)
+    u = u.merge(interval, on=gkeys, how="left")
 
-    mean OI across the side's own strikes (unweighted — matches the
-    former per-group dict mean); qualifying strikes have OI >= 70% of
-    the mean; the winner is the max-OI strike, ties broken to the
-    LOWEST strike (stable mergesort keeps the strike order among equal
-    OI values — identical to the former dict-iteration ``>`` scan).
-    """
-    from analyze.options.config import LARGE_NUM_MEAN_FRACTION
+    frames: list[pd.DataFrame] = []
+    for oi_col, ot, breacher in (
+        ("call_oi", "CALL", "above"),   # CALL zone breached when spot ABOVE the zone
+        ("put_oi", "PUT", "below"),     # PUT zone breached when spot BELOW the zone
+    ):
+        s = u.loc[
+            u[oi_col] > 0,
+            gkeys + ["strike_price", oi_col, "_chain_oi", "_interval"],
+        ].copy()
+        s = s[
+            s[oi_col] >= ZONE_MIN_STRIKE_MASS * s["_chain_oi"]
+        ]
+        if s.empty:
+            continue
 
-    if side.empty:
-        return pd.DataFrame(
-            columns=_WALLS_GROUP_KEY
-            + ["wall_strike_raw", "wall_oi", "mean_oi"]
+        # ---- cluster: run-length ids over interval-sized gaps ----------
+        s = s.sort_values(gkeys + ["strike_price"]).reset_index(drop=True)
+        gap = s["strike_price"] - s.groupby(
+            gkeys, sort=False
+        )["strike_price"].shift(1)
+        brk = (gap > ZONE_MERGE_MAX_GAPS * s["_interval"]) & gap.notna()
+        s["_brk"] = brk.astype("int64")
+        s["_zid"] = s.groupby(gkeys, sort=False)["_brk"].cumsum()
+
+        # ---- zone aggregate + dominant pick -----------------------------
+        s["_w"] = s["strike_price"] * s[oi_col]
+        z = s.groupby(
+            gkeys + ["_zid"], sort=False
+        ).agg(
+            wall_low=("strike_price", "min"),
+            wall_high=("strike_price", "max"),
+            wall_oi=(oi_col, "sum"),
+            wall_center=("_w", "sum"),
+            _chain=("_chain_oi", "first"),
+        ).reset_index()
+        z["wall_center"] = z["wall_center"] / z["wall_oi"]
+        idx = z.groupby(gkeys, sort=False)["wall_oi"].idxmax()
+        z = z.loc[idx].reset_index(drop=True)
+        z["option_type"] = ot
+
+        # ---- gap / breach / eligibility ---------------------------------
+        z = z.merge(spot, on=["date", "underlying_code"], how="left")
+        sp = z["_spot"]
+        if breacher == "above":
+            gap_pct = (z["wall_center"] - sp) / sp * 100.0
+            breached = sp > z["wall_high"]
+        else:
+            gap_pct = (sp - z["wall_center"]) / sp * 100.0
+            breached = sp < z["wall_low"]
+        mass_share = z["wall_oi"] / z["_chain"]
+        eligible = (
+            (mass_share >= ZONE_ELIGIBLE_MASS_SHARE)
+            & (sp > 0)
+            & (gap_pct.abs() <= ZONE_MAX_GAP_PCT)
         )
-    s = side.sort_values(_WALLS_GROUP_KEY + ["strike_price"]).reset_index(
-        drop=True
-    )
-    s["_mean_oi"] = s.groupby(_WALLS_GROUP_KEY, sort=False)[
-        oi_col
-    ].transform("mean")
-    qual = s[s[oi_col] >= s["_mean_oi"] * LARGE_NUM_MEAN_FRACTION]
-    if qual.empty:
-        return pd.DataFrame(
-            columns=_WALLS_GROUP_KEY
-            + ["wall_strike_raw", "wall_oi", "mean_oi"]
+        z = z.loc[eligible].reset_index(drop=True)
+        if z.empty:
+            continue
+        z["mass_share"] = mass_share.loc[z.index]
+        z["gap_pct"] = gap_pct.loc[z.index]
+        z["_breached"] = breached.loc[z.index]
+
+        # ---- lifecycle: overlap match + persistence run -----------------
+        z = z.sort_values(
+            _ZONE_LIFECYCLE_KEY + ["date"]
+        ).reset_index(drop=True)
+        g = z.groupby(_ZONE_LIFECYCLE_KEY, sort=False)
+        prev_low = g["wall_low"].shift(1)
+        prev_high = g["wall_high"].shift(1)
+        prev_mass = g["mass_share"].shift(1)
+        overlap = (
+            np.minimum(z["wall_high"], prev_high)
+            - np.maximum(z["wall_low"], prev_low)
+        ).clip(lower=0.0)
+        rng = z["wall_high"] - z["wall_low"]
+        prng = prev_high - prev_low
+        denom = np.maximum(np.minimum(rng, prng), 1e-9)
+        matched = (overlap / denom >= ZONE_PERSIST_MATCH).fillna(False)
+        # zero-range (single-strike) zones match only on the same strike
+        matched = matched | (
+            (rng <= 0) & (prng <= 0) & (z["wall_low"] == prev_low)
         )
-    best = (
-        qual.assign(_neg_oi=-qual[oi_col].astype("float64"))
-        .sort_values(["_neg_oi", "strike_price"])
-        .drop_duplicates(subset=_WALLS_GROUP_KEY, keep="first")
-    )
-    best = best[_WALLS_GROUP_KEY + ["strike_price", oi_col, "_mean_oi"]].rename(
-        columns={
-            "strike_price": "wall_strike_raw",
-            oi_col: "wall_oi",
-            "_mean_oi": "mean_oi",
-        }
-    )
-    return best
+        matched = matched.fillna(False)
+
+        # days_persisted = position within the current matched run.
+        # Run-length via cumsum of the run-start indicator (no scans).
+        t = z.groupby(_ZONE_LIFECYCLE_KEY, sort=False).cumcount()
+        z["_t"] = t
+        run_start = (~matched).astype("int64")
+        z["_rid"] = run_start.groupby(
+            [z[c] for c in _ZONE_LIFECYCLE_KEY], sort=False
+        ).cumsum()
+        first_t = z.groupby(
+            _ZONE_LIFECYCLE_KEY + ["_rid"], sort=False
+        )["_t"].transform("min")
+        z["days_persisted"] = (z["_t"] - first_t + 1).astype("int64")
+
+        # ---- state machine ----------------------------------------------
+        eroded = matched & (
+            z["mass_share"] < ZONE_ERODE_RATIO * prev_mass
+        )
+        eroded = eroded.fillna(False)
+        state = pd.Series(WALL_STATE_ACTIVE, index=z.index)
+        state = state.where(~eroded, WALL_STATE_ERODED)
+        state = state.where(
+            ~z["_breached"].fillna(False), WALL_STATE_BREACHED
+        )
+        z["state"] = state
+
+        # ---- strength score ----------------------------------------------
+        gap_pos = z["gap_pct"].clip(lower=0.0)
+        persist_frac = z["days_persisted"].clip(
+            upper=ZONE_PERSIST_WINDOW
+        ) / float(ZONE_PERSIST_WINDOW)
+        z["strength_score"] = (
+            z["mass_share"]
+            * np.exp(-gap_pos / ZONE_GAP_DECAY)
+            * (1.0 + ZONE_PERSIST_BONUS * persist_frac)
+        )
+
+        frames.append(pd.DataFrame({
+            "date": z["date"],
+            "option_type": z["option_type"],
+            "underlying_code": z["underlying_code"],
+            "expiry_date": z["expiry_date"],
+            "wall_type": WALL_TYPE_ZONE,
+            "wall_strike": z["wall_center"] / PRICE_SCALE,
+            "wall_oi": z["wall_oi"],
+            "mean_oi": np.nan,
+            "threshold": ZONE_ELIGIBLE_MASS_SHARE,
+            "wall_low": z["wall_low"],
+            "wall_high": z["wall_high"],
+            "wall_center": z["wall_center"],
+            "mass_share": z["mass_share"],
+            "gap_pct": z["gap_pct"],
+            "days_persisted": z["days_persisted"],
+            "state": z["state"],
+            "strength_score": z["strength_score"],
+        }))
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def compute_options_walls(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute per-expiry-group options wall levels for both 80pct and
-    large_num wall types.
+    """Compute per-expiry-group options wall zones (wall_type='zone').
 
     For each (date, underlying_code, expiry_date), aggregates OI by strike
-    separately for CALL and PUT, then computes:
-
-    80pct wall:
-      - Bear (PUT): contiguous zone from lowest strike where putPct >= 80%,
-        linearly interpolated boundary at the 80% threshold.
-      - Bull (CALL): contiguous zone from highest strike where putPct <= 20%,
-        linearly interpolated boundary at the 20% threshold.
-
-    large_num wall:
-      - For each option type, compute mean OI across all strikes.
-      - Filter strikes where OI > 70% of the mean value.
-      - Pick the strike with the maximum OI among qualifying strikes.
+    separately for CALL and PUT, unions the per-side strike frames and
+    delegates to :func:`_zone_walls` (adjacent-strike OI cluster per side
+    with strength score and lifecycle).
 
     Args:
         df: DataFrame with columns:
             date, contract_code, option_type, underlying_code, expiry_date,
-            strike_price, open_interest.
+            strike_price, open_interest, underlying_close.
 
     Returns:
         DataFrame with WALLS_RESULT_COLUMNS — one row per
-        (date, option_type, underlying_code, expiry_date, wall_type).
+        (date, option_type, underlying_code, expiry_date) for the
+        dominant CALL and PUT zone.
     """
-    from analyze.options.config import (
-        WALLS_RESULT_COLUMNS,
-        WALL_TYPE_80PCT,
-        WALL_TYPE_LARGE_NUM,
-        PUT_PCT_RED,
-        PUT_PCT_GREEN,
-        PRICE_SCALE,
-        LARGE_NUM_MEAN_FRACTION,
-    )
+    from analyze.options.config import WALLS_RESULT_COLUMNS
 
     empty = pd.DataFrame(columns=WALLS_RESULT_COLUMNS)
     if df.empty:
         return empty
 
-    # Open-expiry collapse (vectorized shared helper; uses the same
-    # dataset max date the former inline collapse computed).
+    # Open-expiry collapse (vectorized shared helper).
     data = _apply_open_expiry_collapse(df.copy())
     if data.empty:
         return empty
@@ -158,9 +308,8 @@ def compute_options_walls(df: pd.DataFrame) -> pd.DataFrame:
         .agg(open_interest=("open_interest", "sum"))
     )
 
-    # Per-side strike frames (a strike belongs to a side's mean only if
-    # that side actually has a row there — the former per-group dicts
-    # contained only real rows).
+    # Per-side strike frames (a strike belongs to a side only if that
+    # side actually has a row there).
     call_side = agg.loc[
         agg["option_type"] == "CALL",
         _WALLS_GROUP_KEY + ["strike_price", "open_interest"],
@@ -170,9 +319,7 @@ def compute_options_walls(df: pd.DataFrame) -> pd.DataFrame:
         _WALLS_GROUP_KEY + ["strike_price", "open_interest"],
     ].rename(columns={"open_interest": "put_oi"})
 
-    # Union of strikes per group (put_pct / 80pct runs operate on the
-    # union; strikes with zero total OI are dropped — the former
-    # strike_data filter).
+    # Union of strikes per group; strikes with zero total OI are dropped.
     union = call_side.merge(
         put_side, on=_WALLS_GROUP_KEY + ["strike_price"], how="outer",
     )
@@ -187,215 +334,21 @@ def compute_options_walls(df: pd.DataFrame) -> pd.DataFrame:
     union = union.sort_values(
         _WALLS_GROUP_KEY + ["strike_price"]
     ).reset_index(drop=True)
-    union["put_pct"] = (
-        union["put_oi"] / (union["call_oi"] + union["put_oi"]) * 100.0
+
+    # ---- zone walls (strength-scored, with lifecycle) --------------------
+    # Spot = median underlying close per (date, underlying); rows without
+    # a positive spot are dropped inside _zone_walls (gap undefined).
+    spot = (
+        data.loc[data["underlying_close"] > 0]
+        .groupby(["date", "underlying_code"], sort=False)["underlying_close"]
+        .median()
+        .reset_index()
+        .rename(columns={"underlying_close": "_spot"})
     )
-    union["_rn"] = union.groupby(_WALLS_GROUP_KEY, sort=False).cumcount()
-
-    gkeys = [union[c] for c in _WALLS_GROUP_KEY]
-    last_rn = union["_rn"].groupby(gkeys, sort=False).transform("max")
-
-    # ---- 80pct walls ---------------------------------------------------
-    # Bear (PUT): contiguous run from the LOWEST strike while
-    # put_pct >= PUT_PCT_RED; the run breaks at the first bad row.
-    bear_bad = union["put_pct"] < PUT_PCT_RED
-    first_bad = (
-        union["_rn"].where(bear_bad)
-        .groupby(gkeys, sort=False).transform("min")
-    )
-    # Bull (CALL): contiguous run from the HIGHEST strike while
-    # put_pct <= PUT_PCT_GREEN; the run breaks at the last bad row.
-    bull_bad = union["put_pct"] > PUT_PCT_GREEN
-    last_bad = (
-        union["_rn"].where(bull_bad)
-        .groupby(gkeys, sort=False).transform("max")
-    )
-
-    wall_frames: list[pd.DataFrame] = []
-
-    # Bear interpolated: first_bad in (0, last_rn] — boundary rows
-    # a = first_bad-1 (put_pct >= threshold), b = first_bad (< threshold).
-    # Bull interpolated: last_bad in [0, last_rn) — boundary rows
-    # a = last_bad (put_pct > threshold), b = last_bad+1 (<= threshold).
-    # anchors must be ONE row per GROUP (first_bad/last_bad are group-level
-    # broadcast values; collapsing via drop_duplicates on key + value).
-    def _anchors_from_bad(bad_rn: pd.Series, b_offset: int) -> pd.DataFrame:
-        rows = pd.DataFrame({
-            "date": union["date"],
-            "underlying_code": union["underlying_code"],
-            "expiry_date": union["expiry_date"],
-            "_fb": bad_rn,
-        }).drop_duplicates()
-        rows = rows[rows["_fb"].notna()].copy()
-        rows["_rn_b"] = rows.pop("_fb").astype("int64") + b_offset
-        rows["_rn_a"] = rows["_rn_b"] - 1
-        return rows
-
-    bear_int_mask = first_bad.notna() & (first_bad > 0)
-    if bear_int_mask.any():
-        anchors = _anchors_from_bad(first_bad.where(bear_int_mask), 0)
-        a = _boundary_rows(
-            union, anchors, "_rn_a",
-            ["strike_price", "put_pct", "put_oi"],
-        ).rename(columns={
-            "strike_price": "_a_strike", "put_pct": "_a_pct",
-            "put_oi": "_a_oi",
-        })
-        b = _boundary_rows(
-            union, a, "_rn_b",
-            ["strike_price", "put_pct", "put_oi"],
-        ).rename(columns={
-            "strike_price": "_b_strike", "put_pct": "_b_pct",
-            "put_oi": "_b_oi",
-        })
-        d_pct = b["_b_pct"].to_numpy(dtype=np.float64) - \
-            b["_a_pct"].to_numpy(dtype=np.float64)
-        a_strike = b["_a_strike"].to_numpy(dtype=np.float64)
-        b_strike = b["_b_strike"].to_numpy(dtype=np.float64)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            frac = np.where(
-                d_pct == 0, 0.0, (PUT_PCT_RED - b["_a_pct"].to_numpy(
-                    dtype=np.float64)) / d_pct
-            )
-        wall = np.where(
-            d_pct == 0, b_strike, a_strike + frac * (b_strike - a_strike)
-        )
-        # wall_oi = put OI at the wall strike when it coincides with a
-        # real boundary strike (frac == 0 / d_pct == 0), else 0 — the
-        # former put_oi.get(strike, 0) semantics.
-        oi = np.where(
-            wall == a_strike, b["_a_oi"].to_numpy(dtype=np.float64),
-            np.where(wall == b_strike, b["_b_oi"].to_numpy(dtype=np.float64),
-                     0.0),
-        )
-        wall_frames.append(pd.DataFrame({
-            "date": b["date"],
-            "option_type": "PUT",
-            "underlying_code": b["underlying_code"],
-            "expiry_date": b["expiry_date"],
-            "wall_type": WALL_TYPE_80PCT,
-            "wall_strike_raw": wall,
-            "wall_oi": oi,
-            "mean_oi": np.nan,
-            "threshold": PUT_PCT_RED / 100.0,
-        }))
-
-    # Bear full chain: no bad row — the whole chain is put-dominant;
-    # wall = highest strike of the group.
-    bear_full_mask = first_bad.isna()
-    if bear_full_mask.any():
-        rows = union.loc[
-            bear_full_mask & (union["_rn"] == last_rn),
-            _WALLS_GROUP_KEY + ["strike_price", "put_oi"],
-        ]
-        wall_frames.append(pd.DataFrame({
-            "date": rows["date"],
-            "option_type": "PUT",
-            "underlying_code": rows["underlying_code"],
-            "expiry_date": rows["expiry_date"],
-            "wall_type": WALL_TYPE_80PCT,
-            "wall_strike_raw": rows["strike_price"].to_numpy(
-                dtype=np.float64),
-            "wall_oi": rows["put_oi"].to_numpy(dtype=np.float64),
-            "mean_oi": np.nan,
-            "threshold": PUT_PCT_RED / 100.0,
-        }))
-
-    # Bull interpolated: last_bad in [0, last_rn) — boundary rows
-    # a = last_bad (put_pct > threshold), b = last_bad+1 (<= threshold).
-    bull_int_mask = last_bad.notna() & (last_bad < last_rn)
-    if bull_int_mask.any():
-        anchors = _anchors_from_bad(last_bad.where(bull_int_mask), 1)
-        a = _boundary_rows(
-            union, anchors, "_rn_a",
-            ["strike_price", "put_pct", "call_oi"],
-        ).rename(columns={
-            "strike_price": "_a_strike", "put_pct": "_a_pct",
-            "call_oi": "_a_oi",
-        })
-        b = _boundary_rows(
-            union, a, "_rn_b",
-            ["strike_price", "put_pct", "call_oi"],
-        ).rename(columns={
-            "strike_price": "_b_strike", "put_pct": "_b_pct",
-            "call_oi": "_b_oi",
-        })
-        d_pct = b["_b_pct"].to_numpy(dtype=np.float64) - \
-            b["_a_pct"].to_numpy(dtype=np.float64)
-        a_strike = b["_a_strike"].to_numpy(dtype=np.float64)
-        b_strike = b["_b_strike"].to_numpy(dtype=np.float64)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            frac = np.where(
-                d_pct == 0, 0.0, (PUT_PCT_GREEN - b["_a_pct"].to_numpy(
-                    dtype=np.float64)) / d_pct
-            )
-        wall = np.where(
-            d_pct == 0, b_strike, a_strike + frac * (b_strike - a_strike)
-        )
-        oi = np.where(
-            wall == a_strike, b["_a_oi"].to_numpy(dtype=np.float64),
-            np.where(wall == b_strike, b["_b_oi"].to_numpy(dtype=np.float64),
-                     0.0),
-        )
-        wall_frames.append(pd.DataFrame({
-            "date": b["date"],
-            "option_type": "CALL",
-            "underlying_code": b["underlying_code"],
-            "expiry_date": b["expiry_date"],
-            "wall_type": WALL_TYPE_80PCT,
-            "wall_strike_raw": wall,
-            "wall_oi": oi,
-            "mean_oi": np.nan,
-            "threshold": PUT_PCT_GREEN / 100.0,
-        }))
-
-    # Bull full chain: no bad row — call-dominant throughout;
-    # wall = lowest strike of the group.
-    bull_full_mask = last_bad.isna()
-    if bull_full_mask.any():
-        rows = union.loc[
-            bull_full_mask & (union["_rn"] == 0),
-            _WALLS_GROUP_KEY + ["strike_price", "call_oi"],
-        ]
-        wall_frames.append(pd.DataFrame({
-            "date": rows["date"],
-            "option_type": "CALL",
-            "underlying_code": rows["underlying_code"],
-            "expiry_date": rows["expiry_date"],
-            "wall_type": WALL_TYPE_80PCT,
-            "wall_strike_raw": rows["strike_price"].to_numpy(
-                dtype=np.float64),
-            "wall_oi": rows["call_oi"].to_numpy(dtype=np.float64),
-            "mean_oi": np.nan,
-            "threshold": PUT_PCT_GREEN / 100.0,
-        }))
-
-    # ---- large_num walls ------------------------------------------------
-    for side_df, oi_col, ot in (
-        (call_side, "call_oi", "CALL"),
-        (put_side, "put_oi", "PUT"),
-    ):
-        best = _large_num_walls(side_df, oi_col)
-        if best.empty:
-            continue
-        wall_frames.append(pd.DataFrame({
-            "date": best["date"],
-            "option_type": ot,
-            "underlying_code": best["underlying_code"],
-            "expiry_date": best["expiry_date"],
-            "wall_type": WALL_TYPE_LARGE_NUM,
-            "wall_strike_raw": best["wall_strike_raw"].to_numpy(
-                dtype=np.float64),
-            "wall_oi": best["wall_oi"].to_numpy(dtype=np.float64),
-            "mean_oi": best["mean_oi"].to_numpy(dtype=np.float64),
-            "threshold": LARGE_NUM_MEAN_FRACTION,
-        }))
-
-    if not wall_frames:
+    result = _zone_walls(union, spot)
+    if result.empty:
         return empty
 
-    result = pd.concat(wall_frames, ignore_index=True)
-    result["wall_strike"] = result["wall_strike_raw"] / PRICE_SCALE
     result = result[WALLS_RESULT_COLUMNS].copy()
     result = result.sort_values(
         ["date", "option_type", "underlying_code", "expiry_date", "wall_type"]

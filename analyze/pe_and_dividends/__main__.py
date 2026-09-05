@@ -26,7 +26,17 @@ Per sec_type (index / etf / stock):
        + recompute (is_active flag + 5y rolling windows require full
        recompute when a new month appears). If no missing month-end
        dates, skip stats entirely.
-  6. Upsert analysis_identity.
+  6. Compute monthly trailing percentile BANDS of pe_ma20 /
+     dividend_yield (analysis.pe_and_dividend_pct — internal step
+     pct_bands.py): ``--force`` / ``--code`` DELETE the scope + rebuild;
+     incremental computes only missing (code, month, metric) triples
+     (trailing windows make completed months immutable).
+  7. Compute band-BREAK excursion streaks of pe_ma20 / dividend_yield
+     against those bands (analysis.pe_and_dividend_pct_streaks —
+     internal step pct_streaks.py): episodes shift with new data, so the
+     scope is rebuilt WHOLESALE per sec_type (per code in --code mode)
+     on every run that processes it.
+  8. Upsert analysis_identity.
 
 Incremental mode rationale
   The pe_ma20 and dividend_yield for past dates don't change
@@ -93,6 +103,7 @@ from analyze.pe_and_dividends.fetch import (  # noqa: E402
     fetch_index_pe_and_close,
     fetch_latest_index_composition,
     fetch_stock_dividends,
+    fetch_constituent_closes,
     fetch_etf_close_and_dividends,
     fetch_stock_close,
     fetch_trading_dates,
@@ -106,6 +117,8 @@ from analyze.pe_and_dividends.compute import (  # noqa: E402
     compute_monthly_stats,
     find_month_end_dates,
 )
+from analyze.pe_and_dividends.pct_bands import run_pd_pct_bands  # noqa: E402
+from analyze.pe_and_dividends.pct_streaks import run_pd_pct_streaks  # noqa: E402
 
 
 def _normalize_stock_codes(df, col: str) -> None:
@@ -198,6 +211,14 @@ async def _process_index(
     trading_dates = await fetch_trading_dates(conn, st)
     print(f"  [{st}]   {len(trading_dates):,} trading dates", flush=True)
 
+    # Constituent closes (per-share denominators for the cap-weighted
+    # constituent-yield aggregation — see compute_index_dividend_yield).
+    print(f"  [{st}] Fetching constituent closes from stock_basic_stats...",
+          flush=True)
+    stock_close_df = await fetch_constituent_closes(conn, constituent_codes)
+    print(f"  [{st}]   {len(stock_close_df):,} (code, date) constituent close rows",
+          flush=True)
+
     # ---- Compute pe_ma20 -------------------------------------------------
     print(f"  [{st}] Computing pe_ma20 (rolling {20}-day MA of PE per code)...",
           flush=True)
@@ -211,9 +232,10 @@ async def _process_index(
     stock_dps = compute_trailing_12m_dps(div_df, trading_dates)
     print(f"  [{st}]   {len(stock_dps):,} (stock, date) DPS rows", flush=True)
 
-    print(f"  [{st}] Computing index dividend_yield (weighted constituent DPS / close)...",
+    print(f"  [{st}] Computing index dividend_yield (cap-weighted constituent "
+          f"trailing yields)...",
           flush=True)
-    dy_df = compute_index_dividend_yield(close_df, comp_df, stock_dps)
+    dy_df = compute_index_dividend_yield(comp_df, stock_dps, stock_close_df)
     print(f"  [{st}]   {dy_df['dividend_yield'].notna().sum():,} non-null dividend_yield values",
           flush=True)
 
@@ -246,6 +268,15 @@ async def _process_index(
     else:
         print(f"  [{st}] Monthly stats up to date; skipping stats step.",
               flush=True)
+
+    # ---- Percentile bands + band-break excursion streaks (internal
+    # steps). Bands are incremental (trailing windows are immutable per
+    # completed month); streaks shift with new data, so their scope is
+    # rebuilt wholesale on every run that processes the sec_type.
+    await run_pd_pct_bands(
+        conn, detail_df, sec_type=st, force=force, code_filter=code,
+    )
+    await run_pd_pct_streaks(conn, detail_df, sec_type=st, code_filter=code)
 
     return n_detail
 
@@ -324,6 +355,13 @@ async def _process_etf(
         print(f"  [{st}] Monthly stats up to date; skipping stats step.",
               flush=True)
 
+    # ---- Percentile bands + band-break excursion streaks (see the
+    # index processor's comment).
+    await run_pd_pct_bands(
+        conn, detail_df, sec_type=st, force=force, code_filter=code,
+    )
+    await run_pd_pct_streaks(conn, detail_df, sec_type=st, code_filter=code)
+
     return n_detail
 
 
@@ -401,6 +439,13 @@ async def _process_stock(
     else:
         print(f"  [{st}] Monthly stats up to date; skipping stats step.",
               flush=True)
+
+    # ---- Percentile bands + band-break excursion streaks (see the
+    # index processor's comment).
+    await run_pd_pct_bands(
+        conn, detail_df, sec_type=st, force=force, code_filter=code,
+    )
+    await run_pd_pct_streaks(conn, detail_df, sec_type=st, code_filter=code)
 
     return n_detail
 
@@ -548,6 +593,28 @@ async def _detect_missing_dates(
         missing_detail = await find_missing_analysis_dates(
             conn, DETAIL_TABLE, [identity_table], sec_type=st,
         )
+
+        # ---- Self-heal: exact-zero dividend_yield rows are invalid ----
+        # The current formula yields strictly positive values (dps > 0
+        # gate) or NULL — a stored 0.0 means the row was written by an
+        # OLDER compute (which emitted 0 instead of NULL when the
+        # trailing-12m dividend sum was empty) and incremental upserts
+        # never refreshed it. Those fake 0% stretches make the first real
+        # dividend look like an infinite spike. Flag their dates as
+        # missing so the upsert overwrites them with the recomputed
+        # values.
+        zero_dates = await conn.fetch(
+            f"SELECT DISTINCT date FROM {DETAIL_TABLE} "
+            f"WHERE sec_type = $1 AND dividend_yield = 0",
+            st,
+        )
+        n_zero = len(zero_dates)
+        if n_zero:
+            missing_detail = set(missing_detail) | {r["date"] for r in zero_dates}
+            print(f"    -> detail[{st}]: {n_zero} dates carry invalid "
+                  f"dividend_yield = 0 rows (stale legacy values); "
+                  f"re-upserting them", flush=True)
+
         target_dates_detail[st] = missing_detail
         print(f"    -> detail[{st}]: {len(missing_detail)} missing dates",
               flush=True)

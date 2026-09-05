@@ -5,6 +5,7 @@ import { Router, type Request, type Response } from "express";
 import {
   listUnderlyings,
   getOptionsCombined,
+  getOptionsWalls,
   getEtfOhlcv,
   getOptionsSkewnessCorr,
   getOptionsSkewnessCrossCounts,
@@ -44,6 +45,20 @@ router.get("/combined", async (req: Request, res: Response) => {
     res.json(await getOptionsCombined(query));
   } catch (err) {
     console.error("[szse-options/combined] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/walls", async (req: Request, res: Response) => {
+  try {
+    const query = {
+      underlying: typeof req.query.underlying === "string" ? req.query.underlying : undefined,
+      start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
+      end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+    };
+    res.json(await getOptionsWalls(query));
+  } catch (err) {
+    console.error("[szse-options/walls] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

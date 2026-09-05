@@ -31,9 +31,9 @@ from analyze.industry_sentiments.attributions.sql_broad_market import (
 #                              (N != M) of N's weight on stocks held by
 #                              BOTH N and M. Computed directly from
 #                              stats.sec_composition (NOT from
-#                              sec_alloc_perf_attribution, which only keeps
-#                              the top-3 non-broad indices per industry as
-#                              benchmarks — not enough for "all member
+#                              the stats.cross_stats pair grain, which only
+#                              keeps the top-3 non-broad indices per industry
+#                              as benchmarks — not enough for "all member
 #                              indices"). Mirrors code_sec_shared_weight
 #                              semantics (subject's OWN weight on shared
 #                              stocks). Self-pair (M, M) excluded.

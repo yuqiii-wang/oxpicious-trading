@@ -80,8 +80,46 @@ interface DbMemberTickRow extends QueryResultRow {
 //  The dropdown is intentionally restricted to broad-market indices so the
 //  user picks a true market-wide benchmark (not a sector or strategy index).
 //  Wrapper CTE so ORDER BY can resolve the is_broad_market column.
+//
+//  The all_curated_with_data CTE (benchmarks that have pair-grain
+//  attribution history in stats.cross_stats sec_type='index' AND raw
+//  intraday data) has two source variants picked at call time:
+//    • summary (default): UNNEST of stats.cross_stats_code_summary's
+//      per-code benchmarks arrays — a benchmark has history iff it appears
+//      in at least one subject's benchmarks array. Millisecond read; the
+//      rollup is maintained by builds.cross_stats (15_cross_stats_code_
+//      summary.sql).
+//    • live (fallback, only while the summary has no 'index' rows yet —
+//      fresh DB before the first builds.cross_stats run): the former
+//      full-table DISTINCT scan over the 70M+ row main table.
 // ----------------------------------------------------------------------------
-const BENCHMARK_LIST_SQL = `
+function buildAllCuratedWithDataCte(useSummary: boolean): string {
+    const history = useSummary
+        ? `
+        SELECT UNNEST(cs.benchmarks) AS benchmark_code
+        FROM stats.cross_stats_code_summary cs
+        WHERE cs.sec_type = 'index'`
+        : `
+        SELECT sap.benchmark_code
+        FROM stats.cross_stats sap
+        WHERE sap.sec_type = 'index'`;
+    return `
+all_curated_with_data AS (
+    -- Benchmarks with attribution history (pair grain) + intraday data,
+    -- used when the live pipeline hasn't processed them yet.
+    SELECT DISTINCT h.benchmark_code
+    FROM (${history}) h
+    WHERE h.benchmark_code IN (SELECT benchmark_code FROM curated)
+      AND EXISTS (
+          SELECT 1 FROM stats.index_intraday_5min i5
+          WHERE i5.code = h.benchmark_code AND i5.close IS NOT NULL
+          LIMIT 1
+      )
+)`;
+}
+
+function buildBenchmarkListSql(useSummary: boolean): string {
+return `
 WITH
 -- The curated broad-market benchmark set: indices carrying the
 -- hand-authored BROAD/benchmark_broadmarket tag.
@@ -94,20 +132,7 @@ processed AS (
     SELECT DISTINCT a.benchmark_code
     FROM live.sec_alloc_live_attribution a
     WHERE a.benchmark_code IN (SELECT benchmark_code FROM curated)
-),
-all_curated_with_data AS (
-    -- Curated benchmarks that have attribution history and intraday data,
-    -- used when the live pipeline hasn't processed them yet.
-    SELECT DISTINCT sap.benchmark_code
-    FROM analysis.sec_alloc_perf_attribution sap
-    WHERE sap.sec_type = 'index'
-      AND sap.benchmark_code IN (SELECT benchmark_code FROM curated)
-      AND EXISTS (
-          SELECT 1 FROM stats.index_intraday_5min i5
-          WHERE i5.code = sap.benchmark_code AND i5.close IS NOT NULL
-          LIMIT 1
-      )
-),
+),${buildAllCuratedWithDataCte(useSummary)},
 bench_codes AS (
     SELECT benchmark_code FROM processed
     UNION
@@ -138,6 +163,7 @@ enriched AS (
 SELECT * FROM enriched
 ORDER BY benchmark_code
 `;
+}
 
 // ----------------------------------------------------------------------------
 //  SQL: Benchmark % change per 5-min tick (from the live tick table).
@@ -633,7 +659,16 @@ export async function listIntradayMovementsBenchmarks(): Promise<{
   benchmark_name: string;
   is_broad_market: boolean | null;
 }[]> {
-  const rows = await queryRows<DbBenchmarkListRow>(BENCHMARK_LIST_SQL, []);
+  // Summary rollup first (millisecond read); the live variant is only used
+  // while the rollup has no pair-grain rows yet (fresh DB before the first
+  // builds.cross_stats run).
+  const summaryProbe = await queryRows(
+    `SELECT 1 AS ok FROM stats.cross_stats_code_summary WHERE sec_type = 'index' LIMIT 1`,
+  );
+  const rows = await queryRows<DbBenchmarkListRow>(
+    buildBenchmarkListSql(summaryProbe.length > 0),
+    [],
+  );
   return rows.map((r) => ({
     benchmark_code: r.benchmark_code,
     benchmark_name: r.benchmark_name ?? r.benchmark_code,

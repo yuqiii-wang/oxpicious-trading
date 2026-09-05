@@ -20,7 +20,18 @@ interface CompositeAnalysis {
   tags: string[];
 }
 
-const COMPOSITE_ANALYSES: CompositeAnalysis[] = [];
+const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
+  {
+    slug: "opposite-industry-correlations",
+    title: "Opposite Industry Correlations",
+    description:
+      "Industry MA trends offset by a broad-market benchmark (rebased to each " +
+      "industry's level, subtracted — market factor removed, prices recomputed). " +
+      "Audits the raw overall correlation against the benchmark-removed " +
+      "correlation and the opposite score over 20/60/255-day windows.",
+    tags: ["correlation", "benchmark offset", "audit"],
+  },
+];
 
 export default function CompositesPage() {
   const navigate = useNavigate();

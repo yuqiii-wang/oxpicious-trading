@@ -176,7 +176,9 @@ def parse_underlying_code(underlying_str):
 def compute_expiry_date(trade_date, expiry_month):
     """Compute the expiration date for a given trade date and expiry month.
 
-    SZSE ETF options expire on the third Friday of the expiry month.
+    SZSE ETF options expire on the fourth Wednesday of the expiry month
+    (到期日/行权日 = 到期月份的第四个星期三, 遇法定节假日顺延 — weekday
+    math only, no holiday calendar here).
     """
     month_num = int(_MONTH_MAP.get(expiry_month, expiry_month[:-1]))
     year = trade_date.year
@@ -185,10 +187,11 @@ def compute_expiry_date(trade_date, expiry_month):
         year += 1
 
     first_day = datetime.datetime(year, month_num, 1)
-    first_friday = first_day + datetime.timedelta(days=(4 - first_day.weekday() + 7) % 7)
-    third_friday = first_friday + datetime.timedelta(weeks=2)
+    # Wednesday = weekday 2 (Monday=0, Sunday=6)
+    first_wednesday = first_day + datetime.timedelta(days=(2 - first_day.weekday() + 7) % 7)
+    fourth_wednesday = first_wednesday + datetime.timedelta(weeks=3)
 
-    return third_friday
+    return fourth_wednesday
 
 
 # ============================================================================
@@ -482,7 +485,15 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
         df_merged = df.merge(etf[["_date_key", "etf_code", "etf_close"]],
                             left_on=["_date_key", "underlying_code"],
                             right_on=["_date_key", "etf_code"], how="left")
-        df["underlying_close"] = df_merged["etf_close"].fillna(0.0)
+        uc = df_merged["etf_close"].fillna(0.0)
+        # SZSE ETF option strikes use the exchange's ×1000 naming
+        # ("创业板ETF购12月2342" = 2.342 yuan → strike_price 2342), so
+        # underlying_close must live on the same ×1000 (≈ index-level)
+        # scale for moneyness / IV to be meaningful. Source windows that
+        # quote the ETF in yuan (< 50) are rescaled to that convention.
+        df["underlying_close"] = np.where(
+            (uc > 0) & (uc < 50), uc * 1000.0, uc,
+        )
         df["moneyness_ratio"] = np.where(df["underlying_close"] > 0,
                                          df["strike_price"] / df["underlying_close"], 0.0)
     else:

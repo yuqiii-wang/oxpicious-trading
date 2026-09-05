@@ -285,6 +285,11 @@ def build_options_df(
             index_map[["date", "underlying_code", "underlying_close"]],
             on=["date", "underlying_code"], how="left",
         )
+        # Trade dates without an index row (index data lags the options
+        # feed by a day or two) would COPY as NULL and violate the
+        # settlement table's NOT NULL — align with the SZSE build's
+        # fillna(0.0) convention (0 = "no spot", moneyness 0).
+        out["underlying_close"] = out["underlying_close"].fillna(0.0)
         # Compute moneyness
         out["moneyness_ratio"] = np.where(
             out["underlying_close"] > 0,

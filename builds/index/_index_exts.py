@@ -9,7 +9,7 @@ stats.index_exts (per-(date, index_code) extension metrics):
                       index code on this date.
   total_etf_trading_amount     = Σ etf_liquidity_margin.trading_amount (yuan)
                       across the same ETF universe. NULL when no ETF tracks
-                      the index. Consumed by analyze_sec_alloc_perf_attribution.py
+                      the index. Consumed by builds.cross_stats
                       as the index's ETF-market trading volume.
   total_etf_trading_amount_ma5 = 5-trading-day moving average of
                       total_etf_trading_amount (AVG over the trailing 5 rows

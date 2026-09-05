@@ -2,7 +2,8 @@
  * ForecastTable — the MA-Spread panel's 2nd plot: one code's extreme-day
  * bucket table from the analysis_forecasts schema, chosen by the parent's
  * dropdown (mov_rsi = RSI extreme-percentile buckets, mov_std = Bollinger
- * breach buckets, mov_gap = N-day price-return extreme-percentile buckets).
+ * breach buckets, mov_gap = N-day price-return extreme-percentile buckets,
+ * px_vol = σ-standardized price-speed × z-scored 量比 state cells).
  * Rendered by the globally shared ExpandedTable (layered header + per-column
  * header filters); this file only supplies the column args and the toolbar.
  *
@@ -10,9 +11,11 @@
  *   • bucket-config (standalone, rowSpan-2 headers) — month (stat_month,
  *     DATE-RANGE filter at month granularity), window (rsi_window /
  *     ma_window / gap_window, ticks), width (pct / k, ticks), side (ticks),
- *     cooldown (ticks), hyped (ticks);
+ *     cooldown (ticks), hyped (ticks); px_vol instead shows speed
+ *     (px_speed) × volume (vol_state) with no cooldown (state cells);
  *   • mov_std excess magnitudes (standalone) — exc close / exc max avg /
- *     exc max peak (numeric-range filters, percent points);
+ *     exc max peak (numeric-range filters, percent points); px_vol state
+ *     magnitudes (standalone) — mean t / mean z (numeric ranges, raw);
  *   • horizon result columns grouped under the horizon label (Next/5d/20d/
  *     60d) — mean / max / min forward changes (ranges, percent points),
  *     std (range, percent points), max/low swing ratio (range, raw), P>1%
@@ -44,13 +47,15 @@ import type {
   ForecastKind,
   ForecastResponse,
   MaSpreadSecType,
+  MarginRatioForecastRow,
   MovGapForecastRow,
   MovRsiForecastRow,
   MovStdForecastRow,
+  PxVolForecastRow,
 } from "@shared/types";
 
 /** Union of all bucket row shapes — config columns read via this. */
-type ForecastRow = MovRsiForecastRow | MovStdForecastRow | MovGapForecastRow;
+type ForecastRow = MovRsiForecastRow | MovStdForecastRow | MovGapForecastRow | PxVolForecastRow | MarginRatioForecastRow;
 
 /** Fractional change → signed % string, colored green/red. */
 function ChangeCell({ v }: { v: number | null }) {
@@ -267,6 +272,171 @@ function stdConfigCols(): ConfigCol[] {
   ];
 }
 
+/** Raw σ/z-score cell (NOT percent points — mean_t / mean_z are state
+ *  magnitudes in code-σ units). Muted dash when null. */
+function RawCell({ v }: { v: number | null }) {
+  if (v == null) return dash();
+  return <>{v.toFixed(2)}</>;
+}
+
+/** px_vol bucket-config columns — stat_month, px_speed, vol_state, side,
+ *  is_market_hyped. No cooldown column: state cells admit every
+ *  qualifying day (no cooldown in the bucket family). */
+function pxVolConfigCols(): ConfigCol[] {
+  const px = (r: ForecastRow) => r as PxVolForecastRow;
+  const SPEED_COLOR: Record<PxVolForecastRow["px_speed"], string> = {
+    sharp_up: UP_COLOR,
+    slow_up: UP_COLOR,
+    flat: "text.disabled",
+    slow_dn: DOWN_COLOR,
+    sharp_dn: DOWN_COLOR,
+  };
+  return [
+    {
+      key: "stat_month",
+      label: "month",
+      value: (r) => r.stat_month.slice(0, 7),
+      render: (r) => periodLabel(r.stat_month),
+      align: "left",
+      width: 150,
+    },
+    {
+      key: "px_speed",
+      label: "speed",
+      value: (r) => px(r).px_speed,
+      render: (r) => (
+        <Box component="span" sx={{ color: SPEED_COLOR[px(r).px_speed], fontWeight: 600 }}>
+          {px(r).px_speed}
+        </Box>
+      ),
+      align: "left",
+      width: 74,
+    },
+    { key: "vol_state", label: "volume", value: (r) => px(r).vol_state, align: "left", width: 66 },
+    {
+      key: "side",
+      label: "side",
+      value: (r) => px(r).side,
+      render: (r) => (
+        <Box
+          component="span"
+          sx={{
+            color:
+              px(r).side === "flat"
+                ? "text.disabled"
+                : px(r).side === "top" ? UP_COLOR : DOWN_COLOR,
+            fontWeight: 600,
+          }}
+        >
+          {px(r).side}
+        </Box>
+      ),
+      align: "center",
+      width: 60,
+    },
+    {
+      key: "is_market_hyped",
+      label: "hyped",
+      value: (r) => (r.is_market_hyped ? "hyped" : "normal"),
+      render: (r) => (
+        <Box component="span" sx={{ color: r.is_market_hyped ? "text.primary" : "text.disabled" }}>
+          {r.is_market_hyped ? "●" : "·"}
+        </Box>
+      ),
+      align: "center",
+      width: 46,
+    },
+  ];
+}
+
+/** Fraction (rz_buy / trading_amount) → percent-points cell — the raw
+ *  margin ratio is a share of turnover. Muted dash when null. */
+function ShareCell({ v }: { v: number | null }) {
+  if (v == null) return dash();
+  return <>{`${(v * 100).toFixed(1)}%`}</>;
+}
+
+/** margin_ratio bucket-config columns — stat_month, ratio_state, side,
+ *  is_market_hyped. No cooldown column: state cells admit every
+ *  qualifying day (no cooldown in the bucket family). */
+function marginRatioConfigCols(): ConfigCol[] {
+  const mr = (r: ForecastRow) => r as MarginRatioForecastRow;
+  const STATE_COLOR: Record<MarginRatioForecastRow["ratio_state"], string> = {
+    no_buy: "text.secondary",
+    vlow: UP_COLOR,
+    low: UP_COLOR,
+    mid: "text.disabled",
+    high: DOWN_COLOR,
+    vhigh: DOWN_COLOR,
+  };
+  const STATE_LABEL: Record<MarginRatioForecastRow["ratio_state"], string> = {
+    no_buy: "no buy",
+    vlow: "z≤-2",
+    low: "-2<z≤-1",
+    mid: "-1<z≤+1",
+    high: "+1<z≤+2",
+    vhigh: "z>+2",
+  };
+  return [
+    {
+      key: "stat_month",
+      label: "month",
+      value: (r) => r.stat_month.slice(0, 7),
+      render: (r) => periodLabel(r.stat_month),
+      align: "left",
+      width: 150,
+    },
+    {
+      key: "ratio_state",
+      label: "margin z",
+      value: (r) => mr(r).ratio_state,
+      render: (r) => (
+        <Box component="span" sx={{ color: STATE_COLOR[mr(r).ratio_state], fontWeight: 600 }}>
+          {STATE_LABEL[mr(r).ratio_state]}
+        </Box>
+      ),
+      align: "left",
+      width: 88,
+    },
+    {
+      key: "side",
+      label: "side",
+      value: (r) => mr(r).side,
+      render: (r) => (
+        <Box
+          component="span"
+          sx={{
+            color:
+              mr(r).side === "flat"
+                ? "text.disabled"
+                // Crowding semantics INVERTED vs px_vol: side 'top'
+                // (high/vhigh) is the study's bearish reading, 'bottom'
+                // (vlow/low/no_buy) the mild-bullish one.
+                : mr(r).side === "top" ? DOWN_COLOR : UP_COLOR,
+            fontWeight: 600,
+          }}
+        >
+          {mr(r).side}
+        </Box>
+      ),
+      align: "center",
+      width: 60,
+    },
+    {
+      key: "is_market_hyped",
+      label: "hyped",
+      value: (r) => (r.is_market_hyped ? "hyped" : "normal"),
+      render: (r) => (
+        <Box component="span" sx={{ color: r.is_market_hyped ? "text.primary" : "text.disabled" }}>
+          {r.is_market_hyped ? "●" : "·"}
+        </Box>
+      ),
+      align: "center",
+      width: 46,
+    },
+  ];
+}
+
 interface Props {
   code: string;
   secType: MaSpreadSecType;
@@ -319,12 +489,18 @@ export function ForecastTable({ code, secType, kind }: Props) {
   const isRsi = kind === "mov_rsi";
   const isGap = kind === "mov_gap";
   const isStd = kind === "mov_std";
+  const isPxVol = kind === "px_vol";
+  const isMarginRatio = kind === "margin_ratio";
   const h = HORIZONS[horizon];
   const configCols = isRsi
     ? pctConfigCols("rsi_window", "RSI win")
     : isGap
       ? pctConfigCols("gap_window", "Gap win")
-      : stdConfigCols();
+      : isPxVol
+        ? pxVolConfigCols()
+        : isMarginRatio
+          ? marginRatioConfigCols()
+          : stdConfigCols();
 
   // Column args for the shared ExpandedTable — filters follow the same
   // type rules as the other shared tables: discrete buckets → ticks, month
@@ -367,6 +543,46 @@ export function ForecastTable({ code, secType, kind }: Props) {
             width: 82,
             render: (r: ForecastRow) => <PctCell v={pctVal(r, "max_excess_max")} />,
             filter: { type: "range" as const, value: (r: ForecastRow) => pctVal(r, "max_excess_max") },
+          },
+        ]
+      : []),
+    ...(isPxVol
+      ? [
+          {
+            key: "mean_t",
+            label: "mean t",
+            align: "right" as const,
+            width: 62,
+            render: (r: ForecastRow) => <RawCell v={numVal(r, "mean_t")} />,
+            filter: { type: "range" as const, value: (r: ForecastRow) => numVal(r, "mean_t") },
+          },
+          {
+            key: "mean_z",
+            label: "mean z",
+            align: "right" as const,
+            width: 62,
+            render: (r: ForecastRow) => <RawCell v={numVal(r, "mean_z")} />,
+            filter: { type: "range" as const, value: (r: ForecastRow) => numVal(r, "mean_z") },
+          },
+        ]
+      : []),
+    ...(isMarginRatio
+      ? [
+          {
+            key: "mean_ratio",
+            label: "mean ratio",
+            align: "right" as const,
+            width: 78,
+            render: (r: ForecastRow) => <ShareCell v={numVal(r, "mean_ratio")} />,
+            filter: { type: "range" as const, value: (r: ForecastRow) => numVal(r, "mean_ratio") },
+          },
+          {
+            key: "mean_z",
+            label: "mean z",
+            align: "right" as const,
+            width: 62,
+            render: (r: ForecastRow) => <RawCell v={numVal(r, "mean_z")} />,
+            filter: { type: "range" as const, value: (r: ForecastRow) => numVal(r, "mean_z") },
           },
         ]
       : []),
@@ -469,6 +685,7 @@ export function ForecastTable({ code, secType, kind }: Props) {
         rows={rows}
         rowKey={(r) => configCols.map((c) => c.value(r)).join("-")}
         maxHeight={320}
+        enableFilters={data?.enable_filters ?? false}
         filterScopeDeps={[secType, code, kind]}
         emptyState={
           <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.68rem" }}>

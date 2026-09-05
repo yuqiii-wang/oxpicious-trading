@@ -336,25 +336,35 @@ ALTER TABLE analysis.mov_ave_spreads_detail_ema ADD COLUMN IF NOT EXISTS std_255
 --                            date's close)
 --    low_over_period       — lowest-low anchor: MINIMUM valid CLOSE in the
 --                            1st half (value = that anchor date's close)
---    high_2nd_over_period  — second-high anchor: MAXIMUM valid CLOSE in the
---                            2nd HALF of the window (2nd date is always
---                            later than the top date — the halves are
---                            disjoint and ordered, so the roof line runs
---                            forward in time)
+--    high_2nd_over_period  — second-high anchor: MAXIMUM valid CLOSE in
+--                            [top_high_pos + gap, window_end] (2nd date
+--                            is always later than the top date — the
+--                            gap is enforced constructively, so the
+--                            roof line runs forward in time)
 --                            (value = that anchor date's INTRADAY HIGH)
---    low_2nd_over_period   — second-low anchor: MINIMUM valid CLOSE in the
---                            2nd half (2nd date is always later than the
---                            top date — the floor line runs forward in
---                            time)
+--    low_2nd_over_period   — second-low anchor: MINIMUM valid CLOSE in
+--                            [top_low_pos + gap, window_end] (floor
+--                            line runs forward in time)
 --                            (value = that anchor date's INTRADAY LOW)
 --
---  HALF-SPLIT ANCHORS: the window [date-period+1, date] is cut in half —
---  h = L // 2 with L the window length in trading-day positions (for odd
---  L the 2nd half gets the extra day); the 1st extreme is the max/min
---  valid CLOSE of the 1st half and the 2nd extreme the max/min valid
---  CLOSE of the 2nd half. Ties go to the earliest date; NaN closes are
---  skipped. Columns are NULL when the window has fewer than 2 positions
---  or the half holds no valid close.
+--  HALF-SPLIT 1st ANCHORS + DYNAMIC 2nd RANGE: the window
+--  [date-period+1, date] is cut in half — h = L // 2 with L the window
+--  length in trading-day positions (for odd L the 2nd half gets the
+--  extra day); the 1st extreme is the max/min valid CLOSE of the 1st
+--  half. The 2nd extreme is NOT confined to the 2nd half — its search
+--  range starts `gap` trading days AFTER the 1st anchor, where
+--  gap = ceil(0.20*period) with a 20-trading-day floor for periods
+--  >= 60 (period 20 keeps the pure 20% gap: a 20td floor would push
+--  the search start past the window end for every row). Ties go to the
+--  earliest date; NaN closes are skipped. Columns are NULL when the
+--  window has fewer than 2 positions or the half holds no valid close;
+--  when the 1st anchor is too close to the window end (top + gap >
+--  window_end), only the 2nd anchor is NULLed while the 1st stays
+--  valid.
+--  MIGRATION NOTE (2026-09): the gap was ceil(0.10*period) before —
+--  rows written by the 10% rule must be recomputed via a --force
+--  rebuild of the OHLC step (find_ohlc_repair_dates cannot detect
+--  them).
 --  Populated by the internal OHLC step of `analyze.mov_ave_spread`
 --  (see ohlc.py). Reuses the same source DataFrame as the parent
 --  pipeline — no second DB round-trip.
@@ -391,7 +401,7 @@ SELECT public.create_hash_partitions('analysis', 'mov_ave_spreads_detail_ohlc', 
 -- LONG format: one row per (code, sec_type, date, period). The per-window
 -- columns collapse into a single generic *_over_period column set keyed by
 -- `period` ∈ {20, 60, 120, 255, 500, 750, 1275} trading days.
-COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ohlc              IS 'OHLC detail (LONG format): one row per (code, sec_type, date, period) with today_close + rolling-window anchors per period ∈ {20,60,120,255,500,750,1275} trading days. HALF-SPLIT 1st ANCHORS + DYNAMIC 2nd RANGE: the period window [date-period+1, date] is cut in half — h = L // 2 in trading-day positions (for odd L the 2nd half gets the extra day). 1st anchors (high_over_period/low_over_period): the MAXIMUM/MINIMUM valid CLOSE of the 1st half (ties -> earliest date; value = anchor date close). 2nd anchors (high_2nd_over_period/low_2nd_over_period): the MAXIMUM/MINIMUM valid CLOSE found in [1st_anchor_position + ceil(0.10*period), window_end] — the 2nd anchor is NOT confined to the 2nd half. The 10% time-distance gap is enforced CONSTRUCTIVELY by shifting the 2nd anchor search range, guaranteeing |sec_pos - top_pos| > 10% of window length wherever both exist. value = anchor date INTRADAY high/low. NaN closes are skipped; a half with no valid close NULLs its 1st anchor; when the 1st anchor is too close to the window end (top + 0.10*period > window_end), only the 2nd anchor is NULLed while the 1st stays valid. 2nd anchor dates are always strictly after the 1st anchor date. DATE columns record the anchor dates. sec_type ∈ {etf, index, stock}. Source: same DataFrame as mov_ave_spread parent pipeline (no second DB round-trip).';
+COMMENT ON TABLE  analysis.mov_ave_spreads_detail_ohlc              IS 'OHLC detail (LONG format): one row per (code, sec_type, date, period) with today_close + rolling-window anchors per period ∈ {20,60,120,255,500,750,1275} trading days. HALF-SPLIT 1st ANCHORS + DYNAMIC 2nd RANGE: the period window [date-period+1, date] is cut in half — h = L // 2 in trading-day positions (for odd L the 2nd half gets the extra day). 1st anchors (high_over_period/low_over_period): the MAXIMUM/MINIMUM valid CLOSE of the 1st half (ties -> earliest date; value = anchor date close). 2nd anchors (high_2nd_over_period/low_2nd_over_period): the MAXIMUM/MINIMUM valid CLOSE found in [1st_anchor_position + gap, window_end] where gap = ceil(0.20*period) with a 20-trading-day floor for periods >= 60 (period 20 keeps the pure 20% gap) — the 2nd anchor is NOT confined to the 2nd half. The time-distance gap is enforced CONSTRUCTIVELY by shifting the 2nd anchor search range, guaranteeing |sec_pos - top_pos| >= gap wherever both exist. value = anchor date INTRADAY high/low. NaN closes are skipped; a half with no valid close NULLs its 1st anchor; when the 1st anchor is too close to the window end (top + gap > window_end), only the 2nd anchor is NULLed while the 1st stays valid. 2nd anchor dates are always strictly after the 1st anchor date. DATE columns record the anchor dates. sec_type ∈ {etf, index, stock}. Source: same DataFrame as mov_ave_spread parent pipeline (no second DB round-trip).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.sec_type     IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.code        IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.date        IS 'Business date (trading day).';
@@ -403,12 +413,12 @@ COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_over_period   IS 'To
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_date_over_period IS 'Business date of the top-high anchor (max valid CLOSE of the window''s 1st half). NULL when the half holds no valid close.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_over_period    IS 'Lowest-low anchor: the MINIMUM valid CLOSE in the 1st HALF of the period window (ties -> earliest date); value = the anchor date close. NULL when the half holds no valid close.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_date_over_period IS 'Business date of the lowest-low anchor (min valid CLOSE of the window''s 1st half). NULL when the half holds no valid close.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_over_period IS 'Second-high anchor: the MAXIMUM valid CLOSE found in [top_high_pos + ceil(0.10*period), window_end] — the 10% time-distance gap is enforced CONSTRUCTIVELY. NOT confined to the 2nd half; the search range starts from 10% of window AFTER the 1st anchor. value = the anchor date INTRADAY HIGH. NULL when the dynamic range holds no valid close OR when the 1st anchor is too close to the window end.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_over_period IS 'Second-high anchor: the MAXIMUM valid CLOSE found in [top_high_pos + gap, window_end] where gap = ceil(0.20*period) with a 20-trading-day floor for periods >= 60 (period 20 keeps the pure 20% gap) — the time-distance gap is enforced CONSTRUCTIVELY. NOT confined to the 2nd half; the search range starts from the gap AFTER the 1st anchor. value = the anchor date INTRADAY HIGH. NULL when the dynamic range holds no valid close OR when the 1st anchor is too close to the window end.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_2nd_date_over_period IS 'Business date of the second-high anchor. Always strictly after the top-high anchor date. NULL when the dynamic range holds no valid close OR when the 1st anchor is too close to the window end.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_over_period  IS 'Second-low anchor: the MINIMUM valid CLOSE found in [top_low_pos + ceil(0.10*period), window_end] — the 10% time-distance gap is enforced CONSTRUCTIVELY. NOT confined to the 2nd half. value = the anchor date INTRADAY LOW. NULL when the dynamic range holds no valid close OR when the 1st anchor is too close to the window end.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_over_period  IS 'Second-low anchor: the MINIMUM valid CLOSE found in [top_low_pos + gap, window_end] where gap = ceil(0.20*period) with a 20-trading-day floor for periods >= 60 (period 20 keeps the pure 20% gap) — the time-distance gap is enforced CONSTRUCTIVELY. NOT confined to the 2nd half. value = the anchor date INTRADAY LOW. NULL when the dynamic range holds no valid close OR when the 1st anchor is too close to the window end.';
 COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_2nd_date_over_period IS 'Business date of the second-low anchor. Always strictly after the lowest-low anchor date. NULL when the dynamic range holds no valid close OR when the 1st anchor is too close to the window end.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_over_period IS 'Slope of the roof line through the two high anchors of this period (high_over_period close -> high_2nd_over_period intraday high), in price units per trading day: (high_2nd_over_period - high_over_period) / (trading days between the two anchor dates). Signed; the 2nd anchor always lies at least ceil(0.10*period) days after the top. NULL when either anchor is absent.';
-COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_over_period  IS 'Slope of the floor line through the two low anchors of this period (low_over_period close -> low_2nd_over_period intraday low), in price units per trading day. Signed; the 2nd anchor always lies at least ceil(0.10*period) days after the bottom. NULL when either anchor is absent.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.high_line_slope_over_period IS 'Slope of the roof line through the two high anchors of this period (high_over_period close -> high_2nd_over_period intraday high), in price units per trading day: (high_2nd_over_period - high_over_period) / (trading days between the two anchor dates). Signed; the 2nd anchor always lies at least gap = ceil(0.20*period) days (20td floor for periods >= 60) after the top. NULL when either anchor is absent.';
+COMMENT ON COLUMN analysis.mov_ave_spreads_detail_ohlc.low_line_slope_over_period  IS 'Slope of the floor line through the two low anchors of this period (low_over_period close -> low_2nd_over_period intraday low), in price units per trading day. Signed; the 2nd anchor always lies at least gap = ceil(0.20*period) days (20td floor for periods >= 60) after the bottom. NULL when either anchor is absent.';
 
 -- ----------------------------------------------------------------------------
 --  Table: analysis.mov_ave_rsi  (per-asset+date Wilder RSI + short-term gaps)
@@ -911,15 +921,131 @@ COMMENT ON COLUMN analysis.mov_ave_market_hypes.trading_amt_hype_days           
 COMMENT ON COLUMN analysis.mov_ave_market_hypes.min_std_threshold                  IS 'Centered-20-year PERCENTILE level (0-100) of std_{W}days used as the volatility-leg threshold: a date checks in on this leg when its W-day rolling population σ exceeds the percentile of its centered window (~2550 rows before the date + ~2550 rows after it, ±10 trading years). Default 30.0 (30th percentile) — DELIBERATELY LOW: the W-day trailing σ lags a sudden turmoil by construction (the window still holds W-1 pre-turmoil rows on day 1), so a low bar lets episodes start at the turmoil''s first big-move day (the 2024-09-24 rally audit showed a 60th-pct σ leg delayed episode starts by a full month while the amt leg fired from day one). Recorded build parameter — NOT part of the PK; changing it requires a --force rebuild.';
 COMMENT ON COLUMN analysis.mov_ave_market_hypes.std_hype_days                      IS 'Days within the episode span (start_date..end_date inclusive) on which the VOLATILITY leg individually checked in (std_{W}days > its centered-20y percentile). Diagnostic for which leg drove the episode; <= hype_days (interior bridged gaps did not check in).';
 
--- Migrate: add the per-leg check-in day counts to pre-existing installs
--- (CREATE TABLE includes them for fresh installs, but ADD COLUMN IF NOT
--- EXISTS retro-fits the columns to an already-existing table without
--- dropping data). Days within the episode span on which each leg
--- individually checked in — diagnostics for which leg drove the episode
--- (the volatility leg lags turmoil onsets, the liquidity leg fires from
--- day one). Nullable in the migration only because the column cannot be
--- added NOT NULL to a non-empty table; the wholesale per-sec_type rebuild
--- that the market-hypes step performs on every pipeline run refills every
--- row (run --force to trigger it immediately).
-ALTER TABLE analysis.mov_ave_market_hypes ADD COLUMN IF NOT EXISTS trading_amt_hype_days INTEGER;
-ALTER TABLE analysis.mov_ave_market_hypes ADD COLUMN IF NOT EXISTS std_hype_days           INTEGER;
+-- ----------------------------------------------------------------------------
+--  Table: analysis.mov_ave_high_low_pct  (multi-period high/low price
+--         percentile BAND, one row per security x calendar month x
+--         period x pct_type)
+--
+--  Symmetric quantile ENVELOPEs of where a security's daily prices
+--  traded over its recent history: low_val is the pct_type-th
+--  percentile of daily LOW prices and high_val the (100 - pct_type)-th
+--  percentile of daily HIGH prices over the trailing `period`-row
+--  window ENDING at the month's last trading row (255/500/750/1275
+--  trading rows = ~1/2/3/5 trading years — the ma255 yearly-window
+--  precedent). pct_type 1 -> near-full range of the window ([1st pct
+--  of lows, 99th pct of highs]); pct_type 10 -> core envelope ([10th,
+--  90th]). One band per calendar month per (sec_type, code) per
+--  (period, pct_type) — 12 bands per month.
+--
+--  Populated by the internal high-low-percentile step of
+--  `analyze.mov_ave_spread` (see high_low_pct.py; reuses the parent
+--  source DataFrame's high / low columns — no second DB round-trip).
+--  Trailing window: historical bands are IMMUTABLE once computed (new
+--  dates never change a past month's trailing percentile), so only
+--  missing (code, month) pairs are (re)computed — a pair is complete
+--  when all 12 (period, pct_type) rows exist; --force rebuilds the
+--  whole scope.
+-- ----------------------------------------------------------------------------
+DROP TABLE IF EXISTS analysis.mov_ave_high_low_pct CASCADE;
+DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_high_low_pct';
+
+CREATE TABLE analysis.mov_ave_high_low_pct (
+    sec_type                        TEXT          NOT NULL,  -- 'etf' | 'index' | 'stock'
+    code                            TEXT          NOT NULL,
+    date_year_month                 DATE          NOT NULL,  -- the month's FIRST day, lookback period
+    period                          INTEGER       NOT NULL,  -- 255, 500, 750, 1275
+    pct_type                        INTEGER       NOT NULL,  -- 1 | 5 | 10 (percent)
+    high_val                        NUMERIC(10,2) NOT NULL,
+    low_val                         NUMERIC(10,2) NOT NULL,
+
+    CONSTRAINT pk_mov_ave_high_low_pct PRIMARY KEY (sec_type, code, date_year_month, period, pct_type)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'mov_ave_high_low_pct', 8);
+
+COMMENT ON TABLE  analysis.mov_ave_high_low_pct            IS 'Multi-period high/low price percentile BAND (ETF + Index + Stock). One row per (sec_type, code, date_year_month, period, pct_type): a symmetric quantile envelope of the security''s daily price range over the lookback period — low_val = the pct_type-th percentile of daily LOW prices, high_val = the (100 - pct_type)-th percentile of daily HIGH prices (linear interpolation), both over the TRAILING (backward-only) window of `period` trading rows (255/500/750/1275 = ~1/2/3/5 trading years — the ma255 yearly-window precedent) ENDING at date_year_month''s last trading row. pct_type 1 = near-full range of the window ([1st pct of lows, 99th pct of highs]); pct_type 10 = core envelope ([10th, 90th]). One band per calendar month, anchored at the month''s last trading row and stored under the month''s first day — 12 bands (4 periods x 3 pct_types) per (sec_type, code, month). Windows near a code''s history start are naturally truncated; fewer than 255 rows (1 trading year) of history yields no band. Trailing windows make historical bands immutable once computed — only missing (code, month) pairs are computed incrementally (a pair is complete when all 12 rows exist); --force rebuilds the whole scope. Internal step of analyze.mov_ave_spread (high_low_pct.py), reusing the parent source DataFrame''s high/low columns.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct.code       IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct.date_year_month IS 'Calendar month of the band, stored as the month''s FIRST day (e.g. 2026-09-01) — the anchor of the lookback period: the percentile window ENDS (inclusive) at the month''s LAST trading row and spans the preceding `period` trading rows. Part of the PK.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct.period     IS 'Lookback window length in trading rows: 255 / 500 / 750 / 1275 (~1 / 2 / 3 / 5 trading years — the ma255 yearly-window precedent). The window is TRAILING — it ends inclusive at date_year_month''s last trading row and reaches back `period` rows. Part of the PK (one band set per period); near a code''s history start the window is naturally truncated to the available rows (bands appear once >= 255 rows of history exist).';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct.pct_type   IS 'Band tightness parameter in percent: the LOW leg uses the pct_type-th percentile of daily low prices, the HIGH leg the (100 - pct_type)-th percentile of daily high prices. Allowed values 1 / 5 / 10 — 1 = near-full range of the window, 5 = wide envelope, 10 = core envelope. Part of the PK (one band set per level).';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct.high_val   IS 'Upper band: the (100 - pct_type)-th percentile (linear interpolation) of daily HIGH prices over the trailing `period`-row window ending at date_year_month''s last trading row. Price units, rounded to 2 decimals.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct.low_val    IS 'Lower band: the pct_type-th percentile (linear interpolation) of daily LOW prices over the same trailing `period`-row window. Price units, rounded to 2 decimals; <= high_val for any real price history.';
+
+-- ----------------------------------------------------------------------------
+--  Table: analysis.mov_ave_high_low_pct_streaks  (band-BREAK excursion
+--         streaks audited against analysis.mov_ave_high_low_pct bands,
+--         one row per excursion streak x security x period x pct_type)
+--
+--  For each (period, pct_type) band, a day is OUT-OF-BAND when its
+--  adjusted close falls ABOVE high_val or BELOW low_val (close-based
+--  breakout test — intraday spikes don't trigger, the streak's own
+--  high/low columns carry that information). An excursion STREAK is
+--  the maximal consolidation of same-side out-of-band days where
+--  brief re-entries into the band of up to HIGH_LOW_PCT_GAP_TOLERANCE
+--  (5) consecutive trading days are TOLERATED (bridged — the 5-day
+--  gap stays inside the streak's span); a longer in-band gap ends the
+--  streak, as does a side switch (above -> below or vice versa starts
+--  a new streak). start_date/end_date bound the streak's span (the
+--  first/last OUT-OF-BAND trading row; bridged in-band days in
+--  between count in day_count). Episodes can span calendar months;
+--  date_year_month records the streak's START month (the band month
+--  context in which the excursion began).
+--
+--  EPISODES SHIFT when new data arrives: the last streak of a code is
+--  open-ended until a 6+-day in-band gap (or a side switch) closes it,
+--  and trailing in-band days may later become a bridged gap — so, like
+--  mov_ave_market_hypes episodes (margin_changes precedent), streaks
+--  are rebuilt WHOLESALE per sec_type on every run that processes the
+--  sec_type; per-date PK coverage diffing does not apply.
+--
+--  Populated by the internal streaks step of `analyze.mov_ave_spread`
+--  (see high_low_pct_streaks.py; joins the parent source DataFrame's
+--  open/high/low/price/trading_amount against the bands table — bands
+--  are computed by the high-low-percentile step earlier in the same
+--  run).
+-- ----------------------------------------------------------------------------
+DROP TABLE IF EXISTS analysis.mov_ave_high_low_pct_streaks CASCADE;
+DELETE FROM analysis.analysis_identity WHERE name = 'mov_ave_high_low_pct_streaks';
+
+CREATE TABLE analysis.mov_ave_high_low_pct_streaks (
+    sec_type                        TEXT          NOT NULL,  -- 'etf' | 'index' | 'stock'
+    code                            TEXT          NOT NULL,
+    date_year_month                 DATE          NOT NULL,  -- the streak's START month FIRST day (band month context)
+    period                          INTEGER       NOT NULL,  -- 255, 500, 750, 1275
+    pct_type                        INTEGER       NOT NULL,  -- 1 | 5 | 10 (percent)
+
+    start_date                      DATE          NOT NULL,  -- the first trading row in the streak
+    end_date                        DATE          NOT NULL,  -- the last trading row in the streak
+    open                            NUMERIC(10,2) NOT NULL,  -- the open price on start_date
+    close                           NUMERIC(10,2) NOT NULL,  -- the close price on end_date
+    high                            NUMERIC(10,2) NOT NULL,  -- the high price in the streak
+    low                             NUMERIC(10,2) NOT NULL,  -- the low price in the streak
+    day_count                       INTEGER       NOT NULL,  -- the number of trading rows in the streak
+    std_dev                         NUMERIC(10,2) NOT NULL,  -- the standard deviation of daily price changes in the streak, rounded to 2 decimals
+    daily_ave_trading_amt           NUMERIC(24,2) NOT NULL,  -- the average trading amount in the streak, rounded to 2 decimals
+
+    CONSTRAINT pk_mov_ave_high_low_pct_streaks PRIMARY KEY (sec_type, code, date_year_month, period, pct_type, start_date, end_date)
+) PARTITION BY HASH (code);
+
+-- Native hash partitions (8) keyed by code — created via the shared util
+-- (database/sql/00_partition_utils.sql); children are named _p00.._p07
+SELECT public.create_hash_partitions('analysis', 'mov_ave_high_low_pct_streaks', 8);
+
+COMMENT ON TABLE  analysis.mov_ave_high_low_pct_streaks            IS 'Band-BREAK excursion streaks audited against analysis.mov_ave_high_low_pct (ETF + Index + Stock). One row per excursion streak per (sec_type, code, period, pct_type): a day is OUT-OF-BAND when its adjusted close falls ABOVE the band''s high_val or BELOW low_val (close-based breakout test — intraday spikes do not trigger; the streak''s own high/low columns carry that information). An excursion streak is the maximal consolidation of same-side out-of-band days where re-entries into the band of up to 5 consecutive trading days are TOLERATED (bridged — the in-band gap stays inside the streak''s span); a longer in-band gap ends the streak, as does a side switch (above -> below or vice versa starts a new streak). start_date/end_date bound the span (first/last OUT-OF-BAND trading row; bridged in-band days in between count in day_count). Streaks can span calendar months; date_year_month records the START month. Episodes SHIFT with new data (the last streak of a code is open-ended until a 6+-day in-band gap or side switch closes it, and trailing in-band days may become a bridged gap later), so streaks are rebuilt WHOLESALE per sec_type on every run that processes the sec_type (mov_ave_market_hypes episodes / margin_changes precedent). Internal step of analyze.mov_ave_spread (high_low_pct_streaks.py), joining the parent source DataFrame against the bands table computed earlier in the same run.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.code       IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.date_year_month IS 'The streak''s START month, stored as the month''s FIRST day — the band-month context in which the excursion began (the first out-of-band day is tested against this month''s band row). Streaks may span later months; each day is tested against its OWN month''s band. Part of the PK.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.period     IS 'Lookback window length of the audited band in trading rows: 255 / 500 / 750 / 1275 (~1 / 2 / 3 / 5 trading years) — the band''s `period` in analysis.mov_ave_high_low_pct. Part of the PK (streaks are audited per band period).';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.pct_type   IS 'Band tightness parameter of the audited band in percent: 1 / 5 / 10 — the band''s `pct_type` in analysis.mov_ave_high_low_pct (the band whose high_val/low_val the close breaks). Part of the PK (streaks are audited per band level).';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.start_date IS 'First trading row of the streak: the first OUT-OF-BAND day (adjusted close above high_val or below low_val). Part of the PK.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.end_date   IS 'Last trading row of the streak: the last OUT-OF-BAND day. Bridged in-band days (<= 5-day tolerated re-entries) lie strictly between start_date and end_date; trailing in-band days after end_date are NOT part of the streak (they may later become a bridged gap — episodes shift, hence the wholesale rebuild). Part of the PK.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.open       IS 'Adjusted open price on start_date (the streak''s first out-of-band day), rounded to 2 decimals.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.close      IS 'Adjusted close price on end_date (the streak''s last out-of-band day), rounded to 2 decimals.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.high       IS 'Maximum adjusted HIGH price over all trading rows in the streak span [start_date, end_date] (including bridged in-band days) — may exceed the band''s high_val, rounded to 2 decimals.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.low        IS 'Minimum adjusted LOW price over all trading rows in the streak span [start_date, end_date] (including bridged in-band days) — may fall below the band''s low_val, rounded to 2 decimals.';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.day_count  IS 'Number of trading rows in the streak span [start_date, end_date] — out-of-band days plus bridged in-band days (tolerated <= 5-day re-entries).';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.std_dev    IS 'Population standard deviation (ddof=0) of day-over-day adjusted-close changes within the streak span, in PRICE units, rounded to 2 decimals (0.00 for single-day streaks).';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.daily_ave_trading_amt IS 'Average trading_amount over all trading rows in the streak span (including bridged in-band days; NULL-amount rows are skipped), rounded to 2 decimals. 0.00 is the sentinel for spans with NO trading-amount data at all (some indices publish NULL amounts on scattered dates).';

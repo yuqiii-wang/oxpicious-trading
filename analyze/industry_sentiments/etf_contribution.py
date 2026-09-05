@@ -1,14 +1,14 @@
 """Internal ETF contribution step for analyze.industry_sentiments.
 
-Aggregates analysis.sec_alloc_perf_attribution.code_etf_trading_amount to the
+Aggregates stats.cross_stats.code_etf_trading_amount (sec_type='index') to the
 industry level, producing analysis.industry_etf_contribution with one row per
 (date, industry_id, pool_size).
 
 AGGREGATION
   industry_etf_trading_amount = SUM(code_etf_trading_amount) across member
-  indices in the industry (from sec_alloc_perf_attribution where
-  sec_type='index'). Each member index's code_etf_trading_amount is the
-  aggregate ETF turnover tracking that index (precomputed in
+  indices in the industry (from stats.cross_stats where sec_type='index',
+  built by builds.cross_stats). Each member index's code_etf_trading_amount
+  is the aggregate ETF turnover tracking that index (precomputed in
   stats.index_exts.total_etf_trading_amount).
 
   Cross-sectional count across member indices (same GROUP BY):
@@ -42,7 +42,7 @@ IMPLEMENTATION
   INSERT. Incremental mode: date filter + ON CONFLICT DO UPDATE.
 
 DEPENDENCY
-  Depends on analysis.sec_alloc_perf_attribution being populated first. If
+  Depends on stats.cross_stats (sec_type='index') being populated first. If
   that table has no index rows with non-NULL code_etf_trading_amount, the
   step exits gracefully.
 
@@ -80,7 +80,7 @@ ANALYSIS_NAME = "industry_etf_contribution"
 ANALYSIS_DESCRIPTION = (
     "Per-(date, industry_id, pool_size) aggregate ETF trading turnover. "
     "industry_etf_trading_amount = SUM(code_etf_trading_amount) across "
-    "member indices from analysis.sec_alloc_perf_attribution (sec_type"
+    "member indices from stats.cross_stats (sec_type"
     "='index'). industry_etf_count = COUNT of member indices with non-NULL "
     "ETF amount. Each member index contributes its aggregate ETF turnover "
     "(precomputed in stats.index_exts). pool_size: small (stock_num<51), "
@@ -88,8 +88,8 @@ ANALYSIS_DESCRIPTION = (
     "industry_etf_trading_amount_ma5 = 5-day MA, "
     "industry_etf_trading_amount_ma20 = 20-day MA. Built by "
     "analyze.industry_sentiments.etf_contribution (internal step, "
-    "truncate-then-recompute). Depends on "
-    "analysis.sec_alloc_perf_attribution being populated first."
+    "truncate-then-recompute). Depends on stats.cross_stats "
+    "(sec_type='index') being populated first."
 )
 
 
@@ -98,10 +98,11 @@ ANALYSIS_DESCRIPTION = (
 # ---------------------------------------------------------------------------
 
 # Guard: bail out early if the upstream table has no index rows with
-# non-NULL code_etf_trading_amount.
+# non-NULL code_etf_trading_amount. Source: stats.cross_stats PAIR grain
+# (built by builds.cross_stats — the former analysis.sec_alloc_perf_attribution).
 COUNT_SOURCE_SQL = """
     SELECT COUNT(*) AS n
-    FROM analysis.sec_alloc_perf_attribution
+    FROM stats.cross_stats
     WHERE sec_type = 'index'
       AND code_etf_trading_amount IS NOT NULL
 """
@@ -110,7 +111,7 @@ COUNT_SOURCE_SQL = """
 #
 # CTE chain:
 #   etf_amt       — DISTINCT (code, date, code_etf_trading_amount) from
-#                   sec_alloc_perf_attribution (sec_type='index'). DISTINCT
+#                   stats.cross_stats (sec_type='index'). DISTINCT
 #                   because the same value appears for every benchmark_code.
 #                   {date_filter} applies HERE ONLY (incremental mode targets
 #                   specific dates).
@@ -134,7 +135,7 @@ WITH etf_amt AS (
         sa.code,
         sa.date,
         sa.code_etf_trading_amount
-    FROM analysis.sec_alloc_perf_attribution sa
+    FROM stats.cross_stats sa
     WHERE sa.sec_type = 'index'
       AND sa.code_etf_trading_amount IS NOT NULL
       {date_filter}
@@ -214,7 +215,7 @@ async def run_etf_contribution(
     a single atomic-ish batch.
 
     Pipeline
-      1. Guard: if sec_alloc_perf_attribution has no index rows with non-NULL
+      1. Guard: if stats.cross_stats has no index rows with non-NULL
          code_etf_trading_amount, exit gracefully.
       2. Force mode: TRUNCATE analysis.industry_etf_contribution.
       3. SQL: aggregate code_etf_trading_amount per (date, industry_id,
@@ -247,7 +248,7 @@ async def run_etf_contribution(
     # ---- Step 1: guard — check upstream availability ----------------
     n_src = await conn.fetchval(COUNT_SOURCE_SQL)
     if not n_src:
-        print("\n[e1/5] sec_alloc_perf_attribution has no index rows with "
+        print("\n[e1/5] stats.cross_stats has no index rows with "
               "non-NULL code_etf_trading_amount — nothing to materialize. "
               "Skipping etf_contribution step.", flush=True)
         return

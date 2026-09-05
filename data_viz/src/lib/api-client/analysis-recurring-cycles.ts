@@ -3,7 +3,6 @@ import type {
   SectorNode,
   StrategyNode,
   RecurringCyclesSecType,
-  RecurringCyclesCodesResponse,
   RecurringCyclesChartResponse,
   RecurringCyclesSpectrumResponse,
 } from "@shared/types";
@@ -12,23 +11,12 @@ import type {
 //  Analysis Commons — Recurring Cycles (Index only)
 //  All endpoints require a `sec_type` query param ('index') and rely on the
 //  LRU TTL cache only (no version check; the analysis schema is recomputed
-//  offline by the Python build script).
+//  offline by the Python build script). The navigation trees are served from
+//  the analysis.recurring_cycles_codes registry; all recurring-cycles DATA
+//  endpoints take a `code` param and filter by it (PK-index-driven reads).
 // ---------------------------------------------------------------------------
-export function fetchRecurringCyclesCodes(
-  secType: RecurringCyclesSecType,
-  exchange?: string | null,
-): Promise<RecurringCyclesCodesResponse> {
-  const params = new URLSearchParams();
-  if (secType) params.set("sec_type", secType);
-  if (exchange) params.set("exchange", exchange);
-  const qs = params.toString();
-  return fetchJson<RecurringCyclesCodesResponse>(
-    `/api/analysis/recurring-cycles/codes${qs ? `?${qs}` : ""}`,
-  );
-}
-
 /** Themes tree (L1 sector → L2 industry → items) for SecClassificationNav.
- *  Only includes codes that have rows in analysis.recurring_cycles. */
+ *  Only includes codes registered in analysis.recurring_cycles_codes. */
 export function fetchRecurringCyclesThemes(
   secType: RecurringCyclesSecType,
   exchange?: string | null,

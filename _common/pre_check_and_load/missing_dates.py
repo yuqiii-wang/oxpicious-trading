@@ -206,10 +206,10 @@ async def filter_rows_to_missing_dates_async(
     this is effectively a no-op (returns all rows). The overhead is one
     ``SELECT DISTINCT date`` query per call.
 
-    Used by analyze.mov_ave_spread (detail),
-    analyze.industry_sentiments (main table), and
-    analyze.sec_alloc_perf_attribution (build_and_insert) to skip
-    already-populated dates before bulk upsert.
+    Used by analyze.mov_ave_spread (detail) and
+    analyze.industry_sentiments (main table) to skip
+    already-populated dates before bulk upsert (formerly also
+    analyze.sec_alloc_perf_attribution, migrated to builds.cross_stats).
 
     Args:
         conn: asyncpg connection.

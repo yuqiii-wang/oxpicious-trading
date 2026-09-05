@@ -73,10 +73,10 @@ export function fetchMovAveSpreadChart(
 }
 
 /** Forecast buckets table (2nd plot beneath the spread chart): one code's
- *  mov_rsi / mov_std buckets joined 1:1 with their analysis_forecasts
- *  forecast_results columns. ALL stat_months of the code are returned
- *  (optionally narrowed to stat_months >= `month`). The response lists all
- *  available months for the month tick-filter. */
+ *  mov_rsi / mov_std / mov_gap / px_vol buckets joined 1:1 with their
+ *  analysis_forecasts forecast_results columns. ALL stat_months of the
+ *  code are returned (optionally narrowed to stat_months >= `month`). The
+ *  response lists all available months for the month tick-filter. */
 export function fetchMovAveSpreadForecast(
   code: string,
   secType: MaSpreadSecType,

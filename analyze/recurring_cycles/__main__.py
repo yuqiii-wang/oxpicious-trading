@@ -21,7 +21,13 @@ Per sec_type (index / etf / stock):
      - ``--force``: DELETE sec_type rows + chunked COPY-insert.
      - default: chunked upsert only rows whose (code, last_date) is in
        the per-code missing-target set (ON CONFLICT DO UPDATE on PK).
-  5. Upsert analysis_identity.
+  5. Sync the analysis.recurring_cycles_codes registry (populated-codes
+     list per sec_type) so the UI page-load endpoints resolve "codes
+     with data" from the tiny registry instead of scanning the main
+     table. --force full-replaces the sec_type's registry rows; the
+     single-code mode deletes + re-registers that code; incremental
+     upserts the codes whose rows were written.
+  6. Upsert analysis_identity.
 
 Incremental mode rationale
   The periodicity for a past date doesn't change retroactively (close
@@ -79,6 +85,7 @@ from analyze._common import (  # noqa: E402
 )
 from analyze.recurring_cycles.config import (  # noqa: E402
     TABLE_NAME,
+    CODES_TABLE_NAME,
     ANALYSIS_NAME,
     DESCRIPTION,
     SEC_TYPES,
@@ -343,6 +350,56 @@ async def _write_rows(
 
 
 # ---------------------------------------------------------------------------
+#  Populated-codes registry (analysis.recurring_cycles_codes)
+# ---------------------------------------------------------------------------
+
+async def _refresh_codes_registry(
+    conn,
+    sec_type: str,
+    written_codes: list[str],
+    *,
+    full_replace: bool,
+    deleted_code: str | None = None,
+) -> None:
+    """Sync analysis.recurring_cycles_codes with the codes just written.
+
+    The registry backs the UI page-load endpoints (themes / strategy-themes):
+    "which codes have recurring-cycles data" must be answerable from the
+    ~500-row registry instead of a SELECT DISTINCT over the 55 GB
+    partitioned main table on every page load.
+
+    - full_replace (``--force``): DELETE all sec_type registry rows, then
+      insert the written codes (the force pass rewrote the whole sec_type).
+    - deleted_code (single-code mode): DELETE that code's registry row
+      first — its big-table rows were wiped and may not have been rebuilt.
+    - otherwise (incremental): plain upsert of the written codes.
+    """
+    t0 = time.time()
+    if deleted_code is not None:
+        await conn.execute(
+            f"DELETE FROM {CODES_TABLE_NAME} "
+            f"WHERE sec_type = $1 AND code = $2",
+            sec_type, deleted_code,
+        )
+    if full_replace:
+        await conn.execute(
+            f"DELETE FROM {CODES_TABLE_NAME} WHERE sec_type = $1",
+            sec_type,
+        )
+    if written_codes:
+        await conn.execute(
+            f"INSERT INTO {CODES_TABLE_NAME} (sec_type, code) "
+            f"SELECT $1, unnest($2::text[]) "
+            f"ON CONFLICT (sec_type, code) DO NOTHING",
+            sec_type, written_codes,
+        )
+    verb = "full-replaced" if full_replace else "upserted"
+    print(f"  [{sec_type}]   codes registry {verb} with "
+          f"{len(written_codes):,} codes ({time.time() - t0:.1f}s)",
+          flush=True)
+
+
+# ---------------------------------------------------------------------------
 #  Per-sec_type pipeline
 # ---------------------------------------------------------------------------
 
@@ -434,6 +491,7 @@ async def _process_sec_type(
             f"DELETE FROM {TABLE_NAME} WHERE sec_type = $1", sec_type
         )
     total = 0
+    written_codes: set[str] = set()
     n_batches = (len(code_list) + _COMPUTE_BATCH_CODES - 1) \
         // _COMPUTE_BATCH_CODES
     for i in range(n_batches):
@@ -447,12 +505,25 @@ async def _process_sec_type(
         )
         print(f"  [{sec_type}]   batch {i + 1}/{n_batches}: "
               f"{len(result_df):,} recurring-cycles rows", flush=True)
+        if not result_df.empty:
+            written_codes.update(
+                result_df["code"].astype(str).unique().tolist()
+            )
         # ---- Write this batch to the DB ---------------------------------
         total += await _write_rows(
             conn, sec_type, result_df,
             force=force, target_dates=target_dates, code=code,
             wipe=False,
         )
+
+    # ---- Sync the populated-codes registry --------------------------------
+    # Registry mirrors the big table's (sec_type, code) universe so the UI
+    # page-load endpoints never scan recurring_cycles itself.
+    await _refresh_codes_registry(
+        conn, sec_type, sorted(written_codes),
+        full_replace=force,
+        deleted_code=code,
+    )
     return total
 
 

@@ -23,6 +23,14 @@ from analyze.pe_and_dividends.config import (
     STABILITY_WINDOW_YEARS,
 )
 
+# Minimum representable dividend_yield at the detail table's NUMERIC(10,6)
+# storage precision: a value below half of 1e-6 rounds to stored 0.000000,
+# and the schema treats exact 0.0 as NO DATA (a yield is strictly positive
+# whenever a dividend exists). Null these micro-quotients instead so the
+# stored value is never an exact zero — otherwise the incremental
+# self-heal (which re-upserts zero rows) would flag them forever.
+MIN_STORED_YIELD = 5e-7
+
 
 # ---------------------------------------------------------------------------
 #  trailing-12m DPS — event-based rolling 365d sum per stock
@@ -126,57 +134,83 @@ def compute_trailing_12m_dps(
 
 
 # ---------------------------------------------------------------------------
-#  Index dividend_yield — weighted sum of constituent DPS / close
+#  Index dividend_yield — cap-weighted average of constituent yields
 # ---------------------------------------------------------------------------
 def compute_index_dividend_yield(
-    close_df: pd.DataFrame,
     composition_df: pd.DataFrame,
     stock_dps_df: pd.DataFrame,
+    stock_close_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Compute dividend_yield for each index code per date.
 
-    index_dps[index_code, date] = SUM(weight_fraction × stock_trailing_dps)
-    dividend_yield = index_dps / close
+    dividend_yield[index_code, date] = SUM_s ( weight_fraction_s × dps_s,t / close_s,t )
+
+    the cap-weighted average of the constituents' own trailing-12m yields
+    (numerator and denominator are both per-share quantities, so the
+    result is a true yield).
+
+    UNIT NOTE (the reason stock closes are required): dividing the
+    weighted DPS (CNY per share of the average constituent) by the index
+    CLOSE (index POINTS) — the former formula — produces values ~100x
+    too small (the SSE composite showed ~0.05% instead of ~2.5%):
+    capitalization weights do not convert per-share CNY into
+    index-point CNY. Averaging the constituents' own dps/close ratios
+    keeps every term per-share and the weights only express composition.
 
     Args:
-        close_df: DataFrame with columns code, date, close (index data).
         composition_df: DataFrame with columns index_code, stock_code,
-            weight_pct.
-        stock_dps_df: DataFrame with columns code, date, trailing_dps
-            (constituent stock trailing-12m DPS).
+            weight_pct (the LATEST snapshot; stock_code suffix-stripped —
+            the caller normalizes).
+        stock_dps_df: DataFrame with columns code (suffix-stripped), date,
+            trailing_dps (constituent trailing-12m DPS).
+        stock_close_df: DataFrame with columns code (suffix-stripped),
+            date, close — the constituents' own close prices.
 
     Returns:
-        DataFrame with columns: code, date, dividend_yield.
+        DataFrame with columns: code (index_code), date, dividend_yield.
+        One row per (index, date) where at least one constituent has both
+        a trailing DPS and a close.
     """
-    if close_df.empty or composition_df.empty or stock_dps_df.empty:
+    if composition_df.empty or stock_dps_df.empty or stock_close_df.empty:
         return pd.DataFrame(columns=["code", "date", "dividend_yield"])
 
-    # Prepare composition: weight_fraction = weight_pct / 100
     comp = composition_df.copy()
     comp["weight_fraction"] = comp["weight_pct"] / 100.0
 
-    # Join stock DPS with composition on stock_code
+    # Join constituent DPS with composition weights, then with the
+    # constituent's own close (all keys are suffix-stripped codes).
     merged = stock_dps_df.merge(
         comp[["index_code", "stock_code", "weight_fraction"]],
         left_on="code",
         right_on="stock_code",
         how="inner",
     )
-    merged["weighted_dps"] = merged["weight_fraction"] * merged["trailing_dps"]
-
-    # Group by (index_code, date) and sum
-    index_dps = merged.groupby(["index_code", "date"], sort=False)["weighted_dps"].sum().reset_index()
-    index_dps = index_dps.rename(columns={"index_code": "code", "weighted_dps": "index_dps"})
-
-    # Join with close and compute dividend_yield
-    result = close_df.merge(index_dps, on=["code", "date"], how="left")
-    result["dividend_yield"] = np.where(
-        (result["close"].notna()) & (result["close"] > 0) & (result["index_dps"].notna()),
-        result["index_dps"] / result["close"],
-        np.nan,
+    merged = merged.merge(
+        stock_close_df.rename(columns={"close": "stock_close"}),
+        on=["code", "date"],
+        how="inner",
+    )
+    merged["weighted_yield"] = (
+        merged["weight_fraction"]
+        * merged["trailing_dps"]
+        / merged["stock_close"]
     )
 
-    return result[["code", "date", "dividend_yield"]]
+    index_dy = (
+        merged.groupby(["index_code", "date"], sort=False)["weighted_yield"]
+        .sum()
+        .reset_index()
+        .rename(columns={"index_code": "code", "weighted_yield": "dividend_yield"})
+    )
+    # Strictly-positive gate: every term is >= 0, so a sum of exactly 0
+    # means NO constituent had a dividend in its trailing window (the
+    # source dividend history has limited depth) — that is NO DATA, not a
+    # 0% yield. NULL it (same semantics as the stock/etf dps > 0 gate),
+    # along with quotients below the NUMERIC(10,6) storage floor.
+    index_dy["dividend_yield"] = index_dy["dividend_yield"].where(
+        index_dy["dividend_yield"] >= MIN_STORED_YIELD
+    )
+    return index_dy[["code", "date", "dividend_yield"]]
 
 
 # ---------------------------------------------------------------------------
@@ -236,11 +270,9 @@ def compute_simple_dividend_yield(
     )
     dps = merged["running_dps"].fillna(0.0)
     close = merged["close"]
-    merged["dividend_yield"] = np.where(
-        close.notna() & (close > 0) & (dps > 0),
-        dps / close,
-        np.nan,
-    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        quot = np.where(close > 0, dps / close, np.nan)
+    merged["dividend_yield"] = np.where(quot >= MIN_STORED_YIELD, quot, np.nan)
 
     return merged[["code", "date", "dividend_yield"]]
 

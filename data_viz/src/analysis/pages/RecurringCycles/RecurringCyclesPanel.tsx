@@ -314,12 +314,14 @@ export function RecurringCyclesPanel({
               `≥ 2.0 ⇔ p<0.01). Sorted by significance — the day periods ` +
               `whose repeated rise/drop spacing beats chance surface ` +
               `first. ◆ green = the recurring period (strength argmax). ` +
-              `Column headers carry filters (ticks / numeric ranges).`
+              `Column headers carry filters only when the backend enables ` +
+              `them (enable_filters — ticks / numeric ranges).`
             }
           >
             <PoissonAuditTable
               spectrums={spectrum.spectrums}
               scopeKey={`${code}-${effectiveDate}`}
+              enableFilters={spectrum.enable_filters ?? false}
             />
           </ChartCard>
         )}

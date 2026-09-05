@@ -30,12 +30,12 @@
  *
  * NOTE: the target set is the FULL set of selected member indices (matching
  * the L2/L3 chip counts exactly) — it is NOT narrowed to indices that have
- * sec_alloc_perf_attribution rows. Indices without attribution data still
- * appear in the top plot (close curve) and pagination; their PerfAttrPanel
- * gracefully reports "No benchmark data for {code}." The perf-attr codes
- * list is fetched only to SORT (indices WITH allocation data first, so the
- * first paginated panels show real attribution bars) and to surface the
- * allocation-data count in the subtitle.
+ * stats.cross_stats (sec_type='index') rows. Indices without attribution data
+ * still appear in the top plot (close curve) and pagination; their
+ * PerfAttrPanel gracefully reports "No benchmark data for {code}." The
+ * perf-attr codes list is fetched only to SORT (indices WITH allocation data
+ * first, so the first paginated panels show real attribution bars) and to
+ * surface the allocation-data count in the subtitle.
  */
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -82,7 +82,7 @@ export function IndexAllocationView({
   const [page, setPage] = useState(1);
 
   // Fetch the list of index codes that have rows in
-  // analysis.sec_alloc_perf_attribution (once, on mount). Used ONLY for
+  // stats.cross_stats (sec_type='index') (once, on mount). Used ONLY for
   // SORTING (indices WITH allocation data are paginated first, so the user
   // sees real attribution bars before "No benchmark data" panels) and for the
   // subtitle count. The target set itself is NOT filtered by this — every

@@ -19,11 +19,15 @@ grid and each RSI window W:
      stack (columns are config-independent), then the mask is SPARSIFIED
      with a single np.nonzero: every downstream reduction (cooldown
      counts, market-hype split, per-horizon mean / high / low n-day
-     forward change and P(reverse > 1%) via wide.aggregate_horizons_sparse)
+     forward change and P(reverse beyond the code's adaptive
+     reverse_threshold) via wide.aggregate_horizons_sparse)
      works on the trigger-cell lists — bincount/reduceat passes scaling
      with the trigger count instead of dense T·C·K tensors, and the row
      payload is expanded by wide.build_result_rows (vectorized rounding).
-     No per-config / per-code Python loops.
+     No per-config / per-code Python loops. Per (code, horizon) the
+     reversal probability is computed against the code's ADAPTIVE
+     reverse threshold (wide.reverse_thresholds: k·σ of the code's
+     window forward changes in "std" mode, fixed-bar fallback).
 
 Yields (stat_month, rows) so __main__ can split each row into the
 mov_rsi motivation dicts and the forecast_results result dicts and write
@@ -48,6 +52,8 @@ from analyze.analysis_forecasts.wide import (
     aggregate_horizons_sparse,
     apply_cooldown,
     build_result_rows,
+    reverse_thresholds,
+    window_sigmas,
 )
 
 
@@ -60,8 +66,8 @@ def _thresholds(
     """Column-wise linear-interpolated quantile gather from the sorted
     window matrix S (NaN-last). Columns with valid_n == 0 → NaN.
 
-    Also imported by analyze.analysis_signals.compute (single-q form) —
-    keep the signature.
+    Also imported by analyze.analysis_signals.signals._base
+    (single-q form) — keep the signature.
     """
     n_safe = np.maximum(valid_n, 1)
     pos = q * (n_safe - 1)
@@ -88,7 +94,7 @@ def compute_rsi_results(
     Args:
         mats: wide rsi matrices keyed f"rsi_{w}".
         chg:  shared change matrices (build_change_matrices):
-              NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS, DN, UP.
+              NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS.
         windows: resolved MonthWindow list for the target months.
         codes: sorted code list (matrix column order).
         sec_type: emitted into every row.
@@ -129,6 +135,9 @@ def compute_rsi_results(
 
         FINs = {n: chg[f"FIN_{n}"][lo:hi] for n in FORWARD_HORIZONS}
         NC0s = {n: chg[f"NC0_{n}"][lo:hi] for n in FORWARD_HORIZONS}
+        # Per-(code, horizon) reversal bar for this window (adaptive
+        # k·σ of the code's window forward changes; fixed fallback).
+        thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
         HY = hype[lo:hi]
         live2 = live[:, None]
 
@@ -225,7 +234,7 @@ def compute_rsi_results(
                             continue
 
                         agg = aggregate_horizons_sparse(
-                            st, sc, fk, C, P, side, NC0s, FINs
+                            st, sc, fk, C, P, side, NC0s, FINs, thr_n
                         )
                         kk, ii = np.nonzero(emit.T)
                         base: list[dict] = [
@@ -244,7 +253,7 @@ def compute_rsi_results(
                             }
                             for k, i in zip(kk.tolist(), ii.tolist())
                         ]
-                        rows.extend(build_result_rows(agg, kk, ii, base))
+                        rows.extend(build_result_rows(agg, kk, ii, base, thr_n))
 
         if rows:
             yield mw.stat_month, rows

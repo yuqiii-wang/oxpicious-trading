@@ -36,6 +36,7 @@ import {
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import AnalysisRunButton from "@/components/AnalysisRunButton";
+import EChart from "@/components/EChart";
 import IndexPanel from "@/dataviz/features/index-baseline/IndexPanel";
 import EtfMarginPanel from "@/dataviz/features/etf-margin/EtfMarginPanel";
 import StockPanel from "@/dataviz/features/stock-baseline/StockPanel";
@@ -46,6 +47,8 @@ import {
   fetchEtfMarginCombined,
   fetchStocksCombined,
   fetchPeAndDividendStats,
+  fetchPeAndDividendStreaks,
+  fetchPeAndDividendChart,
   invalidateCacheForUrl,
 } from "@/lib/api-client";
 import type {
@@ -54,7 +57,12 @@ import type {
   StockBundle,
   PeAndDividendStatsResponse,
   PeAndDividendStatsRow,
+  PeAndDividendStreaksResponse,
+  PeAndDividendStreak,
+  PeAndDividendStreakMetric,
+  PeAndDividendChartResponse,
 } from "@shared/types";
+import { buildStreakChartOption, type MetricObsRow } from "./chartOption/streakChartOption";
 import type { PanelProps } from "./types";
 import {
   expandedTableBodyCellSx,
@@ -73,6 +81,42 @@ function fmtMonth(dateStr: string): string {
 /** Return the YYYY-MM key for a YYYY-MM-DD date string. */
 function monthKey(dateStr: string): string {
   return dateStr.slice(0, 7);
+}
+
+// ---- Band-break excursion streaks (analysis.pe_and_dividend_pct_streaks,
+// the mov_ave_high_low_pct_streaks pattern applied to pe_ma20 /
+// dividend_yield) — nested metric → period → pct selection mirrors the
+// MaSpread High/Low Streaks buttons. ----
+
+/** Band lookback windows (observations) — mirrors PD_PCT_PERIODS. */
+const STREAK_PERIODS = [255, 500, 750, 1275] as const;
+/** Band tightness levels (percent) — mirrors PD_PCT_TYPES. */
+const STREAK_PCTS = [1, 5, 10] as const;
+/** In-band gap tolerance bridged inside ONE streak (trading days). */
+const STREAK_GAP_TOLERANCE = 5;
+/** Max streak rows rendered in the table (most recent first). */
+const STREAK_TABLE_CAP = 500;
+/** Accent for high-side streaks (stretched metric — the MaSpread high
+ *  streak accent). */
+const STREAK_HIGH_ACCENT = "#AB47BC";
+/** Accent for low-side streaks (compressed metric — the MaSpread low
+ *  streak accent). */
+const STREAK_LOW_ACCENT = "#F9A825";
+
+const STREAK_METRICS: Array<{ value: PeAndDividendStreakMetric; label: string }> = [
+  { value: "pe_ma20", label: "PE MA20" },
+  { value: "dividend_yield", label: "Div Yield" },
+];
+
+/** Format one streak's metric value: dividend_yield is a FRACTIONAL ratio
+ *  (0.035 = 3.5%) — scale to percent for display; pe_ma20 is a plain
+ *  multiple. */
+function fmtStreakValue(
+  metric: PeAndDividendStreakMetric,
+  v: number | null | undefined,
+): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return metric === "dividend_yield" ? `${fmtNum(v * 100, 2)}%` : fmtNum(v, 2);
 }
 
 /** Opt-in per-column header filters — Month is a date-range selector (month
@@ -104,6 +148,26 @@ export function PeAndDividendPanel({
   const [statsData, setStatsData] = useState<PeAndDividendStatsResponse | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState<string | null>(null);
+
+  // ---- Band-break excursion streaks data ----------------------------------
+  const [streakData, setStreakData] = useState<PeAndDividendStreaksResponse | null>(null);
+  const [streaksLoading, setStreaksLoading] = useState(false);
+  const [streaksError, setStreaksError] = useState<string | null>(null);
+
+  // ---- Daily chart rows (observation series for the streak shading) -------
+  const [chartData, setChartData] = useState<PeAndDividendChartResponse | null>(null);
+
+  // Nested single-select streak combo: layer 1 = metric (null = off),
+  // layer 2 = band lookback period, layer 3 = band tightness pct.
+  const [streakMetric, setStreakMetric] = useState<PeAndDividendStreakMetric | null>(null);
+  const [streakPeriod, setStreakPeriod] = useState<number | null>(null);
+  const [streakPct, setStreakPct] = useState<number | null>(null);
+
+  // Streak shading anchor (index into the selected metric's observation
+  // rows; null = the latest row) + the clicked archive streak (drives the
+  // table highlight and the bordered band on the chart).
+  const [streakAnchorIdx, setStreakAnchorIdx] = useState<number | null>(null);
+  const [selectedStreak, setSelectedStreak] = useState<PeAndDividendStreak | null>(null);
 
   // Bumped by the per-security AnalysisRunButton after a rebuild run —
   // retriggers the stats fetch (the cache entry is invalidated first in
@@ -167,10 +231,158 @@ export function PeAndDividendPanel({
     };
   }, [code, secType, refreshKey]);
 
-  // Reset clicked date when the code changes.
+  // Fetch the band-break excursion streaks + daily chart rows (parallel
+  // with stats) — same deps, so a per-security rebuild refreshes all.
+  useEffect(() => {
+    let cancelled = false;
+    setStreaksLoading(true);
+    setStreaksError(null);
+    fetchPeAndDividendStreaks(code, secType)
+      .then((data) => {
+        if (cancelled) return;
+        setStreakData(data);
+        setStreaksLoading(false);
+      })
+      .catch((e: Error) => {
+        if (cancelled) return;
+        setStreaksError(e.message);
+        setStreaksLoading(false);
+      });
+    fetchPeAndDividendChart(code, secType)
+      .then((data) => {
+        if (cancelled) return;
+        setChartData(data);
+      })
+      .catch(() => {
+        /* the baseline plot above still renders; the streak chart just
+           shows the "no data" hint */
+        if (cancelled) return;
+        setChartData(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [code, secType, refreshKey]);
+
+  // Reset clicked date + streak combo/anchor when the code changes.
   useEffect(() => {
     setClickedDate(null);
+    setStreakMetric(null);
+    setStreakPeriod(null);
+    setStreakPct(null);
+    setStreakAnchorIdx(null);
+    setSelectedStreak(null);
   }, [code, secType]);
+
+  // ---- Streak section: availability + selected-combo subset --------------
+  const allStreaks = useMemo(() => streakData?.streaks ?? [], [streakData]);
+  const hasStreakData = allStreaks.length > 0;
+
+  const toggleStreakMetric = useCallback((m: PeAndDividendStreakMetric) => {
+    // The anchor indexes into the selected metric's observation rows, so a
+    // metric switch invalidates it (and the selected archive streak).
+    setStreakAnchorIdx(null);
+    setSelectedStreak(null);
+    setStreakMetric((prev) => {
+      if (prev === m) {
+        setStreakPeriod(null);
+        setStreakPct(null);
+        return null;
+      }
+      return m;
+    });
+  }, []);
+
+  const toggleStreakPeriod = useCallback((w: number) => {
+    setStreakPeriod((prev) => {
+      if (prev === w) {
+        setStreakPct(null);
+        return null;
+      }
+      return w;
+    });
+  }, []);
+
+  const toggleStreakPct = useCallback((p: number) => {
+    setStreakPct((prev) => (prev === p ? null : p));
+  }, []);
+
+  // The selected combo's streaks, most recent first (capped for render).
+  const selectedStreaks = useMemo(() => {
+    if (streakMetric == null || streakPeriod == null || streakPct == null) return [];
+    return allStreaks
+      .filter((s) => s.metric === streakMetric && s.period === streakPeriod && s.pctType === streakPct)
+      .sort((a, b) => (a.startDate < b.startDate ? 1 : -1));
+  }, [allStreaks, streakMetric, streakPeriod, streakPct]);
+
+  // Caption summary for the selected combo: per-side streak count, total
+  // days, extreme value and the first couple of spans (MaSpread caption
+  // style).
+  const streakSummary = useMemo(() => {
+    if (streakMetric == null || streakPeriod == null || streakPct == null) return null;
+    const high = selectedStreaks.filter((s) => s.side === "high");
+    const low = selectedStreaks.filter((s) => s.side === "low");
+    const spanList = (arr: PeAndDividendStreak[]) =>
+      arr.length === 0
+        ? "none"
+        : `${arr.length} streak${arr.length === 1 ? "" : "s"} · ${arr.reduce((a, s) => a + s.dayCount, 0)}d · peak ${fmtStreakValue(streakMetric, Math.max(...arr.map((s) => s.maxValue)))} · ${arr.slice(0, 2).map((s) => `${s.startDate.slice(2)}→${s.endDate.slice(2)}`).join(", ")}${arr.length > 2 ? `, +${arr.length - 2} more` : ""}`;
+    return { high: spanList(high), low: spanList(low) };
+  }, [selectedStreaks, streakMetric, streakPeriod, streakPct]);
+
+  // ---- Streak shading chart (MaSpread-style window zones + break bands) --
+  // Non-NULL observations of the selected metric — the series the shading
+  // is detected and drawn against.
+  const obsRows = useMemo<MetricObsRow[]>(() => {
+    if (streakMetric == null || chartData == null) return [];
+    return chartData.rows
+      .filter((r) => r[streakMetric] != null && Number.isFinite(r[streakMetric]!))
+      .map((r) => ({ date: r.date, value: r[streakMetric]! }));
+  }, [chartData, streakMetric]);
+
+  /** Stable identity for an archive streak (table-row highlight state). */
+  const streakKey = (s: PeAndDividendStreak): string =>
+    `${s.metric}|${s.period}|${s.pctType}|${s.startDate}|${s.endDate}|${s.side}`;
+
+  // Clicking a streak row: anchor the shading window at the streak's end
+  // date, border its detected counterpart on the chart. Clicking the
+  // selected row again clears the anchor (back to the latest window).
+  const handleStreakRowClick = useCallback(
+    (s: PeAndDividendStreak) => {
+      if (selectedStreak != null && streakKey(selectedStreak) === streakKey(s)) {
+        setSelectedStreak(null);
+        setStreakAnchorIdx(null);
+        return;
+      }
+      setSelectedStreak(s);
+      const idx = obsRows.findIndex((r) => r.date === s.endDate);
+      setStreakAnchorIdx(idx >= 0 ? idx : null);
+    },
+    [selectedStreak, obsRows],
+  );
+
+  // Clicking the chart re-anchors the window (like MaSpread); clicking the
+  // anchored date again clears it. Re-anchoring deselects the archive
+  // streak (its static-edge counterpart may no longer be in the window).
+  const handleStreakChartClick = useCallback((dataIdx: number) => {
+    setStreakAnchorIdx((prev) => {
+      if (prev === dataIdx) return null;
+      return dataIdx;
+    });
+    setSelectedStreak(null);
+  }, []);
+
+  const chartBuild = useMemo(() => {
+    if (streakPeriod == null || streakPct == null || obsRows.length === 0) return null;
+    return buildStreakChartOption({
+      obs: obsRows,
+      metric: streakMetric!,
+      period: streakPeriod,
+      pct: streakPct,
+      anchorIdx: streakAnchorIdx,
+      selectedStreak,
+      themeMode,
+    });
+  }, [obsRows, streakMetric, streakPeriod, streakPct, streakAnchorIdx, selectedStreak, themeMode]);
 
   // ---- Stats table: highlight + scroll-into-view --------------------------
   // Find the stats row whose month-end is the latest one <= clickedDate.
@@ -189,10 +401,13 @@ export function PeAndDividendPanel({
   const hasAnalysisData = statsLoading || statsRows.length > 0;
 
   // Refetch after a per-security analysis rebuild (AnalysisRunButton):
-  // drop the cached stats response, then bump the refresh key.
+  // drop the cached stats/streaks responses, then bump the refresh key.
   const handleAnalysisRunCompleted = useCallback(() => {
     invalidateCacheForUrl(
       `/api/analysis/pe-and-dividend/stats?code=${code}&sec_type=${secType}`,
+    );
+    invalidateCacheForUrl(
+      `/api/analysis/pe-and-dividend/streaks?code=${code}&sec_type=${secType}`,
     );
     setRefreshKey((k) => k + 1);
   }, [code, secType]);
@@ -255,6 +470,265 @@ export function PeAndDividendPanel({
         them in another ChartCard here — just render them directly.
       */}
       {plotContent}
+
+      {/* ---- Band-break excursion streaks (analysis.pe_and_dividend_pct_streaks) ----
+          The high/low streaks pattern applied to the pe_ma20 / dividend_yield
+          series: a day breaks out when its value is above/below its own
+          month's trailing percentile band (analysis.pe_and_dividend_pct), and
+          a streak is a maximal run of same-side break days with ≤5-day
+          in-band gaps bridged. Nested metric → period → pct selection lists
+          the DB archive rows for that combo. */}
+      <ChartCard
+        title="Valuation Streaks (band-break)"
+        subtitle={
+          hasStreakData
+            ? `${allStreaks.length} streaks across all metric × window × tightness combos — pick one to list them`
+            : undefined
+        }
+        height={undefined}
+      >
+        {streaksLoading && (
+          <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+            <CircularProgress size={28} />
+          </Box>
+        )}
+        {streaksError && (
+          <Alert severity="error" variant="filled">
+            Failed to load streaks: {streaksError}
+          </Alert>
+        )}
+        {!streaksLoading && !streaksError && !hasStreakData && (
+          <Alert severity="warning">
+            No streak data for {code}. (Streaks are computed by the Python
+            build script against the monthly percentile bands — run{" "}
+            <code>python -m analyze.pe_and_dividends</code> to build
+            analysis.pe_and_dividend_pct_streaks.)
+          </Alert>
+        )}
+        {!streaksLoading && !streaksError && hasStreakData && (
+          <>
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
+              {/* Layer 1 — metric (pe_ma20 / dividend_yield). */}
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                <Typography
+                  variant="caption"
+                  component="span"
+                  sx={{
+                    fontSize: "0.65rem",
+                    minWidth: 88,
+                    color: streakMetric != null ? "primary.main" : "text.secondary",
+                    fontWeight: streakMetric != null ? 700 : 400,
+                  }}
+                >
+                  Streaks
+                </Typography>
+                {STREAK_METRICS.map((m) => (
+                  <Chip
+                    key={m.value}
+                    label={m.label}
+                    size="small"
+                    clickable
+                    color={streakMetric === m.value ? "primary" : "default"}
+                    variant={streakMetric === m.value ? "filled" : "outlined"}
+                    onClick={() => toggleStreakMetric(m.value)}
+                    sx={{ fontSize: "0.7rem", height: 22 }}
+                  />
+                ))}
+              </Box>
+              {/* Layer 2 — band lookback period (observations). */}
+              {streakMetric != null && (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                  <Typography
+                    variant="caption"
+                    component="span"
+                    sx={{
+                      fontSize: "0.65rem",
+                      minWidth: 88,
+                      color: streakPeriod != null ? "primary.main" : "text.secondary",
+                      fontWeight: streakPeriod != null ? 700 : 400,
+                    }}
+                  >
+                    Window
+                  </Typography>
+                  {STREAK_PERIODS.map((w) => (
+                    <Chip
+                      key={w}
+                      label={`${w}d`}
+                      size="small"
+                      clickable
+                      color={streakPeriod === w ? "primary" : "default"}
+                      variant={streakPeriod === w ? "filled" : "outlined"}
+                      onClick={() => toggleStreakPeriod(w)}
+                      sx={{ fontSize: "0.7rem", height: 22 }}
+                    />
+                  ))}
+                </Box>
+              )}
+              {/* Layer 3 — band tightness pct. */}
+              {streakMetric != null && streakPeriod != null && (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
+                  <Typography
+                    variant="caption"
+                    component="span"
+                    sx={{
+                      fontSize: "0.65rem",
+                      minWidth: 88,
+                      color: streakPct != null ? "primary.main" : "text.secondary",
+                      fontWeight: streakPct != null ? 700 : 400,
+                    }}
+                  >
+                    Tightness
+                  </Typography>
+                  {STREAK_PCTS.map((p) => (
+                    <Chip
+                      key={p}
+                      label={`${p}%`}
+                      size="small"
+                      clickable
+                      color={streakPct === p ? "primary" : "default"}
+                      variant={streakPct === p ? "filled" : "outlined"}
+                      onClick={() => toggleStreakPct(p)}
+                      sx={{ fontSize: "0.7rem", height: 22 }}
+                    />
+                  ))}
+                </Box>
+              )}
+            </Box>
+            {streakMetric != null && streakPeriod != null && streakPct == null && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+              >
+                pick a band tightness (pct) to list streaks
+              </Typography>
+            )}
+            {streakMetric != null && streakPeriod != null && streakPct != null && (
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+              >
+                {streakMetric === "pe_ma20" ? "PE MA20" : "dividend yield"} breaks its
+                trailing {streakPeriod}-obs top/bottom {streakPct}% band (each day vs its
+                own month's band · ≤{STREAK_GAP_TOLERANCE}-day in-band gaps bridged) ·{" "}
+                {selectedStreaks.length === 0
+                  ? "no streaks for this combo"
+                  : `high ${streakSummary?.high} · low ${streakSummary?.low}`}
+              </Typography>
+            )}
+            {/* ---- Streak shading chart (MaSpread style) ----
+                Light purple / yellow = the anchor window's static top/bottom
+                pct% zones; darker bands = break streaks detected CLIENT-SIDE
+                against that same edge (the guide's "shading ⊆ values inside
+                the zone" guarantee). Clicking a streak row above or a chart
+                date re-anchors the trailing window. */}
+            {chartBuild != null && chartBuild.win != null && (
+              <>
+                <EChart
+                  option={chartBuild.option}
+                  height={300}
+                  onCanvasClick={handleStreakChartClick}
+                />
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+                >
+                  light purple/yellow = trailing {streakPeriod}-obs top/bottom{" "}
+                  {streakPct}% zones of{" "}
+                  {streakMetric === "pe_ma20" ? "PE MA20" : "dividend yield"} (
+                  {chartBuild.win.startDate} → {chartBuild.win.endDate}), darker = break
+                  streaks vs that static edge (≤{STREAK_GAP_TOLERANCE}-day bridge ·
+                  high {chartBuild.streaks?.high.length ?? 0} / low{" "}
+                  {chartBuild.streaks?.low.length ?? 0}) ·{" "}
+                  {selectedStreak != null
+                    ? `selected ${selectedStreak.side} ${selectedStreak.startDate}→${selectedStreak.endDate}${
+                        chartBuild.emphasized
+                          ? " (bordered)"
+                          : " — not a break vs this static edge"
+                      }`
+                    : streakAnchorIdx != null
+                      ? `anchored to ${chartBuild.win.endDate} (click again to clear)`
+                      : "click a streak row or a chart date to anchor the window"}
+                </Typography>
+              </>
+            )}
+            {streakMetric != null && streakPeriod != null && streakPct != null && selectedStreaks.length > 0 && (
+              <TableContainer component={Box} sx={expandedTableContainerSx(360)}>
+                <Table size="small" stickyHeader>
+                  <TableHead>
+                    <TableRow>
+                      <TableCell sx={expandedTableHeadCellSx}>Side</TableCell>
+                      <TableCell sx={expandedTableHeadCellSx}>Start</TableCell>
+                      <TableCell sx={expandedTableHeadCellSx}>End</TableCell>
+                      <TableCell sx={expandedTableHeadCellSx} align="right">Days</TableCell>
+                      <TableCell sx={expandedTableHeadCellSx} align="right">Start Val</TableCell>
+                      <TableCell sx={expandedTableHeadCellSx} align="right">End Val</TableCell>
+                      <TableCell sx={expandedTableHeadCellSx} align="right">Max</TableCell>
+                      <TableCell sx={expandedTableHeadCellSx} align="right">Min</TableCell>
+                      <TableCell sx={expandedTableHeadCellSx} align="right">Std</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {selectedStreaks.slice(0, STREAK_TABLE_CAP).map((s, idx) => {
+                      const isSel = selectedStreak != null && streakKey(selectedStreak) === streakKey(s);
+                      return (
+                        <TableRow
+                          key={`${s.startDate}-${s.endDate}`}
+                          onClick={() => handleStreakRowClick(s)}
+                          sx={{
+                            ...expandedTableBodyRowSx(idx),
+                            cursor: "pointer",
+                            ...(isSel ? { bgcolor: "action.selected" } : {}),
+                          }}
+                        >
+                          <TableCell sx={expandedTableBodyCellSx}>
+                            <Typography
+                              variant="caption"
+                              component="span"
+                              sx={{
+                                fontSize: "0.7rem",
+                                fontWeight: 700,
+                                color: s.side === "high" ? STREAK_HIGH_ACCENT : STREAK_LOW_ACCENT,
+                              }}
+                            >
+                              {s.side}
+                            </Typography>
+                          </TableCell>
+                          <TableCell sx={expandedTableBodyCellSx}>{s.startDate}</TableCell>
+                          <TableCell sx={expandedTableBodyCellSx}>{s.endDate}</TableCell>
+                          <TableCell align="right" sx={expandedTableNumCellSx}>{s.dayCount}</TableCell>
+                          <TableCell align="right" sx={expandedTableNumCellSx}>
+                            {fmtStreakValue(streakMetric!, s.startValue)}
+                          </TableCell>
+                          <TableCell align="right" sx={expandedTableNumCellSx}>
+                            {fmtStreakValue(streakMetric!, s.endValue)}
+                          </TableCell>
+                          <TableCell align="right" sx={expandedTableNumCellSx}>
+                            {fmtStreakValue(streakMetric!, s.maxValue)}
+                          </TableCell>
+                          <TableCell align="right" sx={expandedTableNumCellSx}>
+                            {fmtStreakValue(streakMetric!, s.minValue)}
+                          </TableCell>
+                          <TableCell align="right" sx={expandedTableNumCellSx}>
+                            {fmtNum(s.stdDev, 3)}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+            {streakMetric != null && streakPeriod != null && streakPct != null && selectedStreaks.length > STREAK_TABLE_CAP && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}>
+                showing the {STREAK_TABLE_CAP} most recent of {selectedStreaks.length} streaks
+              </Typography>
+            )}
+          </>
+        )}
+      </ChartCard>
 
       {/* ---- Monthly PE & Dividend stats table ---- */}
       <ChartCard

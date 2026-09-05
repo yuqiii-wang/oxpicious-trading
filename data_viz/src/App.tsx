@@ -15,6 +15,7 @@ import LiveDataTradingSignalsPage from "@/live/pages/LiveDataTradingSignalsPage"
 import CommonsPage from "@/analysis/pages/CommonsPage";
 import DerivativesPage from "@/analysis/pages/DerivativesPage";
 import CompositesPage from "@/analysis/pages/CompositesPage";
+import OppositeIndustryCorrelationsPage from "@/analysis/pages/Composites/OppositeIndustryCorrelationsPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
 import PeAndDividendPage from "@/analysis/pages/PeAndDividendPage";
@@ -67,6 +68,10 @@ export default function App() {
           <Route path="/analysis/derivatives/futures" element={<FuturesAnalysisPage />} />
           <Route path="/analysis/derivatives/options" element={<OptionsAnalysisPage />} />
           <Route path="/analysis/composites" element={<CompositesPage />} />
+          <Route
+            path="/analysis/composites/opposite-industry-correlations"
+            element={<OppositeIndustryCorrelationsPage />}
+          />
           <Route path="/strategy" element={<Navigate to="/strategy/singleton" replace />} />
           <Route
             path="/strategy/commons"

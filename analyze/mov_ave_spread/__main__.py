@@ -52,6 +52,25 @@ Pipeline
      source DataFrame. Episodes are rebuilt wholesale per sec_type on
      every run — new dates shift episode boundaries (margin_changes
      precedent).
+  11. INTERNAL STEP: compute multi-period high/low price percentile
+     BANDS (one row per security x calendar month x period x pct_type
+     1/5/10: low_val = the pct_type-th percentile of daily lows,
+     high_val = the (100-pct_type)-th percentile of daily highs over
+     the trailing `period`-row window — 255/500/750/1275 = ~1/2/3/5
+     trading years — ending at the month's last trading row) from the
+     SAME source data (high/low columns) ->
+     analysis.mov_ave_high_low_pct (see high_low_pct.py). Trailing
+     window: completed months are immutable, so only missing (code,
+     month) pairs are computed and inserted.
+  12. INTERNAL STEP: audit band-BREAK excursion STREAKS against the
+     high-low-percentile bands (one row per excursion streak per
+     security x period x pct_type: maximal consolidations of same-side
+     days whose adjusted close falls above high_val / below low_val,
+     tolerating in-band re-entries of up to 5 consecutive trading
+     days; a longer gap or a side switch starts a new streak) ->
+     analysis.mov_ave_high_low_pct_streaks (see
+     high_low_pct_streaks.py). Episodes SHIFT with new data, so they
+     are rebuilt WHOLESALE per sec_type (market_hypes precedent).
 
 Default (incremental) mode:
   Only dates present in source identity tables (stats.etf_identity +
@@ -65,8 +84,11 @@ Default (incremental) mode:
   sec_type A already had it.
 
 --force mode:
-  Truncate detail, then recompute and
-  insert all rows for the active universe.
+  Full-universe force (no --sec-type): TRUNCATE the detail tables,
+  then recompute and insert all rows for the active universe.
+  Scoped force (--sec-type X --force): DELETE only X's rows from the
+  detail tables — other sec_types' data is NOT touched (they are not
+  rebuilt by this run).
 
 --sec-type mode:
   Process only the specified sec_type (for testing). Default: all.
@@ -122,6 +144,8 @@ from analyze.mov_ave_spread.config import (  # noqa: E402
     DETAIL_TABLE,
     DESCRIPTION,
     EMA_DETAIL_TABLE,
+    HIGH_LOW_PCT_STREAKS_TABLE,
+    HIGH_LOW_PCT_TABLE,
     HOLIDAY_TABLE,
     MARKET_HYPES_TABLE,
     OHLC_TABLE,
@@ -140,6 +164,13 @@ from analyze.mov_ave_spread.ohlc import run_ohlc, find_ohlc_repair_dates  # noqa
 from analyze.mov_ave_spread.trading_amt import run_trading_amt  # noqa: E402
 from analyze.mov_ave_spread.trading_amt_ratios import run_trading_amt_ratios  # noqa: E402
 from analyze.mov_ave_spread.market_hypes import run_market_hypes  # noqa: E402
+from analyze.mov_ave_spread.high_low_pct import (  # noqa: E402
+    find_missing_high_low_pct_pairs,
+    run_high_low_pct,
+)
+from analyze.mov_ave_spread.high_low_pct_streaks import (  # noqa: E402
+    run_high_low_pct_streaks,
+)
 from analyze.mov_ave_spread.holiday import run_holiday  # noqa: E402
 
 
@@ -253,6 +284,16 @@ async def _process_one_sec_type(
     await run_market_hypes(conn, df, force=force, pool=pool,
                            max_concurrent=max_concurrent, sec_type=st)
 
+    # ---- High-low percentile band step (reuses same source DataFrame)
+    await run_high_low_pct(conn, df, force=force, pool=pool,
+                           max_concurrent=max_concurrent, sec_type=st)
+
+    # ---- Band-break excursion streaks step (audits the bands table,
+    # wholesale rebuild per sec_type) ---------------------------------
+    await run_high_low_pct_streaks(conn, df, force=force, pool=pool,
+                                   max_concurrent=max_concurrent,
+                                   sec_type=st)
+
     # Free the source DataFrame — full history no longer needed.
     del df
 
@@ -289,7 +330,8 @@ async def _process_single_code(
     for table in (
         HOLIDAY_TABLE, RSI_TABLE, DETAIL_TABLE, EMA_DETAIL_TABLE,
         OHLC_TABLE, TRADING_AMT_TABLE, TRADING_AMT_RATIOS_TABLE,
-        MARKET_HYPES_TABLE,
+        MARKET_HYPES_TABLE, HIGH_LOW_PCT_TABLE,
+        HIGH_LOW_PCT_STREAKS_TABLE,
     ):
         status = await conn.execute(
             f"DELETE FROM {table} WHERE sec_type = $1 AND code = $2",
@@ -343,6 +385,12 @@ async def _process_single_code(
     await run_market_hypes(conn, df, force=False, pool=pool,
                            max_concurrent=max_concurrent, sec_type=st,
                            code_filter=code)
+    await run_high_low_pct(conn, df, force=False, pool=pool,
+                           max_concurrent=max_concurrent, sec_type=st,
+                           code_filter=code)
+    await run_high_low_pct_streaks(conn, df, force=False, pool=pool,
+                                   max_concurrent=max_concurrent,
+                                   sec_type=st, code_filter=code)
 
     del df
     return n_detail
@@ -426,13 +474,37 @@ async def main() -> None:
 
         # ---- Step 0: determine target dates (per-sec_type) --------------
         if args.force:
-            print("\n[0/4] Force mode: truncating detail "
-                  "tables...", flush=True)
-            await truncate_table_async(conn, DETAIL_TABLE)
-            await truncate_table_async(conn, TRADING_AMT_TABLE)
-            await truncate_table_async(conn, TRADING_AMT_RATIOS_TABLE)
-            await truncate_table_async(conn, HOLIDAY_TABLE)
-            await truncate_table_async(conn, MARKET_HYPES_TABLE)
+            if set(sec_types) == set(SEC_TYPES):
+                # Full-universe force: EVERY sec_type is rebuilt by this
+                # run, so TRUNCATE (fast, resets storage) is safe.
+                print("\n[0/4] Force mode: truncating detail "
+                      "tables...", flush=True)
+                await truncate_table_async(conn, DETAIL_TABLE)
+                await truncate_table_async(conn, TRADING_AMT_TABLE)
+                await truncate_table_async(conn, TRADING_AMT_RATIOS_TABLE)
+                await truncate_table_async(conn, HOLIDAY_TABLE)
+                await truncate_table_async(conn, MARKET_HYPES_TABLE)
+                await truncate_table_async(conn, HIGH_LOW_PCT_TABLE)
+                print("    -> truncated; will recompute all rows",
+                      flush=True)
+            else:
+                # Scoped --sec-type force: DELETE only the scoped
+                # sec_type's rows — a TRUNCATE here would wipe the OTHER
+                # sec_types' data (they are NOT rebuilt by this run).
+                print(f"\n[0/4] Force mode: deleting "
+                      f"{', '.join(sec_types)} rows from detail tables "
+                      f"(other sec_types untouched)...", flush=True)
+                for table in (DETAIL_TABLE, TRADING_AMT_TABLE,
+                              TRADING_AMT_RATIOS_TABLE, HOLIDAY_TABLE,
+                              MARKET_HYPES_TABLE, HIGH_LOW_PCT_TABLE,
+                              HIGH_LOW_PCT_STREAKS_TABLE):
+                    await conn.execute(
+                        f"DELETE FROM {table} "
+                        f"WHERE sec_type = ANY($1::text[])",
+                        list(sec_types),
+                    )
+                print("    -> deleted; will recompute scoped rows",
+                      flush=True)
             # Use empty set (not None) so _process_one_sec_type knows to
             # compute ALL dates (no filtering) in force mode.
             target_dates_per_st = {st: set() for st in sec_types}
@@ -440,7 +512,7 @@ async def main() -> None:
             ta_ratios_missing_per_st = {}
             ohlc_missing_per_st = {}
             hypes_missing_per_st = {}
-            print("    -> truncated; will recompute all rows", flush=True)
+            hl_pct_missing_per_st = {}
         else:
             print("\n[0/4] Detecting missing dates PER-sec_type "
                   "(etf_identity vs detail[etf], index_identity vs "
@@ -451,6 +523,8 @@ async def main() -> None:
             ta_ratios_missing_per_st: dict = {}
             ohlc_missing_per_st: dict = {}
             hypes_missing_per_st: dict = {}
+            hl_pct_missing_per_st: dict = {}
+            streaks_missing_per_st: dict = {}
             for st in sec_types:
                 src_tbl = SEC_TYPE_IDENTITY_TABLE[st]
                 td_st = await find_missing_analysis_dates(
@@ -501,6 +575,35 @@ async def main() -> None:
                 if hypes_empty:
                     print(f"    -> {st}: market_hypes empty "
                           f"(no episodes yet)", flush=True)
+                # The high-low-pct table is keyed by (code, month,
+                # pct_type) — missing data is detected at (code, month)
+                # pair granularity (see high_low_pct.
+                # find_missing_high_low_pct_pairs; scoped to the active
+                # universe + months with >= 255 cumulative rows + the
+                # in-progress month excluded).
+                hl_pairs = await find_missing_high_low_pct_pairs(
+                    conn, src_tbl, st,
+                )
+                hl_pct_missing_per_st[st] = hl_pairs
+                if hl_pairs:
+                    print(f"    -> {st}: high_low_pct "
+                          f"{len(hl_pairs):,} missing (code, month) "
+                          f"pairs", flush=True)
+                # The streaks table stores EXCURSION EPISODES (like the
+                # market-hypes episodes — they SHIFT with new data), so
+                # per-date coverage diffing does not apply — it is
+                # rebuilt wholesale whenever the sec_type is processed.
+                # Only flag COMPLETELY EMPTY scopes (fresh schema /
+                # wiped table) so the pipeline runs at least once.
+                streaks_empty = not await conn.fetchval(
+                    f"SELECT EXISTS (SELECT 1 FROM "
+                    f"{HIGH_LOW_PCT_STREAKS_TABLE} WHERE sec_type = $1)",
+                    st,
+                )
+                streaks_missing_per_st[st] = streaks_empty
+                if streaks_empty:
+                    print(f"    -> {st}: high_low_pct_streaks empty "
+                          f"(no streaks yet)", flush=True)
             total_missing = sum(
                 len(s) for s in target_dates_per_st.values()
             )
@@ -516,26 +619,32 @@ async def main() -> None:
             total_hypes_missing = sum(
                 1 for s in hypes_missing_per_st.values() if s
             )
+            total_hl_pct_missing = sum(
+                len(s) for s in hl_pct_missing_per_st.values()
+            )
             if (
                 total_missing == 0
                 and total_ta_missing == 0
                 and total_ta_ratios_missing == 0
                 and total_ohlc_missing == 0
                 and total_hypes_missing == 0
+                and total_hl_pct_missing == 0
             ):
                 print("    -> DB is up to date; nothing to do.", flush=True)
                 print_wall_time(t0)
                 return
             # For sec_types where only trading_amt / trading_amt_ratios /
-            # OHLC needs updates or market_hypes is still empty, set
-            # target_dates to None so the detail step is skipped but the
-            # internal steps (which have their own checks) still run.
+            # OHLC / high_low_pct needs updates or market_hypes is still
+            # empty, set target_dates to None so the detail step is
+            # skipped but the internal steps (which have their own
+            # checks) still run.
             for st in sec_types:
                 if not target_dates_per_st.get(st) and (
                     ta_missing_per_st.get(st)
                     or ta_ratios_missing_per_st.get(st)
                     or ohlc_missing_per_st.get(st)
                     or hypes_missing_per_st.get(st)
+                    or hl_pct_missing_per_st.get(st)
                 ):
                     target_dates_per_st[st] = None
 
@@ -560,8 +669,17 @@ async def main() -> None:
             hy_st = (
                 hypes_missing_per_st.get(st) if hypes_missing_per_st else None
             )
+            hl_st = (
+                hl_pct_missing_per_st.get(st)
+                if hl_pct_missing_per_st else None
+            )
+            sk_st = (
+                streaks_missing_per_st.get(st)
+                if streaks_missing_per_st else None
+            )
             if td_st is not None and len(td_st) == 0 and not args.force:
-                if not ta_st and not ta_ratio_st and not oh_st and not hy_st:
+                if not ta_st and not ta_ratio_st and not oh_st \
+                        and not hy_st and not hl_st and not sk_st:
                     print(f"\n  [{st}] up to date; skipping.", flush=True)
                     continue
             n_detail = await _process_one_sec_type(

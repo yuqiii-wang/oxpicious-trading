@@ -23,7 +23,8 @@ Cooldown suppression runs ONCE per cooldown value on the flattened
 (T, C·K) stack (columns are config-independent), then the mask is
 SPARSIFIED with a single np.nonzero: every downstream reduction works
 on the trigger-cell lists — the hype split is a cell filter, the
-per-horizon mean / high / low n-day forward change and P(reverse > 1%)
+per-horizon mean / high / low n-day forward change and
+P(reverse beyond the code's adaptive reverse_threshold)
 come from wide.aggregate_horizons_sparse (bincount/reduceat passes
 scaling with the trigger count), and the breach magnitude aggregates
 (mean_excess_close, mean_excess_max / max_excess_max — MEAN / MAX
@@ -61,7 +62,9 @@ from analyze.analysis_forecasts.wide import (
     aggregate_horizons_sparse,
     apply_cooldown,
     build_result_rows,
+    reverse_thresholds,
     round6,
+    window_sigmas,
 )
 
 
@@ -82,7 +85,7 @@ def compute_std_results(
         mats: wide matrices keyed "price", "high", "low", f"ma_{w}",
               f"std_{w}".
         chg:  shared change matrices (build_change_matrices):
-              NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS, DN, UP.
+              NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS.
         windows: resolved MonthWindow list for the target months.
         codes: sorted code list (matrix column order).
         sec_type: emitted into every row.
@@ -118,6 +121,9 @@ def compute_std_results(
 
         FINs = {n: chg[f"FIN_{n}"][lo:hi] for n in FORWARD_HORIZONS}
         NC0s = {n: chg[f"NC0_{n}"][lo:hi] for n in FORWARD_HORIZONS}
+        # Per-(code, horizon) reversal bar for this window (adaptive
+        # k·σ of the code's window forward changes; fixed fallback).
+        thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
         P = mats["price"][lo:hi]
         HIGH = mats["high"][lo:hi]
         LOW = mats["low"][lo:hi]
@@ -223,7 +229,7 @@ def compute_std_results(
                             continue
 
                         agg = aggregate_horizons_sparse(
-                            st, sc, fk, C, K, side, NC0s, FINs
+                            st, sc, fk, C, K, side, NC0s, FINs, thr_n
                         )
                         kk, ii = np.nonzero(emit.T)
                         base: list[dict] = [
@@ -310,7 +316,7 @@ def compute_std_results(
                                 "max_excess_max": round6(mxv),
                             })
 
-                        rows.extend(build_result_rows(agg, kk, ii, base))
+                        rows.extend(build_result_rows(agg, kk, ii, base, thr_n))
 
         if rows:
             yield mw.stat_month, rows

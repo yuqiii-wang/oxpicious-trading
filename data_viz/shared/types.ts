@@ -122,6 +122,38 @@ export interface OptionsCombinedResponse {
   rows: OptionsRow[];
 }
 
+/** Lifecycle state of a zone wall (analysis.options_walls.state). */
+export type OptionsWallState = "ACTIVE" | "ERODED" | "BREACHED";
+
+/** One row of analysis.options_walls — wall_type='zone' only (the legacy
+ *  80pct / large_num wall types were removed from the backend). Price
+ *  columns wall_low/high/center are in RAW strike units; wall_strike is
+ *  the legacy center / 10000. */
+export interface OptionsWallRow {
+  date: string;
+  option_type: OptionType;
+  underlying_code: string;
+  expiry_date: string;
+  wall_type: "zone";
+  wall_strike: number | null;
+  wall_oi: number | null;
+  wall_low: number | null;
+  wall_high: number | null;
+  wall_center: number | null;
+  /** zone OI / total chain OI (call+put), 0..1 */
+  mass_share: number | null;
+  /** signed away-from-spot distance of the center, % of spot */
+  gap_pct: number | null;
+  days_persisted: number | null;
+  state: OptionsWallState | null;
+  strength_score: number | null;
+}
+
+export interface OptionsWallsResponse {
+  underlying_code: string;
+  rows: OptionsWallRow[];
+}
+
 /** Data-source selector for analysis.options_skewness_stats rows. */
 export type SkewType =
   | "oi_moneyness"
@@ -1158,6 +1190,50 @@ export interface MovAveSpreadHypeEpisode {
  *  map. Source: analysis.mov_ave_market_hypes. */
 export type MovAveSpreadHypeEpisodes = Record<number, MovAveSpreadHypeEpisode[]>;
 
+/** One band-BREAK excursion streak from
+ *  analysis.mov_ave_high_low_pct_streaks: a maximal run of trading days
+ *  whose adjusted close stayed outside the (period, pctType) high/low
+ *  percentile band (close > high_val = high leg, close < low_val = low
+ *  leg), with in-band gaps of up to 5 trading days bridged inside one
+ *  streak (a 6-day gap ends it). date spans are shipped flat for ALL
+ *  (period, pctType) combos — the client filters by its nested
+ *  period→pct selection. */
+export interface MovAveSpreadHighLowStreak {
+  /** Band lookback window in trading rows (255/500/750/1275). */
+  period: number;
+  /** Band tightness in percent (1/5/10) — the band's pct_type. */
+  pctType: number;
+  /** First OUT-OF-BAND day of the streak. */
+  startDate: string;
+  /** Last OUT-OF-BAND day of the streak (bridged in-band days may lie
+   *  inside the span). */
+  endDate: string;
+  /** Which band leg the streak broke, derived at query time by comparing
+   *  the streak's end close with its END month's band row — a streak
+   *  never switches sides, so the end day's own-month band decides. */
+  side: "high" | "low";
+  /** Open price on start_date. */
+  open: number;
+  /** Close price on end_date. */
+  close: number;
+  /** Max adjusted high over the streak span. */
+  high: number;
+  /** Min adjusted low over the streak span. */
+  low: number;
+  /** End-month band's high_val (top edge) — a high streak shades from
+   *  here UP to `high`. */
+  bandHigh: number;
+  /** End-month band's low_val (bottom edge) — a low streak shades from
+   *  here DOWN to `low`. */
+  bandLow: number;
+  /** Trading-row count of the streak span (incl. bridged in-band days). */
+  dayCount: number;
+  /** Std-dev of daily price changes in the streak (price units). */
+  stdDev: number;
+  /** Average trading amount over the streak span (0.00 = no amt data). */
+  dailyAveTradingAmt: number;
+}
+
 /** Response for GET /chart?sec_type=etf&code=510050 — all pair time series for one asset. */
 export interface MovAveSpreadChartResponse {
   code: string;
@@ -1175,18 +1251,25 @@ export interface MovAveSpreadChartResponse {
    *  purple). Optional so older cached responses without the field still
    *  typecheck. */
   hypeEpisodes?: MovAveSpreadHypeEpisodes;
+  /** High/low band-BREAK excursion streaks shipped FLAT for ALL
+   *  (period, pctType) combos — the client filters by its nested
+   *  period→pct selection (source: analysis.mov_ave_high_low_pct_streaks,
+   *  side derived at query time). Optional so older cached responses
+   *  without the field still typecheck. */
+  highLowStreaks?: MovAveSpreadHighLowStreak[];
 }
 
 // ----------------------------------------------------------------------------
 //  Analysis Commons — Forecast buckets (analysis_forecasts schema)
-//    mov_rsi / mov_std / mov_gap — bucket-definition (motivation) tables,
-//      each row linking 1:1 via forecast_id to its forecast_results row.
+//    mov_rsi / mov_std / mov_gap / px_vol — bucket-definition (motivation)
+//      tables, each row linking 1:1 via forecast_id to its forecast_results
+//      rows (normalized: 4 period rows next/5d/20d/60d).
 //    Served by GET /api/analysis/mov-ave-spread/forecast — the MA-Spread
 //    panel's second plot: a config→result table beneath the spread chart.
 // ----------------------------------------------------------------------------
 
 /** Which bucket family the forecast table shows. */
-export type ForecastKind = "mov_rsi" | "mov_std" | "mov_gap";
+export type ForecastKind = "mov_rsi" | "mov_std" | "mov_gap" | "px_vol" | "margin_ratio";
 
 /** The forecast_results numeric columns: mean + std-dev of the forward
  *  fractional changes at all 4 horizons; close-based max/min forward
@@ -1278,6 +1361,62 @@ export interface MovGapForecastRow extends ForecastResultCols {
   in_signals: boolean;
 }
 
+/** One px_vol bucket row (σ-standardized price-speed × z-scored 量比
+ *  state cell) + its results. Bucket key: (stat_month, px_speed,
+ *  vol_state, is_market_hyped). State cells — NO cooldown (every
+ *  qualifying day joins). */
+export interface PxVolForecastRow extends ForecastResultCols {
+  stat_month: string;
+  /** σ-standardized 1-day price change state: sharp_up / slow_up / flat /
+   *  slow_dn / sharp_dn (t = ret_1d / rolling-255 σ_ret of the code). */
+  px_speed: "sharp_up" | "slow_up" | "flat" | "slow_dn" | "sharp_dn";
+  /** Trading-amount state: heavy / normal / shrink (z-scored 量比). */
+  vol_state: "heavy" | "normal" | "shrink";
+  /** Reversal side of reverse_prob: top (up speeds) / bottom (down
+   *  speeds) / flat (no directional claim — reverse_prob NULL). */
+  side: "top" | "bottom" | "flat";
+  is_market_hyped: boolean;
+  /** TRUE when the bucket already has signal day(s) in
+   *  analysis_signals.signals (px_speed + vol_state + side match + date
+   *  inside stat_month). */
+  in_signals: boolean;
+  /** Mean σ-standardized price speed t over the bucket's days (from the
+   *  linked forecast_results.config JSONB — descriptive magnitude). */
+  mean_t: number | null;
+  /** Mean z-scored 量比 over the bucket's days (same config JSONB). */
+  mean_z: number | null;
+}
+
+/** One margin_ratio bucket row (margin-buy intensity z-score state —
+ *  融资买入额/成交额 ratio vs the code's own trailing distribution) + its
+ *  results. Bucket key: (stat_month, ratio_state, is_market_hyped).
+ *  State cells — NO cooldown (every qualifying day joins). ETF + Stock
+ *  only (index has no margin data). */
+export interface MarginRatioForecastRow extends ForecastResultCols {
+  stat_month: string;
+  /** Margin-intensity state: no_buy (rz_buy <= 0 that day) / vlow
+   *  (z <= -2) / low (-2,-1] / mid (-1,+1] / high (+1,+2] / vhigh
+   *  (z > +2) of the code's rolling-1220-row (min 250) ratio moments
+   *  shifted 1 row. */
+  ratio_state: "no_buy" | "vlow" | "low" | "mid" | "high" | "vhigh";
+  /** Reversal side of reverse_prob: top (high/vhigh crowding — the
+   *  study's bearish reading) / bottom (vlow/low/no_buy) / flat (mid —
+   *  reverse_prob NULL). */
+  side: "top" | "bottom" | "flat";
+  is_market_hyped: boolean;
+  /** TRUE when the bucket already has signal day(s) in
+   *  analysis_signals.signals (ratio_state + side match + date inside
+   *  stat_month). */
+  in_signals: boolean;
+  /** Mean raw ratio (rz_buy / trading_amount, fraction) over the
+   *  bucket's days (from the linked forecast_results.config JSONB —
+   *  NULL for no_buy). */
+  mean_ratio: number | null;
+  /** Mean z-score over the bucket's days (same config JSONB — NULL for
+   *  no_buy). */
+  mean_z: number | null;
+}
+
 /** Response for GET /forecast?sec_type=&code=&kind=[&month=] — the code's
  *  buckets of the requested kind joined 1:1 with their forecast_results
  *  columns. `month` is a START month: rows cover every stat_month >= month
@@ -1290,7 +1429,10 @@ export interface ForecastResponse {
   sec_type: string;
   /** All distinct stat_months (YYYY-MM-DD) with rows for this code, DESC. */
   months: string[];
-  rows: MovRsiForecastRow[] | MovStdForecastRow[] | MovGapForecastRow[];
+  rows: MovRsiForecastRow[] | MovStdForecastRow[] | MovGapForecastRow[] | PxVolForecastRow[] | MarginRatioForecastRow[];
+  /** Backend arg for the shared ExpandedTable: whether the table renders
+   *  its per-column header filters. Default false (filters disabled). */
+  enable_filters: boolean;
 }
 
 // ----------------------------------------------------------------------------
@@ -1360,6 +1502,69 @@ export interface PeAndDividendStatsResponse {
   rows: PeAndDividendStatsRow[];
 }
 
+// ----------------------------------------------------------------------------
+//  PE & Dividend band-BREAK excursion streaks (analysis.pe_and_dividend_pct
+//  + analysis.pe_and_dividend_pct_streaks) — the high/low streaks pattern of
+//  analysis.mov_ave_high_low_pct[_streaks] applied to the pe_ma20 /
+//  dividend_yield series. A day breaks out when its metric value is ABOVE
+//  its own month-band high_val (high — the metric is stretched vs its own
+//  trailing history) or BELOW low_val (low — compressed); a streak is the
+//  maximal run of same-side break days with up to 5 consecutive in-band
+//  trading days bridged (a 6-day gap or a side switch ends it).
+// ----------------------------------------------------------------------------
+
+/** The audited valuation series (`metric` column) — the two value columns
+ *  of analysis.pe_and_dividends. */
+export type PeAndDividendStreakMetric = "pe_ma20" | "dividend_yield";
+
+/** One band-BREAK excursion streak from
+ *  analysis.pe_and_dividend_pct_streaks. Shipped flat for ALL (metric,
+ *  period, pctType) combos — the client filters by its nested selection. */
+export interface PeAndDividendStreak {
+  /** Which valuation series was audited. */
+  metric: PeAndDividendStreakMetric;
+  /** Band lookback window in observations (255/500/750/1275). */
+  period: number;
+  /** Band tightness in percent (1/5/10) — the band's pct_type. */
+  pctType: number;
+  /** First OUT-OF-BAND day of the streak. */
+  startDate: string;
+  /** Last OUT-OF-BAND day of the streak (bridged in-band days may lie
+   *  inside the span). */
+  endDate: string;
+  /** Which band leg the streak broke, derived at query time by comparing
+   *  the streak's end value with its END month's band row — a streak
+   *  never switches sides, so the end day's own-month band decides. */
+  side: "high" | "low";
+  /** Metric value on start_date. */
+  startValue: number;
+  /** Metric value on end_date. */
+  endValue: number;
+  /** Max metric value over the streak span (high streaks: the stretch's
+   *  peak). */
+  maxValue: number;
+  /** Min metric value over the streak span. */
+  minValue: number;
+  /** End-month band's high_val (top edge). */
+  bandHigh: number;
+  /** End-month band's low_val (bottom edge). */
+  bandLow: number;
+  /** Trading-row count of the streak span (incl. bridged in-band days). */
+  dayCount: number;
+  /** Population std of day-over-day value changes in the span (the
+   *  metric's own units). */
+  stdDev: number;
+}
+
+/** Response for GET /api/analysis/pe-and-dividend/streaks. */
+export interface PeAndDividendStreaksResponse {
+  code: string;
+  name: string;
+  /** Flat per-streak array, ascending by metric, period, pctType,
+   *  startDate. */
+  streaks: PeAndDividendStreak[];
+}
+
 /** One row in the codes list (analysis.pe_and_dividends DISTINCT ON code). */
 export interface PeAndDividendCodeRow {
   code: string;
@@ -1405,22 +1610,6 @@ export interface RecurringCyclesChartResponse {
   code: string;
   name: string;
   rows: RecurringCyclesChartRow[];
-}
-
-/** One code row from analysis.recurring_cycles (codes endpoint). */
-export interface RecurringCyclesCodeRow {
-  code: string;
-  name: string;
-  first_date: string;
-  last_date: string;
-  n_dates: number;
-  /** Latest recurring period per range_days (key=range_days). */
-  latest_period: Record<number, number | null>;
-}
-
-/** Response for GET /api/analysis/recurring-cycles/codes. */
-export interface RecurringCyclesCodesResponse {
-  codes: RecurringCyclesCodeRow[];
 }
 
 /** One (range_days) row from the spectrum endpoint — the per-day recurring
@@ -1491,6 +1680,10 @@ export interface RecurringCyclesSpectrumResponse {
    *  last_date, this is the latest available date for the code. */
   last_date: string;
   spectrums: RecurringCyclesSpectrumRow[];
+  /** Backend arg for the shared ExpandedTable: whether the audit table
+   *  renders its per-column header filters. Default false (filters
+   *  disabled). */
+  enable_filters: boolean;
 }
 
 // ----------------------------------------------------------------------------
@@ -1566,12 +1759,13 @@ export interface MarginTrendsShadeResponse {
 
 // ----------------------------------------------------------------------------
 //  Analysis Commons — Perf Attribution (ETF/Index subjects × Index benchmarks)
-//    analysis.sec_alloc_perf_attribution
-//    PK: (code, date, sec_type, benchmark_code)
+//    stats.cross_stats (sec_type='index' pair grain; former
+//    analysis.sec_alloc_perf_attribution)
+//    PK: (code, benchmark_code, date, sec_type)
 //
 //    Per-row: code_sec_shared_weight, benchmark_sec_shared_weight,
-//    benchmark_etf_trading_amount, code_etf_trading_amount, etf_trading_amount_ratio_benchmark_to_code
-//    (GENERATED), corr_{5,20,60,255}d.
+//    benchmark_etf_trading_amount, code_etf_trading_amount, etf_trading_amount_ratio_benchmark_to_code,
+//    etf_trading_amount_ratio_benchmark_to_code_ma5, corr_{20,60,255}d.
 // ----------------------------------------------------------------------------
 export type PerfAttrSecType = "etf" | "index";
 
@@ -1879,6 +2073,120 @@ export interface IndustryCorrelationsResponse {
    *  where both endpoints are in industry_ids. Empty when the analysis
    *  hasn't been run or no pairs have enough overlapping history. */
   correlations: IndustryCorrelationRow[];
+}
+
+// ----------------------------------------------------------------------------
+//  Industry Correlations by Benchmark Offset (composite analysis) —
+//  opposite industry correlations audited in
+//  analysis_composites.industry_corr_benchmark_offsets. Each industry's
+//  MA-W trend (mean_close) is offset by a broad-market benchmark: the
+//  benchmark MA is rebased to the industry's MA level at each window start
+//  (k = MA_X[s] / MA_B[s]), then subtracted (common market factor removed)
+//  and rebuilt as a recomputed price starting at 100. The row audits, per
+//  20/60/255 trading-day window:
+//    overall_corr_ma{W}_{W}d    — RAW pairwise correlation of the MA-W
+//      curves (same semantics as IndustryCorrelationRow.corr_ma{W}_{W}d).
+//    offset_sub_corr_ma{W}_{W}d — correlation of the benchmark-offset
+//      SUBTRACTED recomputed prices (common market factor removed).
+//    opposite_score_ma{W}_{W}d  — (1 − offset_sub_corr) / 2 in [0, 1]
+//      (1 = perfectly opposite once the benchmark is removed).
+//
+//  Source: analysis_composites.industry_corr_benchmark_offsets (built by
+//  python -m analyze.analysis_composites; default benchmark 000300).
+//  Drives the Composites → "Opposite Industry Correlations" page.
+// ----------------------------------------------------------------------------
+/** One benchmark-offset audit row — the pairwise correlation metrics for
+ *  industry_id vs benchmark_industry_id over the W-day window starting on
+ *  start_date, for one offset benchmark_code. */
+export interface IndustryCorrOffsetRow {
+  /** Subject industry (lexicographically smaller). */
+  industry_id: string;
+  /** Benchmark industry (lexicographically larger) — the OTHER industry
+   *  of the pair, not the offset benchmark index. */
+  benchmark_industry_id: string;
+  /** Display label for the subject industry. */
+  industry_label: string;
+  /** Display label for the benchmark industry. */
+  benchmark_industry_label: string;
+  /** Offset benchmark index code (e.g. "000300" = CSI300). */
+  benchmark_code: string;
+  /** Start date of the compute window on the calendar grid (YYYY-MM-DD). */
+  start_date: string;
+  /** Stride in trading days between consecutive window starts (default
+   *  20). */
+  interval: number;
+  /** Pool_size slice (same for both industries). */
+  pool_size: "small" | "mid" | "large" | "all";
+  /** RAW pairwise Pearson correlation of the MA20 curves over the 20d
+   *  window. NULL when the window is not full. */
+  overall_corr_ma20_20d: number | null;
+  overall_corr_ma60_60d: number | null;
+  overall_corr_ma255_255d: number | null;
+  /** Correlation of the benchmark-offset SUBTRACTED recomputed prices
+   *  (industry MA − rebased benchmark MA). NULL when the window is not
+   *  full or the benchmark MA is undefined on a window date. */
+  offset_sub_corr_ma20_20d: number | null;
+  offset_sub_corr_ma60_60d: number | null;
+  offset_sub_corr_ma255_255d: number | null;
+  /** Opposite-correlation score = (1 − offset_sub_corr) / 2 in [0, 1]:
+   *  1 = perfectly opposite after removing the benchmark component, 0.5 =
+   *  uncorrelated residual, 0 = perfectly co-moving residual. */
+  opposite_score_ma20_20d: number | null;
+  opposite_score_ma60_60d: number | null;
+  opposite_score_ma255_255d: number | null;
+}
+
+/** Response for GET /api/analysis/industry-corr-offsets?industry_ids=...
+ *  &pool_size=all&benchmark=000300 */
+export interface IndustryCorrOffsetsResponse {
+  /** Distinct industry_ids requested (deduplicated). */
+  industry_ids: string[];
+  /** Pool_size slice used. */
+  pool_size: "small" | "mid" | "large" | "all";
+  /** Offset benchmark used. */
+  benchmark_code: string;
+  /** Backend arg for the shared ExpandedTable: whether the audit table
+   *  renders its per-column header filters (explicitly enabled for this
+   *  endpoint). */
+  enable_filters: boolean;
+  /** Audit rows — one per (start_date, lexicographic pair) where both
+   *  endpoints are in industry_ids. */
+  offsets: IndustryCorrOffsetRow[];
+}
+
+/** One offset benchmark available in
+ *  analysis_composites.industry_corr_benchmark_offsets. */
+export interface IndustryCorrOffsetBenchmark {
+  /** Broad-market index code (e.g. "000300"). */
+  benchmark_code: string;
+  /** Display label (from stats.sec_classification; falls back to the
+   *  code). */
+  benchmark_label: string;
+  /** Distinct industries covered (pairs materialized). */
+  n_industries: number;
+  /** First / last window start dates materialized. */
+  first_start_date: string;
+  last_start_date: string;
+}
+
+/** Response for GET /api/analysis/industry-corr-offsets/benchmarks */
+export interface IndustryCorrOffsetBenchmarksResponse {
+  benchmarks: IndustryCorrOffsetBenchmark[];
+}
+
+/** One selectable industry for the offset-correlations page. */
+export interface IndustryCorrOffsetIndustry {
+  industry_id: string;
+  /** Display label (from stats.sec_classification; falls back to the
+   *  id). */
+  industry_label: string;
+  /** True when this industry has at least one materialized audit row. */
+  has_rows: boolean;
+}
+
+/** Response for GET /api/analysis/industry-corr-offsets/industries */
+export interface IndustryCorrOffsetIndustriesResponse {
+  industries: IndustryCorrOffsetIndustry[];
 }
 
 // ----------------------------------------------------------------------------

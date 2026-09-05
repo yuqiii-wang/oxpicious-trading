@@ -33,3 +33,20 @@ export const OHLC_WINDOWS = [20, 60, 120, 255, 500, 750, 1275] as const;
  * style shared with every other button row).
  */
 export const HYPE_WINDOWS = [5, 20, 60, 120, 255] as const;
+
+/**
+ * High/low band-BREAK streak lookback buttons (trading rows) — the first
+ * layer of the nested High/Low Streaks row. Mirrors
+ * HIGH_LOW_PCT_PERIODS in analyze/mov_ave_spread/config.py and the
+ * analysis.mov_ave_high_low_pct period values.
+ */
+export const HIGH_LOW_STREAK_PERIODS = [255, 500, 750, 1275] as const;
+
+/**
+ * High/low band-BREAK streak tightness buttons (percent) — the second
+ * layer, expanded when a period is selected. pct_type p of the band keeps
+ * daily LOWs above their p-th percentile (low_val) and daily HIGHs below
+ * their (100-p)-th percentile (high_val); a streak is a maximal run of
+ * closes outside the band (up to 5 in-band days bridged).
+ */
+export const HIGH_LOW_STREAK_PCTS = [1, 5, 10] as const;

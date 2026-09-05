@@ -5,7 +5,8 @@
  * pattern with expiryTooltip.ts and annual-sentiment/tooltipComponents.tsx).
  *
  * Filters items to only show strike levels that have OI data for the
- * hovered date. Supports both 80% wall and large_num wall modes.
+ * hovered date. Shows the backend zone walls (wall_type='zone') with
+ * lifecycle state / mass share / persistence.
  */
 import React from "react";
 import { DOWN_COLOR, SPOT_COLOR, UP_COLOR } from "@/theme/chart-palette";
@@ -14,11 +15,10 @@ import { renderReactElement } from "@/lib/react-tooltip-renderer";
 import { EXPIRY_MARKERS_SERIES_NAME, ExpiryInfoBlock, type TooltipColors } from "./expiryTooltip";
 import { mixHex } from "./bandTexture";
 import {
-  BEAR_THRESHOLD_SERIES_NAME,
-  BULL_THRESHOLD_SERIES_NAME,
-  CALL_LARGE_NUM_SERIES_NAME,
-  PUT_LARGE_NUM_SERIES_NAME,
-  type WallMode,
+  CALL_ZONE_SERIES_NAME,
+  PUT_ZONE_SERIES_NAME,
+  type ZoneWallPoint,
+  type ZoneWallSeries,
 } from "./bandData";
 import type { BandCell } from "./bandData";
 import type { ExpiryMarkerDataItem } from "./sharedData";
@@ -59,13 +59,36 @@ interface BandTooltipParam {
 
 // ---- Formatter generator -------------------------------------------------
 
+/** State label color: ACTIVE = side color, ERODED dimmed, BREACHED red. */
+function stateColor(state: ZoneWallPoint["state"]): string {
+  switch (state) {
+    case "BREACHED":
+      return "#c0392b";
+    case "ERODED":
+      return "#e67e22";
+    default:
+      return "#27ae60";
+  }
+}
+
 export function makeBandsTooltipFormatter(
   textColor: string,
   tooltipBg: string,
   splitLineColor: string,
-  wallMode: WallMode = "80pct",
+  zones?: ZoneWallSeries,
 ) {
   const colors: TooltipColors = { textColor, tooltipBg, splitLineColor };
+  // Date → dominant zone per side (first non-null wins; broken-date arrays
+  // may repeat a source date).
+  const zoneByDate = new Map<string, { call: ZoneWallPoint | null; put: ZoneWallPoint | null }>();
+  if (zones) {
+    for (let i = 0; i < zones.call.length || i < zones.put.length; i++) {
+      const call = zones.call[i] ?? null;
+      const put = zones.put[i] ?? null;
+      const date = call?.date ?? put?.date;
+      if (date && !zoneByDate.has(date)) zoneByDate.set(date, { call, put });
+    }
+  }
   return (params: unknown): string => {
     const arr = (Array.isArray(params) ? params : [params]) as BandTooltipParam[];
     if (arr.length === 0) return "";
@@ -74,10 +97,8 @@ export function makeBandsTooltipFormatter(
     const expiryItem = arr.find((p) => p.seriesName === EXPIRY_MARKERS_SERIES_NAME);
     const bandCells = arr
       .filter((p) => p.seriesName !== "Spot" && p.seriesName !== EXPIRY_MARKERS_SERIES_NAME
-        && p.seriesName !== BULL_THRESHOLD_SERIES_NAME
-        && p.seriesName !== BEAR_THRESHOLD_SERIES_NAME
-        && p.seriesName !== CALL_LARGE_NUM_SERIES_NAME
-        && p.seriesName !== PUT_LARGE_NUM_SERIES_NAME)
+        && p.seriesName !== CALL_ZONE_SERIES_NAME
+        && p.seriesName !== PUT_ZONE_SERIES_NAME)
       .map((p) => p.data as BandCell)
       .filter((d): d is BandCell => !!d && typeof d !== "number" && d.putPct != null && d.totalOi > 0);
 
@@ -85,10 +106,6 @@ export function makeBandsTooltipFormatter(
     const spotV =
       typeof spotParam?.value === "number" ? spotParam.value : spotParam?.value?.[1];
     const hasSpot = spotV != null && Number.isFinite(spotV);
-
-    // Determine the wall series names based on mode
-    const callWallName = wallMode === "80pct" ? BULL_THRESHOLD_SERIES_NAME : CALL_LARGE_NUM_SERIES_NAME;
-    const putWallName = wallMode === "80pct" ? BEAR_THRESHOLD_SERIES_NAME : PUT_LARGE_NUM_SERIES_NAME;
 
     type Entry = { price: number; node: React.ReactElement };
     const entries: Entry[] = [];
@@ -130,31 +147,42 @@ export function makeBandsTooltipFormatter(
       });
     }
 
-    const thresholdEntry = (
-      seriesName: string,
-      v: number | [number, number] | undefined,
-      color: string,
-    ): Entry | null => {
-      const y = typeof v === "number" ? v : v?.[1];
-      if (y == null || !Number.isFinite(y)) return null;
+    // Zone wall entries (backend analysis.options_walls, dominant per side)
+    const zoneEntry = (name: string, z: ZoneWallPoint | null, color: string): Entry | null => {
+      if (!z) return null;
+      const stateBits: React.ReactNode[] = [];
+      if (z.state) {
+        stateBits.push(React.createElement(
+          "span",
+          { key: "s", style: { color: stateColor(z.state), fontWeight: 600 } },
+          z.state,
+        ));
+      }
+      if (z.daysPersisted != null) {
+        stateBits.push(React.createElement(Dim, { key: "d" }, ` ×${z.daysPersisted}d`));
+      }
       return {
-        price: y,
+        price: z.center,
         node: React.createElement(React.Fragment, null, [
           React.createElement(Dot, { color }),
-          ` ${seriesName} · `,
-          React.createElement(Bold, null, fmtNum(y)),
+          ` ${name} · `,
+          React.createElement(Bold, null, `${fmtNum(z.low)}–${fmtNum(z.high)}`),
+          ` (ctr ${fmtNum(z.center)})`,
+          z.massShare != null
+            ? React.createElement(Dim, null, ` · mass ${(z.massShare * 100).toFixed(1)}%`)
+            : null,
+          stateBits.length > 0 ? React.createElement(Dim, null, " · ") : null,
+          ...stateBits,
         ]),
       };
     };
-
-    // Show wall entries based on mode
-    const callWallV = arr.find((p) => p.seriesName === callWallName)?.value;
-    const putWallV = arr.find((p) => p.seriesName === putWallName)?.value;
-
-    const callWallEntry = thresholdEntry(callWallName, callWallV, UP_COLOR);
-    if (callWallEntry) entries.push(callWallEntry);
-    const putWallEntry = thresholdEntry(putWallName, putWallV, DOWN_COLOR);
-    if (putWallEntry) entries.push(putWallEntry);
+    const zonesForDate = dateStr ? zoneByDate.get(dateStr) : undefined;
+    if (zonesForDate) {
+      const callEntry = zoneEntry(CALL_ZONE_SERIES_NAME, zonesForDate.call, UP_COLOR);
+      if (callEntry) entries.push(callEntry);
+      const putEntry = zoneEntry(PUT_ZONE_SERIES_NAME, zonesForDate.put, DOWN_COLOR);
+      if (putEntry) entries.push(putEntry);
+    }
 
     entries.sort((a, b) => b.price - a.price);
 

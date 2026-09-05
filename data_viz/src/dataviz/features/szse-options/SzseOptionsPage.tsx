@@ -32,6 +32,7 @@ import OhlcModeToggle from "@/components/OhlcModeToggle";
 import {
   fetchEtfOhlcv,
   fetchOptionsCombined,
+  fetchOptionsWalls,
   fetchUnderlyings,
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
@@ -40,6 +41,7 @@ import type {
   EtfOhlcvResponse,
   OptionsCombinedResponse,
   OptionsUnderlying,
+  OptionsWallsResponse,
 } from "@shared/types";
 import { UNDERLYING_LABELS } from "@/theme/chart-palette";
 import { computeSnapshotStats } from "@/lib/options-stats";
@@ -55,6 +57,7 @@ export default function SzseOptionsPage() {
 
   const [underlyings, setUnderlyings] = useState<OptionsUnderlying[]>([]);
   const [optionsData, setOptionsData] = useState<OptionsCombinedResponse | null>(null);
+  const [wallsData, setWallsData] = useState<OptionsWallsResponse | null>(null);
   const [ohlcv, setOhlcv] = useState<EtfOhlcvResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -82,11 +85,15 @@ export default function SzseOptionsPage() {
     Promise.all([
       fetchOptionsCombined(underlyingCode, null, null, optionsTargetType),
       fetchEtfOhlcv(underlyingCode, null, null, optionsTargetType),
+      // Zone walls are optional — don't fail the page when the walls table
+      // is missing or empty for this underlying.
+      fetchOptionsWalls(underlyingCode).catch(() => null),
     ])
-      .then(([opts, ohlc]) => {
+      .then(([opts, ohlc, walls]) => {
         if (cancelled) return;
         setOptionsData(opts);
         setOhlcv(ohlc);
+        setWallsData(walls);
         setSelectedDate(opts.dates.length > 0 ? opts.dates[opts.dates.length - 1] : "");
         setLoading(false);
       })
@@ -200,7 +207,7 @@ export default function SzseOptionsPage() {
                 onDateChange={setSelectedDate}
               />
               <MarketInterestWallPanel rows={optionsData.rows} selectedDate={selectedDate} />
-              <OptionsTrendPanel rows={optionsData.rows} />
+              <OptionsTrendPanel rows={optionsData.rows} walls={wallsData?.rows ?? []} />
 
               <ChartCard
                 title="ETF Price & Volume"

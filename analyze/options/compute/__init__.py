@@ -5,7 +5,7 @@ metric semantics and industry anchors):
 
   skewness.py   — oi_moneyness (OI-wtd mean moneyness, positioning)
   oi_stats.py   — plain put/call OI ratio correlation stats
-  walls.py      — 80pct + large_num wall levels
+  walls.py      — strength-scored OI wall zones with lifecycle
   iv_skew.py    — IV skew stats (ATM/25d wings/risk reversal) + iv_smile
                  (OI-wtd 3rd moment of IV, pricing)
   greek_delta.py — delta-weighted put/call OI ratio dpcr (PCR refinement,

@@ -18,7 +18,8 @@ grid and each gap window W:
      tensor (side-major), cooldown-suppressed ONCE on the flattened
      (T, C·K) stack, sparsified with a single np.nonzero, and every
      downstream reduction (hype split, per-horizon mean / high / low
-     n-day forward change and P(reverse > 1%) via
+     n-day forward change and P(reverse beyond the code's adaptive
+     reverse_threshold) via
      wide.aggregate_horizons_sparse) works on the trigger-cell lists.
      The row payload is expanded by wide.build_result_rows.
 
@@ -49,6 +50,8 @@ from analyze.analysis_forecasts.wide import (
     aggregate_horizons_sparse,
     apply_cooldown,
     build_result_rows,
+    reverse_thresholds,
+    window_sigmas,
 )
 
 
@@ -68,7 +71,7 @@ def compute_gap_results(
     Args:
         mats: wide gap matrices keyed f"gap_{w}".
         chg:  shared change matrices (build_change_matrices):
-              NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS, DN, UP.
+              NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS.
         windows: resolved MonthWindow list for the target months.
         codes: sorted code list (matrix column order).
         sec_type: emitted into every row.
@@ -100,6 +103,9 @@ def compute_gap_results(
 
         FINs = {n: chg[f"FIN_{n}"][lo:hi] for n in FORWARD_HORIZONS}
         NC0s = {n: chg[f"NC0_{n}"][lo:hi] for n in FORWARD_HORIZONS}
+        # Per-(code, horizon) reversal bar for this window (adaptive
+        # k·σ of the code's window forward changes; fixed fallback).
+        thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
         HY = hype[lo:hi]
         live2 = live[:, None]
 
@@ -188,7 +194,7 @@ def compute_gap_results(
                             continue
 
                         agg = aggregate_horizons_sparse(
-                            st, sc, fk, C, P, side, NC0s, FINs
+                            st, sc, fk, C, P, side, NC0s, FINs, thr_n
                         )
                         kk, ii = np.nonzero(emit.T)
                         base: list[dict] = [
@@ -207,7 +213,7 @@ def compute_gap_results(
                             }
                             for k, i in zip(kk.tolist(), ii.tolist())
                         ]
-                        rows.extend(build_result_rows(agg, kk, ii, base))
+                        rows.extend(build_result_rows(agg, kk, ii, base, thr_n))
 
         if rows:
             yield mw.stat_month, rows

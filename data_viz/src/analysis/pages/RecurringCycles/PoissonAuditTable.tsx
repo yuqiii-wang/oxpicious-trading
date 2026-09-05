@@ -123,9 +123,16 @@ interface Props {
   spectrums: RecurringCyclesSpectrumRow[];
   /** Scope key — filters reset when it changes (code / date). */
   scopeKey: string;
+  /** Header-filter master switch — threaded from the spectrum response's
+   *  `enable_filters` backend arg (disabled by default). */
+  enableFilters?: boolean;
 }
 
-export function PoissonAuditTable({ spectrums, scopeKey }: Props) {
+export function PoissonAuditTable({
+  spectrums,
+  scopeKey,
+  enableFilters = false,
+}: Props) {
   const rows = useMemo(() => buildAuditRows(spectrums), [spectrums]);
 
   const columns: ExpandedTableColumn<AuditRow>[] = useMemo(
@@ -243,6 +250,7 @@ export function PoissonAuditTable({ spectrums, scopeKey }: Props) {
       rows={rows}
       rowKey={(r) => `${r.range_days}-${r.day}`}
       maxHeight={320}
+      enableFilters={enableFilters}
       filterScopeDeps={[scopeKey]}
       emptyState={
         <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.68rem" }}>

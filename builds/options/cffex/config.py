@@ -13,7 +13,8 @@ CFFEX stock option products (股票期权, ETF options on CFFEX):
 Contract code format: <PRODUCT><YYMM>-<C|P>-<STRIKE>
   e.g. IO2607-C-4000 → product=IO, month=2607, type=C(CALL), strike=4000
 
-CFFEX index options expire on the 4th Wednesday of the expiry month.
+CFFEX index options expire on the 3rd Friday of the expiry month
+(最后交易日/到期日 = 合约到期月份的第三个星期五, 遇法定假日顺延).
 """
 from __future__ import annotations
 
@@ -153,26 +154,27 @@ def normalize_contract_year_month(contract_month: str) -> str:
 # Expiry date calculation
 # ---------------------------------------------------------------------------
 
-def _fourth_wednesday(year: int, month: int) -> int:
-    """Return the day of the 4th Wednesday of a given year-month.
+def _third_friday(year: int, month: int) -> int:
+    """Return the day of the 3rd Friday of a given year-month.
 
-    CFFEX index options expire on the 4th Wednesday of the expiry month.
+    CFFEX index options expire on the 3rd Friday of the expiry month
+    (last trading day = expiry day; postponed to the next trading day
+    when it falls on a public holiday — not calendar-adjusted here).
     """
     import datetime
     # First day of the month
     first = datetime.date(year, month, 1)
-    # Wednesday = weekday 2 (Monday=0, Sunday=6)
-    # Days until first Wednesday
-    days_until_first_wed = (2 - first.weekday()) % 7
-    first_wed = first.day + days_until_first_wed
-    fourth_wed = first_wed + 21  # 3 more weeks
-    return fourth_wed
+    # Friday = weekday 4 (Monday=0, Sunday=6)
+    days_until_first_friday = (4 - first.weekday()) % 7
+    first_friday = first.day + days_until_first_friday
+    third_friday = first_friday + 14  # 2 more weeks
+    return third_friday
 
 
 def compute_expiry_date(trade_date, contract_month: str):
     """Compute the expiration date for a CFFEX option contract.
 
-    CFFEX index options expire on the 4th Wednesday of the expiry month.
+    CFFEX index options expire on the 3rd Friday of the expiry month.
 
     Args:
         trade_date: datetime.date of the trading day
@@ -186,6 +188,5 @@ def compute_expiry_date(trade_date, contract_month: str):
     year = 2000 + yy
     month = mm
 
-    # If expiry month < current month, it's already expired
-    expiry_day = _fourth_wednesday(year, month)
+    expiry_day = _third_friday(year, month)
     return type(trade_date)(year, month, expiry_day)

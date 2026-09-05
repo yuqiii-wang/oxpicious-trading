@@ -45,13 +45,17 @@
 --    (signed fractional ratios, e.g. 0.05 = +5%; computed per code on
 --    its own trading-day sequence — calendar gaps do not count as rows)
 --
---    reverse change      = the move AGAINST the bucket's extreme side:
---      top / upper (overbought / above upper band): change < -1%
---      counts as a reversal;
---      bottom / lower (oversold / below lower band): change > +1%
---      counts as a reversal.
---    reverse_prob_{n}    = P(n-day change is a reverse change > 1%)
---                          over bucket days with a valid n-day change.
+--    reverse change      = the move AGAINST the bucket's extreme side
+--      beyond the bucket's adaptive reverse_threshold (k_n · σ of the
+--      code's window n-day forward changes; legacy fixed 1% fallback —
+--      see 01_forecast_results.sql):
+--      top / upper (overbought / above upper band): change <
+--      −reverse_threshold counts as a reversal;
+--      bottom / lower (oversold / below lower band): change >
+--      +reverse_threshold counts as a reversal.
+--    reverse_prob_{n}    = P(n-day change is a reverse change beyond
+--                          the row's reverse_threshold) over bucket
+--                          days with a valid n-day change.
 -- ============================================================================
 
 CREATE SCHEMA IF NOT EXISTS analysis_forecasts;

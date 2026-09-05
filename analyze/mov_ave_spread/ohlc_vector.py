@@ -11,13 +11,15 @@ IDENTICAL (same anchor positions, values, dates and NULL handling):
                     1st half [a, a+h-1] where h = L // 2.  Ties ->
                     earliest date.  NULL when the half holds no valid
                     close.
-  2nd anchor       = argmax of valid CLOSE in [top + ceil(0.10*W), b] —
-                    the 10% time-distance gap is enforced CONSTRUCTIVELY
-                    by shifting the 2nd anchor's search range so the
-                    result is guaranteed to be >= 10% of W after the 1st
-                    anchor.  Ties -> earliest.  NULL when the dynamic
+  2nd anchor       = argmax of valid CLOSE in [top + gap, b] where
+                    gap = ohlc_second_gap_td(w) — ceil(0.20*W) with a
+                    20td floor for W >= 60 (config.py). The time-distance
+                    gap is enforced CONSTRUCTIVELY by shifting the 2nd
+                    anchor's search range so the result is guaranteed to
+                    be at least `gap` trading days after the 1st anchor.
+                    Ties -> earliest.  NULL when the dynamic
                     range has no valid close OR when the 1st anchor is
-                    too close to b (top + 0.10*W > b).  The 1st anchor
+                    too close to b (top + gap > b).  The 1st anchor
                     stays valid in that case.
 
 Everything is plain NumPy per (sec_type, code) group — no cuDF
@@ -42,6 +44,7 @@ import numpy as np
 import pandas as pd
 
 from _common.df_utils import host_array
+from analyze.mov_ave_spread.config import ohlc_second_gap_td
 
 
 # ---------------------------------------------------------------------------
@@ -151,11 +154,12 @@ def _select_anchor_positions(
     h = (b - a + 1) // 2.  Ties go to the earliest position.
 
     Phase 2 — 2nd anchor: after locating the 1st anchor at ``top``,
-    the 2nd anchor is the argmax in [top + ceil(0.10*W), b] — the
-    10% time-distance gap is enforced CONSTRUCTIVELY by starting
-    the 2nd search 10% of the window AFTER the 1st anchor.  If the
-    1st anchor is so close to ``b`` that top + ceil(0.10*W) > b, the
-    2nd anchor comes back -1 but the 1st anchor remains valid.
+    the 2nd anchor is the argmax in [top + gap, b] where
+    gap = ohlc_second_gap_td(w) — the time-distance gap is enforced
+    CONSTRUCTIVELY by starting the 2nd search `gap` trading days
+    AFTER the 1st anchor.  If the 1st anchor is so close to ``b``
+    that top + gap > b, the 2nd anchor comes back -1 but the 1st
+    anchor remains valid.
 
     ``vtbl`` is the sparse argmax table over ``svals[V]`` — the valid-
     close positions — so each query is a plain range argmax.  NaN
@@ -188,9 +192,10 @@ def _select_anchor_positions(
     )
     top: np.ndarray = _gather_pos(V, q1)  # -1 when 1st half empty
 
-    # Phase 2 — 2nd anchor from dynamic range [top + 0.10*W, b]
-    # Enforce the 10% time-distance gap construction.
-    gap: int = max(1, int(0.10 * w))  # at least 1 trading day
+    # Phase 2 — 2nd anchor from dynamic range [top + gap, b]
+    # Enforce the time-distance gap construction (20% of W, 20td floor
+    # for W >= 60 — see config.ohlc_second_gap_td).
+    gap: int = ohlc_second_gap_td(w)
     j2lo_abs: np.ndarray = top + gap  # absolute start positions
     j2hi_abs: np.ndarray = b          # absolute end positions
     ok2: np.ndarray = (top >= 0) & (j2lo_abs <= b)
@@ -277,9 +282,9 @@ def compute_group_anchors_all_windows(
             out[f"{tag}_2nd_date_{w}d"] = _gather_date(dates, sec)
             # Roof/floor line slope through the two anchors, in price
             # units per trading day: (2nd value - top value) / (2nd pos -
-            # top pos).  The 10% time-distance gap is enforced
-            # constructively (2nd anchor searched from top + 0.10*W to b),
-            # so sec - top >= 0.10*W > 0 wherever both exist.  NaN when
+            # top pos).  The time-distance gap is enforced
+            # constructively (2nd anchor searched from top + gap to b),
+            # so sec - top >= gap > 0 wherever both exist.  NaN when
             # either anchor is absent.
             slope: np.ndarray = np.full(n, np.nan)
             ok2: np.ndarray = (top >= 0) & (sec >= 0)

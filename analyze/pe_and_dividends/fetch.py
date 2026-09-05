@@ -9,6 +9,8 @@ For sec_type='index':
   - close from stats.index_basic_stats
   - composition from stats.sec_composition (latest snapshot, source_type='index')
   - constituent dividends from stats.stock_dividends
+  - constituent closes from stats.stock_basic_stats (cap-weighted
+    constituent-yield aggregation)
 
 For sec_type='etf':
   - close from stats.etf_basic_stats
@@ -21,6 +23,7 @@ For sec_type='stock':
 from __future__ import annotations
 
 import datetime
+import re
 from typing import Optional, Set
 
 import pandas as pd
@@ -139,6 +142,48 @@ async def fetch_latest_index_composition(
     # Drop rows with null stock_code or weight_pct
     df = df.dropna(subset=["stock_code", "weight_pct"])
     return df
+
+
+# ---------------------------------------------------------------------------
+#  Constituent closes (for the index cap-weighted constituent yield)
+# ---------------------------------------------------------------------------
+async def fetch_constituent_closes(
+    conn, stock_codes: list[str]
+) -> pd.DataFrame:
+    """Fetch per-(code, date) close for the given constituent stocks.
+
+    Codes are SUFFIX-STRIPPED on both sides (REGEXP_REPLACE) so they join
+    with the normalized sec_composition.stock_code / stock_dividends.code
+    keys used by the index dividend-yield aggregation. The input list may
+    carry either convention — it is stripped here before the query.
+
+    Returns DataFrame with columns: code, date, close
+    """
+    if not stock_codes:
+        return pd.DataFrame(columns=["code", "date", "close"])
+    stripped_codes = sorted({
+        re.sub(r"\.(SS|SZ|SH|BJ|HK)$", "", str(c).upper())
+        for c in stock_codes
+    })
+    if not stripped_codes:
+        return pd.DataFrame(columns=["code", "date", "close"])
+    rows = await conn.fetch(
+        """
+        SELECT REGEXP_REPLACE(code, '\\.(SS|SZ|SH|BJ|HK)$', '') AS code,
+               extract(epoch from date)::float8 AS date,
+               close::float8 AS close
+        FROM stats.stock_basic_stats
+        WHERE close IS NOT NULL
+          AND REGEXP_REPLACE(code, '\\.(SS|SZ|SH|BJ|HK)$', '') = ANY($1::text[])
+        ORDER BY code, date ASC
+        """,
+        stripped_codes,
+    )
+    if not rows:
+        return pd.DataFrame(columns=["code", "date", "close"])
+    cols = rec_cols(rows)
+    cols["date"] = epoch_col_to_dt64(cols["date"])
+    return pd.DataFrame(cols, columns=["code", "date", "close"])
 
 
 # ---------------------------------------------------------------------------

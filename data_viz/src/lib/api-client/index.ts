@@ -18,6 +18,7 @@ export {
 export {
   fetchUnderlyings,
   fetchOptionsCombined,
+  fetchOptionsWalls,
   fetchEtfOhlcv,
 } from "./options";
 
@@ -69,10 +70,10 @@ export {
   fetchPeAndDividendStrategyThemes,
   fetchPeAndDividendChart,
   fetchPeAndDividendStats,
+  fetchPeAndDividendStreaks,
 } from "./analysis-pe-and-dividend";
 
 export {
-  fetchRecurringCyclesCodes,
   fetchRecurringCyclesThemes,
   fetchRecurringCyclesStrategyThemes,
   fetchRecurringCyclesChart,
@@ -105,6 +106,14 @@ export {
   runIndustryCorrelationsRefresh,
   INDUSTRY_CORR_RUN_TAG,
 } from "./analysis-industry-sentiments";
+
+export {
+  fetchIndustryCorrOffsets,
+  fetchIndustryCorrOffsetBenchmarks,
+  fetchIndustryCorrOffsetIndustries,
+  runIndustryCorrOffsetsRefresh,
+  INDUSTRY_CORR_OFFSET_RUN_TAG,
+} from "./analysis-corr-offsets";
 
 export {
   fetchIndustryBenchmarkAttribution,

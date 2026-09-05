@@ -1,4 +1,4 @@
-﻿import { fetchJson } from "./_cache";
+import { fetchJson } from "./_cache";
 import type {
   SectorNode,
   StrategyNode,
@@ -21,7 +21,7 @@ export function fetchPerfAttrCodes(
 }
 
 /** Themes tree (L1 sector → L2 industry → items) for the ThemeSelector.
- *  Only includes codes that have rows in analysis.sec_alloc_perf_attribution. */
+ *  Only includes codes that have rows in stats.cross_stats (sec_type='index'). */
 export function fetchPerfAttrThemes(
   secType: PerfAttrSecType = "etf",
 ): Promise<SectorNode[]> {

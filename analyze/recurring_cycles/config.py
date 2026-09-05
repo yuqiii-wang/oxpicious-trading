@@ -7,6 +7,11 @@ from __future__ import annotations
 
 # ---- Target table (analysis schema) --------------------------------------
 TABLE_NAME = "analysis.recurring_cycles"
+# Populated-codes registry — one (sec_type, code) row per code present in
+# TABLE_NAME, maintained by __main__ after every write. Lets the UI
+# page-load endpoints resolve "codes with data" without scanning the 55 GB
+# partitioned main table. DDL: database/sql/analysis/18_recurring_cycles_codes.sql
+CODES_TABLE_NAME = "analysis.recurring_cycles_codes"
 ANALYSIS_NAME = "recurring_cycles"
 
 DESCRIPTION = (

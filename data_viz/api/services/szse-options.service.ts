@@ -12,6 +12,8 @@ import type {
   OptionsRow,
   OptionsUnderlying,
   OptionsCombinedResponse,
+  OptionsWallRow,
+  OptionsWallsResponse,
   EtfOhlcvResponse,
   SkewType,
   SkewnessCorrRow,
@@ -192,6 +194,86 @@ export async function getOptionsCombined(
   const dates = Array.from(new Set(transformed.map((r) => r.date))).sort();
 
   return { dates, underlying_code: underlying, rows: transformed };
+}
+
+// ----------------------------------------------------------------------------
+//  Options wall zones — analysis.options_walls (wall_type='zone' only; the
+//  legacy 80pct / large_num wall types were removed from the backend).
+//  wall_low/high/center are in RAW strike units (same scale as
+//  v_options_quote.strike_price).
+// ----------------------------------------------------------------------------
+
+interface DbOptionsWallRow extends QueryResultRow {
+  date: Date | string;
+  option_type: string;
+  underlying_code: string;
+  expiry_date: Date | string;
+  wall_type: string;
+  wall_strike: number | null;
+  wall_oi: number | null;
+  wall_low: number | null;
+  wall_high: number | null;
+  wall_center: number | null;
+  mass_share: number | null;
+  gap_pct: number | null;
+  days_persisted: number | null;
+  state: string | null;
+  strength_score: number | null;
+}
+
+export async function getOptionsWalls(
+  q: OptionsQuery,
+): Promise<OptionsWallsResponse> {
+  const underlying = stripExchangeSuffix((q.underlying ?? "")).trim();
+
+  const params: unknown[] = [];
+  const where: string[] = ["wall_type = 'zone'"];
+  let i = 1;
+
+  if (underlying) {
+    where.push(`underlying_code = $${i++}`);
+    params.push(underlying);
+  }
+  const startDate = toDateParam(q.start_date);
+  const endDate = toDateParam(q.end_date);
+  if (startDate) {
+    where.push(`date >= $${i++}::date`);
+    params.push(startDate);
+  }
+  if (endDate) {
+    where.push(`date <= $${i++}::date`);
+    params.push(endDate);
+  }
+
+  const sql = `
+    SELECT date, option_type, underlying_code, expiry_date, wall_type,
+           wall_strike, wall_oi,
+           wall_low, wall_high, wall_center,
+           mass_share, gap_pct, days_persisted, state, strength_score
+    FROM analysis.options_walls
+    WHERE ${where.join(" AND ")}
+    ORDER BY date ASC, expiry_date ASC, option_type ASC
+  `;
+  const rows = await queryRows<DbOptionsWallRow>(sql, params);
+  const transformed: OptionsWallRow[] = rows.map((r) => ({
+    date: formatDate(r.date),
+    option_type: (String(r.option_type).toUpperCase() === "PUT" ? "PUT" : "CALL") as "PUT" | "CALL",
+    underlying_code: r.underlying_code,
+    expiry_date: formatDate(r.expiry_date),
+    wall_type: "zone" as const,
+    wall_strike: toNum(r.wall_strike),
+    wall_oi: toNum(r.wall_oi),
+    wall_low: toNum(r.wall_low),
+    wall_high: toNum(r.wall_high),
+    wall_center: toNum(r.wall_center),
+    mass_share: toNum(r.mass_share),
+    gap_pct: toNum(r.gap_pct),
+    days_persisted: toNum(r.days_persisted),
+    state: (r.state ?? null) as OptionsWallRow["state"],
+    strength_score: toNum(r.strength_score),
+  }));
+
+  return { underlying_code: underlying, rows: transformed };
 }
 
 // ----------------------------------------------------------------------------

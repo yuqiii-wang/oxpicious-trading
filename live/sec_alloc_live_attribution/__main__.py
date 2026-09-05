@@ -179,8 +179,8 @@ async def main() -> None:
         default="",
         help=(
             "Comma-separated benchmark codes to limit scope to. "
-            "Without this flag, all benchmarks in "
-            "sec_alloc_perf_attribution are considered."
+            "Without this flag, all indices with 5-min tick data "
+            "(stats.index_intraday_5min) are considered."
         ),
     )
     args = ap.parse_args()

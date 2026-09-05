@@ -31,6 +31,9 @@ import {
   listIndustrySentimentsThemes,
   listIndustrySentimentsStrategyThemes,
   getIndustryCorrelations,
+  getIndustryCorrOffsets,
+  listIndustryCorrOffsetBenchmarks,
+  listIndustryCorrOffsetIndustries,
   getIndustryBenchmarkAttribution,
   listIndustryAttributionBenchmarks,
   getBenchmarkPriceChart,
@@ -45,11 +48,11 @@ import {
   listPeAndDividendThemes,
   listPeAndDividendStrategyThemes,
   listPeAndDividendStats,
+  listPeAndDividendStreaks,
   listMarginTrendThemes,
   listMarginTrendStrategyThemes,
   getMarginIndustrySeries,
   getMarginTrends,
-  listRecurringCyclesCodes,
   getRecurringCyclesChart,
   getRecurringCyclesSpectrum,
   listRecurringCyclesThemes,
@@ -182,9 +185,10 @@ router.get("/mov-ave-spread/chart", async (req: Request, res: Response) => {
 
 // ---- Forecast buckets table (2nd plot beneath the spread chart) ----
 // GET /api/analysis/mov-ave-spread/forecast?sec_type=etf&code=510050&kind=mov_rsi
-//   kind ∈ {mov_rsi, mov_std, mov_gap} — returns the code's bucket rows
-//   (bucket config incl. cooldown_days + is_market_hyped + excess cols for
-//   mov_std, read from forecast_results.config) joined 1:1 with their
+//   kind ∈ {mov_rsi, mov_std, mov_gap, px_vol} — returns the code's bucket
+//   rows (bucket config incl. cooldown_days + is_market_hyped + excess cols
+//   for mov_std / mean_t + mean_z for px_vol, read from
+//   forecast_results.config) joined 1:1 with their
 //   analysis_forecasts.forecast_results columns. ALL stat_months are
 //   returned; optional `month=YYYY-MM-DD` narrows to stat_months >= month.
 //   The response's `months` lists every available stat_month.
@@ -246,7 +250,7 @@ router.get("/perf-attr/codes", async (req: Request, res: Response) => {
 
 // ---- Performance Attribution: themes tree (L1 sector → L2 industry → items)
 // Mirrors /api/etf-margin/themes and /api/index-baseline/themes but only
-// includes codes that have rows in analysis.sec_alloc_perf_attribution.
+// includes codes that have rows in stats.cross_stats (sec_type='index').
 router.get("/perf-attr/themes", async (req: Request, res: Response) => {
   try {
     res.json(await listPerfAttrThemes(parsePerfAttrSecType(req)));
@@ -477,8 +481,122 @@ router.post("/industry-correlations/run", async (req: Request, res: Response) =>
   }
 });
 
+// ---- Industry Correlations by Benchmark Offset (composite analysis —
+//      opposite industry correlations; drives the Composites page).
+//   GET /api/analysis/industry-corr-offsets?industry_ids=BANKS,AI
+//         &pool_size=all&benchmark=000300
+//     Returns IndustryCorrOffsetsResponse: one audit row per
+//     (start_date, lexicographic pair) for every pair from the
+//     user-selected industry_ids set, with the RAW overall correlation,
+//     the benchmark-offset sub / add recomputed-price correlations and the
+//     derived opposite score (1 - sub)/2, at 20d/60d/255d windows.
+//   GET /api/analysis/industry-corr-offsets/benchmarks
+//     Returns the distinct benchmark_code values materialized in
+//     analysis_composites.industry_corr_benchmark_offsets (benchmark
+//     dropdown; empty list until the analysis has been run).
+//   POST /api/analysis/industry-corr-offsets/run   body:
+//     { industry_ids?: string[], codes?: string[], benchmark?: string }
+//     Spawns `python -m analyze.analysis_composites --industry ...
+//     --code ... --benchmark ...` (filtered mode: recompute + upsert ALL
+//     windows for the pairs among the given industries) via the shared
+//     py-runner and WAITS for it to exit. Deduped by a fixed
+//     process-id-tag, so a second click while a refresh is in flight
+//     resolves with already_running=true. Running-state is polled via
+//     GET /api/analysis/run-analysis/status with
+//     INDUSTRY_CORR_OFFSET_RUN_TAG.
+router.get("/industry-corr-offsets", async (req: Request, res: Response) => {
+  try {
+    const raw = typeof req.query.industry_ids === "string"
+      ? req.query.industry_ids
+      : "";
+    const industryIds = raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    if (industryIds.length < 2) {
+      res.status(400).json({
+        error: "Need at least 2 industry_ids (comma-separated)",
+      });
+      return;
+    }
+    const poolSize = typeof req.query.pool_size === "string"
+      ? req.query.pool_size.trim()
+      : "all";
+    const benchmark = typeof req.query.benchmark === "string"
+      ? req.query.benchmark.trim()
+      : "000300";
+    res.json(await getIndustryCorrOffsets(industryIds, poolSize, benchmark));
+  } catch (err) {
+    console.error("[analysis/industry-corr-offsets] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/industry-corr-offsets/benchmarks", async (_req: Request, res: Response) => {
+  try {
+    res.json(await listIndustryCorrOffsetBenchmarks());
+  } catch (err) {
+    console.error("[analysis/industry-corr-offsets/benchmarks] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// GET /api/analysis/industry-corr-offsets/industries — selectable industry
+// list (distinct type='index' industries + has_rows flag).
+router.get("/industry-corr-offsets/industries", async (_req: Request, res: Response) => {
+  try {
+    res.json(await listIndustryCorrOffsetIndustries());
+  } catch (err) {
+    console.error("[analysis/industry-corr-offsets/industries] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+/** Fixed process-id-tag for UI-triggered offset-corr refresh runs — one
+ *  refresh at a time globally (must match the tag built client-side). */
+export const INDUSTRY_CORR_OFFSET_RUN_TAG = "analysis-run:industry_corr_offsets";
+
+router.post("/industry-corr-offsets/run", async (req: Request, res: Response) => {
+  try {
+    const industryIds = parseBodyList(req.body?.industry_ids);
+    const codes = parseBodyList(req.body?.codes);
+    const benchmarkRaw = typeof req.body?.benchmark === "string"
+      ? req.body.benchmark.trim()
+      : "";
+    if (industryIds.length + codes.length === 0) {
+      res.status(400).json({
+        success: false,
+        stderr_tail: "Missing 'industry_ids' or 'codes' (at least one entry)",
+      });
+      return;
+    }
+    const args: string[] = [];
+    if (industryIds.length > 0) args.push("--industry", industryIds.join(","));
+    if (codes.length > 0) args.push("--code", codes.join(","));
+    if (benchmarkRaw) args.push("--benchmark", benchmarkRaw);
+    console.log(
+      `[analysis/industry-corr-offsets/run] python -m analyze.analysis_composites ${args.join(" ")}`,
+    );
+    const result = await runPythonModule(
+      "analyze.analysis_composites",
+      args,
+      { processIdTag: INDUSTRY_CORR_OFFSET_RUN_TAG },
+    );
+    res.json({
+      success: result.success,
+      already_running: result.already_running === true,
+      process_id_tag: INDUSTRY_CORR_OFFSET_RUN_TAG,
+      stdout_tail: result.stdout.slice(-2000),
+      stderr_tail: result.stderr.slice(-2000),
+    });
+  } catch (err) {
+    console.error("[analysis/industry-corr-offsets/run] error:", err);
+    res.status(500).json({ success: false, stderr_tail: String(err) });
+  }
+});
+
 // ---- Industry-level Benchmark Attribution (aggregated
-//      sec_alloc_perf_attribution per industry_id). Drives the "Benchmark
+//      stats.cross_stats pair rows per industry_id). Drives the "Benchmark
 //      Attribution" view on the IndustrySentiments page — the toggle that
 //      swaps the price/correlation plot for a fluctuation-attribution bar
 //      chart per industry. Aggregates per-index rows to one row per
@@ -710,6 +828,11 @@ router.get("/industry-etf-contribution/etf-bars", async (req: Request, res: Resp
 //   GET /api/analysis/pe-and-dividend/stats?sec_type=index&code=000300
 //     Returns PeAndDividendStatsResponse: ALL monthly 5y rolling stats
 //     snapshots for one code (most recent first). is_active marks the latest.
+//   GET /api/analysis/pe-and-dividend/streaks?sec_type=index&code=000300
+//     Returns PeAndDividendStreaksResponse: band-BREAK excursion streaks of
+//     the code's pe_ma20 / dividend_yield series
+//     (analysis.pe_and_dividend_pct_streaks, side derived from the end
+//     month's band), flat for ALL (metric, period, pct_type) combos.
 router.get("/pe-and-dividend/codes", async (req: Request, res: Response) => {
   try {
     res.json(await listPeAndDividendCodes(
@@ -765,6 +888,26 @@ router.get("/pe-and-dividend/stats", async (req: Request, res: Response) => {
     res.json(await listPeAndDividendStats(code, parseSecType(req)));
   } catch (err) {
     console.error("[analysis/pe-and-dividend/stats] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+//   GET /api/analysis/pe-and-dividend/streaks?sec_type=index&code=000300
+//     Returns PeAndDividendStreaksResponse: the band-BREAK excursion
+//     streaks of the code's pe_ma20 / dividend_yield series (from
+//     analysis.pe_and_dividend_pct_streaks, side derived at query time
+//     from the end month's band), shipped flat for ALL (metric, period,
+//     pct_type) combos — the client filters by its nested selection.
+router.get("/pe-and-dividend/streaks", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await listPeAndDividendStreaks(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/pe-and-dividend/streaks] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
@@ -843,30 +986,20 @@ router.get("/margin-trends/trends", async (req: Request, res: Response) => {
 //   coherence, amplitude-gated); headline period_days = argmax of strength
 //   (0 = no recurring period). Currently populated for sec_type='index' only.
 //
-//   GET /api/analysis/recurring-cycles/codes?sec_type=index
-//     Returns RecurringCyclesCodesResponse: list of codes with first/last
-//     date, n_dates, and the latest recurring period per range_days.
+//   The table is 55 GB (per-row spectra arrays) — no page-load query may
+//   scan it. The navigation trees resolve "codes with data" from the
+//   analysis.recurring_cycles_codes registry (maintained by the Python
+//   populator), and every recurring_cycles read below is code-filtered so
+//   the PK index drives it — the UI must pass `code` in the filter.
+//
 //   GET /api/analysis/recurring-cycles/chart?sec_type=index&code=000300
 //     Returns RecurringCyclesChartResponse: per-(last_date, range_days)
 //     period_days + strength rows for one security.
 //   GET /api/analysis/recurring-cycles/themes?sec_type=index
 //     Returns the L1 sector → L2 industry → items tree for SecClassificationNav,
-//     filtered to codes that have rows in analysis.recurring_cycles.
+//     restricted to codes registered in analysis.recurring_cycles_codes.
 //   GET /api/analysis/recurring-cycles/strategy-themes?sec_type=index
 //     Parallel L1 strategy → L2 theme tree (RIGHT column).
-router.get("/recurring-cycles/codes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listRecurringCyclesCodes(
-      parseSecType(req),
-      undefined, undefined, undefined, undefined,
-      parseExchange(req),
-    ));
-  } catch (err) {
-    console.error("[analysis/recurring-cycles/codes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
 router.get("/recurring-cycles/chart", async (req: Request, res: Response) => {
   try {
     const code = parseCode(req);

@@ -505,7 +505,7 @@ async def fetch_missing_iv_skew_groups(
 
 WALLS_FETCH_COLUMNS = [
     "date", "contract_code", "option_type", "underlying_code",
-    "expiry_date", "strike_price", "open_interest",
+    "expiry_date", "strike_price", "open_interest", "underlying_close",
 ]
 
 
@@ -514,7 +514,10 @@ async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.Data
 
     Returns a DataFrame with columns:
         date, contract_code, option_type, underlying_code,
-        expiry_date, strike_price, open_interest
+        expiry_date, strike_price, open_interest, underlying_close
+
+    ``underlying_close`` (LEFT JOIN — NULL when settlement is missing)
+    is required by the zone wall pipeline (gap / BREACHED state).
 
     Dates stay datetime64 (compute boundary).
 
@@ -531,12 +534,15 @@ async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.Data
             t.underlying_code,
             extract(epoch from t.expiry_date)::float8 AS expiry_date,
             k.strike_price,
-            v.open_interest
+            v.open_interest,
+            s.underlying_close
         FROM stats.options_terms t
         JOIN stats.options_strike k
           ON k.date = t.date AND k.contract_code = t.contract_code
         JOIN stats.options_volume_oi v
           ON v.date = t.date AND v.contract_code = t.contract_code
+        LEFT JOIN stats.options_settlement s
+          ON s.date = t.date AND s.contract_code = t.contract_code
         WHERE k.strike_price > 0
           {sec_filter}
         ORDER BY t.option_type, t.underlying_code, t.expiry_date, t.date
@@ -549,7 +555,7 @@ async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.Data
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     df["expiry_date"] = epoch_col_to_dt64(
         df["expiry_date"], index=df.index)
-    for col in ("strike_price", "open_interest"):
+    for col in ("strike_price", "open_interest", "underlying_close"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
@@ -562,7 +568,7 @@ async def fetch_missing_walls_groups(
     tuples missing from analysis.options_walls.
 
     Returns list of tuples that need computation. Each expiry group needs
-    both wall types (80pct and large_num), and both option types (CALL/PUT).
+    the zone wall for both option types (CALL/PUT).
     """
     sec_filter = _sec_type_where(sec_type)
     sql = f"""
@@ -601,16 +607,13 @@ async def fetch_missing_walls_groups(
     except Exception:
         pass
 
-    # Each expiry group needs both wall types: duplicate the candidate
-    # PK frame per wall type (vectorized; 2 copies), THEN anti-join on
+    # Each expiry group needs the zone wall per option type: duplicate the
+    # candidate PK frame per wall type (vectorized), THEN anti-join on
     # the full 5-column PK so a group missing only one wall type is
     # detected per type.
-    from analyze.options.config import WALL_TYPE_80PCT, WALL_TYPE_LARGE_NUM
+    from analyze.options.config import WALL_TYPES
     candidates = pd.concat(
-        [
-            collapsed.assign(wall_type=WALL_TYPE_80PCT),
-            collapsed.assign(wall_type=WALL_TYPE_LARGE_NUM),
-        ],
+        [collapsed.assign(wall_type=wt) for wt in WALL_TYPES],
         ignore_index=True,
     )
     return _missing_pk_tuples(

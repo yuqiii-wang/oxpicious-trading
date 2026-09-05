@@ -5,11 +5,10 @@
  * Extracted from ExpiryOiBandsPanel.tsx for the merged OptionsTrendPanel.
  * Uses shared bandsTooltip.ts for tooltip formatting.
  *
- * Two wall modes:
- *   - "80pct":  boundary where one side dominates ≥80% of total OI at
- *              each strike, interpolated across strikes (existing logic).
- *   - "large_num": strike with the max OI among those exceeding 70% of
- *              the mean OI across all strikes in the expiry group.
+ * Wall overlay: the backend's zone walls (analysis.options_walls,
+ * wall_type='zone') are drawn as translucent low→high bands with a center
+ * line per side. The legacy 80pct / large_num client-side wall curves were
+ * removed — the zone wall supersedes them.
  */
 import {
   DOWN_COLOR,
@@ -28,14 +27,10 @@ import {
   makeExpiryDotTooltip,
 } from "./expiryTooltip";
 import {
-  BEAR_THRESHOLD_SERIES_NAME,
-  BULL_THRESHOLD_SERIES_NAME,
-  CALL_LARGE_NUM_SERIES_NAME,
-  LARGE_NUM_MEAN_FRACTION,
-  PUT_LARGE_NUM_SERIES_NAME,
-  PUT_PCT_GREEN,
-  PUT_PCT_RED,
-  type WallMode,
+  CALL_ZONE_SERIES_NAME,
+  PUT_ZONE_SERIES_NAME,
+  type ZoneWallPoint,
+  type ZoneWallSeries,
 } from "./bandData";
 import type { BandCell } from "./bandData";
 import type { ExpiryMarker } from "./sharedData";
@@ -65,183 +60,80 @@ function buildBandRenderItem(cells: BandCell[]) {
   };
 }
 
-/**
- * Compute the >80% dominance boundary curves for the bands chart.
- *
- * Per date, strikes are sorted ascending by strike and the walls are placed
- * at the boundary of the DEEPEST contiguous dominant zone, anchored at the
- * chain edge (a stray dominant island separated by a non-dominant gap does
- * not extend the zone):
- *   - Bear (red): the put zone (putPct ≥ 80) grows UP from the lowest
- *     strike; the wall is its top boundary. The exact 80% level usually
- *     falls BETWEEN two strikes (e.g. 78% then 82%), so the boundary
- *     strike is linearly interpolated in between.
- *   - Bull (green): the call zone (putPct ≤ 20) grows DOWN from the highest
- *     strike; the wall is its bottom boundary, interpolated the same way.
- * Clamps to the chain edge when the zone spans the whole chain; null when
- * the zone does not exist on that date.
- */
-export function computeThresholdCurves(
-  cells: BandCell[],
-  datesLength: number,
-): {
-  bull: (number | null)[];
-  bear: (number | null)[];
-} {
-  const byIdx = new Map<number, BandCell[]>();
-  for (const cell of cells) {
-    const idx = cell.value[0];
-    let group = byIdx.get(idx);
-    if (!group) {
-      group = [];
-      byIdx.set(idx, group);
-    }
-    group.push(cell);
+/** Fill opacity of the zone band by lifecycle state. */
+function zoneFillOpacity(state: ZoneWallPoint["state"]): number {
+  switch (state) {
+    case "BREACHED":
+      return 0.08;
+    case "ERODED":
+      return 0.16;
+    default:
+      return 0.26;
   }
-
-  const interpolate = (a: BandCell, b: BandCell, target: number): number => {
-    const dPct = b.putPct - a.putPct;
-    if (dPct === 0) return b.strikeY;
-    return a.strikeY + ((target - a.putPct) / dPct) * (b.strikeY - a.strikeY);
-  };
-
-  const bull: (number | null)[] = new Array(datesLength).fill(null);
-  const bear: (number | null)[] = new Array(datesLength).fill(null);
-
-  for (const [idx, group] of byIdx) {
-    if (idx >= datesLength) continue;
-    group.sort((a, b) => a.strikeY - b.strikeY);
-
-    // Bear (red) wall: the put-dominant zone (putPct ≥ 80) is anchored at the
-    // LOWEST strike and extends UP while strikes stay ≥ 80. The wall sits at
-    // the top boundary of that contiguous run — stray ≥80% islands above a
-    // <80% gap do NOT move it. E.g. putPct (low→high) 82%, 78%, 85%, 70%
-    // → wall interpolated between the 82% and 78% strikes at 80%.
-    let hi = -1;
-    for (let i = 0; i < group.length; i++) {
-      if (group[i].putPct >= PUT_PCT_RED) hi = i;
-      else break;
-    }
-    if (hi >= 0) {
-      bear[idx] = hi + 1 < group.length
-        ? interpolate(group[hi], group[hi + 1], PUT_PCT_RED)
-        : group[hi].strikeY; // run reaches chain top — clamp
-    }
-
-    // Bull (green) wall: the call-dominant zone (putPct ≤ 20) is anchored at
-    // the HIGHEST strike and extends DOWN while strikes stay ≤ 20. The wall
-    // sits at the bottom boundary of that contiguous run.
-    let lo = -1;
-    for (let i = group.length - 1; i >= 0; i--) {
-      if (group[i].putPct <= PUT_PCT_GREEN) lo = i;
-      else break;
-    }
-    if (lo >= 0) {
-      bull[idx] = lo > 0
-        ? interpolate(group[lo - 1], group[lo], PUT_PCT_GREEN)
-        : group[lo].strikeY; // run reaches chain bottom — clamp
-    }
-  }
-
-  return { bull, bear };
 }
 
-/**
- * Compute the "large num wall" curves for the bands chart.
- *
- * Per date, for each option type (CALL / PUT):
- *   1. Aggregate OI by strike across all cells for that date + type.
- *   2. Compute the mean OI across all strikes.
- *   3. Filter strikes where OI > 70% of the mean value.
- *   4. Pick the strike with the maximum OI among qualifying strikes.
- *
- * Returns two wall series:
- *   - callWall:  the max-OI strike among CALL strikes exceeding the mean
- *                threshold (acts as support — price tends to stay above).
- *   - putWall:   the max-OI strike among PUT strikes exceeding the mean
- *                threshold (acts as resistance — price tends to stay below).
- */
-export function computeLargeNumWalls(
-  cells: BandCell[],
-  datesLength: number,
-): {
-  callWall: (number | null)[];
-  putWall: (number | null)[];
-} {
-  // Group cells by date index
-  const byIdx = new Map<number, BandCell[]>();
-  for (const cell of cells) {
-    const idx = cell.value[0];
-    let group = byIdx.get(idx);
-    if (!group) {
-      group = [];
-      byIdx.set(idx, group);
-    }
-    group.push(cell);
-  }
+/** Custom-series renderItem drawing one zone wall band (low→high rect +
+ *  OI-weighted center line; dashed when BREACHED) per date. */
+function buildZoneRenderItem(points: (ZoneWallPoint | null)[], color: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (params: any, api: any) => {
+    const p = points[params.dataIndex as number];
+    if (!p) return null;
+    const coordC = api.coord([params.dataIndex, p.center]) as number[];
+    const yLow = (api.coord([params.dataIndex, p.low]) as number[])[1];
+    const yHigh = (api.coord([params.dataIndex, p.high]) as number[])[1];
+    const cx = coordC[0];
+    const cy = coordC[1];
+    if (!Number.isFinite(cx) || !Number.isFinite(yLow) || !Number.isFinite(yHigh)) return null;
+    const step = api.size ? (api.size([1, 0]) as number[]) : null;
+    const half = step && step[0] > 0 ? Math.max(step[0] / 2 - 1, 2) : 4;
+    const breached = p.state === "BREACHED";
+    const lineOpacity = breached ? 0.55 : 0.95;
+    const lineDash = breached ? [3, 3] : undefined;
+    return {
+      type: "group" as const,
+      children: [
+        {
+          type: "rect" as const,
+          shape: {
+            x: cx - half,
+            y: yHigh,
+            width: half * 2,
+            height: Math.max(yLow - yHigh, 1),
+          },
+          style: { fill: color, opacity: zoneFillOpacity(p.state) },
+        },
+        // low/high edge rails — make the zone extent readable where the
+        // fill blends into same-hue OI band cells (call zone in the
+        // green call-side field)
+        {
+          type: "line" as const,
+          shape: { x1: cx - half, y1: yHigh, x2: cx + half, y2: yHigh },
+          style: { stroke: color, lineWidth: 1, opacity: lineOpacity * 0.55, lineDash },
+        },
+        {
+          type: "line" as const,
+          shape: { x1: cx - half, y1: yLow, x2: cx + half, y2: yLow },
+          style: { stroke: color, lineWidth: 1, opacity: lineOpacity * 0.55, lineDash },
+        },
+        {
+          type: "line" as const,
+          shape: { x1: cx - half, y1: cy, x2: cx + half, y2: cy },
+          style: {
+            stroke: color,
+            lineWidth: 1.6,
+            opacity: lineOpacity,
+            lineDash,
+          },
+        },
+      ],
+    };
+  };
+}
 
-  const callWall: (number | null)[] = new Array(datesLength).fill(null);
-  const putWall: (number | null)[] = new Array(datesLength).fill(null);
-
-  for (const [idx, group] of byIdx) {
-    if (idx >= datesLength) continue;
-
-    // Aggregate OI by strike for CALL and PUT separately
-    const callOiByStrike = new Map<number, number>();
-    const putOiByStrike = new Map<number, number>();
-
-    for (const cell of group) {
-      if (cell.callOi > 0) {
-        callOiByStrike.set(
-          cell.strikeY,
-          (callOiByStrike.get(cell.strikeY) ?? 0) + cell.callOi,
-        );
-      }
-      if (cell.putOi > 0) {
-        putOiByStrike.set(
-          cell.strikeY,
-          (putOiByStrike.get(cell.strikeY) ?? 0) + cell.putOi,
-        );
-      }
-    }
-
-    // Compute mean OI for calls and puts
-    const callStrikes = Array.from(callOiByStrike.values());
-    const putStrikes = Array.from(putOiByStrike.values());
-
-    if (callStrikes.length > 0) {
-      const callMean = callStrikes.reduce((a, b) => a + b, 0) / callStrikes.length;
-      const callThreshold = callMean * LARGE_NUM_MEAN_FRACTION;
-
-      // Filter strikes exceeding threshold, pick max OI
-      let bestCallStrike: number | null = null;
-      let bestCallOi = 0;
-      for (const [strike, oi] of callOiByStrike) {
-        if (oi >= callThreshold && oi > bestCallOi) {
-          bestCallOi = oi;
-          bestCallStrike = strike;
-        }
-      }
-      callWall[idx] = bestCallStrike;
-    }
-
-    if (putStrikes.length > 0) {
-      const putMean = putStrikes.reduce((a, b) => a + b, 0) / putStrikes.length;
-      const putThreshold = putMean * LARGE_NUM_MEAN_FRACTION;
-
-      let bestPutStrike: number | null = null;
-      let bestPutOi = 0;
-      for (const [strike, oi] of putOiByStrike) {
-        if (oi >= putThreshold && oi > bestPutOi) {
-          bestPutOi = oi;
-          bestPutStrike = strike;
-        }
-      }
-      putWall[idx] = bestPutStrike;
-    }
-  }
-
-  return { callWall, putWall };
+/** Custom-series data: one item per date (null where no zone that day). */
+function zoneSeriesData(points: (ZoneWallPoint | null)[]) {
+  return points.map((p, xi) => (p ? { value: [xi, p.center] } : null));
 }
 
 export function buildBandsOption(
@@ -251,11 +143,11 @@ export function buildBandsOption(
   themeMode: "light" | "dark",
   dataZoom: EChartsOption["dataZoom"] = undefined,
   expiryMarkers: ExpiryMarker[] = [],
-  wallMode: WallMode = "80pct",
+  zones?: ZoneWallSeries,
 ): EChartsOption {
   const c = axisColors(themeMode);
   const renderItem = buildBandRenderItem(cells);
-  const tooltipFormatter = makeBandsTooltipFormatter(c.textColor, c.tooltipBg, c.splitLineColor, wallMode);
+  const tooltipFormatter = makeBandsTooltipFormatter(c.textColor, c.tooltipBg, c.splitLineColor, zones);
   const dotTooltip = makeExpiryDotTooltip({
     textColor: c.textColor,
     tooltipBg: c.tooltipBg,
@@ -263,61 +155,34 @@ export function buildBandsOption(
   });
   const expiryData = buildExpiryData(dates, [spot], expiryMarkers);
 
-  // Compute wall curves based on the selected mode
-  let wallSeries: EChartsOption["series"] = [];
-  if (wallMode === "80pct") {
-    const { bull, bear } = computeThresholdCurves(cells, dates.length);
-    wallSeries = [
-      {
-        type: "line",
-        name: BULL_THRESHOLD_SERIES_NAME,
-        data: bull,
-        showSymbol: false,
-        smooth: false,
-        connectNulls: false,
-        lineStyle: { color: UP_COLOR, width: 2.5 },
-        itemStyle: { color: UP_COLOR },
-        z: 9,
-      },
-      {
-        type: "line",
-        name: BEAR_THRESHOLD_SERIES_NAME,
-        data: bear,
-        showSymbol: false,
-        smooth: false,
-        connectNulls: false,
-        lineStyle: { color: DOWN_COLOR, width: 2.5 },
-        itemStyle: { color: DOWN_COLOR },
-        z: 9,
-      },
-    ];
-  } else {
-    const { callWall, putWall } = computeLargeNumWalls(cells, dates.length);
-    wallSeries = [
-      {
-        type: "line",
-        name: CALL_LARGE_NUM_SERIES_NAME,
-        data: callWall,
-        showSymbol: false,
-        smooth: false,
-        connectNulls: false,
-        lineStyle: { color: UP_COLOR, width: 2.5, type: "dashed" as const },
-        itemStyle: { color: UP_COLOR },
-        z: 9,
-      },
-      {
-        type: "line",
-        name: PUT_LARGE_NUM_SERIES_NAME,
-        data: putWall,
-        showSymbol: false,
-        smooth: false,
-        connectNulls: false,
-        lineStyle: { color: DOWN_COLOR, width: 2.5, type: "dashed" as const },
-        itemStyle: { color: DOWN_COLOR },
-        z: 9,
-      },
-    ];
-  }
+  const zoneSeries = zones
+    ? [
+        {
+          type: "custom" as const,
+          name: CALL_ZONE_SERIES_NAME,
+          // series-level color only drives the legend swatch — the custom
+          // renderItem styles its own shapes
+          color: UP_COLOR,
+          renderItem: buildZoneRenderItem(zones.call, UP_COLOR),
+          data: zoneSeriesData(zones.call),
+          encode: { x: 0, y: 1 },
+          clip: true,
+          progressive: 0,
+          z: 8,
+        },
+        {
+          type: "custom" as const,
+          name: PUT_ZONE_SERIES_NAME,
+          color: DOWN_COLOR,
+          renderItem: buildZoneRenderItem(zones.put, DOWN_COLOR),
+          data: zoneSeriesData(zones.put),
+          encode: { x: 0, y: 1 },
+          clip: true,
+          progressive: 0,
+          z: 8,
+        },
+      ]
+    : [];
 
   return {
     backgroundColor: "transparent",
@@ -384,7 +249,7 @@ export function buildBandsOption(
         lineStyle: { color: SPOT_COLOR, width: 1.6 },
         z: 10,
       },
-      ...wallSeries,
+      ...zoneSeries,
       {
         id: "bands-expiry-markers",
         type: "scatter",

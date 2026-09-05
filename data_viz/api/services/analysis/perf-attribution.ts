@@ -21,8 +21,9 @@ import type {
 
 // ============================================================================
 //  Performance Attribution — ETF/Index subjects × Index benchmarks
-//    analysis.sec_alloc_perf_attribution
-//    PK: (code, date, sec_type, benchmark_code)
+//    stats.cross_stats (sec_type='index' pair grain; former
+//    analysis.sec_alloc_perf_attribution, migrated 2026-09-04)
+//    PK: (code, benchmark_code, date, sec_type)
 // ============================================================================
 
 /** Whitelisted sec_type → name table mapping (safe for string interpolation). */
@@ -40,6 +41,33 @@ interface DbPerfAttrCodeRow extends QueryResultRow {
   benchmarks: string[];
 }
 
+/** Which source the per-code aggregates read for this sec_type:
+ *  - 'summary': stats.cross_stats_code_summary (per-(sec_type, code)
+ *    rollup maintained by builds.cross_stats — millisecond reads; a live
+ *    GROUP BY over the 70M+ row main table costs ~30s per request).
+ *  - 'live': on-the-fly aggregate over stats.cross_stats — only used while
+ *    the rollup has no rows for the sec_type yet (fresh DB before the
+ *    first build).
+ *  - 'empty': stats.cross_stats has no rows for the sec_type at all
+ *    (e.g. sec_type='etf' — the ETF pair grain is reserved/unused) → the
+ *    caller returns an empty result without any table scan. */
+type PerfAttrCodeSource = "summary" | "live" | "empty";
+
+async function resolvePerfAttrCodeSource(
+  secType: PerfAttrSecType,
+): Promise<PerfAttrCodeSource> {
+  const summary = await queryRows(
+    `SELECT 1 AS ok FROM stats.cross_stats_code_summary WHERE sec_type = $1::text LIMIT 1`,
+    [secType],
+  );
+  if (summary.length) return "summary";
+  const source = await queryRows(
+    `SELECT 1 AS ok FROM stats.cross_stats WHERE sec_type = $1::text LIMIT 1`,
+    [secType],
+  );
+  return source.length ? "live" : "empty";
+}
+
 export async function listPerfAttrCodes(
   secType: PerfAttrSecType,
   sector?: string | null,
@@ -53,39 +81,65 @@ export async function listPerfAttrCodes(
   const strategyFilter = (strategy ?? "").trim();
   const themeFilter = (theme ?? "").trim();
   const hasClassFilter = !!(sectorFilter || industryFilter || strategyFilter || themeFilter);
-  const sql = `
-    WITH latest_name AS (
-      SELECT DISTINCT ON (code) code, name
-      FROM ${nameTable}
-      ORDER BY code, date DESC
-    ),
-    code_stats AS (
+  const codeSource = await resolvePerfAttrCodeSource(secType);
+  if (codeSource === "empty") {
+    return { sec_type: secType, codes: [] };
+  }
+  // Summary variant: one PK-grain read of the rollup (first/last/n_dates/
+  // benchmarks precomputed by builds.cross_stats). Live variant: the
+  // historical two-CTE full-table aggregate (fallback only).
+  const statsSql =
+    codeSource === "summary"
+      ? `
+    SELECT
+      cs.code,
+      cs.first_date,
+      cs.last_date,
+      cs.n_dates,
+      cs.benchmarks
+    FROM stats.cross_stats_code_summary cs
+    WHERE cs.sec_type = $1::text`
+      : `
+    WITH code_stats AS (
       SELECT
         code,
         MIN(date) AS first_date,
         MAX(date) AS last_date,
         COUNT(DISTINCT date) AS n_dates
-      FROM analysis.sec_alloc_perf_attribution
+      FROM stats.cross_stats
       WHERE sec_type = $1::text
       GROUP BY code
     ),
     bench_list AS (
       SELECT code, ARRAY_AGG(DISTINCT benchmark_code ORDER BY benchmark_code) AS benchmarks
-      FROM analysis.sec_alloc_perf_attribution
+      FROM stats.cross_stats
       WHERE sec_type = $1::text
       GROUP BY code
     )
     SELECT
       cs.code,
-      COALESCE(n.name, '') AS name,
       cs.first_date,
       cs.last_date,
       cs.n_dates,
       COALESCE(bl.benchmarks, '{}') AS benchmarks
     FROM code_stats cs
-    LEFT JOIN latest_name n  ON n.code  = cs.code
-    LEFT JOIN bench_list bl  ON bl.code = cs.code
-    ORDER BY cs.n_dates DESC NULLS LAST, cs.code
+    LEFT JOIN bench_list bl ON bl.code = cs.code`;
+  const sql = `
+    WITH latest_name AS (
+      SELECT DISTINCT ON (code) code, name
+      FROM ${nameTable}
+      ORDER BY code, date DESC
+    )
+    SELECT
+      s.code,
+      COALESCE(n.name, '') AS name,
+      s.first_date,
+      s.last_date,
+      s.n_dates,
+      s.benchmarks
+    FROM (${statsSql}) s
+    LEFT JOIN latest_name n ON n.code = s.code
+    ORDER BY s.n_dates DESC NULLS LAST, s.code
   `;
   const rows = await queryRows<DbPerfAttrCodeRow>(sql, [secType]);
 
@@ -97,7 +151,10 @@ export async function listPerfAttrCodes(
   if (hasClassFilter) {
     const metaTable = PERF_ATTR_META_TABLE[secType] ?? PERF_ATTR_META_TABLE.etf;
     const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
-    const metaRows = await queryRows<DbPerfAttrMetaRow>(buildPerfAttrMetaSql(metaTable), [secType, metaType]);
+    const metaRows = await queryRows<DbPerfAttrMetaRow>(
+      buildPerfAttrMetaSql(metaTable, codeSource),
+      [secType, metaType],
+    );
     classMap = new Map<string, DbPerfAttrMetaRow>();
     for (const m of metaRows) {
       const code = stripExchangeSuffix(m.code);
@@ -164,7 +221,7 @@ export async function getPerfAttrAttribution(
     WITH target_date AS (
       SELECT COALESCE(
         $3::date,
-        (SELECT MAX(date) FROM analysis.sec_alloc_perf_attribution
+        (SELECT MAX(date) FROM stats.cross_stats
          WHERE sec_type = $1::text
            AND code = ANY($2::text[]))
       ) AS max_date
@@ -195,7 +252,7 @@ export async function getPerfAttrAttribution(
         THEN (sb.close - ps.close) / ps.close
         ELSE NULL
       END AS subject_return
-    FROM analysis.sec_alloc_perf_attribution a
+    FROM stats.cross_stats a
     CROSS JOIN target_date ld
     LEFT JOIN LATERAL (
       SELECT DISTINCT ON (code) code, name
@@ -271,8 +328,8 @@ export async function getPerfAttrAttribution(
 //  listPerfAttrThemes — two-level L1 sector → L2 industry → items tree for the
 //  Perf Attribution page's ThemeSelector. Mirrors listThemes() in
 //  etf-margin.service.ts and listIndexThemes() in index-baseline.service.ts,
-//  but only includes codes that have rows in analysis.sec_alloc_perf_attribution
-//  for the requested sec_type.
+//  but only includes codes that have rows in stats.cross_stats
+//  (sec_type='index') for the requested sec_type.
 // ----------------------------------------------------------------------------
 
 /** Whitelisted sec_type → meta-table mapping (safe for string interpolation).
@@ -304,17 +361,28 @@ interface DbPerfAttrMetaRow extends QueryResultRow {
 }
 
 /** Meta SQL shared by listPerfAttrThemes() and listPerfAttrStrategyThemes().
- *  Returns one row per code in analysis.sec_alloc_perf_attribution (filtered
+ *  Returns one row per code in stats.cross_stats (filtered
  *  by sec_type) with its precomputed L1/L2 classification from
  *  stats.sec_classification. is_industry_not_strategy distinguishes
- *  industry-primary (TRUE) from strategy-primary (FALSE) rows. */
-function buildPerfAttrMetaSql(metaTable: string): string {
-  return `
-    WITH perf_codes AS (
+ *  industry-primary (TRUE) from strategy-primary (FALSE) rows.
+ *  `codeSource` picks the membership source: the summary rollup's PK
+ *  scan ('summary') or the historical DISTINCT full-table scan ('live'). */
+function buildPerfAttrMetaSql(
+  metaTable: string,
+  codeSource: PerfAttrCodeSource,
+): string {
+  const perfCodes =
+    codeSource === "summary"
+      ? `
+      SELECT code
+      FROM stats.cross_stats_code_summary
+      WHERE sec_type = $1::text`
+      : `
       SELECT DISTINCT code
-      FROM analysis.sec_alloc_perf_attribution
-      WHERE sec_type = $1::text
-    )
+      FROM stats.cross_stats
+      WHERE sec_type = $1::text`;
+  return `
+    WITH perf_codes AS (${perfCodes})
     SELECT
       pc.code,
       COALESCE(m.name, '')             AS name,
@@ -334,7 +402,12 @@ export async function listPerfAttrThemes(
 ): Promise<SectorNode[]> {
   const metaTable = PERF_ATTR_META_TABLE[secType] ?? PERF_ATTR_META_TABLE.etf;
   const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
-  const rows = await queryRows<DbPerfAttrMetaRow>(buildPerfAttrMetaSql(metaTable), [secType, metaType]);
+  const codeSource = await resolvePerfAttrCodeSource(secType);
+  if (codeSource === "empty") return [];
+  const rows = await queryRows<DbPerfAttrMetaRow>(
+    buildPerfAttrMetaSql(metaTable, codeSource),
+    [secType, metaType],
+  );
 
   const sectorMap = new Map<string, {
     sector_label: string;
@@ -405,7 +478,12 @@ export async function listPerfAttrStrategyThemes(
 ): Promise<StrategyNode[]> {
   const metaTable = PERF_ATTR_META_TABLE[secType] ?? PERF_ATTR_META_TABLE.etf;
   const metaType = PERF_ATTR_META_TYPE[secType] ?? PERF_ATTR_META_TYPE.etf;
-  const rows = await queryRows<DbPerfAttrMetaRow>(buildPerfAttrMetaSql(metaTable), [secType, metaType]);
+  const codeSource = await resolvePerfAttrCodeSource(secType);
+  if (codeSource === "empty") return [];
+  const rows = await queryRows<DbPerfAttrMetaRow>(
+    buildPerfAttrMetaSql(metaTable, codeSource),
+    [secType, metaType],
+  );
 
   const mappedRows = rows.map((r) => ({
     code: stripExchangeSuffix(r.code),
@@ -482,7 +560,7 @@ export async function getPerfAttrChart(
               a.corr_255d,
               ${subjSrc.priceExpr} AS subject_close,
               ib.close AS benchmark_close
-       FROM analysis.sec_alloc_perf_attribution a
+       FROM stats.cross_stats a
        ${subjSrc.joinClause}
        LEFT JOIN stats.index_basic_stats ib ON ib.date = a.date AND ib.code = a.benchmark_code
        LEFT JOIN stats.index_exts ieb ON ieb.date = a.date AND ieb.code = a.benchmark_code

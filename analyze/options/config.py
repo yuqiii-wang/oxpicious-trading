@@ -210,16 +210,25 @@ WALLS_ANALYSIS_NAME = "options_walls"
 
 WALLS_DESCRIPTION = (
     "Per-(date, option_type, underlying_code, expiry_date, wall_type) store of "
-    "precomputed options wall levels. Two wall types: 80pct (boundary where "
-    "one side dominates >=80% of total OI at each strike, interpolated across "
-    "strikes) and large_num (strike with the max OI among those exceeding 70% "
-    "of the mean OI across all strikes in the expiry group). FK -> "
-    "analysis.options_expiry_identity."
+    "precomputed options wall levels. Single wall type: zone "
+    "(strength-scored OI wall ZONE with lifecycle: strikes with OI >=2% of "
+    "chain OI clustered into adjacent-strike zones (<=2 strike intervals "
+    "apart); dominant zone per side with wall_low/wall_high/wall_center in "
+    "raw strike units, mass_share (zone OI / chain OI, eligible >=0.06), "
+    "gap_pct (signed center-vs-spot distance), lifecycle state machine "
+    "(ACTIVE / ERODED / BREACHED) with day-over-day >=50% strike-range "
+    "overlap persistence (days_persisted), and strength_score = mass_share "
+    "* exp(-max(gap_pct,0)/8) * (1 + 0.25*min(days_persisted,20)/20)). "
+    "FK -> analysis.options_expiry_identity."
 )
 
 WALLS_RESULT_COLUMNS = [
     "date", "option_type", "underlying_code", "expiry_date", "wall_type",
     "wall_strike", "wall_oi", "mean_oi", "threshold",
+    # wall_type='zone' only (raw strike units — same scale as
+    # stats.options_strike / stats.options_settlement.underlying_close):
+    "wall_low", "wall_high", "wall_center",
+    "mass_share", "gap_pct", "days_persisted", "state", "strength_score",
 ]
 
 WALLS_NUMERIC_COLS = [
@@ -227,19 +236,45 @@ WALLS_NUMERIC_COLS = [
     "wall_oi",
     "mean_oi",
     "threshold",
+    "wall_low",
+    "wall_high",
+    "wall_center",
+    "mass_share",
+    "gap_pct",
+    "days_persisted",
+    "strength_score",
 ]
 
 # Wall type constants
-WALL_TYPE_80PCT = "80pct"
-WALL_TYPE_LARGE_NUM = "large_num"
-WALL_TYPES = [WALL_TYPE_80PCT, WALL_TYPE_LARGE_NUM]
+WALL_TYPE_ZONE = "zone"
+WALL_TYPES = [WALL_TYPE_ZONE]
 
-# 80% wall thresholds (matching frontend bandData.ts)
-PUT_PCT_RED = 80    # bearish: puts >= 80% of total OI
-PUT_PCT_GREEN = 20  # bullish: calls >= 80% of total OI
+# Zone lifecycle states (analysis.options_walls.state CHECK)
+WALL_STATE_ACTIVE = "ACTIVE"
+WALL_STATE_ERODED = "ERODED"
+WALL_STATE_BREACHED = "BREACHED"
 
-# Large num wall fraction (matching frontend LARGE_NUM_MEAN_FRACTION)
-LARGE_NUM_MEAN_FRACTION = 0.70
+# ---- Zone walls (wall_type='zone') ---------------------------------------
+# Empirically calibrated on 4,115 (date, nearest-expiry) observations
+# 2020-2026 (see temps/wall_v2_*.sql studies):
+#   - a strike joins a zone only if its side OI >= 2% of the chain's
+#     total (call+put) OI — below that, strikes are fringe noise;
+#   - a zone is eligible (emitted) only if its mass share >= 6% of
+#     chain OI — at equal strike distance a big call wall holds ~20pp
+#     better than a small one (71.9% vs 51.6% at 0.5-2.5% gap);
+#   - zones merge across <=2 empty strike intervals (a wall is a
+#     massif, not a point);
+#   - persistence: a zone that existed the previous trading day (>=50%
+#     strike-range overlap) holds +3..+11pp better at equal distance.
+ZONE_MIN_STRIKE_MASS = 0.02      # strike-side OI >= 2% of chain OI to enter a zone
+ZONE_MERGE_MAX_GAPS = 2          # merge adjacent selected strikes <=2 empty intervals apart
+ZONE_ELIGIBLE_MASS_SHARE = 0.06  # emit zone only if mass share >= 6% of chain OI
+ZONE_MAX_GAP_PCT = 15.0          # eligible only within +/-15% of spot
+ZONE_ERODE_RATIO = 0.70          # ERODED when mass < 70% of the previous day's zone mass
+ZONE_PERSIST_MATCH = 0.50        # >=50% strike-range overlap = same zone day-over-day
+ZONE_GAP_DECAY = 8.0             # strength decay constant (% gap); matches the hold curve
+ZONE_PERSIST_WINDOW = 20         # days_persisted capped in the strength bonus
+ZONE_PERSIST_BONUS = 0.25        # max persistence bonus (+25% at 20 days)
 
 # Price scale: raw strike_price is in 厘, divide by 10000 for yuan
 PRICE_SCALE = 10000

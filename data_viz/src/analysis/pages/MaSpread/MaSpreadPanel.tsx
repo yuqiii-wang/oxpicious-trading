@@ -37,7 +37,25 @@
  *      MULTIPLE windows can be enabled at once — overlapping shades
  *      stack darker. The caption below reports each enabled window's
  *      stats and the latest date's hyped state.
- *   6. Date-range slider at the bottom of the plot — drives all 9 pairs
+ *   6. High/Low Streaks section beneath the Market Hype row — NESTED
+ *      buttons: the first layer holds the band lookback periods
+ *      (255/500/750/1275, period-column aligned with the OHLC row);
+ *      clicking one expands a second layer of band tightness pcts
+ *      (1/5/10%). Selecting a pct fills the LATEST date's trailing
+ *      period-row window with its top/bottom pct% price zones (light
+ *      purple above high_val, light yellow below low_val) and draws the
+ *      WHOLE-WINDOW LONG BREAK STREAK per side — the in-window DB streaks
+ *      merged into ONE span (first start → last end, gaps between them
+ *      tolerated), shaded as a single horizontal band from the window's
+ *      constant band edge to the merged extreme. Drawing each DB streak
+ *      separately (each to its own peak against its own month's moving
+ *      band) fractured into slivers, so only the merged span is drawn.
+ *      Toggled per side via the chart legend. Clicking
+ *      a chart date anchors the window to the trailing rows before that
+ *      date ("show before that date"; click again to return to the
+ *      latest). The caption reports the window span and each side's
+ *      streak span / streak count / days / extreme.
+ *   7. Date-range slider at the bottom of the plot — drives all 9 pairs
  *      (they share one date axis).
  *
  * Fetches its own chart data on mount via fetchMovAveSpreadChart(code, secType).
@@ -68,8 +86,18 @@ import type {
   MovAveSpreadPairSeries,
 } from "@shared/types";
 import type { PanelProps } from "./types";
-import { OHLC_WINDOWS, HYPE_WINDOWS } from "./constants";
+import {
+  OHLC_WINDOWS,
+  HYPE_WINDOWS,
+  HIGH_LOW_STREAK_PERIODS,
+  HIGH_LOW_STREAK_PCTS,
+} from "./constants";
 import { buildPairOption, buildAmtEnvelopeOption, type TradingAmtMode } from "./chartOption";
+import {
+  computeBreakStreaks,
+  computeStreakBandWindow,
+  type LongBandStreak,
+} from "@/shared/charts/streakBands";
 import { ForecastTable } from "./ForecastTable";
 
 /** Bollinger multiplier options for the top-right dropdown (0.0 … 3.0, step 0.5).
@@ -185,10 +213,32 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // purple (multi-select — overlapping windows' shades stack darker).
   const [hypeWindows, setHypeWindows] = useState<number[]>([]);
 
+  // High/Low Streaks nested buttons: layer 1 = band lookback period
+  // (trading rows, null = row off), layer 2 = band tightness pct (percent,
+  // null = no shading yet). Selecting a period expands the pct layer;
+  // clicking the active period again collapses it (and clears the pct).
+  const [streakPeriod, setStreakPeriod] = useState<number | null>(null);
+  const [streakPct, setStreakPct] = useState<number | null>(null);
+
+  const toggleStreakPeriod = useCallback((w: number) => {
+    setStreakPeriod((prev) => {
+      if (prev === w) {
+        setStreakPct(null);
+        return null;
+      }
+      return w;
+    });
+  }, []);
+
+  const toggleStreakPct = useCallback((p: number) => {
+    setStreakPct((prev) => (prev === p ? null : p));
+  }, []);
+
   // 2nd-plot selector (beneath the spread chart): which forecast bucket
   // table to show — "" = none, "mov_rsi" = RSI extreme-percentile
   // buckets, "mov_std" = Bollinger-breach buckets, "mov_gap" = N-day
-  // price-return extreme-percentile buckets (analysis_forecasts).
+  // price-return extreme-percentile buckets, "px_vol" = σ-speed ×
+  // 量比-z state cells (analysis_forecasts).
   const [forecastKind, setForecastKind] = useState<ForecastKind | "">("");
 
   // Toggle one hype check-in window in the enabled set (multi-select).
@@ -251,15 +301,16 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     [handleAxisPointer],
   );
 
-  // Canvas-level chart click: sets the roof/floor endpoint date. Only armed
-  // while an OHLC window is enabled; clicking the already-selected date
-  // clears the anchor (toggle), clicking another date moves it.
+  // Canvas-level chart click: sets the anchor date. Only armed while an
+  // OHLC window or the High/Low Streaks row is enabled; clicking the
+  // already-selected date clears the anchor (toggle, back to the latest
+  // date's window), clicking another date moves it.
   const handleCanvasClick = useCallback(
     (dataIdx: number) => {
-      if (ohlcWindow == null) return;
+      if (ohlcWindow == null && streakPeriod == null) return;
       setOhlcClickIdx((prev) => (prev === dataIdx ? null : dataIdx));
     },
-    [ohlcWindow],
+    [ohlcWindow, streakPeriod],
   );
 
   // The full pairs list (no slicing — the chart's in-chart dataZoom handles
@@ -376,6 +427,49 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     () => HYPE_WINDOWS.filter((w) => hypeWindows.includes(w)),
     [hypeWindows],
   );
+
+  // ---- High/Low Streaks data (analysis.mov_ave_high_low_pct_streaks via
+  // chartData.highLowStreaks) ----
+  // FLAT per-streak list across ALL (period, pctType) combos — the nested
+  // buttons select a combo, and the WINDOW-CONFINED subset is merged per
+  // DB band-break streak rows (analysis.mov_ave_high_low_pct_streaks,
+  // tested against each month's OWN moving band) — NOT used for shading
+  // (the break bands are detected client-side vs the anchor window's
+  // static edge, see longStreaks below); they only gate the buttons'
+  // availability.
+  const highLowStreaks = chartData?.highLowStreaks ?? null;
+  const hasStreakData = highLowStreaks != null && highLowStreaks.length > 0;
+
+  // The anchor-date band window shown by default (latest date) or when a
+  // chart date is clicked (trailing streakPeriod rows before it) — bounds
+  // both the light zones and the per-streak break bands.
+  const streakWin = useMemo(() => {
+    if (streakPeriod == null || streakPct == null) return null;
+    return computeStreakBandWindow(
+      firstPairRows,
+      streakPeriod,
+      streakPct,
+      ohlcClickIdx,
+    );
+  }, [firstPairRows, streakPeriod, streakPct, ohlcClickIdx]);
+
+  // The BREAK STREAKS for the selected (period, pct) combo — detected
+  // CLIENT-SIDE against the anchor window's own static band edges (the
+  // same edges the light zones draw): days whose close (short_value on
+  // the price pairs) is above high_val / below low_val, consolidated
+  // with the ≤5-day in-band bridge. This guarantees the shading only
+  // ever covers price the chart shows inside the drawn zone — the DB
+  // streak rows (tested against each month's OWN moving band) would
+  // shade old breakouts that sit below today's static edge. Each band
+  // spans the window's whole vertical excursion (constant band edge →
+  // the window's top/bottom price, same extent as the light zones).
+  const longStreaks = useMemo<{
+    high: LongBandStreak[];
+    low: LongBandStreak[];
+  } | null>(() => {
+    if (streakPeriod == null || streakPct == null || streakWin == null) return null;
+    return computeBreakStreaks(firstPairRows, streakWin);
+  }, [firstPairRows, streakWin]);
 
   // Clamp selectedPairIdx to valid range.
   const safePairIdx = Math.min(selectedPairIdx, Math.max(0, pairs.length - 1));
@@ -788,6 +882,115 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
               analysis.mov_ave_market_hypes
             </Typography>
           )}
+
+          {/* ---- High/Low Streaks buttons (nested, single-select) ----
+              Same grid and chip style as the other button rows: the row
+              label spans the full width, then the first layer holds the
+              band lookback periods (255/500/750/1275d) aligned with the
+              OHLC row's matching columns. Clicking a period EXPANDS the
+              second layer — band tightness pcts (1/5/10%) on the row
+              beneath — and clicking the active period collapses it again.
+              Selecting a pct fills the LATEST date's trailing-period window
+              with its top/bottom pct% price zones (light purple above
+              high_val, light yellow below low_val) and draws that combo's
+              break streaks darker inside; clicking a chart date anchors
+              the window to the trailing rows before that date. */}
+          <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
+            {/* Row label */}
+            <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
+              <Typography
+                variant="caption"
+                component="span"
+                sx={{
+                  fontSize: "0.65rem",
+                  color: streakPeriod != null ? "primary.main" : "text.secondary",
+                  fontWeight: streakPeriod != null ? 700 : 400,
+                }}
+              >
+                High/Low Streaks
+              </Typography>
+            </Box>
+            {/* Layer 1 — periods, columns 5-8 (aligned with the OHLC row's
+                255d/500d/750d/1275d buttons). */}
+            {HIGH_LOW_STREAK_PERIODS.map((w, col) => (
+              <Chip
+                key={w}
+                label={`${w}d`}
+                size="small"
+                clickable
+                disabled={!hasStreakData}
+                color={streakPeriod === w ? "primary" : "default"}
+                variant={streakPeriod === w ? "filled" : "outlined"}
+                onClick={() => toggleStreakPeriod(w)}
+                sx={{ gridColumn: col + 5, ...PERIOD_CHIP_SX }}
+              />
+            ))}
+            {/* Layer 2 — pcts, expanded beneath the periods when one is
+                active (columns 5-7, under the first three periods). */}
+            {streakPeriod != null &&
+              HIGH_LOW_STREAK_PCTS.map((p, col) => (
+                <Chip
+                  key={p}
+                  label={`${p}%`}
+                  size="small"
+                  clickable
+                  color={streakPct === p ? "primary" : "default"}
+                  variant={streakPct === p ? "filled" : "outlined"}
+                  onClick={() => toggleStreakPct(p)}
+                  sx={{ gridColumn: col + 5, ...PERIOD_CHIP_SX }}
+                />
+              ))}
+          </Box>
+          {streakPeriod != null && streakPct == null && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              pick a band tightness (pct) to shade break streaks
+            </Typography>
+          )}
+          {streakPeriod != null && streakPct != null && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              light purple/yellow = trailing {streakPeriod}d top/bottom{" "}
+              {streakPct}% zones
+              {streakWin ? ` (${streakWin.startDate} → ${streakWin.endDate})` : ""},
+              darker = break streaks (each shaded over its own span ·
+              ≤5-day in-band gaps bridged) ·{" "}
+              {longStreaks
+                ? (longStreaks.high.length > 0 || longStreaks.low.length > 0
+                    ? [
+                        longStreaks.high.length > 0
+                          ? `high ${longStreaks.high.length} streak${longStreaks.high.length === 1 ? "" : "s"} · ${longStreaks.high.reduce((a, s) => a + s.days, 0)}d · peak ${fmtNum(longStreaks.high.reduce((a, s) => Math.max(a, s.extreme), -Infinity))} · ${longStreaks.high.slice(0, 2).map((s) => `${s.startDate.slice(2)}→${s.endDate.slice(2)}`).join(", ")}${longStreaks.high.length > 2 ? `, +${longStreaks.high.length - 2} more` : ""}`
+                          : "high none",
+                        longStreaks.low.length > 0
+                          ? `low ${longStreaks.low.length} streak${longStreaks.low.length === 1 ? "" : "s"} · ${longStreaks.low.reduce((a, s) => a + s.days, 0)}d · trough ${fmtNum(longStreaks.low.reduce((a, s) => Math.min(a, s.extreme), Infinity))} · ${longStreaks.low.slice(0, 2).map((s) => `${s.startDate.slice(2)}→${s.endDate.slice(2)}`).join(", ")}${longStreaks.low.length > 2 ? `, +${longStreaks.low.length - 2} more` : ""}`
+                          : "low none",
+                      ].join(" · ")
+                    : "no streaks in this window")
+                : "no window"}
+              {streakWin
+                ? ohlcClickIdx != null
+                  ? ` · anchored to ${streakWin.endDate} (click again to clear)`
+                  : " · click a chart date to anchor the window"
+                : ""}
+            </Typography>
+          )}
+          {!hasStreakData && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              no streak data yet — run{" "}
+              <code>python -m analyze.mov_ave_spread</code> to build
+              analysis.mov_ave_high_low_pct_streaks
+            </Typography>
+          )}
         </Box>
       )}
 
@@ -802,6 +1005,10 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                   bollingerK,
                   hypeWindows,
                   hypeEpisodes: chartData?.hypeEpisodes ?? null,
+                  longStreaks,
+                  streakPeriod,
+                  streakPct,
+                  streakAnchorIdx: ohlcClickIdx,
                 })
               : buildPairOption({
                   pair: selectedPair,
@@ -815,6 +1022,10 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                   ohlcRows: chartData?.ohlc ?? null,
                   hypeWindows,
                   hypeEpisodes: chartData?.hypeEpisodes ?? null,
+                  longStreaks,
+                  streakPeriod,
+                  streakPct,
+                  streakAnchorIdx: ohlcClickIdx,
                 })
           }
           height={420}
@@ -857,10 +1068,13 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
       {/* ---- 2nd plot: forecast bucket table (analysis_forecasts) ----
           Dropdown beneath the spread chart selects which bucket family to
           show — RSI extreme-percentile buckets (mov_rsi), Bollinger
-          breach buckets (mov_std) or N-day price-return extreme-percentile
-          buckets (mov_gap). Selecting one mounts ForecastTable,
+          breach buckets (mov_std), N-day price-return extreme-percentile
+          buckets (mov_gap), σ-speed × 量比-z state cells (px_vol) or
+          margin-buy intensity z states (margin_ratio).
+          Selecting one mounts ForecastTable,
           which lists the latest 12 stat_months of this code's buckets
-          (config + is_market_hyped [+ excess cols] → forecast results). */}
+          (config + is_market_hyped [+ excess/mean-t-z cols] → forecast
+          results). */}
       {!loading && !error && (
         <Box sx={{ mt: 1.5 }}>
           <Stack direction="row" alignItems="center" spacing={1}>
@@ -895,6 +1109,12 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
               </MenuItem>
               <MenuItem value="mov_gap" sx={{ fontSize: "0.7rem", py: 0.25 }}>
                 N-day return extremes (mov_gap)
+              </MenuItem>
+              <MenuItem value="px_vol" sx={{ fontSize: "0.7rem", py: 0.25 }}>
+                Price×volume states (px_vol)
+              </MenuItem>
+              <MenuItem value="margin_ratio" sx={{ fontSize: "0.7rem", py: 0.25 }}>
+                Margin-buy ratio states (margin_ratio)
               </MenuItem>
             </Select>
             {forecastKind && (

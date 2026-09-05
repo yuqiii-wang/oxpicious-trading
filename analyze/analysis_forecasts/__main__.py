@@ -21,14 +21,24 @@ schema (see database/sql/analysis/analysis_forecasts/):
 
   - base_rates: per (sec_type, code, stat_month, period) the
     UNCONDITIONAL same-window base rates (mean n-day forward change +
-    P(change < -1%) / P(change > +1%) over ALL of the code's window
-    trading days) — the reference the bucket results are read against
-    (lift).
+    P(change beyond ±reverse_threshold) over ALL of the code's window
+    trading days, at the same adaptive bar as the buckets) — the
+    reference the bucket results are read against (lift).
+
+  - opp_pair_state: per (industry_id, pair_industry_id, stat_month,
+    trend_window) industry opposite-PAIR buckets from
+    analysis_composites.industry_corr_benchmark_offsets — when ONE
+    industry's benchmark-offset trend is dropping (its W-day relative
+    MA return below the benchmark's), the forecast RESULT is the OTHER
+    side industry's forward offset trend (the linked forecast_results
+    rows carry B's forward changes; side='bottom' → reverse_prob = the
+    pair forecast's CONFIRMATION probability).
 
   - forecast_results: the result data (mean forward changes at
     next/5d/20d/60d horizons; close-based max/min forward changes and
     the best-to-worst n-day outcome ratio max_low_change_ratio at the
-    5d/20d/60d horizons; per-horizon >1% reversal probabilities),
+    5d/20d/60d horizons; per-horizon reversal probabilities at each
+    row's adaptive reverse_threshold),
     keyed by forecast_id; every mov_rsi / mov_std / mov_gap row links
     1:1 to its result rows via forecast_id.
 
@@ -106,23 +116,38 @@ from analyze.analysis_forecasts.config import (  # noqa: E402
     TABLE_MOV_RSI,
     TABLE_MOV_STD,
     TABLE_MOV_GAP,
+    TABLE_PX_VOL,
+    TABLE_MARGIN_RATIO,
+    TABLE_OPP_PAIR,
     TABLE_BASE_RATE,
     ANALYSIS_NAME_RSI,
     ANALYSIS_NAME_STD,
     ANALYSIS_NAME_GAP,
+    ANALYSIS_NAME_PX_VOL,
+    ANALYSIS_NAME_MARGIN_RATIO,
+    ANALYSIS_NAME_OPP_PAIR,
     ANALYSIS_NAME_BASE_RATE,
     DESCRIPTION_RSI,
     DESCRIPTION_STD,
     DESCRIPTION_GAP,
+    DESCRIPTION_PX_VOL,
+    DESCRIPTION_MARGIN_RATIO,
+    DESCRIPTION_OPP_PAIR,
     DESCRIPTION_BASE_RATE,
     SEC_TYPES,
     MOV_RSI_COLUMNS,
     MOV_STD_COLUMNS,
     MOV_GAP_COLUMNS,
+    PX_VOL_COLUMNS,
+    MARGIN_RATIO_COLUMNS,
+    OPP_PAIR_COLUMNS,
     RSI_WINDOWS,
     MA_WINDOWS,
     GAP_WINDOWS,
     N_MONTHS,
+    OPP_PAIR_BENCHMARK,
+    OPP_PAIR_POOL_SIZE,
+    OPP_PAIR_SEC_TYPE,
     REFRESH_MONTHS,
     WINDOW_YEARS,
 )
@@ -132,6 +157,13 @@ from analyze.analysis_forecasts.fetch import (  # noqa: E402
     fetch_first_dates,
     fetch_hyped_episodes,
     add_forward_changes,
+    add_px_vol_features,
+    add_margin_ratio_features,
+    fetch_benchmark_closes,
+    fetch_industry_closes,
+    fetch_industry_first_dates,
+    fetch_opp_pair_industries,
+    fetch_opp_pair_pairs,
 )
 from analyze.analysis_forecasts.wide import (  # noqa: E402
     build_month_specs,
@@ -148,7 +180,13 @@ from analyze.analysis_forecasts.wide import (  # noqa: E402
 from analyze.analysis_forecasts.compute_rsi import compute_rsi_results  # noqa: E402
 from analyze.analysis_forecasts.compute_std import compute_std_results  # noqa: E402
 from analyze.analysis_forecasts.compute_gap import compute_gap_results  # noqa: E402
+from analyze.analysis_forecasts.compute_px_vol import compute_px_vol_results  # noqa: E402
+from analyze.analysis_forecasts.compute_margin_ratio import compute_margin_ratio_results  # noqa: E402
 from analyze.analysis_forecasts.compute_base import compute_base_rate_rows  # noqa: E402
+from analyze.analysis_forecasts.compute_opp_pair import (  # noqa: E402
+    build_opp_pair_matrices,
+    compute_opp_pair_results,
+)
 
 
 # Max period rows per COPY chunk (a full stock-universe month of rsi
@@ -239,10 +277,13 @@ async def _delete_months(
 # ---------------------------------------------------------------------------
 
 async def _delete_sec_type(conn, sec_type: str) -> None:
-    """Delete a sec_type's mov_rsi / mov_std / mov_gap rows, the
-    forecast_results rows they link to, and its base_rates rows."""
+    """Delete a sec_type's mov_* / px_vol_state / margin_ratio_state
+    rows, the forecast_results rows they link to, and its base_rates
+    rows."""
     for table, linked in ((TABLE_MOV_RSI, True), (TABLE_MOV_STD, True),
-                          (TABLE_MOV_GAP, True), (TABLE_BASE_RATE, False)):
+                          (TABLE_MOV_GAP, True), (TABLE_PX_VOL, True),
+                          (TABLE_MARGIN_RATIO, True),
+                          (TABLE_BASE_RATE, False)):
         if linked:
             await conn.execute(
                 f"DELETE FROM {TABLE_FORECAST} f USING {table} m "
@@ -315,13 +356,14 @@ async def _process_sec_type(
     force: bool,
 ) -> tuple[int, int, int, int]:
     """Process one sec_type end-to-end.
-    Returns (mov_rsi, mov_std, mov_gap) bucket rows + base_rates rows."""
+    Returns (mov_rsi, mov_std, mov_gap, px_vol, margin_ratio) bucket rows
+    + base_rates."""
     print(f"\n  [{sec_type}] Fetching active codes...", flush=True)
     codes = sorted(await fetch_active_codes(conn, sec_type))
     print(f"  [{sec_type}]   {len(codes):,} active codes", flush=True)
     if not codes:
         print(f"  [{sec_type}]   no active codes; skipping.", flush=True)
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, 0, 0
 
     # ---- Emittable-month bound -------------------------------------------
     # The full-window gate (below) means a snapshot month can emit rows
@@ -350,7 +392,8 @@ async def _process_sec_type(
               f"mov rows + linked forecast_results + base_rates...",
               flush=True)
         await _delete_sec_type(conn, sec_type)
-        compute_rsi = compute_std = compute_gap = compute_base = list(specs)
+        compute_rsi = compute_std = compute_gap = compute_pxvol = \
+            compute_mratio = compute_base = list(specs)
     else:
         compute_rsi, refresh_rsi = await _compute_months(
             conn, TABLE_MOV_RSI, sec_type, specs)
@@ -358,6 +401,10 @@ async def _process_sec_type(
             conn, TABLE_MOV_STD, sec_type, specs)
         compute_gap, refresh_gap = await _compute_months(
             conn, TABLE_MOV_GAP, sec_type, specs)
+        compute_pxvol, refresh_pxvol = await _compute_months(
+            conn, TABLE_PX_VOL, sec_type, specs)
+        compute_mratio, refresh_mratio = await _compute_months(
+            conn, TABLE_MARGIN_RATIO, sec_type, specs)
         compute_base, refresh_base = await _compute_months(
             conn, TABLE_BASE_RATE, sec_type, specs)
         # Refresh-window months present in the DB: delete + recompute
@@ -369,22 +416,30 @@ async def _process_sec_type(
                              linked_results=True)
         await _delete_months(conn, TABLE_MOV_GAP, sec_type, refresh_gap,
                              linked_results=True)
+        await _delete_months(conn, TABLE_PX_VOL, sec_type, refresh_pxvol,
+                             linked_results=True)
+        await _delete_months(conn, TABLE_MARGIN_RATIO, sec_type,
+                             refresh_mratio, linked_results=True)
         await _delete_months(conn, TABLE_BASE_RATE, sec_type, refresh_base,
                              linked_results=False)
         print(f"  [{sec_type}]   months to compute: "
               f"rsi={len(compute_rsi)} std={len(compute_std)} "
-              f"gap={len(compute_gap)} base={len(compute_base)} "
+              f"gap={len(compute_gap)} pxvol={len(compute_pxvol)} "
+              f"mratio={len(compute_mratio)} "
+              f"base={len(compute_base)} "
               f"of {len(specs)} (+ refresh of the last "
               f"{REFRESH_MONTHS})", flush=True)
     if not compute_rsi and not compute_std and not compute_gap \
+            and not compute_pxvol and not compute_mratio \
             and not compute_base:
         print(f"  [{sec_type}]   up to date; skipping.", flush=True)
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, 0, 0
 
     # ---- Fetch inputs (bounded to the earliest needed window start) ------
     todo = {
         s.stat_month: s
-        for s in compute_rsi + compute_std + compute_gap + compute_base
+        for s in compute_rsi + compute_std + compute_gap + compute_pxvol
+        + compute_mratio + compute_base
     }
     since = min(s.lower for s in todo.values())
     print(f"  [{sec_type}] Fetching joined inputs (price / high / low / "
@@ -394,13 +449,15 @@ async def _process_sec_type(
     print(f"  [{sec_type}]   {len(df):,} (code, date) rows", flush=True)
     if df.empty:
         print(f"  [{sec_type}]   no source data; skipping.", flush=True)
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, 0, 0
     episodes = await fetch_hyped_episodes(conn, sec_type, since)
     print(f"  [{sec_type}]   {len(episodes):,} market-hype episodes",
           flush=True)
 
     # ---- Wide grid + shared change matrices -------------------------------
     df = add_forward_changes(df)
+    df = add_px_vol_features(df)
+    df = add_margin_ratio_features(df)
     grid_ord, grid_codes, didx, cidx = build_grid(df)
     shape = (len(grid_ord), len(grid_codes))
     chg = build_change_matrices(df, shape, didx, cidx)
@@ -434,8 +491,16 @@ async def _process_sec_type(
         windows_by_month[m] for m in
         (s.stat_month for s in compute_base) if m in windows_by_month
     ]
+    windows_pxvol = [
+        windows_by_month[m] for m in
+        (s.stat_month for s in compute_pxvol) if m in windows_by_month
+    ]
+    windows_mratio = [
+        windows_by_month[m] for m in
+        (s.stat_month for s in compute_mratio) if m in windows_by_month
+    ]
 
-    n_rsi = n_std = n_gap = 0
+    n_rsi = n_std = n_gap = n_pxvol = n_mratio = 0
     n_base = 0
 
     # ---- Stage 1: RSI extreme buckets -------------------------------------
@@ -501,7 +566,48 @@ async def _process_sec_type(
                   f"wrote {n:,} rows", flush=True)
         del gap_mats
 
-    # ---- Stage 4: unconditional base rates ---------------------------------
+    # ---- Stage 4: price × volume state buckets -----------------------------
+    if windows_pxvol:
+        print(f"  [{sec_type}] Computing px_vol state buckets "
+              f"(speeds×volumes, adaptive σ/z bars) for "
+              f"{len(windows_pxvol)} months...", flush=True)
+        px_mats = {
+            "t": scatter_column(df, "px_t", shape, didx, cidx),
+            "z": scatter_column(df, "px_z", shape, didx, cidx),
+        }
+        for stat_month, rows in compute_px_vol_results(
+            px_mats, chg, windows_pxvol, grid_codes, sec_type, hype,
+            first_ord,
+        ):
+            n = await _write_month(conn, TABLE_PX_VOL, PX_VOL_COLUMNS, rows)
+            n_pxvol += n
+            print(f"    [{stat_month}] px_vol_state + forecast_results: "
+                  f"wrote {n:,} rows", flush=True)
+        del px_mats
+
+    # ---- Stage 5: margin-buy intensity state buckets ----------------------
+    if windows_mratio:
+        print(f"  [{sec_type}] Computing margin_ratio state buckets "
+              f"(融资买入额/成交额 z states) for {len(windows_mratio)} "
+              f"months...", flush=True)
+        mr_mats = {
+            "z": scatter_column(df, "ratio_z", shape, didx, cidx),
+            "nb": scatter_column(df, "nb", shape, didx, cidx,
+                                 dtype=bool),
+            "ratio": scatter_column(df, "ratio", shape, didx, cidx),
+        }
+        for stat_month, rows in compute_margin_ratio_results(
+            mr_mats, chg, windows_mratio, grid_codes, sec_type, hype,
+            first_ord,
+        ):
+            n = await _write_month(conn, TABLE_MARGIN_RATIO,
+                                   MARGIN_RATIO_COLUMNS, rows)
+            n_mratio += n
+            print(f"    [{stat_month}] margin_ratio_state + "
+                  f"forecast_results: wrote {n:,} rows", flush=True)
+        del mr_mats
+
+    # ---- Stage 6: unconditional base rates ---------------------------------
     if windows_base:
         print(f"  [{sec_type}] Computing base rates for "
               f"{len(windows_base)} months...", flush=True)
@@ -512,7 +618,87 @@ async def _process_sec_type(
             n_base += len(rows)
         print(f"    base_rates: wrote {n_base:,} rows", flush=True)
 
-    return n_rsi, n_std, n_gap, n_base
+    return n_rsi, n_std, n_gap, n_pxvol, n_mratio, n_base
+
+
+# ---------------------------------------------------------------------------
+#  opp_pair pipeline (industry opposite-pair buckets — sec_type space is
+#  the constant OPP_PAIR_SEC_TYPE, industries are NOT an active-code
+#  universe; runs ONCE, outside the per-sec_type loop)
+# ---------------------------------------------------------------------------
+
+async def _process_opp_pairs(
+    conn,
+    specs: list[MonthSpec],
+    *,
+    force: bool,
+) -> int:
+    """Industry opposite-pair trend buckets (opp_pair_state + linked
+    forecast_results). Returns bucket rows written."""
+    if force:
+        print(f"\n  [opp_pair] FORCE mode: deleting existing opp_pair "
+              f"rows + linked forecast_results...", flush=True)
+        await _delete_months(conn, TABLE_OPP_PAIR, OPP_PAIR_SEC_TYPE,
+                             [s.stat_month for s in specs],
+                             linked_results=True)
+        compute_pair = list(specs)
+    else:
+        compute_pair, refresh_pair = await _compute_months(
+            conn, TABLE_OPP_PAIR, OPP_PAIR_SEC_TYPE, specs)
+        await _delete_months(conn, TABLE_OPP_PAIR, OPP_PAIR_SEC_TYPE,
+                             refresh_pair, linked_results=True)
+    print(f"  [opp_pair]   months to compute: {len(compute_pair)} "
+          f"of {len(specs)} (+ refresh of the last {REFRESH_MONTHS})",
+          flush=True)
+    if not compute_pair:
+        print(f"  [opp_pair]   up to date; skipping.", flush=True)
+        return 0
+
+    # ---- Pair set + industry universe -------------------------------------
+    industries = await fetch_opp_pair_industries(conn)
+    pairs = await fetch_opp_pair_pairs(conn)
+    print(f"  [opp_pair]   {len(industries)} industries, "
+          f"{len(pairs):,} pairs (pool={OPP_PAIR_POOL_SIZE}, benchmark="
+          f"{OPP_PAIR_BENCHMARK})", flush=True)
+    if len(industries) < 2 or pairs.empty:
+        print(f"  [opp_pair]   no offsets-table pairs; skipping.",
+              flush=True)
+        return 0
+
+    # ---- Industry composite + benchmark trend inputs ----------------------
+    since = min(s.lower for s in compute_pair)
+    df = await fetch_industry_closes(conn, industries, since)
+    bench = await fetch_benchmark_closes(conn, OPP_PAIR_BENCHMARK, since)
+    print(f"  [opp_pair]   {len(df):,} industry (date, close) rows, "
+          f"{len(bench):,} benchmark closes since {since.isoformat()}",
+          flush=True)
+    if df.empty or bench.empty:
+        print(f"  [opp_pair]   no source data; skipping.", flush=True)
+        return 0
+
+    grid_ord, grid_inds, didx, cidx, mats = build_opp_pair_matrices(
+        df, bench, OPP_PAIR_TREND_WINDOWS,
+    )
+    first_dates = await fetch_industry_first_dates(conn, industries)
+    first_ord = first_ords_from_dates(first_dates, grid_inds)
+    windows = [
+        w for w in month_row_windows(grid_ord, compute_pair)
+        if w.lo < w.hi
+    ]
+
+    n_pair = 0
+    print(f"  [opp_pair] Computing opposite-pair buckets "
+          f"(trend_windows={list(OPP_PAIR_TREND_WINDOWS)}) for "
+          f"{len(windows)} months...", flush=True)
+    for stat_month, rows in compute_opp_pair_results(
+        mats, windows, grid_inds, OPP_PAIR_SEC_TYPE, first_ord, pairs,
+        benchmark_code=OPP_PAIR_BENCHMARK, pool_size=OPP_PAIR_POOL_SIZE,
+    ):
+        n = await _write_month(conn, TABLE_OPP_PAIR, OPP_PAIR_COLUMNS, rows)
+        n_pair += n
+        print(f"    [{stat_month}] opp_pair_state + forecast_results: "
+              f"wrote {n:,} rows", flush=True)
+    return n_pair
 
 
 # ---------------------------------------------------------------------------
@@ -532,10 +718,14 @@ async def main() -> None:
                     "close-based max/min forward changes and the "
                     "best-to-worst n-day outcome ratio "
                     "(max_low_change_ratio) at the 5d/20d/60d horizons; "
-                    "per-horizon >1% reversal probabilities; base_rates "
+                    "per-horizon reversal probabilities at each row's "
+                    "adaptive reverse_threshold; base_rates "
                     "holds the unconditional same-window reference "
-                    "(mean change + P(<-1%) / P(>+1%) over all window "
-                    "days)."
+                    "(mean change + P(beyond ±reverse_threshold) over "
+                    "all window days); opp_pair_state holds the "
+                    "industry opposite-pair buckets (one industry "
+                    "dropping → the OTHER side industry's forward "
+                    "offset trend as the forecast result)."
     )
     ap.add_argument(
         "--sec-type", choices=SEC_TYPES, default=None,
@@ -556,9 +746,10 @@ async def main() -> None:
     t0 = time.time()
     print_build_header(
         "ANALYZE FORECASTS (monthly RSI-extreme + Bollinger-breach + "
-        "gap-extreme forecasts)",
+        "gap-extreme + industry opposite-pair forecasts)",
         tables=f"{TABLE_FORECAST}, {TABLE_MOV_RSI}, {TABLE_MOV_STD}, "
-               f"{TABLE_MOV_GAP}, {TABLE_BASE_RATE}",
+               f"{TABLE_MOV_GAP}, {TABLE_PX_VOL}, {TABLE_MARGIN_RATIO}, "
+               f"{TABLE_OPP_PAIR}, {TABLE_BASE_RATE}",
         sec_types=", ".join(sec_types),
         months=f"{args.months} (window {specs[0].lower} .. "
                f"{specs[-1].stat_month})",
@@ -569,12 +760,16 @@ async def main() -> None:
 
     conn = await get_db_connection_async()
     try:
-        total_rsi = total_std = total_gap = total_base = 0
+        total_rsi = total_std = total_gap = total_pxvol = 0
+        total_mratio = total_base = 0
         for st in sec_types:
-            r, s, g, b = await _process_sec_type(conn, st, specs, force=force)
+            r, s, g, p, mr, b = await _process_sec_type(conn, st, specs,
+                                                        force=force)
             total_rsi += r
             total_std += s
             total_gap += g
+            total_pxvol += p
+            total_mratio += mr
             total_base += b
 
             if r or force:
@@ -592,6 +787,18 @@ async def main() -> None:
                     conn, name=ANALYSIS_NAME_GAP,
                     detail_name=ANALYSIS_NAME_GAP, description=DESCRIPTION_GAP,
                 )
+            if p or force:
+                await upsert_analysis_identity(
+                    conn, name=ANALYSIS_NAME_PX_VOL,
+                    detail_name=ANALYSIS_NAME_PX_VOL,
+                    description=DESCRIPTION_PX_VOL,
+                )
+            if mr or force:
+                await upsert_analysis_identity(
+                    conn, name=ANALYSIS_NAME_MARGIN_RATIO,
+                    detail_name=ANALYSIS_NAME_MARGIN_RATIO,
+                    description=DESCRIPTION_MARGIN_RATIO,
+                )
             if b or force:
                 await upsert_analysis_identity(
                     conn, name=ANALYSIS_NAME_BASE_RATE,
@@ -599,15 +806,29 @@ async def main() -> None:
                     description=DESCRIPTION_BASE_RATE,
                 )
 
+        # ---- opp_pair stage (industry pairs; index-space, runs once) ------
+        n_pair = 0
+        if not args.sec_type or args.sec_type == OPP_PAIR_SEC_TYPE:
+            n_pair = await _process_opp_pairs(conn, specs, force=force)
+            if n_pair or force:
+                await upsert_analysis_identity(
+                    conn, name=ANALYSIS_NAME_OPP_PAIR,
+                    detail_name=ANALYSIS_NAME_OPP_PAIR,
+                    description=DESCRIPTION_OPP_PAIR,
+                )
+
         if total_rsi == 0 and total_std == 0 and total_gap == 0 \
-                and total_base == 0 and not force:
+                and total_pxvol == 0 and total_mratio == 0 \
+                and total_base == 0 and n_pair == 0 and not force:
             print("\n  DB is up to date; nothing to do.", flush=True)
             print_wall_time(t0)
             return
 
         print(f"\n  TOTAL: {total_rsi:,} mov_rsi + {total_std:,} mov_std "
-              f"+ {total_gap:,} mov_gap rows written (with linked "
-              f"forecast_results rows) + {total_base:,} base_rates rows",
+              f"+ {total_gap:,} mov_gap + {total_pxvol:,} px_vol + "
+              f"{total_mratio:,} margin_ratio + {n_pair:,} opp_pair rows "
+              f"written (with linked forecast_results rows) + "
+              f"{total_base:,} base_rates rows",
               flush=True)
         print_wall_time(t0)
     finally:

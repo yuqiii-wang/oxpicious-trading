@@ -3,12 +3,16 @@
 Per stat month's trailing 5-year window [lo, hi) and horizon n, the
 UNCONDITIONAL forward-change stats over ALL of each live code's window
 days with a valid n-day forward change (vs the buckets' extreme-day
-subsets): valid-day count, mean change, P(change < -1%),
-P(change > +1%). These are the base rates the bucket results in
-analysis_forecasts.forecast_results are read against (lift) — written
-to analysis_forecasts.base_rates. Same full-window gate as the bucket
-engines (a code is live only once its own history strictly precedes the
-window start); one row per (code, period) where the count > 0.
+subsets): valid-day count, mean change, P(change < −reverse_threshold),
+P(change > +reverse_threshold) at the SAME adaptive per-(code, horizon)
+reversal bar the bucket rows use (reverse_thresholds — k·σ of the
+code's window forward changes in "std" mode, fixed fallback), so lift
+(bucket prob − base prob) stays in one scale. These are the base rates
+the bucket results in analysis_forecasts.forecast_results are read
+against (lift) — written to analysis_forecasts.base_rates. Same
+full-window gate as the bucket engines (a code is live only once its
+own history strictly precedes the window start); one row per (code,
+period) where the count > 0.
 
 Yields (stat_month, rows) so __main__ can write month-major.
 """
@@ -22,9 +26,8 @@ import numpy as np
 from analyze.analysis_forecasts.config import (
     FORWARD_HORIZONS,
     PERIOD_FOR_HORIZON,
-    REVERSE_THRESHOLD,
 )
-from analyze.analysis_forecasts.wide import MonthWindow, round6
+from analyze.analysis_forecasts.wide import MonthWindow, reverse_thresholds, round6, window_sigmas
 
 
 def compute_base_rate_rows(
@@ -54,19 +57,24 @@ def compute_base_rate_rows(
         if not live.any():
             continue
 
+        FINs = {n: chg[f"FIN_{n}"][lo:hi] for n in FORWARD_HORIZONS}
+        NC0s = {n: chg[f"NC0_{n}"][lo:hi] for n in FORWARD_HORIZONS}
+        thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
+
         rows: list[dict] = []
         for n in FORWARD_HORIZONS:
-            fin = chg[f"FIN_{n}"][lo:hi] & live[None, :]
+            fin = FINs[n] & live[None, :]
             cnt = fin.sum(axis=0)
             emit = cnt > 0
             if not emit.any():
                 continue
             # NC0 is 0.0 on invalid days — masked sums equal valid-day
             # sums (same trick as aggregate_horizons_sparse).
-            g = np.where(fin, chg[f"NC0_{n}"][lo:hi], 0.0)
+            g = np.where(fin, NC0s[n], 0.0)
             s = g.sum(axis=0)
-            dn = (fin & (g < -REVERSE_THRESHOLD)).sum(axis=0)
-            up = (fin & (g > REVERSE_THRESHOLD)).sum(axis=0)
+            thr = thr_n[n][None, :]
+            dn = (fin & (g < -thr)).sum(axis=0)
+            up = (fin & (g > thr)).sum(axis=0)
 
             idx = np.nonzero(emit)[0]
             rows.extend(
@@ -79,6 +87,7 @@ def compute_base_rate_rows(
                     "base_ave_change": round6(s[i] / cnt[i]),
                     "base_down_prob": round6(dn[i] / cnt[i]),
                     "base_up_prob": round6(up[i] / cnt[i]),
+                    "reverse_threshold": round6(thr_n[n][i]),
                 }
                 for i in idx.tolist()
             )

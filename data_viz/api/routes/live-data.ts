@@ -125,7 +125,8 @@ router.get("/combined", async (req: Request, res: Response) => {
 //     `date` optional → latest available for the benchmark.
 //   GET /api/live-data/intraday-movements/benchmarks
 //     Returns the list of benchmark codes that appear in
-//     analysis.sec_alloc_perf_attribution (broad-market benchmarks first).
+//     stats.cross_stats / live.sec_alloc_live_attribution
+//     (broad-market benchmarks first).
 //   GET /api/live-data/intraday-movements/prev-day-ohlc
 //     ?benchmark_code=000922&date=YYYY-MM-DD
 //     Returns PrevDayOhlcResponse: raw prev-trading-day OHLC of the benchmark

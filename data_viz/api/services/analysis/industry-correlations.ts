@@ -49,8 +49,9 @@ const VALID_INDUSTRY_CORR_POOLS = new Set(["all", "small", "mid", "large"]);
 /** Lookup table for industry_label by industry_id, populated lazily inside
  *  getIndustryCorrelations() so the response carries human-readable
  *  industry labels alongside the bare IDs (the frontend uses them for the
- *  pair labels in the legend and tooltip). */
-async function fetchIndustryLabels(
+ *  pair labels in the legend and tooltip). Exported for reuse by the
+ *  benchmark-offset correlations service (same label lookup). */
+export async function fetchIndustryLabels(
   industryIds: string[],
 ): Promise<Map<string, string>> {
   if (industryIds.length === 0) return new Map();

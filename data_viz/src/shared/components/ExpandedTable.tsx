@@ -4,6 +4,11 @@
  * scroll container) + the shared per-column header filters (ticks / date /
  * numeric range, opt-in per column) + LAYERED HEADERS.
  *
+ * Header filters are DISABLED BY DEFAULT — they only render when the caller
+ * explicitly passes `enableFilters` (sourced from the backend response's
+ * `enable_filters` arg). Column `filter` defs alone are not enough: without
+ * `enableFilters` the headers show plain labels and no filtering runs.
+ *
  * Layered header: a column with `group` renders its label+filter in the
  * SUB-header row, merged under one group header cell (colSpan) in the top
  * row together with every contiguous column sharing the same group label.
@@ -18,10 +23,12 @@
  *   • render            — custom cell content; default shows the filter
  *     value ("—" when null) or nothing.
  *   • group             — layered-header group label (see above).
- *   • filter            — opt-in: { type: "ticks" | "date" | "range",
- *     granularity?, value(row) }. Filters AND across columns; tick menus
- *     are tri-state ((All) ⇔ everything shown); state resets when
- *     `filterScopeDeps` change.
+ *   • filter            — { type: "ticks" | "date" | "range",
+ *     granularity?, value(row) }. Only active when `enableFilters` is set;
+ *     its value(row) ALSO feeds the default cell text regardless. When
+ *     active, filters AND across columns and tick menus are tri-state
+ *     ((All) ⇔ everything shown); state resets when `filterScopeDeps`
+ *     change.
  *
  * Rows are zebra-striped; when every row is filtered out a single muted
  * row says so; when `rows` is empty from the start `emptyState` renders.
@@ -76,6 +83,11 @@ export interface ExpandedTableProps<T> {
   rowKey: (row: T) => string;
   /** Scroll-viewport height in px (sticky header enabled). */
   maxHeight?: number;
+  /** Master switch for the per-column header filters — DISABLED by
+   *  default. Pass true (typically from the backend response's
+   *  `enable_filters` arg) to render the filter menus; column `filter`
+   *  defs alone never enable them. */
+  enableFilters?: boolean;
   /** Reset all column filters when these deps change (scope change). */
   filterScopeDeps?: unknown[];
   /** Rendered instead of the table when `rows` is empty. */
@@ -91,18 +103,30 @@ export function ExpandedTable<T>({
   rows,
   rowKey,
   maxHeight,
+  enableFilters = false,
   filterScopeDeps = [],
   emptyState,
 }: ExpandedTableProps<T>) {
-  const filterDefs: HeaderFilterDef<T>[] = columns
-    .filter((c) => c.filter != null)
-    .map((c) => ({
-      key: c.key,
-      label: c.label,
-      type: c.filter!.type,
-      granularity: c.filter!.granularity,
-      value: c.filter!.value,
-    }));
+  // Filters are opt-in via enableFilters (default false — "explicitly said
+  // to set up filter args from backend"). Column defs alone are not enough.
+  // The value fns stay reachable for DEFAULT CELL TEXT even when the filter
+  // UI is off, so render-less columns keep showing their values.
+  const filterDefs: HeaderFilterDef<T>[] = enableFilters
+    ? columns
+        .filter((c) => c.filter != null)
+        .map((c) => ({
+          key: c.key,
+          label: c.label,
+          type: c.filter!.type,
+          granularity: c.filter!.granularity,
+          value: c.filter!.value,
+        }))
+    : [];
+  const valueByKey = new Map(
+    columns
+      .filter((c) => c.filter != null)
+      .map((c) => [c.key, c.filter!.value]),
+  );
   const { filtered, menuFor } = useTableHeaderFilters(filterDefs, rows, filterScopeDeps);
 
   if (rows.length === 0 && emptyState != null) {
@@ -144,8 +168,9 @@ export function ExpandedTable<T>({
 
   const cellText = (c: ExpandedTableColumn<T>, row: T): ReactNode => {
     if (c.render != null) return c.render(row);
-    if (c.filter == null) return null;
-    const v = c.filter.value(row);
+    const valueFn = valueByKey.get(c.key);
+    if (valueFn == null) return null;
+    const v = valueFn(row);
     return v == null ? (
       <Typography component="span" variant="inherit" color="text.disabled">
         —

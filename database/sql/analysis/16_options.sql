@@ -289,11 +289,24 @@ CREATE TABLE IF NOT EXISTS analysis.options_walls (
     underlying_code           TEXT          NOT NULL,
     expiry_date               DATE          NOT NULL,
     wall_type                 TEXT          NOT NULL
-        CHECK (wall_type IN ('80pct', 'large_num')),
-    wall_strike               NUMERIC(12,4),   -- strike price (yuan) of the wall
-    wall_oi                   NUMERIC(14,2),   -- total OI at the wall strike
-    mean_oi                   NUMERIC(14,2),   -- mean OI across all strikes (large_num only)
-    threshold                 NUMERIC(8,4),    -- threshold value (80pct: 0.80 putPct; large_num: 0.70 mean ratio)
+        CHECK (wall_type = 'zone'),
+    wall_strike               NUMERIC(12,4),   -- OI-weighted zone center in legacy PRICE_SCALE units (raw strike / 10000)
+    wall_oi                   NUMERIC(14,2),   -- total OI of the dominant zone
+    mean_oi                   NUMERIC(14,2),   -- unused (legacy 80pct/large_num columns, always NULL)
+    threshold                 NUMERIC(8,4),    -- threshold value (zone: 0.06 mass share)
+
+    -- wall_type='zone' (strength-scored OI wall zone with lifecycle):
+    -- all price columns are in RAW strike units (same scale as
+    -- stats.options_strike / stats.options_settlement.underlying_close).
+    wall_low                  NUMERIC(12,4),   -- zone low strike (raw units)
+    wall_high                 NUMERIC(12,4),   -- zone high strike (raw units)
+    wall_center               NUMERIC(12,4),   -- OI-weighted center strike of the zone (raw units)
+    mass_share                NUMERIC(8,6),    -- zone OI / total chain OI (call+put), 0..1
+    gap_pct                   NUMERIC(10,4),   -- |center - spot| / spot * 100 (signed away-from-spot; NULL when spot missing)
+    days_persisted            INTEGER,         -- consecutive trading days the zone has existed (>=50% strike-range overlap day-over-day)
+    state                     TEXT
+        CHECK (state IN ('ACTIVE','ERODED','BREACHED')),
+    strength_score            NUMERIC(10,6),   -- mass_share * exp(-gap_pct/8) * (1 + 0.25*min(days_persisted,20)/20)
 
     CONSTRAINT pk_options_walls
         PRIMARY KEY (underlying_code, date, option_type, expiry_date, wall_type),
@@ -315,16 +328,53 @@ DROP INDEX IF EXISTS analysis.idx_options_walls_underlying_date;
 CREATE INDEX IF NOT EXISTS idx_options_walls_expiry
     ON analysis.options_walls (underlying_code, expiry_date, date);
 
-COMMENT ON TABLE  analysis.options_walls                       IS 'Per-(underlying_code, date, option_type, expiry_date, wall_type) store of precomputed options wall levels. Two wall types: 80pct (boundary where one side dominates ≥80% of total OI at each strike, interpolated across strikes) and large_num (strike with the max OI among those exceeding 70% of the mean OI across all strikes in the expiry group). For CALL walls the wall_strike acts as support (price tends to stay above), for PUT walls as resistance (price tends to stay below). FK -> analysis.options_expiry_identity. Built by analyze.options.';
+COMMENT ON TABLE  analysis.options_walls                       IS 'Per-(underlying_code, date, option_type, expiry_date, wall_type) store of precomputed options wall levels. Single wall type: zone (strength-scored OI wall ZONE with lifecycle — see column comments). For CALL walls the wall acts as resistance/cap, for PUT walls as support/floor. FK -> analysis.options_expiry_identity. Built by analyze.options.';
 COMMENT ON COLUMN analysis.options_walls.date                  IS 'Trading date.';
 COMMENT ON COLUMN analysis.options_walls.option_type           IS 'Option type: CALL or PUT.';
 COMMENT ON COLUMN analysis.options_walls.underlying_code       IS 'Underlying code (unified index codes).';
 COMMENT ON COLUMN analysis.options_walls.expiry_date           IS 'Exact contract expiry date.';
-COMMENT ON COLUMN analysis.options_walls.wall_type             IS 'Wall computation method: 80pct (dominance boundary based on putPct thresholds) or large_num (max-OI strike exceeding a fraction of the mean).';
-COMMENT ON COLUMN analysis.options_walls.wall_strike           IS 'Strike price (yuan) at which the wall is placed. NULL when no valid wall exists for that date/type.';
-COMMENT ON COLUMN analysis.options_walls.wall_oi               IS 'Total open interest at the wall strike (sum across all expiries for the 80pct boundary; sum at the max-OI strike for large_num).';
-COMMENT ON COLUMN analysis.options_walls.mean_oi              IS 'Mean OI across all strikes in the expiry group on that date. Only used by large_num wall type.';
-COMMENT ON COLUMN analysis.options_walls.threshold             IS 'Threshold parameter for the wall: 0.80 (80%) for 80pct, 0.70 (70%) for large_num.';
+COMMENT ON COLUMN analysis.options_walls.wall_type             IS 'Wall computation method: zone (dominant adjacent-strike OI cluster, strength-scored with lifecycle).';
+COMMENT ON COLUMN analysis.options_walls.wall_strike           IS 'OI-weighted zone center in legacy PRICE_SCALE units (raw strike / 10000). Raw-unit comparisons should use wall_low/wall_high/wall_center.';
+COMMENT ON COLUMN analysis.options_walls.wall_oi               IS 'Total OI of the dominant zone.';
+COMMENT ON COLUMN analysis.options_walls.mean_oi              IS 'Unused (legacy 80pct/large_num wall column, always NULL).';
+COMMENT ON COLUMN analysis.options_walls.threshold             IS 'Threshold parameter for the wall: 0.06 (6% minimum chain OI mass share) for zone.';
+COMMENT ON COLUMN analysis.options_walls.wall_low              IS 'zone only: low strike of the dominant OI zone, RAW strike units (same scale as stats.options_strike / underlying_close).';
+COMMENT ON COLUMN analysis.options_walls.wall_high             IS 'zone only: high strike of the dominant OI zone, RAW strike units.';
+COMMENT ON COLUMN analysis.options_walls.wall_center           IS 'zone only: OI-weighted mean strike of the zone (center of mass), RAW strike units.';
+COMMENT ON COLUMN analysis.options_walls.mass_share            IS 'zone only: zone OI / total chain OI (call+put across all strikes), in [0,1]. Empirically >=0.06 (big wall) is the level at which a call wall adds ~20pp hold-rate over a small wall at equal distance.';
+COMMENT ON COLUMN analysis.options_walls.gap_pct               IS 'zone only: distance of the zone center from spot, in % of spot, signed away-from-spot (CALL: center-spot; PUT: spot-center; negative = breached). NULL when the underlying close is missing.';
+COMMENT ON COLUMN analysis.options_walls.days_persisted        IS 'zone only: consecutive trading days the zone has existed, matched day-over-day within (underlying, expiry, side) by >=50% strike-range overlap. 1 = fresh zone (fresh walls hold measurably worse).';
+COMMENT ON COLUMN analysis.options_walls.state                 IS 'zone only: lifecycle state. ACTIVE = intact barrier; ERODED = intact but mass fell below 70% of the previous day''s zone mass; BREACHED = spot closed beyond the zone (CALL: spot > wall_high; PUT: spot < wall_low). Breaches historically continue (~2/3), flipping the zone from barrier to momentum trigger.';
+COMMENT ON COLUMN analysis.options_walls.strength_score        IS 'zone only: strength = mass_share * exp(-max(gap_pct,0)/8) * (1 + 0.25*min(days_persisted,20)/20), in [0,1]. The exponential decay matches the measured hold-rate curve (58% hold at ~1% gap -> 99% at >8%).';
+
+-- ----------------------------------------------------------------------------
+--  Migration for pre-existing options_walls tables (idempotent):
+--  drop the legacy 80pct/large_num wall types — wall_type must be 'zone'.
+--  Safe to re-run.
+-- ----------------------------------------------------------------------------
+DELETE FROM analysis.options_walls WHERE wall_type <> 'zone';
+-- Drop EVERY legacy wall_type check (the original inline CHECK was
+-- auto-renamed with a numeric suffix on name collision) on the parent
+-- + hash partitions, then enforce zone-only.
+DO $$
+DECLARE r RECORD;
+BEGIN
+    FOR r IN
+        SELECT con.conrelid::regclass AS tbl, con.conname
+        FROM pg_constraint con
+        JOIN pg_class c ON c.oid = con.conrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'analysis'
+          AND (c.relname = 'options_walls' OR c.relname LIKE 'options_walls_p%')
+          AND con.contype = 'c'
+          AND con.conname LIKE 'options_walls_wall_type_check%'
+    LOOP
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname);
+    END LOOP;
+END $$;
+ALTER TABLE analysis.options_walls
+    ADD CONSTRAINT options_walls_wall_type_check
+        CHECK (wall_type = 'zone');
 
 -- ----------------------------------------------------------------------------
 --  Register in analysis.analysis_identity
@@ -359,7 +409,7 @@ ON CONFLICT (name) DO UPDATE SET
 
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('options_walls', 'options_walls', NULL, NOW(),
-     'Per-(date, option_type, underlying_code, expiry_date, wall_type) store of precomputed options wall levels. Two wall types: 80pct (boundary where one side dominates >=80% of total OI at each strike, interpolated across strikes) and large_num (strike with the max OI among those exceeding 70% of the mean OI across all strikes in the expiry group). FK -> analysis.options_expiry_identity. Built by analyze.options.')
+     'Per-(date, option_type, underlying_code, expiry_date, wall_type) store of precomputed options wall levels. Single wall type: zone (strength-scored OI wall ZONE with lifecycle: strikes with OI >=2% of chain OI are clustered into adjacent-strike zones (<=2 strike intervals apart); the dominant zone per side carries wall_low/wall_high/wall_center (raw strike units), mass_share (zone OI / chain OI, eligible >=0.06), gap_pct (signed center-vs-spot distance), a lifecycle state machine (ACTIVE / ERODED = mass fell below 70% of previous day / BREACHED = spot beyond the zone) with day-over-day >=50% strike-range overlap persistence tracking (days_persisted), and strength_score = mass_share * exp(-max(gap_pct,0)/8) * (1 + 0.25*min(days_persisted,20)/20). FK -> analysis.options_expiry_identity. Built by analyze.options.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

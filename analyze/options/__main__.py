@@ -15,8 +15,9 @@ Pipeline:
          sign changes in (skewness − 1) per expiry group.
   2. Compute per-expiry-group OI stats and write to
      analysis.options_oi_stats (same PK/FK pattern).
-  3. Compute per-expiry-group options wall levels (80pct + large_num)
-     and write to analysis.options_walls (PK includes wall_type).
+  3. Compute per-expiry-group options wall zones (strength-scored
+     zone with lifecycle) and write to analysis.options_walls
+     (PK includes wall_type).
   4. Compute per-expiry-group IV skew stats (ATM IV, 25-delta wings,
      risk reversal, smile skewness) into analysis.options_iv_skew_stats
      and the iv_smile skewness rolling stats into
@@ -184,15 +185,22 @@ async def _write_rows(
         return 0
 
     # ---- FK safety: drop rows absent from options_expiry_identity ------
-    # All options_* output tables carry FK (underlying_code, date,
-    # option_type, expiry_date) -> options_expiry_identity. Source-filter
-    # drift between the identity pipeline (_SKEWNESS_VALID_WHERE) and the
-    # per-pipeline fetches (e.g. _IV_SKEW_VALID_WHERE) can emit result
-    # rows the identity never registered (observed: stale 2026-03-30
-    # expiry ETF contracts still quoted on 2026-08-24..26). COPY would
-    # crash with ForeignKeyViolationError mid-write; filter deterministically
+    # All options_* output tables EXCEPT the identity table itself carry
+    # FK (underlying_code, date, option_type, expiry_date) ->
+    # options_expiry_identity. Source-filter drift between the identity
+    # pipeline (_SKEWNESS_VALID_WHERE) and the per-pipeline fetches
+    # (e.g. _IV_SKEW_VALID_WHERE) can emit result rows the identity never
+    # registered (observed: stale 2026-03-30 expiry ETF contracts still
+    # quoted on 2026-08-24..26). COPY would crash with
+    # ForeignKeyViolationError mid-write; filter deterministically
     # instead (anti-join against the identity key set).
-    result_df = await _fk_filter(conn, result_df)
+    #
+    # The identity table must NEVER self-anti-join: in --force mode the
+    # pipeline deletes identity content BEFORE the write, so a self-join
+    # compares fresh rows (possibly new expiry conventions) against the
+    # stale pre-delete key set and silently drops almost everything.
+    if table_name != EXPIRY_IDENTITY_TABLE:
+        result_df = await _fk_filter(conn, result_df)
 
     if force:
         if force_delete_where:
@@ -461,8 +469,9 @@ async def _run_walls_pipeline(
 ) -> int:
     """Run the options_walls pipeline.
 
-    Computes per-expiry-group wall levels for both 80pct and large_num
-    wall types. Returns number of rows written.
+    Computes per-expiry-group wall zones (wall_type='zone': the
+    dominant OI cluster per side with strength score and lifecycle).
+    Returns number of rows written.
     """
     # PK for walls includes wall_type
     WALLS_PK_COLUMNS = EXPIRY_PK_COLUMNS + ["wall_type"]
@@ -499,6 +508,7 @@ async def _run_walls_pipeline(
         force=force,
         target_pairs=target_pairs,
         pk_columns=WALLS_PK_COLUMNS,
+        round_to=6,  # mass_share / strength_score die at 2 decimals
     )
 
     print("\n  -> Upserting analysis.analysis_identity registry...",
@@ -683,7 +693,8 @@ async def main() -> None:
         description="Options analysis pipelines. Computes per-expiry-group "
                     "rolling skewness (OI-weighted moneyness) stats, "
                     "per-expiry-group OI correlation stats, per-expiry-group "
-                    "options wall levels (80pct + large_num), and "
+                    "options wall zones (strength-scored zone with "
+                    "lifecycle), and "
                     "per-expiry-group IV skew stats (risk reversal etc.).",
     )
     add_force_arg(ap)
@@ -729,7 +740,7 @@ async def main() -> None:
 
         # ---- Pipeline 3: options_walls ----------------------------------
         print("\n" + "=" * 60)
-        print("PIPELINE 3: options_walls (80pct + large_num wall levels)")
+        print("PIPELINE 3: options_walls (zone wall zones)")
         print("=" * 60)
         n3 = await _run_walls_pipeline(conn, force, sec_type)
 

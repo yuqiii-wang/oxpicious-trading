@@ -7,6 +7,7 @@ export { getForecastTable } from "./analysis-forecasts.js";
 export { listPerfAttrCodes, getPerfAttrAttribution, listPerfAttrThemes, getPerfAttrChart, listPerfAttrStrategyThemes } from "./perf-attribution.js";
 export { listIndustrySentimentsThemes, listIndustrySentimentsStrategyThemes, getIndustrySentimentsChart, getIndustrySentimentsChartByCode } from "./industry-sentiments.js";
 export { getIndustryCorrelations } from "./industry-correlations.js";
+export { getIndustryCorrOffsets, listIndustryCorrOffsetBenchmarks, listIndustryCorrOffsetIndustries } from "./industry-corr-offsets.js";
 export { getBenchmarkPriceChart, getIndustryAttributionPriceSeries } from "./benchmark-price-chart.js";
 export { getAllIndustriesAttribution, getMemberIndexAttribution } from "./industry-attribution-bars.js";
 export { getIndustryBenchmarkAttribution, listIndustryAttributionBenchmarks } from "./industry-benchmark-attribution.js";
@@ -20,6 +21,7 @@ export {
   listPeAndDividendThemes,
   listPeAndDividendStrategyThemes,
   listPeAndDividendStats,
+  listPeAndDividendStreaks,
 } from "./pe-and-dividends.js";
 export {
   listMarginTrendThemes,
@@ -28,7 +30,6 @@ export {
   getMarginTrends,
 } from "./margin-trends.js";
 export {
-  listRecurringCyclesCodes,
   getRecurringCyclesChart,
   getRecurringCyclesSpectrum,
   listRecurringCyclesThemes,

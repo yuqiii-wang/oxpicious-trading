@@ -2,6 +2,7 @@ import { fetchJson } from "./_cache";
 import type {
   OptionsCombinedResponse,
   OptionsUnderlying,
+  OptionsWallsResponse,
   EtfOhlcvResponse,
   SkewnessCorrResponse,
   SkewnessCrossCountResponse,
@@ -32,6 +33,21 @@ export function fetchOptionsCombined(
   if (targetType) params.set("target_type", targetType);
   const qs = params.toString();
   return fetchJson<OptionsCombinedResponse>(`/api/szse-options/combined${qs ? `?${qs}` : ""}`);
+}
+
+/** Zone walls from analysis.options_walls (wall_type='zone' — the backend
+ *  removed the legacy 80pct / large_num wall types). */
+export function fetchOptionsWalls(
+  underlying: string,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<OptionsWallsResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<OptionsWallsResponse>(`/api/szse-options/walls${qs ? `?${qs}` : ""}`);
 }
 
 export function fetchEtfOhlcv(

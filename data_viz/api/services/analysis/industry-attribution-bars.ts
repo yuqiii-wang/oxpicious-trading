@@ -126,7 +126,8 @@ export async function getAllIndustriesAttribution(
 //  Drives the per-industry bar charts in "Benchmark Attribution" mode: each
 //  bar = one member index of the selected industry.
 //
-//  Source: analysis.sec_alloc_perf_attribution (sec_type='index') joined with
+//  Source: stats.cross_stats (sec_type='index' pair grain; former
+//  analysis.sec_alloc_perf_attribution) joined with
 //  stats.sec_classification for industry membership + stats.index_identity for
 //  index display name.
 // ----------------------------------------------------------------------------
@@ -155,8 +156,9 @@ export async function getMemberIndexAttribution(
     WITH target_date AS (
       SELECT COALESCE(
         $3::date,
-        (SELECT MAX(date) FROM analysis.sec_alloc_perf_attribution
-         WHERE benchmark_code = $2::text)
+        (SELECT MAX(date) FROM stats.cross_stats
+         WHERE benchmark_code = $2::text
+           AND sec_type = 'index')
       ) AS max_date
     )
     SELECT
@@ -168,7 +170,7 @@ export async function getMemberIndexAttribution(
       bi.name AS benchmark_name,
       sit.is_broad_market,
       ld.max_date AS date
-    FROM analysis.sec_alloc_perf_attribution sa
+    FROM stats.cross_stats sa
     JOIN stats.sec_classification sc
       ON sc.code = sa.code AND sc.type = 'index'
       AND sc.is_active = TRUE
