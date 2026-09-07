@@ -50,6 +50,7 @@ const APPS: Record<AppKey, AppConfig> = {
       { label: "Index", path: "/dataviz/index-baseline" },
       { label: "Stock", path: "/dataviz/stock-baseline" },
       { label: "Futures", path: "/dataviz/futures" },
+      { label: "News", path: "/dataviz/news" },
     ],
   },
   analysis: {
@@ -59,6 +60,7 @@ const APPS: Record<AppKey, AppConfig> = {
       { label: "Commons", path: "/analysis/commons" },
       { label: "Derivatives", path: "/analysis/derivatives" },
       { label: "Composites", path: "/analysis/composites" },
+      { label: "Signals", path: "/analysis/signals" },
     ],
   },
   strategy: {

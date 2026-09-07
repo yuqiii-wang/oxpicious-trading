@@ -103,6 +103,9 @@ from strategy.factors_and_algos._optm_engine.training.trainer import (  # noqa: 
     NestedTrainer,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("_optm_engine")
+
 
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
@@ -162,8 +165,8 @@ def _split_is_oos(dfs: dict, oos_frac: float):
         n = len(df)
         cut = int(round(n * (1.0 - oos_frac)))
         if cut < 60 or (n - cut) < 60:
-            print(f"  warning: {code} too short to split ({n} rows) — "
-                  f"both segments use the full series", flush=True)
+            logger.info(f"  warning: {code} too short to split ({n} rows) — "
+                  f"both segments use the full series")
             is_dfs[code] = df
             oos_dfs[code] = df
             continue
@@ -174,7 +177,7 @@ def _split_is_oos(dfs: dict, oos_frac: float):
 
 async def main() -> None:
     args = _parse_args()
-    print(f"[gpu] {_GPU_WHY}", flush=True)
+    logger.info(f"[gpu] {_GPU_WHY}")
 
     setup_utf8_stdout()
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -182,7 +185,7 @@ async def main() -> None:
     t0 = time.time()
     codes = sorted(set(c.strip() for c in args.codes if c.strip()))
     if not codes:
-        print("error: no codes provided", flush=True)
+        logger.error("error: no codes provided")
         sys.exit(2)
 
     # Statics: execution-cost assumptions — fixed inputs, not searched.
@@ -200,35 +203,31 @@ async def main() -> None:
     oos_frac = min(max(float(args.oos_frac), 0.0), 0.5)
 
     algo = get_algo(args.algo)
-    print(f"\n=== nested training '{algo.ALGO_NAME}' on {args.sec_type} "
-          f"{codes} ===", flush=True)
-    print(f"  trials={args.trials}  top-k={args.top_k}  seed={args.seed}  "
-          f"oos-frac={oos_frac:.2f}  statics={statics}", flush=True)
-    print(f"  algo TUNABLE_SPACE keys: "
-          f"{sorted(getattr(algo, 'TUNABLE_SPACE', {}) or {}) or '(none)'}",
-          flush=True)
+    logger.info(f"\n=== nested training '{algo.ALGO_NAME}' on {args.sec_type} "
+          f"{codes} ===")
+    logger.info(f"  trials={args.trials}  top-k={args.top_k}  seed={args.seed}  "
+          f"oos-frac={oos_frac:.2f}  statics={statics}")
+    logger.info(f"  algo TUNABLE_SPACE keys: "
+          f"{sorted(getattr(algo, 'TUNABLE_SPACE', {}) or {}) or '(none)'}")
 
     conn = await get_db_or_exit()
     try:
         # Fetch ONCE — every backtest runs purely in-memory.
         df = await algo.fetch_signal_data(conn, args.sec_type, codes)
         if df.empty:
-            print("error: fetched data is empty — check codes/sec_type",
-                  flush=True)
+            logger.error("error: fetched data is empty — check codes/sec_type")
             sys.exit(2)
         dfs = {code: g for code, g in df.groupby("code", sort=False)}
         missing = [c for c in codes if c not in dfs]
         if missing:
-            print(f"warning: no data for codes {missing} (skipped)",
-                  flush=True)
+            logger.info(f"warning: no data for codes {missing} (skipped)")
         codes = [c for c in codes if c in dfs]
 
         base_params = algo.build_params_from_json(args.params_json)
         is_dfs, oos_dfs = _split_is_oos(dfs, oos_frac)
         if oos_frac > 0.0:
-            print(f"  IS/OOS split: step 1 (Omega) on IS, step 4 grid "
-                  f"(Calmar) on OOS (last {oos_frac:.0%} per code)",
-                  flush=True)
+            logger.info(f"  IS/OOS split: step 1 (Omega) on IS, step 4 grid "
+                  f"(Calmar) on OOS (last {oos_frac:.0%} per code)")
         ctx = OptmContext(
             algo=algo, sec_type=args.sec_type, codes=codes,
             dfs=is_dfs, oos_dfs=oos_dfs, statics=statics,
@@ -254,7 +253,7 @@ async def main() -> None:
         # ------------------------------------------------------------------
         trainer = NestedTrainer(
             ctx, seed=args.seed, top_k=args.top_k,
-            log=lambda msg: print(msg, flush=True),
+            log=lambda msg: logger.info(msg),
         )
         try:
             result = trainer.run(args.trials)
@@ -281,61 +280,58 @@ async def main() -> None:
             n_rows += await training_store.insert_training_trials(
                 conn, run_id, trainer.trial_records,
             )
-        print(f"[training] persisted {len(run_ids)} run row(s) + "
-              f"{n_rows} trial row(s) (set_a_omega + set_b_calmar)",
-              flush=True)
+        logger.info(f"[training] persisted {len(run_ids)} run row(s) + "
+              f"{n_rows} trial row(s) (set_a_omega + set_b_calmar)")
 
         # ------------------------------------------------------------------
         #  Summary
         # ------------------------------------------------------------------
         a_m, b_m = result.best_a_metrics, result.best_b_metrics
         fs = result.full_series_metrics or {}
-        print(f"\n=== nested training summary "
+        logger.info(f"\n=== nested training summary "
               f"(winner: stage-A trial {result.winner_trial_no} of "
               f"{result.n_candidates} candidates × {result.grid_size} "
-              f"grid points) ===", flush=True)
-        print(f"  step 1 omega      = {a_m.get('omega')} "
+              f"grid points) ===")
+        logger.info(f"  step 1 omega      = {a_m.get('omega')} "
               f"(pos_months {a_m.get('positive_month_fraction')}, "
-              f"trades {a_m.get('n_trades')})", flush=True)
+              f"trades {a_m.get('n_trades')})")
         if result.kelly is not None:
             k = result.kelly
-            print(f"  step 3 kelly      = f* {k.full_kelly:.3f} → capped "
+            logger.info(f"  step 3 kelly      = f* {k.full_kelly:.3f} → capped "
                   f"{k.capped_kelly:.3f} → fractional "
                   f"{k.fractional_kelly:.3f} → notional {k.notional:,.0f} "
-                  f"(reported static, not persisted)", flush=True)
-        print(f"  step 4/5 calmar   = {b_m.get('calmar')} "
+                  f"(reported static, not persisted)")
+        logger.info(f"  step 4/5 calmar   = {b_m.get('calmar')} "
               f"(OOS ret {b_m.get('total_return')}, "
               f"max_dd {b_m.get('max_dd_pct')}, "
-              f"trades {b_m.get('n_trades')})", flush=True)
+              f"trades {b_m.get('n_trades')})")
         if fs:
-            print(f"  full-series check = calmar {fs.get('calmar')} "
+            logger.info(f"  full-series check = calmar {fs.get('calmar')} "
                   f"(ret {fs.get('total_return')}, "
-                  f"max_dd {fs.get('max_dd_pct')}) — report only",
-                  flush=True)
+                  f"max_dd {fs.get('max_dd_pct')}) — report only")
         if a_m.get("no_trades"):
-            print("  WARNING: the winning stage-A trial produced NO trades "
-                  "on IS.", flush=True)
+            logger.warning("  WARNING: the winning stage-A trial produced NO trades "
+                  "on IS.")
         elif not a_m.get("constraint_ok"):
-            print("  WARNING: no stage-A trial satisfied the >55% "
+            logger.warning("  WARNING: no stage-A trial satisfied the >55% "
                   "positive-months constraint — the best omega under the "
-                  "penalty was used.", flush=True)
+                  "penalty was used.")
 
-        print("\n=== combined best params (Set A ∪ Set B) ===", flush=True)
+        logger.info("\n=== combined best params (Set A ∪ Set B) ===")
         for k in sorted(result.best_params):
-            print(f"    {k} = {result.best_params[k]}", flush=True)
+            logger.info(f"    {k} = {result.best_params[k]}")
 
         if args.no_upsert:
-            print("\n--no-upsert: best params NOT written to algo_configs.",
-                  flush=True)
+            logger.info("\n--no-upsert: best params NOT written to algo_configs.")
         else:
             n = await upsert_best_params_for_codes(
                 conn, args.sec_type, codes, algo.ALGO_NAME,
                 result.best_params,
             )
-            print(f"\n[algo_configs] upserted tuned params for {n} code(s) "
+            logger.info(f"\n[algo_configs] upserted tuned params for {n} code(s) "
                   f"({args.sec_type}, strategy '{algo.ALGO_NAME}', "
                   f"trained row [today, ∞], is_default=FALSE) — next Run "
-                  f"Strategy will use them.", flush=True)
+                  f"Strategy will use them.")
     finally:
         try:
             await asyncio.wait_for(conn.close(), timeout=10)

@@ -1,18 +1,23 @@
 /**
- * FuturesCharts — the 2-plot futures analysis view.
+ * FuturesCharts — the 3-plot futures analysis view.
  *
  * Layout (top → bottom):
  *   1. Futures price curves (identical to Data Viz) with gap_price_vs_underlying
  *      added to the tooltip for each contract.
  *   2. Correlation (corr_price_vs_underlying) — one line per contract
  *      (active + matured), y-axis fixed at -1 to 1.
+ *   3. Basis convergence (contrarian) — signed gap between futures and spot
+ *      (bps) per contract with an emphasized zero line: as a contract ages
+ *      toward expiry its deviation collapses into zero. Dots mark each
+ *      matured contract's expiry gap (history mode) and each active
+ *      contract's yesterday gap. Built by buildBasisConvergenceChartOption.
  *
- * Both plots share:
+ * All plots share:
  *   - A synced time slider (dataZoom) via shared zoomRange state.
  *   - The exact same per-contract color scheme (blue active / grey matured
  *     gradients) via computeFuturesContractStyles().
- *   - Cross-chart hover: hovering either plot shows the tooltip + axis
- *     pointer on both. This is done via manual showTip/hideTip dispatch
+ *   - Cross-chart hover: hovering any plot shows the tooltip + axis
+ *     pointer on all of them. This is done via manual showTip/hideTip dispatch
  *     (NOT echarts.connect) — connect propagates the source chart's
  *     seriesIndex+dataIndex, and the receiving chart resolves the point
  *     from its own series at that index; when that series has a null
@@ -34,6 +39,7 @@ import type { FuturesExtResponse } from "@/lib/api-client/analysis-futures";
 import {
   buildFuturesChartOption,
   buildExpiryDotsSeriesData,
+  buildBasisConvergenceChartOption,
   computeFuturesContractStyles,
   EXPIRY_DOTS_SERIES_ID,
   type FuturesChartExtra,
@@ -62,6 +68,7 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
   // Chart instances for manual cross-chart tooltip sync
   const priceChartRef = useRef<echarts.ECharts | null>(null);
   const corrChartRef = useRef<echarts.ECharts | null>(null);
+  const convChartRef = useRef<echarts.ECharts | null>(null);
   const syncingRef = useRef(false);
 
   // Shared zoom range (percentages 0-100) for both plots' dataZoom sliders
@@ -287,6 +294,7 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
   const handlePriceTipSync = useCallback(
     (params: unknown) => {
       syncTipTo(corrChartRef.current, params);
+      syncTipTo(convChartRef.current, params);
       // Compute expiry dots for history mode
       if (viewMode === "history") {
         const p = params as { dataIndex?: number; currTrigger?: string };
@@ -300,30 +308,45 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
     [syncTipTo, viewMode, computeExpiryDots, applyExpiryDots],
   );
   const handleCorrTipSync = useCallback(
-    (params: unknown) => syncTipTo(priceChartRef.current, params),
+    (params: unknown) => {
+      syncTipTo(priceChartRef.current, params);
+      syncTipTo(convChartRef.current, params);
+    },
+    [syncTipTo],
+  );
+  const handleConvTipSync = useCallback(
+    (params: unknown) => {
+      syncTipTo(priceChartRef.current, params);
+      syncTipTo(corrChartRef.current, params);
+    },
     [syncTipTo],
   );
 
-  const hideCorrTip = useCallback(() => {
-    corrChartRef.current?.dispatchAction({ type: "hideTip" });
-    applyExpiryDots([]);
-  }, [applyExpiryDots]);
-  const hidePriceTip = useCallback(() => {
+  // Leaving any chart hides the tooltip + axis pointer on ALL charts
+  const hideAllTips = useCallback(() => {
     priceChartRef.current?.dispatchAction({ type: "hideTip" });
+    corrChartRef.current?.dispatchAction({ type: "hideTip" });
+    convChartRef.current?.dispatchAction({ type: "hideTip" });
     applyExpiryDots([]);
   }, [applyExpiryDots]);
 
   const priceEvents = useMemo(() => ({
     dataZoom: handleZoom,
     updateAxisPointer: handlePriceTipSync,
-    globalout: hideCorrTip,
-  }), [handleZoom, handlePriceTipSync, hideCorrTip]);
+    globalout: hideAllTips,
+  }), [handleZoom, handlePriceTipSync, hideAllTips]);
 
   const corrEvents = useMemo(() => ({
     dataZoom: handleZoom,
     updateAxisPointer: handleCorrTipSync,
-    globalout: hidePriceTip,
-  }), [handleZoom, handleCorrTipSync, hidePriceTip]);
+    globalout: hideAllTips,
+  }), [handleZoom, handleCorrTipSync, hideAllTips]);
+
+  const convEvents = useMemo(() => ({
+    dataZoom: handleZoom,
+    updateAxisPointer: handleConvTipSync,
+    globalout: hideAllTips,
+  }), [handleZoom, handleConvTipSync, hideAllTips]);
 
   // First plot — reuse existing chartOption with gap extra + synced zoom
   const firstPlotOption = useMemo<EChartsOption | null>(() => {
@@ -460,6 +483,19 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
     };
   }, [combinedData, corrMap, currentZoom, viewMode]);
 
+  // Third plot — basis convergence (contrarian): signed futures−spot gap
+  // per contract in bps, decaying into the zero line toward expiry; with
+  // expiry-gap dots (matured, history mode) and yesterday-gap dots (active).
+  const convOption = useMemo<EChartsOption | null>(() => {
+    if (!combinedData || !gapMap) return null;
+    return buildBasisConvergenceChartOption(
+      combinedData,
+      gapMap,
+      viewMode,
+      currentZoom,
+    );
+  }, [combinedData, gapMap, currentZoom, viewMode]);
+
   const nActive = combinedData?.contracts.filter((c) => c.is_alive && c.is_continuous).length ?? 0;
   const nMatured = combinedData?.contracts.filter((c) => !c.is_alive).length ?? 0;
 
@@ -513,6 +549,39 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
             minHeight={260}
             onReady={(inst) => { corrChartRef.current = inst; }}
             onEvents={corrEvents}
+          />
+        )}
+      </Box>
+
+      {/* Third plot — basis convergence (contrarian): futures−spot gap in
+          bps collapsing into the zero line toward expiry, with expiry-gap
+          and yesterday-gap markers (synced slider & hover) */}
+      <Box>
+        <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+          Basis Convergence (contrarian) — futures vs spot gap, bps
+          {combinedData && (
+            <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+              (zero = futures meets spot · dots mark expiry &amp; yesterday gaps)
+            </Typography>
+          )}
+        </Typography>
+        {loadingExt && (
+          <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
+            <CircularProgress size={28} />
+          </Box>
+        )}
+        {errorExt && (
+          <Typography variant="body2" color="error">
+            Failed to load gap data: {errorExt}
+          </Typography>
+        )}
+        {!loadingExt && !errorExt && convOption && (
+          <EChart
+            option={convOption}
+            height={340}
+            minHeight={260}
+            onReady={(inst) => { convChartRef.current = inst; }}
+            onEvents={convEvents}
           />
         )}
       </Box>

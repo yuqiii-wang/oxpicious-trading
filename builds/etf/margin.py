@@ -24,6 +24,9 @@ from builds.etf.paths import (
     SZSE_MARGIN_DIR, SSE_MARGIN_DIR,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # source column → output column
 _MARGIN_RENAME = {
     "证券代码": "code",
@@ -58,7 +61,7 @@ def _scan_margin_dir(scan_dir, file_prefix, label, verbose=True, files=None, cod
     else:
         files = [f for f in files if os.path.basename(f).startswith(file_prefix)]
     if verbose:
-        print(f"    [MARGIN-{label}] reading {len(files)} {file_prefix}*.csv files", flush=True)
+        logger.info(f"    [MARGIN-{label}] reading {len(files)} {file_prefix}*.csv files")
 
     frames: list[pd.DataFrame] = []
     n_empty = 0
@@ -96,8 +99,8 @@ def _scan_margin_dir(scan_dir, file_prefix, label, verbose=True, files=None, cod
         frames.append(df[["date", "code"] + [c for c in _MARGIN_COLS if c in src_cols]])
         n_ok += 1
     if verbose:
-        print(f"    [MARGIN-{label}] {n_ok} files with data, {n_empty} empty, "
-              f"{sum(len(f) for f in frames):,} rows", flush=True)
+        logger.info(f"    [MARGIN-{label}] {n_ok} files with data, {n_empty} empty, "
+              f"{sum(len(f) for f in frames):,} rows")
     return frames, n_ok, n_empty
 
 
@@ -133,8 +136,8 @@ def build_margin_df(verbose=True, margin_files=None, code=None):
 
     if not frames:
         if verbose:
-            print(f"    [MARGIN] total: {n_ok_total} files with data, "
-                  f"{n_empty_total} empty, 0 rows", flush=True)
+            logger.info(f"    [MARGIN] total: {n_ok_total} files with data, "
+                  f"{n_empty_total} empty, 0 rows")
         return pd.DataFrame()
 
     # ---- ONE vectorized pass over the concatenated frame ----
@@ -159,8 +162,8 @@ def build_margin_df(verbose=True, margin_files=None, code=None):
     n_merged = n_before - n_after
 
     if verbose:
-        print(f"    [MARGIN] total: {n_ok_total} files with data, {n_empty_total} empty, "
-              f"{n_before} raw rows → {n_after} merged rows ({n_merged} duplicates handled)", flush=True)
+        logger.info(f"    [MARGIN] total: {n_ok_total} files with data, {n_empty_total} empty, "
+              f"{n_before} raw rows → {n_after} merged rows ({n_merged} duplicates handled)")
 
     out = out.sort_values(["code", "date"]).reset_index(drop=True)
     return out

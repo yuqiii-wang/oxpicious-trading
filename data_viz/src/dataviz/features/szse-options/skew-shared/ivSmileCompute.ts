@@ -1,9 +1,19 @@
 /**
- * In-browser IV smile skewness computation — mirrors the Python
- * _smile_skewness_by_group (analyze/options/compute.py): OI-weighted 3rd
- * standardized moment of implied vol across strikes, per
- * (date, option_type, expiry group), with CALL/PUT averaged per group
- * (same aggregation as the iv-skew API's AVG over option types).
+ * In-browser IV smile skew computation — the 25Δ risk reversal
+ * (iv_call25 − iv_put25, vol points) per (date, expiry month), computed
+ * from the same quote rows as the Volatility Smile snapshot so the
+ * skew-over-time panel aligns with the smile's visible tilt: OTM call
+ * wing richer (rr25 > 0) → skew price ABOVE spot; OTM put wing richer
+ * (rr25 < 0) → BELOW spot. Same metric as the DB pipeline's
+ * risk_reversal_25d (analyze/options/compute/iv_skew.py: OTM contracts
+ * nearest |delta| = 0.25 within 0 < |delta| < 0.5) and as the
+ * "IV Skew · 25Δ Risk Reversal (C−P)" chart on this tab.
+ *
+ * (Formerly the OI-weighted 3rd standardized moment of IV — dropped
+ * because the 3rd moment of IV levels is mathematically invariant to the
+ * smile's call-vs-put direction on a symmetric strike grid: it measures
+ * wing convexity, not tilt, so the rebased curve sat pinned on one side
+ * of spot regardless of what the smile did.)
  *
  * Unlike the DB pipeline (which collapses open expiry groups beyond the
  * dataset max date into one synthetic mean-expiry group), expiry groups
@@ -11,71 +21,68 @@
  * per-expiry lines + shade bands on recent dates too, matching the
  * in-browser OI moneyness skew reference chart architecture.
  *
- * Display rebase: skewPrice = S × (1 + (skew − 1)/100) — a smile
- * skewness of 1 sits exactly on the spot curve; each unit = ±1% of price.
+ * Display rebase: skewPrice = S × (1 + rr25 × 0.5%) — a balanced smile
+ * (rr25 = 0) sits exactly on the spot curve; each vol point of risk
+ * reversal = ±0.5% of price.
  */
 import { PRICE_SCALE } from "@/theme/chart-palette";
 import { expiryToYyyyMm } from "../vol-smile/expiryUtils";
 import { modeMeta } from "./skewSpec";
-import type { OptionsRow, SkewnessCrossCountRow } from "@shared/types";
+import type { OptionsRow } from "@shared/types";
 import type {
   SharedSkewPerExpiry,
   SharedSkewPoint,
   SharedSkewSpec,
 } from "./types";
 
-/** Smile skewness level that sits exactly on the price curve. */
-const NEUTRAL_SKEW = 1;
-/** Price offset per skewness unit above/below neutral (1 → 1%). */
-const PCT_PER_UNIT = 1;
-/** Minimum contracts for the 3rd-moment smile skewness. */
-const MIN_CONTRACTS = 3;
+/** rr25 level that sits exactly on the price curve (balanced wings). */
+const NEUTRAL_RR = 0;
+/** Price offset per vol point of risk reversal (1 vol pt → 0.5%). */
+const PCT_PER_VOLPT = 0.5;
+/** |delta| target for the OTM wings (mirrors _DELTA_TARGET). */
+const DELTA_TARGET = 0.25;
+/** OTM delta band 0 < |delta| < 0.5 (mirrors _DELTA_OTM_MAX). */
+const DELTA_OTM_MAX = 0.5;
 
-function rebase(spot: number, skew: number): number {
-  return spot * (1 + (skew - NEUTRAL_SKEW) * (PCT_PER_UNIT / 100));
+function rebase(spot: number, rr25: number): number {
+  return spot * (1 + (rr25 - NEUTRAL_RR) * (PCT_PER_VOLPT / 100));
 }
 
-/** OI-weighted 3rd standardized moment of IV (vol points) across strikes. */
-function thirdMomentSkew(rows: OptionsRow[]): number | null {
-  let n = 0;
-  let w = 0;
-  let wx = 0;
-  let wxx = 0;
-  let wxxx = 0;
+/** IV (%) of the contract nearest |delta| = 0.25 inside the OTM band. */
+function nearestOtmIv(rows: OptionsRow[], sign: 1 | -1): number | null {
+  let best: OptionsRow | null = null;
+  let bestDist = Infinity;
   for (const r of rows) {
-    const wi = Math.max(1, r.open_interest);
-    const x = (r.implied_vol as number) * 100;
-    w += wi;
-    wx += wi * x;
-    wxx += wi * x * x;
-    wxxx += wi * x * x * x;
-    n += 1;
+    if (r.delta == null) continue;
+    const d = r.delta * sign; // OTM: delta ∈ (0, 0.5) calls, (−0.5, 0) puts
+    if (d <= 0 || d >= DELTA_OTM_MAX) continue;
+    const dist = Math.abs(d - DELTA_TARGET);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = r;
+    }
   }
-  if (n < MIN_CONTRACTS || w <= 0) return null;
-  const mean = wx / w;
-  const m2 = wxx / w - mean * mean;
-  const m3 = wxxx / w - 3 * mean * (wxx / w) + 2 * mean ** 3;
-  const std = Math.sqrt(Math.max(m2, 0));
-  if (std <= 1e-8) return null;
-  return m3 / (std * std * std);
+  if (best == null || best.implied_vol == null) return null;
+  return (best.implied_vol as number) * 100;
+}
+
+/** 25Δ risk reversal of one expiry group's chain (vol points). */
+function riskReversal25d(rows: OptionsRow[]): number | null {
+  const callIv = nearestOtmIv(
+    rows.filter((r) => r.option_type === "CALL"),
+    1,
+  );
+  const putIv = nearestOtmIv(
+    rows.filter((r) => r.option_type === "PUT"),
+    -1,
+  );
+  if (callIv == null || putIv == null) return null;
+  return callIv - putIv;
 }
 
 export function ivSmileSpecFromRows(
   rows: OptionsRow[],
-  crossCounts?: SkewnessCrossCountRow[],
 ): SharedSkewSpec {
-  // Cross counts keyed (date, YYYY-MM) — from options_skewness_stats
-  // skew_type='iv_smile'.
-  const crossCountMap = new Map<string, number>();
-  if (crossCounts) {
-    for (const c of crossCounts) {
-      crossCountMap.set(
-        `${c.date}|${c.expiry_month.slice(0, 7)}`,
-        c.count_skewness_curve_crossed_spot,
-      );
-    }
-  }
-
   const byDate = new Map<string, OptionsRow[]>();
   for (const r of rows) {
     if (!byDate.has(r.date)) byDate.set(r.date, []);
@@ -100,54 +107,41 @@ export function ivSmileSpecFromRows(
         r.delta != null,
     );
 
-    // Expiry month → option type → contract rows; month → latest expiry date.
-    const groups = new Map<string, Map<string, OptionsRow[]>>();
+    // Expiry month → contract rows; month → latest expiry date.
+    const groups = new Map<string, OptionsRow[]>();
     const expiryDateByMonth = new Map<string, string>();
     for (const r of valid) {
       const em = expiryToYyyyMm(r.expiry_date);
-      if (!groups.has(em)) groups.set(em, new Map());
-      const byType = groups.get(em)!;
-      if (!byType.has(r.option_type)) byType.set(r.option_type, []);
-      byType.get(r.option_type)!.push(r);
+      if (!groups.has(em)) groups.set(em, []);
+      groups.get(em)!.push(r);
       const prev = expiryDateByMonth.get(em);
       if (!prev || r.expiry_date > prev) expiryDateByMonth.set(em, r.expiry_date);
     }
 
     const perExpiry: SharedSkewPerExpiry[] = [];
-    const skewVals: number[] = [];
+    const rrVals: number[] = [];
     for (const em of Array.from(groups.keys()).sort()) {
-      const byType = groups.get(em)!;
-      const typeSkews: number[] = [];
-      for (const t of Array.from(byType.keys()).sort()) {
-        const s = thirdMomentSkew(byType.get(t)!);
-        if (s != null && Number.isFinite(s)) typeSkews.push(s);
-      }
-      const skew =
-        typeSkews.length > 0
-          ? typeSkews.reduce((a, b) => a + b, 0) / typeSkews.length
-          : null;
-      if (skew != null) skewVals.push(skew);
-      const crossCount = crossCountMap.get(`${date}|${em}`);
+      const rr = riskReversal25d(groups.get(em)!);
+      if (rr != null && Number.isFinite(rr)) rrVals.push(rr);
       perExpiry.push({
         expiry: em,
         expiryDate: expiryDateByMonth.get(em) ?? "",
-        skewPrice: skew != null ? rebase(spot, skew) : null,
-        rawSkew: skew,
-        skewPct: skew != null ? (skew - NEUTRAL_SKEW) * PCT_PER_UNIT : null,
-        ...(crossCount != null ? { countSkewnessCurveCrossedSpot: crossCount } : {}),
+        skewPrice: rr != null ? rebase(spot, rr) : null,
+        rawSkew: rr,
+        skewPct: rr != null ? (rr - NEUTRAL_RR) * PCT_PER_VOLPT : null,
       });
     }
 
-    const meanSkew =
-      skewVals.length > 0
-        ? skewVals.reduce((a, b) => a + b, 0) / skewVals.length
+    const meanRr =
+      rrVals.length > 0
+        ? rrVals.reduce((a, b) => a + b, 0) / rrVals.length
         : null;
     points.push({
       date,
       spot,
-      skewPrice: meanSkew != null ? rebase(spot, meanSkew) : null,
-      rawSkew: meanSkew,
-      skewPct: meanSkew != null ? (meanSkew - NEUTRAL_SKEW) * PCT_PER_UNIT : null,
+      skewPrice: meanRr != null ? rebase(spot, meanRr) : null,
+      rawSkew: meanRr,
+      skewPct: meanRr != null ? (meanRr - NEUTRAL_RR) * PCT_PER_VOLPT : null,
       perExpiry,
     });
   }

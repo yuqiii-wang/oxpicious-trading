@@ -28,6 +28,9 @@ import pandas as pd
 from _common.build_commons import rec_cols
 from _common.df_utils import epoch_col_to_dt64, should_use_gpu
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Valid (suffixed) canonical code forms: constituent stocks (A-share +
 # cross-border holdings) and composition-source ETFs (SSE/SZSE listings)
 VALID_STOCK_RE = r"^\d{6}\.(SS|SZ|BJ|HK|SH)$"
@@ -110,7 +113,7 @@ def compute_etf_pe_harmonic(
     """
     if etf_dates_df.empty or composition_df.empty or stock_pe_df.empty:
         if verbose:
-            print("    [ETF-PE] empty input — skipping PE aggregation", flush=True)
+            logger.info("    [ETF-PE] empty input — skipping PE aggregation")
         return pd.DataFrame(columns=["code", "date", "pe"])
 
     # All sides are suffixed codes — direct joins, no bare-key juggling.
@@ -131,9 +134,9 @@ def compute_etf_pe_harmonic(
         columns={"code": "etf_code"})[["etf_code", "date"]].drop_duplicates()
 
     if verbose:
-        print(f"    [ETF-PE] {len(comp):,} (etf, stock) composition pairs, "
+        logger.info(f"    [ETF-PE] {len(comp):,} (etf, stock) composition pairs, "
               f"{len(unique_etf_dates):,} (etf, date) pairs, "
-              f"{len(stock_pe):,} stock PE rows", flush=True)
+              f"{len(stock_pe):,} stock PE rows")
 
     # Merge composition with etf_dates to get (etf, stock, date) triples
     # then merge with stock_pe on (stock_code, date) to get PE per constituent.
@@ -141,12 +144,12 @@ def compute_etf_pe_harmonic(
     merge_left = comp.merge(unique_etf_dates, on="etf_code", how="inner")
 
     if verbose:
-        print(f"    [ETF-PE] {len(merge_left):,} (etf, stock, date) triples "
-              f"before stock PE join", flush=True)
+        logger.info(f"    [ETF-PE] {len(merge_left):,} (etf, stock, date) triples "
+              f"before stock PE join")
 
     # The merge with stock_pe is the heavy operation
     if should_use_gpu(merge_left, op_type="merge"):
-        print(f"    [cuDF router] {len(merge_left):,} rows — merge (GPU-worthy)", flush=True)
+        logger.info(f"    [cuDF router] {len(merge_left):,} rows — merge (GPU-worthy)")
 
     merged = merge_left.merge(
         stock_pe,
@@ -162,8 +165,7 @@ def compute_etf_pe_harmonic(
         sum_w_over_pe=("w_over_pe", "sum"),
     ).reset_index()
     if verbose:
-        print(f"    [ETF-PE] pandas merge+groupby done: {len(result):,} (etf, date) PE values",
-              flush=True)
+        logger.info(f"    [ETF-PE] pandas merge+groupby done: {len(result):,} (etf, date) PE values")
 
     # PE_etf = SUM(w) / SUM(w/pe)
     result["pe"] = np.where(
@@ -176,8 +178,8 @@ def compute_etf_pe_harmonic(
 
     if verbose:
         n_non_null = result["pe"].notna().sum()
-        print(f"    [ETF-PE] {n_non_null:,} non-null PE values computed "
-              f"(out of {len(result):,} etf-date pairs)", flush=True)
+        logger.info(f"    [ETF-PE] {n_non_null:,} non-null PE values computed "
+              f"(out of {len(result):,} etf-date pairs)")
 
     return result
 

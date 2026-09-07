@@ -115,6 +115,9 @@ from analyze.margins.pipeline import (  # noqa: E402
 from analyze.margins.compute import compute_industry_stats  # noqa: E402
 from analyze.margins.changes import run_margin_changes  # noqa: E402
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("margins")
+
 
 # ---------------------------------------------------------------------------
 #  Main orchestration
@@ -161,14 +164,12 @@ async def main() -> None:
     conn = await get_db_connection_async()
     try:
         # ---- Step 0: determine ref_date + missing dates ---------------
-        print("\n[0/5] Determining ref_date (MAX date across source tables)...",
-              flush=True)
+        logger.info("\n[0/5] Determining ref_date (MAX date across source tables)...")
         ref_date = await fetch_latest_source_date(conn, sec_types)
-        print(f"    -> ref_date = {ref_date}", flush=True)
+        logger.info(f"    -> ref_date = {ref_date}")
 
         if not force:
-            print("\n    Detecting missing dates per table (incremental mode)...",
-                  flush=True)
+            logger.info("\n    Detecting missing dates per table (incremental mode)...")
         (
             target_dates_tech, target_dates_index_series,
             target_dates_index_tech, target_dates_industry,
@@ -185,18 +186,16 @@ async def main() -> None:
                 + len(target_dates_industry)
             )
             if total_missing == 0:
-                print("    -> DB is up to date; nothing to do.", flush=True)
+                logger.info("    -> DB is up to date; nothing to do.")
                 print_wall_time(t0)
                 return
 
         # ---- Step 1: per-sec-type tech stats ----------------------------
-        print(f"\n[1/5] Per-sec-type tech stats (sec_types={sec_types})...",
-              flush=True)
+        logger.info(f"\n[1/5] Per-sec-type tech stats (sec_types={sec_types})...")
         # Force mode: truncate the whole tech_stats table up front when
         # processing both sec_types (faster than 2 separate DELETEs).
         if force and args.sec_type == "both":
-            print("    Truncating margin_tech_stats (all sec_types)...",
-                  flush=True)
+            logger.info("    Truncating margin_tech_stats (all sec_types)...")
             await truncate_table_async(conn, TABLE_TECH_STATS)
 
         histories: dict[str, pd.DataFrame] = {}
@@ -205,7 +204,7 @@ async def main() -> None:
         for st in sec_types:
             td = target_dates_tech.get(st)
             if td is not None and len(td) == 0 and not force:
-                print(f"\n  [{st}] up to date; skipping.", flush=True)
+                logger.info(f"\n  [{st}] up to date; skipping.")
                 continue
             hist, imap, tech = await run_sec_type(
                 conn, st, ref_date, force=force, target_dates=td,
@@ -218,8 +217,8 @@ async def main() -> None:
         if run_index:
             # 1b-1: build the margin_index_series TABLE via Python
             # vectorization (the former in-SQL VIEW aggregation).
-            print(f"\n[1b/5] Building {TABLE_INDEX_SERIES} "
-                  "(vectorized)...", flush=True)
+            logger.info(f"\n[1b/5] Building {TABLE_INDEX_SERIES} "
+                  "(vectorized)...")
             await build_margin_index_series(
                 conn, force=force,
                 target_dates=target_dates_index_series,
@@ -228,7 +227,7 @@ async def main() -> None:
             # 1b-2: index-level tech stats computed from the TABLE.
             td_idx = target_dates_index_tech
             if td_idx is not None and len(td_idx) == 0 and not force:
-                print("\n  [index] up to date; skipping.", flush=True)
+                logger.info("\n  [index] up to date; skipping.")
             else:
                 idx_hist, idx_tech = await run_index_tech_stats(
                     conn, force=force, target_dates=td_idx,
@@ -238,11 +237,11 @@ async def main() -> None:
 
         # ---- Step 2: industry SUM aggregation ---------------------------
         if is_index_only:
-            print("\n[2/5] Per-(date, industry_id) SUM aggregation "
-                  "-- SKIPPED (index-only test run)", flush=True)
+            logger.info("\n[2/5] Per-(date, industry_id) SUM aggregation "
+                  "-- SKIPPED (index-only test run)")
         else:
-            print("\n[2/5] Per-(date, industry_id) SUM aggregation "
-                  "(stock + etf)...", flush=True)
+            logger.info("\n[2/5] Per-(date, industry_id) SUM aggregation "
+                  "(stock + etf)...")
 
         etf_hist = histories.get("etf", pd.DataFrame(
             columns=["code", "date", "rz_balance", "rz_buy"]
@@ -265,8 +264,8 @@ async def main() -> None:
             industry_stats = pd.DataFrame()
         else:
             # ---- Step 2: compute industry SUM aggregation -------------
-            print("\n[2/5] Per-(date, industry_id) SUM aggregation "
-                  "(stock + etf)...", flush=True)
+            logger.info("\n[2/5] Per-(date, industry_id) SUM aggregation "
+                  "(stock + etf)...")
 
             # Pre-compute industry stats (will be inserted in step 3)
             industry_stats = compute_industry_stats(
@@ -279,12 +278,11 @@ async def main() -> None:
                 industry_stats["industry_id"].nunique()
                 if not industry_stats.empty else 0
             )
-            print(f"    -> {len(industry_stats):,} rows across "
-                  f"{n_industries} industries", flush=True)
+            logger.info(f"    -> {len(industry_stats):,} rows across "
+                  f"{n_industries} industries")
 
             # ---- Step 3: insert industry_stats ------------------------
-            print(f"\n[3/5] Inserting into {TABLE_INDUSTRY_STATS}...",
-                  flush=True)
+            logger.info(f"\n[3/5] Inserting into {TABLE_INDUSTRY_STATS}...")
             await insert_industry_stats(
                 conn, industry_stats,
                 force=force, target_dates=target_dates_industry,
@@ -296,8 +294,7 @@ async def main() -> None:
         # raw histories collected in step 1 (no DB round-trip for source
         # data). Always truncates + recomputes when called — new dates
         # can change trend boundaries.
-        print("\n[4/5] Margin changes detection (internal step)...",
-              flush=True)
+        logger.info("\n[4/5] Margin changes detection (internal step)...")
         await run_margin_changes(
             conn,
             histories=histories,
@@ -308,8 +305,7 @@ async def main() -> None:
         # ---- Step 5: register in analysis_identity ----------------------
         # (the changes identity row is upserted by its own internal step
         # above)
-        print("\n[5/5] Registering in analysis.analysis_identity...",
-              flush=True)
+        logger.info("\n[5/5] Registering in analysis.analysis_identity...")
         await upsert_analysis_identity(
             conn,
             name="margin_tech_stats",
@@ -335,8 +331,8 @@ async def main() -> None:
                 description=INDUSTRY_STATS_DESCRIPTION,
             )
             n_identity += 1
-        print(f"    -> upserted {n_identity} identity rows "
-              f"(+1 from changes step)", flush=True)
+        logger.info(f"    -> upserted {n_identity} identity rows "
+              f"(+1 from changes step)")
 
         print_wall_time(t0)
     finally:

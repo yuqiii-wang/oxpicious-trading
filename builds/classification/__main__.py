@@ -65,6 +65,9 @@ from builds.classification.sector_industry.owners import load_owners
 from builds.classification.sector_industry.build import build_classification
 from builds.classification.sector_industry.upsert import upsert_to_db
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("classification")
+
 
 async def main():
     ap = argparse.ArgumentParser(
@@ -101,11 +104,10 @@ async def main():
     # --- Load JSON (index classifications — the authoritative source) ---
     prev_state = load_json()
     if prev_state:
-        print(f"    [JSON] Loaded index classifications: "
-              f"{len(prev_state.get('indices', {}))} indices", flush=True)
+        logger.info(f"    [JSON] Loaded index classifications: "
+              f"{len(prev_state.get('indices', {}))} indices")
     else:
-        print(f"    [JSON] No existing JSON — all indices will be classified by keyword rules",
-              flush=True)
+        logger.info(f"    [JSON] No existing JSON — all indices will be classified by keyword rules")
 
     # --- Load owners (sec_owners.json — curated ETF manager / company registry) ---
     owners = load_owners()
@@ -113,20 +115,20 @@ async def main():
     # --- Load CSV (ETF → index mapping) ---
     csv_path = find_latest_csv()
     if csv_path is None:
-        print(f"    [FATAL] No etf_index_map_*.csv found in {CSV_DIR}", flush=True)
+        logger.error(f"    [FATAL] No etf_index_map_*.csv found in {CSV_DIR}")
         sys.exit(1)
-    print(f"    [CSV] Loading ETF → index mapping: {os.path.basename(csv_path)}", flush=True)
+    logger.info(f"    [CSV] Loading ETF → index mapping: {os.path.basename(csv_path)}")
     etf_rows = load_etf_index_csv(csv_path)
-    print(f"    [CSV] {len(etf_rows)} ETF → index mappings loaded", flush=True)
+    logger.info(f"    [CSV] {len(etf_rows)} ETF → index mappings loaded")
 
     # --- Connect to DB (for index meta, stock mapping, and upsert) ---
     conn = None
     if not args.no_db:
-        print("\n[1/2] Connecting to database …", flush=True)
+        logger.info("\n[1/2] Connecting to database …")
         conn = await get_db_or_exit()
 
     try:
-        print("\n[2/2] Building classification …", flush=True)
+        logger.info("\n[2/2] Building classification …")
         state = await build_classification(
             conn, etf_rows, prev_state=prev_state, owners=owners, verbose=True,
             reclassify_indices=args.reclassify)
@@ -135,26 +137,26 @@ async def main():
         save_json(state)
 
         # --- Summary ---
-        print(f"\n    Summary:", flush=True)
-        print(f"      Catalog           : {len(state['catalog'])} sectors "
-              f"(industry + strategy unified)", flush=True)
-        print(f"      Indices           : {len(state.get('indices', {}))}", flush=True)
-        print(f"      ETFs              : {len(state.get('etfs', {}))}", flush=True)
-        print(f"      Stocks            : {len(state.get('stocks', []))} rows "
-              f"({len(set(s['code'] for s in state.get('stocks', [])))} codes)", flush=True)
-        print(f"      Owners            : {len(state.get('owners', []))}", flush=True)
+        logger.info(f"\n    Summary:")
+        logger.info(f"      Catalog           : {len(state['catalog'])} sectors "
+              f"(industry + strategy unified)")
+        logger.info(f"      Indices           : {len(state.get('indices', {}))}")
+        logger.info(f"      ETFs              : {len(state.get('etfs', {}))}")
+        logger.info(f"      Stocks            : {len(state.get('stocks', []))} rows "
+              f"({len(set(s['code'] for s in state.get('stocks', [])))} codes)")
+        logger.info(f"      Owners            : {len(state.get('owners', []))}")
 
         # --- Upsert to DB ---
         if conn is not None:
-            print("\n[DB] Upserting to database …", flush=True)
+            logger.info("\n[DB] Upserting to database …")
             await upsert_to_db(conn, state, verbose=True, force=args.force)
     finally:
         if conn is not None:
             await conn.close()
 
     elapsed = (datetime.datetime.now() - t0).total_seconds()
-    print(f"\n  Wall time: {elapsed:.1f}s", flush=True)
-    print("=" * 78, flush=True)
+    logger.info(f"\n  Wall time: {elapsed:.1f}s")
+    logger.info("=" * 78)
 
 
 if __name__ == "__main__":

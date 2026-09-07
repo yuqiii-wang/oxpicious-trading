@@ -11,7 +11,7 @@ import pandas as pd
 
 from _common.df_utils import should_use_gpu  # noqa: F401 — per project convention
 from _common.df_utils import grouped_rolling_agg
-from analyze.options.config import SKEWNESS_WINDOWS
+from analyze.options.config import SKEWNESS_CROSS_WINDOW, SKEWNESS_WINDOWS
 
 # Expiry group key for skewness aggregation and rolling (per option_type).
 _EXPIRY_GROUP_KEY = ["option_type", "underlying_code", "expiry_date"]
@@ -185,31 +185,44 @@ def _broadcast_slopes(
     return df
 
 
-def _compute_cross_count(group: pd.DataFrame, gap_col: str = "_gap") -> pd.Series:
-    """Cumulative count of sign changes in a gap column for an expiry group.
+def _cross_indicators(group: pd.DataFrame, gap_col: str = "_gap") -> pd.DataFrame:
+    """Per-day neutral-cross indicators for one expiry group (sorted by date).
 
-    For an expiry group sorted by date, tracks how many times the
-    sign of (gap) changes from one day to the next.
+    Returns a frame indexed like ``group`` with:
+      crossed     — True when the gap's sign bucket changed vs the previous
+                    day (a cross of the neutral anchor). False on the first
+                    day and across NaN gaps.
+      days_since  — trading days since the last cross (0 = crossed today);
+                    equals the group's age in days while no cross has
+                    happened yet.
 
-    First day: 0 (no previous day to compare).
-    Subsequent days:
-      - gap >= 0 → skewness at/above its neutral anchor
-      - gap <  0 → skewness below its neutral anchor
-      - sign changed: counter +1; unchanged / NaN: keep previous value
+    Vectorized (cumsum trick + maximum.accumulate).
     """
-    gap = group[gap_col].values
+    gap = group[gap_col].to_numpy(dtype=np.float64)
     n = len(gap)
-    counter = np.zeros(n, dtype=np.int64)
+    if n == 0:
+        return pd.DataFrame(
+            {"crossed": pd.Series(dtype=bool), "days_since": pd.Series(dtype=np.int64)},
+            index=group.index,
+        )
+    t = np.arange(n)
 
-    for i in range(1, n):
-        if np.isnan(gap[i]) or np.isnan(gap[i - 1]):
-            counter[i] = counter[i - 1]
-        elif (gap[i] >= 0) != (gap[i - 1] >= 0):
-            counter[i] = counter[i - 1] + 1
-        else:
-            counter[i] = counter[i - 1]
+    above = np.nan_to_num(gap, nan=np.inf) >= 0
+    # NaN gaps never count as a cross: force both sides False there.
+    valid = ~np.isnan(gap)
+    prev_above = np.roll(above, 1)
+    prev_valid = np.roll(valid, 1)
+    crossed = valid & prev_valid & (above != prev_above)
+    crossed[0] = False
 
-    return pd.Series(counter, index=group.index)
+    # Days since last cross: distance from the most recent True position.
+    last_cross = np.where(crossed, t, -1)
+    days_since = t - np.maximum.accumulate(last_cross)
+
+    return pd.DataFrame(
+        {"crossed": crossed, "days_since": days_since},
+        index=group.index,
+    )
 
 
 def _expanding_corr(
@@ -267,7 +280,7 @@ def _rolling_skew_suite(
     _EXPIRY_GROUP_KEY + [date, underlying_close, skewness, skew_type].
 
     neutral: no-tilt anchor of the skew metric. gap = skewness - neutral;
-      cross counts track sign changes of the gap; gap_maW = maW - neutral.
+      contrarian metrics track the gap vs this anchor; gap_maW = maW - neutral.
         1.0  — oi_moneyness / iv_smile (legacy anchor)
         0.5  — greek_delta (balanced put/call directional book)
         0.0  — greek_gamma / greek_vega (balanced call/put wings)
@@ -283,8 +296,10 @@ def _rolling_skew_suite(
             is frontend-only: as a correlation basis its ±0.3% deviations
             would make corr ≈ 1 trivially.)
 
-    Adds: cross counts, MA/STD (5/20/60), gap-from-neutral stats, slopes,
-    and whole-period price-space correlations with spot.
+    Adds: pre-expiry contrarian metrics (cross_count_20d,
+    days_since_last_cross, gap_side_share_20d), MA/STD (5/20/60),
+    gap-from-neutral stats, slopes, and whole-period price-space
+    correlations with spot.
     """
     agg = agg.copy()
 
@@ -301,12 +316,34 @@ def _rolling_skew_suite(
             1.0 + agg["_gap"] * price_k
         )
 
-    # ---- cumulative cross count of _gap (skewness − neutral) -----------
-    agg["count_skewness_curve_crossed_spot"] = (
-        agg.groupby(_EXPIRY_GROUP_KEY, sort=False)
-        .apply(_compute_cross_count, gap_col="_gap")
-        .reset_index(level=list(range(len(_EXPIRY_GROUP_KEY))), drop=True)
-        .astype(int)
+    # ---- pre-expiry contrarian metrics on _gap (skewness − neutral) ----
+    #   cross_count_20d       — neutral crossings in the trailing
+    #                           SKEWNESS_CROSS_WINDOW sessions (contested
+    #                           positioning into expiry)
+    #   days_since_last_cross — sessions since the last neutral crossing
+    #                           (freshness of the last flip; 0 = crossed
+    #                           today, group age while never crossed)
+    #   gap_side_share_20d    — share of the trailing window at/above
+    #                           neutral (one-sided crowding, in [0,1])
+    ind = (
+        agg.groupby(_EXPIRY_GROUP_KEY, sort=False, group_keys=False)
+        .apply(_cross_indicators, gap_col="_gap")
+        .reindex(agg.index)
+    )
+    agg["_crossed"] = ind["crossed"].astype(np.int64)
+    agg["days_since_last_cross"] = ind["days_since"].astype(int)
+    # NaN gaps stay NaN so they neither vote nor shrink the window's
+    # denominator (rolling mean skips NaNs; min_periods=1).
+    agg["_above_neutral"] = np.where(
+        agg["_gap"].notna(), agg["_gap"] >= 0, np.nan
+    )
+    agg["cross_count_20d"] = grouped_rolling_agg(
+        agg, _EXPIRY_GROUP_KEY, "_crossed",
+        window=SKEWNESS_CROSS_WINDOW, min_periods=1, agg="sum",
+    ).astype(int)
+    agg["gap_side_share_20d"] = grouped_rolling_agg(
+        agg, _EXPIRY_GROUP_KEY, "_above_neutral",
+        window=SKEWNESS_CROSS_WINDOW, min_periods=1, agg="mean",
     )
 
     # Add sequential time index per expiry group for slope computation.
@@ -368,7 +405,7 @@ def _rolling_skew_suite(
 
     # Clean up temporary columns
     agg = agg.drop(
-        columns=["_gap", "_t", "skew_price"]
+        columns=["_gap", "_t", "skew_price", "_crossed", "_above_neutral"]
         + [f"skew_price_ma{w}" for w in SKEWNESS_WINDOWS]
         + [f"spot_ma{w}" for w in SKEWNESS_WINDOWS]
     )

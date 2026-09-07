@@ -40,6 +40,9 @@ activate()
 from _common.df_utils import compute_moving_averages, compute_emas, epoch_col_to_dt64
 import pandas as pd
 
+import logging
+logger = logging.getLogger(__name__)
+
 TABLE = "stats.stock_tech_stats"
 SOURCE_TABLE = "stats.stock_basic_stats"
 DEFAULT_CHUNK_CODES = 500
@@ -174,7 +177,7 @@ async def run_tech_stats_chunked(
     # ------------------------------------------------------------------
     if force:
         if verbose:
-            print(f"    [TECH-STATS] Force mode: truncating {TABLE}…", flush=True)
+            logger.info(f"    [TECH-STATS] Force mode: truncating {TABLE}…")
         await truncate_table_async(conn, TABLE)
         max_existing_date: Optional[date] = None
     elif target_dates:
@@ -187,25 +190,22 @@ async def run_tech_stats_chunked(
         window_start = _t_min - timedelta(days=_LOOKBACK_CALENDAR_DAYS)
         max_existing_date = None
         if verbose:
-            print(f"    [TECH-STATS] Date-target mode: recomputing "
+            logger.info(f"    [TECH-STATS] Date-target mode: recomputing "
                   f"{len(target_dates)} date(s) {_t_min} → {_t_max} "
-                  f"(no truncation, upsert refresh)…", flush=True)
-            print(f"    [TECH-STATS] Loading lookback window: "
+                  f"(no truncation, upsert refresh)…")
+            logger.info(f"    [TECH-STATS] Loading lookback window: "
                   f"{window_start} → {_t_max} "
                   f"({_LOOKBACK_CALENDAR_DAYS} calendar days ≈ "
-                  f"{_LOOKBACK_TRADING_DAYS} trading days)…",
-                  flush=True)
+                  f"{_LOOKBACK_TRADING_DAYS} trading days)…")
     else:
         max_existing_date = await get_max_table_date_async(conn, TABLE)
         if max_existing_date is not None and verbose:
             lookback_start = max_existing_date - timedelta(days=_LOOKBACK_CALENDAR_DAYS)
-            print(f"    [TECH-STATS] Existing max date: {max_existing_date}…",
-                  flush=True)
-            print(f"    [TECH-STATS] Loading lookback window: "
+            logger.info(f"    [TECH-STATS] Existing max date: {max_existing_date}…")
+            logger.info(f"    [TECH-STATS] Loading lookback window: "
                   f"{lookback_start} → today "
                   f"({_LOOKBACK_CALENDAR_DAYS} calendar days ≈ "
-                  f"{_LOOKBACK_TRADING_DAYS} trading days)…",
-                  flush=True)
+                  f"{_LOOKBACK_TRADING_DAYS} trading days)…")
 
     # Timestamp cutoffs for the date-target output filter (datetime64[s/us]
     # column vs raw datetime.date raises InvalidComparison on this pandas
@@ -218,10 +218,10 @@ async def run_tech_stats_chunked(
     # 2. Load all codes
     # ------------------------------------------------------------------
     if verbose:
-        print(f"    [TECH-STATS] Loading distinct codes from {SOURCE_TABLE}…", flush=True)
+        logger.info(f"    [TECH-STATS] Loading distinct codes from {SOURCE_TABLE}…")
     all_codes = await _load_all_codes(conn)
     if verbose:
-        print(f"    [TECH-STATS] {len(all_codes):,} codes with non-null close", flush=True)
+        logger.info(f"    [TECH-STATS] {len(all_codes):,} codes with non-null close")
     if not all_codes:
         return 0
 
@@ -248,9 +248,8 @@ async def run_tech_stats_chunked(
 
         if df.empty:
             if verbose:
-                print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
-                      f"{chunk[0]}..{chunk[-1]}: no close data, skipping",
-                      flush=True)
+                logger.info(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
+                      f"{chunk[0]}..{chunk[-1]}: no close data, skipping")
             continue
 
         # Compute indicators
@@ -265,10 +264,9 @@ async def run_tech_stats_chunked(
             df = df[df["date"] > _cutoff].reset_index(drop=True)
             if df.empty:
                 if verbose:
-                    print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
+                    logger.info(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
                           f"{chunk[0]}..{chunk[-1]}: 0 new rows "
-                          f"(all dates ≤ {max_existing_date})",
-                          flush=True)
+                          f"(all dates ≤ {max_existing_date})")
                 continue
         elif target_dates and not force:
             # Date-target mode: keep ONLY the target dates' rows — the
@@ -276,9 +274,9 @@ async def run_tech_stats_chunked(
             df = df[df["date"].isin(_target_cutoffs)].reset_index(drop=True)
             if df.empty:
                 if verbose:
-                    print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
+                    logger.info(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
                           f"{chunk[0]}..{chunk[-1]}: 0 rows on the target "
-                          f"date(s) — nothing to upsert", flush=True)
+                          f"date(s) — nothing to upsert")
                 continue
 
         # Build rows dict — vectorized: column-wise NaN→None conversion,
@@ -291,7 +289,9 @@ async def run_tech_stats_chunked(
         # Host transfer at the DB boundary: .dt.date on a cudf-backed
         # frame falls back per element (no GPU Timestamp.date fast
         # path); on host pandas it is a plain vectorized conversion.
-        out_df = df[_out_cols].to_pandas()
+        # GPU frame → host; a CPU-fallback frame is already host pandas.
+        _sel = df[_out_cols]
+        out_df = _sel.to_pandas() if hasattr(_sel, "to_pandas") else _sel
         out_df["code"] = out_df["code"].astype(str)
         # Convert datetime64 → Python date for DB insertion (avoids
         # carrying pandas Timestamp into the asyncpg boundary)
@@ -309,24 +309,21 @@ async def run_tech_stats_chunked(
             # Show lookback row count to demonstrate the optimization
             n_source_rows = len(df)
             if not force and max_existing_date is not None:
-                print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
+                logger.info(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
                       f"{chunk[0]}..{chunk[-1]}: "
                       f"{len(rows):,} new rows "
                       f"(computed from {n_source_rows:,} lookback rows) "
                       f"-> {n_copied:,} copied + {n_upserted:,} upserted "
-                      f"(cumulative {total_upserted:,})",
-                      flush=True)
+                      f"(cumulative {total_upserted:,})")
             else:
-                print(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
+                logger.info(f"    [TECH-STATS] [{chunk_idx}/{n_chunks}] codes "
                       f"{chunk[0]}..{chunk[-1]}: "
                       f"{len(rows):,} rows -> upserted {n:,} "
-                      f"(cumulative {total_upserted:,})",
-                      flush=True)
+                      f"(cumulative {total_upserted:,})")
 
     elapsed = int(time.time() - t0)
     if verbose:
-        print(f"    [TECH-STATS] Done in {elapsed}s. Total upserted: {total_upserted:,}",
-              flush=True)
+        logger.info(f"    [TECH-STATS] Done in {elapsed}s. Total upserted: {total_upserted:,}")
     return total_upserted
 
 

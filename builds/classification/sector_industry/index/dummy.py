@@ -30,6 +30,9 @@ from _common.sec_statics.classification import (
     DEFAULT_INDUSTRY_LABEL,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Prefix for dummy index codes.
 DUMMY_PREFIX = "DUMMY_"
 
@@ -180,8 +183,8 @@ def create_dummy_indices(
             n_dummy_mapped += 1
 
     if verbose:
-        print(f"    [DUMMY] {n_real_matched} orphans matched to real indices, "
+        logger.info(f"    [DUMMY] {n_real_matched} orphans matched to real indices, "
               f"{n_dummies} dummy indices created, "
-              f"{n_dummy_mapped} orphan ETFs mapped to dummies", flush=True)
+              f"{n_dummy_mapped} orphan ETFs mapped to dummies")
 
     return indices

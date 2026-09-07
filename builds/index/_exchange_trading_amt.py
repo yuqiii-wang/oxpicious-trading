@@ -49,6 +49,9 @@ from _common.build_commons import (
 )
 from builds._commons.row_emission import records_from_frame
 
+import logging
+logger = logging.getLogger(__name__)
+
 TABLE = "stats.exchange_trading_amt"
 
 # Hardcoded exchange -> representative broad-market index mapping.
@@ -78,8 +81,8 @@ async def build_exchange_trading_amt(conn, force: bool = False,
     # Skipping NULL-amount rows keeps the table clean (no meaningless
     # turnover rows for estimated-close gaps) and makes the missing-key
     # set match exactly what gets inserted.
-    print("\n[EXCH_AMT] Fetching representative-index trading_amounts "
-          "from stats.index_basic_stats...", flush=True)
+    logger.info("\n[EXCH_AMT] Fetching representative-index trading_amounts "
+          "from stats.index_basic_stats...")
     sql_rows = """
         SELECT ec.exchange, ibs.date, ec.index_code,
                ibs.trading_amount AS total_trading_amount
@@ -93,12 +96,12 @@ async def build_exchange_trading_amt(conn, force: bool = False,
     rows = await conn.fetch(sql_rows)
     # Whole-column frame — all downstream filtering/emission is vectorized
     df_all = pd.DataFrame(rec_cols(rows))
-    print(f"    -> {len(df_all):,} desired (date, exchange) rows across "
-          f"{df_all['exchange'].nunique()} exchanges", flush=True)
+    logger.info(f"    -> {len(df_all):,} desired (date, exchange) rows across "
+          f"{df_all['exchange'].nunique()} exchanges")
 
     # ---- Step 2: detect missing pairs or truncate -----------------
     if force:
-        print(f"\n[EXCH_AMT] Force mode: truncating {TABLE}...", flush=True)
+        logger.info(f"\n[EXCH_AMT] Force mode: truncating {TABLE}...")
         await truncate_table_async(conn, TABLE)
         target_df = df_all
     elif forced_date is not None:
@@ -109,20 +112,19 @@ async def build_exchange_trading_amt(conn, force: bool = False,
             set(rec_col(rows, "date")), forced_date,
             source_label="stats.index_basic_stats dates",
         )
-        print(f"\n[EXCH_AMT] [DATE MODE] forcing recompute of {forced_date} "
-              f"(missing-pair skip bypassed)", flush=True)
+        logger.info(f"\n[EXCH_AMT] [DATE MODE] forcing recompute of {forced_date} "
+              f"(missing-pair skip bypassed)")
         target_df = df_all[df_all["date"].isin(target)].reset_index(drop=True)
     else:
-        print(f"\n[EXCH_AMT] Detecting missing (date, exchange) pairs...",
-              flush=True)
+        logger.info(f"\n[EXCH_AMT] Detecting missing (date, exchange) pairs...")
         source_keys = set(zip(rec_col(rows, "date"), rec_col(rows, "exchange")))
         missing_keys = await find_missing_keys(
             conn, TABLE, ["date", "exchange"], source_keys
         )
-        print(f"    -> {len(missing_keys)} of {len(source_keys)} "
-              f"(date, exchange) pairs missing from {TABLE}", flush=True)
+        logger.info(f"    -> {len(missing_keys)} of {len(source_keys)} "
+              f"(date, exchange) pairs missing from {TABLE}")
         if not missing_keys:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return
         # Vectorized membership filter via composite string keys (never a
         # per-row tuple-in-set scan)
@@ -131,10 +133,10 @@ async def build_exchange_trading_amt(conn, force: bool = False,
         target_df = df_all[composite.isin(missing_set)].reset_index(drop=True)
 
     # ---- Step 3: upsert ------------------------------------------
-    print(f"\n[EXCH_AMT] Upserting into {TABLE}...", flush=True)
+    logger.info(f"\n[EXCH_AMT] Upserting into {TABLE}...")
     EMIT_COLS = ["date", "exchange", "index_code", "total_trading_amount"]
     if len(target_df) == 0:
-        print("    -> no data to insert.", flush=True)
+        logger.info("    -> no data to insert.")
     else:
         data = records_from_frame(target_df, EMIT_COLS)
         n_copied, n_upserted = await copy_or_upsert_split_async(
@@ -144,4 +146,4 @@ async def build_exchange_trading_amt(conn, force: bool = False,
         via = "COPY" if n_copied > 0 and n_upserted == 0 else \
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
               "upsert"
-        print(f"    -> upserted {total:,} rows via {via}", flush=True)
+        logger.info(f"    -> upserted {total:,} rows via {via}")

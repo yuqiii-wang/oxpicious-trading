@@ -90,6 +90,9 @@ from analyze.analysis_composites.opposite_correlations import (  # noqa: E402
     run_opposite_correlations,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("analysis_composites")
+
 
 def _parse_csv(raw: str) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
@@ -181,15 +184,15 @@ async def main() -> None:
                     }
                 )
                 if unmapped:
-                    print(f"    -> WARNING: codes with no index "
+                    logger.warning(f"    -> WARNING: codes with no index "
                           f"classification (ignored): "
-                          f"{', '.join(unmapped)}", flush=True)
+                          f"{', '.join(unmapped)}")
                 industry_ids |= resolved
-            print(f"\n[0/1] Filtered mode: {len(industry_ids)} industries "
-                  f"({', '.join(sorted(industry_ids))})", flush=True)
+            logger.info(f"\n[0/1] Filtered mode: {len(industry_ids)} industries "
+                  f"({', '.join(sorted(industry_ids))})")
             if len(industry_ids) < 2:
-                print("    -> fewer than 2 industries — no pairs to "
-                      "compute; nothing to do.", flush=True)
+                logger.info("    -> fewer than 2 industries — no pairs to "
+                      "compute; nothing to do.")
                 print_wall_time(t0)
                 return
             await run_opposite_correlations(
@@ -201,16 +204,16 @@ async def main() -> None:
             )
         else:
             for bench in benchmarks:
-                print(f"\n[0/1] Detecting missing offset-corr windows for "
-                      f"benchmark {bench}...", flush=True)
+                logger.info(f"\n[0/1] Detecting missing offset-corr windows for "
+                      f"benchmark {bench}...")
                 target_dates = await find_missing_offset_window_ends(
                     conn, bench,
                 )
-                print(f"    -> {len(target_dates)} windows missing from "
-                      f"{TABLE_OFFSETS} (benchmark={bench})", flush=True)
+                logger.info(f"    -> {len(target_dates)} windows missing from "
+                      f"{TABLE_OFFSETS} (benchmark={bench})")
                 if not target_dates:
-                    print(f"    -> benchmark {bench} is up to date; "
-                          f"nothing to do.", flush=True)
+                    logger.info(f"    -> benchmark {bench} is up to date; "
+                          f"nothing to do.")
                     continue
                 await run_opposite_correlations(
                     conn, target_dates=target_dates,

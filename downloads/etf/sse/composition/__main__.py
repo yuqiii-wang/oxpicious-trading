@@ -765,4 +765,4 @@ if __name__ == "__main__":
         convert_csv=args.convert_csv and not args.no_convert_csv,
         force_month_start=args.force_month_start,
     )
-    print(result)
+    logger.info(result)

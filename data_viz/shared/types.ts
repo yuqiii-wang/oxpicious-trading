@@ -183,17 +183,6 @@ export interface SkewnessCorrResponse {
   rows: SkewnessCorrRow[];
 }
 
-export interface SkewnessCrossCountRow {
-  date: string;
-  expiry_month: string;
-  count_skewness_curve_crossed_spot: number;
-}
-
-export interface SkewnessCrossCountResponse {
-  underlying_code: string;
-  rows: SkewnessCrossCountRow[];
-}
-
 /** Daily raw skewness series per (date, expiry month) from the DB. */
 export interface SkewnessSeriesRow {
   date: string;
@@ -224,6 +213,10 @@ export interface IvSkewRow {
   rr25_ma5: number | null;
   rr25_ma20: number | null;
   rr25_ma60: number | null;
+  /** Whole-period (expanding) correlation of rr25 MA vs spot MA. */
+  corr_rr25_ma5_vs_spot_ma5: number | null;
+  corr_rr25_ma20_vs_spot_ma20: number | null;
+  corr_rr25_ma60_vs_spot_ma60: number | null;
 }
 
 export interface IvSkewResponse {
@@ -1154,7 +1147,7 @@ export interface MovAveSpreadCodesResponse {
   codes: MovAveSpreadCodeRow[];
 }
 
-/** One market-hype EPISODE from analysis.mov_ave_market_hypes: a
+/** One market-hype EPISODE from stats.mov_ave_market_hypes: a
  *  CONCATENATED span of trading dates anchored on a maximal run of
  *  consecutive hyped dates and extended through the surrounding
  *  check-in evidence (the W rows before the run's first hyped date,
@@ -1187,8 +1180,19 @@ export interface MovAveSpreadHypeEpisode {
 
 /** Market-hype episodes keyed by check-in window (5/20/60/120/255) — one
  *  episode list per window; windows with no episodes are absent from the
- *  map. Source: analysis.mov_ave_market_hypes. */
+ *  map. Source: stats.mov_ave_market_hypes. */
 export type MovAveSpreadHypeEpisodes = Record<number, MovAveSpreadHypeEpisode[]>;
+
+/** Response for GET /api/analysis/market-hypes?sec_type=…&code=… — one
+ *  (sec_type, code)'s market-hype EPISODES, keyed by check-in window.
+ *  Serves the shared CodeTrendChart's Hypes toggle: every page's code
+ *  trend can shade the code's hyped date periods (light purple) from the
+ *  same endpoint, regardless of which analysis page owns the chart. */
+export interface MarketHypeEpisodesResponse {
+  secType: string;
+  code: string;
+  episodes: MovAveSpreadHypeEpisodes;
+}
 
 /** One band-BREAK excursion streak from
  *  analysis.mov_ave_high_low_pct_streaks: a maximal run of trading days
@@ -1234,6 +1238,29 @@ export interface MovAveSpreadHighLowStreak {
   dailyAveTradingAmt: number;
 }
 
+/** Price-speed state of one day (the px_vol family's px_speed —
+ *  analysis.mov_ave_price_vs_amt / analysis_forecasts.px_vol_state). */
+export type MovAveSpreadPxVolSpeed =
+  | "sharp_up"
+  | "slow_up"
+  | "flat"
+  | "slow_dn"
+  | "sharp_dn";
+
+/** Trading-amount state of one day (the px_vol family's vol_state —
+ *  heavy = 放量/increasing, normal = flat, shrink = 缩量/decreasing). */
+export type MovAveSpreadPxVolVolState = "heavy" | "normal" | "shrink";
+
+/** One per-date Price × Trading-Amount state from
+ *  analysis.mov_ave_price_vs_amt (the px_vol family's date-level
+ *  source of truth): every state-valid day joins exactly ONE of the 15
+ *  speed × vol categories. */
+export interface MovAveSpreadPriceVsAmtDay {
+  date: string;
+  speed: MovAveSpreadPxVolSpeed;
+  vol: MovAveSpreadPxVolVolState;
+}
+
 /** Response for GET /chart?sec_type=etf&code=510050 — all pair time series for one asset. */
 export interface MovAveSpreadChartResponse {
   code: string;
@@ -1245,18 +1272,17 @@ export interface MovAveSpreadChartResponse {
    *  analysis.mov_ave_spreads_detail_ohlc — used by the OHLC-window
    *  roof/floor trendline overlay. */
   ohlc: MovAveSpreadOhlcRow[];
-  /** Market-hype episodes keyed by check-in window (20/60/120/255), shared
-   *  by all pairs (same date axis). Source: analysis.mov_ave_market_hypes —
-   *  used by the Market Hype button row to shade hyped date periods (light
-   *  purple). Optional so older cached responses without the field still
-   *  typecheck. */
-  hypeEpisodes?: MovAveSpreadHypeEpisodes;
   /** High/low band-BREAK excursion streaks shipped FLAT for ALL
    *  (period, pctType) combos — the client filters by its nested
    *  period→pct selection (source: analysis.mov_ave_high_low_pct_streaks,
    *  side derived at query time). Optional so older cached responses
    *  without the field still typecheck. */
   highLowStreaks?: MovAveSpreadHighLowStreak[];
+  /** Per-date Price × Trading-Amount state registry rows (source:
+   *  analysis.mov_ave_price_vs_amt) — drives the Px-Vol States button
+   *  row's date shading. Optional so older cached responses without
+   *  the field still typecheck. */
+  priceVsAmt?: MovAveSpreadPriceVsAmtDay[];
 }
 
 // ----------------------------------------------------------------------------
@@ -1337,13 +1363,6 @@ export interface MovStdForecastRow extends ForecastResultCols {
   /** TRUE when the bucket already has signal day(s) in
    *  analysis_signals.signals (config match + date inside stat_month). */
   in_signals: boolean;
-  /** Mean fractional close excursion beyond the band over breach days. */
-  mean_excess_close: number | null;
-  /** Mean fractional intraday excursion (high for upper / low for lower)
-   *  over breach days with a usable extreme; NULL when none. */
-  mean_excess_max: number | null;
-  /** Max fractional intraday excursion (deepest single-day spike). */
-  max_excess_max: number | null;
 }
 
 /** One mov_gap bucket row (N-day price-return extreme-percentile bucket)
@@ -3133,3 +3152,49 @@ export interface FuturesCombinedResponse {
    *  Array length matches dates[]; null where spot unavailable. */
   spot_price: (number | null)[] | null;
 }
+
+// ----------------------------------------------------------------------------
+// News (text schema — text.news / text.news_keywords, loaded by builds.text)
+// One raw article per (title, source, date); industry_id joins the canonical
+// (sector_id, industry_id) classification model (UPPERCASE ids: BANKS, SEMI,
+// BROAD_SSE, …) so news shares the same nav tree as the rest of the app.
+// ----------------------------------------------------------------------------
+
+/** One news article row (item-list shape — content truncated to a snippet). */
+export interface NewsItem {
+  news_id: number;
+  title: string;
+  source: string | null;
+  date: string;
+  url: string | null;
+  industry_id: string | null;
+  /** First ~200 chars of the article body (or null when not crawled). */
+  snippet: string | null;
+}
+
+/** Response for GET /api/news/items. */
+export interface NewsItemsResponse {
+  total: number;
+  items: NewsItem[];
+}
+
+/** One date bucket — count of news matching the current industry/search. */
+export interface NewsDayCount {
+  date: string;
+  count: number;
+}
+
+/** Response for GET /api/news/calendar. */
+export interface NewsCalendarResponse {
+  /** Days WITH at least one matching article (zero-count days omitted). */
+  days: NewsDayCount[];
+  /** Inclusive coverage of the calendar data, so the date bar can lay out
+   *  its window even at the edges of the corpus. */
+  min_date: string | null;
+  max_date: string | null;
+}
+
+/** Response for GET /api/news/themes — same SectorNode tree as the security
+ *  classification nav, but counts = number of news articles per industry and
+ *  items[] always empty (news has no L3 security level). */
+export type NewsThemesResponse = SectorNode[];

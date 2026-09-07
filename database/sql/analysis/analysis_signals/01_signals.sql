@@ -39,18 +39,14 @@
 --  reverse_threshold (k·σ of the code's window forward changes; legacy
 --  fixed 1% bar) against the bucket side).
 --
---  Adaptive confirmation gate (rolling M-1 calibration, no look-ahead):
+--  Forecast-confirmation gate (absolute reversal rule):
 --  a day is RECORDED only when the matching analysis_forecasts bucket
---  (same code/sec_type/stat_month/window/side/pct|k/cooldown) has
---  reverse_prob >= its calibrated threshold in ANY period — the
---  population P90 (QRp_P90) for mov_rsi, the per-security HYB blend
---  w·code_P90 + (1-w)·population_P90 (w = code_n/(code_n+100)) for
---  mov_std / mov_gap; legacy reverse_prob > 0 fallback below 30
---  population bucket-periods — AND the qualifying period's code prior
---  mean reverse_prob is positive where known (the mean sees reverse
---  too, not just the single bucket-period; unknown mean — no prior
---  bucket-periods for that side/period — does not block). Each row
---  also carries the per-security
+--  (same code/sec_type/stat_month/window/side/pct|k/cooldown) has in
+--  ANY forecast period (next / 5d / 20d / 60d) reverse_prob > 1%
+--  (a material reversal probability) AND that period's mean forward
+--  change is a REVERSAL (dir_ave > 0 — the bucket's average outcome
+--  reverses, so the signal holds, not just a fat reversal tail). Each
+--  row also carries the per-security
 --  calibration: tier ('proven' / 'proven_dir' / 'standard'),
 --  code_baseline (prior mean rp of the confidence's argmax period) and
 --  code_rank (within-code percentile floor of the confidence).
@@ -123,7 +119,7 @@ END $$;
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_signals.signals IS 'Per-day buy/sell signals mirroring the analysis_forecasts extreme-day detection (mov_rsi top/bottom-1% RSI days; mov_std 2σ Bollinger breaches; mov_gap top/bottom-1% N-day price-return days) with the same trailing 5-year window, percentile/band thresholds, cooldown suppression and full-window history gate. A day is recorded ONLY when the matching forecast bucket clears the adaptive confirmation gate (rolling M-1 calibration, no look-ahead): population P90 reverse_prob (QRp_P90) for mov_rsi, per-security HYB blend w·code_P90 + (1-w)·population_P90 for mov_std/mov_gap, and the qualifying period''s code prior mean reverse_prob positive where known (the mean sees reverse too; legacy reverse_prob > 0 fallback below 30 population bucket-periods). Each row carries the cross-period MAX(reverse_prob) confidence plus the per-security calibration (tier / code_baseline / code_rank). One row per (code, sec_type, signal_type, signal_sub_type, date); a date is emitted only within its own snapshot month M (the month must already exist in analysis_forecasts for the matching config). Populated incrementally by python -m analyze.analysis_signals; --force deletes the sec_type''s rows and recomputes.';
+COMMENT ON TABLE analysis_signals.signals IS 'Per-day buy/sell signals mirroring the analysis_forecasts extreme-day detection (mov_rsi top/bottom-1% RSI days; mov_std 2σ Bollinger breaches; mov_gap top/bottom-1% N-day price-return days) with the same trailing 5-year window, percentile/band thresholds, cooldown suppression and full-window history gate. A day is recorded ONLY when the matching forecast bucket clears the forecast-confirmation gate (absolute reversal rule): in at least one forecast_results period (next/5d/20d/60d) the bucket''s reverse_prob > 1% (a material reversal probability) AND that period''s mean forward change is a REVERSAL (dir_ave > 0 — the bucket''s average outcome reverses, so the signal holds, not just a fat reversal tail). Each row carries the cross-period MAX(reverse_prob) confidence plus the per-security calibration (tier / code_baseline / code_rank). One row per (code, sec_type, signal_type, signal_sub_type, date); a date is emitted only within its own snapshot month M (the month must already exist in analysis_forecasts for the matching config). Populated incrementally by python -m analyze.analysis_signals; --force deletes the sec_type''s rows and recomputes.';
 COMMENT ON COLUMN analysis_signals.signals.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis_signals.signals.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis_signals.signals.signal_type IS 'Detection family: mov_rsi (RSI extreme-percentile day), mov_std (Bollinger band breach day) or mov_gap (N-day price-return extreme day) — mirrors the analysis_forecasts mov_rsi / mov_std / mov_gap bucket tables.';

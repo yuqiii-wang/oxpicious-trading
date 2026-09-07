@@ -13,6 +13,9 @@ from _common.build_commons import bulk_upsert_async
 
 from builds.classification.sector_industry.catalog import _lookup_labels, _parse_date
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def upsert_stocks(
     conn,
@@ -59,5 +62,5 @@ async def upsert_stocks(
             conn, "stats.sec_classification", stock_rows,
             ["code", "parent_index_code"])
         if verbose:
-            print(f"    [DB] Upserted {inserted:,} stock rows into "
-                  f"stats.sec_classification", flush=True)
+            logger.info(f"    [DB] Upserted {inserted:,} stock rows into "
+                  f"stats.sec_classification")

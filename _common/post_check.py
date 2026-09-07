@@ -46,6 +46,9 @@ import shutil
 import subprocess
 import sys
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("post_check")
+
 _GIB: float = 1024.0 ** 3
 
 # Report a WARNING when usage stays above these after the release pass.
@@ -203,20 +206,20 @@ def post_check() -> dict[str, float | None]:
             f" (released {_fmt_gib(released)})" if released and released > 0
             else ""
         )
-        print(f"[POST-CHECK] CPU RSS : {_fmt_gib(rss_b)} -> "
-              f"{_fmt_gib(rss_a)}{delta}", flush=True)
+        logger.info(f"[POST-CHECK] CPU RSS : {_fmt_gib(rss_b)} -> "
+              f"{_fmt_gib(rss_a)}{delta}")
         if rss_a > WARN_RSS_GB * _GIB:
-            print(f"[POST-CHECK] WARNING: RSS still above "
+            logger.warning(f"[POST-CHECK] WARNING: RSS still above "
                   f"{WARN_RSS_GB:g} GiB after release (live reference "
-                  f"or other process?)", flush=True)
+                  f"or other process?)")
 
     if ctx_b is not None and ctx_a is not None:
         cudf_note = ""
         if "cudf.pandas" in sys.modules:
             cudf_note = (" [cudf.pandas pre-reservation included; "
                          "returns at process exit]")
-        print(f"[POST-CHECK] GPU in-context used: {_fmt_gib(ctx_b)} -> "
-              f"{_fmt_gib(ctx_a)}{cudf_note}", flush=True)
+        logger.info(f"[POST-CHECK] GPU in-context used: {_fmt_gib(ctx_b)} -> "
+              f"{_fmt_gib(ctx_a)}{cudf_note}")
 
     if gpu_b is not None and gpu_a is not None:
         returned = gpu_a - gpu_b
@@ -224,12 +227,12 @@ def post_check() -> dict[str, float | None]:
             f" (returned {_fmt_gib(returned)} to driver)"
             if returned > 0 else ""
         )
-        print(f"[POST-CHECK] GPU free VRAM: {_fmt_gib(gpu_b)} -> "
-              f"{_fmt_gib(gpu_a)}{delta}", flush=True)
+        logger.info(f"[POST-CHECK] GPU free VRAM: {_fmt_gib(gpu_b)} -> "
+              f"{_fmt_gib(gpu_a)}{delta}")
         if returned < 0:
-            print(f"[POST-CHECK] WARNING: free VRAM dropped "
+            logger.warning(f"[POST-CHECK] WARNING: free VRAM dropped "
                   f"{_fmt_gib(-returned)} during release — another "
-                  f"process may be allocating on the GPU", flush=True)
+                  f"process may be allocating on the GPU")
 
     return stats
 

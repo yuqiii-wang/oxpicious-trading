@@ -90,18 +90,11 @@ function SharedSkewTooltipContent({
           ? (pe.skewPct >= 0 ? "+" : "") + fmtNum(pe.skewPct, 2)
           : "—";
 
-      const crossCount = pe.countSkewnessCurveCrossedSpot;
-      const crossCountStr =
-        crossCount != null && crossCount > 0 ? ` ×${crossCount}` : "";
-
       children.push(
         <div key={`pe-${idx}`} style={{ paddingLeft: "8px" }}>
           <ColoredDot color={expiryColorMap.get(pe.expiry) ?? "#888"} />
           {pe.expiry}: <b>{sign}</b>{" "}
           ΔSpot=<b>{gapSpotStr}</b>
-          {crossCountStr ? (
-            <span style={{ color: "#888", fontSize: 10 }}>{crossCountStr}</span>
-          ) : null}
         </div>,
       );
     });

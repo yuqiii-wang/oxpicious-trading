@@ -115,6 +115,9 @@ from analyze.pe_and_dividends.config import (
     PD_PCT_TYPES,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Source columns needed per detail row (the parent's in-memory detail
 # frame carries them; the two metric columns are melted into the long
 # (metric, value) day frame inside the compute).
@@ -462,8 +465,8 @@ async def _copy_streaks_chunked(conn, streaks: pd.DataFrame) -> int:
             conn, PD_PCT_STREAKS_TABLE, chunk, columns=columns,
         )
         total += n
-        print(f"      streaks chunk {i + 1}/{n_chunks}: COPY {n:,} rows "
-              f"(cumulative {total:,})", flush=True)
+        logger.info(f"      streaks chunk {i + 1}/{n_chunks}: COPY {n:,} rows "
+              f"(cumulative {total:,})")
     return total
 
 
@@ -499,20 +502,19 @@ async def run_pd_pct_streaks(
           rows are deleted + rebuilt.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  PE_AND_DIVIDEND_PCT_STREAKS (internal step of "
-          "pe_and_dividends)", flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  PE_AND_DIVIDEND_PCT_STREAKS (internal step of "
+          "pe_and_dividends)")
+    logger.info("=" * 78)
     if code_filter is not None:
-        print(f"    mode: SINGLE-CODE (full streak rebuild for "
-              f"{code_filter})", flush=True)
+        logger.info(f"    mode: SINGLE-CODE (full streak rebuild for "
+              f"{code_filter})")
     else:
-        print(f"    mode: WHOLESALE for {sec_type} (episodes shift with "
-              f"new data; mov_ave_high_low_pct_streaks precedent)",
-              flush=True)
+        logger.info(f"    mode: WHOLESALE for {sec_type} (episodes shift with "
+              f"new data; mov_ave_high_low_pct_streaks precedent)")
 
     if detail_df.empty:
-        print("    -> no detail data; skipping streaks step.", flush=True)
+        logger.info("    -> no detail data; skipping streaks step.")
         return
 
     # ---- Wholesale scope wipe (episodes shift; PK coverage diffing
@@ -532,8 +534,8 @@ async def run_pd_pct_streaks(
     # ---- Bands for the audited scope (bands step ran earlier) ---------
     bnd = await fetch_bands_async(conn, sec_type, code=code_filter)
     if bnd.empty:
-        print(f"    -> {sec_type}: no bands in {PD_PCT_TABLE}; "
-              f"skipping streaks.", flush=True)
+        logger.info(f"    -> {sec_type}: no bands in {PD_PCT_TABLE}; "
+              f"skipping streaks.")
         return
 
     # ---- Compute + insert ----------------------------------------------
@@ -542,12 +544,12 @@ async def run_pd_pct_streaks(
         streaks[["sec_type", "code"]].drop_duplicates().shape[0]
         if not streaks.empty else 0
     )
-    print(f"    -> {sec_type}: {len(streaks):,} excursion streaks across "
+    logger.info(f"    -> {sec_type}: {len(streaks):,} excursion streaks across "
           f"{n_codes:,} codes (gap tolerance {PD_PCT_GAP_TOLERANCE} "
-          f"trading days)", flush=True)
+          f"trading days)")
     if not streaks.empty:
         n = await _copy_streaks_chunked(conn, streaks)
-        print(f"    -> {sec_type}: inserted {n:,} streak rows", flush=True)
+        logger.info(f"    -> {sec_type}: inserted {n:,} streak rows")
 
     # ---- Register in analysis_identity ----------------------------------
     await upsert_analysis_identity(
@@ -557,5 +559,5 @@ async def run_pd_pct_streaks(
         description=PD_PCT_STREAKS_DESCRIPTION,
     )
 
-    print(f"\n  pe_and_dividend_pct_streaks wall time: "
-          f"{time.time() - t0:.1f}s", flush=True)
+    logger.info(f"\n  pe_and_dividend_pct_streaks wall time: "
+          f"{time.time() - t0:.1f}s")

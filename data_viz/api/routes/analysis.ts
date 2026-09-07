@@ -18,6 +18,7 @@ import { Router, type Request, type Response } from "express";
 import {
   listMovAveSpreadCodes,
   getMovAveSpreadChart,
+  getMarketHypeEpisodes,
   getForecastTable,
   listMovAveSpreadThemes,
   listMovAveSpreadStrategyThemes,
@@ -183,11 +184,31 @@ router.get("/mov-ave-spread/chart", async (req: Request, res: Response) => {
   }
 });
 
-// ---- Forecast buckets table (2nd plot beneath the spread chart) ----
+// ---- Market-hype EPISODES (stats.mov_ave_market_hypes) ----
+// GET /api/analysis/market-hypes?sec_type=etf&code=510050
+//   One (sec_type, code)'s hype episodes keyed by check-in window. MIGRATED
+//   off the mov-ave-spread/chart payload: the shared CodeTrendChart's
+//   Hypes toggle fetches episodes on demand for ANY page's code trend.
+router.get("/market-hypes", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getMarketHypeEpisodes(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/market-hypes] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Forecast buckets table (Recent Movements page's 2nd plot; migrated
+//      off the MA-Spread panel) ----
 // GET /api/analysis/mov-ave-spread/forecast?sec_type=etf&code=510050&kind=mov_rsi
 //   kind ∈ {mov_rsi, mov_std, mov_gap, px_vol} — returns the code's bucket
-//   rows (bucket config incl. cooldown_days + is_market_hyped + excess cols
-//   for mov_std / mean_t + mean_z for px_vol, read from
+//   rows (bucket config incl. cooldown_days + is_market_hyped + mean_t +
+//   mean_z for px_vol / mean_ratio + mean_z for margin_ratio, read from
 //   forecast_results.config) joined 1:1 with their
 //   analysis_forecasts.forecast_results columns. ALL stat_months are
 //   returned; optional `month=YYYY-MM-DD` narrows to stat_months >= month.

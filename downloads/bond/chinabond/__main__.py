@@ -420,4 +420,4 @@ def download_chinabond(
 
 
 if __name__ == "__main__":
-    print(download_chinabond())
+    logger.info(download_chinabond())

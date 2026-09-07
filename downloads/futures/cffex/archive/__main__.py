@@ -519,4 +519,4 @@ if __name__ == "__main__":
         force=args.force,
     )
 
-    print(f"\nSummary: {result}")
+    logger.info(f"\nSummary: {result}")

@@ -636,7 +636,7 @@ if __name__ == "__main__":
              "last_updated) and re-download all stocks.",
     )
     args = ap.parse_args()
-    print(download_sse_dividends(
+    logger.info(download_sse_dividends(
         force=args.force,
         etf_filter=not args.no_etf_filter,
         code_filter=args.code,

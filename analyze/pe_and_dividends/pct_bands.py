@@ -99,7 +99,7 @@ import pandas as pd
 from _common.db_commons import csv_copy_from_frame_async
 from _common.df_utils import host_array
 from analyze._common import upsert_analysis_identity
-from analyze.mov_ave_spread.market_hypes import _grouped_rolling_quantile
+from builds.market_hypes.compute import _grouped_rolling_quantile
 from analyze.pe_and_dividends.config import (
     PD_PCT_COLUMNS,
     PD_PCT_DESCRIPTION,
@@ -111,6 +111,9 @@ from analyze.pe_and_dividends.config import (
     PD_PCT_TABLE,
     PD_PCT_TYPES,
 )
+
+import logging
+logger = logging.getLogger(__name__)
 
 # Band rows per CSV COPY chunk (bounds the in-memory chunk sliced off
 # the long frame before rendering — the high_low_pct.py precedent).
@@ -451,8 +454,8 @@ async def _copy_bands_chunked(conn, bands: pd.DataFrame) -> int:
             conn, PD_PCT_TABLE, chunk, columns=columns,
         )
         total += n
-        print(f"      bands chunk {i + 1}/{n_chunks}: COPY {n:,} rows "
-              f"(cumulative {total:,})", flush=True)
+        logger.info(f"      bands chunk {i + 1}/{n_chunks}: COPY {n:,} rows "
+              f"(cumulative {total:,})")
     return total
 
 
@@ -505,24 +508,22 @@ async def run_pd_pct_bands(
           code's months (its rows are deleted upfront).
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  PE_AND_DIVIDEND_PCT (internal step of pe_and_dividends)",
-          flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  PE_AND_DIVIDEND_PCT (internal step of pe_and_dividends)")
+    logger.info("=" * 78)
 
     if detail_df.empty:
-        print("    -> no detail data; skipping bands step.", flush=True)
+        logger.info("    -> no detail data; skipping bands step.")
         return
 
     if code_filter is not None:
-        print(f"    mode: SINGLE-CODE (full band rebuild for "
-              f"{code_filter})", flush=True)
+        logger.info(f"    mode: SINGLE-CODE (full band rebuild for "
+              f"{code_filter})")
     elif force:
-        print(f"    mode: FORCE (full band rebuild for {sec_type})",
-              flush=True)
+        logger.info(f"    mode: FORCE (full band rebuild for {sec_type})")
     else:
-        print(f"    mode: incremental (missing (code, month, metric) "
-              f"triples only)", flush=True)
+        logger.info(f"    mode: incremental (missing (code, month, metric) "
+              f"triples only)")
 
     codes = sorted(set(host_array(
         detail_df["code"].to_numpy()
@@ -544,50 +545,49 @@ async def run_pd_pct_bands(
         triples = await find_missing_pd_pct_triples(conn, sec_type, codes)
         missing_by_st = {sec_type: triples}
         n_codes_hit = len({c for c, _, _ in triples})
-        print(f"    -> {sec_type}: {len(triples):,} missing (code, month, "
+        logger.info(f"    -> {sec_type}: {len(triples):,} missing (code, month, "
               f"metric) triples across {n_codes_hit:,} of "
-              f"{len(codes):,} codes", flush=True)
+              f"{len(codes):,} codes")
         if not triples:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return
 
     # ---- Step 1: compute bands over the full history -------------------
-    print(f"\n[b1/3] Computing month-end trailing metric percentile bands "
+    logger.info(f"\n[b1/3] Computing month-end trailing metric percentile bands "
           f"for metrics {', '.join(PD_PCT_METRICS)}, periods "
           f"{', '.join(str(p) for p in PD_PCT_PERIODS)} observations at "
           f"pct_type {', '.join(str(p) for p in PD_PCT_TYPES)} "
-          f"(min {PD_PCT_MIN_PERIODS} window observations)...",
-          flush=True)
+          f"(min {PD_PCT_MIN_PERIODS} window observations)...")
     bands = compute_metric_pct_bands(detail_df)
     n_band_codes = (
         bands[["sec_type", "code"]].drop_duplicates().shape[0]
         if not bands.empty else 0
     )
-    print(f"    -> {len(bands):,} band rows across {n_band_codes:,} "
-          f"(sec_type, code) groups", flush=True)
+    logger.info(f"    -> {len(bands):,} band rows across {n_band_codes:,} "
+          f"(sec_type, code) groups")
 
     # ---- Step 2: filter to missing triples + COPY insert ---------------
     if missing_by_st is not None:
         n_expected = sum(len(p) for p in missing_by_st.values())
         n_before = len(bands)
         bands = _filter_to_missing_triples(bands, missing_by_st)
-        print(f"    -> missing-triple filter: {len(bands):,} of "
+        logger.info(f"    -> missing-triple filter: {len(bands):,} of "
               f"{n_before:,} band rows kept ({n_expected:,} expected "
-              f"triples x {PD_PCT_ROWS_PER_TRIPLE} rows)", flush=True)
+              f"triples x {PD_PCT_ROWS_PER_TRIPLE} rows)")
         n_band_triples = (
             bands[["sec_type", "code", "date_year_month", "metric"]]
             .drop_duplicates().shape[0]
             if not bands.empty else 0
         )
         if n_band_triples < n_expected:
-            print(f"    WARNING: {n_expected - n_band_triples:,} expected "
+            logger.warning(f"    WARNING: {n_expected - n_band_triples:,} expected "
                   f"triples produced no band (detail rows exist but the "
                   f"in-memory frame has < {PD_PCT_MIN_PERIODS} non-NULL "
                   f"observations — restated source data); they will be "
-                  f"re-flagged on the next run.", flush=True)
+                  f"re-flagged on the next run.")
 
     if bands.empty:
-        print("    -> no band rows to insert; skipping COPY.", flush=True)
+        logger.info("    -> no band rows to insert; skipping COPY.")
         return
 
     # ---- Wipe incomplete triples' stale rows (incremental mode) --------
@@ -601,24 +601,23 @@ async def run_pd_pct_bands(
             conn, sec_type, missing_by_st.get(sec_type, set()),
         )
         if n_del:
-            print(f"    -> deleted {n_del:,} stale rows of incomplete "
-                  f"triples ({sec_type})", flush=True)
+            logger.info(f"    -> deleted {n_del:,} stale rows of incomplete "
+                  f"triples ({sec_type})")
 
     n_pairs = (
         bands[["sec_type", "code", "date_year_month"]]
         .drop_duplicates().shape[0]
     )
-    print(f"\n[b2/3] COPY-inserting {len(bands):,} band rows "
+    logger.info(f"\n[b2/3] COPY-inserting {len(bands):,} band rows "
           f"({n_pairs:,} code-months x {len(PD_PCT_METRICS)} metrics x "
           f"{len(PD_PCT_PERIODS)} periods x {len(PD_PCT_TYPES)} "
-          f"pct_types)...", flush=True)
+          f"pct_types)...")
     n = await _copy_bands_chunked(conn, bands)
     del bands
-    print(f"    -> inserted {n:,} band rows", flush=True)
+    logger.info(f"    -> inserted {n:,} band rows")
 
     # ---- Step 3: register in analysis_identity --------------------------
-    print(f"\n[b3/3] Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info(f"\n[b3/3] Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=PD_PCT_NAME,
@@ -626,5 +625,4 @@ async def run_pd_pct_bands(
         description=PD_PCT_DESCRIPTION,
     )
 
-    print(f"\n  pe_and_dividend_pct wall time: {time.time() - t0:.1f}s",
-          flush=True)
+    logger.info(f"\n  pe_and_dividend_pct wall time: {time.time() - t0:.1f}s")

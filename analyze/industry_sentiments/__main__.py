@@ -122,6 +122,9 @@ from builds.cross_stats.runner import (  # noqa: E402
     run_cross_stats,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("industry_sentiments")
+
 # The industry BASELINE table (owned by builds.industry). This module only
 # READS from it — the correlations step consumes its mean_close series.
 BASELINE_TABLE = "stats.industry_basic_stats"
@@ -139,9 +142,8 @@ async def _up_to_date_checks(conn, t0: float) -> None:
     SQL migration). Exits after the checks (prints wall time + returns).
     """
     if await needs_rolling_backfill(conn):
-        print("    -> industry_attributions has NULL rolling price "
-              "columns — running full attributions recompute...",
-              flush=True)
+        logger.info("    -> industry_attributions has NULL rolling price "
+              "columns — running full attributions recompute...")
         await run_attributions(conn, force=True)
         # Recompute refreshed ALL columns (incl. rolling prices) —
         # rebuild hypes_and_drains so rankings reflect the data.
@@ -151,11 +153,11 @@ async def _up_to_date_checks(conn, t0: float) -> None:
             "SELECT COUNT(*) FROM analysis.industry_hypes_and_drains"
         )
         if not n_hd:
-            print("    -> hypes_and_drains table empty — "
-                  "populating...", flush=True)
+            logger.info("    -> hypes_and_drains table empty — "
+                  "populating...")
             await run_hypes_and_drains(conn, force=True)
         else:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
     print_wall_time(t0)
 
 
@@ -219,20 +221,19 @@ async def main() -> None:
             tables = "attributions + hypes_and_drains"
             if args.with_corr:
                 tables = "correlations + " + tables
-            print(f"\n[0/5] Force mode: truncating downstream tables "
-                  f"({tables})...", flush=True)
+            logger.info(f"\n[0/5] Force mode: truncating downstream tables "
+                  f"({tables})...")
             if args.with_corr:
                 await truncate_table_async(conn, CORRELATIONS_TABLE)
             await truncate_table_async(conn, ATTRIBUTIONS_TABLE)
             await truncate_table_async(conn, HYPES_DRAINS_TABLE)
             target_dates: Optional[Set[datetime.date]] = None
-            print("    -> truncated; will recompute all downstream rows "
+            logger.info("    -> truncated; will recompute all downstream rows "
                   "(baseline table untouched — rebuild it via "
-                  "'python -m builds.industry --force')", flush=True)
+                  "'python -m builds.industry --force')")
         elif args.with_corr:
-            print("\n[0/5] Detecting missing corr windows "
-                  "(source: industry_basic_stats vs correlations)...",
-                  flush=True)
+            logger.info("\n[0/5] Detecting missing corr windows "
+                  "(source: industry_basic_stats vs correlations)...")
             # Window-end detection: the correlations table is keyed by
             # window START dates (which lag the source calendar by
             # design), so raw-date comparison would never converge.
@@ -240,8 +241,8 @@ async def main() -> None:
             # END dates on the calendar grid against covered ends
             # (start_date + W - 1 where the corr is non-NULL).
             target_dates = await find_missing_corr_window_ends(conn)
-            print(f"    -> {len(target_dates)} corr windows missing from "
-                  f"{CORRELATIONS_TABLE}", flush=True)
+            logger.info(f"    -> {len(target_dates)} corr windows missing from "
+                  f"{CORRELATIONS_TABLE}")
             if not target_dates:
                 # Even when correlations is up to date,
                 # stats.cross_stats (an independent producer
@@ -253,9 +254,9 @@ async def main() -> None:
                 await _up_to_date_checks(conn, t0)
                 return
         else:
-            print("\n[0/5] Correlations SKIPPED (disabled by default — "
+            logger.info("\n[0/5] Correlations SKIPPED (disabled by default — "
                   "run 'python -m analyze.industry_sentiments.corr' "
-                  "separately, or pass --with-corr).", flush=True)
+                  "separately, or pass --with-corr).")
             # Step 2 runs FIRST here: it manages its own missing-date
             # detection, and the downstream target dates below are dates
             # present in stats.cross_stats but not yet
@@ -263,8 +264,8 @@ async def main() -> None:
             await run_cross_stats(conn, force=False)
             ran_perf = True
             target_dates = await find_missing_attribution_dates(conn)
-            print(f"    -> {len(target_dates)} dates missing from "
-                  f"{ATTRIBUTIONS_TABLE}", flush=True)
+            logger.info(f"    -> {len(target_dates)} dates missing from "
+                  f"{ATTRIBUTIONS_TABLE}")
             if not target_dates:
                 await _up_to_date_checks(conn, t0)
                 return
@@ -279,8 +280,7 @@ async def main() -> None:
             await run_correlations(conn, target_dates=target_dates,
                                    force=args.force)
         else:
-            print("\n[1/5] correlations step skipped (disabled).",
-                  flush=True)
+            logger.info("\n[1/5] correlations step skipped (disabled).")
 
         # ---- Step 2: INTERNAL cross-stats producer ----------------------
         # Populate the pair-grain rows of stats.cross_stats (composition

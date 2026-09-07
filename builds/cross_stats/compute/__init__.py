@@ -38,4 +38,7 @@ if "builds.cross_stats.compute" not in sys.modules:
 
 from ._orchestrator import build_and_insert  # noqa: E402
 
+import logging
+logger = logging.getLogger(__name__)
+
 __all__ = ["build_and_insert"]

@@ -50,6 +50,9 @@ import pandas as pd
 
 from _common.df_utils._router import should_use_gpu
 
+import logging
+logger = logging.getLogger(__name__)
+
 # EMA truncation: window grows until d^window < 1e-12 (relative error bound)
 _EMA_LOG_EPS: float = math.log(1e-12)
 
@@ -229,11 +232,11 @@ def compute_emas(
     x_np = np.asarray(df[value_col], dtype=np.float64)
     if adjust or bool(np.isnan(x_np).any()):
         if adjust:
-            print(f"    [EMA] adjust=True → pandas ewm fallback ({len(x_np):,} rows)", flush=True)
+            logger.info(f"    [EMA] adjust=True → pandas ewm fallback ({len(x_np):,} rows)")
         else:
             n_nan = int(np.isnan(x_np).sum())
-            print(f"    [EMA] {n_nan} NaN in '{value_col}' → pandas ewm fallback "
-                  f"(discounted sum would propagate NaN)", flush=True)
+            logger.info(f"    [EMA] {n_nan} NaN in '{value_col}' → pandas ewm fallback "
+                  f"(discounted sum would propagate NaN)")
         return _compute_emas_pandas(df, group_key, value_col, spans,
                                     adjust=adjust, round_to=round_to)
 

@@ -35,6 +35,9 @@ from builds._commons.column_maps import (
 )
 from downloads._common import read_csv_gpu_safe
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Each entry: (directory, glob_pattern, filename_prefix, market_label, exchange_suffix)
 SOURCE_FILE_SETS: list[tuple[str, str, str, str, str]] = [
     ("", "szse_stock_*.csv",        "szse_stock_",        "深圳", ".SZ"),
@@ -376,7 +379,7 @@ def build_missing_rows(
 
     if not frames:
         if verbose:
-            print("    [INFO] No stock rows parsed from any CSV", flush=True)
+            logger.info("    [INFO] No stock rows parsed from any CSV")
         return pd.DataFrame()
 
     combined = pd.concat(frames, ignore_index=True)
@@ -402,16 +405,16 @@ def build_missing_rows(
             n_bse = (ex == "BJ").sum()
         else:
             n_szse = n_sse = n_bse = 0
-        print(f"    [BUILD] {len(combined):,} rows | {n_stocks} stocks | "
-              f"{n_dates} dates | {d0} → {d1}", flush=True)
-        print(f"           SZSE: {n_szse:,} | SSE: {n_sse:,} | BSE: {n_bse:,}", flush=True)
-        print(f"           pe non-null: {combined['pe'].notna().sum():,} | "
-              f"pe>0: {(combined['pe'] > 0).sum():,}", flush=True)
+        logger.info(f"    [BUILD] {len(combined):,} rows | {n_stocks} stocks | "
+              f"{n_dates} dates | {d0} → {d1}")
+        logger.info(f"           SZSE: {n_szse:,} | SSE: {n_sse:,} | BSE: {n_bse:,}")
+        logger.info(f"           pe non-null: {combined['pe'].notna().sum():,} | "
+              f"pe>0: {(combined['pe'] > 0).sum():,}")
         if "trading_shares" in _safe_columns(combined):
-            print(f"           trading_shares non-null: {combined['trading_shares'].notna().sum():,} | "
-                  f"trading_amount non-null: {combined['trading_amount'].notna().sum():,}", flush=True)
-        print(f"    [STATS] ok={counts['ok']} empty={counts['empty']} "
-              f"total_rows={counts['rows']:,}", flush=True)
+            logger.info(f"           trading_shares non-null: {combined['trading_shares'].notna().sum():,} | "
+                  f"trading_amount non-null: {combined['trading_amount'].notna().sum():,}")
+        logger.info(f"    [STATS] ok={counts['ok']} empty={counts['empty']} "
+              f"total_rows={counts['rows']:,}")
     return combined
 
 

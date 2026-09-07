@@ -20,13 +20,12 @@
  * sits exactly on the spot curve.
  *
  * The browser only joins the stored skewness values with spot prices
- * (from the quote rows) and the stored cross counts.
+ * (from the quote rows).
  */
 import { PRICE_SCALE } from "@/theme/chart-palette";
 import { modeMeta } from "./skewSpec";
 import type {
   OptionsRow,
-  SkewnessCrossCountRow,
   SkewnessSeriesRow,
 } from "@shared/types";
 import {
@@ -53,20 +52,7 @@ export function greekSpecFromSeries(
   mode: GreekSkewMode,
   seriesRows: SkewnessSeriesRow[],
   spotByDate: Map<string, number>,
-  crossCounts?: SkewnessCrossCountRow[],
 ): SharedSkewSpec {
-  // Cross counts keyed (date, YYYY-MM) — from options_skewness_stats
-  // rows of THIS mode's skew_type.
-  const crossCountMap = new Map<string, number>();
-  if (crossCounts) {
-    for (const c of crossCounts) {
-      crossCountMap.set(
-        `${c.date}|${c.expiry_month.slice(0, 7)}`,
-        c.count_skewness_curve_crossed_spot,
-      );
-    }
-  }
-
   // date → stored skewness rows (expiry-month granularity).
   const byDate = new Map<string, SkewnessSeriesRow[]>();
   for (const r of seriesRows) {
@@ -86,14 +72,12 @@ export function greekSpecFromSeries(
     for (const r of byDate.get(date)!) {
       const skew = r.skewness as number;
       skewVals.push(skew);
-      const crossCount = crossCountMap.get(`${date}|${r.expiry_month.slice(0, 7)}`);
       perExpiry.push({
         expiry: r.expiry_month.slice(0, 7),
         expiryDate: r.expiry_date ?? "",
         skewPrice: spot * (1 + (skew - neutral) * GREEK_SKEW_PRICE_K),
         rawSkew: skew,
         skewPct: (skew - neutral) * 100,
-        ...(crossCount != null ? { countSkewnessCurveCrossedSpot: crossCount } : {}),
       });
     }
 

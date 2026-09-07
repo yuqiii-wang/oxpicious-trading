@@ -8,6 +8,9 @@ here as a single async function.
 """
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def upsert_analysis_identity(
     conn,
@@ -43,4 +46,4 @@ async def upsert_analysis_identity(
         summary_name,
         description,
     )
-    print(f"    -> upserted analysis_identity (name='{name}')", flush=True)
+    logger.info(f"    -> upserted analysis_identity (name='{name}')")

@@ -23,6 +23,9 @@ from _common.sec_statics.classification import (
 from builds.classification.sector_industry.exchange import _exchange_from_index_code
 from builds.classification.sector_industry.index.db import fetch_index_meta
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def classify_indices(
     conn,
@@ -172,10 +175,10 @@ async def classify_indices(
         n_multi = sum(1 for v in indices.values() if len(v.get("tags", [])) > 1)
         n_ind_primary = sum(1 for v in indices.values() if v.get("is_industry_not_strategy"))
         reclass_note = f", {n_reclassified} reclassified" if n_reclassified else ""
-        print(f"    [INDICES] {len(indices)} indices "
+        logger.info(f"    [INDICES] {len(indices)} indices "
               f"({n_from_json} from JSON, {n_new_classified} newly classified{reclass_note}, "
               f"{n_industry_matched} industry-matched, {n_strategy_matched} strategy-matched, "
               f"{n_ind_primary} industry-primary, {len(indices) - n_ind_primary} strategy-primary, "
-              f"{n_multi} multi-tag)", flush=True)
+              f"{n_multi} multi-tag)")
 
     return indices

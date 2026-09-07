@@ -173,8 +173,7 @@ def compute_recurring_cycles(
         if codes_seen % 1000 == 0:
             # Progress heartbeat — the per-code loop is the pipeline's
             # long phase and prints nothing otherwise.
-            print(f"      ... {codes_seen:,} codes scanned",
-                  flush=True)
+            logger.info(f"      ... {codes_seen:,} codes scanned")
         group = group.sort_values("date").reset_index(drop=True)
         # Unwrap proxy arrays at the pandas→numpy boundary (see
         # _host_array): everything downstream must be RAW host numpy.
@@ -325,7 +324,9 @@ def compute_recurring_cycles(
     # three spectrum columns (lists of per-row ndarrays) sends it down
     # the cudf fast path, which transfers element-by-element — profiled
     # at 116 s for ONE 33k-row frame. The real class builds instantly.
-    real_pd_df = pd.DataFrame._fsproxy_slow
+    # _fsproxy_slow only exists when the cudf.pandas proxy is installed;
+    # on a CPU-only host pd.DataFrame IS the real class already.
+    real_pd_df = getattr(pd.DataFrame, "_fsproxy_slow", pd.DataFrame)
     return real_pd_df({
         "sec_type": np.concatenate(sec_types_arr),
         "code": np.concatenate(codes_arr),

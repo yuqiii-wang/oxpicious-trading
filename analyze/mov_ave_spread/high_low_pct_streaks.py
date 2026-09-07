@@ -102,6 +102,9 @@ from analyze.mov_ave_spread.config import (
     HIGH_LOW_PCT_TYPES,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Source columns needed per trading row (the parent source DataFrame
 # carries them; 'price' is the adjusted close used for the breakout
 # test and the streak's close measure).
@@ -408,8 +411,8 @@ async def _copy_streaks_chunked(conn, streaks: pd.DataFrame) -> int:
             conn, HIGH_LOW_PCT_STREAKS_TABLE, chunk, columns=columns,
         )
         total += n
-        print(f"      streaks chunk {i + 1}/{n_chunks}: COPY {n:,} rows "
-              f"(cumulative {total:,})", flush=True)
+        logger.info(f"      streaks chunk {i + 1}/{n_chunks}: COPY {n:,} rows "
+              f"(cumulative {total:,})")
     return total
 
 
@@ -451,19 +454,19 @@ async def run_high_low_pct_streaks(
                    code's streak rows; only this code is processed.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  MOV_AVE_HIGH_LOW_PCT_STREAKS (internal step of "
-          "mov_ave_spread)", flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  MOV_AVE_HIGH_LOW_PCT_STREAKS (internal step of "
+          "mov_ave_spread)")
+    logger.info("=" * 78)
     if code_filter is not None:
-        print(f"    mode: SINGLE-CODE (full streak rebuild for "
-              f"{code_filter})", flush=True)
+        logger.info(f"    mode: SINGLE-CODE (full streak rebuild for "
+              f"{code_filter})")
     else:
-        print("    mode: WHOLESALE per sec_type (episodes shift with "
-              "new data; market_hypes precedent)", flush=True)
+        logger.info("    mode: WHOLESALE per sec_type (episodes shift with "
+              "new data; margin_changes precedent)")
 
     if df.empty:
-        print("    -> no source data; skipping streaks step.", flush=True)
+        logger.info("    -> no source data; skipping streaks step.")
         return
 
     if sec_type is not None:
@@ -487,8 +490,8 @@ async def run_high_low_pct_streaks(
         # ---- Bands for the audited scope (bands step ran earlier) ----
         bnd = await fetch_bands_async(conn, st, code=code_filter)
         if bnd.empty:
-            print(f"    -> {st}: no bands in {HIGH_LOW_PCT_TABLE}; "
-                  f"skipping streaks.", flush=True)
+            logger.info(f"    -> {st}: no bands in {HIGH_LOW_PCT_TABLE}; "
+                  f"skipping streaks.")
             continue
 
         # ---- Compute + insert ------------------------------------------
@@ -497,15 +500,15 @@ async def run_high_low_pct_streaks(
             streaks[["sec_type", "code"]].drop_duplicates().shape[0]
             if not streaks.empty else 0
         )
-        print(f"    -> {st}: {len(streaks):,} excursion streaks across "
+        logger.info(f"    -> {st}: {len(streaks):,} excursion streaks across "
               f"{n_codes:,} codes "
               f"(gap tolerance {HIGH_LOW_PCT_GAP_TOLERANCE} trading "
-              f"days)", flush=True)
+              f"days)")
         if streaks.empty:
             continue
         n = await _copy_streaks_chunked(conn, streaks)
         n_total += n
-        print(f"    -> {st}: inserted {n:,} streak rows", flush=True)
+        logger.info(f"    -> {st}: inserted {n:,} streak rows")
 
     # ---- Register in analysis_identity ------------------------------
     await upsert_analysis_identity(
@@ -515,5 +518,5 @@ async def run_high_low_pct_streaks(
         description=HIGH_LOW_PCT_STREAKS_DESCRIPTION,
     )
 
-    print(f"\n  mov_ave_high_low_pct_streaks wall time: "
-          f"{time.time() - t0:.1f}s", flush=True)
+    logger.info(f"\n  mov_ave_high_low_pct_streaks wall time: "
+          f"{time.time() - t0:.1f}s")

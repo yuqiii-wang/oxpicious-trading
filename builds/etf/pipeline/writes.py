@@ -8,6 +8,9 @@ from _common.build_commons import copy_or_upsert_split_async
 from _common.df_utils import host_array, safe_columns
 from builds._commons.row_emission import dates_as_date_list, records_from_frame
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def filter_missing_rows(
     merged: pd.DataFrame,
@@ -31,19 +34,19 @@ def filter_missing_rows(
 
     Returns: (merged_missing, n_resync_codes).
     """
-    print("\n[6/7] Filtering to missing (date, code) pairs and inserting …", flush=True)
+    logger.info("\n[6/7] Filtering to missing (date, code) pairs and inserting …")
 
     # raw ndarray boolean mask — a real-pandas bool Series aligned against
     # the proxy index is a cudf fallback (Unsupported type ndarray)
     n_resync_codes = int(merged["code"][split_mask].nunique()) \
         if split_mask.any() else 0
     if n_resync_codes:
-        print(f"    [CORP-RESYNC] {n_resync_codes} codes with NEW corp-action "
+        logger.info(f"    [CORP-RESYNC] {n_resync_codes} codes with NEW corp-action "
               f"events — re-upserting their rows from the earliest new event "
-              f"onward (adjustment values after a corp action change)", flush=True)
+              f"onward (adjustment values after a corp action change)")
     if pe_null_hit.any():
-        print(f"    [PE-BACKFILL] {int(pe_null_hit.sum()):,} existing rows with NULL PE "
-              f"— re-upserting those that got a value", flush=True)
+        logger.info(f"    [PE-BACKFILL] {int(pe_null_hit.sum()):,} existing rows with NULL PE "
+              f"— re-upserting those that got a value")
 
     keep = (~exists | split_mask) & in_range
     if forced_mask is not None:
@@ -62,8 +65,8 @@ def filter_missing_rows(
     # subsequent GPU op (each access = one MixedTypeError CPU fallback).
     # Python dates are produced at the emission boundary in
     # write_split_tables via a single numpy transfer.
-    print(f"    [DB] {len(out):,} rows to upsert "
-          f"(out of {n_total:,} total, missing + corp-action resync)", flush=True)
+    logger.info(f"    [DB] {len(out):,} rows to upsert "
+          f"(out of {n_total:,} total, missing + corp-action resync)")
     return out, n_resync_codes
 
 
@@ -77,7 +80,7 @@ def _compute_eps_vec(close: pd.Series, pe: pd.Series) -> pd.Series:
 async def write_split_tables(conn, merged_missing: pd.DataFrame, force: bool) -> None:
     """Build per-table row lists and COPY/upsert into the 5 split tables."""
     if len(merged_missing) == 0 and not force:
-        print("    [INFO] etf_identity is up to date — no new OHLCV/margin rows to insert", flush=True)
+        logger.info("    [INFO] etf_identity is up to date — no new OHLCV/margin rows to insert")
         return
 
     src = merged_missing.drop_duplicates(subset=["date", "code"], keep="last").copy()
@@ -151,6 +154,6 @@ async def write_split_tables(conn, merged_missing: pd.DataFrame, force: bool) ->
             total = n_copied + n_upserted
             via = "COPY" if n_copied > 0 and n_upserted == 0 else \
                   f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else "upsert"
-            print(f"    [DB] Inserted {total:,} rows into {tbl} via {via}", flush=True)
+            logger.info(f"    [DB] Inserted {total:,} rows into {tbl} via {via}")
         else:
-            print(f"    [DB] No new rows to insert into {tbl}", flush=True)
+            logger.info(f"    [DB] No new rows to insert into {tbl}")

@@ -55,4 +55,4 @@ COMMENT ON COLUMN analysis_forecasts.mov_gap.side IS 'Bucket side: top = gap_{W}
 COMMENT ON COLUMN analysis_forecasts.mov_gap.pct IS 'Percentile width of the bucket: 1, 5, 10 or 25 (percent). The threshold is the window''s (linear-interpolated) percentile of gap_{W}days over non-NULL values.';
 COMMENT ON COLUMN analysis_forecasts.mov_gap.cooldown_days IS 'Part of the PK: trading days skipped after an accepted trigger day before the next trigger may join the bucket. Current build: 5 (config COOLDOWN_DAYS).';
 COMMENT ON COLUMN analysis_forecasts.mov_gap.forecast_id IS '1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results (indexed; allocated by the writer, shared across all 4 periods).';
-COMMENT ON COLUMN analysis_forecasts.mov_gap.is_market_hyped IS 'Part of the PK: TRUE when ANY of the bucket''s dates falls inside one of the code''s analysis.mov_ave_market_hypes episodes (any min_checkin_period).';
+COMMENT ON COLUMN analysis_forecasts.mov_gap.is_market_hyped IS 'Part of the PK: TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';

@@ -50,6 +50,9 @@ from analyze.industry_sentiments.attributions.sql_member_index import (
     MEMBER_INDEX_MAP_POPULATE_SQL,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def run_attributions(
     conn,
@@ -124,19 +127,17 @@ async def run_attributions(
       force: when True, truncate the tables first and recompute all rows.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  INDUSTRY ATTRIBUTIONS (internal step of industry_sentiments)",
-          flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  INDUSTRY ATTRIBUTIONS (internal step of industry_sentiments)")
+    logger.info("=" * 78)
 
     incremental = (not force
                    and target_dates is not None
                    and len(target_dates) > 0)
     if force:
-        print("    mode: FORCE (full recompute)", flush=True)
+        logger.info("    mode: FORCE (full recompute)")
     elif incremental:
-        print(f"    mode: incremental ({len(target_dates)} target dates)",
-              flush=True)
+        logger.info(f"    mode: incremental ({len(target_dates)} target dates)")
 
     # ---- Step 1: guard — check upstream + member-index availability --
     # The broad-market INSERT needs the stats.cross_stats INDUSTRY grain
@@ -146,28 +147,27 @@ async def run_attributions(
     n_src = await conn.fetchval(COUNT_SOURCE_SQL)
     n_members = await conn.fetchval(COUNT_MEMBER_INDICES_SQL)
     if not n_src and not n_members:
-        print("\n[a1/6] stats.cross_stats has no industry rows AND "
+        logger.info("\n[a1/6] stats.cross_stats has no industry rows AND "
               "no member indices with composition data — nothing to "
-              "materialize. Skipping attributions step.", flush=True)
+              "materialize. Skipping attributions step.")
         return
-    print(f"\n[a1/6] Source stats.cross_stats (sec_type='industry'): "
+    logger.info(f"\n[a1/6] Source stats.cross_stats (sec_type='industry'): "
           f"{n_src:,} industry-grain rows | {n_members} non-broad member "
-          f"indices with composition data.", flush=True)
+          f"indices with composition data.")
 
     # ---- Step 2: preview dimensions ----------------------------------
-    print("\n[a2/6] Previewing output dimensions...", flush=True)
+    logger.info("\n[a2/6] Previewing output dimensions...")
     dims = await conn.fetchrow(PREVIEW_DIMENSIONS_SQL)
     n_industries = dims["n_industries"] if dims else 0
     n_benchmarks = dims["n_benchmarks"] if dims else 0
-    print(f"      broad-market: {n_industries} industries x {n_benchmarks} "
+    logger.info(f"      broad-market: {n_industries} industries x {n_benchmarks} "
           f"benchmarks (max {n_industries * n_benchmarks:,} pairs, "
-          f"materialized per date where member indices have data)",
-          flush=True)
+          f"materialized per date where member indices have data)")
     mdims = await conn.fetchrow(PREVIEW_MEMBER_DIMENSIONS_SQL)
     n_md_ind = mdims["n_industries"] if mdims else 0
     n_md_mem = mdims["n_member_indices"] if mdims else 0
-    print(f"      member-index: {n_md_ind} industries x {n_md_mem} "
-          f"non-broad member indices", flush=True)
+    logger.info(f"      member-index: {n_md_ind} industries x {n_md_mem} "
+          f"non-broad member indices")
 
     # ---- Step 3: prune incremental target dates ------------------------
     # Plain INSERT (no ON CONFLICT) is only safe for dates genuinely absent
@@ -181,16 +181,15 @@ async def run_attributions(
         sorted_dates = sorted(target_dates & missing)
         dropped = len(target_dates) - len(sorted_dates)
         if dropped:
-            print(f"    -> pruned {dropped} target date(s) already covered "
-                  f"by {TABLE}", flush=True)
+            logger.info(f"    -> pruned {dropped} target date(s) already covered "
+                  f"by {TABLE}")
         if not sorted_dates:
-            print("    -> all target dates already present — nothing to do.",
-                  flush=True)
-            print(f"\n  attributions wall time: "
-                  f"{time.time() - t0:.1f}s", flush=True)
+            logger.info("    -> all target dates already present — nothing to do.")
+            logger.info(f"\n  attributions wall time: "
+                  f"{time.time() - t0:.1f}s")
             return
-        print(f"    -> {len(sorted_dates)} target date(s) to materialize "
-              f"({sorted_dates[0]} .. {sorted_dates[-1]})", flush=True)
+        logger.info(f"    -> {len(sorted_dates)} target date(s) to materialize "
+              f"({sorted_dates[0]} .. {sorted_dates[-1]})")
 
     # ---- Steps 4-6b: one transaction, all-at-once ---------------------
     # The whole write phase (truncate/index DDL + INSERTs) is atomic: an
@@ -201,19 +200,18 @@ async def run_attributions(
     # recreated after, in the same transaction. PK is kept for dedup.
     async with conn.transaction():
         if not incremental:
-            print(f"\n[a3/6] Truncating {TABLE} + {MAP_TABLE} "
-                  f"(full recompute)...", flush=True)
+            logger.info(f"\n[a3/6] Truncating {TABLE} + {MAP_TABLE} "
+                  f"(full recompute)...")
             await truncate_table_async(conn, TABLE)
             await truncate_table_async(conn, MAP_TABLE)
-            print(f"      Dropping {len(_SECONDARY_INDEXES)} secondary "
-                  f"index(es) (force-mode optimization, PK kept)...",
-                  flush=True)
+            logger.info(f"      Dropping {len(_SECONDARY_INDEXES)} secondary "
+                  f"index(es) (force-mode optimization, PK kept)...")
             for idx_name in _SECONDARY_INDEXES:
                 await conn.execute(f"DROP INDEX IF EXISTS analysis.{idx_name}")
             await conn.execute(SET_MAINTENANCE_WORK_MEM_SQL)
         else:
-            print(f"\n[a3/6] Incremental mode — no truncate (dates are "
-                  f"pruned to absent ones; plain INSERT).", flush=True)
+            logger.info(f"\n[a3/6] Incremental mode — no truncate (dates are "
+                  f"pruned to absent ones; plain INSERT).")
         await conn.execute(SET_WORK_MEM_SQL)
 
         # ---- Steps 4+5: MERGED broad-market INSERT -------------------
@@ -224,37 +222,36 @@ async def run_attributions(
         # and the liquidity split out of the heavy warm-up path.
         n_total_broad = 0
         if not n_src:
-            print("\n[a4-5/6] SKIPPED (no broad-market source data).",
-                  flush=True)
+            logger.info("\n[a4-5/6] SKIPPED (no broad-market source data).")
         elif incremental:
             lookback_date = await fetch_incremental_lookback_date(
                 conn, sorted_dates[0])
             t_broad = time.time()
-            print(f"\n[a4-5/6] MERGED broad-market INSERT (incremental, "
+            logger.info(f"\n[a4-5/6] MERGED broad-market INSERT (incremental, "
                   f"{len(sorted_dates)} dates, lookback "
                   f"{LOOKBACK_TRADING_DAYS}td + "
                   f"{LOOKBACK_EXTRA_CALENDAR_DAYS}d margin -> "
-                  f"{lookback_date})...", flush=True)
+                  f"{lookback_date})...")
             status = await conn.execute(
                 MERGED_BROAD_MARKET_INSERT_SQL_INCREMENTAL,
                 sorted_dates, lookback_date,
             )
             n_total_broad = _parse_insert_count(status)
-            print(f"        -> {status} | {n_total_broad:,} rows inserted "
-                  f"({time.time() - t_broad:.1f}s)", flush=True)
+            logger.info(f"        -> {status} | {n_total_broad:,} rows inserted "
+                  f"({time.time() - t_broad:.1f}s)")
         else:
             t_broad = time.time()
-            print(f"\n[a4-5/6] MERGED broad-market INSERT (all-at-once, "
-                  f"indexes dropped, PK kept)...", flush=True)
+            logger.info(f"\n[a4-5/6] MERGED broad-market INSERT (all-at-once, "
+                  f"indexes dropped, PK kept)...")
             status = await conn.execute(MERGED_BROAD_MARKET_INSERT_SQL_FULL)
             n_total_broad = _parse_insert_count(status)
-            print(f"        -> {status} | {n_total_broad:,} rows inserted "
-                  f"({time.time() - t_broad:.1f}s)", flush=True)
+            logger.info(f"        -> {status} | {n_total_broad:,} rows inserted "
+                  f"({time.time() - t_broad:.1f}s)")
 
         # ---- Step 6: member-index (map populate + expansion, all-at-once) ----
         t_member = time.time()
-        print("\n[a6/6] Member-index INSERT (map populate + expansion, "
-              "all-at-once)...", flush=True)
+        logger.info("\n[a6/6] Member-index INSERT (map populate + expansion, "
+              "all-at-once)...")
         status_map = await conn.execute(MEMBER_INDEX_MAP_POPULATE_SQL)
         n_total_map = _parse_insert_count(status_map)
         if incremental:
@@ -264,8 +261,8 @@ async def run_attributions(
         else:
             status_mi = await conn.execute(MEMBER_INDEX_INSERT_SQL_FULL)
         n_total_member = _parse_insert_count(status_mi)
-        print(f"      -> map={n_total_map:,} rows, member={n_total_member:,} "
-              f"rows ({time.time() - t_member:.1f}s)", flush=True)
+        logger.info(f"      -> map={n_total_map:,} rows, member={n_total_member:,} "
+              f"rows ({time.time() - t_member:.1f}s)")
 
         # ---- Step 6b: equal-variant INSERT (all-at-once) --------------
         # Copies ALL trading_amt rows (broad-market + member-index) to
@@ -274,18 +271,18 @@ async def run_attributions(
         # non_this_industry_* columns are copied unchanged.
         t_eq = time.time()
         if incremental:
-            print(f"\n[a6b/6] Equal-variant INSERT (incremental, "
-                  f"{len(sorted_dates)} target dates)...", flush=True)
+            logger.info(f"\n[a6b/6] Equal-variant INSERT (incremental, "
+                  f"{len(sorted_dates)} target dates)...")
             status_eq = await conn.execute(
                 EQUAL_INSERT_SQL_INCREMENTAL, sorted_dates
             )
         else:
-            print("\n[a6b/6] Equal-variant INSERT (full, copy from "
-                  "trading_amt)...", flush=True)
+            logger.info("\n[a6b/6] Equal-variant INSERT (full, copy from "
+                  "trading_amt)...")
             status_eq = await conn.execute(EQUAL_INSERT_SQL_FULL)
         n_eq = _parse_insert_count(status_eq)
-        print(f"      -> {status_eq} | {n_eq:,} equal rows inserted "
-              f"({time.time() - t_eq:.1f}s)", flush=True)
+        logger.info(f"      -> {status_eq} | {n_eq:,} equal rows inserted "
+              f"({time.time() - t_eq:.1f}s)")
 
         # ---- Recreate secondary index + ANALYZE (force mode only) ----
         # The index was DROPPED above so ALL INSERTs paid zero index
@@ -293,15 +290,13 @@ async def run_attributions(
         # stats. Both are transactional, so they roll back with the rest.
         if not incremental:
             t_idx = time.time()
-            print(f"\n      Recreating {len(_SECONDARY_INDEXES)} secondary "
-                  f"index(es) (bulk build, maintenance_work_mem=512MB)...",
-                  flush=True)
+            logger.info(f"\n      Recreating {len(_SECONDARY_INDEXES)} secondary "
+                  f"index(es) (bulk build, maintenance_work_mem=512MB)...")
             for idx_ddl in _CREATE_SECONDARY_INDEX_DDL:
                 await conn.execute(idx_ddl)
-            print(f"      indexes rebuilt in {time.time() - t_idx:.1f}s",
-                  flush=True)
+            logger.info(f"      indexes rebuilt in {time.time() - t_idx:.1f}s")
             await conn.execute(ANALYZE_TABLE_SQL)
-            print(f"      ANALYZE {TABLE} done", flush=True)
+            logger.info(f"      ANALYZE {TABLE} done")
 
     # Upsert analysis_identity for the mapping table.
     await upsert_analysis_identity(
@@ -344,18 +339,18 @@ async def run_attributions(
         ORDER BY is_broad DESC, ia.benchmark_code, ia.attribution_type
         LIMIT 40
     """)
-    print("\n      Summary by (benchmark_code, attribution_type) "
-          "[top 40, broad-market first]:", flush=True)
+    logger.info("\n      Summary by (benchmark_code, attribution_type) "
+          "[top 40, broad-market first]:")
     for r in summary:
         tag = "BROAD" if r["is_broad"] else "MEMBER"
-        print(f"        {r['benchmark_code']:8s} [{tag}] "
+        logger.info(f"        {r['benchmark_code']:8s} [{tag}] "
               f"{r['attribution_type']:11s}: "
               f"{r['n_rows']:>9,} rows . {r['n_industries']:>3} ind . "
               f"{r['first_date']} -> {r['last_date']} . "
               f"avg_isw={r['avg_isw']} avg_bsw={r['avg_bsw']} . "
-              f"zero_overlap={r['n_zero_overlap']:,}", flush=True)
+              f"zero_overlap={r['n_zero_overlap']:,}")
 
-    print(f"\n  attributions wall time: {time.time() - t0:.1f}s", flush=True)
+    logger.info(f"\n  attributions wall time: {time.time() - t0:.1f}s")
 
 
 def _parse_insert_count(status: str) -> int:

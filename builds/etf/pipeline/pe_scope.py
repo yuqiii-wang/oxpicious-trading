@@ -26,6 +26,9 @@ from builds.etf.pe_aggregation import (
 )
 from builds.etf.db_query import fetch_latest_etf_composition
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class PeScope:
@@ -75,7 +78,7 @@ async def build_pe_scope(
     date (start/end ignored) and makes every row of it a PE/write
     candidate — existing rows are refreshed via the upsert path.
     """
-    print("\n[5/7] Computing ETF PE (harmonic-weighted constituent PE) …", flush=True)
+    logger.info("\n[5/7] Computing ETF PE (harmonic-weighted constituent PE) …")
 
     comp_latest = extract_latest_composition(comp_long)
 
@@ -91,9 +94,9 @@ async def build_pe_scope(
             db_comp = db_comp[~db_comp["etf_code"].isin(covered)]
             if len(db_comp):
                 comp_latest = pd.concat([comp_latest, db_comp], ignore_index=True)
-        print(f"    [ETF-PE] comp_latest: {len(comp_latest):,} (etf, stock) pairs "
+        logger.info(f"    [ETF-PE] comp_latest: {len(comp_latest):,} (etf, stock) pairs "
               f"across {comp_latest['etf_code'].nunique() if len(comp_latest) else 0} ETFs "
-              f"(new snapshots + stored latest)", flush=True)
+              f"(new snapshots + stored latest)")
 
     start_d = parse_date(start_date) if start_date else None
     end_d = parse_date(end_date) if end_date else None
@@ -190,7 +193,7 @@ async def build_pe_scope(
     merged = await compute_and_merge_pe(conn, merged, comp_latest, cand)
 
     n_pe_non_null = int(merged["pe"].notna().sum()) if "pe" in safe_columns(merged) else 0
-    print(f"    [ETF-PE] {n_pe_non_null:,} non-null PE values in merged data", flush=True)
+    logger.info(f"    [ETF-PE] {n_pe_non_null:,} non-null PE values in merged data")
 
     return PeScope(
         merged=merged, comp_latest=comp_latest,
@@ -208,7 +211,7 @@ async def compute_and_merge_pe(
 ) -> pd.DataFrame:
     """Fetch constituent PEs for candidate dates; merge ETF PE into merged."""
     if comp_latest.empty:
-        print("    [ETF-PE] No composition data — PE will be NULL", flush=True)
+        logger.info("    [ETF-PE] No composition data — PE will be NULL")
         merged["pe"] = np.nan
         return merged
 
@@ -220,8 +223,8 @@ async def compute_and_merge_pe(
     stock_col = comp_latest["stock_code"]
     stock_np = np.asarray(host_array(stock_col[stock_col.notna()]))
     constituent_codes = np.unique(stock_np).tolist()
-    print(f"    [ETF-PE] {len(constituent_codes):,} unique constituent stocks "
-          f"across {comp_latest['etf_code'].nunique()} ETFs", flush=True)
+    logger.info(f"    [ETF-PE] {len(constituent_codes):,} unique constituent stocks "
+          f"across {comp_latest['etf_code'].nunique()} ETFs")
 
     # Incremental: fetch stock PE ONLY for candidate dates. Raw ndarray
     # boolean mask — a real-pandas bool Series aligned against the proxy
@@ -239,9 +242,9 @@ async def compute_and_merge_pe(
             conn, stock_codes=constituent_codes, dates=etf_dates)
     else:
         stock_pe_df = pd.DataFrame(columns=["date", "code", "pe"])
-    print(f"    [ETF-PE] Fetched {len(stock_pe_df):,} stock PE rows "
+    logger.info(f"    [ETF-PE] Fetched {len(stock_pe_df):,} stock PE rows "
           f"for {len(etf_dates):,} candidate dates "
-          f"(of {merged['date'].nunique():,} total)", flush=True)
+          f"(of {merged['date'].nunique():,} total)")
 
     etf_pe_df = compute_etf_pe_harmonic(pe_scope, comp_latest, stock_pe_df, verbose=True)
 

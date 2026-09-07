@@ -10,6 +10,8 @@ OHLCV join here anymore.
 """
 from __future__ import annotations
 
+import io
+
 import numpy as np
 import pandas as pd
 
@@ -18,6 +20,9 @@ from builds.stock._helpers import _safe_columns
 from builds._commons.column_maps import (
     STOCK_MARGIN_COL_MAP as _MARGIN_COLS_SRC,
 )
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 def _scan_stock_margin_dir(
@@ -51,8 +56,7 @@ def _scan_stock_margin_dir(
         files = glob_source_files(scan_dir, f"{file_prefix}*.csv")
 
     if verbose:
-        print(f"    [STOCK-MARGIN-{market}] reading {len(files)} {file_prefix}*.csv files",
-              flush=True)
+        logger.info(f"    [STOCK-MARGIN-{market}] reading {len(files)} {file_prefix}*.csv files")
 
     from _common.build_commons import ymd_from_filename as _ymd
 
@@ -86,12 +90,19 @@ def _scan_stock_margin_dir(
         merged = b"\n".join([merged_header] + dlines)
         try:
             # compression=None: chunk is our own uncompressed bytes —
-            # silences cudf's per-parse AUTO-detection warning.
-            df = pd.read_csv(merged, dtype=dtype_map, compression=None)
-        except Exception:
+            # silences cudf's per-parse AUTO-detection warning. Raw bytes
+            # take the cudf GPU read path with zero fallbacks; host pandas
+            # cannot consume bytes, so fall back to a BytesIO wrapper.
+            try:
+                df = pd.read_csv(merged, dtype=dtype_map, compression=None)
+            except TypeError:
+                df = pd.read_csv(io.BytesIO(merged), dtype=dtype_map,
+                                 compression=None)
+        except Exception as e:
             # degrades gracefully: malformed assembled chunk -> skip loudly
-            print(f"      [WARN] {market} margin chunk parse failed "
-                  f"(~{len(dlines)} lines dropped)", flush=True)
+            logger.warning(f"      [WARN] {market} margin chunk parse failed "
+                  f"(~{len(dlines)} lines dropped): "
+                  f"{type(e).__name__}: {e}")
             return
         if "证券代码" not in _safe_columns(df):
             return
@@ -177,8 +188,8 @@ def _scan_stock_margin_dir(
 
     out = big[out_cols].reset_index(drop=True)
     if verbose:
-        print(f"    [STOCK-MARGIN-{market}] {n_ok} files with data, {n_empty} empty, "
-              f"{len(out)} stock rows", flush=True)
+        logger.info(f"    [STOCK-MARGIN-{market}] {n_ok} files with data, {n_empty} empty, "
+              f"{len(out)} stock rows")
     return out, n_ok, n_empty
 
 
@@ -226,8 +237,8 @@ def build_stock_margin_df(
                    "rq_balance_amt", "total_balance"]
     if not frames:
         if verbose:
-            print(f"    [STOCK-MARGIN] total: {n_ok_total} files with data, "
-                  f"{n_empty_total} empty, 0 rows", flush=True)
+            logger.info(f"    [STOCK-MARGIN] total: {n_ok_total} files with data, "
+                  f"{n_empty_total} empty, 0 rows")
         return pd.DataFrame()
 
     from builds.stock._helpers import _safe_to_datetime, _safe_to_numeric, _safe_columns as _sc
@@ -248,9 +259,9 @@ def build_stock_margin_df(
     n_merged = n_before - n_after
 
     if verbose:
-        print(f"    [STOCK-MARGIN] total: {n_ok_total} files with data, "
+        logger.info(f"    [STOCK-MARGIN] total: {n_ok_total} files with data, "
               f"{n_empty_total} empty, {n_before} raw rows → {n_after} merged rows "
-              f"({n_merged} duplicates handled)", flush=True)
+              f"({n_merged} duplicates handled)")
 
     out = out.sort_values(["code", "date"]).reset_index(drop=True)
     return out

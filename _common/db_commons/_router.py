@@ -37,6 +37,9 @@ from ._connections import (
 )
 from ._helpers import _get_conn_params, _get_replica_conn_params
 
+import logging
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 #  Module-level pool singletons (lazily initialized)
 # ---------------------------------------------------------------------------
@@ -364,9 +367,9 @@ def close_pools(timeout: float = 5.0) -> None:
             if pool is not None:
                 try:
                     pool.close(timeout=timeout)
-                    print(f"    [DB] Closed sync {name} pool", flush=True)
+                    logger.info(f"    [DB] Closed sync {name} pool")
                 except Exception as e:
-                    print(f"    [DB] Error closing sync {name} pool: {e}", flush=True)
+                    logger.error(f"    [DB] Error closing sync {name} pool: {e}")
         _sync_primary_pool = None
         _sync_replica_pool = None
 
@@ -388,9 +391,9 @@ async def close_pools_async(timeout: float = 5.0) -> None:
             if pool is not None:
                 try:
                     await pool.close()
-                    print(f"    [DB] Closed async {name} pool", flush=True)
+                    logger.info(f"    [DB] Closed async {name} pool")
                 except Exception as e:
-                    print(f"    [DB] Error closing async {name} pool: {e}", flush=True)
+                    logger.error(f"    [DB] Error closing async {name} pool: {e}")
         _async_primary_pool = None
         _async_replica_pool = None
 

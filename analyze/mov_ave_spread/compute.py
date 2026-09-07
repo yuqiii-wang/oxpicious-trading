@@ -25,6 +25,9 @@ from analyze.mov_ave_spread.helpers import (
     null_if_overflow_counted,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def _assemble_detail_columns(
     df: pd.DataFrame,
@@ -156,7 +159,7 @@ def build_detail_frame(df: pd.DataFrame) -> pd.DataFrame:
     if nulled_counts:
         total = sum(nulled_counts.values())
         per_col = ", ".join(f"{c}={n}" for c, n in nulled_counts.items())
-        print(f"    -> overflow-guard nulled {total:,} value(s) across "
-              f"{len(nulled_counts)} column(s): {per_col}", flush=True)
+        logger.info(f"    -> overflow-guard nulled {total:,} value(s) across "
+              f"{len(nulled_counts)} column(s): {per_col}")
 
     return out_df

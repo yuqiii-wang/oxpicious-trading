@@ -718,7 +718,7 @@ fingerprinting, plus LONG_SLEEP_INTERVAL (90s) between requests.
         force=args.force,
         convert_csv=not args.no_convert_csv,
     )
-    print(result)
+    logger.info(result)
 
 
 if __name__ == "__main__":

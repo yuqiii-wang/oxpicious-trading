@@ -660,7 +660,7 @@ def main() -> None:
         sleep_sec=args.sleep_sec,
         force=args.force,
     )
-    print(summary)
+    logger.info(summary)
 
 
 if __name__ == "__main__":

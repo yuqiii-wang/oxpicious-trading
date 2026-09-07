@@ -14,6 +14,9 @@ import argparse
 from downloads._common.exchanges.sse import SSE_LIST_URL
 from downloads._common.exchanges.sse import run_snapshot_download
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("trend")
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(
@@ -22,4 +25,4 @@ if __name__ == "__main__":
     ap.add_argument("--force", action="store_true",
                     help="Overwrite existing date CSV file.")
     args = ap.parse_args()
-    print(run_snapshot_download(SSE_LIST_URL, "sse_trend_stock", force=args.force))
+    logger.info(run_snapshot_download(SSE_LIST_URL, "sse_trend_stock", force=args.force))

@@ -95,4 +95,4 @@ COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.low_bar IS 'Recorded bui
 COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.high_bar IS 'Recorded build parameter: high lower z-bar (default +1.0).';
 COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.vhigh_bar IS 'Recorded build parameter: vhigh lower z-bar (default +2.0).';
 COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.forecast_id IS '1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results (indexed; allocated by the writer, shared across all 4 periods).';
-COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.is_market_hyped IS 'Part of the PK: TRUE when ANY of the bucket''s dates falls inside one of the code''s analysis.mov_ave_market_hypes episodes (any min_checkin_period).';
+COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.is_market_hyped IS 'Part of the PK: TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';

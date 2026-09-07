@@ -16,6 +16,9 @@ import math
 
 from ._helpers import _parse_table_name
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def _copy_clean_value(v):
     """None-out NaN/NaT sentinels for the COPY binary protocol.
@@ -184,10 +187,9 @@ async def bulk_upsert_async(
 
         return len(rows)
     except Exception as e:
-        print(
+        logger.error(
             f"    [ERROR] Bulk upsert failed for {table_name}: "
             f"{type(e).__name__}: {e}",
-            flush=True,
         )
         raise
 
@@ -358,9 +360,9 @@ async def ensure_table_exists_async(conn, table_name: str, create_sql: str) -> N
         )
 
     if not exists:
-        print(f"    [INFO] Creating table {table_name}", flush=True)
+        logger.info(f"    [INFO] Creating table {table_name}")
         await conn.execute(create_sql)
-        print(f"    [INFO] Table {table_name} created", flush=True)
+        logger.info(f"    [INFO] Table {table_name} created")
 
 
 async def truncate_table_async(conn, table_name: str) -> None:
@@ -379,11 +381,11 @@ async def truncate_table_async(conn, table_name: str) -> None:
         )
 
     if not exists:
-        print(f"    [INFO] Table {table_name} does not exist, skipping truncate", flush=True)
+        logger.info(f"    [INFO] Table {table_name} does not exist, skipping truncate")
         return
 
     if schema:
         await conn.execute(f'TRUNCATE TABLE "{schema}"."{table}" CASCADE')
     else:
         await conn.execute(f'TRUNCATE TABLE "{table}" CASCADE')
-    print(f"    [INFO] Truncated table {table_name}", flush=True)
+    logger.info(f"    [INFO] Truncated table {table_name}")

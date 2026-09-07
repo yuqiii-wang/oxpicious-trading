@@ -35,6 +35,9 @@ from builds.classification.sector_industry.exchange import (
     _is_overseas_name,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Standalone numeric codes in fund names (e.g. '鹏华300LOF' → '300') that
 # should map to broad-market CSI series.  These are too generic for the main
 # INDUSTRY_RULES (would false-match stock names containing 300/500), but are
@@ -184,7 +187,7 @@ def classify_unmatched_funds(
         n_added += 1
 
     if verbose and n_added:
-        print(f"    [FUND] {n_added} unmatched funds classified by name "
-              f"({n_classified} matched, {n_other} → OTHER)", flush=True)
+        logger.info(f"    [FUND] {n_added} unmatched funds classified by name "
+              f"({n_classified} matched, {n_other} → OTHER)")
 
     return etfs

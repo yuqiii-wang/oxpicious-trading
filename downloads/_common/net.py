@@ -10,7 +10,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -240,17 +240,12 @@ def random_sleep_range(min_sec: float, max_sec: float) -> None:
     time.sleep(max(0, sleep_time))
 
 
-_LOGGER_FMT = "%(asctime)s [%(levelname)s] %(message)s"
-_LOGGER_DATEFMT = "%Y-%m-%d %H:%M:%S"
-_CONFIGURED_LOGGERS: Set[str] = set()
-
-
 def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
-    if name not in _CONFIGURED_LOGGERS:
-        logging.basicConfig(level=level, format=_LOGGER_FMT, datefmt=_LOGGER_DATEFMT)
-        logging.getLogger("urllib3.connection").setLevel(logging.ERROR)
-        _CONFIGURED_LOGGERS.add(name)
-    return logging.getLogger(name)
+    # Delegates to the central setup so every downloader gets console +
+    # logs/<YYYY-MM-DD>/<name>.log file output; the first caller names the file.
+    from _common.log_setup import setup_logging
+
+    return setup_logging(name, level=level)
 
 
 def build_headers_with_referer(

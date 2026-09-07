@@ -14,6 +14,9 @@ from typing import Any, Dict, Optional
 
 from builds.classification.sector_industry.paths import JSON_PATH
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def load_json() -> Optional[Dict[str, Any]]:
     """Load sec_classification.json if it exists."""
@@ -23,7 +26,7 @@ def load_json() -> Optional[Dict[str, Any]]:
         with open(JSON_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(f"    [WARN] Failed to load {JSON_PATH}: {e}", flush=True)
+        logger.warning(f"    [WARN] Failed to load {JSON_PATH}: {e}")
         return None
 
 
@@ -48,6 +51,5 @@ def save_json(state: Dict[str, Any]) -> None:
     }
     with open(JSON_PATH, "w", encoding="utf-8") as f:
         json.dump(json_state, f, ensure_ascii=False, indent=2)
-    print(f"    [JSON] Saved {JSON_PATH} "
-          f"({len(json_state['indices'])} indices, unified catalog)",
-          flush=True)
+    logger.info(f"    [JSON] Saved {JSON_PATH} "
+          f"({len(json_state['indices'])} indices, unified catalog)")

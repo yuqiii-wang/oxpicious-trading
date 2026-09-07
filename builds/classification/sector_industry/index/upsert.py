@@ -12,6 +12,9 @@ from _common.build_commons import bulk_upsert_async, truncate_table_async
 
 from builds.classification.sector_industry.catalog import _lookup_labels, _parse_date
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def upsert_indices(
     conn,
@@ -59,8 +62,8 @@ async def upsert_indices(
             conn, "stats.sec_classification", index_rows,
             ["code", "parent_index_code"])
         if verbose:
-            print(f"    [DB] Upserted {inserted:,} index rows into "
-                  f"stats.sec_classification", flush=True)
+            logger.info(f"    [DB] Upserted {inserted:,} index rows into "
+                  f"stats.sec_classification")
 
 
 async def upsert_index_tags(
@@ -99,5 +102,5 @@ async def upsert_index_tags(
             conn, "stats.sec_index_tags", tag_rows,
             ["code", "sector_id", "industry_id"])
         if verbose:
-            print(f"    [DB] Inserted {inserted:,} index tag rows into "
-                  f"stats.sec_index_tags", flush=True)
+            logger.info(f"    [DB] Inserted {inserted:,} index tag rows into "
+                  f"stats.sec_index_tags")

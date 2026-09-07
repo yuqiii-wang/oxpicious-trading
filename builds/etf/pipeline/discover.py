@@ -11,6 +11,9 @@ from builds.etf.paths import (
     SZSE_MARGIN_DIR, SSE_MARGIN_DIR,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # {loader-name: (directory, filename-pattern)} for OHLCV + margin sources
 OHLCV_SOURCES: Dict[str, tuple] = {
     "szse_archive": (SZSE_ARCHIVE_DIR, "szse_etf_*.csv"),
@@ -52,10 +55,10 @@ def discover_source_files() -> tuple[Dict[str, List[str]], Set[date]]:
                 if d:
                     available_dates.add(d)
 
-    print(f"    → OHLCV: {len(files['szse_archive'])} szse_archive + "
-          f"{len(files['szse_trend'])} szse_trend + {len(files['sse_trend'])} sse_trend files", flush=True)
-    print(f"    → Margin: {len(files['szse'])} szse + {len(files['sse'])} sse files", flush=True)
-    print(f"    → {len(available_dates)} unique OHLCV dates available in source files", flush=True)
+    logger.info(f"    → OHLCV: {len(files['szse_archive'])} szse_archive + "
+          f"{len(files['szse_trend'])} szse_trend + {len(files['sse_trend'])} sse_trend files")
+    logger.info(f"    → Margin: {len(files['szse'])} szse + {len(files['sse'])} sse files")
+    logger.info(f"    → {len(available_dates)} unique OHLCV dates available in source files")
     return files, available_dates
 
 

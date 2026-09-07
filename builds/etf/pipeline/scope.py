@@ -9,6 +9,9 @@ import pandas as pd
 from _common.build_commons import get_existing_keys_async, rec_cols, truncate_table_async
 from _common.df_utils import epoch_col_to_dt64
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def purge_existing_data(conn, code_filter: str | None) -> None:
     """--force cleanup: DELETE single-code rows or truncate all ETF tables.
@@ -19,7 +22,7 @@ async def purge_existing_data(conn, code_filter: str | None) -> None:
     """
     if code_filter:
         # Single-code force mode: DELETE only this code's rows.
-        print(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code", flush=True)
+        logger.info(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code")
         for tbl in ("stats.etf_liquidity_margin", "stats.etf_adjustment",
                     "stats.etf_tech_stats", "stats.etf_basic_stats",
                     "stats.etf_identity"):
@@ -29,7 +32,7 @@ async def purge_existing_data(conn, code_filter: str | None) -> None:
             code_filter,
         )
     else:
-        print("    [DB] Force mode: truncating ETF tables", flush=True)
+        logger.info("    [DB] Force mode: truncating ETF tables")
         await truncate_table_async(conn, "stats.etf_identity")
         await conn.execute("DELETE FROM stats.sec_composition WHERE source_type = 'etf'")
 
@@ -114,8 +117,8 @@ def compute_dates_to_read(
         cutoff = max(available_dates) - datetime.timedelta(days=RECENT_REFRESH_DAYS)
         recent = {d for d in (available_dates & existing_dates) if d >= cutoff}
     if recent:
-        print(f"    [DB] {len(recent)} recent dates (last {RECENT_REFRESH_DAYS}d) "
-              f"re-scanned for newly-listed ETFs", flush=True)
+        logger.info(f"    [DB] {len(recent)} recent dates (last {RECENT_REFRESH_DAYS}d) "
+              f"re-scanned for newly-listed ETFs")
     return missing, recent
 
 

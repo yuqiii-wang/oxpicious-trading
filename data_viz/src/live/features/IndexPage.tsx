@@ -16,15 +16,14 @@ import {
   Alert,
   Box,
   CircularProgress,
-  MenuItem,
   Pagination,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import CodeSearchBar, { findCodeInThemes, findCodeInStrategyThemes } from "@/components/CodeSearchBar";
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import RefreshButton from "@/components/RefreshButton";
+import { DateSelector } from "@/shared/components/date-selector";
 import IntradayPanel from "@/live/features/IntradayPanel";
 import {
   fetchLiveDataCombined,
@@ -245,21 +244,12 @@ export default function IndexPage() {
           </Typography>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-          <TextField
-            select
-            size="small"
-            label="Date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            sx={{ minWidth: 150, "& .MuiInputBase-input": { fontSize: "0.8rem" } }}
-          >
-            {dates.length === 0 && <MenuItem value="">—</MenuItem>}
-            {dates.map((d) => (
-              <MenuItem key={d} value={d} sx={{ fontSize: "0.8rem" }}>
-                {d}
-              </MenuItem>
-            ))}
-          </TextField>
+          <DateSelector
+            dates={dates}
+            value={selectedDate || null}
+            sx={{ "& .MuiInputBase-input": { fontSize: "0.8rem" } }}
+            onChange={(d) => setSelectedDate(d ?? "")}
+          />
           <CodeSearchBar
             activeCode={searchCode}
             onSearch={handleSearch}

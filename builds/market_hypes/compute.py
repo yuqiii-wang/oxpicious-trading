@@ -1,152 +1,50 @@
-"""Internal market-hypes step for analyze.mov_ave_spread.
+"""Pure compute for builds.market_hypes — hype flags -> episode rows.
 
-Market-hype EPISODE detection for ETF + Index + Stock: one row per
-(sec_type, code, min_checkin_period, episode) in
-analysis.mov_ave_market_hypes — an episode being a CONCATENATED span of
-trading dates around a maximal run of "hyped" dates, extended through
-the surrounding check-in evidence and bucketed BY ITS LENGTH.
+MIGRATED verbatim from analyze.mov_ave_spread.market_hypes (the
+computation semantics are unchanged; only the module's home and its
+import roots moved — the DB write / orchestration half lives in
+runner.py).
 
-=======================================================================
-  FINANCIAL SEMANTICS
-=======================================================================
+The pipeline: per (sec_type, code, date) frame carrying ``price``-based
+std_{W}days σ columns (fetch.py) and ``trading_amount``:
 
-A market is "hyped" on date t when trading amount AND price volatility
-are BOTH elevated — SUSTAINEDLY — over a check-in window, each measured
-against its own CENTERED 20-year percentile threshold:
-
-1. CENTERED PERCENTILE THRESHOLDS (per date, per code — the audit base
-   window spans BOTH directions around the audited date, NOT a
-   trailing/rolling-back window):
-     trading_amt_threshold[t] = the HYPE_TRADING_AMT_THRESHOLD_PCT-th
-         percentile (linear interpolation) of daily trading_amount over
-         the centered base window of HYPE_THRESHOLD_HALF_WINDOW_ROWS
-         (2550 = 10 trading years) rows BEFORE t, t itself, and 2550
-         rows AFTER t (HYPE_THRESHOLD_WINDOW_ROWS = 5101 rows ≈ 20
-         trading years total).
-     std_threshold[t] = the HYPE_STD_THRESHOLD_PCT-th percentile of
-         std_{W}days over the same centered window, where W = the
-         check-in window (matching timescale: the volatility metric is
-         the W-day rolling population σ already computed by the parent
-         pipeline).
-   A base window with fewer than HYPE_THRESHOLD_MIN_PERIODS (255 = 1
-   trading year) observations has no thresholds -> the date is not
-   hyped. Bases near the start / end of a code's history are naturally
-   truncated — the newest dates have no future rows yet, so their base
-   is effectively the trailing 10y. Because the base looks both ways,
-   historical rows use their FOLLOWING decade (retrospective audit,
-   look-ahead by design): as new data arrives, the ideal thresholds of
-   the last 10 years of dates shift — run a --force rebuild to refresh
-   historical rows' flags.
-
-2. CHECK-IN CONDITION (per date s):
-     checkin[s] = trading_amount[s] > trading_amt_threshold[s]
-                  AND std_{W}days[s] > std_threshold[s]
-   Strict > on both legs. NULL turnover / σ counts as NOT a check-in.
-
-3. SATISFACTION (per date t, "within min_checkin_period from today
-   date"):
-     is_hyped[t] = (count of check-in dates within the last W rows
-                    ending at t, inclusive) / W * 100
-                   > HYPE_CHECKIN_SATISFACTION_THRESHOLD
-   Strict greater-than. The denominator is the full W rows — missing
-   data counts against satisfaction. The first W-1 rows of each code
-   have no full window -> not hyped.
-
-4. EPISODE CONCAT + EXTENSION + BUCKETING (what the table stores):
-   The per-date is_hyped series from (3) is collapsed, per (sec_type,
-   code, min_checkin_period), into maximal runs of CONSECUTIVE hyped
-   dates ("cores"), then each core is extended through the check-in
-   evidence that fed its satisfaction — bridging interior non-check-in
-   days — and finally bucketed by its SPAN:
-     - CONCAT/EXTEND start: the FIRST check-in within the W rows
-       ending at the core's first hyped date (the lookback window that
-       produced the core's first satisfaction verdict — its earliest
-       evidence). This is what lets an episode start at the FIRST
-       big-move day of a turmoil instead of ~W rows later, when the
-       trailing satisfaction count finally crosses the threshold (the
-       2024-09-24 rally audit, 159673.SZ: the 20d satisfaction only
-       crossed 60% on 2024-10-21 — a full month late — while the
-       check-ins began on the rally's day 1).
-     - CONCAT/EXTEND end: symmetric — the LAST check-in within the W
-       rows starting at the core's last hyped date (the decaying tail).
-     - Episodes never overlap within one bucket: each episode's start
-       is clipped to just after the previous episode's end.
-     - BUCKET BOUNDS: hype_days (the span in trading dates, start and
-       end inclusive) must satisfy W <= hype_days < HYPE_EPISODE_SPAN_MAX
-       [W] (the NEXT check-in window; the longest window is bounded by
-       HYPE_MAX_EPISODE_ROWS = the whole ±10y base ≈ 20 trading years).
-       min_checkin_period IS the minimum episode span; the next window
-       is the exclusive maximum — e.g. 20d-bucket episodes span 20..59
-       rows, 60d-bucket 60..119, 255d-bucket 255..5100. A core whose
-       own consecutive span already reaches the bucket max is dropped
-       from that bucket: sustained activity of that length is the
-       domain of the NEXT bucket up, whose own (longer-window,
-       smoother) satisfaction flags it.
-     - trading_amt_hype_days / std_hype_days count the days within the
-       stored span on which each leg individually checked in
-       (diagnostics for which leg drove the episode).
-   Only qualifying spans are stored — non-hyped dates leave no
-   footprint (the pre-episode revision wrote one is_hyped row per
-   date, TRUE and FALSE alike; superseded).
-
-Row multiplicity: one row per EPISODE per check-in window in
-HYPE_CHECKIN_PERIODS (5/20/60/120/255). min_checkin_period IS part of
-the PK — different windows can produce episodes with identical spans,
-so the window must disambiguate the rows. The three threshold columns
-record the build's parameter set; they are NOT part of the PK —
-changing them requires a --force rebuild.
-
-Source: the same source DataFrame already loaded by the parent
-mov_ave_spread.fetch_source_data — reuses the ``trading_amount`` and
-``std_{W}days`` columns (the σ columns are pre-computed by
-helpers.compute_rolling_stds in the parent pipeline). No second DB
-round-trip.
-
-This module is an INTERNAL step of analyze.mov_ave_spread — invoked
-from __main__.py right after the trading-amt-ratios step, reusing the
-same DB connection + source DataFrame.
-
-REBUILD SEMANTICS (margin_changes precedent): episode boundaries shift
-whenever new dates arrive (the trailing episode of a code extends; the
-centered threshold windows move), and non-hyped dates leave no
-footprint — date-level coverage cannot be diffed against an episodes
-table. There is therefore NO per-date incremental upsert: every run
-DELETEs the step's entire scope (one sec_type — or one code in --code
-mode, where the caller already deleted the code's rows) and recomputes
-ALL episodes from the FULL per-code history. The step re-runs whenever
-the parent pipeline processes its sec_type; the parent's up-to-date
-early-skip (detail / trading_amt / ratios / OHLC missing dates + an
-empty-hypes check) governs whether that happens.
-
-Force mode (``force=True``): API-compatible extra — the parent's
---force truncates the table upfront; the step's scoped DELETE already
-guarantees a clean slate for its scope either way.
+1. CENTERED PERCENTILE THRESHOLDS — trading_amount and each std_{W}days
+   get a centered ±10y (2550 rows per side, 5101 total) rolling
+   quantile threshold per (sec_type, code). A base with < 255
+   observations has no thresholds -> the date is not hyped. The base
+   looks BOTH ways (retrospective audit, look-ahead by design) — run a
+   --force rebuild to refresh historical rows' flags as new data
+   arrives.
+2. CHECK-IN — a date checks in when trading_amount AND std_{W}days both
+   EXCEED their thresholds (strict >; NULL -> not a check-in).
+3. SATISFACTION — a date is hyped when MORE than
+   HYPE_CHECKIN_SATISFACTION_THRESHOLD percent of the last W rows are
+   check-ins (denominator = the full W rows; missing data counts
+   against).
+4. EPISODES — the hyped runs are collapsed per window into maximal
+   consecutive cores, extended through the surrounding check-in
+   evidence (first check-in of the W-row lookback before the core's
+   start; last check-in of the W-row lookforward after its end),
+   clipped to never overlap within one (sec_type, code), and bucketed
+   by span into [W, HYPE_EPISODE_SPAN_MAX[W]).
 
 GPU note: the centered percentile uses pandas ``groupby(...).rolling
 (center=True).quantile()``. cuDF lacks rolling-quantile support, so
 when cudf.pandas is active this op transparently falls back to the CPU
-pandas implementation (same contract as the grouped-EWM helper in
-rsi.py). The episode assembly itself runs on host numpy arrays
-(extracted once per window) — the run/extension math is
+pandas implementation (same contract as the grouped-EWM helper in the
+analyze RSI step). The episode assembly itself runs on host numpy
+arrays (extracted once per window) — the run/extension math is
 index-arithmetic-heavy and searchsorted-based, which cuDF does not
 express; the extraction cost is one host copy of three boolean columns
 per window, accepted for a much simpler and faster algorithm.
 """
 from __future__ import annotations
 
-import asyncio
-import time
-
 import numpy as np
 import pandas as pd
 
-from _common.build_commons import copy_insert_async
-from _common.df_utils import column_subset, host_array, safe_columns
-from analyze._common import (
-    sanitize_for_db_insert,
-    upsert_analysis_identity,
-)
-from analyze.mov_ave_spread.config import (
+from _common.df_utils import host_array, safe_columns
+from builds.market_hypes.config import (
     HYPE_CHECKIN_PERIODS,
     HYPE_CHECKIN_SATISFACTION_THRESHOLD,
     HYPE_EPISODE_SPAN_MAX,
@@ -156,11 +54,10 @@ from analyze.mov_ave_spread.config import (
     HYPE_THRESHOLD_MIN_PERIODS,
     HYPE_THRESHOLD_WINDOW_ROWS,
     HYPE_TRADING_AMT_THRESHOLD_PCT,
-    MARKET_HYPES_ANALYSIS_NAME,
-    MARKET_HYPES_COLUMNS,
-    MARKET_HYPES_DESCRIPTION,
-    MARKET_HYPES_TABLE,
 )
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 # Transient (not persisted) per-window is_hyped column names on the
@@ -187,11 +84,6 @@ def _std_ok_col(checkin_period: int) -> str:
 # threshold is window-independent).
 _AMT_OK_TMP = "_hype_amt_ok"
 
-# Episode rows per COPY chunk (bounds the row-dict list materialized
-# between the DataFrame and asyncpg's COPY stream — same spirit as
-# DEFAULT_CHUNK_TARGET_ROWS in analyze._common.upsert).
-_EPISODE_CHUNK_ROWS = 100_000
-
 
 # ---------------------------------------------------------------------------
 #  Compute helpers (pure pandas / cuDF)
@@ -207,7 +99,8 @@ def _grouped_rolling_quantile(
     ``groupby(keys)[col].rolling(window, min_periods,
     center=center).quantile(q)`` returns a MultiIndex Series (group keys
     + original index). Strip the group-key levels and reindex to df.index
-    to realign — the same contract as ``_grouped_ewm_pandas`` in rsi.py.
+    to realign — the same contract as ``_grouped_ewm_pandas`` in the
+    analyze RSI step.
 
     ``center=True`` slides the window symmetrically around each row
     (odd ``window`` = exactly (window-1)/2 rows on each side); the
@@ -220,6 +113,10 @@ def _grouped_rolling_quantile(
     support, so under cudf.pandas this op falls back to CPU (accepted —
     see module docstring). NaN input values are skipped by the rolling
     window and count against min_periods.
+
+    Shared helper: also imported by analyze.mov_ave_spread.high_low_pct
+    and analyze.pe_and_dividends.pct_bands (the same centered-window
+    percentile pattern).
     """
     s = pd.to_numeric(df[col], errors="coerce")
     keys = [df["sec_type"], df["code"]]
@@ -622,266 +519,3 @@ def hype_episodes(df: pd.DataFrame) -> pd.DataFrame:
         ),
     })
     return out
-
-
-def sanitize_market_hypes_rows(df: pd.DataFrame) -> list[dict]:
-    """Sanitize one chunk of the episodes frame for asyncpg COPY
-    (NaN/inf -> None + to_dict).
-
-    The frame must already carry the three recorded build-parameter
-    columns (attached by run_market_hypes). The NUMERIC(6,4) parameter
-    columns are rounded to 4 decimal places; the date / integer key
-    columns pass through.
-    """
-    if df.empty:
-        return []
-    numeric_params = [
-        "min_checkin_satisfaction_threshold",
-        "min_trading_amt_threshold",
-        "min_std_threshold",
-    ]
-    return sanitize_for_db_insert(
-        df, numeric_cols=numeric_params, round_to=4,
-    )
-
-
-async def _copy_episodes_chunked(
-    conn, pool, episodes: pd.DataFrame, *, max_concurrent: int,
-) -> int:
-    """COPY-insert the episodes frame in row-count chunks.
-
-    Bounds peak memory like build_and_insert_chunked (never
-    materializes the full row-dict list): each ~_EPISODE_CHUNK_ROWS
-    slice is sanitized inside the concurrency semaphore, then streamed
-    via COPY on ``conn`` (sequential) or on a pool connection
-    (parallel). COPY is safe because the caller DELETEd the whole
-    scope first — the inserted episodes are guaranteed conflict-free.
-
-    Chunks are row-count slices (not date-bounded): episode rows carry
-    no single "date" key and each (sec_type, code, start_date,
-    end_date, min_checkin_period) PK appears exactly once in the frame,
-    so no two chunks can conflict even under parallel COPY.
-    """
-    n_total = len(episodes)
-    if n_total == 0:
-        return 0
-
-    bounds = [
-        (lo, min(lo + _EPISODE_CHUNK_ROWS, n_total))
-        for lo in range(0, n_total, _EPISODE_CHUNK_ROWS)
-    ]
-    n_chunks = len(bounds)
-    columns = list(MARKET_HYPES_COLUMNS)
-
-    use_parallel = (
-        pool is not None and max_concurrent > 1 and n_chunks > 1
-    )
-    if not use_parallel:
-        total = 0
-        for i, (lo, hi) in enumerate(bounds, start=1):
-            rows = sanitize_market_hypes_rows(episodes.iloc[lo:hi])
-            n = await copy_insert_async(
-                conn, MARKET_HYPES_TABLE, rows, columns=columns,
-            )
-            total += n
-            print(f"      episodes chunk {i}/{n_chunks}: COPY {n:,} rows "
-                  f"(cumulative {total:,})", flush=True)
-        return total
-
-    pool_max = getattr(pool, "_maxsize", max_concurrent)
-    concurrency = max(1, min(max_concurrent, n_chunks, pool_max))
-    sem = asyncio.Semaphore(concurrency)
-    lock = asyncio.Lock()
-    counter = [0]
-    print(f"      parallel COPY: {n_chunks} chunks, {concurrency} "
-          f"concurrent (pool max_size={pool_max})", flush=True)
-
-    async def _task(i: int, lo: int, hi: int) -> int:
-        # Acquire the semaphore BEFORE building the chunk's dicts so at
-        # most ``concurrency`` chunks' rows are in flight (the same
-        # memory bound as build_and_insert_chunked).
-        async with sem:
-            rows = sanitize_market_hypes_rows(episodes.iloc[lo:hi])
-            async with pool.acquire() as c:
-                n = await copy_insert_async(
-                    c, MARKET_HYPES_TABLE, rows, columns=columns,
-                )
-        async with lock:
-            counter[0] += n
-            so_far = counter[0]
-        print(f"      episodes chunk {i}/{n_chunks} done: COPY {n:,} rows "
-              f"(cumulative {so_far:,})", flush=True)
-        return n
-
-    results = await asyncio.gather(*[
-        _task(i, lo, hi) for i, (lo, hi) in enumerate(bounds, start=1)
-    ])
-    return sum(results)
-
-
-# ---------------------------------------------------------------------------
-#  Pipeline (internal step — invoked from mov_ave_spread.__main__)
-# ---------------------------------------------------------------------------
-
-async def run_market_hypes(
-    conn,
-    df: pd.DataFrame,
-    *,
-    force: bool = False,
-    pool=None,
-    max_concurrent: int = 20,
-    sec_type: str | None = None,
-    code_filter: str | None = None,
-) -> None:
-    """Run the market-hypes EPISODE pipeline against the source data
-    already loaded by the parent mov_ave_spread.
-
-    Reuses the caller's DB connection and source DataFrame (the
-    ``trading_amount`` and ``std_{W}days`` columns are reused — no
-    second DB fetch). The DataFrame must contain the FULL per-code
-    history so the centered ±10y percentile windows have enough rows on
-    each side of every date (up to 2550 per side).
-
-    Pipeline
-      1. Compute the per-window is_hyped + check-in + per-leg flags over
-         the FULL per-code history (centered percentile thresholds +
-         check-in counts).
-      2. Assemble the hyped runs into CONCATENATED episodes (extend
-         through the check-in evidence; bucket by span into
-         [W, next window)) — start_date / end_date / hype_days /
-         trading_amt_hype_days / std_hype_days per window.
-      3. DELETE the step's entire scope (the given sec_type — or the
-         single --code, whose rows the caller already deleted), then
-         COPY-insert the recomputed episodes. There is no per-date
-         incremental upsert: episode boundaries shift when new dates
-         arrive and non-hyped dates leave no footprint
-         (margin_changes precedent).
-      4. Upsert analysis.analysis_identity registry.
-
-    Args:
-      conn: asyncpg connection (reused from parent).
-      df: source DataFrame with at least columns [sec_type, code, date,
-          trading_amount, std_5days, std_20days, std_60days,
-          std_120days, std_255days]. Must be the FULL per-code history
-          (the centered ±10y percentile windows need up to 2550 rows on
-          EACH side of every date).
-      force: accepted for API compatibility with the other internal
-          steps — the rebuild is wholesale regardless. The parent's
-          --force additionally truncates the table upfront.
-      pool: optional connection pool for parallel COPY chunks.
-      max_concurrent: maximum parallel COPY chunks.
-      sec_type: when provided, process only this sec_type (parent loop
-                passes one sec_type at a time to bound memory). When
-                None, infers sec_types from the DataFrame.
-      code_filter: single-code mode (--code): rebuild the episodes of
-                   this code only.
-    """
-    t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  MOV_AVE_MARKET_HYPES (internal step of mov_ave_spread)",
-          flush=True)
-    print("=" * 78, flush=True)
-
-    if code_filter is not None:
-        print(f"    mode: SINGLE-CODE (wholesale episode rebuild for "
-              f"{code_filter})", flush=True)
-    elif force:
-        print("    mode: FORCE (wholesale episode rebuild; the parent "
-              "truncated the table upfront)", flush=True)
-    else:
-        print("    mode: WHOLESALE PER-SEC_TYPE (episodes are rebuilt on "
-              "every run — new dates shift episode boundaries)",
-              flush=True)
-
-    needed_cols = list(dict.fromkeys(
-        ["sec_type", "code", "date", "trading_amount"]
-        + [HYPE_STD_COLUMN_BY_PERIOD[w] for w in HYPE_CHECKIN_PERIODS]
-    ))
-    available = column_subset(df, needed_cols)
-    hype_df = df[available].copy()
-
-    if hype_df.empty:
-        print("    -> no source data; skipping market-hypes step.",
-              flush=True)
-        return
-
-    if sec_type is not None:
-        sec_types = (sec_type,)
-    else:
-        sec_types = tuple(sorted(hype_df["sec_type"].unique()))
-
-    # ---- Step 1: compute is_hyped per window over full history ------
-    print("\n[h1/3] Computing market-hype flags per check-in window "
-          f"({', '.join(str(w) for w in HYPE_CHECKIN_PERIODS)} rows; "
-          f"centered ±{HYPE_THRESHOLD_HALF_WINDOW_ROWS}-row "
-          f"(20y total) percentile thresholds at "
-          f"{HYPE_TRADING_AMT_THRESHOLD_PCT:.1f}% amt / "
-          f"{HYPE_STD_THRESHOLD_PCT:.1f}% std; satisfaction > "
-          f"{HYPE_CHECKIN_SATISFACTION_THRESHOLD:.1f}%)...",
-          flush=True)
-    hype_df = hype_df.sort_values(
-        ["sec_type", "code", "date"]
-    ).reset_index(drop=True)
-    hype_df = compute_market_hypes(hype_df)
-
-    # ---- Step 2: assemble concat/extended/bucketed episodes ---------
-    print("\n[h2/3] Assembling hyped episodes (concat through check-in "
-          f"evidence; span buckets [W, next window) for "
-          f"{', '.join(str(w) for w in HYPE_CHECKIN_PERIODS)} "
-          f"windows)...", flush=True)
-    episodes = hype_episodes(hype_df)
-    del hype_df
-    # Attach the recorded build parameters + fix the table column order.
-    episodes = episodes.reindex(columns=list(MARKET_HYPES_COLUMNS))
-    episodes["min_checkin_satisfaction_threshold"] = (
-        HYPE_CHECKIN_SATISFACTION_THRESHOLD
-    )
-    episodes["min_trading_amt_threshold"] = HYPE_TRADING_AMT_THRESHOLD_PCT
-    episodes["min_std_threshold"] = HYPE_STD_THRESHOLD_PCT
-    n_codes = (
-        episodes[["sec_type", "code"]].drop_duplicates().shape[0]
-        if not episodes.empty
-        else 0
-    )
-    print(f"    -> {len(episodes):,} episodes across {n_codes:,} "
-          f"(sec_type, code) groups", flush=True)
-
-    # ---- Step 3: replace the scope's rows wholesale -----------------
-    if code_filter is not None:
-        for st in sec_types:
-            status = await conn.execute(
-                f"DELETE FROM {MARKET_HYPES_TABLE} "
-                f"WHERE sec_type = $1 AND code = $2",
-                st, code_filter,
-            )
-            n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
-            print(f"    -> deleted {n_del:,} existing episode rows "
-                  f"({st}/{code_filter})", flush=True)
-    else:
-        for st in sec_types:
-            status = await conn.execute(
-                f"DELETE FROM {MARKET_HYPES_TABLE} WHERE sec_type = $1",
-                st,
-            )
-            n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
-            print(f"    -> deleted {n_del:,} existing episode rows "
-                  f"({st})", flush=True)
-
-    n = await _copy_episodes_chunked(
-        conn, pool, episodes, max_concurrent=max_concurrent,
-    )
-    del episodes
-    print(f"    -> inserted {n:,} episode rows", flush=True)
-
-    # ---- Step 4: register in analysis_identity ----------------------
-    print(f"\n[h3/3] Upserting analysis.analysis_identity registry...",
-          flush=True)
-    await upsert_analysis_identity(
-        conn,
-        name=MARKET_HYPES_ANALYSIS_NAME,
-        detail_name="mov_ave_market_hypes",
-        description=MARKET_HYPES_DESCRIPTION,
-    )
-
-    print(f"\n  mov_ave_market_hypes wall time: "
-          f"{time.time() - t0:.1f}s", flush=True)

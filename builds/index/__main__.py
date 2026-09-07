@@ -61,6 +61,9 @@ from builds.index._index_exts import build_index_exts
 from builds.index._exchange_trading_amt import build_exchange_trading_amt
 from builds.index._sec_similars import build_sec_similars
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("index")
+
 
 async def _run_composition(force: bool, code_filter: str | None = None,
                            forced_date=None) -> None:
@@ -87,31 +90,49 @@ async def _run_composition(force: bool, code_filter: str | None = None,
 
     conn = await get_db_or_exit()
     try:
-        print("\n    Building CSI index composition rows …", flush=True)
+        logger.info("\n    Building CSI index composition rows …")
         index_comp_rows = await build_index_composition_rows(
             conn=conn, force=force, code_filter=code_filter,
             forced_date=forced_date,
         )
 
-        print("\n    Building SZSE index composition rows …", flush=True)
+        logger.info("\n    Building SZSE index composition rows …")
         szse_index_comp_rows = await build_szse_index_composition_rows(
             conn=conn, force=force, code_filter=code_filter,
             forced_date=forced_date,
         )
 
         all_rows = index_comp_rows + szse_index_comp_rows
-        print(f"\n    → total: {len(all_rows):,} index composition rows "
-              f"({len(index_comp_rows):,} CSI + {len(szse_index_comp_rows):,} SZSE)", flush=True)
+        # CSI and SZSE closeweight sets can overlap — e.g. 399812 is
+        # published by BOTH for the same snapshot_date. A duplicate
+        # (code, snapshot_date, rank) aborts the all-COPY write with a
+        # UNIQUE violation; keep the FIRST occurrence (CSI — canonical
+        # suffixed stock codes + normalized weights).
+        _seen: set = set()
+        _deduped = []
+        for _r in all_rows:
+            _k = (_r["code"], _r["snapshot_date"], _r["rank"])
+            if _k in _seen:
+                continue
+            _seen.add(_k)
+            _deduped.append(_r)
+        if len(_deduped) != len(all_rows):
+            logger.warning(f"    [DEDUP] dropped {len(all_rows) - len(_deduped):,} "
+                  f"duplicate index composition rows overlapping between "
+                  f"CSI and SZSE sources (CSI kept)")
+        all_rows = _deduped
+        logger.info(f"\n    → total: {len(all_rows):,} index composition rows "
+              f"({len(index_comp_rows):,} CSI + {len(szse_index_comp_rows):,} SZSE)")
 
         if force:
             if code_filter:
-                print(f"    [DB] Force mode for code {code_filter}: deleting existing index composition rows", flush=True)
+                logger.info(f"    [DB] Force mode for code {code_filter}: deleting existing index composition rows")
                 await conn.execute(
                     "DELETE FROM stats.sec_composition WHERE source_type = 'index' AND code = $1",
                     code_filter,
                 )
             else:
-                print("    [DB] Force mode: deleting existing index composition rows", flush=True)
+                logger.info("    [DB] Force mode: deleting existing index composition rows")
                 await conn.execute(
                     "DELETE FROM stats.sec_composition WHERE source_type = 'index'"
                 )
@@ -131,9 +152,9 @@ async def _run_composition(force: bool, code_filter: str | None = None,
             via = "COPY" if n_copied > 0 and n_upserted == 0 else \
                   f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
                   "upsert"
-            print(f"    [DB] Inserted {total:,} rows into stats.sec_composition via {via}", flush=True)
+            logger.info(f"    [DB] Inserted {total:,} rows into stats.sec_composition via {via}")
         else:
-            print("    [DB] No new rows to insert", flush=True)
+            logger.info("    [DB] No new rows to insert")
     finally:
         await conn.close()
 
@@ -151,7 +172,7 @@ async def main():
     enforce_date_force_exclusion(args)
     forced = parse_date_arg(args.date)
     if forced is not None:
-        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
+        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
 
     # Index codes in the DB are bare 6-digit codes (e.g. 000300) — strip
     # the exchange suffix normalize_code may have appended.
@@ -173,21 +194,21 @@ async def main():
         }
     )
     if code_filter:
-        print(f"    [CODE FILTER] Restricting build to single index: {code_filter}", flush=True)
+        logger.info(f"    [CODE FILTER] Restricting build to single index: {code_filter}")
 
     # ---- Phase 1: Index composition (CSI + SZSE) ----------------------
-    print("\n" + "=" * 78)
-    print("  PHASE 1: INDEX COMPOSITION (CSI + SZSE)")
-    print("=" * 78)
+    logger.info("\n" + "=" * 78)
+    logger.info("  PHASE 1: INDEX COMPOSITION (CSI + SZSE)")
+    logger.info("=" * 78)
     t1 = time.time()
     await _run_composition(force=args.force, code_filter=code_filter,
                            forced_date=forced)
-    print(f"\n  Composition phase done ({int(time.time() - t1)}s)", flush=True)
+    logger.info(f"\n  Composition phase done ({int(time.time() - t1)}s)")
 
     # ---- Phase 2: Index baseline (CSIndex daily) ----------------------
-    print("\n" + "=" * 78)
-    print("  PHASE 2: INDEX BASELINE (CSIndex daily OHLCV + PE + MAs)")
-    print("=" * 78)
+    logger.info("\n" + "=" * 78)
+    logger.info("  PHASE 2: INDEX BASELINE (CSIndex daily OHLCV + PE + MAs)")
+    logger.info("=" * 78)
     t2 = time.time()
 
     # baseline.main uses sys.argv for argparse; set it and call directly.
@@ -212,16 +233,16 @@ async def main():
     finally:
         sys.argv = original_argv
 
-    print(f"\n  Baseline phase done ({int(time.time() - t2)}s)", flush=True)
+    logger.info(f"\n  Baseline phase done ({int(time.time() - t2)}s)")
 
     # ---- Phase 3: Index exts (index_exts + etf/exchange amt + similars) --
     # Each step has its own missing-date skip check, so in incremental mode
     # each only (re)computes the dates it is missing. The steps are
     # independent (different sources, different date grains) and do not
     # take a code filter.
-    print("\n" + "=" * 78)
-    print("  PHASE 3: INDEX EXTS (ETF metrics + exchange trading amt + sec similars)")
-    print("=" * 78)
+    logger.info("\n" + "=" * 78)
+    logger.info("  PHASE 3: INDEX EXTS (ETF metrics + exchange trading amt + sec similars)")
+    logger.info("=" * 78)
     t3 = time.time()
 
     from _common.build_commons import get_db_connection_async
@@ -247,7 +268,7 @@ async def main():
         except Exception:
             pass
 
-    print(f"\n  Exts phase done ({int(time.time() - t3)}s)", flush=True)
+    logger.info(f"\n  Exts phase done ({int(time.time() - t3)}s)")
     print_wall_time(t0)
 
 

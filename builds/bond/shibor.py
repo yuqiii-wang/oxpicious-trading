@@ -18,6 +18,9 @@ from builds._commons.safe_parse import safe_to_datetime
 from _common.df_utils import safe_columns
 from builds.bond.paths import SHIBOR_DIR
 
+import logging
+logger = logging.getLogger(__name__)
+
 SHIBOR_TENOR_MAP = [
     ("O/N", "shibor_o_n"),
     ("1W",  "shibor_1w"),
@@ -85,7 +88,7 @@ def build_shibor_df(start_date=None, end_date=None, verbose=True, files=None):
         pattern = os.path.join(SHIBOR_DIR, "shibor_his_*.csv")
         files = sorted(glob.glob(pattern))
     if verbose:
-        print(f"    [SHIBOR] reading {len(files)} shibor_his_*.csv files", flush=True)
+        logger.info(f"    [SHIBOR] reading {len(files)} shibor_his_*.csv files")
 
     all_chunks = []
     n_bad: int = 0
@@ -122,12 +125,12 @@ def build_shibor_df(start_date=None, end_date=None, verbose=True, files=None):
 
     if verbose:
         if len(big):
-            print(f"    [SHIBOR] {len(big)} daily SHIBOR records "
+            logger.info(f"    [SHIBOR] {len(big)} daily SHIBOR records "
                   f"(skipped {n_bad} bad chunks), "
-                  f"{big['date'].min().date()} → {big['date'].max().date()}", flush=True)
+                  f"{big['date'].min().date()} → {big['date'].max().date()}")
             if "shibor_o_n" in safe_columns(big) and big["shibor_o_n"].notna().any():
-                print(f"    [SHIBOR] O/N range: {big['shibor_o_n'].min():.4f}% → "
-                      f"{big['shibor_o_n'].max():.4f}%", flush=True)
+                logger.info(f"    [SHIBOR] O/N range: {big['shibor_o_n'].min():.4f}% → "
+                      f"{big['shibor_o_n'].max():.4f}%")
         else:
-            print(f"    [SHIBOR] no records in range", flush=True)
+            logger.info(f"    [SHIBOR] no records in range")
     return big

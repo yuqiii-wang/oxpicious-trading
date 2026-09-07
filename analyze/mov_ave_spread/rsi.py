@@ -65,6 +65,14 @@ from analyze._common import (
 )
 from analyze.mov_ave_spread.config import SEC_TYPES, SEC_TYPE_IDENTITY_TABLE
 
+import logging
+logger = logging.getLogger(__name__)
+
+# Set after the first GPU-route failure is logged: on a CPU-only host the
+# per-call failure is permanent (e.g. cupy not installed) and repeating it
+# per chunk is log noise, not new information.
+_ewm_gpu_warned = False
+
 
 # ---------------------------------------------------------------------------
 #  Configuration
@@ -249,8 +257,8 @@ def sanitize_rsi_rows(df: pd.DataFrame) -> list[dict]:
     if nulled:
         total = sum(nulled.values())
         per = ", ".join(f"{c}={n}" for c, n in nulled.items())
-        print(f"    -> NUMERIC(10,6) overflow-guard nulled {total:,} value(s) "
-              f"across {len(nulled)} column(s): {per}", flush=True)
+        logger.info(f"    -> NUMERIC(10,6) overflow-guard nulled {total:,} value(s) "
+              f"across {len(nulled)} column(s): {per}")
 
     # date_of_last_extreme_500days stays datetime64 in the frame — the
     # shared sanitize_for_db_insert M-branch converts DATE columns to
@@ -354,8 +362,9 @@ def _grouped_ewm_gpu(s, df, alpha, min_periods, group_bounds):
     )
     # Unwrap the proxy index ONCE — the REAL pandas Series ctor would
     # otherwise dispatch on the proxy RangeIndex (RangeIndex._typ
-    # AttributeError fallback).
-    return pd.Series._fsproxy_slow(
+    # AttributeError fallback). _fsproxy_slow only exists under the
+    # cudf.pandas proxy; plain pandas IS the real class already.
+    return getattr(pd.Series, "_fsproxy_slow", pd.Series)(
         dev.get(), index=host_array(df.index)
     )
 
@@ -385,11 +394,14 @@ def _grouped_ewm_pandas(s, df, grp, alpha, min_periods, ignore_na=False,
         try:
             return _grouped_ewm_gpu(s, df, alpha, min_periods, group_bounds)
         except Exception as e:  # noqa: BLE001 — any GPU failure → pandas
-            print(
-                f"      [ewm kernel] GPU route failed "
-                f"({type(e).__name__}: {e}) — pandas fallback",
-                flush=True,
-            )
+            global _ewm_gpu_warned
+            if not _ewm_gpu_warned:
+                _ewm_gpu_warned = True
+                logger.warning(
+                    f"      [ewm kernel] GPU route failed "
+                    f"({type(e).__name__}: {e}) — pandas fallback "
+                    f"(further failures suppressed for this run)",
+                )
     keys = [df[k] for k in grp]
     res = (
         s.groupby(keys, sort=False)
@@ -574,9 +586,9 @@ async def run_rsi(
                 None, infers sec_types from the DataFrame.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  MOV_AVE_RSI (internal step of mov_ave_spread)", flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  MOV_AVE_RSI (internal step of mov_ave_spread)")
+    logger.info("=" * 78)
 
     # Select only the columns RSI needs — the parent DataFrame carries
     # many extra columns (OHLC, MAs, slopes, stds) that are irrelevant
@@ -590,12 +602,11 @@ async def run_rsi(
     rsi_df = df[["sec_type", "code", "date", "price", "price_slope"]].copy()
     n_null_price = int(rsi_df["price"].isna().sum())
     if n_null_price > 0:
-        print(f"    note: {n_null_price:,} rows with NULL price will get "
-              f"NULL RSI/gap but carried-forward last-extreme columns",
-              flush=True)
+        logger.info(f"    note: {n_null_price:,} rows with NULL price will get "
+              f"NULL RSI/gap but carried-forward last-extreme columns")
 
     if rsi_df.empty:
-        print("    -> no source data; skipping RSI step.", flush=True)
+        logger.info("    -> no source data; skipping RSI step.")
         return
 
     # Use the sec_type passed by the parent (per-sec_type loop) or infer
@@ -612,35 +623,32 @@ async def run_rsi(
         # and bypass the per-sec_type skip-filter (sec_types=() at the
         # insert below keeps every row — dates covered by OTHER codes
         # would otherwise mask this code's gaps).
-        print("    mode: SINGLE-CODE (full recompute for this code)",
-              flush=True)
+        logger.info("    mode: SINGLE-CODE (full recompute for this code)")
         target_dates_union: Optional[Set] = None
     elif force:
-        print("    mode: FORCE (full recompute)", flush=True)
+        logger.info("    mode: FORCE (full recompute)")
         if sec_type is not None:
             # Per-sec_type scope: DELETE only this sec_type's rows — the
             # parent loop calls run_rsi once per sec_type, so a whole-
             # table TRUNCATE here would wipe the other sec_types' rows
             # (in a --sec-type scoped run they are NOT rebuilt).
-            print(f"\n[r0/3] Force mode: deleting {sec_type} rows from "
-                  "mov_ave_rsi...", flush=True)
+            logger.info(f"\n[r0/3] Force mode: deleting {sec_type} rows from "
+                  "mov_ave_rsi...")
             status = await conn.execute(
                 f"DELETE FROM {RSI_TABLE} WHERE sec_type = $1", sec_type,
             )
             n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
-            print(f"    -> deleted {n_del:,} rows; will recompute all "
-                  f"{sec_type} rows", flush=True)
+            logger.info(f"    -> deleted {n_del:,} rows; will recompute all "
+                  f"{sec_type} rows")
         else:
-            print("\n[r0/3] Force mode: truncating mov_ave_rsi...",
-                  flush=True)
+            logger.info("\n[r0/3] Force mode: truncating mov_ave_rsi...")
             await truncate_table_async(conn, RSI_TABLE)
-            print("    -> truncated; will recompute all rows", flush=True)
+            logger.info("    -> truncated; will recompute all rows")
         target_dates_union: Optional[Set] = None
     else:
-        print("    mode: incremental (missing dates only)", flush=True)
-        print("\n[r0/3] Detecting missing dates PER-sec_type "
-              "(etf_identity vs mov_ave_rsi[etf], etc.)...",
-              flush=True)
+        logger.info("    mode: incremental (missing dates only)")
+        logger.info("\n[r0/3] Detecting missing dates PER-sec_type "
+              "(etf_identity vs mov_ave_rsi[etf], etc.)...")
         target_dates_per_st: dict = {}
         for st in sec_types:
             td_st = await find_missing_analysis_dates(
@@ -648,22 +656,21 @@ async def run_rsi(
                 [SEC_TYPE_IDENTITY_TABLE[st]], sec_type=st,
             )
             target_dates_per_st[st] = td_st
-            print(f"    -> {st}: {len(td_st)} missing dates", flush=True)
+            logger.info(f"    -> {st}: {len(td_st)} missing dates")
         # Union across sec_types — a date is "to do" if ANY sec_type
         # is missing it.
         target_dates_union = set()
         for s in target_dates_per_st.values():
             target_dates_union |= s
-        print(f"    -> union across sec_types: "
-              f"{len(target_dates_union)} dates to (re)compute",
-              flush=True)
+        logger.info(f"    -> union across sec_types: "
+              f"{len(target_dates_union)} dates to (re)compute")
         if not target_dates_union:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return
 
     # ---- Step 1: compute RSI + gaps + last-extreme over full history --
-    print("\n[r1/3] Computing Wilder RSI + gaps + last-extreme "
-          "per (sec_type, code, date) over full history...", flush=True)
+    logger.info("\n[r1/3] Computing Wilder RSI + gaps + last-extreme "
+          "per (sec_type, code, date) over full history...")
     rsi_df = compute_rsi_and_gaps(rsi_df)
     rsi_df = _compute_since_last_extreme(rsi_df)
 
@@ -674,11 +681,11 @@ async def run_rsi(
         # convention).
         td64 = pd.to_datetime(sorted(target_dates_union)).values
         rsi_df = rsi_df[rsi_df["date"].isin(td64)].reset_index(drop=True)
-        print(f"    -> incremental filter: {len(rsi_df):,} of {n_before:,} "
-              f"rows are in target_dates_union", flush=True)
+        logger.info(f"    -> incremental filter: {len(rsi_df):,} of {n_before:,} "
+              f"rows are in target_dates_union")
 
     if rsi_df.empty:
-        print("    -> no rows to upsert; skipping RSI upsert.", flush=True)
+        logger.info("    -> no rows to upsert; skipping RSI upsert.")
         return
 
     # ---- Step 2: build + insert (chunked by date) -------------------
@@ -686,9 +693,9 @@ async def run_rsi(
     # stock universe (6.7M rows) that is multi-GB and OOMs. Build + insert
     # per date-chunk so peak memory is bounded to one chunk's dicts
     # (~100K rows). Mirrors the parent mov_ave_spread detail step.
-    print(f"\n[r2/3] Building + inserting {len(rsi_df):,} mov_ave_rsi rows "
+    logger.info(f"\n[r2/3] Building + inserting {len(rsi_df):,} mov_ave_rsi rows "
           f"in date-bounded chunks ({'COPY' if force else 'upsert'} per "
-          f"chunk)...", flush=True)
+          f"chunk)...")
     n = await build_and_insert_chunked(
         conn, pool, rsi_df,
         sanitize_rsi_rows,
@@ -700,11 +707,10 @@ async def run_rsi(
         label="mov_ave_rsi",
     )
     del rsi_df
-    print(f"    -> inserted {n:,} rows", flush=True)
+    logger.info(f"    -> inserted {n:,} rows")
 
     # ---- Step 3: register in analysis_identity ----------------------
-    print(f"\n[r3/3] Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info(f"\n[r3/3] Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=RSI_ANALYSIS_NAME,
@@ -712,4 +718,4 @@ async def run_rsi(
         description=RSI_DESCRIPTION,
     )
 
-    print(f"\n  mov_ave_rsi wall time: {time.time() - t0:.1f}s", flush=True)
+    logger.info(f"\n  mov_ave_rsi wall time: {time.time() - t0:.1f}s")

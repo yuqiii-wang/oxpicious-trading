@@ -4,10 +4,13 @@
  * Layout:
  *   • Header — title + subtitle + back button + Refresh
  *   • Product selector (IC/IF/IH/IM index or T/TF/TL/TS bond)
- *   • FuturesCharts — 2 plots:
+ *   • FuturesCharts — 3 plots:
  *       1. Futures price curves (identical to Data Viz) with gap_price_vs_underlying
  *          added to the tooltip for each contract.
  *       2. Correlation (corr_price_vs_underlying, 20d rolling) per contract.
+ *       3. Basis convergence (contrarian): signed futures−spot gap (bps) per
+ *          contract decaying into the zero line toward expiry, with expiry-gap
+ *          and yesterday-gap markers.
  */
 import { useEffect, useState } from "react";
 import {

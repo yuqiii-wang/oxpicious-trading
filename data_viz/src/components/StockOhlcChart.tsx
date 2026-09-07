@@ -51,7 +51,15 @@ import {
   commonGrid,
   commonDataZoom,
 } from "@/theme/chart-palette";
-import type { StockBaselineRow, StockDividend } from "@shared/types";
+import type {
+  MovAveSpreadHypeEpisode,
+  StockBaselineRow,
+  StockDividend,
+} from "@shared/types";
+import {
+  HYPE_ACCENT_COLOR,
+  hypeEpisodesToMarkArea,
+} from "@/shared/charts/hypeBands";
 import type { EChartsOption } from "echarts";
 
 interface Props {
@@ -77,9 +85,14 @@ interface Props {
    *  Used by the PE & Dividend analysis page to highlight the matching
    *  month-end row in the stats table. */
   onDateClick?: (date: string) => void;
+  /** Market-hype EPISODES to shade (light purple full-height bands), as a
+   *  sorted DISJOINT span list — callers merge all check-in windows with
+   *  mergeHypeEpisodesAllWindows (shared hypeBands helper) so overlapping
+   *  windows' shades don't stack. Empty/omitted = no shading. */
+  hypeEpisodes?: MovAveSpreadHypeEpisode[];
 }
 
-export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = [], dataZoomStart, dataZoomEnd, onDateClick }: Props) {
+export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = [], dataZoomStart, dataZoomEnd, onDateClick, hypeEpisodes }: Props) {
   const themeMode = useStore((s) => s.themeMode);
 
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
@@ -393,6 +406,25 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
       z: 1,
     });
 
+    // --- Market-hype shading (light purple full-height bands) -----------
+    // Empty-data series hosting the markArea (the same
+    // rect-legend + markArea pattern as the MA-Spread charts) — sits
+    // behind everything; the "Hyped" legend entry toggles the shading.
+    if (hypeEpisodes && hypeEpisodes.length > 0) {
+      series.push({
+        type: "line",
+        name: "Hyped",
+        yAxisIndex: 0,
+        data: [],
+        markArea: {
+          silent: true,
+          data: hypeEpisodesToMarkArea(hypeEpisodes),
+        },
+        itemStyle: { color: HYPE_ACCENT_COLOR, opacity: 0.45 },
+        z: 0,
+      });
+    }
+
     if (hasPe && peAxisIdx >= 0) {
       // Separate PE into actual (solid) and estimated (faint) series. Null or
       // 0 values are suppressed so missing/placeholder PE samples do not
@@ -540,7 +572,7 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
       yAxis,
       series,
     };
-  }, [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd]);
+  }, [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd, hypeEpisodes]);
 
   return (
     <EChart

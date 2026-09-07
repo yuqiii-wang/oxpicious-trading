@@ -23,6 +23,7 @@ import { router as futuresRoutes } from "./routes/futures.js";
 import liveDataRoutes from "./routes/live-data.js";
 import analysisRoutes from "./routes/analysis.js";
 import strategyRoutes from "./routes/strategy.js";
+import newsRoutes from "./routes/news.js";
 import cacheRoutes from "./routes/cache.js";
 
 const app: express.Application = express();
@@ -45,6 +46,7 @@ app.use("/api/futures", futuresRoutes);
 app.use("/api/live-data", liveDataRoutes);
 app.use("/api/analysis", analysisRoutes);
 app.use("/api/strategy", strategyRoutes);
+app.use("/api/news", newsRoutes);
 app.use("/api/cache", cacheRoutes);
 
 /**

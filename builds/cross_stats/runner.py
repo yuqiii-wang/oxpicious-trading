@@ -71,6 +71,9 @@ from builds.cross_stats._summary import (
     summary_is_stale,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Preflight gates + dates map
@@ -87,7 +90,7 @@ async def check_composition_present(conn) -> int:
     """)
     n = int(n or 0)
     if n == 0:
-        print(
+        logger.info(
             "\n[COMPOSITION GATE] stats.sec_composition has NO index "
             "holdings (source_type='index', stock_code IS NOT NULL).\n"
             "  cross_stats is entirely composition-derived — run the "
@@ -95,7 +98,6 @@ async def check_composition_present(conn) -> int:
             "    wsl -d Ubuntu-22.04 -- bash -lc \"source "
             "~/miniconda3/etc/profile.d/conda.sh && conda activate base "
             "&& cd /mnt/e/oxpicious-trading && python -m builds.index\"\n",
-            flush=True,
         )
         sys.exit(1)
     return n
@@ -119,8 +121,8 @@ async def _backfill_dates_map_if_stale(conn) -> None:
     )
     if not n_main:
         return
-    print(f"    -> dates map empty but {TABLE} has {n_main:,} PAIR rows; "
-          f"backfilling map (one-time)...", flush=True)
+    logger.info(f"    -> dates map empty but {TABLE} has {n_main:,} PAIR rows; "
+          f"backfilling map (one-time)...")
     await conn.execute(
         f"INSERT INTO {DATES_MAP_TABLE} (date) "
         f"SELECT DISTINCT date FROM {TABLE} WHERE sec_type = 'index' "
@@ -195,34 +197,33 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
         otherwise (early-return when up to date).
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  CROSS STATS (pair + industry grain) — builds.cross_stats",
-          flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  CROSS STATS (pair + industry grain) — builds.cross_stats")
+    logger.info("=" * 78)
     print_declared_blockers()
     if force:
-        print("    mode: FORCE (full recompute)", flush=True)
+        logger.info("    mode: FORCE (full recompute)")
 
     # ---- Step 0: composition preflight gate ---------------------------
-    print("\n[0/5] Composition preflight gate...", flush=True)
+    logger.info("\n[0/5] Composition preflight gate...")
     n_holdings = await check_composition_present(conn)
-    print(f"    -> stats.sec_composition holds {n_holdings:,} index "
-          f"holding rows — OK", flush=True)
+    logger.info(f"    -> stats.sec_composition holds {n_holdings:,} index "
+          f"holding rows — OK")
 
     # ---- Step 1: determine target dates -------------------------------
     if force:
-        print(f"\n[1/5] Force mode: truncating {TABLE}...", flush=True)
+        logger.info(f"\n[1/5] Force mode: truncating {TABLE}...")
         await truncate_table_async(conn, TABLE)
         await truncate_table_async(conn, DATES_MAP_TABLE)
         await conn.execute(
             f"DROP INDEX IF EXISTS stats.{SEC_TYPE_DATE_INDEX}"
         )
         target_dates: Optional[Set[datetime.date]] = None
-        print("    -> truncated (+ dates map); dropped secondary index; "
-              "will recompute all rows", flush=True)
+        logger.info("    -> truncated (+ dates map); dropped secondary index; "
+              "will recompute all rows")
     else:
-        print("\n[1/5] Detecting missing dates "
-              "(source: index_identity vs dates map)...", flush=True)
+        logger.info("\n[1/5] Detecting missing dates "
+              "(source: index_identity vs dates map)...")
         await _backfill_dates_map_if_stale(conn)
         source_rows = await conn.fetch(
             "SELECT DISTINCT date FROM stats.index_identity ORDER BY date"
@@ -230,22 +231,20 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
         source_dates = {r["date"] for r in source_rows}
         existing = await _fetch_map_dates(conn)
         target_dates = source_dates - existing
-        print(f"    -> {len(target_dates)} dates missing from {TABLE} "
+        logger.info(f"    -> {len(target_dates)} dates missing from {TABLE} "
               f"(map has {len(existing)} of {len(source_dates)} source "
-              f"dates)", flush=True)
+              f"dates)")
         if not target_dates:
             # No-op run: the summary rollup still needs a refresh when the
             # last data-writing run predates it (or the summary table is
             # new/empty). The staleness probe touches only the tiny dates
             # map + summary PK, so steady-state no-op runs stay cheap.
             if await summary_is_stale(conn):
-                print("    -> code summary stale; refreshing it now "
-                      "(one-time after the last data write)...", flush=True)
+                logger.info("    -> code summary stale; refreshing it now "
+                      "(one-time after the last data write)...")
                 await refresh_code_summary(conn)
-            print("    -> cross_stats up to date; nothing to do.",
-                  flush=True)
-            print(f"\n  cross_stats wall time: {time.time() - t0:.1f}s",
-                  flush=True)
+            logger.info("    -> cross_stats up to date; nothing to do.")
+            logger.info(f"\n  cross_stats wall time: {time.time() - t0:.1f}s")
             return
 
     # ---- Compute lookback start for incremental mode -----------------
@@ -257,20 +256,19 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
     if target_dates:
         min_target: datetime.date = min(target_dates)
         start_date = recent_trading_day_cutoff(_LOOKBACK, ref=min_target)
-        print(f"    -> lookback window: {start_date} to {min_target} "
-              f"({_LOOKBACK} trading days)", flush=True)
+        logger.info(f"    -> lookback window: {start_date} to {min_target} "
+              f"({_LOOKBACK} trading days)")
 
     # ---- Step 2: PAIR grain -------------------------------------------
-    print("\n[2/5] PAIR grain: fetching index closes (benchmarks)...",
-          flush=True)
+    logger.info("\n[2/5] PAIR grain: fetching index closes (benchmarks)...")
     with timed("fetch"):
         index_closes = await fetch_index_closes(conn, start_date=start_date)
         n_indices = (index_closes["benchmark_code"].nunique()
                      if not index_closes.empty else 0)
-        print(f"    -> {len(index_closes):,} index rows across "
-              f"{n_indices} indices", flush=True)
+        logger.info(f"    -> {len(index_closes):,} index rows across "
+              f"{n_indices} indices")
         if index_closes.empty:
-            print("    -> no index data; exiting.", flush=True)
+            logger.info("    -> no index data; exiting.")
             return
 
         # Recent-data pre-filter: drop delisted/suspended indices (no
@@ -285,35 +283,34 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
             index_closes["benchmark_code"].isin(active_index_codes)
         ]
         after = int(index_closes["benchmark_code"].nunique())
-        print(f"    -> recent-data pre-filter (cutoff={cutoff.isoformat()}, "
+        logger.info(f"    -> recent-data pre-filter (cutoff={cutoff.isoformat()}, "
               f"{RECENT_TRADING_DAYS} trading days): kept {after} of "
-              f"{before} indices", flush=True)
+              f"{before} indices")
         if index_closes.empty:
-            print("    -> no indices with recent data; exiting.",
-                  flush=True)
+            logger.info("    -> no indices with recent data; exiting.")
             return
 
-        print("    -> fetching composition shared weights (ALL pairs) "
-              "+ codes-with-composition filter set...", flush=True)
+        logger.info("    -> fetching composition shared weights (ALL pairs) "
+              "+ codes-with-composition filter set...")
         shared_weights = await fetch_shared_weights(conn)
-        print(f"    -> {len(shared_weights):,} (subject, benchmark) "
-              f"pairs with shared weights", flush=True)
+        logger.info(f"    -> {len(shared_weights):,} (subject, benchmark) "
+              f"pairs with shared weights")
         codes_with_comp = await fetch_codes_with_composition(conn)
-        print(f"    -> {len(codes_with_comp):,} codes have composition "
-              f"data (used to filter subjects)", flush=True)
+        logger.info(f"    -> {len(codes_with_comp):,} codes have composition "
+              f"data (used to filter subjects)")
 
-        print("    -> fetching total_etf_trading_amount from "
-              "stats.index_exts per (date, tracking_index)...", flush=True)
+        logger.info("    -> fetching total_etf_trading_amount from "
+              "stats.index_exts per (date, tracking_index)...")
         etf_amount_by_index = await fetch_etf_amount_by_index(
             conn, start_date=start_date
         )
         if not etf_amount_by_index.empty:
-            print(f"    -> {len(etf_amount_by_index):,} rows across "
+            logger.info(f"    -> {len(etf_amount_by_index):,} rows across "
                   f"{etf_amount_by_index['index_code'].nunique()} indices "
-                  f"with tracking ETFs", flush=True)
+                  f"with tracking ETFs")
         else:
-            print("    -> no ETF->index mapping data; ETF amount columns "
-                  "will be NULL.", flush=True)
+            logger.info("    -> no ETF->index mapping data; ETF amount columns "
+                  "will be NULL.")
 
         index_subject_closes = await fetch_index_subject_closes(
             conn, start_date=start_date
@@ -335,24 +332,24 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
             index_subject_closes["code"].isin(active_index_codes)
         ]
         after_idx = int(index_subject_closes["code"].nunique())
-        print(f"    -> {after_idx} of {before_idx} subjects "
-              f"(recent-data filter + broad-include)", flush=True)
+        logger.info(f"    -> {after_idx} of {before_idx} subjects "
+              f"(recent-data filter + broad-include)")
 
     if index_subject_closes.empty:
-        print("    -> no subjects; skipping pair grain.", flush=True)
+        logger.info("    -> no subjects; skipping pair grain.")
     else:
-        print("\n[3/5] PAIR grain: building + COPY "
-              f"({TABLE}, sec_type='index')...", flush=True)
+        logger.info("\n[3/5] PAIR grain: building + COPY "
+              f"({TABLE}, sec_type='index')...")
         n = await build_and_insert(
             conn, index_subject_closes, index_closes, shared_weights,
             etf_amount_by_index, sec_type="index",
             target_dates=target_dates,
         )
-        print(f"    -> pair grain total: {n:,} rows", flush=True)
+        logger.info(f"    -> pair grain total: {n:,} rows")
 
     # ---- Step 4: INDUSTRY grain ---------------------------------------
-    print(f"\n[4/5] INDUSTRY grain: INSERT...SELECT "
-          f"(sec_type='industry')...", flush=True)
+    logger.info(f"\n[4/5] INDUSTRY grain: INSERT...SELECT "
+          f"(sec_type='industry')...")
     await conn.execute(SET_WORK_MEM_SQL)
     if target_dates is None:
         sql, params = INDUSTRY_INSERT_SQL_FULL, []
@@ -371,22 +368,22 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
             sql, params = None, []
             scope = (f"SKIP (all {len(candidates)} candidate dates already "
                      f"have industry rows)")
-    print(f"    -> {scope}", flush=True)
+    logger.info(f"    -> {scope}")
     if sql is not None:
         with timed("industry-grain"):
             status = await conn.execute(sql, *params)
-        print(f"    -> industry grain: {status}", flush=True)
+        logger.info(f"    -> industry grain: {status}")
 
     # ---- Step 5: register dates + post-create index -------------------
     # Post-create the secondary index FIRST so the written-dates probe
     # below is index-driven (in force mode the index was dropped for the
     # bulk load; incremental runs keep it live).
-    print(f"\n[5/5] Registering written dates in {DATES_MAP_TABLE} + "
-          f"post-creating secondary index...", flush=True)
+    logger.info(f"\n[5/5] Registering written dates in {DATES_MAP_TABLE} + "
+          f"post-creating secondary index...")
     t_idx = time.time()
     await conn.execute(SEC_TYPE_DATE_INDEX_SQL)
-    print(f"    -> index {SEC_TYPE_DATE_INDEX} ready "
-          f"({time.time() - t_idx:.1f}s)", flush=True)
+    logger.info(f"    -> index {SEC_TYPE_DATE_INDEX} ready "
+          f"({time.time() - t_idx:.1f}s)")
     # The map tracks PAIR-grain dates ONLY: register the dates that
     # ACTUALLY have pair rows (exact probe via the just-created index).
     # Registering planned target dates instead would mask dates whose
@@ -404,17 +401,17 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
             msg += (f"; {len(masked)} target dates have NO pair rows "
                     f"(closes not downloaded yet) — left unregistered: "
                     f"{sorted(masked)}")
-    print(msg, flush=True)
+    logger.info(msg)
 
     # ---- Step 5b: refresh the API-facing code summary -----------------
     # Data was written → membership/dates changed → always refresh. The
     # API (perf-attr codes/themes, intraday benchmark dropdown) reads
     # stats.cross_stats_code_summary instead of re-aggregating the 70M+
     # row main table per request.
-    print(f"\n[5/5b] Refreshing {SUMMARY_TABLE}...", flush=True)
+    logger.info(f"\n[5/5b] Refreshing {SUMMARY_TABLE}...")
     await refresh_code_summary(conn)
 
-    print(f"\n  cross_stats wall time: {time.time() - t0:.1f}s", flush=True)
+    logger.info(f"\n  cross_stats wall time: {time.time() - t0:.1f}s")
 
 
 # ---------------------------------------------------------------------------
@@ -431,9 +428,9 @@ async def run_corr_update(conn) -> None:
     windows need it.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  CROSS STATS — CORR BUILD (stride grid only)", flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  CROSS STATS — CORR BUILD (stride grid only)")
+    logger.info("=" * 78)
 
     await check_composition_present(conn)
     await _backfill_dates_map_if_stale(conn)
@@ -442,16 +439,15 @@ async def run_corr_update(conn) -> None:
     grid_set: Set[datetime.date] = set(pd.to_datetime(grid_dates).date)
     present = await _fetch_map_dates(conn)
     target_dates = grid_set & present
-    print(f"    -> {len(target_dates)} grid dates present in {TABLE}",
-          flush=True)
+    logger.info(f"    -> {len(target_dates)} grid dates present in {TABLE}")
     if not target_dates:
-        print("    -> no grid dates to update; run the main pipeline "
-              "first.", flush=True)
+        logger.info("    -> no grid dates to update; run the main pipeline "
+              "first.")
         return
 
     index_closes = await fetch_index_closes(conn)
     if index_closes.empty:
-        print("    -> no index data; exiting.", flush=True)
+        logger.info("    -> no index data; exiting.")
         return
     shared_weights = await fetch_shared_weights(conn)
     etf_amount_by_index = await fetch_etf_amount_by_index(conn)
@@ -466,7 +462,7 @@ async def run_corr_update(conn) -> None:
         index_closes["benchmark_code"].isin(active_index_codes)
     ]
     if index_closes.empty:
-        print("    -> no indices with recent data; exiting.", flush=True)
+        logger.info("    -> no indices with recent data; exiting.")
         return
     broad_subjects = index_closes[
         ~index_closes["benchmark_code"].isin(index_subject_closes["code"])
@@ -482,7 +478,7 @@ async def run_corr_update(conn) -> None:
         index_subject_closes["code"].isin(active_index_codes)
     ]
     if index_subject_closes.empty:
-        print("    -> no subjects; exiting.", flush=True)
+        logger.info("    -> no subjects; exiting.")
         return
 
     n = await build_and_insert(
@@ -490,5 +486,5 @@ async def run_corr_update(conn) -> None:
         etf_amount_by_index, sec_type="index",
         target_dates=target_dates, with_corr=True,
     )
-    print(f"    -> corr build total: {n:,} rows", flush=True)
-    print(f"\n  corr build wall time: {time.time() - t0:.1f}s", flush=True)
+    logger.info(f"    -> corr build total: {n:,} rows")
+    logger.info(f"\n  corr build wall time: {time.time() - t0:.1f}s")

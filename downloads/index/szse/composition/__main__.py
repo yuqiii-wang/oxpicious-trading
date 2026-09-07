@@ -652,4 +652,4 @@ if __name__ == "__main__":
         sleep_sec=args.sleep_sec,
         force_month_start=args.force_month_start,
     )
-    print(result)
+    logger.info(result)

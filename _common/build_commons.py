@@ -77,6 +77,9 @@ from _common.pre_check_and_load import (
 )
 from _common._holidays_and_weekdays import recent_trading_day_cutoff
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ============================================================================
 # stdout encoding (Windows console fix) — duplicated in 6/8 build scripts
@@ -319,17 +322,15 @@ def parse_date_arg(value: Optional[str]) -> Optional[datetime.date]:
     try:
         return datetime.date.fromisoformat(value)
     except ValueError:
-        print(f"[ARG-ERROR] --date expects YYYY-MM-DD, got {value!r}",
-              file=sys.stderr, flush=True)
+        logger.error(f"[ARG-ERROR] --date expects YYYY-MM-DD, got {value!r}")
         raise SystemExit(2)
 
 
 def enforce_date_force_exclusion(args) -> None:
     """--date and --force are mutually exclusive (SystemExit 2)."""
     if getattr(args, "date", None) and getattr(args, "force", False):
-        print("[ARG-ERROR] --date and --force are mutually exclusive "
-              "(--date already scopes and forces a single date)",
-              file=sys.stderr, flush=True)
+        logger.error("[ARG-ERROR] --date and --force are mutually exclusive "
+              "(--date already scopes and forces a single date)")
         raise SystemExit(2)
 
 
@@ -345,8 +346,7 @@ def forced_date_scope(
     """
     if forced in available_dates:
         return {forced}
-    print(f"[FATAL] --date {forced}: no data for this date in {source_label}",
-          file=sys.stderr, flush=True)
+    logger.error(f"[FATAL] --date {forced}: no data for this date in {source_label}")
     raise SystemExit(1)
 
 
@@ -393,10 +393,10 @@ async def get_db_or_exit():
         try:
             conn = await get_db_connection_async()
             if attempt > 0:
-                print(f"    [DB] Connected successfully on attempt "
-                      f"{attempt + 1}", flush=True)
+                logger.info(f"    [DB] Connected successfully on attempt "
+                      f"{attempt + 1}")
             else:
-                print("    [DB] Connected successfully", flush=True)
+                logger.info("    [DB] Connected successfully")
             return conn
         except Exception as e:
             last_exc = e
@@ -405,22 +405,20 @@ async def get_db_or_exit():
                 # Permanent error, or out of retries — give up.
                 msg = str(e).strip()
                 if msg:
-                    print(f"    [FATAL] Database connection failed: "
-                          f"{type(e).__name__}: {msg}", flush=True)
+                    logger.error(f"    [FATAL] Database connection failed: "
+                          f"{type(e).__name__}: {msg}")
                 else:
-                    print(f"    [FATAL] Database connection failed: "
-                          f"{type(e).__name__} (no message) repr={e!r}",
-                          flush=True)
+                    logger.error(f"    [FATAL] Database connection failed: "
+                          f"{type(e).__name__} (no message) repr={e!r}")
                 sys.exit(1)
             # Transient — wait and retry.
             delay, label = _RETRY_BACKOFF[attempt]
-            print(f"    [WARN] Connection attempt {attempt + 1} failed "
-                  f"({type(e).__name__}); retrying in {label} …",
-                  flush=True)
+            logger.warning(f"    [WARN] Connection attempt {attempt + 1} failed "
+                  f"({type(e).__name__}); retrying in {label} …")
             await asyncio.sleep(delay)
 
     # Unreachable — loop always exits via return or sys.exit.
-    print(f"    [FATAL] Database connection failed: {last_exc!r}", flush=True)
+    logger.error(f"    [FATAL] Database connection failed: {last_exc!r}")
     sys.exit(1)
 
 
@@ -529,18 +527,18 @@ def print_build_header(title: str, **fields) -> None:
 
     ``fields`` are rendered as ``key: value`` lines under the title bar.
     """
-    print("=" * 78, flush=True)
-    print(f"  {title}", flush=True)
-    print("=" * 78, flush=True)
+    logger.info("=" * 78)
+    logger.info(f"  {title}")
+    logger.info("=" * 78)
     for k, v in fields.items():
-        print(f"  {k:<22s}: {v}", flush=True)
+        logger.info(f"  {k:<22s}: {v}")
 
 
 def print_wall_time(t0: float) -> None:
     """Print the elapsed wall time since ``t0`` (a time.time() value)."""
     import time as _time
-    print(f"\n  Wall time: {int(_time.time() - t0)}s", flush=True)
-    print("=" * 78, flush=True)
+    logger.info(f"\n  Wall time: {int(_time.time() - t0)}s")
+    logger.info("=" * 78)
 
 
 # ============================================================================

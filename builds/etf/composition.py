@@ -17,6 +17,9 @@ import pandas as pd
 from _common.df_utils import safe_columns
 from builds.etf.paths import COMP_DIR
 
+import logging
+logger = logging.getLogger(__name__)
+
 COMBINED_COLS = [
     "trade_date", "etf_code", "etf_name", "fund_type", "target_index",
     "nav_per_unit", "min_unit_nav",
@@ -103,10 +106,10 @@ def build_composition(verbose=True, code=None, existing_ymd_keys=None):
                  if (k := _filename_comp_key(f)) is None
                  or k not in existing_ymd_keys]
         if verbose and n_all - len(files):
-            print(f"    [COMP] DB gate: skipped {n_all - len(files)} of "
-                  f"{n_all} per-file CSVs (snapshots already in DB)", flush=True)
+            logger.info(f"    [COMP] DB gate: skipped {n_all - len(files)} of "
+                  f"{n_all} per-file CSVs (snapshots already in DB)")
     if verbose:
-        print(f"    [COMP] {len(files)} per-file CSVs to read in {COMP_DIR}", flush=True)
+        logger.info(f"    [COMP] {len(files)} per-file CSVs to read in {COMP_DIR}")
 
     counts = Counter()
     dfs = []
@@ -120,8 +123,8 @@ def build_composition(verbose=True, code=None, existing_ymd_keys=None):
         dfs.append(df)
 
     if not dfs:
-        print("    [WARN] No holdings read from any per-file CSV "
-              "(run download_szse_etf_composition.py to generate them)", flush=True)
+        logger.warning("    [WARN] No holdings read from any per-file CSV "
+              "(run download_szse_etf_composition.py to generate them)")
         return pd.DataFrame(columns=COMBINED_COLS), pd.DataFrame()
 
     combined = pd.concat(dfs, ignore_index=True)
@@ -140,14 +143,14 @@ def build_composition(verbose=True, code=None, existing_ymd_keys=None):
     ).reset_index(drop=True)
 
     if verbose:
-        print(f"    [COMP] {len(combined):,} rows, "
+        logger.info(f"    [COMP] {len(combined):,} rows, "
               f"{combined['etf_code'].nunique()} ETFs, "
-              f"{combined['trade_date'].nunique()} dates", flush=True)
+              f"{combined['trade_date'].nunique()} dates")
 
     universe = _build_universe(combined)
 
-    print(f"    [STATS] parsed={counts['parsed']} failed={counts['failed']} "
-          f"total_holdings={counts['holdings']:,}", flush=True)
+    logger.info(f"    [STATS] parsed={counts['parsed']} failed={counts['failed']} "
+          f"total_holdings={counts['holdings']:,}")
     return combined, universe
 
 

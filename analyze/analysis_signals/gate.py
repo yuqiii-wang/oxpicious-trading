@@ -1,40 +1,28 @@
-"""Adaptive forecast-confirmation gate for analysis_signals.
+"""Forecast-confirmation gate for analysis_signals.
 
-Replaces the fixed ``reverse_prob > 0`` bucket gate with the
-self-adaptive population-quantile rule QRp_P90 plus the per-security
-layers selected by the per-security gate study (2026-09,
-temp_scripts/study_per_security_signals.py). Calibration mirrors the
-study's populations exactly: for each (side, forecast period) the
-threshold derives from reverse_prob over ALL buckets of the same
-sec_type + signal family from ALL stat_months strictly BEFORE the
-target month M (an M-1 calibration gate — a month's threshold never
-sees its own outcomes, so no look-ahead).
+A detected extreme day is RECORDED only when its matching
+analysis_forecasts bucket (same code/sec_type/stat_month/window/side/
+pct|k/cooldown config) qualifies under the ABSOLUTE reversal rule:
+at least ONE forecast_results period (next / 5d / 20d / 60d) must have
 
-Threshold modes (per family, ``hybrid`` flag):
-  - SEC QRp_P90 (mov_rsi): rp >= the population P90. The mov_rsi rp
-    distribution is saturated at 1.0 (21-24% of bucket-periods), where
-    the per-code rank gate degenerates; per-security differentiation
-    for mov_rsi happens in the tier columns instead.
-  - HYB QRp_P90 (mov_std / mov_gap): threshold = w·code_P90 +
-    (1-w)·population_P90 with shrinkage weight w = code_n/(code_n +
-    K_SHRINK); below HYBRID_MIN_POP prior bucket-periods the weight is
-    0 (pure population gate). OOS: uniformly tighter mean rp / dir_ave
-    than the population-only gate at modestly lower volume.
+  - reverse P > 1% — ``reverse_prob > GATE_RP_MIN``: the bucket's
+    probability of a reversal beyond its adaptive reverse_threshold
+    is material (a bare ``> 0`` tail is not enough), AND
+  - a MEAN REVERSAL — the period's mean forward change in the
+    bucket's direction (``dir_ave`` = ±ave_change, sign-flipped for
+    top/upper buckets) is > 0: the bucket's average outcome reverses,
+    so the signal holds — a fat reversal tail with a continuing mean
+    does not.
 
-A bucket qualifies when AT LEAST ONE period (next / 5d / 20d / 60d)
-has reverse_prob >= its calibrated threshold AND the code's prior
-mean reverse_prob for that (side, period) — the same M-1 per-code
-mean the tier / baseline columns read — is positive where known:
-besides the single bucket-period clearing its threshold, the code's
-own history must also see reverse (mean rp > 0 — the legacy
-``reverse_prob > 0`` bar applied to the mean; an unknown mean — the
-code has no prior bucket-periods for that side/period — does not
-block, the same fall-back-don't-fail convention as the HYB weight /
-tier / rank layers). Consistent with the row's confidence semantics
-(confidence = cross-period MAX(reverse_prob)).
+Both conjuncts read the bucket's OWN historical outcomes from
+analysis_forecasts.forecast_results (via the bucket's forecast_id) —
+no population calibration and no look-ahead concern: a month's gate
+only sees that month's own bucket statistics, exactly what the
+forecast table already recorded for it.
 
-Per-security calibration columns (study: prior-vs-future mean rp
-correlation 0.80-0.97):
+Per-security calibration columns (kept from the 2026-09 gate study —
+prior-vs-future mean rp correlation 0.80-0.97; row metadata only,
+they do not gate):
   - tier — MAX over QUALIFYING periods: 'proven' (2) when the code's
     prior mean rp >= PROVEN_RP, 'proven_dir' (1) when the code's prior
     mean DIRECTIONAL move >= PROVEN_DIR_AVE, else 'standard' (0).
@@ -45,14 +33,8 @@ correlation 0.80-0.97):
     (from the code's own prior P25/P50/P75/P90/P95), NULL below
     RANK_MIN_POP prior bucket-periods.
 
-Cold-start fallback: when a (target month, side, period) population
-has fewer than GATE_MIN_POP bucket-periods, the calibrated quantile is
-meaningless and that period falls back to the legacy
-``reverse_prob > 0`` rule.
-
-All quantiles / means / qualification run in SQL (percentile_cont
-interpolates linearly — the same definition as the study's numpy
-quantiles). The returned ConfirmMap keeps the legacy shape per
+All qualification / means run in SQL (percentile_cont interpolates
+linearly). The returned ConfirmMap keeps the legacy shape per
 (stat_month, matrix_key, side) with three added per-code arrays, so
 the signal engines only gain new row fields.
 """
@@ -64,10 +46,7 @@ import numpy as np
 
 from analyze.analysis_signals.signals._base import ConfirmMap
 from analyze.analysis_signals.config import (
-    GATE_MIN_POP,
-    GATE_Q,
-    HYBRID_MIN_POP,
-    K_SHRINK,
+    GATE_RP_MIN,
     PROVEN_DIR_AVE,
     PROVEN_MIN_POP,
     PROVEN_RP,
@@ -87,23 +66,20 @@ async def fetch_confirm(
     config_filter: str,
     matrix_key,
     *,
-    hybrid: bool,
     code_col: str = "code",
 ) -> ConfirmMap:
-    """Confirmed-code sets for one percentile/band family under the
-    adaptive per-security gate (shared by the rsi / std / gap engines).
+    """Confirmed-code sets for one bucket family under the reversal
+    gate (shared by every signal engine).
 
     Args:
-        mov_table: analysis_forecasts.mov_{rsi,std,gap}.
+        mov_table: analysis_forecasts.mov_{rsi,std,gap} / px_vol_state /
+              margin_ratio_state / opp_pair_state.
         win_col: the bucket's window column (rsi_window / ma_window /
-              gap_window).
+              gap_window / px_speed / ratio_state / trend_window).
         config_filter: extra SQL filter on the mov table ("pct = 1" /
-              "k::float8 = 2.0").
+              "k::float8 = 2.0" / "TRUE").
         matrix_key: window value → the engine's matrix key
-              ("rsi_{w}" / "ma_{w}" / "gap_{w}").
-        hybrid: True → HYB QRp_P90 threshold (per-code shrinkage, the
-              mov_std / mov_gap mode); False → pure population QRp_P90
-              (the mov_rsi mode).
+              ("rsi_{w}" / "ma_{w}" / "gap_{w}" / the state string).
         code_col: the mov table column the per-security calibration
               groups by — "code" for the per-security families, the
               TARGET industry ("pair_industry_id") for the opp_pair
@@ -117,27 +93,6 @@ async def fetch_confirm(
     ranks are the code's prior mean rp and within-code percentile
     floor for the confidence's argmax period (NaN when unknown).
     """
-    # Calibrated pass threshold: NULL → legacy rp > 0 fallback. HYB adds
-    # the per-code shrinkage blend on top of the population P90. On top
-    # of it, qual ANDs the mean-reversal rule: the code's own prior mean
-    # rp for the same (side, period) must also see reverse (> 0) where
-    # known — unknown (no prior bucket-periods) does not block.
-    if hybrid:
-        thr_expr = (
-            "CASE WHEN s.q IS NULL OR s.n < " + str(GATE_MIN_POP) + " "
-            "THEN NULL "
-            "WHEN c.n IS NULL OR c.n < " + str(HYBRID_MIN_POP) + " "
-            "THEN s.q "
-            "ELSE (c.n::float8 / (c.n + " + str(K_SHRINK) + ")) * c.q90 "
-            "+ (1.0 - c.n::float8 / (c.n + " + str(K_SHRINK) + ")) * s.q "
-            "END"
-        )
-    else:
-        thr_expr = (
-            "CASE WHEN s.q IS NULL OR s.n < " + str(GATE_MIN_POP) + " "
-            "THEN NULL ELSE s.q END"
-        )
-
     rank_cases = "".join(
         " WHEN b.confidence >= c.q" + str(int(l * 100)) + " THEN "
         + repr(l) for l in reversed(_RANK_LEVELS)
@@ -159,13 +114,6 @@ async def fetch_confirm(
         "          (SELECT MAX(x) FROM unnest($2::date[]) x) "
         "), t AS ("
         "    SELECT DISTINCT unnest($2::date[]) AS target_month "
-        "), sec_thr AS ("
-        "    SELECT t.target_month, bp.side, bp.period, "
-        "           percentile_cont(" + repr(GATE_Q) + ") WITHIN GROUP "
-        "               (ORDER BY bp.rp) AS q, "
-        "           COUNT(*)::bigint AS n "
-        "    FROM t JOIN bp ON bp.stat_month < t.target_month "
-        "    GROUP BY t.target_month, bp.side, bp.period "
         "), code_thr AS ("
         "    SELECT t.target_month, bp.code, bp.side, bp.period, "
         + "".join(
@@ -178,11 +126,10 @@ async def fetch_confirm(
         "           COUNT(*)::bigint AS n "
         "    FROM t JOIN bp ON bp.stat_month < t.target_month "
         "    GROUP BY t.target_month, bp.code, bp.side, bp.period "
-"), gated AS ("
-"    SELECT bp.stat_month, bp.win, bp.side, bp.code, bp.rp, "
-+ thr_expr + " AS pass_thr, "
-"           c.mean_rp AS mean_rp, "
-"           CASE "
+        "), gated AS ("
+        "    SELECT bp.stat_month, bp.win, bp.side, bp.code, "
+        "           bp.rp, bp.dir_ave, "
+        "           CASE "
         "               WHEN c.n >= " + str(PROVEN_MIN_POP) + " "
         "                    AND c.mean_rp >= " + repr(PROVEN_RP) + " "
         "               THEN 2 "
@@ -192,19 +139,15 @@ async def fetch_confirm(
         "               THEN 1 ELSE 0 END AS tier_pts "
         "    FROM bp "
         "    JOIN t ON t.target_month = bp.stat_month "
-        "    LEFT JOIN sec_thr s ON s.target_month = bp.stat_month "
-        "                   AND s.side = bp.side AND s.period = bp.period "
         "    LEFT JOIN code_thr c ON c.target_month = bp.stat_month "
         "                        AND c.code = bp.code "
         "                        AND c.side = bp.side "
         "                        AND c.period = bp.period "
-"), qual AS ("
-"    SELECT stat_month, win, side, code, MAX(tier_pts) AS tier_pts "
-"    FROM gated "
-"    WHERE CASE WHEN pass_thr IS NOT NULL "
-"               THEN rp >= pass_thr ELSE rp > 0 END "
-"         AND (mean_rp IS NULL OR mean_rp > 0) "
-"    GROUP BY stat_month, win, side, code "
+        "), qual AS ("
+        "    SELECT stat_month, win, side, code, MAX(tier_pts) AS tier_pts "
+        "    FROM gated "
+        "    WHERE rp > " + repr(GATE_RP_MIN) + " AND dir_ave > 0 "
+        "    GROUP BY stat_month, win, side, code "
         "), best AS ("
         "    SELECT DISTINCT ON (stat_month, win, side, code) "
         "           stat_month, win, side, code, "

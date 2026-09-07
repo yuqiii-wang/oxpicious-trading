@@ -94,6 +94,9 @@ from live.sec_alloc_live_attribution.ticks import (  # noqa: E402
     load_missing_ticks,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("sec_alloc_live_attribution")
+
 setup_utf8_stdout()
 
 # How long --mode ref waits for its advisory lock before aborting (another
@@ -119,8 +122,8 @@ async def _upsert_live_identity(conn, mode: str) -> None:
         REF_TABLE.split(".", 1)[1],
         f"{PIPELINE_DESCRIPTION} [last mode: {mode}]",
     )
-    print(f"    -> upserted live_identity (name='{PIPELINE_NAME}', "
-          f"mode={mode})", flush=True)
+    logger.info(f"    -> upserted live_identity (name='{PIPELINE_NAME}', "
+          f"mode={mode})")
 
 
 async def _acquire_ref_lock_blocking(conn) -> bool:
@@ -135,8 +138,8 @@ async def _acquire_ref_lock_blocking(conn) -> bool:
         await conn.execute("SELECT pg_advisory_lock($1)", REF_ADVISORY_LOCK_KEY)
         return True
     except Exception as e:  # QueryCanceledError on timeout
-        print(f"    -> ref lock not acquired within {REF_LOCK_WAIT_S}s "
-              f"({type(e).__name__}); aborting this ref run.", flush=True)
+        logger.info(f"    -> ref lock not acquired within {REF_LOCK_WAIT_S}s "
+              f"({type(e).__name__}); aborting this ref run.")
         return False
     finally:
         await conn.execute("SET statement_timeout = '0'")
@@ -196,8 +199,8 @@ async def main() -> None:
     # ---- Resolve the live date -------------------------------------
     target_dates = await fetch_latest_intraday_dates(conn, n_dates=1)
     if not target_dates:
-        print("\n    -> no intraday dates in stats.index_intraday_5min; "
-              "nothing to do.", flush=True)
+        logger.info("\n    -> no intraday dates in stats.index_intraday_5min; "
+              "nothing to do.")
         print_wall_time(t0)
         await asyncio.wait_for(conn.close(), timeout=10)
         return
@@ -220,10 +223,10 @@ async def main() -> None:
                 else "SKIPPED (another live instance holds the advisory lock)"
             ),
         )
-        print(f"\n[1/2] Latest intraday date = {latest_date}", flush=True)
+        logger.info(f"\n[1/2] Latest intraday date = {latest_date}")
         if not lock_acquired:
-            print("[2/2] Lock held — exiting fast; the next 5-min run "
-                  "catches up.", flush=True)
+            logger.info("[2/2] Lock held — exiting fast; the next 5-min run "
+                  "catches up.")
             print_wall_time(t0)
             try:
                 await asyncio.wait_for(conn.close(), timeout=10)
@@ -232,14 +235,13 @@ async def main() -> None:
             return
 
         pairs = await find_live_tick_pairs(conn, benchmarks)
-        print(f"[2/2] LIVE fallback tick pass: {len(pairs)} tick-eligible "
-              "(benchmark, date) pairs...", flush=True)
+        logger.info(f"[2/2] LIVE fallback tick pass: {len(pairs)} tick-eligible "
+              "(benchmark, date) pairs...")
         if pairs:
             n_fb = await load_fallback_ticks(conn, pairs)
-            print(f"    -> fallback total: {n_fb:,} TRUE tick rows",
-                  flush=True)
+            logger.info(f"    -> fallback total: {n_fb:,} TRUE tick rows")
         else:
-            print("    -> no tick-eligible pairs; nothing to do.", flush=True)
+            logger.info("    -> no tick-eligible pairs; nothing to do.")
         await _upsert_live_identity(conn, "live")
         print_wall_time(t0)
         try:
@@ -282,11 +284,11 @@ async def main() -> None:
 
     # ---- Force mode → truncate child first, then parent ------------
     if args.force:
-        print("\n[0/3] Force mode: truncating tick table first, then "
-              "ref...", flush=True)
+        logger.info("\n[0/3] Force mode: truncating tick table first, then "
+              "ref...")
         await truncate_table_async(conn, TICK_TABLE)
         await truncate_table_async(conn, REF_TABLE)
-        print("    -> truncated; will recompute all rows", flush=True)
+        logger.info("    -> truncated; will recompute all rows")
 
     # ---- Step 0: invalidate this date's ref/ticks (--rebuild-latest-date)
     # The "Build Yday Ref" chain refreshes CSVs + daily stats BEFORE this
@@ -294,49 +296,45 @@ async def main() -> None:
     # from stale/estimated closes → delete so the heavy pass rebuilds.
     if args.rebuild_latest_date:
         n_ref_del, n_tick_del = await invalidate_ref_for_date(conn, latest_date)
-        print(f"\n[0/3] --rebuild-latest-date: deleted {n_ref_del:,} ref + "
-              f"{n_tick_del:,} tick rows for {latest_date} — rebuilding",
-              flush=True)
+        logger.info(f"\n[0/3] --rebuild-latest-date: deleted {n_ref_del:,} ref + "
+              f"{n_tick_del:,} tick rows for {latest_date} — rebuilding")
 
     # ---- Step 1: HEAVY ref pass (once per date) --------------------
-    print(f"\n[1/3] Heavy ref pass (latest intraday date = {latest_date}; "
-          "pairs with existing ref rows are skipped)...", flush=True)
+    logger.info(f"\n[1/3] Heavy ref pass (latest intraday date = {latest_date}; "
+          "pairs with existing ref rows are skipped)...")
     missing_ref = await find_missing_ref_pairs(conn, benchmarks)
-    print(f"    -> {len(missing_ref)} (benchmark, date) ref pairs missing",
-          flush=True)
+    logger.info(f"    -> {len(missing_ref)} (benchmark, date) ref pairs missing")
     zero_ref_pairs: list[tuple[str, object]] = []
     if missing_ref:
         n_ref, zero_ref_pairs = await ensure_ref(conn, missing_ref)
-        print(f"    -> ref total: {n_ref:,} rows; "
-              f"{len(zero_ref_pairs)} pairs remain ref-less", flush=True)
+        logger.info(f"    -> ref total: {n_ref:,} rows; "
+              f"{len(zero_ref_pairs)} pairs remain ref-less")
     else:
-        print("    -> ref up to date for the latest date; heavy pass "
-              "skipped.", flush=True)
+        logger.info("    -> ref up to date for the latest date; heavy pass "
+              "skipped.")
 
     # ---- Step 2a: WEIGHTED tick pass (incremental + upgrades) ------
-    print("\n[2/3] Weighted tick pass (pairs with missing or "
-          "fallback-only ticks)...", flush=True)
+    logger.info("\n[2/3] Weighted tick pass (pairs with missing or "
+          "fallback-only ticks)...")
     tick_pairs = await find_pairs_with_missing_ticks(conn, benchmarks)
-    print(f"    -> {len(tick_pairs)} (benchmark, date) pairs pending",
-          flush=True)
+    logger.info(f"    -> {len(tick_pairs)} (benchmark, date) pairs pending")
     if tick_pairs:
         n_ticks = await load_missing_ticks(conn, tick_pairs)
-        print(f"    -> weighted total: {n_ticks:,} rows", flush=True)
+        logger.info(f"    -> weighted total: {n_ticks:,} rows")
     else:
-        print("    -> all weighted ticks up to date.", flush=True)
+        logger.info("    -> all weighted ticks up to date.")
 
     # ---- Step 2b: FALLBACK tick pass for ref-less pairs ------------
     # (all mode only — in the split design the LIVE process owns
     # fallback ticks; ref mode stops after the weighted upgrades.)
     if args.mode == "all" and zero_ref_pairs:
-        print(f"    -> fallback for {len(zero_ref_pairs)} ref-less "
-              "pairs (is_without_trading_amt = TRUE)...", flush=True)
+        logger.info(f"    -> fallback for {len(zero_ref_pairs)} ref-less "
+              "pairs (is_without_trading_amt = TRUE)...")
         n_fb = await load_fallback_ticks(conn, zero_ref_pairs)
-        print(f"    -> fallback total: {n_fb:,} TRUE tick rows",
-              flush=True)
+        logger.info(f"    -> fallback total: {n_fb:,} TRUE tick rows")
 
     # ---- Step 3: register in live.live_identity --------------------
-    print("\n[3/3] Registering in live.live_identity...", flush=True)
+    logger.info("\n[3/3] Registering in live.live_identity...")
     await _upsert_live_identity(conn, args.mode)
 
     print_wall_time(t0)

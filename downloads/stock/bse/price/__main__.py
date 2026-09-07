@@ -11,5 +11,8 @@ from __future__ import annotations
 
 from downloads._common.exchanges.bjs import download_bse_price
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("price")
+
 if __name__ == "__main__":
-    print(download_bse_price())
+    logger.info(download_bse_price())

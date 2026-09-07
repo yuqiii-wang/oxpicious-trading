@@ -15,4 +15,5 @@
 \ir 11_sec_info.sql
 \ir 12_futures_baseline.sql
 \ir 13_industry_baseline.sql
+\ir 16_mov_ave_market_hypes.sql
 \ir 99_reconstruct_views.sql

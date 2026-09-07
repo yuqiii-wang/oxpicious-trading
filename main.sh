@@ -51,6 +51,9 @@ done
 # split); it is the producer that analyze.industry_sentiments' attributions
 # + etf_contribution aggregations read from — its incremental run here makes
 # the analyze step's internal producer a no-op.
+# builds.text loads the downloaded news text (downloads.macro.*.news above)
+# into text.news + text.news_keywords — idempotent upserts, so it is safe
+# on every run even before the first news download.
 for m in \
   builds.stock \
   builds.etf \
@@ -59,7 +62,8 @@ for m in \
   builds.cross_stats \
   builds.bond \
   builds.options \
-  builds.futures
+  builds.futures \
+  builds.text
 do
   python -m "$m"
 done

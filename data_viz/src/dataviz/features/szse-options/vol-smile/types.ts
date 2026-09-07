@@ -3,7 +3,6 @@ export interface ExpirySkew {
   expiryDate: string;
   skewPrice: number | null;
   skewPct: number | null;
-  countSkewnessCurveCrossedSpot?: number;
 }
 
 export interface DailySkew {

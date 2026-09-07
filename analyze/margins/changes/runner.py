@@ -27,6 +27,9 @@ from analyze.margins.changes.db_io import truncate_and_insert
 from analyze.margins.changes.detection import detect_trend_episodes
 from analyze.margins.changes.trading_amt import fetch_trading_amt
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def run_margin_changes(
     conn,
@@ -59,7 +62,7 @@ async def run_margin_changes(
             shift when new dates arrive). Kept for API compatibility
             with the pipeline.
     """
-    print("\n  Detecting margin balance trend episodes...", flush=True)
+    logger.info("\n  Detecting margin balance trend episodes...")
 
     # ---- Fetch trading_amount once for all sec_types -----------------
     # The ratio Σ rz_buy / Σ trading_amount is computed inside
@@ -67,14 +70,14 @@ async def run_margin_changes(
     # contiguous daily-row segments — no asof join required).
     sec_types_present = list(tech_stats_by_sec_type.keys())
     trading_amt = await fetch_trading_amt(conn, sec_types_present)
-    print(f"    -> fetched {len(trading_amt):,} trading_amount rows "
-          f"({', '.join(sec_types_present)})", flush=True)
+    logger.info(f"    -> fetched {len(trading_amt):,} trading_amount rows "
+          f"({', '.join(sec_types_present)})")
 
     all_episodes: list[pd.DataFrame] = []
     for sec_type, tech_stats in tech_stats_by_sec_type.items():
         history = histories.get(sec_type)
         if history is None or history.empty or tech_stats.empty:
-            print(f"    [{sec_type}] no data; skipping.", flush=True)
+            logger.info(f"    [{sec_type}] no data; skipping.")
             continue
 
         amt_sec = trading_amt[
@@ -85,20 +88,18 @@ async def run_margin_changes(
         )
         n_up = int((episodes["is_trend_up_not_down"] == True).sum()) if not episodes.empty else 0  # noqa: E712
         n_down = int((episodes["is_trend_up_not_down"] == False).sum()) if not episodes.empty else 0  # noqa: E712
-        print(f"    [{sec_type}] {len(episodes):,} trend episodes "
-              f"({n_up:,} UP, {n_down:,} DOWN)", flush=True)
+        logger.info(f"    [{sec_type}] {len(episodes):,} trend episodes "
+              f"({n_up:,} UP, {n_down:,} DOWN)")
         if not episodes.empty:
             all_episodes.append(episodes)
 
     if not all_episodes:
-        print("    -> no trend episodes detected; writing empty table.",
-              flush=True)
+        logger.info("    -> no trend episodes detected; writing empty table.")
         await truncate_and_insert(conn, pd.DataFrame(columns=INSERT_COLUMNS))
     else:
         episodes_df = pd.concat(all_episodes, ignore_index=True)
         n = await truncate_and_insert(conn, episodes_df)
-        print(f"    -> COPY-inserted {n:,} rows into margin_changes",
-              flush=True)
+        logger.info(f"    -> COPY-inserted {n:,} rows into margin_changes")
 
     # Upsert the analysis_identity row.
     await upsert_analysis_identity(
@@ -107,4 +108,4 @@ async def run_margin_changes(
         detail_name="margin_changes",
         description=DESCRIPTION,
     )
-    print("    -> upserted margin_changes identity row", flush=True)
+    logger.info("    -> upserted margin_changes identity row")

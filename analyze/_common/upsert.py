@@ -42,6 +42,9 @@ from _common.pre_check_and_load.missing_dates import (
     filter_rows_to_missing_dates_async,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # Default target rows per upsert chunk. ~8.2M detail rows / ~1700 dates
 # ≈ 5000 rows/date; grouping ~20 dates per chunk gives ~100K rows/chunk
@@ -110,8 +113,8 @@ async def _upsert_chunk_sequential(
     via = "COPY" if n_copied > 0 and n_upserted == 0 else \
           f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
           "upsert"
-    print(f"{prefix}chunk {chunk_idx}/{n_chunks}: inserted {n:,} rows "
-          f"via {via} (cumulative {total_counter[0]:,})", flush=True)
+    logger.info(f"{prefix}chunk {chunk_idx}/{n_chunks}: inserted {n:,} rows "
+          f"via {via} (cumulative {total_counter[0]:,})")
     return n
 
 
@@ -135,8 +138,8 @@ async def _upsert_chunk_parallel(
     via = "COPY" if n_copied > 0 and n_upserted == 0 else \
           f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
           "upsert"
-    print(f"{prefix}chunk {chunk_idx}/{n_chunks} done: inserted {n:,} rows "
-          f"via {via} (cumulative {so_far:,})", flush=True)
+    logger.info(f"{prefix}chunk {chunk_idx}/{n_chunks} done: inserted {n:,} rows "
+          f"via {via} (cumulative {so_far:,})")
     return n
 
 
@@ -213,9 +216,8 @@ async def batched_upsert_by_date(
     sem = asyncio.Semaphore(concurrency)
     lock = asyncio.Lock()
 
-    print(f"{prefix}parallel mode: {n_chunks} chunks, "
-          f"{concurrency} concurrent (pool max_size={pool_max})",
-          flush=True)
+    logger.info(f"{prefix}parallel mode: {n_chunks} chunks, "
+          f"{concurrency} concurrent (pool max_size={pool_max})")
 
     async def _task(chunk_idx, chunk):
         async with sem:
@@ -242,8 +244,8 @@ async def _copy_chunk_sequential(
     n = await copy_insert_async(conn, table_name, chunk)
     total_counter[0] += n
     prefix = f"      {label} " if label else "      "
-    print(f"{prefix}chunk {chunk_idx}/{n_chunks}: COPY {n:,} rows "
-          f"(cumulative {total_counter[0]:,})", flush=True)
+    logger.info(f"{prefix}chunk {chunk_idx}/{n_chunks}: COPY {n:,} rows "
+          f"(cumulative {total_counter[0]:,})")
     return n
 
 
@@ -261,8 +263,8 @@ async def _copy_chunk_parallel(
         total_counter[0] += n
         so_far = total_counter[0]
     prefix = f"      {label} " if label else "      "
-    print(f"{prefix}chunk {chunk_idx}/{n_chunks} done: COPY {n:,} rows "
-          f"(cumulative {so_far:,})", flush=True)
+    logger.info(f"{prefix}chunk {chunk_idx}/{n_chunks} done: COPY {n:,} rows "
+          f"(cumulative {so_far:,})")
     return n
 
 
@@ -338,9 +340,8 @@ async def batched_copy_by_date(
     sem = asyncio.Semaphore(concurrency)
     lock = asyncio.Lock()
 
-    print(f"{prefix}parallel COPY: {n_chunks} chunks, "
-          f"{concurrency} concurrent (pool max_size={pool_max})",
-          flush=True)
+    logger.info(f"{prefix}parallel COPY: {n_chunks} chunks, "
+          f"{concurrency} concurrent (pool max_size={pool_max})")
 
     async def _task(chunk_idx, chunk):
         async with sem:
@@ -539,18 +540,16 @@ async def build_and_insert_chunked(
     if use_parallel:
         pool_max = getattr(pool, "_maxsize", max_concurrent)
         concurrency = max(1, min(max_concurrent, n_chunks, pool_max))
-        print(f"{prefix}build+insert: {n_chunks} date-chunks "
+        logger.info(f"{prefix}build+insert: {n_chunks} date-chunks "
               f"(~{chunk_target_rows:,} rows/chunk), parallel COPY "
-              f"({concurrency} concurrent, pool max_size={pool_max})",
-              flush=True)
+              f"({concurrency} concurrent, pool max_size={pool_max})")
         return await _build_and_insert_parallel(
             conn, pool, sub_frames, build_fn, table_name,
             sec_types_set, concurrency, n_chunks, prefix, force,
         )
     else:
-        print(f"{prefix}build+insert: {n_chunks} date-chunks "
-              f"(~{chunk_target_rows:,} rows/chunk), sequential (COPY)",
-              flush=True)
+        logger.info(f"{prefix}build+insert: {n_chunks} date-chunks "
+              f"(~{chunk_target_rows:,} rows/chunk), sequential (COPY)")
         return await _build_and_insert_sequential(
             conn, sub_frames, build_fn, table_name,
             sec_types_set, n_chunks, prefix, force,
@@ -579,8 +578,8 @@ async def _build_and_insert_sequential(
             continue
         n = await copy_insert_async(conn, table_name, rows)
         total += n
-        print(f"{prefix}chunk {i}/{n_chunks}: COPY {n:,} rows "
-              f"(cumulative {total:,})", flush=True)
+        logger.info(f"{prefix}chunk {i}/{n_chunks}: COPY {n:,} rows "
+              f"(cumulative {total:,})")
     return total
 
 
@@ -610,8 +609,8 @@ async def _build_and_insert_parallel(
             async with lock:
                 total_counter[0] += n
                 so_far = total_counter[0]
-            print(f"{prefix}chunk {chunk_idx}/{n_chunks}: COPY {n:,} rows "
-                  f"(cumulative {so_far:,})", flush=True)
+            logger.info(f"{prefix}chunk {chunk_idx}/{n_chunks}: COPY {n:,} rows "
+                  f"(cumulative {so_far:,})")
             return n
 
     for i, sub in enumerate(sub_frames, start=1):
@@ -749,10 +748,9 @@ async def build_and_insert_chunked_df(
     if use_parallel:
         pool_max = getattr(pool, "_maxsize", max_concurrent)
         concurrency = max(1, min(max_concurrent, n_chunks, pool_max))
-        print(f"{prefix}build+insert (df): {n_chunks} date-chunks "
+        logger.info(f"{prefix}build+insert (df): {n_chunks} date-chunks "
               f"(~{chunk_target_rows:,} wide rows/chunk), parallel CSV COPY "
-              f"({concurrency} concurrent, pool max_size={pool_max})",
-              flush=True)
+              f"({concurrency} concurrent, pool max_size={pool_max})")
         sem = asyncio.Semaphore(concurrency)
         lock = asyncio.Lock()
         total_counter = [0]
@@ -767,8 +765,8 @@ async def build_and_insert_chunked_df(
                 async with lock:
                     total_counter[0] += n
                     so_far = total_counter[0]
-                print(f"{prefix}chunk {chunk_idx}/{n_chunks}: COPY "
-                      f"{n:,} rows (cumulative {so_far:,})", flush=True)
+                logger.info(f"{prefix}chunk {chunk_idx}/{n_chunks}: COPY "
+                      f"{n:,} rows (cumulative {so_far:,})")
                 return n
 
         for i, sub in enumerate(sub_frames, start=1):
@@ -791,9 +789,9 @@ async def build_and_insert_chunked_df(
         results = await asyncio.gather(*copy_tasks)
         total = sum(results)
     else:
-        print(f"{prefix}build+insert (df): {n_chunks} date-chunks "
+        logger.info(f"{prefix}build+insert (df): {n_chunks} date-chunks "
               f"(~{chunk_target_rows:,} wide rows/chunk), sequential "
-              f"(CSV COPY)", flush=True)
+              f"(CSV COPY)")
         for i, sub in enumerate(sub_frames, start=1):
             long_df = build_fn(sub)
             if long_df is None or len(long_df) == 0:
@@ -808,6 +806,6 @@ async def build_and_insert_chunked_df(
                 continue
             n = await csv_copy_from_frame_async(conn, table_name, long_df)
             total += n
-            print(f"{prefix}chunk {i}/{n_chunks}: COPY {n:,} rows "
-                  f"(cumulative {total:,})", flush=True)
+            logger.info(f"{prefix}chunk {i}/{n_chunks}: COPY {n:,} rows "
+                  f"(cumulative {total:,})")
     return total

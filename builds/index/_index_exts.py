@@ -55,6 +55,9 @@ from _common.build_commons import (
 )
 from builds._commons.row_emission import records_from_frame
 
+import logging
+logger = logging.getLogger(__name__)
+
 TABLE_INDEX = "stats.index_exts"
 TABLE_INDUSTRY = "stats.etf_trading_amt"
 
@@ -70,13 +73,13 @@ async def build_index_exts(conn, force: bool = False,
     """
     # ---- Step 1: detect missing dates or truncate ----------------
     if force:
-        print(f"\n[INDEX_EXTS] Force mode: truncating {TABLE_INDEX} and "
-              f"{TABLE_INDUSTRY}...", flush=True)
+        logger.info(f"\n[INDEX_EXTS] Force mode: truncating {TABLE_INDEX} and "
+              f"{TABLE_INDUSTRY}...")
         await truncate_table_async(conn, TABLE_INDEX)
         await truncate_table_async(conn, TABLE_INDUSTRY)
         target_dates: Optional[Set[datetime.date]] = None
     else:
-        print(f"\n[INDEX_EXTS] Detecting missing dates...", flush=True)
+        logger.info(f"\n[INDEX_EXTS] Detecting missing dates...")
         source_rows = await conn.fetch(
             "SELECT DISTINCT date FROM stats.etf_liquidity_margin"
         )
@@ -89,17 +92,16 @@ async def build_index_exts(conn, force: bool = False,
                 source_dates, forced_date,
                 source_label="stats.etf_liquidity_margin dates",
             )
-            print(f"    -> [DATE MODE] forcing recompute of {forced_date} "
-                  f"(missing-date skip bypassed)", flush=True)
+            logger.info(f"    -> [DATE MODE] forcing recompute of {forced_date} "
+                  f"(missing-date skip bypassed)")
         else:
             target_dates = await find_missing_dates(
                 conn, TABLE_INDEX, source_dates
             )
-            print(f"    -> {len(target_dates)} dates missing from "
-                  f"{TABLE_INDEX} (out of {len(source_dates)} source dates)",
-                  flush=True)
+            logger.info(f"    -> {len(target_dates)} dates missing from "
+                  f"{TABLE_INDEX} (out of {len(source_dates)} source dates)")
             if not target_dates:
-                print("    -> DB is up to date; nothing to do.", flush=True)
+                logger.info("    -> DB is up to date; nothing to do.")
                 return
 
     # ---- Step 2: compute per-(date, index) aggregation ------------
@@ -116,8 +118,8 @@ async def build_index_exts(conn, force: bool = False,
     # needs full per-code history). In incremental mode, only target-date
     # rows are returned via a WHERE filter on the final SELECT, so only
     # those are upserted. Existing rows keep their already-correct MA5.
-    print("\n[INDEX_EXTS] Computing etf_num + total_etf_trading_amount + ma5 per "
-          "(date, index_code)...", flush=True)
+    logger.info("\n[INDEX_EXTS] Computing etf_num + total_etf_trading_amount + ma5 per "
+          "(date, index_code)...")
     date_filter = (
         "WHERE ewm.date = ANY($1::date[])"
         if target_dates is not None else ""
@@ -157,15 +159,14 @@ async def build_index_exts(conn, force: bool = False,
         rows = await conn.fetch(sql_index, sorted(target_dates))
     else:
         rows = await conn.fetch(sql_index)
-    print(f"    -> {len(rows):,} rows across "
+    logger.info(f"    -> {len(rows):,} rows across "
           f"{len(set(rec_col(rows, 'code')))} indices "
-          f"(only indices with linked ETFs — joined via sec_classification)",
-          flush=True)
+          f"(only indices with linked ETFs — joined via sec_classification)")
 
     # ---- Step 3: upsert per-(date, index) rows --------------------
-    print(f"\n[INDEX_EXTS] Upserting into {TABLE_INDEX}...", flush=True)
+    logger.info(f"\n[INDEX_EXTS] Upserting into {TABLE_INDEX}...")
     if not rows:
-        print("    -> no data to insert.", flush=True)
+        logger.info("    -> no data to insert.")
     else:
         # Whole-column extraction + column-major row emission
         df = pd.DataFrame(rec_cols(rows))
@@ -180,7 +181,7 @@ async def build_index_exts(conn, force: bool = False,
         via = "COPY" if n_copied > 0 and n_upserted == 0 else \
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
               "upsert"
-        print(f"    -> upserted {total:,} rows via {via}", flush=True)
+        logger.info(f"    -> upserted {total:,} rows via {via}")
 
     # ---- Step 3b: backfill stock_num from sec_composition ---------
     # For every (date, code) row in index_exts, find the latest
@@ -193,8 +194,8 @@ async def build_index_exts(conn, force: bool = False,
     #
     # In incremental mode, filter to target dates so existing rows are
     # not touched (their stock_num is already correct).
-    print(f"\n[INDEX_EXTS] Backfilling stock_num from sec_composition "
-          f"(latest snapshot <= date per code)...", flush=True)
+    logger.info(f"\n[INDEX_EXTS] Backfilling stock_num from sec_composition "
+          f"(latest snapshot <= date per code)...")
     date_filter_update = (
         "AND ie.date = ANY($1::date[])"
         if target_dates is not None else ""
@@ -224,8 +225,8 @@ async def build_index_exts(conn, force: bool = False,
         stock_num_rows = await conn.fetch(sql_stock_num, sorted(target_dates))
     else:
         stock_num_rows = await conn.fetch(sql_stock_num)
-    print(f"    -> updated stock_num on {len(stock_num_rows):,} "
-          f"(date, code) rows", flush=True)
+    logger.info(f"    -> updated stock_num on {len(stock_num_rows):,} "
+          f"(date, code) rows")
 
     # ---- Step 4: compute per-(date, industry_id) aggregation ------
     # Same etf_liquidity_margin source, but grouped by the linked
@@ -240,8 +241,8 @@ async def build_index_exts(conn, force: bool = False,
     #
     # Same MA5 pattern: full CTE for window correctness, output filtered
     # to target dates in incremental mode.
-    print("\n[INDEX_EXTS] Computing etf_num + total_etf_trading_amount + ma5 per "
-          "(date, industry_id)...", flush=True)
+    logger.info("\n[INDEX_EXTS] Computing etf_num + total_etf_trading_amount + ma5 per "
+          "(date, industry_id)...")
     date_filter_ind = (
         "WHERE eim.date = ANY($1::date[])"
         if target_dates is not None else ""
@@ -282,14 +283,13 @@ async def build_index_exts(conn, force: bool = False,
         ind_rows = await conn.fetch(sql_ind, sorted(target_dates))
     else:
         ind_rows = await conn.fetch(sql_ind)
-    print(f"    -> {len(ind_rows):,} rows across "
-          f"{len(set(r['code'] for r in ind_rows))} industries",
-          flush=True)
+    logger.info(f"    -> {len(ind_rows):,} rows across "
+          f"{len(set(r['code'] for r in ind_rows))} industries")
 
     # ---- Step 5: upsert per-(date, industry_id) rows --------------
-    print(f"\n[INDEX_EXTS] Upserting into {TABLE_INDUSTRY}...", flush=True)
+    logger.info(f"\n[INDEX_EXTS] Upserting into {TABLE_INDUSTRY}...")
     if not ind_rows:
-        print("    -> no data to insert.", flush=True)
+        logger.info("    -> no data to insert.")
     else:
         ind_data = [
             {
@@ -308,4 +308,4 @@ async def build_index_exts(conn, force: bool = False,
         via2 = "COPY" if n_copied2 > 0 and n_upserted2 == 0 else \
                f"COPY+upsert ({n_copied2}+{n_upserted2})" if n_copied2 > 0 else \
                "upsert"
-        print(f"    -> upserted {total2:,} rows via {via2}", flush=True)
+        logger.info(f"    -> upserted {total2:,} rows via {via2}")

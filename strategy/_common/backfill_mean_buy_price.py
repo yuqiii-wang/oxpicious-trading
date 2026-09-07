@@ -28,6 +28,9 @@ from typing import List, Tuple
 from _common.build_commons import setup_utf8_stdout
 from _common.db_commons import get_db_connection_async
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("backfill_mean_buy_price")
+
 # Per-seq fetch: side, qty, normalized_fill_price ordered chronologically.
 # decision_no is already 1..N in chronological order (assigned by
 # assign_decision_no after sorting by (exec_date, side)).
@@ -105,15 +108,14 @@ async def main() -> None:
             "SELECT COUNT(*) FROM strategy.trade_decision "
             "WHERE normalized_mean_buy_price IS NULL"
         )
-        print(f"[backfill] trade_decision rows: {total} "
-              f"(NULL normalized_mean_buy_price: {nulls})", flush=True)
+        logger.info(f"[backfill] trade_decision rows: {total} "
+              f"(NULL normalized_mean_buy_price: {nulls})")
         if nulls == 0:
-            print("[backfill] nothing to do; all rows already populated.",
-                  flush=True)
+            logger.info("[backfill] nothing to do; all rows already populated.")
             return
 
         affected = await conn.fetch(AFFECTED_SEQS_SQL)
-        print(f"[backfill] affected seqs: {len(affected)}", flush=True)
+        logger.info(f"[backfill] affected seqs: {len(affected)}")
 
         n_updated = 0
         for rec in affected:
@@ -135,17 +137,16 @@ async def main() -> None:
             for decision_no, mbp in updates:
                 await conn.execute(UPDATE_SQL, seq_id, decision_no, mbp)
                 n_updated += 1
-            print(f"[backfill] seq_id={seq_id}: updated {len(updates)} rows "
-                  f"(first BUY mean_buy_price={updates[0][1]:.4f})",
-                  flush=True)
+            logger.info(f"[backfill] seq_id={seq_id}: updated {len(updates)} rows "
+                  f"(first BUY mean_buy_price={updates[0][1]:.4f})")
 
         # Verify the result.
         remaining = await conn.fetchval(
             "SELECT COUNT(*) FROM strategy.trade_decision "
             "WHERE normalized_mean_buy_price IS NULL"
         )
-        print(f"[backfill] updated {n_updated} rows; "
-              f"remaining NULLs: {remaining}", flush=True)
+        logger.info(f"[backfill] updated {n_updated} rows; "
+              f"remaining NULLs: {remaining}")
     finally:
         await conn.close()
 

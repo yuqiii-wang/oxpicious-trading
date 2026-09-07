@@ -30,18 +30,14 @@ Differences from the forecast engines (by design):
     reverse_threshold (k·σ of the code's window forward changes) against
     the bucket side).
 
-Adaptive forecast-confirmation gate (QRp_P90 + mean-reversal rule): a
-detected day is RECORDED only when the matching analysis_forecasts
-bucket (same code/sec_type/stat_month/window/side/pct|k/cooldown
-config) has a cross-period reversal confidence (MAX reverse_prob
-across the forecast_results periods next/5d/20d/60d) at or above the
-P90 quantile of its population (same sec_type/family/side, all
-buckets of all PRIOR stat_months — M-1 calibration, no look-ahead;
-legacy confidence > 0 fallback below GATE_MIN_POP population buckets)
-AND the qualifying period's code prior mean reverse_prob is positive
-where known — the mean sees reverse too, not just the single
-bucket-period (unknown mean — no prior bucket-periods for that
-side/period — does not block). __main__ builds the
+Forecast-confirmation gate (absolute reversal rule): a detected day is
+RECORDED only when the matching analysis_forecasts bucket (same
+code/sec_type/stat_month/window/side/pct|k/cooldown config) qualifies —
+at least ONE forecast_results period (next/5d/20d/60d) has reverse_prob
+> GATE_RP_MIN (reverse P > 1% — a material reversal probability) AND a
+MEAN REVERSAL (dir_ave > 0 — the bucket's mean forward change reverses,
+so the signal holds, not just a fat reversal tail); see gate.py.
+__main__ builds the
 confirmed-code sets per (stat_month, window, side) via
 analysis_signals.gate.fetch_confirm and passes them as `confirm`; the
 engines AND them into the cell mask AFTER cooldown, so detection stays

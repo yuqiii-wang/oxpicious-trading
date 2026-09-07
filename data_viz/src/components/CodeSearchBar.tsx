@@ -23,6 +23,11 @@ interface Props {
   onClear: () => void;
   /** Placeholder text (e.g. "ETF code" / "Index code"). */
   placeholder?: string;
+  /** Disable the input (pages whose selection model has no code search). */
+  disabled?: boolean;
+  /** Label prefix on the active-search chip. Default "Code:" — pages that
+   *  reuse the bar for free-text search can relabel it (e.g. "关键词:"). */
+  activeLabel?: string;
 }
 
 export default function CodeSearchBar({
@@ -30,6 +35,8 @@ export default function CodeSearchBar({
   onSearch,
   onClear,
   placeholder = "Code",
+  disabled = false,
+  activeLabel = "Code",
 }: Props) {
   const [value, setValue] = useState("");
 
@@ -50,6 +57,7 @@ export default function CodeSearchBar({
       <TextField
         size="small"
         value={value}
+        disabled={disabled}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKey}
         placeholder={placeholder}
@@ -67,7 +75,7 @@ export default function CodeSearchBar({
       />
       {activeCode && (
         <Chip
-          label={`Code: ${activeCode}`}
+          label={`${activeLabel}: ${activeCode}`}
           size="small"
           color="primary"
           variant="filled"

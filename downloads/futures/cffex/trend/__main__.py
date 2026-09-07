@@ -297,37 +297,37 @@ def main() -> None:
     trend_dir = get_trend_dir(args.out_root)
     archive_dir = _PROJECT_ROOT / "temps" / "cffex_archive"
 
-    print(f"\n  Trend dir: {trend_dir}")
-    print(f"  Archive dir: {archive_dir}")
+    logger.info(f"\n  Trend dir: {trend_dir}")
+    logger.info(f"  Archive dir: {archive_dir}")
 
     # ------------------------------------------------------------------
     # Step 1: Check SQL for latest date
     # ------------------------------------------------------------------
-    print("\n[1/4] Checking database for latest date ...", flush=True)
+    logger.info("\n[1/4] Checking database for latest date ...")
     latest_db_date = get_latest_db_date()
     if latest_db_date:
-        print(f"    Latest DB date: {latest_db_date}", flush=True)
+        logger.info(f"    Latest DB date: {latest_db_date}")
     else:
-        print("    No data in database (will download everything)", flush=True)
+        logger.info("    No data in database (will download everything)")
 
     # ------------------------------------------------------------------
     # Step 2: Check local trend files
     # ------------------------------------------------------------------
-    print("\n[2/4] Checking local trend files ...", flush=True)
+    logger.info("\n[2/4] Checking local trend files ...")
     trend_dates = list_trend_dates(args.out_root)
     latest_trend = max(trend_dates) if trend_dates else None
     if latest_trend:
-        print(f"    Latest trend file: {latest_trend} ({len(trend_dates)} files)", flush=True)
+        logger.info(f"    Latest trend file: {latest_trend} ({len(trend_dates)} files)")
     else:
-        print("    No trend files found", flush=True)
+        logger.info("    No trend files found")
 
     # ------------------------------------------------------------------
     # Step 3: Backfill from archive (if requested or trend dir is empty)
     # ------------------------------------------------------------------
     if args.backfill or not trend_dates:
-        print("\n[3/4] Backfilling from archive ...", flush=True)
+        logger.info("\n[3/4] Backfilling from archive ...")
         if not archive_dir.exists():
-            print("    Archive directory not found, skipping backfill", flush=True)
+            logger.info("    Archive directory not found, skipping backfill")
         else:
             # Determine dates to backfill: all dates up to the last completed month
             last_archive = _last_completed_archive_month()
@@ -343,21 +343,21 @@ def main() -> None:
             # Only backfill dates not already in trend
             missing_backfill = backfill_dates - trend_dates
             if missing_backfill:
-                print(f"    {len(missing_backfill)} dates to backfill from archive", flush=True)
+                logger.info(f"    {len(missing_backfill)} dates to backfill from archive")
                 n_copied = backfill_from_archive(trend_dir, archive_dir, missing_backfill)
-                print(f"    Copied {n_copied} files from archive", flush=True)
+                logger.info(f"    Copied {n_copied} files from archive")
             else:
-                print("    No dates need backfilling", flush=True)
+                logger.info("    No dates need backfilling")
 
             # Refresh trend_dates
             trend_dates = list_trend_dates(args.out_root)
     else:
-        print("\n[3/4] Skipping backfill (--backfill not requested)", flush=True)
+        logger.info("\n[3/4] Skipping backfill (--backfill not requested)")
 
     # ------------------------------------------------------------------
     # Step 4: Find missing dates and download
     # ------------------------------------------------------------------
-    print("\n[4/4] Finding missing dates to download ...", flush=True)
+    logger.info("\n[4/4] Finding missing dates to download ...")
     missing = find_missing_dates(
         latest_db_date, trend_dates, start_date, end_date,
     )
@@ -377,22 +377,22 @@ def main() -> None:
         missing = all_trading_days
 
     if not missing:
-        print("    No dates need downloading!", flush=True)
+        logger.info("    No dates need downloading!")
         print_wall_time(t0)
         return
 
-    print(f"    {len(missing)} dates to download:", flush=True)
+    logger.info(f"    {len(missing)} dates to download:")
     if len(missing) <= 20:
         for d in missing:
-            print(f"      {d}", flush=True)
+            logger.info(f"      {d}")
     else:
-        print(f"      First: {missing[0]}, Last: {missing[-1]}", flush=True)
+        logger.info(f"      First: {missing[0]}, Last: {missing[-1]}")
 
     # ------------------------------------------------------------------
     # Download using Playwright
     # ------------------------------------------------------------------
-    print(f"\n[Download] Starting Playwright download for {len(missing)} dates ...", flush=True)
-    print("    (This may take a while — CFFEX anti-bot protection requires delays)", flush=True)
+    logger.info(f"\n[Download] Starting Playwright download for {len(missing)} dates ...")
+    logger.info("    (This may take a while — CFFEX anti-bot protection requires delays)")
 
     result = download_trend_batch(
         missing,
@@ -400,11 +400,11 @@ def main() -> None:
         sleep_sec=args.sleep,
     )
 
-    print(f"\n[Done] Download summary:", flush=True)
-    print(f"  Downloaded: {result['downloaded']}", flush=True)
-    print(f"  Skipped:    {result['skipped']}", flush=True)
-    print(f"  No data:    {result['no_data']} (holidays/weekends)", flush=True)
-    print(f"  Failed:     {result['failed']}", flush=True)
+    logger.info(f"\n[Done] Download summary:")
+    logger.info(f"  Downloaded: {result['downloaded']}")
+    logger.info(f"  Skipped:    {result['skipped']}")
+    logger.info(f"  No data:    {result['no_data']} (holidays/weekends)")
+    logger.error(f"  Failed:     {result['failed']}")
 
     print_wall_time(t0)
 

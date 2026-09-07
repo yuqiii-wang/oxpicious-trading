@@ -518,7 +518,7 @@ def main() -> None:
         force=args.force,
         titles_csv=args.titles_csv,
     )
-    print(summary)
+    logger.info(summary)
 
 
 if __name__ == "__main__":

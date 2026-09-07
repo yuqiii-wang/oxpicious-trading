@@ -36,6 +36,9 @@ from builds.stock._helpers.helpers import (
     _read_one,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Maximum age (in calendar months) of a baseline actual-PE row usable for
 # estimating PE on a missing-PE date.
 PE_ESTIMATE_MAX_MONTHS: int = 3
@@ -81,7 +84,7 @@ async def _read_sse_pe_files(
         ]
     if not pe_files:
         if verbose:
-            print("    [PE] No PE files found", flush=True)
+            logger.info("    [PE] No PE files found")
         return pd.DataFrame(columns=["date", "code", "name", "pe"])
 
     row_gate_max: dict[str, date] = {}
@@ -136,23 +139,22 @@ async def _read_sse_pe_files(
                 skipped_count += 1
 
         if verbose:
-            print(f"    [PE] {len(pe_files)} PE files → "
+            logger.info(f"    [PE] {len(pe_files)} PE files → "
                   f"{len(files_to_read)} files to read "
-                  f"({skipped_count} skipped by mtime/tail peek)",
-                  flush=True)
+                  f"({skipped_count} skipped by mtime/tail peek)")
     elif force:
         if verbose:
-            print(f"    [PE] Force mode: reading all {len(pe_files)} PE files", flush=True)
+            logger.info(f"    [PE] Force mode: reading all {len(pe_files)} PE files")
 
     if not files_to_read:
         if verbose:
             # Distinguish "dir/files absent" from "all snapshots already
             # loaded": skipped_count>0 means the incremental gate worked.
             if skipped_count > 0:
-                print(f"    [PE] All {skipped_count} PE snapshots already "
-                      f"loaded — nothing new to merge", flush=True)
+                logger.info(f"    [PE] All {skipped_count} PE snapshots already "
+                      f"loaded — nothing new to merge")
             else:
-                print("    [PE] No PE files with new data to read", flush=True)
+                logger.info("    [PE] No PE files with new data to read")
         return pd.DataFrame(columns=["date", "code", "name", "pe"])
 
     frames: list[pd.DataFrame] = []
@@ -194,8 +196,8 @@ async def _read_sse_pe_files(
         frames.append(df)
 
     if verbose and n_rows_gated_out > 0:
-        print(f"    [PE] Row gate: {n_rows_gated_out:,} historical rows "
-              f"already in DB excluded (latest-missing-dates)", flush=True)
+        logger.info(f"    [PE] Row gate: {n_rows_gated_out:,} historical rows "
+              f"already in DB excluded (latest-missing-dates)")
 
     if not frames:
         return pd.DataFrame(columns=["date", "code", "name", "pe"])
@@ -280,7 +282,7 @@ async def _read_sse_archive_trend_files(
         archive_files = archive_files[:limit]
     if not archive_files:
         if verbose:
-            print("    [ARCHIVE] No archive trend files found", flush=True)
+            logger.info("    [ARCHIVE] No archive trend files found")
         return pd.DataFrame()
 
     # {bare}_trend.csv → {bare}.SS (filenames carry zero-padded 6-digit codes)
@@ -334,16 +336,15 @@ async def _read_sse_archive_trend_files(
                 n_skip_peek += 1
 
         if verbose:
-            print(f"    [ARCHIVE] {len(archive_files)} archive files → "
+            logger.info(f"    [ARCHIVE] {len(archive_files)} archive files → "
                   f"{len(files_to_read)} to read "
-                  f"({n_skip_mtime} skipped by mtime, {n_skip_peek} by tail peek)",
-                  flush=True)
+                  f"({n_skip_mtime} skipped by mtime, {n_skip_peek} by tail peek)")
     elif force and verbose:
-        print(f"    [ARCHIVE] Force mode: reading all {len(archive_files)} archive files", flush=True)
+        logger.info(f"    [ARCHIVE] Force mode: reading all {len(archive_files)} archive files")
 
     if not files_to_read:
         if verbose:
-            print(f"    [ARCHIVE] No archive files with new data to read", flush=True)
+            logger.info(f"    [ARCHIVE] No archive files with new data to read")
         return pd.DataFrame()
 
     sd = pd.to_datetime(start_date) if start_date else None
@@ -379,8 +380,8 @@ async def _read_sse_archive_trend_files(
         combined = combined[combined["date"] > combined["_db_max"]]
         combined = combined.drop(columns=["_db_max"])
         if verbose and n_before > len(combined):
-            print(f"    [ARCHIVE] Per-code DB-max filter: "
-                  f"{n_before:,} → {len(combined):,} rows", flush=True)
+            logger.info(f"    [ARCHIVE] Per-code DB-max filter: "
+                  f"{n_before:,} → {len(combined):,} rows")
     if sd is not None:
         combined = combined[combined["date"] >= sd]
     if ed is not None:

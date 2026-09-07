@@ -40,17 +40,13 @@
 --  Motivation columns (all part of the bucket key):
 --    is_market_hyped (both, PK member) — TRUE when ANY of the bucket's
 --                  dates falls inside one of the code's
---                  analysis.mov_ave_market_hypes episodes (any
+--                  stats.mov_ave_market_hypes episodes (any
 --                  min_checkin_period). The underlying RSI / band values
 --                  are NOT re-stored: rsi_{W}days is already in
 --                  analysis.mov_ave_rsi and ma/std are in
 --                  analysis.mov_ave_spreads_detail / stats.*_tech_stats,
 --                  joined via (sec_type, code, date) and the bucket's
 --                  rsi_window / ma_window keys.
---    Breach magnitude metrics (mov_std only) have moved to
---    analysis_forecasts.forecast_results.config JSONB:
---      mean_excess_close, mean_excess_max, max_excess_max
---      (fractional close/intraday excursion beyond the band).
 --  (forward-change outcomes are NOT stored here — see forecast_results)
 -- ============================================================================
 
@@ -116,12 +112,12 @@ COMMENT ON COLUMN analysis_forecasts.mov_rsi.side IS 'Bucket side: top = rsi in 
 COMMENT ON COLUMN analysis_forecasts.mov_rsi.pct IS 'Percentile width of the bucket: 1, 5, 10 or 25 (percent). The threshold is the window''s (linear-interpolated) percentile of rsi_{W}days over non-NULL values.';
 COMMENT ON COLUMN analysis_forecasts.mov_rsi.cooldown_days IS 'Part of the PK: trading days skipped after an accepted trigger day before the next trigger may join the bucket (0 = no cooldown). Current build: 5 (config COOLDOWN_DAYS). Rows written before this column existed carry 0 (computed without cooldown).';
 COMMENT ON COLUMN analysis_forecasts.mov_rsi.forecast_id IS '1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results (indexed; allocated by the writer, shared across all 4 periods).';
-COMMENT ON COLUMN analysis_forecasts.mov_rsi.is_market_hyped IS 'Part of the PK: TRUE when ANY of the bucket''s dates falls inside one of the code''s analysis.mov_ave_market_hypes episodes (any min_checkin_period).';
+COMMENT ON COLUMN analysis_forecasts.mov_rsi.is_market_hyped IS 'Part of the PK: TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
 
 -- ----------------------------------------------------------------------------
 --  Comments — mov_std
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_forecasts.mov_std IS 'Bollinger-breach bucket definitions (motivation): per (code, sec_type, month, ma_window, k, side, cooldown_days, is_market_hyped) — the days within the trailing 5-year window ending at stat_month whose price closed beyond ma_{W} ± k·std_{W}days (with cooldown_days suppression after each accepted breach). Breach-magnitude stats (mean_excess_close / mean_excess_max / max_excess_max) have moved to the forecast_results.config JSONB linked via forecast_id. Results (forward changes / reversal probabilities) also live in forecast_results. Band inputs join from analysis.mov_ave_spreads_detail / stats.*_tech_stats. Sources: stats.*_tech_stats (ma), analysis.mov_ave_spreads_detail (std), stats.*_basic_stats closes (price, COALESCE etf_adjustment.adj_close for ETFs).';
+COMMENT ON TABLE analysis_forecasts.mov_std IS 'Bollinger-breach bucket definitions (motivation): per (code, sec_type, month, ma_window, k, side, cooldown_days, is_market_hyped) — the days within the trailing 5-year window ending at stat_month whose price closed beyond ma_{W} ± k·std_{W}days (with cooldown_days suppression after each accepted breach). Results (forward changes / reversal probabilities) live in forecast_results linked via forecast_id. Band inputs join from analysis.mov_ave_spreads_detail / stats.*_tech_stats. Sources: stats.*_tech_stats (ma), analysis.mov_ave_spreads_detail (std), stats.*_basic_stats closes (price, COALESCE etf_adjustment.adj_close for ETFs).';
 COMMENT ON COLUMN analysis_forecasts.mov_std.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis_forecasts.mov_std.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis_forecasts.mov_std.stat_month IS 'Completed month-end date. The bucket is computed over the trailing 5-year window (stat_month - 5 years, stat_month] of the code''s own trading days.';
@@ -130,7 +126,7 @@ COMMENT ON COLUMN analysis_forecasts.mov_std.k IS 'σ multiple defining the Boll
 COMMENT ON COLUMN analysis_forecasts.mov_std.side IS 'Breach side: upper = price > ma_{W} + k·std_{W}days (reversals are changes below the bucket''s adaptive reverse_threshold); lower = price < ma_{W} - k·std_{W}days (reversals are changes above it).';
 COMMENT ON COLUMN analysis_forecasts.mov_std.cooldown_days IS 'Part of the PK: trading days skipped after an accepted breach day before the next breach may join the bucket (0 = no cooldown). Current build: 5 (config COOLDOWN_DAYS). Rows written before this column existed carry 0 (computed without cooldown).';
 COMMENT ON COLUMN analysis_forecasts.mov_std.forecast_id IS '1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results (indexed; allocated by the writer, shared across all 4 periods).';
-COMMENT ON COLUMN analysis_forecasts.mov_std.is_market_hyped IS 'Part of the PK: TRUE when ANY breach date falls inside one of the code''s analysis.mov_ave_market_hypes episodes (any min_checkin_period).';
+COMMENT ON COLUMN analysis_forecasts.mov_std.is_market_hyped IS 'Part of the PK: TRUE when ANY breach date falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
 
 -- ----------------------------------------------------------------------------
 --  Migration: drop breach-magnitude columns (now in forecast_results.config JSONB)

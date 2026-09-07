@@ -8,16 +8,26 @@ import {
   IV_BLUE,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
-import { expiryToYyyyMm } from "./expiryUtils";
-import type { SkewnessCorrRow } from "@shared/types";
+import type { SkewnessCorrRow, IvSkewRow } from "@shared/types";
 import type { EChartsOption } from "echarts";
 
 export type CorrMode = "ma5" | "ma20" | "ma60";
 
-const CORR_FIELD_MAP: Record<CorrMode, keyof SkewnessCorrRow> = {
+/** Any per-expiry-month row carrying date + per-mode correlation fields. */
+export type CorrSeriesRow = SkewnessCorrRow | IvSkewRow;
+
+/** corr fields of options_skewness_stats (skewness vs spot). */
+export const SKEWNESS_CORR_FIELDS: Record<CorrMode, string> = {
   ma5: "corr_skewness_ma5_vs_spot_ma5",
   ma20: "corr_skewness_ma20_vs_spot_ma20",
   ma60: "corr_skewness_ma60_vs_spot_ma60",
+};
+
+/** corr fields of options_iv_skew_stats (25Δ risk reversal vs spot). */
+export const IV_SKEW_CORR_FIELDS: Record<CorrMode, string> = {
+  ma5: "corr_rr25_ma5_vs_spot_ma5",
+  ma20: "corr_rr25_ma20_vs_spot_ma20",
+  ma60: "corr_rr25_ma60_vs_spot_ma60",
 };
 
 const CORR_MODE_LABELS: Record<CorrMode, string> = {
@@ -28,9 +38,11 @@ const CORR_MODE_LABELS: Record<CorrMode, string> = {
 
 export function buildCorrTimeSeriesOption(
   dates: string[],
-  corrRows: SkewnessCorrRow[],
+  corrRows: CorrSeriesRow[],
   selectedDate: string,
   mode: CorrMode = "ma5",
+  fields: Record<CorrMode, string> = SKEWNESS_CORR_FIELDS,
+  metricLabel = "Skewness",
 ): EChartsOption {
   const themeMode = useStore.getState().themeMode;
   const c = axisColors(themeMode);
@@ -41,7 +53,7 @@ export function buildCorrTimeSeriesOption(
     return {
       backgroundColor: "transparent",
       title: {
-        text: `Skewness–Spot Whole-Period Correlation · ${CORR_MODE_LABELS[mode]}  [No data]`,
+        text: `${metricLabel}–Spot Whole-Period Correlation · ${CORR_MODE_LABELS[mode]}  [No data]`,
         left: "center",
         top: "center",
         textStyle: { color: textColor, fontSize: 11, fontWeight: 400 },
@@ -49,13 +61,13 @@ export function buildCorrTimeSeriesOption(
     };
   }
 
-  const corrField = CORR_FIELD_MAP[mode];
+  const corrField = fields[mode];
 
   // Map corr data by date -> expiry_month -> value
   const corrMap = new Map<string, Map<string, number | null>>();
   for (const r of corrRows) {
     if (!corrMap.has(r.date)) corrMap.set(r.date, new Map());
-    const val = r[corrField];
+    const val = (r as unknown as Record<string, unknown>)[corrField];
     const numVal = typeof val === "number" ? val : val != null ? Number(val) : null;
     corrMap.get(r.date)!.set(r.expiry_month, numVal != null && Number.isFinite(numVal) ? numVal : null);
   }
@@ -153,7 +165,7 @@ export function buildCorrTimeSeriesOption(
     animation: false,
     grid: commonGrid({ left: 56, right: 36, top: 30, bottom: 28 }),
     title: {
-      text: `Skewness–Spot Whole-Period Correlation · ${CORR_MODE_LABELS[mode]}`,
+      text: `${metricLabel}–Spot Whole-Period Correlation · ${CORR_MODE_LABELS[mode]}`,
       left: "left",
       textStyle: { color: textColor, fontSize: 10, fontWeight: 600 },
     },

@@ -27,6 +27,9 @@ from builds.etf.pipeline.writes import filter_missing_rows, write_split_tables
 from builds.etf.pipeline.composition_write import insert_composition
 from builds.etf.pipeline.quality import upsert_quality_metrics
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def run(args) -> None:
     """Full ETF build: discovery → scope → load → features → PE → writes.
@@ -38,11 +41,11 @@ async def run(args) -> None:
     """
     code_filter = getattr(args, "resolved_code", None)
     if code_filter:
-        print(f"    [CODE FILTER] Restricting build to single ETF: {code_filter}", flush=True)
+        logger.info(f"    [CODE FILTER] Restricting build to single ETF: {code_filter}")
 
     forced = getattr(args, "forced_date", None)
     if forced:
-        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
+        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
 
     t0 = time.time()
     header_fields = {
@@ -62,11 +65,11 @@ async def run(args) -> None:
     )
 
     # (1) Discover source files (fast — filenames only, no reading)
-    print("\n[1/7] Discovering source CSV files …", flush=True)
+    logger.info("\n[1/7] Discovering source CSV files …")
     files, available_dates = discover_source_files()
 
     # (2) Connect to DB and find missing dates
-    print("\n[2/7] Connecting to database and detecting missing dates …", flush=True)
+    logger.info("\n[2/7] Connecting to database and detecting missing dates …")
     conn = await get_db_or_exit()
     try:
         if args.force:
@@ -77,7 +80,7 @@ async def run(args) -> None:
             existing_keys, existing_dates = await fetch_existing_identity_keys(
                 conn, code_filter, force=False)
 
-        print(f"    [DB] {len(existing_keys):,} existing (date, code) pairs in stats.etf_identity", flush=True)
+        logger.info(f"    [DB] {len(existing_keys):,} existing (date, code) pairs in stats.etf_identity")
         if args.force:
             missing_ohlcv_dates = available_dates - existing_dates
             recent_refresh_dates: set = set()
@@ -95,8 +98,8 @@ async def run(args) -> None:
             # B3 correction source: true per-code first/last/day counts for
             # build_universe (merged is window-truncated on this path).
             day_stats = await fetch_per_code_day_stats(conn, code_filter)
-        print(f"    [DB] {len(missing_ohlcv_dates)} dates missing "
-              f"(out of {len(available_dates)} available)", flush=True)
+        logger.info(f"    [DB] {len(missing_ohlcv_dates)} dates missing "
+              f"(out of {len(available_dates)} available)")
 
         # (3) Read ONLY missing-date source CSVs + query DB for history
         ohlcv_df, margin_df, adj_seeds = await load_source_frames(
@@ -143,8 +146,8 @@ async def run(args) -> None:
         await conn.close()
 
     # Console summary
-    print("\n  Theme distribution:", flush=True)
+    logger.info("\n  Theme distribution:")
     for tid, sub in uni_df.groupby("theme_id"):
-        print(f"    · {tid:<20s} {len(sub):>4d}", flush=True)
+        logger.info(f"    · {tid:<20s} {len(sub):>4d}")
 
     print_wall_time(t0)

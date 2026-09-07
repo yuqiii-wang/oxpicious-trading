@@ -91,6 +91,9 @@ from analyze.mov_ave_spread.config import (
     SEC_TYPE_IDENTITY_TABLE,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Configuration
@@ -158,7 +161,7 @@ def compute_ema_vs_columns(df: pd.DataFrame) -> pd.DataFrame:
     needed = ["sec_type", "code", "date"] + sorted(src_cols)
 
     if should_use_gpu(df[needed], op_type="merge"):
-        print(f"    [cuDF router] {len(df):,} rows — merge (GPU-worthy)", flush=True)
+        logger.info(f"    [cuDF router] {len(df):,} rows — merge (GPU-worthy)")
 
     # CPU path — use the shared gap_col helper (vectorized pandas).
     from analyze.mov_ave_spread.helpers import gap_col
@@ -207,8 +210,8 @@ def sanitize_ema_rows(df: pd.DataFrame) -> list[dict]:
     if nulled:
         total = sum(nulled.values())
         per = ", ".join(f"{c}={n}" for c, n in nulled.items())
-        print(f"    -> NUMERIC(10,6) overflow-guard nulled {total:,} value(s) "
-              f"across {len(nulled)} column(s): {per}", flush=True)
+        logger.info(f"    -> NUMERIC(10,6) overflow-guard nulled {total:,} value(s) "
+              f"across {len(nulled)} column(s): {per}")
 
     return sanitize_for_db_insert(out, numeric_cols=numeric_cols)
 
@@ -265,10 +268,9 @@ async def run_ema(
                 None, infers sec_types from the DataFrame.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  MOV_AVE_SPREAD_DETAIL_EMA (internal step of mov_ave_spread)",
-          flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  MOV_AVE_SPREAD_DETAIL_EMA (internal step of mov_ave_spread)")
+    logger.info("=" * 78)
 
     # Select only the columns EMA needs — the parent DataFrame carries
     # many extra columns (OHLC, MAs, slopes, stds, trading_amt_*) that
@@ -291,7 +293,7 @@ async def run_ema(
     ema_df = df[available].copy()
 
     if ema_df.empty:
-        print("    -> no source data; skipping EMA step.", flush=True)
+        logger.info("    -> no source data; skipping EMA step.")
         return
 
     # Use the sec_type passed by the parent (per-sec_type loop) or infer
@@ -308,36 +310,34 @@ async def run_ema(
         # and bypass the per-sec_type skip-filter (sec_types=() at the
         # insert below keeps every row — dates covered by OTHER codes
         # would otherwise mask this code's gaps).
-        print("    mode: SINGLE-CODE (full recompute for this code)",
-              flush=True)
+        logger.info("    mode: SINGLE-CODE (full recompute for this code)")
         target_dates_union: Optional[Set] = None
     elif force:
-        print("    mode: FORCE (full recompute)", flush=True)
+        logger.info("    mode: FORCE (full recompute)")
         if sec_type is not None:
             # Per-sec_type scope: DELETE only this sec_type's rows — the
             # parent loop calls run_ema once per sec_type, so a whole-
             # table TRUNCATE here would wipe the other sec_types' rows
             # (in a --sec-type scoped run they are NOT rebuilt).
-            print(f"\n[e0/3] Force mode: deleting {sec_type} rows from "
-                  "mov_ave_spreads_detail_ema...", flush=True)
+            logger.info(f"\n[e0/3] Force mode: deleting {sec_type} rows from "
+                  "mov_ave_spreads_detail_ema...")
             status = await conn.execute(
                 f"DELETE FROM {EMA_DETAIL_TABLE} WHERE sec_type = $1",
                 sec_type,
             )
             n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
-            print(f"    -> deleted {n_del:,} rows; will recompute all "
-                  f"{sec_type} rows", flush=True)
+            logger.info(f"    -> deleted {n_del:,} rows; will recompute all "
+                  f"{sec_type} rows")
         else:
-            print("\n[e0/3] Force mode: truncating "
-                  "mov_ave_spreads_detail_ema...", flush=True)
+            logger.info("\n[e0/3] Force mode: truncating "
+                  "mov_ave_spreads_detail_ema...")
             await truncate_table_async(conn, EMA_DETAIL_TABLE)
-            print("    -> truncated; will recompute all rows", flush=True)
+            logger.info("    -> truncated; will recompute all rows")
         target_dates_union: Optional[Set] = None
     else:
-        print("    mode: incremental (missing dates only)", flush=True)
-        print("\n[e0/3] Detecting missing dates PER-sec_type "
-              "(etf_identity vs detail_ema[etf], etc.)...",
-              flush=True)
+        logger.info("    mode: incremental (missing dates only)")
+        logger.info("\n[e0/3] Detecting missing dates PER-sec_type "
+              "(etf_identity vs detail_ema[etf], etc.)...")
         target_dates_per_st: dict = {}
         for st in sec_types:
             td_st = await find_missing_analysis_dates(
@@ -345,22 +345,21 @@ async def run_ema(
                 [SEC_TYPE_IDENTITY_TABLE[st]], sec_type=st,
             )
             target_dates_per_st[st] = td_st
-            print(f"    -> {st}: {len(td_st)} missing dates", flush=True)
+            logger.info(f"    -> {st}: {len(td_st)} missing dates")
         # Union across sec_types — a date is "to do" if ANY sec_type
         # is missing it.
         target_dates_union = set()
         for s in target_dates_per_st.values():
             target_dates_union |= s
-        print(f"    -> union across sec_types: "
-              f"{len(target_dates_union)} dates to (re)compute",
-              flush=True)
+        logger.info(f"    -> union across sec_types: "
+              f"{len(target_dates_union)} dates to (re)compute")
         if not target_dates_union:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return
 
     # ---- Step 1: compute vs columns over full history, then filter --
-    print("\n[e1/3] Computing 9 EMA gap (vs) columns per "
-          "(sec_type, code, date) over full history...", flush=True)
+    logger.info("\n[e1/3] Computing 9 EMA gap (vs) columns per "
+          "(sec_type, code, date) over full history...")
     ema_df = compute_ema_vs_columns(ema_df)
 
     if target_dates_union is not None and len(target_dates_union) > 0:
@@ -370,17 +369,17 @@ async def run_ema(
         # convention).
         td64 = pd.to_datetime(sorted(target_dates_union)).values
         ema_df = ema_df[ema_df["date"].isin(td64)].reset_index(drop=True)
-        print(f"    -> incremental filter: {len(ema_df):,} of {n_before:,} "
-              f"rows are in target_dates_union", flush=True)
+        logger.info(f"    -> incremental filter: {len(ema_df):,} of {n_before:,} "
+              f"rows are in target_dates_union")
 
     if ema_df.empty:
-        print("    -> no rows to upsert; skipping EMA upsert.", flush=True)
+        logger.info("    -> no rows to upsert; skipping EMA upsert.")
         return
 
     # ---- Step 2: build + insert (chunked by date) -------------------
-    print(f"\n[e2/3] Building + inserting {len(ema_df):,} "
+    logger.info(f"\n[e2/3] Building + inserting {len(ema_df):,} "
           f"mov_ave_spreads_detail_ema rows in date-bounded chunks "
-          f"({'COPY' if force else 'upsert'} per chunk)...", flush=True)
+          f"({'COPY' if force else 'upsert'} per chunk)...")
     n = await build_and_insert_chunked(
         conn, pool, ema_df,
         sanitize_ema_rows,
@@ -392,11 +391,10 @@ async def run_ema(
         label="mov_ave_spreads_detail_ema",
     )
     del ema_df
-    print(f"    -> inserted {n:,} rows", flush=True)
+    logger.info(f"    -> inserted {n:,} rows")
 
     # ---- Step 3: register in analysis_identity ----------------------
-    print(f"\n[e3/3] Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info(f"\n[e3/3] Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=EMA_ANALYSIS_NAME,
@@ -404,5 +402,5 @@ async def run_ema(
         description=EMA_DESCRIPTION,
     )
 
-    print(f"\n  mov_ave_spreads_detail_ema wall time: "
-          f"{time.time() - t0:.1f}s", flush=True)
+    logger.info(f"\n  mov_ave_spreads_detail_ema wall time: "
+          f"{time.time() - t0:.1f}s")

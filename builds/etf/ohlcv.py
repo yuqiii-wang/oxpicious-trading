@@ -25,6 +25,9 @@ from builds.etf.paths import (
 )
 from builds.etf.codes import MONEY_MARKET_KW
 
+import logging
+logger = logging.getLogger(__name__)
+
 # source column → output column (identical names across all canonical
 # exports except the volume column, which is per-market and renamed by
 # the caller — 成交量（万份） SZSE ETF vs 成交量(万股) SSE)
@@ -143,13 +146,13 @@ def build_ohlcv_df(verbose=True, ohlcv_files=None, code=None):
         fs, n_ok, n_empty, n_tot = _scan_ohlcv_dir(scan_dir, prefix, volume_col,
                                                    files=files, code=code)
         if verbose:
-            print(f"    [OHLCV-{file_key}] read {n_tot} files  "
-                  f"{n_ok} ok  {n_empty} empty  {sum(len(f) for f in fs):,} rows", flush=True)
+            logger.info(f"    [OHLCV-{file_key}] read {n_tot} files  "
+                  f"{n_ok} ok  {n_empty} empty  {sum(len(f) for f in fs):,} rows")
         frames.extend(fs)
 
     if not frames:
         if verbose:
-            print("    [OHLCV] no source rows", flush=True)
+            logger.info("    [OHLCV] no source rows")
         return pd.DataFrame()
 
     # ---- ONE vectorized pass over the concatenated frame ----
@@ -204,8 +207,8 @@ def build_ohlcv_df(verbose=True, ohlcv_files=None, code=None):
         # host unwrap ONCE (Timestamp.date has no cudf fast path)
         d0 = str(host_array(out["date"].min()).astype("datetime64[D]"))
         d1 = str(host_array(out["date"].max()).astype("datetime64[D]"))
-        print(f"    [OHLCV] final rows: {len(out):,}  "
+        logger.info(f"    [OHLCV] final rows: {len(out):,}  "
               f"unique codes: {out['code'].nunique()}  "
               f"SZSE (.SZ): {n_szse:,}  SSE (.SS): {n_sse:,}  "
-              f"date range: {d0} → {d1}", flush=True)
+              f"date range: {d0} → {d1}")
     return out

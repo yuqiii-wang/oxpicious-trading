@@ -9,6 +9,9 @@ import argparse
 from ._config import SLEEP_SEC
 from .runner import download_index_composition
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("composition")
+
 
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
@@ -54,4 +57,4 @@ if __name__ == "__main__":
         sleep_sec=args.sleep_sec,
         force_month_start=args.force_month_start,
     )
-    print(result)
+    logger.info(result)

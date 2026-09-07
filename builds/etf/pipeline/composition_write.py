@@ -11,6 +11,9 @@ import pandas as pd
 from _common.build_commons import copy_or_upsert_split_async, rec_col
 from builds._commons.row_emission import dates_as_date_list
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Canonical suffixed ETF code ("NNNNNN.SZ"/"NNNNNN.SS") — composition CSVs
 # are written with whole suffixed etf_code by the download conversion.
 VALID_ETF_RE = r"^\d{6}\.(SS|SZ)$"
@@ -32,7 +35,7 @@ async def insert_composition(
     that snapshot date's rows as write candidates even when already stored
     (upsert overwrites; no deletes).
     """
-    print("\n[7/7] Inserting ETF composition data (missing snapshots only) …", flush=True)
+    logger.info("\n[7/7] Inserting ETF composition data (missing snapshots only) …")
 
     if code_filter:
         comp_existing_rows = await conn.fetch(
@@ -48,7 +51,7 @@ async def insert_composition(
         c + "|" + f"{d:%Y-%m-%d}"
         for c, d in zip(rec_col(comp_existing_rows, "code"),
                         rec_col(comp_existing_rows, "snapshot_date"))]
-    print(f"    [DB] {len(existing_comp_str_keys):,} existing (code, snapshot_date) pairs in stats.sec_composition", flush=True)
+    logger.info(f"    [DB] {len(existing_comp_str_keys):,} existing (code, snapshot_date) pairs in stats.sec_composition")
 
     holdings_rows = []
 
@@ -114,8 +117,8 @@ async def insert_composition(
                     for s, c, rk, sc, sn, w
                     in zip(snap_l, code_l, rank_l, sc_l, sn_l, wp_l)
                 )
-            print(f"    [DB] Built {len(holdings_rows):,} sec_composition rows (full comp) "
-                  f"from {n_etfs_kept} ETFs (skipped existing)", flush=True)
+            logger.info(f"    [DB] Built {len(holdings_rows):,} sec_composition rows (full comp) "
+                  f"from {n_etfs_kept} ETFs (skipped existing)")
 
     if holdings_rows:
         n_copied, n_upserted = await copy_or_upsert_split_async(
@@ -126,6 +129,6 @@ async def insert_composition(
         total = n_copied + n_upserted
         via = "COPY" if n_copied > 0 and n_upserted == 0 else \
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else "upsert"
-        print(f"    [DB] Inserted {total:,} rows into stats.sec_composition via {via}", flush=True)
+        logger.info(f"    [DB] Inserted {total:,} rows into stats.sec_composition via {via}")
     else:
-        print("    [DB] No new rows to insert into stats.sec_composition", flush=True)
+        logger.info("    [DB] No new rows to insert into stats.sec_composition")

@@ -2,8 +2,10 @@ You are an expert change implementation and verification specialist. Your core r
 
 for py and ts, try best to assign an actual type to variables, not `Any`. If not determined, do more study, and try not to give multiple type options, can break logic to smaller funcs to make variable type deterministic.
 for all python scripts main, should have an arg `--force`, so that with this arg `--force` shall purge old data to re-generate new data, if not still check missing dates for pk primary key to decide what date data to generate.
+For variable naming, use English and snake.
 
 The UI (in data_viz dir) is a standard react project, so write code in react style.
+Check `data_viz\src\shared` for basic components.
 Always study if there is any shared components that can be used in multiple pages rather than writing a new component.
 IDE browser is available.
 

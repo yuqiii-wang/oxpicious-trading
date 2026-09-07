@@ -10,10 +10,29 @@ export {
   invalidateCacheForPrefix,
 } from "./_cache";
 
+// Shared fetch transport (retry + per-endpoint timeout). Every fetchJson
+// caller already goes through it — these exports are for surfacing the
+// resulting errors in UI alerts or tuning a specific call.
+export {
+  formatFetchError,
+  HttpError,
+  DEFAULT_TIMEOUT_MS,
+  resolveTimeoutMs,
+  type FetchRetryOptions,
+} from "./_retry";
+
 export {
   fetchDebtBaseline,
   fetchPbocOmaAnnouncements,
 } from "./debt";
+
+export {
+  fetchNewsThemes,
+  fetchNewsStrategyThemes,
+  fetchNewsAuthors,
+  fetchNewsCalendar,
+  fetchNewsItems,
+} from "./news";
 
 export {
   fetchUnderlyings,
@@ -61,8 +80,11 @@ export {
   fetchMovAveSpreadThemes,
   fetchMovAveSpreadStrategyThemes,
   fetchMovAveSpreadChart,
-  fetchMovAveSpreadForecast,
 } from "./analysis-ma-spread";
+
+export { fetchAnalysisForecast } from "./analysis-forecasts";
+
+export { fetchMarketHypes } from "./analysis-market-hypes";
 
 export {
   fetchPeAndDividendCodes,

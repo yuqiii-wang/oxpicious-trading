@@ -120,6 +120,10 @@ from analyze.pe_and_dividends.compute import (  # noqa: E402
 from analyze.pe_and_dividends.pct_bands import run_pd_pct_bands  # noqa: E402
 from analyze.pe_and_dividends.pct_streaks import run_pd_pct_streaks  # noqa: E402
 
+from _common.log_setup import setup_logging  # noqa: E402
+
+logger = setup_logging("pe_and_dividends")
+
 
 def _normalize_stock_codes(df, col: str) -> None:
     """Normalize a stock-code column in-place by stripping exchange suffixes.
@@ -160,46 +164,42 @@ async def _process_index(
     st = "index"
     if code is not None:
         code_list = [code]
-        print(f"\n  [{st}] SINGLE-CODE mode: processing {code}", flush=True)
+        logger.info(f"\n  [{st}] SINGLE-CODE mode: processing {code}")
     else:
-        print(f"\n  [{st}] Fetching active codes...", flush=True)
+        logger.info(f"\n  [{st}] Fetching active codes...")
         codes = await fetch_active_codes(conn, st)
         code_list = sorted(codes)
-        print(f"  [{st}]   {len(code_list):,} active codes", flush=True)
+        logger.info(f"  [{st}]   {len(code_list):,} active codes")
         if not code_list:
-            print(f"  [{st}]   no active codes; skipping.", flush=True)
+            logger.info(f"  [{st}]   no active codes; skipping.")
             return 0
 
     # ---- Fetch source data ----------------------------------------------
-    print(f"  [{st}] Fetching PE + close from index_valuation + index_basic_stats...",
-          flush=True)
+    logger.info(f"  [{st}] Fetching PE + close from index_valuation + index_basic_stats...")
     close_df = await fetch_index_pe_and_close(conn, code_list)
-    print(f"  [{st}]   {len(close_df):,} (code, date) rows with close", flush=True)
+    logger.info(f"  [{st}]   {len(close_df):,} (code, date) rows with close")
 
     if code is not None and close_df.empty:
-        print(f"  [{st}]   no source data for {code} in {st}; skipping.",
-              flush=True)
+        logger.info(f"  [{st}]   no source data for {code} in {st}; skipping.")
         return 0
 
-    print(f"  [{st}] Fetching latest composition from sec_composition...", flush=True)
+    logger.info(f"  [{st}] Fetching latest composition from sec_composition...")
     comp_df = await fetch_latest_index_composition(conn, code_list)
-    print(f"  [{st}]   {len(comp_df):,} (index_code, stock_code) composition rows",
-          flush=True)
+    logger.info(f"  [{st}]   {len(comp_df):,} (index_code, stock_code) composition rows")
 
     # Get unique constituent stock codes (original format, before normalization)
     if not comp_df.empty:
         constituent_codes = sorted(comp_df["stock_code"].unique().tolist())
     else:
         constituent_codes = []
-    print(f"  [{st}]   {len(constituent_codes):,} unique constituent stocks",
-          flush=True)
+    logger.info(f"  [{st}]   {len(constituent_codes):,} unique constituent stocks")
 
     # Fetch ALL stock dividends (small table ~12K rows) — avoids code-format
     # mismatch issues between sec_composition.stock_code and
     # stock_dividends.code (mixed suffix conventions).
-    print(f"  [{st}] Fetching ALL stock dividends...", flush=True)
+    logger.info(f"  [{st}] Fetching ALL stock dividends...")
     div_df = await fetch_stock_dividends(conn, stock_codes=None)
-    print(f"  [{st}]   {len(div_df):,} dividend events total", flush=True)
+    logger.info(f"  [{st}]   {len(div_df):,} dividend events total")
 
     # Normalize stock codes for cross-table join: strip exchange suffixes
     # from both composition.stock_code and dividends.code so they match
@@ -207,42 +207,35 @@ async def _process_index(
     _normalize_stock_codes(comp_df, "stock_code")
     _normalize_stock_codes(div_df, "code")
 
-    print(f"  [{st}] Fetching trading dates...", flush=True)
+    logger.info(f"  [{st}] Fetching trading dates...")
     trading_dates = await fetch_trading_dates(conn, st)
-    print(f"  [{st}]   {len(trading_dates):,} trading dates", flush=True)
+    logger.info(f"  [{st}]   {len(trading_dates):,} trading dates")
 
     # Constituent closes (per-share denominators for the cap-weighted
     # constituent-yield aggregation — see compute_index_dividend_yield).
-    print(f"  [{st}] Fetching constituent closes from stock_basic_stats...",
-          flush=True)
+    logger.info(f"  [{st}] Fetching constituent closes from stock_basic_stats...")
     stock_close_df = await fetch_constituent_closes(conn, constituent_codes)
-    print(f"  [{st}]   {len(stock_close_df):,} (code, date) constituent close rows",
-          flush=True)
+    logger.info(f"  [{st}]   {len(stock_close_df):,} (code, date) constituent close rows")
 
     # ---- Compute pe_ma20 -------------------------------------------------
-    print(f"  [{st}] Computing pe_ma20 (rolling {20}-day MA of PE per code)...",
-          flush=True)
+    logger.info(f"  [{st}] Computing pe_ma20 (rolling {20}-day MA of PE per code)...")
     pe_ma20 = compute_pe_ma20(close_df)
-    print(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values",
-          flush=True)
+    logger.info(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values")
 
     # ---- Compute dividend_yield ------------------------------------------
-    print(f"  [{st}] Computing trailing-12m DPS per constituent stock...",
-          flush=True)
+    logger.info(f"  [{st}] Computing trailing-12m DPS per constituent stock...")
     stock_dps = compute_trailing_12m_dps(div_df, trading_dates)
-    print(f"  [{st}]   {len(stock_dps):,} (stock, date) DPS rows", flush=True)
+    logger.info(f"  [{st}]   {len(stock_dps):,} (stock, date) DPS rows")
 
-    print(f"  [{st}] Computing index dividend_yield (cap-weighted constituent "
-          f"trailing yields)...",
-          flush=True)
+    logger.info(f"  [{st}] Computing index dividend_yield (cap-weighted constituent "
+          f"trailing yields)...")
     dy_df = compute_index_dividend_yield(comp_df, stock_dps, stock_close_df)
-    print(f"  [{st}]   {dy_df['dividend_yield'].notna().sum():,} non-null dividend_yield values",
-          flush=True)
+    logger.info(f"  [{st}]   {dy_df['dividend_yield'].notna().sum():,} non-null dividend_yield values")
 
     # ---- Build + insert detail rows --------------------------------------
-    print(f"  [{st}] Building detail rows...", flush=True)
+    logger.info(f"  [{st}] Building detail rows...")
     detail_df = build_detail_rows(close_df, pe_ma20, dy_df, st)
-    print(f"  [{st}]   {len(detail_df):,} detail rows", flush=True)
+    logger.info(f"  [{st}]   {len(detail_df):,} detail rows")
 
     n_detail = await _write_detail(
         conn, st, _detail_db_rows(detail_df), force=force,
@@ -254,7 +247,7 @@ async def _process_index(
     # (is_active flag flips). Skip entirely if no missing month-end dates.
     # Single-code mode always recomputes the code's stats rows.
     if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
-        print(f"  [{st}] Computing monthly 5y rolling stats...", flush=True)
+        logger.info(f"  [{st}] Computing monthly 5y rolling stats...")
         pe_df = (
             close_df[["code", "date", "pe"]].copy()
             if "pe" in safe_columns(close_df) else None
@@ -263,11 +256,10 @@ async def _process_index(
         stats_rows = compute_monthly_stats(
             detail_df, pe_df, comp_df, div_df, trading_dates, st
         )
-        print(f"  [{st}]   {len(stats_rows):,} monthly stats rows", flush=True)
+        logger.info(f"  [{st}]   {len(stats_rows):,} monthly stats rows")
         await _write_stats(conn, st, stats_rows, force=force, code=code)
     else:
-        print(f"  [{st}] Monthly stats up to date; skipping stats step.",
-              flush=True)
+        logger.info(f"  [{st}] Monthly stats up to date; skipping stats step.")
 
     # ---- Percentile bands + band-break excursion streaks (internal
     # steps). Bands are incremental (trailing windows are immutable per
@@ -293,28 +285,27 @@ async def _process_etf(
     st = "etf"
     if code is not None:
         code_list = [code]
-        print(f"\n  [{st}] SINGLE-CODE mode: processing {code}", flush=True)
+        logger.info(f"\n  [{st}] SINGLE-CODE mode: processing {code}")
     else:
-        print(f"\n  [{st}] Fetching active codes...", flush=True)
+        logger.info(f"\n  [{st}] Fetching active codes...")
         codes = await fetch_active_codes(conn, st)
         code_list = sorted(codes)
-        print(f"  [{st}]   {len(code_list):,} active codes", flush=True)
+        logger.info(f"  [{st}]   {len(code_list):,} active codes")
         if not code_list:
-            print(f"  [{st}]   no active codes; skipping.", flush=True)
+            logger.info(f"  [{st}]   no active codes; skipping.")
             return 0
 
-    print(f"  [{st}] Fetching close + pe + implied_dividend_per_share...", flush=True)
+    logger.info(f"  [{st}] Fetching close + pe + implied_dividend_per_share...")
     etf_df = await fetch_etf_close_and_dividends(conn, code_list)
-    print(f"  [{st}]   {len(etf_df):,} (code, date) rows", flush=True)
+    logger.info(f"  [{st}]   {len(etf_df):,} (code, date) rows")
 
     if code is not None and etf_df.empty:
-        print(f"  [{st}]   no source data for {code} in {st}; skipping.",
-              flush=True)
+        logger.info(f"  [{st}]   no source data for {code} in {st}; skipping.")
         return 0
 
-    print(f"  [{st}] Fetching trading dates...", flush=True)
+    logger.info(f"  [{st}] Fetching trading dates...")
     trading_dates = await fetch_trading_dates(conn, st)
-    print(f"  [{st}]   {len(trading_dates):,} trading dates", flush=True)
+    logger.info(f"  [{st}]   {len(trading_dates):,} trading dates")
 
     # Convert ETF adjustment data to dividend events
     div_events = etf_df[etf_df["implied_dividend_per_share"] > 0].copy()
@@ -322,21 +313,21 @@ async def _process_etf(
         "date": "ex_dividend_date",
         "implied_dividend_per_share": "dividend_per_share_pre_tax",
     })[["code", "ex_dividend_date", "dividend_per_share_pre_tax"]]
-    print(f"  [{st}]   {len(div_events):,} ETF dividend events", flush=True)
+    logger.info(f"  [{st}]   {len(div_events):,} ETF dividend events")
 
     close_df = etf_df[["code", "date", "close", "pe"]].copy()
 
     # Compute pe_ma20 (ETF PE is pre-computed by builds.etf via harmonic weighting)
     pe_df = close_df[["code", "date", "pe"]].copy()
     pe_ma20 = compute_pe_ma20(close_df)
-    print(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values", flush=True)
+    logger.info(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values")
 
     # Compute dividend_yield
     dy_df = compute_simple_dividend_yield(close_df, div_events)
 
     # Build + insert detail rows
     detail_df = build_detail_rows(close_df, pe_ma20, dy_df, st)
-    print(f"  [{st}]   {len(detail_df):,} detail rows", flush=True)
+    logger.info(f"  [{st}]   {len(detail_df):,} detail rows")
 
     n_detail = await _write_detail(
         conn, st, _detail_db_rows(detail_df), force=force,
@@ -345,15 +336,14 @@ async def _process_etf(
 
     # Monthly stats
     if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
-        print(f"  [{st}] Computing monthly 5y rolling stats...", flush=True)
+        logger.info(f"  [{st}] Computing monthly 5y rolling stats...")
         stats_rows = compute_monthly_stats(
             detail_df, pe_df, None, div_events, trading_dates, st
         )
-        print(f"  [{st}]   {len(stats_rows):,} monthly stats rows", flush=True)
+        logger.info(f"  [{st}]   {len(stats_rows):,} monthly stats rows")
         await _write_stats(conn, st, stats_rows, force=force, code=code)
     else:
-        print(f"  [{st}] Monthly stats up to date; skipping stats step.",
-              flush=True)
+        logger.info(f"  [{st}] Monthly stats up to date; skipping stats step.")
 
     # ---- Percentile bands + band-break excursion streaks (see the
     # index processor's comment).
@@ -377,28 +367,27 @@ async def _process_stock(
     st = "stock"
     if code is not None:
         code_list = [code]
-        print(f"\n  [{st}] SINGLE-CODE mode: processing {code}", flush=True)
+        logger.info(f"\n  [{st}] SINGLE-CODE mode: processing {code}")
     else:
-        print(f"\n  [{st}] Fetching active codes...", flush=True)
+        logger.info(f"\n  [{st}] Fetching active codes...")
         codes = await fetch_active_codes(conn, st)
         code_list = sorted(codes)
-        print(f"  [{st}]   {len(code_list):,} active codes", flush=True)
+        logger.info(f"  [{st}]   {len(code_list):,} active codes")
         if not code_list:
-            print(f"  [{st}]   no active codes; skipping.", flush=True)
+            logger.info(f"  [{st}]   no active codes; skipping.")
             return 0
 
-    print(f"  [{st}] Fetching close + pe...", flush=True)
+    logger.info(f"  [{st}] Fetching close + pe...")
     close_df = await fetch_stock_close(conn, code_list)
-    print(f"  [{st}]   {len(close_df):,} (code, date) rows", flush=True)
+    logger.info(f"  [{st}]   {len(close_df):,} (code, date) rows")
 
     if code is not None and close_df.empty:
-        print(f"  [{st}]   no source data for {code} in {st}; skipping.",
-              flush=True)
+        logger.info(f"  [{st}]   no source data for {code} in {st}; skipping.")
         return 0
 
-    print(f"  [{st}] Fetching dividends (all stock_dividends)...", flush=True)
+    logger.info(f"  [{st}] Fetching dividends (all stock_dividends)...")
     div_df = await fetch_stock_dividends(conn, stock_codes=None)
-    print(f"  [{st}]   {len(div_df):,} dividend events total", flush=True)
+    logger.info(f"  [{st}]   {len(div_df):,} dividend events total")
     # NOTE: Do NOT strip exchange suffixes for stocks.
     # stats.stock_basic_stats.code and stats.stock_dividends.code are BOTH
     # suffixed (e.g. "600000.SS") and already match each other directly.
@@ -407,21 +396,21 @@ async def _process_stock(
     # stats.stock_identity (codes SQL latest_name), and
     # stats.sec_classification (META_SQL) — all of which are suffixed.
 
-    print(f"  [{st}] Fetching trading dates...", flush=True)
+    logger.info(f"  [{st}] Fetching trading dates...")
     trading_dates = await fetch_trading_dates(conn, st)
-    print(f"  [{st}]   {len(trading_dates):,} trading dates", flush=True)
+    logger.info(f"  [{st}]   {len(trading_dates):,} trading dates")
 
     # Compute pe_ma20 (stock PE from stock_basic_stats.pe)
     pe_df = close_df[["code", "date", "pe"]].copy()
     pe_ma20 = compute_pe_ma20(close_df)
-    print(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values", flush=True)
+    logger.info(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values")
 
     # Compute dividend_yield
     dy_df = compute_simple_dividend_yield(close_df, div_df)
 
     # Build + insert detail rows
     detail_df = build_detail_rows(close_df, pe_ma20, dy_df, st)
-    print(f"  [{st}]   {len(detail_df):,} detail rows", flush=True)
+    logger.info(f"  [{st}]   {len(detail_df):,} detail rows")
 
     n_detail = await _write_detail(
         conn, st, _detail_db_rows(detail_df), force=force,
@@ -430,15 +419,14 @@ async def _process_stock(
 
     # Monthly stats
     if force or code is not None or (target_dates_stats is not None and len(target_dates_stats) > 0):
-        print(f"  [{st}] Computing monthly 5y rolling stats...", flush=True)
+        logger.info(f"  [{st}] Computing monthly 5y rolling stats...")
         stats_rows = compute_monthly_stats(
             detail_df, pe_df, None, div_df, trading_dates, st
         )
-        print(f"  [{st}]   {len(stats_rows):,} monthly stats rows", flush=True)
+        logger.info(f"  [{st}]   {len(stats_rows):,} monthly stats rows")
         await _write_stats(conn, st, stats_rows, force=force, code=code)
     else:
-        print(f"  [{st}] Monthly stats up to date; skipping stats step.",
-              flush=True)
+        logger.info(f"  [{st}] Monthly stats up to date; skipping stats step.")
 
     # ---- Percentile bands + band-break excursion streaks (see the
     # index processor's comment).
@@ -472,19 +460,19 @@ async def _write_detail(
       (sec_type, code, date). Skipped entirely when target_dates is empty.
     """
     if not detail_rows:
-        print(f"  [{sec_type}]   no detail rows to write", flush=True)
+        logger.info(f"  [{sec_type}]   no detail rows to write")
         return 0
 
     if force:
-        print(f"  [{sec_type}] Deleting existing {sec_type} rows from "
-              f"{DETAIL_TABLE}...", flush=True)
+        logger.info(f"  [{sec_type}] Deleting existing {sec_type} rows from "
+              f"{DETAIL_TABLE}...")
         await conn.execute(
             f"DELETE FROM {DETAIL_TABLE} WHERE sec_type = $1", sec_type
         )
-        print(f"  [{sec_type}] Inserting {len(detail_rows):,} detail rows "
-              f"(COPY)...", flush=True)
+        logger.info(f"  [{sec_type}] Inserting {len(detail_rows):,} detail rows "
+              f"(COPY)...")
         n = await copy_insert_async(conn, DETAIL_TABLE, detail_rows)
-        print(f"  [{sec_type}]   inserted {n:,} detail rows", flush=True)
+        logger.info(f"  [{sec_type}]   inserted {n:,} detail rows")
         return n
 
     # Incremental: filter to missing dates only.
@@ -492,22 +480,19 @@ async def _write_detail(
         rows_to_write = detail_rows
     else:
         if len(target_dates) == 0:
-            print(f"  [{sec_type}]   detail up to date; skipping insert.",
-                  flush=True)
+            logger.info(f"  [{sec_type}]   detail up to date; skipping insert.")
             return 0
         rows_to_write = [
             r for r in detail_rows if r["date"] in target_dates
         ]
-        print(f"  [{sec_type}] Incremental filter: {len(rows_to_write):,} of "
-              f"{len(detail_rows):,} detail rows are in target_dates",
-              flush=True)
+        logger.info(f"  [{sec_type}] Incremental filter: {len(rows_to_write):,} of "
+              f"{len(detail_rows):,} detail rows are in target_dates")
 
     if not rows_to_write:
-        print(f"  [{sec_type}]   no new detail rows to upsert", flush=True)
+        logger.info(f"  [{sec_type}]   no new detail rows to upsert")
         return 0
 
-    print(f"  [{sec_type}] Upserting {len(rows_to_write):,} detail rows...",
-          flush=True)
+    logger.info(f"  [{sec_type}] Upserting {len(rows_to_write):,} detail rows...")
     n_copied, n_upserted = await copy_or_upsert_split_async(
         conn, DETAIL_TABLE, rows_to_write,
         key_columns=["sec_type", "code", "date"],
@@ -516,7 +501,7 @@ async def _write_detail(
     via = "COPY" if n_copied > 0 and n_upserted == 0 else \
           f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
           "upsert"
-    print(f"  [{sec_type}]   inserted {n:,} detail rows via {via}", flush=True)
+    logger.info(f"  [{sec_type}]   inserted {n:,} detail rows via {via}")
     return n
 
 
@@ -536,26 +521,26 @@ async def _write_stats(
     whole sec_type.
     """
     if not stats_rows:
-        print(f"  [{sec_type}]   no stats rows to write", flush=True)
+        logger.info(f"  [{sec_type}]   no stats rows to write")
         return 0
 
     if code is not None:
-        print(f"  [{sec_type}] Deleting existing rows for {code} from "
-              f"{STATS_TABLE}...", flush=True)
+        logger.info(f"  [{sec_type}] Deleting existing rows for {code} from "
+              f"{STATS_TABLE}...")
         await conn.execute(
             f"DELETE FROM {STATS_TABLE} WHERE sec_type = $1 AND code = $2",
             sec_type, code,
         )
     else:
-        print(f"  [{sec_type}] Deleting existing {sec_type} rows from "
-              f"{STATS_TABLE}...", flush=True)
+        logger.info(f"  [{sec_type}] Deleting existing {sec_type} rows from "
+              f"{STATS_TABLE}...")
         await conn.execute(
             f"DELETE FROM {STATS_TABLE} WHERE sec_type = $1", sec_type
         )
-    print(f"  [{sec_type}] Inserting {len(stats_rows):,} stats rows "
-          f"(COPY)...", flush=True)
+    logger.info(f"  [{sec_type}] Inserting {len(stats_rows):,} stats rows "
+          f"(COPY)...")
     n = await copy_insert_async(conn, STATS_TABLE, stats_rows)
-    print(f"  [{sec_type}]   inserted {n:,} stats rows", flush=True)
+    logger.info(f"  [{sec_type}]   inserted {n:,} stats rows")
     return n
 
 
@@ -611,13 +596,12 @@ async def _detect_missing_dates(
         n_zero = len(zero_dates)
         if n_zero:
             missing_detail = set(missing_detail) | {r["date"] for r in zero_dates}
-            print(f"    -> detail[{st}]: {n_zero} dates carry invalid "
+            logger.info(f"    -> detail[{st}]: {n_zero} dates carry invalid "
                   f"dividend_yield = 0 rows (stale legacy values); "
-                  f"re-upserting them", flush=True)
+                  f"re-upserting them")
 
         target_dates_detail[st] = missing_detail
-        print(f"    -> detail[{st}]: {len(missing_detail)} missing dates",
-              flush=True)
+        logger.info(f"    -> detail[{st}]: {len(missing_detail)} missing dates")
 
         # ---- Stats table: missing MONTH-END dates ----
         # The stats table only has month-end rows, so we need to compare
@@ -640,8 +624,8 @@ async def _detect_missing_dates(
         }
         missing_stats = month_ends - existing_stats_dates
         target_dates_stats[st] = missing_stats
-        print(f"    -> stats[{st}]: {len(missing_stats)} missing month-end "
-              f"dates", flush=True)
+        logger.info(f"    -> stats[{st}]: {len(missing_stats)} missing month-end "
+              f"dates")
 
     return target_dates_detail, target_dates_stats
 
@@ -667,8 +651,7 @@ async def main() -> None:
     force = args.force
 
     if args.code and args.force:
-        print("ERROR: --code and --force are mutually exclusive.",
-              flush=True)
+        logger.error("ERROR: --code and --force are mutually exclusive.")
         sys.exit(2)
 
     sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
@@ -707,8 +690,7 @@ async def main() -> None:
                     code=args.code,
                 )
 
-            print(f"\n  -> Upserting analysis.analysis_identity registry...",
-                  flush=True)
+            logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
             await upsert_analysis_identity(
                 conn,
                 name=ANALYSIS_NAME,
@@ -716,14 +698,13 @@ async def main() -> None:
                 description=DESCRIPTION,
             )
 
-            print(f"\n  TOTAL: {total:,} detail rows inserted", flush=True)
+            logger.info(f"\n  TOTAL: {total:,} detail rows inserted")
             print_wall_time(t0)
             return
 
         # ---- Detect missing dates (incremental mode) --------------------
         if not force:
-            print("\n  Detecting missing dates per sec_type (incremental mode)...",
-                  flush=True)
+            logger.info("\n  Detecting missing dates per sec_type (incremental mode)...")
         target_dates_detail, target_dates_stats = await _detect_missing_dates(
             conn, list(sec_types), force,
         )
@@ -735,7 +716,7 @@ async def main() -> None:
                 + sum(len(s) for s in target_dates_stats.values())
             )
             if total_missing == 0:
-                print("    -> DB is up to date; nothing to do.", flush=True)
+                logger.info("    -> DB is up to date; nothing to do.")
                 print_wall_time(t0)
                 return
 
@@ -747,7 +728,7 @@ async def main() -> None:
             if (not force
                     and td_detail is not None and len(td_detail) == 0
                     and td_stats is not None and len(td_stats) == 0):
-                print(f"\n  [{st}] up to date; skipping.", flush=True)
+                logger.info(f"\n  [{st}] up to date; skipping.")
                 continue
             processor = _PROCESSORS[st]
             n = await processor(
@@ -759,8 +740,7 @@ async def main() -> None:
             total += n
 
         # Upsert analysis_identity
-        print(f"\n  -> Upserting analysis.analysis_identity registry...",
-              flush=True)
+        logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
         await upsert_analysis_identity(
             conn,
             name=ANALYSIS_NAME,
@@ -768,7 +748,7 @@ async def main() -> None:
             description=DESCRIPTION,
         )
 
-        print(f"\n  TOTAL: {total:,} detail rows inserted", flush=True)
+        logger.info(f"\n  TOTAL: {total:,} detail rows inserted")
         print_wall_time(t0)
     finally:
         try:

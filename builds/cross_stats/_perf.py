@@ -12,6 +12,9 @@ from __future__ import annotations
 import time
 from contextlib import contextmanager
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Wall-time budgets per phase label (seconds). Exceeding the budget logs
 # a [PERF-BLOCKER] line (warning only — never aborts).
 _BUDGETS_S: dict[str, float] = {
@@ -32,13 +35,12 @@ def timed(label: str, budget_s: float | None = None):
         yield
     finally:
         elapsed = time.time() - t0
-        print(f"    [perf] {label}: {elapsed:.1f}s", flush=True)
+        logger.info(f"    [perf] {label}: {elapsed:.1f}s")
         budget = budget_s if budget_s is not None else _BUDGETS_S.get(label)
         if budget is not None and elapsed > budget:
-            print(
+            logger.info(
                 f"    [PERF-BLOCKER] {label} took {elapsed:.1f}s "
                 f"(budget {budget:.0f}s) — investigate before the next run",
-                flush=True,
             )
 
 
@@ -76,6 +78,6 @@ DECLARED_BLOCKERS: tuple[tuple[str, str], ...] = (
 
 def print_declared_blockers() -> None:
     """Emit the declared-blocker register (visible in every run log)."""
-    print("    [perf] declared structural blockers (accepted):", flush=True)
+    logger.info("    [perf] declared structural blockers (accepted):")
     for name, why in DECLARED_BLOCKERS:
-        print(f"      - {name}: {why}", flush=True)
+        logger.info(f"      - {name}: {why}")

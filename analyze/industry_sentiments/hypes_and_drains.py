@@ -56,6 +56,9 @@ from _common.build_commons import (
 )
 from analyze._common import upsert_analysis_identity
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Configuration
@@ -437,40 +440,39 @@ async def run_hypes_and_drains(
       force: when True (default), truncate + recompute.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  INDUSTRY HYPES & DRAINS (internal step of industry_sentiments)",
-          flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  INDUSTRY HYPES & DRAINS (internal step of industry_sentiments)")
+    logger.info("=" * 78)
 
     # ---- Step 1: guard -----------------------------------------------
     n_src = await conn.fetchval(COUNT_SOURCE_SQL)
     if not n_src:
-        print("\n[hd1/7] industry_attributions has no broad-market rows "
+        logger.info("\n[hd1/7] industry_attributions has no broad-market rows "
               "with 255d data — nothing to rank. Skipping "
-              "hypes_and_drains step.", flush=True)
+              "hypes_and_drains step.")
         return
-    print(f"\n[hd1/7] Source analysis.industry_attributions: "
-          f"{n_src:,} broad-market rows with 255d data.", flush=True)
+    logger.info(f"\n[hd1/7] Source analysis.industry_attributions: "
+          f"{n_src:,} broad-market rows with 255d data.")
 
     # ---- Step 2: 120d column check (warn, don't abort) ---------------
     n_120 = await conn.fetchval(COUNT_120D_SQL)
     if not n_120:
-        print("      WARNING: benchmark_non_this_industry_rolling_120days_"
+        logger.warning("      WARNING: benchmark_non_this_industry_rolling_120days_"
               "price is NULL for all broad-market benchmarks. The "
               "attributions step's 120d backfill has not run yet — "
-              "period=120 rows will be skipped.", flush=True)
+              "period=120 rows will be skipped.")
     else:
-        print(f"      120d column populated ({n_120:,} rows).", flush=True)
+        logger.info(f"      120d column populated ({n_120:,} rows).")
 
     # ---- Step 3: fetch broad-market benchmark codes -----------------
     benchmark_codes = [r["benchmark_code"] for r in await conn.fetch(
         BROAD_MARKET_BENCHMARKS_SQL
     )]
-    print(f"\n[hd2/7] Found {len(benchmark_codes)} broad-market benchmarks: "
-          f"{', '.join(benchmark_codes)}", flush=True)
+    logger.info(f"\n[hd2/7] Found {len(benchmark_codes)} broad-market benchmarks: "
+          f"{', '.join(benchmark_codes)}")
 
     # ---- Step 4: truncate -------------------------------------------
-    print(f"\n[hd3/7] Truncating {TABLE} (full recompute)...", flush=True)
+    logger.info(f"\n[hd3/7] Truncating {TABLE} (full recompute)...")
     await truncate_table_async(conn, TABLE)
 
     # ---- Step 5: per-(benchmark, period, weighting) INSERT ----------
@@ -495,15 +497,15 @@ async def run_hypes_and_drains(
                 )
                 n_iter = _parse_insert_count(status)
                 n_total += n_iter
-                print(f"  [hd4/7] {bm_code} period={period:>3d}d "
+                logger.info(f"  [hd4/7] {bm_code} period={period:>3d}d "
                       f"{weighting:5s}: inserted {n_iter:>7,} rows "
-                      f"({time.time() - t_iter:.1f}s)", flush=True)
+                      f"({time.time() - t_iter:.1f}s)")
                 del status, n_iter, sql
                 gc.collect()
     gc.collect()
-    print(f"  total: {n_total:,} rows inserted across "
+    logger.info(f"  total: {n_total:,} rows inserted across "
           f"{len(benchmark_codes)} benchmarks x {len(PERIODS)} periods "
-          f"x {len(WEIGHTINGS)} weightings", flush=True)
+          f"x {len(WEIGHTINGS)} weightings")
 
     # ---- Step 6: upsert analysis_identity ---------------------------
     await upsert_analysis_identity(
@@ -526,18 +528,16 @@ async def run_hypes_and_drains(
         ORDER BY benchmark_code, period_days, weighting
         LIMIT 60
     """)
-    print("\n      Summary by (benchmark, period, weighting) [first 60]:",
-          flush=True)
+    logger.info("\n      Summary by (benchmark, period, weighting) [first 60]:")
     for r in summary:
-        print(f"        {r['benchmark_code']} {r['period_days']:>3d}d "
+        logger.info(f"        {r['benchmark_code']} {r['period_days']:>3d}d "
               f"{r['weighting']:5s}: "
               f"{r['n_rows']:>7,} rows . "
               f"{r['n_industries']:>3} ind . "
               f"{r['first_date']} -> {r['last_date']} . "
-              f"avg_metric={r['avg_metric']}", flush=True)
+              f"avg_metric={r['avg_metric']}")
 
-    print(f"\n  hypes_and_drains wall time: {time.time() - t0:.1f}s",
-          flush=True)
+    logger.info(f"\n  hypes_and_drains wall time: {time.time() - t0:.1f}s")
 
     # ---- Seasonal (monthly) aggregation -----------------------------
     await run_hypes_and_drains_seasonal(conn)
@@ -582,23 +582,22 @@ async def run_hypes_and_drains_seasonal(conn) -> None:
     table.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  INDUSTRY HYPES & DRAINS — SEASONAL (monthly) aggregation",
-          flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  INDUSTRY HYPES & DRAINS — SEASONAL (monthly) aggregation")
+    logger.info("=" * 78)
 
     # ---- Truncate ----------------------------------------------------
-    print(f"\n[hd-s1/3] Truncating {SEASONAL_TABLE}...", flush=True)
+    logger.info(f"\n[hd-s1/3] Truncating {SEASONAL_TABLE}...")
     await truncate_table_async(conn, SEASONAL_TABLE)
 
     # ---- Insert ------------------------------------------------------
-    print("[hd-s2/3] Aggregating per-date rankings into monthly "
-          "rankings...", flush=True)
+    logger.info("[hd-s2/3] Aggregating per-date rankings into monthly "
+          "rankings...")
     await conn.execute(SET_WORK_MEM_SQL)
     status = await conn.execute(_SEASONAL_INSERT_SQL)
     n_inserted = _parse_insert_count(status)
-    print(f"  inserted {n_inserted:,} seasonal ranking rows "
-          f"({time.time() - t0:.1f}s)", flush=True)
+    logger.info(f"  inserted {n_inserted:,} seasonal ranking rows "
+          f"({time.time() - t0:.1f}s)")
 
     # ---- Summary -----------------------------------------------------
     summary = await conn.fetch("""
@@ -615,14 +614,12 @@ async def run_hypes_and_drains_seasonal(conn) -> None:
         ORDER BY benchmark_code, period_days
         LIMIT 30
     """)
-    print("\n      Seasonal summary by (benchmark, period) [first 30]:",
-          flush=True)
+    logger.info("\n      Seasonal summary by (benchmark, period) [first 30]:")
     for r in summary:
-        print(f"        {r['benchmark_code']} {r['period_days']:>3d}d: "
+        logger.info(f"        {r['benchmark_code']} {r['period_days']:>3d}d: "
               f"{r['n_seasons']:>2} seasons . "
               f"{r['n_rows']:>5,} rows . "
               f"{r['n_industries']:>3} ind . "
-              f"{r['first_season']} -> {r['last_season']}", flush=True)
+              f"{r['first_season']} -> {r['last_season']}")
 
-    print(f"\n  seasonal aggregation wall time: {time.time() - t0:.1f}s",
-          flush=True)
+    logger.info(f"\n  seasonal aggregation wall time: {time.time() - t0:.1f}s")

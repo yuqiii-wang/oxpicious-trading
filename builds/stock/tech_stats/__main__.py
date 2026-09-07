@@ -31,6 +31,9 @@ from _common.build_commons import (
 )
 from builds.stock.tech_stats import run_tech_stats_chunked, TABLE, SOURCE_TABLE
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("tech_stats")
+
 setup_utf8_stdout()
 
 
@@ -79,7 +82,7 @@ async def main():
             conn, force=args.force, chunk_size=args.chunk_size, verbose=True,
             target_dates=target_dates,
         )
-        print(f"\n[DONE] Total rows upserted into {TABLE}: {total:,}", flush=True)
+        logger.info(f"\n[DONE] Total rows upserted into {TABLE}: {total:,}")
     finally:
         try:
             await conn.close()

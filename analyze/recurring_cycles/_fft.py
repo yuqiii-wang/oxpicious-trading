@@ -29,9 +29,9 @@ def _log_cupy_fail(fn: str, e: Exception) -> None:
             "[recurring_cycles] cupy %s failed (%s: %s) -> numpy CPU "
             "(subsequent failures silent)",
             fn, type(e).__name__, e)
-        print(f"    [recurring_cycles] cupy {fn} failed "
+        logger.error(f"    [recurring_cycles] cupy {fn} failed "
               f"({type(e).__name__}: {e}) -> numpy CPU "
-              f"(subsequent failures silent)", flush=True)
+              f"(subsequent failures silent)")
         _cupy_fail_logged = True
 
 
@@ -68,8 +68,7 @@ def _rfft(windows: np.ndarray, axis: int = 1) -> np.ndarray:
             release_cupy_pool()
             if not _rfft_backend_logged:
                 logger.info("[recurring_cycles] FFT backend: cupy (GPU/cuFFT)")
-                print("    [recurring_cycles] FFT backend: cupy (GPU/cuFFT)",
-                      flush=True)
+                logger.info("    [recurring_cycles] FFT backend: cupy (GPU/cuFFT)")
                 _rfft_backend_logged = True
             return out
         except Exception as e:
@@ -78,7 +77,7 @@ def _rfft(windows: np.ndarray, axis: int = 1) -> np.ndarray:
             _log_cupy_fail("rFFT", e)
     if not _rfft_backend_logged:
         logger.info("[recurring_cycles] FFT backend: numpy (CPU)")
-        print("    [recurring_cycles] FFT backend: numpy (CPU)", flush=True)
+        logger.info("    [recurring_cycles] FFT backend: numpy (CPU)")
         _rfft_backend_logged = True
     return np.fft.rfft(windows, axis=axis)
 

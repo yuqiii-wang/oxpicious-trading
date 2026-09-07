@@ -13,6 +13,9 @@ import pandas as pd
 from builds._commons.safe_parse import safe_to_datetime
 from builds.bond.paths import PBOC_LPR_CSV
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def build_lpr_df(start_date=None, end_date=None, verbose=True):
     """Build a daily LPR frame from the combined LPR CSV.
@@ -23,18 +26,18 @@ def build_lpr_df(start_date=None, end_date=None, verbose=True):
     Returns DataFrame columns: date, lpr_1y, lpr_5y
     """
     if verbose:
-        print(f"    [PBOC-LPR] reading {PBOC_LPR_CSV}", flush=True)
+        logger.info(f"    [PBOC-LPR] reading {PBOC_LPR_CSV}")
 
     if not os.path.exists(PBOC_LPR_CSV):
         if verbose:
-            print(f"    [PBOC-LPR] WARNING: {PBOC_LPR_CSV} not found; "
-                  f"run `python download_pboc_lpr_news.py` first.", flush=True)
+            logger.warning(f"    [PBOC-LPR] WARNING: {PBOC_LPR_CSV} not found; "
+                  f"run `python download_pboc_lpr_news.py` first.")
         return pd.DataFrame()
 
     df = pd.read_csv(PBOC_LPR_CSV, dtype=str, encoding="utf-8-sig", keep_default_na=False)
     if len(df) == 0:
         if verbose:
-            print(f"    [PBOC-LPR] no records in {PBOC_LPR_CSV}", flush=True)
+            logger.info(f"    [PBOC-LPR] no records in {PBOC_LPR_CSV}")
         return pd.DataFrame()
 
     df = df.rename(columns={"pub_date": "date"})
@@ -57,14 +60,14 @@ def build_lpr_df(start_date=None, end_date=None, verbose=True):
 
     if verbose:
         if len(df):
-            print(f"    [PBOC-LPR] {len(df)} monthly LPR announcements, "
-                  f"{df['date'].min().date()} → {df['date'].max().date()}", flush=True)
+            logger.info(f"    [PBOC-LPR] {len(df)} monthly LPR announcements, "
+                  f"{df['date'].min().date()} → {df['date'].max().date()}")
             if df["lpr_1y"].notna().any():
-                print(f"    [PBOC-LPR] 1Y range: {df['lpr_1y'].min():.4f}% → "
-                      f"{df['lpr_1y'].max():.4f}%", flush=True)
+                logger.info(f"    [PBOC-LPR] 1Y range: {df['lpr_1y'].min():.4f}% → "
+                      f"{df['lpr_1y'].max():.4f}%")
             if df["lpr_5y"].notna().any():
-                print(f"    [PBOC-LPR] 5Y+ range: {df['lpr_5y'].min():.4f}% → "
-                      f"{df['lpr_5y'].max():.4f}%", flush=True)
+                logger.info(f"    [PBOC-LPR] 5Y+ range: {df['lpr_5y'].min():.4f}% → "
+                      f"{df['lpr_5y'].max():.4f}%")
         else:
-            print(f"    [PBOC-LPR] no records in range", flush=True)
+            logger.info(f"    [PBOC-LPR] no records in range")
     return df

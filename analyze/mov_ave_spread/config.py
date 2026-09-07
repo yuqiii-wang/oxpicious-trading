@@ -676,153 +676,66 @@ HOLIDAY_COLUMNS = (
 )
 
 
+
+
+
 # ============================================================================
-#  Market hypes (analysis.mov_ave_market_hypes)
-#  — Market-hype EPISODE detector: one row per CONCATENATED hype episode
-#    per check-in window. An episode is a maximal span of trading dates
-#    around a sustained run of hyped dates, extended through the
-#    surrounding check-in evidence, with its SPAN (hype_days) bounded
-#    below by the window (min_checkin_period) and above by the NEXT
-#    window (exclusive) — so each calendar turmoil lands in exactly the
-#    bucket matching its length. Internal step of the parent
-#    mov_ave_spread pipeline (see market_hypes.py).
+#  analysis.mov_ave_price_vs_amt — per-date Price × Trading-Amount state
+#  registry (the px_vol family's DATE-LEVEL source of truth)
+#
+#  One row per (sec_type, code, date): every day with valid inputs joins
+#  EXACTLY ONE of the 15 price-speed × amount-state categories. The
+#  category definitions / thresholds are the analysis_forecasts px_vol
+#  engine's verbatim (imported from analyze.analysis_forecasts.config +
+#  fetch — single source of truth, so the registry audits against the
+#  buckets 1:1). Consumers: analysis_forecasts.px_vol_state +
+#  analysis_signals px_vol (bucket membership + mean_t / mean_z) and
+#  the MA-Spread UI's Px-Vol States date shading.
+#
+#  Internal step of the parent mov_ave_spread pipeline (see
+#  price_vs_amt.py) — reuses the parent source DataFrame's price +
+#  trading_amount columns; REBUILT WHOLESALE per sec_type (ETF
+#  adj_close back-adjustments rewrite price history — market_hypes
+#  precedent).
 # ============================================================================
 
-MARKET_HYPES_TABLE = "analysis.mov_ave_market_hypes"
-MARKET_HYPES_ANALYSIS_NAME = "mov_ave_market_hypes"
+PRICE_VS_AMT_TABLE = "analysis.mov_ave_price_vs_amt"
+PRICE_VS_AMT_ANALYSIS_NAME = "mov_ave_price_vs_amt"
 
-# Check-in windows (trading rows) — one EPISODE SET per window per
-# (sec_type, code). min_checkin_period IS the MINIMUM episode span for
-# its bucket; the span is bounded above by the NEXT window (exclusive).
-# Mirrors the min_checkin_period column (part of the PK) in
-# 03_mov_ave_spreads.sql.
-HYPE_CHECKIN_PERIODS = (5, 20, 60, 120, 255)
-
-# Audit base window (trading rows) for the percentile thresholds:
-# CENTERED ±10 trading years around each audited date — NOT a trailing /
-# rolling-back window. The base for date t spans the 2550 rows (10 trading
-# years) BEFORE t, t itself, and the 2550 rows AFTER t (total 5101 rows ≈
-# 20 trading years). Windows near the start / end of a code's history are
-# naturally truncated (the newest dates have no future rows yet — their
-# base is effectively the trailing 10y); a base with fewer than
-# HYPE_THRESHOLD_MIN_PERIODS non-NULL observations has no thresholds
-# (the date is not hyped).
-HYPE_THRESHOLD_HALF_WINDOW_ROWS = 2550
-HYPE_THRESHOLD_WINDOW_ROWS = 2 * HYPE_THRESHOLD_HALF_WINDOW_ROWS + 1
-HYPE_THRESHOLD_MIN_PERIODS = 255
-
-# Maximum episode span for the LONGEST bucket (255d): the whole
-# 10y+10y = 20y centered threshold base (2 * 2550 rows). Shorter buckets
-# are capped by the next check-in window instead (see
-# HYPE_EPISODE_SPAN_MAX) — e.g. a 20d-bucket episode spans 20..59 rows,
-# a 60d-bucket one 60..119, and a 255d-bucket one 255..5100.
-HYPE_MAX_EPISODE_ROWS = 2 * HYPE_THRESHOLD_HALF_WINDOW_ROWS
-
-# Episode-span upper bound (EXCLUSIVE) per check-in window: the next
-# window in HYPE_CHECKIN_PERIODS, or HYPE_MAX_EPISODE_ROWS (the full
-# 20y base) for the longest window. Together with the window itself
-# (the inclusive lower bound) this partitions episode lengths into
-# disjoint buckets — one calendar turmoil lands in exactly the bucket
-# whose range contains its span.
-HYPE_EPISODE_SPAN_MAX = {
-    w: (
-        HYPE_CHECKIN_PERIODS[i + 1]
-        if i + 1 < len(HYPE_CHECKIN_PERIODS)
-        else HYPE_MAX_EPISODE_ROWS
-    )
-    for i, w in enumerate(HYPE_CHECKIN_PERIODS)
-}
-
-# Parameter set recorded on every row (the schema defaults). All three
-# are strict-greater-than comparisons in percent units (0-100):
-#   - satisfaction: fraction of check-in dates within the window that
-#     must be EXCEEDED for is_hyped = TRUE (60.0 = "> 60% of the days").
-#   - amt percentile: centered-20y (±10y) percentile of daily
-#     trading_amount that a date must EXCEED on the liquidity leg
-#     (60.0 = 60th pct).
-#   - std percentile: centered-20y (±10y) percentile of std_{W}days
-#     that a date must EXCEED on the volatility leg. Deliberately LOW
-#     (30.0 = 30th pct): the W-day trailing σ lags a sudden turmoil by
-#     construction (the window still holds W-1 pre-turmoil rows on day
-#     1), so the volatility leg must clear a modest bar to let episodes
-#     start at the turmoil's first big-move day — the 2024-09-24 rally
-#     audit (159673.SZ) showed a 60th-pct std leg delayed episode starts
-#     by a full month while the amt leg fired from day one.
-# Changing any of these requires a --force rebuild (they are recorded
-# per row but are NOT part of the PK).
-HYPE_CHECKIN_SATISFACTION_THRESHOLD = 60.0
-HYPE_TRADING_AMT_THRESHOLD_PCT = 60.0
-HYPE_STD_THRESHOLD_PCT = 30.0
-
-# Volatility source column per check-in window (matching timescale):
-# the W-day rolling population σ of price already computed by the
-# parent pipeline (helpers.compute_rolling_stds -> std_{W}days in the
-# source DataFrame / mov_ave_spreads_detail).
-HYPE_STD_COLUMN_BY_PERIOD = {
-    5:   "std_5days",
-    20:  "std_20days",
-    60:  "std_60days",
-    120: "std_120days",
-    255: "std_255days",
-}
-
-# All output column names of analysis.mov_ave_market_hypes in the order
-# they appear in the table (must stay in sync with the CREATE TABLE in
-# 03_mov_ave_spreads.sql — COPY inserts with this explicit column
-# order). NOTE: the PK is (sec_type, code, start_date, end_date,
-# min_checkin_period); the three threshold columns are recorded build
-# parameters, not key columns. trading_amt_hype_days / std_hype_days
-# count the days within the episode span on which each leg individually
-# checked in (diagnostics for which leg drove the episode).
-MARKET_HYPES_COLUMNS = (
-    "sec_type", "code",
-    "start_date", "end_date", "min_checkin_period", "hype_days",
-    "min_checkin_satisfaction_threshold",
-    "min_trading_amt_threshold",
-    "trading_amt_hype_days",
-    "min_std_threshold",
-    "std_hype_days",
+PRICE_VS_AMT_COLUMNS = (
+    "sec_type", "code", "date",
+    "px_speed", "vol_state", "side",
+    "px_t", "px_z", "ret_1d", "px_sigma", "amt_ratio",
+    "sigma_window", "lb_window",
+    "k_slow_up", "k_slow_dn", "k_sharp",
+    "z_heavy", "z_shrink", "sigma_floor",
 )
 
-MARKET_HYPES_DESCRIPTION = (
-    "Market-hype EPISODE detector (ETF + Index + Stock). One row per "
-    "(sec_type, code, min_checkin_period, episode): a CONCATENATED hype "
-    "episode — a maximal span of trading dates anchored on a maximal run "
-    "of consecutive hyped dates and extended through the surrounding "
-    "check-in evidence (the W rows before the run's first hyped date, "
-    "back to its first check-in, and the W rows after the last hyped "
-    "date, to its last check-in). start_date / end_date bracket the "
-    "span; hype_days = the span length in trading dates. min_checkin_"
-    "period (W) is the bucket's MINIMUM span and the next window its "
-    "EXCLUSIVE maximum (20d bucket: 20..59 rows; 60d: 60..119; 120d: "
-    "120..254; 255d: 255..5100 = the whole ±10y threshold base), so "
-    "each calendar turmoil lands in exactly the bucket matching its "
-    "length. A date is hyped when, within the last W trading rows "
-    "ending at it, MORE than min_checkin_satisfaction_threshold "
-    "percent of the dates are check-ins — a check-in being a date "
-    "whose daily trading_amount EXCEEDS its centered-20y "
-    "min_trading_amt_threshold percentile AND whose W-day rolling "
-    "population σ (std_{W}days, matching timescale) EXCEEDS its "
-    "centered-20y min_std_threshold percentile. The audit base window "
-    "is CENTERED on each audited date — 2550 trading rows (10 trading "
-    "years) before the date plus 2550 rows after it (NOT a trailing/"
-    "rolling-back window) — with a 255-row (1 trading year) minimum "
-    "before thresholds exist; bases near the start/end of a code's "
-    "history are naturally truncated (the newest dates have no future "
-    "rows yet). Because the base looks both ways, historical rows use "
-    "their following decade (retrospective audit; run --force to "
-    "refresh historical rows' flags after new data arrives). "
-    "trading_amt_hype_days / std_hype_days count the days within the "
-    "episode span on which each leg individually checked in. Non-hyped "
-    "dates leave no footprint; episodes are REBUILT WHOLESALE per "
-    "sec_type on every pipeline run (new dates shift episode "
-    "boundaries — the margin_changes precedent). One episode set per "
-    "check-in window (5/20/60/120/255); the three threshold columns "
-    "record the build's parameter set (defaults 60.0/60.0/30.0). "
-    "Source: same DataFrame as the mov_ave_spread parent pipeline "
-    "(trading_amount + std_{W}days columns — no second DB round-trip). "
-    "The sec_type column discriminates the source universe ('etf' | "
-    "'index' | 'stock')."
+PRICE_VS_AMT_DESCRIPTION = (
+    "Per-(code, date) Price × Trading-Amount state registry (ETF + "
+    "Index + Stock): every day with valid inputs joins exactly ONE of "
+    "the 15 px_speed × vol_state categories — the σ-standardized 1-day "
+    "price change (t = ret_1d / the code's own rolling-255 σ_ret "
+    "ddof=1, min 60, shifted 1 row; σ below sigma_floor 0.005 excludes "
+    "bond-like codes: sharp_up t > 2.0 / slow_up 1.26 < t <= 2.0 / "
+    "flat / slow_dn / sharp_dn t < -2.0) × the z-scored 量比 "
+    "(trading_amount vs its own 5-row trailing mean, z vs the "
+    "rolling-255 moments shifted 1 row: heavy z > 2.0 / normal / "
+    "shrink z < -0.92). NULL trading_amount → no row. side mirrors "
+    "px_vol_state (top/bottom/flat). The px_t / px_z / ret_1d / "
+    "px_sigma / amt_ratio columns record the state evidence so consumers "
+    "recompute nothing. This is the DATE-LEVEL source of truth of the "
+    "px_vol family: analysis_forecasts.px_vol_state bucket aggregates, "
+    "the analysis_signals px_vol detections and the MA-Spread UI "
+    "shading all audit against this table. Rows are REBUILT WHOLESALE "
+    "per sec_type on every pipeline run (ETF adj_close back-adjustments "
+    "rewrite price history — the market_hypes precedent). Source: the "
+    "forecast engine's own price/amt series (COALESCE(adj_close, close) "
+    "for ETF, estimated closes excluded — identical conventions to "
+    "analysis_forecasts.fetch_analysis_inputs, so the buckets audit "
+    "1:1); category definitions imported verbatim from "
+    "analyze.analysis_forecasts (add_px_vol_features + PX_VOL_* "
+    "constants)."
 )
 
 
@@ -853,11 +766,10 @@ HIGH_LOW_PCT_PERIODS = (255, 500, 750, 1275)
 # in 03_mov_ave_spreads.sql.
 HIGH_LOW_PCT_TYPES = (1, 5, 10)
 
-# Minimum observations for a band: 255 rows (1 trading year, the
-# HYPE_THRESHOLD_MIN_PERIODS precedent), shared by all periods. Windows
-# near a code's history start are naturally truncated; fewer than 255
-# rows yields no band (the month is skipped — high_val/low_val are NOT
-# NULL).
+# Minimum observations for a band: 255 rows (1 trading year), shared by
+# all periods. Windows near a code's history start are naturally
+# truncated; fewer than 255 rows yields no band (the month is skipped —
+# high_val/low_val are NOT NULL).
 HIGH_LOW_PCT_MIN_PERIODS = 255
 
 # Rows per (sec_type, code, date_year_month) pair when complete: one

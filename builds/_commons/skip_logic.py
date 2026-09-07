@@ -30,6 +30,9 @@ from _common.build_commons import (
     in_range,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def discover_available_dates(
     dirs_patterns_prefixes: List[Tuple[str, str, str]],
@@ -131,17 +134,17 @@ async def get_files_to_read(
         dirs_patterns_prefixes, start_date, end_date
     )
     if verbose:
-        print(f"    → {len(available_dates)} unique dates available in source files", flush=True)
+        logger.info(f"    → {len(available_dates)} unique dates available in source files")
 
     if force:
         missing_dates = available_dates
         if verbose:
-            print(f"    [DB] Force mode: ALL {len(missing_dates)} dates treated as missing", flush=True)
+            logger.info(f"    [DB] Force mode: ALL {len(missing_dates)} dates treated as missing")
     else:
         missing_dates = await find_missing_dates(conn, table, available_dates)
         if verbose:
-            print(f"    [DB] {len(missing_dates)} dates missing from {table} "
-                  f"(out of {len(available_dates)} available)", flush=True)
+            logger.info(f"    [DB] {len(missing_dates)} dates missing from {table} "
+                  f"(out of {len(available_dates)} available)")
 
     # Build full file list across all dirs
     all_files: List[str] = []
@@ -151,6 +154,6 @@ async def get_files_to_read(
         all_files.extend(filtered)
 
     if verbose:
-        print(f"    → {len(all_files)} source CSV files to read", flush=True)
+        logger.info(f"    → {len(all_files)} source CSV files to read")
 
     return all_files, available_dates, missing_dates

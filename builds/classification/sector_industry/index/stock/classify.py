@@ -60,6 +60,9 @@ from builds.classification.sector_industry.index.stock.dummy_ext import (
 )
 from builds.classification.sector_industry.stock_overrides import match_stock_override
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def classify_stocks(
     conn,
@@ -214,9 +217,9 @@ async def classify_stocks(
             1 for s in stocks
             if s["parent_index_code"] and s["sector_id"] != DEFAULT_SECTOR_ID)
         n_primary = sum(1 for s in stocks if s["parent_index_is_primary"])
-        print(f"    [STOCKS] {n_stock_codes} stocks → {len(stocks)} rows "
+        logger.info(f"    [STOCKS] {n_stock_codes} stocks → {len(stocks)} rows "
               f"({n_mapped} with parent, {n_dummy} via dummy, "
               f"{n_name_classified} name-classified, "
-              f"{n_other} → OTHER, {n_primary} primary)", flush=True)
+              f"{n_other} → OTHER, {n_primary} primary)")
 
     return stocks

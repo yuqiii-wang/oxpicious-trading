@@ -18,6 +18,9 @@ from builds.stock._helpers import (
     records_from_frame,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ============================================================================
 # stats.stock_identity
@@ -75,19 +78,17 @@ async def write_identity(conn, identity_rows: list[dict]) -> None:
         )
         total_inserted = n_copied + n_upserted
         if n_copied > 0 and n_upserted == 0:
-            print(f"    [DB] Inserted {total_inserted:,} rows into "
-                  f"stats.stock_identity via COPY (all new dates)",
-                  flush=True)
+            logger.info(f"    [DB] Inserted {total_inserted:,} rows into "
+                  f"stats.stock_identity via COPY (all new dates)")
         elif n_copied > 0:
-            print(f"    [DB] Inserted {total_inserted:,} rows into "
+            logger.info(f"    [DB] Inserted {total_inserted:,} rows into "
                   f"stats.stock_identity ({n_copied:,} copied + "
-                  f"{n_upserted:,} upserted)", flush=True)
+                  f"{n_upserted:,} upserted)")
         else:
-            print(f"    [DB] Inserted {total_inserted:,} rows into "
-                  f"stats.stock_identity via upsert (all historical)",
-                  flush=True)
+            logger.info(f"    [DB] Inserted {total_inserted:,} rows into "
+                  f"stats.stock_identity via upsert (all historical)")
     else:
-        print(f"    [DB] No new rows to insert into stats.stock_identity", flush=True)
+        logger.info(f"    [DB] No new rows to insert into stats.stock_identity")
 
 
 # ============================================================================
@@ -188,8 +189,7 @@ async def write_basic_stats_ohlcv(
     """
     async with pool.acquire() as bs_conn:
         if not ov_rows:
-            print(f"    [DB] No OHLCV rows to upsert into stats.stock_basic_stats",
-                  flush=True)
+            logger.info(f"    [DB] No OHLCV rows to upsert into stats.stock_basic_stats")
             return
         cols = ["prev_close", "open", "high", "low", "close", "pct_change",
                 "is_close_estimated"]
@@ -228,9 +228,8 @@ async def write_basic_stats_ohlcv(
             await bs_conn.execute("DROP TABLE _bs_ov")
         parts = result.split()
         inserted_count = int(parts[-1]) if parts else 0
-        print(f"    [DB] Upserted {inserted_count:,} OHLCV rows into "
-              f"stats.stock_basic_stats (column-scoped: no pe/eps touch)",
-              flush=True)
+        logger.info(f"    [DB] Upserted {inserted_count:,} OHLCV rows into "
+              f"stats.stock_basic_stats (column-scoped: no pe/eps touch)")
 
 
 async def write_pe_only_conn(
@@ -302,7 +301,7 @@ async def write_pe_only_conn(
            f"{n_flagged:,} is_pe_estimated=true)")
     if n_seeded:
         msg += f" | seeded {n_seeded:,} key-only identity rows"
-    print(msg + "", flush=True)
+    logger.info(msg + "")
 
 
 async def upsert_margin_only_conn(
@@ -319,9 +318,9 @@ async def upsert_margin_only_conn(
     Shares one connection, creates+drops its own temp table in one txn."""
     if not margin_only_rows:
         return
-    print(f"    [DB] Preparing {len(margin_only_rows):,} "
+    logger.info(f"    [DB] Preparing {len(margin_only_rows):,} "
           f"margin-only rows for upsert (FK filtering via "
-          f"temp table)…", flush=True)
+          f"temp table)…")
     async with conn.transaction():
         await conn.execute(
             "CREATE TEMP TABLE _margin_upsert ("
@@ -360,9 +359,8 @@ async def upsert_margin_only_conn(
         )
         n_seeded = int(seed_result.split()[-1]) if seed_result else 0
         if n_seeded > 0:
-            print(f"    [DB] Seeded {n_seeded:,} key-only identity rows "
-                  f"(name/exchange enriched later by OHLCV batches)",
-                  flush=True)
+            logger.info(f"    [DB] Seeded {n_seeded:,} key-only identity rows "
+                  f"(name/exchange enriched later by OHLCV batches)")
         result = await conn.execute(
             "INSERT INTO stats.stock_liquidity_margin "
             "(date, code, rz_buy, rz_balance, rq_sell_qty, "
@@ -388,11 +386,10 @@ async def upsert_margin_only_conn(
         1 for r in margin_only_rows
         if (r.get("rz_balance") or 0) > 0
     )
-    print(f"    [DB] Upserted {inserted_count:,} margin-only "
+    logger.info(f"    [DB] Upserted {inserted_count:,} margin-only "
           f"rows into stats.stock_liquidity_margin (6 margin "
           f"cols, trading_shares/amount preserved; "
-          f"{n_with_margin:,} with non-zero rz_balance)",
-          flush=True)
+          f"{n_with_margin:,} with non-zero rz_balance)")
 
 
 def build_margin_upsert_rows(margin_df: pd.DataFrame) -> list[dict]:
@@ -432,8 +429,8 @@ async def write_liquidity_margin(
     only — margin cols are owned by the independent margin pass)."""
     async with pool.acquire() as lm_conn:
         if not liq_rows:
-            print(f"    [DB] No OHLCV rows to insert into "
-                  f"stats.stock_liquidity_margin", flush=True)
+            logger.info(f"    [DB] No OHLCV rows to insert into "
+                  f"stats.stock_liquidity_margin")
             return
         n_copied, n_upserted = await copy_or_upsert_split_async(
             lm_conn, "stats.stock_liquidity_margin", liq_rows, ["date", "code"]
@@ -441,9 +438,9 @@ async def write_liquidity_margin(
         via = "COPY" if n_copied > 0 and n_upserted == 0 else \
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
               "upsert"
-        print(f"    [DB] Inserted {len(liq_rows):,} liquidity rows into "
+        logger.info(f"    [DB] Inserted {len(liq_rows):,} liquidity rows into "
               f"stats.stock_liquidity_margin "
-              f"(trading_shares/amount only) via {via}", flush=True)
+              f"(trading_shares/amount only) via {via}")
 
 
 # ============================================================================

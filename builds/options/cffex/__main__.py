@@ -101,6 +101,9 @@ from builds.options.cffex.loader import (
     ymd_to_date,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("cffex")
+
 # Underlying index codes for CFFEX options (same as futures mapping)
 # IO→000300, HO→000016, MO→000852, CO→000905
 _INDEX_UNDERLYING_CODES = [code for code, _ in PRODUCT_UNDERLYING.values()]
@@ -211,10 +214,10 @@ async def upsert_split_tables_date_mode(conn, tables) -> None:
     """
     for tbl, rows in tables.items():
         if not rows:
-            print(f"    [DB] No rows to upsert into {tbl}", flush=True)
+            logger.info(f"    [DB] No rows to upsert into {tbl}")
             continue
         n = await bulk_upsert_async(conn, tbl, rows, key_columns=["date", "contract_code"])
-        print(f"    [DB] Upserted {n:,} rows into {tbl}", flush=True)
+        logger.info(f"    [DB] Upserted {n:,} rows into {tbl}")
 
 
 async def main() -> None:
@@ -253,23 +256,23 @@ async def main() -> None:
         },
     )
     if code_filter:
-        print(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}", flush=True)
+        logger.info(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}")
         if code_filter not in _INDEX_UNDERLYING_CODES:
-            print("    [CODE FILTER] Not a CFFEX index underlying — nothing to do for CFFEX; skipping", flush=True)
+            logger.info("    [CODE FILTER] Not a CFFEX index underlying — nothing to do for CFFEX; skipping")
             print_wall_time(t0)
             return
     if forced_date:
-        print(f"[DATE MODE] Forced single-date build: {forced_date}", flush=True)
+        logger.info(f"[DATE MODE] Forced single-date build: {forced_date}")
 
     # ------------------------------------------------------------------
     # 1. Discover source files and available dates
     # ------------------------------------------------------------------
-    print("\n[1/4] Discovering source CSV files …", flush=True)
+    logger.info("\n[1/4] Discovering source CSV files …")
     all_files = glob_options_files()
-    print(f"    → {len(all_files)} *_options.csv files found (archive + options_trend + futures_trend)", flush=True)
+    logger.info(f"    → {len(all_files)} *_options.csv files found (archive + options_trend + futures_trend)")
 
     if not all_files:
-        print("    [FATAL] No options CSV files found", flush=True)
+        logger.error("    [FATAL] No options CSV files found")
         sys.exit(1)
 
     # Extract available dates from filenames
@@ -289,12 +292,12 @@ async def main() -> None:
         end_d = date.fromisoformat(args.end_date)
         available_dates = {d for d in available_dates if d <= end_d}
 
-    print(f"    → {len(available_dates)} unique dates available in range", flush=True)
+    logger.info(f"    → {len(available_dates)} unique dates available in range")
 
     # ------------------------------------------------------------------
     # 2. Connect to DB and find missing dates (CFFEX-only)
     # ------------------------------------------------------------------
-    print("\n[2/4] Connecting to database and detecting missing dates …", flush=True)
+    logger.info("\n[2/4] Connecting to database and detecting missing dates …")
     conn = await get_db_or_exit()
 
     try:
@@ -302,11 +305,11 @@ async def main() -> None:
             if code_filter:
                 # Single-code force mode: delete only this underlying's rows
                 # instead of truncating (FK-safe order handled by the helper).
-                print(f"    [DB] Force mode for underlying {code_filter}: deleting existing rows", flush=True)
+                logger.info(f"    [DB] Force mode for underlying {code_filter}: deleting existing rows")
                 from builds.options.tables import delete_underlying_rows_async
                 await delete_underlying_rows_async(conn, code_filter)
             else:
-                print("    [DB] Force mode: truncating existing tables", flush=True)
+                logger.info("    [DB] Force mode: truncating existing tables")
                 for tbl in (
                     "stats.options_aggregate",
                     "stats.options_volume_oi",
@@ -329,16 +332,14 @@ async def main() -> None:
             # this underlying's gaps.
             missing_dates = await find_missing_cffex_dates(conn, available_dates, code_filter=code_filter)
 
-        print(
+        logger.info(
             f"    [DB] {len(missing_dates)} dates missing from "
             f"stats.options_identity (out of {len(available_dates)} available)",
-            flush=True,
         )
 
         if not missing_dates:
-            print(
+            logger.info(
                 "    [INFO] Database is up to date — no new dates to insert",
-                flush=True,
             )
             print_wall_time(t0)
             return
@@ -346,12 +347,12 @@ async def main() -> None:
         # ------------------------------------------------------------------
         # 3. Read only missing-date source files and build options frame
         # ------------------------------------------------------------------
-        print(f"\n[3/4] Reading source CSVs for {len(missing_dates)} missing dates …", flush=True)
+        logger.info(f"\n[3/4] Reading source CSVs for {len(missing_dates)} missing dates …")
         missing_files = filter_files_by_dates(all_files, missing_dates)
-        print(f"    → {len(missing_files)} source CSV files to read", flush=True)
+        logger.info(f"    → {len(missing_files)} source CSV files to read")
 
         if not missing_files:
-            print("    [INFO] No source files for missing dates", flush=True)
+            logger.info("    [INFO] No source files for missing dates")
             print_wall_time(t0)
             return
 
@@ -360,9 +361,9 @@ async def main() -> None:
         missing_max = max(missing_dates)
         index_ohlcv = await load_index_ohlcv(conn, missing_min, missing_max)
         if index_ohlcv is not None and len(index_ohlcv) > 0:
-            print(f"    [INDEX] Loaded {len(index_ohlcv)} index rows for moneyness", flush=True)
+            logger.info(f"    [INDEX] Loaded {len(index_ohlcv)} index rows for moneyness")
         else:
-            print("    [INDEX] No index data available — moneyness will be 0", flush=True)
+            logger.info("    [INDEX] No index data available — moneyness will be 0")
 
         options_df = build_options_df(missing_files, index_ohlcv)
 
@@ -374,14 +375,14 @@ async def main() -> None:
             options_df = options_df[
                 options_df["underlying_code"] == code_filter
             ].reset_index(drop=True)
-            print(f"    [CODE FILTER] Options rows {n_before:,} → {len(options_df):,} for underlying {code_filter}", flush=True)
+            logger.info(f"    [CODE FILTER] Options rows {n_before:,} → {len(options_df):,} for underlying {code_filter}")
 
         if len(options_df) == 0:
-            print("    [INFO] No options rows parsed from missing-date files", flush=True)
+            logger.info("    [INFO] No options rows parsed from missing-date files")
             print_wall_time(t0)
             return
 
-        print(f"    → {len(options_df):,} options rows  ·  {options_df['underlying_code'].nunique()} underlyings", flush=True)
+        logger.info(f"    → {len(options_df):,} options rows  ·  {options_df['underlying_code'].nunique()} underlyings")
         # Host boundary: a host-backed proxy frame still dispatches ops with
         # cudf implementations through the GPU path, so the frame must keep
         # only GPU-convertible dtypes (datetime64 dates, no object columns).
@@ -390,12 +391,12 @@ async def main() -> None:
         if hasattr(options_df, "to_pandas"):  # GPU frame → host at DB boundary
             options_df = options_df.to_pandas()
 
-        print(f"    → date range: {options_df['date'].min().date()} → {options_df['date'].max().date()}", flush=True)
+        logger.info(f"    → date range: {options_df['date'].min().date()} → {options_df['date'].max().date()}")
 
         # ------------------------------------------------------------------
         # 4. Insert to database
         # ------------------------------------------------------------------
-        print("\n[4/4] Inserting data to database …", flush=True)
+        logger.info("\n[4/4] Inserting data to database …")
 
         # Dates stay datetime64 on the frame: a .dt.date object column
         # poisons every later cudf op with MixedTypeError fallbacks. The
@@ -426,16 +427,15 @@ async def main() -> None:
 
     # Console summary
     if not options_df.empty:
-        print(f"\n  Underlying distribution:", flush=True)
+        logger.info(f"\n  Underlying distribution:")
         for code, sub in options_df.groupby("underlying_code"):
             name = str(sub["underlying_name"].dropna().iloc[0]) if sub["underlying_name"].notna().any() else ""
             n_dates = int(sub["date"].dt.strftime("%Y-%m-%d").nunique())
             n_contracts = int(sub["contract_code"].nunique())
             n_strikes = int(sub["strike_price"].nunique())
-            print(
+            logger.info(
                 f"    · {code:<8s} {name:<16s} {n_dates:>4d} days  "
                 f"{n_contracts:>4d} contracts  {n_strikes:>3d} strikes",
-                flush=True,
             )
 
     print_wall_time(t0)

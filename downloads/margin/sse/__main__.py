@@ -517,4 +517,4 @@ def download_sse_margin(
 
 
 if __name__ == "__main__":
-    print(download_sse_margin())
+    logger.info(download_sse_margin())

@@ -43,11 +43,10 @@ recomputed here):
      is RECORDED only when the matching forecast bucket (same
      code/sec_type/stat_month/window/side/pct|k/cooldown config)
      qualifies — in ANY forecast_results period (next / 5d / 20d /
-     60d) that period's reverse_prob clears its calibrated M-1
-     threshold (QRp_P90 / HYB QRp_P90, see gate.py; legacy
-     reverse_prob > 0 below GATE_MIN_POP population bucket-periods)
-     AND the code's prior mean reverse_prob for that period is
-     positive where known (the mean sees reverse too), read from
+     60d) that period's reverse_prob exceeds GATE_RP_MIN (reverse
+     P > 1% — a material reversal probability) AND that period's mean
+     forward change is a REVERSAL (dir_ave > 0 — the bucket's average
+     outcome reverses, so the signal holds), read from
      analysis_forecasts.forecast_results via the bucket's forecast_id
      (the probabilities are NOT stored on the signal row; the row's
      confidence = MAX(reverse_prob) across all periods). Detection
@@ -134,13 +133,15 @@ from analyze.analysis_forecasts.fetch import (  # noqa: E402
     fetch_industry_first_dates,
     fetch_opp_pair_industries,
     fetch_opp_pair_pairs,
-    add_px_vol_features,
+    fetch_price_vs_amt_states,
+    assert_price_vs_amt_params,
     add_margin_ratio_features,
 )
 from analyze.analysis_forecasts.wide import (  # noqa: E402
     MonthSpec,
     _shift_years,
     build_grid,
+    build_px_vol_state_matrices,
     first_ords_from_dates,
     month_row_windows,
     scatter_column,
@@ -153,12 +154,7 @@ from analyze.analysis_signals.config import (  # noqa: E402
     DESCRIPTION,
     DETAIL_NAME,
     GAP_PCT,
-    GATE_Q,
-    K_SHRINK,
-    MARGIN_RATIO_GATE_HYBRID,
     MARGIN_RATIO_SIGNAL_STATES,
-    OPP_PAIR_GATE_HYBRID,
-    PX_VOL_GATE_HYBRID,
     RSI_PCT,
     SIGNAL_COLUMNS,
     SIGNAL_TYPE_MARGIN_RATIO,
@@ -179,6 +175,10 @@ from analyze.analysis_signals.gate import fetch_confirm  # noqa: E402
 from analyze.analysis_signals.live_close import (  # noqa: E402
     mirror_live_close,
 )
+
+from _common.log_setup import setup_logging  # noqa: E402
+
+logger = setup_logging("analysis_signals")
 
 
 # Max rows per COPY chunk (a full stock-universe month of signals is
@@ -237,11 +237,10 @@ async def _forecast_present_months(
 
 
 # ---------------------------------------------------------------------------
-#  Adaptive forecast-confirmation gate ("strong reverse signal") — see
-#  gate.py: the confirmed-code sets are fetched from analysis_forecasts
-#  with the self-adaptive QRp_P90 population-quantile threshold plus the
-#  mean-reversal conjunct (the code's prior mean rp must also be
-#  positive where known).
+#  Forecast-confirmation gate ("strong reverse signal") — see gate.py:
+#  the confirmed-code sets are fetched from analysis_forecasts with the
+#  absolute reversal rule (reverse P > 1% in some period AND that
+#  period's mean forward change a reversal).
 # ---------------------------------------------------------------------------
 
 
@@ -336,29 +335,29 @@ async def _process_sec_type(
 ) -> tuple[int, int, int, int, int]:
     """Process one sec_type end-to-end. Returns (mov_rsi, mov_std,
     mov_gap, px_vol, margin_ratio) signal rows written."""
-    print(f"\n  [{sec_type}] Fetching active codes...", flush=True)
+    logger.info(f"\n  [{sec_type}] Fetching active codes...")
     codes = sorted(await fetch_active_codes(conn, sec_type))
-    print(f"  [{sec_type}]   {len(codes):,} active codes", flush=True)
+    logger.info(f"  [{sec_type}]   {len(codes):,} active codes")
     if not codes:
-        print(f"  [{sec_type}]   no active codes; skipping.", flush=True)
+        logger.info(f"  [{sec_type}]   no active codes; skipping.")
         return 0, 0, 0, 0, 0
 
     # ---- Target months: forecast presence gate ---------------------------
     fc_rsi, fc_std, fc_gap, fc_pxvol, fc_mratio = \
         await _forecast_present_months(conn, sec_type)
-    print(f"  [{sec_type}]   forecast-gated months: rsi={len(fc_rsi)} "
+    logger.info(f"  [{sec_type}]   forecast-gated months: rsi={len(fc_rsi)} "
           f"std={len(fc_std)} gap={len(fc_gap)} pxvol={len(fc_pxvol)} "
-          f"mratio={len(fc_mratio)}", flush=True)
+          f"mratio={len(fc_mratio)}")
     if not fc_rsi and not fc_std and not fc_gap and not fc_pxvol \
             and not fc_mratio:
-        print(f"  [{sec_type}]   no analysis_forecasts data yet; "
-              f"skipping.", flush=True)
+        logger.info(f"  [{sec_type}]   no analysis_forecasts data yet; "
+              f"skipping.")
         return 0, 0, 0, 0, 0
 
     # ---- Missing months (incremental / force) -----------------------------
     if force:
-        print(f"  [{sec_type}] FORCE mode: deleting existing {sec_type} "
-              f"signal rows...", flush=True)
+        logger.info(f"  [{sec_type}] FORCE mode: deleting existing {sec_type} "
+              f"signal rows...")
         await conn.execute(
             f"DELETE FROM {TABLE_SIGNALS} WHERE sec_type = $1", sec_type
         )
@@ -383,25 +382,23 @@ async def _process_sec_type(
         missing_mratio = [
             m for m in fc_mratio if m.replace(day=1) not in present_mratio
         ]
-        print(f"  [{sec_type}]   missing months: rsi={len(missing_rsi)} "
+        logger.info(f"  [{sec_type}]   missing months: rsi={len(missing_rsi)} "
               f"std={len(missing_std)} gap={len(missing_gap)} "
               f"pxvol={len(missing_pxvol)} "
-              f"mratio={len(missing_mratio)}", flush=True)
+              f"mratio={len(missing_mratio)}")
     if not missing_rsi and not missing_std and not missing_gap \
             and not missing_pxvol and not missing_mratio:
-        print(f"  [{sec_type}]   up to date; skipping.", flush=True)
+        logger.info(f"  [{sec_type}]   up to date; skipping.")
         return 0, 0, 0, 0, 0
 
-    # ---- Adaptive confirmation gate: confirmed codes per config --------
-    # mov_rsi: SEC QRp_P90 (rp-saturated family — per-security
-    # differentiation lands in the tier columns); mov_std / mov_gap:
-    # HYB QRp_P90 (per-code shrinkage blend, see gate.py).
+    # ---- Forecast-confirmation gate: confirmed codes per config --------
+    # Absolute reversal rule (see gate.py): reverse P > 1% in some
+    # forecast period AND that period's mean forward change a reversal.
     confirm_rsi = (
         await fetch_confirm(
             conn, sec_type, missing_rsi,
             "analysis_forecasts.mov_rsi", "rsi_window",
             f"m.pct = {RSI_PCT}", lambda w: f"rsi_{w}",
-            hybrid=False,
         )
         if missing_rsi else {}
     )
@@ -410,7 +407,6 @@ async def _process_sec_type(
             conn, sec_type, missing_std,
             "analysis_forecasts.mov_std", "ma_window",
             f"m.k::float8 = {STD_K!r}", lambda w: f"ma_{w}",
-            hybrid=True,
         )
         if missing_std else {}
     )
@@ -419,7 +415,6 @@ async def _process_sec_type(
             conn, sec_type, missing_gap,
             "analysis_forecasts.mov_gap", "gap_window",
             f"m.pct = {GAP_PCT}", lambda w: f"gap_{w}",
-            hybrid=True,
         )
         if missing_gap else {}
     )
@@ -428,7 +423,6 @@ async def _process_sec_type(
             conn, sec_type, missing_pxvol,
             "analysis_forecasts.px_vol_state", "px_speed",
             "m.px_speed <> 'flat'", lambda s: s,
-            hybrid=PX_VOL_GATE_HYBRID,
         )
         if missing_pxvol else {}
     )
@@ -438,33 +432,29 @@ async def _process_sec_type(
             "analysis_forecasts.margin_ratio_state", "ratio_state",
             "m.ratio_state IN ('vlow', 'low', 'high', 'vhigh')",
             lambda s: s,
-            hybrid=MARGIN_RATIO_GATE_HYBRID,
         )
         if missing_mratio else {}
     )
-    print(f"  [{sec_type}]   gate-confirmed configs: rsi={len(confirm_rsi)} "
-          f"(SEC QRp_P{int(100 * GATE_Q)}), std={len(confirm_std)}, "
-          f"gap={len(confirm_gap)}, pxvol={len(confirm_pxvol)}, "
-          f"mratio={len(confirm_mratio)} "
-          f"(HYB QRp_P{int(100 * GATE_Q)}, "
-          f"K={K_SHRINK}) — month x window x side combos clearing the "
-          f"calibrated threshold over prior months, with per-code "
-          f"tier/baseline/rank calibration", flush=True)
+    logger.info(f"  [{sec_type}]   gate-confirmed configs: rsi={len(confirm_rsi)} "
+          f"std={len(confirm_std)}, gap={len(confirm_gap)}, "
+          f"pxvol={len(confirm_pxvol)}, mratio={len(confirm_mratio)} "
+          f"(reverse P > 1% + mean reversal) — month x window x side "
+          f"combos with a qualifying forecast period, with per-code "
+          f"tier/baseline/rank calibration")
 
     # ---- Fetch inputs (bounded to the earliest needed window start) ------
     todo_months = sorted(set(missing_rsi) | set(missing_std)
                          | set(missing_gap) | set(missing_pxvol)
                          | set(missing_mratio))
     since = min(_specs_for(todo_months), key=lambda s: s.lower).lower
-    print(f"  [{sec_type}] Fetching joined inputs (price / ma / rsi / "
+    logger.info(f"  [{sec_type}] Fetching joined inputs (price / ma / rsi / "
           f"gap / std / trading_amount) for {len(codes):,} codes since "
-          f"{since.isoformat()}...", flush=True)
+          f"{since.isoformat()}...")
     df = await fetch_analysis_inputs(conn, sec_type, codes, since)
-    print(f"  [{sec_type}]   {len(df):,} (code, date) rows", flush=True)
+    logger.info(f"  [{sec_type}]   {len(df):,} (code, date) rows")
     if df.empty:
-        print(f"  [{sec_type}]   no source data; skipping.", flush=True)
+        logger.info(f"  [{sec_type}]   no source data; skipping.")
         return 0, 0, 0, 0, 0
-    df = add_px_vol_features(df)
     df = add_margin_ratio_features(df)
 
     # ---- Wide grid + per-code first-data gate ------------------------------
@@ -478,8 +468,8 @@ async def _process_sec_type(
     # ---- Stage 1: RSI extreme signals --------------------------------------
     if missing_rsi:
         windows_rsi = month_row_windows(grid_ord, _specs_for(missing_rsi))
-        print(f"  [{sec_type}] Computing RSI signals (top/bottom "
-              f"{RSI_PCT}%) for {len(windows_rsi)} months...", flush=True)
+        logger.info(f"  [{sec_type}] Computing RSI signals (top/bottom "
+              f"{RSI_PCT}%) for {len(windows_rsi)} months...")
         rsi_mats = {
             f"rsi_{w}": scatter_column(df, f"rsi_{w}days", shape, didx, cidx)
             for w in RSI_WINDOWS
@@ -490,15 +480,14 @@ async def _process_sec_type(
         ):
             n = await _write_month(conn, rows)
             n_rsi += n
-            print(f"    [{stat_month}] mov_rsi signals: wrote {n:,} rows",
-                  flush=True)
+            logger.info(f"    [{stat_month}] mov_rsi signals: wrote {n:,} rows")
         del rsi_mats
 
     # ---- Stage 2: Bollinger-breach signals ----------------------------------
     if missing_std:
         windows_std = month_row_windows(grid_ord, _specs_for(missing_std))
-        print(f"  [{sec_type}] Computing Bollinger-breach signals "
-              f"(±{STD_K:g}σ) for {len(windows_std)} months...", flush=True)
+        logger.info(f"  [{sec_type}] Computing Bollinger-breach signals "
+              f"(±{STD_K:g}σ) for {len(windows_std)} months...")
         std_mats: dict = {
             "price": scatter_column(df, "price", shape, didx, cidx),
         }
@@ -513,15 +502,14 @@ async def _process_sec_type(
         ):
             n = await _write_month(conn, rows)
             n_std += n
-            print(f"    [{stat_month}] mov_std signals: wrote {n:,} rows",
-                  flush=True)
+            logger.info(f"    [{stat_month}] mov_std signals: wrote {n:,} rows")
         del std_mats
 
     # ---- Stage 3: gap extreme signals ---------------------------------------
     if missing_gap:
         windows_gap = month_row_windows(grid_ord, _specs_for(missing_gap))
-        print(f"  [{sec_type}] Computing gap signals (top/bottom "
-              f"{GAP_PCT}%) for {len(windows_gap)} months...", flush=True)
+        logger.info(f"  [{sec_type}] Computing gap signals (top/bottom "
+              f"{GAP_PCT}%) for {len(windows_gap)} months...")
         gap_mats = {
             f"gap_{w}": scatter_column(df, f"gap_{w}days", shape, didx, cidx)
             for w in GAP_WINDOWS
@@ -532,37 +520,49 @@ async def _process_sec_type(
         ):
             n = await _write_month(conn, rows)
             n_gap += n
-            print(f"    [{stat_month}] mov_gap signals: wrote {n:,} rows",
-                  flush=True)
+            logger.info(f"    [{stat_month}] mov_gap signals: wrote {n:,} rows")
         del gap_mats
 
     # ---- Stage 4: px_vol state signals ---------------------------------------
+    # The day categories come from the analysis.mov_ave_price_vs_amt
+    # REGISTRY (the px_vol family's date-level source of truth) — the
+    # recorded build parameters are verified against the constants
+    # before consuming.
     if missing_pxvol:
-        windows_pxvol = month_row_windows(grid_ord, _specs_for(missing_pxvol))
-        print(f"  [{sec_type}] Computing px_vol signals (adaptive σ/z "
-              f"state cells) for {len(windows_pxvol)} months...",
-              flush=True)
-        px_mats = {
-            "t": scatter_column(df, "px_t", shape, didx, cidx),
-            "z": scatter_column(df, "px_z", shape, didx, cidx),
-        }
-        for stat_month, rows in compute_px_vol_signals(
-            px_mats, windows_pxvol, grid_codes, sec_type, first_ord,
-            grid_ord, confirm_pxvol,
-        ):
-            n = await _write_month(conn, rows)
-            n_pxvol += n
-            print(f"    [{stat_month}] px_vol signals: wrote {n:,} rows",
-                  flush=True)
-        del px_mats
+        await assert_price_vs_amt_params(conn, sec_type)
+        states_df = await fetch_price_vs_amt_states(
+            conn, sec_type, codes, since
+        )
+        if states_df.empty:
+            logger.info(f"  [{sec_type}] px_vol: no price_vs_amt registry "
+                        f"rows (run python -m analyze.mov_ave_spread); "
+                        f"skipping.")
+            del states_df
+        else:
+            windows_pxvol = month_row_windows(grid_ord, _specs_for(missing_pxvol))
+            logger.info(f"  [{sec_type}] Computing px_vol signals from "
+                        f"{len(states_df):,} price_vs_amt registry rows "
+                        f"(adaptive σ/z state cells) for "
+                        f"{len(windows_pxvol)} months...")
+            px_mats = build_px_vol_state_matrices(
+                states_df, grid_ord, grid_codes, shape,
+            )
+            for stat_month, rows in compute_px_vol_signals(
+                px_mats, windows_pxvol, grid_codes, sec_type, first_ord,
+                grid_ord, confirm_pxvol,
+            ):
+                n = await _write_month(conn, rows)
+                n_pxvol += n
+                logger.info(f"    [{stat_month}] px_vol signals: wrote {n:,} rows")
+            del px_mats
+            del states_df
 
     # ---- Stage 5: margin_ratio state signals --------------------------------
     if missing_mratio:
         windows_mratio = month_row_windows(
             grid_ord, _specs_for(missing_mratio))
-        print(f"  [{sec_type}] Computing margin_ratio signals (margin-buy "
-              f"intensity z states) for {len(windows_mratio)} months...",
-              flush=True)
+        logger.info(f"  [{sec_type}] Computing margin_ratio signals (margin-buy "
+              f"intensity z states) for {len(windows_mratio)} months...")
         mr_mats = {
             "z": scatter_column(df, "ratio_z", shape, didx, cidx),
         }
@@ -572,8 +572,8 @@ async def _process_sec_type(
         ):
             n = await _write_month(conn, rows)
             n_mratio += n
-            print(f"    [{stat_month}] margin_ratio signals: wrote "
-                  f"{n:,} rows", flush=True)
+            logger.info(f"    [{stat_month}] margin_ratio signals: wrote "
+                  f"{n:,} rows")
         del mr_mats
 
     return n_rsi, n_std, n_gap, n_pxvol, n_mratio
@@ -598,16 +598,15 @@ async def _process_opp_pair_signals(conn, *, force: bool) -> int:
         OPP_PAIR_SEC_TYPE,
     )
     fc = sorted(r["stat_month"] for r in fc_rows)
-    print(f"\n  [opp_pair] forecast-gated months: {len(fc)}",
-          flush=True)
+    logger.info(f"\n  [opp_pair] forecast-gated months: {len(fc)}")
     if not fc:
-        print(f"  [opp_pair]   no analysis_forecasts.opp_pair_state "
-              f"data yet; skipping.", flush=True)
+        logger.info(f"  [opp_pair]   no analysis_forecasts.opp_pair_state "
+              f"data yet; skipping.")
         return 0
 
     if force:
-        print(f"  [opp_pair] FORCE mode: deleting existing opp_pair "
-              f"signal rows...", flush=True)
+        logger.info(f"  [opp_pair] FORCE mode: deleting existing opp_pair "
+              f"signal rows...")
         await conn.execute(
             f"DELETE FROM {TABLE_SIGNALS} "
             f"WHERE sec_type = $1 AND signal_type = $2",
@@ -620,34 +619,33 @@ async def _process_opp_pair_signals(conn, *, force: bool) -> int:
         # forecast months are month-ENDS; signal presence is month-STARTS
         # (date_trunc) — compare on the truncated month.
         missing = [m for m in fc if m.replace(day=1) not in present]
-        print(f"  [opp_pair]   missing months: {len(missing)}", flush=True)
+        logger.info(f"  [opp_pair]   missing months: {len(missing)}")
     if not missing:
-        print(f"  [opp_pair]   up to date; skipping.", flush=True)
+        logger.info(f"  [opp_pair]   up to date; skipping.")
         return 0
 
-    # ---- Adaptive confirmation gate (HYB QRp_P90 keyed by the TARGET
-    # industry — the code the signal is emitted on) ------------------------
+    # ---- Forecast-confirmation gate (absolute reversal rule, keyed by
+    # the TARGET industry — the code the signal is emitted on) -----------
     confirm_pair = await fetch_confirm(
         conn, OPP_PAIR_SEC_TYPE, missing,
         "analysis_forecasts.opp_pair_state", "trend_window",
         "TRUE", lambda w: f"pair_{w}",
-        hybrid=OPP_PAIR_GATE_HYBRID, code_col="pair_industry_id",
+        code_col="pair_industry_id",
     )
-    print(f"  [opp_pair]   gate-confirmed configs: {len(confirm_pair)} "
-          f"(HYB QRp_P{int(100 * GATE_Q)}, K={K_SHRINK}, per-TARGET-"
-          f"industry calibration)", flush=True)
+    logger.info(f"  [opp_pair]   gate-confirmed configs: {len(confirm_pair)} "
+          f"(reverse P > 1% + mean reversal, per-TARGET-"
+          f"industry calibration)")
 
     # ---- Industry composite + benchmark trend inputs ----------------------
     industries = await fetch_opp_pair_industries(conn)
     pairs = await fetch_opp_pair_pairs(conn)
     since = min(_specs_for(missing), key=lambda s: s.lower).lower
-    print(f"  [opp_pair] Fetching industry composite closes for "
-          f"{len(industries)} industries since {since.isoformat()}...",
-          flush=True)
+    logger.info(f"  [opp_pair] Fetching industry composite closes for "
+          f"{len(industries)} industries since {since.isoformat()}...")
     df = await fetch_industry_closes(conn, industries, since)
     bench = await fetch_benchmark_closes(conn, OPP_PAIR_BENCHMARK, since)
     if df.empty or bench.empty:
-        print(f"  [opp_pair]   no source data; skipping.", flush=True)
+        logger.info(f"  [opp_pair]   no source data; skipping.")
         return 0
 
     grid_ord, grid_inds, _didx, _cidx, mats = build_opp_pair_matrices(
@@ -658,15 +656,14 @@ async def _process_opp_pair_signals(conn, *, force: bool) -> int:
     windows = month_row_windows(grid_ord, _specs_for(missing))
 
     n_pair = 0
-    print(f"  [opp_pair] Computing opposite-pair signals for "
-          f"{len(windows)} months...", flush=True)
+    logger.info(f"  [opp_pair] Computing opposite-pair signals for "
+          f"{len(windows)} months...")
     for stat_month, rows in compute_opp_pair_signals(
         mats, windows, grid_inds, first_ord, grid_ord, pairs, confirm_pair,
     ):
         n = await _write_month(conn, rows)
         n_pair += n
-        print(f"    [{stat_month}] opp_pair signals: wrote {n:,} rows",
-              flush=True)
+        logger.info(f"    [{stat_month}] opp_pair signals: wrote {n:,} rows")
     return n_pair
 
 
@@ -743,12 +740,12 @@ async def main() -> None:
                 )
 
             if live:
-                print(f"  [{st}] Mirroring day-close signals into "
-                      f"live.live_signals...", flush=True)
+                logger.info(f"  [{st}] Mirroring day-close signals into "
+                      f"live.live_signals...")
                 n_live = await mirror_live_close(conn, st)
                 total_live += n_live
-                print(f"  [{st}]   day-close records written: "
-                      f"{n_live:,}", flush=True)
+                logger.info(f"  [{st}]   day-close records written: "
+                      f"{n_live:,}")
 
         # ---- opp_pair stage (industry pairs; index-space, runs once) ------
         n_pair = 0
@@ -761,19 +758,19 @@ async def main() -> None:
         if total_rsi == 0 and total_std == 0 and total_gap == 0 \
                 and total_pxvol == 0 and total_mratio == 0 \
                 and total_live == 0 and n_pair == 0 and not force:
-            print("\n  DB is up to date; nothing to do.", flush=True)
+            logger.info("\n  DB is up to date; nothing to do.")
             print_wall_time(t0)
             return
 
-        print(f"\n  TOTAL: {total_rsi:,} mov_rsi signals + "
+        logger.info(f"\n  TOTAL: {total_rsi:,} mov_rsi signals + "
               f"{total_std:,} mov_std signals + "
               f"{total_gap:,} mov_gap signals + "
               f"{total_pxvol:,} px_vol signals + "
               f"{total_mratio:,} margin_ratio signals + "
-              f"{n_pair:,} opp_pair signals written", flush=True)
+              f"{n_pair:,} opp_pair signals written")
         if live:
-            print(f"  TOTAL: {total_live:,} live day-close records "
-                  f"written", flush=True)
+            logger.info(f"  TOTAL: {total_live:,} live day-close records "
+                  f"written")
         print_wall_time(t0)
     finally:
         try:

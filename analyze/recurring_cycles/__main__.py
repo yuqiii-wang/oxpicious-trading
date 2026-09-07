@@ -102,6 +102,9 @@ from analyze.recurring_cycles.compute import (  # noqa: E402
     NUMERIC_COLS,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("recurring_cycles")
+
 
 # Chunk size for COPY / upsert. 10K because each row carries four
 # spectrum arrays (up to ~636 doubles each for range_days=1275). At 10K
@@ -249,12 +252,12 @@ async def _write_rows(
         Number of rows written.
     """
     if result_df.empty:
-        print(f"  [{sec_type}]   no rows to write", flush=True)
+        logger.info(f"  [{sec_type}]   no rows to write")
         return 0
 
     if code is not None:
-        print(f"  [{sec_type}] SINGLE-CODE mode: deleting existing rows "
-              f"for {code} from {TABLE_NAME}...", flush=True)
+        logger.info(f"  [{sec_type}] SINGLE-CODE mode: deleting existing rows "
+              f"for {code} from {TABLE_NAME}...")
         await conn.execute(
             f"DELETE FROM {TABLE_NAME} WHERE sec_type = $1 AND code = $2",
             sec_type, code,
@@ -263,8 +266,8 @@ async def _write_rows(
         # wipe=False when the caller pre-deleted once for a chunked
         # (code-batched) COPY-insert — re-deleting would wipe the
         # previous batches' rows.
-        print(f"  [{sec_type}] Deleting existing {sec_type} rows from "
-              f"{TABLE_NAME}...", flush=True)
+        logger.info(f"  [{sec_type}] Deleting existing {sec_type} rows from "
+              f"{TABLE_NAME}...")
         await conn.execute(
             f"DELETE FROM {TABLE_NAME} WHERE sec_type = $1", sec_type
         )
@@ -279,19 +282,17 @@ async def _write_rows(
                 else set()
             )
             if not all_target_dates:
-                print(f"  [{sec_type}]   up to date; skipping insert.",
-                      flush=True)
+                logger.info(f"  [{sec_type}]   up to date; skipping insert.")
                 return 0
             n_before = len(result_df)
             result_df = result_df[
                 result_df["last_date"].isin(all_target_dates)
             ].reset_index(drop=True)
-            print(f"  [{sec_type}] Incremental filter: {len(result_df):,} "
-                  f"of {n_before:,} rows are in target dates", flush=True)
+            logger.info(f"  [{sec_type}] Incremental filter: {len(result_df):,} "
+                  f"of {n_before:,} rows are in target dates")
 
     if result_df.empty:
-        print(f"  [{sec_type}]   no rows to write after filter",
-              flush=True)
+        logger.info(f"  [{sec_type}]   no rows to write after filter")
         return 0
 
     # Chunked insert to bound peak memory.
@@ -299,11 +300,11 @@ async def _write_rows(
     total = 0
 
     if force or code is not None:
-        print(f"  [{sec_type}] COPY-inserting {len(result_df):,} rows "
-              f"in {n_chunks} chunks...", flush=True)
+        logger.info(f"  [{sec_type}] COPY-inserting {len(result_df):,} rows "
+              f"in {n_chunks} chunks...")
     else:
-        print(f"  [{sec_type}] Upserting {len(result_df):,} rows "
-              f"in {n_chunks} chunks...", flush=True)
+        logger.info(f"  [{sec_type}] Upserting {len(result_df):,} rows "
+              f"in {n_chunks} chunks...")
 
     for i in range(n_chunks):
         chunk = result_df.iloc[
@@ -341,11 +342,11 @@ async def _write_rows(
             f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else
             "upsert"
         )
-        print(f"    chunk {i + 1}/{n_chunks}: "
+        logger.info(f"    chunk {i + 1}/{n_chunks}: "
               f"{via} {n:,} rows "
-              f"(cumulative {total:,})", flush=True)
+              f"(cumulative {total:,})")
 
-    print(f"  [{sec_type}]   wrote {total:,} rows total", flush=True)
+    logger.info(f"  [{sec_type}]   wrote {total:,} rows total")
     return total
 
 
@@ -394,9 +395,8 @@ async def _refresh_codes_registry(
             sec_type, written_codes,
         )
     verb = "full-replaced" if full_replace else "upserted"
-    print(f"  [{sec_type}]   codes registry {verb} with "
-          f"{len(written_codes):,} codes ({time.time() - t0:.1f}s)",
-          flush=True)
+    logger.info(f"  [{sec_type}]   codes registry {verb} with "
+          f"{len(written_codes):,} codes ({time.time() - t0:.1f}s)")
 
 
 # ---------------------------------------------------------------------------
@@ -430,22 +430,21 @@ async def _process_sec_type(
         # when a security has NO rows while the rest of the sec_type is up
         # to date (date-level detection would see nothing missing).
         code_list = [code]
-        print(f"\n  [{sec_type}] SINGLE-CODE mode: processing {code}",
-              flush=True)
+        logger.info(f"\n  [{sec_type}] SINGLE-CODE mode: processing {code}")
     else:
-        print(f"\n  [{sec_type}] Fetching active codes...", flush=True)
+        logger.info(f"\n  [{sec_type}] Fetching active codes...")
         codes = await fetch_active_codes(conn, sec_type)
         code_list = sorted(codes)
-        print(f"  [{sec_type}]   {len(code_list):,} active codes", flush=True)
+        logger.info(f"  [{sec_type}]   {len(code_list):,} active codes")
         if not code_list:
-            print(f"  [{sec_type}]   no active codes; skipping.", flush=True)
+            logger.info(f"  [{sec_type}]   no active codes; skipping.")
             return 0
 
     # ---- Detect missing targets (incremental mode) ------------------------
     target_dates: dict[str, set] | None = None
     if code is None and not force:
-        print(f"  [{sec_type}] Detecting missing (code, date, window) "
-              f"targets...", flush=True)
+        logger.info(f"  [{sec_type}] Detecting missing (code, date, window) "
+              f"targets...")
         target_dates = await _find_missing_targets(
             conn, sec_type, code_list
         )
@@ -453,22 +452,20 @@ async def _process_sec_type(
         n_target_dates = (
             len(set().union(*target_dates.values())) if target_dates else 0
         )
-        print(f"  [{sec_type}]   {n_gap_codes:,} codes with gaps; "
-              f"{n_target_dates:,} distinct missing dates", flush=True)
+        logger.info(f"  [{sec_type}]   {n_gap_codes:,} codes with gaps; "
+              f"{n_target_dates:,} distinct missing dates")
         if not target_dates:
-            print(f"  [{sec_type}]   up to date; skipping.", flush=True)
+            logger.info(f"  [{sec_type}]   up to date; skipping.")
             return 0
 
     # ---- Fetch close prices (full history) -------------------------------
-    print(f"  [{sec_type}] Fetching full close-price history for "
-          f"{len(code_list):,} codes...", flush=True)
+    logger.info(f"  [{sec_type}] Fetching full close-price history for "
+          f"{len(code_list):,} codes...")
     close_df = await fetch_close_prices(conn, sec_type, code_list)
-    print(f"  [{sec_type}]   {len(close_df):,} (code, date) rows",
-          flush=True)
+    logger.info(f"  [{sec_type}]   {len(close_df):,} (code, date) rows")
 
     if close_df.empty:
-        print(f"  [{sec_type}]   no close-price data; skipping.",
-              flush=True)
+        logger.info(f"  [{sec_type}]   no close-price data; skipping.")
         return 0
 
     # ---- Compute + write in code-bounded batches --------------------------
@@ -479,14 +476,14 @@ async def _process_sec_type(
     # of 52GB, GPU idle, heartbeat stall). Batches of
     # _COMPUTE_BATCH_CODES bound the accumulator to a few GB and make
     # the run resumable (each batch writes before the next computes).
-    print(f"  [{sec_type}] Computing recurring rise/drop periodicity "
+    logger.info(f"  [{sec_type}] Computing recurring rise/drop periodicity "
           f"(range_days={list(RANGE_DAYS)}) in batches of "
-          f"{_COMPUTE_BATCH_CODES:,} codes...", flush=True)
+          f"{_COMPUTE_BATCH_CODES:,} codes...")
     if force:
         # DELETE once for the whole sec_type up front; the per-batch
         # COPY-inserts run with wipe=False.
-        print(f"  [{sec_type}] Deleting existing {sec_type} rows from "
-              f"{TABLE_NAME}...", flush=True)
+        logger.info(f"  [{sec_type}] Deleting existing {sec_type} rows from "
+              f"{TABLE_NAME}...")
         await conn.execute(
             f"DELETE FROM {TABLE_NAME} WHERE sec_type = $1", sec_type
         )
@@ -503,8 +500,8 @@ async def _process_sec_type(
             batch_df, sec_type, RANGE_DAYS,
             target_dates=target_dates,
         )
-        print(f"  [{sec_type}]   batch {i + 1}/{n_batches}: "
-              f"{len(result_df):,} recurring-cycles rows", flush=True)
+        logger.info(f"  [{sec_type}]   batch {i + 1}/{n_batches}: "
+              f"{len(result_df):,} recurring-cycles rows")
         if not result_df.empty:
             written_codes.update(
                 result_df["code"].astype(str).unique().tolist()
@@ -558,8 +555,7 @@ async def main() -> None:
     force = args.force
 
     if args.code and args.force:
-        print("ERROR: --code and --force are mutually exclusive.",
-              flush=True)
+        logger.error("ERROR: --code and --force are mutually exclusive.")
         sys.exit(2)
 
     sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
@@ -592,13 +588,12 @@ async def main() -> None:
 
         # Early exit if everything was up to date (nothing written).
         if total == 0 and not force and not args.code:
-            print("\n  DB is up to date; nothing to do.", flush=True)
+            logger.info("\n  DB is up to date; nothing to do.")
             print_wall_time(t0)
             return
 
         # ---- Upsert analysis_identity -----------------------------------
-        print(f"\n  -> Upserting analysis.analysis_identity registry...",
-              flush=True)
+        logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
         await upsert_analysis_identity(
             conn,
             name=ANALYSIS_NAME,
@@ -606,7 +601,7 @@ async def main() -> None:
             description=DESCRIPTION,
         )
 
-        print(f"\n  TOTAL: {total:,} rows written", flush=True)
+        logger.info(f"\n  TOTAL: {total:,} rows written")
         print_wall_time(t0)
     finally:
         try:

@@ -102,6 +102,9 @@ from builds.industry.compute import (  # noqa: E402
     aggregate_by_pool,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("industry")
+
 
 # ---------------------------------------------------------------------------
 #  SQL queries (kept in __main__ — they are tightly coupled to the async
@@ -301,7 +304,7 @@ async def main() -> None:
              else "incremental (missing dates only)",
     )
     if forced is not None:
-        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
+        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
 
     conn = await get_db_connection_async()
     try:
@@ -312,8 +315,8 @@ async def main() -> None:
             # the upsert path below; no truncation, no deletes). The date
             # must exist in the source identity table, else there is no
             # source data to aggregate for it.
-            print(f"    -> --date mode: checking stats.index_identity for "
-                  f"{forced}...", flush=True)
+            logger.info(f"    -> --date mode: checking stats.index_identity for "
+                  f"{forced}...")
             id_rows = await conn.fetch(
                 "SELECT DISTINCT date FROM stats.index_identity WHERE date = $1",
                 forced,
@@ -323,22 +326,19 @@ async def main() -> None:
                 source_label="stats.index_identity",
             )
         elif args.force:
-            print("\n[0/6] Force mode: truncating industry_basic_stats...",
-                  flush=True)
+            logger.info("\n[0/6] Force mode: truncating industry_basic_stats...")
             await truncate_table_async(conn, TABLE)
             target_dates: Optional[Set[datetime.date]] = None
-            print("    -> truncated; will recompute all rows", flush=True)
+            logger.info("    -> truncated; will recompute all rows")
         else:
-            print("\n[0/6] Detecting missing dates "
-                  "(source: index_identity vs industry_basic_stats)...",
-                  flush=True)
+            logger.info("\n[0/6] Detecting missing dates "
+                  "(source: index_identity vs industry_basic_stats)...")
             target_dates = await find_missing_analysis_dates(
                 conn, TABLE, ["stats.index_identity"],
             )
-            print(f"    -> {len(target_dates)} dates missing from {TABLE}",
-                  flush=True)
+            logger.info(f"    -> {len(target_dates)} dates missing from {TABLE}")
             if not target_dates:
-                print("    -> DB is up to date; nothing to do.", flush=True)
+                logger.info("    -> DB is up to date; nothing to do.")
                 print_wall_time(t0)
                 return
 
@@ -350,26 +350,24 @@ async def main() -> None:
         incremental = (target_dates is not None and len(target_dates) > 0)
         if incremental:
             sorted_dates = sorted(target_dates)
-            print(f"\n[1/6] Loading (date, code, industry_id, OHLC, pe, "
+            logger.info(f"\n[1/6] Loading (date, code, industry_id, OHLC, pe, "
                   f"stock_num) — INCREMENTAL: {len(sorted_dates)} target "
-                  f"dates + first-close row per code (rebase anchor)...",
-                  flush=True)
+                  f"dates + first-close row per code (rebase anchor)...")
             rows = await conn.fetch(
                 LOAD_INDEX_DATA_SQL_INCREMENTAL, sorted_dates
             )
         else:
-            print("\n[1/6] Loading (date, code, industry_id, OHLC, pe, "
+            logger.info("\n[1/6] Loading (date, code, industry_id, OHLC, pe, "
                   "stock_num) from index_basic_stats LEFT JOIN index_valuation "
                   "JOIN sec_classification (compositioned indices only), stock_num "
-                  "via LATERAL sec_composition latest-snapshot (no date filter)...",
-                  flush=True)
+                  "via LATERAL sec_composition latest-snapshot (no date filter)...")
             rows = await conn.fetch(LOAD_INDEX_DATA_SQL_FULL)
-        print(f"    -> {len(rows):,} rows across "
+        logger.info(f"    -> {len(rows):,} rows across "
               f"{len(set(zip(rec_col(rows, 'industry_id'), rec_col(rows, 'code'))))} "
-              f"(industry, code) pairs", flush=True)
+              f"(industry, code) pairs")
 
         if not rows:
-            print("    -> no data; aborting.", flush=True)
+            logger.info("    -> no data; aborting.")
             return
 
         # Whole-column extraction + vectorized conversions (no per-row
@@ -401,12 +399,11 @@ async def main() -> None:
         df = df[df["close"].notna() & (df["close"] > 0)].copy()
 
         # ---- Step 2: rebase each code's OHLC to 100 at its first close ----
-        print("\n[2/6] Rebased-to-100 OHLC at per-index first available close "
-              "(history start, single scale factor per index)...",
-              flush=True)
+        logger.info("\n[2/6] Rebased-to-100 OHLC at per-index first available close "
+              "(history start, single scale factor per index)...")
         df = rebase_ohlc(df)
-        print(f"    -> rebased {len(df):,} rows across {df['code'].nunique()} "
-              f"indices", flush=True)
+        logger.info(f"    -> rebased {len(df):,} rows across {df['code'].nunique()} "
+              f"indices")
 
         # ---- Incremental filter: keep only target_dates for aggregation -----
         if target_dates is not None and len(target_dates) > 0:
@@ -415,26 +412,22 @@ async def main() -> None:
             # never match a datetime64 column).
             ts_targets = pd.to_datetime(sorted(target_dates))
             df = df[df["date"].isin(ts_targets)].reset_index(drop=True)
-            print(f"    -> incremental filter: {len(df):,} of {n_before:,} rows "
-                  f"are in target_dates (rebase context rows dropped)",
-                  flush=True)
+            logger.info(f"    -> incremental filter: {len(df):,} of {n_before:,} rows "
+                  f"are in target_dates (rebase context rows dropped)")
 
         # ---- Step 3 + 4: classify pool_size + aggregate -------------------
-        print("\n[3/6] Classifying pool_size from stock_num "
-              "(small<51, mid 51-180, large >180; NULL->'all' only)...",
-              flush=True)
-        print("\n[4/6] Aggregating mean_open/high/low/close + var_price/mean_pe "
-              "per (date, industry_id, pool_size)...",
-              flush=True)
+        logger.info("\n[3/6] Classifying pool_size from stock_num "
+              "(small<51, mid 51-180, large >180; NULL->'all' only)...")
+        logger.info("\n[4/6] Aggregating mean_open/high/low/close + var_price/mean_pe "
+              "per (date, industry_id, pool_size)...")
         result = aggregate_by_pool(df)
-        print(f"    -> {len(result):,} aggregated rows across "
+        logger.info(f"    -> {len(result):,} aggregated rows across "
               f"{result['industry_id'].nunique()} industries x "
-              f"{result['pool_size'].nunique()} pool_size slices", flush=True)
+              f"{result['pool_size'].nunique()} pool_size slices")
 
         # ---- Step 5: compute total_trading_amount via SQL (union of stocks) --
-        print("\n[5/6] Computing total_trading_amount via SQL "
-              "(union of stocks across member indices -> SUM stock trading_amount)...",
-              flush=True)
+        logger.info("\n[5/6] Computing total_trading_amount via SQL "
+              "(union of stocks across member indices -> SUM stock trading_amount)...")
 
         # 5a. Pool unions temp table — latest snapshot per code, no snapshot_date
         t_pool = time.time()
@@ -446,8 +439,8 @@ async def main() -> None:
         )
         await conn.execute("ANALYZE _pu")
         n_pu = await conn.fetchval("SELECT COUNT(*) FROM _pu")
-        print(f"    [5a] _pu temp table: {n_pu:,} rows "
-              f"({time.time() - t_pool:.1f}s)", flush=True)
+        logger.info(f"    [5a] _pu temp table: {n_pu:,} rows "
+              f"({time.time() - t_pool:.1f}s)")
 
         # 5b. Final aggregation join — direct _pu x stock_liquidity_margin.
         # In incremental mode, filter to target_dates so the SQL only
@@ -458,13 +451,13 @@ async def main() -> None:
             amt_rows = await conn.fetch(
                 _POOL_AMOUNT_JOIN_SQL_INCREMENTAL, sorted_dates
             )
-            print(f"    [5b] Final join + GROUP BY (incremental, "
+            logger.info(f"    [5b] Final join + GROUP BY (incremental, "
                   f"{len(sorted_dates)} target dates): {len(amt_rows):,} rows "
-                  f"({time.time() - t_final:.1f}s)", flush=True)
+                  f"({time.time() - t_final:.1f}s)")
         else:
             amt_rows = await conn.fetch(_POOL_AMOUNT_JOIN_SQL_FULL)
-            print(f"    [5b] Final join + GROUP BY (full): {len(amt_rows):,} rows "
-                  f"({time.time() - t_final:.1f}s)", flush=True)
+            logger.info(f"    [5b] Final join + GROUP BY (full): {len(amt_rows):,} rows "
+                  f"({time.time() - t_final:.1f}s)")
 
         # Cleanup temp table
         await conn.execute("DROP TABLE IF EXISTS pg_temp._pu")
@@ -478,8 +471,8 @@ async def main() -> None:
             amt_df["date"], unit="ns", index=amt_df.index)
 
         # ---- Step 6: merge + upsert ---------------------------------------
-        print(f"\n[6/6] Merging index-level + stock-level aggregates, "
-              f"upserting into {TABLE}...", flush=True)
+        logger.info(f"\n[6/6] Merging index-level + stock-level aggregates, "
+              f"upserting into {TABLE}...")
         if amt_df.empty:
             # No stock trading_amount data at all — skip the merge (an empty
             # amt_df would have float64 dtypes for date/industry_id/pool_size
@@ -504,9 +497,9 @@ async def main() -> None:
             ["industry_id", "date", "pool_size"]
         ).reset_index(drop=True)
         n_with_amt = result["total_trading_amount"].notna().sum()
-        print(f"    -> {len(result):,} total rows | "
+        logger.info(f"    -> {len(result):,} total rows | "
               f"{n_with_amt:,} with total_trading_amount | "
-              f"{len(result) - n_with_amt:,} without (NULL)", flush=True)
+              f"{len(result) - n_with_amt:,} without (NULL)")
 
         # DB-insert boundary: asyncpg needs python datetime.date objects —
         # ONE host numpy pass (a cudf-backed .dt.date falls back per
@@ -538,8 +531,8 @@ async def main() -> None:
             data = await filter_rows_to_missing_dates_async(conn, TABLE, data)
             n_skipped = n_before - len(data)
             if n_skipped > 0:
-                print(f"    -> skip check: {n_skipped:,} of {n_before:,} rows "
-                      f"already present (skipped)", flush=True)
+                logger.info(f"    -> skip check: {n_skipped:,} of {n_before:,} rows "
+                      f"already present (skipped)")
 
         # Force mode: table is pre-truncated → key-batched COPY (whole
         # industry_id groups per chunk — the table's HASH partition key;
@@ -550,7 +543,7 @@ async def main() -> None:
             n = await batched_copy_by_key_async(
                 conn, TABLE, data, key="industry_id", label="baseline",
             )
-            print(f"    -> key-batched COPY-inserted {n:,} rows", flush=True)
+            logger.info(f"    -> key-batched COPY-inserted {n:,} rows")
         else:
             n_copied, n_upserted = await copy_or_upsert_split_async(
                 conn, TABLE, data,
@@ -560,7 +553,7 @@ async def main() -> None:
             via = "COPY" if n_copied > 0 and n_upserted == 0 else \
                   f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
                   "upsert"
-            print(f"    -> inserted {n:,} rows via {via}", flush=True)
+            logger.info(f"    -> inserted {n:,} rows via {via}")
 
         print_wall_time(t0)
     finally:

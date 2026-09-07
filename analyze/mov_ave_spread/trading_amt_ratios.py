@@ -132,6 +132,9 @@ from analyze.mov_ave_spread.config import (
 )
 from analyze.mov_ave_spread.helpers import null_if_overflow_counted
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Transient (not persisted) intermediate columns: daily intraday range,
 # daily overnight gap, and their 5-day MAs. Used as ratio denominators.
 _HIGH_LOW_RANGE_TMP = "_high_low_range"
@@ -347,8 +350,8 @@ def sanitize_trading_amt_ratios_rows(df: pd.DataFrame) -> list[dict]:
     if nulled:
         total = sum(nulled.values())
         per = ", ".join(f"{c}={n}" for c, n in nulled.items())
-        print(f"    -> overflow-guard nulled {total:,} value(s) across "
-              f"{len(nulled)} column(s): {per}", flush=True)
+        logger.info(f"    -> overflow-guard nulled {total:,} value(s) across "
+              f"{len(nulled)} column(s): {per}")
 
     return sanitize_for_db_insert(out, numeric_cols=numeric_cols)
 
@@ -400,10 +403,9 @@ async def run_trading_amt_ratios(
                 None, infers sec_types from the DataFrame.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  MOV_AVE_TRADING_AMT_RATIOS (internal step of mov_ave_spread)",
-          flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  MOV_AVE_TRADING_AMT_RATIOS (internal step of mov_ave_spread)")
+    logger.info("=" * 78)
 
     needed_cols = list(dict.fromkeys(
         ["sec_type", "code", "date", "price", "open", "high", "low",
@@ -415,8 +417,7 @@ async def run_trading_amt_ratios(
     ta_df = df[available].copy()
 
     if ta_df.empty:
-        print("    -> no source data; skipping trading-amt-ratios step.",
-              flush=True)
+        logger.info("    -> no source data; skipping trading-amt-ratios step.")
         return
 
     if sec_type is not None:
@@ -431,38 +432,36 @@ async def run_trading_amt_ratios(
         # and bypass the per-sec_type skip-filter (sec_types=() at the
         # insert below keeps every row — dates covered by OTHER codes
         # would otherwise mask this code's gaps).
-        print("    mode: SINGLE-CODE (full recompute for this code)",
-              flush=True)
+        logger.info("    mode: SINGLE-CODE (full recompute for this code)")
         target_dates_union: Optional[Set] = None
     elif force:
-        print("    mode: FORCE (full recompute)", flush=True)
+        logger.info("    mode: FORCE (full recompute)")
         if sec_type is not None:
             # Per-sec_type scope: DELETE only this sec_type's rows — the
             # parent loop calls run_trading_amt_ratios once per sec_type,
             # so a whole-table TRUNCATE here would wipe the other
             # sec_types' rows (in a --sec-type scoped run they are NOT
             # rebuilt).
-            print(f"\n[t0/4] Force mode: deleting {sec_type} rows from "
-                  "mov_ave_trading_amt_ratios...", flush=True)
+            logger.info(f"\n[t0/4] Force mode: deleting {sec_type} rows from "
+                  "mov_ave_trading_amt_ratios...")
             status = await conn.execute(
                 f"DELETE FROM {TRADING_AMT_RATIOS_TABLE} "
                 f"WHERE sec_type = $1",
                 sec_type,
             )
             n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
-            print(f"    -> deleted {n_del:,} rows; will recompute all "
-                  f"{sec_type} rows", flush=True)
+            logger.info(f"    -> deleted {n_del:,} rows; will recompute all "
+                  f"{sec_type} rows")
         else:
-            print("\n[t0/4] Force mode: truncating "
-                  "mov_ave_trading_amt_ratios...", flush=True)
+            logger.info("\n[t0/4] Force mode: truncating "
+                  "mov_ave_trading_amt_ratios...")
             await truncate_table_async(conn, TRADING_AMT_RATIOS_TABLE)
-            print("    -> truncated; will recompute all rows", flush=True)
+            logger.info("    -> truncated; will recompute all rows")
         target_dates_union: Optional[Set] = None
     else:
-        print("    mode: incremental (missing dates only)", flush=True)
-        print("\n[t0/4] Detecting missing dates PER-sec_type "
-              "(etf_identity vs trading_amt_ratios[etf], etc.)...",
-              flush=True)
+        logger.info("    mode: incremental (missing dates only)")
+        logger.info("\n[t0/4] Detecting missing dates PER-sec_type "
+              "(etf_identity vs trading_amt_ratios[etf], etc.)...")
         target_dates_per_st: dict = {}
         for st in sec_types:
             td_st = await find_missing_analysis_dates(
@@ -470,28 +469,25 @@ async def run_trading_amt_ratios(
                 [SEC_TYPE_IDENTITY_TABLE[st]], sec_type=st,
             )
             target_dates_per_st[st] = td_st
-            print(f"    -> {st}: {len(td_st)} missing dates", flush=True)
+            logger.info(f"    -> {st}: {len(td_st)} missing dates")
         target_dates_union = set()
         for s in target_dates_per_st.values():
             target_dates_union |= s
-        print(f"    -> union across sec_types: "
-              f"{len(target_dates_union)} dates to (re)compute",
-              flush=True)
+        logger.info(f"    -> union across sec_types: "
+              f"{len(target_dates_union)} dates to (re)compute")
         if not target_dates_union:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return
 
     # ---- Step 1: compute the 6 slope ratios over full history -------
-    print("\n[t1/4] Computing 6 slope-ratio columns "
-          "((trading_amt / 1M) / price_slope, matching-timescale)...",
-          flush=True)
+    logger.info("\n[t1/4] Computing 6 slope-ratio columns "
+          "((trading_amt / 1M) / price_slope, matching-timescale)...")
     ta_df = compute_trading_amt_slope_vs_price_ratios(ta_df)
 
     # ---- Step 2: compute range / gap MAs + 4 ratio columns ----------
-    print("[t2/4] Computing daily range / overnight gap + MA5s and 4 "
+    logger.info("[t2/4] Computing daily range / overnight gap + MA5s and 4 "
           "range / gap ratio columns "
-          "((ta or ta_ma5 / 1M) / (range or gap, matching timescale))...",
-          flush=True)
+          "((ta or ta_ma5 / 1M) / (range or gap, matching timescale))...")
     ta_df = compute_range_and_gap_mas(ta_df)
     ta_df = compute_trading_amt_high_low_and_gap_ratios(ta_df)
 
@@ -502,18 +498,18 @@ async def run_trading_amt_ratios(
         # convention).
         td64 = pd.to_datetime(sorted(target_dates_union)).values
         ta_df = ta_df[ta_df["date"].isin(td64)].reset_index(drop=True)
-        print(f"    -> incremental filter: {len(ta_df):,} of {n_before:,} "
-              f"rows are in target_dates_union", flush=True)
+        logger.info(f"    -> incremental filter: {len(ta_df):,} of {n_before:,} "
+              f"rows are in target_dates_union")
 
     if ta_df.empty:
-        print("    -> no rows to upsert; skipping trading-amt-ratios "
-              "upsert.", flush=True)
+        logger.info("    -> no rows to upsert; skipping trading-amt-ratios "
+              "upsert.")
         return
 
     # ---- Step 3: build + insert (chunked by date) -------------------
-    print(f"\n[t3/4] Building + inserting {len(ta_df):,} "
+    logger.info(f"\n[t3/4] Building + inserting {len(ta_df):,} "
           f"mov_ave_trading_amt_ratios rows in date-bounded chunks "
-          f"({'COPY' if force else 'upsert'} per chunk)...", flush=True)
+          f"({'COPY' if force else 'upsert'} per chunk)...")
     n = await build_and_insert_chunked(
         conn, pool, ta_df,
         sanitize_trading_amt_ratios_rows,
@@ -525,11 +521,10 @@ async def run_trading_amt_ratios(
         label="mov_ave_trading_amt_ratios",
     )
     del ta_df
-    print(f"    -> inserted {n:,} rows", flush=True)
+    logger.info(f"    -> inserted {n:,} rows")
 
     # ---- Step 4: register in analysis_identity ----------------------
-    print(f"\n[t4/4] Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info(f"\n[t4/4] Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=TRADING_AMT_RATIOS_ANALYSIS_NAME,
@@ -537,5 +532,5 @@ async def run_trading_amt_ratios(
         description=TRADING_AMT_RATIOS_DESCRIPTION,
     )
 
-    print(f"\n  mov_ave_trading_amt_ratios wall time: "
-          f"{time.time() - t0:.1f}s", flush=True)
+    logger.info(f"\n  mov_ave_trading_amt_ratios wall time: "
+          f"{time.time() - t0:.1f}s")

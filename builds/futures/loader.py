@@ -35,6 +35,9 @@ from builds.futures.config import (
 from builds.futures.paths import CFFEX_ARCHIVE_DIR, FUTURES_CSV_PATTERN
 from downloads._common import read_csv_gpu_safe
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Regex to extract YYYYMMDD from filename like "20260701_futures.csv"
 _FILENAME_DATE_RE = re.compile(r"(\d{8})")
 
@@ -170,7 +173,7 @@ def build_futures_df(
                                open_interest, open_interest_change, delta
     """
     if verbose:
-        print(f"    [FUTURES] reading {len(files)} *_futures.csv files", flush=True)
+        logger.info(f"    [FUTURES] reading {len(files)} *_futures.csv files")
 
     frames: list[pd.DataFrame] = []
     n_empty = 0
@@ -236,10 +239,9 @@ def build_futures_df(
         })
     if not meta_rows:
         if verbose:
-            print(
+            logger.info(
                 f"    [FUTURES] {n_ok} files with data, {n_empty} empty, "
                 f"all {n_invalid_contracts} contracts invalid — no rows",
-                flush=True,
             )
         return pd.DataFrame(columns=identity_cols), pd.DataFrame(columns=basic_cols)
 
@@ -272,11 +274,10 @@ def build_futures_df(
     ).reset_index(drop=True)
 
     if verbose:
-        print(
+        logger.info(
             f"    [FUTURES] {n_ok} files with data, {n_empty} empty, "
             f"{n_parse_fail} rows dropped as parse failures ({n_invalid_contracts} contracts), "
             f"{len(identity_df)} identity rows, {len(basic_df)} basic_stats rows",
-            flush=True,
         )
 
     return identity_df, basic_df

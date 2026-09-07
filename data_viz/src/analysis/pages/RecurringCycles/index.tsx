@@ -1,12 +1,12 @@
 /**
  * Recurring Cycles analysis page (default export).
  *
- * Index-only for now. Layout mirrors the other analysis-commons pages
- * (PeAndDividend, MaSpread):
- *   • Header — title + subtitle (active sector/industry label)
- *   • Controls — CodeSearchBar + Refresh (no sec_type toggle; index only)
- *   • SecClassificationNav — two-level cascade (L1 sector → L2 industry) +
- *     parallel strategy column + exchange filter row + L3 security-level chips
+ * Index-only for now. Built on the shared analysis nav kit
+ * (@/shared/components/sec-nav):
+ *   • SecNavShell — header (CodeSearchBar + Refresh; no sec_type toggle —
+ *     index only) + SecClassificationNav (two-level cascade L1 sector → L2
+ *     industry + parallel strategy column + exchange filter row + L3
+ *     security-level chips), fully wired from useSecNav
  *   • Stack of RecurringCyclesPanel cards — one per code on the current page.
  *     Each panel renders the index price plot on top + per-date recurring
  *     rise/drop periodicity bar charts below, one chart per range_days
@@ -21,351 +21,132 @@
  * Backed by analysis.recurring_cycles (sec_type='index').
  */
 import { useEffect, useMemo, useState } from "react";
-import {
-  Alert,
-  Box,
-  CircularProgress,
-  IconButton,
-  Pagination,
-  Stack,
-  Typography,
-} from "@mui/material";
-import { ArrowBack } from "@mui/icons-material";
-import { useNavigate } from "react-router-dom";
-import CodeSearchBar, { findCodeInThemes, findCodeInStrategyThemes } from "@/components/CodeSearchBar";
-import RefreshButton from "@/components/RefreshButton";
-import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
+import { Alert, Box, Pagination, Stack, Typography } from "@mui/material";
 import { useStore } from "@/store/filters";
+import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import {
   fetchRecurringCyclesThemes,
   fetchRecurringCyclesStrategyThemes,
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
-import type {
-  RecurringCyclesSecType,
-  SectorNode,
-  StrategyNode,
-} from "@shared/types";
 import { PAGE_SIZE } from "./constants";
 import { RecurringCyclesPanel } from "./RecurringCyclesPanel";
 
-const SEC_TYPE: RecurringCyclesSecType = "index";
+const SEC_TYPE = "index" as const;
+
+/** Nav trees endpoints (index-only — recurring cycles has no ETF/stock data). */
+const THEMES_SOURCES = {
+  index: {
+    themes: (exchange: string | null) => fetchRecurringCyclesThemes(SEC_TYPE, exchange),
+    strategyThemes: (exchange: string | null) => fetchRecurringCyclesStrategyThemes(SEC_TYPE, exchange),
+  },
+};
 
 export default function RecurringCyclesPage() {
-  const navigate = useNavigate();
   const themeMode = useStore((s) => s.themeMode);
 
-  // Local sector/industry state (independent from the global filters).
-  const [sectorId, setSectorId] = useState<string | null>(null);
-  const [industrySlug, setIndustrySlug] = useState<string | null>(null);
-  const [exchange, setExchange] = useState<string | null>("PRIMARY");
-  const [strategies, setStrategies] = useState<StrategyNode[]>([]);
-  const [strategyId, setStrategyId] = useState<string | null>(null);
-  const [themeSlug, setThemeSlug] = useState<string | null>(null);
+  // Shared nav: code search + classification selection (no sec_type toggle —
+  // single-sec-type page, so SecNavShell renders no toggle).
+  const nav = useSecNav({
+    themesSources: THEMES_SOURCES,
+    defaultSecType: SEC_TYPE,
+    dataLabel: "recurring-cycles",
+    onInvalidateCache: () => invalidateCacheForPrefix("/api/analysis/recurring-cycles/"),
+  });
 
-  const [sectors, setSectors] = useState<SectorNode[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [searchCode, setSearchCode] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
 
-  // Reset selection on exchange change.
-  useEffect(() => {
-    setSectors([]);
-    setError(null);
-    setSectorId(null);
-    setIndustrySlug(null);
-    setStrategies([]);
-    setStrategyId(null);
-    setThemeSlug(null);
-    setSearchCode(null);
-    setPage(1);
-  }, [exchange]);
-
-  // Load the navigation trees whenever exchange changes or refresh is
-  // bumped. Both are served from the analysis.recurring_cycles_codes
-  // registry (no recurring_cycles table scan). All recurring-cycles DATA
-  // fetches happen per code in RecurringCyclesPanel with `code` in the
-  // query — never here.
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    Promise.all([
-      fetchRecurringCyclesThemes(SEC_TYPE, exchange),
-      fetchRecurringCyclesStrategyThemes(SEC_TYPE, exchange),
-    ])
-      .then(([t, st]) => {
-        if (cancelled) return;
-        setSectors(t);
-        setStrategies(st);
-        if (sectorId && !t.some((s) => s.sector_id === sectorId)) {
-          setSectorId(null);
-          setIndustrySlug(null);
-        }
-        if (strategyId && !st.some((s) => s.sector_id === strategyId)) {
-          setStrategyId(null);
-          setThemeSlug(null);
-        }
-        setLoading(false);
-      })
-      .catch((e: Error) => {
-        if (cancelled) return;
-        setError(e.message);
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exchange, refreshKey]);
-
+  // Back to page 1 whenever selection, search, or exchange changes.
   useEffect(() => {
     setPage(1);
-  }, [sectorId, industrySlug, strategyId, themeSlug, exchange]);
-
-  const handleRefresh = () => {
-    invalidateCacheForPrefix("/api/analysis/recurring-cycles/");
-    setRefreshKey((k) => k + 1);
-  };
-
-  const handleSearch = (code: string) => {
-    const foundIndustry = findCodeInThemes(sectors, code);
-    if (foundIndustry) {
-      setError(null);
-      setStrategyId(null);
-      setThemeSlug(null);
-      setSectorId(foundIndustry.sectorId);
-      setIndustrySlug(foundIndustry.industrySlug);
-      setSearchCode(code);
-      setPage(1);
-      return;
-    }
-    const foundStrategy = findCodeInStrategyThemes(strategies, code);
-    if (foundStrategy) {
-      setError(null);
-      setSectorId(null);
-      setIndustrySlug(null);
-      setStrategyId(foundStrategy.strategyId);
-      setThemeSlug(foundStrategy.themeSlug);
-      setSearchCode(code);
-      setPage(1);
-      return;
-    }
-    setError(`Code not found in INDEX recurring-cycles data: ${code}`);
-    setSearchCode(null);
-  };
-
-  const handleClearSearch = () => {
-    setSearchCode(null);
-  };
-
-  const handleSectorChange = (id: string | null) => {
-    setSearchCode(null);
-    setSectorId(id);
-    if (id) {
-      setStrategyId(null);
-      setThemeSlug(null);
-    }
-  };
-  const handleIndustryChange = (slug: string | null) => {
-    setSearchCode(null);
-    setIndustrySlug(slug);
-  };
-  const handleStrategyChange = (id: string | null) => {
-    setSearchCode(null);
-    setStrategyId(id);
-    if (id) {
-      setSectorId(null);
-      setThemeSlug(null);
-    }
-  };
-  const handleThemeChange = (slug: string | null) => {
-    setSearchCode(null);
-    setThemeSlug(slug);
-  };
-  const handleExchangeChange = (ex: string | null) => {
-    setSearchCode(null);
-    setExchange(ex);
-  };
+  }, [nav.searchCode, nav.sectorId, nav.industrySlug, nav.strategyId, nav.themeSlug, nav.exchange]);
 
   // Page items are derived from the navigation trees (each tree item
   // carries { code, name }). No separate codes query: the per-code data
   // is fetched inside RecurringCyclesPanel with `code` in the filter.
   const { pageCodes, totalCodes } = useMemo(() => {
     const norm = (c: string) => c.toUpperCase().replace(/\.(SS|SZ|SH|BJ|HK)$/i, "");
-    if (searchCode) {
-      const want = norm(searchCode);
+    if (nav.searchCode) {
+      const want = norm(nav.searchCode);
       const match =
-        sectors
+        nav.sectors
           .flatMap((s) => s.industries.flatMap((ind) => ind.items))
-          .concat(strategies.flatMap((s) => s.industries.flatMap((t) => t.items)))
+          .concat(nav.strategies.flatMap((s) => s.industries.flatMap((t) => t.items)))
           .find((it) => norm(it.code) === want) ?? null;
       return { pageCodes: match ? [match] : [], totalCodes: match ? 1 : 0 };
     }
-    const items = strategyId
-      ? strategies
-          .filter((s) => s.sector_id === strategyId)
+    const items = nav.strategyId
+      ? nav.strategies
+          .filter((s) => s.sector_id === nav.strategyId)
           .flatMap((s) => s.industries)
-          .filter((t) => !themeSlug || t.industry_slug === themeSlug || t.industry_id === themeSlug)
+          .filter((t) => !nav.themeSlug || t.industry_slug === nav.themeSlug || t.industry_id === nav.themeSlug)
           .flatMap((t) => t.items)
-      : sectors
-          .filter((s) => !sectorId || s.sector_id === sectorId)
+      : nav.sectors
+          .filter((s) => !nav.sectorId || s.sector_id === nav.sectorId)
           .flatMap((s) => s.industries)
-          .filter((ind) => !industrySlug || ind.industry_slug === industrySlug)
+          .filter((ind) => !nav.industrySlug || ind.industry_slug === nav.industrySlug)
           .flatMap((ind) => ind.items);
     const wanted = Array.from(new Map(items.map((it) => [it.code, it])).values()).sort((a, b) =>
       a.code.localeCompare(b.code),
     );
     return { pageCodes: wanted, totalCodes: wanted.length };
-  }, [sectors, strategies, sectorId, industrySlug, strategyId, themeSlug, searchCode]);
+  }, [nav.searchCode, nav.strategyId, nav.themeSlug, nav.sectorId, nav.industrySlug, nav.sectors, nav.strategies]);
 
   const totalPages = Math.max(1, Math.ceil(totalCodes / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const visibleCodes = pageCodes.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
-  const activeSector = sectors.find((s) => s.sector_id === sectorId);
-  const activeIndustry = activeSector?.industries.find(
-    (i) => i.industry_slug === industrySlug,
-  );
-  const activeStrategy = strategies.find((s) => s.sector_id === strategyId);
-  const activeTheme = activeStrategy?.industries.find(
-    (t) => t.industry_slug === themeSlug,
-  );
-  const headerLabel = activeIndustry
-    ? `${activeSector?.sector_label ?? ""} / ${activeIndustry.industry_label}`
-    : activeSector
-      ? `${activeSector.sector_label} (All)`
-      : activeTheme
-        ? `${activeStrategy?.sector_label ?? ""} / ${activeTheme.industry_label}`
-        : activeStrategy
-          ? `${activeStrategy.sector_label} (All)`
-          : "Select a sector or strategy";
-
   return (
-    <Box>
-      <Box
-        sx={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          gap: 2,
-          flexWrap: "wrap",
-        }}
-      >
-        <Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            <IconButton
-              onClick={() => navigate("/analysis/commons")}
-              size="small"
-              aria-label="back to commons"
-            >
-              <ArrowBack />
-            </IconButton>
-            <Typography variant="h5" sx={{ fontWeight: 700 }}>
-              Recurring Cycles
-            </Typography>
-          </Box>
-          <Typography variant="body2" color="text.secondary">
-            {headerLabel} — recurring rise/drop periodicity: every integer day
+    <SecNavShell
+      nav={nav}
+      title="Recurring Cycles"
+      backPath="/analysis/commons"
+      backLabel="back to commons"
+      subtitle={`${nav.headerLabel} — recurring rise/drop periodicity: every integer day
             period audited for RECURRENCE (extrema evidence × ACF coherence,
             amplitude-gated). Click any date to see the per-period spectra.
-            Index only for now.
-          </Typography>
-        </Box>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-          <CodeSearchBar
-            activeCode={searchCode}
-            onSearch={handleSearch}
-            onClear={handleClearSearch}
-            placeholder="Index code (e.g. 000300)"
-          />
-          <RefreshButton
-            onClick={handleRefresh}
-            loading={loading}
-            label="Refresh"
-            tooltip="Refresh recurring-cycles themes + codes + chart data (bypass cache)"
-          />
-        </Box>
-      </Box>
-
-      <SecClassificationNav
-        sectors={sectors}
-        sectorId={sectorId}
-        industrySlug={industrySlug}
-        exchange={exchange}
-        onSectorChange={handleSectorChange}
-        onIndustryChange={handleIndustryChange}
-        onExchangeChange={handleExchangeChange}
-        strategies={strategies}
-        strategyId={strategyId}
-        themeSlug={themeSlug}
-        onStrategyChange={handleStrategyChange}
-        onThemeChange={handleThemeChange}
-        itemKind="Index"
-        selectedItemCode={searchCode}
-        onItemSelected={(code) => {
-          setError(null);
-          setSearchCode(code);
-          setPage(1);
-        }}
-        onClearItemSelection={handleClearSearch}
-        loading={loading}
-      />
-
-      {loading && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
-          <CircularProgress size={32} />
-        </Box>
-      )}
-      {error && (
-        <Alert severity="error" variant="filled" sx={{ mb: 2 }}>
-          Failed to load recurring-cycles data: {error}
+            Index only for now.`}
+      refreshTooltip="Refresh recurring-cycles themes + codes + chart data (bypass cache)"
+      errorPrefix="recurring-cycles data"
+    >
+      {visibleCodes.length === 0 ? (
+        <Alert severity="warning">
+          {nav.searchCode
+            ? `No data available for code: ${nav.searchCode}`
+            : `No INDEX recurring-cycles data in this sector/industry. (Run the Python populator: python -m analyze.recurring_cycles --sec-type index --force)`}
         </Alert>
-      )}
-      {!loading && !error && (
+      ) : (
         <>
-          {visibleCodes.length === 0 ? (
-            <Alert severity="warning">
-              {searchCode
-                ? `No data available for code: ${searchCode}`
-                : `No INDEX recurring-cycles data in this sector/industry. (Run the Python populator: python -m analyze.recurring_cycles --sec-type index --force)`}
-            </Alert>
-          ) : (
-            <>
-              <Typography variant="caption" color="text.secondary">
-                {searchCode
-                  ? `Search result for ${searchCode}`
-                  : `${visibleCodes.length} of ${totalCodes} indices on this page · page ${safePage}/${totalPages}`}
-              </Typography>
-              <Stack spacing={1.5} sx={{ mt: 0.5 }}>
-                {visibleCodes.map((c) => (
-                  <RecurringCyclesPanel
-                    key={c.code}
-                    code={c.code}
-                    name={c.name}
-                    secType={SEC_TYPE}
-                    themeMode={themeMode}
-                  />
-                ))}
-              </Stack>
-              {!searchCode && totalPages > 1 && (
-                <Box sx={{ display: "flex", justifyContent: "center", pt: 2, pb: 1 }}>
-                  <Pagination
-                    count={totalPages}
-                    page={safePage}
-                    onChange={(_e, v) => setPage(v)}
-                    color="primary"
-                    showFirstButton
-                    showLastButton
-                  />
-                </Box>
-              )}
-            </>
+          <Typography variant="caption" color="text.secondary">
+            {nav.searchCode
+              ? `Search result for ${nav.searchCode}`
+              : `${visibleCodes.length} of ${totalCodes} indices on this page · page ${safePage}/${totalPages}`}
+          </Typography>
+          <Stack spacing={1.5} sx={{ mt: 0.5 }}>
+            {visibleCodes.map((c) => (
+              <RecurringCyclesPanel
+                key={c.code}
+                code={c.code}
+                name={c.name}
+                secType={SEC_TYPE}
+                themeMode={themeMode}
+              />
+            ))}
+          </Stack>
+          {!nav.searchCode && totalPages > 1 && (
+            <Box sx={{ display: "flex", justifyContent: "center", pt: 2, pb: 1 }}>
+              <Pagination
+                count={totalPages}
+                page={safePage}
+                onChange={(_e, v) => setPage(v)}
+                color="primary"
+                showFirstButton
+                showLastButton
+              />
+            </Box>
           )}
         </>
       )}
-    </Box>
+    </SecNavShell>
   );
 }

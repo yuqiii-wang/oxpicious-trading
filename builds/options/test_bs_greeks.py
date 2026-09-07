@@ -14,7 +14,7 @@ try:
     HAS_QL = True
 except ImportError:
     HAS_QL = False
-    print("QuantLib not available, skipping comparison")
+    print("QuantLib not available, skipping comparison", flush=True)
 
 from scipy.optimize import brentq
 
@@ -40,9 +40,9 @@ def ql_reference(S, K, T, price, is_call):
 
 
 # ===========================================================================
-print("=" * 64)
-print("TEST 1: Correctness vs QuantLib (SZSE-style scaled inputs)")
-print("=" * 64)
+logger.info("=" * 64)
+logger.info("TEST 1: Correctness vs QuantLib (SZSE-style scaled inputs)")
+logger.info("=" * 64)
 np.random.seed(42)
 n = 2000
 S = np.random.uniform(2.0, 5.0, n)
@@ -53,6 +53,9 @@ sigma_true = np.random.uniform(0.08, 0.9, n)
 
 # Prices from the vectorized pricer itself (self-consistent data)
 from _common.df_utils import bs_price_greeks
+
+import logging
+logger = logging.getLogger(__name__)
 price, *_ = bs_price_greeks(S, K, T, r, sigma_true, is_call)
 # add tiny noise (like real market data)
 price = price * (1 + np.random.normal(0, 0.001, n))
@@ -69,12 +72,12 @@ t0 = time.time()
 iv_new, delta_new, theta_new, gamma_new, vega_new, rho_new = compute_iv_and_greeks(
     test_df, use_gpu=False, verbose=False)
 t_new = time.time() - t0
-print(f"vectorized CPU: {t_new:.3f}s for {n:,} rows")
+logger.info(f"vectorized CPU: {t_new:.3f}s for {n:,} rows")
 
 t0 = time.time()
 ref = np.array([ql_reference(S[i], K[i], T[i], price[i], bool(is_call[i])) for i in range(n)])
 t_ql = time.time() - t0
-print(f"QuantLib row-by-row: {t_ql:.3f}s for {n:,} rows   (speedup {t_ql/t_new:.0f}x)")
+logger.info(f"QuantLib row-by-row: {t_ql:.3f}s for {n:,} rows   (speedup {t_ql/t_new:.0f}x)")
 
 names = ["IV", "Delta", "Theta", "Gamma", "Vega", "Rho"]
 new = [iv_new, delta_new, theta_new, gamma_new, vega_new, rho_new]
@@ -85,15 +88,15 @@ for name, a in zip(names, new):
     only_ref = ~np.isfinite(a) & np.isfinite(b)
     diff = np.abs(a[both] - b[both])
     scale = np.maximum(np.abs(b[both]), 1e-12)
-    print(f"  {name:6s}: n_both={both.sum():4d}  max_abs={np.max(diff):.3e}  "
+    logger.info(f"  {name:6s}: n_both={both.sum():4d}  max_abs={np.max(diff):.3e}  "
           f"mean_abs={np.mean(diff):.3e}  max_rel={np.max(diff/scale):.3e}  "
           f"nan_only_new={only_new.sum()}  nan_only_ref={only_ref.sum()}")
 
 # ===========================================================================
-print()
-print("=" * 64)
-print("TEST 2: Performance at scale (1.6M rows, like the real SZSE build)")
-print("=" * 64)
+logger.info()
+logger.info("=" * 64)
+logger.info("TEST 2: Performance at scale (1.6M rows, like the real SZSE build)")
+logger.info("=" * 64)
 n_large = 1_600_000
 S2 = np.random.uniform(2.0, 5.0, n_large)
 K2 = np.random.uniform(2.0, 5.0, n_large)
@@ -132,10 +135,10 @@ D2 = np.exp(-r * T2)
 intrinsic = np.where(is_call2, np.maximum(S2 - D2 * K2, 0),
                      np.maximum(D2 * K2 - S2, 0))
 resolvable = solvable & (np.abs(price2 - intrinsic) > 1e-9 * S2)
-print(f"CPU (numpy):  {t_cpu:.2f}s for {n_large:,} rows")
-print(f"  max |price(iv) - price| (solvable rows) = "
+logger.info(f"CPU (numpy):  {t_cpu:.2f}s for {n_large:,} rows")
+logger.info(f"  max |price(iv) - price| (solvable rows) = "
       f"{price_resid[solvable].max():.3e}  <- solver converged")
-print(f"  max |IV-true| on sigma-resolvable rows (n={resolvable.sum():,}): "
+logger.info(f"  max |IV-true| on sigma-resolvable rows (n={resolvable.sum():,}): "
       f"{err[resolvable].max():.3e}")
 
 try:
@@ -145,21 +148,21 @@ try:
     t_gpu = time.time() - t0
     p_solved_g, *_ = bs_price_greeks(S2, K2, T2, r, iv2g, is_call2)
     solvable_g = np.isfinite(iv2g)
-    print(f"GPU (cupy):   {t_gpu:.2f}s for {n_large:,} rows")
-    print(f"  max |price(iv) - price| = "
+    logger.info(f"GPU (cupy):   {t_gpu:.2f}s for {n_large:,} rows")
+    logger.info(f"  max |price(iv) - price| = "
           f"{np.abs(p_solved_g[solvable_g] - price2[solvable_g]).max():.3e}"
           f"  <- solver converged")
-    print(f"  max |IV-true| on sigma-resolvable rows: "
+    logger.info(f"  max |IV-true| on sigma-resolvable rows: "
           f"{np.abs(iv2g[resolvable & solvable_g] - sig2[resolvable & solvable_g]).max():.3e}")
-    print(f"GPU speedup vs CPU: {t_cpu/t_gpu:.1f}x")
+    logger.info(f"GPU speedup vs CPU: {t_cpu/t_gpu:.1f}x")
 except Exception as e:
-    print(f"GPU test skipped: {type(e).__name__}: {e}")
+    logger.info(f"GPU test skipped: {type(e).__name__}: {e}")
 
 # ===========================================================================
-print()
-print("=" * 64)
-print("TEST 3: CFFEX-style (no scaling) + csv_delta fallback")
-print("=" * 64)
+logger.info()
+logger.info("=" * 64)
+logger.info("TEST 3: CFFEX-style (no scaling) + csv_delta fallback")
+logger.info("=" * 64)
 n3 = 5000
 S3 = np.random.uniform(3000, 4000, n3)
 K3 = np.random.uniform(3000, 4000, n3)
@@ -177,17 +180,17 @@ cf_df = pd.DataFrame({
 iv3, d3, th3, g3, v3, r3 = compute_iv_and_greeks(
     cf_df, use_gpu=False, price_scale=1.0, opt_scale=1.0,
     csv_delta_col="csv_delta", verbose=False)
-print(f"NaN IV rows: {np.isnan(iv3).sum()} (a few deep-ITM rows are expected:"
+logger.info(f"NaN IV rows: {np.isnan(iv3).sum()} (a few deep-ITM rows are expected:"
       f" time value below float64 resolution -> IV undefined, same as brentq)")
-print(f"delta filled from csv (unsolvable rows): {np.isclose(d3, 0.5).sum()}")
+logger.info(f"delta filled from csv (unsolvable rows): {np.isclose(d3, 0.5).sum()}")
 # force some unsolvable rows: price below intrinsic
 deep = np.full(50, 1e-9)
 cf_df.loc[cf_df.index[:50], "settle"] = deep
 iv3b, d3b, *_ = compute_iv_and_greeks(
     cf_df, use_gpu=False, price_scale=1.0, opt_scale=1.0,
     csv_delta_col="csv_delta", verbose=False)
-print(f"with below-intrinsic rows: NaN IV = {np.isnan(iv3b).sum()}, "
+logger.info(f"with below-intrinsic rows: NaN IV = {np.isnan(iv3b).sum()}, "
       f"csv_delta fallback = {np.isclose(d3b, 0.5).sum()}")
 
-print()
-print("ALL TESTS COMPLETE")
+logger.info()
+logger.info("ALL TESTS COMPLETE")

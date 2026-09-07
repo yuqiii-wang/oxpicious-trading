@@ -25,6 +25,9 @@ from _common.df_utils import host_dtypes, safe_columns
 from builds._commons.safe_parse import safe_to_numeric
 from builds.index.baseline.paths import SHARED_WEIGHT_THRESHOLD
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def fill_missing_closes(combined: pd.DataFrame,
                         shared_weights: dict,
@@ -243,7 +246,7 @@ def fill_missing_closes(combined: pd.DataFrame,
         combined = combined.sort_values(["code", "date"]).reset_index(drop=True)
 
     if verbose:
-        print(f"    [EST] Close estimation: {n_filled} dates filled via proxy, "
-              f"{n_carry} carried forward, {len(estimated_rows)} total estimated rows", flush=True)
+        logger.info(f"    [EST] Close estimation: {n_filled} dates filled via proxy, "
+              f"{n_carry} carried forward, {len(estimated_rows)} total estimated rows")
 
     return combined

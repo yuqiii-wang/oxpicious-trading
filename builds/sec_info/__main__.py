@@ -76,6 +76,9 @@ from builds.sec_info.upsert import (
 )
 from builds.classification.sector_industry.owners import load_owners
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("sec_info")
+
 
 # Default MIX columns (NULL when asset_portfolio.csv is empty / absent).
 _MIX_COLS = [
@@ -182,7 +185,7 @@ async def main():
     enforce_date_force_exclusion(args)
     forced = parse_date_arg(args.date)
     if forced is not None:
-        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
+        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
 
     t0 = datetime.datetime.now()
     mode = ("FORCE (truncate + reload)" if args.force else
@@ -198,18 +201,18 @@ async def main():
     )
 
     if not os.path.isdir(SZSE_REPORTS_DIR):
-        print(f"    [FATAL] Reports dir not found: {SZSE_REPORTS_DIR}", flush=True)
+        logger.error(f"    [FATAL] Reports dir not found: {SZSE_REPORTS_DIR}")
         sys.exit(1)
 
     # --- 1. Scan + parse all report CSVs ---
-    print("\n[1/4] Scanning + parsing report CSVs …", flush=True)
+    logger.info("\n[1/4] Scanning + parsing report CSVs …")
     latest_per_code, report_rows, top10_snapshots = _gather_reports(SZSE_REPORTS_DIR)
     n_codes = len(latest_per_code)
     n_reports = len(report_rows)
     n_top10 = len(top10_snapshots)
     n_top10_rows = sum(len(s["holdings"]) for s in top10_snapshots)
-    print(f"    [CSV] {n_codes} funds, {n_reports} report quarters, "
-          f"{n_top10} top10 snapshots ({n_top10_rows} holdings rows)", flush=True)
+    logger.info(f"    [CSV] {n_codes} funds, {n_reports} report quarters, "
+          f"{n_top10} top10 snapshots ({n_top10_rows} holdings rows)")
 
     # --- 1b. --date scope: restrict every parsed collection to the forced
     #     quarter-end report date (validated before any DB work) ---
@@ -228,38 +231,37 @@ async def main():
         n_reports = len(report_rows)
         n_top10 = len(top10_snapshots)
         n_top10_rows = sum(len(s["holdings"]) for s in top10_snapshots)
-        print(f"    [DATE MODE] Restricted to {forced}: {n_codes} funds, "
+        logger.info(f"    [DATE MODE] Restricted to {forced}: {n_codes} funds, "
               f"{n_reports} report quarters, {n_top10} top10 snapshots "
-              f"({n_top10_rows} holdings rows)", flush=True)
+              f"({n_top10_rows} holdings rows)")
 
     # --- 2. Connect to DB ---
-    print("\n[2/4] Connecting to database …", flush=True)
+    logger.info("\n[2/4] Connecting to database …")
     conn = await get_db_or_exit()
 
     try:
         # --- 3. sec_owners (truncate + rebuild) ---
         if args.no_owners:
-            print("\n[3/4] sec_owners: --no-owners, skipping", flush=True)
+            logger.info("\n[3/4] sec_owners: --no-owners, skipping")
         elif forced is not None:
-            print(f"\n[3/4] sec_owners: DATE MODE {forced}, skipping "
+            logger.info(f"\n[3/4] sec_owners: DATE MODE {forced}, skipping "
                   f"(date-independent registry rebuild — run without --date "
-                  f"to refresh)", flush=True)
+                  f"to refresh)")
         else:
-            print("\n[3/4] Rebuilding stats.sec_owners …", flush=True)
+            logger.info("\n[3/4] Rebuilding stats.sec_owners …")
             owners = _parse_owners_from_json()
             await upsert_owners(conn, owners, verbose=True)
 
         # --- 4. sec_info (latest snapshot per code, missing-data) ---
-        print("\n[4/4] Upserting stats.sec_info + sec_reports + sec_composition …",
-              flush=True)
+        logger.info("\n[4/4] Upserting stats.sec_info + sec_reports + sec_composition …")
         # --date mode bypasses the missing-data skips: the skip filters see
         # "nothing existing", so every parsed row of the forced date is
         # re-written through the normal upsert path (force stays False →
         # no truncation, no deletes).
         bypass = forced is not None
         if bypass:
-            print("    [DB] DATE MODE: sec_info/sec_reports missing-data "
-                  "skips bypassed — forced-date rows re-upserted", flush=True)
+            logger.info("    [DB] DATE MODE: sec_info/sec_reports missing-data "
+                  "skips bypassed — forced-date rows re-upserted")
         existing_info = {} if bypass else await fetch_existing_sec_info(conn)
         info_rows = build_sec_info_rows(latest_per_code, existing_info, args.force)
         await upsert_sec_info(conn, info_rows, args.force)
@@ -271,32 +273,31 @@ async def main():
 
         # --- sec_composition top10 injection (always missing-data) ---
         if args.no_composition:
-            print("    [DB] --no-composition: skipping top10 → sec_composition",
-                  flush=True)
+            logger.info("    [DB] --no-composition: skipping top10 → sec_composition")
         else:
             existing_comp = await fetch_existing_composition_keys(conn)
             if forced is not None:
-                print("    [DB] DATE MODE: sec_composition keeps its "
+                logger.info("    [DB] DATE MODE: sec_composition keeps its "
                       "missing-snapshot guard (builds.etf full snapshots are "
-                      "never overwritten by the top-10 source)", flush=True)
+                      "never overwritten by the top-10 source)")
             comp_rows = build_composition_rows(top10_snapshots, existing_comp)
             await inject_top10_composition(conn, comp_rows)
 
         # --- Summary ---
-        print(f"\n    Summary:", flush=True)
-        print(f"      Funds (sec_info)     : {len(info_rows):,} upserted "
-              f"({n_codes} parsed)", flush=True)
-        print(f"      Reports (sec_reports): {len(report_rows_to_write):,} upserted "
-              f"({n_reports} parsed)", flush=True)
+        logger.info(f"\n    Summary:")
+        logger.info(f"      Funds (sec_info)     : {len(info_rows):,} upserted "
+              f"({n_codes} parsed)")
+        logger.info(f"      Reports (sec_reports): {len(report_rows_to_write):,} upserted "
+              f"({n_reports} parsed)")
         if not args.no_composition:
-            print(f"      top10 → sec_composition: {len(comp_rows):,} rows from "
-                  f"{n_top10} snapshots", flush=True)
+            logger.info(f"      top10 → sec_composition: {len(comp_rows):,} rows from "
+                  f"{n_top10} snapshots")
     finally:
         await conn.close()
 
     elapsed = (datetime.datetime.now() - t0).total_seconds()
-    print(f"\n  Wall time: {elapsed:.1f}s", flush=True)
-    print("=" * 78, flush=True)
+    logger.info(f"\n  Wall time: {elapsed:.1f}s")
+    logger.info("=" * 78)
 
 
 if __name__ == "__main__":

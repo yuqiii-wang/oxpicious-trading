@@ -72,6 +72,9 @@ from _common.build_commons import (
 )
 from builds._commons.row_emission import records_from_frame
 
+import logging
+logger = logging.getLogger(__name__)
+
 TABLE = "stats.sec_similars"
 SOURCE_TABLE = "stats.sec_composition"
 
@@ -374,13 +377,13 @@ async def _build_for_sec_type(conn, sec_type: str, force: bool,
         # already exited(1) when no sec_type has the date, so a sec_type
         # without a snapshot at it is a logged no-op.
         if forced_date not in source_dates:
-            print(f"{tag} [DATE MODE] no '{source_type}' composition snapshot at "
-                  f"{forced_date}; nothing to do for this sec_type", flush=True)
+            logger.info(f"{tag} [DATE MODE] no '{source_type}' composition snapshot at "
+                  f"{forced_date}; nothing to do for this sec_type")
             return
         target_dates: Optional[Set[datetime.date]] = {forced_date}
     elif force:
-        print(f"\n{tag} Force mode: truncating {TABLE} "
-              f"WHERE sec_type='{sec_type}'...", flush=True)
+        logger.info(f"\n{tag} Force mode: truncating {TABLE} "
+              f"WHERE sec_type='{sec_type}'...")
         await conn.execute(
             f"DELETE FROM {TABLE} WHERE sec_type = $1", sec_type
         )
@@ -393,40 +396,40 @@ async def _build_for_sec_type(conn, sec_type: str, force: bool,
         existing_dates = {r["date"] for r in existing_rows}
         target_dates = source_dates - existing_dates
 
-    print(f"{tag} {len(source_dates)} composition snapshot dates "
-          f"in {SOURCE_TABLE} (source_type='{source_type}')", flush=True)
+    logger.info(f"{tag} {len(source_dates)} composition snapshot dates "
+          f"in {SOURCE_TABLE} (source_type='{source_type}')")
     if forced_date is not None:
-        print(f"{tag} [DATE MODE] -> recompute snapshot date {forced_date} "
-              f"(missing-date skip bypassed)", flush=True)
+        logger.info(f"{tag} [DATE MODE] -> recompute snapshot date {forced_date} "
+              f"(missing-date skip bypassed)")
     elif force:
-        print(f"{tag} force mode -> recompute all dates", flush=True)
+        logger.info(f"{tag} force mode -> recompute all dates")
     else:
-        print(f"{tag} {len(target_dates)} dates missing from {TABLE} "
-              f"(sec_type='{sec_type}')", flush=True)
+        logger.info(f"{tag} {len(target_dates)} dates missing from {TABLE} "
+              f"(sec_type='{sec_type}')")
         if not target_dates:
-            print(f"{tag} DB is up to date; nothing to do.", flush=True)
+            logger.info(f"{tag} DB is up to date; nothing to do.")
             return
 
     if not source_dates:
-        print(f"{tag} No source data; nothing to do.", flush=True)
+        logger.info(f"{tag} No source data; nothing to do.")
         return
 
     # ---- Step 2: compute top-3 similar codes + industries -----------
     dates_param = sorted(target_dates) if target_dates else sorted(source_dates)
-    print(f"{tag} Computing similar codes + similar/dissimilar industries "
-          f"for {len(dates_param)} snapshot dates...", flush=True)
+    logger.info(f"{tag} Computing similar codes + similar/dissimilar industries "
+          f"for {len(dates_param)} snapshot dates...")
     sql = _SQL_SEC_SIMILARS_TEMPLATE.format(
         src=SOURCE_TABLE, source_type=source_type, sec_type=sec_type,
     )
     rows = await conn.fetch(sql, dates_param)
     n_codes = len(set(rec_col(rows, "code")))
-    print(f"{tag} -> {len(rows):,} rows across {n_codes} {sec_type}s "
-          f"across {len(dates_param)} snapshot dates", flush=True)
+    logger.info(f"{tag} -> {len(rows):,} rows across {n_codes} {sec_type}s "
+          f"across {len(dates_param)} snapshot dates")
 
     # ---- Step 3: upsert --------------------------------------------
-    print(f"{tag} Upserting into {TABLE}...", flush=True)
+    logger.info(f"{tag} Upserting into {TABLE}...")
     if not rows:
-        print(f"{tag} -> no data to insert.", flush=True)
+        logger.info(f"{tag} -> no data to insert.")
         return
 
     # Whole-column extraction + column-major row emission (no per-row dict walks)
@@ -440,7 +443,7 @@ async def _build_for_sec_type(conn, sec_type: str, force: bool,
     via = "COPY" if n_copied > 0 and n_upserted == 0 else \
           f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
           "upsert"
-    print(f"{tag} -> upserted {total:,} rows via {via}", flush=True)
+    logger.info(f"{tag} -> upserted {total:,} rows via {via}")
 
 
 async def build_sec_similars(conn, force: bool = False,
@@ -475,7 +478,6 @@ async def build_sec_similars(conn, force: bool = False,
             union_dates, forced_date,
             source_label=f"{SOURCE_TABLE} snapshot dates",
         )
-        print(f"[SEC_SIMILARS] [DATE MODE] forcing snapshot date {forced_date}",
-              flush=True)
+        logger.info(f"[SEC_SIMILARS] [DATE MODE] forcing snapshot date {forced_date}")
     for sec_type in SEC_TYPES:
         await _build_for_sec_type(conn, sec_type, force, forced_date=forced_date)

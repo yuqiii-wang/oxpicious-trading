@@ -94,6 +94,9 @@ from builds.index.baseline.shared_weights import fetch_index_shared_weights
 from builds.index.baseline.build_daily import build_daily_df
 from builds.index.baseline.db_insert import insert_daily_to_db
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("baseline")
+
 
 # ============================================================================
 # Main pipeline
@@ -122,7 +125,7 @@ async def main():
     enforce_date_force_exclusion(args)
     forced = parse_date_arg(args.date)
     if forced is not None:
-        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
+        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
 
     # Index codes are bare 6-digit codes (e.g. 000300) — strip the
     # exchange suffix normalize_code may have appended.
@@ -141,12 +144,12 @@ async def main():
         }
     )
     if code_filter:
-        print(f"    [CODE FILTER] Restricting build to single index: {code_filter}", flush=True)
+        logger.info(f"    [CODE FILTER] Restricting build to single index: {code_filter}")
 
     # ------------------------------------------------------------------
     # 1. Connect to DB and query latest date per code
     # ------------------------------------------------------------------
-    print("\n[1/3] Connecting to database and querying latest dates …", flush=True)
+    logger.info("\n[1/3] Connecting to database and querying latest dates …")
     conn = await get_db_or_exit()
 
     try:
@@ -154,13 +157,13 @@ async def main():
             if code_filter:
                 # Single-code force mode: DELETE only this index's rows
                 # (FK children first, identity last) instead of truncating.
-                print(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code", flush=True)
+                logger.info(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code")
                 for tbl in ("stats.index_tech_stats",
                             "stats.index_valuation", "stats.index_basic_stats",
                             "stats.index_identity"):
                     await conn.execute(f"DELETE FROM {tbl} WHERE code = $1", code_filter)
             else:
-                print("    [DB] Force mode: truncating existing daily tables", flush=True)
+                logger.info("    [DB] Force mode: truncating existing daily tables")
                 # NOTE: stats.index_intraday_5min is owned by stream_sse_price.py
                 # (real-time SSE streaming) and is intentionally NOT truncated here.
                 for tbl in ("stats.index_tech_stats",
@@ -180,8 +183,8 @@ async def main():
             latest_dates = {code_filter: row["max_date"].isoformat()} \
                 if row and row["max_date"] else {}
             stale_keys: set = set()
-            print(f"    [DB] code {code_filter} latest date in stats.index_tech_stats: "
-                  f"{latest_dates.get(code_filter) or '(none)'}", flush=True)
+            logger.info(f"    [DB] code {code_filter} latest date in stats.index_tech_stats: "
+                  f"{latest_dates.get(code_filter) or '(none)'}")
         else:
             # Latest-missing-dates check: one MAX(date) per code from
             # stats.index_tech_stats (the LAST table in the insert sequence)
@@ -196,8 +199,8 @@ async def main():
                     conn, "stats.index_tech_stats", ["code"])).items()
             }
             n_dates = len(latest_dates)
-            print(f"    [DB] {n_dates:,} index codes in stats.index_tech_stats; "
-                  f"latest {max(latest_dates.values()) if latest_dates else '(none)'}", flush=True)
+            logger.info(f"    [DB] {n_dates:,} index codes in stats.index_tech_stats; "
+                  f"latest {max(latest_dates.values()) if latest_dates else '(none)'}")
 
             # Self-heal: recent estimated/NULL-OHLC rows are stale keys —
             # they are rebuilt from the local CSVs. Covers rows gap-filled
@@ -221,27 +224,25 @@ async def main():
                 stale_keys = {f"{str(r['date'])[:10]}|{str(r['code'])}"
                               for r in stale_rows}
                 if stale_keys:
-                    print(
+                    logger.info(
                         f"    [DB] refresh-estimated({args.refresh_estimated_days}d): "
                         f"{len(stale_keys):,} estimated/NULL-open keys marked for rebuild",
-                        flush=True,
                     )
                 else:
-                    print(
+                    logger.info(
                         f"    [DB] refresh-estimated({args.refresh_estimated_days}d): "
                         f"no estimated/NULL-open rows in window",
-                        flush=True,
                     )
 
         # ------------------------------------------------------------------
         # 2. Build daily frame (latest-missing-dates only)
         # ------------------------------------------------------------------
-        print("\n[2/3] Building daily history frame (latest missing dates only) …", flush=True)
+        logger.info("\n[2/3] Building daily history frame (latest missing dates only) …")
 
         # Fetch shared weights for close-price estimation of missing dates
         shared_weights = await fetch_index_shared_weights(conn)
-        print(f"    [DB] {len(shared_weights):,} index shared-weight pairs loaded "
-              f"for close estimation", flush=True)
+        logger.info(f"    [DB] {len(shared_weights):,} index shared-weight pairs loaded "
+              f"for close estimation")
 
         daily_df = await build_daily_df(conn, latest_dates,
                                         stale_keys=stale_keys,
@@ -252,8 +253,8 @@ async def main():
         # --date availability gate: no source CSV row exists at the forced
         # date (real or estimable) — same contract as forced_date_scope.
         if forced is not None and (daily_df is None or len(daily_df) == 0):
-            print(f"[FATAL] --date {forced}: no data for this date in "
-                  f"index daily source CSVs", file=sys.stderr, flush=True)
+            logger.error(f"[FATAL] --date {forced}: no data for this date in "
+                  f"index daily source CSVs")
             raise SystemExit(1)
 
         # (--code filtering is pushed down into build_daily_df / loaders —
@@ -262,10 +263,10 @@ async def main():
         # ------------------------------------------------------------------
         # 3. Insert to database
         # ------------------------------------------------------------------
-        print("\n[3/3] Inserting daily data to database …", flush=True)
+        logger.info("\n[3/3] Inserting daily data to database …")
         new_daily = await insert_daily_to_db(conn, daily_df)
 
-        print(f"    → Total new daily rows inserted: {new_daily:,}", flush=True)
+        logger.info(f"    → Total new daily rows inserted: {new_daily:,}")
 
     finally:
         await conn.close()

@@ -30,6 +30,9 @@ from builds.cross_stats.config import (
     TABLE,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Grains hosted in cross_stats — the summary mirrors ALL of them ('etf' is
 # reserved/empty today; DELETE+aggregate simply yields no rows for it).
 _SUMMARY_SEC_TYPES = ("index", "industry", "etf")
@@ -97,5 +100,4 @@ async def refresh_code_summary(conn) -> None:
             )
             await conn.execute(_REFRESH_SQL, list(_SUMMARY_SEC_TYPES))
     n = await conn.fetchval(f"SELECT count(*) FROM {SUMMARY_TABLE}")
-    print(f"    -> code summary refreshed: {n:,} rows in {SUMMARY_TABLE}",
-          flush=True)
+    logger.info(f"    -> code summary refreshed: {n:,} rows in {SUMMARY_TABLE}")

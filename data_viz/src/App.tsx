@@ -7,6 +7,7 @@ import EtfMarginPage from "@/dataviz/pages/EtfMarginPage";
 import IndexBaselinePage from "@/dataviz/pages/IndexBaselinePage";
 import StockBaselinePage from "@/dataviz/pages/StockBaselinePage";
 import FuturesPage from "@/dataviz/pages/FuturesPage";
+import NewsPage from "@/dataviz/pages/NewsPage";
 import LiveDataIndexPage from "@/live/pages/LiveDataIndexPage";
 import LiveDataEtfPage from "@/live/pages/LiveDataEtfPage";
 import LiveDataStockPage from "@/live/pages/LiveDataStockPage";
@@ -24,6 +25,8 @@ import EtfHoldingsPage from "@/analysis/pages/EtfHoldingsPage";
 import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
 import OptionsAnalysisPage from "@/analysis/pages/OptionsAnalysis";
+import SignalsPage from "@/analysis/pages/SignalsPage";
+import RecentMovementsPage from "@/analysis/pages/RecentMovements";
 import SingletonStrategyPage from "@/strategy/SingletonStrategyPage";
 import { useSecAllocLivePipeline } from "@/live/hooks/useSecAllocLivePipeline";
 import { useTradingSignalsSchedule } from "@/live/hooks/useTradingSignalsSchedule";
@@ -56,6 +59,7 @@ export default function App() {
           <Route path="/dataviz/index-baseline" element={<IndexBaselinePage />} />
           <Route path="/dataviz/stock-baseline" element={<StockBaselinePage />} />
           <Route path="/dataviz/futures" element={<FuturesPage />} />
+          <Route path="/dataviz/news" element={<NewsPage />} />
           <Route path="/analysis" element={<Navigate to="/analysis/commons" replace />} />
           <Route path="/analysis/commons" element={<CommonsPage />} />
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
@@ -72,6 +76,8 @@ export default function App() {
             path="/analysis/composites/opposite-industry-correlations"
             element={<OppositeIndustryCorrelationsPage />}
           />
+          <Route path="/analysis/signals" element={<SignalsPage />} />
+          <Route path="/analysis/signals/recent-movements" element={<RecentMovementsPage />} />
           <Route path="/strategy" element={<Navigate to="/strategy/singleton" replace />} />
           <Route
             path="/strategy/commons"

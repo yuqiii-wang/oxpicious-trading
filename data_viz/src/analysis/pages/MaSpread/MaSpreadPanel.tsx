@@ -29,15 +29,7 @@
  *      through the window's top + 2nd highs (the roof) and top + 2nd
  *      lows (the floor) from history, converging and stopping at the
  *      clicked date (two points determining a line).
- *   5. Market Hype section beneath the OHLC Window row — a "Market Hype"
- *      row label with check-in window buttons (5/20/60/120/255d,
- *      period-column aligned, same chip style as every other button
- *      row). Clicking toggles that window's light purple markArea over
- *      the chart's hyped date periods (analysis.mov_ave_market_hypes);
- *      MULTIPLE windows can be enabled at once — overlapping shades
- *      stack darker. The caption below reports each enabled window's
- *      stats and the latest date's hyped state.
- *   6. High/Low Streaks section beneath the Market Hype row — NESTED
+ *   5. High/Low Streaks section beneath the OHLC Window row — NESTED
  *      buttons: the first layer holds the band lookback periods
  *      (255/500/750/1275, period-column aligned with the OHLC row);
  *      clicking one expands a second layer of band tightness pcts
@@ -55,8 +47,17 @@
  *      date ("show before that date"; click again to return to the
  *      latest). The caption reports the window span and each side's
  *      streak span / streak count / days / extreme.
- *   7. Date-range slider at the bottom of the plot — drives all 9 pairs
+ *   6. Date-range slider at the bottom of the plot — drives all 9 pairs
  *      (they share one date axis).
+ *   7. Px-Vol States section beneath the High/Low Streaks row — the
+ *      trading amt × price-change state family (the
+ *      analysis_forecasts.px_vol_state engine, recomputed client-side from
+ *      the chart rows — the DB stores bucket aggregates only): layer 1 =
+ *      price speed (sharp/slow/flat rise/drop), layer 2 = amount state
+ *      (increasing/flat/decreasing). Picking one of each shades the
+ *      matching dates — green rise / red drop / gray flat, shade depth by
+ *      combo strength (sharp × heavy = darkest, e.g. rising price +
+ *      increasing amount = strong growth).
  *
  * Fetches its own chart data on mount via fetchMovAveSpreadChart(code, secType).
  */
@@ -81,24 +82,33 @@ import { fmtNum, fmtPct } from "@/lib/series";
 import { fetchMovAveSpreadChart, invalidateCacheForUrl } from "@/lib/api-client";
 import type { OhlcMode } from "@/lib/ohlc";
 import type {
-  ForecastKind,
   MovAveSpreadChartResponse,
   MovAveSpreadPairSeries,
 } from "@shared/types";
 import type { PanelProps } from "./types";
 import {
   OHLC_WINDOWS,
-  HYPE_WINDOWS,
   HIGH_LOW_STREAK_PERIODS,
   HIGH_LOW_STREAK_PCTS,
 } from "./constants";
 import { buildPairOption, buildAmtEnvelopeOption, type TradingAmtMode } from "./chartOption";
 import {
+  computePxVolStates,
+  pxVolMatchRuns,
+  pxVolRunsToMarkArea,
+  pxVolShadeColor,
+  pxVolAccentColor,
+  pxVolReading,
+  PX_VOL_SPEED_OPTIONS,
+  PX_VOL_VOL_OPTIONS,
+  type PxVolSpeed,
+  type PxVolVolState,
+} from "./chartOption";
+import {
   computeBreakStreaks,
   computeStreakBandWindow,
   type LongBandStreak,
 } from "@/shared/charts/streakBands";
-import { ForecastTable } from "./ForecastTable";
 
 /** Bollinger multiplier options for the top-right dropdown (0.0 … 3.0, step 0.5).
  *  0.0 = band hidden; 2.0 = standard Bollinger. */
@@ -207,18 +217,28 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // this date. Clicking the same date again clears it.
   const [ohlcClickIdx, setOhlcClickIdx] = useState<number | null>(null);
 
-  // ENABLED market-hype check-in windows (trading days) — empty = off.
-  // Selected via the Market Hype button row beneath the OHLC Window row;
-  // each enabled window shades the chart's hyped date periods light
-  // purple (multi-select — overlapping windows' shades stack darker).
-  const [hypeWindows, setHypeWindows] = useState<number[]>([]);
-
   // High/Low Streaks nested buttons: layer 1 = band lookback period
   // (trading rows, null = row off), layer 2 = band tightness pct (percent,
   // null = no shading yet). Selecting a period expands the pct layer;
   // clicking the active period again collapses it (and clears the pct).
   const [streakPeriod, setStreakPeriod] = useState<number | null>(null);
   const [streakPct, setStreakPct] = useState<number | null>(null);
+
+  // Px-Vol States nested buttons (trading amt × price change): layer 1 =
+  // price speed (sharp/slow/flat rise/drop), layer 2 = trading-amount state
+  // (increasing/flat/decreasing). Single-select per row; BOTH rows must be
+  // picked before the chart shades the matching dates. The shades' color
+  // strength follows the combo's weight (sharp × heavy = darkest).
+  const [pxVolSpeed, setPxVolSpeed] = useState<PxVolSpeed | null>(null);
+  const [pxVolVol, setPxVolVol] = useState<PxVolVolState | null>(null);
+
+  const togglePxVolSpeed = useCallback((s: PxVolSpeed) => {
+    setPxVolSpeed((prev) => (prev === s ? null : s));
+  }, []);
+
+  const togglePxVolVol = useCallback((v: PxVolVolState) => {
+    setPxVolVol((prev) => (prev === v ? null : v));
+  }, []);
 
   const toggleStreakPeriod = useCallback((w: number) => {
     setStreakPeriod((prev) => {
@@ -232,20 +252,6 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
 
   const toggleStreakPct = useCallback((p: number) => {
     setStreakPct((prev) => (prev === p ? null : p));
-  }, []);
-
-  // 2nd-plot selector (beneath the spread chart): which forecast bucket
-  // table to show — "" = none, "mov_rsi" = RSI extreme-percentile
-  // buckets, "mov_std" = Bollinger-breach buckets, "mov_gap" = N-day
-  // price-return extreme-percentile buckets, "px_vol" = σ-speed ×
-  // 量比-z state cells (analysis_forecasts).
-  const [forecastKind, setForecastKind] = useState<ForecastKind | "">("");
-
-  // Toggle one hype check-in window in the enabled set (multi-select).
-  const toggleHypeWindow = useCallback((w: number) => {
-    setHypeWindows((prev) =>
-      prev.includes(w) ? prev.filter((x) => x !== w) : [...prev, w],
-    );
   }, []);
 
   // Fetch chart data on mount and whenever the code/sec_type changes.
@@ -332,102 +338,6 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     return m;
   }, [pairs]);
 
-  // ---- Market-hype data (analysis.mov_ave_market_hypes via
-  // chartData.hypeEpisodes) ----
-  // One episode list per check-in window — each episode is a maximal run
-  // of consecutive hyped dates (startDate/endDate = first/last satisfied
-  // dates). Windows with no episodes are absent from the map.
-  const hypeEpisodes = chartData?.hypeEpisodes ?? null;
-
-  // The chart's latest date (all pairs share one date axis) — the yardstick
-  // for "currently hyped".
-  const lastChartDate =
-    pairs.length > 0 && pairs[0].rows.length > 0
-      ? pairs[0].rows[pairs[0].rows.length - 1].date
-      : null;
-
-  // Whether ANY hype data exists for this code (buttons are disabled when
-  // the table has no episodes for it — before the table's first build, or a
-  // code that was never hyped in any window).
-  const hasHypeData =
-    hypeEpisodes != null &&
-    Object.values(hypeEpisodes).some((eps) => eps.length > 0);
-
-  // Each window's CURRENT hyped state — TRUE when an episode of that window
-  // still covers the chart's latest date (a code's trailing episode extends
-  // as new hyped dates arrive, so its endDate IS the latest hyped date).
-  // Drives the "currently hyped" note in the caption under the selected
-  // hype window.
-  const latestHypeFlags = useMemo(() => {
-    const m = new Map<number, boolean>();
-    if (hypeEpisodes == null || lastChartDate == null) return m;
-    for (const w of HYPE_WINDOWS) {
-      m.set(
-        w,
-        (hypeEpisodes[w] ?? []).some((ep) => ep.endDate >= lastChartDate),
-      );
-    }
-    return m;
-  }, [hypeEpisodes, lastChartDate]);
-
-  // Stats for the caption under the hype buttons, per ENABLED window:
-  // number of hyped TRADING days in the full history (episode spans), the
-  // per-leg check-in day counts (amt / σ legs — diagnostics for which leg
-  // drove the episodes), and the last hyped date.
-  const hypeWindowStats = useMemo(() => {
-    const m = new Map<
-      number,
-      {
-        count: number;
-        amtDays: number | null;
-        stdDays: number | null;
-        lastDate: string | null;
-      }
-    >();
-    if (hypeEpisodes == null) return m;
-    for (const w of HYPE_WINDOWS) {
-      if (!hypeWindows.includes(w)) continue;
-      const eps = hypeEpisodes[w] ?? [];
-      let count = 0;
-      let amtDays = 0;
-      let stdDays = 0;
-      let lastDate: string | null = null;
-      let hasLegData = false;
-      for (const ep of eps) {
-        count += ep.hypeDays;
-        if (ep.tradingAmtHypeDays != null && ep.stdHypeDays != null) {
-          hasLegData = true;
-          amtDays += ep.tradingAmtHypeDays;
-          stdDays += ep.stdHypeDays;
-        }
-        if (lastDate == null || ep.endDate > lastDate) lastDate = ep.endDate;
-      }
-      m.set(w, {
-        count,
-        amtDays: hasLegData ? amtDays : null,
-        stdDays: hasLegData ? stdDays : null,
-        lastDate,
-      });
-    }
-    return m;
-  }, [hypeWindows, hypeEpisodes]);
-
-  // Exclusive upper bound (trading days) of a hype window's episode-span
-  // bucket: the window's own length as the minimum, the next window as the
-  // exclusive maximum (255d's tail is 5100 = the whole ±10y base).
-  const hypeBucketUpper = useCallback((w: number): number => {
-    const next =
-      HYPE_WINDOWS[HYPE_WINDOWS.indexOf(w as (typeof HYPE_WINDOWS)[number]) + 1] ??
-      5100;
-    return next - 1;
-  }, []);
-
-  // Enabled hype windows in HYPE_WINDOWS order (stable caption ordering).
-  const enabledHypeWindows = useMemo(
-    () => HYPE_WINDOWS.filter((w) => hypeWindows.includes(w)),
-    [hypeWindows],
-  );
-
   // ---- High/Low Streaks data (analysis.mov_ave_high_low_pct_streaks via
   // chartData.highLowStreaks) ----
   // FLAT per-streak list across ALL (period, pctType) combos — the nested
@@ -470,6 +380,55 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     if (streakPeriod == null || streakPct == null || streakWin == null) return null;
     return computeBreakStreaks(firstPairRows, streakWin);
   }, [firstPairRows, streakWin]);
+
+  // ---- Px-Vol States data (the analysis.mov_ave_price_vs_amt
+  // registry — the px_vol family's DATE-LEVEL source of truth; the
+  // forecast buckets in analysis_forecasts.px_vol_state store
+  // aggregates only) ----
+  // Per-date (speed, vol) state served by the chart endpoint
+  // (chartData.priceVsAmt). Falls back to a client-side replication of
+  // the registry's computation (computePxVolStates) for cached
+  // responses that predate the field. Computed lazily (either Px-Vol
+  // button picked).
+  const pxVolStates = useMemo(() => {
+    if (pxVolSpeed == null && pxVolVol == null) return null;
+    const dbDays = chartData?.priceVsAmt;
+    if (dbDays != null) {
+      const byDate = new Map(dbDays.map((d) => [d.date, d]));
+      return firstPairRows.map((r) => {
+        const d = byDate.get(r.date);
+        return d != null ? { speed: d.speed, vol: d.vol } : null;
+      });
+    }
+    return computePxVolStates(
+      firstPairRows.map((r) => r.short_value),
+      firstPairRows.map((r) => r.trading_amount),
+    );
+  }, [chartData, firstPairRows, pxVolSpeed, pxVolVol]);
+
+  // The selected combo's consecutive matched runs + the chart overlay
+  // (legend label + markArea rects shaded by the combo's strength color).
+  const pxVolRuns = useMemo(() => {
+    if (pxVolSpeed == null || pxVolVol == null || pxVolStates == null) return [];
+    return pxVolMatchRuns(
+      firstPairRows.map((r) => r.date),
+      pxVolStates,
+      pxVolSpeed,
+      pxVolVol,
+    );
+  }, [firstPairRows, pxVolStates, pxVolSpeed, pxVolVol]);
+
+  const pxVolShade = useMemo(() => {
+    if (pxVolSpeed == null || pxVolVol == null || pxVolRuns.length === 0) return null;
+    const speedOpt = PX_VOL_SPEED_OPTIONS.find((o) => o.key === pxVolSpeed);
+    const volOpt = PX_VOL_VOL_OPTIONS.find((o) => o.key === pxVolVol);
+    const label = `PxVol(${speedOpt?.label ?? pxVolSpeed}·${volOpt?.label ?? pxVolVol})`;
+    return {
+      label,
+      accent: pxVolAccentColor(pxVolSpeed),
+      data: pxVolRunsToMarkArea(pxVolRuns, pxVolShadeColor(pxVolSpeed, pxVolVol)),
+    };
+  }, [pxVolSpeed, pxVolVol, pxVolRuns]);
 
   // Clamp selectedPairIdx to valid range.
   const safePairIdx = Math.min(selectedPairIdx, Math.max(0, pairs.length - 1));
@@ -805,84 +764,6 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
             </Typography>
           )}
 
-          {/* ---- Market Hype buttons (multi-select) ----
-              Same layout and chip style as the OHLC Window row: full-width
-              row label on its own line, then the check-in window buttons
-              (5/20/60/120/255d) aligned with the pair chips' MA columns —
-              each window doubles as an episode-span BUCKET (its own length
-              as the minimum, the next window as the exclusive maximum), so
-              each calendar turmoil lands in exactly the bucket matching
-              its length. Clicking a button toggles that window's light
-              purple shading of the chart's hyped date periods — MULTIPLE
-              windows can be enabled at once and their shades overlap
-              (stacking darker where they coincide). The latest date's
-              hyped state is reported in the caption below, not on the
-              buttons. */}
-          <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
-            {/* Row label */}
-            <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
-              <Typography
-                variant="caption"
-                component="span"
-                sx={{
-                  fontSize: "0.65rem",
-                  color: hypeWindows.length > 0 ? "primary.main" : "text.secondary",
-                  fontWeight: hypeWindows.length > 0 ? 700 : 400,
-                }}
-              >
-                Market Hype
-              </Typography>
-            </Box>
-            {HYPE_WINDOWS.map((w, col) => (
-              <Chip
-                key={w}
-                label={`${w}d`}
-                size="small"
-                clickable
-                disabled={!hasHypeData}
-                color={hypeWindows.includes(w) ? "primary" : "default"}
-                variant={hypeWindows.includes(w) ? "filled" : "outlined"}
-                onClick={() => toggleHypeWindow(w)}
-                sx={{ gridColumn: col + 1, ...PERIOD_CHIP_SX }}
-              />
-            ))}
-          </Box>
-          {enabledHypeWindows.map((w) => {
-            const st = hypeWindowStats.get(w);
-            return (
-              <Typography
-                key={w}
-                variant="caption"
-                color="text.secondary"
-                sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
-              >
-                light purple shading marks hyped periods ({w}d bucket ·
-                episodes spanning {w}-{hypeBucketUpper(w)} trading days ·
-                trading amt + volatility check-ins vs their centered 20y
-                (±10y) percentiles){st ? ` · ${st.count} hyped ${
-                  st.count === 1 ? "day" : "days"
-                }` +
-                  (st.amtDays != null && st.stdDays != null
-                    ? ` (amt ${st.amtDays} · σ ${st.stdDays})`
-                    : "") +
-                  (st.lastDate ? ` · last ${st.lastDate}` : "")
-                : ""}
-                {latestHypeFlags.get(w) === true ? " · currently hyped" : ""}
-              </Typography>
-            );
-          })}
-          {!hasHypeData && (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
-            >
-              no hype data yet — run{" "}
-              <code>python -m analyze.mov_ave_spread</code> to build
-              analysis.mov_ave_market_hypes
-            </Typography>
-          )}
-
           {/* ---- High/Low Streaks buttons (nested, single-select) ----
               Same grid and chip style as the other button rows: the row
               label spans the full width, then the first layer holds the
@@ -991,6 +872,91 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
               analysis.mov_ave_high_low_pct_streaks
             </Typography>
           )}
+
+          {/* ---- Px-Vol States buttons (nested, single-select per row) ----
+              The trading amt × price-change state family — shades come
+              from the analysis.mov_ave_price_vs_amt registry (the
+              analysis_forecasts.px_vol_state engine's date-level
+              source of truth): layer 1 = the day's price SPEED
+              (sharp/slow/flat rise/drop — t = ret_1d / the code's own
+              trailing 255-row σ_ret), layer 2 = the day's
+              trading-amount STATE (increasing/flat/decreasing —
+              z-scored 量比). Picking one of each shades the chart over
+              the dates satisfying BOTH legs; the shade hue follows the
+              price direction (green rise / red drop / gray flat) and
+              its DEPTH follows the combo's strength — sharp×heavy
+              (e.g. rising price + increasing amount = strong growth)
+              shades darkest, weaker speeds / amount states lighten
+              toward pastel. */}
+          <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
+            {/* Row label */}
+            <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
+              <Typography
+                variant="caption"
+                component="span"
+                sx={{
+                  fontSize: "0.65rem",
+                  color: pxVolSpeed != null || pxVolVol != null ? "primary.main" : "text.secondary",
+                  fontWeight: pxVolSpeed != null || pxVolVol != null ? 700 : 400,
+                }}
+              >
+                Px-Vol States (Price × Amt)
+              </Typography>
+            </Box>
+            {/* Layer 1 — price speed (columns 1-5). */}
+            {PX_VOL_SPEED_OPTIONS.map((o, col) => (
+              <Chip
+                key={o.key}
+                label={o.label}
+                size="small"
+                clickable
+                color={pxVolSpeed === o.key ? "primary" : "default"}
+                variant={pxVolSpeed === o.key ? "filled" : "outlined"}
+                onClick={() => togglePxVolSpeed(o.key)}
+                sx={{ gridColumn: col + 1, ...PERIOD_CHIP_SX }}
+              />
+            ))}
+            {/* Layer 2 — trading-amount state (columns 1-3), always visible:
+                the two rows are independent picks of ONE state family, not
+                a progressive drill-down like High/Low Streaks. */}
+            {PX_VOL_VOL_OPTIONS.map((o, col) => (
+              <Chip
+                key={o.key}
+                label={o.label}
+                size="small"
+                clickable
+                color={pxVolVol === o.key ? "primary" : "default"}
+                variant={pxVolVol === o.key ? "filled" : "outlined"}
+                onClick={() => togglePxVolVol(o.key)}
+                sx={{ gridColumn: col + 1, ...PERIOD_CHIP_SX }}
+              />
+            ))}
+          </Box>
+          {(pxVolSpeed != null || pxVolVol != null) && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              {pxVolSpeed == null || pxVolVol == null
+                ? "pick both a price speed and an amount state to shade matching dates"
+                : `${PX_VOL_SPEED_OPTIONS.find((o) => o.key === pxVolSpeed)?.label} × ${
+                    PX_VOL_VOL_OPTIONS.find((o) => o.key === pxVolVol)?.label
+                  } — ${pxVolReading(pxVolSpeed, pxVolVol)} · ${
+                    pxVolRuns.length === 0
+                      ? "no matching dates"
+                      : `${pxVolRuns.reduce((a, r) => a + r.days, 0)} matching ${
+                          pxVolRuns.reduce((a, r) => a + r.days, 0) === 1 ? "day" : "days"
+                        } in ${pxVolRuns.length} run${pxVolRuns.length === 1 ? "" : "s"}` +
+                        ` · longest ${Math.max(...pxVolRuns.map((r) => r.days))}d` +
+                        ` · last ${pxVolRuns[pxVolRuns.length - 1].endDate}`
+                  } · thresholds t ±2.0σ (sharp) / ±1.26σ (slow) · z_量比 +2.0 / −0.92 · source: ${
+                    chartData?.priceVsAmt != null
+                      ? "analysis.mov_ave_price_vs_amt"
+                      : "client-side replication (registry rows not in response)"
+                  }`}
+            </Typography>
+          )}
         </Box>
       )}
 
@@ -1003,12 +969,11 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                   themeMode,
                   ohlcMode,
                   bollingerK,
-                  hypeWindows,
-                  hypeEpisodes: chartData?.hypeEpisodes ?? null,
                   longStreaks,
                   streakPeriod,
                   streakPct,
                   streakAnchorIdx: ohlcClickIdx,
+                  pxVolShade,
                 })
               : buildPairOption({
                   pair: selectedPair,
@@ -1020,12 +985,11 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                   ohlcWindow,
                   ohlcClickIdx,
                   ohlcRows: chartData?.ohlc ?? null,
-                  hypeWindows,
-                  hypeEpisodes: chartData?.hypeEpisodes ?? null,
                   longStreaks,
                   streakPeriod,
                   streakPct,
                   streakAnchorIdx: ohlcClickIdx,
+                  pxVolShade,
                 })
           }
           height={420}
@@ -1063,73 +1027,6 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
               : fmtPct(latestSummary.gap_value * 100, 2)}
           </Box>
         </Typography>
-      )}
-
-      {/* ---- 2nd plot: forecast bucket table (analysis_forecasts) ----
-          Dropdown beneath the spread chart selects which bucket family to
-          show — RSI extreme-percentile buckets (mov_rsi), Bollinger
-          breach buckets (mov_std), N-day price-return extreme-percentile
-          buckets (mov_gap), σ-speed × 量比-z state cells (px_vol) or
-          margin-buy intensity z states (margin_ratio).
-          Selecting one mounts ForecastTable,
-          which lists the latest 12 stat_months of this code's buckets
-          (config + is_market_hyped [+ excess/mean-t-z cols] → forecast
-          results). */}
-      {!loading && !error && (
-        <Box sx={{ mt: 1.5 }}>
-          <Stack direction="row" alignItems="center" spacing={1}>
-            <Typography
-              variant="caption"
-              sx={{
-                fontSize: "0.65rem",
-                color: forecastKind ? "primary.main" : "text.secondary",
-                fontWeight: forecastKind ? 700 : 400,
-              }}
-            >
-              Forecast
-            </Typography>
-            <Select
-              size="small"
-              value={forecastKind}
-              onChange={(e) => setForecastKind(e.target.value as ForecastKind | "")}
-              sx={{
-                height: 26,
-                fontSize: "0.7rem",
-                "& .MuiSelect-select": { py: 0.25, px: 1, fontSize: "0.7rem" },
-              }}
-            >
-              <MenuItem value="" sx={{ fontSize: "0.7rem", py: 0.25 }}>
-                off
-              </MenuItem>
-              <MenuItem value="mov_rsi" sx={{ fontSize: "0.7rem", py: 0.25 }}>
-                RSI extremes (mov_rsi)
-              </MenuItem>
-              <MenuItem value="mov_std" sx={{ fontSize: "0.7rem", py: 0.25 }}>
-                Bollinger breach (mov_std)
-              </MenuItem>
-              <MenuItem value="mov_gap" sx={{ fontSize: "0.7rem", py: 0.25 }}>
-                N-day return extremes (mov_gap)
-              </MenuItem>
-              <MenuItem value="px_vol" sx={{ fontSize: "0.7rem", py: 0.25 }}>
-                Price×volume states (px_vol)
-              </MenuItem>
-              <MenuItem value="margin_ratio" sx={{ fontSize: "0.7rem", py: 0.25 }}>
-                Margin-buy ratio states (margin_ratio)
-              </MenuItem>
-            </Select>
-            {forecastKind && (
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.62rem" }}>
-                tick the header dropdowns to filter buckets (month header = month selector) ·
-                mean/high/low forward change + P(&gt;1% reversal)
-              </Typography>
-            )}
-          </Stack>
-          {forecastKind && (
-            <Box sx={{ mt: 0.75 }}>
-              <ForecastTable code={code} secType={secType} kind={forecastKind} />
-            </Box>
-          )}
-        </Box>
       )}
     </ChartCard>
   );

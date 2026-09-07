@@ -42,6 +42,9 @@ setup_utf8_stdout()
 
 from analyze.options.config import GREEK_SKEW_TYPES  # noqa: E402
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("_migrate_greek_skew")
+
 TABLE: str = "analysis.options_skewness_stats"
 
 ALL_TYPES: list[str] = ["oi_moneyness", "iv_smile"] + GREEK_SKEW_TYPES
@@ -117,8 +120,7 @@ async def main() -> None:
     try:
         for ddl in DDL:
             await conn.execute(ddl)
-            print(f"    -> {ddl.split(TABLE, 1)[1].strip()[:80]} (ok)",
-                  flush=True)
+            logger.info(f"    -> {ddl.split(TABLE, 1)[1].strip()[:80]} (ok)")
         # COMMENT ON COLUMN is DDL — asyncpg cannot bind parameters to DDL,
         # so the (static, self-authored) comment text is inlined with
         # single quotes escaped defensively.
@@ -127,10 +129,10 @@ async def main() -> None:
                 f"COMMENT ON COLUMN {TABLE}.{col} IS "
                 f"'{comment.replace(chr(39), chr(39) * 2)}'"
             )
-        print(f"Migration complete: {len(DDL)} DDL statements, "
-              f"{len(COMMENTS)} comments set.", flush=True)
-        print("Next: run `python -m analyze.options` to rebuild the "
-              "greek_* rows with the new pair-level metrics.", flush=True)
+        logger.info(f"Migration complete: {len(DDL)} DDL statements, "
+              f"{len(COMMENTS)} comments set.")
+        logger.info("Next: run `python -m analyze.options` to rebuild the "
+              "greek_* rows with the new pair-level metrics.")
     finally:
         try:
             await asyncio.wait_for(conn.close(), timeout=10)

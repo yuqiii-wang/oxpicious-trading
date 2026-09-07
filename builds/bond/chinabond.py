@@ -18,6 +18,9 @@ from builds._commons.safe_parse import safe_to_datetime
 from _common.df_utils import safe_columns
 from builds.bond.paths import CHINABOND_DIR
 
+import logging
+logger = logging.getLogger(__name__)
+
 CHINABOND_TENOR_MAP = [
     ("0d",  "cb_0d"),
     ("1m",  "cb_1m"),
@@ -97,7 +100,7 @@ def build_chinabond_df(start_date=None, end_date=None, verbose=True, files=None)
         pattern = os.path.join(CHINABOND_DIR, "chinabond_bzqx_treasury_bond_*.csv")
         files = sorted(glob.glob(pattern))
     if verbose:
-        print(f"    [CHINABOND] reading {len(files)} chinabond_bzqx_treasury_bond_*.csv files", flush=True)
+        logger.info(f"    [CHINABOND] reading {len(files)} chinabond_bzqx_treasury_bond_*.csv files")
 
     all_chunks = []
     n_bad: int = 0
@@ -131,12 +134,12 @@ def build_chinabond_df(start_date=None, end_date=None, verbose=True, files=None)
 
     if verbose:
         if len(big):
-            print(f"    [CHINABOND] {len(big)} daily yield-curve records "
+            logger.info(f"    [CHINABOND] {len(big)} daily yield-curve records "
                   f"(skipped {n_bad} bad files), "
-                  f"{big['date'].min().date()} → {big['date'].max().date()}", flush=True)
+                  f"{big['date'].min().date()} → {big['date'].max().date()}")
             if "cb_1y" in safe_columns(big) and big["cb_1y"].notna().any():
-                print(f"    [CHINABOND] 1Y yield range: "
-                      f"{big['cb_1y'].min():.4f}% → {big['cb_1y'].max():.4f}%", flush=True)
+                logger.info(f"    [CHINABOND] 1Y yield range: "
+                      f"{big['cb_1y'].min():.4f}% → {big['cb_1y'].max():.4f}%")
         else:
-            print(f"    [CHINABOND] no records in range", flush=True)
+            logger.info(f"    [CHINABOND] no records in range")
     return big

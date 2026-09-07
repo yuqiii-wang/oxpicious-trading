@@ -42,6 +42,9 @@ from builds.index.baseline.paths import (
     SZSE_INDEX_CODES, VALID_CODE_RE,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Snapshot filenames carry their snapshot date: *_YYYYMMDD.csv
 _FILE_DATE_RE = re.compile(r"_(\d{8})\.csv$")
 
@@ -121,8 +124,8 @@ def load_szse_index_history(verbose: bool = True,
     trend_files = sorted(glob.glob(os.path.join(SZSE_TREND_DIR, "szse_trend_index_*.csv")))
 
     if verbose:
-        print(f"    [SZSE] {len(archive_files)} archive + {len(trend_files)} trend "
-              f"index CSVs found", flush=True)
+        logger.info(f"    [SZSE] {len(archive_files)} archive + {len(trend_files)} trend "
+              f"index CSVs found")
 
     # Column rename map: SZSE Chinese → CSIndex schema
     RENAME = {
@@ -208,12 +211,12 @@ def load_szse_index_history(verbose: bool = True,
         dfs.append(df)
 
     if n_skipped_covered and verbose:
-        print(f"    [SZSE] date-gate skipped {n_skipped_covered} snapshots "
-              f"(rows already in DB)", flush=True)
+        logger.info(f"    [SZSE] date-gate skipped {n_skipped_covered} snapshots "
+              f"(rows already in DB)")
 
     if not dfs:
         if verbose:
-            print(f"    [SZSE] No valid index data loaded", flush=True)
+            logger.info(f"    [SZSE] No valid index data loaded")
         return []
 
     combined = pd.concat(dfs, ignore_index=True)
@@ -226,8 +229,8 @@ def load_szse_index_history(verbose: bool = True,
         for code in _code_list(combined):
             sub = combined[combined["code"] == code]
             name = sub["indexName"].iloc[0] if len(sub) else ""
-            print(f"    [SZSE] {code} {name}: {len(sub)} dates "
-                  f"({_fmt_date_range(sub['date'])})", flush=True)
+            logger.info(f"    [SZSE] {code} {name}: {len(sub)} dates "
+                  f"({_fmt_date_range(sub['date'])})")
 
     # Return per-code DataFrames (same structure as CSIndex history files)
     return [combined[combined["code"] == code].copy() for code in _code_list(combined)]
@@ -274,7 +277,7 @@ def load_sse_index_history(verbose: bool = True,
     trend_files = sorted(glob.glob(os.path.join(SSE_TREND_DIR, "sse_trend_index_*.csv")))
 
     if verbose:
-        print(f"    [SSE] {len(trend_files)} trend index CSVs found", flush=True)
+        logger.info(f"    [SSE] {len(trend_files)} trend index CSVs found")
 
     if not trend_files:
         return []
@@ -358,12 +361,12 @@ def load_sse_index_history(verbose: bool = True,
         dfs.append(df)
 
     if n_skipped_covered and verbose:
-        print(f"    [SSE] date-gate skipped {n_skipped_covered} snapshots "
-              f"(rows already in DB)", flush=True)
+        logger.info(f"    [SSE] date-gate skipped {n_skipped_covered} snapshots "
+              f"(rows already in DB)")
 
     if not dfs:
         if verbose:
-            print(f"    [SSE] No valid index data loaded", flush=True)
+            logger.info(f"    [SSE] No valid index data loaded")
         return []
 
     combined = pd.concat(dfs, ignore_index=True)
@@ -373,10 +376,10 @@ def load_sse_index_history(verbose: bool = True,
     combined = combined.drop_duplicates(subset=["date", "code"], keep="last")
 
     if verbose:
-        print(f"    [SSE] loaded {len(combined)} rows across "
+        logger.info(f"    [SSE] loaded {len(combined)} rows across "
               f"{combined['date'].nunique()} dates, "
               f"{len(_code_list(combined))} codes "
-              f"({_fmt_date_range(combined['date'])})", flush=True)
+              f"({_fmt_date_range(combined['date'])})")
 
     # Return per-code DataFrames (same structure as CSIndex history files)
     return [combined[combined["code"] == code].copy() for code in _code_list(combined)]
@@ -410,8 +413,7 @@ def load_cnindex_history(verbose: bool = True,
     else:
         history_files = sorted(glob.glob(os.path.join(CNINDEX_DIR, "*_history.csv")))
     if verbose:
-        print(f"    [CNINDEX] {len(history_files)} history CSVs in {CNINDEX_DIR}",
-              flush=True)
+        logger.info(f"    [CNINDEX] {len(history_files)} history CSVs in {CNINDEX_DIR}")
     if not history_files:
         return []
 
@@ -440,7 +442,7 @@ def load_cnindex_history(verbose: bool = True,
 
     if not dfs:
         if verbose:
-            print(f"    [CNINDEX] No valid index data loaded", flush=True)
+            logger.info(f"    [CNINDEX] No valid index data loaded")
         return []
 
     if verbose:
@@ -449,7 +451,7 @@ def load_cnindex_history(verbose: bool = True,
             cols = np.asarray(df.columns).tolist()
             has_name = "indexName" in cols and len(df)
             name = df["indexName"].iloc[0] if has_name else ""
-            print(f"    [CNINDEX] {code} {name}: {len(df)} dates "
-                  f"({_fmt_date_range(df['date'])})", flush=True)
+            logger.info(f"    [CNINDEX] {code} {name}: {len(df)} dates "
+                  f"({_fmt_date_range(df['date'])})")
 
     return dfs

@@ -327,4 +327,4 @@ def run_cli(
         sleep_sec=args.sleep_sec,
         force=args.force,
     )
-    print(summary)
+    logger.info(summary)

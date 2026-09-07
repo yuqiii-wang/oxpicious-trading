@@ -23,6 +23,9 @@ from _common.build_commons import copy_or_upsert_split_async
 from _common.df_utils import safe_columns
 from builds._commons.row_emission import dates_as_date_list, records_from_frame
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def insert_daily_to_db(conn, daily_df, verbose=True):
     """Insert daily data into database tables (async).
@@ -103,6 +106,6 @@ async def insert_daily_to_db(conn, daily_df, verbose=True):
                 via = "COPY" if n_copied > 0 and n_upserted == 0 else \
                       f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
                       "upsert"
-                print(f"    [DB] Inserted {total:,} rows into {tbl} via {via}", flush=True)
+                logger.info(f"    [DB] Inserted {total:,} rows into {tbl} via {via}")
 
     return len(identity_rows)

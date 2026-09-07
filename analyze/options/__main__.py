@@ -11,8 +11,11 @@ Pipeline:
      analysis.options_expiry_identity):
        - ``--force``: DELETE all + chunked COPY-insert.
        - default:     chunked upsert (ON CONFLICT DO UPDATE on PK).
-       - Includes count_skewness_curve_crossed_spot: cumulative count of
-         sign changes in (skewness − 1) per expiry group.
+       - Includes pre-expiry contrarian metrics on the gap
+         (skewness − neutral): cross_count_20d (neutral crossings in
+         the trailing 20 sessions), days_since_last_cross (sessions
+         since the last crossing) and gap_side_share_20d (share of the
+         trailing 20 sessions at/above neutral) per expiry group.
   2. Compute per-expiry-group OI stats and write to
      analysis.options_oi_stats (same PK/FK pattern).
   3. Compute per-expiry-group options wall zones (strength-scored
@@ -121,6 +124,10 @@ from analyze.options.compute import (  # noqa: E402
     GREEK_SKEW_COMPUTERS,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+
+logger = setup_logging("options")
+
 
 _CHUNK_SIZE = 10000
 
@@ -153,9 +160,8 @@ async def _fk_filter(conn, result_df: pd.DataFrame) -> pd.DataFrame:
     n_before = len(result_df)
     result_df = result_df.loc[mask].reset_index(drop=True)
     if len(result_df) != n_before:
-        print(f"  FK filter: dropped {n_before - len(result_df):,} of "
-              f"{n_before:,} rows not in options_expiry_identity",
-              flush=True)
+        logger.info(f"  FK filter: dropped {n_before - len(result_df):,} of "
+              f"{n_before:,} rows not in options_expiry_identity")
     return result_df
 
 
@@ -181,7 +187,7 @@ async def _write_rows(
         Number of rows written.
     """
     if result_df.empty:
-        print("  no rows to write", flush=True)
+        logger.info("  no rows to write")
         return 0
 
     # ---- FK safety: drop rows absent from options_expiry_identity ------
@@ -204,17 +210,17 @@ async def _write_rows(
 
     if force:
         if force_delete_where:
-            print(f"  Deleting rows ({force_delete_where}) from "
-                  f"{table_name}...", flush=True)
+            logger.info(f"  Deleting rows ({force_delete_where}) from "
+                  f"{table_name}...")
             await conn.execute(
                 f"DELETE FROM {table_name} WHERE {force_delete_where}"
             )
         else:
-            print(f"  Deleting existing rows from {table_name}...", flush=True)
+            logger.info(f"  Deleting existing rows from {table_name}...")
             await conn.execute(f"DELETE FROM {table_name}")
     else:
         if target_pairs is not None and len(target_pairs) == 0:
-            print("  up to date; nothing to insert.", flush=True)
+            logger.info("  up to date; nothing to insert.")
             return 0
 
         if target_pairs is not None:
@@ -231,18 +237,18 @@ async def _write_rows(
             )
             mask = pd.MultiIndex.from_frame(pk_df).isin(target_pairs)
             result_df = result_df.loc[mask].reset_index(drop=True)
-            print(f"  Incremental filter: {len(result_df):,} of "
-                  f"{n_before:,} rows are in target pairs", flush=True)
+            logger.info(f"  Incremental filter: {len(result_df):,} of "
+                  f"{n_before:,} rows are in target pairs")
 
     if result_df.empty:
-        print("  no rows to write after filter", flush=True)
+        logger.info("  no rows to write after filter")
         return 0
 
     n_chunks = (len(result_df) + _CHUNK_SIZE - 1) // _CHUNK_SIZE
     total = 0
 
-    print(f"  {'COPY' if force else 'Upsert'}ing {len(result_df):,} rows "
-          f"in {n_chunks} chunks...", flush=True)
+    logger.info(f"  {'COPY' if force else 'Upsert'}ing {len(result_df):,} rows "
+          f"in {n_chunks} chunks...")
 
     for i in range(n_chunks):
         chunk = result_df.iloc[
@@ -270,11 +276,11 @@ async def _write_rows(
             f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else
             "upsert"
         )
-        print(f"    chunk {i + 1}/{n_chunks}: "
+        logger.info(f"    chunk {i + 1}/{n_chunks}: "
               f"{via} {n:,} rows "
-              f"(cumulative {total:,})", flush=True)
+              f"(cumulative {total:,})")
 
-    print(f"  wrote {total:,} rows total", flush=True)
+    logger.info(f"  wrote {total:,} rows total")
     return total
 
 
@@ -290,20 +296,20 @@ async def _run_expiry_identity_pipeline(
 
     Returns number of rows written.
     """
-    print("\n  Populating expiry identity table...", flush=True)
+    logger.info("\n  Populating expiry identity table...")
 
     if force:
-        print("    Force mode: clearing dependent tables first...", flush=True)
+        logger.info("    Force mode: clearing dependent tables first...")
         await conn.execute("DELETE FROM analysis.options_walls")
         await conn.execute("DELETE FROM analysis.options_skewness_stats")
         await conn.execute("DELETE FROM analysis.options_iv_skew_stats")
         await conn.execute("DELETE FROM analysis.options_oi_stats")
 
     rows = await fetch_expiry_identity_rows(conn, sec_type)
-    print(f"    {len(rows):,} distinct expiry groups", flush=True)
+    logger.info(f"    {len(rows):,} distinct expiry groups")
 
     if not rows:
-        print("    no data; skipping.", flush=True)
+        logger.info("    no data; skipping.")
         return 0
 
     # Create DataFrame from tuples (date objects already materialized in
@@ -327,8 +333,7 @@ async def _run_expiry_identity_pipeline(
             pass
         target_pairs = set(rows) - existing
         if len(target_pairs) == 0:
-            print("    -> expiry_identity is up to date; nothing to do.",
-                  flush=True)
+            logger.info("    -> expiry_identity is up to date; nothing to do.")
             return 0
 
     n = await _write_rows(
@@ -353,31 +358,29 @@ async def _run_skewness_pipeline(
     """
     target_pairs: set | None = None
     if not force:
-        print("\n  Detecting missing expiry groups "
-              "for skewness stats (oi_moneyness)...", flush=True)
+        logger.info("\n  Detecting missing expiry groups "
+              "for skewness stats (oi_moneyness)...")
         missing_list = await fetch_missing_skewness_groups(
             conn, sec_type, skew_type=SKEW_TYPE_MONEYNESS,
         )
         target_pairs = {(*t, SKEW_TYPE_MONEYNESS) for t in missing_list}
-        print(f"    -> {len(target_pairs):,} missing expiry groups",
-              flush=True)
+        logger.info(f"    -> {len(target_pairs):,} missing expiry groups")
         if len(target_pairs) == 0:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return 0
 
-    print("\n  [1/3] Fetching option contract rows for skewness...",
-          flush=True)
+    logger.info("\n  [1/3] Fetching option contract rows for skewness...")
     df = await fetch_options_skewness_rows(conn, sec_type)
-    print(f"    {len(df):,} contract-date rows", flush=True)
+    logger.info(f"    {len(df):,} contract-date rows")
     if df.empty:
-        print("    no data; skipping.", flush=True)
+        logger.info("    no data; skipping.")
         return 0
 
-    print("\n  [2/3] Computing skewness rolling stats...", flush=True)
+    logger.info("\n  [2/3] Computing skewness rolling stats...")
     result_df = compute_options_skewness_stats(df)
-    print(f"    {len(result_df):,} expiry-group result rows", flush=True)
+    logger.info(f"    {len(result_df):,} expiry-group result rows")
 
-    print("\n  [3/3] Writing to DB...", flush=True)
+    logger.info("\n  [3/3] Writing to DB...")
     n = await _write_rows(
         conn, result_df,
         table_name=SKEWNESS_TABLE_NAME,
@@ -388,8 +391,7 @@ async def _run_skewness_pipeline(
         round_to=4,
     )
 
-    print("\n  -> Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info("\n  -> Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=SKEWNESS_ANALYSIS_NAME,
@@ -415,32 +417,30 @@ async def _run_oi_pipeline(
 
     target_pairs: set | None = None
     if not force:
-        print("\n  Detecting missing expiry groups "
-              "for OI stats...", flush=True)
+        logger.info("\n  Detecting missing expiry groups "
+              "for OI stats...")
         # Same detection as skewness, but checked against the OI table
         missing_list = await fetch_missing_skewness_groups(
             conn, sec_type, table_name=OI_TABLE_NAME,
         )
         target_pairs = set(missing_list)
-        print(f"    -> {len(target_pairs):,} missing expiry groups",
-              flush=True)
+        logger.info(f"    -> {len(target_pairs):,} missing expiry groups")
         if len(target_pairs) == 0:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return 0
 
-    print("\n  [1/3] Fetching option contract rows for OI...",
-          flush=True)
+    logger.info("\n  [1/3] Fetching option contract rows for OI...")
     df = await fetch_oi_rows(conn, sec_type)
-    print(f"    {len(df):,} contract-date rows", flush=True)
+    logger.info(f"    {len(df):,} contract-date rows")
     if df.empty:
-        print("    no data; skipping.", flush=True)
+        logger.info("    no data; skipping.")
         return 0
 
-    print("\n  [2/3] Computing OI put/call ratio correlation stats...", flush=True)
+    logger.info("\n  [2/3] Computing OI put/call ratio correlation stats...")
     result_df = compute_options_oi_stats(df)
-    print(f"    {len(result_df):,} expiry-group result rows", flush=True)
+    logger.info(f"    {len(result_df):,} expiry-group result rows")
 
-    print("\n  [3/3] Writing to DB...", flush=True)
+    logger.info("\n  [3/3] Writing to DB...")
     n = await _write_rows(
         conn, result_df,
         table_name=OI_TABLE_NAME,
@@ -450,8 +450,7 @@ async def _run_oi_pipeline(
         pk_columns=EXPIRY_PK_COLUMNS,
     )
 
-    print("\n  -> Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info("\n  -> Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=OI_ANALYSIS_NAME,
@@ -478,29 +477,27 @@ async def _run_walls_pipeline(
 
     target_pairs: set | None = None
     if not force:
-        print("\n  Detecting missing expiry groups "
-              "for walls...", flush=True)
+        logger.info("\n  Detecting missing expiry groups "
+              "for walls...")
         missing_list = await fetch_missing_walls_groups(conn, sec_type)
         target_pairs = set(missing_list)
-        print(f"    -> {len(target_pairs):,} missing expiry-group+wall-type pairs",
-              flush=True)
+        logger.info(f"    -> {len(target_pairs):,} missing expiry-group+wall-type pairs")
         if len(target_pairs) == 0:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return 0
 
-    print("\n  [1/3] Fetching option contract rows for walls...",
-          flush=True)
+    logger.info("\n  [1/3] Fetching option contract rows for walls...")
     df = await fetch_options_walls_rows(conn, sec_type)
-    print(f"    {len(df):,} contract-date rows", flush=True)
+    logger.info(f"    {len(df):,} contract-date rows")
     if df.empty:
-        print("    no data; skipping.", flush=True)
+        logger.info("    no data; skipping.")
         return 0
 
-    print("\n  [2/3] Computing options wall levels...", flush=True)
+    logger.info("\n  [2/3] Computing options wall levels...")
     result_df = compute_options_walls(df)
-    print(f"    {len(result_df):,} expiry-group wall result rows", flush=True)
+    logger.info(f"    {len(result_df):,} expiry-group wall result rows")
 
-    print("\n  [3/3] Writing to DB...", flush=True)
+    logger.info("\n  [3/3] Writing to DB...")
     n = await _write_rows(
         conn, result_df,
         table_name=WALLS_TABLE_NAME,
@@ -511,8 +508,7 @@ async def _run_walls_pipeline(
         round_to=6,  # mass_share / strength_score die at 2 decimals
     )
 
-    print("\n  -> Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info("\n  -> Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=WALLS_ANALYSIS_NAME,
@@ -541,41 +537,38 @@ async def _run_iv_skew_pipeline(
     target_pairs: set | None = None
     corr_target_pairs: set | None = None
     if not force:
-        print("\n  Detecting missing expiry groups "
-              "for IV skew stats...", flush=True)
+        logger.info("\n  Detecting missing expiry groups "
+              "for IV skew stats...")
         missing_list = await fetch_missing_iv_skew_groups(conn, sec_type)
         target_pairs = set(missing_list)
-        print(f"    -> {len(target_pairs):,} missing expiry groups",
-              flush=True)
+        logger.info(f"    -> {len(target_pairs):,} missing expiry groups")
 
-        print("  Detecting missing expiry groups for iv_smile "
-              "skewness stats...", flush=True)
+        logger.info("  Detecting missing expiry groups for iv_smile "
+              "skewness stats...")
         corr_missing = await fetch_missing_iv_skew_groups(
             conn, sec_type,
             table_name=SKEWNESS_TABLE_NAME,
             skew_type=SKEW_TYPE_IV_SMILE,
         )
         corr_target_pairs = {(*t, SKEW_TYPE_IV_SMILE) for t in corr_missing}
-        print(f"    -> {len(corr_target_pairs):,} missing expiry groups",
-              flush=True)
+        logger.info(f"    -> {len(corr_target_pairs):,} missing expiry groups")
 
         if len(target_pairs) == 0 and len(corr_target_pairs) == 0:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return 0
 
-    print("\n  [1/4] Fetching option contract rows for IV skew...",
-          flush=True)
+    logger.info("\n  [1/4] Fetching option contract rows for IV skew...")
     df = await fetch_iv_skew_rows(conn, sec_type)
-    print(f"    {len(df):,} contract-date rows", flush=True)
+    logger.info(f"    {len(df):,} contract-date rows")
     if df.empty:
-        print("    no data; skipping.", flush=True)
+        logger.info("    no data; skipping.")
         return 0
 
-    print("\n  [2/4] Computing IV skew stats...", flush=True)
+    logger.info("\n  [2/4] Computing IV skew stats...")
     result_df = compute_options_iv_skew_stats(df)
-    print(f"    {len(result_df):,} expiry-group result rows", flush=True)
+    logger.info(f"    {len(result_df):,} expiry-group result rows")
 
-    print("\n  [3/4] Writing IV skew stats to DB...", flush=True)
+    logger.info("\n  [3/4] Writing IV skew stats to DB...")
     n = await _write_rows(
         conn, result_df,
         table_name=IV_SKEW_TABLE_NAME,
@@ -586,10 +579,9 @@ async def _run_iv_skew_pipeline(
     )
 
     # ---- iv_smile skewness rolling stats (shared skewness table) -------
-    print("\n  [4/4] Computing iv_smile skewness rolling stats...",
-          flush=True)
+    logger.info("\n  [4/4] Computing iv_smile skewness rolling stats...")
     corr_df = compute_options_iv_smile_corr_stats(df)
-    print(f"    {len(corr_df):,} expiry-group result rows", flush=True)
+    logger.info(f"    {len(corr_df):,} expiry-group result rows")
     await _write_rows(
         conn, corr_df,
         table_name=SKEWNESS_TABLE_NAME,
@@ -601,8 +593,7 @@ async def _run_iv_skew_pipeline(
         round_to=4,
     )
 
-    print("\n  -> Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info("\n  -> Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=IV_SKEW_ANALYSIS_NAME,
@@ -635,34 +626,33 @@ async def _run_greek_skew_pipeline(
     if not force:
         for g in GREEK_NAMES:
             skew_type = f"greek_{g}"
-            print(f"\n  Detecting missing expiry groups for {skew_type} "
-                  f"skewness stats...", flush=True)
+            logger.info(f"\n  Detecting missing expiry groups for {skew_type} "
+                  f"skewness stats...")
             missing = await fetch_missing_iv_skew_groups(
                 conn, sec_type,
                 table_name=SKEWNESS_TABLE_NAME,
                 skew_type=skew_type,
             )
             target_pairs_by_greek[g] = {(*t, skew_type) for t in missing}
-            print(f"    -> {len(target_pairs_by_greek[g]):,} missing "
-                  f"expiry groups", flush=True)
+            logger.info(f"    -> {len(target_pairs_by_greek[g]):,} missing "
+                  f"expiry groups")
         if all(len(tp) == 0 for tp in target_pairs_by_greek.values()):
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return 0
 
-    print("\n  [1/2] Fetching option contract rows for greek skew...",
-          flush=True)
+    logger.info("\n  [1/2] Fetching option contract rows for greek skew...")
     df = await fetch_iv_skew_rows(conn, sec_type)
-    print(f"    {len(df):,} contract-date rows", flush=True)
+    logger.info(f"    {len(df):,} contract-date rows")
     if df.empty:
-        print("    no data; skipping.", flush=True)
+        logger.info("    no data; skipping.")
         return 0
 
     for gi, g in enumerate(GREEK_NAMES, start=2):
         skew_type = f"greek_{g}"
-        print(f"\n  [{gi}/{len(GREEK_NAMES) + 1}] Computing {skew_type} "
-              f"rolling stats...", flush=True)
+        logger.info(f"\n  [{gi}/{len(GREEK_NAMES) + 1}] Computing {skew_type} "
+              f"rolling stats...")
         result_df = GREEK_SKEW_COMPUTERS[g](df)
-        print(f"    {len(result_df):,} expiry-group result rows", flush=True)
+        logger.info(f"    {len(result_df):,} expiry-group result rows")
 
         n = await _write_rows(
             conn, result_df,
@@ -676,8 +666,7 @@ async def _run_greek_skew_pipeline(
         )
         total += n
 
-    print("\n  -> Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info("\n  -> Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=SKEWNESS_ANALYSIS_NAME,
@@ -721,46 +710,46 @@ async def main() -> None:
     conn = await get_db_connection_async()
     try:
         # ---- Pipeline 0: populate options_expiry_identity (FK lookup) -----
-        print("\n" + "=" * 60)
-        print("PIPELINE 0: options_expiry_identity (FK lookup)")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("PIPELINE 0: options_expiry_identity (FK lookup)")
+        logger.info("=" * 60)
         n_id = await _run_expiry_identity_pipeline(conn, force, sec_type)
 
         # ---- Pipeline 1: options_skewness_stats --------------------------
-        print("\n" + "=" * 60)
-        print("PIPELINE 1: options_skewness_stats (expiry-group skewness)")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("PIPELINE 1: options_skewness_stats (expiry-group skewness)")
+        logger.info("=" * 60)
         n1 = await _run_skewness_pipeline(conn, force, sec_type)
 
         # ---- Pipeline 2: options_oi_stats -------------------------------
-        print("\n" + "=" * 60)
-        print("PIPELINE 2: options_oi_stats (expiry-group OI)")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("PIPELINE 2: options_oi_stats (expiry-group OI)")
+        logger.info("=" * 60)
         n2 = await _run_oi_pipeline(conn, force, sec_type)
 
         # ---- Pipeline 3: options_walls ----------------------------------
-        print("\n" + "=" * 60)
-        print("PIPELINE 3: options_walls (zone wall zones)")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("PIPELINE 3: options_walls (zone wall zones)")
+        logger.info("=" * 60)
         n3 = await _run_walls_pipeline(conn, force, sec_type)
 
         # ---- Pipeline 4: options_iv_skew_stats --------------------------
-        print("\n" + "=" * 60)
-        print("PIPELINE 4: options_iv_skew_stats (IV-based skew)")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("PIPELINE 4: options_iv_skew_stats (IV-based skew)")
+        logger.info("=" * 60)
         n4 = await _run_iv_skew_pipeline(conn, force, sec_type)
 
         # ---- Pipeline 5: greek skew (options_skewness_stats) -----------
-        print("\n" + "=" * 60)
-        print("PIPELINE 5: options_skewness_stats (greek_* skew types)")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("PIPELINE 5: options_skewness_stats (greek_* skew types)")
+        logger.info("=" * 60)
         n5 = await _run_greek_skew_pipeline(conn, force, sec_type)
 
         total = n_id + n1 + n2 + n3 + n4 + n5
-        print(f"\n  TOTAL: {total:,} rows written "
+        logger.info(f"\n  TOTAL: {total:,} rows written "
               f"(expiry_identity={n_id:,}, "
               f"skewness={n1:,}, oi={n2:,}, walls={n3:,}, "
-              f"iv_skew={n4:,}, greek_skew={n5:,})", flush=True)
+              f"iv_skew={n4:,}, greek_skew={n5:,})")
         print_wall_time(t0)
     finally:
         try:

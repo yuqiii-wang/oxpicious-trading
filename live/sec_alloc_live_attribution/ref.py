@@ -27,6 +27,9 @@ from _common.build_commons import bulk_upsert_async
 from .config import REF_TABLE
 from .fetch import fetch_ref_members
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Columns of the ref rows handed to bulk_upsert_async (must match the table).
 _REF_ROW_COLUMNS = (
     "benchmark_code",
@@ -172,10 +175,9 @@ async def ensure_ref(
         total += n
         if n == 0:
             zero_ref_pairs.append((bench, dt))
-        print(
+        logger.info(
             f"    [ref {idx}/{len(missing_pairs)}] {bench} @ {dt}: "
             f"{n:,} ref rows ({time.time() - t_pair:.1f}s)",
-            flush=True,
         )
     return total, zero_ref_pairs
 

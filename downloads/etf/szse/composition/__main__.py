@@ -981,4 +981,4 @@ if __name__ == "__main__":
         download_mode=args.download_mode,
         force_month_start=args.force_month_start,
     )
-    print(result)
+    logger.info(result)

@@ -407,8 +407,17 @@ def read_csv_gpu_safe(
                 # compression=None: the buffer is our own uncompressed
                 # bytes; leaving 'infer' makes cudf warn per parse
                 # ("Auto detection of compression type … buffer types").
-                df = pd.read_csv(buf, dtype=dtype, keep_default_na=False,
-                                 na_values=[""], compression=None)
+                # Raw bytes take the cudf GPU path; host pandas cannot
+                # consume bytes — retry wrapped so --code builds keep the
+                # pre-filtered fast path on CPU-only hosts.
+                try:
+                    df = pd.read_csv(buf, dtype=dtype,
+                                     keep_default_na=False,
+                                     na_values=[""], compression=None)
+                except TypeError:
+                    df = pd.read_csv(io.BytesIO(buf), dtype=dtype,
+                                     keep_default_na=False,
+                                     na_values=[""], compression=None)
                 return _strip_bom_columns(df)
             except Exception:
                 pass  # unsafe/odd parse → fall through to the full-path read
@@ -693,9 +702,16 @@ def read_build_csv(
             # silences cudf's per-parse AUTO-detection warning. A parse
             # failure here is NOT silently absorbed into a full read:
             # that would mask a broken loader and silently 100x the I/O.
-            return _strip_bom_columns(
-                pd.read_csv(buf, dtype=dtype, compression=None,
-                            **read_kwargs))
+            # Raw bytes take the cudf GPU path; host pandas cannot consume
+            # bytes — retry BytesIO-wrapped so --code builds keep the
+            # pre-filtered fast path on CPU-only hosts.
+            try:
+                parsed = pd.read_csv(buf, dtype=dtype, compression=None,
+                                     **read_kwargs)
+            except TypeError:
+                parsed = pd.read_csv(io.BytesIO(buf), dtype=dtype,
+                                     compression=None, **read_kwargs)
+            return _strip_bom_columns(parsed)
 
     df = pd.read_csv(path, dtype=dtype, **read_kwargs)
     return _strip_bom_columns(df)

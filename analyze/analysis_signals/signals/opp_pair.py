@@ -96,7 +96,7 @@ def compute_opp_pair_signals(
         g = grid_ord[lo:hi]
         in_month = _in_month_rows(g, mw.stat_month)
 
-        rows: list[dict] = []
+        dedup: dict = {}
         for w in sorted(mats):
             # ConfirmMap keyed by the gate's matrix key ("pair_{W}" —
             # the same convention as rsi_{W} / ma_{W}); the emitted
@@ -141,7 +141,7 @@ def compute_opp_pair_signals(
                 b = b_ids[i]
                 v = float(TR[t, a_idx[i]])
                 score = float(scores[i]) if np.isfinite(scores[i]) else None
-                rows.append({
+                row = {
                     "code": b,
                     "sec_type": OPP_PAIR_SEC_TYPE,
                     "signal_type": SIGNAL_TYPE_OPP_PAIR,
@@ -173,6 +173,17 @@ def compute_opp_pair_signals(
                         "pair_score": round6(score)
                         if score is not None else None,
                     }),
-                })
+                }
+                # One row per (target industry, sub_type, date): several
+                # confirmed SOURCE industries can trigger for the SAME
+                # target on the same day, and the PK
+                # (code, sec_type, signal_type, signal_sub_type, date)
+                # admits only one — keep the strongest trigger (the most
+                # negative source trend; the side-'bottom' reversal bar).
+                key = (b, sub, row["date"])
+                prev = dedup.get(key)
+                if prev is None or v < prev[0]:
+                    dedup[key] = (v, row)
+        rows = [row for _v, row in dedup.values()]
         if rows:
             yield mw.stat_month, rows

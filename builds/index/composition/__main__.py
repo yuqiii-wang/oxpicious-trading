@@ -64,6 +64,9 @@ from builds.index.composition import (
     available_snapshot_dates,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("composition")
+
 
 async def main():
     import argparse
@@ -81,7 +84,7 @@ async def main():
     enforce_date_force_exclusion(args)
     forced = parse_date_arg(args.date)
     if forced is not None:
-        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
+        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
         forced_date_scope(
             available_snapshot_dates(),
             forced,
@@ -102,13 +105,13 @@ async def main():
     # ------------------------------------------------------------------
     # (1) Connect to DB and find existing (code, snapshot_date) pairs
     # ------------------------------------------------------------------
-    print("\n[1/4] Connecting to database and detecting missing snapshots …", flush=True)
+    logger.info("\n[1/4] Connecting to database and detecting missing snapshots …")
     conn = await get_db_or_exit()
 
     try:
         if args.force:
-            print("    [DB] Force mode: deleting existing index composition rows "
-                  "(source_type='index', ETF rows preserved)", flush=True)
+            logger.info("    [DB] Force mode: deleting existing index composition rows "
+                  "(source_type='index', ETF rows preserved)")
             await conn.execute(
                 "DELETE FROM stats.sec_composition WHERE source_type = 'index'"
             )
@@ -121,28 +124,28 @@ async def main():
             existing_comp_keys = {
                 (r["code"], r["snapshot_date"]) for r in comp_existing_rows
             }
-            print(f"    [DB] {len(existing_comp_keys):,} existing (code, snapshot_date) pairs "
-                  f"in stats.sec_composition (source_type='index')", flush=True)
+            logger.info(f"    [DB] {len(existing_comp_keys):,} existing (code, snapshot_date) pairs "
+                  f"in stats.sec_composition (source_type='index')")
 
         # ------------------------------------------------------------------
         # (2) Build composition rows from CSI + SZSE CSVs
         # ------------------------------------------------------------------
-        print("\n[2/4] Building CSI index composition rows …", flush=True)
+        logger.info("\n[2/4] Building CSI index composition rows …")
         index_comp_rows = await build_index_composition_rows(
             conn=conn, force=args.force, forced_date=forced)
 
-        print("\n[3/4] Building SZSE index composition rows …", flush=True)
+        logger.info("\n[3/4] Building SZSE index composition rows …")
         szse_index_comp_rows = await build_szse_index_composition_rows(
             conn=conn, force=args.force, forced_date=forced)
 
         all_rows = index_comp_rows + szse_index_comp_rows
-        print(f"\n    → total: {len(all_rows):,} index composition rows "
-              f"({len(index_comp_rows):,} CSI + {len(szse_index_comp_rows):,} SZSE)", flush=True)
+        logger.info(f"\n    → total: {len(all_rows):,} index composition rows "
+              f"({len(index_comp_rows):,} CSI + {len(szse_index_comp_rows):,} SZSE)")
 
         # ------------------------------------------------------------------
         # (3) Filter to missing (code, snapshot_date) pairs and insert
         # ------------------------------------------------------------------
-        print("\n[4/4] Filtering to missing pairs and inserting …", flush=True)
+        logger.info("\n[4/4] Filtering to missing pairs and inserting …")
         # --date mode bypasses the missing-pair filter: every row built from
         # the forced snapshot date is (re)written via the upsert path.
         if not args.force and existing_comp_keys and not forced:
@@ -152,10 +155,10 @@ async def main():
                 if (r["code"], r["snapshot_date"]) not in existing_comp_keys
             ]
             n_skipped = n_before - len(all_rows)
-            print(f"    [DB] {len(all_rows):,} rows to insert "
-                  f"(skipped {n_skipped:,} existing)", flush=True)
+            logger.info(f"    [DB] {len(all_rows):,} rows to insert "
+                  f"(skipped {n_skipped:,} existing)")
         else:
-            print(f"    [DB] {len(all_rows):,} rows to insert", flush=True)
+            logger.info(f"    [DB] {len(all_rows):,} rows to insert")
 
         if all_rows:
             n_copied, n_upserted = await copy_or_upsert_split_async(
@@ -167,9 +170,9 @@ async def main():
             via = "COPY" if n_copied > 0 and n_upserted == 0 else \
                   f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
                   "upsert"
-            print(f"    [DB] Inserted {total:,} rows into stats.sec_composition via {via}", flush=True)
+            logger.info(f"    [DB] Inserted {total:,} rows into stats.sec_composition via {via}")
         else:
-            print(f"    [DB] No new rows to insert into stats.sec_composition", flush=True)
+            logger.info(f"    [DB] No new rows to insert into stats.sec_composition")
 
     finally:
         await conn.close()

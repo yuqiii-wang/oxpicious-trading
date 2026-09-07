@@ -11,10 +11,8 @@ and RESULT tables:
 
   - mov_std: per (sec_type, code, stat_month, ma_window, k, side,
     is_market_hyped) the Bollinger-breach days (price beyond
-    ma_{W} ± k·std_{W}days) within the same window (motivation:
-    breach magnitude mean_excess_close / mean_excess_max /
-    max_excess_max; band inputs join from
-    analysis.mov_ave_spreads_detail / stats.*_tech_stats).
+    ma_{W} ± k·std_{W}days) within the same window (band inputs join
+    from analysis.mov_ave_spreads_detail / stats.*_tech_stats).
 
   - mov_gap: per (sec_type, code, stat_month, gap_window, side, pct,
     is_market_hyped) the days whose gap_{W}days (W-day price return,
@@ -72,7 +70,7 @@ DESCRIPTION_RSI = (
     "with cooldown suppression: after an accepted trigger day the next "
     "5 trading days (PK member cooldown_days) cannot join the bucket. "
     "Buckets are split by PK member is_market_hyped (ANY bucket date "
-    "inside one of the code's analysis.mov_ave_market_hypes episodes); "
+    "inside one of the code's stats.mov_ave_market_hypes episodes); "
     "result data in analysis_forecasts.forecast_results via "
     "forecast_id: mean forward fractional changes at the "
     "next-day, 5d, 20d and 60d horizons; close-based max/min forward "
@@ -104,12 +102,9 @@ DESCRIPTION_STD = (
     "stats.*_tech_stats and std_{W}days from "
     "analysis.mov_ave_spreads_detail. Buckets are split by PK member "
     "is_market_hyped (ANY breach date inside one of the code's "
-    "analysis.mov_ave_market_hypes episodes), with cooldown suppression: "
+    "stats.mov_ave_market_hypes episodes), with cooldown suppression: "
     "after an accepted breach day the next 5 trading days (PK member "
-    "cooldown_days) cannot join the bucket. Breach magnitude cols: "
-    "mean_excess_close = mean fractional close excursion beyond the "
-    "band; mean_excess_max / max_excess_max = mean / max fractional "
-    "intraday excursion, high for upper / low for lower breaches; result "
+    "cooldown_days) cannot join the bucket. Result "
     "data in analysis_forecasts.forecast_results via forecast_id: mean "
     "forward fractional changes at the next-day, 5d, 20d and 60d "
     "horizons; close-based max/min forward changes and the "
@@ -143,7 +138,7 @@ DESCRIPTION_GAP = (
     "cooldown suppression: after an accepted trigger day the next 5 "
     "trading days (PK member cooldown_days) cannot join the bucket. "
     "Buckets are split by PK member is_market_hyped (ANY bucket date "
-    "inside one of the code's analysis.mov_ave_market_hypes episodes); "
+    "inside one of the code's stats.mov_ave_market_hypes episodes); "
     "result data in analysis_forecasts.forecast_results via "
     "forecast_id: mean forward fractional changes at the next-day, 5d, "
     "20d and 60d horizons; close-based max/min forward changes and the "
@@ -432,6 +427,17 @@ PX_VOL_SPEED_SIDE: dict[str, str] = {
     "sharp_up": "top", "slow_up": "top",
     "flat": "flat",
     "slow_dn": "bottom", "sharp_dn": "bottom",
+}
+
+# Speed / state name → ordinal (the (T, C) state matrices' int encoding,
+# see wide.build_px_vol_state_matrices — the scatter of the
+# analysis.mov_ave_price_vs_amt registry rows). The -1 sentinel ("no
+# valid state that day") is assigned at matrix-build time.
+PX_VOL_SPEED_ORD: dict[str, int] = {
+    s: i for i, s in enumerate(PX_VOL_SPEEDS)
+}
+PX_VOL_VOL_ORD: dict[str, int] = {
+    v: i for i, v in enumerate(PX_VOL_VOL_STATES)
 }
 
 # px_vol_state columns in write order (bucket keys + side + recorded

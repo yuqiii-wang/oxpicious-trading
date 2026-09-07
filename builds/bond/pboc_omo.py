@@ -17,6 +17,9 @@ from builds.bond.instruments import (
 )
 from builds.bond.paths import PBOC_INSTRUMENTS_CSV
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def _tenor_days_vec(tenor_col: pd.Series) -> pd.Series:
     """Vectorized parse_duration_to_days over a str column ('7D','6M','1Y').
@@ -49,18 +52,18 @@ def build_pboc_omo_df(start_date=None, end_date=None, verbose=True):
         omo_all_rates, omo_all_tenors, omo_all_quantities, omo_dur_qty_pairs
     """
     if verbose:
-        print(f"    [PBOC-OMO] reading {PBOC_INSTRUMENTS_CSV}", flush=True)
+        logger.info(f"    [PBOC-OMO] reading {PBOC_INSTRUMENTS_CSV}")
 
     inst = load_pboc_instruments_df(start_date=start_date, end_date=end_date, verbose=verbose)
     if inst is None or len(inst) == 0:
         if verbose:
-            print(f"    [PBOC-OMO] no records in range", flush=True)
+            logger.info(f"    [PBOC-OMO] no records in range")
         return pd.DataFrame()
 
     inst = inst[inst["category"] == "omo_transaction"]
     if len(inst) == 0:
         if verbose:
-            print(f"    [PBOC-OMO] no omo_transaction records in range", flush=True)
+            logger.info(f"    [PBOC-OMO] no omo_transaction records in range")
         return pd.DataFrame()
 
     host = inst.to_pandas() if hasattr(inst, "to_pandas") else inst
@@ -126,16 +129,16 @@ def build_pboc_omo_df(start_date=None, end_date=None, verbose=True):
 
     if verbose:
         if len(df):
-            print(f"    [PBOC-OMO] parsed {len(df)} daily OMO records, "
-                  f"{rows[0]['date']} → {rows[-1]['date']}", flush=True)
+            logger.info(f"    [PBOC-OMO] parsed {len(df)} daily OMO records, "
+                  f"{rows[0]['date']} → {rows[-1]['date']}")
             if df["omo_rate"].notna().any():
-                print(f"    [PBOC-OMO] omo_rate range: "
-                      f"{df['omo_rate'].min():.4f}% → {df['omo_rate'].max():.4f}%", flush=True)
+                logger.info(f"    [PBOC-OMO] omo_rate range: "
+                      f"{df['omo_rate'].min():.4f}% → {df['omo_rate'].max():.4f}%")
             if df["omo_quantity"].notna().any():
-                print(f"    [PBOC-OMO] omo_quantity range: "
-                      f"{df['omo_quantity'].min():g} → {df['omo_quantity'].max():g} 亿元", flush=True)
+                logger.info(f"    [PBOC-OMO] omo_quantity range: "
+                      f"{df['omo_quantity'].min():g} → {df['omo_quantity'].max():g} 亿元")
         else:
-            print(f"    [PBOC-OMO] no records in range", flush=True)
+            logger.info(f"    [PBOC-OMO] no records in range")
     return df
 
 
@@ -145,18 +148,18 @@ def build_pboc_omo_df(start_date=None, end_date=None, verbose=True):
 def build_pboc_outright_repo_df(start_date=None, end_date=None, verbose=True):
     """Build a daily outright-repo marker frame from the combined instruments CSV."""
     if verbose:
-        print(f"    [PBOC-OUTRIGHT] reading {PBOC_INSTRUMENTS_CSV}", flush=True)
+        logger.info(f"    [PBOC-OUTRIGHT] reading {PBOC_INSTRUMENTS_CSV}")
 
     inst = load_pboc_instruments_df(start_date=start_date, end_date=end_date, verbose=verbose)
     if inst is None or len(inst) == 0:
         if verbose:
-            print(f"    [PBOC-OUTRIGHT] no records in range", flush=True)
+            logger.info(f"    [PBOC-OUTRIGHT] no records in range")
         return pd.DataFrame()
 
     inst = inst[inst["instrument"] == "outright_repo"].copy()
     if len(inst) == 0:
         if verbose:
-            print(f"    [PBOC-OUTRIGHT] no outright_repo instruments in range", flush=True)
+            logger.info(f"    [PBOC-OUTRIGHT] no outright_repo instruments in range")
         return pd.DataFrame()
 
     inst["outright_repo_marker"] = 1
@@ -192,32 +195,32 @@ def build_pboc_outright_repo_df(start_date=None, end_date=None, verbose=True):
 
     if verbose:
         if len(df):
-            print(f"    [PBOC-OUTRIGHT] {len(df)} outright-repo announcements, "
-                  f"{df['date'].min().date()} → {df['date'].max().date()}", flush=True)
+            logger.info(f"    [PBOC-OUTRIGHT] {len(df)} outright-repo announcements, "
+                  f"{df['date'].min().date()} → {df['date'].max().date()}")
             if df["outright_repo_quantity"].notna().any():
-                print(f"    [PBOC-OUTRIGHT] quantity range: "
+                logger.info(f"    [PBOC-OUTRIGHT] quantity range: "
                       f"{df['outright_repo_quantity'].min():g} → "
-                      f"{df['outright_repo_quantity'].max():g} 亿元", flush=True)
+                      f"{df['outright_repo_quantity'].max():g} 亿元")
         else:
-            print(f"    [PBOC-OUTRIGHT] no records in range", flush=True)
+            logger.info(f"    [PBOC-OUTRIGHT] no records in range")
     return df
 
 
 def build_pboc_mlf_df(start_date=None, end_date=None, verbose=True):
     """Build a daily MLF marker frame from the combined instruments CSV."""
     if verbose:
-        print(f"    [PBOC-MLF] reading {PBOC_INSTRUMENTS_CSV}", flush=True)
+        logger.info(f"    [PBOC-MLF] reading {PBOC_INSTRUMENTS_CSV}")
 
     inst = load_pboc_instruments_df(start_date=start_date, end_date=end_date, verbose=verbose)
     if inst is None or len(inst) == 0:
         if verbose:
-            print(f"    [PBOC-MLF] no records in range", flush=True)
+            logger.info(f"    [PBOC-MLF] no records in range")
         return pd.DataFrame()
 
     inst = inst[inst["instrument"] == "MLF"].copy()
     if len(inst) == 0:
         if verbose:
-            print(f"    [PBOC-MLF] no MLF instruments in range", flush=True)
+            logger.info(f"    [PBOC-MLF] no MLF instruments in range")
         return pd.DataFrame()
 
     inst["mlf_marker"] = 1
@@ -250,12 +253,12 @@ def build_pboc_mlf_df(start_date=None, end_date=None, verbose=True):
 
     if verbose:
         if len(df):
-            print(f"    [PBOC-MLF] {len(df)} MLF announcements, "
-                  f"{df['date'].min().date()} → {df['date'].max().date()}", flush=True)
+            logger.info(f"    [PBOC-MLF] {len(df)} MLF announcements, "
+                  f"{df['date'].min().date()} → {df['date'].max().date()}")
             if df["mlf_quantity"].notna().any():
-                print(f"    [PBOC-MLF] quantity range: "
+                logger.info(f"    [PBOC-MLF] quantity range: "
                       f"{df['mlf_quantity'].min():g} → "
-                      f"{df['mlf_quantity'].max():g} 亿元", flush=True)
+                      f"{df['mlf_quantity'].max():g} 亿元")
         else:
-            print(f"    [PBOC-MLF] no records in range", flush=True)
+            logger.info(f"    [PBOC-MLF] no records in range")
     return df

@@ -69,6 +69,9 @@ from strategy.factors_and_algos import (  # noqa: E402
 from strategy.factors_and_algos._algo.fault_tolerance import append_ft_suffix  # noqa: E402
 from strategy._common.fetch import discover_available_codes  # noqa: E402
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("singleton_trading")
+
 # Engine/runner-consumed keys that stay CLI-driven (NOT stored in the DB
 # default algo_configs row). Everything else in the merged params comes from
 # the algo's DEFAULT_PARAMS + the DB row.
@@ -173,8 +176,8 @@ async def main() -> None:
                             conn, algo_name, st, code, strategy_name,
                         )
                         if inserted:
-                            print(f"    [algo_configs] inserted default "
-                                  f"{strategy_name} config for {st}/{code}", flush=True)
+                            logger.info(f"    [algo_configs] inserted default "
+                                  f"{strategy_name} config for {st}/{code}")
                 primary_st = next(iter(codes_by_st))
                 primary_code = codes_by_st[primary_st][0]
                 # min_holding_period is NOT forced here: when the optimizer
@@ -192,8 +195,8 @@ async def main() -> None:
                     "min_holding_period",
                     STRATEGY_PARAMS["min_holding_period"],
                 )
-                print(f"    [algo_configs] loaded {strategy_name} params from DB "
-                      f"for {primary_st}/{primary_code}", flush=True)
+                logger.info(f"    [algo_configs] loaded {strategy_name} params from DB "
+                      f"for {primary_st}/{primary_code}")
 
             await discover_and_run(
                 conn=conn, strategy_name=strategy_name,
@@ -218,12 +221,11 @@ async def main() -> None:
             )
 
             pf_name = portfolio_name(selection, fault_tolerance=ft)
-            print(f"\n=== MIXED mode ===\n  selection: {selection}\n  "
+            logger.info(f"\n=== MIXED mode ===\n  selection: {selection}\n  "
                   f"portfolio_name: {pf_name}\n  sub-algos to run: "
-                  f"{[n for n, w in selection.items() if w != 0]}", flush=True)
+                  f"{[n for n, w in selection.items() if w != 0]}")
             if ft > 0:
-                print(f"  fault_tolerance: {ft}% (strategy names get _ft{int(round(ft))} suffix)",
-                      flush=True)
+                logger.info(f"  fault_tolerance: {ft}% (strategy names get _ft{int(round(ft))} suffix)")
 
             collector = AlgoSignalCollector(selection)  # mixed-mode collector
 
@@ -232,10 +234,10 @@ async def main() -> None:
                 if codes_by_st and st in codes_by_st:
                     codes = codes_by_st[st]
                 elif discovery:
-                    print(f"\n>>> Discovering available codes for sec_type={st} "
-                          f"from analysis.mov_ave_spreads_detail...", flush=True)
+                    logger.info(f"\n>>> Discovering available codes for sec_type={st} "
+                          f"from analysis.mov_ave_spreads_detail...")
                     codes = await discover_available_codes(conn, st)
-                    print(f"    -> found {len(codes)} code(s)", flush=True)
+                    logger.info(f"    -> found {len(codes)} code(s)")
                     if not codes:
                         continue
                 else:
@@ -254,8 +256,8 @@ async def main() -> None:
                         dry_run=False, t0=t0,
                     )
                 else:
-                    print(f"\n[Phase 1] --dry-run: skipping sub-algo runs "
-                          f"for {st}.", flush=True)
+                    logger.info(f"\n[Phase 1] --dry-run: skipping sub-algo runs "
+                          f"for {st}.")
 
                 # Phase 2: portfolio (blended backtest).
                 await build_algo_portfolio(
@@ -273,8 +275,7 @@ async def main() -> None:
                         append_ft_suffix(n, ft) for n, w in selection.items() if w != 0
                     ] + [pf_name]
                     for sname in all_names:
-                        print(f"\n  --- risks for '{sname}' [{st}] ---",
-                              flush=True)
+                        logger.info(f"\n  --- risks for '{sname}' [{st}] ---")
                         await compute_and_upsert_risks(
                             conn=conn, sec_types=[st],
                             codes_by_st={st: codes}, force=args.force,

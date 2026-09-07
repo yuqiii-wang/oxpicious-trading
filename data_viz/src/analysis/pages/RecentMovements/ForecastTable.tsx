@@ -1,9 +1,10 @@
 /**
- * ForecastTable — the MA-Spread panel's 2nd plot: one code's extreme-day
- * bucket table from the analysis_forecasts schema, chosen by the parent's
- * dropdown (mov_rsi = RSI extreme-percentile buckets, mov_std = Bollinger
- * breach buckets, mov_gap = N-day price-return extreme-percentile buckets,
- * px_vol = σ-standardized price-speed × z-scored 量比 state cells).
+ * ForecastTable — the Recent Movements page's 2nd plot (migrated from the
+ * MA-Spread panel): one code's extreme-day bucket table from the
+ * analysis_forecasts schema, chosen by the parent's dropdown (mov_rsi = RSI
+ * extreme-percentile buckets, mov_std = Bollinger breach buckets, mov_gap =
+ * N-day price-return extreme-percentile buckets, px_vol = σ-standardized
+ * price-speed × z-scored 量比 state cells).
  * Rendered by the globally shared ExpandedTable (layered header + per-column
  * header filters); this file only supplies the column args and the toolbar.
  *
@@ -13,9 +14,9 @@
  *     ma_window / gap_window, ticks), width (pct / k, ticks), side (ticks),
  *     cooldown (ticks), hyped (ticks); px_vol instead shows speed
  *     (px_speed) × volume (vol_state) with no cooldown (state cells);
- *   • mov_std excess magnitudes (standalone) — exc close / exc max avg /
- *     exc max peak (numeric-range filters, percent points); px_vol state
- *     magnitudes (standalone) — mean t / mean z (numeric ranges, raw);
+ *   • px_vol state magnitudes (standalone) — mean t / mean z (numeric
+ *     ranges, raw); margin_ratio state magnitudes (standalone) — mean
+ *     ratio (percent points) / mean z (raw);
  *   • horizon result columns grouped under the horizon label (Next/5d/20d/
  *     60d) — mean / max / min forward changes (ranges, percent points),
  *     std (range, percent points), max/low swing ratio (range, raw), P>1%
@@ -41,7 +42,7 @@ import {
   Typography,
 } from "@mui/material";
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
-import { fetchMovAveSpreadForecast } from "@/lib/api-client";
+import { fetchAnalysisForecast } from "@/lib/api-client";
 import ExpandedTable, { type ExpandedTableColumn } from "@/shared/components/ExpandedTable";
 import type {
   ForecastKind,
@@ -458,7 +459,7 @@ export function ForecastTable({ code, secType, kind }: Props) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchMovAveSpreadForecast(code, secType, kind)
+    fetchAnalysisForecast(code, secType, kind)
       .then((d) => {
         if (cancelled) return;
         setData(d);
@@ -518,34 +519,6 @@ export function ForecastTable({ code, secType, kind }: Props) {
           ? { type: "date" as const, granularity: "month" as const, value: (r: ForecastRow) => r.stat_month.slice(0, 7) }
           : { type: "ticks" as const, value: (r: ForecastRow) => c.value(r) },
     })),
-    ...(isStd
-      ? [
-          {
-            key: "mean_excess_close",
-            label: "exc close",
-            align: "right" as const,
-            width: 76,
-            render: (r: ForecastRow) => <PctCell v={pctVal(r, "mean_excess_close")} />,
-            filter: { type: "range" as const, value: (r: ForecastRow) => pctVal(r, "mean_excess_close") },
-          },
-          {
-            key: "mean_excess_max",
-            label: "exc max avg",
-            align: "right" as const,
-            width: 82,
-            render: (r: ForecastRow) => <PctCell v={pctVal(r, "mean_excess_max")} />,
-            filter: { type: "range" as const, value: (r: ForecastRow) => pctVal(r, "mean_excess_max") },
-          },
-          {
-            key: "max_excess_max",
-            label: "exc max peak",
-            align: "right" as const,
-            width: 82,
-            render: (r: ForecastRow) => <PctCell v={pctVal(r, "max_excess_max")} />,
-            filter: { type: "range" as const, value: (r: ForecastRow) => pctVal(r, "max_excess_max") },
-          },
-        ]
-      : []),
     ...(isPxVol
       ? [
           {

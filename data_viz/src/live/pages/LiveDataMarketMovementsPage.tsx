@@ -56,6 +56,7 @@ import {
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
 import RefreshButton from "@/components/RefreshButton";
+import { DateSelector } from "@/shared/components/date-selector";
 import IndexPanel from "@/dataviz/features/index-baseline/IndexPanel";
 import { useStore } from "@/store/filters";
 import {
@@ -72,6 +73,7 @@ import {
   SEC_ALLOC_LIVE_REF_DL_TAG,
   SEC_ALLOC_LIVE_REF_BASE_TAG,
 } from "@/lib/api-client";
+import { formatFetchError } from "@/lib/api-client/_retry";
 import type {
   IndexBundle,
   IntradayMovementsIndustryTick,
@@ -226,7 +228,7 @@ export default function LiveDataMarketMovementsPage() {
       })
       .catch((e: Error) => {
         if (cancelled) return;
-        setError(e.message);
+        setError(formatFetchError(e));
         setLoading(false);
       });
     return () => { cancelled = true; };
@@ -716,23 +718,16 @@ export default function LiveDataMarketMovementsPage() {
             />
           )}
         />
-        <Autocomplete
-          size="small"
-          sx={{ minWidth: 150 }}
-          disableClearable
-          options={availableDates.length > 0 ? availableDates : selectedDate ? [selectedDate] : []}
-          value={selectedDate ?? availableDates[0] ?? ""}
-          onChange={(_e, v) => {
-            if (v) setSelectedDate(v === availableDates[0] ? null : v);
-          }}
-          renderInput={(params) => (
-            <TextField
-              {...params}
-              label={isLatestView ? "Date (latest)" : "Date (historical — live refresh paused)"}
-              variant="outlined"
-              size="small"
-            />
-          )}
+        <DateSelector
+          dates={availableDates}
+          value={selectedDate}
+          defaultDate={availableDates[0]}
+          label={
+            isLatestView
+              ? "Date (latest)"
+              : "Date (historical — live refresh paused)"
+          }
+          onChange={(v) => setSelectedDate(v)}
         />
         <ToggleButtonGroup
           size="small"

@@ -4,10 +4,13 @@
  *
  *   • 'oi_moneyness' — OI-weighted mean moneyness (strike/spot), a
  *     POSITIONING metric. Skew price = S × E[M], Δ% = (E[M] − 1) × 100.
- *   • 'iv_smile'     — OI-weighted 3rd standardized moment of implied vol
- *     across strikes, a PRICING metric. Rebased for display:
- *     S × (1 + (skew − 1)/100), so skew = 1 sits exactly on the spot curve
- *     and each unit offsets by ±1% of price.
+ *   • 'iv_smile'     — 25Δ risk reversal (iv_call25 − iv_put25, vol pts)
+ *     per expiry group, a PRICING metric. Rebased for display:
+ *     S × (1 + rr25 × 0.5%), so rr25 = 0 sits exactly on the spot curve.
+ *   • 'smile_slope'  — full-smile OI-weighted least-squares IV tilt per
+ *     expiry group (same PRICING family): the fitted IV difference
+ *     between the +10% and −10% log-moneyness wings, in vol pts. Same
+ *     rebase as iv_smile: S × (1 + tilt × 0.5%).
  *   • 'greek_delta'  — delta-weighted put/call OI ratio dpcr (whole
  *     chain, neutral 0.5 = balanced directional book; the delta-weighted
  *     refinement of the plain put/call ratio). PAIR-level CALL-vs-PUT
@@ -26,7 +29,7 @@
  * Adapters in skewSpec.ts / ivSmileCompute.ts / greekSpec.ts produce
  * SharedSkewSpec from each source; sharedSkewOption.ts renders it
  * identically (spot + per-expiry thin lines + expiry shade bands + mean
- * skew curve + cross-count marks).
+ * skew curve + expiry closing lines).
  */
 
 /** DB-driven greek skew modes (skew_type = 'greek_<name>'). */
@@ -45,7 +48,11 @@ export const GREEK_NEUTRAL: Record<GreekSkewMode, number> = {
 /** Price-space rebase scale: 1 unit of (skew − neutral) = ±10% of spot. */
 export const GREEK_SKEW_PRICE_K = 0.1;
 
-export type SharedSkewMode = "oi_moneyness" | "iv_smile" | GreekSkewMode;
+export type SharedSkewMode =
+  | "oi_moneyness"
+  | "iv_smile"
+  | "smile_slope"
+  | GreekSkewMode;
 
 /** True when the mode is one of the DB-driven greek_* skew types. */
 export function isGreekSkewMode(mode: SharedSkewMode): mode is GreekSkewMode {
@@ -63,7 +70,6 @@ export interface SharedSkewPerExpiry {
   rawSkew: number | null;
   /** Deviation from neutral in percent (mode-specific scaling). */
   skewPct: number | null;
-  countSkewnessCurveCrossedSpot?: number;
 }
 
 export interface SharedSkewPoint {
@@ -83,6 +89,4 @@ export interface SharedSkewSpec {
   chartTitle: string;
   /** Legend/series name of the mean (aggregate) skew curve. */
   meanSeriesName: string;
-  /** Label for cross-count markPoints, e.g. "Neutral Moneyness Days". */
-  crossCountLabel: string;
 }

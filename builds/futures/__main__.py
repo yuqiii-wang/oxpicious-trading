@@ -89,6 +89,9 @@ from builds.futures.loader import (
     build_futures_df,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("futures")
+
 
 async def main() -> None:
     ap = argparse.ArgumentParser(
@@ -122,19 +125,19 @@ async def main() -> None:
         }
     )
     if code_filter:
-        print(f"    [CODE FILTER] Restricting build to single contract: {code_filter}", flush=True)
+        logger.info(f"    [CODE FILTER] Restricting build to single contract: {code_filter}")
     if forced is not None:
-        print(f"[DATE MODE] Forced single-date build: {forced}", flush=True)
+        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
 
     # ------------------------------------------------------------------
     # 1. Discover source files and available dates
     # ------------------------------------------------------------------
-    print("\n[1/3] Discovering source CSV files …", flush=True)
+    logger.info("\n[1/3] Discovering source CSV files …")
     all_files = glob_futures_files(CFFEX_ARCHIVE_DIR)
-    print(f"    → {len(all_files)} *_futures.csv files available", flush=True)
+    logger.info(f"    → {len(all_files)} *_futures.csv files available")
 
     if not all_files:
-        print("    [FATAL] No futures CSV files found", flush=True)
+        logger.error("    [FATAL] No futures CSV files found")
         sys.exit(1)
 
     # Extract available dates from filenames (stdlib date — no proxied
@@ -155,12 +158,12 @@ async def main() -> None:
         end_d = pd.to_datetime(args.end_date).date()
         available_dates = {d for d in available_dates if d <= end_d}
 
-    print(f"    → {len(available_dates)} unique dates available in range", flush=True)
+    logger.info(f"    → {len(available_dates)} unique dates available in range")
 
     # ------------------------------------------------------------------
     # 2. Connect to DB and find missing dates
     # ------------------------------------------------------------------
-    print("\n[2/3] Connecting to database and detecting missing dates …", flush=True)
+    logger.info("\n[2/3] Connecting to database and detecting missing dates …")
     conn = await get_db_or_exit()
 
     try:
@@ -173,7 +176,7 @@ async def main() -> None:
             if code_filter:
                 # Single-code force mode: delete only this contract's rows
                 # (FK child first, identity last) instead of truncating.
-                print(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code", flush=True)
+                logger.info(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code")
                 await conn.execute(
                     "DELETE FROM stats.futures_basic_stats WHERE code = $1", code_filter
                 )
@@ -181,7 +184,7 @@ async def main() -> None:
                     "DELETE FROM stats.futures_identity WHERE code = $1", code_filter
                 )
             else:
-                print("    [DB] Force mode: truncating existing tables", flush=True)
+                logger.info("    [DB] Force mode: truncating existing tables")
                 await truncate_table_async(conn, "stats.futures_basic_stats")
                 await truncate_table_async(conn, "stats.futures_identity")
             missing_dates = available_dates
@@ -196,16 +199,14 @@ async def main() -> None:
                 conn, "stats.futures_identity", available_dates
             )
 
-        print(
+        logger.info(
             f"    [DB] {len(missing_dates)} dates missing from "
             f"stats.futures_identity (out of {len(available_dates)} available)",
-            flush=True,
         )
 
         if not missing_dates:
-            print(
+            logger.info(
                 "    [INFO] Database is up to date — no new futures dates to insert",
-                flush=True,
             )
             print_wall_time(t0)
             return
@@ -213,15 +214,14 @@ async def main() -> None:
         # ------------------------------------------------------------------
         # 3. Filter to missing-date files and build rows
         # ------------------------------------------------------------------
-        print(
+        logger.info(
             f"\n[3/3] Reading source CSVs for {len(missing_dates)} missing dates …",
-            flush=True,
         )
         missing_files = filter_files_by_dates(all_files, missing_dates)
-        print(f"    → {len(missing_files)} source CSV files to read", flush=True)
+        logger.info(f"    → {len(missing_files)} source CSV files to read")
 
         if not missing_files:
-            print("    [INFO] No source files for missing dates", flush=True)
+            logger.info("    [INFO] No source files for missing dates")
             print_wall_time(t0)
             return
 
@@ -233,30 +233,29 @@ async def main() -> None:
             if len(identity_df) > 0:
                 n_before = len(identity_df)
                 identity_df = identity_df[identity_df["code"] == code_filter]
-                print(f"    [CODE FILTER] Identity rows {n_before:,} → {len(identity_df):,} for code {code_filter}", flush=True)
+                logger.info(f"    [CODE FILTER] Identity rows {n_before:,} → {len(identity_df):,} for code {code_filter}")
             if len(basic_df) > 0:
                 n_before = len(basic_df)
                 basic_df = basic_df[basic_df["code"] == code_filter]
-                print(f"    [CODE FILTER] Basic-stats rows {n_before:,} → {len(basic_df):,} for code {code_filter}", flush=True)
+                logger.info(f"    [CODE FILTER] Basic-stats rows {n_before:,} → {len(basic_df):,} for code {code_filter}")
 
         if identity_df.empty or basic_df.empty:
-            print("    [INFO] No futures rows parsed from missing-date files", flush=True)
+            logger.info("    [INFO] No futures rows parsed from missing-date files")
             print_wall_time(t0)
             return
 
         n_codes = identity_df["code"].nunique()
         d0 = identity_df["date"].min()
         d1 = identity_df["date"].max()
-        print(
+        logger.info(
             f"    → {len(identity_df):,} identity rows · {n_codes} contracts",
-            flush=True,
         )
-        print(f"    → date range: {d0} → {d1}", flush=True)
+        logger.info(f"    → date range: {d0} → {d1}")
 
         # ------------------------------------------------------------------
         # 4. Insert to database
         # ------------------------------------------------------------------
-        print("\n[DB] Inserting data …", flush=True)
+        logger.info("\n[DB] Inserting data …")
 
         # Convert dates to datetime.date for asyncpg — keep the columns
         # datetime64 until this boundary, then ONE host numpy pass per
@@ -295,14 +294,12 @@ async def main() -> None:
             via = "COPY" if n_copied > 0 and n_upserted == 0 else \
                   f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
                   "upsert"
-            print(
+            logger.info(
                 f"    [DB] Inserted {total:,} rows into stats.futures_identity via {via}",
-                flush=True,
             )
         else:
-            print(
+            logger.info(
                 "    [DB] No new identity rows to insert into stats.futures_identity",
-                flush=True,
             )
 
         # Insert basic_stats
@@ -314,14 +311,12 @@ async def main() -> None:
             via = "COPY" if n_copied > 0 and n_upserted == 0 else \
                   f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
                   "upsert"
-            print(
+            logger.info(
                 f"    [DB] Inserted {total:,} rows into stats.futures_basic_stats via {via}",
-                flush=True,
             )
         else:
-            print(
+            logger.info(
                 "    [DB] No new basic_stats rows to insert into stats.futures_basic_stats",
-                flush=True,
             )
 
     finally:
@@ -329,15 +324,14 @@ async def main() -> None:
 
     # Console summary
     if not identity_df.empty:
-        print(f"\n  Product distribution:", flush=True)
+        logger.info(f"\n  Product distribution:")
         for product_code, sub in identity_df.groupby("product_code"):
             n_dates = int(sub["date"].nunique())
             n_contracts = int(sub["code"].nunique())
-            print(
+            logger.info(
                 f"    · {product_code:<4s} "
                 f"{sub['name'].iloc[0]:<20s} "
                 f"{n_dates:>4d} days  {n_contracts:>3d} contracts",
-                flush=True,
             )
 
     print_wall_time(t0)

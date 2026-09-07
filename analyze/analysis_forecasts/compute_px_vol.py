@@ -5,16 +5,25 @@ The recent-day price-change × trading-amount STATE buckets (see
 database/sql/analysis/analysis_forecasts/05_px_vol_state.sql and the
 2026-09 temp_scripts studies): per stat month's trailing 5-year window
 [lo, hi) of the (T, C) wide grid, a (code, date) joins ONE of the
-15 speed × volume cells when BOTH legs hold:
+15 speed × volume cells when BOTH legs hold. The categories come from
+the analysis.mov_ave_price_vs_amt REGISTRY (the px_vol family's
+DATE-LEVEL source of truth, built by analyze.mov_ave_spread) —
+scattered via wide.build_px_vol_state_matrices into:
 
-  t = ret_1d / σ_ret(code, 255 rows ending t-1)   (scattered "t" matrix;
-      NULL where σ is degenerate or below sigma_floor — the fetch layer
-      applies the floor, so NaN here means "never a bucket")
-  z = z-scored 量比                                (scattered "z" matrix)
+  speed  — (T, C) int8 speed ordinal (PX_VOL_SPEEDS order; -1 = no
+           valid state that day)
+  vol    — (T, C) int8 vol ordinal (PX_VOL_VOL_STATES order; -1 = none)
+  t / z  — (T, C) float64 of the recorded px_t / px_z (the bucket
+           mean_t / mean_z config magnitudes)
 
   px_speed: sharp_up t>2.0 | slow_up 1.26<t<=2.0 | flat -1.29<=t<=1.26
             | slow_dn -2.0<=t<-1.29 | sharp_dn t<-2.0
   vol_state: heavy z>2.0 | normal | shrink z<-0.92
+
+(Thresholding the raw t/z features was superseded by the registry
+read — the engines AUDIT against the recorded categories; the
+PX_VOL_* constants remain the recorded row parameters AND the audit
+bar fetch.assert_price_vs_amt_params enforces before consuming.)
 
 Unlike the mov_* EVENT buckets there is NO cooldown (a state cell
 admits every qualifying day), and the bucket split is by PK member
@@ -28,7 +37,7 @@ trigger cells) against the code's ADAPTIVE reversal bar
 top speeds reverse on change < -thr, bottom speeds on change > +thr;
 flat rows carry side='flat' and get reverse_prob = NULL (no
 directional claim). The config JSONB records the bucket's mean t /
-mean z (motivation magnitude, like mov_std's breach excesses).
+mean z (motivation magnitude, like margin_ratio's mean ratio / mean z).
 
 Yields (stat_month, rows) so __main__ can split each row into the
 px_vol_state motivation dicts and the forecast_results result dicts
@@ -88,9 +97,10 @@ def compute_px_vol_results(
     """Yield (stat_month, bucket rows) per stat month.
 
     Args:
-        mats: wide state matrices keyed "t" (σ-standardized price
-              speed) and "z" (z-scored 量比) — NaN where the day has
-              no valid state.
+        mats: wide state matrices from the price_vs_amt registry
+              (wide.build_px_vol_state_matrices) keyed "speed"/"vol"
+              (int8 category ordinals, -1 = none) and "t"/"z" (the
+              recorded px_t / px_z — NaN where no state).
         chg:  shared change matrices (build_change_matrices):
               NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS.
         windows: resolved MonthWindow list for the target months.
@@ -103,6 +113,7 @@ def compute_px_vol_results(
               first_ord < mw.lo_ord (DATE-space full-window gate).
     """
     C = len(codes)
+    n_speeds = len(PX_VOL_SPEEDS)
 
     for mw in windows:
         lo, hi = mw.lo, mw.hi
@@ -118,23 +129,14 @@ def compute_px_vol_results(
         thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
         HY = hype[lo:hi]
 
+        S = mats["speed"][lo:hi]
+        V = mats["vol"][lo:hi]
         T = mats["t"][lo:hi]
         Z = mats["z"][lo:hi]
-        with np.errstate(invalid="ignore"):
-            # Speed masks (NaN compares False → invalid days never
-            # join): (5, T, C) stacked in PX_VOL_SPEEDS order.
-            speed = np.stack([
-                T > PX_VOL_K_SHARP,
-                (T > PX_VOL_K_SLOW_UP) & (T <= PX_VOL_K_SHARP),
-                (T >= -PX_VOL_K_SLOW_DN) & (T <= PX_VOL_K_SLOW_UP),
-                (T >= -PX_VOL_K_SHARP) & (T < -PX_VOL_K_SLOW_DN),
-                T < -PX_VOL_K_SHARP,
-            ])
-            vol = np.stack([
-                Z > PX_VOL_Z_HEAVY,
-                (Z >= PX_VOL_Z_SHRINK) & (Z <= PX_VOL_Z_HEAVY),
-                Z < PX_VOL_Z_SHRINK,
-            ])
+        # Speed masks (5, T, C) stacked in PX_VOL_SPEEDS order —
+        # equality on the registry's int8 ordinals (-1 never matches).
+        speed = np.stack([(S == i) for i in range(n_speeds)])
+        vol = np.stack([(V == i) for i in range(_N_STATES)])
         # (5, 3, T, C) → (T, C, K) with k = speed_idx*3 + state_idx.
         n_rows = hi - lo
         mask = (speed[:, None] & vol[None, :]) \
@@ -185,7 +187,7 @@ def compute_px_vol_results(
                 )
                 kk, ii = np.nonzero(emit.T)
                 # Per-bucket mean state magnitudes (config JSONB — the
-                # motivation magnitude, like mov_std's breach excess):
+                # motivation magnitude, like margin_ratio's):
                 # every sparse cell has valid t/z by construction, so
                 # the all-cell sums are the per-cell mean numerators.
                 s_t = np.bincount(fk, weights=T[st, sc], minlength=C * P)

@@ -43,7 +43,7 @@ GREEK_NAMES = ["delta", "gamma", "vega"]
 GREEK_SKEW_TYPES = [f"greek_{g}" for g in GREEK_NAMES]
 
 # No-tilt anchor of each greek_* metric (gap = skewness - neutral;
-# anchors the cross counts, gap columns and the price rebase):
+# anchors the contrarian metrics, gap columns and the price rebase):
 #   greek_delta: 0.5 (balanced put/call directional book)
 #   greek_gamma / greek_vega: 0.0 (balanced call/put wings)
 GREEK_NEUTRAL = {"delta": 0.5, "gamma": 0.0, "vega": 0.0}
@@ -80,7 +80,13 @@ SKEWNESS_DESCRIPTION = (
     "the CALL and PUT rows of a pair hold the SAME value — weighted by "
     "open_interest with zero OI = zero vote; theta/rho have no "
     "industry-standard positioning skew and are not computed. Stores the "
-    "daily raw skewness value (skewness column) plus rolling windows "
+    "daily raw skewness value (skewness column) plus pre-expiry contrarian "
+    "metrics on the gap (skewness − neutral): cross_count_20d = neutral "
+    "crossings in the trailing 20 sessions (contested positioning into "
+    "expiry), days_since_last_cross = sessions since the gap last crossed "
+    "neutral (freshness of the last flip; 0 = crossed today), and "
+    "gap_side_share_20d = share of the trailing 20 sessions at/above "
+    "neutral (one-sided crowding, in [0,1]). Plus rolling windows "
     "(5/20/60 days): MA, STD, gap-from-neutral (skewness_MA − neutral; "
     "neutral = 1 for oi_moneyness/iv_smile, 0.5 for greek_delta, 0 for "
     "greek_gamma/greek_vega), linear regression slope of gap, and "
@@ -96,7 +102,7 @@ SKEWNESS_DESCRIPTION = (
 SKEWNESS_RESULT_COLUMNS = [
     "date", "option_type", "underlying_code", "expiry_date", "skew_type",
     "skewness",
-    "count_skewness_curve_crossed_spot",
+    "cross_count_20d", "days_since_last_cross", "gap_side_share_20d",
     "skewness_ma5", "skewness_ma20", "skewness_ma60",
     "skewness_std5", "skewness_std20", "skewness_std60",
     "gap_skewness_vs_spot_ma5", "gap_skewness_vs_spot_ma20",
@@ -111,7 +117,7 @@ SKEWNESS_RESULT_COLUMNS = [
 
 SKEWNESS_NUMERIC_COLS = [
     "skewness",
-    "count_skewness_curve_crossed_spot",
+    "cross_count_20d", "days_since_last_cross", "gap_side_share_20d",
     "skewness_ma5", "skewness_ma20", "skewness_ma60",
     "skewness_std5", "skewness_std20", "skewness_std60",
     "gap_skewness_vs_spot_ma5", "gap_skewness_vs_spot_ma20",
@@ -125,6 +131,10 @@ SKEWNESS_NUMERIC_COLS = [
 ]
 
 SKEWNESS_WINDOWS = [5, 20, 60]
+
+# Trailing session window of the pre-expiry contrarian metrics
+# (cross_count_20d / gap_side_share_20d) — one monthly expiry cycle.
+SKEWNESS_CROSS_WINDOW = 20
 
 # ---- Options IV skew stats table --------------------------------------------
 # Per-(date, option_type, underlying_code, expiry_date) implied-volatility

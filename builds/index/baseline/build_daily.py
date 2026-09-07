@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import datetime
 import glob
+import io
 import os
 import re
 
@@ -71,6 +72,9 @@ from builds.index.baseline.loaders import (
     load_szse_index_history, load_sse_index_history, load_cnindex_history,
     snapshot_file_date,
 )
+
+import logging
+logger = logging.getLogger(__name__)
 
 # B6 tail-read window: the CSIndex history archive is the full corpus
 # (per-code files), yet only the most recent dates are ever missing from
@@ -133,8 +137,16 @@ def _tail_read_history(path: str, tail_rows: int = HISTORY_TAIL_ROWS) -> pd.Data
     if payload.startswith(b"\xef\xbb\xbf"):
         payload = payload[3:]
     try:
-        return pd.read_csv(payload, dtype=str, keep_default_na=False,
-                           na_values=[""], compression=None)
+        # Raw bytes take the cudf GPU read path; host pandas cannot
+        # consume bytes — retry wrapped so the tail-trim fast path also
+        # works on CPU-only hosts instead of always falling back.
+        try:
+            return pd.read_csv(payload, dtype=str, keep_default_na=False,
+                               na_values=[""], compression=None)
+        except TypeError:
+            return pd.read_csv(io.BytesIO(payload), dtype=str,
+                               keep_default_na=False, na_values=[""],
+                               compression=None)
     except Exception:
         return None
 
@@ -306,10 +318,9 @@ def _estimate_ohl_from_close(combined: pd.DataFrame, verbose: bool = True) -> pd
         n_est = int(np.asarray(need, dtype=bool).sum())
         if n_est:
             n_no_prev = int(np.asarray(fill_open, dtype=bool).sum())
-            print(f"    [EST] OHLC estimation: {n_est:,} close-only rows "
+            logger.info(f"    [EST] OHLC estimation: {n_est:,} close-only rows "
                   f"synthesized (open=prev close, high=low=close); "
-                  f"{n_est - n_no_prev:,} without prev close left open=NULL",
-                  flush=True)
+                  f"{n_est - n_no_prev:,} without prev close left open=NULL")
 
     return combined
 
@@ -379,8 +390,8 @@ async def build_daily_df(conn,
         grid_latest = max(grid_latest or "", snapshot_file_date(path) or "")
     grid_latest = grid_latest or None
     if verbose:
-        print(f"    [DAILY] {len(history_files)} history + {len(onem_files)} 1m CSVs in {CSINDEX_DIR}", flush=True)
-        print(f"    [DAILY] source grid latest date: {grid_latest or '(none)'}", flush=True)
+        logger.info(f"    [DAILY] {len(history_files)} history + {len(onem_files)} 1m CSVs in {CSINDEX_DIR}")
+        logger.info(f"    [DAILY] source grid latest date: {grid_latest or '(none)'}")
 
     # A code is needed when fresh (no DB rows), stale (rebuild), or its
     # latest DB date is behind the grid latest (new tail data and/or the
@@ -399,8 +410,8 @@ async def build_daily_df(conn,
         all_codes |= {os.path.basename(p).replace("_history.csv", "")
                       for p in cnindex_files}
         n_uptodate = sum(1 for c in all_codes if not _is_needed(c))
-        print(f"    [DAILY] {len(all_codes) - n_uptodate} of {len(all_codes)} CSV codes "
-              f"behind grid latest → loading; {n_uptodate} up to date → skipped", flush=True)
+        logger.info(f"    [DAILY] {len(all_codes) - n_uptodate} of {len(all_codes)} CSV codes "
+              f"behind grid latest → loading; {n_uptodate} up to date → skipped")
 
     # ---- Load *_history.csv (trailing tail per code; B6) ------------------
     # Codes with NO DB rows at all (fresh ingest or --force after truncate)
@@ -451,8 +462,8 @@ async def build_daily_df(conn,
         n_1m_loaded += 1
 
     if verbose and n_1m_loaded:
-        print(f"    [DAILY] loaded {n_1m_loaded} 1m CSVs "
-              f"(+{n_1m_skipped} header-only / up-to-date skipped)", flush=True)
+        logger.info(f"    [DAILY] loaded {n_1m_loaded} 1m CSVs "
+              f"(+{n_1m_skipped} header-only / up-to-date skipped)")
 
     # Also load SZSE index data (archive + trend) for 399001 / 399006.
     # Per-date snapshots contribute only rows AT their filename date, so a
@@ -477,10 +488,10 @@ async def build_daily_df(conn,
         dfs.append(df)
 
     if n_skipped_files and verbose:
-        print(f"    [DAILY] skipped {n_skipped_files} files (code violates DB check constraint)", flush=True)
+        logger.info(f"    [DAILY] skipped {n_skipped_files} files (code violates DB check constraint)")
 
     if not dfs:
-        print("    [WARN] No new daily data to process", flush=True)
+        logger.warning("    [WARN] No new daily data to process")
         return pd.DataFrame()
 
     combined = pd.concat(dfs, ignore_index=True)
@@ -508,8 +519,8 @@ async def build_daily_df(conn,
         pe_vals = np.asarray(combined["pe"]).tolist()
         pe_lookup = {k: v for k, v, keep in zip(keys_pre, pe_vals, pe_keep) if keep}
         if verbose and pe_lookup:
-            print(f"    [DAILY] PE lookup: {len(pe_lookup):,} (date, code) pairs with PE "
-                  f"(from CSIndex)", flush=True)
+            logger.info(f"    [DAILY] PE lookup: {len(pe_lookup):,} (date, code) pairs with PE "
+                  f"(from CSIndex)")
 
     # Deduplicate (date, code) pairs: keep="last" picks the 1m version over
     # the history version for overlapping dates, since 1m DataFrames are
@@ -521,9 +532,8 @@ async def build_daily_df(conn,
     combined = combined.reset_index(drop=True)
     n_after_dedup = len(combined)
     if verbose and n_before_dedup != n_after_dedup:
-        print(f"    [DAILY] dedup: {n_before_dedup:,} → {n_after_dedup:,} rows "
-              f"(1m/SZSE/SSE/CNINDEX overrode history for {n_before_dedup - n_after_dedup:,} dates)",
-              flush=True)
+        logger.info(f"    [DAILY] dedup: {n_before_dedup:,} → {n_after_dedup:,} rows "
+              f"(1m/SZSE/SSE/CNINDEX overrode history for {n_before_dedup - n_after_dedup:,} dates)")
 
     # Fill missing PE from the pre-dedup lookup. SSE trend rows won the dedup
     # for 000xxx codes but have NULL PE; CSIndex rows (which lost the dedup)
@@ -543,8 +553,7 @@ async def build_daily_df(conn,
                                       np.asarray(combined["pe"], dtype=float))
         n_pe_filled = n_pe_missing_before - int(combined["pe"].isna().sum())
         if verbose and n_pe_filled:
-            print(f"    [DAILY] PE merge: filled {n_pe_filled:,} NULL PE values from CSIndex lookup",
-                  flush=True)
+            logger.info(f"    [DAILY] PE merge: filled {n_pe_filled:,} NULL PE values from CSIndex lookup")
 
     # Fill missing trading days with estimated close prices (if shared weights
     # available). Up-to-date codes are not loaded, so their changePct at the
@@ -605,12 +614,12 @@ async def build_daily_df(conn,
     combined = combined[keep_mask].reset_index(drop=True)
 
     if verbose:
-        print(f"    → {len(combined):,} new rows  ·  {combined['code'].nunique()} indexes", flush=True)
+        logger.info(f"    → {len(combined):,} new rows  ·  {combined['code'].nunique()} indexes")
         if len(combined):
             # np datetime64[D] formatting — direct f-string of the proxied
             # scalar triggers a date.__format__ cudf fallback
             d_np = np.asarray(combined["date"]).astype("datetime64[D]")
-            print(f"    → date range: {d_np.min()} → {d_np.max()}", flush=True)
+            logger.info(f"    → date range: {d_np.min()} → {d_np.max()}")
 
     return combined
 

@@ -32,6 +32,9 @@ from downloads._common.exchanges.szse import (
     run_szse_download,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("archive")
+
 
 INDEX_EXTRA_PARAMS: Dict[str, Optional[str]] = {}
 
@@ -127,4 +130,4 @@ def download_szse_archive_index(
 
 
 if __name__ == "__main__":
-    print(download_szse_archive_index())
+    logger.info(download_szse_archive_index())

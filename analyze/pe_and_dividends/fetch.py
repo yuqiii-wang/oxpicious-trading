@@ -38,6 +38,9 @@ from _common.df_utils import epoch_col_to_dt64
 
 from analyze.pe_and_dividends.config import SEC_TYPE_IDENTITY_TABLE
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Active-universe pre-filter
@@ -50,9 +53,9 @@ async def fetch_active_codes(conn, sec_type: str) -> Set[str]:
     codes = await fetch_codes_with_recent_data_async(
         conn, identity_table, n_trading_days=RECENT_TRADING_DAYS,
     )
-    print(f"      pre-filter: {len(codes):,} {sec_type} codes have "
+    logger.info(f"      pre-filter: {len(codes):,} {sec_type} codes have "
           f"data in the last {RECENT_TRADING_DAYS} trading days "
-          f"(cutoff={cutoff.isoformat()})", flush=True)
+          f"(cutoff={cutoff.isoformat()})")
     return codes
 
 

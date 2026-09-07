@@ -5,9 +5,6 @@ Loads, per sec_type, the joined long-format input frame:
   price   — the same price convention as the parent mov_ave_spread
             analysis (ETF = COALESCE(etf_adjustment.adj_close, close);
             index / stock = *_basic_stats.close),
-  high/low — the day's intraday extremes, ETF-scaled by the SAME
-            adj_close/close factor as price so the Bollinger-excess
-            metrics stay in one consistent price space,
   ma_{W}  — from stats.{sec_type}_tech_stats (ma5/20/60/120/255),
   rsi_{W} — from analysis.mov_ave_rsi (Wilder RSI columns),
   gap_{W} — from analysis.mov_ave_rsi (N-day price-return columns),
@@ -18,7 +15,7 @@ Loads, per sec_type, the joined long-format input frame:
             margin_ratio buckets never fire there).
 
 Plus the compact market-hype EPISODES list
-(analysis.mov_ave_market_hypes) used to build the per-(date, code)
+(stats.mov_ave_market_hypes) used to build the per-(date, code)
 hyped-date matrix.
 
 All NUMERIC columns are cast to native float8 in SQL (Decimal objects
@@ -60,15 +57,20 @@ from analyze.analysis_forecasts.config import (
     PX_VOL_SIGMA_FLOOR,
     PX_VOL_SIGMA_MIN_DAYS,
     PX_VOL_SIGMA_WINDOW,
+    PX_VOL_SPEEDS,
+    PX_VOL_VOL_STATES,
     PX_VOL_Z_HEAVY,
     PX_VOL_Z_SHRINK,
     RSI_WINDOWS,
     SEC_TYPE_IDENTITY_TABLE,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Output column order (matches the SELECT list below).
 _COLUMNS = (
-    ["code", "date", "price", "high", "low"]
+    ["code", "date", "price"]
     + [f"ma_{w}days" for w in MA_WINDOWS]
     + [f"rsi_{w}days" for w in RSI_WINDOWS]
     + [f"gap_{w}days" for w in GAP_WINDOWS]
@@ -76,30 +78,22 @@ _COLUMNS = (
     + ["trading_amount", "rz_buy"]
 )
 
-# Base table + price/high/low expressions per sec_type (same price
-# convention as analyze.mov_ave_spread: ETF uses the adjusted close when
-# available, and high/low carry the same adj factor so excess metrics
-# stay consistent with the price the bands are computed on).
+# Base table + price expression per sec_type (same price convention as
+# analyze.mov_ave_spread: ETF uses the adjusted close when available).
 _PRICE_SOURCE = {
     "index": (
         "stats.index_basic_stats b",
         "b.close",
-        "b.high",
-        "b.low",
     ),
     "etf": (
         "stats.etf_basic_stats b "
         "LEFT JOIN stats.etf_adjustment a "
         "ON a.code = b.code AND a.date = b.date",
         "COALESCE(a.adj_close, b.close)",
-        "(b.high * COALESCE(a.adj_close / NULLIF(b.close, 0), 1.0))",
-        "(b.low * COALESCE(a.adj_close / NULLIF(b.close, 0), 1.0))",
     ),
     "stock": (
         "stats.stock_basic_stats b",
         "b.close",
-        "b.high",
-        "b.low",
     ),
 }
 
@@ -147,9 +141,9 @@ async def fetch_active_codes(conn, sec_type: str) -> Set[str]:
     codes = await fetch_codes_with_recent_data_async(
         conn, identity_table, n_trading_days=RECENT_TRADING_DAYS,
     )
-    print(f"      pre-filter: {len(codes):,} {sec_type} codes have "
+    logger.info(f"      pre-filter: {len(codes):,} {sec_type} codes have "
           f"data in the last {RECENT_TRADING_DAYS} trading days "
-          f"(cutoff={cutoff.isoformat()})", flush=True)
+          f"(cutoff={cutoff.isoformat()})")
     return codes
 
 
@@ -220,7 +214,7 @@ async def fetch_analysis_inputs(
     if not codes:
         return pd.DataFrame(columns=_COLUMNS)
 
-    base, price_expr, high_expr, low_expr = _PRICE_SOURCE[sec_type]
+    base, price_expr = _PRICE_SOURCE[sec_type]
     amt_join, amt_expr, rz_expr, est_filter = _AMT_SOURCE[sec_type]
     ma_cols = ",\n       ".join(
         f"t.ma{w}::float8 AS ma_{w}days" for w in MA_WINDOWS
@@ -238,8 +232,6 @@ async def fetch_analysis_inputs(
         SELECT b.code,
                extract(epoch from b.date)::float8 AS date,
                {price_expr}::float8 AS price,
-               {high_expr}::float8 AS high,
-               {low_expr}::float8 AS low,
                {ma_cols},
                {rsi_cols},
                {gap_cols},
@@ -306,9 +298,10 @@ def add_px_vol_features(df: pd.DataFrame) -> pd.DataFrame:
         px_t      — t = ret_1d / px_sigma, NULL where px_sigma is
                     NaN/<=0 or below PX_VOL_SIGMA_FLOOR (bond-like
                     codes never join a bucket).
-        px_z      — z-scored 量比: liangbi = trading_amount /
-                    mean(trading_amount, t-PX_VOL_LB_WINDOW..t-1);
-                    z = (liangbi - μ_lb[t-1]) / σ_lb[t-1] with the
+        px_z      — z-scored 量比: amt_ratio = trading_amount /
+                    mean(trading_amount, t-PX_VOL_LB_WINDOW..t-1)
+                    (the classic 量比);
+                    z = (amt_ratio - μ_lb[t-1]) / σ_lb[t-1] with the
                     rolling PX_VOL_SIGMA_WINDOW-row moments shifted
                     1 row. NULL where any input is missing.
 
@@ -347,15 +340,15 @@ def add_px_vol_features(df: pd.DataFrame) -> pd.DataFrame:
     )
     ta = df["trading_amount"]
     base = df["_lb_base"]
-    df["_liangbi"] = (ta / base).where(
+    df["_amt_ratio"] = (ta / base).where(
         ta.notna() & base.notna() & (base > 1e-12))
 
     mu = grouped_rolling_agg(
-        df, "code", "_liangbi", PX_VOL_SIGMA_WINDOW,
+        df, "code", "_amt_ratio", PX_VOL_SIGMA_WINDOW,
         min_periods=PX_VOL_SIGMA_MIN_DAYS, agg="mean", sort=False,
     )
     sig = grouped_rolling_agg(
-        df, "code", "_liangbi", PX_VOL_SIGMA_WINDOW,
+        df, "code", "_amt_ratio", PX_VOL_SIGMA_WINDOW,
         min_periods=PX_VOL_SIGMA_MIN_DAYS, agg="std", ddof=1, sort=False,
     )
     df["_lb_mu"] = mu
@@ -364,14 +357,17 @@ def add_px_vol_features(df: pd.DataFrame) -> pd.DataFrame:
                   periods=1, sort=False)
     grouped_shift(df, ["code"], "_lb_sig", out_names="_lb_sig_lag",
                   periods=1, sort=False)
-    lb = df["_liangbi"]
+    lb = df["_amt_ratio"]
     mu_l = df["_lb_mu_lag"]
     sig_l = df["_lb_sig_lag"]
     df["px_z"] = ((lb - mu_l) / sig_l).where(
         lb.notna() & mu_l.notna() & sig_l.notna() & (sig_l > 1e-12))
+    # Keep the raw 量比 as a named column (the price_vs_amt registry
+    # records it as the state evidence; consumers recompute nothing).
+    df["amt_ratio"] = lb
 
     return df.drop(columns=[
-        "_lb_base", "_liangbi", "_lb_mu", "_lb_sig",
+        "_lb_base", "_amt_ratio", "_lb_mu", "_lb_sig",
         "_lb_mu_lag", "_lb_sig_lag",
     ])
 
@@ -565,7 +561,7 @@ async def fetch_hyped_episodes(
     episode, not per date) bounded to end_date >= ``since``.
 
     An episode is a concatenated hype span (start_date..end_date
-    inclusive, any min_checkin_period) from analysis.mov_ave_market_hypes.
+    inclusive, any min_checkin_period) from stats.mov_ave_market_hypes.
     Dates inside an episode are the "market-hyped dates"; expansion to
     per-(code, date) flags happens host-side in wide.build_hype_matrix
     (expanding in SQL to calendar rows would blow up row counts for the
@@ -579,7 +575,7 @@ async def fetch_hyped_episodes(
         SELECT m.code,
                extract(epoch from m.start_date)::float8 AS start_date,
                extract(epoch from m.end_date)::float8   AS end_date
-        FROM analysis.mov_ave_market_hypes m
+        FROM stats.mov_ave_market_hypes m
         WHERE m.sec_type = $1
           AND m.end_date >= $2
         ORDER BY m.code, m.start_date ASC
@@ -593,3 +589,135 @@ async def fetch_hyped_episodes(
     df["start_date"] = epoch_col_to_dt64(df["start_date"], index=df.index)
     df["end_date"] = epoch_col_to_dt64(df["end_date"], index=df.index)
     return df
+
+
+# ---------------------------------------------------------------------------
+#  px_vol state registry (analysis.mov_ave_price_vs_amt) — the px_vol
+#  family's DATE-LEVEL source of truth. The forecast / signal engines
+#  consume the registry's categories instead of re-deriving them from
+#  raw features, so every bucket audits against the recorded states.
+# ---------------------------------------------------------------------------
+
+_PVA_STATE_COLUMNS = [
+    "code", "date", "px_speed", "vol_state", "px_t", "px_z",
+]
+
+
+async def fetch_price_vs_amt_states(
+    conn,
+    sec_type: str,
+    codes: list[str],
+    since: date,
+) -> pd.DataFrame:
+    """Fetch the sec_type's per-(code, date) Price × Amt state rows
+    from analysis.mov_ave_price_vs_amt, bounded to date >= ``since``.
+
+    One row per state-valid day (the registry stores EVERY day whose
+    σ_ret and 量比 z legs are valid — the 5×3 bands are exhaustive).
+    Returns a DataFrame with columns ``_PVA_STATE_COLUMNS`` (dates as
+    datetime64[us]; px_speed / vol_state as the recorded names).
+    """
+    if not codes:
+        return pd.DataFrame(columns=_PVA_STATE_COLUMNS)
+    rows = await conn.fetch(
+        """
+        SELECT m.code,
+               extract(epoch from m.date)::float8 AS date,
+               m.px_speed, m.vol_state,
+               m.px_t::float8, m.px_z::float8
+        FROM analysis.mov_ave_price_vs_amt m
+        WHERE m.sec_type = $1
+          AND m.code = ANY($2::text[])
+          AND m.date >= $3
+        ORDER BY m.code, m.date ASC
+        """,
+        sec_type,
+        sorted(codes),
+        since,
+    )
+    if not rows:
+        return pd.DataFrame(columns=_PVA_STATE_COLUMNS)
+    df = pd.DataFrame(rec_cols(rows), columns=_PVA_STATE_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    return df
+
+
+async def fetch_price_vs_amt_source(
+    conn,
+    sec_type: str,
+    codes: list[str],
+) -> pd.DataFrame:
+    """Fetch the REGISTRY build's source frame — price + trading_amount
+    per (code, date) with the SAME conventions as fetch_analysis_inputs
+    (ETF price = COALESCE(adj_close, close); estimated closes excluded
+    for etf/index; trading_amount from the sec_type's own source). The
+    registry (analysis.mov_ave_price_vs_amt, built by
+    analyze.mov_ave_spread.price_vs_amt) must classify on exactly the
+    price series the forecast engine consumes, or the buckets would not
+    audit 1:1 against the recorded states.
+
+    Returns an unbounded FULL-history frame (the trailing σ/z windows
+    need the code's whole past) with columns [sec_type, code, date,
+    price, trading_amount], sorted by (code, date).
+    """
+    base, price_expr = _PRICE_SOURCE[sec_type]
+    amt_join, amt_expr, _, est_filter = _AMT_SOURCE[sec_type]
+    sql = f"""
+        SELECT b.code,
+               extract(epoch from b.date)::float8 AS date,
+               {price_expr}::float8 AS price,
+               {amt_expr}::float8 AS trading_amount
+        FROM {base}
+        {amt_join}
+        WHERE b.code = ANY($1::text[])
+          AND b.close IS NOT NULL
+          {est_filter}
+        ORDER BY b.code, b.date ASC
+    """
+    rows = await conn.fetch(sql, sorted(codes))
+    columns = ["sec_type", "code", "date", "price", "trading_amount"]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    df = pd.DataFrame(rec_cols(rows), columns=columns[1:])
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df.insert(0, "sec_type", sec_type)
+    return df
+
+
+async def assert_price_vs_amt_params(conn, sec_type: str) -> None:
+    """Audit guard: the registry's recorded build parameters must match
+    the engine's PX_VOL_* constants exactly — a mismatch means the
+    registry was built with a different calibration than the
+    consumption-side thresholds (rebuild the registry, or realign the
+    constants, before trusting the buckets)."""
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT sigma_window, lb_window, k_slow_up, k_slow_dn,
+               k_sharp, z_heavy, z_shrink, sigma_floor
+        FROM analysis.mov_ave_price_vs_amt
+        WHERE sec_type = $1
+        """,
+        sec_type,
+    )
+    if not rows:
+        return  # empty registry — the caller skips the px_vol stage
+    expected = {
+        "sigma_window": PX_VOL_SIGMA_WINDOW,
+        "lb_window": PX_VOL_LB_WINDOW,
+        "k_slow_up": float(PX_VOL_K_SLOW_UP),
+        "k_slow_dn": float(PX_VOL_K_SLOW_DN),
+        "k_sharp": float(PX_VOL_K_SHARP),
+        "z_heavy": float(PX_VOL_Z_HEAVY),
+        "z_shrink": float(PX_VOL_Z_SHRINK),
+        "sigma_floor": float(PX_VOL_SIGMA_FLOOR),
+    }
+    for r in rows:
+        got = {k: float(r[k]) for k in expected}
+        if got != expected:
+            raise ValueError(
+                f"[{sec_type}] analysis.mov_ave_price_vs_amt recorded "
+                f"build parameters {got} differ from the engine "
+                f"constants {expected} — rebuild the registry "
+                f"(python -m analyze.mov_ave_spread) or realign the "
+                f"px_vol constants before running the forecast engines."
+            )

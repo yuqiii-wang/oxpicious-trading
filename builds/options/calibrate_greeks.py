@@ -13,6 +13,9 @@ import QuantLib as ql
 
 from _common.df_utils import bs_price_greeks
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("calibrate_greeks")
+
 r = 0.02
 
 rows = []
@@ -28,7 +31,7 @@ for _ in range(300):
 for S, K, T, sig, is_call in rows[:0]:
     pass
 
-print(f"{'S':>5s} {'K':>5s} {'T':>5s} {'sig':>5s} {'cp':>3s} | "
+logger.info(f"{'S':>5s} {'K':>5s} {'T':>5s} {'sig':>5s} {'cp':>3s} | "
       f"{'d_QL':>8s} {'d_A':>8s} {'d_B':>8s} | "
       f"{'g_QL':>10s} {'g_A':>10s} {'g_B':>10s} | "
       f"{'th_QL':>10s} {'t1':>10s} {'t2':>10s} {'t3':>10s}")
@@ -90,11 +93,11 @@ for S, K, T, sig, is_call in rows:
         err[k] = max(err[k], abs(v - ref))
 
     if rows.index((S, K, T, sig, is_call)) < 3:
-        print(f"{S:5.2f} {K:5.2f} {T:5.2f} {sig:5.2f} {'C' if is_call else 'P':>3s} | "
+        logger.info(f"{S:5.2f} {K:5.2f} {T:5.2f} {sig:5.2f} {'C' if is_call else 'P':>3s} | "
               f"{d_QL:8.5f} {d_A:8.5f} {d_B:8.5f} | "
               f"{g_QL:10.6f} {g_A:10.6f} {g_B:10.6f} | "
               f"{th_QL:10.6f} {t1:10.6f} {t2:10.6f} {t3:10.6f}")
 
-print("\nMax abs error vs QuantLib over the grid:")
+logger.error("\nMax abs error vs QuantLib over the grid:")
 for k, v in err.items():
-    print(f"  {k}: {v:.3e}")
+    logger.info(f"  {k}: {v:.3e}")

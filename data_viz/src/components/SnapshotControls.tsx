@@ -16,9 +16,9 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import { DatePicker } from "@mui/x-date-pickers/DatePicker";
-import dayjs, { type Dayjs } from "dayjs";
+import dayjs from "dayjs";
 import { useStore } from "@/store/filters";
+import { DateSelector } from "@/shared/components/date-selector";
 import { UNDERLYING_LABELS } from "@/theme/chart-palette";
 
 interface UnderlyingOpt {
@@ -85,9 +85,6 @@ export default function SnapshotControls({ underlyings, dates, selectedDate, onS
   const optionsTargetType = useStore((s) => s.optionsTargetType);
   const setOptionsTargetType = useStore((s) => s.setOptionsTargetType);
 
-  const minDate = dates.length > 0 ? dayjs(dates[0]) : undefined;
-  const maxDate = dates.length > 0 ? dayjs(dates[dates.length - 1]) : undefined;
-
   return (
     <Stack
       direction={{ xs: "column", md: "row" }}
@@ -139,16 +136,12 @@ export default function SnapshotControls({ underlyings, dates, selectedDate, onS
         Snapshot Date
       </Typography>
 
-      <DatePicker
+      <DateSelector
+        dates={dates}
+        value={selectedDate || null}
         label="Select date"
-        value={selectedDate ? dayjs(selectedDate) : null}
-        format="YYYY-MM-DD"
-        minDate={minDate}
-        maxDate={maxDate}
-        slotProps={{
-          textField: { size: "small", sx: { width: 180 } },
-        }}
-        onChange={(v: Dayjs | null) => onSelectedDateChange(v ? v.format("YYYY-MM-DD") : "")}
+        minWidth={180}
+        onChange={(v) => onSelectedDateChange(v ?? "")}
       />
 
       <Typography variant="caption" color="text.secondary">

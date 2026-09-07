@@ -132,6 +132,9 @@ from analyze.mov_ave_spread.ohlc_vector import (
     compute_group_anchors_all_windows,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Compute helpers (pure pandas / cuDF)
@@ -546,8 +549,8 @@ def build_ohlc_long_frame(df: pd.DataFrame) -> pd.DataFrame:
     if nulled:
         total: int = sum(nulled.values())
         per: str = ", ".join(f"{c}={n}" for c, n in nulled.items())
-        print(f"    -> overflow-guard nulled {total:,} value(s) across "
-              f"{len(nulled)} column(s): {per}", flush=True)
+        logger.info(f"    -> overflow-guard nulled {total:,} value(s) across "
+              f"{len(nulled)} column(s): {per}")
 
     return long_df
 
@@ -654,10 +657,9 @@ async def run_ohlc(
                 None, infers sec_types from the DataFrame.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  MOV_AVE_SPREAD_DETAIL_OHLC (internal step of mov_ave_spread)",
-          flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  MOV_AVE_SPREAD_DETAIL_OHLC (internal step of mov_ave_spread)")
+    logger.info("=" * 78)
 
     # Select only the columns OHLC needs — the parent DataFrame carries
     # many extra columns (other MAs, slopes, stds, trading_amt_*) that
@@ -671,7 +673,7 @@ async def run_ohlc(
     ohlc_df = df[available].copy()
 
     if ohlc_df.empty:
-        print("    -> no source data; skipping OHLC step.", flush=True)
+        logger.info("    -> no source data; skipping OHLC step.")
         return
 
     # Use the sec_type passed by the parent (per-sec_type loop) or infer
@@ -688,35 +690,33 @@ async def run_ohlc(
         # and bypass the per-sec_type skip-filter (sec_types=() at the
         # insert below keeps every row — dates covered by OTHER codes
         # would otherwise mask this code's gaps).
-        print("    mode: SINGLE-CODE (full recompute for this code)",
-              flush=True)
+        logger.info("    mode: SINGLE-CODE (full recompute for this code)")
         target_dates_union: Optional[Set] = None
     elif force:
-        print("    mode: FORCE (full recompute)", flush=True)
+        logger.info("    mode: FORCE (full recompute)")
         if sec_type is not None:
             # Per-sec_type scope: DELETE only this sec_type's rows — the
             # parent loop calls run_ohlc once per sec_type, so a whole-
             # table TRUNCATE here would wipe the previous sec_type's
             # freshly recomputed rows.
-            print(f"\n[o0/3] Force mode: deleting {sec_type} rows from "
-                  "mov_ave_spreads_detail_ohlc...", flush=True)
+            logger.info(f"\n[o0/3] Force mode: deleting {sec_type} rows from "
+                  "mov_ave_spreads_detail_ohlc...")
             status: str = await conn.execute(
                 f"DELETE FROM {OHLC_TABLE} WHERE sec_type = $1", sec_type,
             )
             n_del: int = int(status.rsplit(" ", 1)[-1]) if status else 0
-            print(f"    -> deleted {n_del:,} rows; will recompute all "
-                  f"{sec_type} rows", flush=True)
+            logger.info(f"    -> deleted {n_del:,} rows; will recompute all "
+                  f"{sec_type} rows")
         else:
-            print("\n[o0/3] Force mode: truncating "
-                  "mov_ave_spreads_detail_ohlc...", flush=True)
+            logger.info("\n[o0/3] Force mode: truncating "
+                  "mov_ave_spreads_detail_ohlc...")
             await truncate_table_async(conn, OHLC_TABLE)
-            print("    -> truncated; will recompute all rows", flush=True)
+            logger.info("    -> truncated; will recompute all rows")
         target_dates_union: Optional[Set] = None
     else:
-        print("    mode: incremental (missing dates only)", flush=True)
-        print("\n[o0/3] Detecting missing dates PER-sec_type "
-              "(etf_identity vs detail_ohlc[etf], etc.)...",
-              flush=True)
+        logger.info("    mode: incremental (missing dates only)")
+        logger.info("\n[o0/3] Detecting missing dates PER-sec_type "
+              "(etf_identity vs detail_ohlc[etf], etc.)...")
         target_dates_per_st: dict = {}
         for st in sec_types:
             td_st = await find_missing_analysis_dates(
@@ -735,27 +735,26 @@ async def run_ohlc(
                     st, sorted(repair_st),
                 )
                 n_deleted: int = int(status.rsplit(" ", 1)[-1]) if status else 0
-                print(f"    -> {st}: backfill repair — deleted "
+                logger.info(f"    -> {st}: backfill repair — deleted "
                       f"{n_deleted:,} incomplete rows across "
-                      f"{len(repair_st)} dates", flush=True)
+                      f"{len(repair_st)} dates")
             target_dates_per_st[st] = td_st | repair_st
-            print(f"    -> {st}: {len(td_st)} missing + "
-                  f"{len(repair_st)} repair dates", flush=True)
+            logger.info(f"    -> {st}: {len(td_st)} missing + "
+                  f"{len(repair_st)} repair dates")
         # Union across sec_types — a date is "to do" if ANY sec_type
         # is missing it.
         target_dates_union = set()
         for s in target_dates_per_st.values():
             target_dates_union |= s
-        print(f"    -> union across sec_types: "
-              f"{len(target_dates_union)} dates to (re)compute",
-              flush=True)
+        logger.info(f"    -> union across sec_types: "
+              f"{len(target_dates_union)} dates to (re)compute")
         if not target_dates_union:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return
 
     # ---- Step 1: compute OHLC columns over full history, then filter --
-    print("\n[o1/3] Computing today_close + rolling OHLC columns per "
-          "(sec_type, code, date) over full history...", flush=True)
+    logger.info("\n[o1/3] Computing today_close + rolling OHLC columns per "
+          "(sec_type, code, date) over full history...")
     ohlc_df = compute_ohlc_columns(ohlc_df)
 
     if target_dates_union is not None and len(target_dates_union) > 0:
@@ -766,11 +765,11 @@ async def run_ohlc(
         # so the hash comparison hits.
         td64 = pd.to_datetime(sorted(target_dates_union)).values
         ohlc_df = ohlc_df[ohlc_df["date"].isin(td64)].reset_index(drop=True)
-        print(f"    -> incremental filter: {len(ohlc_df):,} of {n_before:,} "
-              f"rows are in target_dates_union", flush=True)
+        logger.info(f"    -> incremental filter: {len(ohlc_df):,} of {n_before:,} "
+              f"rows are in target_dates_union")
 
     if ohlc_df.empty:
-        print("    -> no rows to upsert; skipping OHLC upsert.", flush=True)
+        logger.info("    -> no rows to upsert; skipping OHLC upsert.")
         return
 
     # ---- Step 2: build + insert (chunked by date) -------------------
@@ -778,10 +777,10 @@ async def run_ohlc(
     # LONG (one row per (sec_type, code, date, period)). build_fn melts
     # each date-bounded chunk to the long frame and the CSV COPY writer
     # inserts it — no per-row dicts, C-level client encoding.
-    print(f"\n[o2/3] Building + inserting {len(ohlc_df):,} wide rows "
+    logger.info(f"\n[o2/3] Building + inserting {len(ohlc_df):,} wide rows "
           f"(x{len(OHLC_WINDOWS)} periods = "
           f"{len(ohlc_df) * len(OHLC_WINDOWS):,} long rows) in "
-          f"date-bounded chunks via CSV COPY...", flush=True)
+          f"date-bounded chunks via CSV COPY...")
     n = await build_and_insert_chunked_df(
         conn, pool, ohlc_df,
         build_ohlc_long_frame,
@@ -792,11 +791,10 @@ async def run_ohlc(
         label="mov_ave_spreads_detail_ohlc",
     )
     del ohlc_df
-    print(f"    -> inserted {n:,} rows", flush=True)
+    logger.info(f"    -> inserted {n:,} rows")
 
     # ---- Step 3: register in analysis_identity ----------------------
-    print(f"\n[o3/3] Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info(f"\n[o3/3] Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=OHLC_ANALYSIS_NAME,
@@ -804,5 +802,5 @@ async def run_ohlc(
         description=OHLC_DESCRIPTION,
     )
 
-    print(f"\n  mov_ave_spreads_detail_ohlc wall time: "
-          f"{time.time() - t0:.1f}s", flush=True)
+    logger.info(f"\n  mov_ave_spreads_detail_ohlc wall time: "
+          f"{time.time() - t0:.1f}s")

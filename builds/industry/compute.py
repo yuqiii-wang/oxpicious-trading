@@ -25,6 +25,9 @@ import pandas as pd
 
 from _common.df_utils import should_use_gpu
 
+import logging
+logger = logging.getLogger(__name__)
+
 # OHLC fields rebased to 100 at each index's first available close.
 _OHLC_FIELDS = ("open", "high", "low", "close")
 
@@ -75,7 +78,7 @@ def rebase_ohlc(df: pd.DataFrame) -> pd.DataFrame:
 
     # Log GPU decision for awareness (no branching).
     if should_use_gpu(work, op_type="groupby_agg"):
-        print(f"    [cuDF router] {len(work):,} rows — groupby_agg (GPU-worthy)", flush=True)
+        logger.info(f"    [cuDF router] {len(work):,} rows — groupby_agg (GPU-worthy)")
 
     first_close = (
         work.groupby("code", as_index=False)
@@ -114,7 +117,7 @@ def aggregate_by_pool(df: pd.DataFrame) -> pd.DataFrame:
 
     # Log GPU decision for awareness (no branching).
     if should_use_gpu(df, op_type="groupby_agg"):
-        print(f"    [cuDF router] {len(df):,} rows — groupby_agg (GPU-worthy)", flush=True)
+        logger.info(f"    [cuDF router] {len(df):,} rows — groupby_agg (GPU-worthy)")
 
     # Cache industry_label by industry_id — label is constant per
     # industry_id, so take first non-empty. Kept as a small frame for a

@@ -12,7 +12,7 @@ band never enter a bucket.) Codes whose own history does not span the
 full window (first data date > window start) are gated out — no
 partial-window stats. Each (code, w, k, side) bucket is SPLIT into
 two rows by the PK member is_market_hyped — whether the bucket's breach
-dates fall inside the code's analysis.mov_ave_market_hypes episodes:
+dates fall inside the code's stats.mov_ave_market_hypes episodes:
 one row for the hyped breach days and one for the non-hyped breach days
 (each subset emitted only where non-empty — no breach, no record).
 
@@ -26,17 +26,9 @@ on the trigger-cell lists — the hype split is a cell filter, the
 per-horizon mean / high / low n-day forward change and
 P(reverse beyond the code's adaptive reverse_threshold)
 come from wide.aggregate_horizons_sparse (bincount/reduceat passes
-scaling with the trigger count), and the breach magnitude aggregates
-(mean_excess_close, mean_excess_max / max_excess_max — MEAN / MAX
-fractional close / intraday excursion beyond the band, high for upper /
-low for lower breaches) are gathered at the cells themselves: the
-per-cell band level is a vectorized
-``MA[t,c] ± ks_arr[k]·SD[t,c]`` gather (no dense (T, C, K) excursion
-tensors), counts/sums accumulate with np.bincount and the per-group
-max with one np.maximum.reduceat over the group-contiguous sorted
-cells. The row payload (forecast_results fields) is expanded by
-wide.build_result_rows (vectorized rounding). No per-config / per-code
-Python loops.
+scaling with the trigger count). The row payload (forecast_results
+fields) is expanded by wide.build_result_rows (vectorized rounding).
+No per-config / per-code Python loops.
 
 Yields (stat_month, rows) so __main__ can split each row into the
 mov_std motivation dicts and the forecast_results result dicts and write
@@ -44,7 +36,6 @@ month-major.
 """
 from __future__ import annotations
 
-import json
 from datetime import date
 from typing import Iterator
 
@@ -63,7 +54,6 @@ from analyze.analysis_forecasts.wide import (
     apply_cooldown,
     build_result_rows,
     reverse_thresholds,
-    round6,
     window_sigmas,
 )
 
@@ -82,8 +72,7 @@ def compute_std_results(
     """Yield (stat_month, bucket rows) per stat month.
 
     Args:
-        mats: wide matrices keyed "price", "high", "low", f"ma_{w}",
-              f"std_{w}".
+        mats: wide matrices keyed "price", f"ma_{w}", f"std_{w}".
         chg:  shared change matrices (build_change_matrices):
               NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS.
         windows: resolved MonthWindow list for the target months.
@@ -102,7 +91,6 @@ def compute_std_results(
     """
     C = len(codes)
     K = len(ks)
-    ks_arr = np.asarray(ks, dtype=np.float64)
     for mw in windows:
         lo, hi = mw.lo, mw.hi
         if lo >= hi:
@@ -125,15 +113,8 @@ def compute_std_results(
         # k·σ of the code's window forward changes; fixed fallback).
         thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
         P = mats["price"][lo:hi]
-        HIGH = mats["high"][lo:hi]
-        LOW = mats["low"][lo:hi]
         HY = hype[lo:hi]
         live2 = live[:, None]
-        # ext_ok rejects high/low = 0 placeholders (some CSIndex files
-        # carry high = close − 0.01 / low = 0 when intraday data is
-        # absent) — "excursion beyond the band" must be positive to
-        # mean anything.
-        ext_ok = {"upper": HIGH > 0, "lower": LOW > 0}
 
         rows: list[dict] = []
         for w in ma_windows:
@@ -214,9 +195,8 @@ def compute_std_results(
                         sc = c_s[sel]
                         fk = flat_s[sel]
                         # Group-ascending cell order — one stable sort
-                        # shared by the subset count, every horizon's
-                        # bincount / reduceat reductions and the breach
-                        # magnitude reduceat.
+                        # shared by the subset count and every horizon's
+                        # bincount / reduceat reductions.
                         order = np.argsort(fk, kind="stable")
                         st = st[order]
                         sc = sc[order]
@@ -242,79 +222,12 @@ def compute_std_results(
                                 "side": side,
                                 "cooldown_days": cd,
                                 "is_market_hyped": hyped,
+                                # config JSONB: no extra motivation data
+                                # for std buckets (NULL = empty config)
+                                "config": None,
                             }
                             for j, i in zip(kk.tolist(), ii.tolist())
                         ]
-
-                        # Breach magnitude aggregates over the subset —
-                        # gathered at the cells (band level per cell is
-                        # a vectorized MA ± ks_arr[fk]·SD gather; no
-                        # dense excursion tensors). Counts/sums via
-                        # bincount, per-group max via reduceat.
-                        with np.errstate(divide="ignore", invalid="ignore"):
-                            kf = fk % K  # config axis of the group id
-                            thr = (
-                                MA[st, sc] + ks_arr[kf] * SD[st, sc]
-                                if side == "upper"
-                                else MA[st, sc] - ks_arr[kf] * SD[st, sc]
-                            )
-                            ec = (
-                                (P[st, sc] - thr) / thr if side == "upper"
-                                else (thr - P[st, sc]) / thr
-                            )
-                            em = (
-                                (HIGH[st, sc] - thr) / thr if side == "upper"
-                                else (thr - LOW[st, sc]) / thr
-                            )
-                        # close-based excursion: any finite one counts
-                        # (band 0 → inf / NaN bands → NaN filtered by
-                        # isfinite); intraday excursion only genuinely
-                        # POSITIVE ones (+ ext_ok placeholder guard) —
-                        # sub-band extremes are rejected (exc_m > 0).
-                        vc = np.isfinite(ec)
-                        vm = (em > 0) & ext_ok[side][st, sc]
-                        CP = C * K
-                        cc = np.bincount(fk[vc], minlength=CP).reshape(C, K)
-                        scc = np.bincount(
-                            fk[vc], weights=ec[vc], minlength=CP
-                        ).reshape(C, K)
-                        cm = np.bincount(fk[vm], minlength=CP).reshape(C, K)
-                        smc = np.bincount(
-                            fk[vm], weights=em[vm], minlength=CP
-                        ).reshape(C, K)
-                        bounds = np.flatnonzero(fk[1:] != fk[:-1]) + 1
-                        starts = np.concatenate(([0], bounds))
-                        gid = fk[starts]
-                        mx = np.full(CP, -np.inf)
-                        # Groups with no valid cell keep the -inf default
-                        # (the legacy where(..., -inf).max semantics).
-                        mx[gid] = np.maximum.reduceat(
-                            np.where(vm, em, -np.inf), starts
-                        )
-                        mx = mx.reshape(C, K)
-
-                        R = kk.size
-                        cc_e = cc[ii, kk]
-                        cm_e = cm[ii, kk]
-                        mean_close = np.divide(
-                            scc[ii, kk], cc_e,
-                            out=np.full(R, np.nan), where=cc_e > 0,
-                        )
-                        mean_max = np.divide(
-                            smc[ii, kk], cm_e,
-                            out=np.full(R, np.nan), where=cm_e > 0,
-                        )
-                        # config JSONB: breach magnitude metrics
-                        # (migrated from mov_std scalar columns)
-                        # asyncpg COPY needs a JSON text string
-                        for row, mc, mm, mxv in zip(
-                            base, mean_close, mean_max, mx[ii, kk]
-                        ):
-                            row["config"] = json.dumps({
-                                "mean_excess_close": round6(mc),
-                                "mean_excess_max": round6(mm),
-                                "max_excess_max": round6(mxv),
-                            })
 
                         rows.extend(build_result_rows(agg, kk, ii, base, thr_n))
 

@@ -85,6 +85,9 @@ from _common.df_utils import epoch_col_to_dt64
 from analyze._common import upsert_analysis_identity
 from _common.df_utils.rolling_corr import release_cupy_pool
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def _cupy_available() -> bool:
     """Cached CuPy + CUDA device check (same probe as recurring_cycles._fft)."""
@@ -309,12 +312,12 @@ def _window_corr_stack(
             del gx0, gsx, gsxx, gsxy, gcov, gvar, gcorr
             release_cupy_pool()
             if not _GPU_BACKEND_LOGGED:
-                print(f"    [corr] window-corr backend: cupy "
-                      f"(est {est_bytes >> 20} MiB)", flush=True)
+                logger.info(f"    [corr] window-corr backend: cupy "
+                      f"(est {est_bytes >> 20} MiB)")
                 _GPU_BACKEND_LOGGED = True
         except Exception as e:                                     # pragma: no cover
-            print(f"    [corr] cupy failed ({type(e).__name__}: {e}) "
-                  f"-> numpy CPU", flush=True)
+            logger.error(f"    [corr] cupy failed ({type(e).__name__}: {e}) "
+                  f"-> numpy CPU")
             corr = None
             release_cupy_pool()
     if corr is None:
@@ -405,10 +408,9 @@ async def run_correlations(
         refresh button).
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  INDUSTRY CORRELATIONS (internal step of industry_sentiments)",
-          flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  INDUSTRY CORRELATIONS (internal step of industry_sentiments)")
+    logger.info("=" * 78)
 
     filtered = industry_ids is not None and len(industry_ids) > 0
     if filtered and force:
@@ -421,21 +423,20 @@ async def run_correlations(
                    and target_dates is not None
                    and len(target_dates) > 0)
     if force:
-        print("    mode: FORCE (full recompute)", flush=True)
+        logger.info("    mode: FORCE (full recompute)")
     elif filtered:
-        print(f"    mode: FILTERED ({len(industry_ids)} industries — "
-              f"recompute all their windows, upsert)", flush=True)
+        logger.info(f"    mode: FILTERED ({len(industry_ids)} industries — "
+              f"recompute all their windows, upsert)")
     elif incremental:
-        print(f"    mode: incremental ({len(target_dates)} target window-end "
-              f"dates)", flush=True)
+        logger.info(f"    mode: incremental ({len(target_dates)} target window-end "
+              f"dates)")
 
     # ---- Step 1: load mean_close series from industry_basic_stats ----
     # Only non-NULL mean_close rows are useful — NULL rows mean no
     # member indices contributed to that (date, industry, pool) slice
     # and cannot be correlated.
-    print("\n[c1/4] Loading (date, industry_id, pool_size, mean_close) "
-          "from stats.industry_basic_stats (non-NULL mean only)...",
-          flush=True)
+    logger.info("\n[c1/4] Loading (date, industry_id, pool_size, mean_close) "
+          "from stats.industry_basic_stats (non-NULL mean only)...")
     if filtered:
         rows = await conn.fetch(f"""
             SELECT extract(epoch from date)::float8 AS date,
@@ -455,11 +456,11 @@ async def run_correlations(
         """)
     n_series = len(set(zip(rec_col(rows, "industry_id"),
                            rec_col(rows, "pool_size"))))
-    print(f"      -> {len(rows):,} rows across "
-          f"{n_series} (industry, pool_size) series", flush=True)
+    logger.info(f"      -> {len(rows):,} rows across "
+          f"{n_series} (industry, pool_size) series")
 
     if not rows:
-        print("      -> no data; skipping correlations step.", flush=True)
+        logger.info("      -> no data; skipping correlations step.")
         return
 
     # Whole-column extraction via the shared helper (C-level itemgetter
@@ -480,11 +481,9 @@ async def run_correlations(
     # Partition-key batching — see module docstring. One pivot + ONE
     # boolean overlap matmul + per-(pool, window) matmul-per-grid-start
     # corr stacks; emit stays industry-major for the key-batched writes.
-    print("\n[c2/4] Per-pool pivot to wide (date x industry) matrices...",
-          flush=True)
-    print(f"[c3/4] Windowed MA-corr stacks per (pool, window) "
-          f"(windows={WINDOWS}, stride={INTERVAL_DAYS}d)...",
-          flush=True)
+    logger.info("\n[c2/4] Per-pool pivot to wide (date x industry) matrices...")
+    logger.info(f"[c3/4] Windowed MA-corr stacks per (pool, window) "
+          f"(windows={WINDOWS}, stride={INTERVAL_DAYS}d)...")
 
     out_rows: list[dict] = []
     n_pairs_total = 0
@@ -575,11 +574,10 @@ async def run_correlations(
         n_pairs_with_data += pool_pairs
         pool_rows = int(s_idx.size)
         if s_idx.size == 0:
-            print(f"      [{pool:5s}] {t_len:,} dates x {n_ind} industries "
+            logger.info(f"      [{pool:5s}] {t_len:,} dates x {n_ind} industries "
                   f"-> {pool_pairs:,}/{n_ind * (n_ind - 1) // 2:,} pairs "
                   f"(overlap >= {MIN_OVERLAP}), {starts.size:,} grid "
-                  f"starts, {pool_rows:,} rows",
-                  flush=True)
+                  f"starts, {pool_rows:,} rows")
             continue
 
         # Corr values per window at the emitted cells only (fancy
@@ -616,11 +614,10 @@ async def run_correlations(
             )
         )
 
-        print(f"      [{pool:5s}] {t_len:,} dates x {n_ind} industries -> "
+        logger.info(f"      [{pool:5s}] {t_len:,} dates x {n_ind} industries -> "
               f"{pool_pairs:,}/{n_ind * (n_ind - 1) // 2:,} pairs "
               f"(overlap >= {MIN_OVERLAP}), {starts.size:,} grid starts, "
-              f"{pool_rows:,} rows",
-              flush=True)
+              f"{pool_rows:,} rows")
 
     # ---- Sanitize (in the row builder above) + ONE key-batched write -
     # Row dicts are built host-side directly from numpy columns (see
@@ -630,24 +627,20 @@ async def run_correlations(
     # (~100K rows) itself, so 757K rows become ~8 COPY round trips
     # instead of 234 per-industry ones.
     total_rows = len(out_rows)
-    print(f"      -> {n_pairs_total} industry pairs x up to 4 pools "
+    logger.info(f"      -> {n_pairs_total} industry pairs x up to 4 pools "
           f"= up to {n_pairs_total * 4} (pair, pool) combinations; "
-          f"{n_pairs_with_data} had >= {MIN_OVERLAP} overlapping dates",
-          flush=True)
-    print(f"      -> {total_rows:,} correlation rows emitted"
-          f"{' (target window-end dates filtered)' if incremental else ''}",
-          flush=True)
+          f"{n_pairs_with_data} had >= {MIN_OVERLAP} overlapping dates")
+    logger.info(f"      -> {total_rows:,} correlation rows emitted"
+          f"{' (target window-end dates filtered)' if incremental else ''}")
 
     if not out_rows:
-        print("      -> no rows to upsert; skipping correlations upsert.",
-              flush=True)
+        logger.info("      -> no rows to upsert; skipping correlations upsert.")
         return
 
     # ---- Step 4: truncate (force only) + insert ---------------------
     if force:
-        print(f"\n[c4/4] Truncating {TABLE} and key-batched-COPY-inserting "
-              f"{total_rows:,} rows (batch key = industry_id)...",
-              flush=True)
+        logger.info(f"\n[c4/4] Truncating {TABLE} and key-batched-COPY-inserting "
+              f"{total_rows:,} rows (batch key = industry_id)...")
         await truncate_table_async(conn, TABLE)
         n = await batched_copy_by_key_async(
             conn, TABLE, out_rows, key="industry_id",
@@ -655,8 +648,8 @@ async def run_correlations(
         )
         via = "key-batched COPY (force)"
     else:
-        print(f"\n[c4/4] Upserting {total_rows:,} rows into {TABLE} "
-              f"(target windows)...", flush=True)
+        logger.info(f"\n[c4/4] Upserting {total_rows:,} rows into {TABLE} "
+              f"(target windows)...")
         n_copied, n_upserted = await copy_or_upsert_split_async(
             conn, TABLE, out_rows,
             key_columns=[
@@ -672,7 +665,7 @@ async def run_correlations(
         via = "COPY" if n_copied > 0 and n_upserted == 0 else \
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
               "upsert"
-    print(f"      -> inserted {n:,} rows via {via}", flush=True)
+    logger.info(f"      -> inserted {n:,} rows via {via}")
 
     # ---- Register in analysis.analysis_identity ----------------------
     await upsert_analysis_identity(
@@ -694,10 +687,10 @@ async def run_correlations(
         GROUP BY pool_size
         ORDER BY pool_size
     """)
-    print("\n      Summary by pool_size:", flush=True)
+    logger.info("\n      Summary by pool_size:")
     for r in summary:
-        print(f"        {r['pool']:6s}: {r['n_rows']:>8,} rows . "
+        logger.info(f"        {r['pool']:6s}: {r['n_rows']:>8,} rows . "
               f"{r['n_pairs']:>4} pairs . "
-              f"{r['first_date']} -> {r['last_date']}", flush=True)
+              f"{r['first_date']} -> {r['last_date']}")
 
-    print(f"\n  correlations wall time: {time.time() - t0:.1f}s", flush=True)
+    logger.info(f"\n  correlations wall time: {time.time() - t0:.1f}s")

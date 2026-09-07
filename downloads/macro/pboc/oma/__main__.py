@@ -1011,13 +1011,13 @@ def reparse_existing_files(
     files = sorted(out_dir.glob(f"{OMA_FILE_PREFIX}_*.md"))
     n_total = len(files)
     n_ok = n_skip = n_fail = n_csv_ok = 0
-    print(f"[REPARSE] scanning {n_total} .md files in {out_dir}", flush=True)
+    logger.info(f"[REPARSE] scanning {n_total} .md files in {out_dir}")
 
     for fpath in files:
         try:
             text = fpath.read_text(encoding="utf-8")
         except Exception as e:
-            print(f"  [ERROR] cannot read {fpath.name}: {e}", flush=True)
+            logger.error(f"  [ERROR] cannot read {fpath.name}: {e}")
             n_fail += 1
             continue
         if not text.startswith("---"):
@@ -1081,10 +1081,10 @@ def reparse_existing_files(
                 if convert_md_to_csv(fpath):
                     n_csv_ok += 1
             except Exception as e:
-                print(f"  [WARN] CSV failed for {fpath.name}: {e}", flush=True)
+                logger.warning(f"  [WARN] CSV failed for {fpath.name}: {e}")
 
-    print(f"[REPARSE] done: {n_ok} re-parsed, {n_skip} skipped, {n_fail} failed "
-          f"({n_csv_ok} per-file CSVs written)", flush=True)
+    logger.error(f"[REPARSE] done: {n_ok} re-parsed, {n_skip} skipped, {n_fail} failed "
+          f"({n_csv_ok} per-file CSVs written)")
 
     result = {"total": n_total, "ok": n_ok, "skipped": n_skip,
               "failed": n_fail, "csv_files": n_csv_ok}
@@ -1092,7 +1092,7 @@ def reparse_existing_files(
         try:
             result["combined_csv"] = build_oma_combined_csv(out_dir)
         except Exception as e:
-            print(f"  [ERROR] build_oma_combined_csv failed: {e}", flush=True)
+            logger.error(f"  [ERROR] build_oma_combined_csv failed: {e}")
     return result
 
 
@@ -1117,9 +1117,9 @@ if __name__ == "__main__":
 
     if args.reparse:
         out_dir = resolve_out_dir(str(Path(__file__).resolve()), "pboc_oma_news", None)
-        print(reparse_existing_files(out_dir, convert_csv=convert_csv, build_csv=build_csv))
+        logger.info(reparse_existing_files(out_dir, convert_csv=convert_csv, build_csv=build_csv))
     else:
-        print(download_pboc_oma_news(
+        logger.info(download_pboc_oma_news(
             start_date=args.start_date,
             end_date=args.end_date,
             years=args.years,

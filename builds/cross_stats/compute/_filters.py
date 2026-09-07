@@ -8,6 +8,9 @@ import pandas as pd
 
 from builds.cross_stats.config import TABLE
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def filter_target_dates(conn, target_dates):
     """Return target_dates minus dates already present in TABLE as PAIR
@@ -31,9 +34,8 @@ async def filter_target_dates(conn, target_dates):
     missing = set(target_dates) - present
     n_already = len(target_dates) - len(missing)
     if n_already > 0:
-        print(f"    -> skip check: {n_already:,} of {len(target_dates):,} "
-              f"target dates already have pair rows in {TABLE} (skipped)",
-              flush=True)
+        logger.info(f"    -> skip check: {n_already:,} of {len(target_dates):,} "
+              f"target dates already have pair rows in {TABLE} (skipped)")
     return missing
 
 
@@ -61,7 +63,6 @@ def filter_to_target_rows(
         merged = merged[merged["date"].isin(target_dates)].copy()
 
     if (subject_idx + 1) % 10 == 0 or (subject_idx + 1) == n_subjects:
-        print(f"      {subject_code}: incremental filter "
-              f"{len(merged):,} of {n_before:,} rows in target_dates",
-              flush=True)
+        logger.info(f"      {subject_code}: incremental filter "
+              f"{len(merged):,} of {n_before:,} rows in target_dates")
     return merged

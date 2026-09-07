@@ -61,6 +61,11 @@ def build_universe(
         "first_date": first_dt,
         "last_date": last_dt,
     })
+    # Dict construction aligns on the groupby index whose name is "code",
+    # leaving uni with BOTH an index level and a column named "code" —
+    # pandas merge(on="code") then raises an ambiguity ValueError (cudf
+    # tolerates it). ``code`` stays only as the column.
+    uni.index.name = None
 
     # B3 window correction — see docstring.
     if db_day_stats is not None and len(db_day_stats):

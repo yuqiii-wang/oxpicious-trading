@@ -32,6 +32,9 @@ from typing import Any
 
 from ._async_ops import copy_insert_async
 
+import logging
+logger = logging.getLogger(__name__)
+
 # ~100K rows per chunk — small enough to bound memory, large enough to
 # amortize per-chunk transaction overhead (matches
 # analyze._common.upsert.DEFAULT_CHUNK_TARGET_ROWS).
@@ -107,6 +110,6 @@ async def batched_copy_by_key_async(
     total = 0
     for i, chunk in enumerate(chunks, start=1):
         total += await copy_insert_async(conn, table_name, chunk)
-        print(f"{prefix}chunk {i}/{n_chunks}: COPY {len(chunk):,} rows "
-              f"(cumulative {total:,})", flush=True)
+        logger.info(f"{prefix}chunk {i}/{n_chunks}: COPY {len(chunk):,} rows "
+              f"(cumulative {total:,})")
     return total

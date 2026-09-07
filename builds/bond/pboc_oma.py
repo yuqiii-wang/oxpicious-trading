@@ -15,6 +15,9 @@ import pandas as pd
 from builds._commons.safe_parse import safe_to_datetime
 from builds.bond.paths import PBOC_OMA_CSV
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def build_oma_df(start_date=None, end_date=None, verbose=True):
     """Build a PBoC OMA (Open Market Announcements) frame from oma_combined.csv.
@@ -36,18 +39,18 @@ def build_oma_df(start_date=None, end_date=None, verbose=True):
         serial_year, serial_no, detail_slug
     """
     if verbose:
-        print(f"    [PBOC-OMA] reading {PBOC_OMA_CSV}", flush=True)
+        logger.info(f"    [PBOC-OMA] reading {PBOC_OMA_CSV}")
 
     if not os.path.exists(PBOC_OMA_CSV):
         if verbose:
-            print(f"    [PBOC-OMA] WARNING: {PBOC_OMA_CSV} not found; "
-                  f"run `python download_pboc_oma.py` first.", flush=True)
+            logger.warning(f"    [PBOC-OMA] WARNING: {PBOC_OMA_CSV} not found; "
+                  f"run `python download_pboc_oma.py` first.")
         return pd.DataFrame()
 
     df = pd.read_csv(PBOC_OMA_CSV, dtype=str, encoding="utf-8-sig", keep_default_na=False)
     if len(df) == 0:
         if verbose:
-            print(f"    [PBOC-OMA] no records in {PBOC_OMA_CSV}", flush=True)
+            logger.info(f"    [PBOC-OMA] no records in {PBOC_OMA_CSV}")
         return pd.DataFrame()
 
     df = df.rename(columns={"pub_date": "date"})
@@ -61,7 +64,7 @@ def build_oma_df(start_date=None, end_date=None, verbose=True):
     df = df[df["type"] != "primary_dealer"].copy()
     if len(df) == 0:
         if verbose:
-            print(f"    [PBOC-OMA] no records after excluding primary_dealer", flush=True)
+            logger.info(f"    [PBOC-OMA] no records after excluding primary_dealer")
         return pd.DataFrame()
 
     keep = ["date", "title", "type", "content", "detail_url",
@@ -78,9 +81,9 @@ def build_oma_df(start_date=None, end_date=None, verbose=True):
         if len(df):
             type_counts = df["type"].value_counts().to_dict()
             type_summary = ", ".join(f"{t}={n}" for t, n in type_counts.items())
-            print(f"    [PBOC-OMA] {len(df)} announcements, "
+            logger.info(f"    [PBOC-OMA] {len(df)} announcements, "
                   f"{df['date'].min().date()} → {df['date'].max().date()} "
-                  f"[{type_summary}]", flush=True)
+                  f"[{type_summary}]")
         else:
-            print(f"    [PBOC-OMA] no records in range", flush=True)
+            logger.info(f"    [PBOC-OMA] no records in range")
     return df

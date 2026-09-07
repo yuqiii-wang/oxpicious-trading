@@ -56,6 +56,9 @@ from builds._commons.code_filter import add_code_arg, normalize_code
 
 # Re-export for argparse in the parent shell
 import argparse
+
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("options")
 _ap = argparse.ArgumentParser(
     description="Build SZSE + CFFEX options data (missing dates only)."
 )
@@ -105,7 +108,7 @@ async def _purge_for_force(underlying: str | None) -> None:
         conn = await get_db_or_exit()
         try:
             n = await delete_underlying_rows_async(conn, underlying)
-            print(f"    Deleted {n:,} (date, contract_code) rows of underlying {underlying}", flush=True)
+            logger.info(f"    Deleted {n:,} (date, contract_code) rows of underlying {underlying}")
         finally:
             await conn.close()
     else:
@@ -141,18 +144,18 @@ async def main() -> None:
         }
     )
     if code_filter:
-        print(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}", flush=True)
+        logger.info(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}")
     if forced_date:
-        print(f"[DATE MODE] Forced single-date build: {forced_date}", flush=True)
+        logger.info(f"[DATE MODE] Forced single-date build: {forced_date}")
 
     # --force: purge tables ONCE before running both builders
     if _args.force:
         if code_filter:
-            print(f"\n[FORCE] Deleting rows of underlying {code_filter} from the 7 options_* tables …", flush=True)
+            logger.info(f"\n[FORCE] Deleting rows of underlying {code_filter} from the 7 options_* tables …")
         else:
-            print("\n[FORCE] Truncating all 7 options_* tables …", flush=True)
+            logger.info("\n[FORCE] Truncating all 7 options_* tables …")
         await _purge_for_force(code_filter)
-        print("    Done.", flush=True)
+        logger.info("    Done.")
 
     child_argv = _build_child_argv(
         _args.start_date, _args.end_date, code_filter,
@@ -160,9 +163,9 @@ async def main() -> None:
     )
 
     # ---- 1. SZSE ETF options ----
-    print("\n" + "=" * 60, flush=True)
-    print("PHASE 1: SZSE ETF OPTIONS", flush=True)
-    print("=" * 60, flush=True)
+    logger.info("\n" + "=" * 60)
+    logger.info("PHASE 1: SZSE ETF OPTIONS")
+    logger.info("=" * 60)
     _orig_argv = sys.argv
     sys.argv = child_argv
     try:
@@ -170,27 +173,27 @@ async def main() -> None:
         await szse_main()
     except SystemExit as e:
         if e.code != 0:
-            print(f"[ERROR] SZSE builder exited with code {e.code}", flush=True)
+            logger.error(f"[ERROR] SZSE builder exited with code {e.code}")
     finally:
         sys.argv = _orig_argv
 
     # ---- 2. CFFEX index options ----
-    print("\n" + "=" * 60, flush=True)
-    print("PHASE 2: CFFEX INDEX OPTIONS", flush=True)
-    print("=" * 60, flush=True)
+    logger.info("\n" + "=" * 60)
+    logger.info("PHASE 2: CFFEX INDEX OPTIONS")
+    logger.info("=" * 60)
     sys.argv = child_argv
     try:
         from builds.options.cffex.__main__ import main as cffex_main
         await cffex_main()
     except SystemExit as e:
         if e.code != 0:
-            print(f"[ERROR] CFFEX builder exited with code {e.code}", flush=True)
+            logger.error(f"[ERROR] CFFEX builder exited with code {e.code}")
     finally:
         sys.argv = _orig_argv
 
-    print("\n" + "=" * 60, flush=True)
-    print("OPTIONS BUILD COMPLETE (SZSE + CFFEX)", flush=True)
-    print("=" * 60, flush=True)
+    logger.info("\n" + "=" * 60)
+    logger.info("OPTIONS BUILD COMPLETE (SZSE + CFFEX)")
+    logger.info("=" * 60)
     print_wall_time(t0)
 
 

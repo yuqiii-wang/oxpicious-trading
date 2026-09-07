@@ -37,6 +37,9 @@ from analyze.mov_ave_spread.helpers import (
     compute_trading_amt_market_share_vs_mas,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # Number of prior trading-day rows per code needed as lookback context for
 # slope (1st derivative, needs 1 prior row) and curvature (2nd derivative,
@@ -235,16 +238,15 @@ async def fetch_source_data(
     active_codes = await fetch_codes_with_recent_data_async(
         conn, identity_table, n_trading_days=RECENT_TRADING_DAYS,
     )
-    print(f"      pre-filter: {len(active_codes):,} {sec_type} codes have "
+    logger.info(f"      pre-filter: {len(active_codes):,} {sec_type} codes have "
           f"data in the last {RECENT_TRADING_DAYS} trading days "
-          f"(cutoff={cutoff.isoformat()})", flush=True)
+          f"(cutoff={cutoff.isoformat()})")
     if code_filter is not None:
         # Single-code mode (--code): bypass the active-universe pre-filter
         # and load exactly this code's full history. Empty df when the code
         # has no source data for this sec_type (caller skips it).
         active_codes = {code_filter}
-        print(f"      code filter: {code_filter} (single-code mode)",
-              flush=True)
+        logger.info(f"      code filter: {code_filter} (single-code mode)")
     if not active_codes:
         return pd.DataFrame(columns=["sec_type", "code", "date", "price",
                                      "open", "low", "high",
@@ -285,8 +287,8 @@ async def fetch_source_data(
     # representative-index trading amounts from stats.exchange_trading_amt).
     # Same dict for all sec_types — denominator is market-wide, not per-code.
     denominator_by_date = await _fetch_market_share_denominator(conn)
-    print(f"      market-share denominator: {len(denominator_by_date):,} "
-          f"dates", flush=True)
+    logger.info(f"      market-share denominator: {len(denominator_by_date):,} "
+          f"dates")
 
     sql = _fetch_sql_for_sec_type(sec_type)
     rows = await conn.fetch(sql, sorted(active_codes))
@@ -342,9 +344,9 @@ async def fetch_source_data(
     if n_loaded_codes < len(active_codes):
         # Some active codes had identity rows but no joined basic_stats /
         # tech_stats rows — they are dropped by the INNER JOINs.
-        print(f"      note: {len(active_codes) - n_loaded_codes:,} {sec_type} "
+        logger.info(f"      note: {len(active_codes) - n_loaded_codes:,} {sec_type} "
               f"codes had recent identity data but no joined basic/tech stats "
-              f"rows -> dropped by INNER JOIN", flush=True)
+              f"rows -> dropped by INNER JOIN")
     # Tag every row with its sec_type so downstream detail/summary rows
     # carry the discriminant column required by the new schema.
     df["sec_type"] = sec_type
@@ -409,9 +411,8 @@ async def fetch_source_data(
         # hits the GPU hash join.
         td64 = pd.to_datetime(sorted(target_dates)).values
         df = df[df["date"].isin(td64)].reset_index(drop=True)
-        print(f"      incremental filter: {len(df):,} of {n_before:,} rows "
-              f"are in target_dates (slope/curv context rows dropped)",
-              flush=True)
+        logger.info(f"      incremental filter: {len(df):,} of {n_before:,} rows "
+              f"are in target_dates (slope/curv context rows dropped)")
 
     # Reorder columns for readability.
     df = df[["sec_type", "code", "date", "price", "open", "low", "high",

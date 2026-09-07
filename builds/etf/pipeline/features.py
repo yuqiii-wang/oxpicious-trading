@@ -11,6 +11,9 @@ from _common.df_utils import compute_moving_averages, compute_emas, safe_columns
 from builds.etf.split_adjustment import apply_split_adjustment
 from builds.etf.composition import build_composition
 
+import logging
+logger = logging.getLogger(__name__)
+
 MARGIN_VALUE_COLS: list = [
     "rz_buy", "rz_balance", "rq_sell_qty", "rq_balance_qty",
     "rq_balance_amt", "total_balance",
@@ -32,7 +35,7 @@ def prepare_features(
     pre-window history (cum factors are forward products — seeding the
     first row reproduces full-history values exactly).
     """
-    print("\n[4/7] Merging OHLCV + margin, applying corp-action adjustment + MAs …", flush=True)
+    logger.info("\n[4/7] Merging OHLCV + margin, applying corp-action adjustment + MAs …")
     if len(margin_df):
         merged = ohlcv_df.merge(margin_df, on=["date", "code"], how="left", validate="m:1")
     else:
@@ -59,8 +62,8 @@ def prepare_features(
         merged, group_key="code", value_col="adj_close",
         spans=[6, 10, 20, 60, 120, 255],
     )
-    print(f"    → MA columns added: ma5, ma5_ratio, ma20, ma60, ma120, ma255; "
-          f"EMA columns added: ema6, ema10, ema20, ema60, ema120, ema255", flush=True)
+    logger.info(f"    → MA columns added: ma5, ma5_ratio, ma20, ma60, ma120, ma255; "
+          f"EMA columns added: ema6, ema10, ema20, ema60, ema120, ema255")
     return merged
 
 
@@ -82,7 +85,7 @@ def _fill_sse_rq_balance_amt(merged: pd.DataFrame) -> None:
         implied = merged["rq_balance_qty"] * mid_price
         merged["rq_balance_amt"] = merged["rq_balance_amt"].where(
             ~missing_rq_amt, implied)
-        print(f"    → Filled rq_balance_amt for {int(missing_rq_amt.sum()):,} SSE ETF rows", flush=True)
+        logger.info(f"    → Filled rq_balance_amt for {int(missing_rq_amt.sum()):,} SSE ETF rows")
 
 
 async def load_composition(
@@ -134,8 +137,8 @@ async def load_composition(
             for c, d in zip(rec_col(comp_existing_rows, "code"),
                             rec_col(comp_existing_rows, "snapshot_date"))
         }
-        print(f"    [COMP] {len(existing_ymd_keys):,} existing (code, snapshot_date) "
-              f"pairs in stats.sec_composition", flush=True)
+        logger.info(f"    [COMP] {len(existing_ymd_keys):,} existing (code, snapshot_date) "
+              f"pairs in stats.sec_composition")
         if forced_date is not None:
             # --date refresh: lift the gate for the forced snapshot date
             # only, so its composition CSVs are re-read + re-upserted.
@@ -143,11 +146,11 @@ async def load_composition(
             n_gated = len(existing_ymd_keys)
             existing_ymd_keys = {
                 k for k in existing_ymd_keys if not k.endswith(forced_ymd)}
-            print(f"    [DATE MODE] Composition gate lifted for snapshot "
+            logger.info(f"    [DATE MODE] Composition gate lifted for snapshot "
                   f"{forced_date}: {n_gated - len(existing_ymd_keys)} stored "
-                  f"pair(s) re-readable", flush=True)
+                  f"pair(s) re-readable")
 
-    print("\n    Building composition …", flush=True)
+    logger.info("\n    Building composition …")
     comp_long, comp_universe = build_composition(
         verbose=True, code=code_filter, existing_ymd_keys=existing_ymd_keys)
 
@@ -155,5 +158,5 @@ async def load_composition(
         comp_long = comp_long[
             comp_long["etf_code"].astype(str).str.strip().eq(code_filter)
         ].reset_index(drop=True)
-        print(f"    [CODE FILTER] Composition rows restricted to {code_filter}: {len(comp_long):,}", flush=True)
+        logger.info(f"    [CODE FILTER] Composition rows restricted to {code_filter}: {len(comp_long):,}")
     return comp_long, comp_universe

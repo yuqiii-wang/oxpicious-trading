@@ -17,6 +17,9 @@ from live.live_signals.config import (
     SIGNAL_SCALE,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # signal_type → evaluator module registry (dispatch table).
 _EVALUATORS: dict[str, object] = {
@@ -68,20 +71,18 @@ class AnalysisEvaluator:
         bar = await self.fetch_latest_intraday(sec_type, code)
         if bar is None:
             if verbose:
-                print(f"  [{sec_type}] {code}: no intraday price — skipped",
-                      flush=True)
+                logger.info(f"  [{sec_type}] {code}: no intraday price — skipped")
             return [], False
         bar_date, bar_time, close = bar
         if verbose:
-            print(f"  [{sec_type}] {code} latest intraday bar: "
-                  f"{bar_date} {bar_time} close={close}", flush=True)
+            logger.info(f"  [{sec_type}] {code} latest intraday bar: "
+                  f"{bar_date} {bar_time} close={close}")
 
         sigs = await fetch_active_signals(self._conn, sec_type, code)
         if not sigs:
             return [], True
         if verbose:
-            print(f"  [{sec_type}] {code}: {len(sigs)} active signal configs",
-                  flush=True)
+            logger.info(f"  [{sec_type}] {code}: {len(sigs)} active signal configs")
 
         # Fetch per-code supporting data (RSI for mov_rsi).
         rsi_by_window = await fetch_current_rsii(self._conn, sec_type, code)
@@ -91,17 +92,16 @@ class AnalysisEvaluator:
             ev = self._evaluate_one(sig, close, rsi_by_window)
             if ev is None:
                 if verbose:
-                    print(f"    {sig['signal_type']}/"
+                    logger.info(f"    {sig['signal_type']}/"
                           f"{sig['signal_sub_type']}: not comparable "
-                          f"(no current indicator value)", flush=True)
+                          f"(no current indicator value)")
                 continue
             triggered, value = ev
             if verbose:
                 mark = "TRIGGERED" if triggered else "ok"
-                print(f"    {sig['signal_type']}/{sig['signal_sub_type']} "
+                logger.info(f"    {sig['signal_type']}/{sig['signal_sub_type']} "
                       f"({sig['action']}): value={value:.4f} vs "
-                      f"threshold={sig['signal_threshold']:.4f} → {mark}",
-                      flush=True)
+                      f"threshold={sig['signal_threshold']:.4f} → {mark}")
             if not triggered:
                 continue
             # signal is stored at SIGNAL_SCALE decimals; signal_excess is
@@ -147,8 +147,8 @@ class AnalysisEvaluator:
         for st in sec_types:
             codes = await fetch_active_codes(self._conn, st)
             if verbose:
-                print(f"  [{st}] {len(codes)} codes with active signal "
-                      f"configs", flush=True)
+                logger.info(f"  [{st}] {len(codes)} codes with active signal "
+                      f"configs")
             n_missing = 0
             for code in codes:
                 recs, has_bar = await self.process_code(
@@ -159,9 +159,8 @@ class AnalysisEvaluator:
                     continue
                 total_records.extend(recs)
             if verbose:
-                print(f"  [{st}] checked {len(codes)} codes "
-                      f"({n_missing} without intraday price — skipped)",
-                      flush=True)
+                logger.info(f"  [{st}] checked {len(codes)} codes "
+                      f"({n_missing} without intraday price — skipped)")
         return total_records
 
     # ---- per-signal-type dispatch --------------------------------------------

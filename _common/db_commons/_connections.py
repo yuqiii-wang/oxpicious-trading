@@ -12,6 +12,9 @@ import psycopg
 
 from ._helpers import _get_conn_params, _get_replica_conn_params
 
+import logging
+logger = logging.getLogger(__name__)
+
 try:
     import asyncpg
 
@@ -47,7 +50,7 @@ def get_db_connection() -> psycopg.Connection:
         )
         return conn
     except Exception as e:
-        print(f"    [ERROR] Failed to connect to database: {e}", flush=True)
+        logger.error(f"    [ERROR] Failed to connect to database: {e}")
         raise
 
 
@@ -87,16 +90,14 @@ async def get_db_connection_async():
         # the exception type and repr so the root cause is always visible.
         msg = str(e).strip()
         if msg:
-            print(
+            logger.error(
                 f"    [ERROR] Failed to connect to database: "
                 f"{type(e).__name__}: {msg}",
-                flush=True,
             )
         else:
-            print(
+            logger.error(
                 f"    [ERROR] Failed to connect to database: "
                 f"{type(e).__name__} (no message) repr={e!r}",
-                flush=True,
             )
         raise
 
@@ -177,7 +178,7 @@ def get_read_db_connection() -> psycopg.Connection:
         conn.execute("SET default_transaction_read_only = on")
         return conn
     except Exception as e:
-        print(f"    [ERROR] Failed to connect to read replica: {e}", flush=True)
+        logger.error(f"    [ERROR] Failed to connect to read replica: {e}")
         raise
 
 
@@ -206,10 +207,9 @@ async def get_read_db_connection_async():
         return conn
     except Exception as e:
         msg = str(e).strip()
-        print(
+        logger.error(
             f"    [ERROR] Failed to connect to read replica: "
             f"{type(e).__name__}: {msg if msg else repr(e)}",
-            flush=True,
         )
         raise
 

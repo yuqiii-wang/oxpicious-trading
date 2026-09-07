@@ -15,6 +15,9 @@ from __future__ import annotations
 import argparse
 import sys
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("archive")
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(
@@ -68,7 +71,7 @@ def main() -> None:
             start_date=args.start_date,
             sleep_sec=sleep,
         )
-        print(result)
+        logger.info(result)
     elif args.subcommand == "reports":
         from downloads._common import LONG_SLEEP_INTERVAL
         from downloads.etf.szse.archive.reports import download_szse_etf_reports
@@ -83,7 +86,7 @@ def main() -> None:
             include_lof=not args.no_lof,
             start_date=args.start_date,
         )
-        print(result)
+        logger.info(result)
 
 
 if __name__ == "__main__":

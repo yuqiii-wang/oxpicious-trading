@@ -18,6 +18,9 @@ from _common.build_commons import (
 from builds.stock._helpers import _file_has_data
 from builds.stock.pipeline.discovery import file_date_from_path
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def find_latest_missing_dates(
     conn,
@@ -81,20 +84,20 @@ async def find_latest_missing_dates(
         n_ident_c: float = float(comp_row["n_ident"])
         n_basic_c: float = float(comp_row["n_basic"])
         if n_ident_c > 0 and n_basic_c < 0.5 * n_ident_c:
-            print(f"    [DB] tail date {db_max} INCOMPLETE "
+            logger.info(f"    [DB] tail date {db_max} INCOMPLETE "
                   f"(basic_stats {int(n_basic_c):,} / identity "
-                  f"{int(n_ident_c):,}) → re-ingesting", flush=True)
+                  f"{int(n_ident_c):,}) → re-ingesting")
             missing = {d for d in source_dates if d >= db_max}
             return missing
 
     if db_max is None or db_max < src_max:
         missing = {d for d in source_dates if db_max is None or d > db_max}
-        print(f"    [DB] latest-missing-dates: csv latest {src_max} vs db latest "
-              f"{db_max} → {len(missing)} tail dates missing", flush=True)
+        logger.info(f"    [DB] latest-missing-dates: csv latest {src_max} vs db latest "
+              f"{db_max} → {len(missing)} tail dates missing")
         return missing
 
-    print(f"    [DB] latest-missing-dates: csv latest {src_max} <= db latest "
-          f"{db_max} → nothing missing", flush=True)
+    logger.info(f"    [DB] latest-missing-dates: csv latest {src_max} <= db latest "
+          f"{db_max} → nothing missing")
     return set()
 
 
@@ -118,7 +121,7 @@ async def detect_missing_dates(
         label = f"all {len(loadable_dates)} loadable dates are targets" + \
             (f" (rows filtered to code {code_filter} at read time)"
              if code_filter else "")
-        print(f"    [DB] {mode}: {label}", flush=True)
+        logger.info(f"    [DB] {mode}: {label}")
         return set(loadable_dates)
 
     if not loadable_dates:
@@ -132,10 +135,9 @@ async def detect_missing_dates(
         conn, "stats.stock_identity",
     )
     if probe is None:
-        print(f"    [DB] stats.stock_identity empty"
+        logger.info(f"    [DB] stats.stock_identity empty"
               + (f" for code {code_filter}" if code_filter else "") +
-              f" — falling back to all {len(loadable_dates)} loadable dates",
-              flush=True)
+              f" — falling back to all {len(loadable_dates)} loadable dates")
         return set(loadable_dates)
 
     return await find_latest_missing_dates(conn, loadable_dates, code_filter)
@@ -169,9 +171,9 @@ async def collect_missing_file_pairs(
             d = file_date_from_path(path)
             if d is not None and d in force_dates:
                 missing_file_pairs.append((path, market))
-        print(f"    [DATE MODE] forced date(s) {sorted(force_dates)} → "
+        logger.info(f"    [DATE MODE] forced date(s) {sorted(force_dates)} → "
               f"{len(missing_file_pairs)} source files to read "
-              f"(DB max-date checks bypassed)", flush=True)
+              f"(DB max-date checks bypassed)")
         return missing_file_pairs
 
     if force:
@@ -179,7 +181,7 @@ async def collect_missing_file_pairs(
         label = f"reading all {len(all_files)} source files" + \
             (f" (rows filtered to code {code_filter} at read time)"
              if code_filter else "")
-        print(f"    {mode}: {label}", flush=True)
+        logger.info(f"    {mode}: {label}")
         return [(path, market) for path, market, _suffix in all_files]
 
     # ---- latest: two MAX aggregates per suffix, no DISTINCT scans ----
@@ -232,12 +234,11 @@ async def collect_missing_file_pairs(
                 if d is not None and d in target_dates:
                     if _file_has_data(path):
                         missing_file_pairs.append((path, market))
-            print(f"    [{suffix}] latest-missing-dates: csv latest {src_max} "
+            logger.info(f"    [{suffix}] latest-missing-dates: csv latest {src_max} "
                   f"vs db latest {db_max} → {len(target_dates)} tail dates, "
-                  f"{len(missing_file_pairs) - before_count} files to read",
-                  flush=True)
+                  f"{len(missing_file_pairs) - before_count} files to read")
         else:
-            print(f"    [{suffix}] latest-missing-dates: csv latest {src_max} "
-                  f"<= db latest {db_max} → no files to read", flush=True)
+            logger.info(f"    [{suffix}] latest-missing-dates: csv latest {src_max} "
+                  f"<= db latest {db_max} → no files to read")
 
     return missing_file_pairs

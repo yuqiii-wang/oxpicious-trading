@@ -256,7 +256,7 @@ def main():
     args = parser.parse_args()
 
     result = download_sse_options_price(out_root=args.out_root)
-    print(result)
+    logger.info(result)
 
 
 if __name__ == "__main__":

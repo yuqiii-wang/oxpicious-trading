@@ -14,6 +14,9 @@ import pandas as pd
 from _common._holidays_and_weekdays import recent_trading_day_cutoff
 from builds.cross_stats.config import CORR_WINDOWS
 
+import logging
+logger = logging.getLogger(__name__)
+
 _MAX_CORR_WINDOW: int = max(CORR_WINDOWS)  # 255 trading days
 _MA5_BUFFER: int = 5                       # for etf ratio MA5
 LOOKBACK_TRADING_DAYS: int = _MAX_CORR_WINDOW + _MA5_BUFFER  # 260
@@ -49,13 +52,12 @@ def filter_dataframes_for_lookback(
     idx_filtered = _apply(index_closes)
     etf_filtered = _apply(etf_amount_by_index)
 
-    print(
+    logger.info(
         f"    [lookback] filter to dates >= {lookback_start} "
         f"({LOOKBACK_TRADING_DAYS} trading days before {min_target}): "
         f"subjects {len(sub_filtered):,}/{len(subject_closes):,} "
         f"benchmarks {len(idx_filtered):,}/{len(index_closes):,} "
         f"etf_amounts {len(etf_filtered):,}/{len(etf_amount_by_index):,}",
-        flush=True,
     )
 
     return sub_filtered, idx_filtered, etf_filtered

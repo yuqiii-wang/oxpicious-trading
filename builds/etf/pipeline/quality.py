@@ -8,6 +8,9 @@ from _common.build_commons import bulk_upsert_async, rec_cols
 from _common.df_utils import safe_columns
 from builds._commons.row_emission import records_from_frame
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def upsert_quality_metrics(conn, uni_df: pd.DataFrame, merged: pd.DataFrame) -> None:
     """Compute + upsert type='etf' quality rows (classification cols preserved
@@ -36,7 +39,7 @@ async def upsert_quality_metrics(conn, uni_df: pd.DataFrame, merged: pd.DataFram
         "has_margin": uni_df["n_margin_days"][codes_mask] > 0,
     }).reset_index(drop=True)
     if out.empty:
-        print("    [DB] No ETF quality rows to insert into stats.sec_classification", flush=True)
+        logger.info("    [DB] No ETF quality rows to insert into stats.sec_classification")
         return
 
     if avg_vol is not None and len(avg_vol):
@@ -79,6 +82,6 @@ async def upsert_quality_metrics(conn, uni_df: pd.DataFrame, merged: pd.DataFram
             conn, "stats.sec_classification", quality_rows,
             ["code", "parent_index_code"],
         )
-        print(f"    [DB] Upserted {inserted:,} ETF quality rows into stats.sec_classification", flush=True)
+        logger.info(f"    [DB] Upserted {inserted:,} ETF quality rows into stats.sec_classification")
     else:
-        print("    [DB] No ETF quality rows to insert into stats.sec_classification", flush=True)
+        logger.info("    [DB] No ETF quality rows to insert into stats.sec_classification")

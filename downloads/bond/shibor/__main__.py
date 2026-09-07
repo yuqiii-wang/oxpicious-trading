@@ -556,4 +556,4 @@ def download_shibor(
 
 
 if __name__ == "__main__":
-    print(download_shibor())
+    logger.info(download_shibor())

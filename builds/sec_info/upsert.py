@@ -26,6 +26,9 @@ from _common.build_commons import (
     bulk_upsert_async, truncate_table_async, rec_col,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ============================================================================
 # sec_owners  (moved from builds.classification.sector_industry.owners)
@@ -44,8 +47,7 @@ async def upsert_owners(
     """
     if not owners:
         if verbose:
-            print("    [DB] No owners to load — skipping stats.sec_owners",
-                  flush=True)
+            logger.info("    [DB] No owners to load — skipping stats.sec_owners")
         return
     owner_rows = [{
         "owner_id": o["owner_id"],
@@ -58,8 +60,8 @@ async def upsert_owners(
     inserted = await bulk_upsert_async(
         conn, "stats.sec_owners", owner_rows, ["owner_id"])
     if verbose:
-        print(f"    [DB] Inserted {inserted:,} owner rows into "
-              f"stats.sec_owners", flush=True)
+        logger.info(f"    [DB] Inserted {inserted:,} owner rows into "
+              f"stats.sec_owners")
 
 
 # ============================================================================
@@ -109,19 +111,18 @@ async def upsert_sec_info(conn, rows: List[Dict[str, Any]], force: bool,
     """Upsert sec_info rows.  Truncates first when force=True."""
     if not rows and not force:
         if verbose:
-            print("    [DB] No new/updated sec_info rows — skipping",
-                  flush=True)
+            logger.info("    [DB] No new/updated sec_info rows — skipping")
         return 0
     if force:
         await truncate_table_async(conn, "stats.sec_info")
     if not rows:
         if verbose:
-            print("    [DB] No sec_info rows to insert", flush=True)
+            logger.info("    [DB] No sec_info rows to insert")
         return 0
     inserted = await bulk_upsert_async(conn, "stats.sec_info", rows, ["code"])
     if verbose:
-        print(f"    [DB] Upserted {inserted:,} rows into stats.sec_info "
-              f"({'force' if force else 'incremental'})", flush=True)
+        logger.info(f"    [DB] Upserted {inserted:,} rows into stats.sec_info "
+              f"({'force' if force else 'incremental'})")
     return inserted
 
 
@@ -154,19 +155,19 @@ async def upsert_sec_reports(conn, rows: List[Dict[str, Any]], force: bool,
     """Upsert sec_reports rows.  Truncates first when force=True."""
     if not rows and not force:
         if verbose:
-            print("    [DB] No new sec_reports rows — skipping", flush=True)
+            logger.info("    [DB] No new sec_reports rows — skipping")
         return 0
     if force:
         await truncate_table_async(conn, "stats.sec_reports")
     if not rows:
         if verbose:
-            print("    [DB] No sec_reports rows to insert", flush=True)
+            logger.info("    [DB] No sec_reports rows to insert")
         return 0
     inserted = await bulk_upsert_async(
         conn, "stats.sec_reports", rows, ["code", "report_date"])
     if verbose:
-        print(f"    [DB] Upserted {inserted:,} rows into stats.sec_reports "
-              f"({'force' if force else 'incremental'})", flush=True)
+        logger.info(f"    [DB] Upserted {inserted:,} rows into stats.sec_reports "
+              f"({'force' if force else 'incremental'})")
     return inserted
 
 
@@ -214,13 +215,12 @@ async def inject_top10_composition(conn, rows: List[Dict[str, Any]],
     """Insert top10-holdings rows into sec_composition (missing snapshots only)."""
     if not rows:
         if verbose:
-            print("    [DB] No new sec_composition rows from top10_holdings — skipping",
-                  flush=True)
+            logger.info("    [DB] No new sec_composition rows from top10_holdings — skipping")
         return 0
     inserted = await bulk_upsert_async(
         conn, "stats.sec_composition", rows,
         ["code", "snapshot_date", "rank"])
     if verbose:
-        print(f"    [DB] Inserted {inserted:,} top10-holdings rows into "
-              f"stats.sec_composition", flush=True)
+        logger.info(f"    [DB] Inserted {inserted:,} top10-holdings rows into "
+              f"stats.sec_composition")
     return inserted

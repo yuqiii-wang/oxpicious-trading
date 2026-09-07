@@ -33,6 +33,9 @@ from _common.build_commons import rec_cols
 from _common.db_commons import copy_insert_async
 from builds._commons.row_emission import records_from_frame
 
+import logging
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Column split: db table -> {db column: frame column or scalar constant}
 # ---------------------------------------------------------------------------
@@ -163,9 +166,9 @@ async def insert_split_tables(conn, tables: Dict[str, List[dict]]) -> None:
     for tbl, rows in tables.items():
         if rows:
             inserted = await copy_insert_async(conn, tbl, rows)
-            print(f"    [DB] Inserted {inserted:,} rows into {tbl}", flush=True)
+            logger.info(f"    [DB] Inserted {inserted:,} rows into {tbl}")
         else:
-            print(f"    [DB] No new rows to insert into {tbl}", flush=True)
+            logger.info(f"    [DB] No new rows to insert into {tbl}")
 
 
 async def delete_underlying_rows_async(conn, underlying_code: str) -> int:

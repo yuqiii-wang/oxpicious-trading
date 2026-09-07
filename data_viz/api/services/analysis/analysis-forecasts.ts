@@ -1,6 +1,7 @@
 /**
- * Forecast buckets (analysis_forecasts schema) — serves the MA-Spread
- * panel's second plot: a config→result table beneath the spread chart.
+ * Forecast buckets (analysis_forecasts schema) — serves the Recent
+ * Movements page's second plot (migrated off the MA-Spread panel): a
+ * config→result table beneath the trend chart.
  *
  *  getForecastTable(secType, code, kind, month?)
  *    kind = "mov_rsi" → analysis_forecasts.mov_rsi ⋈ forecast_results
@@ -12,8 +13,7 @@
  *      per-horizon >1% reversal probabilities).
  *    kind = "mov_std" → analysis_forecasts.mov_std ⋈ forecast_results
  *      one row per (stat_month, ma_window, k, side, is_market_hyped)
- *      Bollinger-breach bucket, additionally carrying mean_excess_close /
- *      mean_excess_max / max_excess_max.
+ *      Bollinger-breach bucket.
  *    kind = "mov_gap" → analysis_forecasts.mov_gap ⋈ forecast_results
  *      one row per (stat_month, gap_window, side, pct, is_market_hyped)
  *      N-day price-return extreme-percentile bucket.
@@ -221,9 +221,6 @@ interface DbStdRow extends QueryResultRow {
   cooldown_days: number;
   is_market_hyped: boolean;
   in_signals: boolean;
-  mean_excess_close: number | null;
-  mean_excess_max: number | null;
-  max_excess_max: number | null;
   [k: string]: unknown;
 }
 
@@ -250,19 +247,10 @@ interface DbMarginRatioRow extends QueryResultRow {
   [k: string]: unknown;
 }
 
-/** Excess-magnitude metrics live in the linked forecast_results.config JSONB
- *  (duplicated across all 4 period rows per forecast_id) — extract them
- *  as float8. Since all 4 periods carry identical config, we cast to text
- *  (PG can MIN text, not jsonb), MIN, and cast back to jsonb for ->> access. */
-const CONFIG_EXCESS_COLS = `
-  NULLIF(MIN(f.config::text)::jsonb->>'mean_excess_close', '')::float8 AS mean_excess_close,
-  NULLIF(MIN(f.config::text)::jsonb->>'mean_excess_max', '')::float8   AS mean_excess_max,
-  NULLIF(MIN(f.config::text)::jsonb->>'max_excess_max', '')::float8    AS max_excess_max
-`;
-
 /** px_vol state magnitudes live in the linked forecast_results.config
- *  JSONB (duplicated across all 4 period rows per forecast_id) — same
- *  MIN(text) trick as CONFIG_EXCESS_COLS above. */
+ *  JSONB (duplicated across all 4 period rows per forecast_id) — the
+ *  MIN(text) trick casts to text (PG can MIN text, not jsonb), MINs,
+ *  and casts back to jsonb for ->> access. */
 const CONFIG_PX_VOL_COLS = `
   NULLIF(MIN(f.config::text)::jsonb->>'mean_t', '')::float8 AS mean_t,
   NULLIF(MIN(f.config::text)::jsonb->>'mean_z', '')::float8 AS mean_z
@@ -363,9 +351,6 @@ function mapStdRow(r: DbStdRow): MovStdForecastRow {
     cooldown_days: r.cooldown_days,
     is_market_hyped: r.is_market_hyped === true,
     in_signals: r.in_signals === true,
-    mean_excess_close: toNum(r.mean_excess_close),
-    mean_excess_max: toNum(r.mean_excess_max),
-    max_excess_max: toNum(r.max_excess_max),
     ave_next_change: toNum(r.ave_next_change),
     ave_next_5d_change: toNum(r.ave_next_5d_change),
     ave_next_20d_change: toNum(r.ave_next_20d_change),
@@ -532,7 +517,7 @@ export async function getForecastTable(
       m ? [st, code, m] : [st, code],
     );
     const mapped = rows.map(mapRsiRow);
-    return { kind: "mov_rsi", code, sec_type: st, months, rows: mapped, enable_filters: false };
+    return { kind: "mov_rsi", code, sec_type: st, months, rows: mapped, enable_filters: true };
   }
 
   if (k === "mov_gap") {
@@ -559,7 +544,7 @@ export async function getForecastTable(
       m ? [st, code, m] : [st, code],
     );
     const mapped = rows.map(mapGapRow);
-    return { kind: "mov_gap", code, sec_type: st, months, rows: mapped, enable_filters: false };
+    return { kind: "mov_gap", code, sec_type: st, months, rows: mapped, enable_filters: true };
   }
 
   if (k === "px_vol") {
@@ -591,7 +576,7 @@ export async function getForecastTable(
       m ? [st, code, m] : [st, code],
     );
     const mapped = rows.map(mapPxVolRow);
-    return { kind: "px_vol", code, sec_type: st, months, rows: mapped, enable_filters: false };
+    return { kind: "px_vol", code, sec_type: st, months, rows: mapped, enable_filters: true };
   }
 
   if (k === "margin_ratio") {
@@ -620,7 +605,7 @@ export async function getForecastTable(
       m ? [st, code, m] : [st, code],
     );
     const mapped = rows.map(mapMarginRatioRow);
-    return { kind: "margin_ratio", code, sec_type: st, months, rows: mapped, enable_filters: false };
+    return { kind: "margin_ratio", code, sec_type: st, months, rows: mapped, enable_filters: true };
   }
 
   // kind === "mov_std"
@@ -633,7 +618,6 @@ export async function getForecastTable(
            m.cooldown_days,
            m.is_market_hyped,
            ${IN_SIGNALS_STD} AS in_signals,
-           ${CONFIG_EXCESS_COLS},
            ${PIVOT_COLS}
     FROM analysis_forecasts.mov_std m
     JOIN analysis_forecasts.forecast_results f
@@ -648,5 +632,5 @@ export async function getForecastTable(
     m ? [st, code, m] : [st, code],
   );
   const mapped = rows.map(mapStdRow);
-  return { kind: "mov_std", code, sec_type: st, months, rows: mapped, enable_filters: false };
+  return { kind: "mov_std", code, sec_type: st, months, rows: mapped, enable_filters: true };
 }

@@ -18,30 +18,16 @@ before the window start).
 A signal date is emitted only within its own snapshot month M, so each
 date is owned by exactly one snapshot (clean date-level PK).
 
-Adaptive forecast-confirmation gate (QRp_P90 + per-security layers): a
-detected day is RECORDED only when the matching analysis_forecasts
-bucket (same code/sec_type/stat_month/window/side/pct|k/cooldown
-config) qualifies — for AT LEAST ONE forecast_results period
-(next/5d/20d/60d) that period's reverse_prob is at or above its
-calibration threshold (same sec_type + signal family + side + period,
-ALL buckets of all PRIOR stat_months — an M-1 calibration gate: no
-look-ahead) AND the code's prior mean rp for that (side, period) is
-positive where known — the mean has to see reverse too, not just the
-single bucket-period (the same M-1 per-code mean the tier / baseline
-columns read; an unknown mean — no prior bucket-periods — does not
-block). Two calibrated threshold modes (per-security gate study,
-2026-09):
-  - mov_rsi — SEC QRp_P90: rp >= the population P90 (the mov_rsi rp
-    distribution is saturated at 1.0, where the per-code rank gate
-    degenerates; the study's PROVEN_DIR dominates it instead).
-  - mov_std / mov_gap — HYB QRp_P90: threshold = w·code_P90 +
-    (1-w)·population_P90 with shrinkage weight w = code_n/(code_n +
-    K_SHRINK); below HYBRID_MIN_POP prior bucket-periods for the code
-    the weight is 0 (pure population gate). Uniformly tighter OOS
-    quality than the population-only gate at modestly lower volume.
-While a (month, side, period) population has fewer than GATE_MIN_POP
-bucket-periods the calibrated quantile is meaningless and that period
-falls back to the legacy reverse_prob > 0 rule.
+Forecast-confirmation gate (absolute reversal rule): a detected day is
+RECORDED only when the matching analysis_forecasts bucket (same
+code/sec_type/stat_month/window/side/pct|k/cooldown config) qualifies —
+for AT LEAST ONE forecast_results period (next/5d/20d/60d) that
+period's reverse_prob exceeds GATE_RP_MIN (reverse P > 1% — a material
+reversal probability, not a bare > 0 tail) AND that period's mean
+forward change is a REVERSAL (dir_ave > 0 — the bucket's average
+outcome reverses, so the signal holds, not just a fat reversal tail).
+Both conjuncts read the bucket's own historical outcomes from
+analysis_forecasts.forecast_results.
 
 Per-security confidence calibration (validated by the study: a code's
 prior mean reverse_prob predicts its future mean rp with correlation
@@ -73,36 +59,17 @@ from analyze.analysis_forecasts.config import (
 # a tuple to compare variants; signals emit the current (first) value.
 COOLDOWN_DAYS = _FORECAST_COOLDOWN_DAYS[0]
 
-# ---- Adaptive confirmation gate (QRp_P90) -----------------------------------
+# ---- Forecast-confirmation gate (absolute reversal rule) --------------------
 
-# Population-quantile rank of the adaptive confirmation gate: a bucket's
-# cross-period confidence (MAX reverse_prob over next/5d/20d/60d) must be
-# >= this quantile of its population (same sec_type/family/side, all
-# buckets of all PRIOR stat_months) to confirm a signal day. Selected by
-# the adaptive-threshold study as the only rule valid across index/etf/
-# stock (etf/stock lack base rates, ruling out lift-based rules) and
-# out-of-sample stable (split-half OOS: mean rp 0.8-1.0 at ~10% pass).
-GATE_Q = 0.90
-
-# Minimum population size for the calibrated quantile to be trusted; a
-# (target month, side) population below this falls back to the legacy
-# "confidence > 0" rule (cold-start months at the head of the history).
-GATE_MIN_POP = 30
+# A detected day is recorded only when its matching forecast bucket
+# qualifies in at least one forecast_results period (next/5d/20d/60d):
+# that period's reverse_prob must exceed this bar (reverse P > 1% — a
+# material reversal probability, not a bare > 0 tail) AND its mean
+# forward change must be a REVERSAL (dir_ave > 0 — the bucket's average
+# outcome reverses, so the signal holds, not just a fat reversal tail).
+GATE_RP_MIN = 0.01
 
 # ---- Per-security layers (gate study, 2026-09) -------------------------------
-
-# Shrinkage strength of the HYB QRp_P90 gate (mov_std / mov_gap): the
-# calibrated threshold is w·(code's own prior P90) + (1-w)·(population
-# P90) with w = code_n / (code_n + K_SHRINK) — an empirical-Bayes blend
-# that trusts a code's own history in proportion to how much of it
-# exists. OOS: uniformly tighter mean rp / dir_ave than the
-# population-only gate at ~10-16% lower volume.
-K_SHRINK = 100
-
-# Minimum prior bucket-periods for a code before its own P90 enters the
-# HYB threshold at all (below this the weight is 0 → pure population
-# gate).
-HYBRID_MIN_POP = 30
 
 # 'proven' tier bar: at least one qualifying period's code has a prior
 # mean reverse_prob >= this (mov_rsi precision tier: +17-21% dir_ave at
@@ -152,18 +119,13 @@ DESCRIPTION = (
     "detection uses the same window, thresholds, cooldown (5 trading "
     "days) and full-window history gate as the forecast buckets, and "
     "each date is emitted only within its own snapshot month. A day is "
-    "recorded only when its bucket clears the adaptive confirmation "
-    "gate (calibrated rolling M-1, no look-ahead): for at least one "
-    "forecast period (next/5d/20d/60d) that period's reverse_prob must "
-    "clear its calibration threshold — the population P90 "
-    f"(QRp_P{int(100 * GATE_Q)}) for mov_rsi, and for mov_std/mov_gap "
-    "the per-security HYB blend w·code_P90 + (1-w)·population_P90 "
-    f"(w = code_n/(code_n + {K_SHRINK}), pure population below "
-    f"{HYBRID_MIN_POP} prior bucket-periods) — and the code's prior "
-    "mean reverse_prob for that (side, period) must also be positive "
-    "where known (the mean sees reverse too, not just the single "
-    "bucket-period); legacy reverse_prob > 0 "
-    f"fallback below {GATE_MIN_POP} population bucket-periods. Each "
+    "recorded only when its bucket clears the forecast-confirmation "
+    "gate (absolute reversal rule): for at least one forecast period "
+    "(next/5d/20d/60d) that period's reverse_prob must exceed "
+    + repr(GATE_RP_MIN) + " (reverse P > 1% — a material reversal "
+    "probability) AND that period's mean forward change must be a "
+    "reversal (dir_ave > 0 — the bucket's average outcome reverses, "
+    "so the signal holds, not just a fat reversal tail). Each "
     "row also carries the per-security calibration (validated by the "
     "gate study: prior-vs-future mean rp correlation 0.80-0.97): tier "
     "('proven' = a qualifying period's code has prior mean rp >= "
@@ -239,10 +201,6 @@ def sub_type_px_vol(px_speed: str, vol_state: str) -> str:
 # apply either reading.
 PX_VOL_SIDE_ACTION = {"top": "sell", "bottom": "buy"}
 
-# The HYB QRp_P90 gate (per-code shrinkage blend, like mov_std /
-# mov_gap) — px_vol rp is unsaturated (state buckets, no cooldown).
-PX_VOL_GATE_HYBRID = True
-
 # px_vol signal_sub_type cell list (10 sided cells; flat excluded).
 def px_vol_cells() -> list[tuple[str, str]]:
     from analyze.analysis_forecasts.config import (
@@ -278,10 +236,6 @@ MARGIN_RATIO_SIGNAL_STATES = ("vlow", "low", "high", "vhigh")
 
 MARGIN_RATIO_SIDE_ACTION = {"top": "sell", "bottom": "buy"}
 
-# The HYB QRp_P90 gate (per-code shrinkage blend, like px_vol) —
-# margin_ratio rp is unsaturated (state buckets, no cooldown).
-MARGIN_RATIO_GATE_HYBRID = True
-
 # ---- opp_pair family (industry opposite-pair trend forecasts) ---------------
 
 # signal_type for the opp_pair family (buckets:
@@ -308,8 +262,6 @@ OPP_PAIR_TREND_BAR = 0.0
 # the TARGET industry B; confidence = the bucket's cross-period
 # MAX(reverse_prob) = P(B's forward offset change > B's adaptive bar) —
 # the pair forecast's CONFIRMATION probability.
-OPP_PAIR_GATE_HYBRID = True
-
 # side → action mapping (shared by all signal types: the extreme side
 # is a SELL-side extreme for top/upper, a BUY-side extreme for
 # bottom/lower).

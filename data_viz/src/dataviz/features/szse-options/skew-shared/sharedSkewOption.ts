@@ -7,7 +7,7 @@
  *   • Per-expiry thin dashed blue-gradient lines
  *   • Expiry shade bands from the selected date to each active expiry
  *     (band between spot and that expiry's skew curve)
- *   • Vertical expiry closing lines + neutral-cross-count markPoints
+ *   • Expiry dot marking each active expiry's closing boundary
  *
  * Generalized from the OI-wtd moneyness skew chart (oiMoneynessOption.ts).
  */
@@ -19,7 +19,6 @@ import {
   commonLegend,
   expiryBlueColor,
   FUTURES_BLUE_NEAR,
-  FUTURES_EXPIRY_DOT_BORDER,
   IV_BLUE,
 } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
@@ -30,7 +29,6 @@ import type { EChartsOption } from "echarts";
 export function buildSharedSkewOption(
   spec: SharedSkewSpec,
   selectedDate: string,
-  showCrossCounts: boolean = true,
   dataZoomStart?: number,
   dataZoomEnd?: number,
 ): EChartsOption {
@@ -148,20 +146,10 @@ export function buildSharedSkewOption(
   // width ≥ 0) with invisible lines and a translucent area fill (no smooth
   // — smooth breaks stacked band boundaries); beyond the last data date the
   // band carries the last edges flat to the true expiry, so the y-axis
-  // extent never changes. Each expiry also gets a vertical closing line at
-  // its expiry, bounded by the band levels (spot ↔ skew).
+  // extent never changes. Each expiry also gets a dot at its expiry,
+  // centered on the band (spot ↔ skew midpoint).
   const SHADE_COLOR = "rgba(31, 119, 180, 0.12)";
   const expiryShadeSeries: EChartsOption["series"] = [];
-  const crossCountMarkPoints: {
-    name: string;
-    coord: [string, number];
-    value: number;
-    itemStyle: { color: string; borderColor: string; borderWidth: number };
-    label: Record<string, unknown>;
-    symbol: string;
-    symbolSize: number;
-    tooltip: { show: boolean };
-  }[] = [];
   if (hasActiveExpiries) {
     const lastD = points[points.length - 1];
     const activeSets = points[selectedIdx].perExpiry
@@ -206,41 +194,6 @@ export function buildSharedSkewOption(
       const stackId = `exp-shade-${k}`;
       const ySpot = endIdx < dates.length ? points[endIdx].spot : lastD.spot;
 
-      // Cross count markPoint at spot price level on the expiry date.
-      // Marker shape follows the futures expiry-date dots (see
-      // features/futures/chartOption/priceChart.ts): circle with a white
-      // ring + two-line label with a white halo — but tinted with THIS
-      // expiry's blue-gradient contract color (expiryColorMap) so each
-      // mark visually ties to its own per-expiry skew line.
-      if (showCrossCounts && pe.countSkewnessCurveCrossedSpot != null && pe.countSkewnessCurveCrossedSpot > 0) {
-        const expColor = expiryColorMap.get(pe.expiry) ?? IV_BLUE;
-        crossCountMarkPoints.push({
-          name: `cross-count-${pe.expiry}`,
-          coord: [xEnd, ySpot],
-          value: pe.countSkewnessCurveCrossedSpot,
-          itemStyle: {
-            color: expColor,
-            borderColor: FUTURES_EXPIRY_DOT_BORDER,
-            borderWidth: 2,
-          },
-          label: {
-            show: true,
-            formatter: `${pe.expiryDate}\nCrossed ×${pe.countSkewnessCurveCrossedSpot}`,
-            color: expColor,
-            fontSize: 10,
-            fontWeight: 600,
-            lineHeight: 13,
-            position: "top",
-            distance: 6,
-            textBorderColor: FUTURES_EXPIRY_DOT_BORDER,
-            textBorderWidth: 2,
-          },
-          symbol: "circle",
-          symbolSize: 10,
-          tooltip: { show: false },
-        });
-      }
-
       expiryShadeSeries.push(
         {
           type: "line" as const,
@@ -267,20 +220,17 @@ export function buildSharedSkewOption(
           tooltip: { show: false },
           z: 0,
         },
-        // Vertical closing segment at the expiry: bounded by the spot level
-        // and this expiry's skewness level (band height at the boundary).
-        // Drawn as a 2-point line series (same category twice) — markLine
-        // coord pairs proved unreliable on the stacked shade series.
+        // Expiry dot at the expiry: centered in the band (spot ↔ skew
+        // midpoint) — marks where this expiry's shade closes without the
+        // visual weight of a full-height vertical line. Drawn as a
+        // single-point scatter series (markLine/markPoint coord pairs
+        // proved unreliable on the stacked shade series).
         {
-          type: "line" as const,
-          name: `expiry-line ${pe.expiry}`,
-          data: [
-            [xEnd, ySpot],
-            [xEnd, lastSkew],
-          ],
-          showSymbol: false,
-          smooth: false,
-          lineStyle: { color: IV_BLUE, width: 2, opacity: 1 },
+          type: "scatter" as const,
+          name: `expiry-dot ${pe.expiry}`,
+          data: [[xEnd, (ySpot + lastSkew) / 2]],
+          symbolSize: 7,
+          itemStyle: { color: IV_BLUE, borderColor: "#fff", borderWidth: 1 },
           silent: true,
           tooltip: { show: false },
           z: 4,
@@ -355,7 +305,6 @@ export function buildSharedSkewOption(
             },
           });
         }
-        data.push(...crossCountMarkPoints);
         return data.length > 0 ? { data, z: 10 } : undefined;
       })(),
     },

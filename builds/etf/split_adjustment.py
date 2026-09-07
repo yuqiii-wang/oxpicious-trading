@@ -9,6 +9,9 @@ import pandas as pd
 
 from _common.df_utils import safe_columns
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def apply_split_adjustment(
     df: pd.DataFrame,
@@ -120,8 +123,8 @@ def apply_split_adjustment(
         ).round(6)
         df = df.drop(columns=["_seed_factor", "_seed_dividend"])
         if verbose:
-            print(f"    [CORP-ADJ] seeded {len(adj_seeds):,} codes with their "
-                  f"pre-window cum factor/dividend state", flush=True)
+            logger.info(f"    [CORP-ADJ] seeded {len(adj_seeds):,} codes with their "
+                  f"pre-window cum factor/dividend state")
 
     act_type = np.full(n_rows, "", dtype=object)
     act_type[is_div_like] = "dividend"
@@ -182,8 +185,8 @@ def apply_split_adjustment(
         n_etfs_affected = int(df["code"][df["is_split_event_day"] == 1].nunique())
         n_div = int(is_div_like.sum())
         n_split = int(is_split_like.sum())
-        print(f"    [CORP-ADJ] detected {n_splits_detected} corp-action days "
+        logger.info(f"    [CORP-ADJ] detected {n_splits_detected} corp-action days "
               f"({n_div} dividend-like, {n_split} split/conv) across {n_etfs_affected} ETFs; "
-              f"added adj_* OHLC + dividend columns", flush=True)
+              f"added adj_* OHLC + dividend columns")
 
     return df

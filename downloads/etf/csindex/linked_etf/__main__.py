@@ -465,4 +465,4 @@ if __name__ == "__main__":
         fetch_excel=not args.no_excel,
         force_month_start=args.force_month_start,
     )
-    print(result)
+    logger.info(result)

@@ -34,25 +34,7 @@ Pipeline
      from the SAME source data -> analysis.mov_ave_trading_amt_ratios
      (see trading_amt_ratios.py). Reuses the same DB connection +
      source DataFrame.
-  10. INTERNAL STEP: compute market-hype EPISODES (one row per
-     CONCATENATED episode per check-in window 5/20/60/120/255: the span
-     around a maximal run of consecutive hyped dates, extended through
-     the check-in evidence, bucketed by span into [W, next window) —
-     W = min_checkin_period is the bucket MINIMUM, the next window the
-     exclusive maximum (the 255d bucket spans up to the whole ±10y
-     base); a date is hyped when more than
-     min_checkin_satisfaction_threshold percent of the last W trading
-     rows are check-ins — dates whose trading_amount AND std_{W}days
-     both exceed their centered 20-year (±10 trading years around the
-     audited date) percentile thresholds) from the SAME source data
-     (trading_amount + std_{W}days columns) ->
-     analysis.mov_ave_market_hypes (see market_hypes.py; also counts
-     the per-leg check-in days trading_amt_hype_days / std_hype_days
-     within each episode span). Reuses the same DB connection +
-     source DataFrame. Episodes are rebuilt wholesale per sec_type on
-     every run — new dates shift episode boundaries (margin_changes
-     precedent).
-  11. INTERNAL STEP: compute multi-period high/low price percentile
+  10. INTERNAL STEP: compute multi-period high/low price percentile
      BANDS (one row per security x calendar month x period x pct_type
      1/5/10: low_val = the pct_type-th percentile of daily lows,
      high_val = the (100-pct_type)-th percentile of daily highs over
@@ -62,7 +44,7 @@ Pipeline
      analysis.mov_ave_high_low_pct (see high_low_pct.py). Trailing
      window: completed months are immutable, so only missing (code,
      month) pairs are computed and inserted.
-  12. INTERNAL STEP: audit band-BREAK excursion STREAKS against the
+  11. INTERNAL STEP: audit band-BREAK excursion STREAKS against the
      high-low-percentile bands (one row per excursion streak per
      security x period x pct_type: maximal consolidations of same-side
      days whose adjusted close falls above high_val / below low_val,
@@ -70,7 +52,7 @@ Pipeline
      days; a longer gap or a side switch starts a new streak) ->
      analysis.mov_ave_high_low_pct_streaks (see
      high_low_pct_streaks.py). Episodes SHIFT with new data, so they
-     are rebuilt WHOLESALE per sec_type (market_hypes precedent).
+     are rebuilt WHOLESALE per sec_type (margin_changes precedent).
 
 Default (incremental) mode:
   Only dates present in source identity tables (stats.etf_identity +
@@ -147,9 +129,9 @@ from analyze.mov_ave_spread.config import (  # noqa: E402
     HIGH_LOW_PCT_STREAKS_TABLE,
     HIGH_LOW_PCT_TABLE,
     HOLIDAY_TABLE,
-    MARKET_HYPES_TABLE,
     OHLC_TABLE,
     PAIRS,
+    PRICE_VS_AMT_TABLE,
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
     TRADING_AMT_ANALYSIS_NAME,
@@ -163,7 +145,7 @@ from analyze.mov_ave_spread.ema import run_ema  # noqa: E402
 from analyze.mov_ave_spread.ohlc import run_ohlc, find_ohlc_repair_dates  # noqa: E402
 from analyze.mov_ave_spread.trading_amt import run_trading_amt  # noqa: E402
 from analyze.mov_ave_spread.trading_amt_ratios import run_trading_amt_ratios  # noqa: E402
-from analyze.mov_ave_spread.market_hypes import run_market_hypes  # noqa: E402
+from analyze.mov_ave_spread.price_vs_amt import run_price_vs_amt  # noqa: E402
 from analyze.mov_ave_spread.high_low_pct import (  # noqa: E402
     find_missing_high_low_pct_pairs,
     run_high_low_pct,
@@ -173,6 +155,9 @@ from analyze.mov_ave_spread.high_low_pct_streaks import (  # noqa: E402
 )
 from analyze.mov_ave_spread.holiday import run_holiday  # noqa: E402
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("mov_ave_spread")
+
 
 async def _process_one_sec_type(
     conn, pool, st, target_dates_st, force, max_concurrent, t0,
@@ -181,10 +166,10 @@ async def _process_one_sec_type(
 
     Fetches the FULL per-code history for ``st``, builds + inserts
     detail rows (filtered to ``target_dates_st`` in incremental
-    mode), then runs the RSI/holiday/EMA/OHLC/trading-amt/trading-amt-
-    ratios/market-hypes steps on the same source data. The source
-    DataFrame is freed before returning so the caller can process the
-    next sec_type without cumulative memory growth.
+    mode), then runs the RSI/holiday/EMA/OHLC/trading-amt/ratios
+    steps on the same source data. The source DataFrame is freed
+    before returning so the caller can process the next sec_type
+    without cumulative memory growth.
 
     Splitting per-sec_type is essential for the stock universe: 11K+
     codes × 1.6K dates = ~17M rows (~6 GB in pandas). Loading all 3
@@ -192,19 +177,18 @@ async def _process_one_sec_type(
     at a time bounds peak memory to a single sec_type's data.
     """
     # ---- Fetch FULL source data for this sec_type ----------------------
-    print(f"\n  [{st}] Fetching FULL per-(code, date) price + MAs "
-          f"from stats schema...", flush=True)
+    logger.info(f"\n  [{st}] Fetching FULL per-(code, date) price + MAs "
+          f"from stats schema...")
     df = await fetch_source_data(conn, st, target_dates=None)
-    print(f"  [{st}]   {len(df):,} (code, date) source rows", flush=True)
+    logger.info(f"  [{st}]   {len(df):,} (code, date) source rows")
     if df.empty:
-        print(f"  [{st}]   no source data; skipping.", flush=True)
+        logger.info(f"  [{st}]   no source data; skipping.")
         return 0
 
     # ---- Build + insert detail (chunked by date) -----------------------
     if target_dates_st is not None and len(target_dates_st) == 0:
         # Empty set means force mode — compute ALL dates (no filtering).
-        print(f"\n  [{st}] Computing + inserting detail rows (FORCE mode, all dates)...",
-              flush=True)
+        logger.info(f"\n  [{st}] Computing + inserting detail rows (FORCE mode, all dates)...")
         detail_df = df
         n_detail = await build_and_insert_chunked_df(
             conn, pool, detail_df,
@@ -216,17 +200,16 @@ async def _process_one_sec_type(
             max_concurrent=max_concurrent,
             label=f"detail[{st}]",
         )
-        print(f"  [{st}]   inserted {n_detail:,} detail rows", flush=True)
+        logger.info(f"  [{st}]   inserted {n_detail:,} detail rows")
         del detail_df
     elif target_dates_st is None:
-        print(f"\n  [{st}] Detail up-to-date; skipping detail "
-              f"computation.", flush=True)
+        logger.info(f"\n  [{st}] Detail up-to-date; skipping detail "
+              f"computation.")
         n_detail = 0
         # Still need to run internal steps even if detail is up-to-date
     else:
-        print(f"\n  [{st}] Computing + inserting detail rows in date-bounded "
-              f"chunks (9 gap cols + 12 slope/curv cols per row)...",
-              flush=True)
+        logger.info(f"\n  [{st}] Computing + inserting detail rows in date-bounded "
+              f"chunks (9 gap cols + 12 slope/curv cols per row)...")
         detail_df = df
         if len(target_dates_st) > 0:
             n_before = len(detail_df)
@@ -237,10 +220,10 @@ async def _process_one_sec_type(
             detail_df = detail_df[
                 detail_df["date"].isin(td64)
             ].reset_index(drop=True)
-            print(f"  [{st}]   incremental filter: {len(detail_df):,} of "
-                  f"{n_before:,} rows are in target_dates", flush=True)
-        print(f"  [{st}]   building {len(detail_df):,} detail rows "
-              f"(COPY per chunk)", flush=True)
+            logger.info(f"  [{st}]   incremental filter: {len(detail_df):,} of "
+                  f"{n_before:,} rows are in target_dates")
+        logger.info(f"  [{st}]   building {len(detail_df):,} detail rows "
+              f"(COPY per chunk)")
 
         n_detail = await build_and_insert_chunked_df(
             conn, pool, detail_df,
@@ -252,7 +235,7 @@ async def _process_one_sec_type(
             max_concurrent=max_concurrent,
             label=f"detail[{st}]",
         )
-        print(f"  [{st}]   inserted {n_detail:,} detail rows", flush=True)
+        logger.info(f"  [{st}]   inserted {n_detail:,} detail rows")
 
         del detail_df
 
@@ -280,8 +263,9 @@ async def _process_one_sec_type(
     await run_trading_amt_ratios(conn, df, force=force, pool=pool,
                                  max_concurrent=max_concurrent, sec_type=st)
 
-    # ---- Market-hypes step (reuses same source DataFrame) ---------
-    await run_market_hypes(conn, df, force=force, pool=pool,
+    # ---- Price-vs-amt state registry step (reuses same source
+    #      DataFrame; the px_vol family's date-level source of truth) --
+    await run_price_vs_amt(conn, df, force=force, pool=pool,
                            max_concurrent=max_concurrent, sec_type=st)
 
     # ---- High-low percentile band step (reuses same source DataFrame)
@@ -312,7 +296,7 @@ async def _process_single_code(
       2. Fetch the code's FULL source history (bypassing the
          active-universe pre-filter).
       3. Recompute + COPY-insert detail, then run ALL internal steps
-         (RSI / holiday / EMA / OHLC / trading-amt / ratios / hypes) with
+         (RSI / holiday / EMA / OHLC / trading-amt / ratios) with
          ``code_filter`` so each step skips its per-sec_type missing-date
          detection (dates covered by OTHER codes would mask this code's
          gaps) and bypasses the per-sec_type skip-filter
@@ -322,15 +306,14 @@ async def _process_single_code(
     Returns the number of detail rows inserted (0 when the sec_type has
     no source data for the code).
     """
-    print(f"\n  [{st}] SINGLE-CODE mode: rebuilding all rows for {code}",
-          flush=True)
+    logger.info(f"\n  [{st}] SINGLE-CODE mode: rebuilding all rows for {code}")
 
     # ---- Step 1: delete the code's rows (FK-safe order) ------------------
     # mov_ave_rsi_holiday has a FK to mov_ave_rsi → delete holiday first.
     for table in (
         HOLIDAY_TABLE, RSI_TABLE, DETAIL_TABLE, EMA_DETAIL_TABLE,
         OHLC_TABLE, TRADING_AMT_TABLE, TRADING_AMT_RATIOS_TABLE,
-        MARKET_HYPES_TABLE, HIGH_LOW_PCT_TABLE,
+        PRICE_VS_AMT_TABLE, HIGH_LOW_PCT_TABLE,
         HIGH_LOW_PCT_STREAKS_TABLE,
     ):
         status = await conn.execute(
@@ -338,17 +321,16 @@ async def _process_single_code(
             st, code,
         )
         n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
-        print(f"  [{st}]   deleted {n_del:,} rows from {table}", flush=True)
+        logger.info(f"  [{st}]   deleted {n_del:,} rows from {table}")
 
     # ---- Step 2: fetch the code's FULL source history --------------------
-    print(f"  [{st}] Fetching FULL per-(code, date) price + MAs "
-          f"for {code}...", flush=True)
+    logger.info(f"  [{st}] Fetching FULL per-(code, date) price + MAs "
+          f"for {code}...")
     df = await fetch_source_data(conn, st, target_dates=None,
                                  code_filter=code)
-    print(f"  [{st}]   {len(df):,} (code, date) source rows", flush=True)
+    logger.info(f"  [{st}]   {len(df):,} (code, date) source rows")
     if df.empty:
-        print(f"  [{st}]   no source data for {code} in {st}; skipping.",
-              flush=True)
+        logger.info(f"  [{st}]   no source data for {code} in {st}; skipping.")
         return 0
 
     # ---- Step 3: detail + all internal steps -----------------------------
@@ -362,7 +344,7 @@ async def _process_single_code(
         max_concurrent=max_concurrent,
         label=f"detail[{st}:{code}]",
     )
-    print(f"  [{st}]   inserted {n_detail:,} detail rows", flush=True)
+    logger.info(f"  [{st}]   inserted {n_detail:,} detail rows")
 
     await run_rsi(conn, df, force=False, pool=pool,
                   max_concurrent=max_concurrent, sec_type=st,
@@ -382,7 +364,7 @@ async def _process_single_code(
     await run_trading_amt_ratios(conn, df, force=False, pool=pool,
                                  max_concurrent=max_concurrent, sec_type=st,
                                  code_filter=code)
-    await run_market_hypes(conn, df, force=False, pool=pool,
+    await run_price_vs_amt(conn, df, force=False, pool=pool,
                            max_concurrent=max_concurrent, sec_type=st,
                            code_filter=code)
     await run_high_low_pct(conn, df, force=False, pool=pool,
@@ -424,8 +406,7 @@ async def main() -> None:
     args = ap.parse_args()
 
     if args.code and args.force:
-        print("ERROR: --code and --force are mutually exclusive.",
-              flush=True)
+        logger.error("ERROR: --code and --force are mutually exclusive.")
         sys.exit(2)
 
     sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
@@ -459,16 +440,14 @@ async def main() -> None:
                 total_detail += await _process_single_code(
                     conn, pool, st, args.code, max_concurrent,
                 )
-            print(f"\n  -> Upserting analysis.analysis_identity registry...",
-                  flush=True)
+            logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
             await upsert_analysis_identity(
                 conn,
                 name=ANALYSIS_NAME,
                 detail_name="mov_ave_spreads_detail",
                 description=DESCRIPTION,
             )
-            print(f"\n  TOTAL: {total_detail:,} detail rows inserted",
-                  flush=True)
+            logger.info(f"\n  TOTAL: {total_detail:,} detail rows inserted")
             print_wall_time(t0)
             return
 
@@ -477,52 +456,51 @@ async def main() -> None:
             if set(sec_types) == set(SEC_TYPES):
                 # Full-universe force: EVERY sec_type is rebuilt by this
                 # run, so TRUNCATE (fast, resets storage) is safe.
-                print("\n[0/4] Force mode: truncating detail "
-                      "tables...", flush=True)
+                logger.info("\n[0/4] Force mode: truncating detail "
+                      "tables...")
                 await truncate_table_async(conn, DETAIL_TABLE)
                 await truncate_table_async(conn, TRADING_AMT_TABLE)
                 await truncate_table_async(conn, TRADING_AMT_RATIOS_TABLE)
                 await truncate_table_async(conn, HOLIDAY_TABLE)
-                await truncate_table_async(conn, MARKET_HYPES_TABLE)
+                await truncate_table_async(conn, PRICE_VS_AMT_TABLE)
                 await truncate_table_async(conn, HIGH_LOW_PCT_TABLE)
-                print("    -> truncated; will recompute all rows",
-                      flush=True)
+                logger.info("    -> truncated; will recompute all rows")
             else:
                 # Scoped --sec-type force: DELETE only the scoped
                 # sec_type's rows — a TRUNCATE here would wipe the OTHER
                 # sec_types' data (they are NOT rebuilt by this run).
-                print(f"\n[0/4] Force mode: deleting "
+                logger.info(f"\n[0/4] Force mode: deleting "
                       f"{', '.join(sec_types)} rows from detail tables "
-                      f"(other sec_types untouched)...", flush=True)
+                      f"(other sec_types untouched)...")
                 for table in (DETAIL_TABLE, TRADING_AMT_TABLE,
                               TRADING_AMT_RATIOS_TABLE, HOLIDAY_TABLE,
-                              MARKET_HYPES_TABLE, HIGH_LOW_PCT_TABLE,
+                              PRICE_VS_AMT_TABLE,
+                              HIGH_LOW_PCT_TABLE,
                               HIGH_LOW_PCT_STREAKS_TABLE):
                     await conn.execute(
                         f"DELETE FROM {table} "
                         f"WHERE sec_type = ANY($1::text[])",
                         list(sec_types),
                     )
-                print("    -> deleted; will recompute scoped rows",
-                      flush=True)
+                logger.info("    -> deleted; will recompute scoped rows")
             # Use empty set (not None) so _process_one_sec_type knows to
             # compute ALL dates (no filtering) in force mode.
             target_dates_per_st = {st: set() for st in sec_types}
             ta_missing_per_st = {}
             ta_ratios_missing_per_st = {}
             ohlc_missing_per_st = {}
-            hypes_missing_per_st = {}
             hl_pct_missing_per_st = {}
+            # Force mode rebuilds the streaks table wholesale inside
+            # _process_one_sec_type; nothing to diff here.
+            streaks_missing_per_st = {}
         else:
-            print("\n[0/4] Detecting missing dates PER-sec_type "
+            logger.info("\n[0/4] Detecting missing dates PER-sec_type "
                   "(etf_identity vs detail[etf], index_identity vs "
-                  "detail[index], stock_identity vs detail[stock])...",
-                  flush=True)
+                  "detail[index], stock_identity vs detail[stock])...")
             target_dates_per_st: dict = {}
             ta_missing_per_st: dict = {}
             ta_ratios_missing_per_st: dict = {}
             ohlc_missing_per_st: dict = {}
-            hypes_missing_per_st: dict = {}
             hl_pct_missing_per_st: dict = {}
             streaks_missing_per_st: dict = {}
             for st in sec_types:
@@ -531,24 +509,22 @@ async def main() -> None:
                     conn, DETAIL_TABLE, [src_tbl], sec_type=st,
                 )
                 target_dates_per_st[st] = td_st
-                print(f"    -> {st}: detail {len(td_st)} missing dates",
-                      flush=True)
+                logger.info(f"    -> {st}: detail {len(td_st)} missing dates")
                 # Also check trading_amt table independently
                 td_ta = await find_missing_analysis_dates(
                     conn, TRADING_AMT_TABLE, [src_tbl], sec_type=st,
                 )
                 ta_missing_per_st[st] = td_ta
                 if td_ta:
-                    print(f"    -> {st}: trading_amt {len(td_ta)} missing dates",
-                          flush=True)
+                    logger.info(f"    -> {st}: trading_amt {len(td_ta)} missing dates")
                 # Also check trading_amt_ratios table independently
                 td_tar = await find_missing_analysis_dates(
                     conn, TRADING_AMT_RATIOS_TABLE, [src_tbl], sec_type=st,
                 )
                 ta_ratios_missing_per_st[st] = td_tar
                 if td_tar:
-                    print(f"    -> {st}: trading_amt_ratios "
-                          f"{len(td_tar)} missing dates", flush=True)
+                    logger.info(f"    -> {st}: trading_amt_ratios "
+                          f"{len(td_tar)} missing dates")
                 # Also check the OHLC table independently (missing dates
                 # + repair dates whose rows predate the DATE/2nd-extrema
                 # columns — see ohlc.find_ohlc_repair_dates).
@@ -558,23 +534,7 @@ async def main() -> None:
                 td_oh |= await find_ohlc_repair_dates(conn, st)
                 ohlc_missing_per_st[st] = td_oh
                 if td_oh:
-                    print(f"    -> {st}: ohlc {len(td_oh)} missing/repair dates",
-                          flush=True)
-                # The market-hypes table stores EPISODES (runs of hyped
-                # dates), so per-date coverage cannot be diffed against
-                # it — it is rebuilt wholesale whenever a sec_type is
-                # processed. Only flag COMPLETELY EMPTY scopes (fresh
-                # schema / wiped table) so the pipeline runs at least
-                # once to populate them.
-                hypes_empty = not await conn.fetchval(
-                    f"SELECT EXISTS (SELECT 1 FROM {MARKET_HYPES_TABLE} "
-                    f"WHERE sec_type = $1)",
-                    st,
-                )
-                hypes_missing_per_st[st] = hypes_empty
-                if hypes_empty:
-                    print(f"    -> {st}: market_hypes empty "
-                          f"(no episodes yet)", flush=True)
+                    logger.info(f"    -> {st}: ohlc {len(td_oh)} missing/repair dates")
                 # The high-low-pct table is keyed by (code, month,
                 # pct_type) — missing data is detected at (code, month)
                 # pair granularity (see high_low_pct.
@@ -586,11 +546,11 @@ async def main() -> None:
                 )
                 hl_pct_missing_per_st[st] = hl_pairs
                 if hl_pairs:
-                    print(f"    -> {st}: high_low_pct "
+                    logger.info(f"    -> {st}: high_low_pct "
                           f"{len(hl_pairs):,} missing (code, month) "
-                          f"pairs", flush=True)
-                # The streaks table stores EXCURSION EPISODES (like the
-                # market-hypes episodes — they SHIFT with new data), so
+                          f"pairs")
+                # The streaks table stores EXCURSION EPISODES (they
+                # SHIFT with new data), so
                 # per-date coverage diffing does not apply — it is
                 # rebuilt wholesale whenever the sec_type is processed.
                 # Only flag COMPLETELY EMPTY scopes (fresh schema /
@@ -602,8 +562,8 @@ async def main() -> None:
                 )
                 streaks_missing_per_st[st] = streaks_empty
                 if streaks_empty:
-                    print(f"    -> {st}: high_low_pct_streaks empty "
-                          f"(no streaks yet)", flush=True)
+                    logger.info(f"    -> {st}: high_low_pct_streaks empty "
+                          f"(no streaks yet)")
             total_missing = sum(
                 len(s) for s in target_dates_per_st.values()
             )
@@ -616,9 +576,6 @@ async def main() -> None:
             total_ohlc_missing = sum(
                 len(s) for s in ohlc_missing_per_st.values()
             )
-            total_hypes_missing = sum(
-                1 for s in hypes_missing_per_st.values() if s
-            )
             total_hl_pct_missing = sum(
                 len(s) for s in hl_pct_missing_per_st.values()
             )
@@ -627,23 +584,20 @@ async def main() -> None:
                 and total_ta_missing == 0
                 and total_ta_ratios_missing == 0
                 and total_ohlc_missing == 0
-                and total_hypes_missing == 0
                 and total_hl_pct_missing == 0
             ):
-                print("    -> DB is up to date; nothing to do.", flush=True)
+                logger.info("    -> DB is up to date; nothing to do.")
                 print_wall_time(t0)
                 return
             # For sec_types where only trading_amt / trading_amt_ratios /
-            # OHLC / high_low_pct needs updates or market_hypes is still
-            # empty, set target_dates to None so the detail step is
-            # skipped but the internal steps (which have their own
-            # checks) still run.
+            # OHLC / high_low_pct needs updates, set target_dates to
+            # None so the detail step is skipped but the internal steps
+            # (which have their own checks) still run.
             for st in sec_types:
                 if not target_dates_per_st.get(st) and (
                     ta_missing_per_st.get(st)
                     or ta_ratios_missing_per_st.get(st)
                     or ohlc_missing_per_st.get(st)
-                    or hypes_missing_per_st.get(st)
                     or hl_pct_missing_per_st.get(st)
                 ):
                     target_dates_per_st[st] = None
@@ -666,9 +620,6 @@ async def main() -> None:
             oh_st = (
                 ohlc_missing_per_st.get(st) if ohlc_missing_per_st else None
             )
-            hy_st = (
-                hypes_missing_per_st.get(st) if hypes_missing_per_st else None
-            )
             hl_st = (
                 hl_pct_missing_per_st.get(st)
                 if hl_pct_missing_per_st else None
@@ -679,8 +630,8 @@ async def main() -> None:
             )
             if td_st is not None and len(td_st) == 0 and not args.force:
                 if not ta_st and not ta_ratio_st and not oh_st \
-                        and not hy_st and not hl_st and not sk_st:
-                    print(f"\n  [{st}] up to date; skipping.", flush=True)
+                        and not hl_st and not sk_st:
+                    logger.info(f"\n  [{st}] up to date; skipping.")
                     continue
             n_detail = await _process_one_sec_type(
                 conn, pool, st, td_st, args.force, max_concurrent, t0,
@@ -688,8 +639,7 @@ async def main() -> None:
             total_detail += n_detail
 
         # ---- Upsert analysis_identity ------------------------------------
-        print(f"\n  -> Upserting analysis.analysis_identity registry...",
-              flush=True)
+        logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
         await upsert_analysis_identity(
             conn,
             name=ANALYSIS_NAME,
@@ -697,7 +647,7 @@ async def main() -> None:
             description=DESCRIPTION,
         )
 
-        print(f"\n  TOTAL: {total_detail:,} detail rows inserted", flush=True)
+        logger.info(f"\n  TOTAL: {total_detail:,} detail rows inserted")
         print_wall_time(t0)
     finally:
         try:

@@ -51,6 +51,9 @@ from builds.cross_stats.compute._sanitize import (
     select_and_sanitize_corr,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Subject-block clamps for the code-partitioned corr computation.
 _CORR_BLOCK_MIN: int = 8
 _CORR_BLOCK_MAX: int = 256
@@ -132,13 +135,12 @@ async def build_and_insert(conn, subject_closes: pd.DataFrame,
     n_subjects = subject_closes["code"].nunique() if not subject_closes.empty else 0
     n_indices = (index_closes["benchmark_code"].nunique()
                  if not index_closes.empty else 0)
-    print(f"    -> {n_subjects} {sec_type}s x {n_indices} indices "
+    logger.info(f"    -> {n_subjects} {sec_type}s x {n_indices} indices "
           f"(cross-product on shared dates), "
-          f"mode={'corr-only' if with_corr else 'insert'}",
-          flush=True)
+          f"mode={'corr-only' if with_corr else 'insert'}")
 
     if n_subjects == 0 or n_indices == 0:
-        print("    -> no data to insert.", flush=True)
+        logger.info("    -> no data to insert.")
         return 0
 
     # Lookback pre-filter (both modes).
@@ -177,8 +179,8 @@ async def _corr_only_update(conn, subject_closes: pd.DataFrame,
                             target_dates: Optional[Set[datetime.date]],
                             n_subjects: int) -> int:
     """Upsert corr_20d/60d/255d straight from the GPU tensor frame."""
-    print("    -> Corr-only fast path: GPU tensor -> upsert "
-          "(no per-subject pipeline, base columns untouched)", flush=True)
+    logger.info("    -> Corr-only fast path: GPU tensor -> upsert "
+          "(no per-subject pipeline, base columns untouched)")
 
     benchmark_close_wide, _etf_wide, _etf_long = (
         prepare_pivots(index_closes, etf_amount_by_index)
@@ -187,9 +189,8 @@ async def _corr_only_update(conn, subject_closes: pd.DataFrame,
     subject_codes = sorted(subject_closes["code"].unique())
     n_pairs = sum(len(v) for v in subject_related.values())
     block = _corr_block_size(len(subject_codes), n_pairs, len(grid_dates))
-    print(f"    -> {len(subject_codes)} subjects in blocks of {block} "
-          f"(corr frame budget 12 GB per block)",
-          flush=True)
+    logger.info(f"    -> {len(subject_codes)} subjects in blocks of {block} "
+          f"(corr frame budget 12 GB per block)")
 
     ts_targets = (pd.to_datetime(sorted(target_dates))
                   if target_dates else None)
@@ -225,8 +226,8 @@ async def _corr_only_update(conn, subject_closes: pd.DataFrame,
             )
             total += n
             done = min(blk_start + block, len(subject_codes))
-            print(f"    [{done}/{len(subject_codes)}] subjects: {n:,} corr "
-                  f"rows (cumulative: {total:,})", flush=True)
+            logger.info(f"    [{done}/{len(subject_codes)}] subjects: {n:,} corr "
+                  f"rows (cumulative: {total:,})")
     return total
 
 
@@ -245,8 +246,7 @@ async def _insert_rows(conn, subject_closes: pd.DataFrame,
     # DB-side skip for already-present target dates (safety net).
     target_dates = await filter_target_dates(conn, target_dates)
     if target_dates is not None and len(target_dates) == 0:
-        print("    -> all target dates already present; nothing to do.",
-              flush=True)
+        logger.info("    -> all target dates already present; nothing to do.")
         return 0
 
     benchmark_close_wide, _etf_amount_wide, etf_amount_long = (
@@ -262,9 +262,9 @@ async def _insert_rows(conn, subject_closes: pd.DataFrame,
             related = subject_related.get(subject_code, set())
             if not related:
                 if done % 10 == 0 or done == n_subjects:
-                    print(f"    [{done}/{n_subjects}] {subject_code}: "
+                    logger.info(f"    [{done}/{n_subjects}] {subject_code}: "
                           f"skip (no non-zero shared weight with any "
-                          f"benchmark)", flush=True)
+                          f"benchmark)")
                 continue
 
             related_idx = index_closes[
@@ -297,7 +297,6 @@ async def _insert_rows(conn, subject_closes: pd.DataFrame,
             )
             total += n
             if done % 10 == 0 or done == n_subjects:
-                print(f"    [{done}/{n_subjects}] {subject_code}: "
-                      f"{len(rows):,} rows (cumulative: {total:,})",
-                      flush=True)
+                logger.info(f"    [{done}/{n_subjects}] {subject_code}: "
+                      f"{len(rows):,} rows (cumulative: {total:,})")
     return total

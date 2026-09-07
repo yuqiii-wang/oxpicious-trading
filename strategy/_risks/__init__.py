@@ -41,6 +41,9 @@ from strategy._risks.upsert import (  # noqa: F401
     upsert_risk_seq, upsert_risk_periods, upsert_risk_factors,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Public orchestrator — called by strategy.singleton_trading after backtest
@@ -85,11 +88,10 @@ async def compute_and_upsert_risks(
         codes = (codes_by_st or {}).get(st, [])  # empty = all
         pairs = await fetch_strategy_seqs(conn, st, codes or None, strategy_name)
         if not pairs:
-            print(f"\n[{st}] no trade_decision data found; skipping.", flush=True)
+            logger.info(f"\n[{st}] no trade_decision data found; skipping.")
             continue
 
-        print(f"\n[{st}] Computing risk metrics for {len(pairs)} (seq, code) pair(s)...",
-              flush=True)
+        logger.info(f"\n[{st}] Computing risk metrics for {len(pairs)} (seq, code) pair(s)...")
         # Include position_after so the price-drawdown computation can detect
         # unzero holding periods; default fetch_decisions omits it.
         # Include total_qty_before so the FT amplified P&L can derive the
@@ -148,13 +150,13 @@ async def compute_and_upsert_risks(
             risk_period_rows.extend(rp)
             dd1 = rs['drawdown_1st_date']
             dd1v = rs['drawdown_1st_val']
-            print(f"    -> seq={seq_id} code={code}: "
+            logger.info(f"    -> seq={seq_id} code={code}: "
                   f"concentration={rs['concentration_ratio']:.4f} "
                   f"dd1={dd1} val={dd1v} "
                   f"drop_unzero={rs['deepest_drop_since_unzero_pos']:.4f} "
                   f"drop_buy={rs['deepest_drop_since_last_buy']:.4f} "
                   f"risk_score={rs['risk_score']:.2f} "
-                  f"grade={rs['risk_grade']}", flush=True)
+                  f"grade={rs['risk_grade']}")
 
         if force:
             for seq_id, code in pairs:
@@ -186,12 +188,12 @@ async def compute_and_upsert_risks(
         n_fac = await upsert_risk_factors(conn, risk_factor_rows)
         total_seq += n_seq
         total_per += n_per
-        print(f"    -> [{st}] upserted {n_seq} risk_seq, {n_per} risk_period, "
-              f"{n_fac} risk_factor rows", flush=True)
+        logger.info(f"    -> [{st}] upserted {n_seq} risk_seq, {n_per} risk_period, "
+              f"{n_fac} risk_factor rows")
 
     elapsed = time.time() - t0
-    print(f"\n  risks done: {total_seq} risk_seq + {total_per} risk_period rows "
-          f"({elapsed:.1f}s)", flush=True)
+    logger.info(f"\n  risks done: {total_seq} risk_seq + {total_per} risk_period rows "
+          f"({elapsed:.1f}s)")
 
 
 __all__ = [

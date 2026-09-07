@@ -43,6 +43,8 @@ from analyze.analysis_forecasts.config import (
     MM_HORIZONS,
     N_MONTHS,
     PERIOD_FOR_HORIZON,
+    PX_VOL_SPEED_ORD,
+    PX_VOL_VOL_ORD,
     REVERSE_THRESHOLD,
     REVERSE_THRESHOLD_MODE,
     REVERSE_THRESHOLD_STD_K,
@@ -239,6 +241,73 @@ def scatter_column(
     vals = host_array(df[col].to_numpy())
     mat[didx, cidx] = vals.astype(dtype, copy=False)
     return mat
+
+
+def build_px_vol_state_matrices(
+    states_df: pd.DataFrame,
+    grid_ord: np.ndarray,
+    codes: list[str],
+    shape: tuple[int, int],
+) -> dict[str, np.ndarray]:
+    """Scatter the price_vs_amt registry rows into the (T, C) grid.
+
+    Args:
+        states_df: fetch_price_vs_amt_states' frame (code, date,
+            px_speed, vol_state, px_t, px_z — sorted by (code, date)).
+        grid_ord: the MAIN grid's sorted day ordinals (build_grid).
+        codes: the MAIN grid's sorted code list.
+        shape: (T, C).
+
+    Returns:
+        Wide state matrices keyed:
+          "speed" — (T, C) int8 speed ordinal 0..4 (PX_VOL_SPEEDS
+                    order), -1 = no valid state that day
+          "vol"   — (T, C) int8 vol ordinal 0..2 (PX_VOL_VOL_STATES
+                    order), -1 = none
+          "t" / "z" — (T, C) float64 of the recorded px_t / px_z
+                    (NaN where no state — the bucket means' weights)
+
+    The engines consume these INSTEAD of thresholding raw features: the
+    registry (analysis.mov_ave_price_vs_amt) is the px_vol family's
+    date-level source of truth, so the buckets audit against it 1:1.
+    Registry dates outside the main grid (shouldn't happen — both
+    derive from the same basic_stats close rows) are dropped.
+    """
+    T_n, C_n = shape
+    speed = np.full(shape, -1, dtype=np.int8)
+    vol = np.full(shape, -1, dtype=np.int8)
+    t = np.full(shape, np.nan, dtype=np.float64)
+    z = np.full(shape, np.nan, dtype=np.float64)
+    if states_df.empty:
+        return {"speed": speed, "vol": vol, "t": t, "z": z}
+
+    dord = date_ordinals(states_df["date"])
+    didx = np.searchsorted(grid_ord, dord)
+    scodes = host_array(states_df["code"].to_numpy())
+    codes_arr = np.asarray(codes)
+    cidx = np.searchsorted(codes_arr, scodes)
+
+    # Keep only (code, date) pairs that exist on the main grid.
+    ok = didx < T_n
+    ok[ok] &= cidx[ok] < C_n
+    ok[ok] &= grid_ord[didx[ok]] == dord[ok]
+    ok[ok] &= codes_arr[cidx[ok]] == scodes[ok]
+
+    speed_idx = host_array(
+        states_df["px_speed"].map(PX_VOL_SPEED_ORD).to_numpy(dtype="float64")
+    )
+    vol_idx = host_array(
+        states_df["vol_state"].map(PX_VOL_VOL_ORD).to_numpy(dtype="float64")
+    )
+    speed[didx[ok], cidx[ok]] = speed_idx[ok].astype(np.int8)
+    vol[didx[ok], cidx[ok]] = vol_idx[ok].astype(np.int8)
+    t[didx[ok], cidx[ok]] = host_array(
+        states_df["px_t"].to_numpy(dtype="float64")
+    )[ok]
+    z[didx[ok], cidx[ok]] = host_array(
+        states_df["px_z"].to_numpy(dtype="float64")
+    )[ok]
+    return {"speed": speed, "vol": vol, "t": t, "z": z}
 
 
 def build_hype_matrix(

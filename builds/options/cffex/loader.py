@@ -119,6 +119,9 @@ def _read_one_csv(filepath: str) -> Optional[pd.DataFrame]:
 
 from _common.df_utils import compute_iv_and_greeks as _compute_iv_and_greeks
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def compute_iv_and_greeks(options_df: pd.DataFrame) -> pd.DataFrame:
     """Compute implied volatility and Greeks from option prices.
@@ -182,7 +185,7 @@ def build_options_df(
         pd.DataFrame ready for DB insertion, or empty DataFrame if no data.
     """
     if verbose:
-        print(f"    [CFFEX OPTIONS] reading {len(files)} *_options.csv files", flush=True)
+        logger.info(f"    [CFFEX OPTIONS] reading {len(files)} *_options.csv files")
 
     frames: list[pd.DataFrame] = []
     n_empty = 0
@@ -301,11 +304,10 @@ def build_options_df(
         out["moneyness_ratio"] = 0.0
 
     if verbose:
-        print(
+        logger.info(
             f"    [CFFEX OPTIONS] {n_ok} files with data, {n_empty} empty, "
             f"{n_invalid_contracts} invalid contracts "
             f"({n_parse_fail} rows dropped), {len(out)} rows",
-            flush=True,
         )
 
     # --- Add derived columns ---
@@ -377,7 +379,7 @@ def build_options_df(
 
     # --- Compute Greeks ---
     if verbose:
-        print(f"    → Computing implied volatility and Greeks for {len(out):,} rows …", flush=True)
+        logger.info(f"    → Computing implied volatility and Greeks for {len(out):,} rows …")
 
     out = compute_iv_and_greeks(out)
 
@@ -391,6 +393,6 @@ def build_options_df(
     })
 
     if verbose:
-        print(f"    → Derived columns added: moneyness, ratios, IV, Greeks", flush=True)
+        logger.info(f"    → Derived columns added: moneyness, ratios, IV, Greeks")
 
     return out

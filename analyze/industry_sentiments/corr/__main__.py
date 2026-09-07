@@ -71,6 +71,9 @@ from analyze.industry_sentiments.correlations import (  # noqa: E402
     TABLE as CORRELATIONS_TABLE,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("corr")
+
 BASELINE_TABLE = "stats.industry_basic_stats"
 
 
@@ -150,30 +153,28 @@ async def main() -> None:
                     }
                 )
                 if unmapped:
-                    print(f"    -> WARNING: codes with no index "
+                    logger.warning(f"    -> WARNING: codes with no index "
                           f"classification (ignored): "
-                          f"{', '.join(unmapped)}", flush=True)
+                          f"{', '.join(unmapped)}")
                 industry_ids |= resolved
-            print(f"\n[0/1] Filtered mode: {len(industry_ids)} industries "
-                  f"({', '.join(sorted(industry_ids))})", flush=True)
+            logger.info(f"\n[0/1] Filtered mode: {len(industry_ids)} industries "
+                  f"({', '.join(sorted(industry_ids))})")
             if len(industry_ids) < 2:
-                print("    -> fewer than 2 industries — no pairs to "
-                      "compute; nothing to do.", flush=True)
+                logger.info("    -> fewer than 2 industries — no pairs to "
+                      "compute; nothing to do.")
                 print_wall_time(t0)
                 return
             await run_correlations(conn, industry_ids=industry_ids)
         elif args.force:
             await run_correlations(conn, force=True)
         else:
-            print("\n[0/1] Detecting missing corr windows "
-                  "(source: industry_basic_stats vs correlations)...",
-                  flush=True)
+            logger.info("\n[0/1] Detecting missing corr windows "
+                  "(source: industry_basic_stats vs correlations)...")
             target_dates = await find_missing_corr_window_ends(conn)
-            print(f"    -> {len(target_dates)} corr windows missing from "
-                  f"{CORRELATIONS_TABLE}", flush=True)
+            logger.info(f"    -> {len(target_dates)} corr windows missing from "
+                  f"{CORRELATIONS_TABLE}")
             if not target_dates:
-                print("    -> correlations are up to date; nothing to do.",
-                      flush=True)
+                logger.info("    -> correlations are up to date; nothing to do.")
                 print_wall_time(t0)
                 return
             await run_correlations(conn, target_dates=target_dates)

@@ -25,18 +25,22 @@
  * Refresh button (and the auto-trigger when a fresh selection has no
  * materialized rows) runs `python -m analyze.analysis_composites
  * --industry ... --benchmark ...` in filtered mode (recompute + upsert).
+ *
+ * Industry selection uses the SAME shared multi-label nav kit as Industry
+ * Sentiments: useSecNav (index-only sector/industry + strategy/theme trees
+ * with the exchange filter) + SecClassificationNavMulti — multi-select L2
+ * industry chips across sectors, merged (non-exclusive) with the RIGHT
+ * strategy→theme column into one industry-id set. The per-industry L3 index
+ * row is omitted — pair correlations are per-industry, not per-code.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  Autocomplete,
   Box,
-  Chip,
   CircularProgress,
   IconButton,
   MenuItem,
   Select,
-  TextField,
   ToggleButton,
   ToggleButtonGroup,
   Tooltip,
@@ -46,12 +50,16 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import EChart from "@/components/EChart";
 import ExpandedTable, { type ExpandedTableColumn } from "@/shared/components/ExpandedTable";
 import { useTheme } from "@/hooks/useTheme";
+import { useSecNav } from "@/shared/components/sec-nav";
+import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
 import {
   fetchIndustryCorrOffsetBenchmarks,
   fetchIndustryCorrOffsetIndustries,
   fetchIndustryCorrOffsets,
   runIndustryCorrOffsetsRefresh,
   fetchAnalysisRunStatus,
+  fetchIndustrySentimentsThemes,
+  fetchIndustrySentimentsStrategyThemes,
   INDUSTRY_CORR_OFFSET_RUN_TAG,
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
@@ -76,6 +84,16 @@ type CorrWindow = "20d" | "60d" | "255d";
 type OffsetMetric = "overall" | "sub" | "score";
 
 const WINDOWS: CorrWindow[] = ["20d", "60d", "255d"];
+
+/** Nav trees endpoints (index-only — the same classification trees Industry
+ *  Sentiments browses; industries/themes map 1:1 onto the offset table's
+ *  industry_ids from stats.sec_classification). */
+const THEMES_SOURCES = {
+  index: {
+    themes: (exchange: string | null) => fetchIndustrySentimentsThemes(exchange),
+    strategyThemes: (exchange: string | null) => fetchIndustrySentimentsStrategyThemes(exchange),
+  },
+};
 
 /** metric → per-window row column. */
 const METRIC_COLS: Record<OffsetMetric, Record<CorrWindow, string>> = {
@@ -118,13 +136,67 @@ export default function OppositeIndustryCorrelationsPage() {
   const { theme: themeMode } = useTheme();
 
   // ---- Selection state ---------------------------------------------------
+  // Shared nav kit (same as Industry Sentiments): loads the sector→industry
+  // (LEFT) and strategy→theme (RIGHT) trees for the index sec_type, with the
+  // exchange filter. Non-exclusive mode — both columns contribute to the
+  // same merged pair set.
+  const nav = useSecNav({
+    themesSources: THEMES_SOURCES,
+    defaultSecType: "index",
+    dataLabel: "opposite-industry-correlations",
+    mutuallyExclusive: false,
+  });
+  // Composites industry list (has_rows flags — used only to seed the initial
+  // selection with industries that already have materialized rows).
   const [industries, setIndustries] = useState<IndustryCorrOffsetIndustry[]>([]);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  // Multi-select L2 industries (LEFT column): slugs persist across sector
+  // switches so the user can pick industries from multiple sectors.
+  const [selectedIndustrySlugs, setSelectedIndustrySlugs] = useState<string[]>([]);
   const [pool, setPool] = useState<PoolSize>("all");
   const [benchmark, setBenchmark] = useState("000300");
   const [benchmarkOptions, setBenchmarkOptions] = useState<string[]>([]);
   const [win, setWin] = useState<CorrWindow>("60d");
   const [metric, setMetric] = useState<OffsetMetric>("sub");
+
+  // ---- Derived selection: slugs/themes → industry_ids ---------------------
+  // slug → industry_id lookup across the sector tree (LEFT column).
+  const slugToIndustryId = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of nav.sectors) {
+      for (const ind of s.industries) m.set(ind.industry_slug, ind.industry_id);
+    }
+    return m;
+  }, [nav.sectors]);
+
+  // LEFT column: selected slugs → industry_ids (dropping any slug that no
+  // longer maps, e.g. after an exchange switch pruned the tree).
+  const selectedIndustryIds = useMemo(
+    () =>
+      selectedIndustrySlugs
+        .map((slug) => slugToIndustryId.get(slug))
+        .filter((id): id is string => Boolean(id)),
+    [selectedIndustrySlugs, slugToIndustryId],
+  );
+
+  // RIGHT column: strategy theme industry_ids, fetched the SAME way as
+  // industries (strategy-primary indices carry their theme as industry_id).
+  // When no theme is picked, ALL themes under the strategy are included.
+  const selectedStrategyThemeIds = useMemo(() => {
+    if (!nav.strategyId) return [];
+    const strat = nav.strategies.find((s) => s.sector_id === nav.strategyId);
+    if (!strat) return [];
+    if (nav.themeSlug) {
+      const th = strat.industries.find((t) => t.industry_slug === nav.themeSlug);
+      return th ? [th.industry_id] : [];
+    }
+    return strat.industries.map((t) => t.industry_id);
+  }, [nav.strategyId, nav.themeSlug, nav.strategies]);
+
+  // Combined industry-id selection the API is queried with (LEFT + RIGHT).
+  const selectedIds = useMemo(
+    () => [...selectedIndustryIds, ...selectedStrategyThemeIds],
+    [selectedIndustryIds, selectedStrategyThemeIds],
+  );
 
   // ---- Data state --------------------------------------------------------
   const [data, setData] = useState<IndustryCorrOffsetsResponse | null>(null);
@@ -142,18 +214,13 @@ export default function OppositeIndustryCorrelationsPage() {
   benchmarkRef.current = benchmark;
   const wasRunningRef = useRef(false);
 
-  // Load industries + benchmarks once.
+  // Load the composites industry list (has_rows seeding) + benchmarks once.
   useEffect(() => {
     let cancelled = false;
     fetchIndustryCorrOffsetIndustries()
       .then((resp) => {
         if (cancelled) return;
         setIndustries(resp.industries);
-        setSelectedIds((prev) =>
-          prev.length > 0
-            ? prev
-            : resp.industries.filter((i) => i.has_rows).slice(0, 3).map((i) => i.industry_id),
-        );
       })
       .catch(() => { /* industries list is best-effort */ });
     fetchIndustryCorrOffsetBenchmarks()
@@ -166,6 +233,50 @@ export default function OppositeIndustryCorrelationsPage() {
       .catch(() => { /* benchmarks list is best-effort */ });
     return () => { cancelled = true; };
   }, []);
+
+  // Prune multi-select slugs that no longer exist in the (re)loaded tree
+  // (e.g. switching exchange drops mainland-only industries), then seed the
+  // multi-select ONCE with the first industries that have materialized offset
+  // rows so the page shows data immediately on first load. If nothing
+  // materialized maps into the tree, fall back to the first industries of the
+  // first sector (the auto-recompute below fetches their rows on demand).
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (nav.sectors.length === 0) return;
+    const validSlugs = new Set<string>();
+    for (const s of nav.sectors) {
+      for (const ind of s.industries) validSlugs.add(ind.industry_slug);
+    }
+    setSelectedIndustrySlugs((prev) => {
+      const next = prev.filter((slug) => validSlugs.has(slug));
+      return next.length === prev.length ? prev : next;
+    });
+    if (!seededRef.current && selectedIndustrySlugs.length === 0 && !nav.strategyId) {
+      const idToSlug = new Map<string, string>();
+      for (const [slug, id] of slugToIndustryId) {
+        if (!idToSlug.has(id)) idToSlug.set(id, slug);
+      }
+      const seedSlugs = industries
+        .filter((i) => i.has_rows)
+        .map((i) => idToSlug.get(i.industry_id))
+        .filter((s): s is string => Boolean(s))
+        .slice(0, 3);
+      if (seedSlugs.length === 0) {
+        for (const ind of nav.sectors[0].industries.slice(0, 3)) {
+          seedSlugs.push(ind.industry_slug);
+        }
+      }
+      if (seedSlugs.length > 0) {
+        seededRef.current = true;
+        const firstSector = nav.sectors.find((s) =>
+          s.industries.some((i) => seedSlugs.includes(i.industry_slug)),
+        );
+        if (firstSector) nav.handleSectorChange(firstSector.sector_id);
+        setSelectedIndustrySlugs(seedSlugs);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nav.sectors, nav.strategyId, selectedIndustrySlugs, industries, slugToIndustryId]);
 
   // Poll the run tag while refreshing — also on mount once, so a run
   // started elsewhere restores the spinner.
@@ -403,10 +514,6 @@ export default function OppositeIndustryCorrelationsPage() {
   const numPairs = data
     ? new Set(data.offsets.map((r) => `${r.industry_id}|${r.benchmark_industry_id}`)).size
     : 0;
-  const selectedIndustries = useMemo(
-    () => industries.filter((i) => selectedIds.includes(i.industry_id)),
-    [industries, selectedIds],
-  );
 
   return (
     <Box>
@@ -419,40 +526,35 @@ export default function OppositeIndustryCorrelationsPage() {
         recomputed from the offset trend). Audits the raw overall correlation against the
         benchmark-removed correlation and the opposite score (1 − offset) / 2 — 1 =
         perfectly opposite once the benchmark factor is removed. Windows start every 20
-        trading days.
+        trading days. Pick industries with the classification nav below — tick multiple
+        industry chips (across sectors, they persist while you browse) and optionally a
+        strategy/theme; both columns merge into the same pair set.
       </Typography>
+
+      {/* ---- Classification nav (multi-select) — the same shared kit as
+           Industry Sentiments: tick multiple industry chips across sectors
+           (switching the active sector only changes the browsing context;
+           picked industries persist), merged non-exclusively with the
+           RIGHT strategy→theme column. The per-industry L3 index row is
+           omitted — pair correlations are per-industry, not per-code. ---- */}
+      <SecClassificationNavMulti
+        sectors={nav.sectors}
+        sectorId={nav.sectorId}
+        onSectorChange={nav.handleSectorChange}
+        selectedIndustrySlugs={selectedIndustrySlugs}
+        onMultiIndustryChange={setSelectedIndustrySlugs}
+        exchange={nav.exchange}
+        onExchangeChange={nav.handleExchangeChange}
+        strategies={nav.strategies}
+        strategyId={nav.strategyId}
+        themeSlug={nav.themeSlug}
+        onStrategyChange={nav.handleStrategyChange}
+        onThemeChange={nav.handleThemeChange}
+        loading={nav.loading}
+      />
 
       {/* ---- Controls ---- */}
       <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1.5, alignItems: "center", mb: 2 }}>
-        <Autocomplete
-          multiple
-          size="small"
-          sx={{ minWidth: 420 }}
-          options={industries}
-          getOptionLabel={(o) => o.industry_label || o.industry_id}
-          value={selectedIndustries}
-          onChange={(_, v) => setSelectedIds(v.map((o) => o.industry_id))}
-          renderInput={(params) => (
-            <TextField {...params} label="Industries (2+)" placeholder="Pick industries…" />
-          )}
-          renderOption={(props, o) => (
-            <li {...props} key={o.industry_id}>
-              <Box sx={{ display: "flex", gap: 1, alignItems: "center", width: "100%" }}>
-                <span>{o.industry_label || o.industry_id}</span>
-                <Box component="span" sx={{ flexGrow: 1 }} />
-                {!o.has_rows && (
-                  <Chip label="no data yet" size="small" variant="outlined" sx={{ fontSize: "0.65rem" }} />
-                )}
-              </Box>
-            </li>
-          )}
-          renderTags={(v, getTagProps) =>
-            v.map((o, idx) => {
-              const { key, ...rest } = getTagProps({ index: idx });
-              return <Chip key={key} size="small" label={o.industry_label || o.industry_id} {...rest} />;
-            })
-          }
-        />
         <ToggleButtonGroup
           value={pool}
           exclusive

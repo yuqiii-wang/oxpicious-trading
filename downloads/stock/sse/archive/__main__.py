@@ -1312,4 +1312,4 @@ if __name__ == "__main__":
     ap.add_argument("--force", action="store_true",
                     help="Overwrite existing per-stock CSV files.")
     args = ap.parse_args()
-    print(download_sse_archive(force=args.force, etf_filter=not args.no_etf_filter))
+    logger.info(download_sse_archive(force=args.force, etf_filter=not args.no_etf_filter))

@@ -18,8 +18,6 @@ import type {
   SkewType,
   SkewnessCorrRow,
   SkewnessCorrResponse,
-  SkewnessCrossCountRow,
-  SkewnessCrossCountResponse,
   SkewnessSeriesRow,
   SkewnessSeriesResponse,
   IvSkewRow,
@@ -443,62 +441,6 @@ export async function getOptionsSkewnessCorr(
 }
 
 // ----------------------------------------------------------------------------
-//  Options Skewness Cross Counts — per-expiry cross count of skewness curve
-// ----------------------------------------------------------------------------
-
-interface DbSkewnessCrossCountRow extends QueryResultRow {
-  date: Date | string;
-  underlying_code: string;
-  expiry_month: Date | string;
-  count_skewness_curve_crossed_spot: number;
-}
-
-export async function getOptionsSkewnessCrossCounts(
-  underlying: string,
-  startDate?: string,
-  endDate?: string,
-  skewType: SkewType = "oi_moneyness",
-): Promise<SkewnessCrossCountResponse> {
-  const cleanedCode = stripExchangeSuffix(underlying).trim();
-  const sd = toDateParam(startDate);
-  const ed = toDateParam(endDate);
-
-  const params: unknown[] = [cleanedCode, skewType];
-  const where: string[] = ["underlying_code = $1", "skew_type = $2"];
-  let i = 3;
-
-  if (sd) {
-    where.push(`date >= $${i++}::date`);
-    params.push(sd);
-  }
-  if (ed) {
-    where.push(`date <= $${i++}::date`);
-    params.push(ed);
-  }
-
-  const sql = `
-    SELECT
-      date,
-      underlying_code,
-      DATE_TRUNC('month', expiry_date) AS expiry_month,
-      MAX(count_skewness_curve_crossed_spot) AS count_skewness_curve_crossed_spot
-    FROM analysis.options_skewness_stats
-    WHERE ${where.join(" AND ")}
-    GROUP BY date, underlying_code, DATE_TRUNC('month', expiry_date)
-    ORDER BY date ASC, DATE_TRUNC('month', expiry_date) ASC
-  `;
-
-  const rows = await queryRows<DbSkewnessCrossCountRow>(sql, params);
-  const transformed: SkewnessCrossCountRow[] = rows.map((r) => ({
-    date: formatDate(r.date),
-    expiry_month: formatDate(r.expiry_month),
-    count_skewness_curve_crossed_spot: toNum(r.count_skewness_curve_crossed_spot) ?? 0,
-  }));
-
-  return { underlying_code: cleanedCode, rows: transformed };
-}
-
-// ----------------------------------------------------------------------------
 //  Options Skewness Series — daily raw skewness per (date, expiry month)
 // ----------------------------------------------------------------------------
 
@@ -577,6 +519,9 @@ interface DbIvSkewRow extends QueryResultRow {
   rr25_ma5: number | null;
   rr25_ma20: number | null;
   rr25_ma60: number | null;
+  corr_rr25_ma5_vs_spot_ma5: number | null;
+  corr_rr25_ma20_vs_spot_ma20: number | null;
+  corr_rr25_ma60_vs_spot_ma60: number | null;
 }
 
 export async function getOptionsIvSkew(
@@ -620,7 +565,10 @@ export async function getOptionsIvSkew(
       AVG(smile_skewness) AS smile_skewness,
       AVG(rr25_ma5) AS rr25_ma5,
       AVG(rr25_ma20) AS rr25_ma20,
-      AVG(rr25_ma60) AS rr25_ma60
+      AVG(rr25_ma60) AS rr25_ma60,
+      AVG(corr_rr25_ma5_vs_spot_ma5) AS corr_rr25_ma5_vs_spot_ma5,
+      AVG(corr_rr25_ma20_vs_spot_ma20) AS corr_rr25_ma20_vs_spot_ma20,
+      AVG(corr_rr25_ma60_vs_spot_ma60) AS corr_rr25_ma60_vs_spot_ma60
     FROM analysis.options_iv_skew_stats
     WHERE ${where.join(" AND ")}
     GROUP BY date, underlying_code, DATE_TRUNC('month', expiry_date)
@@ -642,6 +590,9 @@ export async function getOptionsIvSkew(
     rr25_ma5: toNum(r.rr25_ma5),
     rr25_ma20: toNum(r.rr25_ma20),
     rr25_ma60: toNum(r.rr25_ma60),
+    corr_rr25_ma5_vs_spot_ma5: toNum(r.corr_rr25_ma5_vs_spot_ma5),
+    corr_rr25_ma20_vs_spot_ma20: toNum(r.corr_rr25_ma20_vs_spot_ma20),
+    corr_rr25_ma60_vs_spot_ma60: toNum(r.corr_rr25_ma60_vs_spot_ma60),
   }));
 
   return { underlying_code: cleanedCode, rows: transformed };

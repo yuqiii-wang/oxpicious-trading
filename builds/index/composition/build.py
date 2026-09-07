@@ -32,6 +32,9 @@ from builds._commons.safe_parse import safe_to_numeric
 from _common.df_utils import safe_columns
 from downloads._common import read_csv_gpu_safe
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def _extract_code_date_from_filename(filename: str) -> Optional[Tuple[str, datetime.date]]:
     """Extract (index_code, snapshot_date) from '{code}_closeweight_{YYYYMMDD}.csv'.
@@ -117,12 +120,12 @@ async def filter_comp_files_by_missing(
         List of file paths to actually read.
     """
     if not os.path.isdir(directory):
-        print(f"    [{label}] dir not found: {directory}", flush=True)
+        logger.info(f"    [{label}] dir not found: {directory}")
         return []
 
     files = sorted(glob.glob(os.path.join(directory, "*_closeweight_*.csv")))
     if not files:
-        print(f"    [{label}] no CSVs found in {directory}", flush=True)
+        logger.info(f"    [{label}] no CSVs found in {directory}")
         return []
 
     # Extract (code, date) from filenames
@@ -135,17 +138,17 @@ async def filter_comp_files_by_missing(
             file_to_keys[f] = {key}
 
     if not source_keys:
-        print(f"    [{label}] {len(files)} CSVs but no parseable filenames", flush=True)
+        logger.info(f"    [{label}] {len(files)} CSVs but no parseable filenames")
         return []
 
-    print(f"    [{label}] {len(files)} CSV files → {len(source_keys)} unique (code, date) pairs", flush=True)
+    logger.info(f"    [{label}] {len(files)} CSV files → {len(source_keys)} unique (code, date) pairs")
 
     if code_filter:
         bare = _normalize_code_filter(code_filter)
         files = _filter_files_by_code(files, bare)
         source_keys = {k for k in source_keys if k[0] == bare}
         if not source_keys:
-            print(f"    [{label}] no CSVs for code {bare} in {directory}", flush=True)
+            logger.info(f"    [{label}] no CSVs for code {bare} in {directory}")
             return []
 
     # --date mode: bypass the DB missing-pair skip entirely — the forced
@@ -157,8 +160,8 @@ async def filter_comp_files_by_missing(
             f for f in files
             if any(d == forced_date for _, d in file_to_keys.get(f, ()))
         ]
-        print(f"    [{label}] DATE MODE {forced_date}: {len(forced_files)} snapshot "
-              f"file(s) to read (missing-pair skip bypassed)", flush=True)
+        logger.info(f"    [{label}] DATE MODE {forced_date}: {len(forced_files)} snapshot "
+              f"file(s) to read (missing-pair skip bypassed)")
         return forced_files
 
     # Check DB for existing pairs
@@ -182,11 +185,11 @@ async def filter_comp_files_by_missing(
     # Compute missing pairs
     missing_keys = source_keys - existing_keys
     if not missing_keys:
-        print(f"    [{label}] All {len(source_keys)} (code, date) pairs already in DB — skipping all reads", flush=True)
+        logger.info(f"    [{label}] All {len(source_keys)} (code, date) pairs already in DB — skipping all reads")
         return []
 
     n_skipped = len(source_keys) - len(missing_keys)
-    print(f"    [{label}] {len(missing_keys)} pairs missing, {n_skipped} already in DB", flush=True)
+    logger.info(f"    [{label}] {len(missing_keys)} pairs missing, {n_skipped} already in DB")
 
     # Filter files: only those with at least one missing key
     filtered = []
@@ -197,7 +200,7 @@ async def filter_comp_files_by_missing(
         if keys & missing_keys:
             filtered.append(f)
 
-    print(f"    [{label}] → {len(filtered)} files to read (filtered from {len(files)})", flush=True)
+    logger.info(f"    [{label}] → {len(filtered)} files to read (filtered from {len(files)})")
     return filtered
 
 
@@ -209,18 +212,18 @@ def _read_comp_csvs(directory: str, label: str, files: Optional[List[str]] = Non
     """
     if files is None:
         if not os.path.isdir(directory):
-            print(f"    [{label}] dir not found: {directory}", flush=True)
+            logger.info(f"    [{label}] dir not found: {directory}")
             return pd.DataFrame()
         files = sorted(glob.glob(os.path.join(directory, "*_closeweight_*.csv")))
         if not files:
-            print(f"    [{label}] no CSVs found in {directory}", flush=True)
+            logger.info(f"    [{label}] no CSVs found in {directory}")
             return pd.DataFrame()
 
     if not files:
-        print(f"    [{label}] no files to read (all dates already in DB)", flush=True)
+        logger.info(f"    [{label}] no files to read (all dates already in DB)")
         return pd.DataFrame()
 
-    print(f"    [{label}] reading {len(files)} CSV files", flush=True)
+    logger.info(f"    [{label}] reading {len(files)} CSV files")
 
     dfs = []
     for path in files:
@@ -236,7 +239,7 @@ def _read_comp_csvs(directory: str, label: str, files: Optional[List[str]] = Non
     combined = pd.concat(dfs, ignore_index=True)
     for c in ("snapshot_date", "index_code", "stock_code", "stock_name", "weight_pct"):
         if c not in safe_columns(combined):
-            print(f"    [{label}] WARN: missing column '{c}'", flush=True)
+            logger.warning(f"    [{label}] WARN: missing column '{c}'")
             return pd.DataFrame()
     combined["weight_pct"] = safe_to_numeric(combined["weight_pct"]).fillna(0.0)
     combined = combined.sort_values(
@@ -290,8 +293,8 @@ def _build_rows_from_df(combined: pd.DataFrame, label: str,
     if rows:
         n_indices = combined["index_code"].nunique()
         n_dates = combined["snapshot_date"].nunique()
-        print(f"    [{label}] {len(rows):,} rows from {n_indices} indices, "
-              f"{n_dates} snapshot dates", flush=True)
+        logger.info(f"    [{label}] {len(rows):,} rows from {n_indices} indices, "
+              f"{n_dates} snapshot dates")
     return rows
 
 

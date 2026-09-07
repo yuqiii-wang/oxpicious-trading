@@ -8,12 +8,16 @@ Pipeline:
      - Index futures → stats.index_basic_stats.close
      - Bond futures  → stats.debt_treasury yield (converted to bond price)
   3. Compute per-(date, code) gap, changing_rate (1st-order derivative
-     of the gap — convergence/divergence direction), and correlation
-     metrics.
+     of the gap — convergence/divergence direction), correlation
+     metrics, and the rolling AR(1) of the basis (slope + half-life).
   4. Write rows to analysis.futures_ext:
      - ``--force``: DELETE all + chunked COPY-insert.
      - default:     chunked upsert (ON CONFLICT DO UPDATE on PK).
-  5. Upsert analysis.analysis_identity (name='futures_ext').
+  5. Compute the basis-convergence quintile summary (mean forward gap
+     change per gap quintile per contract_type) and upsert it into
+     analysis.futures_gap_quintiles (asof_date-stamped snapshots).
+  6. Upsert analysis.analysis_identity (name='futures_ext' and
+     name='futures_gap_quintiles').
 
 Incremental mode rationale:
   The gap metrics (basis) for past dates are historical facts — futures
@@ -73,12 +77,22 @@ from analyze.futures.config import (  # noqa: E402
     NUMERIC_COLS,
     BOND_PRODUCT_TENOR,
     INDEX_PRODUCT_UNDERLYING,
+    QUINTILE_TABLE_NAME,
+    QUINTILE_ANALYSIS_NAME,
+    QUINTILE_DESCRIPTION,
+    QUINTILE_NUMERIC_COLS,
 )
 from analyze.futures.fetch import (  # noqa: E402
     fetch_futures_data,
     fetch_futures_identity_dates,
 )
-from analyze.futures.compute import compute_futures_ext  # noqa: E402
+from analyze.futures.compute import (  # noqa: E402
+    compute_futures_ext,
+    compute_gap_quintile_summary,
+)
+
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("futures")
 
 
 _CHUNK_SIZE = 10000
@@ -112,15 +126,15 @@ async def _write_rows(
         Number of rows written.
     """
     if result_df.empty:
-        print("  no rows to write", flush=True)
+        logger.info("  no rows to write")
         return 0
 
     if force:
-        print(f"  Deleting existing rows from {TABLE_NAME}...", flush=True)
+        logger.info(f"  Deleting existing rows from {TABLE_NAME}...")
         await conn.execute(f"DELETE FROM {TABLE_NAME}")
     else:
         if target_pairs is not None and len(target_pairs) == 0:
-            print("  up to date; nothing to insert.", flush=True)
+            logger.info("  up to date; nothing to insert.")
             return 0
 
         if target_pairs is not None:
@@ -132,19 +146,19 @@ async def _write_rows(
                     axis=1,
                 )
             ].reset_index(drop=True)
-            print(f"  Incremental filter: {len(result_df):,} of "
-                  f"{n_before:,} rows are in target dates", flush=True)
+            logger.info(f"  Incremental filter: {len(result_df):,} of "
+                  f"{n_before:,} rows are in target dates")
 
     if result_df.empty:
-        print("  no rows to write after filter", flush=True)
+        logger.info("  no rows to write after filter")
         return 0
 
     # Chunked write
     n_chunks = (len(result_df) + _CHUNK_SIZE - 1) // _CHUNK_SIZE
     total = 0
 
-    print(f"  {'COPY' if force else 'Upsert'}ing {len(result_df):,} rows "
-          f"in {n_chunks} chunks...", flush=True)
+    logger.info(f"  {'COPY' if force else 'Upsert'}ing {len(result_df):,} rows "
+          f"in {n_chunks} chunks...")
 
     for i in range(n_chunks):
         chunk = result_df.iloc[
@@ -172,12 +186,48 @@ async def _write_rows(
             f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else
             "upsert"
         )
-        print(f"    chunk {i + 1}/{n_chunks}: "
+        logger.info(f"    chunk {i + 1}/{n_chunks}: "
               f"{via} {n:,} rows "
-              f"(cumulative {total:,})", flush=True)
+              f"(cumulative {total:,})")
 
-    print(f"  wrote {total:,} rows total", flush=True)
+    logger.info(f"  wrote {total:,} rows total")
     return total
+
+
+async def _write_quintile_summary(
+    conn,
+    summary_df: pd.DataFrame,
+) -> int:
+    """Upsert the basis-convergence quintile summary snapshot.
+
+    The table PK is (asof_date, contract_type, horizon_days, quintile),
+    where asof_date stamps the run — re-running on the same day
+    upserts in place, a new day appends a fresh snapshot (small
+    history of the convergence stats). The table is tiny (≤ ~20 rows
+    per run), so a single upsert call suffices.
+    """
+    if summary_df.empty:
+        logger.info("  no quintile summary rows to write")
+        return 0
+
+    rows = sanitize_for_db_insert(
+        summary_df,
+        numeric_cols=QUINTILE_NUMERIC_COLS,
+        round_to=4,
+    )
+    if not rows:
+        return 0
+
+    n_copied, n_upserted = await copy_or_upsert_split_async(
+        conn, QUINTILE_TABLE_NAME, rows,
+        key_columns=["asof_date", "contract_type",
+                     "horizon_days", "quintile"],
+        date_column="asof_date",
+    )
+    n = n_copied + n_upserted
+    logger.info(f"  upserted {n:,} quintile summary rows into "
+          f"{QUINTILE_TABLE_NAME} (asof_date={rows[0]['asof_date']})")
+    return n
 
 
 async def main() -> None:
@@ -207,47 +257,61 @@ async def main() -> None:
         # ---- Detect missing dates (incremental mode) --------------------
         target_pairs: set | None = None
         if not force:
-            print("\n  Detecting missing (date, code) pairs...", flush=True)
+            logger.info("\n  Detecting missing (date, code) pairs...")
             missing_list = await _find_missing_dates(conn)
             target_pairs = set(missing_list)
-            print(f"    -> {len(target_pairs):,} missing (date, code) pairs",
-                  flush=True)
+            logger.info(f"    -> {len(target_pairs):,} missing (date, code) pairs")
             if len(target_pairs) == 0:
-                print("    -> DB is up to date; nothing to do.", flush=True)
+                logger.info("    -> DB is up to date; nothing to do.")
                 print_wall_time(t0)
                 return
 
         # ---- Step 1: fetch futures + underlying data ---------------------
-        print("\n  [1/3] Fetching futures + underlying data...", flush=True)
+        logger.info("\n  [1/4] Fetching futures + underlying data...")
         df = await fetch_futures_data(conn)
-        print(f"    {len(df):,} (date, code) rows with valid underlying data",
-              flush=True)
+        logger.info(f"    {len(df):,} (date, code) rows with valid underlying data")
         if df.empty:
-            print("    no data; skipping.", flush=True)
+            logger.info("    no data; skipping.")
             return
 
         # ---- Step 2: compute metrics ------------------------------------
-        print("\n  [2/3] Computing futures_ext metrics...", flush=True)
+        logger.info("\n  [2/4] Computing futures_ext metrics...")
         result_df = compute_futures_ext(df)
-        print(f"    {len(result_df):,} result rows", flush=True)
+        logger.info(f"    {len(result_df):,} result rows")
 
-        # ---- Step 3: write to DB ----------------------------------------
-        print("\n  [3/3] Writing to DB...", flush=True)
+        # ---- Step 3: write detail rows to DB ----------------------------
+        logger.info("\n  [3/4] Writing detail rows to DB...")
         n = await _write_rows(
             conn, result_df, force=force, target_pairs=target_pairs,
         )
 
+        # ---- Step 4: write quintile summary + identity registry ---------
+        logger.info("\n  [4/4] Writing basis-convergence quintile summary...")
+        # The summary pools the FULL history (both modes fetch the full
+        # underlying data), so it is rebuilt on every run regardless of
+        # the incremental detail filter.
+        summary_df = compute_gap_quintile_summary(result_df, df)
+        logger.info(f"    {len(summary_df):,} quintile summary rows "
+              f"(asof {summary_df['asof_date'].max() if not summary_df.empty else 'n/a'})")
+        n_q = await _write_quintile_summary(conn, summary_df)
+
         # ---- Upsert analysis_identity -----------------------------------
-        print("\n  -> Upserting analysis.analysis_identity registry...",
-              flush=True)
+        logger.info("\n  -> Upserting analysis.analysis_identity registry...")
         await upsert_analysis_identity(
             conn,
             name=ANALYSIS_NAME,
             detail_name="futures_ext",
             description=DESCRIPTION,
         )
+        await upsert_analysis_identity(
+            conn,
+            name=QUINTILE_ANALYSIS_NAME,
+            detail_name=QUINTILE_TABLE_NAME,
+            description=QUINTILE_DESCRIPTION,
+        )
 
-        print(f"\n  TOTAL: {n:,} rows written", flush=True)
+        logger.info(f"\n  TOTAL: {n:,} detail rows + {n_q:,} quintile "
+              f"summary rows written")
         print_wall_time(t0)
     finally:
         try:

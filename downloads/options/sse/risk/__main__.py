@@ -200,4 +200,4 @@ def download_sse_options_risk(
 
 
 if __name__ == "__main__":
-    print(download_sse_options_risk())
+    logger.info(download_sse_options_risk())

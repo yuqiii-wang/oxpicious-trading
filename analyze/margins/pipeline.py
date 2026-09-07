@@ -44,6 +44,9 @@ from analyze.margins.compute import (
     compute_index_margin_series,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Helpers
@@ -118,8 +121,7 @@ async def detect_missing_dates(
             conn, TABLE_TECH_STATS, src_tables, sec_type=st,
         )
         target_dates_tech[st] = missing
-        print(f"    -> tech_stats[{st}]: {len(missing)} missing dates",
-              flush=True)
+        logger.info(f"    -> tech_stats[{st}]: {len(missing)} missing dates")
 
     # ---- margin_index_series (built from the RAW source tables) ----
     target_dates_index_series: set = set()
@@ -129,8 +131,8 @@ async def detect_missing_dates(
             conn, TABLE_INDEX_SERIES,
             [SRC_TABLE_ETF, SRC_TABLE_STOCK],
         )
-        print(f"    -> index_series: {len(target_dates_index_series)} "
-              f"missing dates", flush=True)
+        logger.info(f"    -> index_series: {len(target_dates_index_series)} "
+              f"missing dates")
 
         # tech_stats[index] is keyed off the margin_index_series TABLE.
         # Dates missing from the TABLE itself (to be built this run)
@@ -141,8 +143,8 @@ async def detect_missing_dates(
             SEC_TYPE_SOURCE_TABLES["index"],
             sec_type="index",
         ) | target_dates_index_series
-        print(f"    -> tech_stats[index]: {len(target_dates_index_tech)} "
-              f"missing dates", flush=True)
+        logger.info(f"    -> tech_stats[index]: {len(target_dates_index_tech)} "
+              f"missing dates")
 
     # ---- industry_stats ----
     target_dates_industry: set = set()
@@ -154,8 +156,8 @@ async def detect_missing_dates(
         target_dates_industry = await find_missing_analysis_dates(
             conn, TABLE_INDUSTRY_STATS, industry_source,
         )
-        print(f"    -> industry_stats: {len(target_dates_industry)} "
-              f"missing dates", flush=True)
+        logger.info(f"    -> industry_stats: {len(target_dates_industry)} "
+              f"missing dates")
 
     return (
         target_dates_tech, target_dates_index_series,
@@ -194,49 +196,46 @@ async def run_sec_type(
         target_dates: set of missing dates to write (incremental mode).
             Ignored when ``force`` is True. None means write all rows.
     """
-    print(f"\n  --- sec_type = {sec_type} ---", flush=True)
+    logger.info(f"\n  --- sec_type = {sec_type} ---")
 
     # ---- Universe filter ---------------------------------------------
-    print(f"    [a] Universe filter: codes with rz_balance > 0 in the "
+    logger.info(f"    [a] Universe filter: codes with rz_balance > 0 in the "
           f"last {UNIVERSE_RECENT_DAYS} calendar days on or before "
-          f"{ref_date}...", flush=True)
+          f"{ref_date}...")
     active_codes = await fetch_active_rongzi_codes(
         conn, sec_type, ref_date=ref_date
     )
-    print(f"        -> {len(active_codes):,} active {sec_type} codes",
-          flush=True)
+    logger.info(f"        -> {len(active_codes):,} active {sec_type} codes")
 
     # ---- Margin history ----------------------------------------------
     # Always fetch FULL history (MA60 needs 60 prior days). The
     # incremental filter is applied AFTER computation, not here.
-    print(f"    [b] Fetching full rz_balance + rz_buy history for "
-          f"{len(active_codes):,} codes...", flush=True)
+    logger.info(f"    [b] Fetching full rz_balance + rz_buy history for "
+          f"{len(active_codes):,} codes...")
     history = await fetch_margin_history(conn, sec_type, active_codes)
-    print(f"        -> {len(history):,} rows", flush=True)
+    logger.info(f"        -> {len(history):,} rows")
 
     # ---- Industry mapping --------------------------------------------
-    print(f"    [c] Fetching industry mapping for {sec_type}...",
-          flush=True)
+    logger.info(f"    [c] Fetching industry mapping for {sec_type}...")
     industry_map = await fetch_industry_mapping(conn, sec_type)
     n_mapped = history["code"].isin(industry_map["code"]).nunique() \
         if not history.empty else 0
-    print(f"        -> {len(industry_map):,} mapped codes "
+    logger.info(f"        -> {len(industry_map):,} mapped codes "
           f"({n_mapped} of {history['code'].nunique() if not history.empty else 0} "
-          f"history codes have an industry)", flush=True)
+          f"history codes have an industry)")
 
     # ---- Tech stats --------------------------------------------------
     # Always compute on FULL history (MA windows + hypes need it).
-    print(f"    [d] Computing ma5/ma20/ma60 + slope per code...",
-          flush=True)
+    logger.info(f"    [d] Computing ma5/ma20/ma60 + slope per code...")
     tech_stats = compute_tech_stats(history, sec_type)
-    print(f"        -> {len(tech_stats):,} tech-stats rows", flush=True)
+    logger.info(f"        -> {len(tech_stats):,} tech-stats rows")
 
     # ---- Insert ------------------------------------------------------
     # Force: DELETE sec_type rows + COPY-insert (no conflicts).
     # Incremental: upsert only target_dates rows (ON CONFLICT DO UPDATE).
     if force:
-        print(f"    [e] Deleting old {sec_type} rows from "
-              f"{TABLE_TECH_STATS}...", flush=True)
+        logger.info(f"    [e] Deleting old {sec_type} rows from "
+              f"{TABLE_TECH_STATS}...")
         await delete_tech_stats_for_sec_type(conn, sec_type)
         rows_to_write = tech_stats
     else:
@@ -245,14 +244,14 @@ async def run_sec_type(
             rows_to_write = tech_stats[
                 tech_stats["date"].isin(target_dates)
             ].reset_index(drop=True)
-            print(f"    [e] Incremental filter: {len(rows_to_write):,} of "
-                  f"{n_before:,} rows are in target_dates", flush=True)
+            logger.info(f"    [e] Incremental filter: {len(rows_to_write):,} of "
+                  f"{n_before:,} rows are in target_dates")
         else:
             rows_to_write = tech_stats
 
     if rows_to_write.empty:
-        print("        -> no rows to insert" if force else
-              "        -> no new rows to upsert", flush=True)
+        logger.info("        -> no rows to insert" if force else
+              "        -> no new rows to upsert")
     elif force:
         rows = sanitize_for_db_insert(
             rows_to_write,
@@ -262,7 +261,7 @@ async def run_sec_type(
             conn, TABLE_TECH_STATS, rows,
             columns=TECH_STATS_INSERT_COLUMNS,
         )
-        print(f"        -> COPY-inserted {n:,} rows", flush=True)
+        logger.info(f"        -> COPY-inserted {n:,} rows")
     else:
         rows = sanitize_for_db_insert(
             rows_to_write[TECH_STATS_INSERT_COLUMNS],
@@ -276,7 +275,7 @@ async def run_sec_type(
         via = "COPY" if n_copied > 0 and n_upserted == 0 else \
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
               "upsert"
-        print(f"        -> inserted {n:,} rows via {via}", flush=True)
+        logger.info(f"        -> inserted {n:,} rows via {via}")
 
     return history, industry_map, tech_stats
 
@@ -306,26 +305,23 @@ async def build_margin_index_series(
             Ignored when ``force`` is True.
     """
     if not force and target_dates is not None and len(target_dates) == 0:
-        print("\n  [index-series] up to date; skipping.", flush=True)
+        logger.info("\n  [index-series] up to date; skipping.")
         return
 
-    print("\n  --- margin_index_series TABLE (vectorized build) ---",
-          flush=True)
+    logger.info("\n  --- margin_index_series TABLE (vectorized build) ---")
 
     # ---- Fetch RAW inputs ---------------------------------------------
-    print("    [a] Fetching raw stock/etf margin rows + classification...",
-          flush=True)
+    logger.info("    [a] Fetching raw stock/etf margin rows + classification...")
     dates = None if force else target_dates
     stock_margin, etf_margin, classification = await fetch_index_series_raw(
         conn, dates,
     )
-    print(f"        -> {len(stock_margin):,} stock rows, "
+    logger.info(f"        -> {len(stock_margin):,} stock rows, "
           f"{len(etf_margin):,} etf rows, "
-          f"{len(classification):,} classification rows", flush=True)
+          f"{len(classification):,} classification rows")
 
     # ---- Compute weighted-average series (pandas) ----------------------
-    print("    [b] Computing weighted-average index series (pandas)...",
-          flush=True)
+    logger.info("    [b] Computing weighted-average index series (pandas)...")
     index_series = compute_index_margin_series(
         stock_margin, etf_margin, classification,
     )
@@ -333,20 +329,19 @@ async def build_margin_index_series(
         index_series["index_code"].nunique()
         if not index_series.empty else 0
     )
-    print(f"        -> {len(index_series):,} rows across {n_codes:,} "
-          f"index codes", flush=True)
+    logger.info(f"        -> {len(index_series):,} rows across {n_codes:,} "
+          f"index codes")
 
     # ---- Insert --------------------------------------------------------
     if force:
-        print(f"    [c] Truncating {TABLE_INDEX_SERIES} and inserting...",
-              flush=True)
+        logger.info(f"    [c] Truncating {TABLE_INDEX_SERIES} and inserting...")
         await truncate_table_async(conn, TABLE_INDEX_SERIES)
         rows_to_write = index_series
     else:
         rows_to_write = index_series
 
     if rows_to_write.empty:
-        print("    -> no rows to insert", flush=True)
+        logger.info("    -> no rows to insert")
     elif force:
         rows = sanitize_for_db_insert(
             rows_to_write,
@@ -356,7 +351,7 @@ async def build_margin_index_series(
             conn, TABLE_INDEX_SERIES, rows,
             columns=INDEX_SERIES_INSERT_COLUMNS,
         )
-        print(f"    -> COPY-inserted {n:,} rows", flush=True)
+        logger.info(f"    -> COPY-inserted {n:,} rows")
     else:
         rows = sanitize_for_db_insert(
             rows_to_write[INDEX_SERIES_INSERT_COLUMNS],
@@ -370,7 +365,7 @@ async def build_margin_index_series(
         via = "COPY" if n_copied > 0 and n_upserted == 0 else \
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
               "upsert"
-        print(f"    -> inserted {n:,} rows via {via}", flush=True)
+        logger.info(f"    -> inserted {n:,} rows via {via}")
 
 
 # ---------------------------------------------------------------------------
@@ -408,25 +403,24 @@ async def run_index_tech_stats(
             False, upsert only target_dates rows (incremental).
         target_dates: set of missing dates to write (incremental mode).
     """
-    print("\n  --- sec_type = index (read from the margin_index_series "
-          "TABLE) ---", flush=True)
+    logger.info("\n  --- sec_type = index (read from the margin_index_series "
+          "TABLE) ---")
 
-    print("    [a] Fetching weighted-avg index margin series from "
-          "margin_index_series TABLE...", flush=True)
+    logger.info("    [a] Fetching weighted-avg index margin series from "
+          "margin_index_series TABLE...")
     history = await fetch_index_margin_series(conn)
     n_codes = history["code"].nunique() if not history.empty else 0
-    print(f"        -> {len(history):,} rows, {n_codes:,} index codes",
-          flush=True)
+    logger.info(f"        -> {len(history):,} rows, {n_codes:,} index codes")
 
-    print("    [b] Computing ma5/ma20/ma60 + slope + regime cols "
-          "(on the aggregated series)...", flush=True)
+    logger.info("    [b] Computing ma5/ma20/ma60 + slope + regime cols "
+          "(on the aggregated series)...")
     tech_stats = compute_tech_stats(history, "index")
-    print(f"        -> {len(tech_stats):,} tech-stats rows", flush=True)
+    logger.info(f"        -> {len(tech_stats):,} tech-stats rows")
 
     # ---- Insert ------------------------------------------------------
     if force:
-        print(f"    [c] Deleting old index rows from "
-              f"{TABLE_TECH_STATS}...", flush=True)
+        logger.info(f"    [c] Deleting old index rows from "
+              f"{TABLE_TECH_STATS}...")
         await delete_tech_stats_for_sec_type(conn, "index")
         rows_to_write = tech_stats
     else:
@@ -435,14 +429,14 @@ async def run_index_tech_stats(
             rows_to_write = tech_stats[
                 tech_stats["date"].isin(target_dates)
             ].reset_index(drop=True)
-            print(f"    [c] Incremental filter: {len(rows_to_write):,} of "
-                  f"{n_before:,} rows are in target_dates", flush=True)
+            logger.info(f"    [c] Incremental filter: {len(rows_to_write):,} of "
+                  f"{n_before:,} rows are in target_dates")
         else:
             rows_to_write = tech_stats
 
     if rows_to_write.empty:
-        print("        -> no rows to insert" if force else
-              "        -> no new rows to upsert", flush=True)
+        logger.info("        -> no rows to insert" if force else
+              "        -> no new rows to upsert")
     elif force:
         rows = sanitize_for_db_insert(
             rows_to_write,
@@ -453,7 +447,7 @@ async def run_index_tech_stats(
             conn, TABLE_TECH_STATS, rows,
             columns=TECH_STATS_INSERT_COLUMNS,
         )
-        print(f"        -> COPY-inserted {n:,} rows", flush=True)
+        logger.info(f"        -> COPY-inserted {n:,} rows")
     else:
         rows = sanitize_for_db_insert(
             rows_to_write[TECH_STATS_INSERT_COLUMNS],
@@ -467,7 +461,7 @@ async def run_index_tech_stats(
         via = "COPY" if n_copied > 0 and n_upserted == 0 else \
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
               "upsert"
-        print(f"        -> inserted {n:,} rows via {via}", flush=True)
+        logger.info(f"        -> inserted {n:,} rows via {via}")
 
     return history, tech_stats
 
@@ -495,8 +489,7 @@ async def insert_industry_stats(
 
     # ---- Insert ------------------------------------------------------
     if force:
-        print(f"    Truncating {TABLE_INDUSTRY_STATS} and inserting...",
-              flush=True)
+        logger.info(f"    Truncating {TABLE_INDUSTRY_STATS} and inserting...")
         await truncate_table_async(conn, TABLE_INDUSTRY_STATS)
         rows_to_write = industry_stats
     else:
@@ -505,15 +498,14 @@ async def insert_industry_stats(
             rows_to_write = industry_stats[
                 industry_stats["date"].isin(target_dates)
             ].reset_index(drop=True)
-            print(f"    Incremental filter: {len(rows_to_write):,} of "
-                  f"{n_before:,} industry_stats rows are in target_dates",
-                  flush=True)
+            logger.info(f"    Incremental filter: {len(rows_to_write):,} of "
+                  f"{n_before:,} industry_stats rows are in target_dates")
         else:
             rows_to_write = industry_stats
 
     if rows_to_write.empty:
-        print("    -> no rows to insert" if force else
-              "    -> no new rows to upsert", flush=True)
+        logger.info("    -> no rows to insert" if force else
+              "    -> no new rows to upsert")
     elif force:
         rows = sanitize_for_db_insert(
             rows_to_write,
@@ -523,7 +515,7 @@ async def insert_industry_stats(
             conn, TABLE_INDUSTRY_STATS, rows,
             columns=INDUSTRY_STATS_INSERT_COLUMNS,
         )
-        print(f"    -> COPY-inserted {n:,} rows", flush=True)
+        logger.info(f"    -> COPY-inserted {n:,} rows")
     else:
         rows = sanitize_for_db_insert(
             rows_to_write[INDUSTRY_STATS_INSERT_COLUMNS],
@@ -537,4 +529,4 @@ async def insert_industry_stats(
         via = "COPY" if n_copied > 0 and n_upserted == 0 else \
               f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
               "upsert"
-        print(f"    -> inserted {n:,} rows via {via}", flush=True)
+        logger.info(f"    -> inserted {n:,} rows via {via}")

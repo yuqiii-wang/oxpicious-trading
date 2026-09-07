@@ -75,6 +75,9 @@ from live.live_signals.config import (  # noqa: E402
     SIGNAL_SCHEMES,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("live_signals")
+
 EXIT_NOT_FOUND = 404
 EXIT_USAGE = 2
 
@@ -136,16 +139,14 @@ async def main() -> int:
     args = ap.parse_args()
 
     if args.code and args.sec_type:
-        print("  [ERROR] --code and --sec-type are mutually exclusive.",
-              flush=True)
+        logger.error("  [ERROR] --code and --sec-type are mutually exclusive.")
         return EXIT_USAGE
     if not args.code and not args.sec_type:
-        print("  [ERROR] one of --code / --sec-type is required.",
-              flush=True)
+        logger.error("  [ERROR] one of --code / --sec-type is required.")
         return EXIT_USAGE
     if args.signal_scheme == "strategy":
-        print("  [ERROR] --signal-scheme strategy is not implemented yet; "
-              "only 'analysis' is available.", flush=True)
+        logger.error("  [ERROR] --signal-scheme strategy is not implemented yet; "
+              "only 'analysis' is available.")
         return EXIT_USAGE
 
     sec_types: list[str] = []
@@ -155,8 +156,8 @@ async def main() -> int:
         ]
         bad = [s for s in sec_types if s not in INTRADAY_TABLES]
         if bad:
-            print(f"  [ERROR] unknown sec_type(s): {bad} — valid: "
-                  f"{list(INTRADAY_TABLES)}", flush=True)
+            logger.error(f"  [ERROR] unknown sec_type(s): {bad} — valid: "
+                  f"{list(INTRADAY_TABLES)}")
             return EXIT_USAGE
 
     t0 = time.time()
@@ -180,14 +181,14 @@ async def main() -> int:
                     d, tm, close = bar
                     hits.append((st, d, tm, close))
             if not hits:
-                print(f"  404: code {args.code} has no intraday price in "
+                logger.info(f"  404: code {args.code} has no intraday price in "
                       f"any of {list(SEC_TYPE_PROBE_ORDER)} — nothing to "
-                      f"check.", flush=True)
+                      f"check.")
                 print_wall_time(t0)
                 return EXIT_NOT_FOUND
             for st, d, tm, close in hits:
-                print(f"  [{st}] latest intraday bar: {d} {tm} "
-                      f"close={close}", flush=True)
+                logger.info(f"  [{st}] latest intraday bar: {d} {tm} "
+                      f"close={close}")
 
             total_records: list[dict] = []
             for st, _d, _tm, _close in hits:
@@ -208,7 +209,7 @@ async def main() -> int:
             )
 
         await _upsert_live_identity(conn)
-        print(f"\n  breaches recorded: {len(total_records)}", flush=True)
+        logger.info(f"\n  breaches recorded: {len(total_records)}")
         print_wall_time(t0)
         return 0
     finally:

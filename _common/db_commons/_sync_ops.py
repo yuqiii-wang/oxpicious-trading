@@ -17,6 +17,9 @@ from psycopg.rows import dict_row
 
 from ._helpers import _parse_table_name
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def check_stock_intraday_exists(conn, code: str, check_date: date) -> bool:
     """Check if stock intraday data already exists for a given date (sync).
@@ -145,10 +148,9 @@ def bulk_upsert(conn, table_name: str, rows: list, key_columns: list, batch_size
                     cur.executemany(query, chunk)
         return len(rows)
     except Exception as e:
-        print(
+        logger.error(
             f"    [ERROR] Bulk upsert failed for {table_name}: "
             f"{type(e).__name__}: {e}",
-            flush=True,
         )
         raise
 
@@ -171,9 +173,9 @@ def ensure_table_exists(conn, table_name: str, create_sql: str) -> None:
         exists = cur.fetchone()[0]
 
         if not exists:
-            print(f"    [INFO] Creating table {table_name}", flush=True)
+            logger.info(f"    [INFO] Creating table {table_name}")
             cur.execute(create_sql)
-            print(f"    [INFO] Table {table_name} created", flush=True)
+            logger.info(f"    [INFO] Table {table_name} created")
 
 
 def truncate_table(conn, table_name: str) -> None:
@@ -193,7 +195,7 @@ def truncate_table(conn, table_name: str) -> None:
             )
         exists = cur.fetchone()[0]
         if not exists:
-            print(f"    [INFO] Table {table_name} does not exist, skipping truncate", flush=True)
+            logger.info(f"    [INFO] Table {table_name} does not exist, skipping truncate")
             return
 
         if schema:
@@ -205,4 +207,4 @@ def truncate_table(conn, table_name: str) -> None:
             )
         else:
             cur.execute(sql.SQL("TRUNCATE TABLE {table} CASCADE").format(table=sql.Identifier(table)))
-        print(f"    [INFO] Truncated table {table_name}", flush=True)
+        logger.info(f"    [INFO] Truncated table {table_name}")

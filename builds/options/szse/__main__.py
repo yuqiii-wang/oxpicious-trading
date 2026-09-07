@@ -223,7 +223,7 @@ def build_options_df(files, verbose=True):
         files: list of CSV file paths (already filtered to missing dates by caller)
     """
     if verbose:
-        print(f"    [OPTIONS] reading {len(files)} szse_trend_option_*.csv files", flush=True)
+        logger.info(f"    [OPTIONS] reading {len(files)} szse_trend_option_*.csv files")
 
     frames: list[pd.DataFrame] = []
     n_empty = 0
@@ -279,7 +279,7 @@ def build_options_df(files, verbose=True):
 
     if not frames:
         if verbose:
-            print(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, 0 rows", flush=True)
+            logger.info(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, 0 rows")
         return pd.DataFrame()
 
     out = pd.concat(frames, ignore_index=True)
@@ -304,8 +304,8 @@ def build_options_df(files, verbose=True):
     ]
     if not meta_rows:
         if verbose:
-            print(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, "
-                  f"{len(out)} rows dropped as parse failures, 0 rows kept", flush=True)
+            logger.info(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, "
+                  f"{len(out)} rows dropped as parse failures, 0 rows kept")
         return pd.DataFrame()
     n_pre = len(out)
     out = out.merge(pd.DataFrame(meta_rows), on="合约简称", how="inner")
@@ -324,7 +324,7 @@ def build_options_df(files, verbose=True):
     ])
     if not len(under_meta):
         if verbose:
-            print(f"    [OPTIONS] no parseable underlying codes — 0 rows", flush=True)
+            logger.info(f"    [OPTIONS] no parseable underlying codes — 0 rows")
         return pd.DataFrame()
     n_pre = len(out)
     out = out.merge(under_meta, on=under_col, how="inner")
@@ -358,7 +358,7 @@ def build_options_df(files, verbose=True):
         })
     if not exp_meta_rows:
         if verbose:
-            print(f"    [OPTIONS] no computable expiry dates — 0 rows", flush=True)
+            logger.info(f"    [OPTIONS] no computable expiry dates — 0 rows")
         return pd.DataFrame()
     out = out.merge(
         pd.DataFrame(exp_meta_rows), on=["date", "expiry_month"], how="inner")
@@ -380,8 +380,8 @@ def build_options_df(files, verbose=True):
         out["_exp_days"].astype("int64") * 86_400_000_000_000)
 
     if verbose:
-        print(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, "
-              f"{n_parse_fail} parse failures, {len(out)} rows", flush=True)
+        logger.info(f"    [OPTIONS] {n_ok} files with data, {n_empty} empty, "
+              f"{n_parse_fail} parse failures, {len(out)} rows")
 
     out = out.dropna(subset=["date"])
     out = out.sort_values(
@@ -401,7 +401,7 @@ def load_etf_ohlcv(files, verbose=True):
         files: list of szse_trend_etf_*.csv file paths (already filtered to missing dates)
     """
     if verbose:
-        print(f"    [ETF-OHLCV] reading {len(files)} szse_trend_etf_*.csv files", flush=True)
+        logger.info(f"    [ETF-OHLCV] reading {len(files)} szse_trend_etf_*.csv files")
 
     parts: list = []
     for path in files:
@@ -435,7 +435,7 @@ def load_etf_ohlcv(files, verbose=True):
 
     if not parts:
         if verbose:
-            print("    [WARN] No ETF OHLCV data loaded for moneyness calculation", flush=True)
+            logger.warning("    [WARN] No ETF OHLCV data loaded for moneyness calculation")
         return pd.DataFrame()
 
     out = pd.concat(parts, ignore_index=True)
@@ -445,7 +445,7 @@ def load_etf_ohlcv(files, verbose=True):
     out = out.dropna(subset=["date"]).sort_values(["etf_code", "date"]).reset_index(drop=True)
 
     if verbose:
-        print(f"    → {len(out):,} ETF OHLCV rows  ·  {out['etf_code'].nunique()} ETFs", flush=True)
+        logger.info(f"    → {len(out):,} ETF OHLCV rows  ·  {out['etf_code'].nunique()} ETFs")
 
     return out
 
@@ -542,7 +542,7 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
     df = df.drop(columns=["_date_key"])
 
     if verbose:
-        print(f"    → Computing implied volatility and Greeks for {len(df):,} rows …", flush=True)
+        logger.info(f"    → Computing implied volatility and Greeks for {len(df):,} rows …")
 
     iv, delta, theta, gamma, vega, rho = compute_iv_and_greeks(df)
     df["implied_vol"] = iv
@@ -562,7 +562,7 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
     })
 
     if verbose:
-        print(f"    → Derived columns added: moneyness, ratios, normalized prices, IV, Greeks", flush=True)
+        logger.info(f"    → Derived columns added: moneyness, ratios, normalized prices, IV, Greeks")
 
     return df
 
@@ -574,6 +574,9 @@ _CFFEX_PREFIXES = ["IO%", "HO%", "MO%", "CO%"]
 # CFFEX index-option underlying codes (IO/HO/MO/CO → index codes) — used
 # to skip this SZSE-only builder when --code targets a CFFEX underlying.
 from builds.options.cffex.config import PRODUCT_UNDERLYING as _CFFEX_PRODUCT_UNDERLYING  # noqa: E402
+
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("szse")
 _CFFEX_INDEX_UNDERLYING_CODES = frozenset(
     code for code, _name in _CFFEX_PRODUCT_UNDERLYING.values()
 )
@@ -630,10 +633,10 @@ async def upsert_split_tables_date_mode(conn, tables) -> None:
     """
     for tbl, rows in tables.items():
         if not rows:
-            print(f"    [DB] No rows to upsert into {tbl}", flush=True)
+            logger.info(f"    [DB] No rows to upsert into {tbl}")
             continue
         n = await bulk_upsert_async(conn, tbl, rows, key_columns=["date", "contract_code"])
-        print(f"    [DB] Upserted {n:,} rows into {tbl}", flush=True)
+        logger.info(f"    [DB] Upserted {n:,} rows into {tbl}")
 
 
 # ============================================================================
@@ -673,24 +676,24 @@ async def main():
         }
     )
     if code_filter:
-        print(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}", flush=True)
+        logger.info(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}")
         if code_filter in _CFFEX_INDEX_UNDERLYING_CODES:
-            print("    [CODE FILTER] CFFEX index underlying — nothing to do for SZSE; skipping", flush=True)
+            logger.info("    [CODE FILTER] CFFEX index underlying — nothing to do for SZSE; skipping")
             print_wall_time(t0)
             return
     if forced_date:
-        print(f"[DATE MODE] Forced single-date build: {forced_date}", flush=True)
+        logger.info(f"[DATE MODE] Forced single-date build: {forced_date}")
 
     # ------------------------------------------------------------------
     # 1. Discover source files and available dates
     # ------------------------------------------------------------------
-    print("\n[1/4] Discovering source CSV files …", flush=True)
+    logger.info("\n[1/4] Discovering source CSV files …")
     option_files = glob_source_files(SZSE_TREND_DIR, "szse_trend_option_*.csv")
     etf_files = glob_source_files(SZSE_TREND_DIR, "szse_trend_etf_*.csv")
-    print(f"    → {len(option_files)} option files, {len(etf_files)} ETF files available", flush=True)
+    logger.info(f"    → {len(option_files)} option files, {len(etf_files)} ETF files available")
 
     if not option_files:
-        print("    [FATAL] No option source CSVs found", flush=True)
+        logger.error("    [FATAL] No option source CSVs found")
         sys.exit(1)
 
     # Extract available dates from option file filenames
@@ -712,12 +715,12 @@ async def main():
         if end_d:
             available_dates = {d for d in available_dates if d <= end_d}
 
-    print(f"    → {len(available_dates)} unique dates available in range", flush=True)
+    logger.info(f"    → {len(available_dates)} unique dates available in range")
 
     # ------------------------------------------------------------------
     # 2. Connect to DB and find missing dates
     # ------------------------------------------------------------------
-    print("\n[2/4] Connecting to database and detecting missing dates …", flush=True)
+    logger.info("\n[2/4] Connecting to database and detecting missing dates …")
     conn = await get_db_or_exit()
 
     try:
@@ -725,11 +728,11 @@ async def main():
             if code_filter:
                 # Single-code force mode: delete only this underlying's rows
                 # instead of truncating (FK-safe order handled by the helper).
-                print(f"    [DB] Force mode for underlying {code_filter}: deleting existing rows", flush=True)
+                logger.info(f"    [DB] Force mode for underlying {code_filter}: deleting existing rows")
                 from builds.options.tables import delete_underlying_rows_async
                 await delete_underlying_rows_async(conn, code_filter)
             else:
-                print("    [DB] Force mode: truncating existing tables", flush=True)
+                logger.info("    [DB] Force mode: truncating existing tables")
                 # CASCADE truncates all FK child tables automatically
                 for tbl in ("stats.options_aggregate", "stats.options_volume_oi",
                             "stats.options_greeks", "stats.options_settlement",
@@ -749,18 +752,18 @@ async def main():
             # dates are checked.
             missing_dates = await find_missing_szse_dates(conn, available_dates, code_filter=code_filter)
 
-        print(f"    [DB] {len(missing_dates)} dates missing from stats.options_identity "
-              f"(out of {len(available_dates)} available)", flush=True)
+        logger.info(f"    [DB] {len(missing_dates)} dates missing from stats.options_identity "
+              f"(out of {len(available_dates)} available)")
 
         if not missing_dates:
-            print("    [INFO] Database is up to date — no new dates to insert", flush=True)
+            logger.info("    [INFO] Database is up to date — no new dates to insert")
             print_wall_time(t0)
             return
 
         # ------------------------------------------------------------------
         # 3. Read only missing-date source files and build options frame
         # ------------------------------------------------------------------
-        print(f"\n[3/4] Reading source CSVs for {len(missing_dates)} missing dates …", flush=True)
+        logger.info(f"\n[3/4] Reading source CSVs for {len(missing_dates)} missing dates …")
         missing_ymd = {d.strftime("%Y%m%d") for d in missing_dates}
 
         missing_option_files = [
@@ -771,7 +774,7 @@ async def main():
             f for f in etf_files
             if ymd_from_filename(f, "szse_trend_etf_") in missing_ymd
         ]
-        print(f"    → {len(missing_option_files)} option files, {len(missing_etf_files)} ETF files to read", flush=True)
+        logger.info(f"    → {len(missing_option_files)} option files, {len(missing_etf_files)} ETF files to read")
 
         options_df = build_options_df(missing_option_files)
 
@@ -783,18 +786,18 @@ async def main():
             options_df = options_df[
                 options_df["underlying_code"] == code_filter
             ].reset_index(drop=True)
-            print(f"    [CODE FILTER] Options rows {n_before:,} → {len(options_df):,} for underlying {code_filter}", flush=True)
+            logger.info(f"    [CODE FILTER] Options rows {n_before:,} → {len(options_df):,} for underlying {code_filter}")
 
         if len(options_df) == 0:
-            print("    [INFO] No options rows parsed from missing-date files", flush=True)
+            logger.info("    [INFO] No options rows parsed from missing-date files")
             print_wall_time(t0)
             return
 
-        print(f"    → {len(options_df):,} options rows  ·  {options_df['underlying_code'].nunique()} underlyings", flush=True)
+        logger.info(f"    → {len(options_df):,} options rows  ·  {options_df['underlying_code'].nunique()} underlyings")
         # ONE numpy pass — Timestamp.date on a GPU-backed proxy Timestamp
         # takes the cudf slow path per call
         _d_range = dates_as_date_list(options_df["date"])
-        print(f"    → date range: {min(_d_range)} → {max(_d_range)}", flush=True)
+        logger.info(f"    → date range: {min(_d_range)} → {max(_d_range)}")
 
         etf_ohlcv = load_etf_ohlcv(missing_etf_files)
         options_df = add_derived_columns(options_df, etf_ohlcv)
@@ -812,7 +815,7 @@ async def main():
         # ------------------------------------------------------------------
         # 4. Insert to database
         # ------------------------------------------------------------------
-        print("\n[4/4] Inserting data to database …", flush=True)
+        logger.info("\n[4/4] Inserting data to database …")
 
         # Dates stay datetime64 on the frame: a .dt.date object column
         # poisons every later cudf op with MixedTypeError fallbacks. The
@@ -843,12 +846,12 @@ async def main():
         await conn.close()
 
     # Console summary
-    print(f"\n  Underlying distribution:", flush=True)
+    logger.info(f"\n  Underlying distribution:")
     for code, sub in options_df.groupby("underlying_code"):
         name = str(sub["underlying_name"].dropna().iloc[0]) if sub["underlying_name"].notna().any() else ""
         n_dates = int(sub["date"].dt.strftime("%Y-%m-%d").nunique())
         n_strikes = int(sub["strike_price"].nunique())
-        print(f"    · {code:<8s} {name:<12s} {n_dates:>4d} days  {n_strikes:>3d} strikes", flush=True)
+        logger.info(f"    · {code:<8s} {name:<12s} {n_dates:>4d} days  {n_strikes:>3d} strikes")
 
     print_wall_time(t0)
 

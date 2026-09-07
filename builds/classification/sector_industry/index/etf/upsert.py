@@ -13,6 +13,9 @@ from _common.build_commons import bulk_upsert_async
 
 from builds.classification.sector_industry.catalog import _lookup_labels
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def upsert_etfs(
     conn,
@@ -49,5 +52,5 @@ async def upsert_etfs(
             conn, "stats.sec_classification", etf_rows,
             ["code", "parent_index_code"])
         if verbose:
-            print(f"    [DB] Upserted {inserted:,} ETF rows into "
-                  f"stats.sec_classification", flush=True)
+            logger.info(f"    [DB] Upserted {inserted:,} ETF rows into "
+                  f"stats.sec_classification")

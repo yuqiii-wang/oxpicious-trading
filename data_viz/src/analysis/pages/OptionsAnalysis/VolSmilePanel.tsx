@@ -3,10 +3,12 @@
  *
  *   • Snapshot smile chart (base VolSmilePanel — IV vs moneyness for the
  *     selected date).
- *   • SharedSkewPanel in iv_smile mode — IV smile skewness over time
- *     (rebased to price space, with expiry shade bands) + the
- *     skewness–spot correlation from analysis.options_skewness_stats
- *     (skew_type='iv_smile').
+ *   • SharedSkewPanel in iv_smile mode — IV smile skew (25Δ risk
+ *     reversal) over time, rebased to price space with expiry shade
+ *     bands + the rr25–spot correlation from analysis.options_iv_skew_stats.
+ *   • SharedSkewPanel in smile_slope mode — full-smile IV tilt skew over
+ *     time (whole-curve companion to the two-point 25Δ RR; correlations
+ *     computed in-browser).
  *   • IV skew chart — 25Δ risk reversal per expiry group from
  *     analysis.options_iv_skew_stats, with a Daily / MA5 / MA20 / MA60
  *     toggle.
@@ -105,6 +107,12 @@ export default function AnalysisVolSmilePanel({
       <VolSmilePanel rows={rows} selectedDate={selectedDate} />
       <SharedSkewPanel
         mode="iv_smile"
+        rows={rows}
+        selectedDate={selectedDate}
+        onDateChange={onDateChange}
+      />
+      <SharedSkewPanel
+        mode="smile_slope"
         rows={rows}
         selectedDate={selectedDate}
         onDateChange={onDateChange}

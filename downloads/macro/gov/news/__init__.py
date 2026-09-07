@@ -232,7 +232,7 @@ def main() -> None:
         )
         summaries["gov_articles"] = s3
 
-    print(summaries)
+    logger.info(summaries)
 
 
 if __name__ == "__main__":

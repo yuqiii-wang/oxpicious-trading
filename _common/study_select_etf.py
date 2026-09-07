@@ -58,6 +58,9 @@ for _full_code, _info in _ETFS_JSON.items():
 # and industry_id → [keywords] lookup from the catalog + build_classification.INDEX_RULES.
 from _common.sec_statics.classification import INDEX_RULES as _INDEX_RULES
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("study_select_etf")
+
 _INDUSTRY_LOOKUP: dict = {}
 _KEYWORDS_BY_INDUSTRY: dict = {}
 for _sid, _sdata in _CATALOG.items():
@@ -179,8 +182,8 @@ def load_combined():
     if _combined_cache is not None:
         return _combined_cache
 
-    print(f"    [LOAD] querying stats.etf_identity + etf_basic_stats + "
-          f"etf_liquidity_margin from database …", flush=True)
+    logger.info(f"    [LOAD] querying stats.etf_identity + etf_basic_stats + "
+          f"etf_liquidity_margin from database …")
 
     query = """
         SELECT
@@ -212,8 +215,8 @@ def load_combined():
         conn.close()
 
     if not rows:
-        print(f"    [FATAL] No ETF data found in database. "
-              f"Run build_szse_sse_etf_and_margin.py first.", flush=True)
+        logger.error(f"    [FATAL] No ETF data found in database. "
+              f"Run build_szse_sse_etf_and_margin.py first.")
         sys.exit(1)
 
     df = pd.DataFrame(rows, columns=col_names)
@@ -223,8 +226,8 @@ def load_combined():
     # strip it so downstream code sees bare 6-digit codes.
     df["code"] = df["code"].astype(str).apply(strip_exchange_suffix)
     _combined_cache = df
-    print(f"    → {len(df):,} rows · {df['code'].nunique()} ETFs · "
-          f"{df['date'].min().date()} → {df['date'].max().date()}", flush=True)
+    logger.info(f"    → {len(df):,} rows · {df['code'].nunique()} ETFs · "
+          f"{df['date'].min().date()} → {df['date'].max().date()}")
     return df
 
 
@@ -306,7 +309,7 @@ def study_etf_themes(combined_df=None, save=True, require_recent_data=True):
     if require_recent_data:
         before_count = len(study_df)
         study_df = study_df[study_df["has_recent_data"]].reset_index(drop=True)
-        print(f"    [FILTER] Removed {before_count - len(study_df)} ETFs with no data in the last month", flush=True)
+        logger.info(f"    [FILTER] Removed {before_count - len(study_df)} ETFs with no data in the last month")
 
     # --- Vectorized summary via groupby + merge with ETF_THEMES ---
     # Build a theme config DataFrame from ETF_THEMES
@@ -347,8 +350,8 @@ def study_etf_themes(combined_df=None, save=True, require_recent_data=True):
         summary_path = os.path.join(STUDY_DIR, "etf_theme_summary.csv")
         study_df.to_csv(study_path, index=False, encoding="utf-8-sig")
         summary_df.to_csv(summary_path, index=False, encoding="utf-8-sig")
-        print(f"    [SAVE] {study_path} ({len(study_df)} ETFs)", flush=True)
-        print(f"    [SAVE] {summary_path} ({len(summary_df)} themes)", flush=True)
+        logger.info(f"    [SAVE] {study_path} ({len(study_df)} ETFs)")
+        logger.info(f"    [SAVE] {summary_path} ({len(summary_df)} themes)")
 
     return study_df, summary_df
 
@@ -430,14 +433,14 @@ def select_etfs_for_plotting(
         code_theme[code] = (tid, tlabel, tslug)
 
     if verbose:
-        print(f"\n  [STUDY] Classifying {len(code_name_map)} ETFs into themes …", flush=True)
+        logger.info(f"\n  [STUDY] Classifying {len(code_name_map)} ETFs into themes …")
         counts = {}
         for code, (tid, _, _) in code_theme.items():
             counts[tid] = counts.get(tid, 0) + 1
         for tid in ETF_THEMES.keys():
             cnt = counts.get(tid, 0)
             if cnt > 0:
-                print(f"    · {tid:<20s} {cnt:>4d}  → {ETF_THEMES[tid]['theme_label']}", flush=True)
+                logger.info(f"    · {tid:<20s} {cnt:>4d}  → {ETF_THEMES[tid]['theme_label']}")
 
     # --- (2) Filter & rank within each theme ---
     # Rank key (highest priority first):
@@ -534,16 +537,16 @@ def select_etfs_for_plotting(
                 msg = f"    !! {tid:<20s} deduped {dedup_count} same-match ETFs (kept {len(qualified)})"
                 if swap_count > 0:
                     msg += f"  [margin-promoted {swap_count} tiers]"
-                print(msg, flush=True)
+                logger.info(msg)
 
     if verbose:
-        print(f"\n  [STUDY] Qualified ETFs (≥{min_ohlcv_rows} OHLCV days): {total_qualified}", flush=True)
+        logger.info(f"\n  [STUDY] Qualified ETFs (≥{min_ohlcv_rows} OHLCV days): {total_qualified}")
         for tid, codes in theme_all_codes.items():
             n_marg = sum(1 for c in codes if code_margin_map.get(c, 0) > 0)
-            print(f"    · {tid:<20s} {len(codes):>3d} qualified ({n_marg} with margin)", flush=True)
+            logger.info(f"    · {tid:<20s} {len(codes):>3d} qualified ({n_marg} with margin)")
 
     if total_qualified == 0:
-        print("    [FATAL] No ETFs have qualified OHLCV data", flush=True)
+        logger.error("    [FATAL] No ETFs have qualified OHLCV data")
         return [], ""
 
     # --- (3) Quota-distribute (3-pass) ---
@@ -589,8 +592,7 @@ def select_etfs_for_plotting(
                 break
 
     if verbose:
-        print(f"\n  [STUDY] Final selection: {total_selected} panels across {len(theme_final)} themes",
-              flush=True)
+        logger.info(f"\n  [STUDY] Final selection: {total_selected} panels across {len(theme_final)} themes")
 
     # --- (4) Split oversized themes into multi-figure chunks ---
     figure_specs = []
@@ -642,14 +644,14 @@ def main():
     ap.add_argument("--no-recent-filter", action="store_true", help="Disable filtering ETFs with no data in the last month")
     args = ap.parse_args()
 
-    print("=" * 78, flush=True)
-    print("  SZSE ETF THEME STUDY  ·  classify + select for plotting", flush=True)
-    print("=" * 78, flush=True)
-    print(f"  Study dir    : {STUDY_DIR}", flush=True)
-    print(f"  Today        : {TODAY_STR}", flush=True)
+    logger.info("=" * 78)
+    logger.info("  SZSE ETF THEME STUDY  ·  classify + select for plotting")
+    logger.info("=" * 78)
+    logger.info(f"  Study dir    : {STUDY_DIR}")
+    logger.info(f"  Today        : {TODAY_STR}")
 
     # --- (1) Load ---
-    print("\n[1/3] Loading ETF data from database …", flush=True)
+    logger.info("\n[1/3] Loading ETF data from database …")
     combined = load_combined()
 
     # Optional dev limit
@@ -657,22 +659,22 @@ def main():
         code_counts = combined.groupby("code").size().sort_values(ascending=False)
         top_codes = code_counts.head(args.limit).index.tolist()
         combined = combined[combined["code"].isin(top_codes)].copy()
-        print(f"    → --limit applied → {combined['code'].nunique()} ETFs", flush=True)
+        logger.info(f"    → --limit applied → {combined['code'].nunique()} ETFs")
 
     # --- (2) Study themes ---
-    print("\n[2/3] Studying ETF themes (unique names → theme/industry) …", flush=True)
+    logger.info("\n[2/3] Studying ETF themes (unique names → theme/industry) …")
     study_df, summary_df = study_etf_themes(combined, save=True, require_recent_data=not args.no_recent_filter)
 
-    print(f"\n  Theme summary (ordered by quantity DESC):", flush=True)
-    print(f"  {'Theme ID':<20s} {'Grp':<6s} {'Ind':<6s} {'#ETFs':>6s} {'#Margin':>8s} {'#Qual':>6s}  Label", flush=True)
-    print(f"  {'-'*20} {'-'*6} {'-'*6} {'-'*6} {'-'*8} {'-'*6}  {'-'*40}", flush=True)
+    logger.info(f"\n  Theme summary (ordered by quantity DESC):")
+    logger.info(f"  {'Theme ID':<20s} {'Grp':<6s} {'Ind':<6s} {'#ETFs':>6s} {'#Margin':>8s} {'#Qual':>6s}  Label")
+    logger.info(f"  {'-'*20} {'-'*6} {'-'*6} {'-'*6} {'-'*8} {'-'*6}  {'-'*40}")
     for _, r in summary_df.iterrows():
-        print(f"  {r['theme_id']:<20s} {str(r.get('theme_group_id','')):<6s} "
+        logger.info(f"  {r['theme_id']:<20s} {str(r.get('theme_group_id','')):<6s} "
               f"{str(r.get('industry_id','')):<6s} {r['n_etfs']:>6d} {r['n_with_margin']:>8d} "
-              f"{r['n_ohlcv_qualified']:>6d}  {r['theme_label']}", flush=True)
-    print(f"\n  Total: {study_df['code'].nunique()} unique ETFs across "
+              f"{r['n_ohlcv_qualified']:>6d}  {r['theme_label']}")
+    logger.info(f"\n  Total: {study_df['code'].nunique()} unique ETFs across "
           f"{summary_df['theme_id'].nunique()} industries / "
-          f"{summary_df['theme_group_id'].nunique()} theme groups", flush=True)
+          f"{summary_df['theme_group_id'].nunique()} theme groups")
 
     if "theme_group_id" in summary_df.columns:
         grp = (summary_df.groupby(["theme_group_id", "theme_group_label"], dropna=False)
@@ -681,16 +683,16 @@ def main():
                            n_ohlcv_qualified=("n_ohlcv_qualified", "sum"),
                            n_industries=("theme_id", "nunique"))
                       .sort_values("n_etfs", ascending=False).reset_index())
-        print(f"\n  Theme GROUP summary (ordered by #ETFs DESC, {len(grp)} groups):", flush=True)
-        print(f"  {'GrpID':<12s} {'Group Label':<12s} {'#Ind':>5s} {'#ETFs':>6s} {'#Margin':>8s} {'#Qual':>6s}", flush=True)
-        print(f"  {'-'*12} {'-'*12} {'-'*5} {'-'*6} {'-'*8} {'-'*6}", flush=True)
+        logger.info(f"\n  Theme GROUP summary (ordered by #ETFs DESC, {len(grp)} groups):")
+        logger.info(f"  {'GrpID':<12s} {'Group Label':<12s} {'#Ind':>5s} {'#ETFs':>6s} {'#Margin':>8s} {'#Qual':>6s}")
+        logger.info(f"  {'-'*12} {'-'*12} {'-'*5} {'-'*6} {'-'*8} {'-'*6}")
         for _, r in grp.iterrows():
-            print(f"  {str(r['theme_group_id']):<12s} {str(r['theme_group_label']):<12s} "
+            logger.info(f"  {str(r['theme_group_id']):<12s} {str(r['theme_group_label']):<12s} "
                   f"{int(r['n_industries']):>5d} {int(r['n_etfs']):>6d} "
-                  f"{int(r['n_with_margin']):>8d} {int(r['n_ohlcv_qualified']):>6d}", flush=True)
+                  f"{int(r['n_with_margin']):>8d} {int(r['n_ohlcv_qualified']):>6d}")
 
     # --- (3) Selection plan ---
-    print("\n[3/3] Building selection plan for plotting …", flush=True)
+    logger.info("\n[3/3] Building selection plan for plotting …")
     figure_specs, date_note = select_etfs_for_plotting(
         combined,
         target_panels=args.target_panels,
@@ -702,9 +704,9 @@ def main():
         require_recent_data=not args.no_recent_filter,
     )
 
-    print(f"\n  Figure specs ({len(figure_specs)} figures):", flush=True)
+    logger.info(f"\n  Figure specs ({len(figure_specs)} figures):")
     for i, (slug, label, etf_list) in enumerate(figure_specs):
-        print(f"    [{i:03d}] {slug:<40s} {len(etf_list):>3d} ETFs  → {label[:50]}", flush=True)
+        logger.info(f"    [{i:03d}] {slug:<40s} {len(etf_list):>3d} ETFs  → {label[:50]}")
 
     # Save selection plan
     plan_path = os.path.join(STUDY_DIR, "etf_selection_plan.csv")
@@ -728,10 +730,10 @@ def main():
             })
     plan_df = pd.DataFrame(plan_rows)
     plan_df.to_csv(plan_path, index=False, encoding="utf-8-sig")
-    print(f"\n  [SAVE] {plan_path} ({len(plan_df)} rows)", flush=True)
+    logger.info(f"\n  [SAVE] {plan_path} ({len(plan_df)} rows)")
 
-    print(f"\n  Done. Date range: {date_note}", flush=True)
-    print("=" * 78, flush=True)
+    logger.info(f"\n  Done. Date range: {date_note}")
+    logger.info("=" * 78)
 
 
 if __name__ == "__main__":

@@ -25,16 +25,9 @@ import {
 import type { ThemeMode } from "@/store/filters";
 import type { EChartsOption } from "echarts";
 import type {
-  MovAveSpreadHypeEpisodes,
   MovAveSpreadPairSeries,
 } from "@shared/types";
 import type { OhlcMode } from "@/lib/ohlc";
-import {
-  hypeEpisodesToMarkArea,
-  HYPE_ACCENT_COLOR,
-  HYPE_SHADE_COLOR,
-  type HypeMarkAreaDatum,
-} from "./hypeBands";
 import {
   computeStreakBandWindow,
   streakShadeMarkAreas,
@@ -68,14 +61,6 @@ export interface BuildAmtEnvelopeOptionArgs {
   ohlcMode?: OhlcMode;
   /** Bollinger multiplier k in MA ± k × σ. Default 2.0; 0 = hidden. */
   bollingerK?: number;
-  /** ENABLED market-hype check-in windows (trading days) — empty/null =
-   *  off. Each enabled window's hyped date periods are shaded light
-   *  purple; multiple windows' shades overlap (stacking darker). */
-  hypeWindows?: number[] | null;
-  /** Market-hype episodes keyed by check-in window. Source:
-   *  analysis.mov_ave_market_hypes — episodes are date spans, so no
-   *  index-alignment with pair.rows is required. */
-  hypeEpisodes?: MovAveSpreadHypeEpisodes | null;
   /** The anchor window's WHOLE-WINDOW long horizontal break streaks (one
    *  per side, or null when that side has no streak starting in the
    *  window) — the window's same-side DB streaks merged into one span,
@@ -93,6 +78,19 @@ export interface BuildAmtEnvelopeOptionArgs {
    *  streakPeriod rows BEFORE (and incl.) this row; null = latest row.
    *  Driven by clicking a chart date. */
   streakAnchorIdx?: number | null;
+  /** Px-Vol States overlay (selected speed × vol combo): precomputed
+   *  markArea rects over the consecutive runs of matching dates + the
+   *  legend label + the accent color. Null when the row is off. */
+  pxVolShade?: {
+    label: string;
+    data: Array<
+      [
+        { xAxis: string; itemStyle: { color: string } },
+        { xAxis: string },
+      ]
+    >;
+    accent: string;
+  } | null;
 }
 
 /** Format a yuan amount as 亿元 (100M yuan). */
@@ -107,12 +105,11 @@ export function buildAmtEnvelopeOption({
   themeMode,
   ohlcMode = "absolute",
   bollingerK = 2,
-  hypeWindows = null,
-  hypeEpisodes = null,
   longStreaks = null,
   streakPeriod = null,
   streakPct = null,
   streakAnchorIdx = null,
+  pxVolShade = null,
 }: BuildAmtEnvelopeOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
@@ -183,23 +180,6 @@ export function buildAmtEnvelopeOption({
 
   // ---- Build series ----
   const echartsSeries: NonNullable<EChartsOption["series"]> = [];
-
-  // ---- Market-hype shading (light purple over hyped periods) ------------
-  // Active per ENABLED hype window button (multi-select) with episode data
-  // for this code. Episodes are date spans (first/last satisfied dates of
-  // each hyped run), so they apply directly as markArea rectangles — no
-  // index-alignment with the pair's rows needed. Each enabled window gets
-  // its own series carrying its markArea (z=0, price y-axis) so the shade
-  // sits behind everything, spans the full plot height, and the Hyped(Wd)
-  // legend entry toggles that window's shading individually; overlapping
-  // windows' shades stack darker.
-  const hypeMarkAreaByWindow = new Map<number, HypeMarkAreaDatum[]>();
-  if (hypeEpisodes != null) {
-    for (const w of hypeWindows ?? []) {
-      const data = hypeEpisodesToMarkArea(hypeEpisodes[w]);
-      if (data.length > 0) hypeMarkAreaByWindow.set(w, data);
-    }
-  }
 
   // ---- High/low streak shading (purple above / yellow below the band) ---
   // Active when BOTH nested buttons are picked (period then pct). DEFAULT
@@ -433,32 +413,10 @@ export function buildAmtEnvelopeOption({
   if (showBoll) {
     legendData.push(`Amt Upper (+${bollingerK}σ)`, `Amt Lower (−${bollingerK}σ)`);
   }
-  // Per-window market-hype shading series (light purple rect legend
-  // marker + that window's markArea). The markArea lives ON this series,
-  // so clicking the legend entry toggles that window's shading;
-  // overlapping windows' shades stack darker.
-  for (const [w, data] of hypeMarkAreaByWindow) {
-    legendData.push(`Hyped(${w}d)`);
-    echartsSeries.push({
-      type: "scatter",
-      name: `Hyped(${w}d)`,
-      data: [null],
-      symbol: "rect",
-      symbolSize: [10, 8],
-      itemStyle: { color: HYPE_ACCENT_COLOR, opacity: 0.45, borderColor: HYPE_SHADE_COLOR },
-      z: 0,
-      markArea: {
-        silent: true as const,
-        itemStyle: { borderWidth: 0 },
-        data,
-      },
-    });
-  }
-
   // Per-side high/low streak shading series (rect legend marker + that
   // side's markArea: light window zone + the darker whole-window long
   // streak band) — same
-  // toggle-per-legend-entry pattern as the hype shading above. Both sides
+  // toggle-per-legend-entry pattern as the trend-band shading above. Both sides
   // always carry the window zone rect when the combo is selected.
   if (streakData != null) {
     const streakSides: Array<{
@@ -501,6 +459,26 @@ export function buildAmtEnvelopeOption({
         },
       });
     }
+  }
+
+  // Px-Vol States shading (selected speed × vol combo) — same
+  // rect-legend + markArea pattern as the streak shading above.
+  if (pxVolShade != null && pxVolShade.data.length > 0) {
+    legendData.push(pxVolShade.label);
+    echartsSeries.push({
+      type: "scatter",
+      name: pxVolShade.label,
+      data: [null],
+      symbol: "rect",
+      symbolSize: [10, 8],
+      itemStyle: { color: pxVolShade.accent, opacity: 0.45 },
+      z: 0,
+      markArea: {
+        silent: true as const,
+        itemStyle: { borderWidth: 0 },
+        data: pxVolShade.data,
+      },
+    });
   }
 
   const grid = commonGrid({ left: 55, right: 65, bottom: 50 });

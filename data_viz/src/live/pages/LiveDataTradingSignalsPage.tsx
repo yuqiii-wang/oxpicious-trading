@@ -62,6 +62,7 @@ import {
   type TradingSignalsResponse,
 } from "@/lib/api-client";
 import RefreshButton from "@/components/RefreshButton";
+import { DateSelector } from "@/shared/components/date-selector";
 
 type SignalsMode = "analysis" | "strategy";
 type SecType = "index" | "etf" | "stock";
@@ -365,32 +366,17 @@ export default function LiveDataTradingSignalsPage() {
             </ToggleButton>
           ))}
         </ToggleButtonGroup>
-        <Tooltip
-          title={selectedDate ? selectedDate : `Biz today (${resolvedDate})`}
-          arrow
-        >
-          <Autocomplete
-            size="small"
-            sx={{ minWidth: 150 }}
-            disableClearable
-            options={dateOptions}
-            value={selectedDate ?? resolvedDate}
-            onChange={(_e, v) => {
-              if (!v) return;
-              // Picking the resolved biz-today entry returns to "live"
-              // mode; a historical date freezes the page.
-              setSelectedDate(v === resolvedDate ? null : v);
-            }}
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                label="Date"
-                variant="outlined"
-                size="small"
-              />
-            )}
-          />
-        </Tooltip>
+        <DateSelector
+          dates={dateOptions}
+          value={selectedDate}
+          defaultDate={resolvedDate || undefined}
+          tooltip={selectedDate ? selectedDate : `Biz today (${resolvedDate})`}
+          onChange={(v) => {
+            // Picking the resolved biz-today entry returns to "live"
+            // mode (null); a historical date freezes the page.
+            setSelectedDate(v);
+          }}
+        />
         <Autocomplete
           size="small"
           multiple
@@ -593,7 +579,8 @@ function SignalTable({
                 {s.signal_excess >= 0 ? "▲ " : "▼ "}
                 {s.signal_excess.toFixed(4)}
                 {s.signal_excess_pct !== null && s.signal_excess_pct !== undefined && (
-                  <span
+                  <Box
+                    component="span"
                     sx={{
                       color: theme.palette.text.secondary,
                       fontWeight: 400,
@@ -602,7 +589,7 @@ function SignalTable({
                   >
                     ({s.signal_excess_pct >= 0 ? "+" : ""}
                     {s.signal_excess_pct.toFixed(2)}%)
-                  </span>
+                  </Box>
                 )}
               </TableCell>
               <TableCell

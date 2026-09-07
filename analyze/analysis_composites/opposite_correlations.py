@@ -91,6 +91,9 @@ from analyze.analysis_composites.config import (
     WINDOWS,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Missing-window detection (incremental entry point)
@@ -290,10 +293,10 @@ async def run_opposite_correlations(
       4. Truncate (force) + ONE key-batched write; upsert analysis_identity.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  OPPOSITE INDUSTRY CORRELATIONS BY BENCHMARK OFFSET "
-          "(analysis_composites)", flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  OPPOSITE INDUSTRY CORRELATIONS BY BENCHMARK OFFSET "
+          "(analysis_composites)")
+    logger.info("=" * 78)
 
     benchmarks = tuple(dict.fromkeys(benchmarks))
     filtered = industry_ids is not None and len(industry_ids) > 0
@@ -307,18 +310,18 @@ async def run_opposite_correlations(
                    and target_dates is not None
                    and len(target_dates) > 0)
     if force:
-        print("    mode: FORCE (full recompute)", flush=True)
+        logger.info("    mode: FORCE (full recompute)")
     elif filtered:
-        print(f"    mode: FILTERED ({len(industry_ids)} industries — "
-              f"recompute all their windows, upsert)", flush=True)
+        logger.info(f"    mode: FILTERED ({len(industry_ids)} industries — "
+              f"recompute all their windows, upsert)")
     elif incremental:
-        print(f"    mode: incremental ({len(target_dates)} target "
-              f"window-end dates)", flush=True)
-    print(f"    benchmarks: {', '.join(benchmarks)}", flush=True)
+        logger.info(f"    mode: incremental ({len(target_dates)} target "
+              f"window-end dates)")
+    logger.info(f"    benchmarks: {', '.join(benchmarks)}")
 
     # ---- Step 1: load mean_close series (same query as correlations) ----
-    print("\n[o1/4] Loading (date, industry_id, pool_size, mean_close) "
-          f"from {BASELINE_TABLE} (non-NULL mean only)...", flush=True)
+    logger.info("\n[o1/4] Loading (date, industry_id, pool_size, mean_close) "
+          f"from {BASELINE_TABLE} (non-NULL mean only)...")
     if filtered:
         rows = await conn.fetch(f"""
             SELECT extract(epoch from date)::float8 AS date,
@@ -337,16 +340,15 @@ async def run_opposite_correlations(
             ORDER BY industry_id, pool_size, date
         """)
     if not rows:
-        print("      -> no industry data; skipping.", flush=True)
+        logger.info("      -> no industry data; skipping.")
         return
     df = pd.DataFrame(rec_cols(rows))
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     df["mean_close"] = df["mean_close"].astype(float)
-    print(f"      -> {len(rows):,} rows", flush=True)
+    logger.info(f"      -> {len(rows):,} rows")
 
     # ---- Step 2: load benchmark closes ----------------------------------
-    print(f"\n[o2/4] Loading benchmark closes from {BENCHMARK_TABLE}...",
-          flush=True)
+    logger.info(f"\n[o2/4] Loading benchmark closes from {BENCHMARK_TABLE}...")
     bench_rows = await conn.fetch(f"""
         SELECT extract(epoch from date)::float8 AS date, code, close
         FROM {BENCHMARK_TABLE}
@@ -362,19 +364,19 @@ async def run_opposite_correlations(
     }
     for code in benchmarks:
         if code not in bench_series:
-            print(f"      -> WARNING: no close rows for benchmark "
+            logger.warning(f"      -> WARNING: no close rows for benchmark "
                   f"'{code}' — all its offset columns will be NULL; "
-                  f"skipping it.", flush=True)
+                  f"skipping it.")
     benchmarks = tuple(b for b in benchmarks if b in bench_series)
     if not benchmarks:
-        print("      -> no benchmarks with data; skipping.", flush=True)
+        logger.info("      -> no benchmarks with data; skipping.")
         return
-    print(f"      -> {len(bench_rows):,} rows for "
-          f"{len(benchmarks)} benchmark(s)", flush=True)
+    logger.info(f"      -> {len(bench_rows):,} rows for "
+          f"{len(benchmarks)} benchmark(s)")
 
     # ---- Steps 3: per-pool stacks + emit rows ----------------------------
-    print("\n[o3/4] Per-pool windowed audit stacks "
-          f"(windows={WINDOWS}, stride={INTERVAL_DAYS}d)...", flush=True)
+    logger.info("\n[o3/4] Per-pool windowed audit stacks "
+          f"(windows={WINDOWS}, stride={INTERVAL_DAYS}d)...")
 
     out_rows: list[dict] = []
     tgt64: np.ndarray = (
@@ -447,10 +449,10 @@ async def run_opposite_correlations(
             pool_rows = int(s_idx.size)
             n_pairs = int(pair_ok.sum())
             if s_idx.size == 0:
-                print(f"      [{pool:5s}|{bench_code}] {t_len:,} dates x "
+                logger.info(f"      [{pool:5s}|{bench_code}] {t_len:,} dates x "
                       f"{n_ind} industries -> {n_pairs:,} pairs "
                       f"(overlap >= {MIN_OVERLAP}), {starts.size:,} grid "
-                      f"starts, {pool_rows:,} rows", flush=True)
+                      f"starts, {pool_rows:,} rows")
                 continue
 
             overall_vals: dict[int, np.ndarray] = {}
@@ -506,24 +508,22 @@ async def run_opposite_correlations(
                     sc_l[0], sc_l[1], sc_l[2],
                 )
             )
-            print(f"      [{pool:5s}|{bench_code}] {t_len:,} dates x "
+            logger.info(f"      [{pool:5s}|{bench_code}] {t_len:,} dates x "
                   f"{n_ind} industries -> {n_pairs:,} pairs "
                   f"(overlap >= {MIN_OVERLAP}), {starts.size:,} grid "
-                  f"starts, {pool_rows:,} rows", flush=True)
+                  f"starts, {pool_rows:,} rows")
 
     total_rows = len(out_rows)
-    print(f"      -> {total_rows:,} audit rows emitted"
-          f"{' (target window-end dates filtered)' if incremental else ''}",
-          flush=True)
+    logger.info(f"      -> {total_rows:,} audit rows emitted"
+          f"{' (target window-end dates filtered)' if incremental else ''}")
     if not out_rows:
-        print("      -> no rows to write; skipping.", flush=True)
+        logger.info("      -> no rows to write; skipping.")
         return
 
     # ---- Step 4: truncate (force only) + write ---------------------------
     if force:
-        print(f"\n[o4/4] Truncating {TABLE_OFFSETS} and key-batched-COPY-"
-              f"inserting {total_rows:,} rows (batch key = industry_id)...",
-              flush=True)
+        logger.info(f"\n[o4/4] Truncating {TABLE_OFFSETS} and key-batched-COPY-"
+              f"inserting {total_rows:,} rows (batch key = industry_id)...")
         await truncate_table_async(conn, TABLE_OFFSETS)
         n = await batched_copy_by_key_async(
             conn, TABLE_OFFSETS, out_rows, key="industry_id",
@@ -531,8 +531,8 @@ async def run_opposite_correlations(
         )
         via = "key-batched COPY (force)"
     else:
-        print(f"\n[o4/4] Upserting {total_rows:,} rows into "
-              f"{TABLE_OFFSETS}...", flush=True)
+        logger.info(f"\n[o4/4] Upserting {total_rows:,} rows into "
+              f"{TABLE_OFFSETS}...")
         n_copied, n_upserted = await copy_or_upsert_split_async(
             conn, TABLE_OFFSETS, out_rows,
             key_columns=[
@@ -549,7 +549,7 @@ async def run_opposite_correlations(
         via = "COPY" if n_copied > 0 and n_upserted == 0 else \
             f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
             "upsert"
-    print(f"      -> inserted {n:,} rows via {via}", flush=True)
+    logger.info(f"      -> inserted {n:,} rows via {via}")
 
     # ---- Register in analysis.analysis_identity --------------------------
     await upsert_analysis_identity(
@@ -570,11 +570,10 @@ async def run_opposite_correlations(
         GROUP BY pool_size, benchmark_code
         ORDER BY benchmark_code, pool_size
     """)
-    print("\n      Summary by (benchmark, pool_size):", flush=True)
+    logger.info("\n      Summary by (benchmark, pool_size):")
     for r in summary:
-        print(f"        {r['benchmark_code']} {r['pool']:6s}: "
+        logger.info(f"        {r['benchmark_code']} {r['pool']:6s}: "
               f"{r['n_rows']:>8,} rows . {r['n_pairs']:>4} pairs . "
-              f"{r['first_date']} -> {r['last_date']}", flush=True)
+              f"{r['first_date']} -> {r['last_date']}")
 
-    print(f"\n  opposite correlations wall time: {time.time() - t0:.1f}s",
-          flush=True)
+    logger.info(f"\n  opposite correlations wall time: {time.time() - t0:.1f}s")

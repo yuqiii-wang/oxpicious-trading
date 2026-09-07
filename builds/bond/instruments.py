@@ -15,6 +15,9 @@ import pandas as pd
 from builds._commons.safe_parse import safe_to_datetime
 from builds.bond.paths import PBOC_INSTRUMENTS_CSV
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def parse_duration_to_days(dur_str: str):
     """Convert a duration token like '7D', '6M', '1Y', '91D' to integer days.
@@ -57,8 +60,8 @@ def load_pboc_instruments_df(csv_path: str = PBOC_INSTRUMENTS_CSV,
     if _INSTRUMENTS_DF_CACHE is None:
         if not os.path.exists(csv_path):
             if verbose:
-                print(f"    [PBOC-INSTR] WARNING: {csv_path} not found; "
-                      f"run `python download_pboc_repo_news.py --reparse` first.", flush=True)
+                logger.warning(f"    [PBOC-INSTR] WARNING: {csv_path} not found; "
+                      f"run `python download_pboc_repo_news.py --reparse` first.")
             return pd.DataFrame()
         df = pd.read_csv(csv_path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
         df["pub_date"] = safe_to_datetime(df["pub_date"]).astype("datetime64[ns]")

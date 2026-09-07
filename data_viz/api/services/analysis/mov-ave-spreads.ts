@@ -12,6 +12,7 @@ import type {
   MovAveSpreadCodeRow,
   MovAveSpreadCodesResponse,
   MovAveSpreadChartResponse,
+  MarketHypeEpisodesResponse,
   MovAveSpreadDetailRow,
   MovAveSpreadHypeEpisodes,
   MovAveSpreadHighLowStreak,
@@ -19,10 +20,28 @@ import type {
   MovAveSpreadPairSeries,
   MovAveSpreadPairKind,
   MovAveSpreadLatestGap,
+  MovAveSpreadPriceVsAmtDay,
+  MovAveSpreadPxVolSpeed,
+  MovAveSpreadPxVolVolState,
   SectorNode,
   IndustryNode,
   StrategyNode,
 } from "../../../shared/types.js";
+
+const PX_VOL_SPEED_NAMES: ReadonlySet<string> = new Set([
+  "sharp_up", "slow_up", "flat", "slow_dn", "sharp_dn",
+]);
+const PX_VOL_VOL_NAMES: ReadonlySet<string> = new Set([
+  "heavy", "normal", "shrink",
+]);
+
+function isPxVolSpeed(v: string): v is MovAveSpreadPxVolSpeed {
+  return PX_VOL_SPEED_NAMES.has(v);
+}
+
+function isPxVolVolState(v: string): v is MovAveSpreadPxVolVolState {
+  return PX_VOL_VOL_NAMES.has(v);
+}
 
 // ----------------------------------------------------------------------------
 //  Pair configuration — canonical 9 price pairs + 5 amt pairs.
@@ -877,7 +896,7 @@ function buildChartSql(secType: MaSpreadSecType): string {
 /** SQL for the market-hype EPISODES of one (sec_type, code): one row per
  *  CONCATENATED hype episode per check-in window (span bucketed into
  *  [min_checkin_period, next window)), straight from
- *  analysis.mov_ave_market_hypes (PK (sec_type, code, start_date,
+ *  stats.mov_ave_market_hypes (PK (sec_type, code, start_date,
  *  end_date, min_checkin_period)). Fetched once per chart request — far
  *  cheaper than pivoting the episodes back into per-date flags inside the
  *  chart query. */
@@ -890,10 +909,29 @@ function buildHypeEpisodesSql(): string {
       h.hype_days,
       h.trading_amt_hype_days,
       h.std_hype_days
-    FROM analysis.mov_ave_market_hypes h
+    FROM stats.mov_ave_market_hypes h
     WHERE h.sec_type = $1
       AND h.code = ANY($2::text[])
     ORDER BY h.min_checkin_period, h.start_date
+  `;
+}
+
+/** SQL for one code's per-date Price × Trading-Amount state registry
+ *  rows (analysis.mov_ave_price_vs_amt — the px_vol family's
+ *  date-level source of truth, built by the mov_ave_spread pipeline).
+ *  Every state-valid day joins exactly ONE of the 15
+ *  px_speed × vol_state categories; the UI shades the matching dates
+ *  per picked combo. */
+function buildPriceVsAmtSql(): string {
+  return `
+    SELECT
+      p.date,
+      p.px_speed,
+      p.vol_state
+    FROM analysis.mov_ave_price_vs_amt p
+    WHERE p.sec_type = $1
+      AND p.code = ANY($2::text[])
+    ORDER BY p.date
   `;
 }
 
@@ -1041,7 +1079,7 @@ function toOhlcExtremaRow(r: DbChartRow): MovAveSpreadOhlcRow {
   };
 }
 
-/** One episode row from analysis.mov_ave_market_hypes (see
+/** One episode row from stats.mov_ave_market_hypes (see
  *  buildHypeEpisodesSql). trading_amt_hype_days / std_hype_days may be
  *  NULL on rows built before those columns existed. */
 interface DbHypeEpisodeRow {
@@ -1065,6 +1103,34 @@ function toHypeEpisodes(rows: DbHypeEpisodeRow[]): MovAveSpreadHypeEpisodes {
       hypeDays: r.hype_days,
       tradingAmtHypeDays: r.trading_amt_hype_days ?? undefined,
       stdHypeDays: r.std_hype_days ?? undefined,
+    });
+  }
+  return out;
+}
+
+/** One state-registry row from analysis.mov_ave_price_vs_amt (see
+ *  buildPriceVsAmtSql). */
+interface DbPriceVsAmtRow {
+  date: Date | string;
+  px_speed: string;
+  vol_state: string;
+}
+
+/** Map the registry rows into the response's per-date state array
+ *  (ascending by date). Unknown category names (a future rebuild with
+ *  extended states) are dropped — the UI shades only known cells. */
+function toPriceVsAmtDays(rows: DbPriceVsAmtRow[]): MovAveSpreadPriceVsAmtDay[] {
+  const out: MovAveSpreadPriceVsAmtDay[] = [];
+  for (const r of rows) {
+    if (
+      !isPxVolSpeed(r.px_speed) || !isPxVolVolState(r.vol_state)
+    ) {
+      continue;
+    }
+    out.push({
+      date: formatDate(r.date),
+      speed: r.px_speed,
+      vol: r.vol_state,
     });
   }
   return out;
@@ -1125,14 +1191,17 @@ export async function getMovAveSpreadChart(
   const target = stripped(rawCode);
   const variants = codeVariants(target);
 
-  // Fetch chart rows + name + market-hype episodes + high/low streaks in
-  // parallel.
-  const [chartRows, nameRows, hypeEpisodeRows, streakRows] = await Promise.all([
-    queryRows<DbChartRow>(buildChartSql(secType), [secType, variants]),
-    queryRows<{ name: string | null }>(buildNameSql(secType), [variants]),
-    queryRows<DbHypeEpisodeRow>(buildHypeEpisodesSql(), [secType, variants]),
-    queryRows<DbStreakRow>(buildStreaksSql(), [secType, variants]),
-  ]);
+  // Fetch chart rows + name + high/low streaks + price-vs-amt state
+  // registry in parallel. (Market-hype episodes moved to the dedicated
+  // getMarketHypeEpisodes endpoint — the shared CodeTrendChart toggle
+  // fetches them on demand, so the chart payload no longer carries them.)
+  const [chartRows, nameRows, streakRows, pvaRows] =
+    await Promise.all([
+      queryRows<DbChartRow>(buildChartSql(secType), [secType, variants]),
+      queryRows<{ name: string | null }>(buildNameSql(secType), [variants]),
+      queryRows<DbStreakRow>(buildStreaksSql(), [secType, variants]),
+      queryRows<DbPriceVsAmtRow>(buildPriceVsAmtSql(), [secType, variants]),
+    ]);
 
   const name = nameRows[0]?.name ?? "";
 
@@ -1486,15 +1555,36 @@ export async function getMovAveSpreadChart(
     ],
     // One extrema row per date, index-aligned with every pair's rows.
     ohlc: chartRows.map(toOhlcExtremaRow),
-    // Market-hype episodes keyed by check-in window (5/20/60/120/255) —
-    // drives the light-purple hyped-period shading (spans, so no
-    // index-alignment with the pair rows is needed).
-    hypeEpisodes: toHypeEpisodes(hypeEpisodeRows),
     // High/low band-break excursion streaks, flat across all
     // (period, pct_type) combos — drives the nested High/Low Streaks
     // button row's horizontal span shading.
     highLowStreaks: toStreaks(streakRows),
+    // Per-date Price × Trading-Amount state registry rows
+    // (analysis.mov_ave_price_vs_amt) — drives the Px-Vol States
+    // button row's date shading.
+    priceVsAmt: toPriceVsAmtDays(pvaRows),
   };
+}
+
+// ----------------------------------------------------------------------------
+//  getMarketHypeEpisodes — the market-hype EPISODES of one (sec_type, code)
+//  from stats.mov_ave_market_hypes. MIGRATED off the mov-ave-spread/chart
+//  payload: the shared CodeTrendChart's Hypes toggle (every page's code
+//  trend) fetches episodes on demand via GET /api/analysis/market-hypes,
+//  so the per-pair chart payload no longer ships them.
+// ----------------------------------------------------------------------------
+export async function getMarketHypeEpisodes(
+  rawCode: string,
+  rawSecType: string | undefined | null,
+): Promise<MarketHypeEpisodesResponse> {
+  const secType = normalizeSecType(rawSecType);
+  const target = stripped(rawCode);
+  const variants = codeVariants(target);
+  const rows = await queryRows<DbHypeEpisodeRow>(
+    buildHypeEpisodesSql(),
+    [secType, variants],
+  );
+  return { secType, code: target, episodes: toHypeEpisodes(rows) };
 }
 
 // ----------------------------------------------------------------------------

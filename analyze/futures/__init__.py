@@ -20,6 +20,14 @@ Underlying sources:
   - gap_max_price_vs_underlying_over_20days: rolling max of the basis
     over the trailing 20 trading days (monthly extreme)
   - gap_max_price_vs_underlying_over_60days: same over 60 days (quarterly)
+  - gap_ar1_slope_over_60days: rolling AR(1) slope of the basis over
+    60 days — slope < 1 means the basis mean-reverts toward the
+    underlying (contrarian convergence)
+  - gap_half_life_over_60days: implied mean-reversion half-life
+    ln(0.5)/ln(slope) in trading days (NULL unless 0 < slope < 1)
 
-Output table: analysis.futures_ext
+Output tables: analysis.futures_ext (detail) and
+analysis.futures_gap_quintiles (per-run snapshot of the
+contrarian-convergence quintile stats: mean forward gap change per
+gap quintile per contract_type).
 """

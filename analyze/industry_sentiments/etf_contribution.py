@@ -70,6 +70,9 @@ from analyze._common import (
     upsert_analysis_identity,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Configuration
@@ -231,65 +234,62 @@ async def run_etf_contribution(
       force: when True, truncate the table first and recompute all rows.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  INDUSTRY ETF CONTRIBUTION (internal step of industry_sentiments)",
-          flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  INDUSTRY ETF CONTRIBUTION (internal step of industry_sentiments)")
+    logger.info("=" * 78)
 
     incremental = (not force
                    and target_dates is not None
                    and len(target_dates) > 0)
     if force:
-        print("    mode: FORCE (full recompute)", flush=True)
+        logger.info("    mode: FORCE (full recompute)")
     elif incremental:
-        print(f"    mode: incremental ({len(target_dates)} target dates)",
-              flush=True)
+        logger.info(f"    mode: incremental ({len(target_dates)} target dates)")
 
     # ---- Step 1: guard — check upstream availability ----------------
     n_src = await conn.fetchval(COUNT_SOURCE_SQL)
     if not n_src:
-        print("\n[e1/5] stats.cross_stats has no index rows with "
+        logger.info("\n[e1/5] stats.cross_stats has no index rows with "
               "non-NULL code_etf_trading_amount — nothing to materialize. "
-              "Skipping etf_contribution step.", flush=True)
+              "Skipping etf_contribution step.")
         return
-    print(f"\n[e1/5] Source: {n_src:,} index rows with non-NULL "
-          f"code_etf_trading_amount.", flush=True)
+    logger.info(f"\n[e1/5] Source: {n_src:,} index rows with non-NULL "
+          f"code_etf_trading_amount.")
 
     # ---- Step 2: truncate (full recompute only) ---------------------
     if not incremental:
-        print(f"\n[e2/5] Truncating {TABLE} (full recompute)...", flush=True)
+        logger.info(f"\n[e2/5] Truncating {TABLE} (full recompute)...")
         await truncate_table_async(conn, TABLE)
     else:
-        print(f"\n[e2/5] Incremental mode — no truncate "
-              f"(ON CONFLICT DO UPDATE handles dedup).", flush=True)
+        logger.info(f"\n[e2/5] Incremental mode — no truncate "
+              f"(ON CONFLICT DO UPDATE handles dedup).")
 
     # ---- Step 3: SQL aggregation ------------------------------------
-    print("\n[e3/5] Aggregating code_etf_trading_amount per "
-          "(date, industry_id, pool_size)...", flush=True)
+    logger.info("\n[e3/5] Aggregating code_etf_trading_amount per "
+          "(date, industry_id, pool_size)...")
     t_sql = time.time()
     if incremental:
         sorted_dates = sorted(target_dates)
         rows = await conn.fetch(AGGREGATE_SQL_INCREMENTAL, sorted_dates)
     else:
         rows = await conn.fetch(AGGREGATE_SQL_FULL)
-    print(f"    -> {len(rows):,} aggregated rows "
-          f"({time.time() - t_sql:.1f}s)", flush=True)
+    logger.info(f"    -> {len(rows):,} aggregated rows "
+          f"({time.time() - t_sql:.1f}s)")
 
     if not rows:
-        print("    -> no data; skipping upsert.", flush=True)
+        logger.info("    -> no data; skipping upsert.")
         await upsert_analysis_identity(
             conn,
             name=ANALYSIS_NAME,
             detail_name=ANALYSIS_NAME,
             description=ANALYSIS_DESCRIPTION,
         )
-        print(f"\n  etf_contribution wall time: {time.time() - t0:.1f}s",
-              flush=True)
+        logger.info(f"\n  etf_contribution wall time: {time.time() - t0:.1f}s")
         return
 
     # ---- Step 4: pandas MA5 / MA20 ----------------------------------
-    print("\n[e4/5] Computing 5-day & 20-day MA per (industry_id, "
-          "pool_size)...", flush=True)
+    logger.info("\n[e4/5] Computing 5-day & 20-day MA per (industry_id, "
+          "pool_size)...")
     t_ma = time.time()
     # Whole-column extraction via the shared helper (C-level itemgetter
     # map + one positional unpack — never a per-row python loop; see
@@ -322,11 +322,11 @@ async def run_etf_contribution(
     # Convert date to python datetime.date for asyncpg — ONE host numpy
     # pass (a cudf-backed .dt.date falls back per element).
     to_py_dates(df, ["date"])
-    print(f"    -> MA5 / MA20 computed for {len(df):,} rows "
-          f"({time.time() - t_ma:.1f}s)", flush=True)
+    logger.info(f"    -> MA5 / MA20 computed for {len(df):,} rows "
+          f"({time.time() - t_ma:.1f}s)")
 
     # ---- Step 5: upsert ---------------------------------------------
-    print(f"\n[e5/5] Upserting into {TABLE}...", flush=True)
+    logger.info(f"\n[e5/5] Upserting into {TABLE}...")
     # Sanitize the DataFrame for asyncpg upsert via the shared helper:
     # NaN/inf -> None for numeric cols, non-numeric cols pass through.
     # Replaces the per-row iterrows dict construction with a single
@@ -348,7 +348,7 @@ async def run_etf_contribution(
     via = "COPY" if n_copied > 0 and n_upserted == 0 else \
           f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
           "upsert"
-    print(f"    -> inserted {n:,} rows via {via}", flush=True)
+    logger.info(f"    -> inserted {n:,} rows via {via}")
 
     # ---- Step 6: register in analysis_identity ----------------------
     await upsert_analysis_identity(
@@ -358,4 +358,4 @@ async def run_etf_contribution(
         description=ANALYSIS_DESCRIPTION,
     )
 
-    print(f"\n  etf_contribution wall time: {time.time() - t0:.1f}s", flush=True)
+    logger.info(f"\n  etf_contribution wall time: {time.time() - t0:.1f}s")

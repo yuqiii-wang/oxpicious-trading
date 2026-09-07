@@ -15,6 +15,7 @@
  * intraday-5min) skip the version check and rely on the TTL only.
  */
 import { LruCache } from "@/lib/lru-cache";
+import { fetchJsonWithRetry, type FetchRetryOptions } from "./_retry";
 import type {
   LatestDatesResponse,
   DebtBaselineResponse,
@@ -27,7 +28,6 @@ import type {
   LinkedEtfsResponse,
   StockCombinedResponse,
   IntradayMovementsResponse,
-  SkewnessCrossCountResponse,
 } from "@shared/types";
 
 // Module-level cache singleton: 100 entries, 10-minute TTL (safety net).
@@ -71,13 +71,12 @@ export function invalidateCacheForPrefix(prefix: string): void {
   _versionCache = null;
 }
 
-async function fetchJsonUncached<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`HTTP ${res.status}: ${text}`);
-  }
-  return (await res.json()) as T;
+/**
+ * Raw fetch — retry + per-endpoint timeout are handled by the shared
+ * _retry layer (transient failures only; see _retry.ts for the policy).
+ */
+async function fetchJsonUncached<T>(url: string, opts?: FetchRetryOptions): Promise<T> {
+  return fetchJsonWithRetry<T>(url, opts);
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +91,6 @@ function mapUrlToSource(url: string): keyof LatestDatesResponse | null {
   if (url.startsWith("/api/index-baseline/combined"))     return "index_baseline";
   if (url.startsWith("/api/etf-margin/combined"))         return "etf_margin";
   if (url.startsWith("/api/szse-options/combined"))       return "options";
-  if (url.startsWith("/api/szse-options/skewness-cross-counts")) return "options";
   if (url.startsWith("/api/szse-options/etf-ohlcv"))      return "etf_margin";
   if (url.startsWith("/api/stock-baseline/combined"))     return "stock_baseline";
   if (url.startsWith("/api/live-data/intraday-movements")) return "intraday_movements";
@@ -138,10 +136,6 @@ function extractLatestDate(url: string, data: unknown): string {
     if (url.startsWith("/api/szse-options/combined")) {
       const dates = (data as OptionsCombinedResponse)?.dates ?? [];
       return dates.length ? dates[dates.length - 1] : "";
-    }
-    if (url.startsWith("/api/szse-options/skewness-cross-counts")) {
-      const rows = (data as SkewnessCrossCountResponse)?.rows ?? [];
-      return rows.reduce((max, r) => (r.date > max ? r.date : max), "");
     }
     if (url.startsWith("/api/szse-options/etf-ohlcv")) {
       const dates = (data as EtfOhlcvResponse)?.dates ?? [];
@@ -224,10 +218,12 @@ async function shouldRefreshCache(url: string, cachedData: unknown): Promise<boo
  * result.
  * In-flight requests are de-duplicated so concurrent callers share a single
  * fetch (avoids stampedes when multiple components mount at once).
+ * Network failures are retried with backoff and a per-endpoint timeout
+ * (see ./_retry) — callers can override via `opts`.
  */
 const inflight = new Map<string, Promise<unknown>>();
 
-export async function fetchJson<T>(url: string): Promise<T> {
+export async function fetchJson<T>(url: string, opts?: FetchRetryOptions): Promise<T> {
   const cached = apiCache.get(url);
   if (cached !== undefined) {
     const refresh = await shouldRefreshCache(url, cached);
@@ -240,7 +236,7 @@ export async function fetchJson<T>(url: string): Promise<T> {
   if (existing) {
     return existing as Promise<T>;
   }
-  const p = fetchJsonUncached<T>(url)
+  const p = fetchJsonUncached<T>(url, opts)
     .then((value) => {
       apiCache.set(url, value);
       return value;

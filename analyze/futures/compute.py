@@ -15,7 +15,13 @@ import numpy as np
 import pandas as pd
 
 from _common.df_utils import should_use_gpu  # noqa: F401 — per project convention
-from analyze.futures.config import CORR_WINDOW, MAX_GAP_WINDOWS
+from analyze.futures.config import (
+    AR1_WINDOW,
+    CORR_WINDOW,
+    MAX_GAP_WINDOWS,
+    QUINTILE_HORIZONS,
+    QUINTILE_N_BUCKETS,
+)
 
 
 def compute_futures_ext(
@@ -36,6 +42,11 @@ def compute_futures_ext(
       7. Compute rolling correlation (window=CORR_WINDOW).
       8. Compute rolling max of gap_price_vs_underlying over
          MAX_GAP_WINDOWS per code.
+      9. Compute rolling AR(1) of gap_price_vs_underlying over
+         AR1_WINDOW per code: slope b of gap_t ~ gap_{t-1}, and the
+         implied mean-reversion half-life ln(0.5)/ln(b) (NaN unless
+         0 < b < 1). b < 1 = basis mean-reverts toward the underlying
+         (contrarian convergence).
 
     Args:
         df: DataFrame from fetch.fetch_futures_data with columns:
@@ -52,7 +63,9 @@ def compute_futures_ext(
         corr_price_vs_underlying,
         corr_price_ma5_vs_underlying_ma5,
         gap_max_price_vs_underlying_over_20days,
-        gap_max_price_vs_underlying_over_60days.
+        gap_max_price_vs_underlying_over_60days,
+        gap_ar1_slope_over_60days,
+        gap_half_life_over_60days.
     """
     empty_cols = [
         "date", "code", "underlying_code",
@@ -64,6 +77,8 @@ def compute_futures_ext(
         "corr_price_ma5_vs_underlying_ma5",
         "gap_max_price_vs_underlying_over_20days",
         "gap_max_price_vs_underlying_over_60days",
+        "gap_ar1_slope_over_60days",
+        "gap_half_life_over_60days",
     ]
     if df.empty:
         return pd.DataFrame(columns=empty_cols)
@@ -149,6 +164,17 @@ def compute_futures_ext(
             .reset_index(level=0, drop=True)
         )
 
+    # ---- Step 9: rolling AR(1) of the basis -------------------------------
+    # slope b of gap_t ~ gap_{t-1} over a trailing AR1_WINDOW: b < 1 means
+    # the basis mean-reverts toward the underlying (contrarian
+    # convergence); half-life = ln(0.5) / ln(b) in trading days.
+    out["gap_ar1_slope_over_60days"] = _rolling_ar1_slope(
+        out, "gap_price_vs_underlying", window=AR1_WINDOW
+    )
+    out["gap_half_life_over_60days"] = _ar1_half_life(
+        out["gap_ar1_slope_over_60days"]
+    )
+
     # ---- Final output ----------------------------------------------------
     result = out[[
         "date", "code", "underlying_code",
@@ -160,6 +186,8 @@ def compute_futures_ext(
         "corr_price_ma5_vs_underlying_ma5",
         "gap_max_price_vs_underlying_over_20days",
         "gap_max_price_vs_underlying_over_60days",
+        "gap_ar1_slope_over_60days",
+        "gap_half_life_over_60days",
     ]].copy()
 
     return result
@@ -196,3 +224,127 @@ def _rolling_corr(
         .reset_index(level=0, drop=True)
     )
     return result
+
+
+def _rolling_ar1_slope(
+    df: pd.DataFrame,
+    col: str,
+    window: int,
+) -> pd.Series:
+    """Rolling AR(1) slope of ``col`` per code over ``window`` days.
+
+    For each date, regresses col_t on col_{t-1} over the trailing
+    ``window`` observations: b = Cov(col_t, col_{t-1}) / Var(col_{t-1}).
+    The slope is stored as-is (interpretation: b < 1 mean-reversion,
+    b ~ 1 random walk, b > 1 diverging); use _ar1_half_life for the
+    mean-reversion reading.
+
+    Args:
+        df: DataFrame sorted by (code, date).
+        col: column name (the level series).
+        window: rolling window size in trading days.
+
+    Returns:
+        Series with the same index as df. NaN where not enough history.
+    """
+    def _group_ar1(g: pd.DataFrame) -> pd.Series:
+        lag = g[col].shift(1)
+        cov = g[col].rolling(window, min_periods=window).cov(lag)
+        var = lag.rolling(window, min_periods=window).var()
+        return cov / var
+
+    return (
+        df.groupby("code", sort=False)
+        .apply(_group_ar1)
+        .reset_index(level=0, drop=True)
+    )
+
+
+def _ar1_half_life(slope: pd.Series) -> pd.Series:
+    """Implied mean-reversion half-life (trading days) from AR(1) slope b.
+
+    half_life = ln(0.5) / ln(b). Defined only for 0 < b < 1 (geometric
+    decay); b >= 1 (no mean reversion / explosive) yields NaN.
+    """
+    b = slope.astype(float)
+    hl = np.log(0.5) / np.log(b)
+    return hl.where((b > 0.0) & (b < 1.0))
+
+
+def compute_gap_quintile_summary(
+    result_df: pd.DataFrame,
+    meta_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build the basis-convergence quintile summary (per contract_type).
+
+    Pools the gap distribution across all contracts of a contract_type,
+    splits it into QUINTILE_N_BUCKETS quantile buckets, and records each
+    bucket's mean gap (bps) and mean gap change over the next
+    QUINTILE_HORIZONS trading days (bps). High-quintile (premium) gaps
+    followed by NEGATIVE forward change — and low-quintile (discount)
+    gaps by POSITIVE change — verify the contrarian convergence of the
+    futures basis toward the underlying.
+
+    Args:
+        result_df: compute_futures_ext output (needs date, code,
+            gap_price_vs_underlying).
+        meta_df: fetch_futures_data output (needs date, code,
+            contract_type).
+
+    Returns:
+        DataFrame with columns: asof_date, contract_type, horizon_days,
+        quintile, n_obs, mean_gap_bps, mean_fwd_chg_bps. asof_date is
+        the latest date in result_df (the run's snapshot stamp). Empty
+        (correct columns) when there is no data.
+    """
+    cols = [
+        "asof_date", "contract_type", "horizon_days", "quintile",
+        "n_obs", "mean_gap_bps", "mean_fwd_chg_bps",
+    ]
+    if result_df.empty:
+        return pd.DataFrame(columns=cols)
+
+    d = result_df[["date", "code", "gap_price_vs_underlying"]].merge(
+        meta_df[["date", "code", "contract_type"]],
+        on=["date", "code"],
+        how="inner",
+    ).dropna(subset=["gap_price_vs_underlying", "contract_type"])
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+
+    asof = d["date"].max()
+    rows = []
+    for ct, g in d.groupby("contract_type", sort=True):
+        g = g.sort_values(["code", "date"]).reset_index(drop=True)
+        for h in QUINTILE_HORIZONS:
+            gap = g["gap_price_vs_underlying"]
+            fwd = (
+                g.groupby("code", sort=False)["gap_price_vs_underlying"]
+                .shift(-h)
+            )
+            sub = pd.DataFrame({"gap": gap, "gap_fwd_chg": fwd - gap}).dropna()
+            if len(sub) < QUINTILE_N_BUCKETS:
+                continue
+            q = pd.qcut(
+                sub["gap"],
+                QUINTILE_N_BUCKETS,
+                labels=False,
+                duplicates="drop",
+            ) + 1
+            stats = sub.groupby(q, observed=True).agg(
+                n_obs=("gap_fwd_chg", "size"),
+                mean_gap=("gap", "mean"),
+                mean_fwd_chg=("gap_fwd_chg", "mean"),
+            )
+            for quintile, r in stats.iterrows():
+                rows.append({
+                    "asof_date": asof,
+                    "contract_type": ct,
+                    "horizon_days": h,
+                    "quintile": int(quintile),
+                    "n_obs": int(r["n_obs"]),
+                    "mean_gap_bps": float(r["mean_gap"]) * 1e4,
+                    "mean_fwd_chg_bps": float(r["mean_fwd_chg"]) * 1e4,
+                })
+
+    return pd.DataFrame(rows, columns=cols)

@@ -9,7 +9,9 @@ import type { OptionsRow } from "@shared/types";
  * Renders a solid, even-width line at the OI-weighted mean moneyness (the
  * smile's skewness), with an inline label and — when hovered — a tooltip
  * listing the per-expiry OI-weighted 3rd-moment skewness (CALL / PUT /
- * overall). Negative = downside (puts) richer; positive = upside (calls).
+ * overall). NOTE: the 3rd moment is a wing-convexity measure — its sign
+ * is not the call-vs-put direction of the smile (the 25Δ risk reversal
+ * chart covers direction).
  *
  * Centralized here so the snapshot smile and any future smile-style chart
  * share identical skew styling + tooltip behaviour.
@@ -65,7 +67,9 @@ export function buildSkewLineSeries(
     }
   }
   lines.push(
-    `<div style="opacity:0.6;margin-top:2px">Neg = downside IV richer (puts) · Pos = upside (calls)</div>`,
+    `<div style="opacity:0.6;margin-top:2px">3rd moment = IV-distribution tail asymmetry ` +
+      `(wing convexity) — its sign does NOT track call-vs-put tilt · ` +
+      `wing direction: IV Skew · 25Δ Risk Reversal chart</div>`,
   );
 
   return {

@@ -67,6 +67,9 @@ from _common.df_utils._thresholds import (
     breakeven_rows,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Estimated VRAM for the CuPy path, in float64 (T, N, N) tensors alive
 # simultaneously (joint-validity bool + xm/ym + one running-sum chain).
 _CUPY_TENSOR_OVERHEAD = 6
@@ -359,9 +362,9 @@ def pairwise_rolling_corr(
 
     if verbose:
         note = f" — {reason}" if reason else ""
-        print(f"    [rolling_corr] {t_len:,} rows x {n_ind} cols, "
+        logger.info(f"    [rolling_corr] {t_len:,} rows x {n_ind} cols, "
               f"window {window}: {pair_window_ops:,} pair-window ops "
-              f"-> {backend}{note}", flush=True)
+              f"-> {backend}{note}")
 
     if backend == "cupy (GPU)":
         try:
@@ -377,8 +380,8 @@ def pairwise_rolling_corr(
             # then degrade to the numpy kernel (still much faster than
             # the proxied pandas path).
             release_cupy_pool()
-            print("    [rolling_corr] cupy MemoryError -> numpy CPU "
-                  "kernel", flush=True)
+            logger.info("    [rolling_corr] cupy MemoryError -> numpy CPU "
+                  "kernel")
             return _numpy_tensor(arr, window, min_periods)
     if backend == "numpy (CPU)":
         return _numpy_tensor(arr, window, min_periods)

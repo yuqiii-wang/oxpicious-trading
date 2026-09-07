@@ -31,23 +31,24 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from builds.classification.sector_industry.paths import OWNERS_JSON_PATH
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def load_owners() -> List[Dict[str, Any]]:
     """Load sec_owners.json. Returns a list of owner dicts (empty on failure)."""
     if not os.path.isfile(OWNERS_JSON_PATH):
-        print(f"    [WARN] {OWNERS_JSON_PATH} not found — owner_id will be NULL",
-              flush=True)
+        logger.warning(f"    [WARN] {OWNERS_JSON_PATH} not found — owner_id will be NULL")
         return []
     try:
         with open(OWNERS_JSON_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         owners = data.get("owners", [])
-        print(f"    [OWNERS] Loaded {len(owners)} owners from "
-              f"{os.path.basename(OWNERS_JSON_PATH)}", flush=True)
+        logger.info(f"    [OWNERS] Loaded {len(owners)} owners from "
+              f"{os.path.basename(OWNERS_JSON_PATH)}")
         return owners
     except Exception as e:
-        print(f"    [WARN] Failed to load {OWNERS_JSON_PATH}: {e}",
-              flush=True)
+        logger.warning(f"    [WARN] Failed to load {OWNERS_JSON_PATH}: {e}")
         return []
 
 

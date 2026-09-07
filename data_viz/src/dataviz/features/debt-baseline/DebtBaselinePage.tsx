@@ -26,7 +26,6 @@ import { useStore } from "@/store/filters";
 import type {
   DebtBaselineResponse,
   DebtBaselineRow,
-  PbocOmaRow,
   PbocOmaResponse,
 } from "@shared/types";
 import {
@@ -40,12 +39,10 @@ import {
   CHINABOND_SERIES,
   LPR_SERIES,
   axisColors,
-  commonLegend,
-  commonGrid,
 } from "@/theme/chart-palette";
 import { computeOutrightRepoLifecycle } from "@/lib/lifecycle";
 import { fmtNum, fmtPct } from "@/lib/series";
-import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
+import DateEventStrip, { type DateEvent } from "@/shared/components/date-events/DateEventStrip";
 import { buildBaseOption } from "./base-option";
 
 const CHART_GROUP = "debt-baseline";
@@ -119,122 +116,20 @@ function OmaNewsPanel({ minDate, maxDate }: OmaNewsPanelProps) {
     setRefreshKey((k) => k + 1);
   }, []);
 
-  // Group rows by type for per-type scatter series (enables legend toggle).
-  const seriesByType = useMemo(() => {
-    if (!omaData) return new Map<string, Array<{ value: [string, number]; row: PbocOmaRow; idx: number }>>();
-    const map = new Map<string, Array<{ value: [string, number]; row: PbocOmaRow; idx: number }>>();
-    omaData.rows.forEach((row, idx) => {
-      const arr = map.get(row.type) ?? [];
-      arr.push({ value: [row.date, 0], row, idx });
-      map.set(row.type, arr);
-    });
-    return map;
+  // Strip events — one marker per announcement, colored/grouped by type.
+  // id = row index, resolved back through onEventClick to setSelectedIdx.
+  const omaEvents = useMemo<DateEvent[]>(() => {
+    return (omaData?.rows ?? []).map((row, idx) => ({
+      date: row.date,
+      id: idx,
+      type: row.type,
+      title: row.title,
+      detail: row.keywords ?? undefined,
+    }));
   }, [omaData]);
 
-  const option = useMemo(() => {
-    const c = axisColors(themeMode);
-    const allRows = omaData?.rows ?? [];
-    // x-axis min/max: prefer debt-baseline range (so the strip aligns with the
-    // other panels), but fall back to OMA's own range if debt data isn't loaded.
-    const xMin = minDate || (allRows[0]?.date ?? "");
-    const xMax = maxDate || (allRows[allRows.length - 1]?.date ?? "");
-
-    return {
-      backgroundColor: "transparent",
-      animation: false,
-      grid: commonGrid({ left: 16, right: 16, top: 16, bottom: 28 }),
-      tooltip: {
-        trigger: "item" as const,
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
-        formatter: (params: unknown) => {
-          const p = params as {
-            data?: { value?: [string, number]; row?: PbocOmaRow };
-            name?: string;
-          };
-          const row = p.data?.row;
-          if (!row) return "";
-          const children: React.ReactNode[] = [];
-          children.push(React.createElement("div", {
-            style: { fontWeight: 600, maxWidth: 380 as number | string },
-          }, row.title));
-          children.push(React.createElement("div", {
-            style: { fontSize: 10, opacity: 0.7, marginTop: 2 },
-          }, `${row.date} · ${omaTypeLabel(row.type)}`));
-          if (row.keywords) {
-            children.push(React.createElement("div", {
-              style: { fontSize: 10, opacity: 0.8, marginTop: 2 },
-            }, row.keywords));
-          }
-          return renderReactElement(React.createElement(React.Fragment, null, children));
-        },
-      },
-      xAxis: {
-        type: "time" as const,
-        min: xMin || undefined,
-        max: xMax || undefined,
-        axisLine: { lineStyle: { color: c.axisLineColor } },
-        axisLabel: {
-          color: c.textColor,
-          fontSize: 10,
-          formatter: (v: number) => {
-            const d = new Date(v);
-            const yyyy = d.getFullYear();
-            const mm = String(d.getMonth() + 1).padStart(2, "0");
-            return `${yyyy}-${mm}`;
-          },
-        },
-        axisTick: { show: false },
-        splitLine: { show: false },
-      },
-      yAxis: {
-        type: "value" as const,
-        min: -1,
-        max: 1,
-        show: false,
-      },
-      legend: commonLegend(themeMode, { left: "right", data: Array.from(seriesByType.keys()).map((t) => omaTypeLabel(t)) }),
-      series: Array.from(seriesByType.entries()).map(([type, points]) => ({
-        name: omaTypeLabel(type),
-        type: "scatter" as const,
-        data: points.map((p) => ({
-          value: p.value,
-          row: p.row,
-          idx: p.idx,
-        })),
-        symbolSize: (val: unknown, params: unknown) => {
-          const p = params as { data?: { idx?: number } };
-          return p.data?.idx === selectedIdx ? 16 : 10;
-        },
-        itemStyle: {
-          color: omaTypeColor(type),
-          opacity: 0.85,
-          borderColor: "#fff",
-          borderWidth: 1,
-          shadowBlur: 2,
-          shadowColor: "rgba(0,0,0,0.25)",
-        },
-        emphasis: {
-          itemStyle: {
-            borderColor: "#fff",
-            borderWidth: 2,
-            shadowBlur: 6,
-          },
-          scale: 1.3,
-        },
-        z: 3,
-      })),
-    };
-  }, [omaData, themeMode, minDate, maxDate, seriesByType, selectedIdx]);
-
-  // Click handler — stable identity via useCallback so EChart doesn't re-bind
-  // on every render. Reads selectedIdx setter only.
-  const handleClick = useCallback((params: unknown) => {
-    const p = params as { data?: { idx?: number } };
-    if (p.data?.idx != null) {
-      setSelectedIdx(p.data.idx);
-    }
+  const handleMarkerClick = useCallback((e: DateEvent) => {
+    setSelectedIdx(Number(e.id));
   }, []);
 
   const selectedRow = selectedIdx != null && omaData ? omaData.rows[selectedIdx] ?? null : null;
@@ -265,34 +160,15 @@ function OmaNewsPanel({ minDate, maxDate }: OmaNewsPanelProps) {
       )}
       {!loading && !error && omaData && omaData.rows.length > 0 && (
         <>
-          <Box sx={{ height: 100, position: "relative" }}>
-            <EChart
-              option={option}
-              height={100}
-              minHeight={80}
-              onEvents={{ click: handleClick }}
-            />
-          </Box>
-          {/* Type legend chips */}
-          <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", gap: 0.5, mt: 0.5, mb: 1 }}>
-            {Array.from(seriesByType.keys()).map((t) => (
-              <Chip
-                key={t}
-                size="small"
-                label={omaTypeLabel(t)}
-                sx={{
-                  fontSize: "0.65rem",
-                  height: 18,
-                  bgcolor: omaTypeColor(t),
-                  color: "#fff",
-                  opacity: 0.9,
-                }}
-              />
-            ))}
-            <Typography variant="caption" color="text.secondary" sx={{ fontSize: "0.65rem", alignSelf: "center" }}>
-              {omaData.rows.length} announcements · {omaData.rows[0].date} → {omaData.rows[omaData.rows.length - 1].date}
-            </Typography>
-          </Stack>
+          <DateEventStrip
+            events={omaEvents}
+            typeMeta={OMA_TYPE_META}
+            minDate={minDate}
+            maxDate={maxDate}
+            selectedId={selectedIdx}
+            onEventClick={handleMarkerClick}
+            height={100}
+          />
           {/* Collapsible content panel for the selected announcement */}
           {selectedRow && (
             <Accordion

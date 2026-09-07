@@ -30,6 +30,9 @@ from _common.build_commons import bulk_upsert_async
 from .config import TICK_TABLE
 from .fetch import fetch_fallback_ticks, fetch_missing_ticks
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def _pct(close: float | None, prev_close: float | None) -> float | None:
     """close / prev_close - 1 as a FRACTION; None on None/zero prev."""
@@ -131,10 +134,9 @@ async def _load_many(
         t_pair = time.time()
         n = await _load_pair(conn, bench, dt, fallback=fallback)
         total += n
-        print(
+        logger.info(
             f"    [{label} {idx}/{len(pairs)}] {bench} @ {dt}: "
             f"{n:,} tick rows ({time.time() - t_pair:.1f}s)",
-            flush=True,
         )
     return total
 

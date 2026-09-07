@@ -12,8 +12,8 @@
 --    operator (NOT `<->`, which is L2 distance and cannot use the cosine
 --    index).
 --
---  STATUS: the embedding tables exist but are NOT IN USE — no embedding
---    pipeline is implemented yet (see news_embeddings / qa_embeddings).
+--  STATUS: the embedding columns exist but are NOT IN USE — no embedding
+--    pipeline is implemented yet (see news_embeddings).
 -- ============================================================================
 
 CREATE SCHEMA IF NOT EXISTS text;

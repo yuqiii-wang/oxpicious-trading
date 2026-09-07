@@ -39,6 +39,9 @@ from _common.sec_statics.classification import (
     classify_etf_strategy_by_name,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def fetch_sec_info_names(conn, others: "pd.DataFrame") -> Dict[str, str]:
     """Fetch the official sec_info.name for OTHER ETFs.
@@ -130,8 +133,7 @@ def reclassify_other_etfs(
             n_reclassified += 1
 
     if verbose and n_checked:
-        print(f"    [SEC_INFO] {n_checked} OTHER ETFs found in sec_info, "
-              f"{n_reclassified} re-classified by official name",
-              flush=True)
+        logger.info(f"    [SEC_INFO] {n_checked} OTHER ETFs found in sec_info, "
+              f"{n_reclassified} re-classified by official name")
 
     return n_reclassified, n_checked

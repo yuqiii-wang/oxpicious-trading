@@ -1,10 +1,13 @@
 temps
 temp_data
+logs
+*.log
 __pycache__
 .trae
 
 .env
-temp_scripts/*
+temp_scripts
+_tmp
 
 .backup_staging
 .codebuddy

@@ -25,6 +25,9 @@ from downloads._common import (
     safe_write_bytes,
 )
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("szse")
+
 
 REPORT_CFGS: Dict[str, Dict[str, str]] = {
     "summary": {
@@ -203,4 +206,4 @@ def download_szse_margin(
 
 
 if __name__ == "__main__":
-    print(download_szse_margin())
+    logger.info(download_szse_margin())

@@ -112,4 +112,4 @@ COMMENT ON COLUMN analysis_forecasts.px_vol_state.z_heavy IS 'Recorded build par
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.z_shrink IS 'Recorded build parameter: shrink (缩量) z-bar (default -0.92 — reproduces the legacy 量比<0.8 trigger rate).';
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.sigma_floor IS 'Recorded build parameter: minimum σ_ret for a day to join any bucket (default 0.005). Bond-like indices (σ_ret ≈ 0.01–0.02%) would classify tiny wiggles as extremes — they are excluded by the floor.';
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.forecast_id IS '1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results (indexed; allocated by the writer, shared across all 4 periods).';
-COMMENT ON COLUMN analysis_forecasts.px_vol_state.is_market_hyped IS 'Part of the PK: TRUE when ANY of the bucket''s dates falls inside one of the code''s analysis.mov_ave_market_hypes episodes (any min_checkin_period).';
+COMMENT ON COLUMN analysis_forecasts.px_vol_state.is_market_hyped IS 'Part of the PK: TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';

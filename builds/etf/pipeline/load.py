@@ -10,6 +10,9 @@ from builds.etf.ohlcv import build_ohlcv_df
 from builds.etf.margin import build_margin_df
 from builds.etf.db_query import query_existing_ohlcv_margin_from_db
 
+import logging
+logger = logging.getLogger(__name__)
+
 EMPTY_MARGIN_COLS: List[str] = [
     "date", "code", "rz_buy", "rz_balance", "rq_sell_qty", "rq_balance_qty",
     "rq_balance_amt", "total_balance",
@@ -50,8 +53,8 @@ def _drop_placeholder_files(files: List[str], label: str, verbose: bool = True) 
     good = [f for f in files if _csv_has_data_row(f)]
     n_skip = len(files) - len(good)
     if verbose and n_skip:
-        print(f"    [B5] {label}: skipped {n_skip} placeholder/holiday "
-              f"CSVs (byte-level check)", flush=True)
+        logger.info(f"    [B5] {label}: skipped {n_skip} placeholder/holiday "
+              f"CSVs (byte-level check)")
     return good
 
 
@@ -74,12 +77,12 @@ async def load_source_frames(
     prepare_features.
     """
     if force:
-        print("\n[3/7] Reading ALL source CSVs (force mode) …", flush=True)
+        logger.info("\n[3/7] Reading ALL source CSVs (force mode) …")
         ohlcv_df = build_ohlcv_df(verbose=True, code=code_filter)
         margin_df = build_margin_df(verbose=True, code=code_filter)
         adj_seeds = None
     elif not dates_to_read:
-        print("\n[3/7] OHLCV up to date — querying DB for historical context only …", flush=True)
+        logger.info("\n[3/7] OHLCV up to date — querying DB for historical context only …")
         ohlcv_df, margin_df, adj_seeds = await query_existing_ohlcv_margin_from_db(
             conn, verbose=True, code=code_filter)
     else:
@@ -92,12 +95,12 @@ async def load_source_frames(
             subset[_name] = _drop_placeholder_files(subset[_name], _name)
         subset["szse"] = _drop_placeholder_files(subset["szse"], "szse_margin")
         subset["sse"] = _drop_placeholder_files(subset["sse"], "sse_margin")
-        print(f"\n[3/7] Reading source CSVs for {len(dates_to_read)} dates "
-              f"+ querying DB for historical context …", flush=True)
-        print(f"    → OHLCV files to read: {len(subset['szse_archive'])} szse_archive + "
-              f"{len(subset['szse_trend'])} szse_trend + {len(subset['sse_trend'])} sse_trend", flush=True)
-        print(f"    → Margin files to read: {len(subset['szse'])} szse + "
-              f"{len(subset['sse'])} sse", flush=True)
+        logger.info(f"\n[3/7] Reading source CSVs for {len(dates_to_read)} dates "
+              f"+ querying DB for historical context …")
+        logger.info(f"    → OHLCV files to read: {len(subset['szse_archive'])} szse_archive + "
+              f"{len(subset['szse_trend'])} szse_trend + {len(subset['sse_trend'])} sse_trend")
+        logger.info(f"    → Margin files to read: {len(subset['szse'])} szse + "
+              f"{len(subset['sse'])} sse")
 
         new_ohlcv_df = build_ohlcv_df(
             verbose=True, ohlcv_files=subset, code=code_filter)
@@ -117,17 +120,17 @@ async def load_source_frames(
         if len(ohlcv_df) > 0:
             n_before = len(ohlcv_df)
             ohlcv_df = ohlcv_df[ohlcv_df["code"] == code_filter]
-            print(f"    [CODE FILTER] OHLCV rows {n_before:,} → {len(ohlcv_df):,} for code {code_filter}", flush=True)
+            logger.info(f"    [CODE FILTER] OHLCV rows {n_before:,} → {len(ohlcv_df):,} for code {code_filter}")
         if len(margin_df) > 0:
             n_before = len(margin_df)
             margin_df = margin_df[margin_df["code"] == code_filter]
-            print(f"    [CODE FILTER] Margin rows {n_before:,} → {len(margin_df):,} for code {code_filter}", flush=True)
+            logger.info(f"    [CODE FILTER] Margin rows {n_before:,} → {len(margin_df):,} for code {code_filter}")
 
     if len(ohlcv_df) == 0:
-        print("    [FATAL] No OHLCV rows to process — check source files and DB", flush=True)
+        logger.error("    [FATAL] No OHLCV rows to process — check source files and DB")
         sys.exit(1)
     if len(margin_df) == 0:
-        print("    [WARN] No margin rows — proceeding with OHLCV only", flush=True)
+        logger.warning("    [WARN] No margin rows — proceeding with OHLCV only")
         margin_df = pd.DataFrame(columns=EMPTY_MARGIN_COLS)
     return ohlcv_df, margin_df, adj_seeds
 

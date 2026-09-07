@@ -5,7 +5,6 @@ import type {
   OptionsWallsResponse,
   EtfOhlcvResponse,
   SkewnessCorrResponse,
-  SkewnessCrossCountResponse,
   SkewnessSeriesResponse,
   IvSkewResponse,
   SkewType,
@@ -84,23 +83,6 @@ export function fetchOptionsSkewnessCorr(
   const qs = params.toString();
   return fetchJson<SkewnessCorrResponse>(
     `/api/szse-options/skewness-corr${qs ? `?${qs}` : ""}`,
-  );
-}
-
-export function fetchOptionsSkewnessCrossCounts(
-  underlying: string,
-  startDate?: string | null,
-  endDate?: string | null,
-  skewType: SkewType = "oi_moneyness",
-): Promise<SkewnessCrossCountResponse> {
-  const params = new URLSearchParams();
-  if (underlying) params.set("underlying", underlying);
-  if (startDate) params.set("start_date", startDate);
-  if (endDate) params.set("end_date", endDate);
-  params.set("skew_type", skewType);
-  const qs = params.toString();
-  return fetchJson<SkewnessCrossCountResponse>(
-    `/api/szse-options/skewness-cross-counts${qs ? `?${qs}` : ""}`,
   );
 }
 

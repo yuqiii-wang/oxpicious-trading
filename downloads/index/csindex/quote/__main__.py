@@ -15,6 +15,9 @@ import argparse
 
 from .runner import download_index
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("quote")
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -26,6 +29,6 @@ if __name__ == "__main__":
         ),
     )
     args = ap.parse_args()
-    print(
+    logger.info(
         download_index(ensure_prev_trading_day=args.ensure_prev_trading_day)
     )

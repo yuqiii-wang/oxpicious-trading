@@ -660,7 +660,7 @@ if __name__ == "__main__":
              "batch pause entirely.",
     )
     args = ap.parse_args()
-    print(download_szse_dividends(
+    logger.info(download_szse_dividends(
         force=args.force,
         etf_filter=not args.no_etf_filter,
         code_filter=args.code,

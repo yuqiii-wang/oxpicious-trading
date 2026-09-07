@@ -6,6 +6,9 @@ import pandas as pd
 from _common.build_commons import rec_col, rec_cols
 from _common.df_utils import epoch_col_to_dt64, host_array
 
+import logging
+logger = logging.getLogger(__name__)
+
 # B3 trailing-window fetch: the market-wide DB pull exists to give MA/EMA
 # and corp-action adjustment their trailing context for the new rows. Only
 # that context is needed — not the full 1.02M-row history:
@@ -100,7 +103,7 @@ async def query_existing_ohlcv_margin_from_db(conn, verbose=True, code=None):
     """
     if verbose:
         scope = f" for {code}" if code else ""
-        print(f"    [DB] Querying existing OHLCV + margin from database{scope} …", flush=True)
+        logger.info(f"    [DB] Querying existing OHLCV + margin from database{scope} …")
 
     adj_seeds: pd.DataFrame | None = None
     if code is not None:
@@ -110,7 +113,7 @@ async def query_existing_ohlcv_margin_from_db(conn, verbose=True, code=None):
         max_d = max_rows[0]["max_date"] if max_rows else None
         if max_d is None:
             if verbose:
-                print("    [DB] No existing OHLCV data found", flush=True)
+                logger.info("    [DB] No existing OHLCV data found")
             return pd.DataFrame(), pd.DataFrame(), None
         cutoff = max_d - datetime.timedelta(days=DB_TAIL_DAYS)
         rows = await conn.fetch(
@@ -130,8 +133,8 @@ async def query_existing_ohlcv_margin_from_db(conn, verbose=True, code=None):
             adj_seeds["cum_dividend"] = adj_seeds["cum_dividend"].fillna(0.0)
             seed_df = seed_df.drop(columns=["cum_split_factor", "cum_dividend_per_share"])
             if verbose:
-                print(f"    [DB] Trailing window ≥ {cutoff} ({DB_TAIL_DAYS}d): "
-                      f"{len(rows):,} window rows + {len(seed_df):,} seed rows", flush=True)
+                logger.info(f"    [DB] Trailing window ≥ {cutoff} ({DB_TAIL_DAYS}d): "
+                      f"{len(rows):,} window rows + {len(seed_df):,} seed rows")
             # Seed rows in FRONT of the window (chronological per code);
             # concat aligns by column name (the two SELECTs share 18 cols).
             # Both sides share identical dtypes (datetime64[us] dates +
@@ -147,7 +150,7 @@ async def query_existing_ohlcv_margin_from_db(conn, verbose=True, code=None):
 
     if not len(df):
         if verbose:
-            print("    [DB] No existing OHLCV data found", flush=True)
+            logger.info("    [DB] No existing OHLCV data found")
         return pd.DataFrame(), pd.DataFrame(), adj_seeds
 
     ohlcv_cols = ["date", "code", "name", "exchange", "prev_close", "open",
@@ -173,9 +176,9 @@ async def query_existing_ohlcv_margin_from_db(conn, verbose=True, code=None):
         # host unwrap ONCE (Timestamp.date has no cudf fast path)
         d0 = str(host_array(ohlcv_df["date"].min()).astype("datetime64[D]"))
         d1 = str(host_array(ohlcv_df["date"].max()).astype("datetime64[D]"))
-        print(f"    [DB] OHLCV: {len(ohlcv_df):,} rows | {n_codes} codes | "
-              f"{n_dates} dates | {d0} → {d1}", flush=True)
-        print(f"    [DB] Margin: {len(margin_df):,} rows with margin activity", flush=True)
+        logger.info(f"    [DB] OHLCV: {len(ohlcv_df):,} rows | {n_codes} codes | "
+              f"{n_dates} dates | {d0} → {d1}")
+        logger.info(f"    [DB] Margin: {len(margin_df):,} rows with margin activity")
 
     return ohlcv_df, margin_df, adj_seeds
 

@@ -7,6 +7,9 @@ from datetime import date, timedelta
 
 from _common.build_commons import ymd_from_filename, ymd_to_date
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Repair-scan gating for the identity-vs-liquidity_margin hole check (#3).
 # An identity row without a liquidity_margin row is only refillable when
 # the source CSVs actually carry that stock on that day; structurally
@@ -276,28 +279,27 @@ async def detect_margin_gaps(
         | missing_liquidity_dates
     )
     if missing_margin_dates:
-        print(f"    [MARGIN] {len(missing_margin_dates)} dates need "
+        logger.info(f"    [MARGIN] {len(missing_margin_dates)} dates need "
               f"margin backfill (ALL stocks have zero margin in "
-              f"stock_liquidity_margin)", flush=True)
+              f"stock_liquidity_margin)")
     if partial_margin_dates:
-        print(f"    [MARGIN] {len(partial_margin_dates)} dates have "
+        logger.info(f"    [MARGIN] {len(partial_margin_dates)} dates have "
               f"partial-margin gaps (identity count > liquidity_margin "
-              f"count; some stocks missing margin data)", flush=True)
+              f"count; some stocks missing margin data)")
     if missing_liq_dates:
-        print(f"    [MARGIN] {len(missing_liq_dates)} dates need "
+        logger.info(f"    [MARGIN] {len(missing_liq_dates)} dates need "
               f"liquidity + margin (identity-vs-liquidity_margin holes > "
               f"{MARGIN_REPAIR_HOLE_RATIO:.0%} of the day's identity rows "
-              f"AND within {MARGIN_REPAIR_MAX_AGE_DAYS}d of newest CSV)",
-              flush=True)
+              f"AND within {MARGIN_REPAIR_MAX_AGE_DAYS}d of newest CSV)")
     if n_hole_dates_gated_out:
-        print(f"    [MARGIN] {n_hole_dates_gated_out} hole-dates suppressed "
+        logger.info(f"    [MARGIN] {n_hole_dates_gated_out} hole-dates suppressed "
               f"by repair gate (sparse/suspended holes — structural, not "
-              f"refillable from source CSVs)", flush=True)
+              f"refillable from source CSVs)")
     if missing_liquidity_dates:
-        print(f"    [MARGIN] {len(missing_liquidity_dates)} dates have "
+        logger.info(f"    [MARGIN] {len(missing_liquidity_dates)} dates have "
               f"margin but zero liquidity (no stock traded that day — "
               f"per-stock zero-volume rows from suspensions are excluded); "
-              f"the margin pass will fill them", flush=True)
+              f"the margin pass will fill them")
 
     return MarginGapResult(
         target_dates=target_dates,

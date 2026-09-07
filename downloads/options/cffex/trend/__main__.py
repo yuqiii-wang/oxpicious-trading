@@ -348,47 +348,47 @@ def main() -> None:
     archive_dir = get_archive_dir(args.out_root)
     futures_trend_dir = get_futures_trend_dir(args.out_root)
 
-    print(f"\n  Options trend dir: {trend_dir}")
-    print(f"  Shared archive dir: {archive_dir}")
-    print(f"  Shared futures trend dir: {futures_trend_dir}")
+    logger.info(f"\n  Options trend dir: {trend_dir}")
+    logger.info(f"  Shared archive dir: {archive_dir}")
+    logger.info(f"  Shared futures trend dir: {futures_trend_dir}")
 
     # ------------------------------------------------------------------
     # Step 1: Check SQL for latest date
     # ------------------------------------------------------------------
-    print("\n[1/4] Checking database (stats.options_identity) for latest date ...", flush=True)
+    logger.info("\n[1/4] Checking database (stats.options_identity) for latest date ...")
     latest_db_date = get_latest_db_date()
     if latest_db_date:
-        print(f"    Latest DB date: {latest_db_date}", flush=True)
+        logger.info(f"    Latest DB date: {latest_db_date}")
     else:
-        print("    No data in database (will download everything)", flush=True)
+        logger.info("    No data in database (will download everything)")
 
     # ------------------------------------------------------------------
     # Step 2: Check local + shared trend files
     # ------------------------------------------------------------------
-    print("\n[2/4] Checking local + shared options CSV files ...", flush=True)
+    logger.info("\n[2/4] Checking local + shared options CSV files ...")
     trend_dates = list_trend_dates(args.out_root)
     shared_dates = list_shared_options_dates(args.out_root)
     all_available = trend_dates | shared_dates
 
     latest_trend = max(trend_dates) if trend_dates else None
     if latest_trend:
-        print(f"    Own trend files: {len(trend_dates)} dates (latest: {latest_trend})", flush=True)
+        logger.info(f"    Own trend files: {len(trend_dates)} dates (latest: {latest_trend})")
     else:
-        print("    No own trend files found", flush=True)
+        logger.info("    No own trend files found")
 
     if shared_dates:
         latest_shared = max(shared_dates) if shared_dates else None
-        print(f"    Shared CSV files: {len(shared_dates)} dates (latest: {latest_shared})", flush=True)
+        logger.info(f"    Shared CSV files: {len(shared_dates)} dates (latest: {latest_shared})")
     else:
-        print("    No shared CSV files found", flush=True)
+        logger.info("    No shared CSV files found")
 
     # ------------------------------------------------------------------
     # Step 3: Backfill from shared CSVs (if requested or own dir is empty)
     # ------------------------------------------------------------------
     if args.backfill or not trend_dates:
-        print("\n[3/4] Backfilling from shared CSVs ...", flush=True)
+        logger.info("\n[3/4] Backfilling from shared CSVs ...")
         if not archive_dir.exists() and not futures_trend_dir.exists():
-            print("    Neither archive nor futures trend dir exists, skipping backfill", flush=True)
+            logger.info("    Neither archive nor futures trend dir exists, skipping backfill")
         else:
             last_archive = _last_completed_archive_month()
             backfill_dates: Set[date] = set()
@@ -411,20 +411,20 @@ def main() -> None:
 
             missing_backfill = backfill_dates - trend_dates
             if missing_backfill:
-                print(f"    {len(missing_backfill)} dates to backfill from shared CSVs", flush=True)
+                logger.info(f"    {len(missing_backfill)} dates to backfill from shared CSVs")
                 n_copied = backfill_from_shared_csvs(trend_dir, missing_backfill)
-                print(f"    Copied {n_copied} files from shared CSVs", flush=True)
+                logger.info(f"    Copied {n_copied} files from shared CSVs")
             else:
-                print("    No dates need backfilling", flush=True)
+                logger.info("    No dates need backfilling")
 
             trend_dates = list_trend_dates(args.out_root)
     else:
-        print("\n[3/4] Skipping backfill (--backfill not requested)", flush=True)
+        logger.info("\n[3/4] Skipping backfill (--backfill not requested)")
 
     # ------------------------------------------------------------------
     # Step 4: Find missing dates and download
     # ------------------------------------------------------------------
-    print("\n[4/4] Finding missing dates to download ...", flush=True)
+    logger.info("\n[4/4] Finding missing dates to download ...")
     missing = find_missing_dates(
         latest_db_date, all_available, start_date, end_date,
     )
@@ -443,22 +443,22 @@ def main() -> None:
         missing = all_trading_days
 
     if not missing:
-        print("    No dates need downloading!", flush=True)
+        logger.info("    No dates need downloading!")
         print_wall_time(t0)
         return
 
-    print(f"    {len(missing)} dates to download:", flush=True)
+    logger.info(f"    {len(missing)} dates to download:")
     if len(missing) <= 20:
         for d in missing:
-            print(f"      {d}", flush=True)
+            logger.info(f"      {d}")
     else:
-        print(f"      First: {missing[0]}, Last: {missing[-1]}", flush=True)
+        logger.info(f"      First: {missing[0]}, Last: {missing[-1]}")
 
     # ------------------------------------------------------------------
     # Download using Playwright
     # ------------------------------------------------------------------
-    print(f"\n[Download] Starting Playwright download for {len(missing)} dates ...", flush=True)
-    print("    (This may take a while — CFFEX anti-bot protection requires delays)", flush=True)
+    logger.info(f"\n[Download] Starting Playwright download for {len(missing)} dates ...")
+    logger.info("    (This may take a while — CFFEX anti-bot protection requires delays)")
 
     result = download_trend_batch(
         missing,
@@ -466,11 +466,11 @@ def main() -> None:
         sleep_sec=args.sleep,
     )
 
-    print(f"\n[Done] Download summary:", flush=True)
-    print(f"  Downloaded: {result['downloaded']}", flush=True)
-    print(f"  Skipped:    {result['skipped']}", flush=True)
-    print(f"  No data:    {result['no_data']} (holidays/weekends)", flush=True)
-    print(f"  Failed:     {result['failed']}", flush=True)
+    logger.info(f"\n[Done] Download summary:")
+    logger.info(f"  Downloaded: {result['downloaded']}")
+    logger.info(f"  Skipped:    {result['skipped']}")
+    logger.info(f"  No data:    {result['no_data']} (holidays/weekends)")
+    logger.error(f"  Failed:     {result['failed']}")
 
     print_wall_time(t0)
 

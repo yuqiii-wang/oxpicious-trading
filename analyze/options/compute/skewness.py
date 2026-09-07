@@ -8,8 +8,10 @@ Persists per-expiry-group rolling stats:
   gap_skewness_vs_spot_slope — full-history slope of (moneyness - 1)
   gap_skewness_vs_spot_maW_slope — full-history slope of gap_maW
   corr_skewness_vs_spot — 60-day rolling corr(moneyness, spot)
-  count_skewness_curve_crossed_spot — cumulative count of sign changes
-    in (skewness - 1) for this expiry group
+  cross_count_20d / days_since_last_cross / gap_side_share_20d —
+    pre-expiry contrarian metrics on the gap (skewness - neutral):
+    trailing 20-session neutral crossings, sessions since the last
+    crossing, and share of the trailing 20 sessions at/above neutral
 """
 from __future__ import annotations
 

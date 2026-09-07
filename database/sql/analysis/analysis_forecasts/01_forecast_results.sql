@@ -58,11 +58,11 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_results (
     period              TEXT NOT NULL,
 
     -- config JSONB: per-bucket motivation/config data that varies by
-    -- analysis type (rsi vs std). Duplicated across all 4 period rows
-    -- of the same forecast_id. Keys depend on the linked mov_* table:
-    --   mov_std: {"mean_excess_close": float, "mean_excess_max": float|null,
-    --            "max_excess_max": float|null}
-    --   mov_rsi: NULL (no config data yet)
+    -- analysis type. Duplicated across all 4 period rows of the same
+    -- forecast_id. Keys depend on the linked mov_* table:
+    --   px_vol: {"mean_t": float, "mean_z": float}
+    --   margin_ratio: {"mean_ratio": float|null, "mean_z": float|null}
+    --   mov_rsi / mov_std / mov_gap: NULL (no config data)
     config              JSONB,
     
 
@@ -128,7 +128,7 @@ ALTER TABLE analysis_forecasts.forecast_results
 COMMENT ON TABLE analysis_forecasts.forecast_results IS 'Normalized forecast RESULT data. One row per (forecast_id, period) — each forecast bucket from mov_rsi/mov_std has up to 4 rows (period: next/5d/20d/60d). Carries the mean / std-dev / max / min forward fractional changes (max/min NULL for period=next), per-period occurrence count, within-window close swing amplitude (max_low_change_ratio, NULL for period=next), and per-period reversal probabilities computed against the row''s adaptive reverse_threshold (k·σ of the code''s window n-day forward changes per horizon; legacy fixed 1% fallback — see reverse_threshold). config JSONB carries per-bucket motivation data duplicated across all 4 period rows of the same forecast_id. Partitioned by HASH(forecast_id). Populated by python -m analyze.analysis_forecasts.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.forecast_id IS 'Surrogate identity PK. Allocated by the writer (python -m analyze.analysis_forecasts) and mirrored into the motivation row of analysis_forecasts.mov_rsi / mov_std.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.period IS 'Forward horizon period: ''next'' (next-day), ''5d'' (5 trading days), ''20d'' (20 trading days), ''60d'' (60 trading days). PK member.';
-COMMENT ON COLUMN analysis_forecasts.forecast_results.config IS 'JSONB config for per-bucket motivation data that varies by analysis type. Duplicated across all 4 period rows of the same forecast_id. mov_std rows store breach magnitude metrics here: {"mean_excess_close": float, "mean_excess_max": float|null, "max_excess_max": float|null}. mov_rsi rows are NULL (no config data yet). All fractional: 0.012 = 1.2%.';
+COMMENT ON COLUMN analysis_forecasts.forecast_results.config IS 'JSONB config for per-bucket motivation data that varies by analysis type. Duplicated across all 4 period rows of the same forecast_id. px_vol rows store {"mean_t": float, "mean_z": float}; margin_ratio rows store {"mean_ratio": float|null, "mean_z": float|null}. mov_rsi / mov_std / mov_gap rows are NULL (no config data). All fractional: 0.012 = 1.2%.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.ave_change IS 'Mean n-trading-day forward fractional change (close[t+n]-close[t])/close[t] over bucket days with a valid n-day forward change. NULL when none.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.std_change IS 'Population standard deviation of the n-trading-day forward fractional change over the SAME bucket days as ave_change (dispersion of the horizon outcomes: sqrt(E[x²] − E[x]²)). NULL when no valid days (occurrence_count = 0).';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.max_change IS 'Maximum n-trading-day forward fractional change (close-based) over bucket days with a valid n-day forward change. NULL for period=''next'' (no 1-day max/min) or when none.';

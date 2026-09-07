@@ -23,6 +23,15 @@
  * stats.sec_composition snapshot. Indices WITHOUT composition data are never
  * loaded — every member index plotted here has a known stock_num.
  *
+ * Built on the shared analysis nav kit (@/shared/components/sec-nav):
+ *   • SecNavShell — header (sec_type toggle + CodeSearchBar rendered
+ *     DISABLED — this page is index-only with no code search — plus Refresh)
+ *     + loading/error + page content
+ *   • SecClassificationNavMulti (navSlot) — the shared MULTI-SELECT preset
+ *     over SecClassificationNav: multi-select L2 industries (across sectors),
+ *     multi-select L3 index codes, and non-exclusive LEFT/RIGHT columns so
+ *     industry + strategy selections merge into one view.
+ *
  * Per industry (one plot):
  *   • Lines  = one per member index (filtered by pool_size toggle), rebased
  *              to 100 at the start of the visible (zoom) window.
@@ -34,24 +43,20 @@
  *              lines and overlay).
  *   • Tooltip = per-index actual close (raw value) + rebased % + stock_num.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Autocomplete,
   Box,
   CircularProgress,
-  IconButton,
   Stack,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
-  Typography,
 } from "@mui/material";
-import { ArrowBack } from "@mui/icons-material";
-import { useNavigate } from "react-router-dom";
-import RefreshButton from "@/components/RefreshButton";
-import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import { useStore } from "@/store/filters";
+import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
+import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
 import {
   fetchIndustrySentimentsThemes,
   fetchIndustrySentimentsChart,
@@ -64,8 +69,6 @@ import type {
   IndustrySentimentsChartResponse,
   IndustrySentimentsIndex,
   IndustryAttributionBenchmarkEntry,
-  SectorNode,
-  StrategyNode,
 } from "@shared/types";
 import { IndustrySentimentsPlot } from "./IndustrySentimentsPlot";
 import { BenchmarkPriceChart } from "./BenchmarkPriceChart";
@@ -75,23 +78,44 @@ import { IndustryEtfContributionChart } from "./IndustryEtfContributionChart";
 import { MarketTrendChart } from "./MarketTrendChart";
 import { IndexAllocationView } from "./IndexAllocationView";
 
+/** Nav trees endpoints (index-only — sentiments merges member indices). */
+const THEMES_SOURCES = {
+  index: {
+    themes: (exchange: string | null) => fetchIndustrySentimentsThemes(exchange),
+    strategyThemes: (exchange: string | null) => fetchIndustrySentimentsStrategyThemes(exchange),
+  },
+};
+
 export default function IndustrySentimentsPage() {
-  const navigate = useNavigate();
   const themeMode = useStore((s) => s.themeMode);
 
-  const [sectors, setSectors] = useState<SectorNode[]>([]);
-  const [sectorId, setSectorId] = useState<string | null>(null);
-  // Multi-select: list of selected industry slugs. Persists across sector
-  // switches so the user can pick industries from multiple sectors.
-  const [selectedIndustrySlugs, setSelectedIndustrySlugs] = useState<string[]>([]);
-  const [exchange, setExchange] = useState<string | null>("PRIMARY");
-  // Parallel strategy → theme state (RIGHT column of the two-column selector).
-  // Mutually exclusive with sector/industry: when strategyId is set, the
-  // industry multi-select is cleared and vice versa.
-  const [strategies, setStrategies] = useState<StrategyNode[]>([]);
-  const [strategyId, setStrategyId] = useState<string | null>(null);
-  const [themeSlug, setThemeSlug] = useState<string | null>(null);
+  // Shared nav: trees loading + exchange filter + sector/strategy selection.
+  // Non-exclusive mode: the LEFT (sector/industry) and RIGHT (strategy/theme)
+  // columns can be active simultaneously — both contribute to the merged plot.
+  // The sec_type toggle and code search are rendered DISABLED in the shell
+  // (index-only page, no code search in the multi-select model).
+  const nav = useSecNav({
+    themesSources: THEMES_SOURCES,
+    defaultSecType: "index",
+    dataLabel: "industry-sentiments",
+    mutuallyExclusive: false,
+    onInvalidateCache: () => {
+      invalidateCacheForPrefix("/api/analysis/industry-sentiments/");
+      invalidateCacheForPrefix("/api/analysis/industry-correlations");
+      invalidateCacheForPrefix("/api/analysis/industry-benchmark-attribution");
+      invalidateCacheForPrefix("/api/analysis/industry-attribution-bars");
+      invalidateCacheForPrefix("/api/analysis/industry-etf-contribution");
+      // Index Allocation view fetches per-code attribution + charts from the
+      // perf-attr endpoints — invalidate those too so Refresh covers all modes.
+      invalidateCacheForPrefix("/api/analysis/perf-attr/");
+    },
+  });
 
+  // Multi-select state (page-local — the shared nav's selection model is
+  // single-select): multi industries + multi L3 index codes.
+  // Multi-select industries: list of selected industry slugs. Persists across
+  // sector switches so the user can pick industries from multiple sectors.
+  const [selectedIndustrySlugs, setSelectedIndustrySlugs] = useState<string[]>([]);
   // L3 security-level selection: a list of selected index codes. When non-
   // empty, the chart narrows to show ONLY these individual index codes
   // (filtering on top of the multi-industry view). Cleared by clicking the
@@ -101,11 +125,8 @@ export default function IndustrySentimentsPage() {
   const [selectedItemCodes, setSelectedItemCodes] = useState<string[]>([]);
 
   const [chartDataList, setChartDataList] = useState<IndustrySentimentsChartResponse[]>([]);
-  const [loading, setLoading] = useState(false);
   const [chartLoading, setChartLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [chartError, setChartError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
 
   // Top-level view mode toggle: "correlation" shows the existing
   // multi-line price + PE + amount + pairwise-correlation charts; "attribution"
@@ -124,13 +145,13 @@ export default function IndustrySentimentsPage() {
 
   const slugToIndustryId = useMemo(() => {
     const m = new Map<string, string>();
-    for (const s of sectors) {
+    for (const s of nav.sectors) {
       for (const ind of s.industries) {
         m.set(ind.industry_slug, ind.industry_id);
       }
     }
     return m;
-  }, [sectors]);
+  }, [nav.sectors]);
 
   // Map selected slugs → industry IDs (dropping any slug that no longer maps,
   // e.g. if the taxonomy was refreshed and the industry disappeared).
@@ -147,26 +168,26 @@ export default function IndustrySentimentsPage() {
   // chart can prefix each index with its source industry.
   const slugToIndustryLabel = useMemo(() => {
     const m = new Map<string, string>();
-    for (const s of sectors) {
+    for (const s of nav.sectors) {
       for (const ind of s.industries) {
         m.set(ind.industry_slug, ind.industry_label);
       }
     }
     return m;
-  }, [sectors]);
+  }, [nav.sectors]);
 
   // Map strategy theme industry_id → display label (for the merged-chart
   // label lookup when strategy themes are fetched by industry_id). Built from
   // the strategies tree (RIGHT column).
   const strategyThemeIdToLabel = useMemo(() => {
     const m = new Map<string, string>();
-    for (const s of strategies) {
+    for (const s of nav.strategies) {
       for (const th of s.industries) {
         m.set(th.industry_id, th.industry_label);
       }
     }
     return m;
-  }, [strategies]);
+  }, [nav.strategies]);
 
   // Compute strategy theme industry_ids from strategyId/themeSlug. When a
   // strategy is selected, its themes' industry_ids are fetched the SAME way
@@ -174,15 +195,15 @@ export default function IndustrySentimentsPage() {
   // strategy-primary indices carry their theme as industry_id). When no
   // theme is selected, ALL themes under the strategy are included.
   const selectedStrategyThemeIds = useMemo(() => {
-    if (!strategyId) return [];
-    const strat = strategies.find((s) => s.sector_id === strategyId);
+    if (!nav.strategyId) return [];
+    const strat = nav.strategies.find((s) => s.sector_id === nav.strategyId);
     if (!strat) return [];
-    if (themeSlug) {
-      const th = strat.industries.find((t) => t.industry_slug === themeSlug);
+    if (nav.themeSlug) {
+      const th = strat.industries.find((t) => t.industry_slug === nav.themeSlug);
       return th ? [th.industry_id] : [];
     }
     return strat.industries.map((t) => t.industry_id);
-  }, [strategyId, themeSlug, strategies]);
+  }, [nav.strategyId, nav.themeSlug, nav.strategies]);
 
   // Array of { id, label } for the BenchmarkPriceChart's selectedIndustries
   // prop. Resolves each selected industry_id to its display label. Includes
@@ -206,63 +227,31 @@ export default function IndustrySentimentsPage() {
     return result;
   }, [selectedIndustryIds, slugToIndustryId, slugToIndustryLabel, selectedStrategyThemeIds, strategyThemeIdToLabel]);
 
-  // Load themes (LEFT column — industry taxonomy tree) and the parallel
-  // strategy tree (RIGHT column) on mount, on refresh, AND when the exchange
-  // filter changes — so the WHOLE classification nav (sector/industry/
-  // strategy/theme chips + L3 item chips) refreshes to respect the selected
-  // exchange (e.g. HK indices are excluded when "All (primary)" is selected).
-  // Both are fetched in parallel.
+  // Prune multi-select slugs that no longer exist in the (re)loaded tree
+  // (e.g. switching to HK drops mainland-only industries), then seed the
+  // multi-select with the first industry of the first sector so the page
+  // shows data immediately on FIRST load only. On subsequent tree reloads
+  // (exchange changes / refresh) the pruned selection is kept — the user may
+  // have picked cross-border industries deliberately.
+  const seededRef = useRef(false);
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    Promise.all([
-      fetchIndustrySentimentsThemes(exchange),
-      fetchIndustrySentimentsStrategyThemes(exchange),
-    ])
-      .then(([t, st]) => {
-        if (cancelled) return;
-        setSectors(t);
-        setStrategies(st);
-        // Prune stale multi-select industries that no longer exist in the
-        // filtered tree (e.g. switching to HK drops mainland-only industries).
-        const sectorIds = new Set(t.map((s) => s.sector_id));
-        const validSlugs = new Set<string>();
-        for (const s of t) {
-          for (const ind of s.industries) validSlugs.add(ind.industry_slug);
-        }
-        if (sectorId && !sectorIds.has(sectorId)) {
-          setSectorId(null);
-        }
-        setSelectedIndustrySlugs((prev) => {
-          const next = prev.filter((slug) => validSlugs.has(slug));
-          return next.length === prev.length ? prev : next;
-        });
-        // Clear stale strategy/theme selection if not in the filtered tree.
-        if (strategyId && !st.some((s) => s.sector_id === strategyId)) {
-          setStrategyId(null);
-          setThemeSlug(null);
-        }
-        // Seed the multi-select with the first industry of the first sector
-        // so the page shows data immediately on FIRST load only (sectorId ==
-        // null AND no prior selection). On subsequent exchange changes the
-        // pruned selection above is kept (the user may have picked cross-
-        // border industries deliberately).
-        if (t.length > 0 && sectorId == null && selectedIndustrySlugs.length === 0) {
-          setSectorId(t[0].sector_id);
-          const firstSlug = t[0].industries[0]?.industry_slug ?? null;
-          if (firstSlug) setSelectedIndustrySlugs([firstSlug]);
-        }
-        setLoading(false);
-      })
-      .catch((e: Error) => {
-        if (cancelled) return;
-        setError(e.message);
-        setLoading(false);
-      });
-    return () => { cancelled = true; };
+    if (nav.sectors.length === 0) return;
+    const validSlugs = new Set<string>();
+    for (const s of nav.sectors) {
+      for (const ind of s.industries) validSlugs.add(ind.industry_slug);
+    }
+    setSelectedIndustrySlugs((prev) => {
+      const next = prev.filter((slug) => validSlugs.has(slug));
+      return next.length === prev.length ? prev : next;
+    });
+    if (!seededRef.current && nav.sectorId == null && selectedIndustrySlugs.length === 0) {
+      seededRef.current = true;
+      nav.handleSectorChange(nav.sectors[0].sector_id);
+      const firstSlug = nav.sectors[0].industries[0]?.industry_slug ?? null;
+      if (firstSlug) setSelectedIndustrySlugs([firstSlug]);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey, exchange]);
+  }, [nav.sectors, nav.sectorId, selectedIndustrySlugs]);
 
   // Combined set of industry IDs to fetch: selected industries (LEFT column)
   // PLUS selected strategy theme IDs (RIGHT column). Strategy themes are
@@ -278,7 +267,7 @@ export default function IndustrySentimentsPage() {
       const targetCodes = new Set(
         selectedItemCodes.map((c) => c.toUpperCase()),
       );
-      for (const sector of sectors) {
+      for (const sector of nav.sectors) {
         for (const ind of sector.industries) {
           if (ind.items.some((it) => targetCodes.has(it.code.toUpperCase()))) {
             ids.add(ind.industry_id);
@@ -287,7 +276,7 @@ export default function IndustrySentimentsPage() {
       }
     }
     return Array.from(ids);
-  }, [selectedIndustryIds, selectedStrategyThemeIds, selectedItemCodes, sectors]);
+  }, [selectedIndustryIds, selectedStrategyThemeIds, selectedItemCodes, nav.sectors]);
 
   // Codes from `selectedItemCodes` that are NOT in any industry in the
   // sectors tree (strategy-primary only). These must be fetched via the
@@ -298,7 +287,7 @@ export default function IndustrySentimentsPage() {
     if (selectedItemCodes.length === 0) return [];
     if (selectedStrategyThemeIds.length > 0) return [];
     const inSectors = new Set<string>();
-    for (const sector of sectors) {
+    for (const sector of nav.sectors) {
       for (const ind of sector.industries) {
         for (const it of ind.items) {
           inSectors.add(it.code.toUpperCase());
@@ -308,7 +297,7 @@ export default function IndustrySentimentsPage() {
     return selectedItemCodes.filter(
       (c) => !inSectors.has(c.toUpperCase()),
     );
-  }, [selectedItemCodes, sectors, selectedStrategyThemeIds]);
+  }, [selectedItemCodes, nav.sectors, selectedStrategyThemeIds]);
 
   // Fetch chart data: by industry (normal/multi-select) PLUS by code (for
   // strategy-primary indexes not in the sectors tree), or clear when nothing
@@ -342,7 +331,7 @@ export default function IndustrySentimentsPage() {
       });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveIdsKey, strategyCodesKey, refreshKey]);
+  }, [effectiveIdsKey, strategyCodesKey, nav.refreshKey]);
 
   // Merge multiple industries' chart data into a single
   // IndustrySentimentsChartResponse. When only one industry is selected, the
@@ -435,18 +424,6 @@ export default function IndustrySentimentsPage() {
 
   const multiIndustry = chartDataList.length > 1;
 
-  const handleRefresh = () => {
-    invalidateCacheForPrefix("/api/analysis/industry-sentiments/");
-    invalidateCacheForPrefix("/api/analysis/industry-correlations");
-    invalidateCacheForPrefix("/api/analysis/industry-benchmark-attribution");
-    invalidateCacheForPrefix("/api/analysis/industry-attribution-bars");
-    invalidateCacheForPrefix("/api/analysis/industry-etf-contribution");
-    // Index Allocation view fetches per-code attribution + charts from the
-    // perf-attr endpoints — invalidate those too so Refresh covers all modes.
-    invalidateCacheForPrefix("/api/analysis/perf-attr/");
-    setRefreshKey((k) => k + 1);
-  };
-
   // Fetch the benchmark list for the attribution dropdown once when the user
   // first enters attribution mode (or on refresh). The list is small (~145
   // codes) and stable so we only fetch it once per refresh cycle.
@@ -464,14 +441,14 @@ export default function IndustrySentimentsPage() {
       });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, refreshKey]);
+  }, [viewMode, nav.refreshKey]);
 
   // Sector change only updates the row-2 browsing context — it does NOT clear
   // the multi-select selection (industries picked from other sectors persist).
-  // Non-exclusive mode: engaging the LEFT column (sector/industry) does NOT
-  // clear the RIGHT column (strategy/theme) — both can be active at once.
+  // Non-exclusive mode (nav handlers): engaging the LEFT column does NOT clear
+  // the RIGHT column — both can be active at once.
   const handleSectorChange = (id: string | null) => {
-    setSectorId(id);
+    nav.handleSectorChange(id);
     setSelectedItemCodes([]);
   };
   const handleMultiIndustryChange = (slugs: string[]) => {
@@ -483,7 +460,7 @@ export default function IndustrySentimentsPage() {
     } else {
       const slugSet = new Set(slugs);
       const validCodes = new Set<string>();
-      for (const s of sectors) {
+      for (const s of nav.sectors) {
         for (const ind of s.industries) {
           if (!slugSet.has(ind.industry_slug)) continue;
           for (const it of ind.items) validCodes.add(it.code.toUpperCase());
@@ -494,24 +471,17 @@ export default function IndustrySentimentsPage() {
       );
     }
   };
-  // Kept for ThemeSelector's single-select prop signature (no-op in multi mode).
-  const handleIndustryChange = () => {
-    /* no-op — multi-select mode uses handleMultiIndustryChange */
-  };
   // Clicking a strategy/theme chip engages the RIGHT column. Non-exclusive
   // mode: selecting in the RIGHT column does NOT clear the LEFT column
   // (sector + industry multi-select) — both contribute to the merged plot.
   const handleStrategyChange = (id: string | null) => {
-    setStrategyId(id);
-    if (!id) setThemeSlug(null);
+    if (!id) nav.handleThemeChange(null);
+    nav.handleStrategyChange(id);
     setSelectedItemCodes([]);
   };
   const handleThemeChange = (slug: string | null) => {
-    setThemeSlug(slug);
+    nav.handleThemeChange(slug);
     setSelectedItemCodes([]);
-  };
-  const handleExchangeChange = (ex: string | null) => {
-    setExchange(ex);
   };
 
   // Header label: reflects BOTH industry (LEFT) and strategy (RIGHT) selections.
@@ -524,7 +494,7 @@ export default function IndustrySentimentsPage() {
         : selectedIndustrySlugs.length === 1
           ? (() => {
               const slug = selectedIndustrySlugs[0];
-              const sector = sectors.find((s) =>
+              const sector = nav.sectors.find((s) =>
                 s.industries.some((i) => i.industry_slug === slug),
               );
               const ind = sector?.industries.find((i) => i.industry_slug === slug);
@@ -533,12 +503,12 @@ export default function IndustrySentimentsPage() {
                 : "1 industry";
             })()
           : `${selectedIndustrySlugs.length} industries`;
-    const strat = strategyId
-      ? strategies.find((s) => s.sector_id === strategyId)
+    const strat = nav.strategyId
+      ? nav.strategies.find((s) => s.sector_id === nav.strategyId)
       : null;
     const stratPart = strat
-      ? themeSlug
-        ? `${strat.sector_label} / ${strat.industries.find((t) => t.industry_slug === themeSlug)?.industry_label ?? strat.sector_label}`
+      ? nav.themeSlug
+        ? `${strat.sector_label} / ${strat.industries.find((t) => t.industry_slug === nav.themeSlug)?.industry_label ?? strat.sector_label}`
         : strat.sector_label
       : null;
     if (indPart && stratPart) return `${indPart} + ${stratPart}`;
@@ -548,106 +518,68 @@ export default function IndustrySentimentsPage() {
   })();
 
   return (
-    <Box>
-      <Box
-        sx={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          gap: 2,
-          flexWrap: "wrap",
-        }}
-      >
-        <Box>
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            <IconButton
-              onClick={() => navigate("/analysis/commons")}
-              size="small"
-              aria-label="back to commons"
-            >
-              <ArrowBack />
-            </IconButton>
-            <Typography variant="h5" sx={{ fontWeight: 700 }}>
-              Industry Sentiments
-            </Typography>
-          </Box>
-          <Typography variant="body2" color="text.secondary">
-            {headerLabel} — each member index's daily close (actual value shown in
+    <SecNavShell
+      nav={nav}
+      title="Industry Sentiments"
+      backPath="/analysis/commons"
+      backLabel="back to commons"
+      subtitle={`${headerLabel} — each member index's daily close (actual value shown in
             tooltip), rebased to 100 at the start of the visible (zoom) window.
-            <strong> Multi-select:</strong> tick multiple industry chips (across
-            sectors — switch the active sector to browse, picked industries
-            persist) to merge their member indices into one plot. Toggle pool
-            size to filter by member count (small &lt;51, mid 51-180, large
-            &gt;180). The dashed mean line and ±1σ band are precomputed
-            server-side (anchored at history start — aligned with lines only at
-            full slider range). In single-industry mode the mean/var overlay is
-            always shown; in multi-industry mode, toggle <strong>Mean only</strong>
-            to hide the per-index lines and render one mean curve PER industry
-            (each in a distinct color with its own ±1σ band) for cross-industry
-            comparison. Below the price chart, two sub-plots show the
-            cross-sectional <strong>mean PE</strong> and <strong>mean trading
-            amount</strong> (in yuan, displayed in 亿元) of member indices — in single-industry mode one
-            line per pool_size, in multi-industry mode one line per industry (for
-            the selected pool). Only indices WITH composition data are shown;
-            indices without any composition snapshot are excluded entirely.
-            Broad-market indices (BROAD_CSI/SSE/SZSE/STAR) appear under the FIN
-            sector. <strong>L3 Index multi-select:</strong> tick multiple index
-            chips (across the picked industries) to narrow the displayed lines
-            to just those member indices; click <strong>All</strong> to clear
-            the filter. <strong>All &lt;industry&gt;</strong> chips (one per
-            selected industry) appear alongside — click one to DROP that whole
-            industry from the selection. The per-industry mean/±σ overlay
-            always aggregates ALL member indices of the selected industries
-            (L3 narrowing affects displayed lines only).
-          </Typography>
-        </Box>
-        <RefreshButton
-          onClick={handleRefresh}
-          loading={loading}
-          label="Refresh"
-          tooltip="Refresh industry-sentiments data (bypass cache)"
+            Multi-select: tick multiple industry chips (across sectors — switch
+            the active sector to browse, picked industries persist) to merge
+            their member indices into one plot. Toggle pool size to filter by
+            member count (small <51, mid 51-180, large >180). The dashed mean
+            line and ±1σ band are precomputed server-side (anchored at history
+            start — aligned with lines only at full slider range). In
+            single-industry mode the mean/var overlay is always shown; in
+            multi-industry mode, toggle Mean only to hide the per-index lines
+            and render one mean curve PER industry (each in a distinct color
+            with its own ±1σ band) for cross-industry comparison. Below the
+            price chart, two sub-plots show the cross-sectional mean PE and
+            mean trading amount (in yuan, displayed in 亿元) of member indices
+            — in single-industry mode one line per pool_size, in
+            multi-industry mode one line per industry (for the selected pool).
+            Only indices WITH composition data are shown; indices without any
+            composition snapshot are excluded entirely. Broad-market indices
+            (BROAD_CSI/SSE/SZSE/STAR) appear under the FIN sector. L3 Index
+            multi-select: tick multiple index chips (across the picked
+            industries) to narrow the displayed lines to just those member
+            indices; click All to clear the filter. All <industry> chips (one
+            per selected industry) appear alongside — click one to DROP that
+            whole industry from the selection. The per-industry mean/±σ
+            overlay always aggregates ALL member indices of the selected
+            industries (L3 narrowing affects displayed lines only).`}
+      // Index-only page with no code search — both render DISABLED.
+      secTypes={["index"]}
+      disableToggle
+      disableSearch
+      refreshTooltip="Refresh industry-sentiments data (bypass cache)"
+      errorPrefix="industry-sentiments data"
+      navSlot={
+        <SecClassificationNavMulti
+          sectors={nav.sectors}
+          sectorId={nav.sectorId}
+          onSectorChange={handleSectorChange}
+          selectedIndustrySlugs={selectedIndustrySlugs}
+          onMultiIndustryChange={handleMultiIndustryChange}
+          exchange={nav.exchange}
+          onExchangeChange={nav.handleExchangeChange}
+          strategies={nav.strategies}
+          strategyId={nav.strategyId}
+          themeSlug={nav.themeSlug}
+          onStrategyChange={handleStrategyChange}
+          onThemeChange={handleThemeChange}
+          itemKind="Index"
+          selectedItemCodes={selectedItemCodes}
+          onMultiItemSelected={setSelectedItemCodes}
+          loading={nav.loading}
         />
-      </Box>
-
-      <SecClassificationNav
-        sectors={sectors}
-        sectorId={sectorId}
-        industrySlug={selectedIndustrySlugs[0] ?? null}
-        exchange={exchange}
-        onSectorChange={handleSectorChange}
-        onIndustryChange={handleIndustryChange}
-        onExchangeChange={handleExchangeChange}
-        multiSelect
-        selectedIndustrySlugs={selectedIndustrySlugs}
-        onMultiIndustryChange={handleMultiIndustryChange}
-        strategies={strategies}
-        strategyId={strategyId}
-        themeSlug={themeSlug}
-        onStrategyChange={handleStrategyChange}
-        onThemeChange={handleThemeChange}
-        itemKind="Index"
-        multiSelectItems
-        selectedItemCodes={selectedItemCodes}
-        onMultiItemSelected={setSelectedItemCodes}
-        showAllIndustryChips
-        mutuallyExclusive={false}
-        loading={loading}
-      />
-
-      {loading && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
-          <CircularProgress size={32} />
-        </Box>
-      )}
-      {error && (
-        <Alert severity="error" variant="filled" sx={{ mb: 2 }}>
-          Failed to load industry-sentiments data: {error}
-        </Alert>
-      )}
-      {!loading && !error && effectiveIndustryIds.length === 0 && selectedItemCodes.length === 0 && (
+      }
+    >
+      {effectiveIndustryIds.length === 0 && selectedItemCodes.length === 0 && (
         <Alert severity="warning">Select one or more industries to see the member indices.</Alert>
       )}
-      {!loading && !error && (effectiveIndustryIds.length > 0 || selectedItemCodes.length > 0) && (
+      {(effectiveIndustryIds.length > 0 || selectedItemCodes.length > 0) && (
         <>
           {/* Top-level view-mode toggle: "Industry Correlation" (existing
               multi-line price + PE + amount + pairwise-correlation charts)
@@ -829,6 +761,6 @@ export default function IndustrySentimentsPage() {
           )}
         </>
       )}
-    </Box>
+    </SecNavShell>
   );
 }

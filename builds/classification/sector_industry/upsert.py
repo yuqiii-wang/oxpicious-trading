@@ -45,6 +45,9 @@ from builds.classification.sector_industry.index.upsert import (
 from builds.classification.sector_industry.index.etf.upsert import upsert_etfs
 from builds.classification.sector_industry.index.stock.upsert import upsert_stocks
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def upsert_to_db(
     conn,
@@ -58,8 +61,7 @@ async def upsert_to_db(
     # --- 0. Force mode: truncate sec_classification to remove stale rows ---
     if force:
         if verbose:
-            print(f"    [DB] Force mode: truncating stats.sec_classification...",
-                  flush=True)
+            logger.info(f"    [DB] Force mode: truncating stats.sec_classification...")
         await truncate_table_async(conn, "stats.sec_classification")
 
     # --- 0. Migrate old NULL parent_index_code → '' (new NOT NULL schema) ---
@@ -124,9 +126,8 @@ async def _update_is_primary_exchange(conn, verbose: bool = True) -> None:
             "COUNT(*) FILTER (WHERE is_primary_exchange IS FALSE) AS cross_border, "
             "COUNT(*) FILTER (WHERE is_primary_exchange IS NULL) AS null_ex "
             "FROM stats.sec_classification")
-        print(f"    [DB] is_primary_exchange: {row['primary_ex']:,} primary, "
-              f"{row['cross_border']:,} cross-border, {row['null_ex']:,} NULL",
-              flush=True)
+        logger.info(f"    [DB] is_primary_exchange: {row['primary_ex']:,} primary, "
+              f"{row['cross_border']:,} cross-border, {row['null_ex']:,} NULL")
 
 
 # (sec_type, identity_table) pairs used to derive is_active.  index codes are
@@ -181,5 +182,5 @@ async def _update_is_active(conn, verbose: bool = True) -> None:
         row = await conn.fetchrow(
             "SELECT COUNT(*) FILTER (WHERE is_active) AS active, "
             "COUNT(*) AS total FROM stats.sec_classification")
-        print(f"    [DB] is_active: {row['active']:,}/{row['total']:,} rows "
-              f"active (threshold {threshold.isoformat()})", flush=True)
+        logger.info(f"    [DB] is_active: {row['active']:,}/{row['total']:,} rows "
+              f"active (threshold {threshold.isoformat()})")

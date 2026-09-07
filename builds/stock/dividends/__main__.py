@@ -73,6 +73,9 @@ from _common.build_commons import (
 )
 from _common.db_commons import get_db_connection
 
+from _common.log_setup import setup_logging  # noqa: E402
+logger = setup_logging("dividends")
+
 setup_utf8_stdout()
 
 # ============================================================================
@@ -197,7 +200,7 @@ def _read_dividend_csv(path: str, exchange: str, source: str) -> List[Dict[str, 
                 }
                 rows.append(row)
     except (OSError, csv.Error) as e:
-        print(f"    [WARN] Failed to read {path}: {e}", flush=True)
+        logger.warning(f"    [WARN] Failed to read {path}: {e}")
     return rows
 
 
@@ -346,7 +349,7 @@ async def main() -> None:
     # ------------------------------------------------------------------
     # 1. Discover dividend CSV files
     # ------------------------------------------------------------------
-    print("\n[1/3] Discovering dividend CSV files …", flush=True)
+    logger.info("\n[1/3] Discovering dividend CSV files …")
     # Build a list of (path, exchange, source) tuples. For each stock
     # code, only the LATEST CSV (by date suffix) is loaded — older files
     # from previous download dates are ignored. Legacy files without a
@@ -357,8 +360,8 @@ async def main() -> None:
         archive_dir, exchange, source = _resolve_code_source(bare)
         path = _find_latest_for_code(archive_dir, bare)
         if path is None:
-            print(f"    [FATAL] No dividend CSV for {bare} found in "
-                  f"{archive_dir}", flush=True)
+            logger.error(f"    [FATAL] No dividend CSV for {bare} found in "
+                  f"{archive_dir}")
             sys.exit(1)
         file_specs.append((path, exchange, source))
     else:
@@ -366,12 +369,12 @@ async def main() -> None:
             latest_map = _find_latest_dividend_csvs(archive_dir)
             for code in sorted(latest_map):
                 file_specs.append((latest_map[code], exchange, source))
-    print(f"    → {len(file_specs)} dividend CSV files found "
-          f"(SSE + SZSE)", flush=True)
+    logger.info(f"    → {len(file_specs)} dividend CSV files found "
+          f"(SSE + SZSE)")
     if not file_specs:
-        print("    [FATAL] No dividend CSV files found. Run "
+        logger.error("    [FATAL] No dividend CSV files found. Run "
               "`python -m downloads.stock.sse.dividend` and/or "
-              "`python -m downloads.stock.szse.dividend` first.", flush=True)
+              "`python -m downloads.stock.szse.dividend` first.")
         sys.exit(1)
 
     # Filter to active stocks (sec_classification.is_active=TRUE). Skip in
@@ -393,23 +396,23 @@ async def main() -> None:
                     filtered.append((path, suffix, source))
                 else:
                     n_dropped += 1
-            print(f"    → is_active filter: kept {len(filtered)}, "
+            logger.info(f"    → is_active filter: kept {len(filtered)}, "
                   f"dropped {n_dropped} (delisted / no recent identity "
-                  f"records) out of {len(file_specs)}", flush=True)
+                  f"records) out of {len(file_specs)}")
             file_specs = filtered
             if not file_specs:
-                print("    [INFO] No active stock dividend CSV files "
-                      "to process.", flush=True)
+                logger.info("    [INFO] No active stock dividend CSV files "
+                      "to process.")
                 print_wall_time(t0)
                 return
         else:
-            print("    → sec_classification empty, skipping is_active "
-                  "filter", flush=True)
+            logger.info("    → sec_classification empty, skipping is_active "
+                  "filter")
 
     # ------------------------------------------------------------------
     # 2. Read all CSVs into DB rows
     # ------------------------------------------------------------------
-    print("\n[2/3] Reading dividend CSVs …", flush=True)
+    logger.info("\n[2/3] Reading dividend CSVs …")
     all_rows: List[Dict[str, Any]] = []
     n_files_with_data = 0
     n_files_empty = 0
@@ -420,10 +423,10 @@ async def main() -> None:
             n_files_with_data += 1
         else:
             n_files_empty += 1
-    print(f"    → {len(all_rows):,} dividend rows from {n_files_with_data} files "
-          f"({n_files_empty} empty)", flush=True)
+    logger.info(f"    → {len(all_rows):,} dividend rows from {n_files_with_data} files "
+          f"({n_files_empty} empty)")
     if not all_rows:
-        print("    [INFO] No dividend rows to insert", flush=True)
+        logger.info("    [INFO] No dividend rows to insert")
         print_wall_time(t0)
         return
 
@@ -439,8 +442,7 @@ async def main() -> None:
         deduped.append(r)
     n_dupes = len(all_rows) - len(deduped)
     if n_dupes > 0:
-        print(f"    → {n_dupes} duplicate rows removed ({len(deduped):,} unique)",
-              flush=True)
+        logger.info(f"    → {n_dupes} duplicate rows removed ({len(deduped):,} unique)")
         all_rows = deduped
 
     n_codes = len({r["code"] for r in all_rows})
@@ -448,26 +450,26 @@ async def main() -> None:
     n_szse = sum(1 for r in all_rows if r["source"] == "SZSE")
     d_min = min(r["ex_dividend_date"] for r in all_rows)
     d_max = max(r["ex_dividend_date"] for r in all_rows)
-    print(f"    → {n_codes} unique stocks | ex-dividend dates "
-          f"{d_min} → {d_max}", flush=True)
-    print(f"    → SSE rows: {n_sse:,} | SZSE rows: {n_szse:,}", flush=True)
+    logger.info(f"    → {n_codes} unique stocks | ex-dividend dates "
+          f"{d_min} → {d_max}")
+    logger.info(f"    → SSE rows: {n_sse:,} | SZSE rows: {n_szse:,}")
 
     # ------------------------------------------------------------------
     # 3. Connect to DB and upsert
     # ------------------------------------------------------------------
-    print("\n[3/3] Connecting to database …", flush=True)
+    logger.info("\n[3/3] Connecting to database …")
     conn = await get_db_or_exit()
     try:
         if args.force:
-            print("    [DB] Force mode: truncating stats.stock_dividends", flush=True)
+            logger.info("    [DB] Force mode: truncating stats.stock_dividends")
             await truncate_table_async(conn, "stats.stock_dividends")
 
         inserted = await bulk_upsert_async(
             conn, "stats.stock_dividends", all_rows,
             key_columns=["code", "ex_dividend_date"],
         )
-        print(f"    [DB] Upserted {inserted:,} rows into stats.stock_dividends "
-              f"(PK: code, ex_dividend_date — conflicts overwrite)", flush=True)
+        logger.info(f"    [DB] Upserted {inserted:,} rows into stats.stock_dividends "
+              f"(PK: code, ex_dividend_date — conflicts overwrite)")
     finally:
         await conn.close()
 

@@ -39,6 +39,9 @@ import pandas as pd
 from _common.df_utils import pairwise_rolling_corr
 from builds.cross_stats.config import CORR_WINDOWS
 
+import logging
+logger = logging.getLogger(__name__)
+
 # Rough number of (T, N, N) float64 tensors live simultaneously inside
 # the cumsum kernel (xm, ym, sx, sy, sxx, syy, sxy, masks).
 _TENSOR_LIVE_COUNT: int = 8
@@ -105,8 +108,8 @@ def compute_rolling_correlations_bulk(
     """
     t_start = time.time()
     if enable_gpu is not None:
-        print(f"    [corr_bulk] enable_gpu={enable_gpu} (informational; "
-              f"backend chosen per-window by the kernel)", flush=True)
+        logger.info(f"    [corr_bulk] enable_gpu={enable_gpu} (informational; "
+              f"backend chosen per-window by the kernel)")
 
     if not _is_datetime64(subject_closes["date"]):
         subject_closes = subject_closes.copy()
@@ -172,9 +175,8 @@ def compute_rolling_correlations_bulk(
         grid_mask[INTERVAL_DAYS - 1::INTERVAL_DAYS] = True
         n_grid = int(grid_mask.sum())
         grid_via = "combined calendar positions"
-    print(f"    [corr_bulk] stride grid: every {INTERVAL_DAYS} trading "
-          f"days — {n_grid}/{t_len:,} dates are grid dates ({grid_via})",
-          flush=True)
+    logger.info(f"    [corr_bulk] stride grid: every {INTERVAL_DAYS} trading "
+          f"days — {n_grid}/{t_len:,} dates are grid dates ({grid_via})")
 
     col_names: np.ndarray = np.asarray(combined.columns)
     sub_pos: dict[str, int] = {
@@ -230,10 +232,10 @@ def compute_rolling_correlations_bulk(
     n_bench: int = len(bench_global_names)
     block, chunk = _fit_block_and_chunk(t_len, n_bench)
     if chunk < n_bench:
-        print(f"    [corr_bulk] VRAM-fit sizing: subject block={block}, "
+        logger.info(f"    [corr_bulk] VRAM-fit sizing: subject block={block}, "
               f"benchmark chunk={chunk} (tensor N={block + chunk} cols) — "
               f"full-width blocks exceed free VRAM; chunking keeps the "
-              f"kernel on GPU", flush=True)
+              f"kernel on GPU")
     subject_names = [n[2:] for n in col_names if n.startswith("s|")]
 
     for w_idx, N in enumerate(CORR_WINDOWS):
@@ -268,8 +270,8 @@ def compute_rolling_correlations_bulk(
                         if chunk <= 1:
                             raise
                         chunk = max(chunk // 2, 1)
-                        print(f"    [corr_bulk] CuPy MemoryError: benchmark "
-                              f"chunk -> {chunk}, retrying", flush=True)
+                        logger.info(f"    [corr_bulk] CuPy MemoryError: benchmark "
+                              f"chunk -> {chunk}, retrying")
                         c1 = min(c0 + chunk, n_bench)
                         chunk_names = bench_global_names[c0:c1]
                         keep_cols = blk_sub_cols + \
@@ -305,10 +307,10 @@ def compute_rolling_correlations_bulk(
             f[corr_col] = acc
         if w_idx == 0:
             n_rows = sum(len(f) for f in base_frames)
-            print(f"    [corr_bulk] emitted {n_rows:,} (pair, date) rows "
+            logger.info(f"    [corr_bulk] emitted {n_rows:,} (pair, date) rows "
                   f"across {len(slices)} subjects; T={t_len:,} dates, "
                   f"{len(col_names):,} series; block={block}, "
-                  f"bench_chunk={chunk}", flush=True)
+                  f"bench_chunk={chunk}")
 
     # ---------------- combine ------------------------------------------
     result = pd.concat(base_frames, ignore_index=True)
@@ -318,11 +320,10 @@ def compute_rolling_correlations_bulk(
 
     elapsed = time.time() - t_start
     n_benchmarks = len(active_bench_cols)
-    print(
+    logger.info(
         f"    [corr_bulk] {len(result):,} rows from "
         f"{len(subject_codes)} subjects x {n_benchmarks} benchmarks, "
         f"elapsed: {elapsed:.2f}s",
-        flush=True,
     )
 
     return result

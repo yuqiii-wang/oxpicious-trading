@@ -64,6 +64,9 @@ from analyze.mov_ave_spread.config import (
     SEC_TYPE_IDENTITY_TABLE,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 #  Calendar builder
@@ -345,9 +348,9 @@ async def run_holiday(
       sec_type: when provided, process only this sec_type.
     """
     t0 = time.time()
-    print("\n" + "=" * 78, flush=True)
-    print("  MOV_AVE_RSI_HOLIDAY (internal step of mov_ave_spread)", flush=True)
-    print("=" * 78, flush=True)
+    logger.info("\n" + "=" * 78)
+    logger.info("  MOV_AVE_RSI_HOLIDAY (internal step of mov_ave_spread)")
+    logger.info("=" * 78)
 
     # Select only the columns holiday needs.
     needed_cols = ["sec_type", "code", "date", "price", "open", "high", "low"]
@@ -355,7 +358,7 @@ async def run_holiday(
     holiday_df = df[available].copy()
 
     if holiday_df.empty:
-        print("    -> no source data; skipping holiday step.", flush=True)
+        logger.info("    -> no source data; skipping holiday step.")
         return
 
     if sec_type is not None:
@@ -370,36 +373,33 @@ async def run_holiday(
         # and bypass the per-sec_type skip-filter (sec_types=() at the
         # insert below keeps every row — dates covered by OTHER codes
         # would otherwise mask this code's gaps).
-        print("    mode: SINGLE-CODE (full recompute for this code)",
-              flush=True)
+        logger.info("    mode: SINGLE-CODE (full recompute for this code)")
         target_dates_union: Optional[Set] = None
     elif force:
-        print("    mode: FORCE (full recompute)", flush=True)
+        logger.info("    mode: FORCE (full recompute)")
         if sec_type is not None:
             # Per-sec_type scope: DELETE only this sec_type's rows — the
             # parent loop calls run_holiday once per sec_type, so a
             # whole-table TRUNCATE here would wipe the other sec_types'
             # rows (in a --sec-type scoped run they are NOT rebuilt).
-            print(f"\n[h0/3] Force mode: deleting {sec_type} rows from "
-                  "mov_ave_rsi_holiday...", flush=True)
+            logger.info(f"\n[h0/3] Force mode: deleting {sec_type} rows from "
+                  "mov_ave_rsi_holiday...")
             status = await conn.execute(
                 f"DELETE FROM {HOLIDAY_TABLE} WHERE sec_type = $1",
                 sec_type,
             )
             n_del = int(status.rsplit(" ", 1)[-1]) if status else 0
-            print(f"    -> deleted {n_del:,} rows; will recompute all "
-                  f"{sec_type} rows", flush=True)
+            logger.info(f"    -> deleted {n_del:,} rows; will recompute all "
+                  f"{sec_type} rows")
         else:
-            print("\n[h0/3] Force mode: truncating mov_ave_rsi_holiday...",
-                  flush=True)
+            logger.info("\n[h0/3] Force mode: truncating mov_ave_rsi_holiday...")
             await truncate_table_async(conn, HOLIDAY_TABLE)
-            print("    -> truncated; will recompute all rows", flush=True)
+            logger.info("    -> truncated; will recompute all rows")
         target_dates_union: Optional[Set] = None
     else:
-        print("    mode: incremental (missing dates only)", flush=True)
-        print("\n[h0/3] Detecting missing dates PER-sec_type "
-              "(etf_identity vs holiday[etf], etc.)...",
-              flush=True)
+        logger.info("    mode: incremental (missing dates only)")
+        logger.info("\n[h0/3] Detecting missing dates PER-sec_type "
+              "(etf_identity vs holiday[etf], etc.)...")
         target_dates_per_st: dict = {}
         for st in sec_types:
             td_st = await find_missing_analysis_dates(
@@ -407,21 +407,19 @@ async def run_holiday(
                 [SEC_TYPE_IDENTITY_TABLE[st]], sec_type=st,
             )
             target_dates_per_st[st] = td_st
-            print(f"    -> {st}: {len(td_st)} missing dates", flush=True)
+            logger.info(f"    -> {st}: {len(td_st)} missing dates")
         target_dates_union = set()
         for s in target_dates_per_st.values():
             target_dates_union |= s
-        print(f"    -> union across sec_types: "
-              f"{len(target_dates_union)} dates to (re)compute",
-              flush=True)
+        logger.info(f"    -> union across sec_types: "
+              f"{len(target_dates_union)} dates to (re)compute")
         if not target_dates_union:
-            print("    -> DB is up to date; nothing to do.", flush=True)
+            logger.info("    -> DB is up to date; nothing to do.")
             return
 
     # ---- Step 1: compute holiday metrics over full history ----------
-    print("\n[h1/3] Computing holiday metrics (calendar classification + "
-          "today gaps) per (sec_type, code, date) over full history...",
-          flush=True)
+    logger.info("\n[h1/3] Computing holiday metrics (calendar classification + "
+          "today gaps) per (sec_type, code, date) over full history...")
     holiday_df = compute_holiday_metrics(holiday_df)
 
     if target_dates_union is not None and len(target_dates_union) > 0:
@@ -433,17 +431,17 @@ async def run_holiday(
         holiday_df = holiday_df[
             holiday_df["date"].isin(td64)
         ].reset_index(drop=True)
-        print(f"    -> incremental filter: {len(holiday_df):,} of "
-              f"{n_before:,} rows are in target_dates_union", flush=True)
+        logger.info(f"    -> incremental filter: {len(holiday_df):,} of "
+              f"{n_before:,} rows are in target_dates_union")
 
     if holiday_df.empty:
-        print("    -> no rows to upsert; skipping holiday upsert.", flush=True)
+        logger.info("    -> no rows to upsert; skipping holiday upsert.")
         return
 
     # ---- Step 2: build + insert (chunked by date) -------------------
-    print(f"\n[h2/3] Building + inserting {len(holiday_df):,} "
+    logger.info(f"\n[h2/3] Building + inserting {len(holiday_df):,} "
           f"mov_ave_rsi_holiday rows in date-bounded chunks "
-          f"({'COPY' if force else 'upsert'} per chunk)...", flush=True)
+          f"({'COPY' if force else 'upsert'} per chunk)...")
     n = await build_and_insert_chunked(
         conn, pool, holiday_df,
         sanitize_holiday_rows,
@@ -455,11 +453,10 @@ async def run_holiday(
         label="mov_ave_rsi_holiday",
     )
     del holiday_df
-    print(f"    -> inserted {n:,} rows", flush=True)
+    logger.info(f"    -> inserted {n:,} rows")
 
     # ---- Step 3: register in analysis_identity ----------------------
-    print(f"\n[h3/3] Upserting analysis.analysis_identity registry...",
-          flush=True)
+    logger.info(f"\n[h3/3] Upserting analysis.analysis_identity registry...")
     await upsert_analysis_identity(
         conn,
         name=HOLIDAY_ANALYSIS_NAME,
@@ -467,5 +464,4 @@ async def run_holiday(
         description=HOLIDAY_DESCRIPTION,
     )
 
-    print(f"\n  mov_ave_rsi_holiday wall time: {time.time() - t0:.1f}s",
-          flush=True)
+    logger.info(f"\n  mov_ave_rsi_holiday wall time: {time.time() - t0:.1f}s")

@@ -27,11 +27,10 @@ import {
 } from "@mui/material";
 import { ArrowBack } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
-import { DatePicker } from "@mui/x-date-pickers/DatePicker";
-import dayjs, { type Dayjs } from "dayjs";
 import RefreshButton from "@/components/RefreshButton";
 import StatTable from "@/components/StatTable";
 import { autoDeriveSnapshots } from "@/components/SnapshotControls";
+import { DateSelector } from "@/shared/components/date-selector";
 import { computeSnapshotStats } from "@/lib/options-stats";
 import {
   fetchUnderlyings,
@@ -121,9 +120,6 @@ export default function OptionsAnalysisPage() {
     UNDERLYING_LABELS[underlyingCode] ??
     underlyings.find((u) => u.code === underlyingCode)?.name ??
     underlyingCode;
-
-  const minDate = data?.dates.length ? dayjs(data.dates[0]) : undefined;
-  const maxDate = data?.dates.length ? dayjs(data.dates[data.dates.length - 1]) : undefined;
 
   const snapshotStats = useMemo(() => {
     if (!data || data.dates.length === 0) return [];
@@ -225,16 +221,12 @@ export default function OptionsAnalysisPage() {
           Snapshot Date
         </Typography>
 
-        <DatePicker
+        <DateSelector
+          dates={data?.dates ?? []}
+          value={selectedDate || null}
           label="Select date"
-          value={selectedDate ? dayjs(selectedDate) : null}
-          format="YYYY-MM-DD"
-          minDate={minDate}
-          maxDate={maxDate}
-          slotProps={{
-            textField: { size: "small", sx: { width: 180 } },
-          }}
-          onChange={(v: Dayjs | null) => setSelectedDate(v ? v.format("YYYY-MM-DD") : "")}
+          minWidth={180}
+          onChange={(v) => setSelectedDate(v ?? "")}
         />
       </Box>
 

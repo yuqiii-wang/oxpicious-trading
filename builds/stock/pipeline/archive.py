@@ -9,6 +9,9 @@ from builds.stock._helpers import (
     _read_sse_pe_files,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 async def load_sse_archive(
     conn,
@@ -23,13 +26,13 @@ async def load_sse_archive(
     The reader filters rows per code to dates beyond the DB max, so no
     anti-join against stock_identity is needed here.
     """
-    print(f"\n    Loading SSE archive historical OHLCV from {SSE_PE_DIR} …", flush=True)
+    logger.info(f"\n    Loading SSE archive historical OHLCV from {SSE_PE_DIR} …")
     archive_df = await _read_sse_archive_trend_files(
         SSE_PE_DIR, start_date, end_date, limit=limit,
         conn=conn, force=force, verbose=True, code_filter=code_filter,
     )
     if len(archive_df) == 0:
-        print("    [ARCHIVE] No SSE archive trend files found", flush=True)
+        logger.info("    [ARCHIVE] No SSE archive trend files found")
         return archive_df
 
     n_archive_total = len(archive_df)
@@ -39,8 +42,8 @@ async def load_sse_archive(
     archive_date_strs = archive_df["date"].dt.strftime("%Y-%m-%d")
     d0 = archive_date_strs.min()
     d1 = archive_date_strs.max()
-    print(f"    [ARCHIVE] {n_archive_total:,} rows | {n_archive_stocks} stocks | "
-          f"{d0} → {d1}", flush=True)
+    logger.info(f"    [ARCHIVE] {n_archive_total:,} rows | {n_archive_stocks} stocks | "
+          f"{d0} → {d1}")
     return archive_df
 
 
@@ -50,7 +53,7 @@ async def load_sse_pe(
     code_filter: str | None,
 ) -> pd.DataFrame:
     """Load SSE PE snapshots ({code}_pe.csv, incremental by file mtime)."""
-    print(f"\n    Merging SSE PE snapshots from {SSE_PE_DIR} …", flush=True)
+    logger.info(f"\n    Merging SSE PE snapshots from {SSE_PE_DIR} …")
     return await _read_sse_pe_files(
         SSE_PE_DIR, conn=conn, force=force, verbose=True,
         code_filter=code_filter,

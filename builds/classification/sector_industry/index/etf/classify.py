@@ -32,6 +32,9 @@ from builds.classification.sector_industry.owners import (
     match_etf_owner,
 )
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def classify_etfs(
     etf_rows: List[Dict[str, Any]],
@@ -201,11 +204,10 @@ def classify_etfs(
                       if v["sector_id"] == DEFAULT_SECTOR_ID)
         ow_note = f", {n_overwritten} overwritten" if n_overwritten else ""
         os_note = f", {n_overseas_reclassified} → OVERSEAS" if n_overseas_reclassified else ""
-        print(f"    [ETF] {len(etfs)} ETFs mapped "
+        logger.info(f"    [ETF] {len(etfs)} ETFs mapped "
               f"({n_with_index} with classified parent index, "
               f"{n_name_classified} by name rules{ow_note}{os_note}, "
               f"{n_other} → OTHER, "
-              f"{n_owner_matched} owner-matched, {n_primary} primary)",
-              flush=True)
+              f"{n_owner_matched} owner-matched, {n_primary} primary)")
 
     return etfs

@@ -4,7 +4,8 @@
  *   • SnapshotControls — underlying ETF selector + snapshot date picker
  *   • StatTable — 4 auto-derived snapshot columns (Q4 Start / Last Quarter / Last Month / Latest)
  *   • VolSmilePanel — IV smile snapshot for the selected date
- *   • SharedSkewPanel (iv_smile) — IV smile skewness over time + correlation
+ *   • SharedSkewPanel (iv_smile) — IV smile skew (25Δ risk reversal) over time + correlation
+ *   • SharedSkewPanel (smile_slope) — full-smile IV tilt skew over time + in-browser correlation
  *   • SharedSkewPanel (oi_moneyness) — OI-wtd moneyness skew over time + correlation
  *   • MarketInterestWallPanel — OI wall by expiry for the selected snapshot date
  *   • OptionsTrendPanel — OI bands + P/C Ratio + Total OI (merged card)
@@ -196,6 +197,12 @@ export default function SzseOptionsPage() {
               />
               <SharedSkewPanel
                 mode="iv_smile"
+                rows={optionsData.rows}
+                selectedDate={selectedDate}
+                onDateChange={setSelectedDate}
+              />
+              <SharedSkewPanel
+                mode="smile_slope"
                 rows={optionsData.rows}
                 selectedDate={selectedDate}
                 onDateChange={setSelectedDate}

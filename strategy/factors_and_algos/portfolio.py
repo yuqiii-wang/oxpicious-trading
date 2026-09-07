@@ -38,6 +38,9 @@ from strategy.factors_and_algos import get_algo
 from strategy.factors_and_algos._algo.registry import short_name
 from strategy.factors_and_algos._algo.fault_tolerance import append_ft_suffix
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Portfolio naming
@@ -165,8 +168,8 @@ async def _run_one_sub_algo(
                 conn, algo_name, sec_type, code, algo_name,
             )
             if inserted:
-                print(f"    [algo_configs] inserted default {algo_name} "
-                      f"config for {sec_type}/{code}", flush=True)
+                logger.info(f"    [algo_configs] inserted default {algo_name} "
+                      f"config for {sec_type}/{code}")
         # Load merged params (algo DEFAULT < DB < trading-layer overrides).
         # Uses the FIRST code as the config source (params are per-algo, not
         # per-code — they share the same algo_configs strategy_name).
@@ -242,19 +245,17 @@ async def run_sub_algos(
             )
         )
     if not tasks:
-        print("  [portfolio] no sub-algos with non-zero weight; skipping Phase 1.",
-              flush=True)
+        logger.info("  [portfolio] no sub-algos with non-zero weight; skipping Phase 1.")
         return []
 
-    print(f"\n[Phase 1] Running {len(tasks)} sub-algo(s) concurrently: "
-          f"{ran_names}", flush=True)
+    logger.info(f"\n[Phase 1] Running {len(tasks)} sub-algo(s) concurrently: "
+          f"{ran_names}")
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for name, res in zip(ran_names, results):
         if isinstance(res, Exception):
-            print(f"    [Phase 1] {name}: ERROR {type(res).__name__}: {res}",
-                  flush=True)
+            logger.error(f"    [Phase 1] {name}: ERROR {type(res).__name__}: {res}")
         else:
-            print(f"    [Phase 1] {name}: done", flush=True)
+            logger.info(f"    [Phase 1] {name}: done")
     return ran_names
 
 
@@ -291,8 +292,8 @@ async def build_algo_portfolio(
     from strategy._common.runner import run_one_sec_type
 
     pf_name = portfolio_name(selection, fault_tolerance=fault_tolerance)
-    print(f"\n[Phase 2] Building portfolio '{pf_name}' "
-          f"(blended backtest over {len(codes)} code(s))...", flush=True)
+    logger.info(f"\n[Phase 2] Building portfolio '{pf_name}' "
+          f"(blended backtest over {len(codes)} code(s))...")
 
     # The collector is in MIXED mode (multiple algos). Its fetch/apply/
     # backtest handle the blend internally. The params dict carries the
@@ -320,7 +321,7 @@ async def build_algo_portfolio(
         dry_run=dry_run,
         t0=t0,
     )
-    print(f"    [Phase 2] portfolio '{pf_name}' backtest complete.", flush=True)
+    logger.info(f"    [Phase 2] portfolio '{pf_name}' backtest complete.")
 
 
 __all__ = [
