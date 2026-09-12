@@ -54,7 +54,7 @@ from _common.log_setup import setup_logging  # noqa: E402
 
 from builds.text import upsert
 from builds.text.keywords import extract_for_articles
-from builds.text.loaders import ALL_SOURCES, load_news
+from builds.text.loaders import ALL_SOURCES, load_news, load_zhihu_comments
 
 logger = setup_logging("text")
 
@@ -162,8 +162,23 @@ async def main() -> None:
         await bulk_upsert_async(conn, upsert.NEWS_TABLE,
                                 upsert.build_news_rows(rows),
                                 ["title", "source", "date"])
-        articles = upsert.map_news_ids(
-            needing, await upsert.fetch_existing_news(conn))
+        post_existing = await upsert.fetch_existing_news(conn)
+        articles = upsert.map_news_ids(needing, post_existing)
+
+        # --- text.news_comments (zhihu only for now) -------------------------
+        # Loader rows are PK-deduped in-batch; fetch_existing_comment_pks +
+        # filter_new_comments drop already-stored PKs before the write, so a
+        # re-run is idempotent and the upsert never conflicts twice.
+        if sources is None or "zhihu" in sources:
+            comment_rows = load_zhihu_comments()
+            news_id_by_key = {
+                key: entry["news_id"] for key, entry in post_existing.items()}
+            comments = upsert.build_comment_rows(comment_rows, news_id_by_key)
+            existing_pks = await upsert.fetch_existing_comment_pks(conn)
+            new_comments = upsert.filter_new_comments(comments, existing_pks)
+            logger.info("    [DB] comments: %d parsed, %d resolved to news, "
+                        "%d new", len(comment_rows), len(comments), len(new_comments))
+            await upsert.insert_comments(conn, new_comments)
 
         # --- 4. text.news_keywords ------------------------------------------
         if args.no_keywords:

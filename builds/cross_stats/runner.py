@@ -9,7 +9,7 @@
      (sec_type, date) index — post-created after the bulk COPY).
      Incremental: detect missing dates (stats.index_identity vs the tiny
      dates map) and early-return when up to date.
-  2. PAIR grain: fetch weights/closes/ETF amounts → build_and_insert
+  2. PAIR grain: fetch weights/closes → build_and_insert
      (chunked COPY; corr OFF — see run_corr_update).
   3. INDUSTRY grain: one INSERT...SELECT (FULL after truncate /
      INCREMENTAL for target dates + catch-up dates where pair rows
@@ -57,14 +57,17 @@ from builds.cross_stats.fetch import (
     fetch_shared_weights,
     fetch_index_closes,
     fetch_index_subject_closes,
-    fetch_etf_amount_by_index,
 )
 from builds.cross_stats.compute import build_and_insert
 from builds.cross_stats.compute._gpu_corr import fetch_corr_grid_dates
-from builds.cross_stats.compute._lookback import LOOKBACK_TRADING_DAYS
 from builds.cross_stats._industry import (
     INDUSTRY_INSERT_SQL_FULL,
     INDUSTRY_INSERT_SQL_INCREMENTAL,
+)
+from builds.cross_stats._pair_offsets import (
+    PAIR_OFFSET_BACKFILL_SQL,
+    PAIR_WEIGHTED_UPDATE_SQL_FULL,
+    PAIR_WEIGHTED_UPDATE_SQL_INCREMENTAL,
 )
 from builds.cross_stats._summary import (
     refresh_code_summary,
@@ -248,10 +251,10 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
             return
 
     # ---- Compute lookback start for incremental mode -----------------
-    # Max corr window + MA5 buffer — the pair grain's heaviest rolling
-    # need. (Industry-grain trading amounts have NO rolling window.)
-    _MA5_BUF: int = 5
-    _LOOKBACK: int = max(CORR_WINDOWS) + _MA5_BUF  # 260 trading days
+    # Max corr window — the pair grain's heaviest rolling need. (The
+    # former +5 MA5 buffer went away with the ETF ratio MA5; industry-
+    # grain trading amounts have NO rolling window.)
+    _LOOKBACK: int = max(CORR_WINDOWS)  # 255 trading days
     start_date: Optional[datetime.date] = None
     if target_dates:
         min_target: datetime.date = min(target_dates)
@@ -299,19 +302,6 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
         logger.info(f"    -> {len(codes_with_comp):,} codes have composition "
               f"data (used to filter subjects)")
 
-        logger.info("    -> fetching total_etf_trading_amount from "
-              "stats.index_exts per (date, tracking_index)...")
-        etf_amount_by_index = await fetch_etf_amount_by_index(
-            conn, start_date=start_date
-        )
-        if not etf_amount_by_index.empty:
-            logger.info(f"    -> {len(etf_amount_by_index):,} rows across "
-                  f"{etf_amount_by_index['index_code'].nunique()} indices "
-                  f"with tracking ETFs")
-        else:
-            logger.info("    -> no ETF->index mapping data; ETF amount columns "
-                  "will be NULL.")
-
         index_subject_closes = await fetch_index_subject_closes(
             conn, start_date=start_date
         )
@@ -322,6 +312,7 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
         ].rename(columns={
             "benchmark_code": "code",
             "benchmark_close": "subject_close",
+            "benchmark_price_change": "code_price_change",
         })
         if not broad_subjects.empty:
             index_subject_closes = pd.concat(
@@ -339,13 +330,28 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
         logger.info("    -> no subjects; skipping pair grain.")
     else:
         logger.info("\n[3/5] PAIR grain: building + COPY "
-              f"({TABLE}, sec_type='index')...")
+                    f"({TABLE}, sec_type='index')...")
         n = await build_and_insert(
             conn, index_subject_closes, index_closes, shared_weights,
-            etf_amount_by_index, sec_type="index",
+            sec_type="index",
             target_dates=target_dates,
         )
         logger.info(f"    -> pair grain total: {n:,} rows")
+
+        # ---- 3b: weighted-offset pass ---------------------------------
+        # The COPY writes code_price_with_benchmark_offset; the amount
+        # weighting needs the stock-turnover fan-out, so it lands via one
+        # date-scoped UPDATE right after the COPY (FULL when force — the
+        # truncated table then re-derives everything).
+        t_w = time.time()
+        if target_dates is None:
+            status = await conn.execute(PAIR_WEIGHTED_UPDATE_SQL_FULL)
+        else:
+            status = await conn.execute(
+                PAIR_WEIGHTED_UPDATE_SQL_INCREMENTAL, sorted(target_dates)
+            )
+        logger.info(f"    -> weighted-offset pass: {status} "
+                    f"({time.time() - t_w:.1f}s)")
 
     # ---- Step 4: INDUSTRY grain ---------------------------------------
     logger.info(f"\n[4/5] INDUSTRY grain: INSERT...SELECT "
@@ -415,6 +421,34 @@ async def run_cross_stats(conn, *, force: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
+#  Offset backfill (--backfill-offsets sub-command)
+# ---------------------------------------------------------------------------
+async def run_offset_backfill(conn) -> None:
+    """Backfill the consolidated offset columns onto EXISTING pair rows.
+
+    One-off for deployments created before the columns existed: the plain
+    offset via per-series LAG closes (rows already carrying a value are
+    untouched — idempotent), then the amount-weighted variant via the
+    shared-turnover fan-out (unbounded). New dates are covered by the
+    regular pipeline (pandas offset + the 3b weighted pass), so this
+    never needs to run twice.
+    """
+    t0 = time.time()
+    logger.info("\n" + "=" * 78)
+    logger.info("  CROSS STATS — OFFSET BACKFILL (pair grain)")
+    logger.info("=" * 78)
+    t1 = time.time()
+    status = await conn.execute(PAIR_OFFSET_BACKFILL_SQL)
+    logger.info(f"    -> plain offset backfill: {status} "
+                f"({time.time() - t1:.0f}s)")
+    t1 = time.time()
+    status = await conn.execute(PAIR_WEIGHTED_UPDATE_SQL_FULL)
+    logger.info(f"    -> weighted-offset backfill: {status} "
+                f"({time.time() - t1:.0f}s)")
+    logger.info(f"\n  offset backfill wall time: {time.time() - t0:.0f}s")
+
+
+# ---------------------------------------------------------------------------
 #  Corr-only build (--corr sub-command)
 # ---------------------------------------------------------------------------
 async def run_corr_update(conn) -> None:
@@ -450,7 +484,6 @@ async def run_corr_update(conn) -> None:
         logger.info("    -> no index data; exiting.")
         return
     shared_weights = await fetch_shared_weights(conn)
-    etf_amount_by_index = await fetch_etf_amount_by_index(conn)
     index_subject_closes = await fetch_index_subject_closes(conn)
 
     # Same recent-data pre-filter as the main run — identical universes
@@ -469,6 +502,7 @@ async def run_corr_update(conn) -> None:
     ].rename(columns={
         "benchmark_code": "code",
         "benchmark_close": "subject_close",
+        "benchmark_price_change": "code_price_change",
     })
     if not broad_subjects.empty:
         index_subject_closes = pd.concat(
@@ -483,7 +517,7 @@ async def run_corr_update(conn) -> None:
 
     n = await build_and_insert(
         conn, index_subject_closes, index_closes, shared_weights,
-        etf_amount_by_index, sec_type="index",
+        sec_type="index",
         target_dates=target_dates, with_corr=True,
     )
     logger.info(f"    -> corr build total: {n:,} rows")

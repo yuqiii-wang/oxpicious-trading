@@ -20,6 +20,8 @@ import {
   getMovAveSpreadChart,
   getMarketHypeEpisodes,
   getForecastTable,
+  getForecastTriggerDates,
+  getForecastIdentity,
   listMovAveSpreadThemes,
   listMovAveSpreadStrategyThemes,
   listPerfAttrCodes,
@@ -54,10 +56,6 @@ import {
   listMarginTrendStrategyThemes,
   getMarginIndustrySeries,
   getMarginTrends,
-  getRecurringCyclesChart,
-  getRecurringCyclesSpectrum,
-  listRecurringCyclesThemes,
-  listRecurringCyclesStrategyThemes,
   getFuturesExt,
 } from "../services/analysis/index.js";
 import {
@@ -104,7 +102,6 @@ function parseExchange(req: Request): string | null {
 /** Analysis mains that support single-security recomputation (--code). */
 const RUNNABLE_ANALYSIS_MODULES = new Set([
   "mov_ave_spread",
-  "recurring_cycles",
   "pe_and_dividends",
 ]);
 
@@ -206,7 +203,7 @@ router.get("/market-hypes", async (req: Request, res: Response) => {
 // ---- Forecast buckets table (Recent Movements page's 2nd plot; migrated
 //      off the MA-Spread panel) ----
 // GET /api/analysis/mov-ave-spread/forecast?sec_type=etf&code=510050&kind=mov_rsi
-//   kind ∈ {mov_rsi, mov_std, mov_gap, px_vol} — returns the code's bucket
+//   kind ∈ {mov_rsi, mov_std, mov_gap, mov_pairs, mov_pairs_ema, px_vol} — returns the code's bucket
 //   rows (bucket config incl. cooldown_days + is_market_hyped + mean_t +
 //   mean_z for px_vol / mean_ratio + mean_z for margin_ratio, read from
 //   forecast_results.config) joined 1:1 with their
@@ -226,6 +223,58 @@ router.get("/mov-ave-spread/forecast", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("[analysis/mov-ave-spread/forecast] error:", err);
     res.status(400).json({ error: String(err) });
+  }
+});
+
+// ---- Forecast bucket trigger dates (Recent Movements row-click) ----
+// GET /api/analysis/mov-ave-spread/forecast-dates?forecast_id=123
+//   One bucket's 4 period rows' trigger_dates DATE[] — the calendar
+//   dates behind each horizon's occurrence_count (the exact days the
+//   row's mean/max/min/P>1% stats were computed over; length ==
+//   occurrence_count, null for pre-rebuild rows). The UI marks them on
+//   the code's trend chart when a forecast table row is clicked.
+router.get("/mov-ave-spread/forecast-dates", async (req: Request, res: Response) => {
+  try {
+    const raw = typeof req.query.forecast_id === "string" ? req.query.forecast_id : "";
+    const forecastId = Number(raw);
+    if (!Number.isInteger(forecastId) || forecastId <= 0) {
+      res.status(400).json({ error: "Invalid or missing 'forecast_id' parameter" });
+      return;
+    }
+    res.json(await getForecastTriggerDates(forecastId));
+  } catch (err) {
+    console.error("[analysis/mov-ave-spread/forecast-dates] error:", err);
+    res.status(400).json({ error: String(err) });
+  }
+});
+
+// ---- Forecast bucket identity (search by forecast_id) ----
+// GET /api/analysis/mov-ave-spread/forecast-identity?forecast_id=123
+//   Resolves a forecast_id against analysis_forecasts.forecast_identities
+//   (the shared-PK registry — sec_type / code / stat_month / bucket
+//   family per forecast bucket, the leading-PK identity every motivation
+//   table repeats, migrated into one searchable table) so the UI can
+//   jump straight to the bucket's security + family + month. 404 when
+//   the id is not registered.
+router.get("/mov-ave-spread/forecast-identity", async (req: Request, res: Response) => {
+  try {
+    const raw = typeof req.query.forecast_id === "string" ? req.query.forecast_id : "";
+    const forecastId = Number(raw);
+    if (!Number.isInteger(forecastId) || forecastId <= 0) {
+      res.status(400).json({ error: "Invalid or missing 'forecast_id' parameter" });
+      return;
+    }
+    const identity = await getForecastIdentity(forecastId);
+    if (identity === null) {
+      res.status(404).json({
+        error: `forecast_id ${forecastId} not found in analysis_forecasts.forecast_identities`,
+      });
+      return;
+    }
+    res.json(identity);
+  } catch (err) {
+    console.error("[analysis/mov-ave-spread/forecast-identity] error:", err);
+    res.status(500).json({ error: String(err) });
   }
 });
 
@@ -828,22 +877,22 @@ router.get("/industry-etf-contribution/etf-bars", async (req: Request, res: Resp
 });
 
 // ---- PE & Dividend Yield (per-(sec_type, code, date) valuation analytics)
-//   analysis.pe_and_dividends          — daily pe_ma20 + dividend_yield
+//   analysis.pe / analysis.dividends   — daily raw pe / trailing-12m dividend_yield (split 2026-09)
 //   analysis.pe_and_dividend_stats     — monthly 5y rolling stats snapshot
 //
-//   Close price and raw PE ratio are NOT stored in analysis.pe_and_dividends
+//   Close price is NOT stored in the analysis tables
 //   (they live in stats); the chart endpoint JOINs stats live at request time.
 //
 //   GET /api/analysis/pe-and-dividend/codes?sec_type=index
 //     Returns PeAndDividendCodesResponse: list of codes with first/last date,
-//     n_dates, and latest pe_ma20 + dividend_yield snapshot.
+//     n_dates, and latest pe + dividend_yield snapshot.
 //   GET /api/analysis/pe-and-dividend/chart?sec_type=index&code=000300
-//     Returns PeAndDividendChartResponse: daily (date, close, pe, pe_ma20,
+//     Returns PeAndDividendChartResponse: daily (date, close, pe,
 //     dividend_yield) rows for one security. Close + pe are read live from
 //     stats so the UI always shows the freshest source values.
 //   GET /api/analysis/pe-and-dividend/themes?sec_type=index
 //     Returns the L1 sector → L2 industry → items tree for SecClassificationNav,
-//     filtered to codes that have rows in analysis.pe_and_dividends.
+//     filtered to codes that have rows in analysis.pe / analysis.dividends.
 //   GET /api/analysis/pe-and-dividend/strategy-themes?sec_type=index
 //     Parallel L1 strategy → L2 theme tree (RIGHT column).
 //   GET /api/analysis/pe-and-dividend/stats?sec_type=index&code=000300
@@ -851,7 +900,7 @@ router.get("/industry-etf-contribution/etf-bars", async (req: Request, res: Resp
 //     snapshots for one code (most recent first). is_active marks the latest.
 //   GET /api/analysis/pe-and-dividend/streaks?sec_type=index&code=000300
 //     Returns PeAndDividendStreaksResponse: band-BREAK excursion streaks of
-//     the code's pe_ma20 / dividend_yield series
+//     the code's pe / dividend_yield series
 //     (analysis.pe_and_dividend_pct_streaks, side derived from the end
 //     month's band), flat for ALL (metric, period, pct_type) combos.
 router.get("/pe-and-dividend/codes", async (req: Request, res: Response) => {
@@ -915,7 +964,7 @@ router.get("/pe-and-dividend/stats", async (req: Request, res: Response) => {
 
 //   GET /api/analysis/pe-and-dividend/streaks?sec_type=index&code=000300
 //     Returns PeAndDividendStreaksResponse: the band-BREAK excursion
-//     streaks of the code's pe_ma20 / dividend_yield series (from
+//     streaks of the code's pe / dividend_yield series (from
 //     analysis.pe_and_dividend_pct_streaks, side derived at query time
 //     from the end month's band), shipped flat for ALL (metric, period,
 //     pct_type) combos — the client filters by its nested selection.
@@ -996,84 +1045,6 @@ router.get("/margin-trends/trends", async (req: Request, res: Response) => {
     res.json(await getMarginTrends(industryId, attribution));
   } catch (err) {
     console.error("[analysis/margin-trends/trends] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-// ---- Recurring Cycles (recurring rise/drop periodicity of close prices)
-//   analysis.recurring_cycles — per-(sec_type, code, last_date, range_days)
-//   recurring rise/drop periodicity: every integer day period d (2..N/2)
-//   audited for RECURRENCE in the time domain (extrema evidence × ACF
-//   coherence, amplitude-gated); headline period_days = argmax of strength
-//   (0 = no recurring period). Currently populated for sec_type='index' only.
-//
-//   The table is 55 GB (per-row spectra arrays) — no page-load query may
-//   scan it. The navigation trees resolve "codes with data" from the
-//   analysis.recurring_cycles_codes registry (maintained by the Python
-//   populator), and every recurring_cycles read below is code-filtered so
-//   the PK index drives it — the UI must pass `code` in the filter.
-//
-//   GET /api/analysis/recurring-cycles/chart?sec_type=index&code=000300
-//     Returns RecurringCyclesChartResponse: per-(last_date, range_days)
-//     period_days + strength rows for one security.
-//   GET /api/analysis/recurring-cycles/themes?sec_type=index
-//     Returns the L1 sector → L2 industry → items tree for SecClassificationNav,
-//     restricted to codes registered in analysis.recurring_cycles_codes.
-//   GET /api/analysis/recurring-cycles/strategy-themes?sec_type=index
-//     Parallel L1 strategy → L2 theme tree (RIGHT column).
-router.get("/recurring-cycles/chart", async (req: Request, res: Response) => {
-  try {
-    const code = parseCode(req);
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    res.json(await getRecurringCyclesChart(code, parseSecType(req)));
-  } catch (err) {
-    console.error("[analysis/recurring-cycles/chart] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-//   GET /api/analysis/recurring-cycles/spectrum?sec_type=index&code=000300&last_date=2026-01-08
-//     Returns RecurringCyclesSpectrumResponse: the per-day recurring
-//     periodicity factors (amplitude / count / strength spectra, day-aligned:
-//     element j = day j+2) for ONE (code, last_date) across ALL range_days
-//     windows. last_date is optional — when omitted, defaults to the latest
-//     available date for that code (so the page has an initial spectrum
-//     before the user clicks a date on the top index price plot). Drives the
-//     per-date bar charts below the top price plot on the Recurring Cycles
-//     page.
-router.get("/recurring-cycles/spectrum", async (req: Request, res: Response) => {
-  try {
-    const code = parseCode(req);
-    if (!code) {
-      res.status(400).json({ error: "Missing 'code' parameter" });
-      return;
-    }
-    const rawDate = typeof req.query.last_date === "string" ? req.query.last_date.trim() : "";
-    const lastDate = rawDate || null;
-    res.json(await getRecurringCyclesSpectrum(code, parseSecType(req), lastDate));
-  } catch (err) {
-    console.error("[analysis/recurring-cycles/spectrum] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-router.get("/recurring-cycles/themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listRecurringCyclesThemes(parseSecType(req), parseExchange(req)));
-  } catch (err) {
-    console.error("[analysis/recurring-cycles/themes] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
-router.get("/recurring-cycles/strategy-themes", async (req: Request, res: Response) => {
-  try {
-    res.json(await listRecurringCyclesStrategyThemes(parseSecType(req), parseExchange(req)));
-  } catch (err) {
-    console.error("[analysis/recurring-cycles/strategy-themes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

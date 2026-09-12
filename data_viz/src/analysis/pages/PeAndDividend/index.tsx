@@ -10,7 +10,7 @@
  *     Each panel renders (top → bottom):
  *       1. Dual-axis time-series chart:
  *            - Left y-axis:  close price
- *            - Right y-axis: PE + pe_ma20 (index-only) + dividend_yield (%)
+ *            - Right y-axis: PE + dividend_yield (%)
  *          Click anywhere on the plot to select that date — the monthly
  *          stats table beneath highlights the row whose month-end contains
  *          the clicked date and scrolls it into view.
@@ -19,7 +19,7 @@
  *          is tagged with a "latest" chip.
  *   • Pagination — PAGE_SIZE codes per page.
  *
- * Backed by analysis.pe_and_dividends + analysis.pe_and_dividend_stats.
+ * Backed by analysis.pe / analysis.dividends + analysis.pe_and_dividend_stats.
  * Close + raw PE are NOT stored — they're JOINed live from stats at request
  * time so the UI always shows the freshest source values.
  */
@@ -142,7 +142,7 @@ export default function PeAndDividendPage() {
       backPath="/analysis/commons"
       backLabel="back to commons"
       subtitle={`${nav.headerLabel} — per-security valuation: close price (left axis) vs
-            PE / PE MA20 + trailing-12m dividend yield (right axis). Click any
+            PE + trailing-12m dividend yield (right axis). Click any
             date on the chart to highlight the matching month-end row in the
             5-year rolling stats table beneath. Index securities show all four
             series; ETF/Stock show close + dividend_yield only (no PE source).`}

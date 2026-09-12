@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS stats.index_tech_stats (
     ema60                     NUMERIC(18,4),
     ema120                    NUMERIC(18,4),
     ema255                    NUMERIC(18,4),
+    trading_amt_per_pct_change NUMERIC(18,6),
 
     CONSTRAINT pk_index_tech_stats PRIMARY KEY (code, date),
     CONSTRAINT fk_index_tech_stats_date_code FOREIGN KEY (code, date) REFERENCES stats.index_identity(code, date)
@@ -118,32 +119,10 @@ CREATE TABLE IF NOT EXISTS stats.index_tech_stats (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'index_tech_stats', 8);
 
--- Idempotent migration: add EMA columns to pre-existing tables.
--- CREATE TABLE IF NOT EXISTS does not add new columns to an existing
--- table, so the ALTER TABLE below is required for production upgrades
--- without a full rebuild. Runs BEFORE the COMMENT statements so the
--- columns exist when the comments are applied.
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'index_tech_stats' AND column_name = 'ema6'
-    ) THEN
-        ALTER TABLE stats.index_tech_stats
-            ADD COLUMN ema6  NUMERIC(18,4),
-            ADD COLUMN ema10 NUMERIC(18,4),
-            ADD COLUMN ema20 NUMERIC(18,4),
-            ADD COLUMN ema60 NUMERIC(18,4);
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'index_tech_stats' AND column_name = 'ema120'
-    ) THEN
-        ALTER TABLE stats.index_tech_stats
-            ADD COLUMN ema120 NUMERIC(18,4),
-            ADD COLUMN ema255 NUMERIC(18,4);
-    END IF;
-END $$;
+-- Idempotent migration: add the intraday net-move liquidity ratio to
+-- pre-existing tables (no-op on fresh installs).
+ALTER TABLE stats.index_tech_stats
+    ADD COLUMN IF NOT EXISTS trading_amt_per_pct_change NUMERIC(18,6);
 
 COMMENT ON TABLE  stats.index_tech_stats                    IS 'Index technical indicators (moving averages + EMAs).';
 COMMENT ON COLUMN stats.index_tech_stats.ma5               IS '5-day moving average of close.';
@@ -158,6 +137,7 @@ COMMENT ON COLUMN stats.index_tech_stats.ema20             IS '20-day exponentia
 COMMENT ON COLUMN stats.index_tech_stats.ema60             IS '60-day exponential moving average of close (span=60, adjust=False).';
 COMMENT ON COLUMN stats.index_tech_stats.ema120            IS '120-day exponential moving average of close (span=120, adjust=False).';
 COMMENT ON COLUMN stats.index_tech_stats.ema255            IS '255-day exponential moving average of close (span=255, adjust=False).';
+COMMENT ON COLUMN stats.index_tech_stats.trading_amt_per_pct_change IS 'Intraday net-move liquidity ratio: trading_amount / (close - open), SIGNED — positive on up days, negative on down days (the sign carries the move direction). All inputs from stats.index_basic_stats (trading_amount in yuan; open/close in index points). Zero move (close = open — flat day): denominator floored to 1.0, so the stored value equals the raw trading amount (mov_ave_spread zero-denominator convention — a pragmatic floor, NOT a true ratio). NULL when any input is NULL or |value| >= 1e12 (NUMERIC(18,6) bound). Reciprocal-Amihud liquidity gauge: HIGH = deep book (much capital absorbed per unit of move), LOW = thin market (little capital moved the price a lot). Computed by builds.index.baseline.';
 
 -- ----------------------------------------------------------------------------
 -- Table: index_intraday_5min

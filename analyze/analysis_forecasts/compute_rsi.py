@@ -14,20 +14,25 @@ grid and each RSI window W:
      Codes whose own history does not span the full window (first data
      date > window start) are gated out — no partial-window stats.
   4. The (side, pct) configs are stacked into ONE (T, C, K) bucket mask
-     tensor (K = len(RSI_SIDES)·len(pcts), side-major). Cooldown
-     suppression runs ONCE per cooldown value on the flattened (T, C·K)
-     stack (columns are config-independent), then the mask is SPARSIFIED
-     with a single np.nonzero: every downstream reduction (cooldown
-     counts, market-hype split, per-horizon mean / high / low n-day
-     forward change and P(reverse beyond the code's adaptive
-     reverse_threshold) via wide.aggregate_horizons_sparse)
-     works on the trigger-cell lists — bincount/reduceat passes scaling
-     with the trigger count instead of dense T·C·K tensors, and the row
-     payload is expanded by wide.build_result_rows (vectorized rounding).
-     No per-config / per-code Python loops. Per (code, horizon) the
-     reversal probability is computed against the code's ADAPTIVE
-     reverse threshold (wide.reverse_thresholds: k·σ of the code's
-     window forward changes in "std" mode, fixed-bar fallback).
+     tensor (K = len(RSI_SIDES)·len(pcts), side-major). The UNIFIED
+     bucket-signal pipeline (wide.iter_bucket_subsets) then runs the
+     whole shared span ONCE for the stack: STREAK-MERGE (consecutive
+     qualifying days collapse into ONE signal at the run's MID row —
+     the high_low_streaks mean-mid anchor; the legacy fixed-5-day
+     cooldown was removed 2026-09), sparsification with a single
+     np.nonzero, live-gated per-config streak counts and the (side,
+     hype) subset splits as group-ascending trigger-cell lists — every
+     downstream reduction (streak counts, market-hype split,
+     per-horizon mean / high / low n-day forward change and
+     P(reverse beyond the code's adaptive reverse_threshold) via
+     wide.aggregate_horizons_sparse) works on those lists — bincount/
+     reduceat passes scaling with the trigger count instead of dense
+     T·C·K tensors, and the row payload is expanded by
+     wide.build_result_rows (vectorized rounding). No per-config /
+     per-code Python loops. Per (code, horizon) the reversal
+     probability is computed against the code's ADAPTIVE reverse
+     threshold (wide.reverse_thresholds: k·σ of the code's window
+     forward changes in "std" mode, fixed-bar fallback).
 
 Yields (stat_month, rows) so __main__ can split each row into the
 mov_rsi motivation dicts and the forecast_results result dicts and write
@@ -41,8 +46,9 @@ from typing import Iterator
 import numpy as np
 
 from analyze.analysis_forecasts.config import (
-    COOLDOWN_DAYS,
     FORWARD_HORIZONS,
+    MM_HORIZONS,
+    LOOKBACK_PERIOD,
     RSI_PCTS,
     RSI_SIDES,
     RSI_WINDOWS,
@@ -50,8 +56,8 @@ from analyze.analysis_forecasts.config import (
 from analyze.analysis_forecasts.wide import (
     MonthWindow,
     aggregate_horizons_sparse,
-    apply_cooldown,
     build_result_rows,
+    iter_bucket_subsets,
     reverse_thresholds,
     window_sigmas,
 )
@@ -88,6 +94,7 @@ def compute_rsi_results(
     first_ord: np.ndarray,
     rsi_windows: tuple = RSI_WINDOWS,
     pcts: tuple = RSI_PCTS,
+    grid_ord: np.ndarray | None = None,
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, bucket rows) per stat month.
 
@@ -108,6 +115,10 @@ def compute_rsi_results(
               strictly precedes the window start — first data month +
               60 months = first snapshot (first listed 2020-01 →
               first snapshot 2025-01).
+        grid_ord: optional (T,) int64 day ordinals of the FULL grid
+              (build_grid) — sliced per window into aggregate_horizons_
+              sparse's win_ord so each emitted row carries its
+              trigger_dates (the calendar dates behind occurrence_count).
     """
     C = len(codes)
     col = np.arange(C)
@@ -135,6 +146,10 @@ def compute_rsi_results(
 
         FINs = {n: chg[f"FIN_{n}"][lo:hi] for n in FORWARD_HORIZONS}
         NC0s = {n: chg[f"NC0_{n}"][lo:hi] for n in FORWARD_HORIZONS}
+        # Window-sliced PATH-extreme matrices (FMAX0/FMIN0) — the
+        # swing-aware reversal event + max_low_change_ratio inputs.
+        PATH0s = {n: (chg[f"FMAX0_{n}"][lo:hi], chg[f"FMIN0_{n}"][lo:hi])
+                  for n in MM_HORIZONS}
         # Per-(code, horizon) reversal bar for this window (adaptive
         # k·σ of the code's window forward changes; fixed fallback).
         thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
@@ -154,106 +169,61 @@ def compute_rsi_results(
 
             # Bucket masks for ALL (side, pct) configs in one broadcast
             # compare (NaN V / NaN τ compare False → invalid days never
-            # enter a bucket).
+            # enter a bucket), plus the per-config signed TRIGGER
+            # EXCESS tensor (value − qualifying bar: V − τ_top for the
+            # top-side pcts, V − τ_bottom for the bottom-side — the
+            # forecast_results.trigger_excess source; NaN cells compare
+            # False in the mask, so excess is only gathered where the
+            # bar was actually breached).
             with np.errstate(invalid="ignore"):
                 V3 = V[:, :, None]
                 mask_raw = np.concatenate(
                     [V3 >= thr[:, :P][None], V3 <= thr[:, P:][None]],
                     axis=2,
                 )  # (T, C, K)
+                excess3 = np.concatenate(
+                    [V3 - thr[:, :P][None], V3 - thr[:, P:][None]],
+                    axis=2,
+                )  # (T, C, K)
 
-            # Cooldown suppression (PK member cooldown_days):
-            # after an accepted trigger day the next cooldown_days grid
-            # trading days cannot join the bucket (fixed skip — triggers
-            # inside the window do not restart it). cd == 0 is the
-            # identity. One call for the whole (T, C·K) stack — columns
-            # are config-independent.
-            T = mask_raw.shape[0]
-            for cd in COOLDOWN_DAYS:
-                mask3 = (
-                    mask_raw if cd == 0
-                    else apply_cooldown(
-                        mask_raw.reshape(T, -1), cd
-                    ).reshape(mask_raw.shape)
+            # Streak-merge + side/hype subsets via the UNIFIED bucket
+            # pipeline (wide.iter_bucket_subsets): consecutive
+            # qualifying grid rows collapse into ONE signal at the run's
+            # MID row (the high_low_streaks mean-mid anchor), run
+            # lengths ride along per kept cell for the bucket's
+            # streak_signal_days mean, and the (side, hype) subsets
+            # come back as group-ascending sparse cell lists.
+            for (side, hyped, kk, ii, st, sc, fk, L_int, exc, mean_streak
+                 ) in iter_bucket_subsets(mask_raw, HY, live2, C, RSI_SIDES,
+                                          excess3=excess3):
+                agg = aggregate_horizons_sparse(
+                    st, sc, fk, C, P, side, NC0s, FINs, thr_n,
+                    path0s=PATH0s,
+                    win_ord=None if grid_ord is None
+                    else grid_ord[lo:hi],
+                    lens=L_int,
+                    vals=exc,
                 )
-                # Sparsify ONCE per cooldown value: every downstream
-                # reduction works on the trigger-cell lists.
-                nz_t, nz_c, nz_k = np.nonzero(mask3)
-                if nz_t.size == 0:
-                    continue
-                nz_t = nz_t.astype(np.int32)
-                nz_c = nz_c.astype(np.int32)
-                nz_k = nz_k.astype(np.int32)
-                # Post-cooldown per-config trigger counts, live-gated
-                # (not-yet-live codes never emit).
-                count = np.bincount(
-                    nz_c * K + nz_k, minlength=C * K
-                ).reshape(C, K) * live2
-                if not (count > 0).any():
-                    continue
-                hy_cells = HY[nz_t, nz_c]
-
-                for si, side in enumerate(RSI_SIDES):
-                    sl = slice(si * P, (si + 1) * P)
-                    cnt_s = count[:, sl]
-                    if not (cnt_s > 0).any():
-                        continue
-                    in_side = (nz_k >= si * P) & (nz_k < (si + 1) * P)
-                    if not in_side.any():
-                        continue
-                    t_s = nz_t[in_side]
-                    c_s = nz_c[in_side]
-                    k_s = nz_k[in_side] - si * P
-                    flat_s = c_s * P + k_s
-                    hy_s = hy_cells[in_side]
-
-                    # Hype split of the bucket (PK member).
-                    # Aggregates are per subset — max/high/low are
-                    # non-additive, so the non-hyped subset cannot
-                    # be derived from the full bucket minus the
-                    # hyped one. Each subset is a cell-list filter.
-                    for hyped in (False, True):
-                        sel = hy_s if hyped else ~hy_s
-                        if not sel.any():
-                            continue
-                        st = t_s[sel]
-                        sc = c_s[sel]
-                        fk = flat_s[sel]
-                        # Group-ascending cell order — one stable sort
-                        # shared by the subset count and every horizon's
-                        # bincount / reduceat reductions.
-                        order = np.argsort(fk, kind="stable")
-                        st = st[order]
-                        sc = sc[order]
-                        fk = fk[order]
-                        emit = (
-                            np.bincount(fk, minlength=C * P).reshape(C, P)
-                            > 0
-                        ) & (cnt_s > 0)
-                        if not emit.any():
-                            continue
-
-                        agg = aggregate_horizons_sparse(
-                            st, sc, fk, C, P, side, NC0s, FINs, thr_n
-                        )
-                        kk, ii = np.nonzero(emit.T)
-                        base: list[dict] = [
-                            {
-                                "sec_type": sec_type,
-                                "code": codes[i],
-                                "stat_month": mw.stat_month,
-                                "rsi_window": w,
-                                "side": side,
-                                "pct": pcts[k],
-                                "cooldown_days": cd,
-                                "is_market_hyped": hyped,
-                                # config JSONB: no extra motivation data
-                                # for RSI buckets (NULL = empty config)
-                                "config": None,
-                            }
-                            for k, i in zip(kk.tolist(), ii.tolist())
-                        ]
-                        rows.extend(build_result_rows(agg, kk, ii, base, thr_n))
+                base: list[dict] = [
+                    {
+                        "sec_type": sec_type,
+                        "code": codes[i],
+                        "stat_month": mw.stat_month,
+                        "rsi_window": w,
+                        "side": side,
+                        "pct": pcts[k],
+                        "is_market_hyped": hyped,
+                        "lookback_period": LOOKBACK_PERIOD,
+                        "streak_signal_days": round(
+                            float(mean_streak[row_n]), 2),
+                        # config JSONB: no extra motivation data
+                        # for RSI buckets (NULL = empty config)
+                        "config": None,
+                    }
+                    for row_n, (k, i) in enumerate(
+                        zip(kk.tolist(), ii.tolist()))
+                ]
+                rows.extend(build_result_rows(agg, kk, ii, base, thr_n))
 
         if rows:
             yield mw.stat_month, rows

@@ -14,9 +14,10 @@ Per sec_type (index / etf / stock):
      - etf: close (etf_basic_stats) + implied_dividend_per_share
        (etf_adjustment).
      - stock: close (stock_basic_stats) + dividends (stock_dividends).
-  3. Compute pe_ma20 (index-only) and dividend_yield (trailing-12m D/P)
-     on FULL history (trailing-12m DPS + 5y rolling windows need it).
-  4. Write daily rows to analysis.pe_and_dividends:
+  3. Compute pe (raw, invalid values masked) and dividend_yield
+     (trailing-12m D/P) on FULL history (trailing-12m DPS + 5y rolling
+     windows need it).
+  4. Write daily rows to analysis.pe + analysis.dividends (2026-09 split):
      - ``--force``: DELETE sec_type rows + COPY-insert.
      - default: upsert ONLY rows whose date is in the missing-dates set.
   5. Compute monthly 5y rolling stats. Write to
@@ -26,25 +27,25 @@ Per sec_type (index / etf / stock):
        + recompute (is_active flag + 5y rolling windows require full
        recompute when a new month appears). If no missing month-end
        dates, skip stats entirely.
-  6. Compute monthly trailing percentile BANDS of pe_ma20 /
-     dividend_yield (analysis.pe_and_dividend_pct — internal step
-     pct_bands.py): ``--force`` / ``--code`` DELETE the scope + rebuild;
-     incremental computes only missing (code, month, metric) triples
-     (trailing windows make completed months immutable).
-  7. Compute band-BREAK excursion streaks of pe_ma20 / dividend_yield
-     against those bands (analysis.pe_and_dividend_pct_streaks —
-     internal step pct_streaks.py): episodes shift with new data, so the
-     scope is rebuilt WHOLESALE per sec_type (per code in --code mode)
-     on every run that processes it.
+  6. Compute monthly trailing percentile BANDS of pe / dividend_yield
+     (analysis.pe_and_dividend_pct — internal step pct_bands.py):
+     ``--force`` / ``--code`` DELETE the scope + rebuild; incremental
+     computes only missing (code, month, metric) triples (trailing
+     windows make completed months immutable).
+  7. Compute band-BREAK excursion streaks of pe / dividend_yield against
+     those bands (analysis.pe_and_dividend_pct_streaks — internal step
+     pct_streaks.py): episodes shift with new data, so the scope is
+     rebuilt WHOLESALE per sec_type (per code in --code mode) on every
+     run that processes it.
   8. Upsert analysis_identity.
 
 Incremental mode rationale
-  The pe_ma20 and dividend_yield for past dates don't change
-  retroactively (PE and dividends are historical facts), so existing
-  rows are valid. New dates get appended via upsert. The monthly stats
-  table has an is_active flag that flips when a new month-end appears,
-  so stats is recomputed per sec_type only when new month-end dates are
-  detected (otherwise skipped).
+  The pe and dividend_yield for past dates don't change retroactively
+  (PE and dividends are historical facts), so existing rows are valid.
+  New dates get appended via upsert. The monthly stats table has an
+  is_active flag that flips when a new month-end appears, so stats is
+  recomputed per sec_type only when new month-end dates are detected
+  (otherwise skipped).
 """
 from __future__ import annotations
 
@@ -91,10 +92,13 @@ from analyze._common.sanitize import sanitize_for_db_insert  # noqa: E402
 from _common.df_utils.sanitize import safe_columns  # noqa: E402
 from analyze._common import upsert_analysis_identity  # noqa: E402
 from analyze.pe_and_dividends.config import (  # noqa: E402
-    ANALYSIS_NAME,
-    DETAIL_TABLE,
+    ANALYSIS_NAME_PE,
+    ANALYSIS_NAME_DIVIDENDS,
+    PE_TABLE,
+    DIVIDENDS_TABLE,
     STATS_TABLE,
-    DESCRIPTION,
+    DESCRIPTION_PE,
+    DESCRIPTION_DIVIDENDS,
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
 )
@@ -109,7 +113,7 @@ from analyze.pe_and_dividends.fetch import (  # noqa: E402
     fetch_trading_dates,
 )
 from analyze.pe_and_dividends.compute import (  # noqa: E402
-    compute_pe_ma20,
+    clean_pe,
     compute_trailing_12m_dps,
     compute_index_dividend_yield,
     compute_simple_dividend_yield,
@@ -137,24 +141,26 @@ def _normalize_stock_codes(df, col: str) -> None:
 
 
 def _detail_db_rows(detail_df: pd.DataFrame) -> list[dict]:
-    """Materialize the detail frame for asyncpg: the frame keeps its
-    datetime64 ``date`` column until sanitize extracts it host-side
+    """Materialize the combined detail frame for asyncpg: the frame keeps
+    its datetime64 ``date`` column until sanitize extracts it host-side
     (``date_cols=["date"]`` → python date objects) so cuDF never sees an
     object-date column (pre-converting poisoned every subsequent frame op
     with MixedTypeError fallbacks). NaN/inf → NULL sanitize. The
     datetime64 ``detail_df`` itself stays untouched so the monthly-stats
-    compute can reuse it."""
+    compute can reuse it. The WRITER splits each row into its metric's
+    table (analysis.pe / analysis.dividends)."""
     return sanitize_for_db_insert(
         detail_df,
-        numeric_cols=["pe_ma20", "dividend_yield"],
+        numeric_cols=["pe", "dividend_yield"],
         round_to=6,
         date_cols=["date"],
     )
 
 
 async def _process_index(
-    conn, pool, *, force: bool, target_dates_detail: set | None,
-    target_dates_stats: set | None, code: str | None = None,
+    conn, pool, *, force: bool, target_dates_pe: set | None,
+    target_dates_dy: set | None, target_dates_stats: set | None,
+    code: str | None = None,
 ) -> int:
     """Process sec_type='index' end-to-end.
 
@@ -217,10 +223,10 @@ async def _process_index(
     stock_close_df = await fetch_constituent_closes(conn, constituent_codes)
     logger.info(f"  [{st}]   {len(stock_close_df):,} (code, date) constituent close rows")
 
-    # ---- Compute pe_ma20 -------------------------------------------------
-    logger.info(f"  [{st}] Computing pe_ma20 (rolling {20}-day MA of PE per code)...")
-    pe_ma20 = compute_pe_ma20(close_df)
-    logger.info(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values")
+    # ---- Compute pe --------------------------------------------------------
+    logger.info(f"  [{st}] Cleaning pe (masking invalid <= 0 / NULL values)...")
+    pe = clean_pe(close_df)
+    logger.info(f"  [{st}]   {pe.notna().sum():,} non-null pe values")
 
     # ---- Compute dividend_yield ------------------------------------------
     logger.info(f"  [{st}] Computing trailing-12m DPS per constituent stock...")
@@ -234,12 +240,13 @@ async def _process_index(
 
     # ---- Build + insert detail rows --------------------------------------
     logger.info(f"  [{st}] Building detail rows...")
-    detail_df = build_detail_rows(close_df, pe_ma20, dy_df, st)
+    detail_df = build_detail_rows(close_df, pe, dy_df, st)
     logger.info(f"  [{st}]   {len(detail_df):,} detail rows")
 
     n_detail = await _write_detail(
         conn, st, _detail_db_rows(detail_df), force=force,
-        target_dates=target_dates_detail,
+        target_dates_pe=target_dates_pe,
+        target_dates_dy=target_dates_dy,
     )
 
     # ---- Compute + insert monthly stats ----------------------------------
@@ -274,8 +281,9 @@ async def _process_index(
 
 
 async def _process_etf(
-    conn, pool, *, force: bool, target_dates_detail: set | None,
-    target_dates_stats: set | None, code: str | None = None,
+    conn, pool, *, force: bool, target_dates_pe: set | None,
+    target_dates_dy: set | None, target_dates_stats: set | None,
+    code: str | None = None,
 ) -> int:
     """Process sec_type='etf' end-to-end.
 
@@ -317,21 +325,22 @@ async def _process_etf(
 
     close_df = etf_df[["code", "date", "close", "pe"]].copy()
 
-    # Compute pe_ma20 (ETF PE is pre-computed by builds.etf via harmonic weighting)
+    # Compute pe (ETF PE is pre-computed by builds.etf via harmonic weighting)
     pe_df = close_df[["code", "date", "pe"]].copy()
-    pe_ma20 = compute_pe_ma20(close_df)
-    logger.info(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values")
+    pe = clean_pe(close_df)
+    logger.info(f"  [{st}]   {pe.notna().sum():,} non-null pe values")
 
     # Compute dividend_yield
     dy_df = compute_simple_dividend_yield(close_df, div_events)
 
     # Build + insert detail rows
-    detail_df = build_detail_rows(close_df, pe_ma20, dy_df, st)
+    detail_df = build_detail_rows(close_df, pe, dy_df, st)
     logger.info(f"  [{st}]   {len(detail_df):,} detail rows")
 
     n_detail = await _write_detail(
         conn, st, _detail_db_rows(detail_df), force=force,
-        target_dates=target_dates_detail,
+        target_dates_pe=target_dates_pe,
+        target_dates_dy=target_dates_dy,
     )
 
     # Monthly stats
@@ -356,8 +365,9 @@ async def _process_etf(
 
 
 async def _process_stock(
-    conn, pool, *, force: bool, target_dates_detail: set | None,
-    target_dates_stats: set | None, code: str | None = None,
+    conn, pool, *, force: bool, target_dates_pe: set | None,
+    target_dates_dy: set | None, target_dates_stats: set | None,
+    code: str | None = None,
 ) -> int:
     """Process sec_type='stock' end-to-end.
 
@@ -391,7 +401,7 @@ async def _process_stock(
     # NOTE: Do NOT strip exchange suffixes for stocks.
     # stats.stock_basic_stats.code and stats.stock_dividends.code are BOTH
     # suffixed (e.g. "600000.SS") and already match each other directly.
-    # Stripping would make analysis.pe_and_dividends.code (stock) BARE,
+    # Stripping would make analysis.pe / analysis.dividends code (stock) BARE,
     # breaking JOINs with stats.stock_basic_stats (chart SQL),
     # stats.stock_identity (codes SQL latest_name), and
     # stats.sec_classification (META_SQL) — all of which are suffixed.
@@ -400,21 +410,22 @@ async def _process_stock(
     trading_dates = await fetch_trading_dates(conn, st)
     logger.info(f"  [{st}]   {len(trading_dates):,} trading dates")
 
-    # Compute pe_ma20 (stock PE from stock_basic_stats.pe)
+    # Compute pe (stock PE from stock_basic_stats.pe)
     pe_df = close_df[["code", "date", "pe"]].copy()
-    pe_ma20 = compute_pe_ma20(close_df)
-    logger.info(f"  [{st}]   {pe_ma20.notna().sum():,} non-null pe_ma20 values")
+    pe = clean_pe(close_df)
+    logger.info(f"  [{st}]   {pe.notna().sum():,} non-null pe values")
 
     # Compute dividend_yield
     dy_df = compute_simple_dividend_yield(close_df, div_df)
 
     # Build + insert detail rows
-    detail_df = build_detail_rows(close_df, pe_ma20, dy_df, st)
+    detail_df = build_detail_rows(close_df, pe, dy_df, st)
     logger.info(f"  [{st}]   {len(detail_df):,} detail rows")
 
     n_detail = await _write_detail(
         conn, st, _detail_db_rows(detail_df), force=force,
-        target_dates=target_dates_detail,
+        target_dates_pe=target_dates_pe,
+        target_dates_dy=target_dates_dy,
     )
 
     # Monthly stats
@@ -449,60 +460,101 @@ _PROCESSORS = {
 #  Shared write helpers (force = DELETE + COPY; incremental = filter + upsert)
 # ---------------------------------------------------------------------------
 
-async def _write_detail(
-    conn, sec_type: str, detail_rows: list[dict], *,
+async def _write_metric_table(
+    conn, sec_type: str, rows: list[dict], *, table: str,
     force: bool, target_dates: set | None,
 ) -> int:
-    """Write detail rows to analysis.pe_and_dividends.
+    """Write one metric's rows (already projected to the table's
+    [sec_type, code, date, value] shape) to ``table``.
 
     - force: DELETE sec_type rows + COPY-insert.
     - incremental: filter to target_dates rows + upsert on
       (sec_type, code, date). Skipped entirely when target_dates is empty.
     """
-    if not detail_rows:
-        logger.info(f"  [{sec_type}]   no detail rows to write")
+    if not rows:
+        logger.info(f"  [{sec_type}]   no rows to write to {table}")
         return 0
 
     if force:
         logger.info(f"  [{sec_type}] Deleting existing {sec_type} rows from "
-              f"{DETAIL_TABLE}...")
+              f"{table}...")
         await conn.execute(
-            f"DELETE FROM {DETAIL_TABLE} WHERE sec_type = $1", sec_type
+            f"DELETE FROM {table} WHERE sec_type = $1", sec_type
         )
-        logger.info(f"  [{sec_type}] Inserting {len(detail_rows):,} detail rows "
+        logger.info(f"  [{sec_type}] Inserting {len(rows):,} rows to {table} "
               f"(COPY)...")
-        n = await copy_insert_async(conn, DETAIL_TABLE, detail_rows)
-        logger.info(f"  [{sec_type}]   inserted {n:,} detail rows")
+        n = await copy_insert_async(conn, table, rows)
+        logger.info(f"  [{sec_type}]   inserted {n:,} rows")
         return n
 
     # Incremental: filter to missing dates only.
     if target_dates is None:
-        rows_to_write = detail_rows
+        rows_to_write = rows
     else:
         if len(target_dates) == 0:
-            logger.info(f"  [{sec_type}]   detail up to date; skipping insert.")
+            logger.info(f"  [{sec_type}]   {table} up to date; skipping insert.")
             return 0
         rows_to_write = [
-            r for r in detail_rows if r["date"] in target_dates
+            r for r in rows if r["date"] in target_dates
         ]
         logger.info(f"  [{sec_type}] Incremental filter: {len(rows_to_write):,} of "
-              f"{len(detail_rows):,} detail rows are in target_dates")
+              f"{len(rows):,} rows are in target_dates")
 
     if not rows_to_write:
-        logger.info(f"  [{sec_type}]   no new detail rows to upsert")
+        logger.info(f"  [{sec_type}]   no new rows to upsert into {table}")
         return 0
 
-    logger.info(f"  [{sec_type}] Upserting {len(rows_to_write):,} detail rows...")
+    logger.info(f"  [{sec_type}] Upserting {len(rows_to_write):,} rows into "
+          f"{table}...")
     n_copied, n_upserted = await copy_or_upsert_split_async(
-        conn, DETAIL_TABLE, rows_to_write,
+        conn, table, rows_to_write,
         key_columns=["sec_type", "code", "date"],
     )
     n = n_copied + n_upserted
     via = "COPY" if n_copied > 0 and n_upserted == 0 else \
           f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
           "upsert"
-    logger.info(f"  [{sec_type}]   inserted {n:,} detail rows via {via}")
+    logger.info(f"  [{sec_type}]   inserted {n:,} rows via {via}")
     return n
+
+
+async def _write_detail(
+    conn, sec_type: str, detail_rows: list[dict], *,
+    force: bool, target_dates_pe: set | None,
+    target_dates_dy: set | None,
+) -> int:
+    """Split the combined detail rows per metric and write the TWO tables
+    (2026-09 split of analysis.pe_and_dividends):
+
+      analysis.pe         — rows with a defined pe (dicts projected to
+                            [sec_type, code, date, pe]);
+      analysis.dividends  — rows with a defined dividend_yield.
+
+    Each side carries its own missing-date set (a date can be missing for
+    one metric and present for the other — e.g. a newly-listed payer
+    with no PE source yet), and both share the force / incremental
+    contract of the former single-table writer (see _write_metric_table).
+    Returns the TOTAL rows written across both tables.
+    """
+    pe_rows = [
+        {"sec_type": r["sec_type"], "code": r["code"], "date": r["date"],
+         "pe": r["pe"]}
+        for r in detail_rows if r.get("pe") is not None
+    ]
+    dy_rows = [
+        {"sec_type": r["sec_type"], "code": r["code"], "date": r["date"],
+         "dividend_yield": r["dividend_yield"]}
+        for r in detail_rows if r.get("dividend_yield") is not None
+    ]
+    n_pe = await _write_metric_table(
+        conn, sec_type, pe_rows, table=PE_TABLE,
+        force=force, target_dates=target_dates_pe,
+    )
+    n_dy = await _write_metric_table(
+        conn, sec_type, dy_rows, table=DIVIDENDS_TABLE,
+        force=force, target_dates=target_dates_dy,
+    )
+    return n_pe + n_dy
 
 
 async def _write_stats(
@@ -551,57 +603,69 @@ async def _write_stats(
 async def _detect_missing_dates(
     conn, sec_types: list[str], force: bool,
 ) -> tuple[dict[str, set], dict[str, set]]:
-    """Detect missing dates per sec_type for the detail and stats tables.
+    """Detect missing dates per sec_type for the two metric tables and
+    the stats table.
 
-    Returns (target_dates_detail, target_dates_stats):
-      - target_dates_detail[st]: dates present in the identity table but
-        NOT in analysis.pe_and_dividends for that sec_type.
+    Returns (target_dates_pe, target_dates_dy, target_dates_stats):
+      - target_dates_pe[st]: dates present in the identity table but NOT
+        in analysis.pe for that sec_type.
+      - target_dates_dy[st]: dates present in the identity table but NOT
+        in analysis.dividends for that sec_type.
       - target_dates_stats[st]: MONTH-END trading dates present in the
         identity table but NOT in analysis.pe_and_dividend_stats for that
         sec_type. Used to gate the stats recompute (is_active flips when a
         new month-end appears).
 
-    In force mode both dicts map to None (meaning "all dates").
+    In force mode all dicts map to None (meaning "all dates").
     """
     if force:
         return (
             {st: None for st in sec_types},
             {st: None for st in sec_types},
+            {st: None for st in sec_types},
         )
 
-    target_dates_detail: dict[str, set] = {}
+    target_dates_pe: dict[str, set] = {}
+    target_dates_dy: dict[str, set] = {}
     target_dates_stats: dict[str, set] = {}
     for st in sec_types:
         identity_table = SEC_TYPE_IDENTITY_TABLE[st]
 
-        # ---- Detail table: missing dates ----
-        missing_detail = await find_missing_analysis_dates(
-            conn, DETAIL_TABLE, [identity_table], sec_type=st,
+        # ---- PE table: missing dates ----
+        missing_pe = await find_missing_analysis_dates(
+            conn, PE_TABLE, [identity_table], sec_type=st,
+        )
+        target_dates_pe[st] = set(missing_pe)
+        logger.info(f"    -> pe[{st}]: {len(missing_pe)} missing dates")
+
+        # ---- Dividends table: missing dates ----
+        missing_dy = await find_missing_analysis_dates(
+            conn, DIVIDENDS_TABLE, [identity_table], sec_type=st,
         )
 
         # ---- Self-heal: exact-zero dividend_yield rows are invalid ----
         # The current formula yields strictly positive values (dps > 0
-        # gate) or NULL — a stored 0.0 means the row was written by an
-        # OLDER compute (which emitted 0 instead of NULL when the
+        # gate) — a stored 0.0 means the row was written by an OLDER
+        # compute (which emitted 0 instead of skipping when the
         # trailing-12m dividend sum was empty) and incremental upserts
         # never refreshed it. Those fake 0% stretches make the first real
         # dividend look like an infinite spike. Flag their dates as
         # missing so the upsert overwrites them with the recomputed
         # values.
         zero_dates = await conn.fetch(
-            f"SELECT DISTINCT date FROM {DETAIL_TABLE} "
+            f"SELECT DISTINCT date FROM {DIVIDENDS_TABLE} "
             f"WHERE sec_type = $1 AND dividend_yield = 0",
             st,
         )
         n_zero = len(zero_dates)
         if n_zero:
-            missing_detail = set(missing_detail) | {r["date"] for r in zero_dates}
-            logger.info(f"    -> detail[{st}]: {n_zero} dates carry invalid "
+            missing_dy = set(missing_dy) | {r["date"] for r in zero_dates}
+            logger.info(f"    -> dividends[{st}]: {n_zero} dates carry invalid "
                   f"dividend_yield = 0 rows (stale legacy values); "
                   f"re-upserting them")
 
-        target_dates_detail[st] = missing_detail
-        logger.info(f"    -> detail[{st}]: {len(missing_detail)} missing dates")
+        target_dates_dy[st] = set(missing_dy)
+        logger.info(f"    -> dividends[{st}]: {len(missing_dy)} missing dates")
 
         # ---- Stats table: missing MONTH-END dates ----
         # The stats table only has month-end rows, so we need to compare
@@ -627,7 +691,7 @@ async def _detect_missing_dates(
         logger.info(f"    -> stats[{st}]: {len(missing_stats)} missing month-end "
               f"dates")
 
-    return target_dates_detail, target_dates_stats
+    return target_dates_pe, target_dates_dy, target_dates_stats
 
 
 async def main() -> None:
@@ -659,7 +723,8 @@ async def main() -> None:
     t0 = time.time()
     print_build_header(
         "ANALYZE PE & DIVIDENDS (ETF + INDEX + STOCK)",
-        detail_table=DETAIL_TABLE,
+        pe_table=PE_TABLE,
+        div_table=DIVIDENDS_TABLE,
         stats_table=STATS_TABLE,
         sec_types=", ".join(sec_types),
         mode=(
@@ -685,7 +750,8 @@ async def main() -> None:
                 total += await processor(
                     conn, pool,
                     force=False,
-                    target_dates_detail=None,
+                    target_dates_pe=None,
+                    target_dates_dy=None,
                     target_dates_stats=None,
                     code=args.code,
                 )
@@ -693,9 +759,15 @@ async def main() -> None:
             logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
             await upsert_analysis_identity(
                 conn,
-                name=ANALYSIS_NAME,
-                detail_name="pe_and_dividends",
-                description=DESCRIPTION,
+                name=ANALYSIS_NAME_PE,
+                detail_name="pe",
+                description=DESCRIPTION_PE,
+            )
+            await upsert_analysis_identity(
+                conn,
+                name=ANALYSIS_NAME_DIVIDENDS,
+                detail_name="dividends",
+                description=DESCRIPTION_DIVIDENDS,
             )
 
             logger.info(f"\n  TOTAL: {total:,} detail rows inserted")
@@ -705,14 +777,15 @@ async def main() -> None:
         # ---- Detect missing dates (incremental mode) --------------------
         if not force:
             logger.info("\n  Detecting missing dates per sec_type (incremental mode)...")
-        target_dates_detail, target_dates_stats = await _detect_missing_dates(
-            conn, list(sec_types), force,
+        target_dates_pe, target_dates_dy, target_dates_stats = (
+            await _detect_missing_dates(conn, list(sec_types), force)
         )
 
         # Early exit if everything is up to date (incremental mode only).
         if not force:
             total_missing = (
-                sum(len(s) for s in target_dates_detail.values())
+                sum(len(s) for s in target_dates_pe.values())
+                + sum(len(s) for s in target_dates_dy.values())
                 + sum(len(s) for s in target_dates_stats.values())
             )
             if total_missing == 0:
@@ -722,11 +795,13 @@ async def main() -> None:
 
         total = 0
         for st in sec_types:
-            td_detail = target_dates_detail.get(st)
+            td_pe = target_dates_pe.get(st)
+            td_dy = target_dates_dy.get(st)
             td_stats = target_dates_stats.get(st)
-            # Skip sec_type entirely if both detail and stats are up to date.
+            # Skip sec_type entirely if all three targets are up to date.
             if (not force
-                    and td_detail is not None and len(td_detail) == 0
+                    and td_pe is not None and len(td_pe) == 0
+                    and td_dy is not None and len(td_dy) == 0
                     and td_stats is not None and len(td_stats) == 0):
                 logger.info(f"\n  [{st}] up to date; skipping.")
                 continue
@@ -734,7 +809,8 @@ async def main() -> None:
             n = await processor(
                 conn, pool,
                 force=force,
-                target_dates_detail=td_detail,
+                target_dates_pe=td_pe,
+                target_dates_dy=td_dy,
                 target_dates_stats=td_stats,
             )
             total += n
@@ -743,9 +819,15 @@ async def main() -> None:
         logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
         await upsert_analysis_identity(
             conn,
-            name=ANALYSIS_NAME,
-            detail_name="pe_and_dividends",
-            description=DESCRIPTION,
+            name=ANALYSIS_NAME_PE,
+            detail_name="pe",
+            description=DESCRIPTION_PE,
+        )
+        await upsert_analysis_identity(
+            conn,
+            name=ANALYSIS_NAME_DIVIDENDS,
+            detail_name="dividends",
+            description=DESCRIPTION_DIVIDENDS,
         )
 
         logger.info(f"\n  TOTAL: {total:,} detail rows inserted")

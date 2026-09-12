@@ -310,13 +310,15 @@ export async function getEtfOhlcv(
       WHERE ${where.join(" AND ")}
       ORDER BY date ASC
     `, params);
+    // null-preserving: CN-holiday rows of cross-border indices / estimated
+    // rows carry NULL OHLC or volume — render as chart gaps, never 0
     const transformed = rows.map((r) => ({
       date: formatDate(r.date),
-      open: toNum(r.open) ?? 0,
-      high: toNum(r.high) ?? 0,
-      low: toNum(r.low) ?? 0,
-      close: toNum(r.close) ?? 0,
-      volume: toNum(r.trading_shares) ?? 0,
+      open: toNum(r.open),
+      high: toNum(r.high),
+      low: toNum(r.low),
+      close: toNum(r.close),
+      volume: toNum(r.trading_shares),
     }));
     return {
       dates: transformed.map((r) => r.date),

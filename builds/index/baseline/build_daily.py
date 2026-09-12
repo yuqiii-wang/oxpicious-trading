@@ -61,7 +61,10 @@ import pandas as pd
 from downloads._common import read_csv_gpu_safe
 
 from builds._commons.safe_parse import safe_to_datetime, safe_to_numeric
-from _common.df_utils import compute_moving_averages, compute_emas, safe_columns
+from _common.df_utils import (
+    compute_moving_averages, compute_emas, safe_columns,
+    compute_trading_amt_per_move,
+)
 
 from builds.index.baseline.paths import (
     CNINDEX_DIR, CSINDEX_DIR, SZSE_ARCHIVE_DIR, SZSE_TREND_DIR, SSE_TREND_DIR,
@@ -585,6 +588,13 @@ async def build_daily_df(conn,
         value_col="close",
         spans=[6, 10, 20, 60, 120, 255],
     )
+
+    # trading_amt_per_pct_change = trading_amount / (close - open), signed.
+    # Row-wise — no lookback state. `open` always exists here
+    # (_estimate_ohl_from_close synthesizes it); trading_amount is absent
+    # only when NO source carried it (then the metric stays NULL — skip).
+    if "trading_amount" in safe_columns(combined):
+        compute_trading_amt_per_move(combined)
 
     # Filter to rows NEW vs the DB — rows after the code's latest DB date,
     # plus stale (rebuild) keys. Composite-string-key host pass replaces

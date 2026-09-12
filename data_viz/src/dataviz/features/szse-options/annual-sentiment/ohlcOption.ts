@@ -52,9 +52,9 @@ export function buildOhlcOption(
   ]);
 
   const volumes = rows.map((r) => ({
-    value: r.volume / 100,
+    value: r.volume == null ? null : r.volume / 100,
     itemStyle: {
-      color: r.close >= r.open ? UP_COLOR : DOWN_COLOR,
+      color: r.close != null && r.open != null && r.close < r.open ? DOWN_COLOR : UP_COLOR,
       opacity: 0.4,
     },
   }));

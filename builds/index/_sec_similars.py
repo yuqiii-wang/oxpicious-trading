@@ -60,6 +60,7 @@ without a snapshot at the forced date is a logged no-op.
 """
 from typing import Optional, Set
 
+import asyncio
 import datetime
 
 import pandas as pd
@@ -67,6 +68,7 @@ import pandas as pd
 from _common.build_commons import (
     copy_or_upsert_split_async,
     forced_date_scope,
+    get_db_pool_async,
     rec_col,
     rec_cols,
 )
@@ -82,6 +84,65 @@ SOURCE_TABLE = "stats.sec_composition"
 SEC_TYPES = ("index", "etf")
 
 
+# The combined SQL is join-explosive in the number of target snapshot
+# dates (etf/41 dates: ~24M unordered pair-rows per pass), so fetching it
+# as ONE query on ONE connection serializes all of that server work.
+# Chunking the target dates over a small pool lets the server overlap the
+# independent chunk queries (etf/41 dates: 102s serial -> ~21s with
+# 6 x 7-date chunks, identical rows). Chunks produce disjoint
+# (date, code) outputs, so concatenating them is order-free and the
+# single upsert below stays on the caller's connection. Thresholds: the
+# extra backend connections only pay off once a date set is wide; a
+# best-effort per-connection work_mem bump keeps the big pair-sort
+# stages in memory instead of spilling ~200MB per sort to temp.
+_PARALLEL_MIN_DATES = 12
+_POOL_MAX = 6
+_CHUNK_DATES = 7
+_WORK_MEM = "256MB"
+
+
+async def _fetch_similar_rows(conn, sql: str, dates_param: list, tag: str):
+    """Fetch the combined sec_similars SQL for the target snapshot dates.
+
+    Single query (with a best-effort work_mem bump) for small date sets;
+    date-chunked parallel fetch over a short-lived pool once the set is
+    wide enough to amortize the extra backend connections.
+    """
+    if len(dates_param) < _PARALLEL_MIN_DATES:
+        try:
+            await conn.execute(f"SET work_mem = '{_WORK_MEM}'")
+        except Exception:
+            pass
+        try:
+            return await conn.fetch(sql, dates_param)
+        finally:
+            try:
+                await conn.execute("RESET work_mem")
+            except Exception:
+                pass
+
+    n_chunks = min(_POOL_MAX, -(-len(dates_param) // _CHUNK_DATES))
+    size = -(-len(dates_param) // n_chunks)
+    chunks = [dates_param[i:i + size] for i in range(0, len(dates_param), size)]
+    logger.info(f"{tag} -> {len(chunks)} parallel date-chunks "
+          f"(<= {size} dates each, pool max {_POOL_MAX}, "
+          f"work_mem {_WORK_MEM})")
+    pool = await get_db_pool_async(min_size=1, max_size=_POOL_MAX)
+    try:
+        async def _chunk(ch):
+            async with pool.acquire() as c:
+                try:
+                    await c.execute(f"SET work_mem = '{_WORK_MEM}'")
+                except Exception:
+                    pass
+                return await c.fetch(sql, ch)
+
+        results = await asyncio.gather(*[_chunk(ch) for ch in chunks])
+    finally:
+        await pool.close()
+    return [r for rs in results for r in rs]
+
+
 # Combined SQL: similar codes + similar industries (distinct-industry) +
 # dissimilar industries in one query, pivoted into the wide sec_similars
 # table format.
@@ -92,29 +153,68 @@ SEC_TYPES = ("index", "etf")
 # Common CTEs (target_dates, eff, holdings, subjects, subj_class) are shared.
 # Three independent ranking CTEs (ranked, similar_ind_ranked,
 # dissimilar_ind_ranked) are LEFT JOINed in the final SELECT.
+#
+# Join-width optimizations (EXPLAIN ANALYZE 2026-09-09, etf/41 dates:
+# 106s — the pairwise self-join exploded to 48.4M ordered pair-rows in
+# `pairs` and ~17M in `industry_pairs`, all externally sorted):
+#   - eff: per-code snapshot-date ARRAY + unnest MAX(<= d) instead of a
+#     target-dates × composition nested loop (66M joined rows -> 41×613
+#     tiny array scans; identical MAX(snapshot_date) <= d semantics).
+#   - pairs / industry_pairs: the mutual-sharing join is SYMMETRIC, so it
+#     runs once per UNORDERED pair (h2.code > h1.code) and a UNION ALL
+#     flip reconstructs both ordered directions (ranked / dissimilar
+#     consumers join on ordered (code_a, code_b)). The left side is any
+#     holding code (a superset of subjects): pairs whose code_a never
+#     matches a subject in the final SELECT are simply not consumed, and
+#     restricting by subjects instead would DROP (subject, non-subject
+#     peer) pairs that the original query did emit.
 _SQL_SEC_SIMILARS_TEMPLATE = """
 WITH target_dates(d) AS (
     SELECT unnest($1::date[])
 ),
+code_sdates AS (
+    SELECT sc.code,
+           ARRAY_AGG(DISTINCT sc.snapshot_date ORDER BY sc.snapshot_date) AS sdates
+    FROM {src} sc
+    WHERE sc.source_type = '{source_type}'
+      AND sc.stock_code IS NOT NULL
+    GROUP BY sc.code
+),
+-- industry-classified codes for the current sec_type (peer flag +
+-- industry_peers pool). Tiny; hash-joined into holdings so the exploded
+-- pair join filters peers by a per-row boolean instead of a correlated
+-- subplan.
+peer_codes AS (
+    SELECT DISTINCT code
+    FROM stats.sec_classification
+    WHERE type = '{sec_type}'
+      AND is_industry_not_strategy = true
+),
 eff AS (
-    SELECT td.d, sc.code, MAX(sc.snapshot_date) AS eff_date
-    FROM target_dates td
-    JOIN {src} sc
-      ON sc.source_type = '{source_type}'
-     AND sc.stock_code IS NOT NULL
-     AND sc.snapshot_date <= td.d
-    GROUP BY td.d, sc.code
+    SELECT d, code, eff_date
+    FROM (
+        SELECT td.d, cs.code,
+               (SELECT MAX(s) FROM UNNEST(cs.sdates) AS s WHERE s <= td.d) AS eff_date
+        FROM target_dates td
+        CROSS JOIN code_sdates cs
+    ) x
+    -- drop codes with no snapshot on/before d (the old target-dates ×
+    -- composition nested loop simply produced no row for them — a NULL
+    -- eff_date would leak ghost peers into industry_peers/all_industry_peers)
+    WHERE eff_date IS NOT NULL
 ),
 holdings AS (
     SELECT e.d, e.code,
            LEFT(sc.stock_code, 6) AS normalized_code,
-           sc.weight_pct
+           sc.weight_pct,
+           (pc.code IS NOT NULL) AS is_industry_peer
     FROM eff e
     JOIN {src} sc
       ON sc.code = e.code
      AND sc.source_type = '{source_type}'
      AND sc.stock_code IS NOT NULL
      AND sc.snapshot_date = e.eff_date
+    LEFT JOIN peer_codes pc ON pc.code = e.code
 ),
 subjects AS (
     SELECT DISTINCT td.d, sc.code
@@ -133,24 +233,42 @@ subj_class AS (
 ),
 
 -- === SIMILAR CODES (top-5 individual indices/ETFs) ===
-pairs AS (
-    SELECT s.d, s.code AS code_a, h2.code AS code_b,
+-- UNORDERED pair pass: h2.code > h1.code halves the explosion; the
+-- UNION ALL below restores both ordered directions.
+pairs_sym AS (
+    SELECT h1.d, h1.code AS code_a, h2.code AS code_b,
            SUM(h1.weight_pct) AS shared_weight_a,
            SUM(h2.weight_pct) AS shared_weight_b
-    FROM subjects s
-    JOIN holdings h1 ON h1.d = s.d AND h1.code = s.code
-    JOIN holdings h2 ON h2.d = s.d AND h2.normalized_code = h1.normalized_code
-    WHERE h2.code <> s.code
-    GROUP BY s.d, s.code, h2.code
+    FROM holdings h1
+    JOIN holdings h2
+      ON h2.d = h1.d
+     AND h2.normalized_code = h1.normalized_code
+     AND h2.code > h1.code
+    GROUP BY h1.d, h1.code, h2.code
+),
+pairs AS (
+    SELECT d, code_a, code_b, shared_weight_a, shared_weight_b
+    FROM pairs_sym
+    UNION ALL
+    SELECT d, code_b AS code_a, code_a AS code_b,
+           shared_weight_b AS shared_weight_a,
+           shared_weight_a AS shared_weight_b
+    FROM pairs_sym
 ),
 ranked AS (
-    SELECT d, code_a, code_b,
-           (shared_weight_a + shared_weight_b) / 2.0 AS mutual_shared_weight,
-           ROW_NUMBER() OVER (
-               PARTITION BY d, code_a
-               ORDER BY (shared_weight_a + shared_weight_b) / 2.0 DESC, code_b
-           ) AS rn
-    FROM pairs
+    -- only rn<=5 rows survive to materialization — the final SELECT joins
+    -- r1..r5 exclusively (was 3.4M materialized rows on etf/41 dates)
+    SELECT d, code_a, code_b, mutual_shared_weight, rn
+    FROM (
+        SELECT d, code_a, code_b,
+               (shared_weight_a + shared_weight_b) / 2.0 AS mutual_shared_weight,
+               ROW_NUMBER() OVER (
+                   PARTITION BY d, code_a
+                   ORDER BY (shared_weight_a + shared_weight_b) / 2.0 DESC, code_b
+               ) AS rn
+        FROM pairs
+    ) x
+    WHERE rn <= 5
 ),
 
 -- === INDUSTRY-CLASSIFIED PEERS (similar + dissimilar) ===
@@ -161,19 +279,37 @@ ranked AS (
 industry_peers AS (
     SELECT DISTINCT e.d, e.code
     FROM eff e
-    JOIN stats.sec_classification sc
-      ON sc.code = e.code AND sc.type = '{sec_type}' AND sc.is_industry_not_strategy = true
+    JOIN peer_codes pc ON pc.code = e.code
 ),
--- Pairs between subjects and industry-classified peers only
+-- Pairs where at least one side is an industry-classified peer (unordered
+-- pass — see pairs_sym). The peer filter is a per-row boolean on the
+-- precomputed holdings flag — a correlated EXISTS over both sides of the
+-- exploded join re-scans a subplan per pair row and does not finish.
+-- Each UNION branch emits ONLY the direction whose code_b is a peer (the
+-- consumers attach sec_classification to code_b and rank industry peers):
+-- flipping blindly would put non-peer codes on code_b and let them
+-- displace genuine peers in similar_ind_ranked.
+industry_pairs_sym AS (
+    SELECT h1.d, h1.code AS code_a, h2.code AS code_b,
+           (SUM(h1.weight_pct) + SUM(h2.weight_pct)) / 2.0 AS mutual,
+           BOOL_OR(h1.is_industry_peer) AS peer_a,
+           BOOL_OR(h2.is_industry_peer) AS peer_b
+    FROM holdings h1
+    JOIN holdings h2
+      ON h2.d = h1.d
+     AND h2.normalized_code = h1.normalized_code
+     AND h2.code > h1.code
+    WHERE h1.is_industry_peer OR h2.is_industry_peer
+    GROUP BY h1.d, h1.code, h2.code
+),
 industry_pairs AS (
-    SELECT s.d, s.code AS code_a, h2.code AS code_b,
-           (SUM(h1.weight_pct) + SUM(h2.weight_pct)) / 2.0 AS mutual
-    FROM subjects s
-    JOIN holdings h1 ON h1.d = s.d AND h1.code = s.code
-    JOIN holdings h2 ON h2.d = s.d AND h2.normalized_code = h1.normalized_code
-    JOIN industry_peers ip ON ip.d = s.d AND ip.code = h2.code
-    WHERE h2.code <> s.code
-    GROUP BY s.d, s.code, h2.code
+    SELECT d, code_a, code_b, mutual
+    FROM industry_pairs_sym
+    WHERE peer_b
+    UNION ALL
+    SELECT d, code_b AS code_a, code_a AS code_b, mutual
+    FROM industry_pairs_sym
+    WHERE peer_a
 ),
 -- All industry-classified peers per subject (for dissimilar: includes 0-weight)
 all_industry_peers AS (
@@ -212,35 +348,43 @@ best_per_ind AS (
 -- the 5 most-similar peers from 5 DIFFERENT industries (greedy distinct-
 -- industry selection).
 similar_ind_ranked AS (
-    SELECT d, code_a, code_b, mutual,
-           ROW_NUMBER() OVER (
-               PARTITION BY d, code_a
-               ORDER BY mutual DESC, code_b
-           ) AS rn
-    FROM best_per_ind
+    SELECT d, code_a, code_b, mutual, rn
+    FROM (
+        SELECT d, code_a, code_b, mutual,
+               ROW_NUMBER() OVER (
+                   PARTITION BY d, code_a
+                   ORDER BY mutual DESC, code_b
+               ) AS rn
+        FROM best_per_ind
+    ) x
+    WHERE rn <= 5
 ),
 
 -- Dissimilar industry-classified peers: rank by mutual ASC, tie-break by
 -- classification distance (different sector > different industry > same)
 dissimilar_ind_ranked AS (
-    SELECT aip.d, aip.code, aip.peer_code AS code_b,
-           COALESCE(ip.mutual, 0) AS mutual,
-           ROW_NUMBER() OVER (
-               PARTITION BY aip.d, aip.code
-               ORDER BY
-                   COALESCE(ip.mutual, 0) ASC,
-                   CASE WHEN sc_b.sector_id IS DISTINCT FROM sc_a.sector_id
-                        THEN 0 ELSE 1 END,
-                   CASE WHEN sc_b.industry_id IS DISTINCT FROM sc_a.industry_id
-                        THEN 0 ELSE 1 END,
-                   aip.peer_code
-           ) AS rn
-    FROM all_industry_peers aip
-    LEFT JOIN industry_pairs ip
-      ON ip.d = aip.d AND ip.code_a = aip.code AND ip.code_b = aip.peer_code
-    LEFT JOIN subj_class sc_a ON sc_a.d = aip.d AND sc_a.code = aip.code
-    LEFT JOIN stats.sec_classification sc_b
-      ON sc_b.code = aip.peer_code AND sc_b.type = '{sec_type}'
+    SELECT d, code, code_b, mutual, rn
+    FROM (
+        SELECT aip.d, aip.code, aip.peer_code AS code_b,
+               COALESCE(ip.mutual, 0) AS mutual,
+               ROW_NUMBER() OVER (
+                   PARTITION BY aip.d, aip.code
+                   ORDER BY
+                       COALESCE(ip.mutual, 0) ASC,
+                       CASE WHEN sc_b.sector_id IS DISTINCT FROM sc_a.sector_id
+                            THEN 0 ELSE 1 END,
+                       CASE WHEN sc_b.industry_id IS DISTINCT FROM sc_a.industry_id
+                            THEN 0 ELSE 1 END,
+                       aip.peer_code
+               ) AS rn
+        FROM all_industry_peers aip
+        LEFT JOIN industry_pairs ip
+          ON ip.d = aip.d AND ip.code_a = aip.code AND ip.code_b = aip.peer_code
+        LEFT JOIN subj_class sc_a ON sc_a.d = aip.d AND sc_a.code = aip.code
+        LEFT JOIN stats.sec_classification sc_b
+          ON sc_b.code = aip.peer_code AND sc_b.type = '{sec_type}'
+    ) x
+    WHERE rn <= 5
 )
 
 SELECT
@@ -421,7 +565,7 @@ async def _build_for_sec_type(conn, sec_type: str, force: bool,
     sql = _SQL_SEC_SIMILARS_TEMPLATE.format(
         src=SOURCE_TABLE, source_type=source_type, sec_type=sec_type,
     )
-    rows = await conn.fetch(sql, dates_param)
+    rows = await _fetch_similar_rows(conn, sql, dates_param, tag)
     n_codes = len(set(rec_col(rows, "code")))
     logger.info(f"{tag} -> {len(rows):,} rows across {n_codes} {sec_type}s "
           f"across {len(dates_param)} snapshot dates")

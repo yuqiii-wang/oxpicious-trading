@@ -89,11 +89,6 @@ CREATE TABLE IF NOT EXISTS stats.stock_basic_stats (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p15
 SELECT public.create_hash_partitions('stats', 'stock_basic_stats', 16);
 
--- Idempotent migration: add is_ohl_estimated to pre-existing tables.
-ALTER TABLE stats.stock_basic_stats
-    ADD COLUMN IF NOT EXISTS is_ohl_estimated BOOLEAN NOT NULL DEFAULT FALSE;
-
-
 COMMENT ON TABLE  stats.stock_basic_stats             IS 'Stock daily OHLC + pct_change + pe. Source: SZSE archive/trend + SSE trend + SSE PE CSVs. trading_shares/trading_amount moved to stats.stock_liquidity_margin (mirrors etf_liquidity_margin split).';
 COMMENT ON COLUMN stats.stock_basic_stats.prev_close  IS 'Previous closing price (yuan). 前收 from source CSV.';
 COMMENT ON COLUMN stats.stock_basic_stats.open        IS 'Opening price (yuan). 开盘 from source CSV.';
@@ -107,9 +102,6 @@ COMMENT ON COLUMN stats.stock_basic_stats.is_close_estimated IS 'TRUE when close
 COMMENT ON COLUMN stats.stock_basic_stats.is_ohl_estimated  IS 'TRUE when open/high/low were synthesized (not from source CSV) because the source row carries close-only data. Synthesis: open = previous close of the same code (NULL when no predecessor exists), high = low = close. FALSE when any real OHLC component came from the source.';
 COMMENT ON COLUMN stats.stock_basic_stats.has_intraday_5mins IS 'TRUE when 5-minute intraday bars exist for this (date, code) (reserved for future stock intraday support).';
 
--- Idempotent migration: add eps column (earnings per share = close / pe) to
--- pre-existing tables. ADD COLUMN IF NOT EXISTS is a no-op on fresh installs.
-ALTER TABLE stats.stock_basic_stats ADD COLUMN IF NOT EXISTS eps NUMERIC(18,6);
 COMMENT ON COLUMN stats.stock_basic_stats.eps IS 'Earnings per share (EPS), in yuan per single share, derived from the identity PE = price / EPS as eps = close / pe. NULL when pe is NULL or <= 0 (loss-making / no PE recorded) or close is NULL. For SSE stocks where pe is estimated under the constant-EPS assumption (is_pe_estimated=TRUE), eps recovers that constant EPS = last_close / last_pe. Populated by builds/stock/__main__.py at insert time.';
 
 -- NOTE: trading_shares / trading_amount previously lived on stock_basic_stats.
@@ -150,9 +142,6 @@ CREATE INDEX IF NOT EXISTS idx_stock_identity_date
 CREATE INDEX IF NOT EXISTS idx_stock_identity_exchange_code_date
     ON stats.stock_identity (exchange, code, date DESC) INCLUDE (name, is_in_index_or_etf);
 
--- Legacy (code, date) secondary indexes are now redundant with the
--- code-first PK — drop them and add date-first indexes instead.
-DROP INDEX IF EXISTS stats.idx_stock_basic_stats_code_date;
 CREATE INDEX IF NOT EXISTS idx_stock_basic_stats_date
     ON stats.stock_basic_stats (date);
 
@@ -180,6 +169,8 @@ CREATE TABLE IF NOT EXISTS stats.stock_tech_stats (
     ema120                    NUMERIC(18,4),
     ema255                    NUMERIC(18,4),
 
+    trading_amt_per_pct_change NUMERIC(18,6),
+
     CONSTRAINT pk_stock_tech_stats PRIMARY KEY (code, date),
     CONSTRAINT fk_stock_tech_stats_date_code FOREIGN KEY (code, date) REFERENCES stats.stock_identity(code, date)
 ) PARTITION BY HASH (code);
@@ -187,6 +178,11 @@ CREATE TABLE IF NOT EXISTS stats.stock_tech_stats (
 -- Native hash partitions (16) keyed by code — created via the shared util
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p15
 SELECT public.create_hash_partitions('stats', 'stock_tech_stats', 16);
+
+-- Idempotent migration: add the intraday net-move liquidity ratio to
+-- pre-existing tables (no-op on fresh installs).
+ALTER TABLE stats.stock_tech_stats
+    ADD COLUMN IF NOT EXISTS trading_amt_per_pct_change NUMERIC(18,6);
 
 COMMENT ON TABLE  stats.stock_tech_stats                    IS 'Stock technical indicators (moving averages + EMAs), computed from stats.stock_basic_stats.close.';
 COMMENT ON COLUMN stats.stock_tech_stats.ma5                IS '5-day moving average of close.';
@@ -201,6 +197,7 @@ COMMENT ON COLUMN stats.stock_tech_stats.ema20              IS '20-day exponenti
 COMMENT ON COLUMN stats.stock_tech_stats.ema60              IS '60-day exponential moving average of close (span=60, adjust=False).';
 COMMENT ON COLUMN stats.stock_tech_stats.ema120             IS '120-day exponential moving average of close (span=120, adjust=False).';
 COMMENT ON COLUMN stats.stock_tech_stats.ema255             IS '255-day exponential moving average of close (span=255, adjust=False).';
+COMMENT ON COLUMN stats.stock_tech_stats.trading_amt_per_pct_change IS 'Intraday net-move liquidity ratio: trading_amount / (close - open), SIGNED — positive on up days, negative on down days (the sign carries the move direction). trading_amount from stats.stock_liquidity_margin (yuan); open/close from stats.stock_basic_stats (yuan). Zero move (close = open — flat / 一字板 limit-locked day): denominator floored to 1.0, so the stored value equals the raw trading amount (mov_ave_spread zero-denominator convention — a pragmatic floor, NOT a true ratio). NULL when any input is NULL or |value| >= 1e12 (NUMERIC(18,6) bound). Reciprocal-Amihud liquidity gauge: HIGH = deep book (much capital absorbed per unit of move), LOW = thin market (little capital moved the price a lot). Computed by builds.stock.tech_stats.';
 
 DROP INDEX IF EXISTS stats.idx_stock_tech_stats_code_date;
 CREATE INDEX IF NOT EXISTS idx_stock_tech_stats_date

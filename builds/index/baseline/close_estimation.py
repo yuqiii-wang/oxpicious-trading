@@ -1,11 +1,20 @@
 """Fill missing close prices for indices with date gaps.
 
 Some indices (e.g. 399001 深证成指) are missing trading days that other
-indices have — holidays, late starts, data gaps.  When the analysis script
-pivots to wide format, these gaps become NaN, causing widespread NULL
-correlations.  This module estimates the missing closes using the best
+indices have — late starts, sporadic publish gaps.  When the analysis
+script pivots to wide format, these gaps become NaN, causing widespread
+NULL correlations.  This module estimates the missing closes using the best
 proxy index (highest shared weight > SHARED_WEIGHT_THRESHOLD) when
 available, or carries forward the previous close as a fallback.
+
+NON-TRADING DAYS ARE NEVER ESTIMATED.  Cross-border CSI indices (e.g.
+930604 中国互联网30, tracking HK/US-listed names) publish real closes on
+CN holidays, so the union date grid contains those dates — but every
+A-share index is closed then, and fabricating flat carry-forward rows for
+them poisons MA/EMA/corr windows downstream (they reached the DB as
+constant OHLC holiday rows before 2026-09).  Grid dates failing
+``is_trading_day`` are skipped; the cross-border indices' own REAL holiday
+rows are unaffected (they arrive from the source CSVs, not from here).
 
 PERFORMANCE CONTRACT (cudf.pandas): NO Timestamp objects are ever put into
 python dicts/sets/loops — hashing or comparing a proxied Timestamp is one
@@ -20,6 +29,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from _common._holidays_and_weekdays import is_trading_day
 from _common.df_utils import host_dtypes, safe_columns
 
 from builds._commons.safe_parse import safe_to_numeric
@@ -66,6 +76,17 @@ def fill_missing_closes(combined: pd.DataFrame,
         np.asarray(combined["date"]).astype("datetime64[D]"))
     n_grid = len(all_dates)
     date_pos: dict = {d: i for i, d in enumerate(np.asarray(all_dates).tolist())}
+
+    # Non-trading grid dates are never estimated (see module docstring).
+    # One host transfer of the sorted unique grid (~1.7k dates) — python
+    # date objects, no proxied Timestamps.
+    non_trading = np.fromiter(
+        (not is_trading_day(d) for d in np.asarray(all_dates).tolist()),
+        dtype=bool, count=n_grid)
+    if non_trading.any() and verbose:
+        n_skip = int(non_trading.sum())
+        logger.info(f"    [EST] Close estimation: skipping {n_skip} non-trading "
+              f"grid dates (CN holidays — left empty, not filled)")
 
     # np.asarray host transfer — Series.unique() on cudf-parsed string
     # columns falls back to CPU (ExtensionArrays)
@@ -140,8 +161,10 @@ def fill_missing_closes(combined: pd.DataFrame,
         prev_close = np.where(prev_idx >= 0, close_grid[np.clip(prev_idx, 0, None)],
                               np.nan)
 
-        # missing grid positions with a known predecessor
-        missing = ~known & (prev_idx >= 0)
+        # missing grid positions with a known predecessor, excluding
+        # non-trading dates (CN holidays / wrong-calendar artifacts — the
+        # grid carries them only because cross-border indices trade then)
+        missing = ~known & (prev_idx >= 0) & ~non_trading
         if not missing.any():
             continue
 

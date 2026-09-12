@@ -5,9 +5,12 @@
  *
  *   • live.sec_alloc_live_attribution — per-5-min-tick member % vs prev-day
  *     close + denormalized benchmark % + GENERATED diff (tick rows only for
- *     index/etf members; stocks hold weights in the ref but no ticks).
- *   • live.sec_alloc_live_prev_ref — per-(benchmark, date, code, sec_type)
- *     industry_id / is_industry_not_strategy / prev-day share weights.
+ *     index/etf members).
+ *
+ * Industry identity comes from stats.sec_classification at QUERY time (the
+ * former live.sec_alloc_live_prev_ref denormalization was consolidated away —
+ * weights/prev closes are derivable from base tables at read time; this
+ * service is equal-weight only and needs no weights at all).
  *
  * Industry-level aggregates are computed AT QUERY TIME (equal-weight AVG of
  * member pcts per (industry, tick)), so NO analyze recompute pass is required
@@ -222,10 +225,10 @@ ORDER BY i5.time
 //  query time from the live tick table (equal-weight AVG of member pcts —
 //  same semantics as the retired analysis pre-compute). Excludes BROAD_*
 //  (broad-market indices that are themselves benchmarks, not real
-//  industries). Industry identity prefers the ref's denormalized
-//  industry_id and falls back to stats.sec_classification (fallback tick
-//  rows have no ref parent). diff = AVG(member pct) − benchmark pct at the
-//  tick so the UI top-plot shade can be driven directly.
+//  industries). Industry identity = stats.sec_classification (latest ACTIVE
+//  row per code; the former ref-table denormalization was consolidated
+//  away). diff = AVG(member pct) − benchmark pct at the tick so the UI
+//  top-plot shade can be driven directly.
 //  $1 = date, $2 = benchmark_code
 // ----------------------------------------------------------------------------
 const INDUSTRY_SERIES_SQL = `
@@ -244,16 +247,10 @@ base AS (
         a.time,
         a.code_price_pct_relative_prev_date_close          AS pct,
         a.benchmark_price_pct_relative_prev_date_close     AS bench_pct,
-        COALESCE(r.industry_id, cls.industry_id)           AS industry_id,
-        COALESCE(r.is_industry_not_strategy, cls.is_industry_not_strategy, TRUE)
-                                                         AS is_industry_not_strategy
+        cls.industry_id,
+        COALESCE(cls.is_industry_not_strategy, TRUE)       AS is_industry_not_strategy
     FROM live.sec_alloc_live_attribution a
-    LEFT JOIN live.sec_alloc_live_prev_ref r
-        ON r.benchmark_code = a.benchmark_code
-       AND r.date = a.date
-       AND r.code = a.code
-       AND r.sec_type = a.sec_type
-    LEFT JOIN cls ON cls.code = a.code
+    JOIN cls ON cls.code = a.code
     WHERE a.benchmark_code = $2::text
       AND a.date = $1::date
 )
@@ -431,6 +428,7 @@ ORDER BY i5.time, u.industry_id, i5.code
 // ----------------------------------------------------------------------------
 //  SQL: Member index % change per (code, tick, industry) — ALL members with
 //  tick rows (index/etf members; stocks carry no ticks by design).
+//  Industry identity = stats.sec_classification (see INDUSTRY_SERIES_SQL).
 //  $1 = date, $2 = benchmark_code
 // ----------------------------------------------------------------------------
 const MEMBER_SERIES_SQL = `
@@ -447,22 +445,17 @@ SELECT
     a.time::text                                      AS time,
     a.code,
     COALESCE(ii.name, a.code)                         AS code_name,
-    COALESCE(r.industry_id, cls.industry_id)          AS industry_id,
+    cls.industry_id,
     a.code_price_pct_relative_prev_date_close         AS code_price_pct
 FROM live.sec_alloc_live_attribution a
-LEFT JOIN live.sec_alloc_live_prev_ref r
-    ON r.benchmark_code = a.benchmark_code
-   AND r.date = a.date
-   AND r.code = a.code
-   AND r.sec_type = a.sec_type
-LEFT JOIN cls ON cls.code = a.code
+JOIN cls ON cls.code = a.code
 LEFT JOIN LATERAL (
     SELECT name FROM stats.index_identity
     WHERE code = a.code ORDER BY date DESC LIMIT 1
 ) ii ON true
 WHERE a.benchmark_code = $2::text
   AND a.date = $1::date
-ORDER BY a.time, COALESCE(r.industry_id, cls.industry_id), a.code
+ORDER BY a.time, cls.industry_id, a.code
 `;
 
 // ----------------------------------------------------------------------------

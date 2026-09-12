@@ -63,6 +63,7 @@ from builds.cross_stats.config import (  # noqa: E402
 from builds.cross_stats.runner import (  # noqa: E402
     run_corr_update,
     run_cross_stats,
+    run_offset_backfill,
 )
 
 
@@ -78,9 +79,34 @@ async def main() -> None:
              "grid dates and upsert them onto existing rows (the main run "
              "writes rows with corr OFF by default).",
     )
+    ap.add_argument(
+        "--backfill-offsets", action="store_true",
+        help="One-off: backfill code_price_with_benchmark_offset and its "
+             "amount-weighted variant onto EXISTING pair rows (deployments "
+             "created before the columns existed). New dates are covered "
+             "by the regular pipeline.",
+    )
     args = ap.parse_args()
 
     t0 = time.time()
+
+    if args.backfill_offsets:
+        print_build_header(
+            "BUILD CROSS STATS — OFFSET BACKFILL (existing pair rows)",
+            table=TABLE,
+            sec_types="index",
+            mode="backfill code_price_with_benchmark_offset(_by_weighted_amt)",
+        )
+        conn = await get_db_connection_async()
+        try:
+            await run_offset_backfill(conn)
+        finally:
+            try:
+                await asyncio.wait_for(conn.close(), timeout=10)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        print_wall_time(t0)
+        return
 
     if args.corr:
         print_build_header(

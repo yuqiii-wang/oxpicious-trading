@@ -4,8 +4,8 @@ Ported from analyze.sec_alloc_perf_attribution.compute._orchestrator
 (2026-09-04); write target hardwired to stats.cross_stats.
 
   - INSERT mode (``with_corr=False``, default — the main pipeline):
-    per-subject merge pipeline (weights + ETF + MA5 ratio) writing FULL
-    rows with corr=NULL via chunked COPY. Target dates pre-filtered to
+    per-subject merge pipeline (shared weights) writing FULL rows with
+    corr=NULL via chunked COPY. Target dates pre-filtered to
     dates MISSING from the table → rows can never conflict; pure COPY
     (5-10x faster than upsert).
   - CORR-ONLY mode (``with_corr=True`` — the dedicated ``--corr``
@@ -16,7 +16,7 @@ Ported from analyze.sec_alloc_perf_attribution.compute._orchestrator
     the per-subject merge pipeline entirely.
 
   [PERF-BLOCKER — declared] the insert path iterates subjects; each
-  iteration is a small (~4K-row) merge+MA5 chain. See _perf.py
+  iteration is a small (~4K-row) merge chain. See _perf.py
   DECLARED_BLOCKERS for the accepted rationale.
 """
 from __future__ import annotations
@@ -45,7 +45,6 @@ from builds.cross_stats.compute._gpu_corr import (
     compute_rolling_correlations_bulk,
     fetch_corr_grid_dates,
 )
-from builds.cross_stats.compute._etf import attach_etf_amounts, compute_ma5_ratio
 from builds.cross_stats.compute._sanitize import (
     select_and_sanitize,
     select_and_sanitize_corr,
@@ -105,7 +104,6 @@ def _related_benchmarks(shared_weights: dict,
 async def build_and_insert(conn, subject_closes: pd.DataFrame,
                            index_closes: pd.DataFrame,
                            shared_weights: dict,
-                           etf_amount_by_index: pd.DataFrame,
                            sec_type: str,
                            *,
                            target_dates: Optional[Set[datetime.date]] = None,
@@ -119,8 +117,6 @@ async def build_and_insert(conn, subject_closes: pd.DataFrame,
         index_closes:   DataFrame [date, benchmark_code, benchmark_close].
         shared_weights: dict {(subject_code, benchmark_code):
                         (code_wt, bench_wt)}.
-        etf_amount_by_index: DataFrame [date, index_code, etf_amount]
-            (unused by the corr-only path).
         sec_type: 'index' (self-pairs excluded) or 'etf'.
         target_dates: when non-empty, only rows whose date is in this set
             are written. Insert mode: dates MISSING from the table (the
@@ -144,11 +140,9 @@ async def build_and_insert(conn, subject_closes: pd.DataFrame,
         return 0
 
     # Lookback pre-filter (both modes).
-    subject_closes, index_closes, etf_amount_by_index = (
-        filter_dataframes_for_lookback(
-            subject_closes, index_closes, etf_amount_by_index,
-            target_dates if target_dates is not None else set(),
-        )
+    subject_closes, index_closes = filter_dataframes_for_lookback(
+        subject_closes, index_closes,
+        target_dates if target_dates is not None else set(),
     )
 
     broad_market_codes = await _fetch_broad_market_codes(
@@ -158,11 +152,11 @@ async def build_and_insert(conn, subject_closes: pd.DataFrame,
 
     if with_corr:
         return await _corr_only_update(
-            conn, subject_closes, index_closes, etf_amount_by_index,
+            conn, subject_closes, index_closes,
             subject_related, sec_type, target_dates, n_subjects,
         )
     return await _insert_rows(
-        conn, subject_closes, index_closes, etf_amount_by_index,
+        conn, subject_closes, index_closes,
         shared_weights, subject_related, sec_type, target_dates,
         n_subjects,
     )
@@ -173,7 +167,6 @@ async def build_and_insert(conn, subject_closes: pd.DataFrame,
 # ---------------------------------------------------------------------------
 async def _corr_only_update(conn, subject_closes: pd.DataFrame,
                             index_closes: pd.DataFrame,
-                            etf_amount_by_index: pd.DataFrame,
                             subject_related: dict[str, set[str]],
                             sec_type: str,
                             target_dates: Optional[Set[datetime.date]],
@@ -182,9 +175,7 @@ async def _corr_only_update(conn, subject_closes: pd.DataFrame,
     logger.info("    -> Corr-only fast path: GPU tensor -> upsert "
           "(no per-subject pipeline, base columns untouched)")
 
-    benchmark_close_wide, _etf_wide, _etf_long = (
-        prepare_pivots(index_closes, etf_amount_by_index)
-    )
+    benchmark_close_wide = prepare_pivots(index_closes)
     grid_dates = await fetch_corr_grid_dates(conn)
     subject_codes = sorted(subject_closes["code"].unique())
     n_pairs = sum(len(v) for v in subject_related.values())
@@ -236,7 +227,6 @@ async def _corr_only_update(conn, subject_closes: pd.DataFrame,
 # ---------------------------------------------------------------------------
 async def _insert_rows(conn, subject_closes: pd.DataFrame,
                        index_closes: pd.DataFrame,
-                       etf_amount_by_index: pd.DataFrame,
                        shared_weights: dict,
                        subject_related: dict[str, set[str]],
                        sec_type: str,
@@ -249,9 +239,8 @@ async def _insert_rows(conn, subject_closes: pd.DataFrame,
         logger.info("    -> all target dates already present; nothing to do.")
         return 0
 
-    benchmark_close_wide, _etf_amount_wide, etf_amount_long = (
-        prepare_pivots(index_closes, etf_amount_by_index)
-    )
+    # No wide pivot here — the insert path merges per-subject from the
+    # long frames; only the corr path needs benchmark_close_wide.
     weights_frame = build_weights_frame(shared_weights)
 
     total = 0
@@ -273,16 +262,12 @@ async def _insert_rows(conn, subject_closes: pd.DataFrame,
 
             one_subject = subject_closes[subject_closes["code"] == subject_code]
             merged = merge_subject_with_benchmarks(
-                one_subject, related_idx, sec_type
+                one_subject, related_idx, sec_type, subject_code
             )
             if merged is None:
                 continue
 
             merged = attach_shared_weights(merged, weights_frame, subject_code)
-            merged = attach_etf_amounts(
-                merged, etf_amount_long, sec_type, subject_code
-            )
-            merged = compute_ma5_ratio(merged)
             merged = filter_to_target_rows(
                 merged, target_dates, subject_code, done - 1, n_subjects
             )

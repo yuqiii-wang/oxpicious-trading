@@ -24,16 +24,19 @@
  *     value ("—" when null) or nothing.
  *   • group             — layered-header group label (see above).
  *   • filter            — { type: "ticks" | "date" | "range",
- *     granularity?, value(row) }. Only active when `enableFilters` is set;
+ *     granularity?, frozenFromYears?, value(row) }. Only active when
+ *     `enableFilters` is set;
  *     its value(row) ALSO feeds the default cell text regardless. When
  *     active, filters AND across columns and tick menus are tri-state
  *     ((All) ⇔ everything shown); state resets when `filterScopeDeps`
- *     change.
+ *     change. Each filter popup also carries an order row (Ascending ⇄
+ *     Descending) that makes its column the table's ORDERING KEY — rows
+ *     render sorted by it, defaulting to the first date column descending.
  *
  * Rows are zebra-striped; when every row is filtered out a single muted
  * row says so; when `rows` is empty from the start `emptyState` renders.
  */
-import { type ReactNode } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 import {
   Table,
   TableBody,
@@ -55,6 +58,11 @@ export interface ExpandedTableFilter<T> {
   type: "ticks" | "date" | "range";
   /** date type only — input granularity (default "date"). */
   granularity?: "date" | "month";
+  /** date type only — END-ONLY mode: a single editable end-period
+   *  input selecting rows whose stats month EQUALS it (the end − N
+   *  years lookback min is auto-frozen as a caption-only stats
+   *  window; no From input). */
+  frozenFromYears?: number;
   /** The row's filterable value (ticks: string; date: comparable
    *  "YYYY-MM"/"YYYY-MM-DD"; range: number). */
   value: (row: T) => string | number | null;
@@ -92,13 +100,88 @@ export interface ExpandedTableProps<T> {
   filterScopeDeps?: unknown[];
   /** Rendered instead of the table when `rows` is empty. */
   emptyState?: ReactNode;
+  /** Row-click handler (cursor turns pointer when set). */
+  onRowClick?: (row: T) => void;
+  /** rowKey of the currently selected row (tinted) — paired with
+   *  onRowClick to show which row the selection state belongs to. */
+  selectedRowKey?: string | null;
 }
 
 /** Top header-row height (px) — fixed so the sub-header row's sticky top
  *  offset matches; both controlled via the head-cell sx below. */
 const HEAD_ROW_H = 28;
 
-export function ExpandedTable<T>({
+/** Header/body cell sx for one column — the column's alignment plus the
+ *  fixed width hint (kept off group colSpan cells, which size to the sum
+ *  of their sub-columns). Module scope: shared by the header and the
+ *  memoized body rows without identity churn. */
+function colSx<T>(
+  c: ExpandedTableColumn<T>,
+  base: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...base,
+    textAlign: c.align ?? "left",
+    ...(c.width != null ? { width: c.width } : {}),
+  };
+}
+
+/** One body row's default cell content: the column's render fn, else the
+ *  filter value ("—" when null), else nothing. */
+function cellText<T>(
+  c: ExpandedTableColumn<T>,
+  row: T,
+  valueByKey: Map<string, (r: T) => string | number | null>,
+): ReactNode {
+  if (c.render != null) return c.render(row);
+  const valueFn = valueByKey.get(c.key);
+  if (valueFn == null) return null;
+  const v = valueFn(row);
+  return v == null ? (
+    <Typography component="span" variant="inherit" color="text.disabled">
+      —
+    </Typography>
+  ) : (
+    String(v)
+  );
+}
+
+interface BodyRowProps<T> {
+  row: T;
+  columns: ExpandedTableColumn<T>[];
+  /** column key → filter value fn (feeds default cell text). */
+  valueByKey: Map<string, (r: T) => string | number | null>;
+  selected: boolean;
+  idx: number;
+  onRowClick?: (row: T) => void;
+}
+
+/** One body row, individually MEMOIZED: a selection-tint change
+ *  (selectedRowKey) or a freeze flip re-renders only the affected row
+ *  instead of the whole 100+ row body (the tint render measured ~0.9 s
+ *  on the Recent Movements forecast table, 2026-09). All props stay
+ *  identity-stable for untouched rows (memoized columns in callers). */
+function BodyRowImpl<T>({ row, columns, valueByKey, selected, idx, onRowClick }: BodyRowProps<T>) {
+  return (
+    <TableRow
+      onClick={onRowClick ? () => onRowClick(row) : undefined}
+      sx={{
+        ...expandedTableBodyRowSx(idx),
+        ...(onRowClick ? { cursor: "pointer" } : {}),
+        ...(selected ? { bgcolor: "action.selected" } : {}),
+      }}
+    >
+      {columns.map((c) => (
+        <TableCell key={c.key} sx={colSx(c, expandedTableBodyCellSx)}>
+          {cellText(c, row, valueByKey)}
+        </TableCell>
+      ))}
+    </TableRow>
+  );
+}
+const BodyRow = memo(BodyRowImpl) as typeof BodyRowImpl;
+
+export function ExpandedTableImpl<T>({
   columns,
   rows,
   rowKey,
@@ -106,26 +189,40 @@ export function ExpandedTable<T>({
   enableFilters = false,
   filterScopeDeps = [],
   emptyState,
+  onRowClick,
+  selectedRowKey,
 }: ExpandedTableProps<T>) {
   // Filters are opt-in via enableFilters (default false — "explicitly said
   // to set up filter args from backend"). Column defs alone are not enough.
   // The value fns stay reachable for DEFAULT CELL TEXT even when the filter
   // UI is off, so render-less columns keep showing their values.
-  const filterDefs: HeaderFilterDef<T>[] = enableFilters
-    ? columns
-        .filter((c) => c.filter != null)
-        .map((c) => ({
-          key: c.key,
-          label: c.label,
-          type: c.filter!.type,
-          granularity: c.filter!.granularity,
-          value: c.filter!.value,
-        }))
-    : [];
-  const valueByKey = new Map(
-    columns
-      .filter((c) => c.filter != null)
-      .map((c) => [c.key, c.filter!.value]),
+  // Memoized on `columns`: identity stability here keeps the header-filter
+  // hook's memos AND the memoized body rows from recomputing on every
+  // parent render.
+  const filterDefs: HeaderFilterDef<T>[] = useMemo(
+    () =>
+      enableFilters
+        ? columns
+            .filter((c) => c.filter != null)
+            .map((c) => ({
+              key: c.key,
+              label: c.label,
+              type: c.filter!.type,
+              granularity: c.filter!.granularity,
+              frozenFromYears: c.filter!.frozenFromYears,
+              value: c.filter!.value,
+            }))
+        : [],
+    [columns, enableFilters],
+  );
+  const valueByKey = useMemo(
+    () =>
+      new Map(
+        columns
+          .filter((c) => c.filter != null)
+          .map((c) => [c.key, c.filter!.value] as const),
+      ),
+    [columns],
   );
   const { filtered, menuFor } = useTableHeaderFilters(filterDefs, rows, filterScopeDeps);
 
@@ -149,36 +246,10 @@ export function ExpandedTable<T>({
   const subSx = { ...expandedTableHeadCellSx, position: "sticky", top: HEAD_ROW_H, py: 0.4 } as const;
   const groupSx = { ...headSx, textAlign: "center" } as const;
 
-  /** Header/body cell sx for one column — the column's alignment plus the
-   *  fixed width hint (kept off group colSpan cells, which size to the sum
-   *  of their sub-columns). */
-  const colSx = (
-    c: ExpandedTableColumn<T>,
-    base: Record<string, unknown>,
-  ): Record<string, unknown> => ({
-    ...base,
-    textAlign: c.align ?? "left",
-    ...(c.width != null ? { width: c.width } : {}),
-  });
-
   const headContent = (c: ExpandedTableColumn<T>, def?: HeaderFilterDef<T>): ReactNode =>
     c.filter != null && def != null ? menuFor(def) : c.label;
 
   const defByKey = new Map(filterDefs.map((d) => [d.key, d]));
-
-  const cellText = (c: ExpandedTableColumn<T>, row: T): ReactNode => {
-    if (c.render != null) return c.render(row);
-    const valueFn = valueByKey.get(c.key);
-    if (valueFn == null) return null;
-    const v = valueFn(row);
-    return v == null ? (
-      <Typography component="span" variant="inherit" color="text.disabled">
-        —
-      </Typography>
-    ) : (
-      String(v)
-    );
-  };
 
   return (
     <TableContainer sx={expandedTableContainerSx(maxHeight)}>
@@ -232,23 +303,30 @@ export function ExpandedTable<T>({
               </TableCell>
             </TableRow>
           ) : (
-            filtered.map((row, idx) => (
-              <TableRow key={rowKey(row)} sx={expandedTableBodyRowSx(idx)}>
-                {columns.map((c) => (
-                  <TableCell
-                    key={c.key}
-                    sx={colSx(c, expandedTableBodyCellSx)}
-                  >
-                    {cellText(c, row)}
-                  </TableCell>
-                ))}
-              </TableRow>
-            ))
+            filtered.map((row, idx) => {
+              const key = rowKey(row);
+              return (
+                <BodyRow<T>
+                  key={key}
+                  row={row}
+                  columns={columns}
+                  valueByKey={valueByKey}
+                  selected={selectedRowKey != null && key === selectedRowKey}
+                  idx={idx}
+                  onRowClick={onRowClick}
+                />
+              );
+            })
           )}
         </TableBody>
       </Table>
     </TableContainer>
   );
 }
+
+// Memoized — callers that memoize their column defs / rowKey / callbacks
+// (ForecastTable) keep this heavy 100+ row body out of unrelated parent
+// re-renders (trigger-day freeze / chip state flips).
+export const ExpandedTable = memo(ExpandedTableImpl) as typeof ExpandedTableImpl;
 
 export default ExpandedTable;

@@ -138,4 +138,7 @@ from downloads._common.plans import (
     RunStats,
 )
 
+# --- cross-process single-instance locks -------------------------------------
+from downloads._common.locking import single_instance_lock
+
 __all__ = [name for name in dir() if not name.startswith("_")]

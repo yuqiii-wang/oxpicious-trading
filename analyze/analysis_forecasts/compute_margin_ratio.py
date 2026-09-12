@@ -18,10 +18,12 @@ ratio states:
   ratio_state: no_buy nb | vlow z<=-2 | low -2<z<=-1 | mid -1<z<=+1 |
                high +1<z<=+2 | vhigh z>+2
 
-Like px_vol_state there is NO cooldown (a state cell admits every
-qualifying day), and the bucket split is by PK member is_market_hyped
-only. The bucket is etf/stock only — index rz_buy is NULL so every
-mask is False and no rows emit.
+There is NO cooldown (a state cell admits every qualifying day —
+1-day signals, the identity registry's streak_signal_days constant;
+px_vol_state moved onto the event families' streak-merge in 2026-09,
+margin_ratio did not), and the bucket split is by PK member
+is_market_hyped only. The bucket is etf/stock only — index rz_buy is
+NULL so every mask is False and no rows emit.
 
 Per (side, hype) subset the horizon aggregates reuse
 wide.aggregate_horizons_sparse against the code's ADAPTIVE reversal
@@ -46,6 +48,8 @@ import numpy as np
 
 from analyze.analysis_forecasts.config import (
     FORWARD_HORIZONS,
+    MM_HORIZONS,
+    LOOKBACK_PERIOD,
     MARGIN_RATIO_HIGH_BAR,
     MARGIN_RATIO_LOW_BAR,
     MARGIN_RATIO_STATES,
@@ -83,6 +87,7 @@ def compute_margin_ratio_results(
     sec_type: str,
     hype: np.ndarray,
     first_ord: np.ndarray,
+    grid_ord: np.ndarray | None = None,
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, bucket rows) per stat month.
 
@@ -101,6 +106,10 @@ def compute_margin_ratio_results(
         first_ord: (C,) per-code first data date as ABSOLUTE epoch-day
               ordinals — a code is live for a window only when
               first_ord < mw.lo_ord (DATE-space full-window gate).
+        grid_ord: optional (T,) int64 day ordinals of the FULL grid
+              (build_grid) — sliced per window into aggregate_horizons_
+              sparse's win_ord so each emitted row carries its
+              trigger_dates (the calendar dates behind occurrence_count).
     """
     C = len(codes)
 
@@ -114,6 +123,10 @@ def compute_margin_ratio_results(
 
         FINs = {n: chg[f"FIN_{n}"][lo:hi] for n in FORWARD_HORIZONS}
         NC0s = {n: chg[f"NC0_{n}"][lo:hi] for n in FORWARD_HORIZONS}
+        # Window-sliced PATH-extreme matrices (FMAX0/FMIN0) — the
+        # swing-aware reversal event + max_low_change_ratio inputs.
+        PATH0s = {n: (chg[f"FMAX0_{n}"][lo:hi], chg[f"FMIN0_{n}"][lo:hi])
+                  for n in MM_HORIZONS}
         # Per-(code, horizon) adaptive reversal bar for this window.
         thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
         HY = hype[lo:hi]
@@ -177,7 +190,9 @@ def compute_margin_ratio_results(
                     continue
 
                 agg = aggregate_horizons_sparse(
-                    st, sc, fk, C, P, side, NC0s, FINs, thr_n
+                    st, sc, fk, C, P, side, NC0s, FINs, thr_n,
+                    path0s=PATH0s,
+                    win_ord=None if grid_ord is None else grid_ord[lo:hi],
                 )
                 kk, ii = np.nonzero(emit.T)
                 # Per-bucket mean state magnitudes (config JSONB — the
@@ -216,6 +231,11 @@ def compute_margin_ratio_results(
                         "low_bar": MARGIN_RATIO_LOW_BAR,
                         "high_bar": MARGIN_RATIO_HIGH_BAR,
                         "vhigh_bar": MARGIN_RATIO_VHIGH_BAR,
+                        "lookback_period": LOOKBACK_PERIOD,
+                        # state cells admit every qualifying day (no
+                        # streak-merge — 1-day signals): the identity
+                        # registry's streak_signal_days constant.
+                        "streak_signal_days": 1,
                         # config JSONB — asyncpg COPY needs a JSON text
                         # string (compute_px_vol precedent).
                         "config": json.dumps({

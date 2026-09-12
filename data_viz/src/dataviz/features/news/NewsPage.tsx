@@ -2,39 +2,55 @@
  * News page — browse the text-schema news corpus (loaded by builds.text).
  *
  * Layout (built on the shared analysis nav kit):
- *   • SecNavShell — header (title + keyword CodeSearchBar + Refresh) +
- *     loading/error + page content. The sec_type toggle and code search are
- *     OFF: news is not a security type.
+ *   • SecNavShell — header (title + Refresh) + loading/error + page content.
+ *     The sec_type toggle and code search are OFF: news is not a security
+ *     type (the old header keyword bar moved into the question bar's 本地).
  *   • navSlot — source filter chips + the shared SecClassificationNav in its
  *     full TWO-COLUMN form (same as the security pages): LEFT sector →
  *     industry, RIGHT strategy → theme (BROAD/STRAT macro themes live here),
- *     mutually exclusive, no exchange row, no L3 security chips. Below it the
- *     shared DateEventStrip (the PBoC OMA date-event component): one dot per
- *     date that has news, co-filtered by scope + keyword + source.
- *   • NewsList — articles matching (classification scope ∧ keyword ∧ source
- *     ∧ picked date).
+ *     mutually exclusive, no exchange row, no L3 security chips. Directly
+ *     beneath the nav the QuestionSearchBar with TWO buttons sharing one
+ *     input: 本地 naive-tokenizes the question into taxonomy keywords and
+ *     drives the SAME keyword-search API as the old bar (search_mode=any,
+ *     composed with the scope/source/author filters); 在线 runs the live
+ *     zhihu question search (source + author travel with the request;
+ *     non-enabled source chips disable while the bar has input). Below it
+ *     the shared DateEventStrip (the PBoC OMA date-event component): one
+ *     dot per date that has news, co-filtered by scope + keyword + source.
+ *   • NewsFeedPage (shared) — social-media-style post feed matching
+ *     (classification scope ∧ keyword ∧ source ∧ picked date); click a post
+ *     to expand its full content and its threaded comments. Swapped for
+ *     NewsSearchResults while an online search result is displayed.
  *
  * Co-filtering contract: the SAME scope params drive the date strip and the
  * item list, so picking an industry re-draws the dots (only dates with news
  * for that scope show one) and picking a date narrows the list; the keyword
  * and source apply to both (and to the nav tree counts themselves).
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Chip, Stack, Typography } from "@mui/material";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import DateEventStrip, { type DateEvent } from "@/shared/components/date-events/DateEventStrip";
-import CodeSearchBar from "@/components/CodeSearchBar";
 import {
   fetchNewsAuthors,
   fetchNewsCalendar,
   fetchNewsItems,
   fetchNewsStrategyThemes,
   fetchNewsThemes,
+  fetchNewsTokenize,
   invalidateCacheForPrefix,
+  runNewsSearch,
 } from "@/lib/api-client";
-import type { NewsCalendarResponse, NewsDayCount, NewsItemsResponse } from "@shared/types";
-import NewsList, { PAGE_SIZE } from "./NewsList";
+import type {
+  NewsCalendarResponse,
+  NewsDayCount,
+  NewsItemsResponse,
+  NewsSearchResponse,
+} from "@shared/types";
+import NewsFeedPage, { PAGE_SIZE } from "@/shared/components/news/NewsFeedPage";
+import QuestionSearchBar, { QUESTION_SEARCH_ENABLED_SOURCES } from "./QuestionSearchBar";
+import NewsSearchResults from "./NewsSearchResults";
 
 /** Sources produced by downloads.macro.* (mirrors builds/text/loaders.py). */
 const NEWS_SOURCES = ["gov", "ndrc", "pboc_lpr", "pboc_omo", "pboc_oma", "zhihu"] as const;
@@ -50,6 +66,79 @@ export default function NewsPage() {
   // list. Both chip rows render BELOW the Industry row in the nav.
   const [source, setSource] = useState<string | null>(DEFAULT_SOURCE);
   const [author, setAuthor] = useState<string | null>(null);
+
+  // ---- Question bar (beneath the classification nav): two search paths ----
+  // • ONLINE — live zhihu content search; the page's source + author are sent
+  //   with the request. Source chips outside QUESTION_SEARCH_ENABLED_SOURCES
+  //   render disabled only while the Online button is hovered or an online
+  //   search is running / its results are shown — TYPING does not touch them
+  //   (an unsupported source resolves to the first enabled one at submit).
+  // • LOCAL — the ORIGINAL keyword search: the question is naive-tokenized
+  //   into taxonomy keywords (WSL python), and the token list drives the
+  //   same search param as the old header bar — composed with the active
+  //   scope/source/author filters on every fetch below (search_mode=any:
+  //   OR across tokens).
+  const [questionInput, setQuestionInput] = useState("");
+  const [searchRunning, setSearchRunning] = useState(false);
+  const [searchResult, setSearchResult] = useState<NewsSearchResponse | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [onlineHover, setOnlineHover] = useState(false);
+  // Online-search active: a run is in flight or its results are displayed.
+  const onlineActive = searchRunning || searchResult !== null;
+
+  // Local-search state: searchTerm/searchMode feed scopeParams (calendar +
+  // authors + items); localTokens only labels the bar's active chip.
+  const [searchTerm, setSearchTerm] = useState<string | null>(null);
+  const [searchMode, setSearchMode] = useState<"any" | "all">("any");
+  const [localRunning, setLocalRunning] = useState(false);
+  const [localEmpty, setLocalEmpty] = useState(false);
+
+  const runOnlineSearch = useCallback(async () => {
+    const question = questionInput.trim();
+    if (!question || searchRunning) return;
+    setSearchRunning(true);
+    setSearchError(null);
+    // "All" (null) resolves to the first enabled source for the request.
+    const searchSource =
+      source && QUESTION_SEARCH_ENABLED_SOURCES.includes(source)
+        ? source
+        : QUESTION_SEARCH_ENABLED_SOURCES[0];
+    const resp = await runNewsSearch({ question, source: searchSource, author });
+    setSearchRunning(false);
+    setSearchResult(resp);
+    if (!resp.success && !resp.already_running) {
+      setSearchError(resp.stderr_tail ?? "未知错误");
+    }
+  }, [questionInput, searchRunning, source, author]);
+
+  const runLocalSearch = useCallback(async () => {
+    const question = questionInput.trim();
+    if (!question || localRunning) return;
+    setLocalRunning(true);
+    setLocalEmpty(false);
+    const { tokens, error } = await fetchNewsTokenize(question);
+    setLocalRunning(false);
+    if (error || tokens.length === 0) {
+      setLocalEmpty(true);
+      return;
+    }
+    setSearchMode("any");
+    setSearchTerm(tokens.join(" "));
+  }, [questionInput, localRunning]);
+
+  const clearLocalSearch = useCallback(() => {
+    setSearchTerm(null);
+    setSearchMode("any"); // moot while searchTerm is null
+    setLocalEmpty(false);
+  }, []);
+
+  const clearQuestionSearch = useCallback(() => {
+    setQuestionInput("");
+    setSearchResult(null);
+    setSearchError(null);
+    setSearchTerm(null);
+    setLocalEmpty(false);
+  }, []);
 
   // Nav trees: both columns, counts scoped to the active source + author.
   // themesSources is rebuilt per render so a source/author change is picked
@@ -106,9 +195,8 @@ export default function NewsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav.strategies]);
 
-  // Keyword search (free text, whitespace = AND) — page-local state wired to
-  // a CodeSearchBar in the shell header (the nav kit's code search is off).
-  const [searchTerm, setSearchTerm] = useState<string | null>(null);
+  // Selected date + pagination for the corpus list (local search state lives
+  // with the question-bar block above).
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [page, setPage] = useState(1);
 
@@ -138,8 +226,8 @@ export default function NewsPage() {
   }, [nav.industrySlug, nav.themeSlug, nav.sectorId, nav.strategyId, slugToIndustryId]);
   const scopeKey = JSON.stringify(scope);
   const scopeParams = useMemo(
-    () => ({ ...scope, search: searchTerm, source, author }),
-    [scopeKey, searchTerm, source, author], // eslint-disable-line react-hooks/exhaustive-deps -- scopeKey is the canonical scope identity
+    () => ({ ...scope, search: searchTerm, search_mode: searchTerm ? searchMode : null, source, author }),
+    [scopeKey, searchTerm, searchMode, source, author], // eslint-disable-line react-hooks/exhaustive-deps -- scopeKey is the canonical scope identity
   );
 
   // Scope/search/source changes reset the day pick + pagination + author pick
@@ -154,7 +242,12 @@ export default function NewsPage() {
   const [authors, setAuthors] = useState<Array<{ author: string; count: number }>>([]);
   useEffect(() => {
     let cancelled = false;
-    fetchNewsAuthors({ ...scope, search: searchTerm, source })
+    fetchNewsAuthors({
+      ...scope,
+      search: searchTerm,
+      search_mode: searchTerm ? searchMode : null,
+      source,
+    })
       .then((a) => {
         if (!cancelled) setAuthors(a);
       })
@@ -162,7 +255,7 @@ export default function NewsPage() {
         if (!cancelled) setAuthors([]);
       });
     return () => { cancelled = true; };
-  }, [scopeKey, searchTerm, source]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scopeKey, searchTerm, searchMode, source]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [calendar, setCalendar] = useState<NewsCalendarResponse | null>(null);
   const [calendarLoading, setCalendarLoading] = useState(false);
@@ -236,19 +329,10 @@ export default function NewsPage() {
       backPath="/dataviz"
       subtitle={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : " · 全部日期"} — 点选日期圆点筛选当日新闻`}
       showSearch={false}
-      headerExtra={
-        <CodeSearchBar
-          activeCode={searchTerm}
-          onSearch={(kw) => setSearchTerm(kw)}
-          onClear={() => setSearchTerm(null)}
-          placeholder="关键词搜索（空格 = AND）"
-          activeLabel="关键词"
-        />
-      }
       // Replace the shell's default security nav with the news variant:
       // full two-column classification (sector/industry vs strategy/theme —
-      // mutually exclusive, no exchange row, no L3 chips) + source chips +
-      // the shared date-event strip underneath.
+      // mutually exclusive, no exchange row, no L3 chips) + question search
+      // bar + source chips + the shared date-event strip underneath.
       navSlot={
         <Box sx={{ mb: 1.5 }}>
           <SecClassificationNav
@@ -268,9 +352,31 @@ export default function NewsPage() {
             loading={nav.loading}
             sx={{ mb: 1 }}
           />
+          {/* Question search bar — directly beneath the classification nav.
+              本地 tokenizes the question and drives the keyword search API
+              (with the scope/source/author filters below); 在线 runs the
+              live source search (zhihu for now). The old header keyword bar
+              is merged into this bar's 本地 button. */}
+          <QuestionSearchBar
+            value={questionInput}
+            onChange={setQuestionInput}
+            onLocalSearch={runLocalSearch}
+            onOnlineSearch={runOnlineSearch}
+            onClearLocal={clearLocalSearch}
+            onClear={clearQuestionSearch}
+            onOnlineHoverChange={setOnlineHover}
+            localRunning={localRunning}
+            onlineRunning={searchRunning}
+            localTerms={searchTerm}
+            localEmpty={localEmpty}
+            active={searchResult !== null}
+          />
           {/* Source + Author rows — directly below the Industry row, same
               chip style as the classification rows. Both narrow the nav
-              counts, the date strip and the list. */}
+              counts, the date strip and the list — and travel with the
+              question search request. Sources without question-search
+              support render disabled only while the Online button is
+              hovered or an online search is active — never on typing. */}
           <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5, mb: 0.75 }}>
             <Typography variant="subtitle2" sx={{ fontWeight: 600, minWidth: 56, fontSize: "0.75rem" }}>
               Source
@@ -291,6 +397,7 @@ export default function NewsPage() {
                 color={source === s ? "primary" : "default"}
                 variant={source === s ? "filled" : "outlined"}
                 onClick={() => setSource(source === s ? null : s)}
+                disabled={(onlineHover || onlineActive) && !QUESTION_SEARCH_ENABLED_SOURCES.includes(s)}
                 sx={{ fontSize: "0.7rem" }}
               />
             ))}
@@ -352,15 +459,26 @@ export default function NewsPage() {
         </Box>
       }
     >
-      <NewsList
-        items={itemsData?.items ?? []}
-        total={itemsData?.total ?? 0}
-        page={page}
-        onPageChange={setPage}
-        loading={itemsLoading}
-        error={itemsError}
-        scopeLabel={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : ""}${searchTerm ? ` · “${searchTerm}”` : ""}${source ? ` · ${source}` : ""}${author ? ` · ${author}` : ""}`}
-      />
+      {searchResult ? (
+        // Live question-search results (raw zhihu items) replace the feed
+        // until the search is cleared. The date strip + nav above keep their
+        // corpus state untouched.
+        <NewsSearchResults
+          result={searchResult}
+          error={searchError}
+          onDismiss={clearQuestionSearch}
+        />
+      ) : (
+        <NewsFeedPage
+          items={itemsData?.items ?? []}
+          total={itemsData?.total ?? 0}
+          page={page}
+          onPageChange={setPage}
+          loading={itemsLoading}
+          error={itemsError}
+          scopeLabel={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : ""}${searchTerm ? ` · “${searchTerm}”` : ""}${source ? ` · ${source}` : ""}${author ? ` · ${author}` : ""}`}
+        />
+      )}
     </SecNavShell>
   );
 }

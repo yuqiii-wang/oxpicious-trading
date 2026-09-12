@@ -3,7 +3,9 @@
 Ported from analyze.sec_alloc_perf_attribution.fetch (2026-09-04) with the
 config import re-pointed; logic unchanged for parity. Reads composition
 shared weights (subject x benchmark pairs), benchmark index closes, and
-aggregate ETF turnover per (date, tracking_index).
+subject-pool closes. (ETF-market turnover is NOT fetched here anymore —
+the cross_stats ETF amount columns were consolidated away 2026-09-07;
+consumers join stats.index_exts at read time.)
 
 GPU-safe frame construction: asyncpg returns python objects (date, Decimal,
 str) — building ``pd.DataFrame([dict(r) for r in rows])`` would create
@@ -187,7 +189,8 @@ async def fetch_index_closes(
     rows = await conn.fetch(sql, *params)
     if not rows:
         return pd.DataFrame(
-            columns=["benchmark_code", "date", "benchmark_close"]
+            columns=["benchmark_code", "date", "benchmark_close",
+                     "benchmark_price_change"]
         )
 
     df = pd.DataFrame({
@@ -196,7 +199,15 @@ async def fetch_index_closes(
         "benchmark_close": _floats(rows, "close"),
     })
     df = df.sort_values(["benchmark_code", "date"]).reset_index(drop=True)
-    return df[["benchmark_code", "date", "benchmark_close"]]
+    # Daily point change per benchmark — the second operand of
+    # code_price_with_benchmark_offset. diff() on each series' OWN
+    # trading calendar (before any inner-merge date intersection), so a
+    # date missing on one side never corrupts the other side's lag.
+    df["benchmark_price_change"] = df.groupby("benchmark_code")[
+        "benchmark_close"
+    ].diff()
+    return df[["benchmark_code", "date", "benchmark_close",
+               "benchmark_price_change"]]
 
 
 async def fetch_index_subject_closes(
@@ -244,7 +255,8 @@ async def fetch_index_subject_closes(
 
     rows = await conn.fetch(sql, *params)
     if not rows:
-        return pd.DataFrame(columns=["code", "date", "subject_close"])
+        return pd.DataFrame(columns=["code", "date", "subject_close",
+                                     "code_price_change"])
 
     df = pd.DataFrame({
         "code": [r["code"] for r in rows],
@@ -252,47 +264,8 @@ async def fetch_index_subject_closes(
         "subject_close": _floats(rows, "subject_close"),
     })
     df = df.sort_values(["code", "date"]).reset_index(drop=True)
-    return df[["code", "date", "subject_close"]]
-
-
-async def fetch_etf_amount_by_index(
-    conn, start_date: Optional[datetime.date] = None
-) -> pd.DataFrame:
-    """Aggregate ETF turnover per (date, tracking_index) from the
-    precomputed stats.index_exts.total_etf_trading_amount (built by
-    builds.index exts phase). Populates benchmark_etf_trading_amount AND
-    code_etf_trading_amount for index subjects — the ETF-MARKET turnover
-    tracking the index, NOT the index's own turnover (a tighter
-    ETF-market liquidity measure; known upward bias as the ETF universe
-    grows).
-
-    Indices with no tracking ETF (000001, 399001) have NO rows → NULL
-    amounts and NULL ratio downstream.
-
-    Returns DataFrame [index_code, date, etf_amount] (yuan).
-    """
-    date_where: str = ""
-    params: list = []
-    if start_date is not None:
-        date_where = "AND date >= $1"
-        params.append(start_date)
-
-    sql = f"""
-        SELECT code AS index_code,
-               extract(epoch from date)::float8 AS date,
-               total_etf_trading_amount::float8 AS etf_amount
-        FROM stats.index_exts
-        WHERE total_etf_trading_amount IS NOT NULL
-        {date_where}
-    """
-
-    rows = await conn.fetch(sql, *params)
-    if not rows:
-        return pd.DataFrame(columns=["index_code", "date", "etf_amount"])
-
-    df = pd.DataFrame({
-        "index_code": [r["index_code"] for r in rows],
-        "date": epoch_ns_array(rec_col(rows, "date")),
-        "etf_amount": _floats(rows, "etf_amount"),
-    })
-    return df[["index_code", "date", "etf_amount"]]
+    # Daily point change per subject (own calendar — see the benchmark
+    # fetch); merged with the benchmark change into
+    # code_price_with_benchmark_offset by the pair-grain pipeline.
+    df["code_price_change"] = df.groupby("code")["subject_close"].diff()
+    return df[["code", "date", "subject_close", "code_price_change"]]

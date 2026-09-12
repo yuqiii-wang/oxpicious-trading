@@ -129,6 +129,7 @@ SELECT
     t.ema60,
     t.ema120,
     t.ema255,
+    t.trading_amt_per_pct_change,
     -- Liquidity & margin
     lm.trading_shares,
     lm.trading_amount,
@@ -252,7 +253,8 @@ SELECT
     t.ema20,
     t.ema60,
     t.ema120,
-    t.ema255
+    t.ema255,
+    t.trading_amt_per_pct_change
 FROM stats.index_identity i
 LEFT JOIN stats.index_basic_stats bs ON i.date = bs.date AND i.code = bs.code
 LEFT JOIN stats.index_valuation v ON i.date = v.date AND i.code = v.code
@@ -298,6 +300,7 @@ SELECT
     t.ema60,
     t.ema120,
     t.ema255,
+    t.trading_amt_per_pct_change,
     -- Liquidity & margin (mirrors etf_liquidity_margin)
     lm.trading_shares,
     lm.trading_amount,

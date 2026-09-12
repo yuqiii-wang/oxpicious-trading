@@ -12,9 +12,14 @@ the same (date, code, time) row via ON CONFLICT just updates it.
 Date-check pattern (fast-path before reading any CSV content):
   1. Glob <prefix>_*.csv files (filenames only — no reading yet)
   2. Extract dates from filenames
-  3. Query DB for dates already complete (latest bar >= CLOSE_TIME)
-  4. Filter files to only those with incomplete dates
-  5. Read ONLY the filtered files
+  3. Query DB for MAX(time) per date
+  4. A date is complete when the DB reaches CLOSE_TIME (15:00), or — for
+     days the source stopped before 15:00 (early halt) — when the DB has
+     caught up with the file's own last 5-min window (CSV tail read only)
+  5. Read ONLY the files with incomplete dates
+
+The second rule matters because a short day can never reach CLOSE_TIME;
+without it the file would be re-read and re-upserted every cycle forever.
 """
 from __future__ import annotations
 
@@ -34,23 +39,55 @@ from ._model import AssetStream, CSV_COLUMNS, CLOSE_TIME, ceiling_5min, aggregat
 logger = setup_logger("stream_sse")
 
 # Backfill interval: how often the main loop calls backfill_all_csvs.
-BACKFILL_INTERVAL_SEC = 5 * 60  # 5 minutes
+BACKFILL_INTERVAL_SEC = 5 * 60
+
+# Tail size read by _file_last_window to find a CSV's last snapshot.
+_TAIL_BYTES = 64 * 1024
+_UPDATE_TIME_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 
-def _get_incomplete_dates_for_asset(
+def _file_last_window(csv_path: Path) -> Optional[dtime]:
+    """Return the ceiling_5min window of a CSV's last snapshot, or None.
+
+    Reads only the tail of the file: write_snapshot_csv appends polls in
+    order and all rows of one poll share an update_time, so the last
+    timestamp in the file is the latest. A line cut in half by the tail
+    boundary simply fails to match the timestamp pattern.
+
+    Used to classify days whose source data ended before CLOSE_TIME: such
+    a date can never reach 15:00 in the DB, so "complete" has to mean
+    "caught up with the file's own last window" instead.
+    """
+    try:
+        size = csv_path.stat().st_size
+        if size == 0:
+            return None
+        with open(csv_path, "rb") as f:
+            f.seek(max(0, size - _TAIL_BYTES))
+            chunk = f.read().decode("utf-8-sig", errors="replace")
+        matches = _UPDATE_TIME_RE.findall(chunk)
+        if not matches:
+            return None
+        last_dt = datetime.strptime(max(matches), "%Y-%m-%d %H:%M:%S")
+        return ceiling_5min(last_dt.time())
+    except OSError as e:
+        logger.warning("backfill: tail read failed for %s: %s", csv_path.name, e)
+        return None
+
+
+def _get_db_max_times(
     conn,
     asset: AssetStream,
     all_dates: Set[date],
-) -> Set[date]:
-    """Return subset of dates NOT yet complete in the DB for this asset.
+) -> Dict[date, Optional[dtime]]:
+    """Return {date: MAX(time)} in the asset's intraday table per date.
 
-    A date is complete when the latest bar time in the asset's intraday
-    table is >= CLOSE_TIME (15:00).
+    None means the DB has no bars for that date yet.
 
     Single SQL query — batch-checks all dates at once instead of per-file.
     """
     if not all_dates:
-        return set()
+        return {}
 
     date_list = list(all_dates)
     cur = conn.execute(
@@ -60,15 +97,8 @@ def _get_incomplete_dates_for_asset(
         f"GROUP BY date",
         (date_list,),
     )
-    rows = cur.fetchall()
-
-    complete_dates: Set[date] = set()
-    for row in rows:
-        max_time = row[1]
-        if max_time is not None and max_time >= CLOSE_TIME:
-            complete_dates.add(row[0])
-
-    return all_dates - complete_dates
+    db_max = {row[0]: row[1] for row in cur.fetchall()}
+    return {d: db_max.get(d) for d in all_dates}
 
 
 def _parse_csv_row(row: dict) -> Optional[Tuple[datetime, str, dict]]:
@@ -137,14 +167,17 @@ def backfill_csv_file(
     asset: AssetStream,
     csv_path: Path,
     etf_member_codes: Optional[set] = None,
+    last_window: Optional[dtime] = None,
 ) -> Tuple[int, int]:
     """Load one CSV file, aggregate into 5-min bars, upsert to DB.
 
     Returns (n_identity, n_bars) upserted.
 
     DB-completeness guard: If the intraday table already has complete
-    bars for this CSV's date (latest bar >= CLOSE_TIME), the file is
-    skipped entirely — no redundant CSV parsing or re-insertion.
+    bars for this CSV's date (latest bar >= CLOSE_TIME, or — when
+    ``last_window`` is given — the DB reached the file's own last window
+    on a day the source ended before 15:00), the file is skipped entirely
+    — no redundant CSV parsing or re-insertion.
     """
     if not csv_path.exists():
         return 0, 0
@@ -153,7 +186,7 @@ def backfill_csv_file(
     trade_date = _extract_date_from_filename(csv_path)
     if trade_date is not None:
         try:
-            if is_intraday_complete(conn, asset, trade_date):
+            if is_intraday_complete(conn, asset, trade_date, last_window=last_window):
                 logger.info(
                     "backfill %s: %s already complete in DB (latest >= 15:00); "
                     "skipping CSV.",
@@ -240,9 +273,11 @@ def backfill_all_csvs(
     """Scan for all CSV files for each asset and backfill to DB.
 
     Date-check fast-path: for each asset, filenames are checked first to
-    identify dates already complete in the DB (latest bar >= 15:00).
-    Only CSV files for incomplete dates are read — avoiding redundant
-    per-file completeness checks and CSV parsing for already-complete days.
+    identify dates already complete in the DB (latest bar >= 15:00, or —
+    for days the source ended early — the DB caught up with the file's
+    own last window). Only CSV files for incomplete dates are read —
+    avoiding redundant per-file completeness checks and CSV parsing for
+    already-complete days.
 
     Returns total number of bars upserted across all assets.
     """
@@ -277,7 +312,31 @@ def backfill_all_csvs(
         )
 
         # --- Batch-check completeness: only read CSVs for incomplete dates ---
-        incomplete_dates = _get_incomplete_dates_for_asset(conn, asset, all_dates)
+        # A date is complete when the DB reaches CLOSE_TIME, or (short days,
+        # where the source stopped before 15:00) when the DB has caught up
+        # with the CSV's own last 5-min window — tail read only.
+        db_max_times = _get_db_max_times(conn, asset, all_dates)
+
+        incomplete_dates: Set[date] = set()
+        caught_up_dates: Set[date] = set()
+        last_window_by_date: Dict[date, Optional[dtime]] = {}
+        for f in csv_files:
+            d = file_dates.get(f)
+            if d is None or d in incomplete_dates or d in caught_up_dates:
+                continue
+            db_max = db_max_times.get(d)
+            if db_max is None:
+                incomplete_dates.add(d)
+                continue
+            if db_max >= CLOSE_TIME:
+                continue
+            last_window = _file_last_window(f)
+            last_window_by_date[d] = last_window
+            if last_window is not None and db_max >= last_window:
+                caught_up_dates.add(d)
+            else:
+                incomplete_dates.add(d)
+
         if not incomplete_dates:
             logger.info(
                 "backfill %s: all %d dates already complete in DB — skipping all reads",
@@ -287,8 +346,9 @@ def backfill_all_csvs(
 
         n_skipped = len(all_dates) - len(incomplete_dates)
         logger.info(
-            "backfill %s: %d dates incomplete (skipping %d complete dates)",
-            asset.name, len(incomplete_dates), n_skipped,
+            "backfill %s: %d dates incomplete (skipping %d complete dates, "
+            "%d caught up with early-ended CSVs)",
+            asset.name, len(incomplete_dates), n_skipped, len(caught_up_dates),
         )
 
         # Filter files to only those with incomplete dates
@@ -310,6 +370,7 @@ def backfill_all_csvs(
             try:
                 _, n_bars = backfill_csv_file(
                     conn, asset, csv_path, etf_member_codes,
+                    last_window=last_window_by_date.get(file_dates.get(csv_path)),
                 )
                 total_bars += n_bars
             except Exception as e:

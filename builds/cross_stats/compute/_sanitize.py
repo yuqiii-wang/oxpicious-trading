@@ -13,9 +13,8 @@ from builds.cross_stats.config import CORR_WINDOWS
 OUT_COLS: list[str] = [
     "code", "date", "sec_type", "benchmark_code",
     "code_sec_shared_weight", "benchmark_sec_shared_weight",
-    "benchmark_etf_trading_amount", "code_etf_trading_amount",
-    "etf_trading_amount_ratio_benchmark_to_code",
-    "etf_trading_amount_ratio_benchmark_to_code_ma5",
+    "code_price_with_benchmark_offset",
+    "code_price_with_benchmark_offset_by_weighted_amt",
     "corr_20d", "corr_60d", "corr_255d",
 ]
 
@@ -24,9 +23,18 @@ _NON_NUMERIC_COLS: set[str] = {"code", "date", "sec_type", "benchmark_code"}
 
 CORR_COLS: list[str] = [f"corr_{N}d" for N in CORR_WINDOWS]
 
+# Column materialized by the post-COPY SQL pass (runner step 3b,
+# _pair_offsets.PAIR_WEIGHTED_UPDATE_SQL_* — the amount weighting needs
+# the stock-turnover fan-out, impossible frame-side). Absent from the
+# insert-mode frame: NaN-filled here so COPY writes NULL, then the
+# UPDATE pass fills it.
+_SQL_PASS_COLS: list[str] = [
+    "code_price_with_benchmark_offset_by_weighted_amt"
+]
+
 # Corr-only update payload: the 4 PK columns + the 3 corr columns. The
 # upsert's DO UPDATE clause touches ONLY corr columns, so base columns
-# (weights, ETF amounts, ratio) written by the main run are never clobbered.
+# (weights) written by the main run are never clobbered.
 CORR_OUT_COLS: list[str] = [
     "code", "date", "sec_type", "benchmark_code", *CORR_COLS,
 ]
@@ -35,11 +43,12 @@ CORR_OUT_COLS: list[str] = [
 def select_and_sanitize(merged: pd.DataFrame) -> list[dict]:
     """Select output columns and sanitize for the bulk COPY.
 
-    Corr columns may be absent (insert mode) — NaN-filled so the frame
-    always carries the full OUT_COLS shape.
+    Corr columns may be absent (insert mode) and the weighted-offset
+    column is SQL-pass materialized — NaN-filled so the frame always
+    carries the full OUT_COLS shape.
     """
     cols = safe_columns(merged)
-    for c in CORR_COLS:
+    for c in [*CORR_COLS, *_SQL_PASS_COLS]:
         if c not in cols:
             merged[c] = np.nan
     out = merged[OUT_COLS].copy()

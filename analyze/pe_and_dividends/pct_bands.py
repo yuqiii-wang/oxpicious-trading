@@ -1,7 +1,7 @@
 """Internal metric percentile band step for analyze.pe_and_dividends.
 
 Monthly trailing percentile BANDS of the two valuation series carried by
-analysis.pe_and_dividends — pe_ma20 and dividend_yield — one row per
+analysis.pe / analysis.dividends — pe and dividend_yield — one row per
 (sec_type, code, date_year_month, metric, period, pct_type) in
 analysis.pe_and_dividend_pct. The analysis.mov_ave_high_low_pct pattern
 (high/low price bands) applied to the valuation metrics; the band-break
@@ -31,8 +31,8 @@ range of the window ([1st, 99th] percentile), 10 = core envelope
 ([10th, 90th]).
 
 NULL-metric rows are excluded BEFORE the windows are built, so a
-`period` window spans `period` genuine OBSERVATIONS (pe_ma20 is NULL
-before the PE source warms up / on invalid-PE days; dividend_yield is
+`period` window spans `period` genuine OBSERVATIONS (pe is NULL
+on no-earnings / invalid-PE days; dividend_yield is
 NULL until the first trailing-12m dividend window fills) and
 min_periods counts observations, not calendar rows.
 
@@ -68,7 +68,7 @@ codes' months never count as missing.
 
 This module is an INTERNAL step of analyze.pe_and_dividends — invoked
 from __main__.py after the daily detail rows are written, reusing the
-in-memory detail DataFrame (the pe_ma20 / dividend_yield columns — no
+in-memory detail DataFrame (the pe / dividend_yield columns — no
 second DB round-trip for source values; detection does read the detail
 table to count observations per (code, month, metric)).
 
@@ -101,6 +101,7 @@ from _common.df_utils import host_array
 from analyze._common import upsert_analysis_identity
 from builds.market_hypes.compute import _grouped_rolling_quantile
 from analyze.pe_and_dividends.config import (
+    DIVIDENDS_TABLE,
     PD_PCT_COLUMNS,
     PD_PCT_DESCRIPTION,
     PD_PCT_METRICS,
@@ -110,6 +111,7 @@ from analyze.pe_and_dividends.config import (
     PD_PCT_ROWS_PER_TRIPLE,
     PD_PCT_TABLE,
     PD_PCT_TYPES,
+    PE_TABLE,
 )
 
 import logging
@@ -138,7 +140,8 @@ async def find_missing_pd_pct_triples(
         scope — the parent's active universe; delisted codes are outside
         the pipeline's universe and would never converge),
       - the code has >= PD_PCT_MIN_PERIODS (255) cumulative NON-NULL
-        observations of the metric in analysis.pe_and_dividends through
+        observations of the metric in its table (analysis.pe /
+        analysis.dividends) through
         the month's end (fewer rows yield no band — the truncated window
         cannot satisfy min_periods; all periods share this minimum, so
         the expectation is period-independent), and
@@ -161,15 +164,32 @@ async def find_missing_pd_pct_triples(
         return set()
     rows = await conn.fetch(
         f"""
-        WITH ym AS (
+        WITH pe_ym AS (
             SELECT code,
                    date_trunc('month', date)::date AS ym,
-                   COUNT(pe_ma20)        AS n_pe,
-                   COUNT(dividend_yield) AS n_dy
-            FROM analysis.pe_and_dividends
+                   COUNT(pe) AS n_pe
+            FROM {PE_TABLE}
             WHERE sec_type = $1
               AND code = ANY($2::text[])
             GROUP BY 1, 2
+        ),
+        dy_ym AS (
+            SELECT code,
+                   date_trunc('month', date)::date AS ym,
+                   COUNT(dividend_yield) AS n_dy
+            FROM {DIVIDENDS_TABLE}
+            WHERE sec_type = $1
+              AND code = ANY($2::text[])
+            GROUP BY 1, 2
+        ),
+        ym AS (
+            SELECT COALESCE(p.code, d.code) AS code,
+                   COALESCE(p.ym, d.ym)     AS ym,
+                   COALESCE(p.n_pe, 0)      AS n_pe,
+                   COALESCE(d.n_dy, 0)      AS n_dy
+            FROM pe_ym p
+            FULL OUTER JOIN dy_ym d
+              ON d.code = p.code AND d.ym = p.ym
         ),
         hist AS (
             SELECT code, ym, n_pe, n_dy,
@@ -185,7 +205,7 @@ async def find_missing_pd_pct_triples(
             GROUP BY code
         ),
         expected AS (
-            SELECT h.code, h.ym, 'pe_ma20'::text AS metric
+            SELECT h.code, h.ym, 'pe'::text AS metric
             FROM hist h JOIN last_obs lo ON lo.code = h.code
             WHERE lo.last_pe_ym IS NOT NULL
               AND h.pe_upto >= $3
@@ -245,12 +265,12 @@ async def _delete_incomplete_triples(
 
 def compute_metric_pct_bands(df: pd.DataFrame) -> pd.DataFrame:
     """Compute the month-end anchored multi-period percentile bands for
-    BOTH metrics (pe_ma20 + dividend_yield) of one sec_type's detail
+    BOTH metrics (pe + dividend_yield) of one sec_type's detail
     frame.
 
     Args:
       df: the daily detail frame (build_detail_rows output) with columns
-          [sec_type, code, date, pe_ma20, dividend_yield] — the FULL
+          [sec_type, code, date, pe, dividend_yield] — the FULL
           per-code history (the trailing windows need up to 1275 prior
           observations per anchor). NULL-metric rows are dropped per
           metric inside.
@@ -374,7 +394,7 @@ def _bands_for_metric(mdf: pd.DataFrame, metric: str) -> pd.DataFrame:
                 "pct_type": np.full(int(valid.sum()), pct, dtype=np.int64),
                 # NUMERIC(12,6) target — round at the boundary so the
                 # CSV render carries the stored precision (serves both
-                # pe_ma20-scale and dividend_yield-scale metrics).
+                # pe-scale and dividend_yield-scale metrics).
                 "high_val": np.round(high_v[valid], 6),
                 "low_val": np.round(low_v[valid], 6),
             }))
@@ -475,7 +495,7 @@ async def run_pd_pct_bands(
     already computed by the parent pe_and_dividends run.
 
     Reuses the caller's DB connection and the in-memory detail DataFrame
-    (the pe_ma20 / dividend_yield columns — no second DB fetch of source
+    (the pe / dividend_yield columns — no second DB fetch of source
     values). The frame must contain the FULL per-code history so each
     month-end anchor's trailing windows see up to 1275 prior
     observations.
@@ -498,7 +518,7 @@ async def run_pd_pct_bands(
     Args:
       conn: asyncpg connection (reused from parent).
       detail_df: the daily detail frame (build_detail_rows output) with
-          at least [sec_type, code, date, pe_ma20, dividend_yield] — the
+          at least [sec_type, code, date, pe, dividend_yield] — the
           FULL per-code history of ONE sec_type.
       sec_type: the frame's sec_type (parent loop passes one at a time
           to bound memory).

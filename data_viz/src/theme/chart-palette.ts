@@ -78,6 +78,20 @@ export const BOLL_BAND_FILL = cssVar("--chart-boll-fill", "#3498db");  // same h
 export const DIVIDEND_COLOR = cssVar("--chart-dividend", "#f1c40f"); // gold — dividend marker
 export const SPLIT_COLOR = cssVar("--chart-split", "#16a085"); // teal — split/conversion marker
 
+// Forecast trigger-day markers (analysis_forecasts.forecast_results.
+// trigger_dates — the merged signals' MID days a clicked forecast row
+// was computed over). Light purple family: a pinpoint circle at each
+// MID day plus a light full-height shade over its forward forecast
+// window (+1/+5/+20/+60), and a RELATIVELY DARK purple shade over each
+// signal's qualifying STREAK period (streak_starts / streak_ends — the
+// run of consecutive days the mid was anchored at). Violet hue stays
+// distinct from the hype-episode purple
+// (shared/charts/hypeBands: HYPE_SHADE_COLOR / HYPE_ACCENT_COLOR).
+export const TRIGGER_DATE_COLOR = cssVar("--chart-trigger-date", "#BA68C8"); // pinpoint circle at each signal (mid) day
+export const TRIGGER_DATE_FILL = cssVar("--chart-trigger-date-fill", "rgba(186, 104, 200, 0.14)"); // signal + forward-window shade
+export const TRIGGER_STREAK_FILL = cssVar("--chart-trigger-streak-fill", "rgba(140, 36, 170, 0.34)"); // signal streak-period shade (darker)
+export const TRIGGER_STREAK_COLOR = cssVar("--chart-trigger-streak", "#8C24AA"); // streak-period accent (solid form of TRIGGER_STREAK_FILL — tooltip text)
+
 // ----------------------------------------------------------------------------
 // Group major-color palette (ColorBrewer Set1) — one major color per GROUP
 // (e.g. per industry_id). Curves in the same group render as VARIANT shades

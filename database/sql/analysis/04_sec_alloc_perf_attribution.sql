@@ -8,7 +8,9 @@
 --
 --    • analyze.industry_sentiments.__main__     → builds.cross_stats.runner.run_cross_stats
 --    • attributions (broad-market weights)      → stats.cross_stats sec_type='industry'
---    • etf_contribution (ETF amounts)           → stats.cross_stats sec_type='index'
+--    • etf_contribution (ETF amounts)           → stats.index_exts directly (the
+--                                                 cross_stats ETF amount copies were
+--                                                 consolidated away 2026-09-07)
 --    • data_viz perf-attr endpoints             → stats.cross_stats sec_type='index'
 --    • data_viz intraday-movements / member-idx → stats.cross_stats sec_type='index'
 --

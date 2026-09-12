@@ -1,11 +1,12 @@
 /**
  * Live Data — Market Movements page (1st tab on /live).
  *
- * Pre-computed per-5-min-tick % change vs previous trading day's close,
- * decomposed to industry + individual-index level. Data is populated by
+ * Per-5-min-tick % change vs previous trading day's close, decomposed to
+ * industry + individual-index level. Data is populated by
  * python -m live.sec_alloc_live_attribution (Python) into
- * live.sec_alloc_live_attribution (per-tick values) +
- * live.sec_alloc_live_prev_ref (prev-day reference weights).
+ * live.sec_alloc_live_attribution (per-tick values); industry identity and
+ * the trading-amount weights are joined/computed at query time
+ * (stats.sec_classification / stats.index_basic_stats / stats.cross_stats).
  *
  * Layout (three plots, reactive to clicks):
  *   • Top plot    — Benchmark intraday 5-min % line + per-industry SHADED
@@ -136,12 +137,12 @@ export default function LiveDataMarketMovementsPage() {
   // toggle, since weighted comparison is meaningless against a zero line.
   const [noBenchmark, setNoBenchmark] = useState(false);
   // Weighting mode for the middle (Intraday Attribution) plot:
-  //  • "amt"  — trading-amount-weighted (prev-day amounts, live ref tables)
+  //  • "amt"  — trading-amount-weighted (prev-day amounts, read-time weights)
   //  • "equal"— plain member average
   // "amt" is DISABLED when:
   //   - noBenchmark is true (zero-baseline mode — comparison is against 0%)
-  //   - prev-date ref is not ready (weighted_available === false — only
-  //     fallback is_without_trading_amt rows exist)
+  //   - prev-day trading amounts are not computable (weighted_available
+  //     === false — prev-day basic_stats lagging)
   const [attributionMode, setAttributionMode] = useState<"equal" | "amt">("equal");
   const [attribution, setAttribution] = useState<SecAllocLiveAttributionResponse | null>(null);
   // Clicked member index code (bottom plot bar click) → drives the IndexPanel
@@ -366,11 +367,10 @@ export default function LiveDataMarketMovementsPage() {
   //      recent ESTIMATED daily rows from the fresh CSVs so prev-day
   //      OHLC is real (own process-id-tag …:ref:base).
   //   3. live.sec_alloc_live_attribution --mode ref --rebuild-latest-date
-  //      — invalidate this date's ref + tick rows (may have been built
-  //      from stale/estimated closes), then rebuild the heavy prev-day
-  //      ref (closes + trading amounts + weights) into
-  //      live.sec_alloc_live_prev_ref and upgrade fallback tick rows to
-  //      weighted ones.
+  //      — invalidate this date's tick rows (may have been computed from
+  //      stale/estimated closes), then rebuild daily-close-basis
+  //      (weighted) tick rows with prev closes computed at tick time from
+  //      stats.index_basic_stats.
   // May take minutes on the first run of a date → spinner via
   // handleBuildRef while in flight, and via the status poll below after a
   // page refresh, then invalidate + refetch so weighted aggregates and
@@ -496,13 +496,13 @@ export default function LiveDataMarketMovementsPage() {
   // Bottom plot: click a member bar → pick that index code → fetch its full
   // baseline (OHLC + MAs + trading_amount + PE) and render an IndexPanel
   // history chart below (same plot as the /dataviz/index-baseline page).
+  // The industry selection is KEPT — the bottom plot needs it to stay
+  // mounted; the prev-day bar / top-plot highlight already prefer the
+  // clicked member over the industry when both are set.
   const handleMemberClick = useCallback((params: unknown) => {
     const p = params as { data?: { code?: string } };
     const code = p.data?.code;
-    if (code) {
-      setSelectedMemberCode(code);
-      setSelectedIndustryId(null);
-    }
+    if (code) setSelectedMemberCode(code);
   }, []);
 
   // Fetch the IndexBundle for the clicked member index code. The
@@ -549,8 +549,9 @@ export default function LiveDataMarketMovementsPage() {
     [data, selectedTick, themeMode, noBenchmark, prevDayBar, selectedIndustryId, selectedMemberCode],
   );
 
-  // Weighted mode is effective only while the prev-date ref is ready AND
-  // we are NOT in no-benchmark mode (which forces zero-baseline equal).
+  // Weighted mode is effective only while the prev-day weights are
+  // computable AND we are NOT in no-benchmark mode (which forces
+  // zero-baseline equal).
   const weightedAvailable = attribution?.weighted_available === true;
   const effectiveAttributionMode: "equal" | "amt" =
     noBenchmark
@@ -622,7 +623,7 @@ export default function LiveDataMarketMovementsPage() {
           ? "weighted by prev-day trading amt"
           : weightedAvailable
             ? "equal-weighted"
-            : "equal-weighted (trading-amt ref not ready)"
+            : "equal-weighted (prev-day trading-amt weights not ready)"
       } · green = +, red = − · click a bar to drill into its member indices` +
       (noBenchmark ? " · no-benchmark mode" : "")
     : "Click anywhere on the top plot to pick a 5-min tick";
@@ -758,7 +759,7 @@ export default function LiveDataMarketMovementsPage() {
           ? "Market Movements — 0.0% Baseline & Per-Industry Shades"
           : "Market Movements — Benchmark % & Per-Industry Shades"}
         subtitle={refRunning
-          ? "Building yday ref (prev-day closes + trading-amt weights) — equal-weight ticks keep flowing..."
+          ? "Building yday ref (daily-close-basis weighted ticks) — equal-weight ticks keep flowing..."
           : refMessage
             ? `${topSubtitle} · ${refMessage}`
             : topSubtitle}
@@ -771,7 +772,7 @@ export default function LiveDataMarketMovementsPage() {
             startIcon={refRunning ? <CircularProgress size={12} /> : null}
             sx={{ height: 26, minWidth: 0, px: 1, fontSize: "0.7rem" }}
             title={isLatestView
-              ? "Runs the full yday-ref chain: (1) targeted downloads — only codes whose CSVs lack the prev trading day are fetched; (2) builds.index.baseline --refresh-estimated-days — rebuild estimated daily rows; (3) live.sec_alloc_live_attribution --mode ref — heavy prev-day ref + weighted tick upgrades. Deduped by process-id-tag. The 5-min equal-weight refresh runs independently."
+              ? "Runs the full yday-ref chain: (1) targeted downloads — only codes whose CSVs lack the prev trading day are fetched; (2) builds.index.baseline --refresh-estimated-days — rebuild estimated daily rows; (3) live.sec_alloc_live_attribution --mode ref — invalidate this date's ticks and rebuild daily-close-basis weighted tick rows. Deduped by process-id-tag. The 5-min equal-weight refresh runs independently."
               : "Only available on the latest date — switch the date selector back to the newest entry."}
           >
             {refRunning ? "Building Yday Ref…" : "Build Yday Ref"}

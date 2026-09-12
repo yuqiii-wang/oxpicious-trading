@@ -12,19 +12,28 @@ Pipeline per sec_type:
   2. ``build_grid`` — factorize the long frame into the (T, C) grid.
   3. ``scatter_column`` — long column → wide matrix (one fancy-index
      assignment; NaN where the code has no row on a grid date).
-  4. ``build_change_matrices`` — wide forward-change matrices + validity
+  4. ``build_change_matrices`` — wide forward-change matrices (endpoint
+     changes + the MM horizons' path-extreme swings) + validity
      + reverse flags shared by both engines.
   5. ``month_row_windows`` — per stat month, the [lo, hi) grid-row range
      of its trailing 5-year window.
-  6. ``aggregate_horizons_sparse`` — batched per-(code, config) mean/
+  6. ``iter_bucket_subsets`` — the engines' UNIFIED bucket-signal
+     pipeline: streak-merge (apply_streak_midpoints; or one-day
+     signals) → sparsify → live-gated per-config counts → per-side →
+     per-hype split, yielded as the group-ascending sparse cell lists
+     of step 7 (shared by compute_rsi / compute_std / compute_gap /
+     compute_pairs / compute_px_vol).
+  7. ``aggregate_horizons_sparse`` — batched per-(code, config) mean/
      std/high/low/reverse-prob stats of ALL forward horizons over the SPARSE
      trigger-cell lists of a stacked (T, C, K) bucket mask (shared by
      both engines; bincount/reduceat — work scales with the trigger
-     count, not the dense tensor).
-  7. ``build_result_rows`` — expand one batch's gathered aggregates into
+     count, not the dense tensor). With ``win_ord`` it also gathers the
+     per-horizon ragged TRIGGER-DATE lists (the calendar dates behind
+     occurrence_count — the forecast_results.trigger_dates column).
+  8. ``build_result_rows`` — expand one batch's gathered aggregates into
      the forecast_results fields of its emitted rows (vectorized — no
      per-row scalar rounding calls).
-  8. ``split_forecast_rows`` — split computed bucket rows into the
+  9. ``split_forecast_rows`` — split computed bucket rows into the
      motivation (mov_rsi / mov_std) and result (forecast_results) dicts.
 """
 from __future__ import annotations
@@ -352,17 +361,26 @@ def build_change_matrices(
     didx: np.ndarray,
     cidx: np.ndarray,
 ) -> dict[str, np.ndarray]:
-    """Wide matrices derived from the next_change_{n}d columns.
+    """Wide matrices derived from the forward-change columns.
 
     Keys (n = forward horizon in trading days):
       NC0_{n} — next_change_{n}d with NaN→0 (einsum-safe sums)
       FIN_{n} — validity bool (day has a finite n-day forward change)
+      FMAX0_{n} / FMIN0_{n} — MM horizons only: the n-day forward
+              WINDOW's signed close extremes vs the signal close
+              (fetch.add_path_extremes path_high_{n}d / path_low_{n}d)
+              with NaN→0 (invalid days never fire a threshold compare),
+              the swing the reversal event and max_low_change_ratio
+              consume. At the next-day horizon the path IS the endpoint
+              (NC0_1), so no separate matrices exist there.
 
-    Note: max_low_change_ratio is NOT computed here — it is derived at
-    write time from the row's own max/min forward changes as
-    (1 + max) / (1 + min): the best-to-worst n-day ENDPOINT outcome
-    ratio across the bucket's trigger days (the extrema generally come
-    from DIFFERENT trigger days — NOT a within-window path swing).
+    Note: max_low_change_ratio is derived at aggregation time from the
+    bucket's PATH-extreme forward changes as (1 + max path high) /
+    (1 + min path low): the widest realized within-window swing across
+    the bucket's trigger days — highest close reached vs lowest close
+    touched (signed, so a large ratio always signifies a large swing;
+    the extrema of one trigger day's window never mix with another's
+    endpoint).
     """
     mats: dict[str, np.ndarray] = {}
     for n in FORWARD_HORIZONS:
@@ -370,6 +388,11 @@ def build_change_matrices(
         fin = np.isfinite(nc)
         mats[f"NC0_{n}"] = np.where(fin, nc, 0.0)
         mats[f"FIN_{n}"] = fin
+        if n in MM_HORIZONS:
+            for key, col in (("FMAX0", "path_high_{n}d"),
+                             ("FMIN0", "path_low_{n}d")):
+                pc = scatter_column(df, col.format(n=n), shape, didx, cidx)
+                mats[f"{key}_{n}"] = np.where(np.isfinite(pc), pc, 0.0)
     return mats
 
 
@@ -439,6 +462,14 @@ def apply_cooldown(mask: np.ndarray, cooldown_days: int) -> np.ndarray:
     """Suppress re-triggers within ``cooldown_days`` grid rows of the
     last ACCEPTED trigger, per column (code).
 
+    NOTE (2026-09 streak migration): the FORECAST event engines no
+    longer use this — consecutive qualifying days now merge into ONE
+    streak signal anchored at the run's mid row
+    (``apply_streak_midpoints``). This stays for the SIGNALS layer's
+    LIVE detection (analyze.analysis_signals — a live trigger cannot
+    know an ongoing streak's mid ex-post, so day-level de-dup keeps the
+    fixed-skip cooldown semantics).
+
     Greedy sequential over the time axis (an accepted day depends on the
     previous accepted day), vectorized across codes: row ``t`` accepts a
     trigger day whose previous accepted trigger is more than
@@ -464,12 +495,251 @@ def apply_cooldown(mask: np.ndarray, cooldown_days: int) -> np.ndarray:
     return out
 
 
+def apply_streak_midpoints(
+    mask: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Collapse each run of CONSECUTIVE qualifying rows into ONE signal
+    at the run's MID row — the streak-merge that replaced the legacy
+    cooldown suppression in the forecast engines (mov_rsi / mov_std /
+    mov_gap / px_vol_state; consumed via ``iter_bucket_subsets``, the
+    engines' unified bucket-signal pipeline).
+
+    A run of length L starting at row s keeps only row
+    s + (L - 1) // 2 (0-based; the ((L-1)//2 + 1)-th day — the MEAN-MID
+    anchor of the high_low_streaks convention: a 1-day run anchors
+    itself, a 7-day run its 4th day, an 8-day run its 4th day). Dates
+    that keep satisfying the forecast condition CONTINUOUSLY are treated
+    as ONE forecast signal, measured from the mid day.
+
+    Operates per column (the flattened (T, C·K) config stack — columns
+    are config-independent). Runs are clipped at the window-slice edges:
+    a streak straddling the window start anchors from its visible part
+    ("for now" — the month-window slices are independent worlds, the
+    apply_cooldown precedent).
+
+    Returns (mid_mask, run_len): ``mid_mask`` is True only at the kept
+    mid rows; ``run_len`` (int32) carries the run's day count at those
+    rows (0 elsewhere). The per-bucket MEAN of the kept cells'
+    lengths is written to forecast_identities.streak_signal_days by the
+    caller.
+    """
+    T, M = mask.shape
+    # Zero-padded shifted views isolate run STARTS / ENDS in one
+    # broadcast compare (a run touching the slice edge is still bounded
+    # by the False pad).
+    padded = np.zeros((T + 2, M), dtype=bool)
+    padded[1:-1] = mask
+    core = padded[1:-1]
+    starts = core & ~padded[:-2]
+    ends = core & ~padded[2:]
+    rs, ms = np.nonzero(starts)
+    re, me = np.nonzero(ends)
+    # np.nonzero emits ROW-major order across the whole matrix, so the
+    # k-th start is NOT the k-th end globally — pair them PER COLUMN
+    # (within a column starts and ends strictly alternate, start first,
+    # so the column-major-sorted k-th start pairs with the k-th end of
+    # the same column).
+    rs, ms = rs[np.lexsort((rs, ms))], ms[np.lexsort((rs, ms))]
+    re = re[np.lexsort((re, me))]
+    L = (re - rs + 1).astype(np.int32)
+    mid_rows = rs + ((L - 1) // 2).astype(np.int64)
+    mid = np.zeros((T, M), dtype=bool)
+    lens = np.zeros((T, M), dtype=np.int32)
+    mid[mid_rows, ms] = True
+    lens[mid_rows, ms] = L
+    return mid, lens
+
+
+def iter_bucket_subsets(
+    mask_raw: np.ndarray,
+    HY: np.ndarray,
+    live2: np.ndarray,
+    C: int,
+    sides: tuple[str, ...],
+    side_slices: dict[str, slice] | None = None,
+    *,
+    merge: bool = True,
+    excess3: np.ndarray | None = None,
+):
+    """The UNIFIED bucket-signal pipeline of the aggregation engines
+    (compute_rsi / compute_std / compute_gap / compute_pairs /
+    compute_px_vol): streak-merge → sparsify → live-gated per-config
+    counts → per-side → per-hype split, yielded as the group-ascending
+    sparse cell lists aggregate_horizons_sparse consumes.
+
+    One implementation of the machinery every engine previously carried
+    inline (the 2026-09 streak migration duplicated it per engine).
+
+    Args:
+        mask_raw: (Tw, C, K_total) bool bucket mask of ONE month window
+              — the raw per-day qualifying tests (percentile compares,
+              band breaches, sign flips, state equality). NaN compares
+              are False upstream, so invalid days never enter.
+        HY: (Tw, C) bool market-hype matrix of the same window slice.
+        live2: (C, 1) bool live gate (full-window gate × ones) — codes
+              without full-window history never count / never emit.
+        C: number of codes.
+        sides: side names in config-axis order.
+        side_slices: optional {side: slice} per-side ranges of the
+              config axis (the state engines' uneven layout — px_vol).
+              None → K_total is split into len(sides) EQUAL contiguous
+              ranges (the mov_* engines' side-major halves).
+        merge: True (default) — STREAK-MERGE (apply_streak_midpoints):
+              consecutive qualifying grid rows collapse into ONE signal
+              at the run's MID row, run lengths ride along for the
+              bucket's streak_signal_days mean and the result rows'
+              streak spans. False — ONE-DAY signals: every qualifying
+              day is its own signal with run length 1 (the pairs
+              engines: a cross day's predecessor sits on the other side
+              of zero, so consecutive cross days are mutually exclusive
+              and the merge pass would be a no-op).
+        excess3: optional (T, C, K_total) signed per-day per-config
+              TRIGGER EXCESS (value − qualifying bar) of the same
+              window slice — the scalar-bar engines' companion tensor
+              (mov_rsi / mov_gap: the day's indicator minus its
+              percentile bar; mov_std: the price minus the breached
+              band edge; mov_pairs: the day's spread, the bar being the
+              zero line). Gathered at the kept cells like ``lens`` and
+              yielded per subset so aggregate_horizons_sparse can slice
+              it into the rows' forecast_results.trigger_excess lists.
+              None (state families — no scalar qualifying bar) yields
+              None excess, and the result rows write NULL arrays.
+
+    Yields per non-empty (side, is_market_hyped) subset — a tuple
+        (side, hyped, kk, ii, st, sc, fk, lens, exc, mean_streak)
+      side / hyped — the subset keys;
+      kk, ii — (R,) config / code indices of the EMITTED buckets
+              (np.nonzero(emit.T) convention of build_result_rows);
+      st, sc, fk — (E,) group-ASCENDING sorted sparse cells of the
+              subset (window-local row, code, flat group = code·P +
+              config — the aggregate_horizons_sparse contract);
+      lens — (E,) int32 run length per cell (the merged streak's day
+              count; all 1s in one-day mode);
+      exc  — (E,) float trigger excess per cell (the excess3 gather at
+              the same cells, subset- and sort-aligned like ``lens``);
+              None when excess3 was None;
+      mean_streak — (R,) the bucket's mean run length at the emitted
+              (code, config) positions — the source of
+              forecast_identities.streak_signal_days.
+    """
+    K_total = mask_raw.shape[2]
+    if side_slices is None:
+        width = K_total // len(sides)
+        slices = {
+            s: slice(i * width, (i + 1) * width)
+            for i, s in enumerate(sides)
+        }
+    else:
+        slices = side_slices
+
+    if merge:
+        T = mask_raw.shape[0]
+        mask3, lens3 = apply_streak_midpoints(mask_raw.reshape(T, -1))
+        nz_t, nz_c, nz_k = np.nonzero(mask3.reshape(mask_raw.shape))
+    else:
+        nz_t, nz_c, nz_k = np.nonzero(mask_raw)
+    if nz_t.size == 0:
+        return
+    nz_t = nz_t.astype(np.int32)
+    nz_c = nz_c.astype(np.int32)
+    nz_k = nz_k.astype(np.int32)
+    # Run length per kept cell (the merged streak's day count; every
+    # qualifying day carries its own 1-day run in one-day mode).
+    if merge:
+        cell_lens = lens3.reshape(mask_raw.shape)[nz_t, nz_c, nz_k]
+    else:
+        cell_lens = np.ones(nz_t.size, dtype=np.int32)
+    # Trigger excess per kept cell (value − qualifying bar; None for
+    # the state families — no excess3 tensor was passed).
+    cell_exc = (
+        excess3[nz_t, nz_c, nz_k] if excess3 is not None else None
+    )
+    # Live-gated per-config STREAK counts (one per qualifying run —
+    # not-yet-live codes never emit).
+    count = np.bincount(
+        nz_c * K_total + nz_k, minlength=C * K_total
+    ).reshape(C, K_total) * live2
+    if not (count > 0).any():
+        return
+    hy_cells = HY[nz_t, nz_c]
+
+    for side in sides:
+        sl = slices[side]
+        P = sl.stop - sl.start
+        cnt_s = count[:, sl]
+        if not (cnt_s > 0).any():
+            continue
+        in_side = (nz_k >= sl.start) & (nz_k < sl.stop)
+        if not in_side.any():
+            continue
+        t_s = nz_t[in_side]
+        c_s = nz_c[in_side]
+        flat_s = c_s * P + (nz_k[in_side] - sl.start)
+        hy_s = hy_cells[in_side]
+        len_s = cell_lens[in_side]
+        exc_s = cell_exc[in_side] if cell_exc is not None else None
+
+        # Hype split of the bucket (PK member). Aggregates are per
+        # subset — max/high/low are non-additive, so the non-hyped
+        # subset cannot be derived from the full bucket minus the
+        # hyped one. Each subset is a cell-list filter.
+        for hyped in (False, True):
+            sel = hy_s if hyped else ~hy_s
+            if not sel.any():
+                continue
+            st = t_s[sel]
+            sc = c_s[sel]
+            fk = flat_s[sel]
+            L_int = len_s[sel]
+            exc = exc_s[sel] if exc_s is not None else None
+            # Group-ascending cell order — one stable sort shared by
+            # the subset count and every horizon's bincount / reduceat
+            # reductions.
+            order = np.argsort(fk, kind="stable")
+            st = st[order]
+            sc = sc[order]
+            fk = fk[order]
+            L_int = L_int[order]
+            exc = exc[order] if exc is not None else None
+            emit = (
+                np.bincount(fk, minlength=C * P).reshape(C, P) > 0
+            ) & (cnt_s > 0)
+            if not emit.any():
+                continue
+            # streak_signal_days source: the bucket's MEAN run length
+            # over its (hype-split) streak signals.
+            L_sel = L_int.astype(np.float64)
+            mean_streak = np.divide(
+                np.bincount(fk, weights=L_sel, minlength=C * P),
+                np.maximum(np.bincount(fk, minlength=C * P), 1),
+            ).reshape(C, P)
+            kk, ii = np.nonzero(emit.T)
+            yield (side, hyped, kk, ii, st, sc, fk, L_int, exc,
+                   mean_streak[ii, kk])
+
+
 # Per-horizon aggregate bundle returned by ``aggregate_horizons_sparse``
-# (each member a (C, P) array): occurrence counts, sum of changes, sum of
-# SQUARED changes, max / min change (None at the next-day horizon), and
-# reversal count.
+# (each numeric member a (C, P) array): occurrence counts, sum of changes,
+# sum of SQUARED changes, max / min ENDPOINT change (None at the next-day
+# horizon — the max_change / min_change columns), max / min PATH-extreme
+# change (None likewise — the highest/lowest close any trigger day's
+# forward window reached, the max_low_change_ratio swing inputs),
+# reversal count, and — when ``win_ord`` was passed — the ragged
+# trigger-date lists (dict keyed by flat group id; None otherwise) plus,
+# when ``lens`` was passed too, the parallel STREAK SPAN lists (the
+# [start, end] calendar dates of each merged signal's qualifying run) and
+# the parallel STREAK DAY counts (each run's trading-day length;
+# None otherwise), plus — when ``vals`` was passed — the parallel TRIGGER
+# EXCESS lists (each valid cell's value − qualifying bar; None otherwise).
 HorizonAgg = tuple[np.ndarray, np.ndarray, np.ndarray,
-                   np.ndarray | None, np.ndarray | None, np.ndarray]
+                   np.ndarray | None, np.ndarray | None,
+                   np.ndarray | None, np.ndarray | None,
+                   np.ndarray,
+                   "dict[int, list[date]] | None",
+                   "dict[int, list[date]] | None",
+                   "dict[int, list[date]] | None",
+                   "dict[int, list[int]] | None",
+                   "dict[int, list[float]] | None"]
 
 
 def aggregate_horizons_sparse(
@@ -482,6 +752,10 @@ def aggregate_horizons_sparse(
     NC0s: dict[int, np.ndarray],
     FINs: dict[int, np.ndarray],
     thr_n: dict[int, np.ndarray],
+    win_ord: np.ndarray | None = None,
+    lens: np.ndarray | None = None,
+    path0s: dict[int, tuple[np.ndarray, np.ndarray]] | None = None,
+    vals: np.ndarray | None = None,
 ) -> dict[int, HorizonAgg]:
     """Per-(code, config) aggregates of ALL forward horizons over the
     SPARSE trigger cells of one (side, hyped) subset.
@@ -511,18 +785,81 @@ def aggregate_horizons_sparse(
               over all cells are the valid-day sums.
         FINs: per horizon n — (T, C) validity bool (finite n-day change).
         thr_n: per horizon n — (C,) reversal bar (reverse_thresholds).
+        path0s: per MM horizon n — the (FMAX0, FMIN0) path-extreme
+              matrices (build_change_matrices), sliced to the window
+              like NC0s. The SWING-AWARE reversal event and the
+              max_low_change_ratio consume these: at any cell the
+              ADVERSE PATH EXTREME (the window's lowest close for
+              top/upper, highest for bottom/lower — signed) is what
+              crosses the reversal bar, and the swing ratio's extrema
+              are path extrema (never one day's high mixed with another
+              day's low ENDPOINT). None falls back to the endpoint
+              change everywhere (the 1-day path IS the endpoint).
+        win_ord: optional (T,) int64 day ordinals of the window's grid
+              rows (grid_ord[lo:hi]). When given, each horizon's bundle
+              also carries the ragged trigger-date lists td — the
+              calendar dates (datetime.date, ascending — cells are
+              time-ascending within each group) of the group's bucket
+              days with a VALID n-day forward change, keyed by flat
+              group id, i.e. exactly the denominator of that horizon's
+              cnt / mean / reverse_prob. Consumed by build_result_rows
+              as the forecast_results.trigger_dates column; None member
+              when win_ord is omitted.
+        lens: optional (E,) int run length per subset cell (the merged
+              streak's day count — apply_streak_midpoints' lens at the
+              kept mid cells, subset- and sort-aligned like st/sc/flat).
+              When given (event engines only) AND win_ord is given, the
+              bundle also carries the parallel STREAK SPAN lists ss /
+              se — per valid cell, the qualifying run's [start, end]
+              calendar dates (mid row - (L-1)//2 .. mid row + L//2 on
+              the grid; runs are clipped at the window slice so both
+              ends always land inside) — and the parallel STREAK DAY
+              lists sd — per valid cell, the run's trading-day count L.
+              Consumed by build_result_rows as the
+              forecast_results.streak_starts / streak_ends /
+              streak_days columns (parallel to trigger_dates).
+              None elsewhere.
+        vals: optional (E,) float TRIGGER EXCESS per subset cell (the
+              day's trigger value − the bucket's qualifying bar, signed;
+              iter_bucket_subsets' exc, subset- and sort-aligned like
+              st/sc/flat). When given, each horizon's bundle also
+              carries the parallel TRIGGER EXCESS lists te — per valid
+              cell (the SAME valid-cell subset as td), the cell's excess
+              — consumed by build_result_rows as the
+              forecast_results.trigger_excess column (parallel to
+              trigger_dates). None (state engines / callers without a
+              scalar qualifying bar) leaves the column NULL.
 
-    Returns (per horizon n, each (C, P)) — a HorizonAgg bundle:
+    Returns (per horizon n) — a HorizonAgg bundle of (C, P) numeric
+    members (see HorizonAgg) plus the per-horizon td / ss / se / sd /
+    te dicts:
         cnt — bucket days with a valid n-day forward change (int);
         s   — sum of the n-day changes over those days;
         s2  — sum of SQUARED n-day changes over those days (invalid days
               contribute 0.0 — NC0 semantics), the E[x²] half of the
               std_change numerator sqrt(E[x²] − E[x]²);
-        hi  — max n-day change (-inf where cnt == 0; None for the
-              next-day horizon — no MM columns);
-        lo  — min n-day change (+inf where cnt == 0; None likewise);
-        rev — count of reversal days (change beyond the code's bar
-              against the bucket side) among those days (int).
+        hi_e — max ENDPOINT n-day change (-inf where cnt == 0; None for
+              the next-day horizon — no MM columns);
+        lo_e — min ENDPOINT n-day change (+inf where cnt == 0; None
+              likewise);
+        hi_p — max PATH-HIGH n-day change (-inf where cnt == 0; None
+              likewise — the swing ratio's upper extreme);
+        lo_p — min PATH-LOW n-day change (+inf where cnt == 0; None
+              likewise — the swing ratio's lower extreme);
+        rev — count of reversal days (the period's ADVERSE PATH EXTREME
+              beyond the code's bar against the bucket side — the
+              within-period swing, not merely the period-end close)
+              among those days (int);
+        td  — {flat group id: [date, ...]} of the cnt days (None when
+              win_ord is None);
+        ss / se — {flat group id: [date, ...]} of each signal's
+              qualifying-run start / end calendar date, parallel to td
+              (None when win_ord or lens is None);
+        sd  — {flat group id: [int, ...]} of each signal's qualifying-
+              run trading-day count, parallel to td (None when win_ord
+              or lens is None);
+        te  — {flat group id: [float, ...]} of each valid cell's
+              trigger excess, parallel to td (None when vals is None).
     """
     CP = C * P
     # Group scaffolding over the group-ascending cells: one sort shared
@@ -532,35 +869,122 @@ def aggregate_horizons_sparse(
     gid = flat[starts]
     rev_top = side in ("top", "upper")
 
+    # Shared date objects of the window's grid rows (win_ord is int64
+    # days-since-epoch — the same unit as build_grid's grid_ord). Every
+    # group's date list slices THIS object array, so all lists of a
+    # window share one small pool of date objects.
+    wdate = (
+        win_ord.astype("datetime64[D]").astype(object)
+        if win_ord is not None else None
+    )
+
     out: dict[int, HorizonAgg] = {}
     for n in FORWARD_HORIZONS:
         g = NC0s[n][st, sc]          # 0.0 on invalid days (NC0 semantics)
         v = FINs[n][st, sc]
+        # Per-cell PATH extremes (the forward window's highest/lowest
+        # close vs the signal close, signed; 0.0 on invalid days — the
+        # FMAX0/FMIN0 NaN→0 semantics). At the next-day horizon the
+        # path IS the endpoint (no separate matrices); a caller without
+        # path matrices (compute_opp_pair — its forward quantity is a
+        # relative-MA offset change, not a close path) falls back to
+        # the endpoint everywhere (the legacy endpoint semantics).
+        if n in MM_HORIZONS and path0s is not None:
+            fh = path0s[n][0][st, sc]
+            fl = path0s[n][1][st, sc]
+        else:
+            fh = fl = g
         cnt = np.bincount(flat[v], minlength=CP)
         s = np.bincount(flat, weights=g, minlength=CP)
         # g is 0.0 on invalid days, so the all-cell squared sum equals
         # the valid-day squared sum (the std E[x²] pass — same trick as
         # the mean sum above).
         s2 = np.bincount(flat, weights=g * g, minlength=CP)
-        # Reversal at a cell: NC0 is 0.0 on invalid days, so the
+        # Reversal at a cell — SWING-AWARE: the period's ADVERSE PATH
+        # EXTREME (lowest close for top/upper, highest for bottom/
+        # lower) beyond the code's bar, i.e. the forward window swung
+        # ≥ thr against the bucket side AT ANY CLOSE of the period, not
+        # merely at its end. Invalid cells hold 0.0 extremes, so the
         # threshold compare is False there — matches the legacy dense
         # 0/1 flag einsum exactly.
         thr_cell = thr_n[n][sc]
-        rv = (g < -thr_cell) if rev_top else (g > thr_cell)
+        adv = fl if rev_top else fh
+        rv = (adv < -thr_cell) if rev_top else (adv > thr_cell)
         rev = np.bincount(flat[rv], minlength=CP)
+        # Ragged trigger dates over the VALID cells (fk-ascending subset
+        # of the fk-ascending cells): per group id, the contiguous
+        # [lo, hi) slice of the valid cells' dates. Groups with no valid
+        # day emit no entry (build_result_rows maps a miss to NULL).
+        # The valid-cell group bounds are shared by the parallel
+        # trigger-excess lists below.
+        td = None
+        ss = None
+        se = None
+        sd = None
+        lo_g = hi_g = None
+        if wdate is not None or vals is not None:
+            fk_v = flat[v]
+            lo_g = np.searchsorted(fk_v, gid, side="left")
+            hi_g = np.searchsorted(fk_v, gid, side="right")
+        if wdate is not None:
+            d_v = wdate[st[v]]
+            td = {
+                g_id: d_v[a:b].tolist()
+                for g_id, a, b in zip(gid.tolist(), lo_g.tolist(),
+                                      hi_g.tolist())
+                if b > a
+            }
+            if lens is not None:
+                # Streak spans + day counts, parallel to td (same
+                # valid-cell subset): per kept mid cell, the qualifying
+                # run's start / end grid rows around it (mid - (L-1)//2
+                # .. mid + L//2 — runs are clipped at the window slice,
+                # so both land inside) mapped to the shared calendar
+                # dates, and the run's trading-day count L.
+                Lv = lens[v]
+                starts_all = wdate[st[v] - ((Lv - 1) // 2)]
+                ends_all = wdate[st[v] + (Lv // 2)]
+                ss = {}
+                se = {}
+                sd = {}
+                for g_id, a3, b3 in zip(gid.tolist(), lo_g.tolist(),
+                                        hi_g.tolist()):
+                    if b3 > a3:
+                        ss[g_id] = starts_all[a3:b3].tolist()
+                        se[g_id] = ends_all[a3:b3].tolist()
+                        sd[g_id] = Lv[a3:b3].tolist()
+        # Ragged trigger excesses over the SAME valid-cell subset (the
+        # group bounds above are computed whenever either parallel list
+        # is requested): per group id, the contiguous [lo, hi) slice of
+        # the valid cells' excess values (value − qualifying bar).
+        te = None
+        if vals is not None:
+            w_v = vals[v]
+            te = {
+                g_id: w_v[a:b].tolist()
+                for g_id, a, b in zip(gid.tolist(), lo_g.tolist(),
+                                      hi_g.tolist())
+                if b > a
+            }
         if n in MM_HORIZONS:
-            hi = np.full(CP, -np.inf)
-            lo = np.full(CP, np.inf)
+            hi_e = np.full(CP, -np.inf)
+            lo_e = np.full(CP, np.inf)
+            hi_p = np.full(CP, -np.inf)
+            lo_p = np.full(CP, np.inf)
             # Groups with no valid cell keep the ±inf default (the
             # legacy where(..., ±inf).max semantics).
-            hi[gid] = np.maximum.reduceat(np.where(v, g, -np.inf), starts)
-            lo[gid] = np.minimum.reduceat(np.where(v, g, np.inf), starts)
+            hi_e[gid] = np.maximum.reduceat(np.where(v, g, -np.inf), starts)
+            lo_e[gid] = np.minimum.reduceat(np.where(v, g, np.inf), starts)
+            hi_p[gid] = np.maximum.reduceat(np.where(v, fh, -np.inf), starts)
+            lo_p[gid] = np.minimum.reduceat(np.where(v, fl, np.inf), starts)
             out[n] = (cnt.reshape(C, P), s.reshape(C, P), s2.reshape(C, P),
-                      hi.reshape(C, P), lo.reshape(C, P),
-                      rev.reshape(C, P))
+                      hi_e.reshape(C, P), lo_e.reshape(C, P),
+                      hi_p.reshape(C, P), lo_p.reshape(C, P),
+                      rev.reshape(C, P), td, ss, se, sd, te)
         else:
             out[n] = (cnt.reshape(C, P), s.reshape(C, P), s2.reshape(C, P),
-                      None, None, rev.reshape(C, P))
+                      None, None, None, None,
+                      rev.reshape(C, P), td, ss, se, sd, te)
     return out
 
 
@@ -601,11 +1025,14 @@ def build_result_rows(
         ...) so the caller can stride by 4 to group periods per bucket.
     """
     R = kk.size
+    # Config-axis width P (flat group id = code·P + config — the td dict
+    # key space of aggregate_horizons_sparse).
+    P = agg[next(iter(agg))][0].shape[1]
     # First gather all horizon payloads (vectorized per horizon)...
     horizon_payloads: dict[int, dict[str, list | float | None]] = {}
     for n in FORWARD_HORIZONS:
         period = PERIOD_FOR_HORIZON[n]
-        cnt, s, s2, hi, lo, rev = agg[n]
+        cnt, s, s2, hi_e, lo_e, hi_p, lo_p, rev, td, ss, se, sd, te = agg[n]
         cn = cnt[ii, kk]          # (R,) occurrence counts
         pos = cn > 0
 
@@ -623,14 +1050,23 @@ def build_result_rows(
         std = _round_none(np.sqrt(np.maximum(var, 0.0)))
 
         if n in MM_HORIZONS:
-            hi_v = hi[ii, kk]    # (R,) max n-day forward change
-            lo_v = lo[ii, kk]    # (R,) min n-day forward change
+            hi_v = hi_e[ii, kk]   # (R,) max endpoint n-day change
+            lo_v = lo_e[ii, kk]   # (R,) min endpoint n-day change
             max_vals = _round_none(hi_v)
             min_vals = _round_none(lo_v)
+            # The SWING ratio: (1 + max path high) / (1 + min path low)
+            # over the bucket's trigger days — the highest close any
+            # trigger day's forward window reached vs the lowest any
+            # window touched (signed, so the ratio is ≥ 1 and grows
+            # with the widest realized within-period swing). NEVER
+            # derivable from the endpoint max/min columns — one day's
+            # window high is never paired with another day's endpoint.
+            sw_hi = hi_p[ii, kk]
+            sw_lo = lo_p[ii, kk]
             mlr_vals = _round_none(np.divide(
-                1 + hi_v, 1 + lo_v,
+                1 + sw_hi, 1 + sw_lo,
                 out=np.full(R, np.nan),
-                where=pos & (lo_v > -1),
+                where=pos & (sw_lo > -1),
             ))
         else:
             max_vals = [None] * R
@@ -640,6 +1076,38 @@ def build_result_rows(
         rev_vals = _round_none(np.divide(
             rev[ii, kk], cn, out=np.full(R, np.nan), where=pos))
         occ_vals = cn.tolist()
+        # The row's ragged trigger-date list (NULL when the group has no
+        # valid day at this horizon — occurrence_count 0).
+        td_vals: list[list[date] | None] = [
+            None if td is None else td.get(int(i) * P + int(k))
+            for k, i in zip(kk.tolist(), ii.tolist())
+        ]
+        # The rows' parallel STREAK SPAN lists (NULL when the engine
+        # passed no run lengths — state families): streak_starts[r] /
+        # streak_ends[r] are element-wise parallel to trigger_dates[r].
+        ss_vals: list[list[date] | None] = [
+            None if ss is None else ss.get(int(i) * P + int(k))
+            for k, i in zip(kk.tolist(), ii.tolist())
+        ]
+        se_vals: list[list[date] | None] = [
+            None if se is None else se.get(int(i) * P + int(k))
+            for k, i in zip(kk.tolist(), ii.tolist())
+        ]
+        # The rows' parallel STREAK DAY lists (same NULL semantics):
+        # streak_days[r] holds each merged signal's trading-day count.
+        sd_vals: list[list[int] | None] = [
+            None if sd is None else sd.get(int(i) * P + int(k))
+            for k, i in zip(kk.tolist(), ii.tolist())
+        ]
+        # The rows' parallel TRIGGER EXCESS lists (NULL when the engine
+        # passed no per-cell values — the state families): each element
+        # is the trigger day's value − the bucket's qualifying bar
+        # (signed), rounded to the NUMERIC(10,6) scale; non-finite
+        # members map to None (asyncpg cannot encode NaN here).
+        te_vals: list[list[float | None] | None] = []
+        for k, i in zip(kk.tolist(), ii.tolist()):
+            t = None if te is None else te.get(int(i) * P + int(k))
+            te_vals.append(None if t is None else [round6(x) for x in t])
         # The row's reversal bar (per code, horizon — constant across a
         # window's configs).
         rt_vals = _round_none(thr_n[n][ii])
@@ -653,6 +1121,11 @@ def build_result_rows(
             "mlr": mlr_vals,
             "rev": rev_vals,
             "occ": occ_vals,
+            "td": td_vals,
+            "ss": ss_vals,
+            "se": se_vals,
+            "sd": sd_vals,
+            "te": te_vals,
             "rt": rt_vals,
         }
 
@@ -670,6 +1143,11 @@ def build_result_rows(
                 "max_change": p["max"][r_idx],
                 "min_change": p["min"][r_idx],
                 "occurrence_count": p["occ"][r_idx],
+                "trigger_dates": p["td"][r_idx],
+                "streak_starts": p["ss"][r_idx],
+                "streak_ends": p["se"][r_idx],
+                "streak_days": p["sd"][r_idx],
+                "trigger_excess": p["te"][r_idx],
                 "max_low_change_ratio": p["mlr"][r_idx],
                 "reverse_prob": p["rev"][r_idx],
                 "reverse_threshold": p["rt"][r_idx],

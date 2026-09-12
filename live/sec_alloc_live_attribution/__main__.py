@@ -8,31 +8,32 @@ each other:
 
   LIVE  (--mode live — the 5-min auto-refresh path, fired by the Market
         Movements UI on every route via the App-root keeper):
-        Ref-less EQUAL-WEIGHT ticks only. For every tick-eligible
+        Self-contained EQUAL-WEIGHT ticks only. For every tick-eligible
         (benchmark, date) pair, appends fallback rows
         (is_without_trading_amt = TRUE — prev close = prev-day LAST 5-min
-        bar close from stats.index_intraday_5min itself, NO basic_stats /
-        trading-amount dependency). The loader's anti-join skips (code,
-        time) rows that already exist with ANY flag, so pairs covered by
-        weighted rows are natural no-ops. If the live lock is held by a
-        concurrent instance, exits fast (next 5-min run catches up).
+        bar close from stats.index_intraday_5min itself, NO basic_stats
+        dependency). The loader's anti-join skips (code, time) rows that
+        already exist with ANY flag, so pairs covered by daily-close-basis
+        rows are natural no-ops. If the live lock is held by a concurrent
+        instance, exits fast (next 5-min run catches up).
 
   REF   (--mode ref — the manual yday-ref path, fired by the "Build Yday
         Ref" button on the Market Movements page):
-        1. HEAVY once-per-date ref build for missing (benchmark, date)
-           pairs (prev-day closes + trading amounts + normalized weights
-           into live.sec_alloc_live_prev_ref).
-        2. WEIGHTED tick pass: (re)fetch rows missing or present only as
-           fallback (TRUE) and upsert them as weighted (FALSE) rows —
-           upgrades fallback rows in place.
+        WEIGHTED tick pass: (re)fetch rows missing or present only as
+        fallback (TRUE) — prev closes are computed AT TICK TIME from
+        stats.index_basic_stats (the former heavy
+        live.sec_alloc_live_prev_ref reference table was consolidated
+        away; trading-amount weights / composition-overlap shared weights
+        are computed at READ time by the API service) — and upserted as
+        daily-close-basis (FALSE) rows, upgrading fallback rows in place.
         Waits (bounded) for its lock instead of skipping.
 
-  ALL   (--mode all — combined back-compat behavior for CLI runs): ref
-        build + weighted ticks + fallback for zero-ref pairs, exactly as
-        before the split.
+  ALL   (--mode all — combined back-compat behavior for CLI runs):
+        weighted ticks + fallback fill for any rows still missing,
+        exactly as before the split.
 
---force: truncate tick table first, then ref table, then recompute (all/
-ref modes; ignored in live mode). Respects the same latest-date scope.
+--force: truncate tick table first, then recompute (all/ref modes;
+ignored in live mode). Respects the same latest-date scope.
 
 --benchmark CODE[,CODE,...]: limit scope to specific benchmark codes.
 """
@@ -72,26 +73,22 @@ from _common.build_commons import (  # noqa: E402
 )
 
 from live.sec_alloc_live_attribution.config import (  # noqa: E402
-    REF_TABLE,
     TICK_TABLE,
     PIPELINE_NAME,
     PIPELINE_DESCRIPTION,
+    RETENTION_DATES,
     ADVISORY_LOCK_KEY,
     REF_ADVISORY_LOCK_KEY,
 )
 from live.sec_alloc_live_attribution.fetch import (  # noqa: E402
     fetch_latest_intraday_dates,
     find_live_tick_pairs,
-    find_missing_ref_pairs,
     find_pairs_with_missing_ticks,
-)
-from live.sec_alloc_live_attribution.ref import (  # noqa: E402
-    ensure_ref,
-    invalidate_ref_for_date,
 )
 from live.sec_alloc_live_attribution.ticks import (  # noqa: E402
     load_fallback_ticks,
     load_missing_ticks,
+    invalidate_ticks_for_date,
 )
 
 from _common.log_setup import setup_logging  # noqa: E402
@@ -100,7 +97,7 @@ logger = setup_logging("sec_alloc_live_attribution")
 setup_utf8_stdout()
 
 # How long --mode ref waits for its advisory lock before aborting (another
-# ref build is still running; its work is idempotent so aborting is safe).
+# ref run is still running; its work is idempotent so aborting is safe).
 REF_LOCK_WAIT_S = 300
 
 
@@ -119,11 +116,43 @@ async def _upsert_live_identity(conn, mode: str) -> None:
         """,
         PIPELINE_NAME,
         TICK_TABLE.split(".", 1)[1],
-        REF_TABLE.split(".", 1)[1],
+        TICK_TABLE.split(".", 1)[1],
         f"{PIPELINE_DESCRIPTION} [last mode: {mode}]",
     )
     logger.info(f"    -> upserted live_identity (name='{PIPELINE_NAME}', "
           f"mode={mode})")
+
+
+async def _prune_old_dates(conn) -> int:
+    """Delete tick rows older than the RETENTION_DATES newest trading dates.
+
+    The cutoff is the OLDEST of the RETENTION_DATES most recent distinct
+    intraday dates in the SOURCE table (the pipeline writes the latest
+    date only, so the tick table always tracks those dates).
+
+    Runs in ref/all modes only (once-per-day cadence) — never in the
+    5-min live mode, where the tick table's unindexed date scan would
+    run on every tick.
+
+    Returns tick_rows_deleted.
+    """
+    keep = await fetch_latest_intraday_dates(conn, n_dates=RETENTION_DATES)
+    if len(keep) < RETENTION_DATES:
+        # Less history exists than the window — nothing can be outside it.
+        return 0
+    cutoff = keep[-1]
+    tick_status = await conn.execute(
+        f"DELETE FROM {TICK_TABLE} WHERE date < $1", cutoff
+    )
+    # asyncpg execute() returns the command tag, e.g. "DELETE 12345".
+    n_tick = int(tick_status.split()[-1])
+    if n_tick:
+        logger.info(f"    -> retention prune (keep newest {RETENTION_DATES} "
+              f"dates, cutoff < {cutoff}): deleted {n_tick:,} tick rows")
+    else:
+        logger.info(f"    -> retention prune: within the newest "
+              f"{RETENTION_DATES}-date window; nothing deleted")
+    return n_tick
 
 
 async def _acquire_ref_lock_blocking(conn) -> bool:
@@ -149,8 +178,8 @@ async def main() -> None:
     ap = argparse.ArgumentParser(
         description=(
             "Live sec-alloc attribution — per-5-min-tick member % vs prev "
-            "day close (equal-weight live ticks + optional trading-amount "
-            "weighted yday ref, under the live schema)."
+            "day close (equal-weight live ticks + daily-close-basis "
+            "weighted upgrades, under the live schema)."
         )
     )
     add_force_arg(ap)
@@ -160,20 +189,21 @@ async def main() -> None:
         choices=("all", "live", "ref"),
         default="all",
         help=(
-            "live = 5-min equal-weight fallback ticks only (no yday ref "
-            "dependency); ref = heavy yday ref build + weighted tick "
-            "upgrades (manual button); all = combined (back-compat CLI)."
+            "live = 5-min equal-weight fallback ticks only (self-contained, "
+            "no daily-stats dependency); ref = weighted tick upgrades "
+            "(prev closes from index_basic_stats at tick time; manual "
+            "button); all = combined (back-compat CLI)."
         ),
     )
     ap.add_argument(
         "--rebuild-latest-date",
         action="store_true",
         help=(
-            "Before the heavy pass, DELETE this date's existing ref + "
-            "tick rows so they are rebuilt from scratch. Set by the "
-            "'Build Yday Ref' chain (the chain refreshes CSVs + daily "
-            "stats first, so any refs built from stale/estimated closes "
-            "must be invalidated). Ref/all modes only."
+            "Before the weighted pass, DELETE this date's existing tick "
+            "rows so they are rebuilt from scratch. Set by the 'Build Yday "
+            "Ref' chain (the chain refreshes CSVs + daily stats first, so "
+            "any ticks computed from stale/estimated closes must be "
+            "invalidated). Ref/all modes only."
         ),
     )
     ap.add_argument(
@@ -218,7 +248,7 @@ async def main() -> None:
             "(per-5-min-tick % vs prev day close, equal-weight fallback)",
             index_table=TICK_TABLE,
             mode=(
-                "LIVE (equal-weight ticks, no yday-ref dependency)"
+                "LIVE (equal-weight ticks, self-contained prev closes)"
                 if lock_acquired
                 else "SKIPPED (another live instance holds the advisory lock)"
             ),
@@ -256,8 +286,8 @@ async def main() -> None:
         return
 
     # ======================== REF / ALL modes ========================
-    # Heavy yday ref build + weighted tick upgrades (ref), optionally
-    # combined with the fallback pass (all).
+    # Weighted (daily-close-basis) tick upgrades (ref), optionally
+    # combined with the fallback fill (all).
     # =================================================================
     lock_acquired = await _acquire_ref_lock_blocking(conn)
     if not lock_acquired:
@@ -270,52 +300,36 @@ async def main() -> None:
 
     print_build_header(
         "LIVE SEC ALLOC ATTRIBUTION — YDAY REF "
-        "(heavy prev-date ref + trading-amount weighted ticks)"
+        "(trading-amount weighted, daily-close basis)"
         if args.mode == "ref"
         else "LIVE SEC ALLOC ATTRIBUTION "
              "(per-5-min-tick % vs prev day close, trading-amount weighted)",
         index_table=TICK_TABLE,
         mode=(
-            "REF (heavy yday ref + weighted tick upgrades)"
+            "REF (weighted tick upgrades, tick-time prev closes)"
             if args.mode == "ref"
-            else "INCREMENTAL (ref skip-if-present + weighted ticks + fallback)"
+            else "INCREMENTAL (weighted ticks + fallback fill)"
         ),
     )
 
-    # ---- Force mode → truncate child first, then parent ------------
+    # ---- Force mode → truncate the tick table -----------------------
     if args.force:
-        logger.info("\n[0/3] Force mode: truncating tick table first, then "
-              "ref...")
+        logger.info("\n[0/3] Force mode: truncating tick table...")
         await truncate_table_async(conn, TICK_TABLE)
-        await truncate_table_async(conn, REF_TABLE)
         logger.info("    -> truncated; will recompute all rows")
 
-    # ---- Step 0: invalidate this date's ref/ticks (--rebuild-latest-date)
+    # ---- Step 0: invalidate this date's ticks (--rebuild-latest-date)
     # The "Build Yday Ref" chain refreshes CSVs + daily stats BEFORE this
-    # process runs; any existing refs for the date may have been built
-    # from stale/estimated closes → delete so the heavy pass rebuilds.
+    # process runs; any existing ticks for the date may have been computed
+    # from stale/estimated closes → delete so both passes rebuild.
     if args.rebuild_latest_date:
-        n_ref_del, n_tick_del = await invalidate_ref_for_date(conn, latest_date)
-        logger.info(f"\n[0/3] --rebuild-latest-date: deleted {n_ref_del:,} ref + "
-              f"{n_tick_del:,} tick rows for {latest_date} — rebuilding")
+        n_tick_del = await invalidate_ticks_for_date(conn, latest_date)
+        logger.info(f"\n[0/3] --rebuild-latest-date: deleted {n_tick_del:,} "
+              f"tick rows for {latest_date} — rebuilding")
 
-    # ---- Step 1: HEAVY ref pass (once per date) --------------------
-    logger.info(f"\n[1/3] Heavy ref pass (latest intraday date = {latest_date}; "
-          "pairs with existing ref rows are skipped)...")
-    missing_ref = await find_missing_ref_pairs(conn, benchmarks)
-    logger.info(f"    -> {len(missing_ref)} (benchmark, date) ref pairs missing")
-    zero_ref_pairs: list[tuple[str, object]] = []
-    if missing_ref:
-        n_ref, zero_ref_pairs = await ensure_ref(conn, missing_ref)
-        logger.info(f"    -> ref total: {n_ref:,} rows; "
-              f"{len(zero_ref_pairs)} pairs remain ref-less")
-    else:
-        logger.info("    -> ref up to date for the latest date; heavy pass "
-              "skipped.")
-
-    # ---- Step 2a: WEIGHTED tick pass (incremental + upgrades) ------
-    logger.info("\n[2/3] Weighted tick pass (pairs with missing or "
-          "fallback-only ticks)...")
+    # ---- Step 1: WEIGHTED tick pass (incremental + upgrades) --------
+    logger.info(f"\n[1/3] Weighted tick pass (latest intraday date = "
+          f"{latest_date}; pairs with missing or fallback-only ticks)...")
     tick_pairs = await find_pairs_with_missing_ticks(conn, benchmarks)
     logger.info(f"    -> {len(tick_pairs)} (benchmark, date) pairs pending")
     if tick_pairs:
@@ -324,16 +338,24 @@ async def main() -> None:
     else:
         logger.info("    -> all weighted ticks up to date.")
 
-    # ---- Step 2b: FALLBACK tick pass for ref-less pairs ------------
-    # (all mode only — in the split design the LIVE process owns
-    # fallback ticks; ref mode stops after the weighted upgrades.)
-    if args.mode == "all" and zero_ref_pairs:
-        logger.info(f"    -> fallback for {len(zero_ref_pairs)} ref-less "
-              "pairs (is_without_trading_amt = TRUE)...")
-        n_fb = await load_fallback_ticks(conn, zero_ref_pairs)
+    # ---- Step 2: FALLBACK tick fill (all mode only) -----------------
+    # The weighted loader's anti-join covers missing (code, time) rows
+    # per pair, but pairs whose prev-day basic_stats rows are missing
+    # entirely (fetch_missing_ticks returns nothing) would keep no data —
+    # the fallback fill gives them equal-weight rows. In the split design
+    # the LIVE process owns fallback ticks; all mode just catches up.
+    if args.mode == "all":
+        logger.info("\n[2/3] Fallback tick fill (pairs still missing rows)...")
+        n_fb = await load_fallback_ticks(conn, tick_pairs)
         logger.info(f"    -> fallback total: {n_fb:,} TRUE tick rows")
 
-    # ---- Step 3: register in live.live_identity --------------------
+    # ---- Step 3: retention prune + register in live_identity ---------
+    # Skipped on --force (the truncate above already emptied the table)
+    # and in live mode (the 5-min path stays scan-free; the ref/all runs
+    # fire at least once per trading day via the Build Yday Ref chain).
+    if not args.force:
+        await _prune_old_dates(conn)
+
     logger.info("\n[3/3] Registering in live.live_identity...")
     await _upsert_live_identity(conn, args.mode)
 

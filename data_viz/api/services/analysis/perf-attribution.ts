@@ -24,6 +24,12 @@ import type {
 //    stats.cross_stats (sec_type='index' pair grain; former
 //    analysis.sec_alloc_perf_attribution, migrated 2026-09-04)
 //    PK: (code, benchmark_code, date, sec_type)
+//
+//    Stored and read: shared weights + corr_{20,60,255}d. The ETF-market
+//    liquidity triple (benchmark/code amounts + bench/code ratio + MA5)
+//    is NOT stored — derived at read time from
+//    stats.index_exts.total_etf_trading_amount (cross_stats de-dup,
+//    2026-09-07).
 // ============================================================================
 
 /** Whitelisted sec_type → name table mapping (safe for string interpolation). */
@@ -217,6 +223,13 @@ export async function getPerfAttrAttribution(
   // Subject return uses index_basic_stats (correct for sec_type='index';
   // returns NULL for ETF subjects since their codes carry exchange suffixes
   // that don't match index_basic_stats.code).
+  //
+  // The ETF-market liquidity triple (benchmark/code amounts + bench/code
+  // ratio) is likewise derived on-the-fly from stats.index_exts.
+  // total_etf_trading_amount — cross_stats no longer stores those columns
+  // (consolidated away 2026-09-07 as verbatim index_exts duplicates). The
+  // ratio is NULL when either amount is NULL/0 or |ratio| >= 1e6 (the former
+  // NUMERIC(10,4) build cap).
   const sql = `
     WITH target_date AS (
       SELECT COALESCE(
@@ -238,9 +251,18 @@ export async function getPerfAttrAttribution(
       a.date,
       a.code_sec_shared_weight,
       a.benchmark_sec_shared_weight,
-      a.etf_trading_amount_ratio_benchmark_to_code AS etf_trading_amount_ratio,
-      a.benchmark_etf_trading_amount,
-      a.code_etf_trading_amount,
+      CASE
+        WHEN beb.total_etf_trading_amount IS NULL
+          OR ceb.total_etf_trading_amount IS NULL
+          OR beb.total_etf_trading_amount = 0
+          OR ceb.total_etf_trading_amount = 0
+          OR abs(beb.total_etf_trading_amount
+                 / ceb.total_etf_trading_amount) >= 1000000
+        THEN NULL
+        ELSE beb.total_etf_trading_amount / ceb.total_etf_trading_amount
+      END AS etf_trading_amount_ratio,
+      beb.total_etf_trading_amount AS benchmark_etf_trading_amount,
+      ceb.total_etf_trading_amount AS code_etf_trading_amount,
       bm.is_broad_market,
       CASE
         WHEN ib.close IS NOT NULL AND pb.close IS NOT NULL AND pb.close != 0
@@ -278,6 +300,14 @@ export async function getPerfAttrAttribution(
       WHERE code = a.code AND date < a.date
       ORDER BY date DESC LIMIT 1
     ) ps ON true
+    LEFT JOIN LATERAL (
+      SELECT total_etf_trading_amount FROM stats.index_exts
+      WHERE code = a.benchmark_code AND date = a.date
+    ) beb ON true
+    LEFT JOIN LATERAL (
+      SELECT total_etf_trading_amount FROM stats.index_exts
+      WHERE code = a.code AND date = a.date
+    ) ceb ON true
     LEFT JOIN LATERAL (
       SELECT BOOL_OR(is_broad_market) AS is_broad_market
       FROM stats.sec_index_tags
@@ -548,27 +578,60 @@ export async function getPerfAttrChart(
 
   const [chartRows, nameRows, benchNameRows, benchLinkedEtfs, codeLinkedEtfs] = await Promise.all([
     queryRows<DbPerfAttrChartRow>(
-      `SELECT a.date,
-              a.etf_trading_amount_ratio_benchmark_to_code AS etf_trading_amount_ratio,
-              a.etf_trading_amount_ratio_benchmark_to_code_ma5 AS etf_trading_amount_ratio_ma5,
-              a.benchmark_etf_trading_amount,
-              a.code_etf_trading_amount,
-              ieb.etf_num AS benchmark_etf_num,
-              iec.etf_num AS code_etf_num,
-              a.corr_20d,
-              a.corr_60d,
-              a.corr_255d,
-              ${subjSrc.priceExpr} AS subject_close,
-              ib.close AS benchmark_close
-       FROM stats.cross_stats a
-       ${subjSrc.joinClause}
-       LEFT JOIN stats.index_basic_stats ib ON ib.date = a.date AND ib.code = a.benchmark_code
-       LEFT JOIN stats.index_exts ieb ON ieb.date = a.date AND ieb.code = a.benchmark_code
-       LEFT JOIN stats.index_exts iec ON iec.date = a.date AND iec.code = a.code
-       WHERE a.sec_type = $1::text
-         AND a.code = ANY($2::text[])
-         AND a.benchmark_code = $3::text
-       ORDER BY a.date ASC`,
+      // The ETF liquidity columns are derived at READ time from
+      // stats.index_exts.total_etf_trading_amount (cross_stats no longer
+      // stores them — consolidated away 2026-09-07): ratio = bench/code,
+      // NULL when either amount is NULL/0 or |ratio| >= 1e6 (the former
+      // NUMERIC(10,4) build cap); MA5 = 5-trading-day trailing mean of the
+      // ratio (NULLs skipped — pandas rolling(5, min_periods=1) parity from
+      // the former build-time computation).
+      `SELECT date,
+              etf_trading_amount_ratio,
+              AVG(etf_trading_amount_ratio) OVER (
+                  ORDER BY date ASC
+                  ROWS BETWEEN 4 PRECEDING AND CURRENT ROW
+              ) AS etf_trading_amount_ratio_ma5,
+              benchmark_etf_trading_amount,
+              code_etf_trading_amount,
+              benchmark_etf_num,
+              code_etf_num,
+              subject_close,
+              benchmark_close,
+              corr_20d,
+              corr_60d,
+              corr_255d
+       FROM (
+         SELECT a.date,
+                CASE
+                  WHEN ieb.total_etf_trading_amount IS NULL
+                    OR iec.total_etf_trading_amount IS NULL
+                    OR ieb.total_etf_trading_amount = 0
+                    OR iec.total_etf_trading_amount = 0
+                    OR abs(ieb.total_etf_trading_amount
+                           / iec.total_etf_trading_amount) >= 1000000
+                  THEN NULL
+                  ELSE ieb.total_etf_trading_amount
+                       / iec.total_etf_trading_amount
+                END AS etf_trading_amount_ratio,
+                ieb.total_etf_trading_amount AS benchmark_etf_trading_amount,
+                iec.total_etf_trading_amount AS code_etf_trading_amount,
+                ieb.etf_num AS benchmark_etf_num,
+                iec.etf_num AS code_etf_num,
+                a.corr_20d,
+                a.corr_60d,
+                a.corr_255d,
+                ${subjSrc.priceExpr} AS subject_close,
+                ib.close AS benchmark_close
+         FROM stats.cross_stats a
+         ${subjSrc.joinClause}
+         LEFT JOIN stats.index_basic_stats ib ON ib.date = a.date AND ib.code = a.benchmark_code
+         LEFT JOIN stats.index_exts ieb ON ieb.date = a.date AND ieb.code = a.benchmark_code
+         LEFT JOIN stats.index_exts iec ON iec.date = a.date AND iec.code = a.code
+         WHERE a.sec_type = $1::text
+           AND a.code = ANY($2::text[])
+           AND a.benchmark_code = $3::text
+       ) t
+       ORDER BY date ASC`,
       [secType, codeVariants(target), benchmarkCode],
     ),
     queryRows<{ name: string | null }>(

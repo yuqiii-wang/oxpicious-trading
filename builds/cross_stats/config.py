@@ -32,11 +32,6 @@ SEC_TYPE_DATE_INDEX_SQL = (
 # sector/industry benchmarks.
 TOP_N_NON_BROAD = 3
 
-# Cap on |benchmark_etf_trading_amount / code_etf_trading_amount| mirrored
-# from the NUMERIC(10,4) limit (max 999,999.9999). Ratios exceeding this
-# cap are set to NULL in BOTH the value and the MA5 computation.
-RATIO_CAP = 1_000_000
-
 # Rolling-correlation windows (trading days); materialized ONLY on the
 # stride-20 grid. min_periods = max(2N/3, 3) allows up to 1/3 NaN.
 CORR_WINDOWS = (20, 60, 255)
@@ -51,26 +46,28 @@ SET_WORK_MEM_SQL = "SET work_mem = '512MB'"
 SET_MAINTENANCE_WORK_MEM_SQL = "SET maintenance_work_mem = '512MB'"
 
 _DESCRIPTION = (
-    "Cross-security composition overlap + trading-amount share stats "
+    "Cross-security composition overlap + non-shared-turnover stats "
     "(stats.cross_stats). PAIR grain (sec_type='index'): per "
     "(code, benchmark_code, date) — code_sec_shared_weight and "
     "benchmark_sec_shared_weight from the LATEST stats.sec_composition "
     "snapshot overlap (stocks held by BOTH subject and benchmark; "
-    "zero-overlap pairs explicit (0,0)); ETF-market liquidity "
-    "benchmark_etf_trading_amount / code_etf_trading_amount from "
-    "stats.index_exts.total_etf_trading_amount (NULL when no ETF tracks "
-    "the index), ratio bench/code (+ MA5) with the 1e6 cap; corr_20d/60d/"
-    "255d Pearson close correlations on stride-20 grid dates (--corr "
-    "build). INDUSTRY grain (sec_type='industry', code=industry_id): "
+    "zero-overlap pairs explicit (0,0)); corr_20d/60d/255d Pearson close "
+    "correlations on stride-20 grid dates (--corr build). ETF-market "
+    "liquidity is NOT stored — the amounts are verbatim "
+    "stats.index_exts.total_etf_trading_amount copies and the bench/code "
+    "ratio (+ MA5) derives from them, so consumers join index_exts at "
+    "read time. INDUSTRY grain (sec_type='industry', code=industry_id): "
     "industry union overlap vs broad-market benchmarks — "
     "code_sec_shared_weight = SUM of member indices' pair shared weights "
     "(can exceed 100), benchmark_sec_shared_weight = benchmark weight on "
     "the industry stock UNION (union, no member double-counting), plus "
-    "the trading-amount split benchmark_trading_amount / "
-    "shared_trading_amount / non_shared_trading_amount (yuan; stock "
-    "contributes only with a non-NULL close that date). Temporal "
-    "convention: LATEST composition snapshot for ALL dates. Built by "
-    "builds.cross_stats (incremental missing-dates / --force / --corr)."
+    "non_shared_trading_amount = benchmark turnover (stats."
+    "index_basic_stats) − shared-stock turnover (stock contributes only "
+    "with a non-NULL close that date; the former "
+    "benchmark_non_this_industry_trading_amt — split inputs not "
+    "materialized). Temporal convention: LATEST composition snapshot for "
+    "ALL dates. Built by builds.cross_stats (incremental missing-dates / "
+    "--force / --corr)."
 )
 
 

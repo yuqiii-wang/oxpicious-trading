@@ -16,6 +16,10 @@
 //  GET /api/live-data/trading-signals/configs returns the ACTIVE
 //  signal_type / signal_sub_type combos — the page's signal menu
 //  (default = all).
+//
+//  GET /api/live-data/trading-signals/history returns EVERY live_signals
+//  row of one code (newest first) — the row-expansion panel's history
+//  table + the buy/sell markers on the code-trend chart.
 // ---------------------------------------------------------------------------
 import { fetchJson } from "./_cache";
 
@@ -153,5 +157,32 @@ export function fetchTradingSignals(
   if (date) params.set("date", date);
   return fetchJson<TradingSignalsResponse>(
     `/api/live-data/trading-signals?${params.toString()}`,
+  );
+}
+
+export interface TradingSignalHistoryResponse {
+  sec_type: string;
+  code: string;
+  /** Echoed filters (null = not narrowed). */
+  signal_type: string | null;
+  signal_sub_type: string | null;
+  /** EVERY live_signals row of the code, newest first. */
+  signals: TradingSignal[];
+}
+
+/** One code's FULL signal history (all dates) — drives the expanded row's
+ *  history table + the buy/sell markers on its code-trend chart. Optional
+ *  signalType / signalSubType narrow the history to one signal family. */
+export function fetchTradingSignalHistory(
+  secType: string,
+  code: string,
+  signalType?: string | null,
+  signalSubType?: string | null,
+): Promise<TradingSignalHistoryResponse> {
+  const params = new URLSearchParams({ sec_type: secType, code });
+  if (signalType) params.set("signal_type", signalType);
+  if (signalSubType) params.set("signal_sub_type", signalSubType);
+  return fetchJson<TradingSignalHistoryResponse>(
+    `/api/live-data/trading-signals/history?${params.toString()}`,
   );
 }

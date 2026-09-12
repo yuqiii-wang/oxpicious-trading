@@ -8,7 +8,10 @@
  *     value ∈ ticked set; empty selection = no filter.
  *   • "date"  — from/to range over comparable date strings (month inputs
  *     "YYYY-MM" or date inputs "YYYY-MM-DD"); inclusive bounds, empty =
- *     unbounded on that side.
+ *     unbounded on that side. With `frozenFromYears` set the menu swaps
+ *     to an END-ONLY variant: one editable end-period input selecting
+ *     rows whose month EQUALS it (the end − N years min is frozen as a
+ *     caption-only stats window).
  *   • "range" — min/max over continuous numeric magnitudes (prices,
  *     amounts, ratios); rows with a null/non-numeric value never match an
  *     active range. NOT for numeric columns with a small discrete value set
@@ -24,9 +27,16 @@
  * `scopeDeps` resets all filters when the table's data scope changes (new
  * code / sec_type / refresh) — prefill then re-derives from the new rows.
  *
- * Returns `filtered` rows, a `menuFor(def)` header renderer that picks the
- * right menu component, `anyActive` (any column currently filtering) and
- * `reset`.
+ * ROW ORDERING: every filter popup carries an order row (Ascending ⇄
+ * Descending) that makes its column the table's ORDERING KEY and flips the
+ * direction — `filtered` is then sorted by that column (nulls last, numeric
+ * when both values parse as numbers, lexicographic otherwise). The key
+ * DEFAULTS to the first date column, descending; a scope change re-defaults
+ * it together with the filters.
+ *
+ * Returns `filtered` rows (filtered AND ordered), a `menuFor(def)` header
+ * renderer that picks the right menu component, `anyActive` (any column
+ * currently filtering) and `reset`.
  */
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import HeaderFilterMenu from "@/components/HeaderFilterMenu";
@@ -47,6 +57,11 @@ export interface HeaderFilterDef<T> {
   value: (r: T) => string | number | null;
   /** date type only — input granularity (default "date"). */
   granularity?: "date" | "month";
+  /** date type only — END-ONLY mode: the menu shows a single editable
+   *  end-period input and rows match the stats month EQUALING it (the
+   *  end − N years lookback min is auto-frozen as a caption-only stats
+   *  window, not a filter bound). */
+  frozenFromYears?: number;
 }
 
 interface TicksState {
@@ -72,15 +87,34 @@ const defaultState = (type: HeaderFilterType): ColFilterState =>
       ? { kind: "date", from: null, to: null }
       : { kind: "range", min: null, max: null };
 
+/** Row-ordering state — which filter column is the ordering key + direction. */
+interface OrderState {
+  key: string | null;
+  dir: "asc" | "desc";
+}
+
+/** Direction a column applies when it becomes the ordering key (also the
+ *  default ordering direction — tables open date-ordered, latest first). */
+const DEFAULT_DIR: "asc" | "desc" = "desc";
+
+/** Default ordering key: the first date column, descending (null key = keep
+ *  the caller's row order when the table has no date filter). */
+function defaultOrder<T>(defs: HeaderFilterDef<T>[]): OrderState {
+  return { key: defs.find((d) => d.type === "date")?.key ?? null, dir: DEFAULT_DIR };
+}
+
 export function useTableHeaderFilters<T>(
   defs: HeaderFilterDef<T>[],
   rows: T[],
   scopeDeps: unknown[] = [],
 ) {
   const [state, setState] = useState<Record<string, ColFilterState>>({});
-  // New scope → the previous column values don't apply: clear all filters.
+  const [order, setOrder] = useState<OrderState>(() => defaultOrder(defs));
+  // New scope → the previous column values don't apply: clear all filters
+  // and re-default the ordering key (first date column, descending).
   useEffect(() => {
     setState({});
+    setOrder(defaultOrder(defs));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, scopeDeps);
 
@@ -134,11 +168,31 @@ export function useTableHeaderFilters<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defs, rows]);
 
-  const filtered = useMemo(
-    () => rows.filter((r) => defs.every((d) => matches(d, r))),
+  // Filter, then ORDER by the active ordering key — nulls last regardless
+  // of direction; numeric compare when both values parse as numbers (range
+  // columns, numeric tick sets), lexicographic otherwise (date strings
+  // "YYYY-MM[-DD]" compare correctly as strings).
+  const sortDef =
+    order.key != null ? defs.find((d) => d.key === order.key) : undefined;
+  const filtered = useMemo(() => {
+    const out = rows.filter((r) => defs.every((d) => matches(d, r)));
+    if (sortDef == null) return out;
+    const mult = order.dir === "asc" ? 1 : -1;
+    out.sort((a, b) => {
+      const va = sortDef.value(a);
+      const vb = sortDef.value(b);
+      if (va == null || vb == null) {
+        if (va == null && vb == null) return 0;
+        return va == null ? 1 : -1;
+      }
+      const na = typeof va === "number" ? va : Number(va);
+      const nb = typeof vb === "number" ? vb : Number(vb);
+      if (Number.isFinite(na) && Number.isFinite(nb)) return (na - nb) * mult;
+      return String(va).localeCompare(String(vb)) * mult;
+    });
+    return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, defs, state],
-  );
+  }, [rows, defs, state, order, sortDef]);
 
   // Data-derived bounds per date/range column — the PREFILL shown in the
   // inputs while the bound is unset (null state). Date bounds are the
@@ -178,12 +232,24 @@ export function useTableHeaderFilters<T>(
 
   const menuFor = (d: HeaderFilterDef<T>): ReactNode => {
     const s = getState(d);
+    // Row ordering — each menu shows its column's direction (the key's real
+    // dir; other columns display the default desc they'd apply on click).
+    // Toggling makes this column the ordering key and flips asc ⇄ desc.
+    const isKey = order.key === d.key;
+    const sortDir: "asc" | "desc" = isKey ? order.dir : DEFAULT_DIR;
+    const onToggleSort = () =>
+      setOrder({
+        key: d.key,
+        dir: isKey && order.dir === DEFAULT_DIR ? "asc" : DEFAULT_DIR,
+      });
     if (d.type === "ticks") {
       return (
         <HeaderFilterMenu
           label={d.label}
           values={tickValues.get(d.key) ?? []}
           selected={s.kind === "ticks" ? s.selected : []}
+          sortDir={sortDir}
+          onToggleSort={onToggleSort}
           onChange={(selected) => setFilter(d.key, { kind: "ticks", selected })}
         />
       );
@@ -199,6 +265,9 @@ export function useTableHeaderFilters<T>(
           prefillFrom={(b?.lo as string | undefined) ?? null}
           prefillTo={(b?.hi as string | undefined) ?? null}
           granularity={d.granularity}
+          frozenFromYears={d.frozenFromYears}
+          sortDir={sortDir}
+          onToggleSort={onToggleSort}
           onChange={(next) => setFilter(d.key, { kind: "date", ...next })}
         />
       );
@@ -212,6 +281,8 @@ export function useTableHeaderFilters<T>(
         max={rs.kind === "range" ? rs.max : null}
         prefillMin={(b?.lo as number | undefined) ?? null}
         prefillMax={(b?.hi as number | undefined) ?? null}
+        sortDir={sortDir}
+        onToggleSort={onToggleSort}
         onChange={(next) => setFilter(d.key, { kind: "range", ...next })}
       />
     );

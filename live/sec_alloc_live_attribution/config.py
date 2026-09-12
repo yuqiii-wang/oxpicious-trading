@@ -4,21 +4,24 @@ Live Allocation Attribution — per-5-min-tick member % change vs the
 previous trading day's close, weighted by the PREVIOUS trading day's
 trading amount (liquidity weight).
 
-Two tables, split by computation weight (heavy ref built ONCE per date;
-light ticks appended every 5-min run):
+Single light table, appended every 5-min run:
 
-  live.sec_alloc_live_prev_ref     (HEAVY / once per date — ref.py)
-    PK: (benchmark_code, date, code, sec_type)
-    Stores prev_date, prev-day closes (member + benchmark), prev-day
-    trading amount, and the normalized trading-amount market-share weight
-    (code_trading_amount_weight, Σ = 1 per benchmark+date).
-
-  live.sec_alloc_live_attribution  (LIGHT / per 5-min tick — ticks.py)
+  live.sec_alloc_live_attribution
     PK: (code, date, time, sec_type, benchmark_code)
-    FK: (benchmark_code, date, code, sec_type) → prev_ref
     Stores per-tick member pct + benchmark pct vs prev-day close and a
-    GENERATED diff. The UI "by trading amt / without" toggle switches
-    between SUM(ref.weight * tick.pct) and AVG(tick.pct) at QUERY TIME.
+    GENERATED diff. ``is_without_trading_amt`` marks the prev-close basis:
+    TRUE = fallback row (prev-day last 5-min bar close, written by the
+    5-min LIVE pass so equal-weighted data flows immediately); FALSE =
+    daily-close-basis row (prev-day official close, written/upgraded by
+    the yday-ref mode). The UI "by trading amt / without" toggle computes
+    SUM(weight * pct) vs AVG(pct) AT QUERY TIME.
+
+  The former heavy reference table live.sec_alloc_live_prev_ref was
+  CONSOLIDATED AWAY (2026-09-08): its values are derivable from the base
+  tables — prev-day closes/trading amounts from stats.index_basic_stats
+  (computed at tick time by the weighted pass), composition-overlap
+  weights from stats.cross_stats (computed at read time by the API
+  service).
 
 Sources:
   stats.sec_classification            — member universe + industry_id mapping
@@ -27,25 +30,28 @@ Sources:
 """
 from typing import Final
 
-# Heavy static reference table (built once per (benchmark, date)).
-REF_TABLE: Final[str] = "live.sec_alloc_live_prev_ref"
-
-# Light per-5-min tick table (child, strict FK to REF_TABLE).
+# Light per-5-min tick table.
 TICK_TABLE: Final[str] = "live.sec_alloc_live_attribution"
 
 # Registration metadata for live.live_identity.
 PIPELINE_NAME: Final[str] = "sec_alloc_live_attribution"
 PIPELINE_DESCRIPTION: Final[str] = (
-    "Live per-5-min-tick member attribution under the live schema. Heavy "
-    "prev-date reference (prev-day closes, prev-day trading amounts, "
-    "normalized trading-amount market-share weights) is built ONCE per "
-    "(benchmark, date) into live.sec_alloc_live_prev_ref and skipped on "
-    "subsequent runs of the same date. Light per-tick rows (member + "
-    "benchmark % vs prev-day close, GENERATED diff) are appended "
-    "incrementally into live.sec_alloc_live_attribution every run "
-    "(designed to be triggered every 5 min during trading hours by the "
-    "Market Movements UI). Industry-level weighted (SUM weight*pct) and "
-    "equal-weighted (AVG pct) aggregates are computed at query time. "
+    "Live per-5-min-tick member attribution under the live schema. Light "
+    "per-tick rows (member + benchmark % vs prev-day close, GENERATED "
+    "diff) are appended incrementally into "
+    "live.sec_alloc_live_attribution every run (designed to be triggered "
+    "every 5 min during trading hours by the Market Movements UI). "
+    "is_without_trading_amt marks the prev-close basis: TRUE = fallback "
+    "(prev-day last 5-min bar close, equal-weight only), FALSE = "
+    "daily-close basis (upgraded in place by the yday-ref mode's weighted "
+    "pass, which computes prev closes from stats.index_basic_stats at "
+    "tick time — the former heavy live.sec_alloc_live_prev_ref table was "
+    "consolidated away; trading-amount weights and composition-overlap "
+    "shared weights are computed at READ time from stats.index_basic_stats "
+    "and stats.cross_stats). Industry-level weighted (SUM weight*pct, "
+    "renormalized) and equal-weighted (AVG pct) aggregates are computed "
+    "at query time. A retention prune (ref/all modes) keeps only the "
+    "newest 5 trading dates. "
     "Sources: stats.sec_classification (member universe), "
     "stats.index_basic_stats (prev-day close + trading_amount), "
     "stats.index_intraday_5min (tick closes)."
@@ -55,10 +61,29 @@ PIPELINE_DESCRIPTION: Final[str] = (
 # pipelines).
 SUPPORTED_SEC_TYPES: Final[tuple[str, ...]] = ("index",)
 
+# Retention window in TRADING DATES: rows older than the Nth-newest
+# distinct intraday date are deleted from the tick table by the prune step
+# in ref/all modes (once per day — never in the 5-min live mode, where the
+# unindexed date scan would run on every tick). The pipeline is strictly
+# latest-date-scoped (all finder queries resolve MAX(date) of the intraday
+# source), so pruned history is never recomputed.
+RETENTION_DATES: Final[int] = 5
+
+# BENCHMARK UNIVERSE — curated broad-market tags only. The Market
+# Movements page (the only consumer) resolves its benchmark dropdown from
+# stats.sec_index_tags WHERE industry_id = 'benchmark_broadmarket'; before
+# this filter the pipeline computed the FULL (code x tick-bearing index)
+# cross product — 492 benchmarks × ~460 members × ~65 ticks/day ≈ 12M
+# rows/day, ~99% of it never read. Scope every pair finder to the same
+# tag set so ticks, refs, and the UI agree.
+CURATED_BENCHMARK_FILTER: Final[str] = (
+    "i5.code IN (SELECT t.code FROM stats.sec_index_tags t "
+    "WHERE t.industry_id = 'benchmark_broadmarket')"
+)
+
 # LIVE TICK SCOPE: stats.sec_classification.type values eligible for live
 # tick rows. 'industry' members are indexes carrying an industry_id, so the
-# effective set is ('index', 'etf'). STOCKS never get tick rows — they are
-# kept in the REF table for share-weight purposes only.
+# effective set is ('index', 'etf'). STOCKS never get tick rows.
 TICK_CLASS_TYPES: Final[tuple[str, ...]] = ("index", "etf")
 
 # PG advisory-lock keys for single-instance coordination — ONE PER PROCESS
@@ -67,10 +92,10 @@ TICK_CLASS_TYPES: Final[tuple[str, ...]] = ("index", "etf")
 #   • ADVISORY_LOCK_KEY (LIVE ticks process, --mode live): the 5-min
 #     auto-refresh equal-weight path. A second concurrent instance simply
 #     SKIPS (exits fast) — the next 5-min run catches up.
-#   • REF_ADVISORY_LOCK_KEY (YDAY REF process, --mode ref): the heavy
-#     once-per-date prev-day reference build + weighted tick upgrades,
-#     triggered manually from the Market Movements UI button. Waits
-#     (bounded) for the lock instead of skipping.
+#   • REF_ADVISORY_LOCK_KEY (YDAY REF process, --mode ref): the once-per-day
+#     daily-close-basis weighted tick upgrades, triggered manually from the
+#     Market Movements UI button. Waits (bounded) for the lock instead of
+#     skipping.
 ADVISORY_LOCK_KEY: Final[int] = 482311001  # arbitrary stable constant
 REF_ADVISORY_LOCK_KEY: Final[int] = 482311002  # arbitrary stable constant
 

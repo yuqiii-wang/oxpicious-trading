@@ -146,6 +146,15 @@ export function mapIndexRows(rows: IndexBaselineRow[]): CodeTrendRow[] {
 }
 
 /** Default per-sec_type sources — override via the `sources` prop. */
+/** Stable EMPTY identities for the chart props' fallbacks. A fresh []
+ * per render would dirty StockOhlcChart's option memo on EVERY parent
+ * re-render (spinner flips, chip mounts, row selection...), forcing a
+ * full ~1 s notMerge rebuild of the 1700-candle chart each time
+ * (measured 2026-09) — the props must stay identity-stable when their
+ * CONTENT is unchanged. */
+const NO_EPISODES: import("@shared/types").MovAveSpreadHypeEpisode[] = [];
+const NO_DIVIDENDS: StockDividend[] = [];
+
 export const CODE_TREND_SOURCES: Record<CodeTrendSecType, CodeTrendSource> = {
   stock: {
     fetch: async (code) => {
@@ -316,11 +325,11 @@ export default class CodeTrendChart extends React.Component<
         height={height}
         {...chartOptions}
         {...dataZoom}
-        dividends={chartOptions?.dividends ?? this.state.data?.dividends ?? []}
+        dividends={chartOptions?.dividends ?? this.state.data?.dividends ?? NO_DIVIDENDS}
         hypeEpisodes={
           this.state.showHypes
             ? mergeHypeEpisodesAllWindows(this.state.hypeEpisodes)
-            : []
+            : NO_EPISODES
         }
       />
     );

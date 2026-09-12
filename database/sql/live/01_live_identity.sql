@@ -10,7 +10,8 @@
 --                       (e.g. 'sec_alloc_live_attribution'). NULL when the
 --                       pipeline has no separate detail table.
 --    summary_name     — optional suffix of the aggregated summary result table
---                       (e.g. 'sec_alloc_live_prev_ref'). NULL when the
+--                       (falls back to the main table name when the
+--                       pipeline has a single table). NULL when the
 --                       pipeline has no summary table.
 --    last_run_datetime — timestamp of the most recent run that recomputed
 --                       this pipeline (UTC).
@@ -38,7 +39,7 @@ ALTER TABLE live.live_identity
 COMMENT ON TABLE  live.live_identity                     IS 'Registry of live pipelines stored in the live schema. One row per pipeline (may have a detail table, a summary table, or both).';
 COMMENT ON COLUMN live.live_identity.name               IS 'Primary pipeline identifier; matches the suffix of the main result table.';
 COMMENT ON COLUMN live.live_identity.detail_name        IS 'Optional suffix of the per-tick detail result table (e.g. sec_alloc_live_attribution).';
-COMMENT ON COLUMN live.live_identity.summary_name       IS 'Optional suffix of the aggregated summary result table (e.g. sec_alloc_live_prev_ref).';
+COMMENT ON COLUMN live.live_identity.summary_name       IS 'Optional suffix of the aggregated summary result table (same as name when the pipeline has a single table).';
 COMMENT ON COLUMN live.live_identity.last_run_datetime  IS 'Timestamp of the most recent run that recomputed this pipeline (UTC).';
 COMMENT ON COLUMN live.live_identity.description        IS 'Free-form description of what the live pipeline computes.';
 

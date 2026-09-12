@@ -38,6 +38,7 @@ import {
   fetchTradingSignalConfigs,
   fetchTriggeredSignals,
   fetchTradingSignalDates,
+  fetchTradingSignalHistory,
 } from "../services/trading-signals.service.js";
 
 const router = Router();
@@ -112,10 +113,10 @@ router.get("/combined", async (req: Request, res: Response) => {
 // ---- Intraday Movements — per-5-min-tick % change vs prev day close for
 //      the benchmark + ALL industries (shaded areas) + member indices.
 //      Drives the "Market Movements" tab on the Live Data page.
-//      Data is read from live.sec_alloc_live_attribution +
-//      live.sec_alloc_live_prev_ref (populated by
-//      python -m live.sec_alloc_live_attribution); industry aggregates are
-//      computed at query time.
+//      Data is read from live.sec_alloc_live_attribution (populated by
+//      python -m live.sec_alloc_live_attribution); industry identity
+//      (stats.sec_classification) and aggregates are joined/computed at
+//      query time.
 //
 //   GET /api/live-data/intraday-movements
 //     ?benchmark_code=000922&date=YYYY-MM-DD
@@ -233,12 +234,12 @@ router.get("/sec-alloc-live/attribution", async (req: Request, res: Response) =>
 //               Failure is non-fatal (logged, chain continues).
 //            3. live.sec_alloc_live_attribution --mode ref
 //               --rebuild-latest-date (tag "…:ref") — invalidates this
-//               date's ref + tick rows (they may have been built from
-//               stale/estimated closes), then the heavy prev-day
-//               closes + trading amounts + weights + weighted tick
-//               upgrades. Fired by the "Build Yday Ref" button on the
-//               Market Movements page; may take minutes on the first
-//               run of a date.
+//               date's tick rows (they may have been computed from
+//               stale/estimated closes), then rebuilds daily-close-basis
+//               (weighted) ticks with prev closes computed at tick time
+//               from stats.index_basic_stats. Fired by the "Build Yday
+//               Ref" button on the Market Movements page; may take
+//               minutes on the first run of a date.
 //      body.process_id_tag overrides the default tag
 //      ("sec-alloc-live:<mode>") — the py-runner registry dedupes
 //      concurrent spawns of the SAME tag and exposes running-state via
@@ -474,6 +475,45 @@ router.get("/trading-signals/configs", async (req: Request, res: Response) => {
   } catch (err) {
     const status = (err as { status?: number })?.status ?? 500;
     console.error("[live-data/trading-signals/configs] error:", err);
+    res.status(status).json({ error: String(err) });
+  }
+});
+
+/** GET /api/live-data/trading-signals/history?sec_type=index&code=000300
+ *  &signal_type=&signal_sub_type=
+ *  → { sec_type, code, signals: [...] } — EVERY live_signals row of the
+ *  code (newest first): the row-expansion panel's history-signals table +
+ *  buy/sell markers on the code-trend chart. signal_type / signal_sub_type
+ *  optionally narrow the history to one signal family. */
+router.get("/trading-signals/history", async (req: Request, res: Response) => {
+  try {
+    const secType = typeof req.query.sec_type === "string"
+      ? req.query.sec_type : "index";
+    const code = typeof req.query.code === "string"
+      ? req.query.code.trim() : "";
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    const signalType = typeof req.query.signal_type === "string"
+      && req.query.signal_type.trim()
+      ? req.query.signal_type.trim() : null;
+    const signalSubType = typeof req.query.signal_sub_type === "string"
+      && req.query.signal_sub_type.trim()
+      ? req.query.signal_sub_type.trim() : null;
+    const signals = await fetchTradingSignalHistory(
+      secType, code, signalType, signalSubType,
+    );
+    res.json({
+      sec_type: sec_type_valid(secType),
+      code,
+      signal_type: signalType,
+      signal_sub_type: signalSubType,
+      signals,
+    });
+  } catch (err) {
+    const status = (err as { status?: number })?.status ?? 500;
+    console.error("[live-data/trading-signals/history] error:", err);
     res.status(status).json({ error: String(err) });
   }
 });

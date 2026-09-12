@@ -16,10 +16,10 @@
  *                    relative GROWTH in turnover over time. The tooltip still
  *                    surfaces the raw 亿元 value in parentheses.
  *
- * The tooltip surfaces the bench/code liquidity ratio (DB-GENERATED
- * etf_trading_amount_ratio_benchmark_to_code), the subject's share (1/ratio), AND
- * the 5-day moving average of the ratio (etf_trading_amount_ratio_benchmark_to_code_ma5,
- * precomputed by builds.cross_stats) as a dedicated line
+ * The tooltip surfaces the bench/code liquidity ratio (API-computed
+ * etf_trading_amount_ratio), the subject's share (1/ratio), AND
+ * the 5-day moving average of the ratio (etf_trading_amount_ratio_ma5,
+ * computed at read time by the API) as a dedicated line
  * — the former standalone MA5 chart has been consolidated into this tooltip.
  * Shares the same date range (slider-sliced `filteredChartData`) as the
  * close-price plot.
@@ -61,9 +61,10 @@ export function buildAmountContributionOption(
     data.benchmark_linked_etfs.length === 0 && data.code_linked_etfs.length === 0;
   const benchmarkEtfNums = data.rows.map((r) => r.benchmark_etf_num);
   const codeEtfNums = data.rows.map((r) => r.code_etf_num);
-  // DB-generated liquidity ratio (benchmark_etf_trading_amount / code_etf_trading_amount).
+  // Liquidity ratio (benchmark_etf_trading_amount / code_etf_trading_amount,
+  // computed at read time by the API from stats.index_exts).
   const ratios = data.rows.map((r) => r.etf_trading_amount_ratio);
-  // 5-day moving average of the ratio (precomputed by the analyze script).
+  // 5-day moving average of the ratio (read-time window in the API query).
   const ratioMa5s = data.rows.map((r) => r.etf_trading_amount_ratio_ma5);
 
   const subjectName = data.name || data.code;

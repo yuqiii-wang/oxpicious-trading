@@ -1,15 +1,16 @@
 """Internal ETF contribution step for analyze.industry_sentiments.
 
-Aggregates stats.cross_stats.code_etf_trading_amount (sec_type='index') to the
-industry level, producing analysis.industry_etf_contribution with one row per
-(date, industry_id, pool_size).
+Aggregates stats.index_exts.total_etf_trading_amount (aggregate ETF
+turnover per tracked index, built by builds.index exts phase) to the
+industry level, producing analysis.industry_etf_contribution with one
+row per (date, industry_id, pool_size).
 
 AGGREGATION
-  industry_etf_trading_amount = SUM(code_etf_trading_amount) across member
-  indices in the industry (from stats.cross_stats where sec_type='index',
-  built by builds.cross_stats). Each member index's code_etf_trading_amount
-  is the aggregate ETF turnover tracking that index (precomputed in
-  stats.index_exts.total_etf_trading_amount).
+  industry_etf_trading_amount = SUM(total_etf_trading_amount) across
+  member indices in the industry (formerly relayed via
+  stats.cross_stats.code_etf_trading_amount — that stored copy was
+  consolidated away 2026-09-07 as a verbatim index_exts duplicate, so
+  the aggregation now joins index_exts directly).
 
   Cross-sectional count across member indices (same GROUP BY):
     industry_etf_count = COUNT(DISTINCT code) with non-NULL ETF amount.
@@ -42,9 +43,9 @@ IMPLEMENTATION
   INSERT. Incremental mode: date filter + ON CONFLICT DO UPDATE.
 
 DEPENDENCY
-  Depends on stats.cross_stats (sec_type='index') being populated first. If
-  that table has no index rows with non-NULL code_etf_trading_amount, the
-  step exits gracefully.
+  Depends on stats.index_exts (builds.index exts phase) being populated
+  first. If no index has a non-NULL total_etf_trading_amount, the step
+  exits gracefully.
 
 This module is an INTERNAL step of analyze.industry_sentiments — it is
 invoked from __main__.py after the attributions step, reusing the same DB
@@ -82,17 +83,17 @@ TABLE = "analysis.industry_etf_contribution"
 ANALYSIS_NAME = "industry_etf_contribution"
 ANALYSIS_DESCRIPTION = (
     "Per-(date, industry_id, pool_size) aggregate ETF trading turnover. "
-    "industry_etf_trading_amount = SUM(code_etf_trading_amount) across "
-    "member indices from stats.cross_stats (sec_type"
-    "='index'). industry_etf_count = COUNT of member indices with non-NULL "
-    "ETF amount. Each member index contributes its aggregate ETF turnover "
-    "(precomputed in stats.index_exts). pool_size: small (stock_num<51), "
-    "mid (51-180), large (>180), all (every member). "
+    "industry_etf_trading_amount = SUM(total_etf_trading_amount) across "
+    "member indices from stats.index_exts. industry_etf_count = COUNT of "
+    "member indices with non-NULL ETF amount. Each member index "
+    "contributes its aggregate ETF turnover (precomputed in "
+    "stats.index_exts). pool_size: small (stock_num<51), mid (51-180), "
+    "large (>180), all (every member). "
     "industry_etf_trading_amount_ma5 = 5-day MA, "
     "industry_etf_trading_amount_ma20 = 20-day MA. Built by "
     "analyze.industry_sentiments.etf_contribution (internal step, "
-    "truncate-then-recompute). Depends on stats.cross_stats "
-    "(sec_type='index') being populated first."
+    "truncate-then-recompute). Depends on stats.index_exts (builds.index "
+    "exts phase) being populated first."
 )
 
 
@@ -100,24 +101,23 @@ ANALYSIS_DESCRIPTION = (
 #  SQL
 # ---------------------------------------------------------------------------
 
-# Guard: bail out early if the upstream table has no index rows with
-# non-NULL code_etf_trading_amount. Source: stats.cross_stats PAIR grain
-# (built by builds.cross_stats — the former analysis.sec_alloc_perf_attribution).
+# Guard: bail out early if the upstream table has no ETF amount rows.
+# Source: stats.index_exts (built by builds.index exts phase; the former
+# relay via stats.cross_stats.code_etf_trading_amount was consolidated
+# away 2026-09-07 as a verbatim duplicate).
 COUNT_SOURCE_SQL = """
     SELECT COUNT(*) AS n
-    FROM stats.cross_stats
-    WHERE sec_type = 'index'
-      AND code_etf_trading_amount IS NOT NULL
+    FROM stats.index_exts
+    WHERE total_etf_trading_amount IS NOT NULL
 """
 
 # The full aggregation, server-side.
 #
 # CTE chain:
-#   etf_amt       — DISTINCT (code, date, code_etf_trading_amount) from
-#                   stats.cross_stats (sec_type='index'). DISTINCT
-#                   because the same value appears for every benchmark_code.
-#                   {date_filter} applies HERE ONLY (incremental mode targets
-#                   specific dates).
+#   etf_amt       — (code, date, total_etf_trading_amount) from
+#                   stats.index_exts. One row per (code, date) by the
+#                   table's PK — no DISTINCT needed. {date_filter} applies
+#                   HERE ONLY (incremental mode targets specific dates).
 #   index_info    — per-index: industry_id, industry_label, stock_num (from
 #                   COUNT(DISTINCT stock_code) in sec_composition — same as
 #                   industry_sentiments POOL_UNION_TEMP_SQL).
@@ -128,19 +128,18 @@ COUNT_SOURCE_SQL = """
 #                   (date, industry_id, pool_size). Computes:
 #                     industry_etf_count = COUNT(DISTINCT code) [with non-NULL
 #                                          ETF trading amount]
-#                     industry_etf_trading_amount = SUM(code_etf_trading_amount)
+#                     industry_etf_trading_amount = SUM(total_etf_trading_amount)
 #
-# {date_filter} placeholder: "" for full, "AND sa.date = ANY($1::date[])" for
+# {date_filter} placeholder: "" for full, "AND ie.date = ANY($1::date[])" for
 # incremental.
 _AGGREGATE_SQL = """
 WITH etf_amt AS (
-    SELECT DISTINCT
-        sa.code,
-        sa.date,
-        sa.code_etf_trading_amount
-    FROM stats.cross_stats sa
-    WHERE sa.sec_type = 'index'
-      AND sa.code_etf_trading_amount IS NOT NULL
+    SELECT
+        ie.code,
+        ie.date,
+        ie.total_etf_trading_amount AS code_etf_trading_amount
+    FROM stats.index_exts ie
+    WHERE ie.total_etf_trading_amount IS NOT NULL
       {date_filter}
 ),
 index_info AS (
@@ -197,7 +196,7 @@ AGGREGATE_SQL_FULL = _AGGREGATE_SQL.format(date_filter="")
 
 # Incremental — date filter on the source table.
 AGGREGATE_SQL_INCREMENTAL = _AGGREGATE_SQL.format(
-    date_filter="AND sa.date = ANY($1::date[])"
+    date_filter="AND ie.date = ANY($1::date[])"
 )
 
 
@@ -218,10 +217,10 @@ async def run_etf_contribution(
     a single atomic-ish batch.
 
     Pipeline
-      1. Guard: if stats.cross_stats has no index rows with non-NULL
-         code_etf_trading_amount, exit gracefully.
+      1. Guard: if stats.index_exts has no non-NULL
+         total_etf_trading_amount rows, exit gracefully.
       2. Force mode: TRUNCATE analysis.industry_etf_contribution.
-      3. SQL: aggregate code_etf_trading_amount per (date, industry_id,
+      3. SQL: aggregate index_exts ETF turnover per (date, industry_id,
          pool_size).
       4. pandas: compute 5-day and 20-day MA per (industry_id, pool_size)
          group.
@@ -249,12 +248,12 @@ async def run_etf_contribution(
     # ---- Step 1: guard — check upstream availability ----------------
     n_src = await conn.fetchval(COUNT_SOURCE_SQL)
     if not n_src:
-        logger.info("\n[e1/5] stats.cross_stats has no index rows with "
-              "non-NULL code_etf_trading_amount — nothing to materialize. "
+        logger.info("\n[e1/5] stats.index_exts has no non-NULL "
+              "total_etf_trading_amount rows — nothing to materialize. "
               "Skipping etf_contribution step.")
         return
-    logger.info(f"\n[e1/5] Source: {n_src:,} index rows with non-NULL "
-          f"code_etf_trading_amount.")
+    logger.info(f"\n[e1/5] Source: {n_src:,} index_exts rows with non-NULL "
+          f"total_etf_trading_amount.")
 
     # ---- Step 2: truncate (full recompute only) ---------------------
     if not incremental:
@@ -265,8 +264,8 @@ async def run_etf_contribution(
               f"(ON CONFLICT DO UPDATE handles dedup).")
 
     # ---- Step 3: SQL aggregation ------------------------------------
-    logger.info("\n[e3/5] Aggregating code_etf_trading_amount per "
-          "(date, industry_id, pool_size)...")
+    logger.info("\n[e3/5] Aggregating index_exts total_etf_trading_amount "
+          "per (date, industry_id, pool_size)...")
     t_sql = time.time()
     if incremental:
         sorted_dates = sorted(target_dates)

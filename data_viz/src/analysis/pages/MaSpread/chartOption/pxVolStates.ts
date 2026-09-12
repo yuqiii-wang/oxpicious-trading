@@ -19,9 +19,16 @@
  *   t = ret_1d / σ_ret(code, 255 rows ending t-1, min 60, ddof=1)
  *       sharp_up t > 2.0 | slow_up 1.26 < t <= 2.0 | flat | slow_dn | sharp_dn
  *       (never fires when σ_ret is NaN or below sigma_floor 0.005)
- *   z = (amt_ratio - μ) / σ  where amt_ratio = amount[t] / mean(amount[t-5..t-1])
- *       and μ/σ are the rolling-255 (min 60) moments of amt_ratio, shifted 1
+ *   z = (log(amount[t]) - μ) / σ  — the z-scored log AMOUNT LEVEL (what
+ *       "Amt Up/Down" claim: the day's amount vs the code's OWN trailing
+ *       amount distribution), μ/σ = the rolling-255 (min 60) moments of
+ *       log(amount), shifted 1
  *       heavy z > 2.0 | normal -0.92 <= z <= 2.0 | shrink z < -0.92
+ *       (the retired 量比-ratio z — amount / its own 5-day trailing mean,
+ *       z vs the ratio's moments — fired "Amt Up" on drought bounces: in
+ *       a declining-volume regime the 5-day base collapses, so a day
+ *       whose amount sat far below the code's level scored ratio ≈ 1.7
+ *       → z > 2)
  */
 
 /** Price-speed states in PX_VOL_SPEEDS order (sql/comments canonical). */
@@ -32,7 +39,6 @@ export type PxVolVolState = "heavy" | "normal" | "shrink";
 /** Engine thresholds (05_px_vol_state.sql recorded build parameters). */
 export const PX_VOL_SIGMA_WINDOW = 255;
 export const PX_VOL_SIGMA_MIN_DAYS = 60;
-export const PX_VOL_LB_WINDOW = 5;
 export const PX_VOL_K_SHARP = 2.0;
 export const PX_VOL_K_SLOW_UP = 1.26;
 export const PX_VOL_K_SLOW_DN = 1.29;
@@ -152,31 +158,17 @@ export function computePxVolStates(
     }
   }
 
-  // --- 量比 (amt_ratio): amount / mean(amount[t-5..t-1]) — base excludes
-  //     today, so the full 5-row trailing base must be present ------------
-  const amtRatio: Array<number | null> = new Array(n).fill(null);
-  for (let i = PX_VOL_LB_WINDOW; i < n; i++) {
+  // --- 量能水平 z (log-amount LEVEL z): log(amount) moments over the
+  //     trailing W rows (min_periods), SHIFTED 1 row. The LEVEL statement
+  //     is what "Amt Up/Flat/Down" claim — NOT a 5-day-baseline surge
+  //     (the retired ratio z fired Amt Up on drought bounces). -----------
+  const logAmt: Array<number | null> = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
     const ta = amounts[i];
-    if (ta == null) continue;
-    let baseSum = 0;
-    let ok = true;
-    for (let j = i - PX_VOL_LB_WINDOW; j < i; j++) {
-      const v = amounts[j];
-      if (v == null) {
-        ok = false;
-        break;
-      }
-      baseSum += v;
-    }
-    if (!ok) continue;
-    const base = baseSum / PX_VOL_LB_WINDOW;
-    if (base > 1e-12) {
-      const lb = ta / base;
-      if (Number.isFinite(lb)) amtRatio[i] = lb;
-    }
+    if (ta == null || ta <= 0) continue;
+    const l = Math.log(ta);
+    if (Number.isFinite(l)) logAmt[i] = l;
   }
-
-  // --- μ/σ of amt_ratio: rolling W rows (min_periods), SHIFTED 1 row -------
   const muLag: Array<number | null> = new Array(n).fill(null);
   const sigLag: Array<number | null> = new Array(n).fill(null);
   for (let i = 0; i < n; i++) {
@@ -185,7 +177,7 @@ export function computePxVolStates(
     let sum2 = 0;
     let cnt = 0;
     for (let j = lo; j <= i; j++) {
-      const v = amtRatio[j];
+      const v = logAmt[j];
       if (v == null) continue;
       sum += v;
       sum2 += v * v;
@@ -215,11 +207,11 @@ export function computePxVolStates(
     else if (t >= -PX_VOL_K_SHARP) speed = "slow_dn";
     else speed = "sharp_dn";
 
-    const lb = amtRatio[i];
+    const lv = logAmt[i];
     const mu = muLag[i];
     const sig = sigLag[i];
-    if (lb == null || mu == null || sig == null || sig <= 1e-12) continue;
-    const z = (lb - mu) / sig;
+    if (lv == null || mu == null || sig == null || sig <= 1e-12) continue;
+    const z = (lv - mu) / sig;
     let vol: PxVolVolState;
     if (z > PX_VOL_Z_HEAVY) vol = "heavy";
     else if (z >= PX_VOL_Z_SHRINK) vol = "normal";

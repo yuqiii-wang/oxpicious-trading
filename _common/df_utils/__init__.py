@@ -168,6 +168,9 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "bs_price_greeks": ("_common.df_utils.black_scholes", "bs_price_greeks"),
     "solve_iv_newton": ("_common.df_utils.black_scholes", "solve_iv_newton"),
     "compute_iv_and_greeks": ("_common.df_utils.black_scholes", "compute_iv_and_greeks"),
+    # Row-wise capital-per-movement ratio (stock/etf/index/industry builds)
+    "compute_trading_amt_per_move": ("_common.df_utils.ratios", "compute_trading_amt_per_move"),
+    "TRADING_AMT_PER_MOVE_MAX_ABS": ("_common.df_utils.ratios", "TRADING_AMT_PER_MOVE_MAX_ABS"),
 }
 
 __all__ = list(_EXPORTS)

@@ -14,14 +14,23 @@
  * shown, and ticking the last missing item normalizes back to the empty
  * selection — so `selected` never stores the full set.
  *
+ * The popup's first row toggles the ROW ORDER direction (Ascending ⇄
+ * Descending): it makes this column the table's ordering key (see
+ * useTableHeaderFilters) and flips its direction. The tick options are
+ * listed in that direction too (descending reverses the caller's
+ * ascending-sorted `values`); selection is unaffected by order.
+ *
  * The trigger button + items are styled for a primary.main header cell
  * (white icon/badge) — all tables using these menus have blue headers.
  */
 import { useState } from "react";
+import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import {
   Badge,
   Box,
+  Button,
   Checkbox,
   ListItemText,
   MenuItem,
@@ -55,11 +64,29 @@ export interface HeaderFilterMenuProps {
   values: string[];
   /** Currently ticked values — empty = no filter (all rows shown). */
   selected: string[];
+  /** This column's row-order direction (the ordering key's real dir;
+   *  other columns display the default "desc" they'd apply on click). */
+  sortDir: "asc" | "desc";
+  /** Order-row click — makes this column the table's ordering key and
+   *  flips its direction asc ⇄ desc (shared hook state, see
+   *  useTableHeaderFilters). */
+  onToggleSort: () => void;
   onChange: (next: string[]) => void;
 }
 
-export function HeaderFilterMenu({ label, values, selected, onChange }: HeaderFilterMenuProps) {
+export function HeaderFilterMenu({
+  label,
+  values,
+  selected,
+  sortDir,
+  onToggleSort,
+  onChange,
+}: HeaderFilterMenuProps) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  // Tick options follow the row-order direction — descending just reverses
+  // the caller's ascending-sorted list for display.
+  const desc = sortDir === "desc";
+  const shown = desc ? [...values].reverse() : values;
   // "All" state: nothing ticked (= everything shown) or every value ticked.
   const allShown = selected.length === 0 || selected.length >= values.length;
   // A proper-subset selection is an active filter.
@@ -99,6 +126,24 @@ export function HeaderFilterMenu({ label, values, selected, onChange }: HeaderFi
         slotProps={{ paper: { sx: { maxHeight: 260 } } }}
       >
         <MenuList dense disablePadding>
+          {/* Order row — makes this column the table's ordering key and
+              flips Ascending ⇄ Descending (tick options follow it too). */}
+          <MenuItem
+            dense
+            title={`Row order — click for ${desc ? "ascending" : "descending"}`}
+            onClick={onToggleSort}
+            sx={{ fontSize: "0.66rem", py: 0.2, color: "text.secondary" }}
+          >
+            {desc ? (
+              <ArrowDownwardIcon sx={{ fontSize: "0.9rem", p: 0.25, mr: 0.5 }} />
+            ) : (
+              <ArrowUpwardIcon sx={{ fontSize: "0.9rem", p: 0.25, mr: 0.5 }} />
+            )}
+            <ListItemText
+              primary={desc ? "Descending" : "Ascending"}
+              primaryTypographyProps={{ fontSize: "0.66rem" }}
+            />
+          </MenuItem>
           {/* (All) master checkbox — checked ⇔ everything shown (item rows
               then all render ticked to match), indeterminate while a
               proper-subset filter is active; click always resets to the
@@ -116,7 +161,7 @@ export function HeaderFilterMenu({ label, values, selected, onChange }: HeaderFi
             />
             <ListItemText primary="(All)" primaryTypographyProps={{ fontSize: "0.66rem" }} />
           </MenuItem>
-          {values.map((v) => (
+          {shown.map((v) => (
             <MenuItem
               key={v}
               dense
@@ -134,6 +179,44 @@ export function HeaderFilterMenu({ label, values, selected, onChange }: HeaderFi
         </MenuList>
       </Popover>
     </Box>
+  );
+}
+
+/** Shared asc/desc row-order toggle for the box-style header filter popups
+ *  (date / numeric range) — the sibling of the ticks menu's order MenuItem.
+ *  Shows the column's current direction; clicking flips it (and makes the
+ *  column the table's ordering key — state lives in useTableHeaderFilters).
+ *  Styled to match the popups' tiny caption controls. */
+export function HeaderSortToggle({
+  sortDir,
+  onToggle,
+}: {
+  sortDir: "asc" | "desc";
+  onToggle: () => void;
+}) {
+  const asc = sortDir === "asc";
+  return (
+    <Button
+      size="small"
+      onClick={onToggle}
+      title={`Row order — click for ${asc ? "descending" : "ascending"}`}
+      sx={{
+        minWidth: 0,
+        py: 0.1,
+        px: 0.5,
+        fontSize: "0.62rem",
+        textTransform: "none",
+        lineHeight: 1.4,
+        color: "text.secondary",
+      }}
+    >
+      {asc ? (
+        <ArrowUpwardIcon sx={{ fontSize: "0.8rem", mr: 0.25 }} />
+      ) : (
+        <ArrowDownwardIcon sx={{ fontSize: "0.8rem", mr: 0.25 }} />
+      )}
+      {asc ? "Ascending" : "Descending"}
+    </Button>
   );
 }
 

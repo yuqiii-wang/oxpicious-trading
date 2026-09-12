@@ -6,7 +6,10 @@ import datetime
 import pandas as pd
 
 from _common.build_commons import rec_col
-from _common.df_utils import compute_moving_averages, compute_emas, safe_columns
+from _common.df_utils import (
+    compute_moving_averages, compute_emas, safe_columns,
+    compute_trading_amt_per_move,
+)
 
 from builds.etf.split_adjustment import apply_split_adjustment
 from builds.etf.composition import build_composition
@@ -62,6 +65,11 @@ def prepare_features(
         merged, group_key="code", value_col="adj_close",
         spans=[6, 10, 20, 60, 120, 255],
     )
+    # trading_amt_per_pct_change = trading_amount / (adj_close - adj_open),
+    # signed. Adjusted-space move (matching the MA/EMA columns): raw
+    # close-open carries the split / ex-dividend gap on corp-action days.
+    compute_trading_amt_per_move(
+        merged, open_col="adj_open", close_col="adj_close")
     logger.info(f"    → MA columns added: ma5, ma5_ratio, ma20, ma60, ma120, ma255; "
           f"EMA columns added: ema6, ema10, ema20, ema60, ema120, ema255")
     return merged

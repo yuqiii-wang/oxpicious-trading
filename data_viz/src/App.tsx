@@ -20,7 +20,6 @@ import OppositeIndustryCorrelationsPage from "@/analysis/pages/Composites/Opposi
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
 import PeAndDividendPage from "@/analysis/pages/PeAndDividendPage";
-import RecurringCyclesPage from "@/analysis/pages/RecurringCycles";
 import EtfHoldingsPage from "@/analysis/pages/EtfHoldingsPage";
 import MarginTrendsPage from "@/analysis/pages/MarginTrendsPage";
 import FuturesAnalysisPage from "@/analysis/pages/FuturesAnalysis";
@@ -65,7 +64,6 @@ export default function App() {
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
           <Route path="/analysis/commons/industry-sentiments" element={<IndustrySentimentsPage />} />
           <Route path="/analysis/commons/pe-dividend" element={<PeAndDividendPage />} />
-          <Route path="/analysis/commons/recurring-cycles" element={<RecurringCyclesPage />} />
           <Route path="/analysis/commons/etf-holdings" element={<EtfHoldingsPage />} />
           <Route path="/analysis/derivatives" element={<DerivativesPage />} />
           <Route path="/analysis/derivatives/margin-trends" element={<MarginTrendsPage />} />

@@ -51,6 +51,7 @@ import pandas as pd
 
 from analyze.analysis_forecasts.config import (
     FORWARD_HORIZONS,
+    LOOKBACK_PERIOD,
     OPP_PAIR_SIDE,
     OPP_PAIR_TREND_WINDOWS,
 )
@@ -192,6 +193,7 @@ def compute_opp_pair_results(
     *,
     benchmark_code: str,
     pool_size: str,
+    grid_ord: np.ndarray | None = None,
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, bucket rows) per stat month — opp_pair family.
 
@@ -207,6 +209,11 @@ def compute_opp_pair_results(
         pairs: fetch_opp_pair_pairs output (unordered pair set + latest
               offsets-table score context).
         benchmark_code / pool_size: recorded build parameters.
+        grid_ord: optional (T,) int64 day ordinals of the FULL grid
+              (build_opp_pair_matrices output) — sliced per window into
+              aggregate_horizons_sparse's win_ord so each emitted row
+              carries its trigger_dates (the calendar dates behind
+              occurrence_count, on the industry composite grid).
     """
     a_idx, b_idx, a_ids, b_ids, scores, corrs, score_dates = _pair_axis(
         pairs, industries)
@@ -240,8 +247,14 @@ def compute_opp_pair_results(
             st, pc = np.nonzero(tp)
             if st.size == 0:
                 continue
-            # np.nonzero is row-major → pc non-decreasing (the group-
-            # ascending order aggregate_horizons_sparse requires).
+            # np.nonzero is DATE-major, so pc (the flat group id) is NOT
+            # ascending here — one stable sort restores the group-ascending
+            # cell order aggregate_horizons_sparse requires (its group
+            # starts / reduceat extrema / trigger-date slices all assume
+            # it; unsorted cells silently reduced max/min over only the
+            # last contiguous date-run per pair).
+            order = np.argsort(pc, kind="stable")
+            st, pc = st[order], pc[order]
             trig_vals = TR[st, a_idx[pc]]
 
             # Pair-gathered target matrices: column b of each pair — the
@@ -251,13 +264,21 @@ def compute_opp_pair_results(
             finp = {n: FINs[n][:, b_idx] for n in FORWARD_HORIZONS}
             agg = aggregate_horizons_sparse(
                 st, pc, pc, 1, P, OPP_PAIR_SIDE, nc0p, finp, thr_pair,
+                win_ord=None if grid_ord is None else grid_ord[lo:hi],
             )
             # Reshape the (1, P) bundles to (P, 1): pairs become the
             # "code" axis (indexed by ii), the single config by kk — so
             # build_result_rows gathers/thr-indexes per pair unchanged.
+            # The trigger-date dict member (flat = pair position — the
+            # SAME key space as the reshaped ii axis) passes through
+            # untouched: only the ndarray members reshape.
             agg = {
-                n: tuple(None if m is None else m.reshape(P, 1)
-                         for m in bundle)
+                n: tuple(
+                    None if m is None
+                    else m.reshape(P, 1) if isinstance(m, np.ndarray)
+                    else m
+                    for m in bundle
+                )
                 for n, bundle in agg.items()
             }
 
@@ -282,6 +303,11 @@ def compute_opp_pair_results(
                     "side": OPP_PAIR_SIDE,
                     "benchmark_code": benchmark_code,
                     "pool_size": pool_size,
+                    "lookback_period": LOOKBACK_PERIOD,
+                    # state cells admit every qualifying day (no
+                    # streak-merge — 1-day signals): the identity
+                    # registry's streak_signal_days constant.
+                    "streak_signal_days": 1,
                     # config JSONB — asyncpg COPY needs a JSON text
                     # string (compute_std / compute_px_vol precedent).
                     "config": json.dumps({

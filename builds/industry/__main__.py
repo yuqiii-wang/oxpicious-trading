@@ -68,6 +68,7 @@ sys.path.insert(
     ),
 )
 
+from _common._holidays_and_weekdays import is_trading_day
 from _common.build_commons import (  # noqa: E402
     setup_utf8_stdout,
     get_db_connection_async,
@@ -95,7 +96,9 @@ activate()
 
 import pandas as pd  # noqa: E402
 
-from _common.df_utils import epoch_col_to_dt64, sanitize_for_db_insert, to_py_dates  # noqa: E402
+from _common.df_utils import (  # noqa: E402
+    compute_trading_amt_per_move, epoch_col_to_dt64, sanitize_for_db_insert,
+)
 from builds.industry.config import TABLE  # noqa: E402
 from builds.industry.compute import (  # noqa: E402
     rebase_ohlc,
@@ -336,6 +339,11 @@ async def main() -> None:
             target_dates = await find_missing_analysis_dates(
                 conn, TABLE, ["stats.index_identity"],
             )
+            # index_identity still carries CN-holiday dates via cross-border
+            # indices' REAL rows (e.g. 930604 中国互联网30 trades HK/US
+            # sessions) — industry aggregates are A-share trading-day series,
+            # so holiday targets are skipped, not built from a partial pool.
+            target_dates = {d for d in target_dates if is_trading_day(d)}
             logger.info(f"    -> {len(target_dates)} dates missing from {TABLE}")
             if not target_dates:
                 logger.info("    -> DB is up to date; nothing to do.")
@@ -362,6 +370,14 @@ async def main() -> None:
                   "JOIN sec_classification (compositioned indices only), stock_num "
                   "via LATERAL sec_composition latest-snapshot (no date filter)...")
             rows = await conn.fetch(LOAD_INDEX_DATA_SQL_FULL)
+            # Trading-day filter (same rationale as the target-date filter
+            # above — cross-border member rows on CN holidays must not
+            # produce partial-coverage industry aggregates).
+            n_before = len(rows)
+            rows = [r for r in rows if is_trading_day(r["date"])]
+            if n_before != len(rows):
+                logger.info(f"    -> dropped {n_before - len(rows):,} non-trading-"
+                      f"day source rows (CN holidays)")
         logger.info(f"    -> {len(rows):,} rows across "
               f"{len(set(zip(rec_col(rows, 'industry_id'), rec_col(rows, 'code'))))} "
               f"(industry, code) pairs")
@@ -496,28 +512,40 @@ async def main() -> None:
         result = result.sort_values(
             ["industry_id", "date", "pool_size"]
         ).reset_index(drop=True)
+
+        # trading_amt_per_pct_change = total_trading_amount /
+        # (mean_close - mean_open), signed — capital per unit of the
+        # composite slice's open→close move. NULL when either input is
+        # missing (e.g. no stock amount data) or the value overflows
+        # NUMERIC(18,6); a flat composite day (den 0) floors to the raw
+        # total (mov_ave_spread zero-denominator convention).
+        compute_trading_amt_per_move(
+            result,
+            amount_col="total_trading_amount",
+            open_col="mean_open",
+            close_col="mean_close",
+        )
         n_with_amt = result["total_trading_amount"].notna().sum()
         logger.info(f"    -> {len(result):,} total rows | "
               f"{n_with_amt:,} with total_trading_amount | "
               f"{len(result) - n_with_amt:,} without (NULL)")
 
-        # DB-insert boundary: asyncpg needs python datetime.date objects —
-        # ONE host numpy pass (a cudf-backed .dt.date falls back per
-        # element).
-        to_py_dates(result, ["date"])
-
         # Sanitize the aggregated result for asyncpg upsert. Replaces the
         # per-row iterrows dict construction (with manual float()/int()
         # casts + NaN->None) with a single vectorized pass: round (skipped),
         # inf->NaN, NaN->None, to_dict. The non-numeric columns
-        # (date, industry_id, pool_size, industry_label) pass through
-        # unchanged.
+        # (industry_id, pool_size, industry_label) pass through unchanged.
+        # date stays datetime64 on the frame (object-date columns poison
+        # every cudf op with MixedTypeError fallbacks) and is materialized
+        # to python datetime.date host-side via date_cols.
         data = sanitize_for_db_insert(
             result,
             numeric_cols=[
                 "index_count", "mean_open", "mean_high", "mean_low",
                 "mean_close", "var_price", "mean_pe", "total_trading_amount",
+                "trading_amt_per_pct_change",
             ],
+            date_cols=["date"],
         )
 
         # Pre-check: skip already-present dates (safety net — the

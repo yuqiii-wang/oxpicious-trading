@@ -18,7 +18,6 @@ import { fetchJson } from "./_cache";
 /** Analysis mains that support single-security recomputation (--code). */
 export type RunnableAnalysisModule =
   | "mov_ave_spread"
-  | "recurring_cycles"
   | "pe_and_dividends";
 
 /** Response of POST /api/analysis/run-analysis. */

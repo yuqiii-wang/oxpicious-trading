@@ -137,6 +137,18 @@ def download_index(
     if index_codes is None:
         index_codes = list(load_classification_index_names().keys())
 
+    # DUMMY_* codes are synthetic classification placeholders (strategy /
+    # broad-market buckets used by builds & analysis), not real CSI indices
+    # — csindex.com.cn has no data for them, so every per-code step would
+    # only warn and burn anti-bot sleeps (~1 min each).
+    _dummy_codes = [c for c in index_codes if c.startswith("DUMMY_")]
+    if _dummy_codes:
+        logger.info(
+            "Skipping %d DUMMY_* placeholder codes (not real CSI indices)",
+            len(_dummy_codes),
+        )
+        index_codes = [c for c in index_codes if not c.startswith("DUMMY_")]
+
     # Load index names from sec_classification.json (replaces _classification.py).
     _index_names = load_classification_index_names()
 

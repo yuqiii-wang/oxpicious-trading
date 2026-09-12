@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS stats.etf_tech_stats (
     ema60                     NUMERIC(18,4),
     ema120                    NUMERIC(18,4),
     ema255                    NUMERIC(18,4),
+    trading_amt_per_pct_change NUMERIC(18,6),
 
     CONSTRAINT pk_etf_tech_stats PRIMARY KEY (code, date),
     CONSTRAINT fk_etf_tech_stats_date_code FOREIGN KEY (code, date) REFERENCES stats.etf_identity(code, date)
@@ -106,6 +107,11 @@ CREATE TABLE IF NOT EXISTS stats.etf_tech_stats (
 -- Native hash partitions (8) keyed by code — created via the shared util
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'etf_tech_stats', 8);
+
+-- Idempotent migration: add the intraday net-move liquidity ratio to
+-- pre-existing tables (no-op on fresh installs).
+ALTER TABLE stats.etf_tech_stats
+    ADD COLUMN IF NOT EXISTS trading_amt_per_pct_change NUMERIC(18,6);
 
 -- Idempotent migration: add EMA columns to pre-existing tables.
 -- CREATE TABLE IF NOT EXISTS does not add new columns to an existing
@@ -147,6 +153,7 @@ COMMENT ON COLUMN stats.etf_tech_stats.ema20             IS '20-day exponential 
 COMMENT ON COLUMN stats.etf_tech_stats.ema60             IS '60-day exponential moving average of adj_close (span=60, adjust=False).';
 COMMENT ON COLUMN stats.etf_tech_stats.ema120            IS '120-day exponential moving average of adj_close (span=120, adjust=False).';
 COMMENT ON COLUMN stats.etf_tech_stats.ema255            IS '255-day exponential moving average of adj_close (span=255, adjust=False).';
+COMMENT ON COLUMN stats.etf_tech_stats.trading_amt_per_pct_change IS 'Intraday net-move liquidity ratio: trading_amount / (adj_close - adj_open), SIGNED — positive on up days, negative on down days (the sign carries the move direction). trading_amount from stats.etf_liquidity_margin (yuan); the move is measured in ADJUSTED space (adj_open/adj_close from stats.etf_adjustment) because the raw close-open carries the split / ex-dividend gap on corp-action days. Zero move (adj_close = adj_open — flat / limit-locked day): denominator floored to 1.0, so the stored value equals the raw trading amount (mov_ave_spread zero-denominator convention — a pragmatic floor, NOT a true ratio). NULL when any input is NULL or |value| >= 1e12 (NUMERIC(18,6) bound). Reciprocal-Amihud liquidity gauge: HIGH = deep book (much capital absorbed per unit of move), LOW = thin market (little capital moved the price a lot). Computed by builds.etf (pipeline/features.py).';
 
 -- ----------------------------------------------------------------------------
 -- Table: etf_adjustment

@@ -52,35 +52,17 @@ const COMMONS_ANALYSES: CommonsAnalysis[] = [
     slug: "pe-dividend",
     title: "PE & Dividend",
     description:
-      "Per-security valuation: close price (left y-axis) vs PE / PE MA20 + " +
+      "Per-security valuation: close price (left y-axis) vs PE + " +
       "trailing-12m dividend yield (right y-axis). Index securities show " +
       "all four series; ETF/Stock show close + dividend_yield only (no PE " +
       "source). Beneath the chart, a monthly 5-year rolling stats table " +
       "(min/max PE 5y, min/max Div 5y, dividend_var_5y, dividend_stability_5y) " +
       "with an is_active flag on the latest snapshot. Click any date on the " +
       "chart to highlight the matching month-end row in the table. Backed by " +
-      "analysis.pe_and_dividends + analysis.pe_and_dividend_stats; close + " +
+      "analysis.pe / analysis.dividends + analysis.pe_and_dividend_stats; close + " +
       "raw PE are JOINed live from stats so the UI always shows the freshest " +
       "source values.",
     tags: ["ETF", "Index", "Stock", "PE", "dividend yield", "valuation", "5y stats"],
-  },
-  {
-    slug: "recurring-cycles",
-    title: "Recurring Cycles",
-    description:
-      "Per-security recurring rise/drop periodicity — a time-domain " +
-      "recurrence audit, not raw FFT amplitude. For each trading date and " +
-      "window (20/60/255/500/750/1275 days), closes are MA-detrended and " +
-      "scored per candidate period (2–60 days): recurrence count from " +
-      "prominence-filtered swing extrema aligned to the period, coherence " +
-      "from ACF at period multiples, and FFT amplitude as the magnitude " +
-      "reference. strength = amplitude × recurrence-count factor; the " +
-      "headlined recurring period is the strength argmax, so a period only " +
-      "wins when rises/drops actually repeat at that interval. Bar charts " +
-      "show the day-aligned amplitude / count / strength spectra with the " +
-      "recurring period highlighted. Index only for now. Backed by " +
-      "analysis.recurring_cycles.",
-    tags: ["Index", "recurring period", "cycle", "ACF", "extrema", "FFT"],
   },
   {
     slug: "etf-holdings",

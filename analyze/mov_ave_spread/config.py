@@ -709,6 +709,7 @@ PRICE_VS_AMT_COLUMNS = (
     "sigma_window", "lb_window",
     "k_slow_up", "k_slow_dn", "k_sharp",
     "z_heavy", "z_shrink", "sigma_floor",
+    "amt_metric",
 )
 
 PRICE_VS_AMT_DESCRIPTION = (
@@ -718,14 +719,20 @@ PRICE_VS_AMT_DESCRIPTION = (
     "price change (t = ret_1d / the code's own rolling-255 σ_ret "
     "ddof=1, min 60, shifted 1 row; σ below sigma_floor 0.005 excludes "
     "bond-like codes: sharp_up t > 2.0 / slow_up 1.26 < t <= 2.0 / "
-    "flat / slow_dn / sharp_dn t < -2.0) × the z-scored 量比 "
-    "(trading_amount vs its own 5-row trailing mean, z vs the "
-    "rolling-255 moments shifted 1 row: heavy z > 2.0 / normal / "
-    "shrink z < -0.92). NULL trading_amount → no row. side mirrors "
+    "flat / slow_dn / sharp_dn t < -2.0) × the z-scored log "
+    "trading-amount LEVEL (z vs the rolling-255 moments of "
+    "log(trading_amount) shifted 1 row: heavy z > 2.0 / normal / "
+    "shrink z < -0.92 — a LEVEL statement vs the code's own "
+    "trailing-year amount distribution; the retired 量比-ratio z "
+    "fired heavy on drought bounces, i.e. 'Amt Up' on visibly low "
+    "amount). NULL trading_amount → no row. side mirrors "
     "px_vol_state (top/bottom/flat). The px_t / px_z / ret_1d / "
-    "px_sigma / amt_ratio columns record the state evidence so consumers "
-    "recompute nothing. This is the DATE-LEVEL source of truth of the "
-    "px_vol family: analysis_forecasts.px_vol_state bucket aggregates, "
+    "px_sigma / amt_ratio columns record the state evidence (amt_ratio "
+    "is the classic 量比, evidence-only since the log_level refactor) "
+    "so consumers recompute nothing; amt_metric records the vol leg's "
+    "definition for the consumer-side audit. This is the DATE-LEVEL "
+    "source of truth of the px_vol family: "
+    "analysis_forecasts.px_vol_state bucket aggregates, "
     "the analysis_signals px_vol detections and the MA-Spread UI "
     "shading all audit against this table. Rows are REBUILT WHOLESALE "
     "per sec_type on every pipeline run (ETF adj_close back-adjustments "

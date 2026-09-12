@@ -30,34 +30,49 @@ detect the extreme days and emit signal rows:
       granularity; adaptive constant z bars, no cooldown; etf + stock
       only — index has no margin data).
 
-  opp_pair.compute_opp_pair_signals — industry opposite-pair trend
-      forecasts (the analysis_forecasts.opp_pair_state detection at
-      signal granularity): a paired industry's benchmark-offset MA
-      trend crossing below the 0 bar emits a buy row on the OTHER side
-      industry; no cooldown, constant trend bar, gate keyed by the
-      TARGET industry.
+  high_low_streaks.compute_hls_signals — the MEAN-MID anchor day of
+      every MA-Spread band-break excursion streak (the
+      analysis_forecasts.high_low_streaks bucket trigger days 1:1 —
+      the forecasts engine's own anchor machinery reused verbatim;
+      side top an ABOVE-band excursion → sell, bottom → buy; no
+      cooldown; EX-POST anchor — write-once months gated by a resolve
+      lag + a closed-streak guard, see the module docstring).
+
+  mov_pairs.compute_pairs_signals — the CROSS days (golden / death
+      cross) of the EXISTING relative-MA spreads ma5_vs_ma{W} (and the
+      EMA sibling ema6_vs_ema{W} via the same source-agnostic code
+      path): side top a CROSS UP → sell, bottom a CROSS DOWN → buy;
+      cooldown 5, the forecast event-bucket convention.
+
+  (The former opp_pair.compute_opp_pair_signals — industry
+  opposite-pair trend forecasts — was removed: the pair buckets
+  average ~600 trigger days yet ~0 pooled mean forward offset change,
+  and the OOS study showed zero mean confirmation content. See
+  analysis_signals.config for the study reference.)
 
 Yields (stat_month, rows) so __main__ can write month-major (one
 atomic transaction per month, keeping the month-granular incremental
 detection crash-safe).
 """
 from analyze.analysis_signals.signals._base import ConfirmMap
+from analyze.analysis_signals.signals.high_low_streaks import (
+    compute_hls_signals,
+)
 from analyze.analysis_signals.signals.margin_ratio import (
     compute_margin_ratio_signals,
 )
 from analyze.analysis_signals.signals.mov_gap import compute_gap_signals
+from analyze.analysis_signals.signals.mov_pairs import compute_pairs_signals
 from analyze.analysis_signals.signals.mov_rsi import compute_rsi_signals
 from analyze.analysis_signals.signals.mov_std import compute_std_signals
-from analyze.analysis_signals.signals.opp_pair import (
-    compute_opp_pair_signals,
-)
 from analyze.analysis_signals.signals.px_vol import compute_px_vol_signals
 
 __all__ = [
     "ConfirmMap",
     "compute_gap_signals",
+    "compute_hls_signals",
     "compute_margin_ratio_signals",
-    "compute_opp_pair_signals",
+    "compute_pairs_signals",
     "compute_px_vol_signals",
     "compute_rsi_signals",
     "compute_std_signals",

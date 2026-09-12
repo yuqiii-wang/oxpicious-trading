@@ -13,7 +13,11 @@
 --    - 01_forecast_results.sql — analysis_forecasts.forecast_results:
 --      the RESULT data only (mean / high / low forward changes for
 --      next, 5d, 20d, 60d horizons + per-horizon >1% reversal
---      probabilities), keyed by the surrogate forecast_id.
+--      probabilities), keyed by the surrogate forecast_id — plus
+--      analysis_forecasts.forecast_identities: the shared-PK REGISTRY
+--      (one row per forecast_id: sec_type, code, stat_month, bucket
+--      family) the other forecast tables' leading PK columns are
+--      migrated into, powering search by forecast_id.
 --    - 02_mov_rsi_mov_std.sql — analysis_forecasts.mov_rsi and
 --      analysis_forecasts.mov_std: the MOTIVATION (bucket-defining)
 --      columns. Each motivation row carries a forecast_id that links to
@@ -24,6 +28,23 @@
 --      UNCONDITIONAL same-window base rates (mean forward change +
 --      P(<-1%) / P(>+1%) over all window days) the bucket results are
 --      read against.
+--    - 10_high_low_streaks.sql — analysis_forecasts.high_low_streaks:
+--      MA-Spread High/Low streak buckets — every band-break excursion
+--      streak of analysis.mov_ave_high_low_pct_streaks audited at its
+--      MEAN-MID anchor day (the ((day_count-1)//2 + 1)-th trading day
+--      of the span; an 8-day streak anchors its 4th day — an EX-POST
+--      audit anchor: the streak length is known only after the streak
+--      closes).
+--    - 11_pe_state.sql — analysis_forecasts.pe_state: valuation
+--      z-STATE buckets over the PE series of analysis.pe (raw PE,
+--      LOWER the better — high-PE states are bearish, side top);
+--    - 12_dividend_state.sql — analysis_forecasts.dividend_state: the
+--      sibling family over the dividend-yield series of
+--      analysis.dividends (HIGHER the better — high-yield states are
+--      bullish, side bottom; same z bars as pe_state, REVERSED side
+--      mapping). Each family's table carries ONE metric — the combined
+--      pe_dividend_state's metric column is gone (its rows migrate per
+--      metric into the two tables).
 --
 --  Population convention:
 --    - `python -m analyze.analysis_forecasts` computes one snapshot per
@@ -45,8 +66,13 @@
 --    (signed fractional ratios, e.g. 0.05 = +5%; computed per code on
 --    its own trading-day sequence — calendar gaps do not count as rows)
 --
+--  Every table also carries a lookback_period column (TEXT, default
+--  '5y' — a recorded build parameter, NOT a PK member) stating which
+--  trailing calendar window the row was computed over, so a future
+--  rebuild at a different lookback is self-describing.
+--
 --    reverse change      = the move AGAINST the bucket's extreme side
---      beyond the bucket's adaptive reverse_threshold (k_n · σ of the
+--      beyond the bucket's FIXED 1% reverse_threshold (the period-end n-day close vs ±1%; formerly k_n · σ of the
 --      code's window n-day forward changes; legacy fixed 1% fallback —
 --      see 01_forecast_results.sql):
 --      top / upper (overbought / above upper band): change <
@@ -60,4 +86,4 @@
 
 CREATE SCHEMA IF NOT EXISTS analysis_forecasts;
 
-COMMENT ON SCHEMA analysis_forecasts IS 'Monthly per-security forecast analysis: motivation tables (mov_rsi / mov_std) hold the extreme-day bucket definitions per (sec_type, code, stat_month, bucket); forecast_results holds the forward-change result data keyed by forecast_id (1:1 with each motivation row). Each row summarizes a trailing 5-year window of daily data. Populated incrementally by python -m analyze.analysis_forecasts.';
+COMMENT ON SCHEMA analysis_forecasts IS 'Monthly per-security forecast analysis: motivation tables (mov_rsi / mov_std) hold the extreme-day bucket definitions per (sec_type, code, stat_month, bucket); forecast_results holds the forward-change result data keyed by forecast_id (1:1 with each motivation row); forecast_identities is the shared-PK registry (sec_type, code, stat_month, bucket family per forecast_id) powering search by forecast_id. Each row summarizes a trailing 5-year window of daily data. Populated incrementally by python -m analyze.analysis_forecasts.';

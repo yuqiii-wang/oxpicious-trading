@@ -2,23 +2,21 @@
 
 Two paths, both writing the same table (PK upsert — no duplicates):
 
-  WEIGHTED (ref-based, is_without_trading_amt = FALSE):
-    fetch_missing_ticks() joins the ref table (prev closes); rows missing
-    entirely OR present only as FALLBACK (TRUE) are (re)fetched and the
-    upsert UPGRADES fallback rows in place to weighted rows. Tick scope is
-    index/etf members only (fetch SQL enforces it); stocks hold weights in
-    the ref but never get tick rows.
+  WEIGHTED (daily-close basis, is_without_trading_amt = FALSE):
+    fetch_missing_ticks() computes prev closes AT TICK TIME from
+    stats.index_basic_stats (the former live.sec_alloc_live_prev_ref
+    materialization was consolidated away — same values, same basis).
+    Rows missing entirely OR present only as FALLBACK (TRUE) are
+    (re)fetched and the upsert UPGRADES fallback rows in place. Tick
+    scope is index/etf members only (fetch SQL enforces it).
 
-  FALLBACK (ref-less, is_without_trading_amt = TRUE):
-    fetch_fallback_ticks() has NO ref dependency — prev close basis is the
-    member's prev-day LAST 5-min bar close from stats.index_intraday_5min
-    itself. Used when the ref for (benchmark, date) is not ready (heavy
-    pass still running under the advisory lock elsewhere, or zero-ref
-    pairs whose prev-day basic_stats data is lagging). Equal-weighted
-    aggregation only — the UI disables the "by trading amt" toggle while
-    only TRUE rows exist for the benchmark+date. Anti-join skips any
-    existing row (fallback values are deterministic; weighted rows are
-    never downgraded).
+  FALLBACK (self-contained, is_without_trading_amt = TRUE):
+    fetch_fallback_ticks() needs no daily-stats dependency — prev close
+    basis is the member's prev-day LAST 5-min bar close from
+    stats.index_intraday_5min itself. Used by the 5-min LIVE pass so
+    equal-weighted data flows immediately. Anti-join skips any existing
+    row (fallback values are deterministic; weighted rows are never
+    downgraded).
 """
 from __future__ import annotations
 
@@ -49,8 +47,10 @@ def compute_tick_rows(
 ) -> list[dict]:
     """Turn fetched tick bars into upsertable tick rows (pure).
 
-    ``is_without_trading_amt`` marks provenance: TRUE = fallback row
-    (no ref, equal-weight only), FALSE = ref-based weighted-capable row.
+    ``is_without_trading_amt`` marks the prev-close basis: TRUE = fallback
+    row (prev-day last 5-min bar close, equal-weight only), FALSE =
+    daily-close-basis row (prev-day official close from
+    stats.index_basic_stats).
     """
     rows: list[dict] = []
     for b in bars:
@@ -153,5 +153,32 @@ async def load_fallback_ticks(
     conn,
     pairs: list[tuple[str, datetime.date]],
 ) -> int:
-    """FALLBACK pass over ref-less pairs (TRUE rows, equal-weight only)."""
+    """FALLBACK pass over pairs (TRUE rows, equal-weight only)."""
     return await _load_many(conn, pairs, fallback=True, label="fbtk")
+
+
+async def invalidate_ticks_for_date(
+    conn,
+    live_date: datetime.date,
+) -> int:
+    """Delete this date's tick rows so both passes rebuild them.
+
+    Used by the "Build Yday Ref" chain (--rebuild-latest-date): the chain
+    refreshes the CSVs and rebuilds estimated daily rows BEFORE this
+    pipeline runs, so existing ticks for the date (potentially computed
+    from stale/estimated closes) are invalidated to force a rebuild from
+    the fresh data. Fallback ticks are re-created by the 5-min LIVE
+    process, daily-close-basis rows by the weighted pass that follows in
+    the same run.
+
+    Returns the number of tick rows deleted.
+    """
+    n_tick = await conn.execute(
+        "DELETE FROM live.sec_alloc_live_attribution WHERE date = $1::date",
+        live_date,
+    )
+    # asyncpg execute() returns the command tag, e.g. "DELETE 12345".
+    try:
+        return int(n_tick.split()[-1])
+    except (ValueError, IndexError):
+        return 0

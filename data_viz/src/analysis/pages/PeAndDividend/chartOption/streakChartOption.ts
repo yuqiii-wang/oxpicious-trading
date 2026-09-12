@@ -1,7 +1,7 @@
 /**
  * ECharts option builder for the PE & Dividend band-break streak chart —
  * the shared streakBands rendering (light window zones + darker per-streak
- * break bands) applied to a single valuation metric series (pe_ma20 /
+ * break bands) applied to a single valuation metric series (pe /
  * dividend_yield).
  *
  * The guide's final approach, ported 1:1: both layers are drawn against
@@ -126,7 +126,7 @@ export function buildStreakChartOption(
   const series: EChartsOption["series"] = [
     {
       type: "line",
-      name: metric === "pe_ma20" ? "PE MA20" : "Dividend yield",
+      name: metric === "pe" ? "PE" : "Dividend yield",
       data: values,
       symbol: "none",
       lineStyle: { color: lineColor, width: 1.4 },

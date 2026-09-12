@@ -13,10 +13,14 @@ Only the CROSS-SECURITY PRIMITIVE migrates here:
     (benchmark weight on the UNION of industry member stocks —
     composition CTEs latest/holdings/industry_stocks/benchmark_shared
     carried over verbatim)
-  • the trading-amount split: benchmark_trading_amount /
-    shared_trading_amount / non_shared_trading_amount
-    (shared = Σ stock turnover on industry-union ∩ benchmark stocks,
-    close-IS-NOT-NULL parity kept via EXISTS)
+  • the non-shared turnover: non_shared_trading_amount =
+    benchmark trading_amount (stats.index_basic_stats) − Σ stock
+    turnover on industry-union ∩ benchmark stocks (close-IS-NOT-NULL
+    parity kept via EXISTS). The former benchmark_trading_amount /
+    shared_trading_amount columns were consolidated away (2026-09-07):
+    the bench amount is a verbatim index_basic_stats copy and the shared
+    Σ had no external consumer — both live on as internal CTE inputs
+    (bench_amt / shared_trading) only.
 
 The attribution-specific return/rolling-price decomposition
 (shared_portfolio returns, non_industry_returns, rolling_*days_price)
@@ -78,7 +82,8 @@ _SHARED_TAIL = """
 INSERT INTO stats.cross_stats
     (code, benchmark_code, date, sec_type,
      code_sec_shared_weight, benchmark_sec_shared_weight,
-     benchmark_trading_amount, shared_trading_amount,
+     code_price_with_benchmark_offset,
+     code_price_with_benchmark_offset_by_weighted_amt,
      non_shared_trading_amount)
 SELECT
     isw.industry_id,
@@ -88,8 +93,10 @@ SELECT
     ROUND(isw.industry_shared_weight, 4) AS code_sec_shared_weight,
     COALESCE(ROUND(bsw.benchmark_shared_weight, 4), 0)
         AS benchmark_sec_shared_weight,
-    ba.benchmark_trading_amount,
-    st.shared_trading_amount,
+    ROUND(isw.code_price_with_benchmark_offset, 6)
+        AS code_price_with_benchmark_offset,
+    ROUND(isw.code_price_with_benchmark_offset_by_weighted_amt, 6)
+        AS code_price_with_benchmark_offset_by_weighted_amt,
     CASE
         WHEN ba.benchmark_trading_amount IS NOT NULL
              AND st.shared_trading_amount IS NOT NULL
@@ -114,7 +121,11 @@ _INDUSTRY_SHARED_CTE = """industry_shared AS (
         cls.industry_id,
         cs.benchmark_code,
         cs.date,
-        SUM(cs.code_sec_shared_weight) AS industry_shared_weight
+        SUM(cs.code_sec_shared_weight) AS industry_shared_weight,
+        SUM(cs.code_price_with_benchmark_offset)
+            AS code_price_with_benchmark_offset,
+        SUM(cs.code_price_with_benchmark_offset_by_weighted_amt)
+            AS code_price_with_benchmark_offset_by_weighted_amt
     FROM stats.cross_stats cs
     JOIN cls_members cls ON cls.code = cs.code
     WHERE cs.sec_type = 'index'

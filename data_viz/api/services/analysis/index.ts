@@ -3,7 +3,7 @@
  * Extracted from the former analysis.service.ts.
  */
 export { listMovAveSpreadCodes, getMovAveSpreadChart, getMarketHypeEpisodes, listMovAveSpreadThemes, listMovAveSpreadStrategyThemes } from "./mov-ave-spreads.js";
-export { getForecastTable } from "./analysis-forecasts.js";
+export { getForecastTable, getForecastTriggerDates, getForecastIdentity } from "./analysis-forecasts.js";
 export { listPerfAttrCodes, getPerfAttrAttribution, listPerfAttrThemes, getPerfAttrChart, listPerfAttrStrategyThemes } from "./perf-attribution.js";
 export { listIndustrySentimentsThemes, listIndustrySentimentsStrategyThemes, getIndustrySentimentsChart, getIndustrySentimentsChartByCode } from "./industry-sentiments.js";
 export { getIndustryCorrelations } from "./industry-correlations.js";
@@ -29,10 +29,4 @@ export {
   getMarginIndustrySeries,
   getMarginTrends,
 } from "./margin-trends.js";
-export {
-  getRecurringCyclesChart,
-  getRecurringCyclesSpectrum,
-  listRecurringCyclesThemes,
-  listRecurringCyclesStrategyThemes,
-} from "./recurring-cycles.js";
 export { getFuturesExt } from "./analysis-futures.service.js";

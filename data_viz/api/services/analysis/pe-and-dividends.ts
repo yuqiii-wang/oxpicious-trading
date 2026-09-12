@@ -2,14 +2,17 @@
  * PE & Dividend Yield analysis service.
  *
  * Reads from:
- *   analysis.pe_and_dividends       — daily pe_ma20 + dividend_yield
- *   analysis.pe_and_dividend_stats  — monthly 5y rolling stats snapshot
+ *   analysis.pe                    — daily raw pe
+ *   analysis.dividends             — daily trailing-12m dividend_yield
+ *   analysis.pe_and_dividend_stats — monthly 5y rolling stats snapshot
+ *   (2026-09: pe and dividends SPLIT from the former combined
+ *   analysis.pe_and_dividends table)
  *
- * Close price and raw PE ratio are NOT stored in analysis.pe_and_dividends
- * (they live in stats: index_basic_stats.close, index_valuation.pe,
- * etf_basic_stats.close / etf_adjustment.adj_close, stock_basic_stats.close).
- * The chart endpoint JOINs stats live at request time so the UI always shows
- * the freshest close/PE alongside the derived analytics.
+ * Close price is NOT stored in the analysis tables (it lives in stats:
+ * index_basic_stats.close, etf_basic_stats.close /
+ * etf_adjustment.adj_close, stock_basic_stats.close). The chart endpoint
+ * JOINs stats live at request time so the UI always shows the freshest
+ * close alongside the stored pe + dividend_yield.
  *
  * Mirrors the mov-ave-spreads service shape (codes + chart + themes +
  * strategy-themes) so the page can reuse SecClassificationNav verbatim.
@@ -37,45 +40,38 @@ import type {
 
 // ----------------------------------------------------------------------------
 //  Per-sec_type source-table config
-//  Mirrors mov-ave-spreads SEC_SOURCES but only needs close + (index-only) PE.
+//  Mirrors mov-ave-spreads SEC_SOURCES but only needs close (raw pe and
+//  dividend_yield come from analysis.pe / analysis.dividends).
 // ----------------------------------------------------------------------------
 interface SecSource {
   /** Schema-qualified identity table for the asset name lookup. */
   identityTable: string;
-  /** FROM clause for the chart query — recovers close (and PE for index). */
+  /** FROM clause for the chart query — the code's close source (the
+   *  analysis.pe / analysis.dividends LEFT JOINs are appended). */
   chartFromClause: string;
   /** SQL expression for the per-row close column. */
   closeExpr: string;
-  /** SQL expression for the per-row PE column (NULL for etf/stock). */
-  peExpr: string;
 }
 
 const SEC_SOURCES: Record<PeAndDividendSecType, SecSource> = {
   etf: {
     identityTable: "stats.etf_identity",
     chartFromClause:
-      "FROM analysis.pe_and_dividends d\n" +
-      "  JOIN stats.etf_basic_stats   b ON b.date = d.date AND b.code = d.code\n" +
-      "  LEFT JOIN stats.etf_adjustment a ON a.date = d.date AND a.code = d.code",
+      "FROM stats.etf_basic_stats b\n" +
+      "  LEFT JOIN stats.etf_adjustment a ON a.date = b.date AND a.code = b.code",
     closeExpr: "COALESCE(a.adj_close, b.close)",
-    peExpr: "NULL::numeric",
   },
   index: {
     identityTable: "stats.index_identity",
     chartFromClause:
-      "FROM analysis.pe_and_dividends d\n" +
-      "  JOIN stats.index_basic_stats b ON b.date = d.date AND b.code = d.code\n" +
-      "  LEFT JOIN stats.index_valuation v ON v.date = d.date AND v.code = b.code",
+      "FROM stats.index_basic_stats b",
     closeExpr: "b.close",
-    peExpr: "v.pe",
   },
   stock: {
     identityTable: "stats.stock_identity",
     chartFromClause:
-      "FROM analysis.pe_and_dividends d\n" +
-      "  JOIN stats.stock_basic_stats b ON b.date = d.date AND b.code = d.code",
+      "FROM stats.stock_basic_stats b",
     closeExpr: "b.close",
-    peExpr: "NULL::numeric",
   },
 };
 
@@ -98,7 +94,7 @@ interface DbCodeRow extends QueryResultRow {
   first_date: Date | string;
   last_date: Date | string;
   n_dates: number;
-  latest_pe_ma20: number | null;
+  latest_pe: number | null;
   latest_dividend_yield: number | null;
 }
 
@@ -106,7 +102,6 @@ interface DbChartRow extends QueryResultRow {
   date: Date | string;
   close: number | null;
   pe: number | null;
-  pe_ma20: number | null;
   dividend_yield: number | null;
 }
 
@@ -135,8 +130,10 @@ interface DbMetaRow extends QueryResultRow {
 
 // ----------------------------------------------------------------------------
 //  listPeAndDividendCodes — one row per code with first/last date, n_dates,
-//  and the latest snapshot's pe_ma20 + dividend_yield (for sparkline / sort).
-//  Mirrors listMovAveSpreadCodes but draws from analysis.pe_and_dividends.
+//  and the latest snapshot's pe + dividend_yield (for sparkline / sort).
+//  Mirrors listMovAveSpreadCodes but draws from analysis.pe +
+//  analysis.dividends (a code's date axis = the UNION of its rows in the
+//  two split tables).
 // ----------------------------------------------------------------------------
 function buildCodesSql(secType: PeAndDividendSecType): string {
   return `
@@ -151,13 +148,22 @@ function buildCodesSql(secType: PeAndDividendSecType): string {
         MIN(date) AS first_date,
         MAX(date) AS last_date,
         COUNT(DISTINCT date) AS n_dates
-      FROM analysis.pe_and_dividends
-      WHERE sec_type = $1
+      FROM (
+        SELECT code, date FROM analysis.pe WHERE sec_type = $1
+        UNION
+        SELECT code, date FROM analysis.dividends WHERE sec_type = $1
+      ) u
       GROUP BY code
     ),
-    latest_row AS (
-      SELECT DISTINCT ON (code) code, pe_ma20, dividend_yield
-      FROM analysis.pe_and_dividends
+    latest_pe_row AS (
+      SELECT DISTINCT ON (code) code, pe
+      FROM analysis.pe
+      WHERE sec_type = $1
+      ORDER BY code, date DESC
+    ),
+    latest_dy_row AS (
+      SELECT DISTINCT ON (code) code, dividend_yield
+      FROM analysis.dividends
       WHERE sec_type = $1
       ORDER BY code, date DESC
     )
@@ -167,11 +173,12 @@ function buildCodesSql(secType: PeAndDividendSecType): string {
       cd.first_date,
       cd.last_date,
       cd.n_dates,
-      lr.pe_ma20                  AS latest_pe_ma20,
-      lr.dividend_yield           AS latest_dividend_yield
+      lp.pe                       AS latest_pe,
+      ld.dividend_yield           AS latest_dividend_yield
     FROM code_dates cd
     LEFT JOIN latest_name n  ON n.code  = cd.code
-    LEFT JOIN latest_row lr  ON lr.code = cd.code
+    LEFT JOIN latest_pe_row lp ON lp.code = cd.code
+    LEFT JOIN latest_dy_row ld ON ld.code = cd.code
     ORDER BY cd.code
   `;
 }
@@ -183,13 +190,14 @@ const META_TYPE: Record<PeAndDividendSecType, string> = {
 };
 
 /** Meta SQL shared by listPeAndDividendThemes() and listPeAndDividendStrategyThemes().
- *  Returns one row per code in analysis.pe_and_dividends (filtered by sec_type)
- *  with its precomputed L1/L2 classification from stats.sec_classification. */
+ *  Returns one row per code present in analysis.pe / analysis.dividends
+ *  (filtered by sec_type) with its precomputed L1/L2 classification from
+ *  stats.sec_classification. */
 const META_SQL = `
   WITH pd_codes AS (
-    SELECT DISTINCT code
-    FROM analysis.pe_and_dividends
-    WHERE sec_type = $1::text
+    SELECT DISTINCT code FROM analysis.pe WHERE sec_type = $1::text
+    UNION
+    SELECT DISTINCT code FROM analysis.dividends WHERE sec_type = $1::text
   )
   SELECT
     sc.code,
@@ -255,7 +263,7 @@ export async function listPeAndDividendCodes(
       first_date: formatDate(r.first_date),
       last_date: formatDate(r.last_date),
       n_dates: Number(r.n_dates) || 0,
-      latest_pe_ma20: toNum(r.latest_pe_ma20),
+      latest_pe: toNum(r.latest_pe),
       latest_dividend_yield: toNum(r.latest_dividend_yield),
     });
   }
@@ -265,24 +273,28 @@ export async function listPeAndDividendCodes(
 // ----------------------------------------------------------------------------
 //  getPeAndDividendChart — daily time series for one asset.
 //
-//  JOINs analysis.pe_and_dividends with the asset-appropriate source tables
-//  (etf_basic_stats + etf_adjustment for ETFs; index_basic_stats +
-//  index_valuation for indices; stock_basic_stats for stocks) to recover
-//  close + pe alongside the derived pe_ma20 + dividend_yield.
+//  Drives from the asset-appropriate close source (etf_basic_stats +
+//  etf_adjustment for ETFs; index_basic_stats for indices;
+//  stock_basic_stats for stocks) and LEFT JOINs the two split metric
+//  tables — analysis.pe and analysis.dividends — so the response keeps
+//  one row per close day with nulls where a metric is undefined.
 // ----------------------------------------------------------------------------
 function buildChartSql(secType: PeAndDividendSecType): string {
   const src = SEC_SOURCES[secType];
   return `
     SELECT
-      d.date,
+      b.date,
       ${src.closeExpr} AS close,
-      ${src.peExpr}     AS pe,
-      d.pe_ma20,
-      d.dividend_yield
+      p.pe,
+      dy.dividend_yield
     ${src.chartFromClause}
-    WHERE d.sec_type = $2
-      AND d.code = ANY($1::text[])
-    ORDER BY d.date ASC
+    LEFT JOIN analysis.pe p
+      ON p.code = b.code AND p.date = b.date
+    LEFT JOIN analysis.dividends dy
+      ON dy.code = b.code AND dy.date = b.date
+    WHERE b.close IS NOT NULL
+      AND b.code = ANY($1::text[])
+    ORDER BY b.date ASC
   `;
 }
 
@@ -304,7 +316,7 @@ export async function getPeAndDividendChart(
   const target = stripped(rawCode);
 
   const [chartRows, nameRows] = await Promise.all([
-    queryRows<DbChartRow>(buildChartSql(secType), [codeVariants(target), secType]),
+    queryRows<DbChartRow>(buildChartSql(secType), [codeVariants(target)]),
     queryRows<{ name: string | null }>(buildNameSql(secType), [codeVariants(target)]),
   ]);
 
@@ -314,7 +326,6 @@ export async function getPeAndDividendChart(
     date: formatDate(r.date),
     close: toNum(r.close),
     pe: toNum(r.pe),
-    pe_ma20: toNum(r.pe_ma20),
     dividend_yield: toNum(r.dividend_yield),
   }));
 
@@ -375,7 +386,7 @@ export async function listPeAndDividendStats(
 
 // ----------------------------------------------------------------------------
 //  listPeAndDividendStreaks — band-BREAK excursion streaks of one code's
-//  pe_ma20 / dividend_yield series, straight from
+//  pe / dividend_yield series, straight from
 //  analysis.pe_and_dividend_pct_streaks joined with its bands table
 //  (analysis.pe_and_dividend_pct) — the mov-ave-spreads buildStreaksSql
 //  pattern.
@@ -449,7 +460,7 @@ interface DbStreakRow extends QueryResultRow {
 function toStreaks(rows: DbStreakRow[]): PeAndDividendStreak[] {
   const out: PeAndDividendStreak[] = [];
   for (const r of rows) {
-    if (r.metric !== "pe_ma20" && r.metric !== "dividend_yield") continue;
+    if (r.metric !== "pe" && r.metric !== "dividend_yield") continue;
     if (r.side !== "high" && r.side !== "low") continue;
     out.push({
       metric: r.metric as PeAndDividendStreakMetric,
@@ -490,7 +501,7 @@ export async function listPeAndDividendStreaks(
 
 // ----------------------------------------------------------------------------
 //  listPeAndDividendThemes — L1 sector → L2 industry → items tree, restricted
-//  to codes that have rows in analysis.pe_and_dividends for the requested
+//  to codes that have rows in analysis.pe / analysis.dividends for the requested
 //  sec_type. Mirrors listMovAveSpreadThemes().
 // ----------------------------------------------------------------------------
 export async function listPeAndDividendThemes(

@@ -39,10 +39,11 @@ Pipeline
      shared_weight to the industry level -> analysis.industry_attributions
      (see attributions.py). Depends on step 2 being populated first;
      exits gracefully if empty.
-  4. INTERNAL STEP: aggregate code_etf_trading_amount to the industry
-     level -> analysis.industry_etf_contribution (see etf_contribution.py).
-     Depends on step 2 being populated first; exits gracefully if no
-     index rows have non-NULL code_etf_trading_amount.
+  4. INTERNAL STEP: aggregate stats.index_exts.total_etf_trading_amount
+     to the industry level -> analysis.industry_etf_contribution (see
+     etf_contribution.py). Depends on stats.index_exts (builds.index
+     exts phase) being populated first; exits gracefully if it has no
+     non-NULL ETF amounts.
   5. INTERNAL STEP: pre-compute top-5 (HYPE) + bottom-5 (DRAIN)
      industries -> analysis.industry_hypes_and_drains (see
      hypes_and_drains.py). Depends on step 3 (attributions) being
@@ -180,10 +181,10 @@ async def main() -> None:
         "--etf-only", action="store_true",
         help="Run ONLY the etf_contribution step (force=True: truncate "
              "analysis.industry_etf_contribution and recompute all rows). "
-             "Use after rebuilding stats.cross_stats "
-             "(python -m builds.cross_stats) when ETF amounts changed — "
-             "the incremental path would otherwise skip it because no "
-             "attribution dates are missing.",
+             "Use after rebuilding stats.index_exts (builds.index exts "
+             "phase) when ETF amounts changed — the incremental path "
+             "would otherwise skip it because no attribution dates are "
+             "missing.",
     )
     args = ap.parse_args()
 
@@ -300,11 +301,11 @@ async def main() -> None:
                                force=args.force)
 
         # ---- Step 4: INTERNAL etf_contribution step --------------------
-        # Aggregate stats.cross_stats.code_etf_trading_amount
-        # to the industry level -> analysis.industry_etf_contribution. Reuses
-        # this same connection. See etf_contribution.py for the full pipeline.
-        # Exits gracefully if stats.cross_stats has no index rows
-        # with non-NULL code_etf_trading_amount.
+        # Aggregate stats.index_exts.total_etf_trading_amount to the
+        # industry level -> analysis.industry_etf_contribution. Reuses
+        # this same connection. See etf_contribution.py for the full
+        # pipeline. Exits gracefully if index_exts has no non-NULL ETF
+        # amounts.
         await run_etf_contribution(conn, target_dates=target_dates,
                                    force=args.force)
 

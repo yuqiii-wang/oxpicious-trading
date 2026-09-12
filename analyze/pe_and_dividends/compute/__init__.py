@@ -1,7 +1,8 @@
 """Compute layer for analyze.pe_and_dividends.
 
 Split by concern:
-  - compute.pe         — PE logic: pe_ma20, monthly 5y rolling min/max
+  - compute.pe         — PE logic: raw pe (invalid-value masked), monthly
+                         5y rolling min/max
   - compute.dividends  — dividend logic: trailing-12m DPS, dividend_yield,
                          monthly var/stability/last-dividend stats
 
@@ -33,7 +34,7 @@ from _common.df_utils import to_dt64
 
 from analyze._common.sanitize import sanitize_for_db_insert
 from analyze.pe_and_dividends.compute.pe import (
-    compute_pe_ma20,
+    clean_pe,
     compute_monthly_pe_extremes,
 )
 from analyze.pe_and_dividends.compute.dividends import (
@@ -47,42 +48,43 @@ from analyze.pe_and_dividends.compute.dividends import (
 
 
 # ---------------------------------------------------------------------------
-#  Build detail rows for analysis.pe_and_dividends
+#  Build the combined detail frame (the writer splits it into
+#  analysis.pe / analysis.dividends)
 # ---------------------------------------------------------------------------
 def build_detail_rows(
     close_df: pd.DataFrame,
-    pe_ma20_series: pd.Series | None,
+    pe_series: pd.Series | None,
     dividend_yield_df: pd.DataFrame,
     sec_type: str,
 ) -> pd.DataFrame:
-    """Assemble the final detail frame for analysis.pe_and_dividends.
+    """Assemble the combined detail frame for the two split tables.
 
     Returns a DataFrame with columns sec_type, code, date (datetime64),
-    pe_ma20, dividend_yield. NOT yet sanitized — the caller materializes
+    pe, dividend_yield. NOT yet sanitized — the caller materializes
     DB rows via ``sanitize_for_db_insert(date_cols=["date"])`` so the
     datetime64 frame stays reusable for the monthly-stats compute.
 
     Args:
-        close_df: DataFrame with columns code, date, close (and optionally pe).
-        pe_ma20_series: Series aligned to close_df's index with pe_ma20 values.
-            None for etf/stock.
+        close_df: DataFrame with columns code, date, close (and pe).
+        pe_series: Series aligned to close_df's index with cleaned pe
+            values (the clean_pe output).
         dividend_yield_df: DataFrame with columns code, date, dividend_yield.
         sec_type: 'index', 'etf', or 'stock'.
     """
     if close_df.empty:
         return pd.DataFrame(
-            columns=["sec_type", "code", "date", "pe_ma20", "dividend_yield"]
+            columns=["sec_type", "code", "date", "pe", "dividend_yield"]
         )
 
     # Start with close_df as the base
     out = close_df[["code", "date"]].copy()
     out["sec_type"] = sec_type
 
-    # Add pe_ma20 (Series assignment aligns on index — no .values copy)
-    if pe_ma20_series is not None:
-        out["pe_ma20"] = pe_ma20_series
+    # Add pe (Series assignment aligns on index — no .values copy)
+    if pe_series is not None:
+        out["pe"] = pe_series
     else:
-        out["pe_ma20"] = np.nan
+        out["pe"] = np.nan
 
     # Add dividend_yield
     if dividend_yield_df is not None and not dividend_yield_df.empty:
@@ -94,7 +96,7 @@ def build_detail_rows(
     else:
         out["dividend_yield"] = np.nan
 
-    return out[["sec_type", "code", "date", "pe_ma20", "dividend_yield"]]
+    return out[["sec_type", "code", "date", "pe", "dividend_yield"]]
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +130,7 @@ def compute_monthly_stats(
 
     Args:
         detail_df: DataFrame with columns sec_type, code, date (datetime64),
-            pe_ma20, dividend_yield (the daily detail data — the frame
+            pe, dividend_yield (the daily detail data — the frame
             returned by build_detail_rows, NOT sanitized DB dicts).
         pe_df: DataFrame with columns code, date, pe (raw PE from
             index_valuation). None for etf/stock.
@@ -207,7 +209,7 @@ def compute_monthly_stats(
 
 __all__ = [
     # PE side
-    "compute_pe_ma20",
+    "clean_pe",
     "compute_monthly_pe_extremes",
     # Dividend side
     "compute_trailing_12m_dps",

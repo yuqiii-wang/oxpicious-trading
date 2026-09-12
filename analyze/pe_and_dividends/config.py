@@ -1,19 +1,36 @@
-"""Configuration constants for analyze.pe_and_dividends."""
-ANALYSIS_NAME = "pe_and_dividends"
-DETAIL_TABLE = "analysis.pe_and_dividends"
+"""Configuration constants for analyze.pe_and_dividends.
+
+One builder pipeline, TWO tables (2026-09 split of the former combined
+analysis.pe_and_dividends): analysis.pe holds the daily raw PE,
+analysis.dividends the daily trailing-12m dividend yield. The metrics
+share the fetch (index dividends need constituent closes; the date axis
+is the same), so one module computes and writes both.
+"""
+ANALYSIS_NAME_PE = "pe"
+ANALYSIS_NAME_DIVIDENDS = "dividends"
+PE_TABLE = "analysis.pe"
+DIVIDENDS_TABLE = "analysis.dividends"
 STATS_TABLE = "analysis.pe_and_dividend_stats"
 
-DESCRIPTION = (
-    "PE & Dividend Yield analysis (ETF + Index + Stock). Per-(sec_type, "
-    "code, date) pe_ma20 (20-day MA of PE, index-only) and dividend_yield "
-    "(trailing-12m D/P, fractional ratio). Close and raw PE are NOT stored "
-    "(live in stats). Index dividend_yield = cap-weighted average of "
-    "constituent trailing-12m yields (SUM w_s x dps_s/close_s) using the "
-    "LATEST sec_composition snapshot (temporal extrapolation) — NOT "
-    "weighted-DPS / index-close, which mixes per-share CNY with index "
-    "points and understates the yield ~100x. Monthly 5y rolling stats "
-    "(min/max PE, min/max div, dividend_var, dividend_stability) in "
-    "pe_and_dividend_stats."
+DESCRIPTION_PE = (
+    "PE (ETF + Index + Stock). Per-(sec_type, code, date) raw PE — "
+    "index PE from stats.index_valuation.pe, etf/stock PE pre-computed "
+    "by builds.etf / builds.stock; rows only for source days with a "
+    "valid (strictly positive) PE. Split (2026-09) from the former "
+    "combined analysis.pe_and_dividends table."
+)
+
+DESCRIPTION_DIVIDENDS = (
+    "Dividend yield (ETF + Index + Stock). Per-(sec_type, code, date) "
+    "trailing-12m D/P, fractional ratio; rows only where the yield is "
+    "defined (strictly positive — non-payers have no row). Index "
+    "dividend_yield = cap-weighted average of constituent trailing-12m "
+    "yields (SUM w_s x dps_s/close_s) using the LATEST sec_composition "
+    "snapshot (temporal extrapolation) — NOT weighted-DPS / index-close, "
+    "which mixes per-share CNY with index points and understates the "
+    "yield ~100x. Split (2026-09) from the former combined "
+    "analysis.pe_and_dividends table. Monthly 5y rolling dividend stats "
+    "(var / stability / last dividend) in pe_and_dividend_stats."
 )
 
 SEC_TYPES = ("index", "etf", "stock")
@@ -23,9 +40,6 @@ SEC_TYPE_IDENTITY_TABLE = {
     "index": "stats.index_identity",
     "stock": "stats.stock_identity",
 }
-
-# 20-trading-day MA window for pe_ma20.
-PE_MA_WINDOW = 20
 
 # Trailing-12m dividend window in calendar days.
 TRAILING_DIVIDEND_DAYS = 365
@@ -40,7 +54,7 @@ STABILITY_WINDOW_YEARS = 5
 # ============================================================================
 #  analysis.pe_and_dividend_pct — metric percentile BANDS
 #
-#  Monthly trailing percentile bands of the pe_ma20 / dividend_yield series
+#  Monthly trailing percentile bands of the pe / dividend_yield series
 #  (the analysis.mov_ave_high_low_pct pattern applied to the two valuation
 #  metrics; see pct_bands.py). Both band legs are percentiles of the SAME
 #  series — a valuation metric has one value per day, so there are no
@@ -51,10 +65,11 @@ PD_PCT_TABLE = "analysis.pe_and_dividend_pct"
 PD_PCT_NAME = "pe_and_dividend_pct"
 
 # Audited metric series (the `metric` PK column): the two value columns of
-# analysis.pe_and_dividends. Each metric's history is banded independently
-# (its NULL patterns differ — pe_ma20 needs a PE source; dividend_yield is
-# NULL until the first trailing-12m dividend window fills).
-PD_PCT_METRICS = ("pe_ma20", "dividend_yield")
+# analysis.pe / analysis.dividends. Each metric's history is banded independently
+# (its NULL patterns differ — pe is NULL on no-earnings / invalid-PE days;
+# dividend_yield is NULL until the first trailing-12m dividend window
+# fills).
+PD_PCT_METRICS = ("pe", "dividend_yield")
 
 # Lookback window lengths in metric observations (the `period` PK column):
 # 255 / 500 / 750 / 1275 = ~1 / 2 / 3 / 5 trading years (the ma255
@@ -89,8 +104,8 @@ PD_PCT_COLUMNS = (
 
 PD_PCT_DESCRIPTION = (
     "Per-(sec_type, code, month, metric, period, pct_type) percentile "
-    "BAND of the pe_ma20 / dividend_yield series from "
-    "analysis.pe_and_dividends (the mov_ave_high_low_pct pattern applied "
+    "BAND of the pe / dividend_yield series from "
+    "analysis.pe / analysis.dividends (the mov_ave_high_low_pct pattern applied "
     "to the valuation metrics). low_val = pct_type-th and high_val = "
     "(100 - pct_type)-th percentile (linear interpolation) of the "
     "metric's non-NULL values over the TRAILING window of `period` "
@@ -142,7 +157,7 @@ PD_PCT_STREAKS_COLUMNS = (
 PD_PCT_STREAKS_DESCRIPTION = (
     "Band-BREAK excursion streaks audited against "
     "analysis.pe_and_dividend_pct (the mov_ave_high_low_pct_streaks "
-    "pattern applied to pe_ma20 / dividend_yield). A day is OUT-OF-BAND "
+    "pattern applied to pe / dividend_yield). A day is OUT-OF-BAND "
     "when its metric value is ABOVE its own month-band high_val or BELOW "
     "low_val (value-based breakout test). An excursion streak is the "
     "maximal consolidation of same-side out-of-band TRADING days where "

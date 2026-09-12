@@ -880,12 +880,13 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
               source of truth): layer 1 = the day's price SPEED
               (sharp/slow/flat rise/drop — t = ret_1d / the code's own
               trailing 255-row σ_ret), layer 2 = the day's
-              trading-amount STATE (increasing/flat/decreasing —
-              z-scored 量比). Picking one of each shades the chart over
+              trading-amount LEVEL STATE (up/flat/down vs the code's
+              own trailing-year amount distribution — z-scored log
+              amount). Picking one of each shades the chart over
               the dates satisfying BOTH legs; the shade hue follows the
               price direction (green rise / red drop / gray flat) and
               its DEPTH follows the combo's strength — sharp×heavy
-              (e.g. rising price + increasing amount = strong growth)
+              (e.g. rising price + high amount = strong growth)
               shades darkest, weaker speeds / amount states lighten
               toward pastel. */}
           <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
@@ -950,7 +951,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
                         } in ${pxVolRuns.length} run${pxVolRuns.length === 1 ? "" : "s"}` +
                         ` · longest ${Math.max(...pxVolRuns.map((r) => r.days))}d` +
                         ` · last ${pxVolRuns[pxVolRuns.length - 1].endDate}`
-                  } · thresholds t ±2.0σ (sharp) / ±1.26σ (slow) · z_量比 +2.0 / −0.92 · source: ${
+                  } · thresholds t ±2.0σ (sharp) / ±1.26σ (slow) · z_amt(log-level) +2.0 / −0.92 · source: ${
                     chartData?.priceVsAmt != null
                       ? "analysis.mov_ave_price_vs_amt"
                       : "client-side replication (registry rows not in response)"

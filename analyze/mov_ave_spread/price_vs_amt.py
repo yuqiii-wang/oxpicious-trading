@@ -22,17 +22,25 @@ audits 1:1 against the forecast buckets and the signal detections:
       sharp_up t > 2.0 | slow_up 1.26 < t <= 2.0 | flat
       | slow_dn -2.0 <= t < -1.29 | sharp_dn t < -2.0
 
-  z = (amt_ratio - μ) / σ   where amt_ratio = trading_amount[t] /
-      mean(trading_amount, t-5..t-1) (classic, excludes today) and
-      μ/σ are the rolling 255-row (min_periods 60, ddof=1) moments of
-      amt_ratio, shifted 1 row
+  z = (log(trading_amount[t]) - μ) / σ   the z-scored log AMOUNT LEVEL
+      — what heavy/shrink (Amt Up/Down) claim: the day's amount vs the
+      code's OWN trailing-year amount distribution. μ/σ are the
+      rolling 255-row (min_periods 60, ddof=1) moments of
+      log(trading_amount), shifted 1 row.
       heavy z > 2.0 | normal | shrink z < -0.92
+      (The RETIRED 量比-ratio z — amt_ratio = amount / its own 5-day
+      trailing mean, z vs the ratio's trailing moments — fired heavy
+      on drought bounces: in a declining-volume regime the 5-day base
+      collapses, so a day whose amount sat far below the code's level
+      scored ratio ≈ 1.7 → z > 2. amt_ratio stays recorded as
+      evidence only; amt_metric='log_level' guards consumers against
+      stale registries.)
 
 The row also records the state evidence (px_t / px_z / ret_1d /
 px_sigma / amt_ratio) so consumers (the forecast buckets' mean_t /
 mean_z config, the signal params JSON, the UI tooltips) recompute
 nothing, and the build-parameter set (sigma_window / lb_window /
-k_* / z_* / sigma_floor) for consumer-side verification.
+k_* / z_* / sigma_floor / amt_metric) for consumer-side verification.
 
 Consumers:
   - analysis_forecasts.compute_px_vol — bucket membership + mean_t /
@@ -79,6 +87,7 @@ from analyze._common import (
     upsert_analysis_identity,
 )
 from analyze.analysis_forecasts.config import (
+    PX_VOL_AMT_METRIC,
     PX_VOL_K_SHARP,
     PX_VOL_K_SLOW_DN,
     PX_VOL_K_SLOW_UP,
@@ -335,7 +344,8 @@ async def run_price_vs_amt(
     # one sec_type, so one frame per sec_type.
     logger.info(f"\n[p1/2] Fetching the forecast-engine price/amt series + "
           f"classifying the 15 categories (σ-window {PX_VOL_SIGMA_WINDOW} "
-          f"rows, 量比 base {PX_VOL_LB_WINDOW}, bars t ±{PX_VOL_K_SHARP}/±"
+          f"rows, vol leg {PX_VOL_AMT_METRIC} (量比 base "
+          f"{PX_VOL_LB_WINDOW} evidence-only), bars t ±{PX_VOL_K_SHARP}/±"
           f"{PX_VOL_K_SLOW_UP}/{PX_VOL_K_SLOW_DN}, z +{PX_VOL_Z_HEAVY}/"
           f"{PX_VOL_Z_SHRINK}, σ floor {PX_VOL_SIGMA_FLOOR})...")
     parts: list[pd.DataFrame] = []
@@ -373,6 +383,7 @@ async def run_price_vs_amt(
     rows_df["z_heavy"] = PX_VOL_Z_HEAVY
     rows_df["z_shrink"] = PX_VOL_Z_SHRINK
     rows_df["sigma_floor"] = PX_VOL_SIGMA_FLOOR
+    rows_df["amt_metric"] = PX_VOL_AMT_METRIC
 
     n_codes = rows_df[["sec_type", "code"]].drop_duplicates().shape[0]
     logger.info(f"    -> {len(rows_df):,} state rows across {n_codes:,} "

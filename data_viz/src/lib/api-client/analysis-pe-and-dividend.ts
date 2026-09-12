@@ -29,7 +29,7 @@ export function fetchPeAndDividendCodes(
 }
 
 /** Themes tree (L1 sector → L2 industry → items) for SecClassificationNav.
- *  Only includes codes that have rows in analysis.pe_and_dividends. */
+ *  Only includes codes that have rows in analysis.pe / analysis.dividends. */
 export function fetchPeAndDividendThemes(
   secType: PeAndDividendSecType,
   exchange?: string | null,
@@ -82,7 +82,7 @@ export function fetchPeAndDividendStats(
   );
 }
 
-/** Band-BREAK excursion streaks of the code's pe_ma20 / dividend_yield
+/** Band-BREAK excursion streaks of the code's pe / dividend_yield
  *  series (analysis.pe_and_dividend_pct_streaks, side derived at query
  *  time), flat for ALL (metric, period, pct_type) combos. */
 export function fetchPeAndDividendStreaks(

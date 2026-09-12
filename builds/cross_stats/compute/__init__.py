@@ -6,11 +6,10 @@ single-responsibility modules so steps can be tested/swapped independently:
 
   - ``_orchestrator`` : ``build_and_insert`` — the single public entry.
   - ``_lookback``     : incremental-mode lookback pre-filter.
-  - ``_pivots``       : benchmark + ETF wide/long pivots.
+  - ``_pivots``       : benchmark-close wide pivot.
   - ``_filters``      : DB skip check + incremental row filter.
   - ``_merge``        : subject-benchmark merge + shared weights.
   - ``_gpu_corr``     : BULK GPU rolling correlations (stride grid).
-  - ``_etf``          : ETF amounts + capped ratio + MA5.
   - ``_sanitize``     : output column selection + DB sanitization.
 
 GPU ACTIVATION

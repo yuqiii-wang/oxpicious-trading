@@ -10,13 +10,17 @@ bulk_upsert_async already wraps):
                           (downloaded files are immutable per key, so equal
                           counts ⇒ equal content; --force rewrites
                           everything anyway).
-  2. text.news_keywords — for those articles: replace all keyword rows
+  2. text.news_comments — zhihu comments (fetched by --with-comments
+                          downloads): loader rows are resolved to news_id,
+                          PK-checked against stored rows and in-batch
+                          duplicates, then upserted.
+  3. text.news_keywords — for those articles: replace all keyword rows
                           (delete + insert).
-  3. doc_freq / idf     — corpus-level stats on every keyword row,
+  4. doc_freq / idf     — corpus-level stats on every keyword row,
                           recalculated in ONE SQL UPDATE after inserts (the
                           pipeline owns these writes — no triggers, per the
                           DDL comments in database/sql/text/01_news.sql).
-  4. today_industry_change — per (industry_id, date): the industry's
+  5. today_industry_change — per (industry_id, date): the industry's
                           mean_close move (pool_size='all' from
                           stats.industry_basic_stats) on the article date, or
                           the NEXT trading date's move when the article date
@@ -37,6 +41,7 @@ logger = logging.getLogger(__name__)
 # rows; schema changes belong to the DDL files.
 NEWS_TABLE = "text.news"
 KEYWORDS_TABLE = "text.news_keywords"
+COMMENTS_TABLE = "text.news_comments"
 
 
 # ----------------------------------------------------------------------------
@@ -68,6 +73,7 @@ def build_news_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "author": r.get("author"),
         "industry_id": r.get("industry_id"),
         "word_count": r.get("word_count"),
+        "votes": r.get("votes"),
     } for r in rows]
 
 
@@ -247,3 +253,74 @@ async def apply_today_industry_change(
         f'WHERE industry_id = $2 AND date = $3',
         updates)
     return len(updates)
+
+
+# ----------------------------------------------------------------------------
+# 5. text.news_comments (zhihu only for now)
+# ----------------------------------------------------------------------------
+async def fetch_existing_comment_pks(conn) -> set:
+    """Stored comment PKs {(source, comment_id)} — the pre-load PK check.
+
+    Re-loading an artifact must not re-write comments it already stored
+    (duplicate load), and a batch must never carry a PK twice (bulk_upsert's
+    ON CONFLICT DO UPDATE would raise "cannot affect row a second time").
+    Both are filtered before any write happens.
+    """
+    rows = await conn.fetch(
+        f'SELECT source, comment_id FROM {COMMENTS_TABLE}')
+    return {(r["source"], r["comment_id"]) for r in rows}
+
+
+def build_comment_rows(
+    comment_rows: List[Dict[str, Any]],
+    news_id_by_key: Dict[Tuple[str, str, datetime.date], int],
+) -> List[Dict[str, Any]]:
+    """Resolve loader comment rows to the text.news_comments column shape.
+
+    Each row's parent (title, 'zhihu', parent_date) maps to the stored
+    news_id; rows whose parent has no stored news row are dropped.
+    """
+    out: List[Dict[str, Any]] = []
+    for r in comment_rows:
+        news_id = news_id_by_key.get((r["title"], r["source"], r["parent_date"]))
+        if news_id is None:
+            continue
+        out.append({
+            "comment_id": r["comment_id"],
+            "parent_comment_id": r.get("parent_comment_id"),
+            "source": r["source"],
+            "news_id": news_id,
+            "author": r.get("author"),
+            "content": r.get("content"),
+            "date": r.get("date"),
+            "votes": r.get("votes"),
+            "is_reply": r.get("is_reply"),
+        })
+    return out
+
+
+def filter_new_comments(
+    comment_rows: List[Dict[str, Any]],
+    existing_pks: set,
+) -> List[Dict[str, Any]]:
+    """Keep only comments whose PK is new — in-batch duplicates are dropped
+    too (first occurrence wins), so the upsert batch never conflicts twice."""
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for r in comment_rows:
+        pk = (r["source"], r["comment_id"])
+        if pk in existing_pks or pk in seen:
+            continue
+        seen.add(pk)
+        out.append(r)
+    return out
+
+
+async def insert_comments(conn, comment_rows: List[Dict[str, Any]]) -> int:
+    """Idempotent write of PK-checked comment rows (bulk_upsert on the PK)."""
+    if not comment_rows:
+        return 0
+    await bulk_upsert_async(conn, COMMENTS_TABLE, comment_rows,
+                            ["source", "comment_id"])
+    logger.info("    [DB] %d comment rows written", len(comment_rows))
+    return len(comment_rows)

@@ -10,37 +10,38 @@ start_date, interval) auditing, per 20/60/255-trading-day window:
                               — recomputed here so the audit row is
                               self-contained).
   offset_sub_corr_ma{W}_{W}d  Correlation of the benchmark-REMOVED trends
-                              (common market factor subtracted out).
+                              — the CONSOLIDATED offset primitive from
+                              stats.cross_stats
+                              (code_price_with_benchmark_offset): per
+                              (industry, pool) the curve is the mean of
+                              member indices' daily code-vs-benchmark
+                              offsets, cumulated from the window start
+                              (Pearson removes the per-window constant,
+                              so this equals the correlation of the
+                              offset LEVELS — the common benchmark move
+                              subtracted out at k=1, no MA smoothing).
   opposite_score_ma{W}_{W}d   (1 - offset_sub_corr) / 2 in [0, 1] — the
                               opposite-correlation score (1 = perfectly
                               opposite once the benchmark is removed).
 
-OFFSET MATH (per window starting at grid date s)
-  MA_X[t] = trailing W-day rolling mean of mean_close (industry trend —
-            identical input to analyze.industry_sentiments.correlations).
-  MA_B[t] = trailing W-day rolling mean of stats.index_basic_stats.close
-            for benchmark_code, reindexed onto the pool calendar.
-  k_X     = MA_X[s] / MA_B[s]      (benchmark rebased to the industry's
-                                    MA level at the window start — the
-                                    scaled benchmark moves in MA_X units).
-  adj_X[t] = MA_X[t] - k_X * MA_B[t]        (benchmark-removed trend: an
-                                             industry up while the
-                                             benchmark is up MORE is DOWN
-                                             after the offset).
-  P_X[t]  = 100 + adj_X[t] - adj_X[s]       (recomputed price, starts at
-                                             exactly 100 at s; Pearson is
-                                             shift/scale-invariant, so the
-                                             rebase is presentation only).
+OFFSET SOURCE (consolidated 2026-09-07)
+  The offset curves are NOT recomputed here anymore — they are the
+  pair-grain code_price_with_benchmark_offset series of
+  stats.cross_stats (built by builds.cross_stats from
+  stats.index_basic_stats closes), averaged over the industry's member
+  indices per pool. Pool buckets mirror builds.industry: member indices
+  classified by their LATEST composition stock count (< 51 small,
+  <= 180 mid, else large; compositionless members contribute to 'all'
+  only). The former k-scaled MA-offset decomposition
+  (k = MA_X[s]/MA_B[s], adj = MA_X − k·MA_B) is superseded by this
+  read-from-source primitive.
 
 COMPUTATION ARRANGEMENT (window component sums — no per-pair loops)
-  Pearson of linear combinations is expressible from the window sums of
-  the components — for u_i = X_i - kx_i*B, v_j = Y_j - ky_j*B over w
-  dates see _offset_corr_stack below — so ONE sliding-window gather +
-  batched einsum/matmul per (pool, benchmark, W) yields every pair's
-  overall / offset correlation at once. With N ≤ ~100 industries and
-  ~87 grid starts per window the working set is ~10-100 MB — comfortably
-  host-side (the correlations step's CuPy routing threshold is 64 MiB and
-  is not needed here).
+  Both stacks reuse the shared sliding-window Pearson kernel
+  (_window_corr_stack): ONE sliding-window gather per (pool, benchmark,
+  W) yields every pair's correlation at once. With N ≤ ~100 industries
+  and ~87 grid starts per window the working set is ~10-100 MB —
+  comfortably host-side.
 
 Incremental mode (``target_dates`` non-empty — see
 find_missing_offset_window_ends): only rows whose window END date
@@ -83,7 +84,6 @@ from analyze.analysis_composites.config import (
     ANALYSIS_DESCRIPTION_OFFSETS,
     ANALYSIS_NAME_OFFSETS,
     BASELINE_TABLE,
-    BENCHMARK_TABLE,
     INTERVAL_DAYS,
     MIN_OVERLAP,
     POOL_SIZES,
@@ -154,112 +154,76 @@ async def find_missing_offset_window_ends(
 
 
 # ---------------------------------------------------------------------------
-#  Windowed correlation stacks (overall / benchmark-offset)
+#  Consolidated offset curves (per industry, pool — from stats.cross_stats)
 # ---------------------------------------------------------------------------
 
-def _bench_curve_on_calendar(
-    bench_close: pd.Series, cal_index: pd.Index,
-) -> np.ndarray:
-    """Benchmark close reindexed onto the pool calendar (NaN off-calendar
-    or missing) as a float64 numpy array."""
-    s = bench_close.reindex(cal_index)
-    return s.to_numpy(dtype=np.float64)
+_OFFSET_CURVES_SQL = """
+WITH latest AS (
+    SELECT code, MAX(snapshot_date) AS max_date
+    FROM stats.sec_composition
+    WHERE source_type = 'index' AND stock_code IS NOT NULL
+    GROUP BY code
+),
+stock_num AS (
+    SELECT h.code, COUNT(DISTINCT h.stock_code) AS n
+    FROM stats.sec_composition h
+    JOIN latest ld ON h.code = ld.code AND h.snapshot_date = ld.max_date
+    WHERE h.source_type = 'index' AND h.stock_code IS NOT NULL
+    GROUP BY h.code
+),
+cls AS (
+    SELECT code, industry_id
+    FROM stats.sec_classification
+    WHERE type = 'index'
+      AND is_active = TRUE
+      AND industry_id IS NOT NULL AND industry_id <> ''
+      AND is_industry_not_strategy = TRUE
+),
+member_pool AS (
+    -- Pool buckets mirror builds.industry.classify_pool_vectorized:
+    -- small < 51 constituent stocks, mid <= 180, large otherwise;
+    -- compositionless members contribute to the 'all' pool only.
+    SELECT cls.code, cls.industry_id,
+           CASE
+               WHEN sn.n IS NULL THEN NULL
+               WHEN sn.n < 51 THEN 'small'
+               WHEN sn.n <= 180 THEN 'mid'
+               ELSE 'large'
+           END AS bucket
+    FROM cls cls
+    LEFT JOIN stock_num sn ON sn.code = cls.code
+),
+pools(pool_size) AS (
+    VALUES ('small'), ('mid'), ('large'), ('all')
+)
+SELECT mp.industry_id, p.pool_size,
+       extract(epoch from cs.date)::float8 AS date,
+       AVG(cs.code_price_with_benchmark_offset)::float8 AS offset_pts
+FROM member_pool mp
+JOIN stats.cross_stats cs
+    ON cs.code = mp.code
+   AND cs.benchmark_code = $1::text
+   AND cs.sec_type = 'index'
+   AND cs.code_price_with_benchmark_offset IS NOT NULL
+JOIN pools p ON p.pool_size = 'all' OR p.pool_size = mp.bucket
+GROUP BY mp.industry_id, p.pool_size, cs.date
+"""
 
 
-def _bench_window_ok(
-    bench_ma: np.ndarray, starts: np.ndarray, w: int,
-) -> np.ndarray:
-    """Per grid start: is the benchmark MA-{w} defined on EVERY date of
-    the window [s, s + w) AND at s itself (the k scale factor needs
-    MA_B[s])? A window's first date IS s, so the window check covers it."""
-    t_len = bench_ma.size
-    nan_cs = np.concatenate(([0], np.cumsum(np.isnan(bench_ma))))
-    idx_e = np.minimum(starts + w, t_len)
-    nan_cnt = nan_cs[idx_e] - nan_cs[starts]
-    return (nan_cnt == 0) & ((starts + w) <= t_len)
+async def fetch_offset_curves(conn, benchmark_code: str) -> pd.DataFrame:
+    """(industry_id, pool_size, date, offset_pts) rows for one benchmark.
 
-
-def _offset_corr_stack(
-    ma: np.ndarray,
-    bench_ma: np.ndarray,
-    starts: np.ndarray,
-    w: int,
-) -> np.ndarray:
-    """Per grid start: the full (N, N) Pearson-correlation matrix of the
-    benchmark-removed trends u_i = MA_i - k_i * MA_B (k_i = MA_i[s] /
-    MA_B[s]) over the window [s, s + w).
-
-    The adjusted series is a linear combination, so its Pearson matrix is
-    computed from the window component sums (SX / SXX / SXY / Sxb / Sb /
-    Sbb) in ONE sliding-window gather + einsum/matmul pass — no per-pair
-    loops, no materialized (S, W, N) adjusted matrices.
-
-    NaN cells are zero-filled before the sums; validity is enforced by
-    the caller's emit mask (valid pairs never touch a filled cell).
-    Entries for start rows where the benchmark window is invalid are
-    NaN-masked here.
+    The consolidated per-member daily offsets
+    (stats.cross_stats.code_price_with_benchmark_offset) averaged over
+    each industry's member indices per pool bucket. Always full history —
+    the sliding windows need it; filtered (industry_ids) mode slices in
+    pandas.
     """
-    n_starts = starts.size
-    _, n_ind = ma.shape
-    stack = np.full((n_starts, n_ind, n_ind), np.nan, dtype=np.float64)
-    full = np.nonzero((starts + w) <= ma.shape[0])[0]
-    if full.size == 0:
-        return stack
-    s_full = starts[full]
-
-    x0 = np.ascontiguousarray(
-        np.lib.stride_tricks.sliding_window_view(ma, w, axis=0)[s_full]
-        .transpose(0, 2, 1)
-    )                                                    # (F, w, N)
-    b0 = np.lib.stride_tricks.sliding_window_view(bench_ma, w)[s_full]
-    b0 = np.ascontiguousarray(b0)                        # (F, w)
-    np.copyto(x0, 0.0, where=np.isnan(x0))
-    np.copyto(b0, 0.0, where=np.isnan(b0))
-
-    # Component sums over the window.
-    sx: np.ndarray = x0.sum(axis=1)                      # (F, N)
-    sxx: np.ndarray = np.einsum("fwi,fwi->fi", x0, x0)   # (F, N)
-    sxy: np.ndarray = x0.transpose(0, 2, 1) @ x0         # (F, N, N)
-    sxb: np.ndarray = np.einsum("fwi,fw->fi", x0, b0)    # (F, N)
-    sb: np.ndarray = b0.sum(axis=1)                      # (F,)
-    sbb: np.ndarray = np.einsum("fw,fw->f", b0, b0)      # (F,)
-
-    # Per-(start, industry) scale factor k = MA[s] / MA_B[s].
-    ma_s = ma[s_full]                                    # (F, N)
-    bb_s = bench_ma[s_full]                              # (F,)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        k = ma_s / bb_s[:, None]                         # (F, N)
-    k = np.where(np.isfinite(k), k, np.nan)
-
-    kx = k[:, :, None]                                   # subject scale
-    ky = k[:, None, :]                                   # benchmark-pair scale
-    sb_b = sb[:, None, None]
-
-    # Sums of u_i = MA_i - k_i*B and v_j = MA_j - k_j*B.
-    su = sx[:, :, None] - kx * sb_b                      # (F, N, 1)
-    sv = sx[:, None, :] - ky * sb_b                      # (F, 1, N)
-    suu = sxx[:, :, None] \
-        - 2.0 * kx * sxb[:, :, None] \
-        + kx * kx * sbb[:, None, None]                   # (F, N, 1)
-    svv = sxx[:, None, :] \
-        - 2.0 * ky * sxb[:, None, :] \
-        + ky * ky * sbb[:, None, None]                   # (F, 1, N)
-    suv = sxy \
-        - ky * sxb[:, :, None] \
-        - kx * sxb[:, None, :] \
-        + kx * ky * sbb[:, None, None]                   # (F, N, N)
-
-    cov = suv - su * sv / w
-    var_u = suu - su * su / w
-    var_v = svv - sv * sv / w
-    with np.errstate(divide="ignore", invalid="ignore"):
-        corr = cov / np.sqrt(var_u * var_v)
-
-    # Start rows where the benchmark MA window is invalid -> all NaN.
-    bok = _bench_window_ok(bench_ma, starts, w)
-    corr[~bok[full]] = np.nan
-    stack[full] = corr
-    return stack
+    rows = await conn.fetch(_OFFSET_CURVES_SQL, benchmark_code)
+    return pd.DataFrame(
+        rec_cols(rows),
+        columns=["industry_id", "pool_size", "date", "offset_pts"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -347,32 +311,24 @@ async def run_opposite_correlations(
     df["mean_close"] = df["mean_close"].astype(float)
     logger.info(f"      -> {len(rows):,} rows")
 
-    # ---- Step 2: load benchmark closes ----------------------------------
-    logger.info(f"\n[o2/4] Loading benchmark closes from {BENCHMARK_TABLE}...")
-    bench_rows = await conn.fetch(f"""
-        SELECT extract(epoch from date)::float8 AS date, code, close
-        FROM {BENCHMARK_TABLE}
-        WHERE code = ANY($1) AND close IS NOT NULL
-        ORDER BY code, date
-    """, list(benchmarks))
-    bdf = pd.DataFrame(rec_cols(bench_rows))
-    bdf["date"] = epoch_col_to_dt64(bdf["date"], index=bdf.index)
-    bdf["close"] = bdf["close"].astype(float)
-    bench_series: dict[str, pd.Series] = {
-        code: g.set_index("date")["close"].sort_index()
-        for code, g in bdf.groupby("code")
-    }
-    for code in benchmarks:
-        if code not in bench_series:
-            logger.warning(f"      -> WARNING: no close rows for benchmark "
-                  f"'{code}' — all its offset columns will be NULL; "
-                  f"skipping it.")
-    benchmarks = tuple(b for b in benchmarks if b in bench_series)
+    # ---- Step 2: load consolidated offset curves (stats.cross_stats) ----
+    # Per benchmark: (industry, pool, date) mean-of-member daily offsets.
+    offset_curves: dict[str, pd.DataFrame] = {}
+    for bench_code in benchmarks:
+        odf = await fetch_offset_curves(conn, bench_code)
+        if odf.empty:
+            logger.warning(f"      -> WARNING: no cross_stats offset rows "
+                           f"for benchmark '{bench_code}' — all its offset "
+                           f"columns will be NULL; skipping it.")
+            continue
+        odf["date"] = epoch_col_to_dt64(odf["date"], index=odf.index)
+        odf["offset_pts"] = odf["offset_pts"].astype(float)
+        offset_curves[bench_code] = odf
+    benchmarks = tuple(b for b in benchmarks if b in offset_curves)
     if not benchmarks:
-        logger.info("      -> no benchmarks with data; skipping.")
+        logger.info("      -> no benchmarks with offset data; skipping.")
         return
-    logger.info(f"      -> {len(bench_rows):,} rows for "
-          f"{len(benchmarks)} benchmark(s)")
+    logger.info(f"      -> offset curves for {len(benchmarks)} benchmark(s)")
 
     # ---- Steps 3: per-pool stacks + emit rows ----------------------------
     logger.info("\n[o3/4] Per-pool windowed audit stacks "
@@ -412,14 +368,24 @@ async def run_opposite_correlations(
         }
 
         for bench_code in benchmarks:
-            bench_close = _bench_curve_on_calendar(
-                bench_series[bench_code], wide.index,
-            )
-            bench_ma: dict[int, np.ndarray] = {
-                w: pd.Series(bench_close).rolling(
-                    w, min_periods=w
-                ).mean().to_numpy()
-                for w in WINDOWS
+            # Consolidated offset matrix on the pool calendar: rows =
+            # pool dates, cols = industries (aligned to the mean_close
+            # pivot), values = mean-of-member daily offsets.
+            odf = offset_curves[bench_code]
+            if filtered:
+                odf = odf[odf["industry_id"].isin(industry_ids)]
+            sub_off = odf[odf["pool_size"] == pool]
+            if sub_off.empty:
+                offset_mat = np.full((t_len, n_ind), np.nan)
+            else:
+                off_wide = (
+                    sub_off.pivot(index="date", columns="industry_id",
+                                  values="offset_pts")
+                    .reindex(index=wide.index, columns=ids)
+                )
+                offset_mat = off_wide.to_numpy(dtype=np.float64)
+            col_ok_off: dict[int, np.ndarray] = {
+                w: _window_col_ok(offset_mat, starts, w) for w in WINDOWS
             }
 
             # 3D emit mask (S, N, N): upper-triangle pairs where BOTH
@@ -461,8 +427,12 @@ async def run_opposite_correlations(
             for w in WINDOWS:
                 stack = _window_corr_stack(ma[w], starts, w, col_ok[w])
                 overall_vals[w] = stack[s_idx, ai_idx, bi_idx]
-                sub_stack = _offset_corr_stack(
-                    ma[w], bench_ma[w], starts, w,
+                # Offset-sub: windowed Pearson of the CONSOLIDATED offset
+                # curves (cumulated from the window start — equivalent to
+                # levels under Pearson). Cells whose offset window is
+                # invalid stay NaN (the shared kernel NaN-masks them).
+                sub_stack = _window_corr_stack(
+                    offset_mat, starts, w, col_ok_off[w],
                 )
                 sub_vals[w] = sub_stack[s_idx, ai_idx, bi_idx]
                 # Opposite score = (1 - offset) / 2 on the FINITE offsets.

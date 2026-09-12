@@ -28,10 +28,8 @@ from __future__ import annotations
 
 import csv
 import json
-import random
 import re
-import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,14 +38,15 @@ import requests
 from downloads._common import (
     DEFAULT_START_DATE,
     DEFAULT_TIMEOUT,
+    EMPTY_MARKER_RETRY_DAYS,
     AntiBotProxy,
     AntiBotConfig,
     build_headers_with_referer,
     business_days,
-    is_trading_day,
-    is_valid_file,
+    last_business_day,
     resolve_out_dir,
     setup_logger,
+    single_instance_lock,
 )
 
 
@@ -111,17 +110,6 @@ def _parse_jsonp(text: str) -> Dict[str, Any]:
     if start != -1 and end != -1 and end > start:
         return json.loads(text[start + 1 : end])
     raise ValueError("Cannot parse JSONP response from SSE endpoint")
-
-
-def _prev_business_day(ref: Optional[date] = None, skip_days: int = 1) -> date:
-    """Walk back ``skip_days`` trading days from ``ref`` (default: today)."""
-    d = ref if ref is not None else date.today()
-    count = 0
-    while count < skip_days:
-        d -= timedelta(days=1)
-        if is_trading_day(d):
-            count += 1
-    return d
 
 
 def _fetch_page(
@@ -234,7 +222,7 @@ def _download_summary(
     """
     ymd = trade_date.strftime("%Y%m%d")
     out_file = out_dir / f"sse_margin_summary_{ymd}.csv"
-    if is_valid_file(out_file, min_bytes=64):
+    if _csv_cache_hit(out_file, trade_date, "summary"):
         logger.debug("[summary %s] already exists, skipping", ymd)
         return out_file, -1
 
@@ -247,8 +235,9 @@ def _download_summary(
 
     rows_raw = payload.get("result") or []
     if not rows_raw:
-        # API confirmed no data for this date — write a header-only CSV so the
-        # next run's is_valid_file() check skips it instead of re-fetching.
+        # API confirmed no data for this date — write a header-only CSV so
+        # the next run's cache check skips it. Recent markers are retried
+        # by _csv_cache_hit in case the export simply wasn't published yet.
         logger.info("[summary %s] no data, writing empty CSV", ymd)
         _write_csv(out_file, [], SUMMARY_COLUMNS)
         return out_file, 0
@@ -273,7 +262,7 @@ def _download_detail(
     """
     ymd = trade_date.strftime("%Y%m%d")
     out_file = out_dir / f"sse_margin_detail_{ymd}.csv"
-    if is_valid_file(out_file, min_bytes=64):
+    if _csv_cache_hit(out_file, trade_date, "detail"):
         logger.debug("[detail %s] already exists, skipping", ymd)
         return out_file, -1
 
@@ -319,8 +308,10 @@ def _download_detail(
 
     if not all_rows:
         if api_confirmed_empty:
-            # API confirmed no data for this date — write a header-only CSV so
-            # the next run's is_valid_file() check skips it instead of re-fetching.
+            # API confirmed no data for this date — write a header-only CSV
+            # so the next run's cache check skips it. Recent markers are
+            # retried by _csv_cache_hit in case the export simply wasn't
+            # published yet.
             logger.info("[detail %s] no data, writing empty CSV", ymd)
             _write_csv(out_file, [], DETAIL_COLUMNS)
             return out_file, 0
@@ -342,43 +333,45 @@ def _download_detail(
     return out_file, len(all_rows)
 
 
-def _find_best_margin_end_date(
-    out_dir: Path,
-    session: Optional[requests.Session] = None,
-    proxy: Optional[AntiBotProxy] = None,
-) -> date:
-    """Pick the most recent trade date for which SSE margin data is available.
+def _csv_has_data_rows(path: Path) -> bool:
+    """Check whether a written CSV has at least one data row (i.e. is not a
+    header-only/0-byte "no data" marker)."""
+    try:
+        with open(path, encoding=CSV_ENCODING, newline="") as f:
+            reader = csv.reader(f)
+            next(reader, None)  # header
+            for row in reader:
+                if any(cell.strip() for cell in row):
+                    return True
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return False
+    return False
 
-    Mirrors the SZSE pattern in ``download_szse_margin._find_best_margin_end_date``:
-    if it's after 15:00 on a trading day, first try today; otherwise fall
-    back 1 then 2 business days. A summary probe determines availability.
+
+def _csv_cache_hit(out_file: Path, trade_date: date, log_tag: str) -> bool:
+    """Return True when ``out_file`` already settles this trade date.
+
+    A file with data rows is a plain cache hit. A header-only/0-byte file
+    is an empty marker: recent markers (written within the last
+    ``EMPTY_MARKER_RETRY_DAYS`` calendar days) are deleted and retried —
+    a "no data" response on a recent trading day usually just means the
+    exchange had not published that day's margin export yet when we first
+    asked — while stale markers are treated as confirmed no-data dates.
     """
-    now = datetime.now()
-    today = date.today()
-
-    sess = session or requests.Session()
-    proxy_instance = proxy or AntiBotProxy(AntiBotConfig(base_sleep_sec=5.0))
-
-    candidates: List[date] = []
-    if is_trading_day(today) and now.hour >= 15:
-        candidates.append(today)
-    for skip in [1, 2]:
-        candidates.append(_prev_business_day(today, skip_days=skip))
-
-    for cand in candidates:
-        if not is_trading_day(cand):
-            continue
-        if proxy_instance.is_blocked(SSE_QUERY_URL):
-            break
-        payload = _fetch_page(sess, SUMMARY_SQL_ID, cand, 1, SUMMARY_PAGE_SIZE, proxy_instance)
-        if payload is None:
-            continue
-        rows = payload.get("result") or []
-        if rows:
-            return cand
-        proxy_instance.sleep(0.5)
-
-    return _prev_business_day(today, skip_days=2)
+    if not out_file.exists():
+        return False
+    if _csv_has_data_rows(out_file):
+        return True
+    marker_age = (date.today() - trade_date).days
+    if marker_age > EMPTY_MARKER_RETRY_DAYS:
+        return True
+    logger.info(
+        "[%s %s] empty file is recent (%dd old), retrying (data may not "
+        "have been published yet)", log_tag,
+        trade_date.strftime("%Y%m%d"), marker_age,
+    )
+    out_file.unlink(missing_ok=True)
+    return False
 
 
 def download_sse_margin(
@@ -395,9 +388,17 @@ def download_sse_margin(
     market-wide summary (1 row) and the per-security detail (~1900 rows,
     paginated). Skips dates where the output CSV already exists.
 
+    Margin exports for trade date T are published by the exchange on T+1
+    (daytime), so the newest date or two may legitimately have no data yet
+    when this runs late at night or early morning. Those fetches write
+    empty CSVs that ``_csv_cache_hit`` retries on subsequent runs, so any
+    run after publication picks the dates up automatically (weekends
+    included).
+
     Args:
         out_root: Override output root dir (default: ``temps/sse_margin``).
-        end_date: ``YYYY-MM-DD`` inclusive (default: auto-detect latest available).
+        end_date: ``YYYY-MM-DD`` inclusive (default: the most recent
+            trading day; not-yet-published dates are retried on later runs).
         start_date: ``YYYY-MM-DD`` inclusive (default: ``DEFAULT_START_DATE``).
         report_types: Subset of ``["summary", "detail"]`` (default: both).
         sleep_sec: Sleep between requests for anti-bot throttling.
@@ -414,8 +415,10 @@ def download_sse_margin(
     proxy = AntiBotProxy(proxy_config)
 
     if end_date is None:
-        best_date = _find_best_margin_end_date(out_dir, sess, proxy)
-        effective_end_date = best_date
+        # Walk all the way to the most recent trading day; dates whose
+        # export is not published yet produce empty CSVs that later runs
+        # retry (see _csv_cache_hit).
+        effective_end_date = last_business_day(date.today())
     else:
         effective_end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
 
@@ -517,4 +520,8 @@ def download_sse_margin(
 
 
 if __name__ == "__main__":
-    logger.info(download_sse_margin())
+    try:
+        with single_instance_lock("downloads.margin.sse"):
+            logger.info(download_sse_margin())
+    except RuntimeError as exc:
+        logger.warning("%s — exiting", exc)

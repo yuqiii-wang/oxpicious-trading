@@ -2,7 +2,9 @@
  * HeaderNumericRangeFilterMenu — column-header NUMERIC range filter (one of
  * the three shared header-filter types, alongside HeaderFilterMenu's ticks
  * and HeaderDateFilterMenu's date range): the column label followed by a
- * tiny filter button that opens min/max number inputs. Rows whose numeric
+ * tiny filter button that opens min/max number inputs plus a row-order
+ * toggle (Ascending ⇄ Descending; makes this column the table's ordering
+ * key, shared via useTableHeaderFilters). Rows whose numeric
  * value falls inside [min, max] inclusive match; both bounds empty = no
  * filter (all rows shown); rows with a non-numeric/null value never match
  * an active range. The inputs are PREFILLED with the data's numeric min/max
@@ -25,7 +27,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { headerFilterButtonSx } from "@/components/HeaderFilterMenu";
+import { HeaderSortToggle, headerFilterButtonSx } from "@/components/HeaderFilterMenu";
 
 export interface HeaderNumericRangeFilterMenuProps {
   /** Column label rendered before the filter button. */
@@ -37,6 +39,12 @@ export interface HeaderNumericRangeFilterMenuProps {
    *  Shown in the input, but not treated as an active bound. */
   prefillMin?: number | null;
   prefillMax?: number | null;
+  /** This column's row-order direction (the ordering key's real dir;
+   *  other columns display the default "desc" they'd apply on click). */
+  sortDir: "asc" | "desc";
+  /** Order-toggle click — makes this column the table's ordering key and
+   *  flips its direction asc ⇄ desc (shared hook state). */
+  onToggleSort: () => void;
   onChange: (next: { min: number | null; max: number | null }) => void;
 }
 
@@ -53,6 +61,8 @@ export function HeaderNumericRangeFilterMenu({
   max,
   prefillMin = null,
   prefillMax = null,
+  sortDir,
+  onToggleSort,
   onChange,
 }: HeaderNumericRangeFilterMenuProps) {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
@@ -86,31 +96,38 @@ export function HeaderNumericRangeFilterMenu({
         anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
         transformOrigin={{ vertical: "top", horizontal: "left" }}
       >
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ p: 1 }}>
-          <Typography component="span" sx={{ fontSize: "0.66rem", color: "text.secondary" }}>
-            min
-          </Typography>
-          <TextField
-            type="number"
-            size="small"
-            value={min ?? prefillMin ?? ""}
-            placeholder="min"
-            onChange={(e) => onChange({ min: parseBound(e.target.value), max })}
-            sx={{ width: 110 }}
-            InputProps={{ sx: { fontSize: "0.7rem", py: 0.1 } }}
-          />
-          <Typography component="span" sx={{ fontSize: "0.66rem", color: "text.secondary" }}>
-            max
-          </Typography>
-          <TextField
-            type="number"
-            size="small"
-            value={max ?? prefillMax ?? ""}
-            placeholder="max"
-            onChange={(e) => onChange({ min, max: parseBound(e.target.value) })}
-            sx={{ width: 110 }}
-            InputProps={{ sx: { fontSize: "0.7rem", py: 0.1 } }}
-          />
+        <Stack spacing={0.5} sx={{ p: 1 }}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Typography component="span" sx={{ fontSize: "0.66rem", color: "text.secondary" }}>
+              min
+            </Typography>
+            <TextField
+              type="number"
+              size="small"
+              value={min ?? prefillMin ?? ""}
+              placeholder="min"
+              onChange={(e) => onChange({ min: parseBound(e.target.value), max })}
+              sx={{ width: 110 }}
+              InputProps={{ sx: { fontSize: "0.7rem", py: 0.1 } }}
+            />
+            <Typography component="span" sx={{ fontSize: "0.66rem", color: "text.secondary" }}>
+              max
+            </Typography>
+            <TextField
+              type="number"
+              size="small"
+              value={max ?? prefillMax ?? ""}
+              placeholder="max"
+              onChange={(e) => onChange({ min, max: parseBound(e.target.value) })}
+              sx={{ width: 110 }}
+              InputProps={{ sx: { fontSize: "0.7rem", py: 0.1 } }}
+            />
+          </Stack>
+          {/* Row-order footer — makes this column the table's ordering key
+              and flips Ascending ⇄ Descending. */}
+          <Stack direction="row" justifyContent="flex-end">
+            <HeaderSortToggle sortDir={sortDir} onToggle={onToggleSort} />
+          </Stack>
         </Stack>
       </Popover>
     </Box>

@@ -30,11 +30,15 @@ CREATE TABLE IF NOT EXISTS text.news (
     author        TEXT,                       -- zhihu answer author; gov 来源; NULL when unknown
     industry_id   TEXT,
     word_count    INTEGER,
+    votes         INTEGER,                    -- upvotes when the source provides them (zhihu VoteUpCount); NULL otherwise
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     CONSTRAINT pk_news PRIMARY KEY (title, source, date),
     CONSTRAINT uq_news_news_id UNIQUE (news_id)
 );
+
+-- Upgrade for deployments created before the votes column existed.
+ALTER TABLE text.news ADD COLUMN IF NOT EXISTS votes INTEGER;
 
 
 -- Uniqueness as a standalone index (not just the table constraint) so it is
@@ -65,6 +69,42 @@ COMMENT ON COLUMN text.news.author IS
 COMMENT ON TABLE text.news IS
   'Raw news articles. One row per (title, source, date). content holds the '
   'article body; industry_id links to the industry taxonomy when applicable.';
+
+-- ============================================================================
+--  Per-article comments (text.news_comments).
+--  Populated by builds.text from downloaded artifacts — zhihu only for now
+--  (root comments + their embedded replies of each answer/article, fetched
+--  by downloads.macro.zhihu.news --with-comments). PK (source, comment_id):
+--  the platform comment id is the natural key, so re-loading an artifact is
+--  idempotent and the load path checks these PKs before writing.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS text.news_comments (
+    comment_id   BIGINT      NOT NULL,       -- platform comment id (zhihu comment id)
+    source       TEXT        NOT NULL,       -- 'zhihu' for now
+    parent_comment_id BIGINT,                -- root comment id for nested replies; NULL for roots
+    news_id      BIGINT      NOT NULL,       -- parent article (text.news)
+    author       TEXT,                       -- NULL when the platform hides it
+    content      TEXT,
+    date         DATE,                       -- comment created date (Asia/Shanghai)
+    votes        INTEGER,                    -- comment like count; NULL when not provided
+    is_reply     BOOLEAN       NOT NULL DEFAULT false,  -- true for nested replies
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    CONSTRAINT pk_news_comments PRIMARY KEY (source, comment_id),
+    CONSTRAINT fk_news_comments_news FOREIGN KEY (news_id)
+        REFERENCES text.news (news_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_news_comments_news_id
+    ON text.news_comments (news_id);
+
+-- Upgrade for deployments created before threading existed.
+ALTER TABLE text.news_comments ADD COLUMN IF NOT EXISTS parent_comment_id BIGINT;
+
+COMMENT ON TABLE text.news_comments IS
+  'Reader comments per article. Loaded by builds.text (zhihu only for now): '
+  'root comments + embedded replies fetched by downloads.macro.zhihu.news '
+  '--with-comments. news_id joins the parent article in text.news.';
 
 -- Reference set: the group of news articles an AI QA answer was based on.
 -- Plain entity table — deliberately NOT INHERITS (text.news): table

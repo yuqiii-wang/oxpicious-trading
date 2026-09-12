@@ -4,21 +4,23 @@
 //  POST /api/live-data/sec-alloc-live/run spawns
 //  `python -m live.sec_alloc_live_attribution` (via the shared py-runner)
 //  and waits for it to finish. The module itself is incremental:
-//    • heavy prev-date ref (live.sec_alloc_live_prev_ref) is built ONCE per
-//      date and skipped when already present;
 //    • light 5-min ticks (live.sec_alloc_live_attribution) are appended
 //      for new bars only;
-//    • when the prev-date ref is NOT ready, fallback rows
-//      (is_without_trading_amt = true, equal-weight only) keep live data
-//      flowing — a PG advisory lock degrades a second concurrent instance
-//      to the fallback-only pass.
+//    • the 5-min pass writes self-contained fallback rows
+//      (is_without_trading_amt = true, prev close = prev-day last 5-min
+//      bar close) so live data always flows — a PG advisory lock makes a
+//      second concurrent instance exit fast (the next 5-min run catches
+//      up);
+//    • the yday-ref mode upgrades fallback rows in place to
+//      daily-close-basis rows (false) with prev closes computed at tick
+//      time from stats.index_basic_stats.
 //  The Market Movements page fires this before each 5-min auto-refresh so
 //  the shades never lag the raw 5-min bars.
 //
 //  GET /api/live-data/sec-alloc-live/attribution returns per-industry
 //  weighted/equal aggregates at one tick + weighted_available, which
-//  drives the UI "By Trading Amt" disable state (disabled while only
-//  fallback rows exist for the benchmark+date).
+//  drives the UI "By Trading Amt" disable state (disabled while the
+//  prev-day trading amounts are not computable for the benchmark+date).
 // ---------------------------------------------------------------------------
 import { fetchJson } from "./_cache";
 import type { SecAllocLiveAttributionResponse } from "@shared/types";
@@ -67,8 +69,9 @@ export const SEC_ALLOC_LIVE_LIVE_TAG = "sec-alloc-live:live";
  *           fresh CSVs so prev-day OHLC is real.
  *        3. live.sec_alloc_live_attribution --mode ref
  *           --rebuild-latest-date (tag …:ref) — invalidate this date's
- *           ref + tick rows, then heavy prev-day closes + trading
- *           amounts + weights + weighted tick upgrades.
+ *           tick rows, then rebuild daily-close-basis (weighted) ticks
+ *           with prev closes computed at tick time from
+ *           stats.index_basic_stats.
  *      Fired by the "Build Yday Ref" button; may take minutes.
  *
  *  `processIdTag` dedupes: if a process with the same tag is already

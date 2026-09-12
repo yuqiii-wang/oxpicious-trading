@@ -158,6 +158,11 @@ CREATE TABLE IF NOT EXISTS stats.industry_basic_stats (
     -- data is available for the union set on this date.
     total_trading_amount      NUMERIC(24,4),
 
+    -- Intraday net-move liquidity ratio: total_trading_amount /
+    -- (mean_close - mean_open), signed (negative on down days).
+    -- NULL when inputs are missing or |value| overflows NUMERIC(18,6).
+    trading_amt_per_pct_change NUMERIC(18,6),
+
     CONSTRAINT pk_industry_basic_stats PRIMARY KEY (industry_id, date, pool_size),
     CONSTRAINT chk_industry_basic_stats_pool
         CHECK (pool_size IN ('small', 'mid', 'large', 'all'))
@@ -167,6 +172,11 @@ CREATE TABLE IF NOT EXISTS stats.industry_basic_stats (
 -- Native hash partitions (8) keyed by code — created via the shared util
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'industry_basic_stats', 8);
+
+-- Idempotent migration: add the intraday net-move liquidity ratio to
+-- pre-existing tables (no-op on fresh installs).
+ALTER TABLE stats.industry_basic_stats
+    ADD COLUMN IF NOT EXISTS trading_amt_per_pct_change NUMERIC(18,6);
 
 -- Indexes for the common access patterns:
 --   1. Per-industry + pool_size time series (drives the chart on the
@@ -187,3 +197,4 @@ COMMENT ON COLUMN stats.industry_basic_stats.mean_close     IS 'AVG(rebased_to_1
 COMMENT ON COLUMN stats.industry_basic_stats.var_price      IS 'VARIANCE(rebased_to_100 close) across member indices in this pool_size slice on this date. Captures cross-index dispersion (how spread out the members are).';
 COMMENT ON COLUMN stats.industry_basic_stats.mean_pe        IS 'AVG(raw PE) across member indices in this pool_size slice on this date. Source: stats.index_valuation.pe. NULL PE values excluded from the mean; PE = 0 is treated as a no-data marker and likewise excluded (never averaged in as 0). NULL when no member indices have PE data on this date.';
 COMMENT ON COLUMN stats.industry_basic_stats.total_trading_amount IS 'SUM(stock_liquidity_margin.trading_amount) across the UNION of stocks from all member indices'' compositions (LATEST sec_composition snapshot per code, no temporal filter — same stock universe for all dates) in this pool_size slice on this date. Each stock counted ONCE (union, not sum-per-index). Source: stats.stock_liquidity_margin.trading_amount (in yuan). NULL when no stock trading_amount data is available for the union set on this date.';
+COMMENT ON COLUMN stats.industry_basic_stats.trading_amt_per_pct_change IS 'Intraday net-move liquidity ratio at the composite-slice level: total_trading_amount / (mean_close - mean_open), SIGNED — positive when the composite closed above its open, negative below (the sign carries the move direction). mean_open/mean_close are the rebased-to-100 composite OHLC (same units); total_trading_amount is the slice''s union-stock turnover (yuan). Zero move (mean_close = mean_open — flat slice day): denominator floored to 1.0, so the stored value equals the raw total trading amount (mov_ave_spread zero-denominator convention — a pragmatic floor, NOT a true ratio). NULL when any input is NULL (e.g. no stock amount data) or |value| >= 1e12 (NUMERIC(18,6) bound). Computed by builds.industry.';

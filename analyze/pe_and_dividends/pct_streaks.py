@@ -4,7 +4,7 @@ Band-BREAK excursion streaks audited against
 analysis.pe_and_dividend_pct: one row per excursion streak per
 (sec_type, code, date_year_month, metric, period, pct_type) in
 analysis.pe_and_dividend_pct_streaks — the mov_ave_high_low_pct_streaks
-pattern (high/low price streaks) applied to the pe_ma20 / dividend_yield
+pattern (high/low price streaks) applied to the pe / dividend_yield
 series.
 
 =======================================================================
@@ -12,7 +12,7 @@ series.
 =======================================================================
 
 For each (metric, period, pct_type) band — 255/500/750/1275 observations
-x pct_type 1/5/10, metric ∈ {pe_ma20, dividend_yield} — each banded
+x pct_type 1/5/10, metric ∈ {pe, dividend_yield} — each banded
 TRADING day is tested with a VALUE-based breakout: a day is
 OUT-OF-BAND when its metric value falls ABOVE the day's own month-band
 ``high_val`` or BELOW ``low_val``. A high streak = the metric is
@@ -29,9 +29,9 @@ frame is filtered to the project CN trading calendar
 CN holidays → Mon-Fri rule) so a streak's span, gap tolerance and
 day_count are all in REAL trading rows.
 
-NULL-metric rows are excluded too (pe_ma20 before the PE source warms
-up / on invalid-PE days; dividend_yield until the first trailing-12m
-dividend window fills) — a streak's span contains only genuine
+NULL-metric rows are excluded too (pe on no-earnings / invalid-PE
+days; dividend_yield until the first trailing-12m dividend window
+fills) — a streak's span contains only genuine
 observations; a NULL stretch is invisible to the construction (neither
 an in-band gap nor a break).
 
@@ -121,7 +121,7 @@ logger = logging.getLogger(__name__)
 # Source columns needed per detail row (the parent's in-memory detail
 # frame carries them; the two metric columns are melted into the long
 # (metric, value) day frame inside the compute).
-_DAY_SRC_COLS = ("sec_type", "code", "date", "pe_ma20", "dividend_yield")
+_DAY_SRC_COLS = ("sec_type", "code", "date", "pe", "dividend_yield")
 
 # Streak rows per CSV COPY chunk (bounds the in-memory chunk sliced off
 # the long frame before rendering — the high_low_pct_streaks.py
@@ -439,7 +439,7 @@ def compute_pct_excursion_streaks(
     for c in ("start_value", "end_value", "max_value", "min_value",
               "std_dev"):
         # NUMERIC(12,6) target — round at the boundary so the CSV render
-        # carries the stored precision (serves both pe_ma20-scale and
+        # carries the stored precision (serves both pe-scale and
         # dividend_yield-scale metrics).
         out[c] = out[c].round(6)
     out["day_count"] = out["day_count"].astype("int64")

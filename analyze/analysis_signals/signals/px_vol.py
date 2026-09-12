@@ -1,4 +1,4 @@
-"""px_vol signals (analysis_signals.signals) — price-speed × 量比
+"""px_vol signals (analysis_signals.signals) — price-speed × amount-level
 state cells.
 
 The state-cell detection of analysis_forecasts.px_vol_state at signal
@@ -23,9 +23,10 @@ Differences from the mov_* engines (by design):
   - signal_threshold = the speed's t-bar (k_sharp for sharp_*,
     k_slow_up for slow_up, k_slow_dn for slow_dn); params JSON carries
     the full adaptive threshold set + the day's recorded t / z.
-  - confidence = the matching forecast bucket's cross-period
-    MAX(reverse_prob) (ConfirmMap keyed (stat_month, px_speed, side) —
-    the gate population groups the speed's vol states).
+  - confidence = the driving-factor composite at the matching forecast
+    bucket's argmax period (ConfirmMap keyed (stat_month, px_speed,
+    side) — the gate population groups the speed's vol states); the
+    factor breakdown rides in params JSON (see _base / gate.py).
 """
 from __future__ import annotations
 
@@ -52,12 +53,12 @@ from analyze.analysis_forecasts.wide import MonthWindow, round6
 from analyze.analysis_signals.config import (
     PX_VOL_SIDE_ACTION,
     SIGNAL_TYPE_PX_VOL,
-    TIER_NAMES,
     sub_type_px_vol,
 )
 from analyze.analysis_signals.signals._base import (
     ConfirmMap,
-    _cal_or_none,
+    confirm_dicts,
+    confirm_row_fields,
     _in_month_rows,
     _ord_to_date,
 )
@@ -79,9 +80,10 @@ def compute_px_vol_signals(
               (wide.build_px_vol_state_matrices) keyed "speed"/"vol"
               (int8 category ordinals, -1 = none) and "t"/"z" (the
               recorded px_t / px_z — NaN where no state).
-        confirm: (stat_month, px_speed, side) → (codes, confidences,
-              tier_pts, baselines, ranks) from gate.fetch_confirm on
-              analysis_forecasts.px_vol_state.
+        confirm: (stat_month, px_speed, side) → the confirmed-code
+              calibration entry (codes, confidences, tier_pts,
+              baselines, ranks, periods, factors) from
+              gate.fetch_confirm on analysis_forecasts.px_vol_state.
     """
     C = len(codes)
     codes_arr = np.asarray(codes)
@@ -106,25 +108,13 @@ def compute_px_vol_signals(
                 continue
             side = PX_VOL_SPEED_SIDE[speed]
             # Adaptive confirmation gate (per code — the matching
-            # px_vol_state bucket's calibrated rp threshold).
+            # px_vol_state bucket's calibrated gate).
             conf = confirm.get((mw.stat_month, speed, side))
             if conf is None or conf[0].size == 0:
                 continue
-            conf_codes, conf_vals, tier_vals, base_vals, rank_vals = conf
-            conf_dict: dict[str, float] = {
-                str(c): float(v) for c, v in zip(conf_codes, conf_vals)
-            }
-            tier_dict: dict[str, int] = {
-                str(c): int(v) for c, v in zip(conf_codes, tier_vals)
-            }
-            base_dict: dict[str, float] = {
-                str(c): float(v) for c, v in zip(conf_codes, base_vals)
-            }
-            rank_dict: dict[str, float] = {
-                str(c): float(v) for c, v in zip(conf_codes, rank_vals)
-            }
+            conf_info = confirm_dicts(conf)
             conf_mask = np.isin(
-                codes_arr, np.asarray(conf_codes, dtype=codes_arr.dtype),
+                codes_arr, np.asarray(conf[0], dtype=codes_arr.dtype),
             )
 
             # Registry-equality speed mask (-1 = no valid state). The
@@ -153,6 +143,8 @@ def compute_px_vol_signals(
                 tv = float(T[t, i])
                 zv = float(Z[t, i])
                 vol_state = PX_VOL_VOL_STATES[int(V[t, i])]
+                info = conf_info.get(row_code)
+                fields = confirm_row_fields(info)
                 rows.append({
                     "code": row_code,
                     "sec_type": sec_type,
@@ -161,16 +153,13 @@ def compute_px_vol_signals(
                     "date": _ord_to_date(int(g[t])),
                     "action": PX_VOL_SIDE_ACTION[side],
                     "signal_threshold": round6(bar),
-                    "confidence": round6(conf_dict.get(row_code, 0.0)),
-                    "tier": TIER_NAMES.get(
-                        tier_dict.get(row_code, 0), "standard"),
-                    "code_baseline": _cal_or_none(
-                        base_dict.get(row_code, np.nan)),
-                    "code_rank": _cal_or_none(
-                        rank_dict.get(row_code, np.nan)),
+                    "confidence": fields["confidence"],
+                    "tier": fields["tier"],
+                    "code_baseline": fields["code_baseline"],
+                    "code_rank": fields["code_rank"],
                     "reason": (
                         f"px_vol {speed}: t={tv:.2f} {op} {bar:g} "
-                        f"(σ-scaled ret_1d), 量比z={zv:.2f} "
+                        f"(σ-scaled ret_1d), AmtLevel z={zv:.2f} "
                         f"[bars z>{PX_VOL_Z_HEAVY:g} heavy / "
                         f"z<{PX_VOL_Z_SHRINK:g} shrink], window "
                         f"ending {end}"
@@ -180,7 +169,7 @@ def compute_px_vol_signals(
                         "vol_state": vol_state,
                         "side": side,
                         "t": round6(tv),
-                        "z_amt_ratio": round6(zv),
+                        "z_amt_level": round6(zv),
                         "sigma_window": PX_VOL_SIGMA_WINDOW,
                         "lb_window": PX_VOL_LB_WINDOW,
                         "k_slow_up": PX_VOL_K_SLOW_UP,
@@ -189,6 +178,10 @@ def compute_px_vol_signals(
                         "z_heavy": PX_VOL_Z_HEAVY,
                         "z_shrink": PX_VOL_Z_SHRINK,
                         "sigma_floor": PX_VOL_SIGMA_FLOOR,
+                        "conf_period":
+                            info["conf_period"] if info else None,
+                        "confidence_factors":
+                            info["conf_factors"] if info else None,
                     }),
                 })
         if rows:

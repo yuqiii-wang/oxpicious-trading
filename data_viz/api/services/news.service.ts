@@ -24,7 +24,14 @@
  */
 import { queryRows } from "../lib/db.js";
 import type { QueryResultRow } from "pg";
-import type { NewsDayCount, NewsItem, SectorNode } from "@shared/types";
+import type {
+  NewsComment,
+  NewsCommentsResponse,
+  NewsDayCount,
+  NewsItem,
+  NewsItemDetail,
+  SectorNode,
+} from "@shared/types";
 import { cachedRows } from "./classification-cache.js";
 
 // ---------------------------------------------------------------------------
@@ -74,6 +81,10 @@ interface NewsFilters {
   sectorId?: string | null;
   industryId?: string | null;
   search?: string | null;
+  /** true = terms are OR-ed ("any token hits") instead of the default AND.
+   *  Used by the question bar's local search, whose terms come from the
+   *  naive tokenizer (taxonomy keywords extracted from the question). */
+  searchAny?: boolean;
   source?: string | null;
   author?: string | null;
 }
@@ -100,12 +111,20 @@ async function buildFilterSql(
     params.push(filters.author);
     clauses.push(`n.author = $${params.length}`);
   }
-  // Keyword search: every whitespace-separated term must hit title OR content.
+  // Keyword search: every term must hit title OR content (AND), or — with
+  // searchAny — a single clause matching ANY term (OR across terms).
   const terms = (filters.search ?? "").trim().split(/\s+/).filter(Boolean);
-  for (const term of terms) {
+  const termClauses = terms.map((term) => {
     params.push(`%${term}%`);
     const p = `$${params.length}`;
-    clauses.push(`(n.title ILIKE ${p} OR n.content ILIKE ${p})`);
+    return `(n.title ILIKE ${p} OR n.content ILIKE ${p})`;
+  });
+  if (termClauses.length > 0) {
+    clauses.push(
+      filters.searchAny && termClauses.length > 1
+        ? `(${termClauses.join(" OR ")})`
+        : termClauses.join(" AND "),
+    );
   }
   // Bare conditions — callers add the WHERE keyword themselves.
   return clauses.join(" AND ");
@@ -152,6 +171,11 @@ async function getNewsCountByIndustry(
  * news counts (scoped to *source* when given). LEFT column (sector →
  * industry) uses industry-primary rows; the RIGHT column (strategy → theme)
  * reuses the SAME builder with industryPrimary=false.
+ *
+ * Every catalog industry of the column stays visible even with zero matching
+ * articles — a source/author filter empties a chip to (0) instead of
+ * hiding it. Items tagged outside the catalog surface in the Unclassified
+ * bucket (industry column only).
  */
 async function buildNewsTree(
   industryPrimary: boolean,
@@ -173,16 +197,10 @@ async function buildNewsTree(
   }>();
   let unclassified = 0;
 
-  for (const [industryId, count] of counts) {
-    if (count <= 0) continue;
-    const cat = catalogByIndustry.get(industryId);
-    if (!cat) {
-      // Tagged with an industry_id outside this column's catalog side (or
-      // outside the catalog entirely) — keep the count visible under an
-      // Unclassified bucket so nothing silently disappears from the nav.
-      unclassified += count;
-      continue;
-    }
+  // All catalog industries of this column, zero-count included — catalog
+  // order is preserved inside each sector (final sort below is count-desc).
+  for (const cat of catalogByIndustry.values()) {
+    const count = counts.get(cat.industry_id) ?? 0;
     if (!sectorMap.has(cat.sector_id)) {
       sectorMap.set(cat.sector_id, {
         sector_label: cat.sector_label,
@@ -190,13 +208,23 @@ async function buildNewsTree(
       });
     }
     const sector = sectorMap.get(cat.sector_id)!;
-    const ind = sector.industries.get(industryId) ?? {
+    const ind = sector.industries.get(cat.industry_id) ?? {
       label: cat.industry_label,
       slug: cat.industry_slug,
       count: 0,
     };
     ind.count += count;
-    sector.industries.set(industryId, ind);
+    sector.industries.set(cat.industry_id, ind);
+  }
+
+  // Articles tagged with an industry_id outside this column's catalog (or
+  // outside the catalog entirely) — keep the count visible under an
+  // Unclassified bucket so nothing silently disappears from the nav.
+  for (const [industryId, count] of counts) {
+    if (count <= 0) continue;
+    if (!catalogByIndustry.has(industryId)) {
+      unclassified += count;
+    }
   }
 
   const sectors: SectorNode[] = Array.from(sectorMap.entries()).map(
@@ -353,13 +381,63 @@ async function finishItems(
   params.push(offset);
   const items = await queryRows<NewsItem & QueryResultRow>(
     `SELECT n.news_id, n.title, n.source, n.date::text AS date, n.url,
-            n.industry_id,
+            n.author, n.industry_id, n.votes,
+            (SELECT COUNT(*)::int FROM text.news_comments c
+              WHERE c.news_id = n.news_id) AS comment_count,
             CASE WHEN n.content IS NULL THEN NULL
                  ELSE LEFT(n.content, 200) END AS snippet
        FROM text.news n ${whereClause}
-      ORDER BY n.date DESC, n.source ASC, n.news_id ASC
+      ORDER BY n.date DESC, n.votes DESC NULLS LAST, n.source ASC, n.news_id ASC
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params,
   );
   return { total: Number(totalRows[0]?.n ?? 0), items };
+}
+
+// ---------------------------------------------------------------------------
+// Item detail (full content) + threaded comments — the social-style feed
+// expands a post on click and lazily fetches these.
+// ---------------------------------------------------------------------------
+
+export async function getNewsItem(newsId: number): Promise<NewsItemDetail | null> {
+  const rows = await queryRows<NewsItemDetail & QueryResultRow>(
+    `SELECT n.news_id, n.title, n.source, n.date::text AS date, n.url,
+            n.author, n.industry_id, n.votes, n.content,
+            (SELECT COUNT(*)::int FROM text.news_comments c
+              WHERE c.news_id = n.news_id) AS comment_count
+       FROM text.news n
+      WHERE n.news_id = $1`,
+    [newsId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function listNewsComments(newsId: number): Promise<NewsCommentsResponse> {
+  const rows = await queryRows<NewsComment & QueryResultRow>(
+    `SELECT c.comment_id, c.parent_comment_id, c.author, c.content,
+            c.date::text AS date, c.votes, c.is_reply
+       FROM text.news_comments c
+      WHERE c.news_id = $1
+      ORDER BY c.date ASC, c.comment_id ASC`,
+    [newsId],
+  );
+  // Rebuild the thread: replies nest under their root (conversation order);
+  // roots surface by votes so the best comments lead.
+  const byId = new Map<number, NewsComment>();
+  const roots: NewsComment[] = [];
+  for (const r of rows) {
+    byId.set(r.comment_id, { ...r, replies: [] });
+  }
+  for (const c of byId.values()) {
+    if (c.parent_comment_id != null) {
+      byId.get(c.parent_comment_id)?.replies.push(c);
+    } else {
+      roots.push(c);
+    }
+  }
+  const byVotes = (a: NewsComment, b: NewsComment) =>
+    (b.votes ?? -1) - (a.votes ?? -1) || a.comment_id - b.comment_id;
+  roots.sort(byVotes);
+  for (const c of byId.values()) c.replies.sort(byVotes);
+  return { total: rows.length, comments: roots };
 }

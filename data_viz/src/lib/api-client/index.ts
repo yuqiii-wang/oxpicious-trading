@@ -32,6 +32,10 @@ export {
   fetchNewsAuthors,
   fetchNewsCalendar,
   fetchNewsItems,
+  fetchNewsItem,
+  fetchNewsComments,
+  runNewsSearch,
+  fetchNewsTokenize,
 } from "./news";
 
 export {
@@ -82,7 +86,7 @@ export {
   fetchMovAveSpreadChart,
 } from "./analysis-ma-spread";
 
-export { fetchAnalysisForecast } from "./analysis-forecasts";
+export { fetchAnalysisForecast, fetchForecastTriggerDates, fetchForecastIdentity } from "./analysis-forecasts";
 
 export { fetchMarketHypes } from "./analysis-market-hypes";
 
@@ -94,13 +98,6 @@ export {
   fetchPeAndDividendStats,
   fetchPeAndDividendStreaks,
 } from "./analysis-pe-and-dividend";
-
-export {
-  fetchRecurringCyclesThemes,
-  fetchRecurringCyclesStrategyThemes,
-  fetchRecurringCyclesChart,
-  fetchRecurringCyclesSpectrum,
-} from "./analysis-recurring-cycles";
 
 export {
   fetchMarginTrendThemes,
@@ -183,11 +180,13 @@ export {
   fetchTradingSignalsRunStatus,
   fetchTradingSignalConfigs,
   fetchTradingSignals,
+  fetchTradingSignalHistory,
   type TradingSignalsRunResponse,
   type TradingSignalConfig,
   type TradingSignalConfigsResponse,
   type TradingSignal,
   type TradingSignalsResponse,
+  type TradingSignalHistoryResponse,
 } from "./trading-signals";
 
 export {

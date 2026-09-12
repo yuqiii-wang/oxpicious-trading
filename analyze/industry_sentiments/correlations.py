@@ -90,7 +90,7 @@ logger = logging.getLogger(__name__)
 
 
 def _cupy_available() -> bool:
-    """Cached CuPy + CUDA device check (same probe as recurring_cycles._fft)."""
+    """Cached CuPy + CUDA device check (same probe as _common.df_utils)."""
     global _CUPY_OK
     if _CUPY_OK is None:
         try:

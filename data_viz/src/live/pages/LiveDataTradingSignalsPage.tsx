@@ -16,6 +16,14 @@
  *     live_signals (newest first).
  *   • Signal menu — the ACTIVE analysis_signals configs (signal_type /
  *     signal_sub_type) for the sec_type, default ALL; filters the list.
+ *   • Row expansion — every row is CLICKABLE: clicking toggles a panel
+ *     below the row with (1) the code's daily price trend (shared
+ *     CodeTrendChart over the sec_type's baseline endpoint) carrying the
+ *     code's FULL signal history as buy (green ▲ below the low) / sell
+ *     (red ▼ above the high) markers, and (2) the code's history-signals
+ *     table (GET /api/live-data/trading-signals/history — every
+ *     live.live_signals row of the code, newest first). One row expanded
+ *     at a time; re-expanding a code reuses the cached history fetch.
  *   • Refresh button — force-triggers `python -m live.live_signals
  *     --sec-type <selection>` (the same run the 13:30 scheduler fires),
  *     then reloads the list. On an OLD date (no intraday bars exist) it
@@ -23,8 +31,9 @@
  *     (`python -m analyze.analysis_signals --live`), which records every
  *     not-yet-recorded signal day as one day-close observation (15:00).
  */
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   Autocomplete,
   Box,
   Button,
@@ -54,14 +63,20 @@ import {
 import {
   fetchTradingSignalConfigs,
   fetchTradingSignals,
+  fetchTradingSignalHistory,
   runTradingSignals,
   runTradingSignalsAnalysis,
   fetchTradingSignalsRunStatus,
   invalidateCacheForPrefix,
+  type TradingSignal,
   type TradingSignalConfig,
   type TradingSignalsResponse,
 } from "@/lib/api-client";
 import RefreshButton from "@/components/RefreshButton";
+import CodeTrendChart, {
+  type CodeTrendSecType,
+} from "@/components/CodeTrendChart";
+import type { OhlcTradeSignal } from "@/components/StockOhlcChart";
 import { DateSelector } from "@/shared/components/date-selector";
 
 type SignalsMode = "analysis" | "strategy";
@@ -468,7 +483,16 @@ export default function LiveDataTradingSignalsPage() {
   );
 }
 
-/** The day's triggered signals, confidence DESC (server-ordered). */
+/** Stable React key + expansion identity for one signal row. */
+function rowKey(s: TradingSignal): string {
+  return `${s.code}-${s.signal_type}-${s.signal_sub_type}-${s.date}-${s.time}`;
+}
+
+/** The day's triggered signals, confidence DESC (server-ordered). Every row
+ *  is CLICKABLE: clicking toggles an expansion below the row with (1) the
+ *  code's daily price trend (shared CodeTrendChart) marked with the code's
+ *  full history of buy/sell signals and (2) the code's history-signals
+ *  table. One row expanded at a time. */
 function SignalTable({
   rows,
   loading,
@@ -481,6 +505,7 @@ function SignalTable({
   total: number;
 }) {
   const theme = useTheme();
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   if (loading && rows.length === 0) {
     return (
       <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
@@ -524,86 +549,281 @@ function SignalTable({
           </TableRow>
         </TableHead>
         <TableBody>
-          {rows.map((s) => (
-            <TableRow key={`${s.code}-${s.signal_type}-${s.signal_sub_type}-${s.time}`}>
-              <TableCell sx={{ whiteSpace: "nowrap" }}>
-                {s.time}
-                {s.is_day_close_trigger && (
-                  <Tooltip
-                    title="Day-close trigger — analysis run (15:00 close)"
-                    arrow
-                  >
+          {rows.map((s) => {
+            const key = rowKey(s);
+            const expanded = expandedKey === key;
+            return (
+              <Fragment key={key}>
+                <TableRow
+                  hover
+                  onClick={() => setExpandedKey(expanded ? null : key)}
+                  sx={{
+                    cursor: "pointer",
+                    ...(expanded && { backgroundColor: "action.hover" }),
+                  }}
+                >
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>
+                    {s.time}
+                    {s.is_day_close_trigger && (
+                      <Tooltip
+                        title="Day-close trigger — analysis run (15:00 close)"
+                        arrow
+                      >
+                        <Chip
+                          size="small"
+                          label="close"
+                          variant="outlined"
+                          sx={{
+                            ml: 0.5,
+                            height: 18,
+                            fontSize: "0.65rem",
+                            verticalAlign: "middle",
+                          }}
+                        />
+                      </Tooltip>
+                    )}
+                  </TableCell>
+                  <TableCell>{s.code}</TableCell>
+                  <TableCell sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
+                    {s.code_name ?? s.code}
+                  </TableCell>
+                  <TableCell>
+                    {s.signal_type} · {s.signal_sub_type}
+                  </TableCell>
+                  <TableCell>
                     <Chip
                       size="small"
-                      label="close"
+                      label={s.action.toUpperCase()}
                       variant="outlined"
-                      sx={{
-                        ml: 0.5,
-                        height: 18,
-                        fontSize: "0.65rem",
-                        verticalAlign: "middle",
-                      }}
+                      sx={actionChipSx(s.action, s.confidence, theme)}
                     />
-                  </Tooltip>
-                )}
-              </TableCell>
-              <TableCell>{s.code}</TableCell>
-              <TableCell sx={{ color: "text.secondary", whiteSpace: "nowrap" }}>
-                {s.code_name ?? s.code}
-              </TableCell>
-              <TableCell>
-                {s.signal_type} · {s.signal_sub_type}
-              </TableCell>
-              <TableCell>
-                <Chip
-                  size="small"
-                  label={s.action.toUpperCase()}
-                  variant="outlined"
-                  sx={actionChipSx(s.action, s.confidence, theme)}
-                />
-              </TableCell>
-              <TableCell align="right">{s.signal.toFixed(4)}</TableCell>
-              <TableCell align="right">
-                {s.signal_threshold.toFixed(4)}
-              </TableCell>
-              <TableCell
-                align="right"
-                sx={{
-                  whiteSpace: "nowrap",
-                  color: s.action === "buy"
-                    ? theme.palette.success.main
-                    : theme.palette.error.main,
-                  fontWeight: 600,
-                }}
-              >
-                {s.signal_excess >= 0 ? "▲ " : "▼ "}
-                {s.signal_excess.toFixed(4)}
-                {s.signal_excess_pct !== null && s.signal_excess_pct !== undefined && (
-                  <Box
-                    component="span"
+                  </TableCell>
+                  <TableCell align="right">{s.signal.toFixed(4)}</TableCell>
+                  <TableCell align="right">
+                    {s.signal_threshold.toFixed(4)}
+                  </TableCell>
+                  <TableCell
+                    align="right"
                     sx={{
-                      color: theme.palette.text.secondary,
-                      fontWeight: 400,
-                      ml: 0.5,
+                      whiteSpace: "nowrap",
+                      color: s.action === "buy"
+                        ? theme.palette.success.main
+                        : theme.palette.error.main,
+                      fontWeight: 600,
                     }}
                   >
-                    ({s.signal_excess_pct >= 0 ? "+" : ""}
-                    {s.signal_excess_pct.toFixed(2)}%)
-                  </Box>
+                    {s.signal_excess >= 0 ? "▲ " : "▼ "}
+                    {s.signal_excess.toFixed(4)}
+                    {s.signal_excess_pct !== null && s.signal_excess_pct !== undefined && (
+                      <Box
+                        component="span"
+                        sx={{
+                          color: theme.palette.text.secondary,
+                          fontWeight: 400,
+                          ml: 0.5,
+                        }}
+                      >
+                        ({s.signal_excess_pct >= 0 ? "+" : ""}
+                        {s.signal_excess_pct.toFixed(2)}%)
+                      </Box>
+                    )}
+                  </TableCell>
+                  <TableCell
+                    align="right"
+                    sx={{
+                      color: theme.palette.text.secondary,
+                    }}
+                  >
+                    {s.confidence}
+                  </TableCell>
+                </TableRow>
+                {expanded && (
+                  <TableRow>
+                    <TableCell
+                      colSpan={9}
+                      sx={{ p: 0, border: "none", bgcolor: "background.default" }}
+                    >
+                      <SignalExpansion signal={s} />
+                    </TableCell>
+                  </TableRow>
                 )}
-              </TableCell>
-              <TableCell
-                align="right"
-                sx={{
-                  color: theme.palette.text.secondary,
-                }}
-              >
-                {s.confidence}
-              </TableCell>
-            </TableRow>
-          ))}
+              </Fragment>
+            );
+          })}
         </TableBody>
       </Table>
     </TableContainer>
+  );
+}
+
+// ---------------------------------------------------------------------------
+//  Row expansion — the code's price trend (shared CodeTrendChart) with the
+//  FULL signal history drawn as buy/sell markers, above the code's
+//  history-signals table (live.live_signals, newest first).
+// ---------------------------------------------------------------------------
+
+/** The sec_types CodeTrendChart knows how to fetch. */
+const TREND_SEC_TYPES: ReadonlySet<string> = new Set(["index", "etf", "stock"]);
+
+function SignalExpansion({ signal }: { signal: TradingSignal }) {
+  const [history, setHistory] = useState<TradingSignal[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // The code's FULL signal history (every date) — drives both the trend
+  // chart's buy/sell markers and the history table. fetchJson's cache makes
+  // re-expansions of the same code instant.
+  useEffect(() => {
+    let cancelled = false;
+    setHistory(null);
+    setError(null);
+    fetchTradingSignalHistory(signal.sec_type, signal.code)
+      .then((resp) => {
+        if (!cancelled) setHistory(resp.signals);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [signal.sec_type, signal.code]);
+
+  // live_signals rows → chart markers (one marker per buy/sell day).
+  const markers: OhlcTradeSignal[] = useMemo(
+    () =>
+      (history ?? []).map((h) => ({
+        date: h.date,
+        action: h.action,
+        signal_type: h.signal_type,
+        signal_sub_type: h.signal_sub_type,
+        confidence: h.confidence,
+      })),
+    [history],
+  );
+
+  if (error) {
+    return (
+      <Alert severity="error" sx={{ m: 1.5 }}>
+        Failed to load {signal.code} history: {error}
+      </Alert>
+    );
+  }
+  if (history === null) {
+    return (
+      <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
+        <CircularProgress size={24} />
+      </Box>
+    );
+  }
+  return (
+    <Stack spacing={2} sx={{ p: 1.5 }}>
+      {TREND_SEC_TYPES.has(signal.sec_type) && (
+        <CodeTrendChart
+          secType={signal.sec_type as CodeTrendSecType}
+          code={signal.code}
+          name={signal.code_name ?? undefined}
+          height={380}
+          chartOptions={{ tradeSignals: markers }}
+        />
+      )}
+      <HistorySignalsTable rows={history} />
+    </Stack>
+  );
+}
+
+/** The code's full live_signals history, newest first (server-ordered). */
+function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
+  const theme = useTheme();
+  return (
+    <Paper variant="outlined" sx={{ p: 1.25 }}>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ display: "block", mb: 0.75, px: 0.5 }}
+      >
+        History signals · {rows.length} record{rows.length === 1 ? "" : "s"}
+      </Typography>
+      {rows.length === 0 ? (
+        <Typography variant="body2" color="text.secondary" sx={{ px: 0.5, pb: 1 }}>
+          No recorded signals for this code.
+        </Typography>
+      ) : (
+        <TableContainer sx={{ maxHeight: 300 }}>
+          <Table size="small" stickyHeader>
+            <TableHead>
+              <TableRow>
+                <TableCell>Date</TableCell>
+                <TableCell>Time</TableCell>
+                <TableCell>Signal</TableCell>
+                <TableCell>Action</TableCell>
+                <TableCell align="right">Signal value</TableCell>
+                <TableCell align="right">Threshold</TableCell>
+                <TableCell align="right">Excess</TableCell>
+                <TableCell align="right">Confidence</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {rows.map((s) => (
+                <TableRow key={rowKey(s)}>
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>
+                    {s.date}
+                    {s.is_day_close_trigger && (
+                      <Tooltip
+                        title="Day-close trigger — analysis run (15:00 close)"
+                        arrow
+                      >
+                        <Chip
+                          size="small"
+                          label="close"
+                          variant="outlined"
+                          sx={{
+                            ml: 0.5,
+                            height: 18,
+                            fontSize: "0.65rem",
+                            verticalAlign: "middle",
+                          }}
+                        />
+                      </Tooltip>
+                    )}
+                  </TableCell>
+                  <TableCell sx={{ whiteSpace: "nowrap" }}>{s.time}</TableCell>
+                  <TableCell>
+                    {s.signal_type} · {s.signal_sub_type}
+                  </TableCell>
+                  <TableCell>
+                    <Chip
+                      size="small"
+                      label={s.action.toUpperCase()}
+                      variant="outlined"
+                      sx={actionChipSx(s.action, s.confidence, theme)}
+                    />
+                  </TableCell>
+                  <TableCell align="right">{s.signal.toFixed(4)}</TableCell>
+                  <TableCell align="right">
+                    {s.signal_threshold.toFixed(4)}
+                  </TableCell>
+                  <TableCell
+                    align="right"
+                    sx={{
+                      whiteSpace: "nowrap",
+                      color: s.action === "buy"
+                        ? theme.palette.success.main
+                        : theme.palette.error.main,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {s.signal_excess >= 0 ? "▲ " : "▼ "}
+                    {s.signal_excess.toFixed(4)}
+                  </TableCell>
+                  <TableCell align="right" sx={{ color: "text.secondary" }}>
+                    {s.confidence}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
+    </Paper>
   );
 }

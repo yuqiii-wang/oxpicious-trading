@@ -4,8 +4,9 @@
  * Returns the RAW daily OHLC of the PREVIOUS trading day (relative to the
  * live date) for:
  *   • the benchmark itself (drives the DEFAULT prev-day bar), and
- *   • EVERY member index of the benchmark's universe (from
- *     live.sec_alloc_live_prev_ref for the date), each carrying
+ *   • EVERY member index of the benchmark's universe (active
+ *     stats.sec_classification indices/ETFs with a non-BROAD industry —
+ *     the same universe the live tick rows are built for), each carrying
  *     its industry_id — the client aggregates per-industry candles as the
  *     MEAN of member %s (equal-weight, same semantics as the page's
  *     industry_price_pct).
@@ -46,11 +47,13 @@ interface DbOhlcRow extends QueryResultRow {
 // ----------------------------------------------------------------------------
 //  SQL: prev-day raw OHLC for the benchmark + all member indices.
 //
-//  Member universe mirrors the tick rows' member base —
-//  live.sec_alloc_live_prev_ref for (benchmark, date) restricted to
-//  tick-eligible sec_types (index/etf; stocks hold share weights in the ref
-//  but carry no tick rows) — so the bar's aggregation base EXACTLY matches
+//  Member universe mirrors the tick rows' member base — active
+//  stats.sec_classification indices/ETFs with a non-BROAD industry
+//  (benchmark excluded) — so the bar's aggregation base EXACTLY matches
 //  the industries/indices the user can click on the middle/bottom plots.
+//  (The former live.sec_alloc_live_prev_ref lookup was consolidated away;
+//  classification is the surviving source of the member roster + industry
+//  tags.)
 //
 //  The prev day is the STRICT previous weekday of the live date (Mon → Fri,
 //  Sun → Fri, otherwise −1 day) — NOT the latest available date. When
@@ -75,11 +78,16 @@ WITH params AS (
                       END AS prev_date
 ),
 members AS (
-    SELECT DISTINCT code, industry_id
-    FROM live.sec_alloc_live_prev_ref
-    WHERE benchmark_code = $1::text
-      AND date = $2::date
-      AND sec_type IN ('index', 'etf')
+    SELECT DISTINCT ON (code)
+        code,
+        industry_id
+    FROM stats.sec_classification
+    WHERE is_active = TRUE
+      AND type IN ('index', 'etf')
+      AND industry_id IS NOT NULL AND industry_id <> ''
+      AND industry_id NOT LIKE 'BROAD_%'
+      AND code <> $1::text
+    ORDER BY code
 ),
 codes AS (
     SELECT code, industry_id FROM members

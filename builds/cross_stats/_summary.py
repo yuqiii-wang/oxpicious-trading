@@ -15,8 +15,14 @@ Refresh policy (see database/sql/stats/15_cross_stats_code_summary.sql):
     map + PK, so no-op runs stay cheap.
   - ``--corr`` never changes code membership or dates → no refresh.
 
-Full DELETE + recompute (not upsert) inside one transaction so removed
-subjects/benchmarks (force-mode recompute, composition edits) never linger.
+Full DELETE + recompute inside one transaction so removed subjects/
+benchmarks (force-mode recompute, composition edits) never linger. The
+re-INSERT is ON CONFLICT DO UPDATE-armored: the aggregate scans the 70M+
+row main table for minutes while the table sits DELETEd-but-uncommitted —
+a concurrent summary writer committing a key in that window would
+otherwise kill the whole run with UniqueViolationError (observed
+2026-09-12); the upsert absorbs it while the DELETE still purges stale
+keys.
 """
 from __future__ import annotations
 
@@ -51,6 +57,11 @@ _REFRESH_SQL = f"""
     FROM {TABLE}
     WHERE sec_type = ANY($1::text[])
     GROUP BY sec_type, code
+    ON CONFLICT (sec_type, code) DO UPDATE SET
+        first_date = EXCLUDED.first_date,
+        last_date  = EXCLUDED.last_date,
+        n_dates    = EXCLUDED.n_dates,
+        benchmarks = EXCLUDED.benchmarks
 """
 
 

@@ -1,7 +1,10 @@
 """builds.stock.tech_stats — Stock technical indicator computation.
 
 Computes MA5/20/60/120/255 + MA5 ratio + EMA6/10/20/60/120/255 from
-stats.stock_basic_stats.close, storing results in stats.stock_tech_stats.
+stats.stock_basic_stats.close, plus trading_amt_per_pct_change
+(trading_amount / (close - open), signed — trading_amount LEFT JOINed
+from stats.stock_liquidity_margin), storing results in
+stats.stock_tech_stats.
 
 OPTIMIZED: Only loads the minimal lookback window from source and
 computes indicators only for NEW dates (date > MAX(date) in the target
@@ -37,7 +40,10 @@ from _common.build_commons import (
 from _common.df_utils._activate import activate
 activate()
 
-from _common.df_utils import compute_moving_averages, compute_emas, epoch_col_to_dt64
+from _common.df_utils import (
+    compute_moving_averages, compute_emas, epoch_col_to_dt64,
+    compute_trading_amt_per_move,
+)
 import pandas as pd
 
 import logging
@@ -62,57 +68,66 @@ async def _load_all_codes(conn) -> list:
     return rec_col(rows, "code")
 
 
+_LOAD_COLS_SQL = (
+    f'SELECT extract(epoch from sbs.date)::float8 AS date, sbs.code AS code, '
+    f'sbs.open::float8 AS open, sbs.close::float8 AS close, '
+    f'slm.trading_amount::float8 AS trading_amount '
+    f'FROM {SOURCE_TABLE} sbs '
+    f'LEFT JOIN stats.stock_liquidity_margin slm '
+    f'    ON slm.code = sbs.code AND slm.date = sbs.date '
+    f'WHERE sbs.code = ANY($1::text[]) '
+    f'  AND sbs.close IS NOT NULL '
+)
+
+
 async def _load_close_window(conn, codes: list, start_date: date,
                              end_date: date | None = None) -> pd.DataFrame:
-    """Load close data for given codes from start_date onward (optionally
-    capped at end_date — used by --date target mode so no rows beyond the
-    newest target are pulled).
+    """Load open/close + liquidity trading_amount for given codes from
+    start_date onward (optionally capped at end_date — used by --date
+    target mode so no rows beyond the newest target are pulled).
 
     Only loads the minimal window needed for indicator computation
     (lookback + new dates), not the full history.
     """
-    query = (
-        f'SELECT extract(epoch from date)::float8 AS date, code, '
-        f'close::float8 AS close FROM {SOURCE_TABLE} '
-        f'WHERE code = ANY($1::text[]) '
-        f'  AND close IS NOT NULL '
-        f'  AND date >= $2 '
-    )
+    query = _LOAD_COLS_SQL + '  AND sbs.date >= $2 '
     if end_date is not None:
-        query += '  AND date <= $3 '
-    query += 'ORDER BY code, date ASC'
+        query += '  AND sbs.date <= $3 '
+    query += 'ORDER BY sbs.code, sbs.date ASC'
     if end_date is not None:
         rows = await conn.fetch(query, sorted(codes), start_date, end_date)
     else:
         rows = await conn.fetch(query, sorted(codes), start_date)
     if not rows:
-        return pd.DataFrame(columns=["date", "code", "close"])
+        return pd.DataFrame(columns=["date", "code", "open", "close",
+                                     "trading_amount"])
     df = pd.DataFrame(rec_cols(rows))
     # Date arrives as float8 epoch (extract(epoch) in SQL) ->
     # datetime64[us] in ONE host pass (epoch_col_to_dt64); converted to
     # python dates only at DB write time (avoids cudf fallback on the
     # .dt.date accessor).
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
-    # DB data is clean — no errors='coerce' needed
-    df["close"] = df["close"].astype(float)
+    # DB data is clean — no errors='coerce' needed (NULL trading_amount
+    # from the LEFT JOIN lands as NaN in the float column)
+    for _c in ("open", "close", "trading_amount"):
+        df[_c] = df[_c].astype(float)
     df = df.dropna(subset=["close"]).sort_values(["code", "date"]).reset_index(drop=True)
     return df
 
 
 async def _load_full_close_history(conn, codes: list) -> pd.DataFrame:
-    """Load ALL close history for given codes (force mode only)."""
+    """Load ALL open/close + liquidity trading_amount history for given
+    codes (force mode only)."""
     rows = await conn.fetch(
-        f'SELECT extract(epoch from date)::float8 AS date, code, '
-        f'close::float8 AS close FROM {SOURCE_TABLE} '
-        f'WHERE code = ANY($1::text[]) AND close IS NOT NULL '
-        f'ORDER BY code, date ASC',
+        _LOAD_COLS_SQL + 'ORDER BY sbs.code, sbs.date ASC',
         sorted(codes),
     )
     if not rows:
-        return pd.DataFrame(columns=["date", "code", "close"])
+        return pd.DataFrame(columns=["date", "code", "open", "close",
+                                     "trading_amount"])
     df = pd.DataFrame(rec_cols(rows))
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
-    df["close"] = df["close"].astype(float)
+    for _c in ("open", "close", "trading_amount"):
+        df[_c] = df[_c].astype(float)
     df = df.dropna(subset=["close"]).sort_values(["code", "date"]).reset_index(drop=True)
     return df
 
@@ -126,6 +141,9 @@ def _compute_tech_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df, group_key="code", value_col="close",
         spans=[6, 10, 20, 60, 120, 255],
     )
+    # trading_amt_per_pct_change = trading_amount / (close - open), signed.
+    # Row-wise — no lookback state, safe on the windowed incremental load.
+    compute_trading_amt_per_move(df)
     return df
 
 
@@ -284,6 +302,7 @@ async def run_tech_stats_chunked(
         _numeric_cols = [
             "ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
             "ema6", "ema10", "ema20", "ema60", "ema120", "ema255",
+            "trading_amt_per_pct_change",
         ]
         _out_cols = ["date", "code"] + _numeric_cols
         # Host transfer at the DB boundary: .dt.date on a cudf-backed

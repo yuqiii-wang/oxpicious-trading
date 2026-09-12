@@ -51,12 +51,12 @@ DECLARED_BLOCKERS: tuple[tuple[str, str], ...] = (
     (
         "pair-grain per-subject loop",
         "compute/_orchestrator._insert_rows iterates subjects; each "
-        "iteration is a small (~4K-row) merge+MA5 chain. Batching into one "
+        "iteration is a small (~4K-row) merge chain. Batching into one "
         "wide op would build the full subjects x benchmarks x dates cross "
         "product (~56M rows) to prune ~8x afterwards — transfer churn "
         "exceeds the loop cost. Small-N per-subject work is the sanctioned "
         "CPU/host route (gpu-df-compute playbook §8.5); the GPU wins live "
-        "in grouped_rolling_agg (MA5) and the corr tensor kernel.",
+        "in the corr tensor kernel.",
     ),
     (
         "fetch_shared_weights O(N^2) zero-fill",

@@ -23,9 +23,10 @@ Differences from the mov_* engines (by design, mirroring px_vol):
     signal_threshold records the crossed |z|-bar per state.
   - No cooldown (state buckets admit every qualifying day, exactly
     like their forecast buckets).
-  - confidence = the matching forecast bucket's cross-period
-    MAX(reverse_prob) (ConfirmMap keyed (stat_month, ratio_state,
-    side) — the gate population groups the states per side).
+  - confidence = the driving-factor composite at the matching forecast
+    bucket's argmax period (ConfirmMap keyed (stat_month, ratio_state,
+    side) — the gate population groups the states per side); the
+    factor breakdown rides in params JSON (see _base / gate.py).
 """
 from __future__ import annotations
 
@@ -49,12 +50,12 @@ from analyze.analysis_signals.config import (
     MARGIN_RATIO_SIDE_ACTION,
     MARGIN_RATIO_SIGNAL_STATES,
     SIGNAL_TYPE_MARGIN_RATIO,
-    TIER_NAMES,
     sub_type_margin_ratio,
 )
 from analyze.analysis_signals.signals._base import (
     ConfirmMap,
-    _cal_or_none,
+    confirm_dicts,
+    confirm_row_fields,
     _in_month_rows,
     _ord_to_date,
 )
@@ -94,8 +95,9 @@ def compute_margin_ratio_signals(
     Args:
         mats: wide state matrix keyed "z" (the day's margin-ratio
               z-score; NaN where undefined — those days never signal).
-        confirm: (stat_month, ratio_state, side) → (codes,
-              confidences, tier_pts, baselines, ranks) from
+        confirm: (stat_month, ratio_state, side) → the confirmed-code
+              calibration entry (codes, confidences, tier_pts,
+              baselines, ranks, periods, factors) from
               gate.fetch_confirm on
               analysis_forecasts.margin_ratio_state.
     """
@@ -117,25 +119,13 @@ def compute_margin_ratio_signals(
             side = MARGIN_RATIO_STATE_SIDE[state]
             mask_fn, bar, op = _STATE_MASKS[state]
             # Adaptive confirmation gate (per code — the matching
-            # margin_ratio_state bucket's calibrated rp threshold).
+            # margin_ratio_state bucket's calibrated gate).
             conf = confirm.get((mw.stat_month, state, side))
             if conf is None or conf[0].size == 0:
                 continue
-            conf_codes, conf_vals, tier_vals, base_vals, rank_vals = conf
-            conf_dict: dict[str, float] = {
-                str(c): float(v) for c, v in zip(conf_codes, conf_vals)
-            }
-            tier_dict: dict[str, int] = {
-                str(c): int(v) for c, v in zip(conf_codes, tier_vals)
-            }
-            base_dict: dict[str, float] = {
-                str(c): float(v) for c, v in zip(conf_codes, base_vals)
-            }
-            rank_dict: dict[str, float] = {
-                str(c): float(v) for c, v in zip(conf_codes, rank_vals)
-            }
+            conf_info = confirm_dicts(conf)
             conf_mask = np.isin(
-                codes_arr, np.asarray(conf_codes, dtype=codes_arr.dtype),
+                codes_arr, np.asarray(conf[0], dtype=codes_arr.dtype),
             )
 
             with np.errstate(invalid="ignore"):
@@ -152,6 +142,8 @@ def compute_margin_ratio_signals(
             for t, i in zip(ts.tolist(), cs.tolist()):
                 row_code = codes[i]
                 zv = float(Z[t, i])
+                info = conf_info.get(row_code)
+                fields = confirm_row_fields(info)
                 rows.append({
                     "code": row_code,
                     "sec_type": sec_type,
@@ -160,13 +152,10 @@ def compute_margin_ratio_signals(
                     "date": _ord_to_date(int(g[t])),
                     "action": MARGIN_RATIO_SIDE_ACTION[side],
                     "signal_threshold": round6(bar),
-                    "confidence": round6(conf_dict.get(row_code, 0.0)),
-                    "tier": TIER_NAMES.get(
-                        tier_dict.get(row_code, 0), "standard"),
-                    "code_baseline": _cal_or_none(
-                        base_dict.get(row_code, np.nan)),
-                    "code_rank": _cal_or_none(
-                        rank_dict.get(row_code, np.nan)),
+                    "confidence": fields["confidence"],
+                    "tier": fields["tier"],
+                    "code_baseline": fields["code_baseline"],
+                    "code_rank": fields["code_rank"],
                     "reason": (
                         f"margin_ratio {state}: 融资买入额/成交额 z="
                         f"{zv:.2f} {op} {bar:g} (code's own rolling "
@@ -183,6 +172,10 @@ def compute_margin_ratio_signals(
                         "low_bar": MARGIN_RATIO_LOW_BAR,
                         "high_bar": MARGIN_RATIO_HIGH_BAR,
                         "vhigh_bar": MARGIN_RATIO_VHIGH_BAR,
+                        "conf_period":
+                            info["conf_period"] if info else None,
+                        "confidence_factors":
+                            info["conf_factors"] if info else None,
                     }),
                 })
         if rows:

@@ -122,7 +122,8 @@ def _prepopulate_finished_codes(
         logger.warning("Failed to pre-populate finished_codes from %s: %s", table, e)
 
 
-def is_intraday_complete(conn, asset: AssetStream, trade_date, threshold: float = 0.95) -> bool:
+def is_intraday_complete(conn, asset: AssetStream, trade_date, threshold: float = 0.95,
+                         last_window: Optional[time] = None) -> bool:
     """Check if the intraday table already has sufficient bars up to CLOSE_TIME
     for the given trade_date. Returns True if the ratio of distinct codes
     with a CLOSE_TIME bar to total identity codes >= threshold.
@@ -130,6 +131,13 @@ def is_intraday_complete(conn, asset: AssetStream, trade_date, threshold: float 
     This catches edge cases where only a few codes have 15:00 bars while
     hundreds of others are missing (suspended stocks, partial DB failures).
     A 95% threshold handles suspended stocks gracefully.
+
+    ``last_window``: the CSV's own last 5-min window. On days the source
+    stopped before CLOSE_TIME (early halt) the date can never reach
+    CLOSE_TIME; once the DB's latest bar reaches ``last_window`` the day
+    is complete and the 95% ratio check is skipped — it is meaningless for
+    short days, and unattainable in general for indices (identity rows
+    cover far more codes than the stream tracks).
     """
     try:
         # Count identity rows for this date
@@ -163,8 +171,12 @@ def is_intraday_complete(conn, asset: AssetStream, trade_date, threshold: float 
                 (trade_date,),
             )
             max_time = cur.fetchone()[0]
-        if max_time is None or max_time < CLOSE_TIME:
+        if max_time is None:
             return False
+        if max_time < CLOSE_TIME:
+            # Short day (source ended before 15:00): complete once the DB
+            # has caught up with the CSV's own last window.
+            return last_window is not None and max_time >= last_window
 
         ratio = n_done / n_total if n_total > 0 else 0.0
         return ratio >= threshold

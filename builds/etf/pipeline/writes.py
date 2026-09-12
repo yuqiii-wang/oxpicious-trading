@@ -121,7 +121,8 @@ async def write_split_tables(conn, merged_missing: pd.DataFrame, force: bool) ->
         + ["pe", "eps", "is_close_estimated"])
 
     tech_cols = ["ma5", "ma5_ratio", "ma20", "ma60", "ma120", "ma255",
-                 "ema6", "ema10", "ema20", "ema60", "ema120", "ema255"]
+                 "ema6", "ema10", "ema20", "ema60", "ema120", "ema255",
+                 "trading_amt_per_pct_change"]
     tech_rows = _emit_rows(
         ["date", "code"] + [c for c in tech_cols if c in cols])
 

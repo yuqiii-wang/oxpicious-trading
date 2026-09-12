@@ -8,7 +8,7 @@
  * so the pages cannot drift. Consumers:
  *   - MaSpread (price + amt-envelope charts) — value = adjusted close,
  *     bands of daily high/low prices (analysis.mov_ave_high_low_pct).
- *   - PE & Dividend (valuation streak chart) — value = pe_ma20 /
+ *   - PE & Dividend (valuation streak chart) — value = pe /
  *     dividend_yield, both band legs folded onto the same series.
  *
  * Two layers, both price-bounded horizontal bands over date ranges:
@@ -157,14 +157,14 @@ export function computeBreakStreaks(
  *  high_val). */
 export const STREAK_HIGH_WIN_COLOR = "rgba(171, 71, 188, 0.12)";
 /** Darker purple for the long high-side break-streak band. */
-export const STREAK_HIGH_SHADE_COLOR = "rgba(142, 36, 170, 0.32)";
+export const STREAK_HIGH_SHADE_COLOR = "rgba(123, 26, 150, 0.38)";
 /** Deep purple for the High Streak legend marker + button accents. */
 export const STREAK_HIGH_ACCENT_COLOR = "#AB47BC";
 /** Light yellow window zone (bottom pct% of the anchor window, below
  *  low_val). */
 export const STREAK_LOW_WIN_COLOR = "rgba(255, 241, 118, 0.20)";
 /** Darker amber for the long low-side break-streak band. */
-export const STREAK_LOW_SHADE_COLOR = "rgba(251, 192, 45, 0.42)";
+export const STREAK_LOW_SHADE_COLOR = "rgba(240, 167, 35, 0.48)";
 /** Deep yellow for the Low Streak legend marker + button accents. */
 export const STREAK_LOW_ACCENT_COLOR = "#F9A825";
 

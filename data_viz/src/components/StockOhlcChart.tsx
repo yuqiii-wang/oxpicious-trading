@@ -24,7 +24,7 @@
  * gold diamond markPoints on the ex-dividend date. The dividend amount is
  * shown in the axis tooltip when the user hovers the event day.
  */
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef, memo } from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
@@ -44,6 +44,10 @@ import {
   MUTED_PALETTE,
   PE_COLOR,
   DIVIDEND_COLOR,
+  TRIGGER_DATE_COLOR,
+  TRIGGER_DATE_FILL,
+  TRIGGER_STREAK_FILL,
+  TRIGGER_STREAK_COLOR,
   UP_COLOR,
   DOWN_COLOR,
   axisColors,
@@ -60,7 +64,50 @@ import {
   HYPE_ACCENT_COLOR,
   hypeEpisodesToMarkArea,
 } from "@/shared/charts/hypeBands";
-import type { EChartsOption } from "echarts";
+import type { ECharts, EChartsOption } from "echarts";
+
+/** One historical trade signal to mark on the chart (from
+ *  live.live_signals). Buys draw a green up-triangle below the day's low,
+ *  sells a red down-triangle above the day's high; several signals of the
+ *  same action on one day share a single marker (the axis tooltip lists
+ *  every signal of the day). */
+export interface OhlcTradeSignal {
+  date: string;
+  /** "buy" | "sell" (anything else draws nothing). */
+  action: string;
+  signal_type: string;
+  signal_sub_type: string;
+  confidence: number;
+}
+
+/** Stable id of the forecast trigger-day overlay series — the base
+ * option always carries an empty placeholder under this id, and the
+ * overlay effect merge-updates its data / markArea in place. */
+const TRIGGER_SERIES_ID = "trigger-days";
+
+/** Fixed y position of the signal-day rail circles on the hidden [0, 1]
+ * trigger axis (0.93 ≈ near the chart top). */
+const TRIGGER_RAIL_Y = 0.93;
+
+/** One forecast signal streak period (Recent Movements row-click):
+ *  the [start, end] qualifying run behind a merged signal's mid day,
+ *  plus its trading-day count (forecast_results streak_days — null for
+ *  state-family / pre-migration rows). */
+interface HighlightSpan {
+  start: string;
+  end: string;
+  days?: number | null;
+}
+
+/** Stable EMPTY prop defaults. Default-parameter `[]` literals create a
+ * NEW array identity on every render, which dirties the option memo
+ * (tradeSignals is a dep) on EVERY parent re-render — forcing a full
+ * ~1 s notMerge rebuild of the 1700-candle chart per state change
+ * (spinner flips, chip mounts, row selection; measured 2026-09). */
+const NO_DIVIDENDS: StockDividend[] = [];
+const NO_TRADE_SIGNALS: OhlcTradeSignal[] = [];
+const NO_HIGHLIGHT_DATES: string[] = [];
+const NO_HIGHLIGHT_SPANS: HighlightSpan[] = [];
 
 interface Props {
   /** Daily OHLC + PE rows for one stock (already windowed by the caller). */
@@ -90,9 +137,41 @@ interface Props {
    *  mergeHypeEpisodesAllWindows (shared hypeBands helper) so overlapping
    *  windows' shades don't stack. Empty/omitted = no shading. */
   hypeEpisodes?: MovAveSpreadHypeEpisode[];
+  /** Historical trade signals to mark: green up-triangle (buy) below the
+   *  low / red down-triangle (sell) above the high, and a per-day signal
+   *  block in the axis tooltip. Same (date, action) pairs share a marker. */
+  tradeSignals?: OhlcTradeSignal[];
+  /** Forecast trigger DAYS to mark — small purple circles above each
+   *  date's high (fallback close): the analysis_forecasts.forecast_results.
+   *  trigger_dates of a clicked forecast row — under the 2026-09
+   *  streak-merge, the merged signals' MID days. Dates outside the
+   *  visible rows are skipped. Default [] (no markers). */
+  highlightDates?: string[];
+  /** Forecast signal STREAK periods to shade (relatively dark purple
+   *  full-height bands): the [start, end] qualifying-run spans behind
+   *  the highlighted mid dates (forecast_results streak_starts /
+   *  streak_ends). Overlapping spans are union-merged; dates outside
+   *  the visible rows are clipped. Hovering a shaded day reports the
+   *  run in the axis tooltip — its trading-day count (`days`,
+   *  forecast_results streak_days) and the span. Default [] (no
+   *  shading). */
+  highlightSpans?: HighlightSpan[];
+  /** Forward forecast window (trading rows) shaded from each highlighted
+   *  SIGNAL day — the period the clicked row's forward change was
+   *  measured over (+1/+5/+20/+60; the clicked horizon). Each day
+   *  shades [day, day + n]; overlapping windows are union-merged so the
+   *  light purple shade stays uniform (dense buckets would otherwise
+   *  stack the translucent fill darker). Default 1. */
+  highlightHorizonDays?: number;
+  /** Fired after the trigger overlay's setOption has been applied (or
+   *  determined to be a no-op) — the "rendering done" gate the Recent
+   *  Movements page uses to unfreeze the forecast table after a row
+   *  click. Stable identity (useCallback) keeps the overlay effect from
+   *  re-running. */
+  onHighlightSettled?: () => void;
 }
 
-export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = [], dataZoomStart, dataZoomEnd, onDateClick, hypeEpisodes }: Props) {
+function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, hypeEpisodes, tradeSignals = NO_TRADE_SIGNALS, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, onHighlightSettled }: Props) {
   const themeMode = useStore((s) => s.themeMode);
 
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
@@ -102,6 +181,17 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
     () => breakArraysAtGaps(rows.map((r) => r.date), [rows.map(() => null)]).dates,
     [rows],
   );
+
+  // Anchor stash for the trigger overlay effect (declared before the
+  // option build that assigns it) — the chart dates (with gap-break
+  // inserts), refreshed on every base rebuild.
+  const triggerAnchorRef = useRef<{ dates: string[] } | null>(null);
+
+  // Date → streak context of the trigger overlay's DARK spans, read by
+  // the axis tooltip formatter at hover time (declared here so the
+  // option closure can reference it; the overlay memo below refreshes
+  // it on every highlight change — no option rebuild on a row click).
+  const streakInfoByDateRef = useRef<Map<string, { days: number | null; start: string; end: string }>>(new Map());
 
   const option = useMemo<EChartsOption>(() => {
     const c = axisColors(themeMode);
@@ -152,7 +242,13 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
       rebased.open, rebased.high, rebased.low, rebased.close,
       rebased.ma5, rebased.ma20, rebased.ma60, rebased.ma120,
       pe, isPeEstimatedNum,
+      // Raw trading amount rides along so the Amount bars stay aligned
+      // with the gap-inserted category axis — built from the raw rows it
+      // would drift one slot left per long-holiday break and run out of
+      // bars at the right edge (the last k slots empty, k = break count).
+      tradingAmount,
     ]);
+    const BROKEN_AMT_IDX = 10;
 
     // Data order: [open, close, low, high] (low before high — matches the
     // shared ohlcRenderItem destructuring `const [o, cl, l, h] = value`).
@@ -200,12 +296,15 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
     // --- Trading-turnover bars (亿元) -----------------------------------
     // trading_amount is stored in yuan — convert to 亿元 (/1e8) for display.
     // Bar color: green when close >= open (price-up), red otherwise.
-    const amtData = tradingAmount.map((v, i) => {
-      const o = open[i];
-      const cl = close[i];
-      const up = o != null && cl != null && cl >= o;
+    // Values come from the BROKEN amount array (NaN at gap markers) so the
+    // bars line up 1:1 with broken.dates; the up/down color reads the
+    // broken open/close on the same slot.
+    const amtData = broken.arrays[BROKEN_AMT_IDX].map((v, i) => {
+      const o = broken.arrays[0][i];
+      const cl = broken.arrays[3][i];
+      const up = o != null && Number.isFinite(o) && cl != null && Number.isFinite(cl) && cl >= o;
       return {
-        value: v / 1e8,
+        value: v != null && Number.isFinite(v) ? v / 1e8 : null,
         itemStyle: { color: up ? UP_COLOR : DOWN_COLOR, opacity: 0.4 },
       };
     });
@@ -217,12 +316,14 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
     // ex_dividend_date falls inside the visible window are drawn.
     const dateToCloseIdx = new Map<string, number>();
     broken.dates.forEach((d, i) => dateToCloseIdx.set(d, i));
-    const dividendMarkPointData: Array<{
+    const markPointData: Array<{
       name: string;
       coord: [string, number];
       itemStyle: { color: string };
       symbol: string;
-      symbolSize: number;
+      symbolRotate?: number;
+      symbolSize: number | [number, number];
+      symbolOffset?: [number, number];
     }> = [];
     const dividendByDate = new Map<string, StockDividend>();
     for (const d of dividends) {
@@ -230,7 +331,7 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
       if (idx === undefined) continue; // ex-div date not in visible window
       const y = broken.arrays[3][idx]; // rebased close (arrays[3] = close)
       if (y == null || !Number.isFinite(y)) continue;
-      dividendMarkPointData.push({
+      markPointData.push({
         name: "Dividend",
         coord: [d.ex_dividend_date, y],
         itemStyle: { color: DIVIDEND_COLOR },
@@ -239,8 +340,46 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
       });
       dividendByDate.set(d.ex_dividend_date, d);
     }
-    const dividendMarkPoint = dividendMarkPointData.length
-      ? { data: dividendMarkPointData, label: { show: false } }
+
+    // --- Trade-signal markers (buy below the low, sell above the high) ---
+    // Same markPoint host as the dividends. Anchors use the rebased low /
+    // high so the markers hug the bar in both OHLC modes, falling back to
+    // the close when the row has no low/high. Same-(date, action) signals
+    // share ONE marker — the axis tooltip lists each day's signals.
+    const signalsByDate = new Map<string, OhlcTradeSignal[]>();
+    if (tradeSignals.length > 0) {
+      const byDateAction = new Map<string, OhlcTradeSignal>();
+      for (const s of tradeSignals) {
+        const buy = s.action === "buy";
+        const sell = s.action === "sell";
+        if (!buy && !sell) continue;
+        const idx = dateToCloseIdx.get(s.date);
+        if (idx === undefined) continue; // signal day not in visible window
+        const anchor = (buy ? broken.arrays[2][idx] : broken.arrays[1][idx])
+          ?? broken.arrays[3][idx]; // arrays[2]=low, [1]=high, [3]=close
+        if (anchor == null || !Number.isFinite(anchor)) continue;
+        const key = `${s.date}|${s.action}`;
+        if (!byDateAction.has(key)) {
+          byDateAction.set(key, s);
+          markPointData.push({
+            name: buy ? "Buy" : "Sell",
+            coord: [s.date, anchor],
+            itemStyle: { color: buy ? UP_COLOR : DOWN_COLOR },
+            // Up-triangle below the bar for buys, down-triangle above for
+            // sells (symbolOffset px: +y down, -y up).
+            symbol: "triangle",
+            symbolRotate: buy ? 0 : 180,
+            symbolSize: [11, 10],
+            symbolOffset: buy ? [0, 12] : [0, -12],
+          });
+        }
+        const list = signalsByDate.get(s.date) ?? [];
+        list.push(s);
+        signalsByDate.set(s.date, list);
+      }
+    }
+    const markPoint = markPointData.length
+      ? { data: markPointData, label: { show: false } }
       : undefined;
 
     // --- Y axes ----------------------------------------------------------
@@ -309,6 +448,20 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
         offset: 40,
       });
     }
+    // Trigger-overlay rail axis (hidden, FIXED [0, 1] extent) — the
+    // signal-day circles ride this rail so overlay data changes can
+    // NEVER dirty the price axis extent and re-render the 1700-candle
+    // custom series (measured ~850 ms per update when they shared
+    // yAxisIndex 0). Fixed min/max = the axis is extent-stable by
+    // construction.
+    const triggerAxisIdx = (yAxis as Array<unknown>).length;
+    (yAxis as Array<unknown>).push({
+      type: "value",
+      min: 0,
+      max: 1,
+      show: false,
+      splitLine: { show: false },
+    });
 
     const series: EChartsOption["series"] = [
       ...(hasOhlc
@@ -333,9 +486,10 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
         lineStyle: { color: MA5_COLOR, width: 0.8 },
         z: 4,
       },
-      // MA20 carries the dividend markPoint — the custom OHLC series cannot
-      // host markPoint, so a standard line series must carry it. MA20 is a
-      // good visual anchor (always present, sits near the price).
+      // MA20 carries the dividend + trade-signal markPoints — the custom
+      // OHLC series cannot host markPoint, so a standard line series must
+      // carry it. MA20 is a good visual anchor (always present, sits near
+      // the price).
       {
         type: "line",
         name: "MA20",
@@ -345,7 +499,7 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
         symbol: "none",
         lineStyle: { color: MA20_COLOR, width: 0.9 },
         z: 4,
-        markPoint: dividendMarkPoint,
+        markPoint,
       },
       {
         type: "line",
@@ -424,6 +578,36 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
         z: 0,
       });
     }
+
+    // --- Forecast trigger-day overlay host (clicked forecast row) --------
+    // Placeholder ONLY — the actual signal-day rail points and the
+    // forward-window markArea are applied imperatively by the
+    // triggerOverlay effect below (merge setOption on this placeholder)
+    // so a row click NEVER rebuilds the heavy base chart (1700+ custom
+    // OHLC candles through a notMerge setOption cost ~850 ms per click
+    // — measured 2026-09). The host rides the FIXED [0,1] trigger rail
+    // axis, so overlay updates cannot dirty the price axis and re-render
+    // the candles either. The always-present host keeps the series list
+    // stable: the incremental merge is a cheap data swap on ONE series.
+    series.push({
+      type: "scatter",
+      id: TRIGGER_SERIES_ID,
+      name: "Trigger days",
+      yAxisIndex: triggerAxisIdx,
+      data: [],
+      symbol: "circle",
+      symbolSize: 5.5,
+      itemStyle: { color: TRIGGER_DATE_COLOR },
+      silent: true,
+      z: 8,
+    });
+    // Date → chart-row lookup for the overlay effect (chart dates with
+    // gap-break inserts). Assigning a ref inside the memo is an
+    // idempotent side effect — the overlay memo below re-reads it
+    // (keyed on this memo's output) so the two never diverge.
+    triggerAnchorRef.current = {
+      dates: broken.dates,
+    };
 
     if (hasPe && peAxisIdx >= 0) {
       // Separate PE into actual (solid) and estimated (faint) series. Null or
@@ -509,6 +693,45 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
             ], { marginBottom: 4 }));
           }
 
+          // Trade-signal rows — one per live_signals record of the day.
+          const daySignals = signalsByDate.get(dateStr) ?? [];
+          for (const s of daySignals) {
+            const buy = s.action === "buy";
+            const color = buy ? UP_COLOR : DOWN_COLOR;
+            children.push(makeRow([
+              React.createElement("span", { style: { color } }, buy ? "▲" : "▼"),
+              " ",
+              React.createElement(
+                tooltipComponents.Bold,
+                { style: { color } },
+                buy ? "BUY" : "SELL",
+              ),
+              ` · ${s.signal_type} · ${s.signal_sub_type}`,
+              ` (conf ${s.confidence})`,
+            ]));
+          }
+
+          // Forecast streak row — when the hovered day sits inside one of
+          // the trigger overlay's dark-purple streak spans (the qualifying
+          // run behind a merged signal), report the run: its trading-day
+          // count (forecast_results streak_days) and the span. The map is
+          // refreshed by the trigger overlay memo — reading the ref here
+          // keeps the option build independent of the highlight state.
+          const streak = streakInfoByDateRef.current.get(dateStr);
+          if (streak) {
+            const daysStr = streak.days != null ? ` · ${streak.days}d` : "";
+            children.push(makeRow([
+              React.createElement("span", { style: { color: TRIGGER_STREAK_COLOR } }, "▬"),
+              " ",
+              React.createElement(
+                tooltipComponents.Bold,
+                { style: { color: TRIGGER_STREAK_COLOR } },
+                "Streak",
+              ),
+              ` · ${streak.start} → ${streak.end}${daysStr}`,
+            ]));
+          }
+
           const isPriceSeries = (name: string) =>
             name === "OHLC" || name === "Close" || name.startsWith("MA");
           for (const p of arr) {
@@ -572,12 +795,155 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
       yAxis,
       series,
     };
-  }, [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd, hypeEpisodes]);
+  }, [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd, hypeEpisodes, tradeSignals]);
+
+  // ---- Forecast trigger-day overlay (imperative incremental update) -----
+  // The overlay payload for the placeholder series above: pinpoint
+  // circles on the fixed signal rail (TRIGGER_RAIL_Y of the [0, 1]
+  // trigger axis — near the chart top) at each merged signal's MID day,
+  // the UNION-MERGED light signal+forward-window markArea spans
+  // (highlightHorizonDays = the +1/+5/+20/+60 period the clicked row's
+  // forward change was measured over; overlapping windows merge so the
+  // light purple shade stays uniform no matter how dense the bucket),
+  // and the UNION-MERGED RELATIVELY DARK streak-period spans
+  // (highlightSpans — each signal's qualifying run [start, end] behind
+  // the mid). Built LIGHT (no chart rebuild) from the date anchor
+  // stashed by the base option build; keyed on `option` so it re-reads
+  // a refreshed anchor after every base rebuild.
+  const triggerOverlay = useMemo(() => {
+    const anchor = triggerAnchorRef.current;
+    const empty = { points: [] as Array<[string, number]>, markArea: undefined };
+    if (!anchor || (highlightDates.length === 0 && highlightSpans.length === 0)) {
+      streakInfoByDateRef.current = new Map();
+      return empty;
+    }
+    const rowIdx = new Map(anchor.dates.map((d, i) => [d, i]));
+    const lastRow = anchor.dates.length - 1;
+    // Per-date streak context for the axis tooltip: every date inside a
+    // qualifying-run span maps to that run's day count + full [start,
+    // end] (the span dates, not the clipped ones). Runs of one bucket
+    // are disjoint, so first span wins on the (impossible) overlap.
+    const streakInfo = new Map<string, { days: number | null; start: string; end: string }>();
+    for (const s of highlightSpans) {
+      let a = rowIdx.get(s.start);
+      const b = rowIdx.get(s.end);
+      if (b === undefined) continue;
+      if (a === undefined) {
+        // start predates the chart — clip to the first visible row
+        a = 0;
+      }
+      for (let i = a; i <= b; i++) {
+        const d = anchor.dates[i];
+        if (d != null && !streakInfo.has(d)) {
+          streakInfo.set(d, { days: s.days ?? null, start: s.start, end: s.end });
+        }
+      }
+    }
+    streakInfoByDateRef.current = streakInfo;
+    const points: Array<[string, number]> = [];
+    // Light spans: mid day through its forward forecast window.
+    const fwd: Array<[number, number]> = [];
+    for (const d of new Set(highlightDates)) {
+      const i = rowIdx.get(d);
+      if (i === undefined) continue; // signal day not on the chart
+      points.push([d, TRIGGER_RAIL_Y]);
+      const H = Math.max(1, highlightHorizonDays);
+      fwd.push([i, Math.min(i + H, lastRow)]);
+    }
+    // Dark spans: each signal's qualifying streak period, clipped to
+    // the visible rows (the run may extend beyond the chart window).
+    const dark: Array<[number, number]> = [];
+    for (const s of highlightSpans) {
+      let a = rowIdx.get(s.start);
+      const b = rowIdx.get(s.end);
+      if (b === undefined) continue;
+      if (a === undefined) {
+        // start predates the chart — clip to the first visible row
+        a = 0;
+      }
+      dark.push([a, b]);
+    }
+    const merge = (spans: Array<[number, number]>): Array<[number, number]> => {
+      const sorted = [...spans].sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+      const merged: Array<[number, number]> = [];
+      for (const s of sorted) {
+        const last = merged[merged.length - 1];
+        if (last && s[0] <= last[1] + 1) {
+          if (s[1] > last[1]) last[1] = s[1];
+        } else {
+          merged.push([s[0], s[1]]);
+        }
+      }
+      return merged;
+    };
+    const mergedFwd = merge(fwd);
+    const mergedDark = merge(dark);
+    if (mergedFwd.length === 0 && mergedDark.length === 0) return empty;
+    const markArea = {
+      silent: true,
+      data: [
+        ...mergedFwd.map(
+          ([a, b]) =>
+            [
+              { xAxis: anchor.dates[a], itemStyle: { color: TRIGGER_DATE_FILL } },
+              { xAxis: anchor.dates[b] },
+            ] as [{ xAxis: string; itemStyle: object }, { xAxis: string }],
+        ),
+        ...mergedDark.map(
+          ([a, b]) =>
+            [
+              { xAxis: anchor.dates[a], itemStyle: { color: TRIGGER_STREAK_FILL } },
+              { xAxis: anchor.dates[b] },
+            ] as [{ xAxis: string; itemStyle: object }, { xAxis: string }],
+        ),
+      ],
+    };
+    return { points, markArea };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightDates, highlightSpans, highlightHorizonDays, option]);
+
+  // Apply the overlay with a MERGE setOption on the placeholder series
+  // only — a row click costs a data swap on one scatter series instead
+  // of a full notMerge rebuild of every candle. `option` in the deps
+  // re-applies the overlay after a base rebuild (notMerge wiped it).
+  // An empty→empty transition skips the setOption entirely (the no-op
+  // merge still costs ~80 ms on a 1700-category chart); either way the
+  // caller is told the overlay has settled so it can unfreeze the UI.
+  const chartRef = useRef<ECharts | null>(null);
+  const overlayEmptyRef = useRef(true);
+  useEffect(() => {
+    const chart = chartRef.current;
+    const empty = triggerOverlay.points.length === 0 && !triggerOverlay.markArea;
+    try {
+      if (chart && !(empty && overlayEmptyRef.current)) {
+        chart.setOption(
+          {
+            series: [
+              {
+                id: TRIGGER_SERIES_ID,
+                data: triggerOverlay.points,
+                markArea: triggerOverlay.markArea ?? { silent: true, data: [] },
+              },
+            ],
+          } as unknown as EChartsOption,
+          { notMerge: false },
+        );
+      }
+    } finally {
+      // Always settle — the caller's freeze must never stick, even if
+      // the chart threw (disposed mid-update, HMR, ...).
+      overlayEmptyRef.current = empty;
+      onHighlightSettled?.();
+    }
+  }, [triggerOverlay, onHighlightSettled]);
 
   return (
     <EChart
       option={option}
       height={height}
+      onReady={(c) => {
+        chartRef.current = c;
+      }}
       onCanvasClick={onDateClick ? (idx) => {
         const date = chartDates[idx];
         if (date) onDateClick(date);
@@ -585,3 +951,8 @@ export default function StockOhlcChart({ rows, ohlcMode, height = 250, dividends
     />
   );
 }
+
+// Identity-stable props (stable empty defaults upstream + memoized
+// chartOptions in callers) let unrelated parent re-renders — chip
+// mounts, spinner flips, row selection — skip this subtree entirely.
+export default memo(StockOhlcChart);

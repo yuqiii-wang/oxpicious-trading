@@ -229,11 +229,13 @@ export interface EtfOhlcvResponse {
   code: string;
   rows: Array<{
     date: string;
-    open: number;
-    high: number;
-    low: number;
-    close: number;
-    volume: number;
+    // null on non-trading dates (CN holidays for A-share indices) — the
+    // chart renders them as gaps, never as zero-price candles
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number | null;
+    volume: number | null;
   }>;
 }
 
@@ -1295,7 +1297,7 @@ export interface MovAveSpreadChartResponse {
 // ----------------------------------------------------------------------------
 
 /** Which bucket family the forecast table shows. */
-export type ForecastKind = "mov_rsi" | "mov_std" | "mov_gap" | "px_vol" | "margin_ratio";
+export type ForecastKind = "mov_rsi" | "mov_std" | "mov_gap" | "mov_pairs" | "mov_pairs_ema" | "px_vol" | "margin_ratio" | "high_low_streaks" | "pe" | "dividend";
 
 /** The forecast_results numeric columns: mean + std-dev of the forward
  *  fractional changes at all 4 horizons; close-based max/min forward
@@ -1304,6 +1306,11 @@ export type ForecastKind = "mov_rsi" | "mov_std" | "mov_gap" | "px_vol" | "margi
  *  5d/20d/60d horizons only; per-horizon P(>1% reversal) and occurrence
  *  counts. */
 export interface ForecastResultCols {
+  /** The bucket's surrogate id into analysis_forecasts.forecast_results —
+   *  links to the row-click trigger-dates endpoint
+   *  (fetchForecastTriggerDates) and to the 4 period rows behind these
+   *  pivoted columns. */
+  forecast_id: number;
   ave_next_change: number | null;
   ave_next_5d_change: number | null;
   ave_next_20d_change: number | null;
@@ -1336,14 +1343,13 @@ export interface ForecastResultCols {
 }
 
 /** One mov_rsi bucket row (RSI extreme-percentile bucket) + its results.
- *  Bucket key: (stat_month, rsi_window, side, pct, cooldown_days,
+ *  Bucket key: (stat_month, rsi_window, side, pct,
  *  is_market_hyped). */
 export interface MovRsiForecastRow extends ForecastResultCols {
   stat_month: string;
   rsi_window: number;
   side: "top" | "bottom";
   pct: number;
-  cooldown_days: number;
   is_market_hyped: boolean;
   /** TRUE when the bucket already has signal day(s) in
    *  analysis_signals.signals (config match + date inside stat_month). */
@@ -1351,14 +1357,13 @@ export interface MovRsiForecastRow extends ForecastResultCols {
 }
 
 /** One mov_std bucket row (Bollinger-breach bucket) + its results.
- *  Bucket key: (stat_month, ma_window, k, side, cooldown_days,
+ *  Bucket key: (stat_month, ma_window, k, side,
  *  is_market_hyped). */
 export interface MovStdForecastRow extends ForecastResultCols {
   stat_month: string;
   ma_window: number;
   k: number;
   side: "upper" | "lower";
-  cooldown_days: number;
   is_market_hyped: boolean;
   /** TRUE when the bucket already has signal day(s) in
    *  analysis_signals.signals (config match + date inside stat_month). */
@@ -1367,13 +1372,51 @@ export interface MovStdForecastRow extends ForecastResultCols {
 
 /** One mov_gap bucket row (N-day price-return extreme-percentile bucket)
  *  + its results. Bucket key: (stat_month, gap_window, side, pct,
- *  cooldown_days, is_market_hyped). */
+ *  is_market_hyped). */
 export interface MovGapForecastRow extends ForecastResultCols {
   stat_month: string;
   gap_window: number;
   side: "top" | "bottom";
   pct: number;
-  cooldown_days: number;
+  is_market_hyped: boolean;
+  /** TRUE when the bucket already has signal day(s) in
+   *  analysis_signals.signals (config match + date inside stat_month). */
+  in_signals: boolean;
+}
+
+/** One mov_pairs bucket row (MA-pair cross bucket — golden / death cross
+ *  read off the EXISTING ma5_vs_ma{pair_window} relative-MA spread of
+ *  analysis.mov_ave_spreads_detail) + its results. Bucket key:
+ *  (stat_month, pair_window, side, is_market_hyped). */
+export interface MovPairsForecastRow extends ForecastResultCols {
+  stat_month: string;
+  /** Slow MA leg of the pair (trading days): 60 / 120 / 255 (fast leg
+   *  fixed ma5; the cross is the ma5_vs_ma{pair_window} sign flip). */
+  pair_window: number;
+  /** Cross side: top = cross UP / golden cross (spread turns > 0 from
+   *  <= 0 — ma5 rises through the slow MA) / bottom = cross DOWN /
+   *  death cross (spread turns < 0 from >= 0). */
+  side: "top" | "bottom";
+  is_market_hyped: boolean;
+  /** TRUE when the bucket already has signal day(s) in
+   *  analysis_signals.signals (config match + date inside stat_month). */
+  in_signals: boolean;
+}
+
+/** One mov_pairs_ema bucket row — the EMA sibling of MovPairsForecastRow
+ *  (identical shape): golden / death cross read off the EXISTING
+ *  ema6_vs_ema{pair_window} relative-EMA spread of
+ *  analysis.mov_ave_spreads_detail_ema. Bucket key: (stat_month,
+ *  pair_window, side, is_market_hyped). */
+export interface MovPairsEmaForecastRow extends ForecastResultCols {
+  stat_month: string;
+  /** Slow EMA leg of the pair (trading days): 60 / 120 / 255 (fast leg
+   *  fixed ema6; the cross is the ema6_vs_ema{pair_window} sign flip). */
+  pair_window: number;
+  /** Cross side: top = cross UP / golden cross (spread turns > 0 from
+   *  <= 0 — ema6 rises through the slow EMA) / bottom = cross DOWN /
+   *  death cross (spread turns < 0 from >= 0). */
+  side: "top" | "bottom";
   is_market_hyped: boolean;
   /** TRUE when the bucket already has signal day(s) in
    *  analysis_signals.signals (config match + date inside stat_month). */
@@ -1436,6 +1479,98 @@ export interface MarginRatioForecastRow extends ForecastResultCols {
   mean_z: number | null;
 }
 
+/** One pe bucket row (PE z-score state — the raw pe series of
+ *  analysis.pe vs the code's own trailing distribution) + its results.
+ *  Bucket key: (stat_month, val_state, is_market_hyped). State cells —
+ *  STREAK-MERGED (consecutive same-state days = ONE mid-anchored
+ *  signal). */
+export interface PeForecastRow extends ForecastResultCols {
+  stat_month: string;
+  /** Valuation z state: vlow (z <= -2) / low (-2,-1] / mid (-1,+1] /
+   *  high (+1,+2] / vhigh (z > +2) of the code's rolling-1220-row
+   *  (min 250) pe moments shifted 1 row. */
+  val_state: "vlow" | "low" | "mid" | "high" | "vhigh";
+  /** Reversal side of reverse_prob — pe is LOWER the better: high/vhigh
+   *  (expensive) = top (bearish), vlow/low (cheap) = bottom; mid = flat
+   *  (reverse_prob NULL). */
+  side: "top" | "bottom" | "flat";
+  is_market_hyped: boolean;
+  /** TRUE when the bucket already has signal day(s) in
+   *  analysis_signals.signals (val_state + side match + date inside
+   *  stat_month). Stays unticked until a pe signals engine exists. */
+  in_signals: boolean;
+  /** Mean raw pe ratio over the bucket's days (from the linked
+   *  forecast_results.config JSONB). */
+  mean_metric: number | null;
+  /** Mean z-score over the bucket's days (same config JSONB). */
+  mean_z: number | null;
+}
+
+/** One dividend bucket row (dividend-yield z-score state — the
+ *  trailing-12m D/P series of analysis.dividends vs the code's own
+ *  trailing distribution) + its results. Bucket key: (stat_month,
+ *  val_state, is_market_hyped). State cells — STREAK-MERGED
+ *  (consecutive same-state days = ONE mid-anchored signal). Dividend
+ *  rows exist only where the code has payout history. */
+export interface DividendForecastRow extends ForecastResultCols {
+  stat_month: string;
+  /** Valuation z state: vlow (z <= -2) / low (-2,-1] / mid (-1,+1] /
+   *  high (+1,+2] / vhigh (z > +2) of the code's rolling-1220-row
+   *  (min 250) dividend_yield moments shifted 1 row. */
+  val_state: "vlow" | "low" | "mid" | "high" | "vhigh";
+  /** Reversal side of reverse_prob — the yield is HIGHER the better
+   *  (the REVERSE of the pe family's mapping): high/vhigh (cheap,
+   *  well-supported) = bottom (bullish), vlow/low = top (bearish);
+   *  mid = flat (reverse_prob NULL). */
+  side: "top" | "bottom" | "flat";
+  is_market_hyped: boolean;
+  /** TRUE when the bucket already has signal day(s) in
+   *  analysis_signals.signals (val_state + side match + date inside
+   *  stat_month). Stays unticked until a dividend signals engine
+   *  exists. */
+  in_signals: boolean;
+  /** Mean fractional dividend yield (D/P) over the bucket's days (from
+   *  the linked forecast_results.config JSONB). */
+  mean_metric: number | null;
+  /** Mean z-score over the bucket's days (same config JSONB). */
+  mean_z: number | null;
+}
+
+/** One high_low_streaks bucket row (MA-Spread High/Low streak — a
+ *  band-break excursion streak audited at its MEAN-MID anchor day: the
+ *  ((day_count-1)//2 + 1)-th trading day of the span, e.g. an 8-day
+ *  streak anchors its 4th day; EX-POST anchor — the streak length is
+ *  known only after the streak closes) + its results. Bucket key:
+ *  (stat_month, band_period, pct_type, side, is_market_hyped). One
+ *  trigger per streak — NO cooldown. */
+export interface HighLowStreaksForecastRow extends ForecastResultCols {
+  stat_month: string;
+  /** Band lookback of the audited band (trading rows): 255 / 500 /
+   *  750 / 1275 (~1/2/3/5 trading years). */
+  band_period: number;
+  /** Band tightness (percent): 1 / 5 / 10 — the band whose high_val /
+   *  low_val the close breaks. */
+  pct_type: number;
+  /** Excursion side: top = ABOVE-band (close on end_date above the end
+   *  month's high_val band — reverse_prob counts DOWN moves) / bottom =
+   *  BELOW-band (reverse_prob counts UP moves — the mean-reversion
+   *  reading). */
+  side: "top" | "bottom";
+  is_market_hyped: boolean;
+  /** TRUE when the bucket already produced signal day(s) in
+   *  analysis_signals.signals (band_period + pct_type + side match +
+   *  date inside stat_month). */
+  in_signals: boolean;
+  /** Mean streak length (day_count, trading rows) over the bucket's
+   *  streaks (from the linked forecast_results.config JSONB — the
+   *  bucket's streak-length context). */
+  mean_day_count: number | null;
+  /** Minimum streak length in the bucket (same config JSONB). */
+  min_day_count: number | null;
+  /** Maximum streak length in the bucket (same config JSONB). */
+  max_day_count: number | null;
+}
+
 /** Response for GET /forecast?sec_type=&code=&kind=[&month=] — the code's
  *  buckets of the requested kind joined 1:1 with their forecast_results
  *  columns. `month` is a START month: rows cover every stat_month >= month
@@ -1448,37 +1583,107 @@ export interface ForecastResponse {
   sec_type: string;
   /** All distinct stat_months (YYYY-MM-DD) with rows for this code, DESC. */
   months: string[];
-  rows: MovRsiForecastRow[] | MovStdForecastRow[] | MovGapForecastRow[] | PxVolForecastRow[] | MarginRatioForecastRow[];
+  rows: MovRsiForecastRow[] | MovStdForecastRow[] | MovGapForecastRow[] | MovPairsForecastRow[] | MovPairsEmaForecastRow[] | PxVolForecastRow[] | MarginRatioForecastRow[] | HighLowStreaksForecastRow[] | PeForecastRow[] | DividendForecastRow[];
   /** Backend arg for the shared ExpandedTable: whether the table renders
    *  its per-column header filters. Default false (filters disabled). */
   enable_filters: boolean;
 }
 
+/** One forecast horizon period (forecast_results.period values). */
+export type ForecastPeriod = "next" | "5d" | "20d" | "60d";
+
+/** One merged forecast signal's qualifying streak period (the run of
+ *  consecutive days that produced the mid-anchored signal), inclusive. */
+export interface ForecastStreakSpan {
+  start: string;
+  end: string;
+  /** Trading-day count of the run (forecast_results streak_days
+   *  BIGINT[], element-wise parallel to streak_starts — the run length
+   *  the mid anchor and the [start, end] span derive from). null for
+   *  state-family rows and rows written before the streak-days
+   *  migration. */
+  days: number | null;
+}
+
+/** Response for GET /forecast-dates?forecast_id= — one bucket's 4 period
+ *  rows' trigger_dates: the calendar DATEs (YYYY-MM-DD, ascending)
+ *  behind each horizon's occurrence_count — under the 2026-09
+ *  streak-merge, the merged signals' MID days — plus `streaks`, the
+ *  parallel qualifying-run [start, end] spans per period (the
+ *  forecast_results streak_starts / streak_ends DATE[]; null for
+ *  state-family rows and rows written before the span migration).
+ *  Served on forecast-row click so the UI can pinpoint the mid dates
+ *  and shade the streak periods on the code's trend chart. */
+export interface ForecastTriggerDatesResponse {
+  forecast_id: number;
+  periods: Record<ForecastPeriod, string[] | null>;
+  streaks: Record<ForecastPeriod, ForecastStreakSpan[] | null>;
+}
+
+/** Motivation table names registered in
+ *  analysis_forecasts.forecast_identities (identity.bucket values). */
+export type ForecastIdentityBucket =
+  | "mov_rsi"
+  | "mov_std"
+  | "mov_gap"
+  | "mov_pairs"
+  | "mov_pairs_ema"
+  | "px_vol_state"
+  | "margin_ratio_state"
+  | "opp_pair_state"
+  | "high_low_streaks"
+  | "pe_state"
+  | "dividend_state";
+
+/** Response for GET /forecast-identity?forecast_id= — the shared-PK
+ *  registry row (analysis_forecasts.forecast_identities): what a
+ *  forecast_id resolves to (sec_type / code / stat_month / bucket
+ *  family) without probing the nine motivation tables. `kind` is the
+ *  ForecastTable family that renders the bucket (null for
+ *  opp_pair_state — the industry-pair family has no table in this UI).
+ *  `code` is the forecast SUBJECT (the security ticker; for opp_pair
+ *  rows the DROPPING industry — the forecast-target pair_industry_id
+ *  lives on the opp_pair_state motivation row). */
+export interface ForecastIdentityResponse {
+  forecast_id: number;
+  sec_type: string;
+  code: string;
+  /** Completed month-end (YYYY-MM-DD) of the bucket's snapshot. */
+  stat_month: string;
+  bucket: ForecastIdentityBucket;
+  kind: ForecastKind | null;
+  /** The bucket's mean streak length per merged signal (the 2026-09
+   *  streak-merge: consecutive qualifying days are ONE mid-anchored
+   *  signal). 1 for the state families (every qualifying day is a
+   *  1-day signal); high_low_streaks reports its config mean_day_count. */
+  streak_signal_days: number | null;
+  lookback_period: string;
+}
+
 // ----------------------------------------------------------------------------
 //  Analysis Commons — PE & Dividend Yield (per-(sec_type, code, date) valuation)
-//    analysis.pe_and_dividends          — daily pe_ma20 + dividend_yield
+//    analysis.pe / analysis.dividends   — daily raw pe / trailing-12m dividend_yield (split 2026-09)
 //    analysis.pe_and_dividend_stats     — monthly 5y rolling stats snapshot
 //    PK (detail): (sec_type, code, date)
 //    PK (stats):  (sec_type, code, date, is_active)  [date = month-end]
 //
-//    Close price and raw PE ratio are NOT stored in analysis.pe_and_dividends
-//    (they live in stats: index_basic_stats.close, index_valuation.pe,
-//    etf_basic_stats.close, stock_basic_stats.close). The chart endpoint JOINs
-//    stats live at request time so the UI always shows the freshest close/PE.
+//    Close price is NOT stored in the analysis tables (it lives in
+//    stats: index_basic_stats.close, etf_basic_stats.close,
+//    stock_basic_stats.close). The chart endpoint JOINs stats live at
+//    request time so the UI always shows the freshest close.
 // ----------------------------------------------------------------------------
 export type PeAndDividendSecType = "etf" | "index" | "stock";
 
-/** One daily row from analysis.pe_and_dividends JOINed with stats for close + pe. */
+/** One daily row JOINed from analysis.pe / analysis.dividends + stats close. */
 export interface PeAndDividendChartRow {
   /** Trading date (YYYY-MM-DD). */
   date: string;
   /** Close price from stats (index_basic_stats.close / etf adj_close /
    *  stock_basic_stats.close). NULL when the source has no close on this date. */
   close: number | null;
-  /** Raw PE ratio from stats.index_valuation.pe (index-only; NULL for etf/stock). */
+  /** Raw PE ratio (analysis.pe.pe — all sec_types; NULL on
+   *  no-earnings / invalid-PE days). */
   pe: number | null;
-  /** 20-day MA of PE (index-only, from analysis.pe_and_dividends.pe_ma20). */
-  pe_ma20: number | null;
   /** Trailing-12m dividend yield (D/P) as a fractional ratio (0.035 = 3.5%). */
   dividend_yield: number | null;
 }
@@ -1524,7 +1729,7 @@ export interface PeAndDividendStatsResponse {
 // ----------------------------------------------------------------------------
 //  PE & Dividend band-BREAK excursion streaks (analysis.pe_and_dividend_pct
 //  + analysis.pe_and_dividend_pct_streaks) — the high/low streaks pattern of
-//  analysis.mov_ave_high_low_pct[_streaks] applied to the pe_ma20 /
+//  analysis.mov_ave_high_low_pct[_streaks] applied to the pe /
 //  dividend_yield series. A day breaks out when its metric value is ABOVE
 //  its own month-band high_val (high — the metric is stretched vs its own
 //  trailing history) or BELOW low_val (low — compressed); a streak is the
@@ -1533,8 +1738,8 @@ export interface PeAndDividendStatsResponse {
 // ----------------------------------------------------------------------------
 
 /** The audited valuation series (`metric` column) — the two value columns
- *  of analysis.pe_and_dividends. */
-export type PeAndDividendStreakMetric = "pe_ma20" | "dividend_yield";
+ *  of analysis.dividends. */
+export type PeAndDividendStreakMetric = "pe" | "dividend_yield";
 
 /** One band-BREAK excursion streak from
  *  analysis.pe_and_dividend_pct_streaks. Shipped flat for ALL (metric,
@@ -1584,15 +1789,15 @@ export interface PeAndDividendStreaksResponse {
   streaks: PeAndDividendStreak[];
 }
 
-/** One row in the codes list (analysis.pe_and_dividends DISTINCT ON code). */
+/** One row in the codes list (UNION of analysis.pe / analysis.dividends, latest snapshot). */
 export interface PeAndDividendCodeRow {
   code: string;
   name: string;
   first_date: string;
   last_date: string;
   n_dates: number;
-  /** Latest snapshot's pe_ma20 (NULL for etf/stock). */
-  latest_pe_ma20: number | null;
+  /** Latest snapshot's raw pe (NULL on no-earnings / invalid-PE days). */
+  latest_pe: number | null;
   /** Latest snapshot's dividend_yield (fractional ratio). */
   latest_dividend_yield: number | null;
 }
@@ -1600,109 +1805,6 @@ export interface PeAndDividendCodeRow {
 /** Response for GET /api/analysis/pe-and-dividend/codes. */
 export interface PeAndDividendCodesResponse {
   codes: PeAndDividendCodeRow[];
-}
-
-// ----------------------------------------------------------------------------
-//  Analysis Commons — Recurring Cycles (recurring rise/drop periodicity)
-//    analysis.recurring_cycles — per-(sec_type, code, last_date, range_days)
-//    recurring rise/drop periodicity: every integer day period d (2..N/2)
-//    audited for RECURRENCE in the time domain (extrema evidence × ACF
-//    coherence, amplitude-gated). Headline period_days = argmax of strength.
-//    Currently populated for sec_type='index' only.
-export type RecurringCyclesSecType = "index";
-
-/** One (last_date, range_days) row from analysis.recurring_cycles. */
-export interface RecurringCyclesChartRow {
-  /** Last trading date of the window (YYYY-MM-DD). */
-  last_date: string;
-  /** Window size in trading days (20 | 60 | 255 | 500 | 750 | 1275). */
-  range_days: number;
-  /** Recurring rise/drop period in trading days (argmax of strength);
-   *  0 = no recurring period detected. */
-  period_days: number;
-  /** strength(d*) at period_days d* (0 when period_days = 0). */
-  strength: number;
-}
-
-/** Response for GET /api/analysis/recurring-cycles/chart. */
-export interface RecurringCyclesChartResponse {
-  code: string;
-  name: string;
-  rows: RecurringCyclesChartRow[];
-}
-
-/** One (range_days) row from the spectrum endpoint — the per-day recurring
- *  periodicity factors for a single (code, last_date) and window size. */
-export interface RecurringCyclesSpectrumRow {
-  /** Window size in trading days (20 | 60 | 255 | 500 | 750 | 1275). */
-  range_days: number;
-  /** Recurring rise/drop period in trading days (argmax of strength + 2
-   *  day offset); 0 = no recurring period detected. */
-  period_days: number;
-  /** strength(d*) at period_days d* (0 when period_days = 0). */
-  strength: number;
-  /** count(d*) at period_days d* — the raw recurrence evidence. */
-  count_factor: number;
-  /** amplitude(d*) at period_days d* — energy-merged FFT amplitude (yuan). */
-  amplitude: number;
-  /** Poisson audit at period_days d*: −log10 of the Bonferroni-adjusted
-   *  tail p-value P(Poisson(λ̂₀) ≥ hits) — how far the observed
-   *  swing-hit count exceeds the empirically calibrated chance
-   *  expectation λ̂₀. 0 = not significant; ≥ 1.30 ⇔ p < 0.05;
-   *  ≥ 2.0 ⇔ p < 0.01. 0 when period_days = 0. */
-  significance: number;
-  /** hits(d*)/λ̂₀(d*) — observed prominence-filtered swing-hit count over
-   *  the Poisson null expectation at the headline period. */
-  evidence_ratio: number;
-  /** Per-day energy-merged FFT amplitude (yuan), DAY-ALIGNED: element j =
-   *  day period d = j + 2; length = floor(range_days/2) − 1 (days 2..N/2).
-   *  The Fourier REFERENCE for the amp bars — NOT recurrence evidence. */
-  amplitude_spectrum: number[];
-  /** Per-day recurrence COUNT factor, day-aligned like amplitude_spectrum:
-   *  count(d) = extrema evidence × ACF coherence (prominence-filtered
-   *  alternating-extrema hits over max possible cycles, capped 1; ×
-   *  fraction of multiples m·d with biased acf ≥ 1.96/√N after MA
-   *  detrending). Says WHETHER price actually repeated that spacing. */
-  count_spectrum: number[];
-  /** Per-day summarized recurring STRENGTH, day-aligned:
-   *  strength(d) = (amp(d)/σ_band) × count(d), 0 for d > N/3 (under 3
-   *  cycles in the window). period_days = argmax + 2. */
-  strength_spectrum: number[];
-  /** Per-day Poisson-audit significance, day-aligned like
-   *  strength_spectrum: −log10 of the Bonferroni-adjusted tail p-value
-   *  P(Poisson(λ̂₀(d)) ≥ hits(d)) vs the calibrated chance hit rate;
-   *  0 where not auditable (d > N/3) or not significant (p ≥ 0.05);
-   *  capped at 300. Empty when the row predates the audit. */
-  significance_spectrum: number[];
-  /** Per-day OBSERVED prominence-filtered swing-hit count (integral
-   *  values), day-aligned like significance_spectrum: element j = day
-   *  period d = j + 2. The raw recEXT numerator (uncapped) — the
-   *  observed side of the Poisson audit table (hits vs λ̂₀ vs p).
-   *  Empty when the row predates the audit. */
-  hits_spectrum: number[];
-  /** Per-day chance expectation λ̂₀(d) of the point-process null,
-   *  day-aligned like hits_spectrum: the empirically calibrated
-   *  expected hit rate n_pool × g(pool-bin, d) the observed hits are
-   *  tested against. Empty when the row predates the audit. */
-  lam0_spectrum: number[];
-  /** Number of sliding windows (dates) analyzed for this (code,
-   *  range_days). Title context only. */
-  total_windows: number;
-}
-
-/** Response for GET /api/analysis/recurring-cycles/spectrum.
- *  Up to 6 rows (one per range_days) for one (code, last_date). */
-export interface RecurringCyclesSpectrumResponse {
-  code: string;
-  name: string;
-  /** The last_date these spectra are for. When the request omitted
-   *  last_date, this is the latest available date for the code. */
-  last_date: string;
-  spectrums: RecurringCyclesSpectrumRow[];
-  /** Backend arg for the shared ExpandedTable: whether the audit table
-   *  renders its per-column header filters. Default false (filters
-   *  disabled). */
-  enable_filters: boolean;
 }
 
 // ----------------------------------------------------------------------------
@@ -1782,9 +1884,10 @@ export interface MarginTrendsShadeResponse {
 //    analysis.sec_alloc_perf_attribution)
 //    PK: (code, benchmark_code, date, sec_type)
 //
-//    Per-row: code_sec_shared_weight, benchmark_sec_shared_weight,
-//    benchmark_etf_trading_amount, code_etf_trading_amount, etf_trading_amount_ratio_benchmark_to_code,
-//    etf_trading_amount_ratio_benchmark_to_code_ma5, corr_{20,60,255}d.
+//    Stored per-row: code_sec_shared_weight, benchmark_sec_shared_weight,
+//    corr_{20,60,255}d. The ETF-market liquidity fields below (amounts,
+//    ratio, MA5) are NOT stored — the API derives them at read time from
+//    stats.index_exts.total_etf_trading_amount.
 // ----------------------------------------------------------------------------
 export type PerfAttrSecType = "etf" | "index";
 
@@ -1810,18 +1913,20 @@ export interface PerfAttrBenchmarkRow {
   date: string;
   code_sec_shared_weight: number | null;
   benchmark_sec_shared_weight: number | null;
-  /** benchmark_etf_trading_amount / code_etf_trading_amount (GENERATED). A LIQUIDITY ratio
+  /** benchmark_etf_trading_amount / code_etf_trading_amount (derived at read
+   *  time by the API from stats.index_exts). A LIQUIDITY ratio
    *  (≥1 means benchmark ETF-market turnover exceeds subject's). Its inverse
    *  (1/ratio) is the subject's SHARE of the benchmark ETF market. NULL when
    *  either amount is NULL/0 (e.g. benchmark has no tracking ETF). */
   etf_trading_amount_ratio: number | null;
   /** Aggregate ETF turnover (yuan) tracking benchmark_code on this date
-   *  (Σ etf_liquidity_margin.trading_amount where parent_index_code = benchmark_code).
-   *  NULL when no ETF tracks the benchmark (e.g. 000001 上证指数). */
+   *  (stats.index_exts.total_etf_trading_amount for benchmark_code, joined at
+   *  read time). NULL when no ETF tracks the benchmark (e.g. 000001 上证指数). */
   benchmark_etf_trading_amount: number | null;
-  /** Subject's ETF turnover (yuan). For sec_type='etf': the ETF's own trading_amount.
-   *  For sec_type='index': aggregate ETF turnover tracking the subject index.
-   *  NULL for stocks and for indices with no tracking ETF. */
+  /** Subject's ETF turnover (yuan) (stats.index_exts.total_etf_trading_amount
+   *  for the subject code, joined at read time; NULL for ETF subjects —
+   *  index_exts is keyed on index codes).
+   *  NULL for indices with no tracking ETF. */
   code_etf_trading_amount: number | null;
   /** TRUE iff the benchmark index is broad-market (any tag in
    *  stats.sec_index_tags with is_broad_market=TRUE). Sourced from the DB,
@@ -1854,16 +1959,21 @@ export interface PerfAttrAttributionResponse {
 
 export interface PerfAttrChartRow {
   date: string;
-  /** benchmark_etf_trading_amount / code_etf_trading_amount (GENERATED). LIQUIDITY ratio,
-   *  NOT a price-attribution proportion. */
+  /** benchmark_etf_trading_amount / code_etf_trading_amount (derived at read
+   *  time by the API from stats.index_exts). LIQUIDITY ratio,
+   *  NOT a price-attribution proportion. NULL when either amount is NULL/0
+   *  or |ratio| >= 1e6 (the former NUMERIC(10,4) build cap). */
   etf_trading_amount_ratio: number | null;
-  /** 5-trading-day moving average of etf_trading_amount_ratio (populated by the
-   *  analysis Python script via pandas rolling(5).mean(); NULL when the
-   *  underlying ratio is NULL for the trailing 5-day window). */
+  /** 5-trading-day moving average of etf_trading_amount_ratio (computed at
+   *  read time by the API via a 5-row trailing window; NULLs skipped —
+   *  parity with the former pandas rolling(5, min_periods=1) build-time
+   *  computation). */
   etf_trading_amount_ratio_ma5: number | null;
-  /** Aggregate ETF turnover (yuan) tracking benchmark_code on this date. */
+  /** Aggregate ETF turnover (yuan) tracking benchmark_code on this date
+   *  (stats.index_exts, joined at read time). */
   benchmark_etf_trading_amount: number | null;
-  /** Subject's ETF turnover (yuan) on this date. */
+  /** Subject's ETF turnover (yuan) on this date (stats.index_exts, joined at
+   *  read time; NULL for ETF subjects — index_exts is keyed on index codes). */
   code_etf_trading_amount: number | null;
   /** Number of ETFs tracking benchmark_code on this date (from stats.index_exts).
    *  NULL when no ETF tracks the benchmark. */
@@ -2482,7 +2592,8 @@ export interface IndustryHypesAndDrainsResponse {
 //  close for the benchmark + ALL industries (shaded areas) + member indices.
 //  Populated by python -m live.sec_alloc_live_attribution into
 //  live.sec_alloc_live_attribution (per-tick member + benchmark %) with
-//  industry aggregates computed at query time from live.sec_alloc_live_prev_ref.
+//  industry identity joined from stats.sec_classification and aggregates
+//  computed at query time.
 //
 //  Top plot: benchmark_price_pct line + per-industry SHADED AREAS
 //  (industry_price_pct with areaStyle). Clicking a 5-min tick selects it
@@ -2606,9 +2717,11 @@ export interface PrevDayOhlcResponse {
 // ----------------------------------------------------------------------------
 //  Live Sec-Alloc Attribution (live schema) — per-industry aggregates at ONE
 //  5-min tick, computed at query time from live.sec_alloc_live_attribution
-//  joined with live.sec_alloc_live_prev_ref weights. Drives the
-//  "By Trading Amt / Equal" toggle on the Intraday Attribution panel of the
-//  Market Movements page (GET /api/live-data/sec-alloc-live/attribution).
+//  with trading-amount weights (stats.index_basic_stats, prev day) and
+//  composition-overlap shared weights (stats.cross_stats) joined at read
+//  time. Drives the "By Trading Amt / Equal" toggle on the Intraday
+//  Attribution panel of the Market Movements page
+//  (GET /api/live-data/sec-alloc-live/attribution).
 // ----------------------------------------------------------------------------
 /** One industry's aggregates at one tick. */
 export interface SecAllocLiveAttributionIndustry {
@@ -3167,9 +3280,40 @@ export interface NewsItem {
   source: string | null;
   date: string;
   url: string | null;
+  author: string | null;
   industry_id: string | null;
+  /** Upvotes when the source provides them (zhihu); the list is ordered by
+   *  this first. NULL for sources without votes — those sort after by date. */
+  votes: number | null;
+  /** Stored comments for this article (0 when none loaded yet). */
+  comment_count: number;
   /** First ~200 chars of the article body (or null when not crawled). */
   snippet: string | null;
+}
+
+/** Full article row for the feed's click-to-expand card. */
+export interface NewsItemDetail extends Omit<NewsItem, "snippet"> {
+  /** Complete article body (untruncated). */
+  content: string | null;
+  author: string | null;
+}
+
+/** One comment in the threaded tree (replies nested under their root). */
+export interface NewsComment {
+  comment_id: number;
+  parent_comment_id: number | null;
+  author: string | null;
+  content: string | null;
+  date: string | null;
+  votes: number | null;
+  is_reply: boolean;
+  replies: NewsComment[];
+}
+
+/** Response for GET /api/news/comments — roots carry nested replies. */
+export interface NewsCommentsResponse {
+  total: number;
+  comments: NewsComment[];
 }
 
 /** Response for GET /api/news/items. */
@@ -3198,3 +3342,49 @@ export interface NewsCalendarResponse {
  *  classification nav, but counts = number of news articles per industry and
  *  items[] always empty (news has no L3 security level). */
 export type NewsThemesResponse = SectorNode[];
+
+// ----------------------------------------------------------------------------
+// News question search (POST /api/news/search) — live zhihu content search
+// driven by the News page question bar; items are raw API payloads, not
+// text.news rows (those appear only after the next builds.text run).
+// ----------------------------------------------------------------------------
+
+/** One raw zhihu search item (downloader artifact schema, snake keys). */
+export interface NewsSearchItem {
+  Title: string;
+  ContentType: string;
+  ContentID: string;
+  ContentText: string | null;
+  Url: string | null;
+  CommentCount?: string;
+  VoteUpCount?: string;
+  AuthorName: string | null;
+  AuthorAvatar?: string | null;
+  AuthorBadgeText?: string | null;
+  /** Unix-seconds publish/update timestamp (string) — the item's date. */
+  EditTime: string | null;
+  AuthorityLevel?: string;
+  RankingScore?: string;
+}
+
+/** Response for POST /api/news/search. */
+export interface NewsSearchResponse {
+  /** True iff the run exited 0 AND its envelope reported success. */
+  success: boolean;
+  /** True when NO run was started because one for the same source is
+   *  already in flight (process-id-tag dedupe). */
+  already_running?: boolean;
+  question: string;
+  source: string;
+  author: string | null;
+  /** Items kept (after the optional author filter). */
+  total: number;
+  /** Items the API returned before any filtering. */
+  total_returned: number;
+  /** Artifact path the response was stored under (temps/zhihu_news/…). */
+  out_file: string | null;
+  items: NewsSearchItem[];
+  /** Diagnostics tails (surfaced on failure). */
+  stdout_tail?: string;
+  stderr_tail?: string;
+}

@@ -10,19 +10,18 @@ def merge_subject_with_benchmarks(
     subject_closes: pd.DataFrame,
     index_closes: pd.DataFrame,
     sec_type: str,
+    subject_code: str,
 ) -> Optional[pd.DataFrame]:
     """Inner-merge one subject's closes with all benchmarks on date.
+
+    The caller's per-subject loop already knows the code — passing it in
+    avoids re-deriving it via Series.unique() (a pandas-3 Arrow string
+    ExtensionArray op that falls back to CPU under cudf.pandas on every
+    per-subject call).
 
     None when the merge is empty (no shared dates or, for sec_type=
     'index', only the self-pair exists — self-pairs excluded).
     """
-    subject_codes = subject_closes["code"].unique()
-    if len(subject_codes) != 1:
-        raise ValueError(
-            f"merge_subject_with_benchmarks expects exactly one subject, "
-            f"got {len(subject_codes)}"
-        )
-    subject_code = subject_codes[0]
     sub = subject_closes[subject_closes["code"] == subject_code]
     merged = sub.merge(index_closes, on="date", how="inner")
     if merged.empty:
@@ -32,6 +31,14 @@ def merge_subject_with_benchmarks(
         merged = merged[merged["code"] != merged["benchmark_code"]]
         if merged.empty:
             return None
+
+    # THE consolidated benchmark-offset primitive: the subject's daily
+    # point change minus the benchmark's daily change. Both operands are
+    # precomputed per-series on their OWN calendars in fetch (diff before
+    # the inner-merge date intersection), so this is a pure subtraction.
+    merged["code_price_with_benchmark_offset"] = (
+        merged["code_price_change"] - merged["benchmark_price_change"]
+    )
 
     merged["sec_type"] = sec_type
     return merged

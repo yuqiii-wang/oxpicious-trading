@@ -84,7 +84,7 @@ function monthKey(dateStr: string): string {
 }
 
 // ---- Band-break excursion streaks (analysis.pe_and_dividend_pct_streaks,
-// the mov_ave_high_low_pct_streaks pattern applied to pe_ma20 /
+// the mov_ave_high_low_pct_streaks pattern applied to pe /
 // dividend_yield) — nested metric → period → pct selection mirrors the
 // MaSpread High/Low Streaks buttons. ----
 
@@ -104,12 +104,12 @@ const STREAK_HIGH_ACCENT = "#AB47BC";
 const STREAK_LOW_ACCENT = "#F9A825";
 
 const STREAK_METRICS: Array<{ value: PeAndDividendStreakMetric; label: string }> = [
-  { value: "pe_ma20", label: "PE MA20" },
+  { value: "pe", label: "PE" },
   { value: "dividend_yield", label: "Div Yield" },
 ];
 
 /** Format one streak's metric value: dividend_yield is a FRACTIONAL ratio
- *  (0.035 = 3.5%) — scale to percent for display; pe_ma20 is a plain
+ *  (0.035 = 3.5%) — scale to percent for display; pe is a plain
  *  multiple. */
 function fmtStreakValue(
   metric: PeAndDividendStreakMetric,
@@ -472,7 +472,7 @@ export function PeAndDividendPanel({
       {plotContent}
 
       {/* ---- Band-break excursion streaks (analysis.pe_and_dividend_pct_streaks) ----
-          The high/low streaks pattern applied to the pe_ma20 / dividend_yield
+          The high/low streaks pattern applied to the pe / dividend_yield
           series: a day breaks out when its value is above/below its own
           month's trailing percentile band (analysis.pe_and_dividend_pct), and
           a streak is a maximal run of same-side break days with ≤5-day
@@ -508,7 +508,7 @@ export function PeAndDividendPanel({
         {!streaksLoading && !streaksError && hasStreakData && (
           <>
             <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75 }}>
-              {/* Layer 1 — metric (pe_ma20 / dividend_yield). */}
+              {/* Layer 1 — metric (pe / dividend_yield). */}
               <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap" }}>
                 <Typography
                   variant="caption"
@@ -609,7 +609,7 @@ export function PeAndDividendPanel({
                 color="text.secondary"
                 sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
               >
-                {streakMetric === "pe_ma20" ? "PE MA20" : "dividend yield"} breaks its
+                {streakMetric === "pe" ? "PE" : "dividend yield"} breaks its
                 trailing {streakPeriod}-obs top/bottom {streakPct}% band (each day vs its
                 own month's band · ≤{STREAK_GAP_TOLERANCE}-day in-band gaps bridged) ·{" "}
                 {selectedStreaks.length === 0
@@ -637,7 +637,7 @@ export function PeAndDividendPanel({
                 >
                   light purple/yellow = trailing {streakPeriod}-obs top/bottom{" "}
                   {streakPct}% zones of{" "}
-                  {streakMetric === "pe_ma20" ? "PE MA20" : "dividend yield"} (
+                  {streakMetric === "pe" ? "PE" : "dividend yield"} (
                   {chartBuild.win.startDate} → {chartBuild.win.endDate}), darker = break
                   streaks vs that static edge (≤{STREAK_GAP_TOLERANCE}-day bridge ·
                   high {chartBuild.streaks?.high.length ?? 0} / low{" "}

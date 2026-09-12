@@ -330,9 +330,13 @@ def load_sse_index_history(verbose: bool = True,
                      "trading_shares", "trading_amount", "changePct", "pe"]:
             if col in _cols:
                 df[col] = safe_to_numeric(df[col])
-        # SSE 成交量(万股) → shares; 成交金额(万元) → yuan (CSIndex uses yuan)
+        # SSE 成交金额(万元) → yuan (CSIndex uses yuan). 成交量 for INDEX
+        # rows is in 万手 (lots of 100), NOT 万股 — verified against the
+        # CSIndex archive volumes (e.g. 000001 2026-09-07: trend 47,737.53
+        #万手 vs archive 4.773753e10 shares = 万手 × 1e6). ETF/stock trend
+        # files genuinely use 万股 — only this index loader takes ×1e6.
         if "trading_shares" in _cols:
-            df["trading_shares"] = df["trading_shares"] * 1e4  # 万股 → shares
+            df["trading_shares"] = df["trading_shares"] * 1e6  # 万手 → shares
         if "trading_amount" in _cols:
             df["trading_amount"] = df["trading_amount"] * 1e4  # 万元 → yuan
 

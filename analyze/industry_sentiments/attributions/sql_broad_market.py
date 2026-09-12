@@ -200,18 +200,22 @@ broad_codes AS (
     WHERE is_broad_market = TRUE
 ),
 {needed_pairs_cte}industry_shared AS (
-    -- Weights + trading split at INDUSTRY grain, straight from
-    -- stats.cross_stats (builds.cross_stats): code_sec_shared_weight is
-    -- ALREADY the SUM of member indices' pair shared weights (former
-    -- trading_amt aggregation, rounded 4dp at build time), and
-    -- non_shared_trading_amount the benchmark − shared turnover split
-    -- (former stock_liquidity_margin fan-out + EXISTS close probe).
+    -- Weights + trading split + the CONSOLIDATED offset primitive at
+    -- INDUSTRY grain, straight from stats.cross_stats (builds.cross_stats):
+    -- code_sec_shared_weight is ALREADY the SUM of member indices' pair
+    -- shared weights (former trading_amt aggregation, rounded 4dp at
+    -- build time), non_shared_trading_amount the benchmark − shared
+    -- turnover split, and the two code_price_with_benchmark_offset*
+    -- columns the pair-grain offsets SUMmed over member indices (the
+    -- consolidated benchmark-offset view — no local recomputation).
     SELECT
         cs.code AS industry_id,
         cs.benchmark_code,
         cs.date,
         cs.code_sec_shared_weight AS industry_shared_weight,
-        cs.non_shared_trading_amount
+        cs.non_shared_trading_amount,
+        cs.code_price_with_benchmark_offset,
+        cs.code_price_with_benchmark_offset_by_weighted_amt
     FROM stats.cross_stats cs
     WHERE cs.sec_type = 'industry'
       AND cs.code_sec_shared_weight IS NOT NULL
@@ -336,7 +340,9 @@ INSERT INTO analysis.industry_attributions
      industry_shared_weight, benchmark_shared_weight,
      benchmark_non_this_industry_price,
 {rolling_cols},
-     benchmark_non_this_industry_trading_amt)
+     benchmark_non_this_industry_trading_amt,
+     code_price_with_benchmark_offset,
+     code_price_with_benchmark_offset_by_weighted_amt)
 SELECT
     isw.industry_id,
     isw.benchmark_code,
@@ -347,7 +353,9 @@ SELECT
     c.non_this_industry_price,
 {rolling_select_cols},
     isw.non_shared_trading_amount
-        AS benchmark_non_this_industry_trading_amt
+        AS benchmark_non_this_industry_trading_amt,
+    isw.code_price_with_benchmark_offset,
+    isw.code_price_with_benchmark_offset_by_weighted_amt
 FROM industry_shared isw
 LEFT JOIN benchmark_shared bsw
     ON bsw.industry_id = isw.industry_id

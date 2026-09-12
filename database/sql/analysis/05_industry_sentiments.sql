@@ -266,9 +266,28 @@ CREATE TABLE IF NOT EXISTS analysis.industry_attributions (
     benchmark_non_this_industry_rolling_500days_price      NUMERIC(20,4),
     benchmark_non_this_industry_trading_amt NUMERIC(20,4),
 
+    -- Consolidated benchmark-offset primitive (added 2026-09-07) — read
+    -- STRAIGHT from stats.cross_stats (sec_type='industry', which
+    -- aggregates the pair-grain offsets over member indices): the
+    -- industry's daily close change minus the benchmark's (SUM over
+    -- member pairs), and its amount-weighted variant (offset × shared
+    -- stocks' turnover share of benchmark turnover). Broad-market rows
+    -- only; replaces the former local shared-weight recomputation for
+    -- the offset view — the return-decomposition columns above keep
+    -- their own semantics.
+    code_price_with_benchmark_offset                 NUMERIC(20,6),
+    code_price_with_benchmark_offset_by_weighted_amt NUMERIC(20,6),
+
     CONSTRAINT pk_industry_attributions PRIMARY KEY
         (industry_id, benchmark_code, date, attribution_type)
 ) PARTITION BY HASH (industry_id);
+
+-- Offset columns (added 2026-09-07) — idempotent migration for existing
+-- deployments; populated by the attributions INSERT from stats.cross_stats.
+ALTER TABLE analysis.industry_attributions
+    ADD COLUMN IF NOT EXISTS code_price_with_benchmark_offset NUMERIC(20,6);
+ALTER TABLE analysis.industry_attributions
+    ADD COLUMN IF NOT EXISTS code_price_with_benchmark_offset_by_weighted_amt NUMERIC(20,6);
 
 -- Native hash partitions (16) keyed by industry_id
 -- Native hash partitions (16) keyed by code — created via the shared util
@@ -328,19 +347,20 @@ ON CONFLICT (name) DO UPDATE SET
 
 -- ============================================================================
 --  Industry ETF Contribution — per-(date, industry_id, pool_size) aggregate
---  ETF trading turnover, sourced from analysis.sec_alloc_perf_attribution.
+--  ETF trading turnover, sourced from stats.index_exts.
 --
 --  Table: analysis.industry_etf_contribution
 --    PK: (date, industry_id, pool_size)
 --
 --  AGGREGATION
---    industry_etf_trading_amount = SUM(code_etf_trading_amount) across member
---      indices in the industry (from analysis.sec_alloc_perf_attribution where
---      sec_type='index'). Each member index's code_etf_trading_amount is the
---      aggregate ETF turnover tracking that index (precomputed in
---      stats.index_exts.total_etf_trading_amount and carried into
---      sec_alloc_perf_attribution). The SUM is the total ETF-market turnover
---      tracking ANY member index in this industry on this date.
+--    industry_etf_trading_amount = SUM(total_etf_trading_amount) across member
+--      indices in the industry (from stats.index_exts). Each member index's
+--      total_etf_trading_amount is the aggregate ETF turnover tracking that
+--      index (precomputed in stats.index_exts by builds.index exts phase;
+--      formerly relayed via cross_stats.code_etf_trading_amount — that stored
+--      copy was consolidated away 2026-09-07 as a verbatim duplicate). The SUM
+--      is the total ETF-market turnover tracking ANY member index in this
+--      industry on this date.
 --
 --      NOTE: an ETF that tracks multiple member indices in the SAME industry
 --      would be counted once per tracked index. In practice most ETFs track
@@ -372,17 +392,15 @@ ON CONFLICT (name) DO UPDATE SET
 --      code_etf_trading_amount in this slice on this date.
 --
 --  SOURCE
---    analysis.sec_alloc_perf_attribution (code_etf_trading_amount, per
---      (code, date, sec_type='index') — DISTINCT since the same value appears
---      for every benchmark_code)
+--    stats.index_exts (total_etf_trading_amount, one row per (code, date))
 --    stats.sec_classification (industry_id per index code)
 --    stats.sec_composition (stock_num → pool_size classification)
 --
 --  POPULATION
 --    analyze.industry_sentiments.etf_contribution (internal step
 --    run_etf_contribution, invoked from __main__ after attributions).
---    Depends on analysis.sec_alloc_perf_attribution being populated first.
---    Truncate-then-recompute on every run.
+--    Depends on stats.index_exts (builds.index exts phase) being populated
+--    first. Truncate-then-recompute on every run.
 --
 --  Register in analysis.analysis_identity (name='industry_etf_contribution').
 -- ============================================================================
@@ -396,11 +414,11 @@ CREATE TABLE IF NOT EXISTS analysis.industry_etf_contribution (
     -- Display label (denormalized)
     industry_label            TEXT          NOT NULL DEFAULT '',
 
-    -- Number of member indices with non-NULL code_etf_trading_amount
+    -- Number of member indices with non-NULL total_etf_trading_amount
     -- contributing to this (date, industry_id, pool_size) slice.
     industry_etf_count         INTEGER,
 
-    -- SUM of code_etf_trading_amount across member indices in this
+    -- SUM of total_etf_trading_amount across member indices in this
     -- pool_size slice on this date (yuan). NULL when no member index has
     -- ETF trading amount data.
     industry_etf_trading_amount     NUMERIC(24,4),
@@ -430,10 +448,10 @@ CREATE INDEX IF NOT EXISTS idx_industry_etf_contribution_industry_pool_date
 CREATE INDEX IF NOT EXISTS idx_industry_etf_contribution_date_industry
     ON analysis.industry_etf_contribution (date, industry_id);
 
-COMMENT ON TABLE  analysis.industry_etf_contribution                        IS 'Per-(industry_id, date, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(code_etf_trading_amount) across member indices from analysis.sec_alloc_perf_attribution (sec_type=''index''). industry_etf_count = COUNT of member indices with non-NULL ETF amount. Each member index contributes its aggregate ETF turnover (precomputed in stats.index_exts). pool_size: small (stock_num<51), mid (51-180), large (>180), all. Built by analyze.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on analysis.sec_alloc_perf_attribution being populated first.';
+COMMENT ON TABLE  analysis.industry_etf_contribution                        IS 'Per-(industry_id, date, pool_size) aggregate ETF trading turnover. industry_etf_trading_amount = SUM(total_etf_trading_amount) across member indices from stats.index_exts. industry_etf_count = COUNT of member indices with non-NULL ETF amount. Each member index contributes its aggregate ETF turnover (precomputed in stats.index_exts by builds.index exts phase). pool_size: small (stock_num<51), mid (51-180), large (>180), all. Built by analyze.industry_sentiments.etf_contribution (internal step, truncate-then-recompute). Depends on stats.index_exts being populated first.';
 COMMENT ON COLUMN analysis.industry_etf_contribution.pool_size              IS 'Pool-size slice: small (stock_num<51), mid (51-180), large (>180), all (every member). Classification source: stats.sec_composition (LATEST snapshot per code).';
-COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_count     IS 'Number of distinct member indices with non-NULL code_etf_trading_amount contributing to this (date, industry_id, pool_size) slice on this date.';
-COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount     IS 'SUM(code_etf_trading_amount) across member indices in this pool_size slice on this date. Source: analysis.sec_alloc_perf_attribution (sec_type=''index'', code_etf_trading_amount = aggregate ETF turnover tracking the member index, precomputed in stats.index_exts). NULL when no member index has ETF trading amount data on this date.';
+COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_count     IS 'Number of distinct member indices with non-NULL total_etf_trading_amount contributing to this (date, industry_id, pool_size) slice on this date.';
+COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount     IS 'SUM(total_etf_trading_amount) across member indices in this pool_size slice on this date. Source: stats.index_exts (total_etf_trading_amount = aggregate ETF turnover tracking the member index, built by builds.index exts phase). NULL when no member index has ETF trading amount data on this date.';
 COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount_ma5 IS '5-trading-day moving average of industry_etf_trading_amount. Populated by analyze.industry_sentiments.etf_contribution via pandas rolling(5).mean() per (industry_id, pool_size) group (min_periods=1). NULL when the underlying value is NULL for the entire trailing 5-day window.';
 COMMENT ON COLUMN analysis.industry_etf_contribution.industry_etf_trading_amount_ma20 IS '20-trading-day moving average of industry_etf_trading_amount. Populated by analyze.industry_sentiments.etf_contribution via pandas rolling(20).mean() per (industry_id, pool_size) group (min_periods=1). NULL when the underlying value is NULL for the entire trailing 20-day window. Longer-window smoother than MA5, exposed by the UI "Trading Amt" MA selector.';
 

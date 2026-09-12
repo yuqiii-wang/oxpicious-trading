@@ -9,6 +9,9 @@
 //    ordered by confidence DESC (the page's main list).
 //  • availableDates(sec_type) — dates present in live_signals (roster,
 //    newest first) for the date selector.
+//  • history(sec_type, code) — EVERY live_signals row of one code (newest
+//    first) behind the row-expansion panel: the history-signals table +
+//    the buy/sell markers on the code-trend chart.
 // ---------------------------------------------------------------------------
 import { queryRows, formatDate } from "./db.service.js";
 import type { QueryResultRow } from "pg";
@@ -135,4 +138,58 @@ export async function fetchTradingSignalDates(
     [st],
   );
   return rows.map((r) => formatDate(r.date));
+}
+
+/** Every live_signals row of ONE code (newest first, confidence DESC within
+ *  a day) — the row-expansion panel's history table + trend-chart markers.
+ *  Optional signal_type / signal_sub_type narrow the history to one signal
+ *  family; omitted = all of the code's signals. */
+export async function fetchTradingSignalHistory(
+  secType: string | null | undefined,
+  code: string,
+  signalType?: string | null,
+  signalSubType?: string | null,
+): Promise<TradingSignalRow[]> {
+  const st = assertSecType(secType);
+  const c = (code ?? "").trim();
+  if (!c) {
+    throw Object.assign(new Error("code is required"), { status: 400 });
+  }
+  const conditions = ["s.sec_type = $1", "s.code = $2"];
+  const params: unknown[] = [st, c];
+  if (signalType) {
+    params.push(signalType.trim());
+    conditions.push(`s.signal_type = $${params.length}`);
+  }
+  if (signalSubType) {
+    params.push(signalSubType.trim());
+    conditions.push(`s.signal_sub_type = $${params.length}`);
+  }
+  const rows = await queryRows<TradingSignalRow & QueryResultRow>(
+    `SELECT s.code,
+            n.name                       AS code_name,
+            s.sec_type,
+            s.signal_type,
+            s.signal_sub_type,
+            to_char(s.date, 'YYYY-MM-DD') AS date,
+            to_char(s.time, 'HH24:MI')    AS time,
+            s.action,
+            s.signal_excess::float8       AS signal_excess,
+            s.signal_excess_pct::float8    AS signal_excess_pct,
+            s.signal::float8              AS signal,
+            s.signal_threshold::float8     AS signal_threshold,
+            s.confidence,
+            s.is_day_close_trigger
+     FROM live.live_signals s
+     LEFT JOIN LATERAL (
+       SELECT i.name FROM ${IDENTITY_TABLE[st]!} i
+       WHERE i.code = s.code
+       ORDER BY i.date DESC LIMIT 1
+     ) n ON TRUE
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY s.date DESC, s.time DESC, s.confidence DESC
+     LIMIT 1000`,
+    params,
+  );
+  return rows;
 }
