@@ -2,31 +2,28 @@
 
 The pipeline lives in builds.stock.pipeline (cli / discovery /
 gap_detection / margin_gap / archive / writer / main). This file only
-sets up the runtime (warnings, cudf.pandas activation, UTF-8 stdout)
-before pandas is imported anywhere, then delegates to pipeline.main().
+defines the :class:`StockBuild` entry class — the runtime lifecycle
+(resource pre-check, cudf.pandas activation, UTF-8 stdout, post-check
+memory release) is owned by the :class:`DataBuild` ABC; the header and
+wall time are printed by pipeline.main() itself (empty ``title`` tells
+the base template to stay out of the way). The pipeline module is
+imported lazily inside :meth:`StockBuild.run` so the cudf.pandas import
+hook is installed before its pandas import.
 """
 
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
+from _common.data_build import DataBuild
 
-pre_check()
-import warnings
-warnings.filterwarnings("ignore")
 
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
+class StockBuild(DataBuild):
+    """``python -m builds.stock`` — delegates to builds.stock.pipeline."""
 
-from _common.build_commons import setup_utf8_stdout
-setup_utf8_stdout()
+    allow_unknown_args = True  # pipeline.cli.parse_args() owns sys.argv
 
-import asyncio
+    async def run(self) -> None:
+        from builds.stock.pipeline.main import main
 
-from builds.stock.pipeline.main import main
+        await main()
+
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    StockBuild().execute()

@@ -8,6 +8,7 @@ import IndexBaselinePage from "@/dataviz/pages/IndexBaselinePage";
 import StockBaselinePage from "@/dataviz/pages/StockBaselinePage";
 import FuturesPage from "@/dataviz/pages/FuturesPage";
 import NewsPage from "@/dataviz/pages/NewsPage";
+import AiPage from "@/dataviz/pages/AiPage";
 import LiveDataIndexPage from "@/live/pages/LiveDataIndexPage";
 import LiveDataEtfPage from "@/live/pages/LiveDataEtfPage";
 import LiveDataStockPage from "@/live/pages/LiveDataStockPage";
@@ -16,7 +17,8 @@ import LiveDataTradingSignalsPage from "@/live/pages/LiveDataTradingSignalsPage"
 import CommonsPage from "@/analysis/pages/CommonsPage";
 import DerivativesPage from "@/analysis/pages/DerivativesPage";
 import CompositesPage from "@/analysis/pages/CompositesPage";
-import OppositeIndustryCorrelationsPage from "@/analysis/pages/Composites/OppositeIndustryCorrelationsPage";
+import OppositeIndustryCorrelationsPage from "@/analysis/pages/Composites/OppositeIndustryCorrelations/OppositeIndustryCorrelationsPage";
+import AiMarketSentimentsPage from "@/analysis/pages/Composites/AiMarketSentiments/AiMarketSentimentsPage";
 import MaSpreadPage from "@/analysis/pages/MaSpreadPage";
 import IndustrySentimentsPage from "@/analysis/pages/IndustrySentimentsPage";
 import PeAndDividendPage from "@/analysis/pages/PeAndDividendPage";
@@ -59,6 +61,7 @@ export default function App() {
           <Route path="/dataviz/stock-baseline" element={<StockBaselinePage />} />
           <Route path="/dataviz/futures" element={<FuturesPage />} />
           <Route path="/dataviz/news" element={<NewsPage />} />
+          <Route path="/dataviz/ai" element={<AiPage />} />
           <Route path="/analysis" element={<Navigate to="/analysis/commons" replace />} />
           <Route path="/analysis/commons" element={<CommonsPage />} />
           <Route path="/analysis/commons/ma-spread" element={<MaSpreadPage />} />
@@ -73,6 +76,10 @@ export default function App() {
           <Route
             path="/analysis/composites/opposite-industry-correlations"
             element={<OppositeIndustryCorrelationsPage />}
+          />
+          <Route
+            path="/analysis/composites/ai-market-sentiments"
+            element={<AiMarketSentimentsPage />}
           />
           <Route path="/analysis/signals" element={<SignalsPage />} />
           <Route path="/analysis/signals/recent-movements" element={<RecentMovementsPage />} />

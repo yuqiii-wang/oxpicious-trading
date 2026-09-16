@@ -24,24 +24,33 @@
 --    Autocomplete dropdown as Benchmark Attribution.
 --
 --  METRIC (hype = industry_return - benchmark_return)
+--    The industry return is the SHARED PORTFOLIO's return (the benchmark
+--    members that belong to the industry), recovered by inverting the
+--    DAILY return-decomposition identity — never by inverting the
+--    materialized rolling_{N}days_price column (its clamped / NULL->0 /
+--    compounding artifacts the (1-swf)/swf inversion would amplify into
+--    +-hundreds-of-percent noise for narrow industries).
 --    For each (date, industry, benchmark, period N):
---      non_industry_return_Nd = benchmark.benchmark_non_this_industry_rolling_{N}days_price
---                               / 100 - 1   (cumulative non-industry return
---                               factor over the trailing N trading days;
---                               NULL when the industry has no overlap with
---                               the benchmark or the benchmark's shared
---                               weight >= 95%)
---      benchmark_return_Nd    = benchmark.close[t] / benchmark.close[t-N] - 1
+--      bench_return_1d        = close[t] / close[t-1] - 1
+--      non_industry_return_1d = benchmark_non_this_industry_price[t] /
+--                               close[t-1] - 1   (EXACT: the build
+--                               materializes the level as
+--                               price[t] = close[t-1] * (1 + r_t))
 --      swf                    = benchmark_shared_weight / 100.0
---      industry_return_Nd     = (benchmark_return_Nd - (1 - swf) * non_industry_return_Nd) / swf
+--      shared_return_1d       = (bench_return_1d - (1-swf)*non_industry_return_1d) / swf
+--      industry_return_Nd     = compounded shared_return_1d over the FULL
+--                               trailing N trading-day rows (exp of the
+--                               summed ln(1+r); returns outside (-0.5, 0.5]
+--                               contribute 0; partial windows -> NULL)
+--      benchmark_return_Nd    = benchmark.close[t] / benchmark.close[t-N] - 1
 --      hype                   = industry_return_Nd - benchmark_return_Nd
 --
 --    A POSITIVE hype means the industry's shared stocks OUTPERFORMED the
 --    benchmark (HYPE); NEGATIVE means they UNDERPERFORMED (DRAIN).
 --    Industries are ranked by hype DESC; rank 1..5 HYPE = top 5,
 --    rank 1..5 DRAIN = bottom 5. Industries with NULL hype (no overlap
---    with the benchmark, swf = 0, or insufficient history) are excluded
---    from ranking.
+--    with the benchmark, swf = 0, or insufficient history for the full
+--    N-row window) are excluded from ranking.
 --
 --    For weighting='amt': metric_value = hype * shared_trading_amt (absolute
 --    yuan impact). The ranking is by this amount instead of raw hype.
@@ -117,13 +126,10 @@ CREATE TABLE IF NOT EXISTS analysis.industry_hypes_and_drains (
     -- so the user can see both the benchmark move and the contribution.
     benchmark_return_nd           NUMERIC(10,6),
 
-    -- Non-this-industry N-day return (signed) = the benchmark
-    -- move EXCLUDING the industry's shared stocks. Used to derive
-    -- industry_return_Nd (and thus hype) via the return decomposition:
-    --   swf = benchmark_shared_weight / 100
-    --   industry_return_Nd = (benchmark_return_Nd - (1-swf)*non_industry_return_Nd) / swf
-    --   hype = industry_return_Nd - benchmark_return_Nd
-    non_industry_return_nd        NUMERIC(10,6),
+    -- Industry (shared portfolio) N-day return (signed) = the compounded
+    -- daily shared return over the trailing N trading-day rows (see the
+    -- METRIC block above). hype = industry_return_Nd - benchmark_return_Nd.
+    industry_return_nd            NUMERIC(10,6),
 
     -- Industry's benchmark_shared_weight (latest snapshot, percent 0-100).
     -- Tooltip context: how much of the benchmark the industry's stocks
@@ -153,12 +159,12 @@ CREATE INDEX IF NOT EXISTS idx_hypes_bench_period_date
 CREATE INDEX IF NOT EXISTS idx_hypes_industry_bench_period_date
     ON analysis.industry_hypes_and_drains (industry_id, benchmark_code, period_days, weighting, date);
 
-COMMENT ON TABLE  analysis.industry_hypes_and_drains                IS 'Pre-computed top-5 (HYPE) + bottom-5 (DRAIN) industries ranked by hype (industry_return - benchmark_return) relative to a BROAD-MARKET benchmark over a trailing window. One row per (benchmark_code, date, period_days, weighting, rank_side, rank). weighting: equal (metric_value = hype, attribution_type=equal) or amt (metric_value = hype × shared_trading_amt, attribution_type=trading_amt). hype = industry_return_Nd - benchmark_return_Nd where industry_return_Nd = (bench_ret - (1-swf)*non_ind_ret) / swf and swf = benchmark_shared_weight / 100. benchmark_code: any broad-market index (is_broad_market=TRUE in stats.sec_index_tags). Positive=HYPE, negative=DRAIN. Built by analyze.industry_sentiments.hypes_and_drains (internal step, truncate-then-recompute). Depends on analysis.industry_attributions (incl. the 120d column) being populated first.';
+COMMENT ON TABLE  analysis.industry_hypes_and_drains                IS 'Pre-computed top-5 (HYPE) + bottom-5 (DRAIN) industries ranked by hype (industry_return - benchmark_return) relative to a BROAD-MARKET benchmark over a trailing window. One row per (benchmark_code, date, period_days, weighting, rank_side, rank). weighting: equal (metric_value = hype, attribution_type=equal) or amt (metric_value = hype × shared_trading_amt, attribution_type=trading_amt). hype = industry_return_Nd - benchmark_return_Nd where industry_return_Nd is the shared portfolio''s trailing-N-day return, recovered by inverting the DAILY decomposition identity (shared_return_1d = (bench_1d - (1-swf)*non_ind_1d)/swf, swf = benchmark_shared_weight/100) and compounding over the full N-row window — never by inverting the materialized rolling column, whose construction artifacts the 1/swf inversion would amplify into noise. benchmark_code: any broad-market index (is_broad_market=TRUE in stats.sec_index_tags). Positive=HYPE, negative=DRAIN. Built by analyze.industry_sentiments.hypes_and_drains (internal step, truncate-then-recompute). Depends on analysis.industry_attributions (incl. the daily benchmark_non_this_industry_price column) being populated first.';
 COMMENT ON COLUMN analysis.industry_hypes_and_drains.weighting      IS 'Ranking method: equal = hype (industry_return_Nd - benchmark_return_Nd, attribution_type=equal). amt = hype × shared_trading_amt (absolute yuan impact, attribution_type=trading_amt). The UI toggle switches between these two ranking methods.';
-COMMENT ON COLUMN analysis.industry_hypes_and_drains.metric_value  IS 'Ranking metric. For weighting=equal: hype = industry_return_Nd - benchmark_return_Nd (range ~[-1,1]) where industry_return_Nd = (bench_ret - (1-swf)*non_ind_ret)/swf and swf = benchmark_shared_weight/100. For weighting=amt: hype × shared_trading_amt (absolute yuan, can be ~10^8-10^11). Positive = HYPE, negative = DRAIN in both cases.';
+COMMENT ON COLUMN analysis.industry_hypes_and_drains.metric_value  IS 'Ranking metric. For weighting=equal: hype = industry_return_Nd - benchmark_return_Nd where industry_return_Nd is the shared portfolio''s compounded trailing-N-day return (daily-identity inversion). For weighting=amt: hype × shared_trading_amt (absolute yuan, can be ~10^8-10^11). Positive = HYPE, negative = DRAIN in both cases.';
 COMMENT ON COLUMN analysis.industry_hypes_and_drains.shared_trading_amt IS 'Shared stocks trading amount (yuan) = benchmark.trading_amount - benchmark_non_this_industry_trading_amt. NULL when trading amount data is unavailable. Used to compute the amt-weighted metric and for UI tooltip context.';
 COMMENT ON COLUMN analysis.industry_hypes_and_drains.benchmark_return_nd    IS 'Benchmark N-day return (signed) = close[t]/close[t-N]-1. Stored for the UI tooltip.';
-COMMENT ON COLUMN analysis.industry_hypes_and_drains.non_industry_return_nd IS 'Non-this-industry N-day return (signed) = the benchmark move EXCLUDING the industry''s shared stocks = non_this_industry_rolling_{N}days_price / 100 - 1. Used to derive industry_return_Nd (and thus hype) via the return decomposition: industry_return_Nd = (benchmark_return_Nd - (1-swf)*non_industry_return_Nd) / swf.';
+COMMENT ON COLUMN analysis.industry_hypes_and_drains.industry_return_nd IS 'Industry (shared portfolio) N-day return (signed) = compounded daily shared return over the trailing N trading-day rows; the daily shared return is inverted from the decomposition identity: shared_return_1d = (bench_return_1d - (1-swf)*non_industry_return_1d) / swf with swf = benchmark_shared_weight/100. hype = industry_return_Nd - benchmark_return_Nd. NULL when the industry has no overlap with the benchmark (swf = 0) or the window is not full.';
 COMMENT ON COLUMN analysis.industry_hypes_and_drains.benchmark_shared_weight IS 'Industry''s benchmark_shared_weight (latest sec_composition snapshot, in percent 0-100). Tooltip context: how much of the benchmark the industry''s stocks represent. NULL when the industry has no overlap with the benchmark.';
 
 -- ----------------------------------------------------------------------------
@@ -166,7 +172,7 @@ COMMENT ON COLUMN analysis.industry_hypes_and_drains.benchmark_shared_weight IS 
 -- ----------------------------------------------------------------------------
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('industry_hypes_and_drains', 'industry_hypes_and_drains', NULL, NOW(),
-     'Pre-computed top-5 (HYPE) + bottom-5 (DRAIN) industries ranked by hype (industry_return - benchmark_return) relative to a BROAD-MARKET benchmark over a trailing window. One row per (date, benchmark_code, period_days, weighting, rank_side, rank). Two weighting variants: equal (metric_value=hype, attribution_type=equal) and amt (metric_value=hype*shared_trading_amt, attribution_type=trading_amt). hype = industry_return_Nd - benchmark_return_Nd where industry_return_Nd = (bench_ret - (1-swf)*non_ind_ret)/swf and swf = benchmark_shared_weight/100. period_days in {5,20,60,120,255,500} (120 default). Built by analyze.industry_sentiments.hypes_and_drains (internal step, truncate-then-recompute). Depends on analysis.industry_attributions (incl. 120d column) being populated first.')
+     'Pre-computed top-5 (HYPE) + bottom-5 (DRAIN) industries ranked by hype (industry_return - benchmark_return) relative to a BROAD-MARKET benchmark over a trailing window. One row per (date, benchmark_code, period_days, weighting, rank_side, rank). Two weighting variants: equal (metric_value=hype, attribution_type=equal) and amt (metric_value=hype*shared_trading_amt, attribution_type=trading_amt). hype = industry_return_Nd - benchmark_return_Nd where industry_return_Nd is the shared portfolio''s trailing-N-day return, recovered by inverting the DAILY decomposition identity (shared_return_1d = (bench_1d - (1-swf)*non_ind_1d)/swf) and compounding over the full N-row window. period_days in {5,20,60,120,255,500} (120 default). Built by analyze.industry_sentiments.hypes_and_drains (internal step, truncate-then-recompute). Depends on analysis.industry_attributions (incl. the daily benchmark_non_this_industry_price column) being populated first.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

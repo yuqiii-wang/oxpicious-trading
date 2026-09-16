@@ -19,10 +19,7 @@ import numpy as np
 from analyze.analysis_forecasts.config import GAP_WINDOWS
 from analyze.analysis_forecasts.wide import MonthWindow
 from analyze.analysis_signals.config import GAP_PCT, sub_type_gap
-from analyze.analysis_signals.signals._base import (
-    ConfirmMap,
-    _compute_pct_signals,
-)
+from analyze.analysis_signals.signals._base import ConfirmMap, PctSignalEngine
 
 
 def compute_gap_signals(
@@ -33,27 +30,33 @@ def compute_gap_signals(
     first_ord: np.ndarray,
     grid_ord: np.ndarray,
     confirm: ConfirmMap,
-    gap_windows: tuple = GAP_WINDOWS,
+    *,
+    gap_windows: tuple[int, ...] = GAP_WINDOWS,
+    pct: int = GAP_PCT,
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, signal rows) per stat month — gap family.
-
-    Identical machinery to compute_rsi_signals applied to the
-    gap_{W}days N-day price-return matrices (analysis.mov_ave_rsi):
-    top 1% = sharp W-day rally → sell, bottom 1% = sharp W-day selloff
-    → buy.
 
     Args:
         mats: wide gap matrices keyed f"gap_{w}".
         confirm: keyed (stat_month, "gap_{w}", side) — see
-              _compute_pct_signals.
+              PctSignalEngine (the window key is the matrix key).
         gap_windows: gap windows to emit (default: forecasts config).
+        pct: percentile width (default GAP_PCT).
     """
-    return _compute_pct_signals(
-        mats, windows, codes, sec_type, first_ord, grid_ord, confirm,
+    engine = PctSignalEngine(
+        mats=mats,
+        chg={},
+        windows=windows,
+        codes=codes,
+        sec_type=sec_type,
+        first_ord=first_ord,
+        grid_ord=grid_ord,
+        confirm=confirm,
         keys=[f"gap_{w}" for w in gap_windows],
-        pct=GAP_PCT,
+        pct=pct,
         signal_type="mov_gap",
         sub_type={f"gap_{w}": sub_type_gap(w) for w in gap_windows},
         param_key="gap_window",
-        fmt=".4f",
+        fmt="0.4f",
     )
+    return engine.run()

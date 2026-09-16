@@ -18,7 +18,8 @@ for m in \
   downloads.options.cffex.trend \
   downloads.macro.pboc.lpr_news \
   downloads.macro.zhihu.news \
-  downloads.macro.gov.news
+  downloads.macro.gov.news \
+  downloads.macro.ai_daily
 do
   python -m "$m"
 done

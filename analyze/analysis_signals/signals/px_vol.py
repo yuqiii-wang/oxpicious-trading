@@ -3,7 +3,11 @@ state cells.
 
 The state-cell detection of analysis_forecasts.px_vol_state at signal
 granularity: a day is a signal when BOTH its legs fall in one of the
-10 SIDED cells (flat is not emitted — no directional claim). The day
+signal cells of PX_VOL_SIGNAL_CELLS (the 2026-09 reduction study's
+four edge-backed (speed, vol) cells — sharp_up_heavy / slow_up_heavy
+sell, sharp_dn_normal / slow_dn_shrink buy; the full 10-sided state
+lattice keeps computing in the forecasts layer, and flat is not
+emitted — no directional claim). The day
 categories come from the analysis.mov_ave_price_vs_amt REGISTRY (the
 px_vol family's date-level source of truth, scattered via
 wide.build_px_vol_state_matrices into int8 ordinals):
@@ -43,15 +47,16 @@ from analyze.analysis_forecasts.config import (
     PX_VOL_LB_WINDOW,
     PX_VOL_SIGMA_FLOOR,
     PX_VOL_SIGMA_WINDOW,
+    PX_VOL_SPEED_ORD,
     PX_VOL_SPEED_SIDE,
-    PX_VOL_SPEEDS,
-    PX_VOL_VOL_STATES,
+    PX_VOL_VOL_ORD,
     PX_VOL_Z_HEAVY,
     PX_VOL_Z_SHRINK,
 )
 from analyze.analysis_forecasts.wide import MonthWindow, round6
 from analyze.analysis_signals.config import (
     PX_VOL_SIDE_ACTION,
+    PX_VOL_SIGNAL_CELLS,
     SIGNAL_TYPE_PX_VOL,
     sub_type_px_vol,
 )
@@ -85,7 +90,6 @@ def compute_px_vol_signals(
               baselines, ranks, periods, factors) from
               gate.fetch_confirm on analysis_forecasts.px_vol_state.
     """
-    C = len(codes)
     codes_arr = np.asarray(codes)
 
     for mw in windows:
@@ -103,12 +107,11 @@ def compute_px_vol_signals(
         T = mats["t"][lo:hi]
         Z = mats["z"][lo:hi]
         rows: list[dict] = []
-        for si, speed in enumerate(PX_VOL_SPEEDS):
-            if speed == "flat":
-                continue
+        for speed, vol_state in PX_VOL_SIGNAL_CELLS:
             side = PX_VOL_SPEED_SIDE[speed]
             # Adaptive confirmation gate (per code — the matching
-            # px_vol_state bucket's calibrated gate).
+            # px_vol_state bucket's calibrated gate; the gate groups a
+            # speed's vol states, so the key carries the speed only).
             conf = confirm.get((mw.stat_month, speed, side))
             if conf is None or conf[0].size == 0:
                 continue
@@ -117,9 +120,6 @@ def compute_px_vol_signals(
                 codes_arr, np.asarray(conf[0], dtype=codes_arr.dtype),
             )
 
-            # Registry-equality speed mask (-1 = no valid state). The
-            # recorded t-bar stays the signal_threshold.
-            smask = S == si
             if speed == "sharp_up":
                 bar = PX_VOL_K_SHARP
             elif speed == "slow_up":
@@ -128,8 +128,13 @@ def compute_px_vol_signals(
                 bar = PX_VOL_K_SLOW_DN
             else:  # sharp_dn
                 bar = PX_VOL_K_SHARP
+            # Registry-equality cell masks (the ordinals are >= 0, so
+            # the -1 "no valid state" sentinel never matches). The
+            # recorded t-bar stays the signal_threshold.
             cells = (
-                smask & (V >= 0) & in_month[:, None] & live[None, :]
+                (S == PX_VOL_SPEED_ORD[speed])
+                & (V == PX_VOL_VOL_ORD[vol_state])
+                & in_month[:, None] & live[None, :]
                 & conf_mask[None, :]
             )
             ts, cs = np.nonzero(cells)
@@ -142,7 +147,6 @@ def compute_px_vol_signals(
                 row_code = codes[i]
                 tv = float(T[t, i])
                 zv = float(Z[t, i])
-                vol_state = PX_VOL_VOL_STATES[int(V[t, i])]
                 info = conf_info.get(row_code)
                 fields = confirm_row_fields(info)
                 rows.append({

@@ -6,7 +6,7 @@
 --  5-year window (stat_month - 5y, stat_month] of the code's own
 --  trading days, stores the bucket's motivation stats, and links via
 --  forecast_id to its RESULT rows in analysis_forecasts.forecast_results
---  (1:N — one forecast_id → 4 period rows: next / 5d / 20d / 60d).
+--  (1:N — one forecast_id → 5 period rows: next / 5d / 20d / 60d / mixed).
 --
 --  CODE-CLUSTERED, forecast_id-keyed (2026-09): PK (code, forecast_id)
 --  on HASH (code) partitions — the code-clustered read/write axis (a
@@ -71,7 +71,7 @@
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis_forecasts.mov_rsi (
     code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_mov_rsi_forecast_id
+    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_mov_rsi_forecast_id
     rsi_window      INTEGER      NOT NULL,  -- RSI window in trading days: 6/10/14/20/60
     side            TEXT         NOT NULL,  -- 'top' (overbought) | 'bottom' (oversold)
     pct             INTEGER      NOT NULL,  -- percentile width: 1 / 5 / 10 / 25
@@ -93,7 +93,7 @@ SELECT public.create_hash_partitions('analysis_forecasts', 'mov_rsi', 16);
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS analysis_forecasts.mov_std (
     code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_mov_std_forecast_id
+    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_mov_std_forecast_id
     ma_window       INTEGER      NOT NULL,  -- MA window in trading days: 5/20/60
     k               NUMERIC(4,2) NOT NULL,  -- σ multiple: 0.5/1.0/1.5/2.0/2.5/3.0
     side            TEXT         NOT NULL,  -- 'upper' | 'lower'
@@ -272,9 +272,9 @@ CREATE INDEX IF NOT EXISTS idx_mov_std_forecast_id
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis_forecasts.mov_rsi IS 'RSI extreme-day bucket definitions (motivation): one row per forecast_id — the days of one security-month whose rsi_{W}days is in the top/bottom pct% of the trailing 5-year window ending at the bucket''s stat_month, streak-merged (2026-09: consecutive bucket days are ONE forecast signal anchored at the run''s MID day — the mean run length per signal lives on forecast_identities.streak_signal_days; the legacy fixed-5-day cooldown was removed), split by whether any bucket date is a market-hyped date. PK (code, forecast_id) on HASH (code) partitions — code-clustered reads/writes; the identity (sec_type, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / reversal probabilities) live in analysis_forecasts.forecast_results via forecast_id. Bucket day RSI values join from analysis.mov_ave_rsi on (sec_type, code, date, rsi_window). Source: analysis.mov_ave_rsi + stats.*_basic_stats closes.';
 COMMENT ON COLUMN analysis_forecasts.mov_rsi.code IS 'Hash partition key + PK lead. The bucket''s sec_type and stat_month are registered in analysis_forecasts.forecast_identities under the row''s forecast_id.';
-COMMENT ON COLUMN analysis_forecasts.mov_rsi.forecast_id IS 'Surrogate id (PK partner of code; 1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id; id-only lookups use idx_mov_rsi_forecast_id.';
+COMMENT ON COLUMN analysis_forecasts.mov_rsi.forecast_id IS 'Surrogate id (PK partner of code; 1:N link to the bucket''s 5 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 5 periods). The bucket''s identity (sec_type, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id; id-only lookups use idx_mov_rsi_forecast_id.';
 COMMENT ON COLUMN analysis_forecasts.mov_rsi.rsi_window IS 'RSI window (trading days) whose extreme days are bucketed: 6/10/14/20/60 — mirrors analysis.mov_ave_rsi.rsi_*days.';
-COMMENT ON COLUMN analysis_forecasts.mov_rsi.side IS 'Bucket side: top = rsi in the top pct% of the window (overbought; reversals are changes below the bucket''s FIXED 1% reverse_threshold (0.01 — the period-end n-day close vs ±1%); bottom = rsi in the bottom pct% (oversold; reversals are changes above it).';
+COMMENT ON COLUMN analysis_forecasts.mov_rsi.side IS 'Bucket side: top = rsi in the top pct% of the window (overbought; reversals are changes below the bucket''s FIXED 1% threshold (0.01 — the period-end n-day close vs ±1%); bottom = rsi in the bottom pct% (oversold; reversals are changes above it).';
 COMMENT ON COLUMN analysis_forecasts.mov_rsi.pct IS 'Percentile width of the bucket: 1, 5, 10 or 25 (percent). The threshold is the window''s (linear-interpolated) percentile of rsi_{W}days over non-NULL values.';
 COMMENT ON COLUMN analysis_forecasts.mov_rsi.is_market_hyped IS 'TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
 COMMENT ON COLUMN analysis_forecasts.mov_rsi.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';
@@ -284,9 +284,9 @@ COMMENT ON COLUMN analysis_forecasts.mov_rsi.lookback_period IS 'Recorded build 
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis_forecasts.mov_std IS 'Bollinger-breach bucket definitions (motivation): one row per forecast_id — the days of one security-month within the trailing 5-year window ending at the bucket''s stat_month whose price closed beyond ma_{W} ± k·std_{W}days, streak-merged (2026-09: consecutive breach days are ONE forecast signal anchored at the run''s MID day — the mean run length per signal lives on forecast_identities.streak_signal_days; the legacy fixed-5-day cooldown was removed). PK (code, forecast_id) on HASH (code) partitions — code-clustered reads/writes; the identity (sec_type, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / reversal probabilities) live in forecast_results linked via forecast_id. Band inputs join from analysis.mov_ave_spreads_detail / stats.*_tech_stats. Sources: stats.*_tech_stats (ma), analysis.mov_ave_spreads_detail (std), stats.*_basic_stats closes (price, COALESCE etf_adjustment.adj_close for ETFs).';
 COMMENT ON COLUMN analysis_forecasts.mov_std.code IS 'Hash partition key + PK lead. The bucket''s sec_type and stat_month are registered in analysis_forecasts.forecast_identities under the row''s forecast_id.';
-COMMENT ON COLUMN analysis_forecasts.mov_std.forecast_id IS 'Surrogate id (PK partner of code; 1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id; id-only lookups use idx_mov_std_forecast_id.';
+COMMENT ON COLUMN analysis_forecasts.mov_std.forecast_id IS 'Surrogate id (PK partner of code; 1:N link to the bucket''s 5 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 5 periods). The bucket''s identity (sec_type, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id; id-only lookups use idx_mov_std_forecast_id.';
 COMMENT ON COLUMN analysis_forecasts.mov_std.ma_window IS 'MA/σ window (trading days): 5/20/60 — ma_{W} from stats.*_tech_stats, std_{W}days from analysis.mov_ave_spreads_detail.';
 COMMENT ON COLUMN analysis_forecasts.mov_std.k IS 'σ multiple defining the Bollinger bound: 0.5 / 1.0 / 1.5 / 2.0 / 2.5 / 3.0.';
-COMMENT ON COLUMN analysis_forecasts.mov_std.side IS 'Breach side: upper = price > ma_{W} + k·std_{W}days (reversals are changes below the bucket''s FIXED 1% reverse_threshold (0.01 — the period-end n-day close vs ±1%); lower = price < ma_{W} - k·std_{W}days (reversals are changes above it).';
+COMMENT ON COLUMN analysis_forecasts.mov_std.side IS 'Breach side: upper = price > ma_{W} + k·std_{W}days (reversals are changes below the bucket''s FIXED 1% threshold (0.01 — the period-end n-day close vs ±1%); lower = price < ma_{W} - k·std_{W}days (reversals are changes above it).';
 COMMENT ON COLUMN analysis_forecasts.mov_std.is_market_hyped IS 'TRUE when ANY breach date falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
 COMMENT ON COLUMN analysis_forecasts.mov_std.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';

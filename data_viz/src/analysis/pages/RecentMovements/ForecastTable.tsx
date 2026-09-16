@@ -43,14 +43,18 @@
  *     period's forward window swings ≥ 1% against the side) — (range,
  *     percent points), days (range, raw). The group follows the
  *     toolbar's horizon toggle;
- *   • signal (standalone, last) — ✓ when the bucket already produced signal
- *     day(s): the backend joins analysis_signals.signals by config + month
- *     (ticks filter signal/none).
+ *   • signal (standalone, last) — ✓ when the bucket's MIXED forecast row
+ *     (the weight-blended forward profile: 5d 50% / next 30% / 20d 15% /
+ *     60d 5%) clears the forecast-result gate the signals layer applies —
+ *     the same rule that emits its signal days (ticks filter signal/none).
  *
  * The month filter doubles as the month selector: all available stat_months
  * arrive in one fetch and the header's single END-PERIOD month input picks
  * the month to show — rows match stat_month == end (its min bound, the
- * stats window start at end − 5y, is auto-frozen as a caption only).
+ * stats window start at end − 5y, is auto-frozen as a caption only). The
+ * selector STARTS ACTIVE — seeded at the data's latest month (or the
+ * forecast-id search focus month via defaultEndMonth) — so ONLY that
+ * month's rows show from load; the menu's Clear releases it to all months.
  * Filters apply AND across columns, OR within a column; they reset when the
  * scope (code / sec_type / kind) changes. While the fetch is in flight a
  * spinner replaces the table.
@@ -804,10 +808,13 @@ function ForecastTableImpl({ code, secType, kind, onRowClick, selectedRowKey, fo
               type: "date" as const,
               granularity: "month" as const,
               // END-PERIOD selector: ONE editable end month; rows match
-              // stat_month == end (only that month's rows show). The min
-              // bound (end − 5y — the buckets' trailing stats window,
-              // WINDOW_YEARS on the compute side) is auto-frozen and
-              // shown as a caption, never as a second input or bound.
+              // stat_month == end (only that month's rows show). The filter
+              // STARTS ACTIVE (single-month view from load), seeded at
+              // defaultEndMonth — the forecast-id search focus month when
+              // set, else the data's latest month. The min bound (end − 5y
+              // — the buckets' trailing stats window, WINDOW_YEARS on the
+              // compute side) is auto-frozen and shown as a caption, never
+              // as a second input or bound.
               frozenFromYears: 5,
               value: (r: ForecastRow) => r.stat_month.slice(0, 7),
             }
@@ -1023,6 +1030,10 @@ function ForecastTableImpl({ code, secType, kind, onRowClick, selectedRowKey, fo
           maxHeight={320}
           enableFilters={data?.enable_filters ?? false}
           filterScopeDeps={filterScopeDeps}
+          // The month selector seeds at the id-search focus month when
+          // active (a jumped-to older bucket's rows must show), else the
+          // data's latest month.
+          defaultEndMonth={focusStatMonth != null ? focusStatMonth.slice(0, 7) : null}
           onRowClick={onRowClick ? handleRowClick : undefined}
           selectedRowKey={selectedRowKey ?? null}
           emptyState={emptyState}

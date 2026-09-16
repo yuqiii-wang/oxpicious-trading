@@ -47,9 +47,16 @@ from datetime import date
 from typing import Iterator
 
 import numpy as np
+import pandas as pd
+
+from _common.df_utils import host_array
 
 from analyze.analysis_forecasts.compute_high_low_streaks import COMBOS
-from analyze.analysis_forecasts.wide import MonthWindow, round6
+from analyze.analysis_forecasts.wide import (
+    MonthWindow,
+    date_ordinals,
+    round6,
+)
 from analyze.analysis_signals.config import (
     HL_STREAKS_GAP_TOLERANCE,
     HL_STREAKS_SIDE_ACTION,
@@ -65,9 +72,40 @@ from analyze.analysis_signals.signals._base import (
 )
 
 
+def hls_extra_cols(streaks_df: pd.DataFrame) -> dict[str, np.ndarray]:
+    """The signals family's per-streak payloads for
+    build_streak_anchor_cells' ``extra_cols`` — arrays over the streaks
+    frame's ROWS, carried through the builder's validity filter into
+    the cells (the join back to streaks_df is NOT 1:1: end_t collapses
+    end dates onto the previous grid row wherever the forecast frame
+    dropped rows the streaks step saw, so the payloads ride the mask
+    instead of being re-joined):
+
+      band_edge  — the streak side's band edge in PRICE space (the end
+                   month band's high_val for top / low_val for bottom —
+                   fetch_high_low_streaks' band_high / band_low), the
+                   emitted signal_threshold;
+      start_ord / end_ord — the span dates as epoch-day ordinals (the
+                   reason text + params JSON's streak context).
+    """
+    band_high = host_array(
+        streaks_df["band_high"].to_numpy()
+    ).astype(np.float64)
+    band_low = host_array(
+        streaks_df["band_low"].to_numpy()
+    ).astype(np.float64)
+    top = host_array(streaks_df["side"].to_numpy()) == "top"
+    return {
+        "band_edge": np.where(top, band_high, band_low),
+        "start_ord": date_ordinals(streaks_df["start_date"]),
+        "end_ord": date_ordinals(streaks_df["end_date"]),
+    }
+
+
 def compute_hls_signals(
+    streaks_df: pd.DataFrame,
     cells: dict[str, np.ndarray],
-    price: np.ndarray,
+    price_mat: np.ndarray,
     windows: list[MonthWindow],
     codes: list[str],
     sec_type: str,
@@ -79,11 +117,16 @@ def compute_hls_signals(
     high_low_streaks family.
 
     Args:
+      streaks_df: fetch_high_low_streaks' frame — the cells'
+          provenance: __main__ resolves the cells with
+          build_streak_anchor_cells(..., extra_cols=hls_extra_cols(
+          streaks_df)), so the factory consumes the CARRIED arrays
+          (band_edge / start_ord / end_ord) instead of re-joining this
+          frame (not 1:1 — see hls_extra_cols).
       cells: build_streak_anchor_cells output (ABSOLUTE grid rows),
-          extended with the signals' extra payloads — "band_edge"
-          (the side's band value in price space), "start_ord" /
-          "end_ord" (the span dates as epoch-day ordinals).
-      price: (T, C) wide price matrix (scatter_column of the input
+          extended with the carried "band_edge" / "start_ord" /
+          "end_ord" keys.
+      price_mat: (T, C) wide price matrix (scatter_column of the input
           frame's "price") — the anchor day's close for the reason /
           live-mirror value.
       windows: resolved MonthWindow list for the target months.
@@ -167,7 +210,7 @@ def compute_hls_signals(
                     row_code = codes[i]
                     info = conf_info.get(row_code)
                     fields = confirm_row_fields(info)
-                    close = float(price[t, i])
+                    close = float(price_mat[t, i])
                     edge_v = float(edge_w[j])
                     n_dc = int(dc_w[j])
                     pos = int(pos_w[j])

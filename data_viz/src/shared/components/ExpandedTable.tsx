@@ -61,7 +61,9 @@ export interface ExpandedTableFilter<T> {
   /** date type only — END-ONLY mode: a single editable end-period
    *  input selecting rows whose stats month EQUALS it (the end − N
    *  years lookback min is auto-frozen as a caption-only stats
-   *  window; no From input). */
+   *  window; no From input). The filter STARTS ACTIVE on every scope
+   *  reset, seeded at `defaultEndMonth` (else the data's latest
+   *  month). */
   frozenFromYears?: number;
   /** The row's filterable value (ticks: string; date: comparable
    *  "YYYY-MM"/"YYYY-MM-DD"; range: number). */
@@ -98,6 +100,11 @@ export interface ExpandedTableProps<T> {
   enableFilters?: boolean;
   /** Reset all column filters when these deps change (scope change). */
   filterScopeDeps?: unknown[];
+  /** END-ONLY date filters (frozenFromYears) seed their end bound at
+   *  this period on every scope reset, instead of the data's latest —
+   *  keep it in filterScopeDeps so a new value re-seeds. Null/undefined
+   *  = latest month. */
+  defaultEndMonth?: string | null;
   /** Rendered instead of the table when `rows` is empty. */
   emptyState?: ReactNode;
   /** Row-click handler (cursor turns pointer when set). */
@@ -188,6 +195,7 @@ export function ExpandedTableImpl<T>({
   maxHeight,
   enableFilters = false,
   filterScopeDeps = [],
+  defaultEndMonth = null,
   emptyState,
   onRowClick,
   selectedRowKey,
@@ -224,7 +232,12 @@ export function ExpandedTableImpl<T>({
       ),
     [columns],
   );
-  const { filtered, menuFor } = useTableHeaderFilters(filterDefs, rows, filterScopeDeps);
+  const { filtered, menuFor } = useTableHeaderFilters(
+    filterDefs,
+    rows,
+    filterScopeDeps,
+    defaultEndMonth,
+  );
 
   if (rows.length === 0 && emptyState != null) {
     return <>{emptyState}</>;

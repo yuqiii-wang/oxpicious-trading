@@ -18,33 +18,28 @@ Usage:
   python -m builds.bond --force
 
 See builds/bond/pipeline.py for the full missing-data detection flow.
+
+The entry class delegates to builds.bond.pipeline; the runtime lifecycle
+(resource pre-check, cudf.pandas activation, UTF-8 stdout, post-check
+memory release) is owned by the :class:`DataBuild` ABC, the header and
+wall time by the pipeline itself (empty ``title``). The pipeline module
+is imported lazily inside :meth:`BondBuild.run` (it imports pandas —
+the cudf.pandas hook must be installed first).
 """
 
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
+from _common.data_build import DataBuild
 
-pre_check()
 
-import warnings
-warnings.filterwarnings("ignore")
+class BondBuild(DataBuild):
+    """``python -m builds.bond`` — delegates to builds.bond.pipeline."""
 
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
+    allow_unknown_args = True  # pipeline parses sys.argv itself
 
-# Import the pipeline only AFTER activation (its modules import pandas)
-from _common.build_commons import setup_utf8_stdout
+    async def run(self) -> None:
+        from builds.bond.pipeline import main
 
-setup_utf8_stdout()
-
-import asyncio
-
-from builds.bond.pipeline import main
+        await main()
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    BondBuild().execute()

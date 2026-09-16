@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS analysis_signals.signals (
     code_rank       NUMERIC(8,6),           -- within-code percentile floor of the confidence (code's own prior buckets)
     reason          TEXT,                   -- human-readable explanation of the signal
     params          JSONB,                  -- full detection params, e.g. {"rsi_window":14,"side":"top","pct":1,"cooldown_days":5}
+    signal_order    INTEGER,                -- 1-based best-first priority rank within (sec_type, stat_month): the 2026-09 findings ladder (family x action measured edge DESC), then confidence DESC; only the top 1/8 of each month survives the trim
     is_active       BOOLEAN      NOT NULL DEFAULT FALSE,  -- TRUE only on the sec_type's LATEST signal date (refreshed after every run)
 
     CONSTRAINT pk_signals PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, date)
@@ -158,6 +159,14 @@ ALTER TABLE analysis_signals.signals
 ALTER TABLE analysis_signals.signals
     ADD COLUMN IF NOT EXISTS code_rank NUMERIC(8,6);
 
+-- Signal order (2026-09 pass-2 "reduce to 1/8"): 1 = the month's best
+-- signal. ADD COLUMN propagates to all hash partitions; assigned by
+-- python -m analyze.analysis_signals after each run's month writes
+-- (rows beyond the per-month top-1/8 cut are deleted by the same pass).
+-- Consumers read signal_order ASC.
+ALTER TABLE analysis_signals.signals
+    ADD COLUMN IF NOT EXISTS signal_order INTEGER;
+
 DO $$ BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
@@ -189,3 +198,4 @@ COMMENT ON COLUMN analysis_signals.signals.reason IS 'Human-readable explanation
 COMMENT ON COLUMN analysis_signals.signals.params IS 'Full detection parameters as JSON: mov_rsi {"rsi_window", "side", "pct", "cooldown_days"}; mov_std {"ma_window", "k", "side", "cooldown_days"}; mov_gap {"gap_window", "side", "pct", "cooldown_days"}; high_low_streaks {"band_period", "pct_type", "side", "day_count", "anchor_pos", "start_date", "end_date", "anchor_close", "band_val"}. Values mirror the analysis_forecasts bucket keys of the matching config.';
 
 COMMENT ON COLUMN analysis_signals.signals.is_active IS 'TRUE only for rows on the sec_type''s LATEST signal date (max(date) per sec_type — the latest date the run wrote); FALSE everywhere else. Refreshed by python -m analyze.analysis_signals after EVERY run (including --force), so exactly one date per sec_type is active at a time. Consumers (e.g. live breach monitoring) use the active rows as the current threshold set.';
+COMMENT ON COLUMN analysis_signals.signals.signal_order IS 'Best-first priority rank of the signal WITHIN its own (sec_type, stat_month) pool: 1 = the month''s best signal. Ordered by the 2026-09 findings ladder — the (signal_type, action) groups by their measured pooled mean directional forward return DESCENDING (high_low_streaks sell / mov_rsi buy / high_low_streaks buy / mov_rsi sell / mov_gap buy / mov_gap sell / mov_pairs_ema buy / mov_pairs buy / px_vol sell / mov_std buy / margin_ratio buy / px_vol buy) — then by confidence DESC within a group. After ranking, only the top 1/8 of each month survives (rows beyond the cut are deleted by the run that wrote the month), so consumers reading signal_order ASC always pick up the best signals first. NULL on months not yet re-ranked (pre-migration rows until a --force rebuild).';

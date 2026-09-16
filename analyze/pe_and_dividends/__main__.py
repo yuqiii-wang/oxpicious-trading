@@ -49,49 +49,24 @@ Incremental mode rationale
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-import asyncio
-import datetime
-import os
 import sys
-import time
 
-# Ensure project root is on sys.path so ``_common`` is importable.
-sys.path.insert(
-    0,
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ),
-)
+# Runtime bootstrap — pre-check → silence warnings → cudf.pandas hook →
+# UTF-8 stdout. MUST run before the pandas-importing modules below.
+from _common.data_pipeline import bootstrap_runtime
 
-from _common.build_commons import (  # noqa: E402
-    setup_utf8_stdout,
-    get_db_connection_async,
-    get_db_pool_async,
-    print_build_header,
-    print_wall_time,
-    add_force_arg,
+bootstrap_runtime()
+
+from _common.build_commons import (
     find_missing_analysis_dates,
 )
-from _common.db_commons import copy_or_upsert_split_async, copy_insert_async  # noqa: E402
+from _common.db_commons import copy_or_upsert_split_async, copy_insert_async
 
-setup_utf8_stdout()
+import pandas as pd
 
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
-
-import pandas as pd  # noqa: E402
-
-from analyze._common.sanitize import sanitize_for_db_insert  # noqa: E402
-from _common.df_utils.sanitize import safe_columns  # noqa: E402
-from analyze._common import upsert_analysis_identity  # noqa: E402
-from analyze.pe_and_dividends.config import (  # noqa: E402
+from analyze._common.sanitize import sanitize_for_db_insert
+from _common.df_utils.sanitize import safe_columns
+from analyze.pe_and_dividends.config import (
     ANALYSIS_NAME_PE,
     ANALYSIS_NAME_DIVIDENDS,
     PE_TABLE,
@@ -102,7 +77,7 @@ from analyze.pe_and_dividends.config import (  # noqa: E402
     SEC_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
 )
-from analyze.pe_and_dividends.fetch import (  # noqa: E402
+from analyze.pe_and_dividends.fetch import (
     fetch_active_codes,
     fetch_index_pe_and_close,
     fetch_latest_index_composition,
@@ -112,7 +87,7 @@ from analyze.pe_and_dividends.fetch import (  # noqa: E402
     fetch_stock_close,
     fetch_trading_dates,
 )
-from analyze.pe_and_dividends.compute import (  # noqa: E402
+from analyze.pe_and_dividends.compute import (
     clean_pe,
     compute_trailing_12m_dps,
     compute_index_dividend_yield,
@@ -121,10 +96,11 @@ from analyze.pe_and_dividends.compute import (  # noqa: E402
     compute_monthly_stats,
     find_month_end_dates,
 )
-from analyze.pe_and_dividends.pct_bands import run_pd_pct_bands  # noqa: E402
-from analyze.pe_and_dividends.pct_streaks import run_pd_pct_streaks  # noqa: E402
+from analyze.pe_and_dividends.pct_bands import run_pd_pct_bands
+from analyze.pe_and_dividends.pct_streaks import run_pd_pct_streaks
 
-from _common.log_setup import setup_logging  # noqa: E402
+from _common.log_setup import setup_logging
+from _common.data_analysis import DataAnalysis
 
 logger = setup_logging("pe_and_dividends")
 
@@ -694,50 +670,49 @@ async def _detect_missing_dates(
     return target_dates_pe, target_dates_dy, target_dates_stats
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="PE & Dividend Yield analysis (ETF + Index + Stock)."
-    )
-    add_force_arg(ap)
-    ap.add_argument(
-        "--sec-type", choices=("index", "etf", "stock"), default=None,
-        help="Process only this sec_type (for testing). Default: all.",
-    )
-    ap.add_argument(
-        "--code", default=None,
-        help="Recompute ALL rows for this single security only "
-             "(single-code mode; used by the UI per-security build "
-             "button). Detail rows are upserted (ON CONFLICT DO "
-             "UPDATE); the code's monthly stats rows are deleted and "
-             "rebuilt. Mutually exclusive with --force.",
-    )
-    args = ap.parse_args()
-    force = args.force
+class PeDividendsAnalysis(DataAnalysis):
+    """``python -m analyze.pe_and_dividends`` — PE + dividend yield.
 
-    if args.code and args.force:
-        logger.error("ERROR: --code and --force are mutually exclusive.")
-        sys.exit(2)
+    The connection AND the fixed-size (4) parallel-write pool are owned
+    by the DataAnalysis amain() template (self.conn / self.pool).
+    """
 
-    sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
+    title = "ANALYZE PE & DIVIDENDS (ETF + INDEX + STOCK)"
+    sec_types = tuple(SEC_TYPES)
+    pool_size = 4
+    component = "pe_and_dividends"
 
-    t0 = time.time()
-    print_build_header(
-        "ANALYZE PE & DIVIDENDS (ETF + INDEX + STOCK)",
-        pe_table=PE_TABLE,
-        div_table=DIVIDENDS_TABLE,
-        stats_table=STATS_TABLE,
-        sec_types=", ".join(sec_types),
-        mode=(
-            f"SINGLE-CODE {args.code} (full recompute for this security)"
-            if args.code else
-            "FORCE (full recompute per sec_type)" if force
-            else "incremental (missing dates only)"
-        ),
-    )
+    def add_arguments(self, parser) -> None:
+        self.add_force_arg(parser)
+        self.add_sec_type_arg(parser)
+        self.add_code_arg(parser)
 
-    conn = await get_db_connection_async()
-    pool = await get_db_pool_async(min_size=1, max_size=4)
-    try:
+    def apply_args(self) -> None:
+        if self.args.code and self.args.force:
+            logger.error("ERROR: --code and --force are mutually exclusive.")
+            sys.exit(2)
+
+    def header_fields(self) -> dict:
+        return {
+            "pe_table": PE_TABLE,
+            "div_table": DIVIDENDS_TABLE,
+            "stats_table": STATS_TABLE,
+            "sec_types": ", ".join(self.resolve_sec_types()),
+            "mode": (
+                f"SINGLE-CODE {self.args.code} (full recompute for this security)"
+                if self.args.code else
+                "FORCE (full recompute per sec_type)" if self.args.force
+                else "incremental (missing dates only)"
+            ),
+        }
+
+    async def run(self) -> None:
+        conn = self.conn
+        pool = self.pool
+        args = self.args
+        force = args.force
+        sec_types = self.resolve_sec_types()
+
         # ---- Single-code mode (--code): rebuild ONE security -------------
         # Bypasses the per-sec_type missing-date detection entirely — the
         # UI fires this when a security has NO rows while the rest of the
@@ -757,21 +732,14 @@ async def main() -> None:
                 )
 
             logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
-            await upsert_analysis_identity(
-                conn,
-                name=ANALYSIS_NAME_PE,
-                detail_name="pe",
-                description=DESCRIPTION_PE,
+            await self.upsert_identity(
+                ANALYSIS_NAME_PE, "pe", DESCRIPTION_PE,
             )
-            await upsert_analysis_identity(
-                conn,
-                name=ANALYSIS_NAME_DIVIDENDS,
-                detail_name="dividends",
-                description=DESCRIPTION_DIVIDENDS,
+            await self.upsert_identity(
+                ANALYSIS_NAME_DIVIDENDS, "dividends", DESCRIPTION_DIVIDENDS,
             )
 
             logger.info(f"\n  TOTAL: {total:,} detail rows inserted")
-            print_wall_time(t0)
             return
 
         # ---- Detect missing dates (incremental mode) --------------------
@@ -790,7 +758,6 @@ async def main() -> None:
             )
             if total_missing == 0:
                 logger.info("    -> DB is up to date; nothing to do.")
-                print_wall_time(t0)
                 return
 
         total = 0
@@ -817,35 +784,15 @@ async def main() -> None:
 
         # Upsert analysis_identity
         logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
-        await upsert_analysis_identity(
-            conn,
-            name=ANALYSIS_NAME_PE,
-            detail_name="pe",
-            description=DESCRIPTION_PE,
+        await self.upsert_identity(
+            ANALYSIS_NAME_PE, "pe", DESCRIPTION_PE,
         )
-        await upsert_analysis_identity(
-            conn,
-            name=ANALYSIS_NAME_DIVIDENDS,
-            detail_name="dividends",
-            description=DESCRIPTION_DIVIDENDS,
+        await self.upsert_identity(
+            ANALYSIS_NAME_DIVIDENDS, "dividends", DESCRIPTION_DIVIDENDS,
         )
 
         logger.info(f"\n  TOTAL: {total:,} detail rows inserted")
-        print_wall_time(t0)
-    finally:
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
-        try:
-            await asyncio.wait_for(pool.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pool.terminate()
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    PeDividendsAnalysis().execute()

@@ -94,13 +94,17 @@
  *  stat_month available for the code (DESC) — so the UI can render the
  *  month tick-filter.
  *
- *  Each row also carries `in_signals` — TRUE when the bucket already
- *  produced signal day(s) in analysis_signals.signals. signals has no
- *  forecast_id column; a signal links to its bucket by config equality
- *  (params JSONB: window / side / pct|k) + the signal date
- *  falling inside the bucket's stat_month, so the flag is a parameterized
- *  EXISTS on that natural key (hype split is NOT matched — signals are
- *  not hype-separated).
+ *  Each row also carries `in_signals` — the bucket's MIXED signal bool:
+ *  TRUE when the row's own forecast_results period='mixed' row (the
+ *  FIXED-weight blend of the four horizon rows: 5d 0.50 / next 0.30 /
+ *  20d 0.15 / 60d 0.05) clears the forecast-result gate the
+ *  analysis_signals layer applies (material blended reverse P > 1%,
+ *  blended mean reversal, probability + magnitude lift over the blended
+ *  base_rates row — see the inSignals() helper).
+ *  The signals layer emits a bucket's signal days iff its mixed row
+ *  passes this same gate (gate.fetch_confirm reads the mixed row), so
+ *  the tick means "this bucket is a live signal bucket" — evaluated per
+ *  forecast_id, hype split included.
  *
  *  getForecastTriggerDates(forecastId) — one bucket's 4 period rows'
  *  trigger_dates DATE[] (the calendar dates behind occurrence_count;
@@ -182,173 +186,37 @@ function buildPivotCols(): string {
 
 const PIVOT_COLS = buildPivotCols();
 
-/** Parameterized EXISTS linking a forecast bucket to its signal day(s) in
- *  analysis_signals.signals: same code / sec_type / signal family, the
- *  bucket config inside the signal's params JSONB (numeric casts — JSON
- *  renders 2.0 while float8::text gives "2"), and the signal date inside
- *  the bucket's snapshot month. stat_month is the month-END label
- * (2025-03-31 = March), so the month window is [date_trunc(month),
- *  month_end] — NOT [stat_month, stat_month + 1 month), which would
- *  match the NEXT month's signals. The mov_std variant also matches k
- *  (signals are emitted only at the detection k, so buckets with other k
- *  stay unticked). hype is NOT matched — signals are not hype-separated. */
-const IN_SIGNALS_RSI = `
-  EXISTS (
-    SELECT 1 FROM analysis_signals.signals s
-    WHERE s.code = i.code
-      AND s.sec_type = i.sec_type
-      AND s.signal_type = 'mov_rsi'
-      AND (s.params->>'rsi_window')::numeric = m.rsi_window
-      AND (s.params->>'pct')::numeric = m.pct
-      AND (s.params->>'side') = m.side
-      AND s.date >= date_trunc('month', i.stat_month)::date
-      AND s.date <= i.stat_month
-  )`;
-
-const IN_SIGNALS_STD = `
-  EXISTS (
-    SELECT 1 FROM analysis_signals.signals s
-    WHERE s.code = i.code
-      AND s.sec_type = i.sec_type
-      AND s.signal_type = 'mov_std'
-      AND (s.params->>'ma_window')::numeric = m.ma_window
-      AND (s.params->>'k')::numeric = m.k
-      AND (s.params->>'side') = m.side
-      AND s.date >= date_trunc('month', i.stat_month)::date
-      AND s.date <= i.stat_month
-  )`;
-
-const IN_SIGNALS_GAP = `
-  EXISTS (
-    SELECT 1 FROM analysis_signals.signals s
-    WHERE s.code = i.code
-      AND s.sec_type = i.sec_type
-      AND s.signal_type = 'mov_gap'
-      AND (s.params->>'gap_window')::numeric = m.gap_window
-      AND (s.params->>'pct')::numeric = m.pct
-      AND (s.params->>'side') = m.side
-      AND s.date >= date_trunc('month', i.stat_month)::date
-      AND s.date <= i.stat_month
-  )`;
-
-/** mov_pairs variant: cross-event buckets, so the natural
- *  key is pair_window + side (no pct/k — the trigger is
- *  the ma5_vs_ma{W} spread's sign flip). Stays unticked until a
- *  mov_pairs signals engine exists. hype is NOT matched — signals are
- *  not hype-separated. */
-const IN_SIGNALS_MOV_PAIRS = `
-  EXISTS (
-    SELECT 1 FROM analysis_signals.signals s
-    WHERE s.code = i.code
-      AND s.sec_type = i.sec_type
-      AND s.signal_type = 'mov_pairs'
-      AND (s.params->>'pair_window')::numeric = m.pair_window
-      AND (s.params->>'side') = m.side
-      AND s.date >= date_trunc('month', i.stat_month)::date
-      AND s.date <= i.stat_month
-  )`;
-
-/** mov_pairs_ema variant — the EMA sibling of IN_SIGNALS_MOV_PAIRS (same
- *  natural key; signal_type 'mov_pairs_ema'). Stays unticked until an
- *  EMA-pair signals engine exists. hype is NOT matched — signals are
- *  not hype-separated. */
-const IN_SIGNALS_MOV_PAIRS_EMA = `
-  EXISTS (
-    SELECT 1 FROM analysis_signals.signals s
-    WHERE s.code = i.code
-      AND s.sec_type = i.sec_type
-      AND s.signal_type = 'mov_pairs_ema'
-      AND (s.params->>'pair_window')::numeric = m.pair_window
-      AND (s.params->>'side') = m.side
-      AND s.date >= date_trunc('month', i.stat_month)::date
-      AND s.date <= i.stat_month
-  )`;
-
-/** px_vol variant: state cells have no cooldown and constant (recorded)
- *  thresholds, so the natural key is px_speed + vol_state + side (all
- *  text in params). flat rows never emit signals and stay unticked.
- *  hype is NOT matched — signals are not hype-separated. */
-const IN_SIGNALS_PX_VOL = `
-  EXISTS (
-    SELECT 1 FROM analysis_signals.signals s
-    WHERE s.code = i.code
-      AND s.sec_type = i.sec_type
-      AND s.signal_type = 'px_vol'
-      AND (s.params->>'px_speed') = m.px_speed
-      AND (s.params->>'vol_state') = m.vol_state
-      AND (s.params->>'side') = m.side
-      AND s.date >= date_trunc('month', i.stat_month)::date
-      AND s.date <= i.stat_month
-  )`;
-
-/** margin_ratio variant: state cells have no cooldown and constant
- *  (recorded) z bars, so the natural key is ratio_state + side (all text
- *  in params). mid / no_buy rows never emit signals and stay unticked.
- *  hype is NOT matched — signals are not hype-separated. */
-const IN_SIGNALS_MARGIN_RATIO = `
-  EXISTS (
-    SELECT 1 FROM analysis_signals.signals s
-    WHERE s.code = i.code
-      AND s.sec_type = i.sec_type
-      AND s.signal_type = 'margin_ratio'
-      AND (s.params->>'ratio_state') = m.ratio_state
-      AND (s.params->>'side') = m.side
-      AND s.date >= date_trunc('month', i.stat_month)::date
-      AND s.date <= i.stat_month
-  )`;
-
-/** high_low_streaks variant: one trigger per streak (NO cooldown), so
- *  the natural key is band_period + pct_type + side (numeric + text in
- *  params; the signal's sub_type p{band_period}_{pct_type} mirrors the
- *  bucket keys). Signals lag the buckets by the EX-POST resolve window
- *  (a month's anchors are final ~2 months later), so recent months
- *  legitimately stay unticked. hype is NOT matched — signals are not
- *  hype-separated. */
-const IN_SIGNALS_HIGH_LOW_STREAKS = `
-  EXISTS (
-    SELECT 1 FROM analysis_signals.signals s
-    WHERE s.code = i.code
-      AND s.sec_type = i.sec_type
-      AND s.signal_type = 'high_low_streaks'
-      AND (s.params->>'band_period')::numeric = m.band_period
-      AND (s.params->>'pct_type')::numeric = m.pct_type
-      AND (s.params->>'side') = m.side
-      AND s.date >= date_trunc('month', i.stat_month)::date
-      AND s.date <= i.stat_month
-  )`;
-
-/** pe variant: streak-merged state cells have constant (recorded) z
- *  bars, so the natural key is val_state + side (all text in params).
- *  mid rows never carry a directional claim and the family has no
- *  signals engine yet — rows stay unticked until one exists. hype is
- *  NOT matched — signals are not hype-separated. */
-const IN_SIGNALS_PE = `
-  EXISTS (
-    SELECT 1 FROM analysis_signals.signals s
-    WHERE s.code = i.code
-      AND s.sec_type = i.sec_type
-      AND s.signal_type = 'pe'
-      AND (s.params->>'val_state') = m.val_state
-      AND (s.params->>'side') = m.side
-      AND s.date >= date_trunc('month', i.stat_month)::date
-      AND s.date <= i.stat_month
-  )`;
-
-/** dividend variant — the yield sibling of IN_SIGNALS_PE (same natural
- *  key; signal_type 'dividend'). Stays unticked until a dividend
- *  signals engine exists. hype is NOT matched — signals are not
- *  hype-separated. */
-const IN_SIGNALS_DIVIDEND = `
-  EXISTS (
-    SELECT 1 FROM analysis_signals.signals s
-    WHERE s.code = i.code
-      AND s.sec_type = i.sec_type
-      AND s.signal_type = 'dividend'
-      AND (s.params->>'val_state') = m.val_state
-      AND (s.params->>'side') = m.side
-      AND s.date >= date_trunc('month', i.stat_month)::date
-      AND s.date <= i.stat_month
-  )`;
+/**
+ * The bucket's ``in_signals`` tick — EXISTS into the SIGNALS layer
+ * (analysis_signals.signals), i.e. this exact bucket emitted a signal
+ * that SURVIVED the 2026-09 reduction pass (forecast-result gate +
+ * per-family confidence floors + the emission side/cell filters + the
+ * signal_order top-1/8 per-month trim). This replaces the former
+ * gate-approximation SQL (a re-implementation of gate.fetch_confirm's
+ * mixed-row conjuncts) which could — and did — drift from what the
+ * signals layer actually records: the signals layer additionally
+ * applies the floors / side filters / trim, so the approximated tick
+ * over-counted. No signal row → no tick (trimmed-away family-months
+ * and the never-emitted pe / dividend state families stay unticked
+ * naturally).
+ */
+function inSignals(
+  signalType: string,
+  subTypeSql: string,
+  emittedOnly = "",
+): string {
+  return `(${emittedOnly ? emittedOnly + " AND " : ""}EXISTS (
+    SELECT 1
+    FROM analysis_signals.signals s
+    WHERE s.sec_type = i.sec_type
+      AND s.code = i.code
+      AND s.signal_type = '${signalType}'
+      AND s.signal_sub_type = ${subTypeSql}
+      AND s.action = CASE WHEN m.side IN ('top', 'upper')
+                     THEN 'sell' ELSE 'buy' END
+      AND date_trunc('month', s.date) = date_trunc('month', i.stat_month)
+  ))`;
+}
 
 interface DbGapRow extends QueryResultRow {
   forecast_id: number | string;
@@ -863,7 +731,7 @@ export async function getForecastTable(
              m.side,
              m.pct,
              m.is_market_hyped,
-             ${IN_SIGNALS_RSI} AS in_signals,
+             ${inSignals("mov_rsi", "'rsi' || m.rsi_window", "(m.pct = 1)")} AS in_signals,
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.mov_rsi m
@@ -892,7 +760,7 @@ export async function getForecastTable(
              m.side,
              m.pct,
              m.is_market_hyped,
-             ${IN_SIGNALS_GAP} AS in_signals,
+             ${inSignals("mov_gap", "'gap' || m.gap_window", "(m.pct = 1)")} AS in_signals,
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.mov_gap m
@@ -920,7 +788,7 @@ export async function getForecastTable(
              m.pair_window,
              m.side,
              m.is_market_hyped,
-             ${IN_SIGNALS_MOV_PAIRS} AS in_signals,
+             ${inSignals("mov_pairs", "'pair' || m.pair_window")} AS in_signals,
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.mov_pairs m
@@ -950,7 +818,7 @@ export async function getForecastTable(
              m.pair_window,
              m.side,
              m.is_market_hyped,
-             ${IN_SIGNALS_MOV_PAIRS_EMA} AS in_signals,
+             ${inSignals("mov_pairs_ema", "'emapair' || m.pair_window")} AS in_signals,
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.mov_pairs_ema m
@@ -979,7 +847,7 @@ export async function getForecastTable(
              m.vol_state,
              m.side,
              m.is_market_hyped,
-             ${IN_SIGNALS_PX_VOL} AS in_signals,
+             ${inSignals("px_vol", "m.px_speed || '_' || m.vol_state")} AS in_signals,
              ${CONFIG_PX_VOL_COLS},
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
@@ -1013,7 +881,7 @@ export async function getForecastTable(
              m.ratio_state,
              m.side,
              m.is_market_hyped,
-             ${IN_SIGNALS_MARGIN_RATIO} AS in_signals,
+             ${inSignals("margin_ratio", "'ratio_' || m.ratio_state")} AS in_signals,
              ${CONFIG_MARGIN_RATIO_COLS},
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
@@ -1047,7 +915,7 @@ export async function getForecastTable(
              m.val_state,
              m.side,
              m.is_market_hyped,
-             ${IN_SIGNALS_PE} AS in_signals,
+             FALSE AS in_signals,
              ${CONFIG_VAL_STATE_COLS},
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
@@ -1079,7 +947,7 @@ export async function getForecastTable(
              m.val_state,
              m.side,
              m.is_market_hyped,
-             ${IN_SIGNALS_DIVIDEND} AS in_signals,
+             FALSE AS in_signals,
              ${CONFIG_VAL_STATE_COLS},
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
@@ -1112,7 +980,7 @@ export async function getForecastTable(
              m.pct_type,
              m.side,
              m.is_market_hyped,
-             ${IN_SIGNALS_HIGH_LOW_STREAKS} AS in_signals,
+             ${inSignals("high_low_streaks", "'p' || m.band_period || '_' || m.pct_type")} AS in_signals,
              ${CONFIG_HIGH_LOW_STREAKS_COLS},
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
@@ -1142,7 +1010,9 @@ export async function getForecastTable(
            m.k::float8 AS k,
            m.side,
            m.is_market_hyped,
-           ${IN_SIGNALS_STD} AS in_signals,
+           ${inSignals("mov_std",
+                 "'std' || m.ma_window || '_' || (m.k::float8::text)",
+                 "(m.k::float8 IN (2.0, 2.5, 3.0))")} AS in_signals,
            ${PIVOT_COLS}
     FROM analysis_forecasts.forecast_identities i
     JOIN analysis_forecasts.mov_std m

@@ -17,8 +17,11 @@
  *     optional single-day pick from the date bar).
  *
  * Filters:
- *   industry scope — industry_id when an L2 chip is active, else ALL
- *   industry_ids of the active sector (L1), else unscoped.
+ *   industry scope — industry_id when an L2 chip is active; else, for an L1
+ *   sector, rows whose sector_id matches directly (the denormalized parent
+ *   sector written by the tagging pipeline) OR — for rows stored before that
+ *   column was backfilled — whose industry_id belongs to the sector; else
+ *   unscoped.
  *   keyword search — whitespace-separated terms, ALL must appear (AND) in
  *   title OR content (case-insensitive).
  */
@@ -80,6 +83,11 @@ async function getSectorIndustryIds(sectorId: string): Promise<string[]> {
 interface NewsFilters {
   sectorId?: string | null;
   industryId?: string | null;
+  /** Explicit industry-id SET (a multi-select / ranked-industries scope).
+   *  PRESENT but empty means the pick resolved to no industries → NO rows;
+   *  absent (null/undefined) leaves the scope to the other filters. Same
+   *  semantics as the AI endpoints' industry_ids. */
+  industryIds?: string[] | null;
   search?: string | null;
   /** true = terms are OR-ed ("any token hits") instead of the default AND.
    *  Used by the question bar's local search, whose terms come from the
@@ -97,11 +105,25 @@ async function buildFilterSql(
   if (filters.industryId) {
     params.push(filters.industryId);
     clauses.push(`n.industry_id = $${params.length}`);
-  } else if (filters.sectorId) {
-    const ids = await getSectorIndustryIds(filters.sectorId);
-    if (ids.length === 0) return "1=0"; // unknown sector — no rows, not all rows
-    params.push(ids);
+  } else if (filters.industryIds != null) {
+    if (filters.industryIds.length === 0) return "1=0"; // pick has no industries — no rows, not all rows
+    params.push(filters.industryIds);
     clauses.push(`n.industry_id = ANY($${params.length}::text[])`);
+  } else if (filters.sectorId) {
+    // Sector scope: rows tagged at sector granularity match directly; rows
+    // stored before sector_id was backfilled (sector_id IS NULL) still
+    // surface through their industry's membership in the sector.
+    const ids = await getSectorIndustryIds(filters.sectorId);
+    params.push(filters.sectorId);
+    const sectorP = `$${params.length}`;
+    if (ids.length === 0) {
+      clauses.push(`n.sector_id = ${sectorP}`);
+    } else {
+      params.push(ids);
+      clauses.push(
+        `(n.sector_id = ${sectorP} OR (n.sector_id IS NULL AND n.industry_id = ANY($${params.length}::text[])))`,
+      );
+    }
   }
   if (filters.source) {
     params.push(filters.source);
@@ -349,6 +371,11 @@ export async function listNewsCalendar(
 export async function listNewsItems(
   filters: NewsFilters & {
     date?: string | null;
+    /** Inclusive date RANGE (date_from ≤ date ≤ date_to) — used instead of
+     *  the single `date` pick when the caller wants a window around the
+     *  picked day. */
+    dateFrom?: string | null;
+    dateTo?: string | null;
     limit?: number | null;
     offset?: number | null;
   },
@@ -361,6 +388,11 @@ export async function listNewsItems(
     params.push(filters.date);
     const dateClause = `WHERE ${conditions ? `${conditions} AND ` : ""}n.date = $${params.length}`;
     return finishItems(dateClause, params, filters);
+  }
+  if (filters.dateFrom && filters.dateTo) {
+    params.push(filters.dateFrom, filters.dateTo);
+    const rangeClause = `WHERE ${conditions ? `${conditions} AND ` : ""}n.date BETWEEN $${params.length - 1} AND $${params.length}`;
+    return finishItems(rangeClause, params, filters);
   }
   return finishItems(conditions ? `WHERE ${conditions}` : "", params, filters);
 }
@@ -381,7 +413,7 @@ async function finishItems(
   params.push(offset);
   const items = await queryRows<NewsItem & QueryResultRow>(
     `SELECT n.news_id, n.title, n.source, n.date::text AS date, n.url,
-            n.author, n.industry_id, n.votes,
+            n.author, n.industry_id, n.sector_id, n.votes,
             (SELECT COUNT(*)::int FROM text.news_comments c
               WHERE c.news_id = n.news_id) AS comment_count,
             CASE WHEN n.content IS NULL THEN NULL
@@ -402,7 +434,7 @@ async function finishItems(
 export async function getNewsItem(newsId: number): Promise<NewsItemDetail | null> {
   const rows = await queryRows<NewsItemDetail & QueryResultRow>(
     `SELECT n.news_id, n.title, n.source, n.date::text AS date, n.url,
-            n.author, n.industry_id, n.votes, n.content,
+            n.author, n.industry_id, n.sector_id, n.votes, n.content,
             (SELECT COUNT(*)::int FROM text.news_comments c
               WHERE c.news_id = n.news_id) AS comment_count
        FROM text.news n

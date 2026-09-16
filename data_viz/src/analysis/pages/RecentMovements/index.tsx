@@ -592,7 +592,7 @@ export default function RecentMovementsPage() {
                     : idSearch.status === "found"
                       ? describeIdentity(idSearch.identity)
                       : forecastKind
-                        ? "header dropdowns filter buckets (month header = end-month selector, only that month's rows) · click a row to mark its trigger days on the trend chart above · forecast id ⏎ jumps to its bucket"
+                        ? "header dropdowns filter buckets (month header = end-month selector, seeded at the latest month — only that month's rows show) · click a row to mark its trigger days on the trend chart above · forecast id ⏎ jumps to its bucket"
                         : "pick a bucket family to show its extreme-day forecast table"}
               </Typography>
             </Stack>

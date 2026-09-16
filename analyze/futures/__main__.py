@@ -27,50 +27,23 @@ Incremental mode rationale:
 from __future__ import annotations
 
 
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
+# Runtime bootstrap — pre-check → silence warnings → cudf.pandas hook →
+# UTF-8 stdout. MUST run before the pandas import below (import hook).
+from _common.data_pipeline import bootstrap_runtime
 
-pre_check()
-import argparse
-import asyncio
-import os
-import sys
-import time
+bootstrap_runtime()
 
-# Ensure project root is on sys.path so ``_common`` is importable when run
-# directly via ``python -m analyze.futures`` or as a script.
-sys.path.insert(
-    0,
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ),
-)
-
-from _common.build_commons import (  # noqa: E402
-    setup_utf8_stdout,
-    get_db_connection_async,
-    print_build_header,
-    print_wall_time,
-    add_force_arg,
-)
-from _common.db_commons import (  # noqa: E402
+from _common.db_commons import (
     copy_or_upsert_split_async,
     copy_insert_async,
 )
 
-setup_utf8_stdout()
+import pandas as pd
 
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
-
-import pandas as pd  # noqa: E402
-
-from analyze._common import (  # noqa: E402
+from analyze._common import (
     sanitize_for_db_insert,
-    upsert_analysis_identity,
 )
-from analyze.futures.config import (  # noqa: E402
+from analyze.futures.config import (
     TABLE_NAME,
     ANALYSIS_NAME,
     DESCRIPTION,
@@ -82,16 +55,18 @@ from analyze.futures.config import (  # noqa: E402
     QUINTILE_DESCRIPTION,
     QUINTILE_NUMERIC_COLS,
 )
-from analyze.futures.fetch import (  # noqa: E402
+from analyze.futures.fetch import (
     fetch_futures_data,
     fetch_futures_identity_dates,
 )
-from analyze.futures.compute import (  # noqa: E402
+from analyze.futures.compute import (
     compute_futures_ext,
     compute_gap_quintile_summary,
 )
 
-from _common.log_setup import setup_logging  # noqa: E402
+from _common.log_setup import setup_logging
+from _common.data_analysis import DataAnalysis
+
 logger = setup_logging("futures")
 
 
@@ -230,30 +205,32 @@ async def _write_quintile_summary(
     return n
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Futures basis and correlation analysis. "
-                    "Computes per-(date, code) metrics comparing futures "
-                    "prices against underlying (index close for index "
-                    "futures, treasury yield-derived bond price for bond "
-                    "futures). Output table: analysis.futures_ext.",
-    )
-    add_force_arg(ap)
-    args = ap.parse_args()
-    force = args.force
+class FuturesExtAnalysis(DataAnalysis):
+    """``python -m analyze.futures`` — basis + correlation vs underlying.
 
-    t0 = time.time()
-    print_build_header(
-        "ANALYZE FUTURES EXT (basis + correlation vs underlying)",
-        table=TABLE_NAME,
-        bond_products=", ".join(BOND_PRODUCT_TENOR.keys()),
-        index_products=", ".join(INDEX_PRODUCT_UNDERLYING.keys()),
-        mode="FORCE (full recompute)" if force
-             else "incremental (missing dates only)",
-    )
+    The DB connection is owned by the DataAnalysis amain() template
+    (self.conn): opened before run(), timed-closed after.
+    """
 
-    conn = await get_db_connection_async()
-    try:
+    title = "ANALYZE FUTURES EXT (basis + correlation vs underlying)"
+    component = "futures"
+
+    def add_arguments(self, parser) -> None:
+        self.add_force_arg(parser)
+
+    def header_fields(self) -> dict:
+        return {
+            "table": TABLE_NAME,
+            "bond_products": ", ".join(BOND_PRODUCT_TENOR.keys()),
+            "index_products": ", ".join(INDEX_PRODUCT_UNDERLYING.keys()),
+            "mode": "FORCE (full recompute)" if self.args.force
+                    else "incremental (missing dates only)",
+        }
+
+    async def run(self) -> None:
+        conn = self.conn
+        force = self.args.force
+
         # ---- Detect missing dates (incremental mode) --------------------
         target_pairs: set | None = None
         if not force:
@@ -263,7 +240,6 @@ async def main() -> None:
             logger.info(f"    -> {len(target_pairs):,} missing (date, code) pairs")
             if len(target_pairs) == 0:
                 logger.info("    -> DB is up to date; nothing to do.")
-                print_wall_time(t0)
                 return
 
         # ---- Step 1: fetch futures + underlying data ---------------------
@@ -297,32 +273,16 @@ async def main() -> None:
 
         # ---- Upsert analysis_identity -----------------------------------
         logger.info("\n  -> Upserting analysis.analysis_identity registry...")
-        await upsert_analysis_identity(
-            conn,
-            name=ANALYSIS_NAME,
-            detail_name="futures_ext",
-            description=DESCRIPTION,
+        await self.upsert_identity(
+            ANALYSIS_NAME, "futures_ext", DESCRIPTION,
         )
-        await upsert_analysis_identity(
-            conn,
-            name=QUINTILE_ANALYSIS_NAME,
-            detail_name=QUINTILE_TABLE_NAME,
-            description=QUINTILE_DESCRIPTION,
+        await self.upsert_identity(
+            QUINTILE_ANALYSIS_NAME, QUINTILE_TABLE_NAME, QUINTILE_DESCRIPTION,
         )
 
         logger.info(f"\n  TOTAL: {n:,} detail rows + {n_q:,} quintile "
               f"summary rows written")
-        print_wall_time(t0)
-    finally:
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    FuturesExtAnalysis().execute()

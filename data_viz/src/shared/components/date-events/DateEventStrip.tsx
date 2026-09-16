@@ -76,6 +76,11 @@ interface Props {
   /** Initial window size in days when `enableZoom` (default 92 ≈ one season —
    *  the slider opens showing only the most recent season of events). */
   defaultWindowDays?: number;
+  /** Shaded band marking a SIBLING chart's visible window (e.g. the code
+   *  trend's dataZoom range on the AI page) — the strip stays full-range
+   *  so every event dot stays visible while the band shows which slice
+   *  the sibling is on. Null/omitted = no band. */
+  highlightRange?: { start: string; end: string } | null;
 }
 
 const BASE_SIZE = 10;
@@ -94,6 +99,7 @@ export default function DateEventStrip({
   emptyText = "No events.",
   enableZoom = false,
   defaultWindowDays = DEFAULT_WINDOW_DAYS,
+  highlightRange = null,
 }: Props) {
   const themeMode = useStore((s) => s.themeMode);
 
@@ -105,18 +111,41 @@ export default function DateEventStrip({
   // the events change (a filter change re-opens the recent window).
   const fullMin = events.length ? events[0].date : null;
   const fullMax = events.length ? events[events.length - 1].date : null;
+
+  // Slider-mode axis: a too-short events range (even a SINGLE day — e.g. a
+  // fresh Q&A corpus) would give the time axis min==max and the dataZoom
+  // slider a degenerate, unusable track. Pad the domain by
+  // `defaultWindowDays` on each side, so the axis is at least twice the
+  // window and the initial (right-anchored) window is a proper draggable
+  // half instead of the full track.
+  const zoomAxis = useMemo(() => {
+    if (!enableZoom) return null;
+    const lo = minDate ?? fullMin;
+    const hi = maxDate ?? fullMax;
+    if (!lo || !hi) return null;
+    const loMs = Date.parse(`${lo}T00:00:00`);
+    const hiMs = Date.parse(`${hi}T00:00:00`);
+    if (Number.isNaN(loMs) || Number.isNaN(hiMs)) return null;
+    const padMs = defaultWindowDays * 86_400_000;
+    if (hiMs - loMs >= padMs) return { min: lo, max: hi };
+    const mid = (loMs + hiMs) / 2;
+    const fmt = (ms: number) =>
+      new Date(ms).toISOString().slice(0, 10);
+    return { min: fmt(mid - padMs), max: fmt(mid + padMs) };
+  }, [enableZoom, minDate, maxDate, fullMin, fullMax, defaultWindowDays]);
+
   const zoomStartPct = useMemo(() => {
-    if (!enableZoom || !fullMin || !fullMax) return 0;
-    const minMs = new Date(`${fullMin}T00:00:00`).getTime();
-    const maxMs = new Date(`${fullMax}T00:00:00`).getTime();
+    if (!enableZoom || !zoomAxis) return 0;
+    const minMs = Date.parse(`${zoomAxis.min}T00:00:00`);
+    const maxMs = Date.parse(`${zoomAxis.max}T00:00:00`);
     if (maxMs <= minMs) return 0;
     const cutoffMs = maxMs - defaultWindowDays * 86_400_000;
     return Math.min(100, Math.max(0, ((cutoffMs - minMs) / (maxMs - minMs)) * 100));
-  }, [enableZoom, fullMin, fullMax, defaultWindowDays]);
+  }, [enableZoom, zoomAxis, defaultWindowDays]);
   // With the dataZoom owning windowing, the axis stays pinned to the FULL
   // event range (so the start % math and the slider backdrop cover everything).
-  const axisMin = enableZoom ? (minDate ?? fullMin) : minDate;
-  const axisMax = enableZoom ? (maxDate ?? fullMax) : maxDate;
+  const axisMin = enableZoom ? zoomAxis?.min ?? null : minDate;
+  const axisMax = enableZoom ? zoomAxis?.max ?? null : maxDate;
 
   // Normalize: resolve ids (default index) + effective type label/color.
   const normalized = useMemo(
@@ -233,7 +262,7 @@ export default function DateEventStrip({
             data: Array.from(seriesByType.keys()).map((t) => typeMeta[t]?.label ?? t),
           })
         : undefined,
-      series: Array.from(seriesByType.entries()).map(([type, points]) => ({
+      series: Array.from(seriesByType.entries()).map(([type, points], seriesIdx) => ({
         name: typeMeta[type]?.label ?? type,
         type: "scatter" as const,
         data: points.map((e) => ({
@@ -258,10 +287,28 @@ export default function DateEventStrip({
           itemStyle: { borderColor: "#fff", borderWidth: 2, shadowBlur: 6 },
           scale: 1.3,
         },
+        // highlightRange band — attached to the FIRST series only (one band
+        // for the whole strip), silent so dot clicks/hovers pass through.
+        markArea: seriesIdx === 0 && highlightRange
+          ? {
+              silent: true,
+              itemStyle: {
+                color: themeMode === "dark"
+                  ? "rgba(148, 163, 184, 0.22)"
+                  : "rgba(100, 116, 139, 0.16)",
+              },
+              data: [
+                [
+                  { xAxis: highlightRange.start },
+                  { xAxis: highlightRange.end },
+                ] as [{ xAxis: string }, { xAxis: string }],
+              ],
+            }
+          : undefined,
         z: 3,
       })),
     };
-  }, [events, themeMode, axisMin, axisMax, seriesByType, typeMeta, showLegend, isSelected, enableZoom, zoomStartPct]);
+  }, [events, themeMode, axisMin, axisMax, seriesByType, typeMeta, showLegend, isSelected, enableZoom, zoomStartPct, highlightRange]);
 
   // Click — resolve the event back for the caller.
   const handleClick = useCallback((params: unknown) => {

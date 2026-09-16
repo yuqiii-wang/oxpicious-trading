@@ -11,15 +11,20 @@ import type {
   NewsThemesResponse,
 } from "@shared/types";
 
-/** Params shared by the calendar + items endpoints. Industry scope: pass
- *  industry_id when an L2 chip is active, else sector_id for the whole L1
- *  (works for BOTH columns — strategy sectors resolve through the same
- *  catalog). `source` and `author` narrow everything to one origin.
+/** Params shared by the calendar + items endpoints. Industry scope, most
+ *  specific first: pass `industry_id` for a single resolved industry (L2
+ *  chip / picked security), `industry_ids` for an EXPLICIT set (multi-select
+ *  / ranked-industries scope = union of the picks' industries) —
+ *  present-but-empty means the pick has no industries and matches NOTHING
+ *  (vs. omitting the key entirely = unscoped), else `sector_id` for the
+ *  whole L1 (works for BOTH columns — strategy sectors resolve through the
+ *  same catalog). `source` and `author` narrow everything to one origin.
  *  `search_mode: "any"` ORs the whitespace terms in `search` (used by the
  *  question bar's tokenized local search); default is AND. */
 export interface NewsScopeParams {
   sector_id?: string | null;
   industry_id?: string | null;
+  industry_ids?: string[] | null;
   search?: string | null;
   search_mode?: "any" | "all" | null;
   source?: string | null;
@@ -29,7 +34,11 @@ export interface NewsScopeParams {
 function qs<T extends object>(params: T): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
-    if (v != null && v !== "") sp.set(k, String(v));
+    if (Array.isArray(v)) {
+      sp.set(k, v.join(",")); // [] → "k=" — an explicit empty set, kept
+    } else if (v != null && v !== "") {
+      sp.set(k, String(v));
+    }
   }
   const s = sp.toString();
   return s ? `?${s}` : "";
@@ -67,9 +76,17 @@ export function fetchNewsCalendar(
   return fetchJson<NewsCalendarResponse>(`/api/news/calendar${qs(params)}`);
 }
 
-/** One page of articles for the scope (+ optional single-day pick). */
+/** One page of articles for the scope. `date` = single-day pick from the
+ *  date bar; `date_from`/`date_to` = inclusive range window (used together,
+ *  instead of `date`) around a picked day. */
 export function fetchNewsItems(
-  params: NewsScopeParams & { date?: string | null; limit?: number; offset?: number },
+  params: NewsScopeParams & {
+    date?: string | null;
+    date_from?: string | null;
+    date_to?: string | null;
+    limit?: number;
+    offset?: number;
+  },
 ): Promise<NewsItemsResponse> {
   return fetchJson<NewsItemsResponse>(`/api/news/items${qs(params)}`);
 }

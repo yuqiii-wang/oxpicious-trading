@@ -51,6 +51,7 @@ const APPS: Record<AppKey, AppConfig> = {
       { label: "Stock", path: "/dataviz/stock-baseline" },
       { label: "Futures", path: "/dataviz/futures" },
       { label: "News", path: "/dataviz/news" },
+      { label: "AI", path: "/dataviz/ai" },
     ],
   },
   analysis: {

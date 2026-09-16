@@ -85,6 +85,26 @@ export interface BenchmarkPriceChartProps {
   /** Selected industries to overlay as non-this-industry shades. Each entry
    *  has an industry_id and a display label. When empty, no shades are drawn. */
   selectedIndustries: Array<{ id: string; label: string }>;
+  /** Fired when a benchmark price load settles — the FULL row span (null
+   *  for a cleared/empty load). The Market Sentiments by AI and News page bridges the
+   *  date-event strip's axis with this until the first visible-range
+   *  report lands. Stable identity (useCallback) keeps the fetch effect
+   *  free of stale-closure churn. */
+  onLoaded?: (data: { rows: Array<{ date: string }> } | null) => void;
+  /** Fired whenever the chart's VISIBLE date window changes — dataZoom
+   *  slider/inside drags, and every data rebuild (which re-anchors the
+   *  window). Carries { start, end } date strings of the visible range
+   *  (null when there are no rows). The Market Sentiments by AI and News page windows
+   *  the date-event strip to the same slider with this (the strip has NO
+   *  slider of its own there). Stable identity (useCallback) avoids
+   *  needless re-binds. */
+  onVisibleRangeChange?: (range: { start: string; end: string } | null) => void;
+  /** Center the dataZoom window on this date (keeping the current window
+   *  span) — the Market Sentiments by AI and News page's date-event strip click jumps
+   *  the benchmark chart's slider to the event day. Pass a fresh
+   *  { date, seq } per request (the same seq is never re-applied);
+   *  non-trading dates snap forward to the next trading day. */
+  focusDateRequest?: { date: string; seq: number } | null;
 }
 
 /** Props for the CorrelationChart component. */

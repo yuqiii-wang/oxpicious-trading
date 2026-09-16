@@ -14,20 +14,45 @@ BENCHMARKS
   reuses the same Autocomplete.
 
 METHODOLOGY (hype = industry_return - benchmark_return)
+  The industry return is the SHARED PORTFOLIO's return (the benchmark
+  members that belong to the industry), recovered by inverting the daily
+  return-decomposition identity — NOT by inverting the materialized
+  rolling_{N}days_price column. Inverting the rolling column amplifies
+  its construction artifacts (clamped / NULL->0 daily returns, exp/ln
+  compounding) by (1-swf)/swf, which for narrow industries (swf < 1%)
+  yields +-hundreds-of-percent noise that flooded both ranking sides
+  (fixed 2026-09-13; the daily identity inverts cleanly because the
+  non-industry daily price column was built FROM it).
+
   For each (date, industry, benchmark, period N):
-    non_industry_return_Nd = benchmark.benchmark_non_this_industry_rolling_{N}days_price
-                             / 100 - 1   (cumulative non-industry return factor
-                             over the trailing N trading days)
-    benchmark_return_Nd    = benchmark.close[t] / benchmark.close[t-N] - 1
+    bench_return_1d       = close[t] / close[t-1] - 1
+    non_industry_return_1d = benchmark_non_this_industry_price[t]
+                             / close[t-1] - 1
+                             (the build materializes the level as
+                             price[t] = close[t-1] * (1 + r_t) — dividing
+                             by the PREVIOUS BENCHMARK CLOSE recovers r_t
+                             exactly; dividing by the industry price's own
+                             previous level instead compounds a cross-term
+                             that random-walks to ~±20% error over the
+                             window and flips industries between sides)
     swf                    = benchmark_shared_weight / 100.0
-    industry_return_Nd     = (benchmark_return_Nd - (1 - swf) * non_industry_return_Nd) / swf
+    shared_return_1d       = (bench_return_1d
+                              - (1 - swf) * non_industry_return_1d) / swf
+    industry_return_Nd     = 100 * exp(SUM ln(1 + shared_return_1d))
+                             over the trailing N trading-day rows - 100
+                             (window must be FULL — COUNT = N; daily
+                             returns outside (-0.5, 0.5] contribute 0,
+                             the same convention as the attributions
+                             build's rolling columns)
+    benchmark_return_Nd    = benchmark.close[t] / benchmark.close[t-N] - 1
     hype                   = industry_return_Nd - benchmark_return_Nd
 
   Positive hype = HYPE (industry's shared stocks outperformed the benchmark);
   negative = DRAIN (underperformed).
 
-  Industries with NULL non_industry_return (no overlap with the benchmark, or
-  insufficient history) or swf = 0 are excluded from ranking.
+  Industries with a NULL shared_return_Nd (swf = 0, no overlap with the
+  benchmark, or insufficient history for the full N-row window) are
+  excluded from ranking.
 
 WEIGHTING VARIANTS
   Two weighting variants are materialized, one per attribution_type:
@@ -75,12 +100,17 @@ ANALYSIS_DESCRIPTION = (
     "'equal' (metric_value = hype, attribution_type='equal') and 'amt' "
     "(metric_value = hype * shared_trading_amt, attribution_type="
     "'trading_amt'). hype = industry_return_Nd - benchmark_return_Nd "
-    "where industry_return_Nd = (bench_ret - (1-swf)*non_ind_ret) / swf "
-    "and swf = benchmark_shared_weight / 100. period_days in "
-    "{5,20,60,120,255,500} (120 default). Built by "
+    "where industry_return_Nd is the shared portfolio's trailing-N-day "
+    "return, recovered by inverting the DAILY decomposition identity "
+    "(shared_return_1d = (bench_1d - (1-swf)*non_ind_1d) / swf, swf = "
+    "benchmark_shared_weight / 100) and compounding over the full N-row "
+    "window — never by inverting the materialized rolling column, whose "
+    "construction artifacts the 1/swf inversion would amplify into noise. "
+    "period_days in {5,20,60,120,255,500} (120 default). Built by "
     "analyze.industry_sentiments.hypes_and_drains (internal step, "
     "truncate-then-recompute). Depends on analysis.industry_attributions "
-    "(incl. 120d column) being populated first."
+    "(incl. the daily benchmark_non_this_industry_price column) being "
+    "populated first."
 )
 
 # Trailing windows (trading days). Must match the rolling_{N}days_price
@@ -105,62 +135,62 @@ BROAD_MARKET_BENCHMARKS_SQL = """
     ORDER BY ia.benchmark_code
 """
 
-# Guard: bail out early if the upstream table is empty / missing OR the 255d
-# column (required for the longest period) has not been populated.
-# Filter on attribution_type='trading_amt' — the non_this_industry UPDATE only
-# populates trading_amt rows; equal rows inherit via the equal-variant INSERT.
+# Guard: bail out early if the upstream table is empty / missing OR the
+# DAILY non-this-industry price column (the raw material for the daily
+# identity inversion) has not been populated.
+# Filter on attribution_type='trading_amt' to avoid duplicate counting —
+# both variants share the same daily columns.
 COUNT_SOURCE_SQL = """
     SELECT COUNT(*) AS n
     FROM analysis.industry_attributions ia
     JOIN stats.sec_index_tags sit ON sit.code = ia.benchmark_code
     WHERE sit.is_broad_market = TRUE
       AND ia.attribution_type = 'trading_amt'
-      AND ia.benchmark_non_this_industry_rolling_255days_price IS NOT NULL
+      AND ia.benchmark_non_this_industry_price IS NOT NULL
 """
-
-# Check that the 120d column exists and has data.
-COUNT_120D_SQL = """
-    SELECT COUNT(*) AS n
-    FROM analysis.industry_attributions ia
-    JOIN stats.sec_index_tags sit ON sit.code = ia.benchmark_code
-    WHERE sit.is_broad_market = TRUE
-      AND ia.attribution_type = 'trading_amt'
-      AND ia.benchmark_non_this_industry_rolling_120days_price IS NOT NULL
-"""
-
-
-def _rolling_col(period: int) -> str:
-    """Return the industry_attributions column name for the given period."""
-    return f"benchmark_non_this_industry_rolling_{period}days_price"
-
 
 # Per-(benchmark_code, period, attribution_type) INSERT...SELECT.
 #
 # Builds the full pipeline server-side for ONE (benchmark, period, variant):
-#   bench_daily       — per (benchmark, date): close + LAG(close, N) via a
-#                       PARTITION BY code window.
-#   bench_returns     — benchmark_return_Nd = close/close_n_ago - 1.
-#   industry_non_ind  — per (date, industry): the pre-materialized
-#                       non_this_industry_rolling_{N}days_price / 100 - 1,
-#                       filtered to non-NULL (drops industries with no overlap
-#                       with this benchmark for this period).
-#   per_industry      — JOIN bench_returns x industry_non_ind on date.
-#                       Computes hype = industry_return_nd - benchmark_return_nd
-#                       where industry_return_nd is derived from the return
-#                       decomposition: swf = benchmark_shared_weight / 100;
-#                       industry_return_nd = (bench_ret - (1-swf)*non_ind_ret) / swf.
+#   bench_daily    — per (benchmark, date): close, 1d and N-day returns via
+#                    LAG windows ordered by date.
+#   industry_daily — per (date, industry): the DAILY non-industry return
+#                    from consecutive benchmark_non_this_industry_price
+#                    levels (LAG within the industry's own row sequence),
+#                    + shared weight + the non-industry trading amount.
+#   shared_daily   — invert the DAILY decomposition identity:
+#                    bench_1d = swf*shared_1d + (1-swf)*non_ind_1d
+#                      -> shared_1d = (bench_1d - (1-swf)*non_ind_1d) / swf
+#                    (swf = benchmark_shared_weight / 100; NULL / swf = 0
+#                    -> NULL). Inverting DAILY returns is numerically
+#                    clean — the non-industry daily price column was
+#                    built FROM this identity; inverting the pre-aggregated
+#                    rolling_{N}days column instead would amplify its
+#                    clamping/compounding artifacts by (1-swf)/swf and
+#                    flood the rankings with noise for narrow industries.
+#   shared_nd      — compound the shared daily returns over the trailing N
+#                    trading-day rows (ROWS BETWEEN N-1 PRECEDING), the
+#                    same exp(SUM ln(1+r)) convention as the attributions
+#                    build's rolling columns: daily returns outside
+#                    (-0.5, 0.5] contribute 0. The window must be FULL
+#                    (COUNT = N) or the row gets NULL — a partial window
+#                    would understate the compounded return.
+#   per_industry   — JOIN shared_nd x bench_daily on date;
+#                    hype = shared_return_nd - benchmark_return_nd;
+#                    shared_trading_amt = benchmark total trading
+#                    - non-industry trading (NULL when non-positive).
 #   per_industry_metric — computes metric_value based on attribution_type:
-#                       'equal' -> hype; 'trading_amt' -> hype * shared_trading_amt.
-#   ranked            — ROW_NUMBER() OVER (PARTITION BY date ORDER BY
-#                       metric_value DESC/ASC) for HYPE/DRAIN, filter <= 5.
+#                    'equal' -> hype; 'trading_amt' -> hype * shared_trading_amt.
+#   ranked         — ROW_NUMBER() OVER (PARTITION BY date ORDER BY
+#                    metric_value DESC/ASC) for HYPE/DRAIN, filter <= 5.
 #
 # Parameters:
 #   $1 = period N (int)
 #   $2 = benchmark_code (text)
 #   $3 = attribution_type (text) — 'equal' or 'trading_amt'
-# The {rolling_col} and {period} placeholders are format-substituted.
-# benchmark_code is validated from the DB, rolling_col is a frozen column
-# name from _rolling_col(period).
+# The {period} placeholder is format-substituted; benchmark_code and
+# attribution_type are bound parameters (validated from the DB / frozen
+# enum) — never format-substituted.
 #
 # The weighting column in industry_hypes_and_drains is derived from
 # attribution_type: 'equal' -> 'equal', 'trading_amt' -> 'amt'.
@@ -170,71 +200,111 @@ WITH bench_daily AS (
         ib.date,
         ib.close,
         ib.trading_amount,
-        LAG(ib.close, $1::int) OVER w AS close_n_ago
+        LAG(ib.close) OVER w AS bench_prev_close,
+        ib.close / NULLIF(LAG(ib.close) OVER w, 0) - 1.0
+            AS bench_return_1d,
+        CASE
+            WHEN LAG(ib.close, $1::int) OVER w IS NOT NULL
+                 AND LAG(ib.close, $1::int) OVER w != 0
+            THEN ib.close / LAG(ib.close, $1::int) OVER w - 1.0
+            ELSE NULL
+        END AS benchmark_return_nd
     FROM stats.index_basic_stats ib
     WHERE ib.code = $2::text
       AND ib.close IS NOT NULL
     WINDOW w AS (ORDER BY ib.date)
 ),
-bench_returns AS (
-    SELECT
-        date,
-        trading_amount,
-        CASE
-            WHEN close_n_ago IS NOT NULL AND close_n_ago != 0
-            THEN close / close_n_ago - 1.0
-            ELSE NULL
-        END AS benchmark_return_nd
-    FROM bench_daily
-),
-industry_non_ind AS (
+industry_daily AS (
     SELECT
         ia.date,
         ia.industry_id,
         ia.benchmark_shared_weight,
-        ia.{rolling_col} / 100.0 - 1.0 AS non_industry_return_nd,
+        ia.benchmark_non_this_industry_price,
         ia.benchmark_non_this_industry_trading_amt
     FROM analysis.industry_attributions ia
     WHERE ia.benchmark_code = $2::text
       AND ia.attribution_type = $3::text
-      AND ia.{rolling_col} IS NOT NULL
+      AND ia.benchmark_non_this_industry_price IS NOT NULL
+),
+shared_daily AS (
+    -- Invert the DAILY decomposition identity (see the template comment
+    -- block above). NULL on any leg or swf = 0 -> NULL.
+    --
+    -- The non-industry DAILY return must be recovered EXACTLY as
+    --   non_industry_return_1d = price[t] / bench_close[t-1] - 1
+    -- because the build materializes the level as
+    --   price[t] = bench_close[t-1] * (1 + non_industry_return_t).
+    -- Ratios of CONSECUTIVE LEVELS (price[t]/price[t-1]) instead carry a
+    -- (1+bench_ret[t-1])/(1+non_ind_ret[t-1]) cross-term whose
+    -- compounding random-walks to ~+-20% error in the trailing-N-day
+    -- shared return (weight-independent), flipping industries between
+    -- the HYPE and DRAIN sides.
+    SELECT
+        d.date,
+        d.industry_id,
+        d.benchmark_shared_weight,
+        CASE
+            WHEN d.benchmark_shared_weight IS NULL
+                 OR d.benchmark_shared_weight = 0
+                 OR br.bench_prev_close IS NULL
+                 OR br.bench_prev_close = 0
+                 OR d.benchmark_non_this_industry_price IS NULL THEN NULL
+            ELSE (br.bench_return_1d
+                  - (1.0 - d.benchmark_shared_weight / 100.0)
+                    * (d.benchmark_non_this_industry_price
+                       / br.bench_prev_close - 1.0))
+                 / (d.benchmark_shared_weight / 100.0)
+        END AS shared_return_1d,
+        d.benchmark_non_this_industry_trading_amt
+    FROM industry_daily d
+    JOIN bench_daily br ON br.date = d.date
+),
+shared_nd AS (
+    SELECT
+        sd.date,
+        sd.industry_id,
+        sd.benchmark_shared_weight,
+        CASE WHEN COUNT(sd.shared_return_1d) OVER wnd = $1::int
+             THEN 100.0 * exp(
+                      SUM(CASE
+                          WHEN sd.shared_return_1d > -0.5
+                               AND sd.shared_return_1d <= 0.5
+                          THEN ln(1.0 + sd.shared_return_1d)
+                          ELSE 0
+                      END) OVER wnd
+                  ) - 100.0
+            ELSE NULL
+        END AS shared_return_nd,
+        sd.benchmark_non_this_industry_trading_amt
+    FROM shared_daily sd
+    WINDOW wnd AS (
+        PARTITION BY sd.industry_id
+        ORDER BY sd.date
+        ROWS BETWEEN ($1::int - 1) PRECEDING AND CURRENT ROW
+    )
 ),
 per_industry AS (
     SELECT
-        br.date,
-        pc.industry_id,
-        pc.benchmark_shared_weight,
-        pc.non_industry_return_nd,
-        br.benchmark_return_nd,
+        bd.date,
+        sn.industry_id,
+        sn.benchmark_shared_weight,
+        bd.benchmark_return_nd,
+        -- The shared portfolio's trailing-N-day return (fractional):
+        -- the "industry return" the hype is measured on.
+        sn.shared_return_nd / 100.0 AS industry_return_nd,
         -- hype = industry_return_nd - benchmark_return_nd
-        -- industry_return_nd = (bench_ret - (1-swf)*non_ind_ret) / swf
-        -- swf = benchmark_shared_weight / 100.0
-        -- Guard: swf = 0 -> NULL (division by zero; industry has no overlap
-        -- with the benchmark, so hype is undefined).
+        sn.shared_return_nd / 100.0 - bd.benchmark_return_nd AS hype,
         CASE
-            WHEN pc.benchmark_shared_weight IS NULL
-                 OR pc.benchmark_shared_weight = 0 THEN NULL
-            ELSE (
-                (br.benchmark_return_nd
-                 - (1.0 - pc.benchmark_shared_weight / 100.0)
-                   * pc.non_industry_return_nd)
-                / (pc.benchmark_shared_weight / 100.0)
-            ) - br.benchmark_return_nd
-        END AS hype,
-        -- shared_trading_amt = benchmark total trading - non-industry trading.
-        -- NULL when either component is missing or result is non-positive
-        -- (data quality guard).
-        CASE
-            WHEN br.trading_amount IS NOT NULL
-                 AND pc.benchmark_non_this_industry_trading_amt IS NOT NULL
-                 AND br.trading_amount - pc.benchmark_non_this_industry_trading_amt > 0
-            THEN br.trading_amount - pc.benchmark_non_this_industry_trading_amt
+            WHEN bd.trading_amount IS NOT NULL
+                 AND sn.benchmark_non_this_industry_trading_amt IS NOT NULL
+                 AND bd.trading_amount - sn.benchmark_non_this_industry_trading_amt > 0
+            THEN bd.trading_amount - sn.benchmark_non_this_industry_trading_amt
             ELSE NULL
         END AS shared_trading_amt
-    FROM industry_non_ind pc
-    JOIN bench_returns br ON br.date = pc.date
-    WHERE pc.non_industry_return_nd IS NOT NULL
-      AND br.benchmark_return_nd IS NOT NULL
+    FROM shared_nd sn
+    JOIN bench_daily bd ON bd.date = sn.date
+    WHERE sn.shared_return_nd IS NOT NULL
+      AND bd.benchmark_return_nd IS NOT NULL
 ),
 -- Compute metric_value based on attribution_type:
 --   'equal'       -> metric_value = hype
@@ -272,7 +342,7 @@ ranked AS (
 INSERT INTO analysis.industry_hypes_and_drains
     (date, benchmark_code, period_days, weighting, rank_side, rank,
      industry_id, industry_label, metric_value, shared_trading_amt,
-     benchmark_return_nd, non_industry_return_nd, benchmark_shared_weight)
+     benchmark_return_nd, industry_return_nd, benchmark_shared_weight)
 SELECT
     r.date,
     $2::text                                                AS benchmark_code,
@@ -287,7 +357,7 @@ SELECT
     ROUND(r.metric_value::numeric, 6)                       AS metric_value,
     ROUND(r.shared_trading_amt::numeric, 4)                 AS shared_trading_amt,
     ROUND(r.benchmark_return_nd::numeric, 6)                AS benchmark_return_nd,
-    ROUND(r.non_industry_return_nd::numeric, 6)             AS non_industry_return_nd,
+    ROUND(r.industry_return_nd::numeric, 6)                 AS industry_return_nd,
     ROUND(r.benchmark_shared_weight::numeric, 4)            AS benchmark_shared_weight
 FROM ranked r
 CROSS JOIN LATERAL (
@@ -307,10 +377,7 @@ def _build_insert_sql(benchmark_code: str, period: int) -> str:
     NOT format-substituted, to avoid SQL injection and allow the same
     formatted SQL to be reused for both 'equal' and 'trading_amt' calls.
     """
-    return _INSERT_SQL_TEMPLATE.format(
-        period=period,
-        rolling_col=_rolling_col(period),
-    )
+    return _INSERT_SQL_TEMPLATE.format(period=period)
 
 
 # Bump work_mem for the window functions + hash aggregate.
@@ -425,16 +492,17 @@ async def run_hypes_and_drains(
     the default — the table is small and cheap to fully recompute).
 
     Pipeline
-      1. Guard: bail out if industry_attributions has no broad-market rows.
-      2. Warn (not abort) if the 120d column has no data.
-      3. Fetch all broad-market benchmark codes.
-      4. Truncate analysis.industry_hypes_and_drains.
-      5. For each (benchmark_code, period, weighting): run the INSERT...SELECT.
+      1. Guard: bail out if industry_attributions has no broad-market rows
+         with daily non-industry price data.
+      2. Fetch all broad-market benchmark codes.
+      3. Truncate analysis.industry_hypes_and_drains.
+      4. For each (benchmark_code, period, weighting): run the INSERT...SELECT.
          weighting 'equal' uses attribution_type='equal' (metric_value=hype);
          weighting 'amt' uses attribution_type='trading_amt'
          (metric_value=hype * shared_trading_amt).
-      6. Upsert analysis.analysis_identity.
-      7. Sanity summary by (benchmark_code, period, weighting).
+      5. Upsert analysis.analysis_identity.
+      6. Sanity summary by (benchmark_code, period, weighting).
+      7. Seasonal (monthly) aggregation.
 
     Args:
       force: when True (default), truncate + recompute.
@@ -447,32 +515,22 @@ async def run_hypes_and_drains(
     # ---- Step 1: guard -----------------------------------------------
     n_src = await conn.fetchval(COUNT_SOURCE_SQL)
     if not n_src:
-        logger.info("\n[hd1/7] industry_attributions has no broad-market rows "
-              "with 255d data — nothing to rank. Skipping "
-              "hypes_and_drains step.")
+        logger.info("\n[hd1/6] industry_attributions has no broad-market rows "
+              "with daily non-industry price data — nothing to rank. "
+              "Skipping hypes_and_drains step.")
         return
-    logger.info(f"\n[hd1/7] Source analysis.industry_attributions: "
-          f"{n_src:,} broad-market rows with 255d data.")
+    logger.info(f"\n[hd1/6] Source analysis.industry_attributions: "
+          f"{n_src:,} broad-market rows with daily non-industry price data.")
 
-    # ---- Step 2: 120d column check (warn, don't abort) ---------------
-    n_120 = await conn.fetchval(COUNT_120D_SQL)
-    if not n_120:
-        logger.warning("      WARNING: benchmark_non_this_industry_rolling_120days_"
-              "price is NULL for all broad-market benchmarks. The "
-              "attributions step's 120d backfill has not run yet — "
-              "period=120 rows will be skipped.")
-    else:
-        logger.info(f"      120d column populated ({n_120:,} rows).")
-
-    # ---- Step 3: fetch broad-market benchmark codes -----------------
+    # ---- Step 2: fetch broad-market benchmark codes -----------------
     benchmark_codes = [r["benchmark_code"] for r in await conn.fetch(
         BROAD_MARKET_BENCHMARKS_SQL
     )]
-    logger.info(f"\n[hd2/7] Found {len(benchmark_codes)} broad-market benchmarks: "
+    logger.info(f"\n[hd2/6] Found {len(benchmark_codes)} broad-market benchmarks: "
           f"{', '.join(benchmark_codes)}")
 
     # ---- Step 4: truncate -------------------------------------------
-    logger.info(f"\n[hd3/7] Truncating {TABLE} (full recompute)...")
+    logger.info(f"\n[hd3/6] Truncating {TABLE} (full recompute)...")
     await truncate_table_async(conn, TABLE)
 
     # ---- Step 5: per-(benchmark, period, weighting) INSERT ----------
@@ -497,7 +555,7 @@ async def run_hypes_and_drains(
                 )
                 n_iter = _parse_insert_count(status)
                 n_total += n_iter
-                logger.info(f"  [hd4/7] {bm_code} period={period:>3d}d "
+                logger.info(f"  [hd4/6] {bm_code} period={period:>3d}d "
                       f"{weighting:5s}: inserted {n_iter:>7,} rows "
                       f"({time.time() - t_iter:.1f}s)")
                 del status, n_iter, sql

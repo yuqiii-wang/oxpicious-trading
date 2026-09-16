@@ -77,51 +77,22 @@ Default (incremental) mode:
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-import asyncio
-import os
 import sys
-import time
 
-# Ensure project root is on sys.path so ``_common`` is importable when run
-# directly via ``python -m analyze.mov_ave_spread`` or as a script.
-sys.path.insert(
-    0,
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ),
-)
+# Runtime bootstrap — pre-check → silence warnings → cudf.pandas hook →
+# UTF-8 stdout. MUST run before the pandas-importing modules below.
+from _common.data_pipeline import bootstrap_runtime
 
-from _common.build_commons import (  # noqa: E402
-    setup_utf8_stdout,
-    get_db_connection_async,
-    get_db_pool_async,
-    truncate_table_async,
-    print_build_header,
-    print_wall_time,
-    find_missing_analysis_dates,
-    add_force_arg,
-)
+bootstrap_runtime()
 
-setup_utf8_stdout()
+import pandas as pd  # (post-activate; used by the detail incremental
+#                     target-date filter)
 
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
-
-import pandas as pd  # noqa: E402  (post-activate; used by the detail
-#                     incremental target-date filter)
-
-from analyze._common import (  # noqa: E402
+from analyze._common import (
     build_and_insert_chunked_df,
-    upsert_analysis_identity,
 )
-from analyze.mov_ave_spread.config import (  # noqa: E402
+from _common.pre_check_and_load import find_missing_analysis_dates
+from analyze.mov_ave_spread.config import (
     ANALYSIS_NAME,
     DETAIL_TABLE,
     DESCRIPTION,
@@ -138,24 +109,26 @@ from analyze.mov_ave_spread.config import (  # noqa: E402
     TRADING_AMT_RATIOS_TABLE,
     TRADING_AMT_TABLE,
 )
-from analyze.mov_ave_spread.fetch import fetch_source_data  # noqa: E402
-from analyze.mov_ave_spread.compute import build_detail_frame  # noqa: E402
-from analyze.mov_ave_spread.rsi import run_rsi, RSI_TABLE  # noqa: E402
-from analyze.mov_ave_spread.ema import run_ema  # noqa: E402
-from analyze.mov_ave_spread.ohlc import run_ohlc, find_ohlc_repair_dates  # noqa: E402
-from analyze.mov_ave_spread.trading_amt import run_trading_amt  # noqa: E402
-from analyze.mov_ave_spread.trading_amt_ratios import run_trading_amt_ratios  # noqa: E402
-from analyze.mov_ave_spread.price_vs_amt import run_price_vs_amt  # noqa: E402
-from analyze.mov_ave_spread.high_low_pct import (  # noqa: E402
+from analyze.mov_ave_spread.fetch import fetch_source_data
+from analyze.mov_ave_spread.compute import build_detail_frame
+from analyze.mov_ave_spread.rsi import run_rsi, RSI_TABLE
+from analyze.mov_ave_spread.ema import run_ema
+from analyze.mov_ave_spread.ohlc import run_ohlc, find_ohlc_repair_dates
+from analyze.mov_ave_spread.trading_amt import run_trading_amt
+from analyze.mov_ave_spread.trading_amt_ratios import run_trading_amt_ratios
+from analyze.mov_ave_spread.price_vs_amt import run_price_vs_amt
+from analyze.mov_ave_spread.high_low_pct import (
     find_missing_high_low_pct_pairs,
     run_high_low_pct,
 )
-from analyze.mov_ave_spread.high_low_pct_streaks import (  # noqa: E402
+from analyze.mov_ave_spread.high_low_pct_streaks import (
     run_high_low_pct_streaks,
 )
-from analyze.mov_ave_spread.holiday import run_holiday  # noqa: E402
+from analyze.mov_ave_spread.holiday import run_holiday
 
-from _common.log_setup import setup_logging  # noqa: E402
+from _common.log_setup import setup_logging
+from _common.data_analysis import DataAnalysis
+
 logger = setup_logging("mov_ave_spread")
 
 
@@ -378,57 +351,43 @@ async def _process_single_code(
     return n_detail
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Moving-average spread analysis (ETF + Index + Stock)."
-    )
-    add_force_arg(ap)
-    ap.add_argument(
-        "--sec-type", choices=("etf", "index", "stock"), default=None,
-        help="Process only this sec_type (for testing). Default: all.",
-    )
-    ap.add_argument(
-        "--max-concurrent", type=int, default=20,
-        help="Maximum parallel upsert chunks. Each chunk acquires one "
-             "Postgres backend connection from the pool, so this also "
-             "sets the pool's max_size. Local dev DB has "
-             "max_connections=100 with ~2 in use, so 20 is safe. "
-             "Reduce if you see 'too many clients' errors. Default: 20.",
-    )
-    ap.add_argument(
-        "--code", default=None,
-        help="Recompute ALL analysis rows for this single security only "
-             "(single-code mode; used by the UI per-security build "
-             "button). Deletes the code's rows first, then rebuilds "
-             "detail + every internal step for that code. Mutually "
-             "exclusive with --force.",
-    )
-    args = ap.parse_args()
+class MovAveSpreadAnalysis(DataAnalysis):
+    title = "ANALYZE MA-SPREADS (ETF + INDEX + STOCK)"
+    sec_types = tuple(SEC_TYPES)
+    component = "mov_ave_spread"
 
-    if args.code and args.force:
-        logger.error("ERROR: --code and --force are mutually exclusive.")
-        sys.exit(2)
+    def add_arguments(self, parser) -> None:
+        self.add_force_arg(parser)
+        self.add_sec_type_arg(parser)
+        self.add_max_concurrent_arg(parser)
+        self.add_code_arg(parser)
 
-    sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
-    max_concurrent = max(1, args.max_concurrent)
+    def apply_args(self) -> None:
+        if self.args.code and self.args.force:
+            logger.error("ERROR: --code and --force are mutually exclusive.")
+            sys.exit(2)
+        self.pool_size = max(1, self.args.max_concurrent)
 
-    t0 = time.time()
-    print_build_header(
-        "ANALYZE MA-SPREADS (ETF + INDEX + STOCK)",
-        detail_table=DETAIL_TABLE,
-        pairs=f"{len(PAIRS)} (5 Price/MA + 4 MA5/MA)",
-        sec_types=", ".join(sec_types),
-        mode=(
-            f"SINGLE-CODE {args.code} (full recompute for this security)"
-            if args.code else
-            "FORCE (full recompute)" if args.force
-            else "incremental (missing dates only)"
-        ),
-    )
+    def header_fields(self) -> dict:
+        return {
+            "detail_table": DETAIL_TABLE,
+            "pairs": f"{len(PAIRS)} (5 Price/MA + 4 MA5/MA)",
+            "sec_types": ", ".join(self.resolve_sec_types()),
+            "mode": (
+                f"SINGLE-CODE {self.args.code} (full recompute for this security)"
+                if self.args.code else
+                "FORCE (full recompute)" if self.args.force
+                else "incremental (missing dates only)"
+            ),
+        }
 
-    conn = await get_db_connection_async()
-    pool = await get_db_pool_async(min_size=1, max_size=max_concurrent)
-    try:
+    async def run(self) -> None:
+        conn = self.conn
+        pool = self.pool
+        args = self.args
+        force = args.force
+        sec_types = self.resolve_sec_types()
+        max_concurrent = self.pool_size
         # ---- Single-code mode (--code): rebuild ONE security -------------
         # Bypasses the per-sec_type missing-date detection entirely — the
         # UI fires this when a security has NO analysis rows while the
@@ -441,14 +400,10 @@ async def main() -> None:
                     conn, pool, st, args.code, max_concurrent,
                 )
             logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
-            await upsert_analysis_identity(
-                conn,
-                name=ANALYSIS_NAME,
-                detail_name="mov_ave_spreads_detail",
-                description=DESCRIPTION,
+            await self.upsert_identity(
+                ANALYSIS_NAME, "mov_ave_spreads_detail", DESCRIPTION,
             )
             logger.info(f"\n  TOTAL: {total_detail:,} detail rows inserted")
-            print_wall_time(t0)
             return
 
         # ---- Step 0: determine target dates (per-sec_type) --------------
@@ -458,12 +413,11 @@ async def main() -> None:
                 # run, so TRUNCATE (fast, resets storage) is safe.
                 logger.info("\n[0/4] Force mode: truncating detail "
                       "tables...")
-                await truncate_table_async(conn, DETAIL_TABLE)
-                await truncate_table_async(conn, TRADING_AMT_TABLE)
-                await truncate_table_async(conn, TRADING_AMT_RATIOS_TABLE)
-                await truncate_table_async(conn, HOLIDAY_TABLE)
-                await truncate_table_async(conn, PRICE_VS_AMT_TABLE)
-                await truncate_table_async(conn, HIGH_LOW_PCT_TABLE)
+                await self.truncate_tables((
+                    DETAIL_TABLE, TRADING_AMT_TABLE,
+                    TRADING_AMT_RATIOS_TABLE, HOLIDAY_TABLE,
+                    PRICE_VS_AMT_TABLE, HIGH_LOW_PCT_TABLE,
+                ))
                 logger.info("    -> truncated; will recompute all rows")
             else:
                 # Scoped --sec-type force: DELETE only the scoped
@@ -587,7 +541,6 @@ async def main() -> None:
                 and total_hl_pct_missing == 0
             ):
                 logger.info("    -> DB is up to date; nothing to do.")
-                print_wall_time(t0)
                 return
             # For sec_types where only trading_amt / trading_amt_ratios /
             # OHLC / high_low_pct needs updates, set target_dates to
@@ -640,29 +593,12 @@ async def main() -> None:
 
         # ---- Upsert analysis_identity ------------------------------------
         logger.info(f"\n  -> Upserting analysis.analysis_identity registry...")
-        await upsert_analysis_identity(
-            conn,
-            name=ANALYSIS_NAME,
-            detail_name="mov_ave_spreads_detail",
-            description=DESCRIPTION,
+        await self.upsert_identity(
+            ANALYSIS_NAME, "mov_ave_spreads_detail", DESCRIPTION,
         )
 
         logger.info(f"\n  TOTAL: {total_detail:,} detail rows inserted")
-        print_wall_time(t0)
-    finally:
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
-        try:
-            await asyncio.wait_for(pool.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pool.terminate()
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    MovAveSpreadAnalysis().execute()

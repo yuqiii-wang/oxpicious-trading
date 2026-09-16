@@ -72,6 +72,7 @@ def build_news_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "url": r.get("url"),
         "author": r.get("author"),
         "industry_id": r.get("industry_id"),
+        "sector_id": r.get("sector_id"),
         "word_count": r.get("word_count"),
         "votes": r.get("votes"),
     } for r in rows]

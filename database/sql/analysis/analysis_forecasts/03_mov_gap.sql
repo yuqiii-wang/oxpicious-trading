@@ -29,12 +29,12 @@
 --  Full-window gate + hype split + forecast_id link: identical to
 --  mov_rsi (see 02_mov_rsi_mov_std.sql). Results (forward changes /
 --  reversal probabilities) live in analysis_forecasts.forecast_results
---  via forecast_id (1:N — one forecast_id → 4 period rows).
+--  via forecast_id (1:N — one forecast_id → 5 period rows).
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.mov_gap (
     code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_mov_gap_forecast_id
+    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_mov_gap_forecast_id
     gap_window      INTEGER      NOT NULL,  -- gap window in trading days: 2/3 (gap_{W}days N-day return)
     side            TEXT         NOT NULL,  -- 'top' (sharp rally) | 'bottom' (sharp selloff)
     pct             INTEGER      NOT NULL,  -- percentile width: 1 / 5 / 10 / 25
@@ -92,7 +92,7 @@ BEGIN
         DROP CONSTRAINT IF EXISTS pk_mov_gap;
     CREATE TABLE analysis_forecasts.mov_gap_new (
             code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-            forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_mov_gap_forecast_id
+            forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_mov_gap_forecast_id
             gap_window      INTEGER      NOT NULL,
             side            TEXT         NOT NULL,
             pct             INTEGER      NOT NULL,
@@ -136,9 +136,9 @@ CREATE INDEX IF NOT EXISTS idx_mov_gap_forecast_id
 --  Comments
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis_forecasts.mov_gap IS 'Short-term price-gap (N-day return) extreme-day bucket definitions (motivation): one row per forecast_id — the days of one security-month whose gap_{W}days = (price[t]-price[t-W])/price[t-W] is in the top pct% (side=top, sharp W-day rally) or bottom pct% (side=bottom, sharp W-day selloff) of the trailing 5-year window ending at the bucket''s stat_month, streak-merged (2026-09: consecutive bucket days are ONE forecast signal anchored at the run''s MID day — the mean run length per signal lives on forecast_identities.streak_signal_days; the legacy fixed-5-day cooldown was removed), split by whether any bucket date is a market-hyped date. gap_window ∈ {2, 3} mirrors analysis.mov_ave_rsi.gap_2days / gap_3days. Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / reversal probabilities) live in analysis_forecasts.forecast_results via forecast_id. Source: analysis.mov_ave_rsi (gap columns).';
-COMMENT ON COLUMN analysis_forecasts.mov_gap.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
+COMMENT ON COLUMN analysis_forecasts.mov_gap.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 5 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 5 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
 COMMENT ON COLUMN analysis_forecasts.mov_gap.gap_window IS 'N-day price-return window (trading days) whose extreme days are bucketed: 2/3 — mirrors analysis.mov_ave_rsi.gap_2days / gap_3days.';
-COMMENT ON COLUMN analysis_forecasts.mov_gap.side IS 'Bucket side: top = gap_{W}days in the top pct% of the window (sharp rally; reversals are changes below the bucket''s FIXED 1% reverse_threshold (0.01 — the period-end n-day close vs ±1%); bottom = gap_{W}days in the bottom pct% (sharp selloff; reversals are changes above it).';
+COMMENT ON COLUMN analysis_forecasts.mov_gap.side IS 'Bucket side: top = gap_{W}days in the top pct% of the window (sharp rally; reversals are changes below the bucket''s FIXED 1% threshold (0.01 — the period-end n-day close vs ±1%); bottom = gap_{W}days in the bottom pct% (sharp selloff; reversals are changes above it).';
 COMMENT ON COLUMN analysis_forecasts.mov_gap.pct IS 'Percentile width of the bucket: 1, 5, 10 or 25 (percent). The threshold is the window''s (linear-interpolated) percentile of gap_{W}days over non-NULL values.';
 COMMENT ON COLUMN analysis_forecasts.mov_gap.is_market_hyped IS 'TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
 COMMENT ON COLUMN analysis_forecasts.mov_gap.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';

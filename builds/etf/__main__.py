@@ -22,8 +22,13 @@ denominator. PE scope is INCREMENTAL — recomputed only for rows eligible
 for re-upsert this run (missing dates ∪ corp-action resync codes ∪ PE-null
 keys). Run builds.stock BEFORE builds.etf so stock PE is available.
 
-The full staged pipeline lives in ``builds.etf.pipeline``; this entry keeps
-only resource pre-check + cudf activation + CLI parsing.
+The full staged pipeline lives in ``builds.etf.pipeline``; this entry
+class (:class:`EtfBuild`, a :class:`DataBuild` subclass) owns only the
+runtime lifecycle (resource pre-check, cudf.pandas activation, UTF-8
+stdout, common --start-date/--end-date/--force/--date/--code args,
+post-check memory release). The pipeline module is imported lazily
+inside :meth:`EtfBuild.run` so the cudf.pandas import hook is installed
+before its pandas import.
 
 Missing-data detection flow (DB-first):
   OHLCV + margin (cross-date dependency — splits + MAs need FULL history):
@@ -50,52 +55,35 @@ Usage:
   python -m builds.etf --code 159919.SZ           (single-ETF test filter)
 """
 
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-
-import warnings
-warnings.filterwarnings("ignore")
-
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
-
-from _common.build_commons import (
-    setup_utf8_stdout, add_common_build_args,
-    enforce_date_force_exclusion, parse_date_arg,
-)
-setup_utf8_stdout()
-
-import asyncio
-
-from builds._commons.code_filter import add_code_arg, normalize_code
+from _common.data_build import DataBuild
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Build SZSE + SSE ETF + margin + composition + PE and insert to database (missing-data-only)."
-    )
-    add_common_build_args(ap)
-    add_code_arg(ap)
-    args = ap.parse_args()
-    # Resolve once so pipeline stages share the canonical suffixed code.
-    args.resolved_code = normalize_code(args.code)
-    # --date: reject the --date + --force combo and validate the value
-    # BEFORE any work starts (SystemExit 2 on misuse); the pipeline
-    # consumes args.forced_date.
-    enforce_date_force_exclusion(args)
-    args.forced_date = parse_date_arg(args.date)
 
-    from builds.etf.pipeline.main import run
-    await run(args)
+class EtfBuild(DataBuild):
+    """``python -m builds.etf`` — runtime lifecycle + common args only.
+
+    Empty ``title``: pipeline.main() prints its own header + wall time.
+    """
+
+    component = "etf"
+
+    def add_arguments(self, parser) -> None:
+        self.add_date_range_args(parser)
+        self.add_code_arg(parser)
+
+    def apply_args(self) -> None:
+        # --date: reject the --date + --force combo and validate the value
+        # BEFORE any work starts (SystemExit 2 on misuse); the pipeline
+        # consumes args.forced_date.
+        self.apply_date_force_args()
+        # Resolve once so pipeline stages share the canonical suffixed code.
+        self.args.resolved_code = self.resolve_code_filter()
+
+    async def run(self) -> None:
+        from builds.etf.pipeline.main import run
+
+        await run(self.args)
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    EtfBuild().execute()

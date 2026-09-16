@@ -72,15 +72,15 @@
 --  rebuild at a different lookback is self-describing.
 --
 --    reverse change      = the move AGAINST the bucket's extreme side
---      beyond the bucket's FIXED 1% reverse_threshold (the period-end n-day close vs ±1%; formerly k_n · σ of the
+--      beyond the bucket's FIXED 1% threshold (the period-end n-day close vs ±1%; formerly k_n · σ of the
 --      code's window n-day forward changes; legacy fixed 1% fallback —
 --      see 01_forecast_results.sql):
 --      top / upper (overbought / above upper band): change <
---      −reverse_threshold counts as a reversal;
+--      −threshold counts as a reversal;
 --      bottom / lower (oversold / below lower band): change >
---      +reverse_threshold counts as a reversal.
+--      +threshold counts as a reversal.
 --    reverse_prob_{n}    = P(n-day change is a reverse change beyond
---                          the row's reverse_threshold) over bucket
+--                          the row's threshold) over bucket
 --                          days with a valid n-day change.
 -- ============================================================================
 

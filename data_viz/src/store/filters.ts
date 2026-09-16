@@ -61,7 +61,7 @@ const DEFAULT_SNAPSHOTS: SnapshotDate[] = [
 ];
 
 export const useStore = create<AppState>((set) => ({
-  themeMode: "light",
+  themeMode: "dark",
   toggleTheme: () =>
     set((s) => ({ themeMode: s.themeMode === "light" ? "dark" : "light" })),
   setThemeMode: (mode) => set({ themeMode: mode }),

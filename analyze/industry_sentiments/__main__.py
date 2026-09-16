@@ -62,68 +62,45 @@ Default (incremental, no-corr) mode:
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-import asyncio
-import os
-import sys
-import time
+import datetime  # noqa: F401  (type hints below)
 from typing import Optional, Set
 
-import datetime  # noqa: F401  (type hints below)
+# Runtime bootstrap — pre-check → silence warnings → cudf.pandas hook →
+# UTF-8 stdout. MUST run before the pandas-importing modules below.
+from _common.data_pipeline import bootstrap_runtime
 
-# Ensure project root is on sys.path so ``_common`` is importable when run
-# directly via ``python -m analyze.industry_sentiments`` or as a script.
-sys.path.insert(
-    0,
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ),
-)
+bootstrap_runtime()
 
-from _common.build_commons import (  # noqa: E402
-    setup_utf8_stdout,
-    get_db_connection_async,
+from _common.build_commons import (
     truncate_table_async,
-    print_build_header,
-    print_wall_time,
-    add_force_arg,
 )
 
-setup_utf8_stdout()
-
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
-
-from analyze.industry_sentiments.correlations import (  # noqa: E402
+from analyze.industry_sentiments.correlations import (
     run_correlations,
     find_missing_corr_window_ends,
     TABLE as CORRELATIONS_TABLE,
 )
-from analyze.industry_sentiments.attributions import (  # noqa: E402
+from analyze.industry_sentiments.attributions import (
     run_attributions,
     needs_rolling_backfill,
     find_missing_attribution_dates,
     TABLE as ATTRIBUTIONS_TABLE,
 )
-from analyze.industry_sentiments.etf_contribution import (  # noqa: E402
+from analyze.industry_sentiments.etf_contribution import (
     run_etf_contribution,
     TABLE as ETF_CONTRIBUTION_TABLE,
 )
-from analyze.industry_sentiments.hypes_and_drains import (  # noqa: E402
+from analyze.industry_sentiments.hypes_and_drains import (
     run_hypes_and_drains,
     TABLE as HYPES_DRAINS_TABLE,
 )
-from builds.cross_stats.runner import (  # noqa: E402
+from builds.cross_stats.runner import (
     run_cross_stats,
 )
 
-from _common.log_setup import setup_logging  # noqa: E402
+from _common.log_setup import setup_logging
+from _common.data_analysis import DataAnalysis
+
 logger = setup_logging("industry_sentiments")
 
 # The industry BASELINE table (owned by builds.industry). This module only
@@ -131,7 +108,7 @@ logger = setup_logging("industry_sentiments")
 BASELINE_TABLE = "stats.industry_basic_stats"
 
 
-async def _up_to_date_checks(conn, t0: float) -> None:
+async def _up_to_date_checks(analysis: DataAnalysis, conn) -> None:
     """Post-detection checks for the 'no missing target dates' branch.
 
     Even when no incremental target dates are missing, the attributions
@@ -159,63 +136,63 @@ async def _up_to_date_checks(conn, t0: float) -> None:
             await run_hypes_and_drains(conn, force=True)
         else:
             logger.info("    -> DB is up to date; nothing to do.")
-    print_wall_time(t0)
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Industry sentiments downstream analysis (correlations "
-                    "[opt-in], perf_attribution, attributions, "
-                    "etf_contribution, hypes_and_drains) reading from "
-                    "stats.industry_basic_stats."
-    )
-    add_force_arg(ap)
-    ap.add_argument(
-        "--with-corr", action="store_true",
-        help="ALSO run the correlations step (analysis."
-             "industry_correlations). Disabled by default — run "
-             "'python -m analyze.industry_sentiments.corr' separately "
-             "instead.",
-    )
-    ap.add_argument(
-        "--etf-only", action="store_true",
-        help="Run ONLY the etf_contribution step (force=True: truncate "
-             "analysis.industry_etf_contribution and recompute all rows). "
-             "Use after rebuilding stats.index_exts (builds.index exts "
-             "phase) when ETF amounts changed — the incremental path "
-             "would otherwise skip it because no attribution dates are "
-             "missing.",
-    )
-    args = ap.parse_args()
+class IndustrySentimentsAnalysis(DataAnalysis):
+    """``python -m analyze.industry_sentiments`` — downstream steps.
 
-    t0 = time.time()
+    The old conn-before-header + two-branch structure is normalized by
+    the DataAnalysis amain() template: one header (title switches for
+    --etf-only via header_fields()), one connection, then run().
+    """
 
-    conn = await get_db_connection_async()
-    if args.etf_only:
-        print_build_header(
-            "ANALYZE INDUSTRY SENTIMENTS — ETF CONTRIBUTION ONLY",
-            source_table=BASELINE_TABLE,
-            mode="etf-only (truncate + full recompute of "
-                 "industry_etf_contribution)",
+    component = "industry_sentiments"
+
+    def add_arguments(self, parser) -> None:
+        self.add_force_arg(parser)
+        parser.add_argument(
+            "--with-corr", action="store_true",
+            help="ALSO run the correlations step (analysis."
+                 "industry_correlations). Disabled by default — run "
+                 "'python -m analyze.industry_sentiments.corr' separately "
+                 "instead.",
         )
-        try:
-            await run_etf_contribution(conn, force=True)
-        finally:
-            try:
-                await asyncio.wait_for(conn.close(), timeout=10)
-            except (asyncio.TimeoutError, Exception):
-                pass
-        print_wall_time(t0)
-        return
-    print_build_header(
-        "ANALYZE INDUSTRY SENTIMENTS "
-        "(downstream steps; baseline source: stats.industry_basic_stats)",
-        source_table=BASELINE_TABLE,
-        mode="FORCE (full downstream recompute)" if args.force
-             else "incremental (missing dates only)",
-    )
+        parser.add_argument(
+            "--etf-only", action="store_true",
+            help="Run ONLY the etf_contribution step (force=True: truncate "
+                 "analysis.industry_etf_contribution and recompute all rows). "
+                 "Use after rebuilding stats.index_exts (builds.index exts "
+                 "phase) when ETF amounts changed — the incremental path "
+                 "would otherwise skip it because no attribution dates are "
+                 "missing.",
+        )
 
-    try:
+    def apply_args(self) -> None:
+        # Title depends on the mode — set BEFORE amain() prints the header.
+        if self.args.etf_only:
+            self.title = "ANALYZE INDUSTRY SENTIMENTS — ETF CONTRIBUTION ONLY"
+        else:
+            self.title = ("ANALYZE INDUSTRY SENTIMENTS "
+                          "(downstream steps; baseline source: "
+                          "stats.industry_basic_stats)")
+
+    def header_fields(self) -> dict:
+        return {
+            "source_table": BASELINE_TABLE,
+            "mode": "etf-only (truncate + full recompute of "
+                    "industry_etf_contribution)" if self.args.etf_only
+                    else "FORCE (full downstream recompute)" if self.args.force
+                    else "incremental (missing dates only)",
+        }
+
+    async def run(self) -> None:
+        conn = self.conn
+        args = self.args
+
+        if args.etf_only:
+            await run_etf_contribution(conn, force=True)
+            return
+
         ran_perf = False  # step 2 already executed in step 0?
         # ---- Step 0: determine target dates -------------------------------
         if args.force:
@@ -252,7 +229,7 @@ async def main() -> None:
                 # the backfill + downstream aggregations read a current
                 # stats.cross_stats.
                 await run_cross_stats(conn, force=False)
-                await _up_to_date_checks(conn, t0)
+                await _up_to_date_checks(self, conn)
                 return
         else:
             logger.info("\n[0/5] Correlations SKIPPED (disabled by default — "
@@ -268,7 +245,7 @@ async def main() -> None:
             logger.info(f"    -> {len(target_dates)} dates missing from "
                   f"{ATTRIBUTIONS_TABLE}")
             if not target_dates:
-                await _up_to_date_checks(conn, t0)
+                await _up_to_date_checks(self, conn)
                 return
 
         # ---- Step 1: INTERNAL correlations step (--with-corr only) ------
@@ -319,20 +296,6 @@ async def main() -> None:
         # is small (~245K rows max) and rankings shift when any date changes.
         await run_hypes_and_drains(conn, force=True)
 
-        print_wall_time(t0)
-    finally:
-        # Close with a timeout — after heavy bulk inserts the PostgreSQL
-        # server can be saturated with WAL checkpoint I/O, making
-        # conn.close() stall on the Terminate message + TCP teardown.
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
-
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    IndustrySentimentsAnalysis().execute()

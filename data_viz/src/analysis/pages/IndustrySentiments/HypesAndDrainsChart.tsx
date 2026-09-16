@@ -285,7 +285,8 @@ export function HypesAndDrainsChart({ benchmarkCode, themeMode }: HypesAndDrains
             variant="caption"
             sx={{ fontSize: "0.72rem", fontWeight: 600, display: "block", mb: -0.5, px: 0.5 }}
           >
-            Benchmark (rebased = 100) + Seasonal top-{maxRank} HYPE / bottom-{maxRank} DRAIN industries
+            Benchmark + Seasonal top-{maxRank} HYPE / bottom-{maxRank} DRAIN industries
+            (curves rebased to 100 over the trailing {data?.period_days ?? "—"}d)
             (● active · ○ fading · ✕ hidden)
           </Typography>
           <div ref={chartWrapperRef} style={{ position: "relative" }}>

@@ -42,42 +42,33 @@ Usage:
   python -m builds.sec_info --date 2025-12-31  # force one report quarter-end (upsert refresh, no truncate)
   python -m builds.sec_info --no-owners  # skip sec_owners rebuild
   python -m builds.sec_info --no-composition  # skip top10 → sec_composition injection
+
+The :class:`SecInfoBuild` entry class (a :class:`DataBuild` subclass)
+owns the runtime lifecycle + common argparse; the CSV-scanning pipeline
+stays in the module-level helpers below (pandas-free — no cudf
+activation needed by this build).
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-import asyncio
-import datetime
 import os
 import sys
 from typing import Any, Dict, List
 
-from _common.build_commons import (
-    setup_utf8_stdout, get_db_or_exit, print_build_header,
-    add_force_arg, add_date_arg, parse_date_arg,
-    enforce_date_force_exclusion, forced_date_scope, TODAY_STR,
-)
+from _common.data_build import DataBuild
+from _common.log_setup import setup_logging
 
-setup_utf8_stdout()
+logger = setup_logging("sec_info")
 
-from builds.sec_info.paths import SZSE_REPORTS_DIR
-from builds.sec_info.loaders import (
+from builds.sec_info.paths import SZSE_REPORTS_DIR  # noqa: E402
+from builds.sec_info.loaders import (  # noqa: E402
     iter_report_files, load_identify, load_asset_portfolio, load_top10_holdings,
 )
-from builds.sec_info.upsert import (
+from builds.sec_info.upsert import (  # noqa: E402
     upsert_owners, fetch_existing_sec_info, build_sec_info_rows, upsert_sec_info,
     fetch_existing_sec_reports, build_sec_reports_rows, upsert_sec_reports,
     fetch_existing_composition_keys, build_composition_rows, inject_top10_composition,
 )
-from builds.classification.sector_industry.owners import load_owners
-
-from _common.log_setup import setup_logging  # noqa: E402
-logger = setup_logging("sec_info")
+from builds.classification.sector_industry.owners import load_owners  # noqa: E402
 
 
 # Default MIX columns (NULL when asset_portfolio.csv is empty / absent).
@@ -167,142 +158,139 @@ def _gather_reports(reports_dir: str) -> tuple:
     return latest_per_code, report_rows, top10_snapshots
 
 
-async def main():
-    ap = argparse.ArgumentParser(
-        description="Build SZSE ETF report registry (sec_info + sec_reports + sec_owners)."
-    )
-    ap.add_argument("--no-owners", action="store_true",
-                    help="Skip sec_owners rebuild (keep existing table)")
-    ap.add_argument("--no-composition", action="store_true",
-                    help="Skip top10_holdings → sec_composition injection")
-    add_force_arg(ap)
-    add_date_arg(ap)
-    args = ap.parse_args()
+class SecInfoBuild(DataBuild):
+    """``python -m builds.sec_info`` — SZSE ETF reports + owner registry."""
 
-    # --date mode: mutual exclusion + parse (SystemExit 2 on bad input).
-    # The forced quarter-end is validated against the parsed report dates
-    # after the CSV scan, before any DB work (forced_date_scope exits(1)).
-    enforce_date_force_exclusion(args)
-    forced = parse_date_arg(args.date)
-    if forced is not None:
-        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
+    title = "BUILD SEC INFO  ·  SZSE ETF reports + owner registry"
+    component = "sec_info"
 
-    t0 = datetime.datetime.now()
-    mode = ("FORCE (truncate + reload)" if args.force else
-            f"DATE MODE (single-date refresh: {forced})" if forced is not None else
-            "incremental (missing data)")
-    print_build_header(
-        "BUILD SEC INFO  ·  SZSE ETF reports + owner registry",
-        **{
+    def add_arguments(self, parser) -> None:
+        parser.add_argument("--no-owners", action="store_true",
+                            help="Skip sec_owners rebuild (keep existing table)")
+        parser.add_argument("--no-composition", action="store_true",
+                            help="Skip top10_holdings → sec_composition injection")
+        self.add_force_arg(parser)
+        self.add_date_arg(parser)
+
+    def apply_args(self) -> None:
+        # --date mode: mutual exclusion + parse (SystemExit 2 on bad input).
+        # The forced quarter-end is validated against the parsed report dates
+        # after the CSV scan, before any DB work (forced_date_scope exits(1)).
+        self.forced_date = self.apply_date_force_args()
+        if self.forced_date is not None:
+            logger.info(f"[DATE MODE] Forced single-date build: {self.forced_date}")
+
+    def header_fields(self) -> dict:
+        from _common.build_commons import TODAY_STR
+
+        mode = ("FORCE (truncate + reload)" if self.args.force else
+                f"DATE MODE (single-date refresh: {self.forced_date})"
+                if self.forced_date is not None else
+                "incremental (missing data)")
+        return {
             "Reports dir": SZSE_REPORTS_DIR,
             "Today": TODAY_STR,
             "Mode": mode,
         }
-    )
 
-    if not os.path.isdir(SZSE_REPORTS_DIR):
-        logger.error(f"    [FATAL] Reports dir not found: {SZSE_REPORTS_DIR}")
-        sys.exit(1)
+    async def run(self) -> None:
+        from _common.build_commons import forced_date_scope
 
-    # --- 1. Scan + parse all report CSVs ---
-    logger.info("\n[1/4] Scanning + parsing report CSVs …")
-    latest_per_code, report_rows, top10_snapshots = _gather_reports(SZSE_REPORTS_DIR)
-    n_codes = len(latest_per_code)
-    n_reports = len(report_rows)
-    n_top10 = len(top10_snapshots)
-    n_top10_rows = sum(len(s["holdings"]) for s in top10_snapshots)
-    logger.info(f"    [CSV] {n_codes} funds, {n_reports} report quarters, "
-          f"{n_top10} top10 snapshots ({n_top10_rows} holdings rows)")
+        if not os.path.isdir(SZSE_REPORTS_DIR):
+            logger.error(f"    [FATAL] Reports dir not found: {SZSE_REPORTS_DIR}")
+            sys.exit(1)
 
-    # --- 1b. --date scope: restrict every parsed collection to the forced
-    #     quarter-end report date (validated before any DB work) ---
-    if forced is not None:
-        available_dates = {r["report_date"] for r in report_rows}
-        target_dates = forced_date_scope(
-            available_dates, forced,
-            source_label="SZSE ETF report CSVs (quarter-end report dates)")
-        latest_per_code = {c: i for c, i in latest_per_code.items()
-                           if i["report_date"] in target_dates}
-        report_rows = [r for r in report_rows
-                       if r["report_date"] in target_dates]
-        top10_snapshots = [s for s in top10_snapshots
-                           if s["snapshot_date"] in target_dates]
+        # --- 1. Scan + parse all report CSVs ---
+        logger.info("\n[1/4] Scanning + parsing report CSVs …")
+        latest_per_code, report_rows, top10_snapshots = _gather_reports(SZSE_REPORTS_DIR)
         n_codes = len(latest_per_code)
         n_reports = len(report_rows)
         n_top10 = len(top10_snapshots)
         n_top10_rows = sum(len(s["holdings"]) for s in top10_snapshots)
-        logger.info(f"    [DATE MODE] Restricted to {forced}: {n_codes} funds, "
-              f"{n_reports} report quarters, {n_top10} top10 snapshots "
-              f"({n_top10_rows} holdings rows)")
+        logger.info(f"    [CSV] {n_codes} funds, {n_reports} report quarters, "
+              f"{n_top10} top10 snapshots ({n_top10_rows} holdings rows)")
 
-    # --- 2. Connect to DB ---
-    logger.info("\n[2/4] Connecting to database …")
-    conn = await get_db_or_exit()
+        # --- 1b. --date scope: restrict every parsed collection to the forced
+        #     quarter-end report date (validated before any DB work) ---
+        if self.forced_date is not None:
+            available_dates = {r["report_date"] for r in report_rows}
+            target_dates = forced_date_scope(
+                available_dates, self.forced_date,
+                source_label="SZSE ETF report CSVs (quarter-end report dates)")
+            latest_per_code = {c: i for c, i in latest_per_code.items()
+                               if i["report_date"] in target_dates}
+            report_rows = [r for r in report_rows
+                           if r["report_date"] in target_dates]
+            top10_snapshots = [s for s in top10_snapshots
+                               if s["snapshot_date"] in target_dates]
+            n_codes = len(latest_per_code)
+            n_reports = len(report_rows)
+            n_top10 = len(top10_snapshots)
+            n_top10_rows = sum(len(s["holdings"]) for s in top10_snapshots)
+            logger.info(f"    [DATE MODE] Restricted to {self.forced_date}: "
+                  f"{n_codes} funds, {n_reports} report quarters, "
+                  f"{n_top10} top10 snapshots ({n_top10_rows} holdings rows)")
 
-    try:
-        # --- 3. sec_owners (truncate + rebuild) ---
-        if args.no_owners:
-            logger.info("\n[3/4] sec_owners: --no-owners, skipping")
-        elif forced is not None:
-            logger.info(f"\n[3/4] sec_owners: DATE MODE {forced}, skipping "
-                  f"(date-independent registry rebuild — run without --date "
-                  f"to refresh)")
-        else:
-            logger.info("\n[3/4] Rebuilding stats.sec_owners …")
-            owners = _parse_owners_from_json()
-            await upsert_owners(conn, owners, verbose=True)
+        # --- 2. Connect to DB ---
+        logger.info("\n[2/4] Connecting to database …")
+        conn = await self.connect_db()
 
-        # --- 4. sec_info (latest snapshot per code, missing-data) ---
-        logger.info("\n[4/4] Upserting stats.sec_info + sec_reports + sec_composition …")
-        # --date mode bypasses the missing-data skips: the skip filters see
-        # "nothing existing", so every parsed row of the forced date is
-        # re-written through the normal upsert path (force stays False →
-        # no truncation, no deletes).
-        bypass = forced is not None
-        if bypass:
-            logger.info("    [DB] DATE MODE: sec_info/sec_reports missing-data "
-                  "skips bypassed — forced-date rows re-upserted")
-        existing_info = {} if bypass else await fetch_existing_sec_info(conn)
-        info_rows = build_sec_info_rows(latest_per_code, existing_info, args.force)
-        await upsert_sec_info(conn, info_rows, args.force)
+        try:
+            # --- 3. sec_owners (truncate + rebuild) ---
+            if self.args.no_owners:
+                logger.info("\n[3/4] sec_owners: --no-owners, skipping")
+            elif self.forced_date is not None:
+                logger.info(f"\n[3/4] sec_owners: DATE MODE {self.forced_date}, "
+                      f"skipping (date-independent registry rebuild — run "
+                      f"without --date to refresh)")
+            else:
+                logger.info("\n[3/4] Rebuilding stats.sec_owners …")
+                owners = _parse_owners_from_json()
+                await upsert_owners(conn, owners, verbose=True)
 
-        # --- sec_reports (missing-data unless --force / --date) ---
-        existing_reports = set() if bypass else await fetch_existing_sec_reports(conn)
-        report_rows_to_write = build_sec_reports_rows(report_rows, existing_reports, args.force)
-        await upsert_sec_reports(conn, report_rows_to_write, args.force)
+            # --- 4. sec_info (latest snapshot per code, missing-data) ---
+            logger.info("\n[4/4] Upserting stats.sec_info + sec_reports + sec_composition …")
+            # --date mode bypasses the missing-data skips: the skip filters see
+            # "nothing existing", so every parsed row of the forced date is
+            # re-written through the normal upsert path (force stays False →
+            # no truncation, no deletes).
+            bypass = self.forced_date is not None
+            if bypass:
+                logger.info("    [DB] DATE MODE: sec_info/sec_reports missing-data "
+                      "skips bypassed — forced-date rows re-upserted")
+            existing_info = {} if bypass else await fetch_existing_sec_info(conn)
+            info_rows = build_sec_info_rows(latest_per_code, existing_info, self.args.force)
+            await upsert_sec_info(conn, info_rows, self.args.force)
 
-        # --- sec_composition top10 injection (always missing-data) ---
-        if args.no_composition:
-            logger.info("    [DB] --no-composition: skipping top10 → sec_composition")
-        else:
-            existing_comp = await fetch_existing_composition_keys(conn)
-            if forced is not None:
-                logger.info("    [DB] DATE MODE: sec_composition keeps its "
-                      "missing-snapshot guard (builds.etf full snapshots are "
-                      "never overwritten by the top-10 source)")
-            comp_rows = build_composition_rows(top10_snapshots, existing_comp)
-            await inject_top10_composition(conn, comp_rows)
+            # --- sec_reports (missing-data unless --force / --date) ---
+            existing_reports = set() if bypass else await fetch_existing_sec_reports(conn)
+            report_rows_to_write = build_sec_reports_rows(report_rows, existing_reports, self.args.force)
+            await upsert_sec_reports(conn, report_rows_to_write, self.args.force)
 
-        # --- Summary ---
-        logger.info(f"\n    Summary:")
-        logger.info(f"      Funds (sec_info)     : {len(info_rows):,} upserted "
-              f"({n_codes} parsed)")
-        logger.info(f"      Reports (sec_reports): {len(report_rows_to_write):,} upserted "
-              f"({n_reports} parsed)")
-        if not args.no_composition:
-            logger.info(f"      top10 → sec_composition: {len(comp_rows):,} rows from "
-                  f"{n_top10} snapshots")
-    finally:
-        await conn.close()
+            # --- sec_composition top10 injection (always missing-data) ---
+            if self.args.no_composition:
+                logger.info("    [DB] --no-composition: skipping top10 → sec_composition")
+            else:
+                existing_comp = await fetch_existing_composition_keys(conn)
+                if self.forced_date is not None:
+                    logger.info("    [DB] DATE MODE: sec_composition keeps its "
+                          "missing-snapshot guard (builds.etf full snapshots are "
+                          "never overwritten by the top-10 source)")
+                comp_rows = build_composition_rows(top10_snapshots, existing_comp)
+                await inject_top10_composition(conn, comp_rows)
 
-    elapsed = (datetime.datetime.now() - t0).total_seconds()
-    logger.info(f"\n  Wall time: {elapsed:.1f}s")
-    logger.info("=" * 78)
+            # --- Summary ---
+            logger.info(f"\n    Summary:")
+            logger.info(f"      Funds (sec_info)     : {len(info_rows):,} upserted "
+                  f"({n_codes} parsed)")
+            logger.info(f"      Reports (sec_reports): {len(report_rows_to_write):,} upserted "
+                  f"({n_reports} parsed)")
+            if not self.args.no_composition:
+                logger.info(f"      top10 → sec_composition: {len(comp_rows):,} rows from "
+                      f"{n_top10} snapshots")
+        finally:
+            await conn.close()
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    SecInfoBuild().execute()

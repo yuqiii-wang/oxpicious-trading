@@ -21,122 +21,86 @@ Usage:
 
 Prerequisite: stats.{etf,index,stock}_{identity,basic_stats,tech_stats,
 liquidity_margin} (+ stats.etf_adjustment) populated by the builds.
+
+The :class:`MarketHypesBuild` entry class (a :class:`DataBuild`
+subclass) owns the runtime lifecycle + the DB connection/pool lifecycle
+(timed close — after heavy bulk writes the PostgreSQL server can be
+saturated with WAL checkpoint I/O, making conn.close() stall). The
+runner / compute modules are imported lazily (they import pandas — the
+cudf.pandas hook must be installed first).
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-import asyncio
-import os
 import sys
-import time
 
-# Ensure project root is on sys.path so ``_common`` is importable when run
-# directly via ``python -m builds.market_hypes`` or as a script.
-sys.path.insert(
-    0,
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ),
-)
-
-from _common.build_commons import (  # noqa: E402
-    setup_utf8_stdout,
-    get_db_connection_async,
-    get_db_pool_async,
-    print_build_header,
-    print_wall_time,
-    add_force_arg,
-)
-
-setup_utf8_stdout()
-
-# cudf.pandas activation — must run before pandas first import (runner /
-# compute import pandas at module scope; the package __init__ also
-# activates, this covers the direct-module-import order here).
-from _common.df_utils._activate import activate  # noqa: E402
-activate()
-
-from builds.market_hypes import TABLE, run_build  # noqa: E402
-from builds.market_hypes.config import SEC_TYPES  # noqa: E402
+from _common.data_build import DataBuild
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Market-hype EPISODE detector build (ETF + Index + "
-                    "Stock) -> stats.mov_ave_market_hypes."
-    )
-    add_force_arg(ap)
-    ap.add_argument(
-        "--sec-type", choices=SEC_TYPES, default=None,
-        help="Rebuild only this sec_type (for testing). Default: all.",
-    )
-    ap.add_argument(
-        "--max-concurrent", type=int, default=20,
-        help="Maximum parallel COPY chunks. Each chunk acquires one "
-             "Postgres backend connection from the pool, so this also "
-             "sets the pool's max_size. Local dev DB has "
-             "max_connections=100 with ~2 in use, so 20 is safe. "
-             "Reduce if you see 'too many clients' errors. Default: 20.",
-    )
-    ap.add_argument(
-        "--code", default=None,
-        help="Rebuild the episodes of this single security only "
-             "(bypasses the active-universe pre-filter). Mutually "
-             "exclusive with --force.",
-    )
-    args = ap.parse_args()
+class MarketHypesBuild(DataBuild):
+    """``python -m builds.market_hypes`` — lifecycle + delegation."""
 
-    if args.code and args.force:
-        print("ERROR: --code and --force are mutually exclusive.")
-        sys.exit(2)
+    title = "BUILD MARKET HYPES (ETF + INDEX + STOCK)"
+    component = "market_hypes"
+    max_concurrent: int = 20
 
-    sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
-    max_concurrent = max(1, args.max_concurrent)
+    def add_arguments(self, parser) -> None:
+        # Safe heavy import: add_arguments runs after bootstrap_runtime()
+        # inside execute() (post pre_check/activate).
+        from builds.market_hypes.config import SEC_TYPES
 
-    t0 = time.time()
-    print_build_header(
-        "BUILD MARKET HYPES (ETF + INDEX + STOCK)",
-        table=TABLE,
-        sec_types=", ".join(sec_types),
-        mode=(
-            f"SINGLE-CODE {args.code} (full recompute for this security)"
-            if args.code else
-            "FORCE (truncate + full recompute)" if args.force
-            else "wholesale per-sec_type recompute"
-        ),
-    )
-
-    conn = await get_db_connection_async()
-    pool = await get_db_pool_async(min_size=1, max_size=max_concurrent)
-    try:
-        await run_build(
-            conn,
-            force=args.force,
-            sec_types=sec_types,
-            code_filter=args.code,
-            max_concurrent=max_concurrent,
-            pool=pool,
+        self.sec_types = tuple(SEC_TYPES)
+        self.add_force_arg(parser)
+        parser.add_argument(
+            "--sec-type", choices=SEC_TYPES, default=None,
+            help="Rebuild only this sec_type (for testing). Default: all.",
         )
-    finally:
-        # Close with a timeout — after heavy bulk writes the PostgreSQL
-        # server can be saturated with WAL checkpoint I/O, making
-        # conn.close() stall on the Terminate message + TCP teardown.
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
+        self.add_max_concurrent_arg(parser)
+        parser.add_argument(
+            "--code", default=None,
+            help="Rebuild the episodes of this single security only "
+                 "(bypasses the active-universe pre-filter). Mutually "
+                 "exclusive with --force.",
+        )
 
-    print_wall_time(t0)
+    def apply_args(self) -> None:
+        if self.args.code and self.args.force:
+            print("ERROR: --code and --force are mutually exclusive.")
+            sys.exit(2)
+        self.max_concurrent = max(1, self.args.max_concurrent)
+
+    def header_fields(self) -> dict:
+        from builds.market_hypes import TABLE
+
+        sec_types = self.resolve_sec_types()
+        return {
+            "table": TABLE,
+            "sec_types": ", ".join(sec_types),
+            "mode": (
+                f"SINGLE-CODE {self.args.code} (full recompute for this security)"
+                if self.args.code else
+                "FORCE (truncate + full recompute)" if self.args.force
+                else "wholesale per-sec_type recompute"
+            ),
+        }
+
+    async def run(self) -> None:
+        from builds.market_hypes import run_build
+
+        conn = await self.open_conn()
+        pool = await self.open_pool(max_size=self.max_concurrent)
+        try:
+            await run_build(
+                conn,
+                force=self.args.force,
+                sec_types=self.resolve_sec_types(),
+                code_filter=self.args.code,
+                max_concurrent=self.max_concurrent,
+                pool=pool,
+            )
+        finally:
+            await self.close_conn(conn)
+            await self.close_pool(pool)
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    MarketHypesBuild().execute()

@@ -108,6 +108,9 @@ async def query_existing_ohlcv_margin_from_db(conn, verbose=True, code=None):
     adj_seeds: pd.DataFrame | None = None
     if code is not None:
         rows = await conn.fetch(_SELECT_COLS + " WHERE i.code = $1", code)
+        df = pd.DataFrame(rec_cols(rows))
+        if len(df):
+            df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     else:
         max_rows = await conn.fetch("SELECT MAX(date) AS max_date FROM stats.etf_identity")
         max_d = max_rows[0]["max_date"] if max_rows else None
@@ -197,7 +200,9 @@ async def fetch_latest_etf_composition(conn, etf_codes=None):
     code_filter = ""
     params = []
     if etf_codes is not None:
-        code_filter = "AND sc.code = ANY($1::text[])"
+        # Inside the `latest` CTE the composition table has no alias —
+        # reference the column bare.
+        code_filter = "AND code = ANY($1::text[])"
         params = [sorted(etf_codes)]
 
     rows = await conn.fetch(f"""

@@ -47,13 +47,6 @@ Usage:
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-import asyncio
 import csv
 import datetime
 import glob
@@ -66,17 +59,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from _common.build_commons import (
-    setup_utf8_stdout, get_db_or_exit,
-    bulk_upsert_async, truncate_table_async,
-    print_build_header, print_wall_time, PROJECT_ROOT,
-)
+from _common.data_build import DataBuild
+from _common.build_commons import PROJECT_ROOT
 from _common.db_commons import get_db_connection
 
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("dividends")
-
-setup_utf8_stdout()
 
 # ============================================================================
 # Paths + constants
@@ -313,172 +301,172 @@ def _fetch_active_stock_codes() -> Optional[set]:
 
 
 # ============================================================================
-# Main pipeline
+# Main pipeline — StockDividendsBuild entry class
 # ============================================================================
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Build SSE + SZSE stock dividend (利润分配/分红) data into "
-                    "stats.stock_dividends. Reads {code}_dividend_{YYYYMMDD}.csv "
-                    "files from temps/sse_archive/ and temps/szse_archive/. "
-                    "When multiple files exist per code (different download "
-                    "dates), the latest date suffix is loaded."
-    )
-    ap.add_argument(
-        "--code", type=str, default=None,
-        help="Single-stock mode: load dividend data for one stock "
-             "(bare 6-digit code, e.g. 600008 for SSE, 000651 for SZSE). "
-             "The exchange is auto-detected from the code prefix.",
-    )
-    ap.add_argument(
-        "--force", action="store_true",
-        help="Truncate stats.stock_dividends before loading (full reload).",
-    )
-    args = ap.parse_args()
+class StockDividendsBuild(DataBuild):
+    """``python -m builds.stock.dividends`` — SSE+SZSE dividends loader.
 
-    t0 = time.time()
-    print_build_header(
-        "STOCK DIVIDENDS BUILDER  ·  SSE + SZSE  →  stats.stock_dividends",
-        **{
+    The only build with fully custom flags (bare 6-digit --code without
+    exchange suffix; no date args), so add_arguments/apply_args are
+    custom. Also the only build mixing a sync DB read (the
+    sec_classification.is_active prefilter in _fetch_active_stock_codes)
+    with the async bulk write.
+    """
+
+    title = "STOCK DIVIDENDS BUILDER  ·  SSE + SZSE  →  stats.stock_dividends"
+    component = "dividends"
+
+    def add_arguments(self, parser) -> None:
+        parser.add_argument(
+            "--code", type=str, default=None,
+            help="Single-stock mode: load dividend data for one stock "
+                 "(bare 6-digit code, e.g. 600008 for SSE, 000651 for SZSE). "
+                 "The exchange is auto-detected from the code prefix.",
+        )
+        parser.add_argument(
+            "--force", action="store_true",
+            help="Truncate stats.stock_dividends before loading (full reload).",
+        )
+
+    def header_fields(self) -> dict:
+        return {
             "SSE dir":   SSE_ARCHIVE_DIR,
             "SZSE dir":  SZSE_ARCHIVE_DIR,
-            "Mode":      f"single-stock ({args.code})" if args.code else "all SSE + SZSE stocks",
-            "Force":     str(args.force),
+            "Mode":      f"single-stock ({self.args.code})" if self.args.code
+                         else "all SSE + SZSE stocks",
+            "Force":     str(self.args.force),
         }
-    )
 
-    # ------------------------------------------------------------------
-    # 1. Discover dividend CSV files
-    # ------------------------------------------------------------------
-    logger.info("\n[1/3] Discovering dividend CSV files …")
-    # Build a list of (path, exchange, source) tuples. For each stock
-    # code, only the LATEST CSV (by date suffix) is loaded — older files
-    # from previous download dates are ignored. Legacy files without a
-    # date suffix are used only when no dated file exists for that code.
-    file_specs: List[Tuple[str, str, str]] = []
-    if args.code:
-        bare = args.code.split(".")[0]
-        archive_dir, exchange, source = _resolve_code_source(bare)
-        path = _find_latest_for_code(archive_dir, bare)
-        if path is None:
-            logger.error(f"    [FATAL] No dividend CSV for {bare} found in "
-                  f"{archive_dir}")
+    async def run(self) -> None:
+        from _common.build_commons import bulk_upsert_async, truncate_table_async
+
+        args = self.args
+
+        # ------------------------------------------------------------------
+        # 1. Discover dividend CSV files
+        # ------------------------------------------------------------------
+        logger.info("\n[1/3] Discovering dividend CSV files …")
+        # Build a list of (path, exchange, source) tuples. For each stock
+        # code, only the LATEST CSV (by date suffix) is loaded — older files
+        # from previous download dates are ignored. Legacy files without a
+        # date suffix are used only when no dated file exists for that code.
+        file_specs: List[Tuple[str, str, str]] = []
+        if args.code:
+            bare = args.code.split(".")[0]
+            archive_dir, exchange, source = _resolve_code_source(bare)
+            path = _find_latest_for_code(archive_dir, bare)
+            if path is None:
+                logger.error(f"    [FATAL] No dividend CSV for {bare} found in "
+                      f"{archive_dir}")
+                sys.exit(1)
+            file_specs.append((path, exchange, source))
+        else:
+            for archive_dir, exchange, source in SOURCE_DIRS:
+                latest_map = _find_latest_dividend_csvs(archive_dir)
+                for code in sorted(latest_map):
+                    file_specs.append((latest_map[code], exchange, source))
+        logger.info(f"    → {len(file_specs)} dividend CSV files found "
+              f"(SSE + SZSE)")
+        if not file_specs:
+            logger.error("    [FATAL] No dividend CSV files found. Run "
+                  "`python -m downloads.stock.sse.dividend` and/or "
+                  "`python -m downloads.stock.szse.dividend` first.")
             sys.exit(1)
-        file_specs.append((path, exchange, source))
-    else:
-        for archive_dir, exchange, source in SOURCE_DIRS:
-            latest_map = _find_latest_dividend_csvs(archive_dir)
-            for code in sorted(latest_map):
-                file_specs.append((latest_map[code], exchange, source))
-    logger.info(f"    → {len(file_specs)} dividend CSV files found "
-          f"(SSE + SZSE)")
-    if not file_specs:
-        logger.error("    [FATAL] No dividend CSV files found. Run "
-              "`python -m downloads.stock.sse.dividend` and/or "
-              "`python -m downloads.stock.szse.dividend` first.")
-        sys.exit(1)
 
-    # Filter to active stocks (sec_classification.is_active=TRUE). Skip in
-    # single-stock mode (explicit --code is always processed). If
-    # sec_classification has no stock rows yet (classification not built),
-    # skip the filter to avoid dropping all data.
-    if not args.code:
-        active_codes = _fetch_active_stock_codes()
-        if active_codes is not None:
-            filtered: List[Tuple[str, str, str]] = []
-            n_dropped = 0
-            for path, suffix, source in file_specs:
-                result = _extract_code_date(path)
-                if result is None:
-                    continue
-                bare_code = result[0]
-                full_code = f"{bare_code}{suffix}"
-                if full_code in active_codes:
-                    filtered.append((path, suffix, source))
-                else:
-                    n_dropped += 1
-            logger.info(f"    → is_active filter: kept {len(filtered)}, "
-                  f"dropped {n_dropped} (delisted / no recent identity "
-                  f"records) out of {len(file_specs)}")
-            file_specs = filtered
-            if not file_specs:
-                logger.info("    [INFO] No active stock dividend CSV files "
-                      "to process.")
-                print_wall_time(t0)
-                return
-        else:
-            logger.info("    → sec_classification empty, skipping is_active "
-                  "filter")
+        # Filter to active stocks (sec_classification.is_active=TRUE). Skip in
+        # single-stock mode (explicit --code is always processed). If
+        # sec_classification has no stock rows yet (classification not built),
+        # skip the filter to avoid dropping all data.
+        if not args.code:
+            active_codes = _fetch_active_stock_codes()
+            if active_codes is not None:
+                filtered: List[Tuple[str, str, str]] = []
+                n_dropped = 0
+                for path, suffix, source in file_specs:
+                    result = _extract_code_date(path)
+                    if result is None:
+                        continue
+                    bare_code = result[0]
+                    full_code = f"{bare_code}{suffix}"
+                    if full_code in active_codes:
+                        filtered.append((path, suffix, source))
+                    else:
+                        n_dropped += 1
+                logger.info(f"    → is_active filter: kept {len(filtered)}, "
+                      f"dropped {n_dropped} (delisted / no recent identity "
+                      f"records) out of {len(file_specs)}")
+                file_specs = filtered
+                if not file_specs:
+                    logger.info("    [INFO] No active stock dividend CSV files "
+                          "to process.")
+                    return
+            else:
+                logger.info("    → sec_classification empty, skipping is_active "
+                      "filter")
 
-    # ------------------------------------------------------------------
-    # 2. Read all CSVs into DB rows
-    # ------------------------------------------------------------------
-    logger.info("\n[2/3] Reading dividend CSVs …")
-    all_rows: List[Dict[str, Any]] = []
-    n_files_with_data = 0
-    n_files_empty = 0
-    for path, exchange, source in file_specs:
-        rows = _read_dividend_csv(path, exchange, source)
-        if rows:
-            all_rows.extend(rows)
-            n_files_with_data += 1
-        else:
-            n_files_empty += 1
-    logger.info(f"    → {len(all_rows):,} dividend rows from {n_files_with_data} files "
-          f"({n_files_empty} empty)")
-    if not all_rows:
-        logger.info("    [INFO] No dividend rows to insert")
-        print_wall_time(t0)
-        return
+        # ------------------------------------------------------------------
+        # 2. Read all CSVs into DB rows
+        # ------------------------------------------------------------------
+        logger.info("\n[2/3] Reading dividend CSVs …")
+        all_rows: List[Dict[str, Any]] = []
+        n_files_with_data = 0
+        n_files_empty = 0
+        for path, exchange, source in file_specs:
+            rows = _read_dividend_csv(path, exchange, source)
+            if rows:
+                all_rows.extend(rows)
+                n_files_with_data += 1
+            else:
+                n_files_empty += 1
+        logger.info(f"    → {len(all_rows):,} dividend rows from {n_files_with_data} files "
+              f"({n_files_empty} empty)")
+        if not all_rows:
+            logger.info("    [INFO] No dividend rows to insert")
+            return
 
-    # Dedupe by (code, ex_dividend_date) — keep last in case multiple CSV
-    # files reference the same stock (e.g. downloaded twice).
-    seen: set = set()
-    deduped: List[Dict[str, Any]] = []
-    for r in all_rows:
-        key = (r["code"], r["ex_dividend_date"])
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(r)
-    n_dupes = len(all_rows) - len(deduped)
-    if n_dupes > 0:
-        logger.info(f"    → {n_dupes} duplicate rows removed ({len(deduped):,} unique)")
-        all_rows = deduped
+        # Dedupe by (code, ex_dividend_date) — keep last in case multiple CSV
+        # files reference the same stock (e.g. downloaded twice).
+        seen: set = set()
+        deduped: List[Dict[str, Any]] = []
+        for r in all_rows:
+            key = (r["code"], r["ex_dividend_date"])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(r)
+        n_dupes = len(all_rows) - len(deduped)
+        if n_dupes > 0:
+            logger.info(f"    → {n_dupes} duplicate rows removed ({len(deduped):,} unique)")
+            all_rows = deduped
 
-    n_codes = len({r["code"] for r in all_rows})
-    n_sse = sum(1 for r in all_rows if r["source"] == "SSE")
-    n_szse = sum(1 for r in all_rows if r["source"] == "SZSE")
-    d_min = min(r["ex_dividend_date"] for r in all_rows)
-    d_max = max(r["ex_dividend_date"] for r in all_rows)
-    logger.info(f"    → {n_codes} unique stocks | ex-dividend dates "
-          f"{d_min} → {d_max}")
-    logger.info(f"    → SSE rows: {n_sse:,} | SZSE rows: {n_szse:,}")
+        n_codes = len({r["code"] for r in all_rows})
+        n_sse = sum(1 for r in all_rows if r["source"] == "SSE")
+        n_szse = sum(1 for r in all_rows if r["source"] == "SZSE")
+        d_min = min(r["ex_dividend_date"] for r in all_rows)
+        d_max = max(r["ex_dividend_date"] for r in all_rows)
+        logger.info(f"    → {n_codes} unique stocks | ex-dividend dates "
+              f"{d_min} → {d_max}")
+        logger.info(f"    → SSE rows: {n_sse:,} | SZSE rows: {n_szse:,}")
 
-    # ------------------------------------------------------------------
-    # 3. Connect to DB and upsert
-    # ------------------------------------------------------------------
-    logger.info("\n[3/3] Connecting to database …")
-    conn = await get_db_or_exit()
-    try:
-        if args.force:
-            logger.info("    [DB] Force mode: truncating stats.stock_dividends")
-            await truncate_table_async(conn, "stats.stock_dividends")
+        # ------------------------------------------------------------------
+        # 3. Connect to DB and upsert
+        # ------------------------------------------------------------------
+        logger.info("\n[3/3] Connecting to database …")
+        conn = await self.connect_db()
+        try:
+            if args.force:
+                logger.info("    [DB] Force mode: truncating stats.stock_dividends")
+                await truncate_table_async(conn, "stats.stock_dividends")
 
-        inserted = await bulk_upsert_async(
-            conn, "stats.stock_dividends", all_rows,
-            key_columns=["code", "ex_dividend_date"],
-        )
-        logger.info(f"    [DB] Upserted {inserted:,} rows into stats.stock_dividends "
-              f"(PK: code, ex_dividend_date — conflicts overwrite)")
-    finally:
-        await conn.close()
-
-    print_wall_time(t0)
+            inserted = await bulk_upsert_async(
+                conn, "stats.stock_dividends", all_rows,
+                key_columns=["code", "ex_dividend_date"],
+            )
+            logger.info(f"    [DB] Upserted {inserted:,} rows into stats.stock_dividends "
+                  f"(PK: code, ex_dividend_date — conflicts overwrite)")
+        finally:
+            await conn.close()
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    StockDividendsBuild().execute()

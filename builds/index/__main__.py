@@ -13,6 +13,9 @@ after baseline: exchange_trading_amt is driven by stats.index_basic_stats
 dates (produced by baseline), and sec_similars is driven by
 sec_composition snapshot dates (produced by phase 1).
 
+Phase 2 embeds the :class:`BaselineBuild` child pipeline directly
+(preset ``args`` + ``await child.amain()``) — no sys.argv mutation.
+
 Usage:
   python -m builds.index
   python -m builds.index --force
@@ -22,46 +25,20 @@ Usage:
 """
 from __future__ import annotations
 
+from _common.data_pipeline import bootstrap_runtime
 
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
+bootstrap_runtime()
 
-pre_check()
-
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
-
-import argparse
-import asyncio
-import sys
 import time
 
 from _common.build_commons import (
-    setup_utf8_stdout,
-    add_common_build_args,
-    print_build_header,
-    print_wall_time,
-    TODAY_STR,
-    enforce_date_force_exclusion,
-    parse_date_arg,
-    forced_date_scope,
-)
-
-setup_utf8_stdout()
-
-from builds._commons.code_filter import add_code_arg, normalize_code
-from builds.index.composition import (
-    build_index_composition_rows,
-    build_szse_index_composition_rows,
-    available_snapshot_dates,
+    print_build_header, print_wall_time, TODAY_STR,
 )
 from builds._commons.paths import INDEX_COMP_DIR, SZSE_INDEX_COMP_DIR
-from builds.index._index_exts import build_index_exts
-from builds.index._exchange_trading_amt import build_exchange_trading_amt
-from builds.index._sec_similars import build_sec_similars
+from _common.log_setup import setup_logging
 
-from _common.log_setup import setup_logging  # noqa: E402
+from _common.data_build import DataBuild
+
 logger = setup_logging("index")
 
 
@@ -77,11 +54,18 @@ async def _run_composition(force: bool, code_filter: str | None = None,
     force-mode DELETE of sec_composition never runs.
     """
     from _common.build_commons import get_db_or_exit, copy_or_upsert_split_async
+    from builds.index.composition import (
+        build_index_composition_rows,
+        build_szse_index_composition_rows,
+    )
 
     if forced_date is not None:
         # --date availability gate: the forced snapshot date must exist
         # among the composition CSV filenames (CSI + SZSE union), else
         # exits(1) before any DB work.
+        from _common.build_commons import forced_date_scope
+        from builds.index.composition import available_snapshot_dates
+
         forced_date_scope(
             available_snapshot_dates(code_filter),
             forced_date,
@@ -159,122 +143,133 @@ async def _run_composition(force: bool, code_filter: str | None = None,
         await conn.close()
 
 
-async def main():
-    ap = argparse.ArgumentParser(
-        description="Build index composition (CSI+SZSE) → baseline (CSIndex daily) "
-                    "→ exts (index_exts + etf/exchange trading amt + sec similars)."
-    )
-    add_common_build_args(ap)
-    add_code_arg(ap)
-    args = ap.parse_args()
+class IndexBuild(DataBuild):
+    """``python -m builds.index`` — 3-phase orchestrator (composition →
+    baseline → exts)."""
 
-    # --date mode: mutual exclusion + parse (SystemExit 2 on bad input).
-    enforce_date_force_exclusion(args)
-    forced = parse_date_arg(args.date)
-    if forced is not None:
-        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
+    title = ("BUILD INDEX  ·  composition (CSI+SZSE) → baseline (CSIndex daily) "
+             "→ exts (ETF/exchange amt + sec similars)")
+    component = "index"
 
-    # Index codes in the DB are bare 6-digit codes (e.g. 000300) — strip
-    # the exchange suffix normalize_code may have appended.
-    code_filter = normalize_code(args.code)
-    if code_filter:
-        code_filter = code_filter.split(".")[0]
+    def add_arguments(self, parser) -> None:
+        self.add_date_range_args(parser)
+        self.add_code_arg(parser)
 
-    t0 = time.time()
-    print_build_header(
-        "BUILD INDEX  ·  composition (CSI+SZSE) → baseline (CSIndex daily) "
-        "→ exts (ETF/exchange amt + sec similars)",
-        **{
+    def apply_args(self) -> None:
+        # --date mode: mutual exclusion + parse (SystemExit 2 on bad input).
+        self.forced_date = self.apply_date_force_args()
+        if self.forced_date is not None:
+            logger.info(f"[DATE MODE] Forced single-date build: {self.forced_date}")
+        # Index codes in the DB are bare 6-digit codes (e.g. 000300) — strip
+        # the exchange suffix normalize_code may have appended.
+        self.code_filter = self.resolve_code_filter(strip_suffix=True)
+
+    def header_fields(self) -> dict:
+        return {
             "CSI comp dir":  INDEX_COMP_DIR,
             "SZSE comp dir": SZSE_INDEX_COMP_DIR,
-            "Date range":    f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
-            "Forced date":   str(forced) if forced else "(none)",
-            "Code filter":   code_filter or "(none — all indices)",
+            "Date range":    f"{self.args.start_date or '(all)'} → {self.args.end_date or '(all)'}",
+            "Forced date":   str(self.forced_date) if self.forced_date else "(none)",
+            "Code filter":   self.code_filter or "(none — all indices)",
             "Today":         TODAY_STR,
         }
-    )
-    if code_filter:
-        logger.info(f"    [CODE FILTER] Restricting build to single index: {code_filter}")
 
-    # ---- Phase 1: Index composition (CSI + SZSE) ----------------------
-    logger.info("\n" + "=" * 78)
-    logger.info("  PHASE 1: INDEX COMPOSITION (CSI + SZSE)")
-    logger.info("=" * 78)
-    t1 = time.time()
-    await _run_composition(force=args.force, code_filter=code_filter,
-                           forced_date=forced)
-    logger.info(f"\n  Composition phase done ({int(time.time() - t1)}s)")
+    def _child_baseline_args(self):
+        """Preset argparse.Namespace for the embedded BaselineBuild (phase 2).
 
-    # ---- Phase 2: Index baseline (CSIndex daily) ----------------------
-    logger.info("\n" + "=" * 78)
-    logger.info("  PHASE 2: INDEX BASELINE (CSIndex daily OHLCV + PE + MAs)")
-    logger.info("=" * 78)
-    t2 = time.time()
+        --refresh-estimated-days: nightly self-heal — rebuild recent daily
+        rows gap-filled as ESTIMATED by a build that raced ahead of the EOD
+        CSV publish; idempotent when the CSVs already agree. Skipped in
+        --date mode: single-date scope only (the forced date is always
+        rebuilt regardless of its row state).
+        """
+        import argparse as _ap
 
-    # baseline.main uses sys.argv for argparse; set it and call directly.
-    # --refresh-estimated-days: nightly self-heal — rebuild recent daily
-    # rows gap-filled as ESTIMATED by a build that raced ahead of the
-    # EOD CSV publish; idempotent when the CSVs already agree. Skipped in
-    # --date mode: single-date scope only (the forced date is always
-    # rebuilt regardless of its row state).
-    original_argv = sys.argv.copy()
-    try:
-        sys.argv = [
-            "builds.index.baseline",
-            *(["--start-date", args.start_date] if args.start_date else []),
-            *(["--end-date", args.end_date] if args.end_date else []),
-            *(["--date", args.date] if args.date else []),
-            *(["--force"] if args.force else []),
-            *([] if (args.force or args.date) else ["--refresh-estimated-days", "10"]),
-            *(["--code", code_filter] if code_filter else []),
-        ]
-        from builds.index.baseline import main as baseline_main
-        await baseline_main()
-    finally:
-        sys.argv = original_argv
+        args = self.args
+        return _ap.Namespace(
+            start_date=args.start_date,
+            end_date=args.end_date,
+            force=args.force,
+            date=args.date,
+            code=self.code_filter,
+            refresh_estimated_days=0 if (args.force or args.date) else 10,
+        )
 
-    logger.info(f"\n  Baseline phase done ({int(time.time() - t2)}s)")
+    async def run(self) -> None:
+        from builds._commons.code_filter import normalize_code  # noqa: F401
+        from builds.index.composition import (
+            build_index_composition_rows,
+            build_szse_index_composition_rows,
+            available_snapshot_dates,
+        )
+        from builds.index._index_exts import build_index_exts
+        from builds.index._exchange_trading_amt import build_exchange_trading_amt
+        from builds.index._sec_similars import build_sec_similars
 
-    # ---- Phase 3: Index exts (index_exts + etf/exchange amt + similars) --
-    # Each step has its own missing-date skip check, so in incremental mode
-    # each only (re)computes the dates it is missing. The steps are
-    # independent (different sources, different date grains) and do not
-    # take a code filter.
-    logger.info("\n" + "=" * 78)
-    logger.info("  PHASE 3: INDEX EXTS (ETF metrics + exchange trading amt + sec similars)")
-    logger.info("=" * 78)
-    t3 = time.time()
+        args = self.args
+        code_filter = self.code_filter
+        forced = self.forced_date
 
-    from _common.build_commons import get_db_connection_async
-    conn = await get_db_connection_async()
-    try:
-        # Step A: per-(date, index) + per-(date, industry) ETF metrics.
-        # Driven by etf_liquidity_margin. --date mode recomputes the forced
-        # date even when already present (upsert refresh, no truncation).
-        await build_index_exts(conn, force=args.force, forced_date=forced)
+        if code_filter:
+            logger.info(f"    [CODE FILTER] Restricting build to single index: {code_filter}")
 
-        # Step B: per-(date, exchange) trading amount proxied by a
-        # representative broad-market index per exchange (SZ->399001,
-        # SS->000001). Driven by index_basic_stats (phase 2 output).
-        await build_exchange_trading_amt(conn, force=args.force, forced_date=forced)
+        # ---- Phase 1: Index composition (CSI + SZSE) ----------------------
+        logger.info("\n" + "=" * 78)
+        logger.info("  PHASE 1: INDEX COMPOSITION (CSI + SZSE)")
+        logger.info("=" * 78)
+        t1 = time.time()
+        await _run_composition(force=args.force, code_filter=code_filter,
+                               forced_date=forced)
+        logger.info(f"\n  Composition phase done ({int(time.time() - t1)}s)")
 
-        # Step C: per-(composition-date, code) top-5 similar codes +
-        # similar/dissimilar industries. Driven by sec_composition
-        # snapshot dates (phase 1 output).
-        await build_sec_similars(conn, force=args.force, forced_date=forced)
-    finally:
+        # ---- Phase 2: Index baseline (CSIndex daily) ----------------------
+        logger.info("\n" + "=" * 78)
+        logger.info("  PHASE 2: INDEX BASELINE (CSIndex daily OHLCV + PE + MAs)")
+        logger.info("=" * 78)
+        t2 = time.time()
+
+        # Embed the BaselineBuild child pipeline directly: preset args,
+        # derive the child's forced_date/code_filter via its apply_args()
+        # hook, then await amain() in THIS event loop — no sys.argv mutation.
+        from builds.index.baseline import BaselineBuild
+
+        baseline = BaselineBuild(args=self._child_baseline_args())
+        baseline.apply_args()
+        await baseline.amain()
+
+        logger.info(f"\n  Baseline phase done ({int(time.time() - t2)}s)")
+
+        # ---- Phase 3: Index exts (index_exts + etf/exchange amt + similars)
+        # Each step has its own missing-date skip check, so in incremental mode
+        # each only (re)computes the dates it is missing. The steps are
+        # independent (different sources, different date grains) and do not
+        # take a code filter.
+        logger.info("\n" + "=" * 78)
+        logger.info("  PHASE 3: INDEX EXTS (ETF metrics + exchange trading amt + sec similars)")
+        logger.info("=" * 78)
+        t3 = time.time()
+
+        conn = await self.open_conn()
         try:
-            await conn.close()
-        except Exception:
-            pass
+            # Step A: per-(date, index) + per-(date, industry) ETF metrics.
+            # Driven by etf_liquidity_margin. --date mode recomputes the forced
+            # date even when already present (upsert refresh, no truncation).
+            await build_index_exts(conn, force=args.force, forced_date=forced)
 
-    logger.info(f"\n  Exts phase done ({int(time.time() - t3)}s)")
-    print_wall_time(t0)
+            # Step B: per-(date, exchange) trading amount proxied by a
+            # representative broad-market index per exchange (SZ->399001,
+            # SS->000001). Driven by index_basic_stats (phase 2 output).
+            await build_exchange_trading_amt(conn, force=args.force, forced_date=forced)
+
+            # Step C: per-(composition-date, code) top-5 similar codes +
+            # similar/dissimilar industries. Driven by sec_composition
+            # snapshot dates (phase 1 output).
+            await build_sec_similars(conn, force=args.force, forced_date=forced)
+        finally:
+            await self.close_conn(conn)
+
+        logger.info(f"\n  Exts phase done ({int(time.time() - t3)}s)")
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    IndexBuild().execute()

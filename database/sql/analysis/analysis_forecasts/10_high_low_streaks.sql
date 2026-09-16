@@ -41,7 +41,7 @@
 --  mov_rsi / mov_pairs (see 02_mov_rsi_mov_std.sql). Results (forward
 --  changes / reversal probabilities) live in
 --  analysis_forecasts.forecast_results via forecast_id (1:N — one
---  forecast_id → 4 period rows: next/5d/20d/60d), measured from the
+--  forecast_id → 5 period rows: next/5d/20d/60d/mixed), measured from the
 --  ANCHOR day's close on the code's own trading-day sequence. The
 --  config JSONB records the bucket's streak-length context
 --  (mean/min/max day_count).
@@ -57,7 +57,7 @@
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.high_low_streaks (
     code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_high_low_streaks_forecast_id
+    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_high_low_streaks_forecast_id
     band_period     INTEGER      NOT NULL,  -- band lookback of the audited streak (trading rows): 255/500/750/1275 (NOT "period" — reserved by the result-row pipeline)
     pct_type        INTEGER      NOT NULL,  -- band tightness of the audited streak (percent): 1/5/10
     side            TEXT         NOT NULL,  -- 'top' (above-band excursion streak) | 'bottom' (below-band excursion streak)
@@ -115,7 +115,7 @@ BEGIN
         DROP CONSTRAINT IF EXISTS pk_high_low_streaks;
     CREATE TABLE analysis_forecasts.high_low_streaks_new (
             code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-            forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_high_low_streaks_forecast_id
+            forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_high_low_streaks_forecast_id
             band_period     INTEGER      NOT NULL,
             pct_type        INTEGER      NOT NULL,
             side            TEXT         NOT NULL,
@@ -159,9 +159,9 @@ CREATE INDEX IF NOT EXISTS idx_high_low_streaks_forecast_id
 --  Comments
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis_forecasts.high_low_streaks IS 'MA-Spread High/Low streak MEAN-MID anchor buckets (motivation): one row per forecast_id — every band-break excursion streak of analysis.mov_ave_high_low_pct_streaks whose anchor day (the ((day_count-1)//2 + 1)-th trading day of the span — the mean mid elapsed day once entered; an 8-day streak anchors its 4th day) falls inside the trailing 5-year window ending at the bucket''s stat_month contributes that ONE day as the bucket''s trigger. The anchor is EX-POST (the streak length is known only after the streak closes — an audit of streak-period behaviour, not a live trigger). side: top = above-band excursion (close on end_date above the end month''s high_val band), bottom = below-band (below low_val; unrounded close vs the stored band — the streaks step''s own test, ties to the nearer band). No cooldown (one trigger per streak; streaks are inherently separated by a 6+-day in-band gap or a side switch). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (mean/std/max/min forward changes from the ANCHOR close at next/5d/20d/60d, occurrence counts, trigger_dates, reversal probabilities at the fixed 1% bar) live in analysis_forecasts.forecast_results via forecast_id; the config JSONB records mean/min/max day_count. Source: analysis.mov_ave_high_low_pct_streaks + analysis.mov_ave_high_low_pct (run python -m analyze.mov_ave_spread first).';
-COMMENT ON COLUMN analysis_forecasts.high_low_streaks.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
+COMMENT ON COLUMN analysis_forecasts.high_low_streaks.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 5 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 5 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
 COMMENT ON COLUMN analysis_forecasts.high_low_streaks.band_period IS 'Band lookback window length (trading rows) of the audited band: 255 / 500 / 750 / 1275 — the streak row''s `period` in analysis.mov_ave_high_low_pct_streaks. (Named band_period, not period: ``period`` is reserved by the shared result-row pipeline — build_result_rows stamps forecast_results'' period next/5d/20d/60d onto every row dict.)';
 COMMENT ON COLUMN analysis_forecasts.high_low_streaks.pct_type IS 'Band tightness parameter (percent) of the audited band: 1 / 5 / 10 — the streak row''s `pct_type` in analysis.mov_ave_high_low_pct_streaks.';
-COMMENT ON COLUMN analysis_forecasts.high_low_streaks.side IS 'Bucket side: top = ABOVE-band excursion streak (the unrounded close on end_date exceeds the end month''s high_val band — reversals are forward changes below the row''s FIXED 1% reverse_threshold (0.01 — the period-end n-day close vs the anchor close)); bottom = BELOW-band excursion streak (close below low_val — reversals are changes above it). Mean-reversion semantics: the study (temp_scripts/study_high_low_streaks_forecast.py) shows below-band streaks drift UP and above-band streaks drift DOWN from the mid anchor.';
+COMMENT ON COLUMN analysis_forecasts.high_low_streaks.side IS 'Bucket side: top = ABOVE-band excursion streak (the unrounded close on end_date exceeds the end month''s high_val band — reversals are forward changes below the row''s FIXED 1% threshold (0.01 — the period-end n-day close vs the anchor close)); bottom = BELOW-band excursion streak (close below low_val — reversals are changes above it). Mean-reversion semantics: the study (temp_scripts/study_high_low_streaks_forecast.py) shows below-band streaks drift UP and above-band streaks drift DOWN from the mid anchor.';
 COMMENT ON COLUMN analysis_forecasts.high_low_streaks.is_market_hyped IS 'TRUE when ANY of the bucket''s ANCHOR dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
 COMMENT ON COLUMN analysis_forecasts.high_low_streaks.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';

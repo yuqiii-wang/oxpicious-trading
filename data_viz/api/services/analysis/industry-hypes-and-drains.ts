@@ -5,7 +5,14 @@
  * analyze.industry_sentiments.hypes_and_drains — truncate-then-recompute).
  * Returns ALL seasonal rankings (which industry is top/bottom 5 per month),
  * the benchmark's full daily price series, season boundary info, and each
- * ranked industry's full daily rolling price series.
+ * ranked industry's full daily curve.
+ *
+ * Each industry's `rolling` value is the SHARED PORTFOLIO's trailing-N-day
+ * 100-based factor, compounded in this service from the daily
+ * decomposition identity (bench_1d, non-industry daily price, shared
+ * weight) — the same math as the build. The frontend plots it directly as
+ * the industry curve (rebased to 100 at the window start, like the
+ * benchmark's own N-day rebasing).
  *
  * The frontend uses the seasonal rankings to drive an ACTIVE/FADING/HIDDEN
  * state machine per industry per date:
@@ -20,7 +27,6 @@ import type {
   IndustryHypesAndDrainsResponse,
   HypesDrainsBenchmarkRow,
   HypesDrainsIndustrySeries,
-  HypesDrainsIndustrySeriesRow,
   SeasonalRankingRow,
   SeasonInfo,
 } from "../../../shared/types.js";
@@ -56,7 +62,7 @@ interface DbBenchmarkRow extends QueryResultRow {
 interface DbIndustrySeriesRow extends QueryResultRow {
   date: Date | string;
   industry_id: string;
-  rolling: number | null;
+  non_ind_price: number | null;
   benchmark_shared_weight: number | null;
 }
 
@@ -113,28 +119,106 @@ const BENCHMARK_NAME_SQL = `
     LIMIT 1
 `;
 
-// Industry rolling price series for ALL ranked industries.
-// Returns benchmark_non_this_industry_rolling_{N}days_price (the 100-based
-// cumulative non-industry return factor) + benchmark_shared_weight per date.
+// Industry DAILY series for ALL ranked industries — the raw material for
+// the shared-portfolio curve. Returns the DAILY non-this-industry price
+// level + benchmark_shared_weight per date; the SERVICE compounds the
+// daily decomposition identity into the trailing-N-day shared return
+// (same math as analyze.industry_sentiments.hypes_and_drains) and outputs
+// it as `rolling`. Reading the pre-materialized rolling_{N}days_price
+// column instead would force the chart to invert it (1/swf amplification
+// of its clamping/compounding artifacts — +-hundreds-of-percent noise for
+// narrow industries).
 //
 // $1 = industry_ids (text[])
 // $2 = benchmark_code
-// $3 = rolling column name (frozen — derived from period_days, NOT user input)
-const INDUSTRY_SERIES_SQL = (rollingCol: string) => `
+// $3 = attribution_type ('equal' | 'trading_amt' — matching the requested
+//      weighting; each (industry, benchmark, date) has TWO rows, one per
+//      type, and mixing them would corrupt the consecutive-day returns)
+const INDUSTRY_SERIES_SQL = `
     SELECT
         ia.date,
         ia.industry_id,
-        ia.${rollingCol} AS rolling,
+        ia.benchmark_non_this_industry_price AS non_ind_price,
         ia.benchmark_shared_weight
     FROM analysis.industry_attributions ia
     WHERE ia.industry_id = ANY($1::text[])
       AND ia.benchmark_code = $2::text
-      AND ia.${rollingCol} IS NOT NULL
+      AND ia.attribution_type = $3::text
+      AND ia.benchmark_non_this_industry_price IS NOT NULL
     ORDER BY ia.industry_id, ia.date
 `;
 
-function _rollingCol(periodDays: number): string {
-  return `benchmark_non_this_industry_rolling_${periodDays}days_price`;
+// Compound the daily shared-return series into the trailing-N-day
+// 100-based factor (the chart's industry curve). Mirrors the build SQL:
+//   non_ind_1d = non_ind_price[t] / bench_close[t-1] - 1   (EXACT — the
+//       build materializes the level as bench_close[t-1] * (1 + r_t);
+//       ratios of consecutive price LEVELS instead carry a cross-term
+//       that random-walks to ~±20% error over the window)
+//   shared_1d  = (bench_1d - (1-swf) * non_ind_1d) / swf
+//   factor_nd  = 100 * exp(SUM ln(1 + shared_1d))   over the FULL N-row
+//               window; daily returns outside (-0.5, 0.5] contribute 0.
+// Returns a map date -> factor (null when the window is not full / the
+// daily legs are missing).
+function buildSharedRollingFactor(
+  rows: DbIndustrySeriesRow[],
+  benchRet1dByDate: Map<string, number>,
+  benchPrevCloseByDate: Map<string, number>,
+  periodDays: number,
+): Map<string, number | null> {
+  const out = new Map<string, number | null>();
+  const n = periodDays;
+  // Sliding window of daily log contributions (null = invalid day) + a
+  // running sum + non-null counter. Validity is tracked per-entry — a
+  // numeric 0 sentinel would misclassify the rare shared_1d === 0 day
+  // (log(1) = 0) and permanently deflate the window's validity count.
+  const window: Array<number | null> = [];
+  let sumLog = 0;
+  let validCount = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const date = formatDate(row.date);
+    const sw = toNum(row.benchmark_shared_weight);
+    const bench1d = benchRet1dByDate.get(date) ?? null;
+    const benchPrevClose = benchPrevCloseByDate.get(date) ?? null;
+    const curPrice = toNum(row.non_ind_price);
+    // Exact daily non-industry return (NULL when the benchmark's previous
+    // close is unknown — e.g. the series' first date).
+    let nonInd1d: number | null = null;
+    if (benchPrevClose != null && benchPrevClose !== 0 && curPrice != null) {
+      nonInd1d = curPrice / benchPrevClose - 1;
+    }
+    let shared1d: number | null = null;
+    if (sw != null && sw > 0 && sw < 100 && bench1d != null && nonInd1d != null) {
+      const swf = sw / 100;
+      shared1d = (bench1d - (1 - swf) * nonInd1d) / swf;
+    }
+    // Push this row's log contribution into the window (clamp: daily
+    // returns outside (-0.5, 0.5] contribute 0 — same convention as the
+    // attributions build's rolling columns).
+    const entry =
+      shared1d != null && shared1d > -0.5 && shared1d <= 0.5
+        ? Math.log(1 + shared1d)
+        : null;
+    window.push(entry);
+    if (entry != null) {
+      sumLog += entry;
+      validCount++;
+    }
+    if (window.length > n) {
+      const dropped = window.shift()!;
+      if (dropped != null) {
+        sumLog -= dropped;
+        validCount--;
+      }
+    }
+    // Full window only — partial windows understate the compounded return.
+    if (window.length === n && validCount === n) {
+      out.set(date, 100 * Math.exp(sumLog));
+    } else {
+      out.set(date, null);
+    }
+  }
+  return out;
 }
 
 // ----------------------------------------------------------------------------
@@ -161,8 +245,6 @@ export async function getIndustryHypesAndDrains(
     throw new Error(`Invalid weighting: must be 'equal' or 'amt', got '${weighting}'`);
   }
 
-  const rollingCol = _rollingCol(periodDays);
-
   // Step 1: fetch all seasonal rankings + season boundaries + benchmark
   // name — all in parallel.
   const [seasonalRows, seasonRows, nameRows] = await Promise.all([
@@ -185,21 +267,39 @@ export async function getIndustryHypesAndDrains(
     };
   }
 
-  // Step 2: fetch the benchmark's full daily price series.
+  // Step 2: fetch the benchmark's full daily price series and derive the
+  // daily close-to-close return map (the bench leg of the daily identity).
   const benchmarkRows = await queryRows<DbBenchmarkRow>(
     BENCHMARK_SERIES_SQL,
     [benchmarkCode],
   );
+  const benchRet1dByDate = new Map<string, number>();
+  const benchPrevCloseByDate = new Map<string, number>();
+  let prevClose: number | null = null;
+  for (const r of benchmarkRows) {
+    const date = formatDate(r.date);
+    const close = toNum(r.close);
+    if (prevClose != null) {
+      benchPrevCloseByDate.set(date, prevClose);
+      if (prevClose !== 0 && close != null) {
+        benchRet1dByDate.set(date, close / prevClose - 1);
+      }
+    }
+    prevClose = close;
+  }
 
   // Step 3: collect all unique industry_ids from the seasonal rankings.
   const industryIds = [...new Set(seasonalRows.map((r) => r.industry_id))];
 
-  // Step 4: fetch each unique industry's full daily rolling series.
+  // Step 4: fetch each unique industry's full DAILY series for the
+  // attribution type matching the requested weighting (the same type the
+  // build ranked on).
+  const attributionType = weighting === "amt" ? "trading_amt" : "equal";
   let industrySeriesRows: DbIndustrySeriesRow[] = [];
   if (industryIds.length > 0) {
     industrySeriesRows = await queryRows<DbIndustrySeriesRow>(
-      INDUSTRY_SERIES_SQL(rollingCol),
-      [industryIds, benchmarkCode],
+      INDUSTRY_SERIES_SQL,
+      [industryIds, benchmarkCode, attributionType],
     );
   }
 
@@ -220,16 +320,13 @@ export async function getIndustryHypesAndDrains(
     season_end: formatDate(r.season_end),
   }));
 
-  // Step 7: group industry series by industry_id and build the response.
-  const seriesByIndustry = new Map<string, HypesDrainsIndustrySeriesRow[]>();
+  // Step 7: group industry series by industry_id, compound the daily
+  // identity into the trailing-N-day shared factor (100-based), and build
+  // the response.
+  const rowsByIndustry = new Map<string, DbIndustrySeriesRow[]>();
   for (const r of industrySeriesRows) {
-    const id = r.industry_id;
-    if (!seriesByIndustry.has(id)) seriesByIndustry.set(id, []);
-    seriesByIndustry.get(id)!.push({
-      date: formatDate(r.date),
-      rolling: toNum(r.rolling),
-      benchmark_shared_weight: toNum(r.benchmark_shared_weight),
-    });
+    if (!rowsByIndustry.has(r.industry_id)) rowsByIndustry.set(r.industry_id, []);
+    rowsByIndustry.get(r.industry_id)!.push(r);
   }
 
   // Build industry_label lookup from seasonal rankings (first occurrence).
@@ -240,11 +337,23 @@ export async function getIndustryHypesAndDrains(
     }
   }
 
-  const industrySeries: HypesDrainsIndustrySeries[] = industryIds.map((id) => ({
-    industry_id: id,
-    industry_label: labelByIndustry.get(id) ?? id,
-    rows: seriesByIndustry.get(id) ?? [],
-  }));
+  const industrySeries: HypesDrainsIndustrySeries[] = industryIds.map((id) => {
+    const rawRows = rowsByIndustry.get(id) ?? [];
+    const factorByDate = buildSharedRollingFactor(
+      rawRows, benchRet1dByDate, benchPrevCloseByDate, periodDays,
+    );
+    return {
+      industry_id: id,
+      industry_label: labelByIndustry.get(id) ?? id,
+      rows: rawRows.map((r) => ({
+        date: formatDate(r.date),
+        // The shared portfolio's trailing-N-day 100-based factor (the
+        // chart's industry curve); null before the window fills.
+        rolling: factorByDate.get(formatDate(r.date)) ?? null,
+        benchmark_shared_weight: toNum(r.benchmark_shared_weight),
+      })),
+    };
+  });
 
   // Step 8: build benchmark series.
   const benchmarkSeries: HypesDrainsBenchmarkRow[] = benchmarkRows.map((r) => ({

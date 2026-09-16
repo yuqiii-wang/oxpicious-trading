@@ -34,134 +34,115 @@ Usage:
   python -m builds.classification --no-db         # same but skip DB upsert
   python -m builds.classification --force         # truncate sec_classification before upsert (removes stale rows)
   python -m builds.classification --reclassify    # reclassify ALL indices from keyword rules (ignores JSON cache)
+
+The :class:`ClassificationBuild` entry class (a :class:`DataBuild`
+subclass) owns the runtime lifecycle; this package's modules are
+JSON/DB-only (pandas-free) so they stay importable at module level.
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-import asyncio
-import datetime
 import os
 import sys
 
-from _common.build_commons import (
-    setup_utf8_stdout, get_db_or_exit,
-    print_build_header,
-    TODAY_STR,
-    add_force_arg,
-)
+from _common.data_build import DataBuild
+from _common.log_setup import setup_logging
 
-setup_utf8_stdout()
-
-from builds.classification.sector_industry.paths import CSV_DIR, JSON_PATH
-from builds.classification.sector_industry.csv_loader import (
-    find_latest_csv, load_etf_index_csv)
-from builds.classification.sector_industry.json_io import load_json, save_json
-from builds.classification.sector_industry.owners import load_owners
-from builds.classification.sector_industry.build import build_classification
-from builds.classification.sector_industry.upsert import upsert_to_db
-
-from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("classification")
 
+from builds.classification.sector_industry.paths import CSV_DIR, JSON_PATH  # noqa: E402
+from builds.classification.sector_industry.csv_loader import (  # noqa: E402
+    find_latest_csv, load_etf_index_csv)
+from builds.classification.sector_industry.json_io import load_json, save_json  # noqa: E402
+from builds.classification.sector_industry.owners import load_owners  # noqa: E402
+from builds.classification.sector_industry.build import build_classification  # noqa: E402
+from builds.classification.sector_industry.upsert import upsert_to_db  # noqa: E402
 
-async def main():
-    ap = argparse.ArgumentParser(
-        description="Build two-level security classification (sector → industry)."
-    )
-    ap.add_argument("--no-db", action="store_true",
-                    help="Skip DB upsert (load JSON + recompute ETFs/stocks + save JSON only)")
-    ap.add_argument("--reclassify", action="store_true",
-                    help="Force reclassification of ALL indices from keyword rules "
-                         "(ignores stale JSON-cached sector_id/industry_id/tags). "
-                         "Use this after changing INDEX_RULES to propagate new rules.")
-    add_force_arg(ap)
-    args = ap.parse_args()
 
-    t0 = datetime.datetime.now()
-    mode_parts = []
-    if args.no_db:
-        mode_parts.append("no-db")
-    if args.force:
-        mode_parts.append("FORCE (truncate + recompute)")
-    else:
-        mode_parts.append("incremental (upsert)")
-    if args.reclassify:
-        mode_parts.append("reclassify")
-    print_build_header(
-        "BUILD CLASSIFICATION  ·  sector → industry  ·  ETF + Index + Stock",
-        **{
+class ClassificationBuild(DataBuild):
+    """``python -m builds.classification`` — JSON + DB classification."""
+
+    title = "BUILD CLASSIFICATION  ·  sector → industry  ·  ETF + Index + Stock"
+    component = "classification"
+
+    def add_arguments(self, parser) -> None:
+        parser.add_argument("--no-db", action="store_true",
+                            help="Skip DB upsert (load JSON + recompute ETFs/stocks + save JSON only)")
+        parser.add_argument("--reclassify", action="store_true",
+                            help="Force reclassification of ALL indices from keyword rules "
+                                 "(ignores stale JSON-cached sector_id/industry_id/tags). "
+                                 "Use this after changing INDEX_RULES to propagate new rules.")
+        self.add_force_arg(parser)
+
+    def header_fields(self) -> dict:
+        from _common.build_commons import TODAY_STR
+
+        mode_parts = []
+        if self.args.no_db:
+            mode_parts.append("no-db")
+        mode_parts.append("FORCE (truncate + recompute)" if self.args.force
+                          else "incremental (upsert)")
+        if self.args.reclassify:
+            mode_parts.append("reclassify")
+        return {
             "JSON path": JSON_PATH,
             "Today": TODAY_STR,
             "Mode": " + ".join(mode_parts),
         }
-    )
 
-    # --- Load JSON (index classifications — the authoritative source) ---
-    prev_state = load_json()
-    if prev_state:
-        logger.info(f"    [JSON] Loaded index classifications: "
-              f"{len(prev_state.get('indices', {}))} indices")
-    else:
-        logger.info(f"    [JSON] No existing JSON — all indices will be classified by keyword rules")
+    async def run(self) -> None:
+        # --- Load JSON (index classifications — the authoritative source) ---
+        prev_state = load_json()
+        if prev_state:
+            logger.info(f"    [JSON] Loaded index classifications: "
+                  f"{len(prev_state.get('indices', {}))} indices")
+        else:
+            logger.info(f"    [JSON] No existing JSON — all indices will be classified by keyword rules")
 
-    # --- Load owners (sec_owners.json — curated ETF manager / company registry) ---
-    owners = load_owners()
+        # --- Load owners (sec_owners.json — curated ETF manager / company registry) ---
+        owners = load_owners()
 
-    # --- Load CSV (ETF → index mapping) ---
-    csv_path = find_latest_csv()
-    if csv_path is None:
-        logger.error(f"    [FATAL] No etf_index_map_*.csv found in {CSV_DIR}")
-        sys.exit(1)
-    logger.info(f"    [CSV] Loading ETF → index mapping: {os.path.basename(csv_path)}")
-    etf_rows = load_etf_index_csv(csv_path)
-    logger.info(f"    [CSV] {len(etf_rows)} ETF → index mappings loaded")
+        # --- Load CSV (ETF → index mapping) ---
+        csv_path = find_latest_csv()
+        if csv_path is None:
+            logger.error(f"    [FATAL] No etf_index_map_*.csv found in {CSV_DIR}")
+            sys.exit(1)
+        logger.info(f"    [CSV] Loading ETF → index mapping: {os.path.basename(csv_path)}")
+        etf_rows = load_etf_index_csv(csv_path)
+        logger.info(f"    [CSV] {len(etf_rows)} ETF → index mappings loaded")
 
-    # --- Connect to DB (for index meta, stock mapping, and upsert) ---
-    conn = None
-    if not args.no_db:
-        logger.info("\n[1/2] Connecting to database …")
-        conn = await get_db_or_exit()
+        # --- Connect to DB (for index meta, stock mapping, and upsert) ---
+        conn = None
+        if not self.args.no_db:
+            logger.info("\n[1/2] Connecting to database …")
+            conn = await self.connect_db()
 
-    try:
-        logger.info("\n[2/2] Building classification …")
-        state = await build_classification(
-            conn, etf_rows, prev_state=prev_state, owners=owners, verbose=True,
-            reclassify_indices=args.reclassify)
+        try:
+            logger.info("\n[2/2] Building classification …")
+            state = await build_classification(
+                conn, etf_rows, prev_state=prev_state, owners=owners, verbose=True,
+                reclassify_indices=self.args.reclassify)
 
-        # --- Save JSON (indices only) ---
-        save_json(state)
+            # --- Save JSON (indices only) ---
+            save_json(state)
 
-        # --- Summary ---
-        logger.info(f"\n    Summary:")
-        logger.info(f"      Catalog           : {len(state['catalog'])} sectors "
-              f"(industry + strategy unified)")
-        logger.info(f"      Indices           : {len(state.get('indices', {}))}")
-        logger.info(f"      ETFs              : {len(state.get('etfs', {}))}")
-        logger.info(f"      Stocks            : {len(state.get('stocks', []))} rows "
-              f"({len(set(s['code'] for s in state.get('stocks', [])))} codes)")
-        logger.info(f"      Owners            : {len(state.get('owners', []))}")
+            # --- Summary ---
+            logger.info(f"\n    Summary:")
+            logger.info(f"      Catalog           : {len(state['catalog'])} sectors "
+                  f"(industry + strategy unified)")
+            logger.info(f"      Indices           : {len(state.get('indices', {}))}")
+            logger.info(f"      ETFs              : {len(state.get('etfs', {}))}")
+            logger.info(f"      Stocks            : {len(state.get('stocks', []))} rows "
+                  f"({len(set(s['code'] for s in state.get('stocks', [])))} codes)")
+            logger.info(f"      Owners            : {len(state.get('owners', []))}")
 
-        # --- Upsert to DB ---
-        if conn is not None:
-            logger.info("\n[DB] Upserting to database …")
-            await upsert_to_db(conn, state, verbose=True, force=args.force)
-    finally:
-        if conn is not None:
-            await conn.close()
-
-    elapsed = (datetime.datetime.now() - t0).total_seconds()
-    logger.info(f"\n  Wall time: {elapsed:.1f}s")
-    logger.info("=" * 78)
+            # --- Upsert to DB ---
+            if conn is not None:
+                logger.info("\n[DB] Upserting to database …")
+                await upsert_to_db(conn, state, verbose=True, force=self.args.force)
+        finally:
+            if conn is not None:
+                await conn.close()
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    ClassificationBuild().execute()

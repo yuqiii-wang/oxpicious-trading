@@ -27,7 +27,7 @@ NULL so every mask is False and no rows emit.
 
 Per (side, hype) subset the horizon aggregates reuse
 wide.aggregate_horizons_sparse against the code's ADAPTIVE reversal
-bar (reverse_thresholds: k_n·σ of the window's n-day forward changes)
+bar (thresholds: k_n·σ of the window's n-day forward changes)
 — the crowding states high/vhigh carry side='top' (reverse on change
 < -thr, the study's bearish reading), vlow/low/no_buy side='bottom'
 (reverse on change > +thr), mid side='flat' with reverse_prob = NULL
@@ -38,218 +38,95 @@ Yields (stat_month, rows) so __main__ can split each row into the
 margin_ratio_state motivation dicts and the forecast_results result
 dicts and write month-major.
 """
+
+
 from __future__ import annotations
 
-import json
+from collections.abc import Iterator
 from datetime import date
-from typing import Iterator
 
 import numpy as np
+import pandas as pd
 
+from analyze.analysis_forecasts._dfengine import (
+    WideDfEngine,
+    _band_ordinal,
+    _finite_mask,
+)
 from analyze.analysis_forecasts.config import (
-    FORWARD_HORIZONS,
-    MM_HORIZONS,
     LOOKBACK_PERIOD,
     MARGIN_RATIO_HIGH_BAR,
     MARGIN_RATIO_LOW_BAR,
-    MARGIN_RATIO_STATES,
     MARGIN_RATIO_STATE_SIDE,
+    MARGIN_RATIO_STATES,
     MARGIN_RATIO_VHIGH_BAR,
     MARGIN_RATIO_VLOW_BAR,
     MARGIN_RATIO_Z_MIN_PERIODS,
     MARGIN_RATIO_Z_WINDOW,
 )
-from analyze.analysis_forecasts.wide import (
-    MonthWindow,
-    aggregate_horizons_sparse,
-    build_result_rows,
-    reverse_thresholds,
-    round6,
-    window_sigmas,
-)
 
-_K = len(MARGIN_RATIO_STATES)               # 6 states on the z axis
+# Ordinal → state name (the _band_ordinal ladder + the no_buy flag).
+_STATE_OF_ORD = {0: "vlow", 1: "low", 2: "mid", 3: "high", 4: "vhigh",
+                 5: "no_buy"}
 
-# Side-batch config ranges on the state axis (MARGIN_RATIO_STATES order:
-# no_buy, vlow, low | mid | high, vhigh).
-_SIDE_SLICES: dict[str, slice] = {
-    "bottom": slice(0, 3),        # no_buy + vlow + low
-    "flat": slice(3, 4),          # mid
-    "top": slice(4, 6),           # high + vhigh
-}
+
+class _MarginRatioEngine(WideDfEngine):
+    """Margin-buy intensity STATE buckets: vlow/low/mid/high/vhigh z
+    bands of ratio_z (the code's own shifted rolling moments) plus the
+    no_buy state (margin traders absent). Every qualifying day is its
+    own 1-day signal (state family — no run semantics); the band
+    members carry no scalar qualifying bar, so trigger_excess is NULL."""
+
+    BUCKET_COLS = ("ratio_state",)
+    MERGE = False
+
+    def _extra_window_cols(self) -> list[str]:
+        return ["ratio", "ratio_z", "nb"]
+
+    def family_constants(self) -> dict:
+        return {
+            "z_window": MARGIN_RATIO_Z_WINDOW,
+            "z_min_periods": MARGIN_RATIO_Z_MIN_PERIODS,
+            "vlow_bar": MARGIN_RATIO_VLOW_BAR,
+            "low_bar": MARGIN_RATIO_LOW_BAR,
+            "high_bar": MARGIN_RATIO_HIGH_BAR,
+            "vhigh_bar": MARGIN_RATIO_VHIGH_BAR,
+        }
+
+    def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
+        nb = win["nb"].fillna(False)
+        has_z = _finite_mask(win["ratio_z"])
+        keep_rows = nb | has_z
+        if not keep_rows.any():
+            return
+        ord_ = _band_ordinal(
+            win["ratio_z"],
+            (MARGIN_RATIO_VLOW_BAR, MARGIN_RATIO_LOW_BAR,
+             MARGIN_RATIO_HIGH_BAR, MARGIN_RATIO_VHIGH_BAR),
+        )
+        ord_ = ord_.where(~nb, 5)          # no_buy overrides any band
+        cells = win[keep_rows].copy()
+        cells["ratio_state"] = ord_[keep_rows].map(_STATE_OF_ORD)
+        cells["excess"] = np.nan           # band membership — no bar
+        cells = cells[cells["ratio_state"].notna()]
+        if cells.empty:
+            return
+        cells["side"] = cells["ratio_state"].map(MARGIN_RATIO_STATE_SIDE)
+        yield self._streak_merge(
+            cells, group_cols=["ratio_state", "side", "code"],
+        )
 
 
 def compute_margin_ratio_results(
-    mats: dict[str, np.ndarray],
-    chg: dict[str, np.ndarray],
-    windows: list[MonthWindow],
-    codes: list[str],
-    sec_type: str,
-    hype: np.ndarray,
-    first_ord: np.ndarray,
-    grid_ord: np.ndarray | None = None,
+    *, df, first_dates, episodes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, bucket rows) per stat month.
-
-    Args:
-        mats: wide state matrices keyed "z" (z-scored margin ratio —
-              NaN where undefined), "nb" (no-margin-buy bool) and
-              "ratio" (raw rz_buy/trading_amount, NaN off buy days —
-              config JSONB magnitude only).
-        chg:  shared change matrices (build_change_matrices):
-              NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS.
-        windows: resolved MonthWindow list for the target months.
-        codes: sorted code list (matrix column order).
-        sec_type: emitted into every row.
-        hype: (T, C) bool matrix of market-hyped (date, code) cells
-              (build_hype_matrix).
-        first_ord: (C,) per-code first data date as ABSOLUTE epoch-day
-              ordinals — a code is live for a window only when
-              first_ord < mw.lo_ord (DATE-space full-window gate).
-        grid_ord: optional (T,) int64 day ordinals of the FULL grid
-              (build_grid) — sliced per window into aggregate_horizons_
-              sparse's win_ord so each emitted row carries its
-              trigger_dates (the calendar dates behind occurrence_count).
-    """
-    C = len(codes)
-
-    for mw in windows:
-        lo, hi = mw.lo, mw.hi
-        if lo >= hi:
-            continue
-        live = first_ord < mw.lo_ord
-        if not live.any():
-            continue
-
-        FINs = {n: chg[f"FIN_{n}"][lo:hi] for n in FORWARD_HORIZONS}
-        NC0s = {n: chg[f"NC0_{n}"][lo:hi] for n in FORWARD_HORIZONS}
-        # Window-sliced PATH-extreme matrices (FMAX0/FMIN0) — the
-        # swing-aware reversal event + max_low_change_ratio inputs.
-        PATH0s = {n: (chg[f"FMAX0_{n}"][lo:hi], chg[f"FMIN0_{n}"][lo:hi])
-                  for n in MM_HORIZONS}
-        # Per-(code, horizon) adaptive reversal bar for this window.
-        thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
-        HY = hype[lo:hi]
-
-        Z = mats["z"][lo:hi]
-        NB = mats["nb"][lo:hi]
-        RA = mats["ratio"][lo:hi]
-        with np.errstate(invalid="ignore"):
-            # State masks (NaN compares False → non-bucket days never
-            # join): (6, T, C) stacked in MARGIN_RATIO_STATES order.
-            mask = np.stack([
-                NB,
-                Z <= MARGIN_RATIO_VLOW_BAR,
-                (Z > MARGIN_RATIO_VLOW_BAR) & (Z <= MARGIN_RATIO_LOW_BAR),
-                (Z > MARGIN_RATIO_LOW_BAR) & (Z <= MARGIN_RATIO_HIGH_BAR),
-                (Z > MARGIN_RATIO_HIGH_BAR) & (Z <= MARGIN_RATIO_VHIGH_BAR),
-                Z > MARGIN_RATIO_VHIGH_BAR,
-            ])
-        # (6, T, C) → (T, C, K) with k = state_idx.
-        n_rows = hi - lo
-        mask = mask.transpose(1, 2, 0).reshape(n_rows, C, _K)
-        nz_t, nz_c, nz_k = np.nonzero(mask)
-        if nz_t.size == 0:
-            continue
-        nz_t = nz_t.astype(np.int32)
-        nz_c = nz_c.astype(np.int32)
-        nz_k = nz_k.astype(np.int32)
-        hy_cells = HY[nz_t, nz_c]
-
-        rows: list[dict] = []
-        for side, sl in _SIDE_SLICES.items():
-            in_side = (nz_k >= sl.start) & (nz_k < sl.stop)
-            if not in_side.any():
-                continue
-            t_s = nz_t[in_side]
-            c_s = nz_c[in_side]
-            k_s = nz_k[in_side] - sl.start
-            P = sl.stop - sl.start
-            flat_s = c_s * P + k_s
-            hy_s = hy_cells[in_side]
-
-            for hyped in (False, True):
-                sel = hy_s if hyped else ~hy_s
-                if not sel.any():
-                    continue
-                st = t_s[sel]
-                sc = c_s[sel]
-                fk = flat_s[sel]
-                # Group-ascending cell order — one stable sort shared
-                # by the emit count and every horizon's reductions.
-                order = np.argsort(fk, kind="stable")
-                st = st[order]
-                sc = sc[order]
-                fk = fk[order]
-                cell_cnt = np.bincount(fk, minlength=C * P)
-                # (C, P) emit grid — same shape convention as the
-                # mov_* engines (build_result_rows gathers kk/ii from
-                # its transpose).
-                emit = cell_cnt.reshape(C, P) > 0
-                if not emit.any():
-                    continue
-
-                agg = aggregate_horizons_sparse(
-                    st, sc, fk, C, P, side, NC0s, FINs, thr_n,
-                    path0s=PATH0s,
-                    win_ord=None if grid_ord is None else grid_ord[lo:hi],
-                )
-                kk, ii = np.nonzero(emit.T)
-                # Per-bucket mean state magnitudes (config JSONB — the
-                # motivation magnitude, like px_vol's mean_t/mean_z).
-                # no_buy cells have NaN ratio/z by construction — their
-                # bin sums stay NaN and round6 maps them to None.
-                s_z = np.bincount(fk, weights=Z[st, sc], minlength=C * P)
-                s_r = np.bincount(fk, weights=RA[st, sc], minlength=C * P)
-                # The bins are CODE-major (flat = i*P + k), so gather
-                # each emitted (code, config) pair's OWN bin — emit
-                # cells have cell_cnt > 0 by construction.
-                emit_flat = ii * P + kk
-                mean_z_vals = np.divide(
-                    s_z[emit_flat], cell_cnt[emit_flat],
-                    out=np.full(emit_flat.size, np.nan),
-                    where=cell_cnt[emit_flat] > 0,
-                )
-                mean_r_vals = np.divide(
-                    s_r[emit_flat], cell_cnt[emit_flat],
-                    out=np.full(emit_flat.size, np.nan),
-                    where=cell_cnt[emit_flat] > 0,
-                )
-                base: list[dict] = []
-                for row_n, (k, i) in enumerate(zip(kk.tolist(), ii.tolist())):
-                    state = MARGIN_RATIO_STATES[sl.start + k]
-                    base.append({
-                        "sec_type": sec_type,
-                        "code": codes[i],
-                        "stat_month": mw.stat_month,
-                        "ratio_state": state,
-                        "side": MARGIN_RATIO_STATE_SIDE[state],
-                        "is_market_hyped": hyped,
-                        "z_window": MARGIN_RATIO_Z_WINDOW,
-                        "z_min_periods": MARGIN_RATIO_Z_MIN_PERIODS,
-                        "vlow_bar": MARGIN_RATIO_VLOW_BAR,
-                        "low_bar": MARGIN_RATIO_LOW_BAR,
-                        "high_bar": MARGIN_RATIO_HIGH_BAR,
-                        "vhigh_bar": MARGIN_RATIO_VHIGH_BAR,
-                        "lookback_period": LOOKBACK_PERIOD,
-                        # state cells admit every qualifying day (no
-                        # streak-merge — 1-day signals): the identity
-                        # registry's streak_signal_days constant.
-                        "streak_signal_days": 1,
-                        # config JSONB — asyncpg COPY needs a JSON text
-                        # string (compute_px_vol precedent).
-                        "config": json.dumps({
-                            "mean_ratio": round6(mean_r_vals[row_n]),
-                            "mean_z": round6(mean_z_vals[row_n]),
-                        }),
-                    })
-                batch = build_result_rows(agg, kk, ii, base, thr_n)
-                if side == "flat":
-                    # No directional claim → the reversal probability is
-                    # meaningless (its "against the bucket side" is
-                    # undefined); NULL it on all 4 period rows.
-                    batch = [{**r, "reverse_prob": None} for r in batch]
-                rows.extend(batch)
-
-        if rows:
-            yield mw.stat_month, rows
+    """Yield (stat_month, margin_ratio_state bucket rows) per month."""
+    engine = _MarginRatioEngine(
+        df=df,
+        first_dates=first_dates,
+        episodes=episodes,
+        codes=codes,
+        sec_type=sec_type,
+        specs=specs,
+    )
+    return engine.run()

@@ -44,7 +44,7 @@
 --  analysis_forecasts.forecast_identities.streak_signal_days — and the
 --  bucket split is by PK member is_market_hyped exactly like the other
 --  engines. Results live in analysis_forecasts.forecast_results via
---  forecast_id (1:N — 4 period rows next/5d/20d/60d).
+--  forecast_id (1:N — 5 period rows next/5d/20d/60d/mixed).
 --
 --  Threshold columns are RECORDED BUILD PARAMETERS (NOT part of the
 --  PK — rebuilding with different values requires --force). The
@@ -60,7 +60,7 @@
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.dividend_state (
     code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-    forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_dividend_state_forecast_id
+    forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_dividend_state_forecast_id
     val_state       TEXT         NOT NULL,  -- 'vlow' | 'low' | 'mid' | 'high' | 'vhigh' (z bars of the dividend yield vs the code's own trailing moments)
     side            TEXT         NOT NULL,  -- yield HIGHER the better: vlow/low (low yield) → 'top' (bearish), high/vhigh (high yield) → 'bottom' (bullish); mid → 'flat'
 
@@ -150,9 +150,9 @@ END $$;
 --  Comments
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis_forecasts.dividend_state IS 'Valuation state buckets (motivation) over the dividend-yield series of analysis.dividends: one row per forecast_id — the window days of one security-month whose trailing-12m D/P (fractional) sits in the named z state of the code''s OWN trailing distribution: z = (dividend_yield - μ)/σ with rolling-1220-row (min 250 non-NULL) moments shifted 1 row. States: vlow z<=-2 / low (-2,-1] / mid (-1,+1] / high (+1,+2] / vhigh z>2. SIDE (yield HIGHER the better — the REVERSE of pe_state''s mapping): vlow/low low-yield states carry side ''top'' (bearish — reverse_prob = P(the forward window''s path low < -threshold)), high/vhigh high-yield states ''bottom'' (bullish); mid = flat (NULL reverse_prob). Non-payer days (NULL yield) form no bucket. The pe sibling lives in analysis_forecasts.pe_state (same z bars, REVERSED side mapping). Streak-merged state signals (consecutive same-state days = ONE mid-anchored signal; mean run length on forecast_identities.streak_signal_days). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / swing-aware reversal probabilities at the FIXED 1% bar) live in analysis_forecasts.forecast_results via forecast_id. Populated by python -m analyze.analysis_forecasts.';
-COMMENT ON COLUMN analysis_forecasts.dividend_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
+COMMENT ON COLUMN analysis_forecasts.dividend_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 5 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 5 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
 COMMENT ON COLUMN analysis_forecasts.dividend_state.val_state IS 'Valuation z state of the day: z = (dividend_yield - μ)/σ of the code''s rolling-1220-row (min 250 non-NULL yield observations) moments shifted 1 row: vlow z <= -2; low -2 < z <= -1; mid -1 < z <= +1; high +1 < z <= +2; vhigh z > +2. Undefined z (yield NULL — non-payers — or short history) → no bucket.';
-COMMENT ON COLUMN analysis_forecasts.dividend_state.side IS 'Reversal side of the bucket''s forecast_results.reverse_prob — the yield is HIGHER the better (a high trailing yield is a cheap, well-supported valuation): vlow/low (low yield) = ''top'' (bearish — reversal counts n-day changes below -reverse_threshold), high/vhigh (high yield) = ''bottom'' (bullish — reversal above +reverse_threshold); mid = ''flat'' (no directional claim; reverse_prob NULL). The REVERSE of the pe_state mapping. Mirrors the mov_* / px_vol / margin_ratio side semantics so analysis_signals.gate consumes the table unchanged.';
+COMMENT ON COLUMN analysis_forecasts.dividend_state.side IS 'Reversal side of the bucket''s forecast_results.reverse_prob — the yield is HIGHER the better (a high trailing yield is a cheap, well-supported valuation): vlow/low (low yield) = ''top'' (bearish — reversal counts n-day changes below -threshold), high/vhigh (high yield) = ''bottom'' (bullish — reversal above +threshold); mid = ''flat'' (no directional claim; reverse_prob NULL). The REVERSE of the pe_state mapping. Mirrors the mov_* / px_vol / margin_ratio side semantics so analysis_signals.gate consumes the table unchanged.';
 COMMENT ON COLUMN analysis_forecasts.dividend_state.z_window IS 'Recorded build parameter: rolling window (rows) of the dividend_yield moments μ/σ (default 1220 ≈ 5y of trading rows). Shifted 1 row before use (no look-ahead).';
 COMMENT ON COLUMN analysis_forecasts.dividend_state.z_min_periods IS 'Recorded build parameter: minimum non-NULL dividend_yield observations inside z_window for z to be defined (default 250).';
 COMMENT ON COLUMN analysis_forecasts.dividend_state.vlow_bar IS 'Recorded build parameter: vlow upper z-bar (default -2.0).';

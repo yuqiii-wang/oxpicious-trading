@@ -25,53 +25,32 @@ The correlations step is NOT part of the default
     stats.sec_classification (type='index') and unioned with
     --industry. Driven by the UI refresh button on the Pairwise
     Correlation chart, so a small selection recomputes in seconds.
+
+The :class:`CorrAnalysis` entry class (a :class:`DataAnalysis` subclass)
+owns the runtime lifecycle + DB connection lifecycle; the
+``--code → industry_ids`` resolution is the shared
+``DataAnalysis.resolve_codes_to_industries`` (was duplicated here and in
+analysis_composites). Bootstrap-first layout: the runtime setup runs
+before this module's imports.
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-import asyncio
-import os
-import sys
-import time
 from typing import Optional, Set
 
-# Ensure project root is on sys.path so ``_common`` is importable when run
-# directly via ``python -m analyze.industry_sentiments.corr`` or as a script.
-sys.path.insert(
-    0,
-    os.path.dirname(
-        os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
-    ),
-)
+from _common.data_pipeline import bootstrap_runtime
 
-from _common.build_commons import (  # noqa: E402
-    setup_utf8_stdout,
-    get_db_connection_async,
-    print_build_header,
-    print_wall_time,
-    add_force_arg,
-)
+bootstrap_runtime()
 
-setup_utf8_stdout()
+from _common.log_setup import setup_logging
 
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate  # noqa: E402
-activate()
+from _common.data_analysis import DataAnalysis
 
-from analyze.industry_sentiments.correlations import (  # noqa: E402
+from analyze.industry_sentiments.correlations import (
     run_correlations,
     find_missing_corr_window_ends,
     TABLE as CORRELATIONS_TABLE,
 )
 
-from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("corr")
 
 BASELINE_TABLE = "stats.industry_basic_stats"
@@ -81,74 +60,60 @@ def _parse_csv(raw: str) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
-async def _resolve_codes_to_industries(
-    conn, codes: list[str],
-) -> Set[str]:
-    """Map member index codes -> their industry_ids (sec_classification)."""
-    rows = await conn.fetch("""
-        SELECT DISTINCT industry_id
-        FROM stats.sec_classification
-        WHERE type = 'index'
-          AND industry_id IS NOT NULL
-          AND industry_id <> ''
-          AND code = ANY($1)
-    """, codes)
-    return {r["industry_id"] for r in rows}
+class CorrAnalysis(DataAnalysis):
+    """``python -m analyze.industry_sentiments.corr`` — correlations only."""
 
+    title = ("ANALYZE INDUSTRY CORRELATIONS (standalone; source: "
+             "stats.industry_basic_stats)")
+    component = "corr"
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Industry correlations ONLY (windowed MA-curve "
-                    "pairwise Pearson correlation) reading from "
-                    "stats.industry_basic_stats."
-    )
-    add_force_arg(ap)
-    ap.add_argument(
-        "--industry", default="", metavar="ID[,ID...]",
-        help="Filtered mode: recompute + upsert ALL windows for the pairs "
-             "among these industry_ids (e.g. BANKS,AI). No truncate.",
-    )
-    ap.add_argument(
-        "--code", default="", metavar="CODE[,CODE...]",
-        help="Filtered mode: member index codes (e.g. 000004,000005) "
-             "resolved to industry_ids via stats.sec_classification and "
-             "unioned with --industry.",
-    )
-    args = ap.parse_args()
+    def add_arguments(self, parser) -> None:
+        self.add_force_arg(parser)
+        parser.add_argument(
+            "--industry", default="", metavar="ID[,ID...]",
+            help="Filtered mode: recompute + upsert ALL windows for the pairs "
+                 "among these industry_ids (e.g. BANKS,AI). No truncate.",
+        )
+        parser.add_argument(
+            "--code", default="", metavar="CODE[,CODE...]",
+            help="Filtered mode: member index codes (e.g. 000004,000005) "
+                 "resolved to industry_ids via stats.sec_classification and "
+                 "unioned with --industry.",
+        )
 
-    industry_args = _parse_csv(args.industry)
-    code_args = _parse_csv(args.code)
-    if args.force and (industry_args or code_args):
-        ap.error("--force cannot be combined with --industry/--code "
-                 "(filtered runs never truncate the table)")
+    def apply_args(self) -> None:
+        self.industry_args = _parse_csv(self.args.industry)
+        self.code_args = _parse_csv(self.args.code)
+        if self.args.force and (self.industry_args or self.code_args):
+            self.parser.error("--force cannot be combined with --industry/--code "
+                              "(filtered runs never truncate the table)")
 
-    t0 = time.time()
-    print_build_header(
-        "ANALYZE INDUSTRY CORRELATIONS (standalone; source: "
-        "stats.industry_basic_stats)",
-        source_table=BASELINE_TABLE,
-        mode="FORCE (full recompute)" if args.force
-             else "FILTERED (chosen industries, recompute + upsert)"
-             if (industry_args or code_args)
-             else "incremental (missing windows only)",
-    )
+    def header_fields(self) -> dict:
+        return {
+            "source_table": BASELINE_TABLE,
+            "mode": "FORCE (full recompute)" if self.args.force
+                    else "FILTERED (chosen industries, recompute + upsert)"
+                    if (self.industry_args or self.code_args)
+                    else "incremental (missing windows only)",
+        }
 
-    conn = await get_db_connection_async()
-    try:
-        if industry_args or code_args:
+    async def run(self) -> None:
+        conn = self.conn
+
+        if self.industry_args or self.code_args:
             # ---- Filtered mode: recompute + upsert chosen industries ----
-            industry_ids: Optional[Set[str]] = set(industry_args)
-            if code_args:
-                resolved = await _resolve_codes_to_industries(
-                    conn, code_args,
+            industry_ids: Optional[Set[str]] = set(self.industry_args)
+            if self.code_args:
+                resolved = await self.resolve_codes_to_industries(
+                    self.code_args,
                 )
                 unmapped = sorted(
-                    set(code_args)
+                    set(self.code_args)
                     - {
                         r["code"] for r in await conn.fetch(
                             "SELECT code FROM stats.sec_classification "
                             "WHERE type = 'index' AND code = ANY($1)",
-                            code_args,
+                            self.code_args,
                         )
                     }
                 )
@@ -162,10 +127,9 @@ async def main() -> None:
             if len(industry_ids) < 2:
                 logger.info("    -> fewer than 2 industries — no pairs to "
                       "compute; nothing to do.")
-                print_wall_time(t0)
                 return
             await run_correlations(conn, industry_ids=industry_ids)
-        elif args.force:
+        elif self.args.force:
             await run_correlations(conn, force=True)
         else:
             logger.info("\n[0/1] Detecting missing corr windows "
@@ -175,23 +139,9 @@ async def main() -> None:
                   f"{CORRELATIONS_TABLE}")
             if not target_dates:
                 logger.info("    -> correlations are up to date; nothing to do.")
-                print_wall_time(t0)
                 return
             await run_correlations(conn, target_dates=target_dates)
-        print_wall_time(t0)
-    finally:
-        # Close with a timeout — after heavy bulk inserts the PostgreSQL
-        # server can be saturated with WAL checkpoint I/O, making
-        # conn.close() stall on the Terminate message + TCP teardown.
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    CorrAnalysis().execute()

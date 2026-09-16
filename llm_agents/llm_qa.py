@@ -17,7 +17,8 @@ idempotent per (question, news_group):
 CLI (``python -m llm_agents.llm_qa``)::
 
     add --question "…" --answer "…" [--news-ids 1,2,3] [--industry BANKS]
-        [--category macro] [--model gpt-…] [--language zh] [--context-file f]
+        [--sector FIN] [--category macro] [--model gpt-…] [--language zh]
+        [--context-file f]
     list [--limit 20] [--all]           # active (or all) rows, newest first
     deactivate --qa-id 42
 """
@@ -46,6 +47,24 @@ logger = setup_logging("llm_qa")
 QA_TABLE = "text.llm_qa"
 GROUPS_TABLE = "text.news_groups"
 GROUP_ITEMS_TABLE = "text.news_group_items"
+
+# Answer-text refusal markers: the model produced no substantive
+# explanation (its sources did not cover the period/move, so it answered
+# with "cannot explain / no source support / will not fabricate"
+# boilerplate — cf. "基于不编造信息的原则，无法提供导致大跌的实质性
+# 原因要点。"). text.llm_qa.is_failed_explanation is derived from these
+# at store time: any hit -> true, none -> false. 无法解释 has not
+# surfaced in stored answers yet but guards the provider's phrasing.
+FAILED_EXPLANATION_KEYWORDS = (
+    "无法解释", "无法提供", "无法回答", "无法给出", "无法归纳",
+    "无法为您", "无法依据", "无法根据", "无法从",
+    "无法输出", "无法获取",
+    "没有来源支持", "无来源支持",
+    "不要编造", "不编造",
+    "未能找到", "没有找到", "未找到", "未发现",
+    "未提供", "未涉及", "未解释",
+    "实质性原因", "没有资料解释",
+)
 
 
 # ----------------------------------------------------------------------------
@@ -88,20 +107,33 @@ async def upsert_qa(
     context: Optional[str] = None,
     category: Optional[str] = None,
     industry_id: Optional[str] = None,
+    sector_id: Optional[str] = None,
     news_ids: Optional[Sequence[int]] = None,
     llm_model: Optional[str] = None,
     language: str = "zh",
     is_active: bool = True,
+    qa_date: Optional[datetime.datetime] = None,
 ) -> int:
     """Insert/update one text.llm_qa row; return its qa_id.
 
     With *news_ids*, the sources are grouped (ensure_news_group) and linked.
     Uniqueness is (question, news_group_id); because Postgres UNIQUE treats
     NULLs as distinct, the news-less case is matched explicitly on
-    question + NULL group and updated in place.
+    question + NULL group and updated in place. *qa_date* is the
+    question's OWN data date (the weekly industry Q&A's （截至…） anchor,
+    Asia/Shanghai midnight) — the column that used to be created_at; the
+    AI page maps it to the latest trading day on or before it. None keeps
+    the now() default (manual/undated rows).
+
+    is_failed_explanation is derived here from the answer text via
+    FAILED_EXPLANATION_KEYWORDS: refusal boilerplate ("无法解释",
+    "无法提供…" etc.) -> true; any substantive answer -> false.
     """
     if not question or not answer:
         raise ValueError("question and answer are required")
+
+    failed_explanation = any(k in answer
+                             for k in FAILED_EXPLANATION_KEYWORDS)
 
     news_group_id: Optional[int] = None
     if news_ids:
@@ -116,11 +148,15 @@ async def upsert_qa(
         if qa_id is not None:
             await conn.execute(
                 f'UPDATE {QA_TABLE} SET answer = $2, context = $3, '
-                f'category = $4, industry_id = $5, llm_model = $6, '
-                f'language = $7, is_active = $8, updated_at = now() '
+                f'category = $4, industry_id = $5, sector_id = $6, '
+                f'llm_model = $7, language = $8, is_active = $9, '
+                f'qa_date = COALESCE($10::timestamptz, qa_date), '
+                f'is_failed_explanation = $11, '
+                f'updated_at = now() '
                 f'WHERE qa_id = $1',
-                qa_id, answer, context, category, industry_id,
-                llm_model, language, is_active)
+                qa_id, answer, context, category, industry_id, sector_id,
+                llm_model, language, is_active, qa_date,
+                failed_explanation)
             return qa_id
 
     row = {
@@ -129,11 +165,15 @@ async def upsert_qa(
         "context": context,
         "category": category,
         "industry_id": industry_id,
+        "sector_id": sector_id,
         "news_group_id": news_group_id,
         "llm_model": llm_model,
         "language": language,
         "is_active": is_active,
+        "is_failed_explanation": failed_explanation,
     }
+    if qa_date is not None:
+        row["qa_date"] = qa_date
     await bulk_upsert_async(conn, QA_TABLE, [row], ["question", "news_group_id"])
     qa_id = await conn.fetchval(
         f'SELECT qa_id FROM {QA_TABLE} '
@@ -155,19 +195,22 @@ async def fetch_qa(
     limit: int = 20,
     include_inactive: bool = False,
     industry_id: Optional[str] = None,
+    sector_id: Optional[str] = None,
 ) -> List[dict]:
     """Newest-first Q&A rows (joined with the source-group article count)."""
     rows = await conn.fetch(
         f'SELECT q.qa_id, q.question, q.answer, q.category, q.industry_id, '
+        f'q.sector_id, '
         f'q.news_group_id, q.llm_model, q.language, q.is_active, '
-        f'q.created_at, q.updated_at, '
+        f'q.qa_date, q.updated_at, '
         f'(SELECT COUNT(*) FROM {GROUP_ITEMS_TABLE} gi '
         f' WHERE gi.news_group_id = q.news_group_id) AS n_sources '
         f'FROM {QA_TABLE} q '
         f'WHERE ($1 OR q.is_active) '
         f'  AND ($2::text IS NULL OR q.industry_id = $2) '
-        f'ORDER BY q.updated_at DESC LIMIT $3',
-        include_inactive, industry_id, limit)
+        f'  AND ($3::text IS NULL OR q.sector_id = $3) '
+        f'ORDER BY q.updated_at DESC LIMIT $4',
+        include_inactive, industry_id, sector_id, limit)
     return [dict(r) for r in rows]
 
 
@@ -210,6 +253,10 @@ async def main() -> None:
                        help="Comma-separated text.news ids proving the answer.")
     p_add.add_argument("--industry", type=str, default=None,
                        help="Canonical industry_id (BANKS, SEMI, …).")
+    p_add.add_argument("--sector", type=str, default=None,
+                       help="Canonical sector_id (FIN, HC, …); derived from "
+                            "the taxonomy when --industry is set and --sector "
+                            "is not.")
     p_add.add_argument("--category", type=str, default=None)
     p_add.add_argument("--model", type=str, default=None,
                        help="LLM model id that produced the answer.")
@@ -222,6 +269,7 @@ async def main() -> None:
     p_list.add_argument("--all", action="store_true",
                         help="include inactive rows")
     p_list.add_argument("--industry", type=str, default=None)
+    p_list.add_argument("--sector", type=str, default=None)
 
     p_off = sub.add_parser("deactivate", help="soft-delete one row")
     p_off.add_argument("--qa-id", type=int, required=True)
@@ -236,24 +284,30 @@ async def main() -> None:
             if args.context_file:
                 with open(args.context_file, encoding="utf-8") as f:
                     context = f.read()
+            sector_id = args.sector
+            if sector_id is None and args.industry:
+                from builds.text.keywords import get_taxonomy
+                sector_id = get_taxonomy().sector_of(args.industry)
             qa_id = await upsert_qa(
                 conn, args.question, args.answer,
                 context=context, category=args.category,
-                industry_id=args.industry,
+                industry_id=args.industry, sector_id=sector_id,
                 news_ids=_parse_news_ids(args.news_ids),
                 llm_model=args.model, language=args.language)
             logger.info("stored text.llm_qa qa_id=%s", qa_id)
         elif args.cmd == "list":
             rows = await fetch_qa(conn, limit=args.limit,
                                   include_inactive=args.all,
-                                  industry_id=args.industry)
+                                  industry_id=args.industry,
+                                  sector_id=args.sector)
             for r in rows:
                 logger.info(
-                    "#%s [%s] active=%s sources=%s industry=%s\n  Q: %s\n  A: %s",
+                    "#%s [%s] active=%s sources=%s sector=%s industry=%s\n"
+                    "  Q: %s\n  A: %s",
                     r["qa_id"], r["updated_at"].date() if r["updated_at"] else "-",
                     "y" if r["is_active"] else "n", r["n_sources"],
-                    r["industry_id"] or "-", r["question"][:80],
-                    (r["answer"] or "")[:100])
+                    r["sector_id"] or "-", r["industry_id"] or "-",
+                    r["question"][:80], (r["answer"] or "")[:100])
             logger.info("%d row(s)", len(rows))
         elif args.cmd == "deactivate":
             if await deactivate_qa(conn, args.qa_id):

@@ -35,47 +35,21 @@ Pipeline:
 from __future__ import annotations
 
 
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
+# Runtime bootstrap — pre-check → silence warnings → cudf.pandas hook →
+# UTF-8 stdout. MUST run before the pandas-importing modules below.
+from _common.data_pipeline import bootstrap_runtime
 
-pre_check()
-import argparse
-import asyncio
-import os
-import sys
-import time
+bootstrap_runtime()
 
-# Ensure project root is on sys.path so ``_common`` is importable when run
-# directly via ``python -m analyze.options`` or as a script.
-sys.path.insert(
-    0,
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ),
-)
-
-from _common.build_commons import (  # noqa: E402
-    setup_utf8_stdout,
-    get_db_connection_async,
-    print_build_header,
-    print_wall_time,
-    add_force_arg,
-)
-from _common.db_commons import (  # noqa: E402
+from _common.db_commons import (
     copy_or_upsert_split_async,
     copy_insert_async,
 )
-from _common.df_utils import to_py_dates  # noqa: E402
+from _common.df_utils import to_py_dates
 
-setup_utf8_stdout()
+import pandas as pd
 
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
-
-import pandas as pd  # noqa: E402
-
-from analyze._common import (  # noqa: E402
+from analyze._common import (
     sanitize_for_db_insert,
     upsert_analysis_identity,
 )
@@ -124,7 +98,8 @@ from analyze.options.compute import (  # noqa: E402
     GREEK_SKEW_COMPUTERS,
 )
 
-from _common.log_setup import setup_logging  # noqa: E402
+from _common.log_setup import setup_logging
+from _common.data_analysis import DataAnalysis
 
 logger = setup_logging("options")
 
@@ -677,38 +652,39 @@ async def _run_greek_skew_pipeline(
     return total
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Options analysis pipelines. Computes per-expiry-group "
-                    "rolling skewness (OI-weighted moneyness) stats, "
-                    "per-expiry-group OI correlation stats, per-expiry-group "
-                    "options wall zones (strength-scored zone with "
-                    "lifecycle), and "
-                    "per-expiry-group IV skew stats (risk reversal etc.).",
-    )
-    add_force_arg(ap)
-    ap.add_argument(
-        "--sec-type",
-        choices=["index", "etf"],
-        default=None,
-        help="Filter by underlying target type (index or etf).",
-    )
-    args = ap.parse_args()
-    force = args.force
-    sec_type = args.sec_type
+class OptionsAnalysis(DataAnalysis):
+    """``python -m analyze.options`` — six sequential sub-pipelines.
 
-    t0 = time.time()
-    print_build_header(
-        "ANALYZE OPTIONS (expiry-group skewness + OI stats + walls + IV skew)",
-        tables=(f"{EXPIRY_IDENTITY_TABLE}, {SKEWNESS_TABLE_NAME}, "
-                f"{OI_TABLE_NAME}, {WALLS_TABLE_NAME}, {IV_SKEW_TABLE_NAME}"),
-        sec_type=sec_type or "all",
-        mode="FORCE (full recompute)" if force
-             else "incremental (missing groups only)",
-    )
+    There is no per-sec_type loop here: the single --sec-type filter
+    (or None = all) is threaded into every sub-pipeline.
+    """
 
-    conn = await get_db_connection_async()
-    try:
+    title = "ANALYZE OPTIONS (expiry-group skewness + OI stats + walls + IV skew)"
+    component = "options"
+
+    def add_arguments(self, parser) -> None:
+        self.add_force_arg(parser)
+        parser.add_argument(
+            "--sec-type",
+            choices=["index", "etf"],
+            default=None,
+            help="Filter by underlying target type (index or etf).",
+        )
+
+    def header_fields(self) -> dict:
+        return {
+            "tables": (f"{EXPIRY_IDENTITY_TABLE}, {SKEWNESS_TABLE_NAME}, "
+                       f"{OI_TABLE_NAME}, {WALLS_TABLE_NAME}, {IV_SKEW_TABLE_NAME}"),
+            "sec_type": self.args.sec_type or "all",
+            "mode": "FORCE (full recompute)" if self.args.force
+                    else "incremental (missing groups only)",
+        }
+
+    async def run(self) -> None:
+        conn = self.conn
+        force = self.args.force
+        sec_type = self.args.sec_type
+
         # ---- Pipeline 0: populate options_expiry_identity (FK lookup) -----
         logger.info("\n" + "=" * 60)
         logger.info("PIPELINE 0: options_expiry_identity (FK lookup)")
@@ -750,17 +726,7 @@ async def main() -> None:
               f"(expiry_identity={n_id:,}, "
               f"skewness={n1:,}, oi={n2:,}, walls={n3:,}, "
               f"iv_skew={n4:,}, greek_skew={n5:,})")
-        print_wall_time(t0)
-    finally:
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    OptionsAnalysis().execute()

@@ -15,145 +15,88 @@ Usage:
   python -m builds.cross_stats --force    truncate + full recompute
   python -m builds.cross_stats --corr     corr-only upsert on stride-20
                                           grid dates (base cols untouched)
+  python -m builds.cross_stats --backfill-offsets   one-off backfill
 
 Prerequisite (preflight gate exits(1) otherwise): stats.sec_composition
 index holdings — run ``python -m builds.index`` first.
+
+The :class:`CrossStatsBuild` entry class (a :class:`DataBuild` subclass)
+owns the runtime lifecycle + per-branch DB connection lifecycle (timed
+close — after heavy bulk writes the PostgreSQL server can be saturated
+with WAL checkpoint I/O). Runner modules are imported lazily (they
+import pandas — the cudf.pandas hook must be installed first).
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-import asyncio
-import os
-import sys
-import time
-
-# Ensure project root is on sys.path so ``_common`` is importable when run
-# directly via ``python -m builds.cross_stats`` or as a script.
-sys.path.insert(
-    0,
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ),
-)
-
-from _common.build_commons import (  # noqa: E402
-    setup_utf8_stdout,
-    get_db_connection_async,
-    print_build_header,
-    print_wall_time,
-    add_force_arg,
-)
-
-setup_utf8_stdout()
-
-# cudf.pandas activation — must run before pandas first import (runner.py
-# imports pandas at module scope).
-from _common.df_utils._activate import activate  # noqa: E402
-activate()
-
-from builds.cross_stats.config import (  # noqa: E402
-    TABLE,
-    TOP_N_NON_BROAD,
-)
-from builds.cross_stats.runner import (  # noqa: E402
-    run_corr_update,
-    run_cross_stats,
-    run_offset_backfill,
-)
+from _common.data_build import DataBuild
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Cross-security stats build (pair + industry grain) "
-                    "→ stats.cross_stats."
-    )
-    add_force_arg(ap)
-    ap.add_argument(
-        "--corr", action="store_true",
-        help="Corr-only build: recompute corr_20d/60d/255d on stride-20 "
-             "grid dates and upsert them onto existing rows (the main run "
-             "writes rows with corr OFF by default).",
-    )
-    ap.add_argument(
-        "--backfill-offsets", action="store_true",
-        help="One-off: backfill code_price_with_benchmark_offset and its "
-             "amount-weighted variant onto EXISTING pair rows (deployments "
-             "created before the columns existed). New dates are covered "
-             "by the regular pipeline.",
-    )
-    args = ap.parse_args()
+class CrossStatsBuild(DataBuild):
+    """``python -m builds.cross_stats`` — lifecycle + 3-branch dispatch."""
 
-    t0 = time.time()
+    component = "cross_stats"
 
-    if args.backfill_offsets:
-        print_build_header(
-            "BUILD CROSS STATS — OFFSET BACKFILL (existing pair rows)",
-            table=TABLE,
-            sec_types="index",
-            mode="backfill code_price_with_benchmark_offset(_by_weighted_amt)",
+    def add_arguments(self, parser) -> None:
+        self.add_force_arg(parser)
+        parser.add_argument(
+            "--corr", action="store_true",
+            help="Corr-only build: recompute corr_20d/60d/255d on stride-20 "
+                 "grid dates and upsert them onto existing rows (the main run "
+                 "writes rows with corr OFF by default).",
         )
-        conn = await get_db_connection_async()
-        try:
-            await run_offset_backfill(conn)
-        finally:
-            try:
-                await asyncio.wait_for(conn.close(), timeout=10)
-            except (asyncio.TimeoutError, Exception):
-                pass
-        print_wall_time(t0)
-        return
-
-    if args.corr:
-        print_build_header(
-            "BUILD CROSS STATS — CORR BUILD (stride-20 grid dates)",
-            table=TABLE,
-            sec_types="index",
-            top_n_non_broad=f"{TOP_N_NON_BROAD}",
-            mode="corr-only (upsert corr_20d/60d/255d on grid dates)",
+        parser.add_argument(
+            "--backfill-offsets", action="store_true",
+            help="One-off: backfill code_price_with_benchmark_offset and its "
+                 "amount-weighted variant onto EXISTING pair rows (deployments "
+                 "created before the columns existed). New dates are covered "
+                 "by the regular pipeline.",
         )
-        conn = await get_db_connection_async()
+
+    def header_fields(self) -> dict:
+        from builds.cross_stats.config import TOP_N_NON_BROAD, TABLE
+
+        if self.args.backfill_offsets:
+            self.title = "BUILD CROSS STATS — OFFSET BACKFILL (existing pair rows)"
+            return {
+                "table": TABLE,
+                "sec_types": "index",
+                "mode": "backfill code_price_with_benchmark_offset(_by_weighted_amt)",
+            }
+        if self.args.corr:
+            self.title = "BUILD CROSS STATS — CORR BUILD (stride-20 grid dates)"
+            return {
+                "table": TABLE,
+                "sec_types": "index",
+                "top_n_non_broad": f"{TOP_N_NON_BROAD}",
+                "mode": "corr-only (upsert corr_20d/60d/255d on grid dates)",
+            }
+        self.title = "BUILD CROSS STATS (PAIR + INDUSTRY GRAIN)"
+        return {
+            "table": TABLE,
+            "sec_types": "index, industry",
+            "top_n_non_broad": f"{TOP_N_NON_BROAD}",
+            "mode": "FORCE (full recompute)" if self.args.force
+                    else "incremental (missing dates only)",
+        }
+
+    async def run(self) -> None:
+        from builds.cross_stats.runner import (
+            run_corr_update,
+            run_cross_stats,
+            run_offset_backfill,
+        )
+
+        conn = await self.open_conn()
         try:
-            await run_corr_update(conn)
+            if self.args.backfill_offsets:
+                await run_offset_backfill(conn)
+            elif self.args.corr:
+                await run_corr_update(conn)
+            else:
+                await run_cross_stats(conn, force=self.args.force)
         finally:
-            # Close with a timeout — after heavy bulk writes the PostgreSQL
-            # server can be saturated with WAL checkpoint I/O, making
-            # conn.close() stall on the Terminate message + TCP teardown.
-            try:
-                await asyncio.wait_for(conn.close(), timeout=10)
-            except (asyncio.TimeoutError, Exception):
-                pass
-        print_wall_time(t0)
-        return
-
-    print_build_header(
-        "BUILD CROSS STATS (PAIR + INDUSTRY GRAIN)",
-        table=TABLE,
-        sec_types="index, industry",
-        top_n_non_broad=f"{TOP_N_NON_BROAD}",
-        mode="FORCE (full recompute)" if args.force
-             else "incremental (missing dates only)",
-    )
-
-    conn = await get_db_connection_async()
-    try:
-        await run_cross_stats(conn, force=args.force)
-    finally:
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
-
-    print_wall_time(t0)
+            await self.close_conn(conn)
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    CrossStatsBuild().execute()

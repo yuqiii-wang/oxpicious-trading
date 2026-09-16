@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS text.news (
     url           TEXT,
     author        TEXT,                       -- zhihu answer author; gov 来源; NULL when unknown
     industry_id   TEXT,
+    sector_id     TEXT,                       -- denormalized parent sector of industry_id
     word_count    INTEGER,
     votes         INTEGER,                    -- upvotes when the source provides them (zhihu VoteUpCount); NULL otherwise
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -37,8 +38,9 @@ CREATE TABLE IF NOT EXISTS text.news (
     CONSTRAINT uq_news_news_id UNIQUE (news_id)
 );
 
--- Upgrade for deployments created before the votes column existed.
+-- Upgrade for deployments created before the votes/sector_id columns existed.
 ALTER TABLE text.news ADD COLUMN IF NOT EXISTS votes INTEGER;
+ALTER TABLE text.news ADD COLUMN IF NOT EXISTS sector_id TEXT;
 
 
 -- Uniqueness as a standalone index (not just the table constraint) so it is
@@ -46,11 +48,12 @@ ALTER TABLE text.news ADD COLUMN IF NOT EXISTS votes INTEGER;
 -- news_id. The keyword index's news_ids mapping relies on this.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_news_news_id ON text.news (news_id);
 
--- Filter indexes backing the UI nav (source / author / industry + date
--- windows). All are filter columns of text.news list/calendar queries; date
--- DESC keeps ORDER BY date DESC walks index-ordered.
+-- Filter indexes backing the UI nav (source / author / industry / sector +
+-- date windows). All are filter columns of text.news list/calendar queries;
+-- date DESC keeps ORDER BY date DESC walks index-ordered.
 CREATE INDEX IF NOT EXISTS ix_news_source_date ON text.news (source, date DESC);
 CREATE INDEX IF NOT EXISTS ix_news_industry_date ON text.news (industry_id, date DESC);
+CREATE INDEX IF NOT EXISTS ix_news_sector_date ON text.news (sector_id, date DESC);
 CREATE INDEX IF NOT EXISTS ix_news_author_date ON text.news (author, date DESC);
 CREATE INDEX IF NOT EXISTS ix_news_date ON text.news (date DESC);
 -- today_industry_change refresh joins (industry_id, date) per touched article.
@@ -66,9 +69,16 @@ COMMENT ON COLUMN text.news.author IS
   'Author/origin when the downloader captured one: zhihu answer AuthorName, '
   'gov.cn 来源 (parsed from date_raw). NULL for ndrc/pboc (source is the org).';
 
+COMMENT ON COLUMN text.news.sector_id IS
+  'Parent sector of industry_id in the canonical taxonomy (FIN for BANKS, '
+  'BROAD for BROAD_SSE, …), denormalized by the Python tagging pipeline so '
+  'an L1-only scope filters on this column directly. Set iff industry_id '
+  'is set; backfilled on the next builds.text run.';
+
 COMMENT ON TABLE text.news IS
   'Raw news articles. One row per (title, source, date). content holds the '
-  'article body; industry_id links to the industry taxonomy when applicable.';
+  'article body; industry_id / sector_id link to the industry taxonomy when '
+  'applicable.';
 
 -- ============================================================================
 --  Per-article comments (text.news_comments).

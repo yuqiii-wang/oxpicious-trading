@@ -39,6 +39,13 @@ export {
 } from "./news";
 
 export {
+  fetchAiCalendar,
+  fetchAiItems,
+  fetchAiQaDetail,
+  type AiScopeParams,
+} from "./ai";
+
+export {
   fetchUnderlyings,
   fetchOptionsCombined,
   fetchOptionsWalls,

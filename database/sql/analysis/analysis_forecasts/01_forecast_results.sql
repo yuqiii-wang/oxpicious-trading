@@ -3,12 +3,17 @@
 --          + analysis_forecasts.forecast_identities (bottom of this file)
 --
 --  Normalized RESULT data of the forecast analysis. One row per
---  (forecast_id, period) — each forecast bucket has up to 4 rows
---  (period ∈ {'next', '5d', '20d', '60d'}). The config JSONB is
---  per-forecast (not per-period), duplicated across all 4 period rows.
+--  (forecast_id, period) — each forecast bucket has 5 rows: the four
+--  forward horizons (period ∈ {'next', '5d', '20d', '60d'}) plus the
+--  weight-blended 'mixed' row (the FIXED-weight blend of the four
+--  horizons at 5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05 — see the
+--  backfill below; the analysis_signals gate reads
+--  exactly this row so every forecast horizon of the same signal trigger
+--  contributes to the signal). The config JSONB is per-forecast (not
+--  per-period), duplicated across all 5 period rows.
 --
 --  forecast_id links 1:1 from analysis_forecasts.mov_rsi / mov_std;
---  PK is (forecast_id, period) so the JOIN naturally expands 1→4.
+--  PK is (forecast_id, period) so the JOIN naturally expands 1→5.
 --  forecast_identities (shared-PK registry, defined at the bottom of
 --  this file) resolves each forecast_id to (sec_type, code, stat_month,
 --  bucket family) — the identity every motivation table repeats in its
@@ -16,7 +21,8 @@
 --
 --  Columns (consolidated — no period suffix in column name; the
 --  ``period`` column carries that role):
---    period           — 'next' (next day), '5d' / '20d' / '60d'
+--    period           — 'next' (next day), '5d' / '20d' / '60d',
+--                       or 'mixed' (the weight-blended forward profile)
 --    ave_change       — mean n-day forward fractional change
 --    std_change       — population std-dev of the n-day forward
 --                       fractional change over the same valid bucket
@@ -56,13 +62,13 @@
 --                       within-window path swing)
 --                       NULL for period='next' or when no valid days
 --    reverse_prob     — P(n-day change is a REVERSAL beyond the row's
---                       reverse_threshold against the bucket side),
+--                       threshold against the bucket side),
 --                       over bucket days with a valid n-day forward
 --                       change
---    reverse_threshold — the reversal bar reverse_prob was computed
+--    threshold — the reversal bar reverse_prob was computed
 --                       against (fractional). ADAPTIVE since the
 --                       2026-09 std-threshold study:
---                       reverse_threshold = k_n · σ(code, stat_month,
+--                       threshold = k_n · σ(code, stat_month,
 --                       n) where σ = population std of the n-day
 --                       forward changes over ALL of the code's window
 --                       days (the base_rates population) and k_n per
@@ -85,13 +91,13 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_results (
     period              TEXT NOT NULL,
 
     -- Trailing calendar window the bucket was computed over (recorded
-    -- build parameter, NOT a PK member; duplicated across all 4 period
+    -- build parameter, NOT a PK member; duplicated across all 5 period
     -- rows like config): '5y' = (stat_month - 5y, stat_month]. A
     -- rebuild with a different lookback requires --force.
     lookback_period     TEXT NOT NULL DEFAULT '5y',
 
     -- config JSONB: per-bucket motivation/config data that varies by
-    -- analysis type. Duplicated across all 4 period rows of the same
+    -- analysis type. Duplicated across all 5 period rows of the same
     -- forecast_id. Keys depend on the linked mov_* table:
     --   px_vol: {"mean_t": float, "mean_z": float}
     --   margin_ratio: {"mean_ratio": float|null, "mean_z": float|null}
@@ -151,7 +157,7 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_results (
     -- NULL for period='next' or when no valid days.
     max_low_change_ratio NUMERIC(10,6),
 
-    -- P(forward change reverses beyond reverse_threshold against the
+    -- P(forward change reverses beyond threshold against the
     -- bucket side) over bucket days with a valid n-day forward change.
     -- NUMERIC(8,6): probability ∈ [0,1] but exactly 1.0 must fit —
     -- NUMERIC(6,6) (scale 6 ⇒ |v| < 1) would overflow on all-reverse
@@ -165,12 +171,12 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_results (
     -- signal-day close). The previous adaptive k_n · σ(code, stat_month,
     -- n) bar ("std" mode; k_n = {next: 0.5, 5d: 0.75, 20d: 1.0,
     -- 60d: 1.0}) is disabled in the forecasts config.
-    reverse_threshold   NUMERIC(8,6) NOT NULL DEFAULT 0.01,
+    threshold   NUMERIC(8,6) NOT NULL DEFAULT 0.01,
 
     CONSTRAINT pk_forecast_results PRIMARY KEY (forecast_id, period)
 ) PARTITION BY HASH (forecast_id);
 
--- Native hash partitions (16) keyed by forecast_id — all 4 periods of
+-- Native hash partitions (16) keyed by forecast_id — all 5 periods of
 -- the same forecast land in the same partition, so partition pruning
 -- still works fine on forecast_id filters. Created via the shared util
 -- (database/sql/00_partition_utils.sql); children named _p00.._p15
@@ -182,8 +188,25 @@ SELECT public.create_hash_partitions('analysis_forecasts', 'forecast_results', 1
 --  bar they were computed at (0.01 = the column default). The adaptive
 --  values arrive when the forecasts run is rebuilt (--force).
 -- ----------------------------------------------------------------------------
+-- 2026-09-15 rename: reverse_threshold -> threshold — the bar is a
+-- plain nonnegative magnitude (the adverse-excursion comparison is
+-- side-free: P is non-increasing in the threshold, an inverse
+-- correlation uniform across sides/horizons); the "reverse" framing and
+-- the disabled adaptive k*sigma machinery are gone.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'analysis_forecasts'
+          AND table_name   = 'forecast_results'
+          AND column_name  = 'reverse_threshold'
+    ) THEN
+        ALTER TABLE analysis_forecasts.forecast_results
+            RENAME COLUMN reverse_threshold TO threshold;
+    END IF;
+END $$;
 ALTER TABLE analysis_forecasts.forecast_results
-    ADD COLUMN IF NOT EXISTS reverse_threshold NUMERIC(8,6) NOT NULL DEFAULT 0.01;
+    ADD COLUMN IF NOT EXISTS threshold NUMERIC(8,6) NOT NULL DEFAULT 0.01;
 
 ALTER TABLE analysis_forecasts.forecast_results
     ADD COLUMN IF NOT EXISTS lookback_period TEXT NOT NULL DEFAULT '5y';
@@ -206,10 +229,10 @@ ALTER TABLE analysis_forecasts.forecast_results
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_forecasts.forecast_results IS 'Normalized forecast RESULT data. One row per (forecast_id, period) — each forecast bucket from mov_rsi/mov_std has up to 4 rows (period: next/5d/20d/60d). Carries the mean / std-dev / max / min forward fractional changes (max/min NULL for period=next), per-period occurrence count, within-window close swing amplitude (max_low_change_ratio, NULL for period=next), and per-period reversal probabilities computed against the row''s reverse_threshold — the FIXED 1% bar: P(the period-end n-day close change is a reversal beyond ±1%; e.g. the 5d probability is about the 5d close) — see reverse_threshold. config JSONB carries per-bucket motivation data duplicated across all 4 period rows of the same forecast_id. Partitioned by HASH(forecast_id). Populated by python -m analyze.analysis_forecasts.';
+COMMENT ON TABLE analysis_forecasts.forecast_results IS 'Normalized forecast RESULT data. One row per (forecast_id, period) — each forecast bucket from mov_rsi/mov_std has 5 rows: the four horizons (period: next/5d/20d/60d) plus the weight-blended mixed row (5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05 — the whole forward profile of one trigger as ONE row; the analysis_signals confirmation gate reads it). Carries the mean / std-dev / max / min forward fractional changes (max/min NULL for period=next and NULL on the mixed row — extrema do not blend), per-period occurrence count, within-window close swing amplitude (max_low_change_ratio, NULL for period=next), and per-period reversal probabilities computed against the row''s threshold — the FIXED 1% bar — see threshold. config JSONB carries per-bucket motivation data duplicated across all period rows of the same forecast_id. Partitioned by HASH(forecast_id). Populated by python -m analyze.analysis_forecasts.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.forecast_id IS 'Surrogate identity PK. Allocated by the writer (python -m analyze.analysis_forecasts) and mirrored into the motivation row of analysis_forecasts.mov_rsi / mov_std.';
-COMMENT ON COLUMN analysis_forecasts.forecast_results.period IS 'Forward horizon period: ''next'' (next-day), ''5d'' (5 trading days), ''20d'' (20 trading days), ''60d'' (60 trading days). PK member.';
-COMMENT ON COLUMN analysis_forecasts.forecast_results.config IS 'JSONB config for per-bucket motivation data that varies by analysis type. Duplicated across all 4 period rows of the same forecast_id. px_vol rows store {"mean_t": float, "mean_z": float}; margin_ratio rows store {"mean_ratio": float|null, "mean_z": float|null}. mov_rsi / mov_std / mov_gap rows are NULL (no config data). All fractional: 0.012 = 1.2%.';
+COMMENT ON COLUMN analysis_forecasts.forecast_results.period IS 'Forward horizon period: ''next'' (next-day), ''5d'' (5 trading days), ''20d'' (20 trading days), ''60d'' (60 trading days), or ''mixed'' — the FIXED-weight blend of the four horizon rows (5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05; weights renormalized over the horizons whose stats exist, occurrence_count = the MIN valid count over those legs, threshold = the full-weight mean of the four bars, max/min/date/excess arrays NULL — they do not blend). The analysis_signals confirmation gate consumes the mixed row. PK member.';
+COMMENT ON COLUMN analysis_forecasts.forecast_results.config IS 'JSONB config for per-bucket motivation data that varies by analysis type. Duplicated across all period rows of the same forecast_id. px_vol rows store {"mean_t": float, "mean_z": float}; margin_ratio rows store {"mean_ratio": float|null, "mean_z": float|null}. mov_rsi / mov_std / mov_gap rows are NULL (no config data). All fractional: 0.012 = 1.2%.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.ave_change IS 'Mean n-trading-day forward fractional change (close[t+n]-close[t])/close[t] over bucket days with a valid n-day forward change. NULL when none.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.std_change IS 'Population standard deviation of the n-trading-day forward fractional change over the SAME bucket days as ave_change (dispersion of the horizon outcomes: sqrt(E[x²] − E[x]²)). NULL when no valid days (occurrence_count = 0).';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.max_change IS 'Maximum n-trading-day forward fractional change (close-based) over bucket days with a valid n-day forward change. NULL for period=''next'' (no 1-day max/min) or when none.';
@@ -221,9 +244,91 @@ COMMENT ON COLUMN analysis_forecasts.forecast_results.streak_ends IS 'Calendar D
 COMMENT ON COLUMN analysis_forecasts.forecast_results.streak_days IS 'TRADING-day counts element-wise parallel to trigger_dates: each merged signal''s qualifying-run length — the number of consecutive grid days the run merges (the same run_len that anchored the mid at mid_date - ((run_len-1)//2) rows and spans streak_starts[r] .. streak_ends[r], and whose per-bucket mean is forecast_identities.streak_signal_days). NULL arrays for the state families (every qualifying day is its own 1-day signal) and pre-migration rows; row-local per period like trigger_dates.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.trigger_excess IS 'Per-signal TRIGGER EXCESS, element-wise parallel to trigger_dates: the mid day''s trigger value minus the bucket''s qualifying bar (signed, value − bar — the live_signals signal_excess convention: positive beyond an upper/top bar, negative below a lower/bottom one; the pairs families'' bar is the zero line, so there the excess IS the day''s spread). Units are each family''s own signal scale: RSI / gap indicator points minus their percentile bar for mov_rsi / mov_gap, the price minus the breached MA ± k·σ band edge for mov_std, the spread itself for mov_pairs / mov_pairs_ema. Written by the scalar-bar event engines only (mov_rsi / mov_std / mov_gap / mov_pairs / mov_pairs_ema); the state families (px_vol_state / margin_ratio_state / opp_pair_state / pe_state / dividend_state — band membership, no scalar bar) and high_low_streaks (ex-post streak anchors, not scalar breaches) carry NULL arrays. Array length == occurrence_count (NULL when the count is 0/NULL); row-local per period like trigger_dates — gathered over the same valid forward-window days, so it pairs element-wise with the trigger_dates / streak_* arrays.';
 COMMENT ON COLUMN analysis_forecasts.forecast_results.max_low_change_ratio IS '(1 + max_change) / (1 + min_change) = max(close[t+1..t+n]) / min(close[t+1..t+n]) — the within-window close swing amplitude derived from the row''s max/min forward changes. NULL for period=''next'' or when no valid days (or min_change <= -1).';
-COMMENT ON COLUMN analysis_forecasts.forecast_results.reverse_prob IS 'Probability that a bucket day (with valid n-day change) REVERSES beyond the row''s reverse_threshold against the bucket side: n-day change < −reverse_threshold for top/upper buckets, > +reverse_threshold for bottom/lower buckets.';
-COMMENT ON COLUMN analysis_forecasts.forecast_results.lookback_period IS 'Trailing calendar window the bucket was computed over (recorded build parameter; duplicated across all 4 period rows of the same forecast_id): ''5y'' = the window (stat_month - 5 years, stat_month] of the code''s own trading days. Default ''5y''; a rebuild with a different lookback requires --force.';
-COMMENT ON COLUMN analysis_forecasts.forecast_results.reverse_threshold IS 'The fractional reversal bar this row''s reverse_prob was computed against: the FIXED 1% (0.01) bar since 2026-09-08 — reverse_prob = P(the PERIOD-END n-day close change is a reversal beyond ±1%; the 5d probability is about the 5d close vs the signal-day close). The previous adaptive k_n · σ bar (temp_scripts/study_reverse_threshold.py) is disabled — REVERSE_THRESHOLD_MODE = "fixed" in the forecasts config.';
+COMMENT ON COLUMN analysis_forecasts.forecast_results.reverse_prob IS 'Probability that a bucket day (with valid n-day change) REVERSES beyond the row''s threshold against the bucket side: n-day change < −threshold for top/upper buckets, > +threshold for bottom/lower buckets.';
+COMMENT ON COLUMN analysis_forecasts.forecast_results.lookback_period IS 'Trailing calendar window the bucket was computed over (recorded build parameter; duplicated across all period rows of the same forecast_id): ''5y'' = the window (stat_month - 5 years, stat_month] of the code''s own trading days. Default ''5y''; a rebuild with a different lookback requires --force.';
+COMMENT ON COLUMN analysis_forecasts.forecast_results.threshold IS 'The fractional reversal bar this row''s reverse_prob was computed against: the FIXED 1% (0.01) bar since 2026-09-08 — reverse_prob = P(the PERIOD-END n-day close change is a reversal beyond ±1%; the 5d probability is about the 5d close vs the signal-day close). The previous adaptive k_n · σ bar (temp_scripts/study_threshold.py) is disabled — REVERSE_THRESHOLD_MODE = "fixed" in the forecasts config. On the mixed row: the full-weight mean of the four horizons'' bars (exactly 0.01 under the fixed bar).';
+
+-- ----------------------------------------------------------------------------
+--  Migration (2026-09 mixed period): every bucket gains the weight-blended
+--  'mixed' period row — the FIXED-weight blend of its four horizon rows at
+--  5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05 (the MIXED_HORIZON_WEIGHTS of
+--  analyze.analysis_forecasts.config; the analysis_signals confirmation
+--  gate reads exactly this row, so every forecast horizon of the same
+--  signal trigger contributes to the signal). Idempotent: buckets already
+--  carrying a mixed row are skipped; the forecasts writer emits the row
+--  natively from its next run (or --force rebuild).
+--
+--  Blend semantics (mirroring wide.build_result_rows):
+--    ave_change / reverse_prob / max_low_change_ratio — the weight mean
+--        of the horizon values, weights renormalized over the horizons
+--        whose stats exist (NULL stats drop out of the blend);
+--    std_change — the mixture dispersion sqrt(Σw·E[x²] − (Σw·mean)²)
+--        over the same legs (NOT the mean of the stds);
+--    occurrence_count — MIN over the legs with a positive count (the
+--        blend is only as well-observed as its weakest leg), 0 when none;
+--    threshold — the full-weight mean of the four bars;
+--    max/min_change + the per-period date/excess arrays — NULL (they do
+--        not blend).
+-- ----------------------------------------------------------------------------
+WITH w(period, wt) AS (
+    VALUES ('next', 0.30::float8), ('5d', 0.50::float8),
+           ('20d', 0.15::float8), ('60d', 0.05::float8)
+), leg AS (
+    SELECT f.forecast_id,
+           w.wt,
+           f.lookback_period,
+           f.config,
+           COALESCE(f.occurrence_count, 0) AS occ,
+           f.ave_change::float8 AS ave,
+           f.std_change::float8 AS std,
+           f.reverse_prob::float8 AS rev,
+           f.max_low_change_ratio::float8 AS mlr,
+           f.threshold::float8 AS thr
+    FROM analysis_forecasts.forecast_results f
+    JOIN w ON w.period = f.period
+    WHERE f.period <> 'mixed'
+), agg AS (
+    SELECT l.forecast_id,
+           (ARRAY_AGG(l.lookback_period))[1] AS lookback_period,
+           (ARRAY_AGG(l.config))[1] AS config,
+           SUM(l.wt) FILTER (WHERE l.ave IS NOT NULL) AS w_stat,
+           SUM(l.wt) FILTER (WHERE l.mlr IS NOT NULL) AS w_mlr,
+           SUM(l.wt * l.ave) AS s_ave,
+           SUM(l.wt * (l.std * l.std + l.ave * l.ave)) AS s_ex2,
+           SUM(l.wt * l.rev) AS s_rev,
+           SUM(l.wt * l.mlr) AS s_mlr,
+           MIN(l.occ) FILTER (WHERE l.occ > 0) AS occ_min,
+           SUM(l.wt * l.thr) AS thr_mix
+    FROM leg l
+    GROUP BY l.forecast_id
+)
+INSERT INTO analysis_forecasts.forecast_results
+       (forecast_id, period, lookback_period, config,
+        ave_change, std_change, max_change, min_change,
+        occurrence_count, trigger_dates, streak_starts, streak_ends,
+        streak_days, trigger_excess, max_low_change_ratio,
+        reverse_prob, threshold)
+SELECT a.forecast_id,
+       'mixed',
+       a.lookback_period,
+       a.config,
+       a.s_ave / a.w_stat,
+       CASE WHEN a.w_stat IS NULL THEN NULL
+            ELSE sqrt(GREATEST(a.s_ex2 / a.w_stat
+                               - (a.s_ave / a.w_stat) ^ 2, 0::float8))
+       END,
+       NULL::numeric, NULL::numeric,
+       COALESCE(a.occ_min, 0),
+       NULL::date[], NULL::date[], NULL::date[], NULL::date[],
+       NULL::numeric[],
+       a.s_mlr / a.w_mlr,
+       a.s_rev / a.w_stat,
+       a.thr_mix
+FROM agg a
+WHERE NOT EXISTS (
+    SELECT 1 FROM analysis_forecasts.forecast_results m
+    WHERE m.forecast_id = a.forecast_id AND m.period = 'mixed'
+);
 
 -- ============================================================================
 --  Table: analysis_forecasts.forecast_identities
@@ -286,7 +391,7 @@ COMMENT ON COLUMN analysis_forecasts.forecast_results.reverse_threshold IS 'The 
 --      registry from its first run). Pre-existing rows keep the column
 --      default streak_signal_days = 1; the per-bucket mean streak
 --      lengths arrive with the --force rebuild (the migration precedent
---      of forecast_results.reverse_threshold).
+--      of forecast_results.threshold).
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.forecast_identities (
@@ -414,8 +519,8 @@ ALTER TABLE analysis_forecasts.forecast_identities
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_forecasts.forecast_identities IS 'Identity registry of every forecast bucket: one row per forecast_id holding the shared identity (sec_type, code, stat_month) — the motivation tables store code alone as their partition key, so this is the ONLY table with the full identity — plus the bucket family (the motivation table name — join it on forecast_id for the family-specific axes), the bucket''s mean streak length per merged signal (streak_signal_days) and the recorded lookback_period. 1:1 with each motivation row and its 4 forecast_results period rows; forecast_ids come from the same sequence (forecast_results_forecast_id_seq). code = the forecast subject (security ticker; the DROPPING industry_id for opp_pair_state rows — the forecast-target pair_industry_id lives on that motivation row). PK (code, forecast_id) on HASH (code) partitions — per-security searches prune to one partition; id-only lookups use idx_forecast_identities_forecast_id. Powers search by forecast_id (API / UI / python -m analyze.analysis_forecasts --search-forecast-id). Populated by the writer (same transaction as the motivation + result rows) and by the idempotent backfill in this file; base_rates is NOT in the registry (no forecast_id).';
-COMMENT ON COLUMN analysis_forecasts.forecast_identities.forecast_id IS 'Surrogate PK, allocated from the shared sequence analysis_forecasts.forecast_results_forecast_id_seq by the writer — the same id as the bucket''s motivation-table row and its 4 forecast_results period rows.';
+COMMENT ON TABLE analysis_forecasts.forecast_identities IS 'Identity registry of every forecast bucket: one row per forecast_id holding the shared identity (sec_type, code, stat_month) — the motivation tables store code alone as their partition key, so this is the ONLY table with the full identity — plus the bucket family (the motivation table name — join it on forecast_id for the family-specific axes), the bucket''s mean streak length per merged signal (streak_signal_days) and the recorded lookback_period. 1:1 with each motivation row and its 5 forecast_results period rows; forecast_ids come from the same sequence (forecast_results_forecast_id_seq). code = the forecast subject (security ticker; the DROPPING industry_id for opp_pair_state rows — the forecast-target pair_industry_id lives on that motivation row). PK (code, forecast_id) on HASH (code) partitions — per-security searches prune to one partition; id-only lookups use idx_forecast_identities_forecast_id. Powers search by forecast_id (API / UI / python -m analyze.analysis_forecasts --search-forecast-id). Populated by the writer (same transaction as the motivation + result rows) and by the idempotent backfill in this file; base_rates is NOT in the registry (no forecast_id).';
+COMMENT ON COLUMN analysis_forecasts.forecast_identities.forecast_id IS 'Surrogate PK, allocated from the shared sequence analysis_forecasts.forecast_results_forecast_id_seq by the writer — the same id as the bucket''s motivation-table row and its 5 forecast_results period rows.';
 COMMENT ON COLUMN analysis_forecasts.forecast_identities.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity). opp_pair_state rows carry the gate-machinery constant ''index'' (industry_id codes are type=''index'' classification members).';
 COMMENT ON COLUMN analysis_forecasts.forecast_identities.code IS 'The forecast SUBJECT: the security ticker for the mov_* / px_vol_state / margin_ratio_state / high_low_streaks families (ETF suffix e.g. "510050.SS"; index bare e.g. "000300"); for opp_pair_state rows the DROPPING industry_id (the trigger side of the pair — the forecast-target pair_industry_id stays on the opp_pair_state motivation row).';
 COMMENT ON COLUMN analysis_forecasts.forecast_identities.stat_month IS 'Completed month-end date. The bucket was computed over the trailing 5-year window (stat_month - 5 years, stat_month] of the code''s own trading days.';

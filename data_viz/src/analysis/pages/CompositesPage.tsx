@@ -31,6 +31,18 @@ const COMPOSITE_ANALYSES: CompositeAnalysis[] = [
       "correlation and the opposite score over 20/60/255-day windows.",
     tags: ["correlation", "benchmark offset", "audit"],
   },
+  {
+    slug: "ai-market-sentiments",
+    title: "Market Sentiments by AI and News",
+    description:
+      "Industry Sentiments' benchmark-price top (classification nav + clickable " +
+      "benchmark chart with per-industry shades) over the LLM Q&A knowledge " +
+      "base (text.llm_qa) and the news corpus (text.news): the classification " +
+      "pick scopes either feed — an AI / News toggle picks the source — and a " +
+      "date picked on the benchmark chart (or a calendar dot) narrows the " +
+      "feed to that day.",
+    tags: ["AI", "news", "market sentiments", "llm qa", "benchmark price"],
+  },
 ];
 
 export default function CompositesPage() {

@@ -1351,8 +1351,11 @@ export interface MovRsiForecastRow extends ForecastResultCols {
   side: "top" | "bottom";
   pct: number;
   is_market_hyped: boolean;
-  /** TRUE when the bucket already has signal day(s) in
-   *  analysis_signals.signals (config match + date inside stat_month). */
+  /** The bucket's MIXED signal bool — TRUE when the row's own
+   *  forecast_results period='mixed' row (the weight-blended forward
+   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  forecast-result gate the signals layer applies (the same rule that
+   *  emits its signal days). */
   in_signals: boolean;
 }
 
@@ -1365,8 +1368,11 @@ export interface MovStdForecastRow extends ForecastResultCols {
   k: number;
   side: "upper" | "lower";
   is_market_hyped: boolean;
-  /** TRUE when the bucket already has signal day(s) in
-   *  analysis_signals.signals (config match + date inside stat_month). */
+  /** The bucket's MIXED signal bool — TRUE when the row's own
+   *  forecast_results period='mixed' row (the weight-blended forward
+   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  forecast-result gate the signals layer applies (the same rule that
+   *  emits its signal days). */
   in_signals: boolean;
 }
 
@@ -1379,8 +1385,11 @@ export interface MovGapForecastRow extends ForecastResultCols {
   side: "top" | "bottom";
   pct: number;
   is_market_hyped: boolean;
-  /** TRUE when the bucket already has signal day(s) in
-   *  analysis_signals.signals (config match + date inside stat_month). */
+  /** The bucket's MIXED signal bool — TRUE when the row's own
+   *  forecast_results period='mixed' row (the weight-blended forward
+   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  forecast-result gate the signals layer applies (the same rule that
+   *  emits its signal days). */
   in_signals: boolean;
 }
 
@@ -1398,8 +1407,11 @@ export interface MovPairsForecastRow extends ForecastResultCols {
    *  death cross (spread turns < 0 from >= 0). */
   side: "top" | "bottom";
   is_market_hyped: boolean;
-  /** TRUE when the bucket already has signal day(s) in
-   *  analysis_signals.signals (config match + date inside stat_month). */
+  /** The bucket's MIXED signal bool — TRUE when the row's own
+   *  forecast_results period='mixed' row (the weight-blended forward
+   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  forecast-result gate the signals layer applies (the same rule that
+   *  emits its signal days). */
   in_signals: boolean;
 }
 
@@ -1418,8 +1430,11 @@ export interface MovPairsEmaForecastRow extends ForecastResultCols {
    *  death cross (spread turns < 0 from >= 0). */
   side: "top" | "bottom";
   is_market_hyped: boolean;
-  /** TRUE when the bucket already has signal day(s) in
-   *  analysis_signals.signals (config match + date inside stat_month). */
+  /** The bucket's MIXED signal bool — TRUE when the row's own
+   *  forecast_results period='mixed' row (the weight-blended forward
+   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  forecast-result gate the signals layer applies (the same rule that
+   *  emits its signal days). */
   in_signals: boolean;
 }
 
@@ -1438,9 +1453,11 @@ export interface PxVolForecastRow extends ForecastResultCols {
    *  speeds) / flat (no directional claim — reverse_prob NULL). */
   side: "top" | "bottom" | "flat";
   is_market_hyped: boolean;
-  /** TRUE when the bucket already has signal day(s) in
-   *  analysis_signals.signals (px_speed + vol_state + side match + date
-   *  inside stat_month). */
+  /** The bucket's MIXED signal bool — TRUE when the row's own
+   *  forecast_results period='mixed' row (the weight-blended forward
+   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  forecast-result gate the signals layer applies (the same rule that
+   *  emits its signal days). */
   in_signals: boolean;
   /** Mean σ-standardized price speed t over the bucket's days (from the
    *  linked forecast_results.config JSONB — descriptive magnitude). */
@@ -1466,9 +1483,11 @@ export interface MarginRatioForecastRow extends ForecastResultCols {
    *  reverse_prob NULL). */
   side: "top" | "bottom" | "flat";
   is_market_hyped: boolean;
-  /** TRUE when the bucket already has signal day(s) in
-   *  analysis_signals.signals (ratio_state + side match + date inside
-   *  stat_month). */
+  /** The bucket's MIXED signal bool — TRUE when the row's own
+   *  forecast_results period='mixed' row (the weight-blended forward
+   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  forecast-result gate the signals layer applies (the same rule that
+   *  emits its signal days). */
   in_signals: boolean;
   /** Mean raw ratio (rz_buy / trading_amount, fraction) over the
    *  bucket's days (from the linked forecast_results.config JSONB —
@@ -1495,9 +1514,11 @@ export interface PeForecastRow extends ForecastResultCols {
    *  (reverse_prob NULL). */
   side: "top" | "bottom" | "flat";
   is_market_hyped: boolean;
-  /** TRUE when the bucket already has signal day(s) in
-   *  analysis_signals.signals (val_state + side match + date inside
-   *  stat_month). Stays unticked until a pe signals engine exists. */
+  /** The bucket's MIXED signal bool — TRUE when the row's own
+   *  forecast_results period='mixed' row (the weight-blended forward
+   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  forecast-result gate the signals layer applies (the same rule that
+   *  emits its signal days). */
   in_signals: boolean;
   /** Mean raw pe ratio over the bucket's days (from the linked
    *  forecast_results.config JSONB). */
@@ -1524,10 +1545,11 @@ export interface DividendForecastRow extends ForecastResultCols {
    *  mid = flat (reverse_prob NULL). */
   side: "top" | "bottom" | "flat";
   is_market_hyped: boolean;
-  /** TRUE when the bucket already has signal day(s) in
-   *  analysis_signals.signals (val_state + side match + date inside
-   *  stat_month). Stays unticked until a dividend signals engine
-   *  exists. */
+  /** The bucket's MIXED signal bool — TRUE when the row's own
+   *  forecast_results period='mixed' row (the weight-blended forward
+   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  forecast-result gate the signals layer applies (the same rule that
+   *  emits its signal days). */
   in_signals: boolean;
   /** Mean fractional dividend yield (D/P) over the bucket's days (from
    *  the linked forecast_results.config JSONB). */
@@ -1557,9 +1579,11 @@ export interface HighLowStreaksForecastRow extends ForecastResultCols {
    *  reading). */
   side: "top" | "bottom";
   is_market_hyped: boolean;
-  /** TRUE when the bucket already produced signal day(s) in
-   *  analysis_signals.signals (band_period + pct_type + side match +
-   *  date inside stat_month). */
+  /** The bucket's MIXED signal bool — TRUE when the row's own
+   *  forecast_results period='mixed' row (the weight-blended forward
+   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  forecast-result gate the signals layer applies (the same rule that
+   *  emits its signal days). */
   in_signals: boolean;
   /** Mean streak length (day_count, trading rows) over the bucket's
    *  streaks (from the linked forecast_results.config JSONB — the
@@ -2516,19 +2540,18 @@ export interface HypesDrainsBenchmarkRow {
   trading_amount: number | null;
 }
 
-/** One date row in an industry's non-this-industry rolling price series
- *  (from analysis.industry_attributions, benchmark_non_this_industry_rolling_{N}days_price).
- *  100-based cumulative non-industry return factor over the trailing N-day
- *  window. The frontend uses this + benchmark_shared_weight to derive the
- *  industry's OWN return via the identity:
- *    ind_return = (bench_return - (1-swf) × non_ind_return) / swf
- *  and plots 100 × (1 + ind_return) as the industry curve. */
+/** One date row in an industry's daily series. `rolling` is the industry's
+ *  SHARED PORTFOLIO trailing-N-day return factor (100-based), compounded by
+ *  the API from the daily decomposition identity — the same math as the
+ *  build's hype metric. The frontend plots it directly as the industry
+ *  curve (rebased to 100 at the window start, like the benchmark's own
+ *  N-day rebasing); hype = rolling/100 - 1 - benchmark_return_nd. */
 export interface HypesDrainsIndustrySeriesRow {
   date: string;
-  /** benchmark_non_this_industry_rolling_{N}days_price (100-based factor). */
+  /** Shared-portfolio trailing-N-day 100-based factor (null before the
+   *  window fills). */
   rolling: number | null;
-  /** benchmark_shared_weight (percent 0-100) on this date. Used as swf
-   *  in the industry return formula. */
+  /** benchmark_shared_weight (percent 0-100) on this date. */
   benchmark_shared_weight: number | null;
 }
 
@@ -3282,6 +3305,10 @@ export interface NewsItem {
   url: string | null;
   author: string | null;
   industry_id: string | null;
+  /** Parent sector of industry_id in the canonical taxonomy (denormalized;
+   *  set iff industry_id is set) — lets an L1-only scope filter at sector
+   *  granularity and sector-only items surface under their sector chip. */
+  sector_id: string | null;
   /** Upvotes when the source provides them (zhihu); the list is ordered by
    *  this first. NULL for sources without votes — those sort after by date. */
   votes: number | null;
@@ -3388,3 +3415,84 @@ export interface NewsSearchResponse {
   stdout_tail?: string;
   stderr_tail?: string;
 }
+
+// ----------------------------------------------------------------------------
+// AI (text schema — text.llm_qa / text.llm_qa_refs / text.news_digestions,
+// written by llm_agents). The DataViz > AI tab renders the Q&A knowledge
+// base with the same shape conventions as the News endpoints: the QA "date"
+// is qa_date (the question's own data date) bucketed to Asia/Shanghai days,
+// industry scope follows the
+// canonical (sector_id, industry_id) classification model.
+// ----------------------------------------------------------------------------
+
+/** One Q&A row (item-list shape — answer truncated to a 240-char snippet).
+ *  Inactive rows (is_active = false) are filtered out server-side and never
+ *  appear in any response. */
+export interface AiQaItem {
+  qa_id: number;
+  question: string;
+  answer_snippet: string | null;
+  industry_id: string | null;
+  /** Parent sector of industry_id in the canonical taxonomy (denormalized;
+   *  set iff industry_id is set) — lets an L1-only scope filter at sector
+   *  granularity and sector-only items surface under their sector chip. */
+  sector_id: string | null;
+  category: string | null;
+  llm_model: string | null;
+  language: string | null;
+  /** qa_date (the question's own data date) as a YYYY-MM-DD Asia/Shanghai
+   *  day, mapped to the latest trading day on/before it (the calendar key). */
+  date: string;
+  /** updated_at as an Asia/Shanghai timestamp string. */
+  updated_at: string;
+  /** Articles in the Q&A's news-group provenance (0 when none). */
+  n_sources: number;
+}
+
+/** One reference resolution of a Q&A answer, joined to its article. */
+export interface AiQaRefItem {
+  /** Citation tag as cited in the answer (ref_1, …). */
+  ref: string;
+  /** 'exact' (came with the summary response) | 'relevant' (found
+   *  after the summary by title search — corpus match or ddgs). */
+  ref_type: string;
+  /** Provenance behind ref_type: 'summary' | 'corpus' | 'ddgs' (null
+   *  on rows stored before the column existed). */
+  resolved_via: string | null;
+  resolved_url: string | null;
+  /** The reference's publish time per the search response (timestamptz str). */
+  ref_time: string | null;
+  news_id: number;
+  title: string;
+  source: string | null;
+  date: string;
+  url: string | null;
+  /** Article content preview for the ref expansion (first 4000 chars,
+   *  server-truncated; null for placeholder / content-less rows). */
+  content: string | null;
+}
+
+/** Full Q&A row for the feed card's click-to-expand fetch. */
+export interface AiQaDetail extends Omit<AiQaItem, "answer_snippet"> {
+  /** Complete answer (untruncated). */
+  answer: string;
+  /** Optional supporting passage stored with the Q&A. */
+  context: string | null;
+  /** Average text.news_digestions sentiment across the Q&A's refs that
+   *  have one (null when no digested refs — the digestion agent hasn't
+   *  covered them yet). */
+  avg_ref_sentiment: number | null;
+  refs: AiQaRefItem[];
+}
+
+/** Response for GET /api/ai/items. */
+export interface AiQaItemsResponse {
+  total: number;
+  items: AiQaItem[];
+}
+
+/** One date bucket — count of Q&A rows matching the current industry/search. */
+export type AiDayCount = NewsDayCount;
+
+/** Response for GET /api/ai/calendar (same shape as the news calendar). */
+export type AiCalendarResponse = NewsCalendarResponse;

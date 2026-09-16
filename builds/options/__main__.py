@@ -26,63 +26,29 @@ Usage:
   python -m builds.options --force
   python -m builds.options --code 159915              (single-underlying test filter)
   python -m builds.options --date 2026-08-28          (force single-date rebuild, no DB skip)
+
+The :class:`OptionsBuild` entry class (a :class:`DataBuild` subclass)
+composes the :class:`SzseOptionsBuild` / :class:`CffexOptionsBuild`
+child pipelines directly (preset args + ``await child.amain()``) — the
+old sys.argv mutation + child-argparse round-trip is gone. Child
+modules are imported lazily (they run their own bootstrap, then import
+pandas).
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import asyncio
-import sys
-import time
-
-from _common.build_commons import (
-    add_common_build_args,
-    get_db_or_exit,
-    truncate_table_async,
-    print_build_header,
-    print_wall_time,
-    TODAY_STR,
-    setup_utf8_stdout,
-    enforce_date_force_exclusion,
-    parse_date_arg,
-)
-
-setup_utf8_stdout()
-
-from builds._commons.code_filter import add_code_arg, normalize_code
-
-# Re-export for argparse in the parent shell
 import argparse
+import sys
 
-from _common.log_setup import setup_logging  # noqa: E402
+from _common.data_build import DataBuild
+from _common.log_setup import setup_logging
+
 logger = setup_logging("options")
-_ap = argparse.ArgumentParser(
-    description="Build SZSE + CFFEX options data (missing dates only)."
-)
-add_common_build_args(_ap)
-add_code_arg(_ap)
-_args = _ap.parse_args()
-
-# --date / --force are mutually exclusive; parse the forced single date.
-# When set, the date also supersedes any explicit --start/--end range so
-# downstream discovery/loading is scoped to this single day.
-enforce_date_force_exclusion(_args)
-forced_date = parse_date_arg(_args.date)
-if forced_date:
-    _args.start_date = forced_date.isoformat()
-    _args.end_date = forced_date.isoformat()
-
-# Normalized code filter (e.g. 159915 → 159915.SZ). Sub-builds compare
-# against the BARE underlying_code column, so forward the bare form.
-_code_filter_raw = normalize_code(_args.code)
-code_filter = _code_filter_raw.split(".")[0] if _code_filter_raw else None
 
 
 async def _truncate_all_tables() -> None:
     """Truncate all 7 options_* tables (called once before force rebuild)."""
+    from _common.build_commons import get_db_or_exit, truncate_table_async
+
     tables = (
         "stats.options_aggregate",
         "stats.options_volume_oi",
@@ -105,6 +71,8 @@ async def _purge_for_force(underlying: str | None) -> None:
     --code underlying's rows when a code filter is set."""
     if underlying:
         from builds.options.tables import delete_underlying_rows_async
+        from _common.build_commons import get_db_or_exit
+
         conn = await get_db_or_exit()
         try:
             n = await delete_underlying_rows_async(conn, underlying)
@@ -115,91 +83,100 @@ async def _purge_for_force(underlying: str | None) -> None:
         await _truncate_all_tables()
 
 
-def _build_child_argv(start_date: str | None, end_date: str | None,
-                      child_code: str | None = None,
-                      forced_date: str | None = None) -> list[str]:
-    """Build argv list for a child builder (without --force)."""
-    argv = [sys.argv[0]]
-    if start_date:
-        argv += ["--start-date", start_date]
-    if end_date:
-        argv += ["--end-date", end_date]
-    if child_code:
-        argv += ["--code", child_code]
-    if forced_date:
-        argv += ["--date", forced_date]
-    return argv
+class OptionsBuild(DataBuild):
+    """``python -m builds.options`` — SZSE + CFFEX options orchestrator."""
 
+    title = "BUILD OPTIONS (SZSE + CFFEX)  ·  missing-data-only → DATABASE"
+    component = "options"
 
-async def main() -> None:
-    t0 = time.time()
+    def add_arguments(self, parser) -> None:
+        self.add_date_range_args(parser)
+        self.add_code_arg(parser)
 
-    print_build_header(
-        "BUILD OPTIONS (SZSE + CFFEX)  ·  missing-data-only → DATABASE",
-        **{
-            "Date range":   f"{_args.start_date or '(all)'} → {_args.end_date or '(all)'}",
-            "Force rebuild": str(_args.force),
-            "Code filter":  code_filter or "(none — all underlyings)",
-            "Today":        TODAY_STR,
+    def apply_args(self) -> None:
+        # --date / --force are mutually exclusive; parse the forced single date.
+        # When set, the date also supersedes any explicit --start/--end range so
+        # downstream discovery/loading is scoped to this single day.
+        self.forced_date = self.apply_date_force_args()
+        if self.forced_date:
+            self.args.start_date = self.forced_date.isoformat()
+            self.args.end_date = self.forced_date.isoformat()
+
+        # Normalized code filter (e.g. 159915 → 159915.SZ). Sub-builds compare
+        # against the BARE underlying_code column, so forward the bare form.
+        self.code_filter = self.resolve_code_filter(strip_suffix=True)
+
+    def header_fields(self) -> dict:
+        return {
+            "Date range":   f"{self.args.start_date or '(all)'} → {self.args.end_date or '(all)'}",
+            "Force rebuild": str(self.args.force),
+            "Code filter":  self.code_filter or "(none — all underlyings)",
+            "Today":        self._today(),
         }
-    )
-    if code_filter:
-        logger.info(f"    [CODE FILTER] Restricting build to single underlying: {code_filter}")
-    if forced_date:
-        logger.info(f"[DATE MODE] Forced single-date build: {forced_date}")
 
-    # --force: purge tables ONCE before running both builders
-    if _args.force:
-        if code_filter:
-            logger.info(f"\n[FORCE] Deleting rows of underlying {code_filter} from the 7 options_* tables …")
-        else:
-            logger.info("\n[FORCE] Truncating all 7 options_* tables …")
-        await _purge_for_force(code_filter)
-        logger.info("    Done.")
+    @staticmethod
+    def _today() -> str:
+        from _common.build_commons import TODAY_STR
+        return TODAY_STR
 
-    child_argv = _build_child_argv(
-        _args.start_date, _args.end_date, code_filter,
-        forced_date.isoformat() if forced_date else None,
-    )
+    def _child_args(self) -> argparse.Namespace:
+        """Preset argparse.Namespace forwarded to both child builders.
 
-    # ---- 1. SZSE ETF options ----
-    logger.info("\n" + "=" * 60)
-    logger.info("PHASE 1: SZSE ETF OPTIONS")
-    logger.info("=" * 60)
-    _orig_argv = sys.argv
-    sys.argv = child_argv
-    try:
-        from builds.options.szse.__main__ import main as szse_main
-        await szse_main()
-    except SystemExit as e:
-        if e.code != 0:
-            logger.error(f"[ERROR] SZSE builder exited with code {e.code}")
-    finally:
-        sys.argv = _orig_argv
+        Children run WITHOUT --force: the purge already happened here, so
+        a child truncate would erase the other child's freshly written
+        rows (they share the same 7 tables).
+        """
+        args = self.args
+        return argparse.Namespace(
+            start_date=args.start_date,
+            end_date=args.end_date,
+            force=False,
+            date=args.date,
+            code=args.code,
+        )
 
-    # ---- 2. CFFEX index options ----
-    logger.info("\n" + "=" * 60)
-    logger.info("PHASE 2: CFFEX INDEX OPTIONS")
-    logger.info("=" * 60)
-    sys.argv = child_argv
-    try:
-        from builds.options.cffex.__main__ import main as cffex_main
-        await cffex_main()
-    except SystemExit as e:
-        if e.code != 0:
-            logger.error(f"[ERROR] CFFEX builder exited with code {e.code}")
-    finally:
-        sys.argv = _orig_argv
+    async def _run_child(self, child_cls, error_label: str) -> None:
+        child = child_cls(args=self._child_args())
+        child.apply_args()
+        try:
+            await child.amain()
+        except SystemExit as e:
+            if e.code not in (None, 0):
+                logger.error(f"[ERROR] {error_label} exited with code {e.code}")
 
-    logger.info("\n" + "=" * 60)
-    logger.info("OPTIONS BUILD COMPLETE (SZSE + CFFEX)")
-    logger.info("=" * 60)
-    print_wall_time(t0)
+    async def run(self) -> None:
+        if self.code_filter:
+            logger.info(f"    [CODE FILTER] Restricting build to single underlying: {self.code_filter}")
+        if self.forced_date:
+            logger.info(f"[DATE MODE] Forced single-date build: {self.forced_date}")
+
+        # --force: purge tables ONCE before running both builders
+        if self.args.force:
+            if self.code_filter:
+                logger.info(f"\n[FORCE] Deleting rows of underlying {self.code_filter} from the 7 options_* tables …")
+            else:
+                logger.info("\n[FORCE] Truncating all 7 options_* tables …")
+            await _purge_for_force(self.code_filter)
+            logger.info("    Done.")
+
+        # ---- 1. SZSE ETF options ----
+        logger.info("\n" + "=" * 60)
+        logger.info("PHASE 1: SZSE ETF OPTIONS")
+        logger.info("=" * 60)
+        from builds.options.szse.__main__ import SzseOptionsBuild
+        await self._run_child(SzseOptionsBuild, "SZSE builder")
+
+        # ---- 2. CFFEX index options ----
+        logger.info("\n" + "=" * 60)
+        logger.info("PHASE 2: CFFEX INDEX OPTIONS")
+        logger.info("=" * 60)
+        from builds.options.cffex.__main__ import CffexOptionsBuild
+        await self._run_child(CffexOptionsBuild, "CFFEX builder")
+
+        logger.info("\n" + "=" * 60)
+        logger.info("OPTIONS BUILD COMPLETE (SZSE + CFFEX)")
+        logger.info("=" * 60)
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    OptionsBuild().execute()

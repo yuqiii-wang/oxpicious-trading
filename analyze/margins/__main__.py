@@ -50,46 +50,17 @@ Testing
 """
 from __future__ import annotations
 
+# Runtime bootstrap — pre-check → silence warnings → cudf.pandas hook →
+# UTF-8 stdout. MUST come before the imports below (analyze._common,
+# _common.build_commons, pandas, ...) which transitively import pandas.
+from _common.data_pipeline import bootstrap_runtime
 
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
+bootstrap_runtime()
 
-pre_check()
-
-# cudf.pandas activation — must run before pandas first import. Imports
-# below (analyze._common, _common.build_commons, ...) transitively import
-# pandas, so activate() MUST come before them.
-from _common.df_utils._activate import activate  # noqa: E402
-activate()
-
-import argparse  # noqa: E402
-import asyncio  # noqa: E402
-import datetime  # noqa: E402
-import os  # noqa: E402
-import sys  # noqa: E402
-import time  # noqa: E402
-
-# Ensure project root is on sys.path so ``_common`` is importable when run
-# directly via ``python -m analyze.margins`` or as a script.
-sys.path.insert(
-    0,
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ),
-)
-
-from _common.build_commons import (  # noqa: E402
-    setup_utf8_stdout,
-    get_db_connection_async,
+from _common.build_commons import (
     truncate_table_async,
-    print_build_header,
-    print_wall_time,
-    add_force_arg,
 )
-from analyze._common import (  # noqa: E402
-    upsert_analysis_identity,
-)
-from analyze.margins.config import (  # noqa: E402
+from analyze.margins.config import (
     TABLE_TECH_STATS,
     TABLE_INDUSTRY_STATS,
     TABLE_INDEX_SERIES,
@@ -99,10 +70,11 @@ from analyze.margins.config import (  # noqa: E402
     INDUSTRY_STATS_DESCRIPTION,
 )
 
-setup_utf8_stdout()
-
 # Now safe to import modules that use pandas
-import pandas as pd  # noqa: E402
+import pandas as pd
+
+from _common.log_setup import setup_logging
+from _common.data_analysis import DataAnalysis
 
 from analyze.margins.pipeline import (  # noqa: E402
     fetch_latest_source_date,
@@ -112,10 +84,9 @@ from analyze.margins.pipeline import (  # noqa: E402
     run_index_tech_stats,
     insert_industry_stats,
 )
-from analyze.margins.compute import compute_industry_stats  # noqa: E402
-from analyze.margins.changes import run_margin_changes  # noqa: E402
+from analyze.margins.compute import compute_industry_stats
+from analyze.margins.changes import run_margin_changes
 
-from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("margins")
 
 
@@ -123,46 +94,59 @@ logger = setup_logging("margins")
 #  Main orchestration
 # ---------------------------------------------------------------------------
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Margin analysis: per-code tech stats + margin_index_series "
-                    "TABLE build (Python vectorization) + per-industry SUM "
-                    "aggregation + trend episode detection. RONGZI (融资) "
-                    "only — RONQIN (融券) excluded."
-    )
-    ap.add_argument(
-        "--sec-type",
-        choices=["etf", "stock", "index", "both"],
-        default="both",
-        help="Which sec_type to process. 'both' (default) runs the full "
-             "pipeline. 'etf' or 'stock' runs only that sec_type (useful "
-             "for testing with a smaller dataset). 'index' runs only the "
-             "margin_index_series TABLE build (Python vectorization) + "
-             "index-level tech stats + trend detection (skips "
-             "stock/etf/industry steps; useful for testing the "
-             "index-series build in isolation).",
-    )
-    add_force_arg(ap)
-    args = ap.parse_args()
-    force = args.force
+class MarginsAnalysis(DataAnalysis):
+    """``python -m analyze.margins`` — rongzi tech stats + industry SUM.
 
-    sec_types = SEC_TYPES if args.sec_type == "both" else (
-        [] if args.sec_type == "index" else [args.sec_type]
-    )
-    run_index = args.sec_type in ("both", "index")
-    is_index_only = args.sec_type == "index"
+    sec_type mapping quirk: ``--sec-type`` accepts a pseudo-type 'both'
+    (default) meaning SEC_TYPES, and 'index' meaning the index-series
+    build only — so add_arguments declares the choices inline instead of
+    using add_sec_type_arg(), and apply_args() maps the value onto
+    (sec_types, run_index, is_index_only).
+    """
 
-    t0 = time.time()
-    print_build_header(
-        "ANALYZE MARGINS (rongzi-only tech stats + industry SUM)",
-        index_table=TABLE_TECH_STATS,
-        sec_type=args.sec_type,
-        mode="FORCE (full recompute)" if force
-             else "incremental (missing dates only)",
-    )
+    title = "ANALYZE MARGINS (rongzi-only tech stats + industry SUM)"
+    component = "margins"
 
-    conn = await get_db_connection_async()
-    try:
+    def add_arguments(self, parser) -> None:
+        parser.add_argument(
+            "--sec-type",
+            choices=["etf", "stock", "index", "both"],
+            default="both",
+            help="Which sec_type to process. 'both' (default) runs the full "
+                 "pipeline. 'etf' or 'stock' runs only that sec_type (useful "
+                 "for testing with a smaller dataset). 'index' runs only the "
+                 "margin_index_series TABLE build (Python vectorization) + "
+                 "index-level tech stats + trend detection (skips "
+                 "stock/etf/industry steps; useful for testing the "
+                 "index-series build in isolation).",
+        )
+        self.add_force_arg(parser)
+
+    def apply_args(self) -> None:
+        self.sec_types = tuple(
+            SEC_TYPES if self.args.sec_type == "both" else (
+                () if self.args.sec_type == "index" else (self.args.sec_type,)
+            )
+        )
+        self.run_index = self.args.sec_type in ("both", "index")
+        self.is_index_only = self.args.sec_type == "index"
+
+    def header_fields(self) -> dict:
+        return {
+            "index_table": TABLE_TECH_STATS,
+            "sec_type": self.args.sec_type,
+            "mode": "FORCE (full recompute)" if self.args.force
+                    else "incremental (missing dates only)",
+        }
+
+    async def run(self) -> None:
+        conn = self.conn
+        args = self.args
+        force = self.args.force
+        sec_types = list(self.sec_types)
+        run_index = self.run_index
+        is_index_only = self.is_index_only
+
         # ---- Step 0: determine ref_date + missing dates ---------------
         logger.info("\n[0/5] Determining ref_date (MAX date across source tables)...")
         ref_date = await fetch_latest_source_date(conn, sec_types)
@@ -187,7 +171,6 @@ async def main() -> None:
             )
             if total_missing == 0:
                 logger.info("    -> DB is up to date; nothing to do.")
-                print_wall_time(t0)
                 return
 
         # ---- Step 1: per-sec-type tech stats ----------------------------
@@ -306,48 +289,27 @@ async def main() -> None:
         # (the changes identity row is upserted by its own internal step
         # above)
         logger.info("\n[5/5] Registering in analysis.analysis_identity...")
-        await upsert_analysis_identity(
-            conn,
-            name="margin_tech_stats",
-            detail_name="margin_tech_stats",
-            description=TECH_STATS_DESCRIPTION,
+        await self.upsert_identity(
+            "margin_tech_stats", "margin_tech_stats", TECH_STATS_DESCRIPTION,
         )
         n_identity = 1
         if run_index:
-            await upsert_analysis_identity(
-                conn,
-                name="margin_index_series",
-                detail_name="margin_index_series",
-                description=INDEX_SERIES_DESCRIPTION,
+            await self.upsert_identity(
+                "margin_index_series", "margin_index_series",
+                INDEX_SERIES_DESCRIPTION,
             )
             n_identity += 1
         if not is_index_only:
             # industry_stats identity row only upserted when the industry
             # aggregation step ran (skipped for index-only test runs).
-            await upsert_analysis_identity(
-                conn,
-                name="margin_industry_stats",
-                detail_name="margin_industry_stats",
-                description=INDUSTRY_STATS_DESCRIPTION,
+            await self.upsert_identity(
+                "margin_industry_stats", "margin_industry_stats",
+                INDUSTRY_STATS_DESCRIPTION,
             )
             n_identity += 1
         logger.info(f"    -> upserted {n_identity} identity rows "
               f"(+1 from changes step)")
 
-        print_wall_time(t0)
-    finally:
-        # Close with a timeout — after heavy bulk inserts the PostgreSQL
-        # server can be saturated with WAL checkpoint I/O, making
-        # conn.close() stall on the Terminate message + TCP teardown.
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
-
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    MarginsAnalysis().execute()

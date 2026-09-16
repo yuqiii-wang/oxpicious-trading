@@ -5,11 +5,14 @@
  *     Sector → industry tree (SectorNode[]) with news counts per industry.
  *     Industry level only — items[] is always empty (no L3 security level).
  *
- *   GET /api/news/calendar?sector_id=&industry_id=&search=&start=&end=
+ *   GET /api/news/calendar?sector_id=&industry_id=&industry_ids=&search=&start=&end=
  *     Per-day news counts for the date bar's dots; co-filtered by the
  *     classification scope + keyword search so the bar reacts to the nav.
+ *     industry_ids (comma-joined, present-even-empty) is the explicit-set
+ *     scope used by the composites page's multi-select / ranked-industries
+ *     scopes — same semantics as the AI routes'.
  *
- *   GET /api/news/items?sector_id=&industry_id=&search=&search_mode=&date=&limit=&offset=
+ *   GET /api/news/items?sector_id=&industry_id=&industry_ids=&search=&search_mode=&date=&limit=&offset=
  *     One page of articles for the same filters (+ optional single-day pick).
  *     search_mode=any ORs the whitespace terms (tokenized question search)
  *     instead of the default AND.
@@ -48,6 +51,14 @@ const router = Router();
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
+}
+
+/** industry_ids list — comma-joined. PRESENT (even empty) scopes to exactly
+ *  that set (empty → no rows); ABSENT leaves the scope to the other params.
+ *  Same semantics as the AI routes' industry_ids. */
+function industryIds(v: unknown): string[] | null {
+  if (v === undefined) return null;
+  return String(v).split(",").map((s) => s.trim()).filter(Boolean);
 }
 
 /** Keyword-search term combinator: "any" (OR across terms — used by the
@@ -106,6 +117,7 @@ router.get("/calendar", async (req: Request, res: Response) => {
       await listNewsCalendar({
         sectorId: str(req.query.sector_id) ?? null,
         industryId: str(req.query.industry_id) ?? null,
+        industryIds: industryIds(req.query.industry_ids),
         search: str(req.query.search) ?? null,
         searchAny: searchMode(req.query.search_mode) === "any",
         source: str(req.query.source) ?? null,
@@ -128,11 +140,14 @@ router.get("/items", async (req: Request, res: Response) => {
       await listNewsItems({
         sectorId: str(req.query.sector_id) ?? null,
         industryId: str(req.query.industry_id) ?? null,
+        industryIds: industryIds(req.query.industry_ids),
         search: str(req.query.search) ?? null,
         searchAny: searchMode(req.query.search_mode) === "any",
         source: str(req.query.source) ?? null,
         author: str(req.query.author) ?? null,
         date: str(req.query.date) ?? null,
+        dateFrom: str(req.query.date_from) ?? null,
+        dateTo: str(req.query.date_to) ?? null,
         limit: Number.isFinite(limit) ? limit : null,
         offset: Number.isFinite(offset) ? offset : null,
       }),

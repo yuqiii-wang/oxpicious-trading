@@ -24,7 +24,7 @@
  * gold diamond markPoints on the ex-dividend date. The dividend amount is
  * shown in the axis tooltip when the user hovers the event day.
  */
-import React, { useEffect, useMemo, useRef, memo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, memo } from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import EChart from "@/components/EChart";
 import { useStore } from "@/store/filters";
@@ -169,9 +169,23 @@ interface Props {
    *  click. Stable identity (useCallback) keeps the overlay effect from
    *  re-running. */
   onHighlightSettled?: () => void;
+  /** Fired whenever the chart's VISIBLE date window changes — dataZoom
+   *  slider/inside drags, and every rows rebuild (which re-anchors the
+   *  window). Carries { start, end } date strings of the visible range
+   *  (null when there are no rows). A sibling chart (the AI page's
+   *  date-event strip) windows itself to the same slider with this.
+   *  Only meaningful when dataZoomStart is set. Stable identity
+   *  (useCallback) avoids needless re-binds. */
+  onVisibleRangeChange?: (range: { start: string; end: string } | null) => void;
+  /** Center the dataZoom window on this date (keeping the current window
+   *  span) — the AI page's date-event strip click jumps the trend's slider
+   *  to the event day. Pass a fresh { date, seq } per request (the same
+   *  seq is never re-applied); non-trading dates snap to the next trading
+   *  day. Only meaningful when dataZoomStart is set. */
+  focusDateRequest?: { date: string; seq: number } | null;
 }
 
-function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, hypeEpisodes, tradeSignals = NO_TRADE_SIGNALS, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, onHighlightSettled }: Props) {
+function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, hypeEpisodes, tradeSignals = NO_TRADE_SIGNALS, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, onHighlightSettled, onVisibleRangeChange, focusDateRequest }: Props) {
   const themeMode = useStore((s) => s.themeMode);
 
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
@@ -911,6 +925,105 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
   // caller is told the overlay has settled so it can unfreeze the UI.
   const chartRef = useRef<ECharts | null>(null);
   const overlayEmptyRef = useRef(true);
+
+  // ---- Visible-window reporter (onVisibleRangeChange) ---------------------
+  // Maps the dataZoom's live start/end % back onto the category-axis dates
+  // and reports the visible range. Fired on ECharts 'datazoom' events AND
+  // on every rows rebuild (the option re-anchor). The callback lives in a
+  // ref so the chart.on binding (made once) always calls the freshest
+  // closure without re-binding on parent re-renders.
+  const visibleRangeCbRef = useRef(onVisibleRangeChange);
+  useEffect(() => {
+    visibleRangeCbRef.current = onVisibleRangeChange;
+  }, [onVisibleRangeChange]);
+
+  const emitVisibleRange = useCallback(() => {
+    const cb = visibleRangeCbRef.current;
+    if (!cb) return;
+    const chart = chartRef.current;
+    const n = chartDates.length;
+    if (!chart || n === 0) {
+      cb(null);
+      return;
+    }
+    try {
+      const dz = (
+        chart.getOption() as
+          | { dataZoom?: Array<{ start?: number; end?: number }> }
+          | undefined
+      )?.dataZoom?.[0];
+      const s = typeof dz?.start === "number" ? dz.start : 0;
+      const e = typeof dz?.end === "number" ? dz.end : 100;
+      const startIdx = Math.max(0, Math.min(n - 1, Math.floor((s / 100) * (n - 1))));
+      const endIdx = Math.max(0, Math.min(n - 1, Math.ceil((e / 100) * (n - 1))));
+      cb({ start: chartDates[startIdx], end: chartDates[endIdx] });
+    } catch {
+      // Instance disposed mid-read (HMR / unmount) — skip this report.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chartDates]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const handler = () => emitVisibleRange();
+    chart.on("datazoom", handler);
+    return () => {
+      chart.off("datazoom", handler);
+    };
+  }, [emitVisibleRange]);
+
+  // Initial report + re-report after rebuilds (the option effect re-anchors
+  // the window; 'datazoom' alone never fires for those).
+  useEffect(() => {
+    emitVisibleRange();
+  }, [emitVisibleRange]);
+
+  // ---- focusDateRequest — jump the dataZoom window to a date --------------
+  // Centers the CURRENT window span on the requested date (non-trading dates
+  // snap forward to the next trading day) and dispatches the dataZoom action
+  // — which moves BOTH dataZoom components (inside + slider) and re-fires
+  // 'datazoom', so onVisibleRangeChange reporters stay in sync. Guarded by
+  // the request's seq so a click is applied exactly once.
+  const lastFocusSeqRef = useRef(-1);
+  useEffect(() => {
+    const req = focusDateRequest;
+    if (!req || req.seq === lastFocusSeqRef.current) return;
+    const chart = chartRef.current;
+    const n = chartDates.length;
+    if (!chart || n === 0) return;
+    let idx = chartDates.indexOf(req.date);
+    if (idx < 0) {
+      idx = chartDates.findIndex((d) => d >= req.date);
+      if (idx < 0) idx = n - 1;
+    }
+    try {
+      const dz = (
+        chart.getOption() as
+          | { dataZoom?: Array<{ start?: number; end?: number }> }
+          | undefined
+      )?.dataZoom?.[0];
+      const span =
+        typeof dz?.start === "number" && typeof dz?.end === "number"
+          ? Math.max(dz.end - dz.start, 1)
+          : 100;
+      const pos = (idx / Math.max(n - 1, 1)) * 100;
+      let start = pos - span / 2;
+      let end = pos + span / 2;
+      if (start < 0) {
+        start = 0;
+        end = span;
+      }
+      if (end > 100) {
+        end = 100;
+        start = 100 - span;
+      }
+      chart.dispatchAction({ type: "dataZoom", start, end });
+      lastFocusSeqRef.current = req.seq;
+    } catch {
+      // Instance disposed mid-dispatch (HMR / unmount) — skip this request.
+    }
+  }, [focusDateRequest, chartDates]);
   useEffect(() => {
     const chart = chartRef.current;
     const empty = triggerOverlay.points.length === 0 && !triggerOverlay.markArea;

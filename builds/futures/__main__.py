@@ -29,56 +29,42 @@ Usage:
   python -m builds.futures --date 2026-07-23           (force single-date rebuild)
   python -m builds.futures --force
   python -m builds.futures --code IF2609              (single-contract test filter)
+
+The :class:`FuturesBuild` entry class (a :class:`DataBuild` subclass)
+owns the runtime lifecycle + common argparse. Bootstrap-first layout:
+``bootstrap_runtime()`` (pre-check → cudf.pandas hook → UTF-8 stdout)
+runs BEFORE the module-level pandas import below; ``execute()`` detects
+the completed bootstrap and skips re-running it.
 """
 from __future__ import annotations
 
+from _common.data_pipeline import bootstrap_runtime
 
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
+bootstrap_runtime()
 
-pre_check()
 import os
 import sys
 import time
-import argparse
 from datetime import date as _date
 from typing import List
-
-import warnings
-warnings.filterwarnings("ignore")
-
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate
-activate()
 
 import numpy as np
 import pandas as pd
 
 from _common.build_commons import (
-    setup_utf8_stdout,
-    add_common_build_args,
-    enforce_date_force_exclusion,
-    parse_date_arg,
-    forced_date_scope,
-    get_db_or_exit,
     find_missing_dates,
-    truncate_table_async,
-    copy_or_upsert_split_async,
+    forced_date_scope,
     print_build_header,
     print_wall_time,
     TODAY_STR,
+    truncate_table_async,
 )
 from builds._commons.code_filter import (
-    add_code_arg,
     find_missing_dates_code_aware,
-    normalize_code,
 )
 from builds._commons.row_emission import records_from_frame
 from _common.df_utils import to_py_dates
-
-setup_utf8_stdout()
-
-import asyncio
+from _common.log_setup import setup_logging
 
 from builds.futures.paths import CFFEX_ARCHIVE_DIR
 from builds.futures.loader import (
@@ -89,257 +75,254 @@ from builds.futures.loader import (
     build_futures_df,
 )
 
-from _common.log_setup import setup_logging  # noqa: E402
+from _common.data_build import DataBuild
+
 logger = setup_logging("futures")
 
 
-async def main() -> None:
-    ap = argparse.ArgumentParser(
-        description="Build CFFEX futures baseline data and insert to database (missing dates only)."
-    )
-    add_common_build_args(ap)
-    add_code_arg(ap)
-    args = ap.parse_args()
+class FuturesBuild(DataBuild):
+    """``python -m builds.futures`` — CFFEX futures baseline build."""
 
-    # --date / --force are mutually exclusive; parse the forced date early.
-    enforce_date_force_exclusion(args)
-    forced = parse_date_arg(args.date)
-    if forced is not None:
-        # Single-date scope overrides any explicit --start-date/--end-date.
-        args.start_date = args.end_date = forced.isoformat()
+    title = "BUILD CFFEX FUTURES BASELINE  ·  missing-dates-only → DATABASE"
+    component = "futures"
 
-    # CFFEX contract codes (e.g. IF2609) carry no exchange suffix — strip
-    # whatever normalize_code may have appended to a bare code.
-    code_filter = normalize_code(args.code)
-    if code_filter:
-        code_filter = code_filter.split(".")[0]
+    def add_arguments(self, parser) -> None:
+        self.add_date_range_args(parser)
+        self.add_code_arg(parser)
 
-    t0 = time.time()
-    print_build_header(
-        "BUILD CFFEX FUTURES BASELINE  ·  missing-dates-only → DATABASE",
-        **{
+    def apply_args(self) -> None:
+        # --date / --force are mutually exclusive; parse the forced date early.
+        forced = self.apply_date_force_args()
+        if forced is not None:
+            # Single-date scope overrides any explicit --start-date/--end-date.
+            self.args.start_date = self.args.end_date = forced.isoformat()
+        # CFFEX contract codes (e.g. IF2609) carry no exchange suffix — strip
+        # whatever normalize_code may have appended to a bare code.
+        self.code_filter = self.resolve_code_filter(strip_suffix=True)
+
+    def header_fields(self) -> dict:
+        return {
             "CFFEX archive dir": CFFEX_ARCHIVE_DIR,
-            "Date range":       f"{args.start_date or '(all)'} → {args.end_date or '(all)'}",
-            "Code filter":      code_filter or "(none — all contracts)",
+            "Date range":       f"{self.args.start_date or '(all)'} → {self.args.end_date or '(all)'}",
+            "Code filter":      self.code_filter or "(none — all contracts)",
             "Today":            TODAY_STR,
         }
-    )
-    if code_filter:
-        logger.info(f"    [CODE FILTER] Restricting build to single contract: {code_filter}")
-    if forced is not None:
-        logger.info(f"[DATE MODE] Forced single-date build: {forced}")
 
-    # ------------------------------------------------------------------
-    # 1. Discover source files and available dates
-    # ------------------------------------------------------------------
-    logger.info("\n[1/3] Discovering source CSV files …")
-    all_files = glob_futures_files(CFFEX_ARCHIVE_DIR)
-    logger.info(f"    → {len(all_files)} *_futures.csv files available")
+    async def run(self) -> None:
+        args = self.args
+        code_filter = self.code_filter
+        forced = self.forced_date
 
-    if not all_files:
-        logger.error("    [FATAL] No futures CSV files found")
-        sys.exit(1)
-
-    # Extract available dates from filenames (stdlib date — no proxied
-    # Timestamp .date() calls, one PER FILE under cudf.pandas)
-    available_dates: set[_date] = set()
-    for f in all_files:
-        ymd = ymd_from_futures_filename(f)
-        if ymd:
-            d = ymd_to_date(ymd)
-            if d is not None:
-                available_dates.add(d)
-
-    # Apply date range filter
-    if args.start_date:
-        start_d = pd.to_datetime(args.start_date).date()
-        available_dates = {d for d in available_dates if d >= start_d}
-    if args.end_date:
-        end_d = pd.to_datetime(args.end_date).date()
-        available_dates = {d for d in available_dates if d <= end_d}
-
-    logger.info(f"    → {len(available_dates)} unique dates available in range")
-
-    # ------------------------------------------------------------------
-    # 2. Connect to DB and find missing dates
-    # ------------------------------------------------------------------
-    logger.info("\n[2/3] Connecting to database and detecting missing dates …")
-    conn = await get_db_or_exit()
-
-    try:
+        if code_filter:
+            logger.info(f"    [CODE FILTER] Restricting build to single contract: {code_filter}")
         if forced is not None:
-            # --date mode: bypass the DB missing-date skip — the forced date
-            # is ALWAYS processed (rows already in the DB are refreshed via
-            # the upsert path below; no truncation, no deletes).
-            missing_dates = forced_date_scope(available_dates, forced)
-        elif args.force:
-            if code_filter:
-                # Single-code force mode: delete only this contract's rows
-                # (FK child first, identity last) instead of truncating.
-                logger.info(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code")
-                await conn.execute(
-                    "DELETE FROM stats.futures_basic_stats WHERE code = $1", code_filter
-                )
-                await conn.execute(
-                    "DELETE FROM stats.futures_identity WHERE code = $1", code_filter
+            logger.info(f"[DATE MODE] Forced single-date build: {forced}")
+
+        # ------------------------------------------------------------------
+        # 1. Discover source files and available dates
+        # ------------------------------------------------------------------
+        logger.info("\n[1/3] Discovering source CSV files …")
+        all_files = glob_futures_files(CFFEX_ARCHIVE_DIR)
+        logger.info(f"    → {len(all_files)} *_futures.csv files available")
+
+        if not all_files:
+            logger.error("    [FATAL] No futures CSV files found")
+            sys.exit(1)
+
+        # Extract available dates from filenames (stdlib date — no proxied
+        # Timestamp .date() calls, one PER FILE under cudf.pandas)
+        available_dates: set[_date] = set()
+        for f in all_files:
+            ymd = ymd_from_futures_filename(f)
+            if ymd:
+                d = ymd_to_date(ymd)
+                if d is not None:
+                    available_dates.add(d)
+
+        # Apply date range filter
+        if args.start_date:
+            start_d = pd.to_datetime(args.start_date).date()
+            available_dates = {d for d in available_dates if d >= start_d}
+        if args.end_date:
+            end_d = pd.to_datetime(args.end_date).date()
+            available_dates = {d for d in available_dates if d <= end_d}
+
+        logger.info(f"    → {len(available_dates)} unique dates available in range")
+
+        # ------------------------------------------------------------------
+        # 2. Connect to DB and find missing dates
+        # ------------------------------------------------------------------
+        logger.info("\n[2/3] Connecting to database and detecting missing dates …")
+        conn = await self.connect_db()
+
+        try:
+            if forced is not None:
+                # --date mode: bypass the DB missing-date skip — the forced date
+                # is ALWAYS processed (rows already in the DB are refreshed via
+                # the upsert path below; no truncation, no deletes).
+                missing_dates = forced_date_scope(available_dates, forced)
+            elif args.force:
+                if code_filter:
+                    # Single-code force mode: delete only this contract's rows
+                    # (FK child first, identity last) instead of truncating.
+                    logger.info(f"    [DB] Force mode for code {code_filter}: deleting existing rows for this code")
+                    await conn.execute(
+                        "DELETE FROM stats.futures_basic_stats WHERE code = $1", code_filter
+                    )
+                    await conn.execute(
+                        "DELETE FROM stats.futures_identity WHERE code = $1", code_filter
+                    )
+                else:
+                    logger.info("    [DB] Force mode: truncating existing tables")
+                    await truncate_table_async(conn, "stats.futures_basic_stats")
+                    await truncate_table_async(conn, "stats.futures_identity")
+                missing_dates = available_dates
+            elif code_filter:
+                # Single-code mode: only check this contract's dates so dates
+                # loaded for OTHER contracts don't mask this code's gaps.
+                missing_dates = await find_missing_dates_code_aware(
+                    conn, "stats.futures_identity", available_dates, code_filter
                 )
             else:
-                logger.info("    [DB] Force mode: truncating existing tables")
-                await truncate_table_async(conn, "stats.futures_basic_stats")
-                await truncate_table_async(conn, "stats.futures_identity")
-            missing_dates = available_dates
-        elif code_filter:
-            # Single-code mode: only check this contract's dates so dates
-            # loaded for OTHER contracts don't mask this code's gaps.
-            missing_dates = await find_missing_dates_code_aware(
-                conn, "stats.futures_identity", available_dates, code_filter
-            )
-        else:
-            missing_dates = await find_missing_dates(
-                conn, "stats.futures_identity", available_dates
+                missing_dates = await find_missing_dates(
+                    conn, "stats.futures_identity", available_dates
+                )
+
+            logger.info(
+                f"    [DB] {len(missing_dates)} dates missing from "
+                f"stats.futures_identity (out of {len(available_dates)} available)",
             )
 
+            if not missing_dates:
+                logger.info(
+                    "    [INFO] Database is up to date — no new futures dates to insert",
+                )
+                return
+
+            # ------------------------------------------------------------------
+            # 3. Filter to missing-date files and build rows
+            # ------------------------------------------------------------------
+            logger.info(
+                f"\n[3/3] Reading source CSVs for {len(missing_dates)} missing dates …",
+            )
+            missing_files = filter_files_by_dates(all_files, missing_dates)
+            logger.info(f"    → {len(missing_files)} source CSV files to read")
+
+            if not missing_files:
+                logger.info("    [INFO] No source files for missing dates")
+                return
+
+            identity_df, basic_df = build_futures_df(missing_files, verbose=True)
+
+            # Filter to the target contract if --code is set (boolean-mask
+            # results are fresh frames; DB emission is index-blind — no reindex)
+            if code_filter:
+                if len(identity_df) > 0:
+                    n_before = len(identity_df)
+                    identity_df = identity_df[identity_df["code"] == code_filter]
+                    logger.info(f"    [CODE FILTER] Identity rows {n_before:,} → {len(identity_df):,} for code {code_filter}")
+                if len(basic_df) > 0:
+                    n_before = len(basic_df)
+                    basic_df = basic_df[basic_df["code"] == code_filter]
+                    logger.info(f"    [CODE FILTER] Basic-stats rows {n_before:,} → {len(basic_df):,} for code {code_filter}")
+
+            if identity_df.empty or basic_df.empty:
+                logger.info("    [INFO] No futures rows parsed from missing-date files")
+                return
+
+            n_codes = identity_df["code"].nunique()
+            d0 = identity_df["date"].min()
+            d1 = identity_df["date"].max()
+            logger.info(
+                f"    → {len(identity_df):,} identity rows · {n_codes} contracts",
+            )
+            logger.info(f"    → date range: {d0} → {d1}")
+
+            # ------------------------------------------------------------------
+            # 4. Insert to database
+            # ------------------------------------------------------------------
+            logger.info("\n[DB] Inserting data …")
+
+            # Convert dates to datetime.date for asyncpg — keep the columns
+            # datetime64 until this boundary, then ONE host numpy pass per
+            # column (a cudf-backed .dt.date falls back per element).
+            identity_db = identity_df.copy()
+            identity_db["date"] = pd.to_datetime(identity_db["date"])
+            to_py_dates(identity_db, ["date"])
+
+            basic_db = basic_df.copy()
+            basic_db["date"] = pd.to_datetime(basic_db["date"])
+            to_py_dates(basic_db, ["date"])
+
+            # Dedupe within batch to avoid ON CONFLICT issues
+            identity_db = identity_db.drop_duplicates(
+                subset=["date", "code"], keep="last"
+            )
+            basic_db = basic_db.drop_duplicates(
+                subset=["date", "code"], keep="last"
+            )
+
+            # Build row dicts for bulk upsert (zip-based assembly, no
+            # to_dict("records") — cudf.pandas falls back once per row)
+            identity_rows: List[dict] = records_from_frame(
+                identity_db, np.asarray(identity_db.columns).tolist())
+            basic_rows: List[dict] = records_from_frame(
+                basic_db, np.asarray(basic_db.columns).tolist())
+
+            pk_cols = ["date", "code"]
+
+            # Insert identity first (FK parent)
+            if identity_rows:
+                n_copied, n_upserted = await self._copy_or_upsert(
+                    conn, "stats.futures_identity", identity_rows, pk_cols
+                )
+            else:
+                logger.info(
+                    "    [DB] No new identity rows to insert into stats.futures_identity",
+                )
+
+            # Insert basic_stats
+            if basic_rows:
+                n_copied, n_upserted = await self._copy_or_upsert(
+                    conn, "stats.futures_basic_stats", basic_rows, pk_cols
+                )
+            else:
+                logger.info(
+                    "    [DB] No new basic_stats rows to insert into stats.futures_basic_stats",
+                )
+
+        finally:
+            await conn.close()
+
+        # Console summary
+        if not identity_df.empty:
+            logger.info(f"\n  Product distribution:")
+            for product_code, sub in identity_df.groupby("product_code"):
+                n_dates = int(sub["date"].nunique())
+                n_contracts = int(sub["code"].nunique())
+                logger.info(
+                    f"    · {product_code:<4s} "
+                    f"{sub['name'].iloc[0]:<20s} "
+                    f"{n_dates:>4d} days  {n_contracts:>3d} contracts",
+                )
+
+    @staticmethod
+    async def _copy_or_upsert(conn, table: str, rows: List[dict], pk_cols: List[str]):
+        """COPY-then-upsert split write with the standard inserted log line."""
+        from _common.build_commons import copy_or_upsert_split_async
+
+        n_copied, n_upserted = await copy_or_upsert_split_async(
+            conn, table, rows, pk_cols
+        )
+        total = n_copied + n_upserted
+        via = "COPY" if n_copied > 0 and n_upserted == 0 else \
+              f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
+              "upsert"
         logger.info(
-            f"    [DB] {len(missing_dates)} dates missing from "
-            f"stats.futures_identity (out of {len(available_dates)} available)",
+            f"    [DB] Inserted {total:,} rows into {table} via {via}",
         )
-
-        if not missing_dates:
-            logger.info(
-                "    [INFO] Database is up to date — no new futures dates to insert",
-            )
-            print_wall_time(t0)
-            return
-
-        # ------------------------------------------------------------------
-        # 3. Filter to missing-date files and build rows
-        # ------------------------------------------------------------------
-        logger.info(
-            f"\n[3/3] Reading source CSVs for {len(missing_dates)} missing dates …",
-        )
-        missing_files = filter_files_by_dates(all_files, missing_dates)
-        logger.info(f"    → {len(missing_files)} source CSV files to read")
-
-        if not missing_files:
-            logger.info("    [INFO] No source files for missing dates")
-            print_wall_time(t0)
-            return
-
-        identity_df, basic_df = build_futures_df(missing_files, verbose=True)
-
-        # Filter to the target contract if --code is set (boolean-mask
-        # results are fresh frames; DB emission is index-blind — no reindex)
-        if code_filter:
-            if len(identity_df) > 0:
-                n_before = len(identity_df)
-                identity_df = identity_df[identity_df["code"] == code_filter]
-                logger.info(f"    [CODE FILTER] Identity rows {n_before:,} → {len(identity_df):,} for code {code_filter}")
-            if len(basic_df) > 0:
-                n_before = len(basic_df)
-                basic_df = basic_df[basic_df["code"] == code_filter]
-                logger.info(f"    [CODE FILTER] Basic-stats rows {n_before:,} → {len(basic_df):,} for code {code_filter}")
-
-        if identity_df.empty or basic_df.empty:
-            logger.info("    [INFO] No futures rows parsed from missing-date files")
-            print_wall_time(t0)
-            return
-
-        n_codes = identity_df["code"].nunique()
-        d0 = identity_df["date"].min()
-        d1 = identity_df["date"].max()
-        logger.info(
-            f"    → {len(identity_df):,} identity rows · {n_codes} contracts",
-        )
-        logger.info(f"    → date range: {d0} → {d1}")
-
-        # ------------------------------------------------------------------
-        # 4. Insert to database
-        # ------------------------------------------------------------------
-        logger.info("\n[DB] Inserting data …")
-
-        # Convert dates to datetime.date for asyncpg — keep the columns
-        # datetime64 until this boundary, then ONE host numpy pass per
-        # column (a cudf-backed .dt.date falls back per element).
-        identity_db = identity_df.copy()
-        identity_db["date"] = pd.to_datetime(identity_db["date"])
-        to_py_dates(identity_db, ["date"])
-
-        basic_db = basic_df.copy()
-        basic_db["date"] = pd.to_datetime(basic_db["date"])
-        to_py_dates(basic_db, ["date"])
-
-        # Dedupe within batch to avoid ON CONFLICT issues
-        identity_db = identity_db.drop_duplicates(
-            subset=["date", "code"], keep="last"
-        )
-        basic_db = basic_db.drop_duplicates(
-            subset=["date", "code"], keep="last"
-        )
-
-        # Build row dicts for bulk upsert (zip-based assembly, no
-        # to_dict("records") — cudf.pandas falls back once per row)
-        identity_rows: List[dict] = records_from_frame(
-            identity_db, np.asarray(identity_db.columns).tolist())
-        basic_rows: List[dict] = records_from_frame(
-            basic_db, np.asarray(basic_db.columns).tolist())
-
-        pk_cols = ["date", "code"]
-
-        # Insert identity first (FK parent)
-        if identity_rows:
-            n_copied, n_upserted = await copy_or_upsert_split_async(
-                conn, "stats.futures_identity", identity_rows, pk_cols
-            )
-            total = n_copied + n_upserted
-            via = "COPY" if n_copied > 0 and n_upserted == 0 else \
-                  f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
-                  "upsert"
-            logger.info(
-                f"    [DB] Inserted {total:,} rows into stats.futures_identity via {via}",
-            )
-        else:
-            logger.info(
-                "    [DB] No new identity rows to insert into stats.futures_identity",
-            )
-
-        # Insert basic_stats
-        if basic_rows:
-            n_copied, n_upserted = await copy_or_upsert_split_async(
-                conn, "stats.futures_basic_stats", basic_rows, pk_cols
-            )
-            total = n_copied + n_upserted
-            via = "COPY" if n_copied > 0 and n_upserted == 0 else \
-                  f"COPY+upsert ({n_copied}+{n_upserted})" if n_copied > 0 else \
-                  "upsert"
-            logger.info(
-                f"    [DB] Inserted {total:,} rows into stats.futures_basic_stats via {via}",
-            )
-        else:
-            logger.info(
-                "    [DB] No new basic_stats rows to insert into stats.futures_basic_stats",
-            )
-
-    finally:
-        await conn.close()
-
-    # Console summary
-    if not identity_df.empty:
-        logger.info(f"\n  Product distribution:")
-        for product_code, sub in identity_df.groupby("product_code"):
-            n_dates = int(sub["date"].nunique())
-            n_contracts = int(sub["code"].nunique())
-            logger.info(
-                f"    · {product_code:<4s} "
-                f"{sub['name'].iloc[0]:<20s} "
-                f"{n_dates:>4d} days  {n_contracts:>3d} contracts",
-            )
-
-    print_wall_time(t0)
+        return n_copied, n_upserted
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    FuturesBuild().execute()

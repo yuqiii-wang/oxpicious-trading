@@ -43,7 +43,7 @@
 --  bearish reading the study supports), no_buy/vlow/low = 'bottom'
 --  (reverse = change > +threshold), mid = 'flat' with NULL
 --  reverse_prob. Results live in analysis_forecasts.forecast_results
---  via forecast_id (1:N — 4 period rows next/5d/20d/60d).
+--  via forecast_id (1:N — 5 period rows next/5d/20d/60d/mixed).
 --
 --  Threshold columns are RECORDED BUILD PARAMETERS (NOT part of the
 --  PK — rebuilding with different values requires --force). The
@@ -60,7 +60,7 @@
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.margin_ratio_state (
     code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-    forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_margin_ratio_state_forecast_id
+    forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_margin_ratio_state_forecast_id
     ratio_state     TEXT         NOT NULL,  -- 'no_buy' | 'vlow' | 'low' | 'mid' | 'high' | 'vhigh' (z bars of rz_buy/trading_amount)
     side            TEXT         NOT NULL,  -- 'top' (high/vhigh crowding) | 'bottom' (vlow/low/no_buy) | 'flat' (mid) — reversal direction of reverse_prob
 
@@ -123,7 +123,7 @@ BEGIN
         DROP CONSTRAINT IF EXISTS pk_margin_ratio_state;
     CREATE TABLE analysis_forecasts.margin_ratio_state_new (
             code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-            forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_margin_ratio_state_forecast_id
+            forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_margin_ratio_state_forecast_id
             ratio_state     TEXT         NOT NULL,
             side            TEXT         NOT NULL,
             z_window        INTEGER      NOT NULL DEFAULT 1220,
@@ -171,10 +171,10 @@ CREATE INDEX IF NOT EXISTS idx_margin_ratio_state_forecast_id
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_forecasts.margin_ratio_state IS 'Margin-buy intensity state buckets (motivation): one row per forecast_id — the window days of one security-month whose 融资买入额/成交额 ratio (rz_buy / trading_amount, RONGZI only, etf + stock) sits in the named state of the code''s OWN trailing distribution: z = (ratio - μ)/σ with rolling-1220-row (min 250 non-NULL) moments shifted 1 row; no_buy = rz_buy <= 0 that day. States: vlow z<=-2 / low (-2,-1] / mid (-1,+1] / high (+1,+2] / vhigh z>2. Crowding (contrarian) semantics per the 2026-09 study (docs/margin_ratio_study.md): high/vhigh = bearish (side top), vlow/low/no_buy = mild bullish (side bottom), mid = flat. State cells: no cooldown. Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / FIXED 1% reverse_threshold — period-end n-day close vs ±1% — reversal probabilities) live in analysis_forecasts.forecast_results via forecast_id; mid rows carry side=''flat'' and NULL reverse_prob. Sources: stats.{etf,stock}_liquidity_margin (rz_buy, trading_amount). Populated by python -m analyze.analysis_forecasts.';
-COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
+COMMENT ON TABLE analysis_forecasts.margin_ratio_state IS 'Margin-buy intensity state buckets (motivation): one row per forecast_id — the window days of one security-month whose 融资买入额/成交额 ratio (rz_buy / trading_amount, RONGZI only, etf + stock) sits in the named state of the code''s OWN trailing distribution: z = (ratio - μ)/σ with rolling-1220-row (min 250 non-NULL) moments shifted 1 row; no_buy = rz_buy <= 0 that day. States: vlow z<=-2 / low (-2,-1] / mid (-1,+1] / high (+1,+2] / vhigh z>2. Crowding (contrarian) semantics per the 2026-09 study (docs/margin_ratio_study.md): high/vhigh = bearish (side top), vlow/low/no_buy = mild bullish (side bottom), mid = flat. State cells: no cooldown. Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / FIXED 1% threshold — period-end n-day close vs ±1% — reversal probabilities) live in analysis_forecasts.forecast_results via forecast_id; mid rows carry side=''flat'' and NULL reverse_prob. Sources: stats.{etf,stock}_liquidity_margin (rz_buy, trading_amount). Populated by python -m analyze.analysis_forecasts.';
+COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 5 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 5 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
 COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.ratio_state IS 'Margin-intensity state of the day: no_buy (rz_buy <= 0 with trading_amount > 0 — margin traders absent); on buy days z = (ratio - μ)/σ of the code''s rolling-1220-row (min 250) ratio moments shifted 1 row: vlow z <= -2; low -2 < z <= -1; mid -1 < z <= +1; high +1 < z <= +2; vhigh z > +2. Undefined z (short history) → no bucket.';
-COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.side IS 'Reversal side of the bucket''s forecast_results.reverse_prob: top (high/vhigh — the crowding states; reversal = n-day change below -reverse_threshold, the study''s bearish reading), bottom (vlow/low/no_buy — reversal above +reverse_threshold), flat (mid — no directional claim; reverse_prob NULL). Mirrors the mov_* / px_vol side semantics so analysis_signals.gate consumes the table unchanged.';
+COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.side IS 'Reversal side of the bucket''s forecast_results.reverse_prob: top (high/vhigh — the crowding states; reversal = n-day change below -threshold, the study''s bearish reading), bottom (vlow/low/no_buy — reversal above +threshold), flat (mid — no directional claim; reverse_prob NULL). Mirrors the mov_* / px_vol side semantics so analysis_signals.gate consumes the table unchanged.';
 COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.z_window IS 'Recorded build parameter: rolling window (rows) of the ratio moments μ/σ (default 1220 ≈ 5y of trading rows). Shifted 1 row before use (no look-ahead).';
 COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.z_min_periods IS 'Recorded build parameter: minimum non-NULL ratio observations inside z_window for z to be defined (default 250 buy days).';
 COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.vlow_bar IS 'Recorded build parameter: vlow upper z-bar (default -2.0).';

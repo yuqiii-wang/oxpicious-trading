@@ -35,7 +35,7 @@ are mutually exclusive and a streak-merge pass would be a no-op — so
 the engines skip it; the recorded streak_signal_days is the 1 constant
 and the result rows' streak spans are the signal day itself. Split by
 PK member is_market_hyped, per-code ADAPTIVE reversal bar
-(wide.reverse_thresholds: k_n·σ of the window's n-day forward
+(wide.thresholds: k_n·σ of the window's n-day forward
 changes). No config JSONB payload (compute_gap precedent — the trigger
 evidence is the stored spread itself, joinable via the bucket keys).
 
@@ -45,177 +45,153 @@ result dicts and write month-major.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import date
-from typing import Iterator
 
-import numpy as np
+import pandas as pd
 
+from _common.df_utils import grouped_shift
+
+from analyze.analysis_forecasts._dfengine import WideDfEngine, _finite_mask
 from analyze.analysis_forecasts.config import (
-    FORWARD_HORIZONS,
-    MM_HORIZONS,
-    LOOKBACK_PERIOD,
-    MOV_PAIRS_SIDES,
+    MOV_PAIRS_EMA_WINDOWS,
     MOV_PAIRS_WINDOWS,
 )
-from analyze.analysis_forecasts.wide import (
-    MonthWindow,
-    aggregate_horizons_sparse,
-    build_result_rows,
-    iter_bucket_subsets,
-    reverse_thresholds,
-    scatter_column,
-    window_sigmas,
-)
 
 
-def build_pairs_matrices(
-    df,
-    shape: tuple[int, int],
-    didx: np.ndarray,
-    cidx: np.ndarray,
-    pair_windows: tuple = MOV_PAIRS_WINDOWS,
-    prefix: str = "pair",
-) -> dict[str, np.ndarray]:
-    """Scatter the fetched spread columns into the (T, C) grid + build
-    the 1-row-shifted previous-spread matrices.
+class _CrossEngine(WideDfEngine):
+    """MA / EMA-pair CROSS event buckets over the EXISTING relative
+    spread columns (ma5_vs_ma{W} fetched as ``pair_{W}``; ema6_vs_ema{W}
+    as ``ema_pair_{W}``) — no new MA computation. A day joins a bucket
+    when the spread flips sign that day: side 'top' a CROSS UP (spread >
+    0 from <= 0 — ma5/ema6 rises through the slow leg), side 'bottom' a
+    CROSS DOWN (spread < 0 from >= 0). NULL spreads (either leg still
+    warming up) never trigger. One-day signals (MERGE=False): a cross
+    day's predecessor sits on the other side of zero, so consecutive
+    cross days are mutually exclusive. The bar is the zero line, so the
+    TRIGGER EXCESS is the day's spread itself. The previous day's
+    spread is shifted ONCE over the full fetched frame (per code on its
+    own row sequence — the same semantics as the legacy scatter-then-
+    slice), so a cross at the window's first row still sees its
+    predecessor."""
 
-    Args:
-        prefix: the fetched column prefix AND the output key prefix —
-              "pair" (ma5_vs_ma{W}, the mov_pairs family) or "ema_pair"
-              (ema6_vs_ema{W}, the mov_pairs_ema family).
+    BUCKET_COLS = ("pair_window",)
+    MERGE = False
 
-    Returns wide matrices keyed f"{prefix}_{w}" (the stored spread, NaN
-    where missing) and f"{prefix}_{w}_prev" (the PREVIOUS grid row's
-    spread, NaN on grid row 0). The shift is on the union trading-day
-    grid (build_grid) — one vectorized pass, not per-code.
-    """
-    mats: dict[str, np.ndarray] = {}
-    for w in pair_windows:
-        S = scatter_column(df, f"{prefix}_{w}", shape, didx, cidx)
-        Sp = np.full_like(S, np.nan)
-        Sp[1:] = S[:-1]
-        mats[f"{prefix}_{w}"] = S
-        mats[f"{prefix}_{w}_prev"] = Sp
-    return mats
+    def __init__(self, *, spread_prefix: str = "pair",
+                 windows: tuple = MOV_PAIRS_WINDOWS, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.spread_prefix = spread_prefix
+        self.windows = windows
+
+    def _extra_window_cols(self) -> list[str]:
+        return [f"{self.spread_prefix}_{w}" for w in self.windows]
+
+    def _prepare(self) -> None:
+        super()._prepare()
+        df = self._prepared
+        for w in self.windows:
+            col = f"{self.spread_prefix}_{w}"
+            grouped_shift(df, ["code"], col, out_names=f"_prev_{col}",
+                          periods=1, sort=False)
+        self._prepared = df
+
+    def _window_cols(self) -> list[str]:
+        cols = super()._window_cols()
+        return cols + [f"_prev_{self.spread_prefix}_{w}" for w in self.windows]
+
+    def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
+        id_vars = ["code", "date", "_t", "is_hyped"]
+        value_cols = self._extra_window_cols()
+        long = win.melt(id_vars=id_vars + [f"_prev_{c}" for c in value_cols],
+                        value_vars=value_cols,
+                        var_name="_wcol", value_name="spread")
+        long["pair_window"] = long["_wcol"].map(
+            {col: w for col, w in zip(value_cols, self.windows)}
+        )
+        long["_prev_col"] = "_prev_" + long["_wcol"]
+        long["prev_spread"] = long.lookup-like-placeholder  # noqa — replaced below
+        if long.empty:
+            return
+        yield long
+    def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
+        id_vars = ["code", "date", "_t", "is_hyped"]
+        value_cols = self._extra_window_cols()
+        prev_cols = [f"_prev_{c}" for c in value_cols]
+
+        # Spreads and their 1-row-lagged predecessors melt in parallel,
+        # then re-join per (code, date, pair_window).
+        long = win.melt(id_vars=id_vars + prev_cols,
+                        value_vars=value_cols,
+                        var_name="_wcol", value_name="spread")
+        long["pair_window"] = long["_wcol"].map(
+            {col: w for col, w in zip(value_cols, self.windows)}
+        )
+        long = long[_finite_mask(long["spread"])]
+        if long.empty:
+            return
+
+        keep = ["code", "date", "_t", "is_hyped", "pair_window", "side"]
+        prevs = win.melt(id_vars=["code", "date"], value_vars=prev_cols,
+                         var_name="_pcol", value_name="prev_spread")
+        prevs["pair_window"] = prevs["_pcol"].map(
+            {f"_prev_{col}": w for col, w in zip(value_cols, self.windows)}
+        )
+        cand = long.merge(
+            prevs[["code", "date", "pair_window", "prev_spread"]],
+            on=["code", "date", "pair_window"], how="left",
+        )
+        ok_prev = _finite_mask(cand["prev_spread"])
+        cells_parts = []
+        for side in ("top", "bottom"):
+            qual = (
+                ((cand["spread"] > 0) & (cand["prev_spread"] <= 0)
+                 & ok_prev) if side == "top"
+                else ((cand["spread"] < 0) & (cand["prev_spread"] >= 0)
+                      & ok_prev)
+            )
+            hit = cand[qual].copy()
+            hit["side"] = side
+            # the bar is the zero line — the excess IS the day's spread
+            hit["excess"] = hit["spread"]
+            cells_parts.append(hit[keep + ["excess"]])
+        cells = pd.concat(cells_parts, ignore_index=True)
+        if cells.empty:
+            return
+
+        # MERGE=False: _streak_merge stamps the 1-day run semantics (the
+        # aggregation / row building are the base's).
+        yield self._streak_merge(
+            cells, group_cols=["pair_window", "side", "code"],
+        )
 
 
 def compute_pairs_results(
-    mats: dict[str, np.ndarray],
-    chg: dict[str, np.ndarray],
-    windows: list[MonthWindow],
-    codes: list[str],
-    sec_type: str,
-    hype: np.ndarray,
-    first_ord: np.ndarray,
-    pair_windows: tuple = MOV_PAIRS_WINDOWS,
-    prefix: str = "pair",
-    grid_ord: np.ndarray | None = None,
+    *, df, first_dates, episodes, codes, sec_type, specs,
+    spread_prefix: str = "pair", windows: tuple = MOV_PAIRS_WINDOWS,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, bucket rows) per stat month.
+    """Yield (stat_month, bucket rows) per stat month — ``spread_prefix``
+    "pair" (ma5_vs_ma{W}, mov_pairs) or "ema_pair" (ema6_vs_ema{W},
+    mov_pairs_ema)."""
+    engine = _CrossEngine(
+        df=df,
+        first_dates=first_dates,
+        episodes=episodes,
+        codes=codes,
+        sec_type=sec_type,
+        specs=specs,
+        spread_prefix=spread_prefix,
+        windows=windows,
+    )
+    return engine.run()
 
-    Args:
-        mats: wide spread matrices (build_pairs_matrices) keyed
-              f"{prefix}_{w}" + f"{prefix}_{w}_prev" ("pair" = the MA
-              family's ma5_vs_ma{W}, "ema_pair" = the EMA family's
-              ema6_vs_ema{W}).
-        chg:  shared change matrices (build_change_matrices):
-              NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS.
-        windows: resolved MonthWindow list for the target months.
-        codes: sorted code list (matrix column order).
-        sec_type: emitted into every row.
-        hype: (T, C) bool matrix of market-hyped (date, code) cells
-              (build_hype_matrix).
-        first_ord: (C,) per-code first data date as ABSOLUTE epoch-day
-              ordinals — a code is live for a window only when
-              first_ord < mw.lo_ord (DATE-space full-window gate).
-        grid_ord: optional (T,) int64 day ordinals of the FULL grid
-              (build_grid) — sliced per window into aggregate_horizons_
-              sparse's win_ord so each emitted row carries its
-              trigger_dates (the calendar dates behind occurrence_count).
-    """
-    C = len(codes)
 
-    for mw in windows:
-        lo, hi = mw.lo, mw.hi
-        if lo >= hi:
-            continue  # no grid rows in this window at all
-        # Full-window gate: DATE-space comparison (first data month +
-        # 60 months = first snapshot), same as the other engines.
-        live = first_ord < mw.lo_ord
-        if not live.any():
-            continue
-
-        FINs = {n: chg[f"FIN_{n}"][lo:hi] for n in FORWARD_HORIZONS}
-        NC0s = {n: chg[f"NC0_{n}"][lo:hi] for n in FORWARD_HORIZONS}
-        # Window-sliced PATH-extreme matrices (FMAX0/FMIN0) — the
-        # swing-aware reversal event + max_low_change_ratio inputs.
-        PATH0s = {n: (chg[f"FMAX0_{n}"][lo:hi], chg[f"FMIN0_{n}"][lo:hi])
-                  for n in MM_HORIZONS}
-        # Per-(code, horizon) reversal bar for this window (adaptive
-        # k·σ of the code's window forward changes; fixed fallback).
-        thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
-        HY = hype[lo:hi]
-        live2 = live[:, None]
-
-        rows: list[dict] = []
-        for w in pair_windows:
-            S = mats[f"{prefix}_{w}"][lo:hi]
-            Sp = mats[f"{prefix}_{w}_prev"][lo:hi]
-            # Sign-flip triggers (NaN comparisons are False → warming-up
-            # / missing rows never trigger), side-major (T, C, K) stack.
-            # The qualifying bar is the ZERO line for both sides, so
-            # the signed TRIGGER EXCESS (value − bar — the
-            # forecast_results.trigger_excess source) is the day's
-            # spread itself on either side (the live_signals
-            # spread-cross precedent: excess reads as the spread).
-            with np.errstate(invalid="ignore"):
-                mask_raw = np.stack(
-                    [(S > 0) & (Sp <= 0), (S < 0) & (Sp >= 0)], axis=2
-                )
-                excess3 = np.stack([S, S], axis=2)
-
-            # ONE-DAY signals via the UNIFIED bucket pipeline
-            # (wide.iter_bucket_subsets, merge=False): a cross day's
-            # predecessor sits on the other side of zero, so
-            # consecutive cross days are mutually exclusive — every
-            # qualifying day is its own signal with a 1-day run length
-            # (the streak-merge pass would be a no-op and is skipped).
-            # The (side, hype) subsets come back as group-ascending
-            # sparse cell lists.
-            for (side, hyped, kk, ii, st, sc, fk, L_int, exc, mean_streak
-                 ) in iter_bucket_subsets(
-                    mask_raw, HY, live2, C, MOV_PAIRS_SIDES, merge=False,
-                    excess3=excess3):
-                agg = aggregate_horizons_sparse(
-                    st, sc, fk, C, 1, side, NC0s, FINs, thr_n,
-                    path0s=PATH0s,
-                    win_ord=None if grid_ord is None
-                    else grid_ord[lo:hi],
-                    lens=L_int,
-                    vals=exc,
-                )
-                base: list[dict] = [
-                    {
-                        "sec_type": sec_type,
-                        "code": codes[i],
-                        "stat_month": mw.stat_month,
-                        "pair_window": w,
-                        "side": side,
-                        "is_market_hyped": hyped,
-                        "lookback_period": LOOKBACK_PERIOD,
-                        # One-day signals: the bucket's mean run length
-                        # is the 1 constant (the identity registry's
-                        # streak column).
-                        "streak_signal_days": round(
-                            float(mean_streak[row_n]), 2),
-                        # config JSONB: no extra motivation data
-                        # for pair buckets (NULL = empty config,
-                        # compute_gap precedent)
-                        "config": None,
-                    }
-                    for row_n, i in enumerate(ii.tolist())
-                ]
-                rows.extend(build_result_rows(agg, kk, ii, base, thr_n))
-
-        if rows:
-            yield mw.stat_month, rows
+def compute_epairs_results(
+    *, df, first_dates, episodes, codes, sec_type, specs,
+) -> Iterator[tuple[date, list[dict]]]:
+    """mov_pairs_ema — the EMA sibling (ema6_vs_ema{W} spreads)."""
+    return compute_pairs_results(
+        df=df, first_dates=first_dates, episodes=episodes, codes=codes,
+        sec_type=sec_type, specs=specs,
+        spread_prefix="ema_pair", windows=MOV_PAIRS_EMA_WINDOWS,
+    )

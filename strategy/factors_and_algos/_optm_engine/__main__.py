@@ -32,6 +32,14 @@ strategy_identity / trade_decision rows are written). The combined
 best params (Set A ∪ Set B) are upserted into ``strategy.algo_configs``
 so the next "Run Strategy" run uses them automatically.
 
+The :class:`OptmEngineStrategy` entry class (a :class:`StrategyPipeline`
+subclass) owns the runtime lifecycle + DB connection lifecycle.
+Bootstrap-first layout with one wrinkle: the ``--gpu`` mode must be
+pre-scanned from argv BEFORE activation (the full argparse runs later
+inside execute()), so the module top calls
+``bootstrap_runtime(_gpu_mode_from_argv())`` and execute() skips the
+already-completed bootstrap.
+
 Examples
 --------
     python -m strategy.factors_and_algos._optm_engine \
@@ -44,29 +52,13 @@ Examples
 """
 from __future__ import annotations
 
-
-# resource pre-check -- exit early when sys/GPU memory is insufficient
-from _common.pre_check import pre_check
-
-pre_check()
-import argparse
-import asyncio
 import json
-import os
 import sys
-import time
 
-sys.path.insert(
-    0, os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__))))),
-)
-
-# GPU decision FIRST — cudf.pandas must patch the pandas import before
-# any module below pulls pandas in (shared util in _common.df_utils;
-# its exports are lazy so this import stays pandas-free). The mode is
-# pre-scanned from argv (argparse itself runs later in _parse_args) so
-# the module-level imports below are safe WITHOUT lazy imports.
-from _common.df_utils import maybe_enable_cudf_pandas  # noqa: E402
+# GPU mode pre-scanned from argv — the module-level imports below (optuna,
+# trainer, ...) pull pandas, so activation MUST happen right here with the
+# requested mode before them.
+from _common.data_pipeline import bootstrap_runtime
 
 
 def _gpu_mode_from_argv(default: str = "auto") -> str:
@@ -82,74 +74,27 @@ def _gpu_mode_from_argv(default: str = "auto") -> str:
     return default
 
 
-_GPU_ON, _GPU_WHY = maybe_enable_cudf_pandas(_gpu_mode_from_argv())
+bootstrap_runtime(_gpu_mode_from_argv())
 
 # Imported AFTER the GPU decision so cudf.pandas patches pandas first.
-import optuna  # noqa: E402
-from strategy._common.constants import DEFAULT_BUY_NOTIONAL  # noqa: E402
-from strategy._common.db import (  # noqa: E402
-    get_db_or_exit,
-    print_wall_time,
-    setup_utf8_stdout,
-)
-from strategy._trading.constants import FEE_RATE, SLIPPAGE_BAND  # noqa: E402
-from strategy.factors_and_algos import get_algo  # noqa: E402
-from strategy.factors_and_algos._optm_engine.objective import OptmContext  # noqa: E402
-from strategy.factors_and_algos._optm_engine.persist import (  # noqa: E402
+import optuna
+
+from strategy._common.constants import DEFAULT_BUY_NOTIONAL
+from strategy._trading.constants import FEE_RATE, SLIPPAGE_BAND
+from strategy.factors_and_algos import get_algo
+from strategy.factors_and_algos._optm_engine.objective import OptmContext
+from strategy.factors_and_algos._optm_engine.persist import (
     upsert_best_params_for_codes,
 )
-from strategy.factors_and_algos._optm_engine.training import training_store  # noqa: E402
-from strategy.factors_and_algos._optm_engine.training.trainer import (  # noqa: E402
+from strategy.factors_and_algos._optm_engine.training import training_store
+from strategy.factors_and_algos._optm_engine.training.trainer import (
     NestedTrainer,
 )
 
-from _common.log_setup import setup_logging  # noqa: E402
+from _common.log_setup import setup_logging
+from strategy._common.strategy_base import StrategyPipeline
+
 logger = setup_logging("_optm_engine")
-
-
-def _parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(
-        description="Nested hybrid param trainer (TPE → top-K → Kelly → "
-                    "grid → OOS) for pluggable algos — works on any "
-                    "AlgoBase subclass with a TUNABLE_SPACE.",
-    )
-    ap.add_argument("--algo", default="macd",
-                    help="Algo to train (registry name). Default: macd.")
-    ap.add_argument("--sec-type", choices=("index", "etf", "stock"),
-                    default="index")
-    ap.add_argument("--codes", nargs="+", required=True,
-                    help="Security code(s) to train on.")
-    ap.add_argument("--trials", type=int, default=50,
-                    help="Step 1 TPE trial count over Set A. Default: 50.")
-    ap.add_argument("--top-k", type=int, default=5,
-                    help="Step 2 distinct Set A candidates carried into "
-                         "the Kelly + grid stages. Default: 5.")
-    ap.add_argument("--seed", type=int, default=None,
-                    help="TPESampler seed (reproducibility).")
-    ap.add_argument(
-        "--statics-json", type=str, default=None,
-        help="Static (non-optimized) execution params as a JSON object: "
-             "fee_rate, slippage_band, buy_notional. Defaults come from "
-             "strategy/_trading/constants.py.",
-    )
-    ap.add_argument(
-        "--params-json", type=str, default=None,
-        help="Base algo param overrides (JSON object) merged over the "
-             "algo's DEFAULT_PARAMS before the study — e.g. fixing one "
-             "model param outside the search.",
-    )
-    ap.add_argument("--oos-frac", type=float, default=0.2,
-                    help="Fraction of each code's rows reserved as the "
-                         "OUT-OF-SAMPLE segment for the Set B grid "
-                         "(Calmar). Step 1 (Omega) runs on the remaining "
-                         "IS rows. 0 disables the split. Clamped to "
-                         "[0, 0.5]. Default: 0.2.")
-    ap.add_argument("--gpu", choices=("auto", "on", "off"), default="auto",
-                    help="cudf.pandas acceleration mode. Default: auto.")
-    ap.add_argument("--no-upsert", action="store_true",
-                    help="Do not write best params to algo_configs "
-                         "(study/dry-run only).")
-    return ap.parse_args()
 
 
 def _split_is_oos(dfs: dict, oos_frac: float):
@@ -175,43 +120,90 @@ def _split_is_oos(dfs: dict, oos_frac: float):
     return is_dfs, oos_dfs
 
 
-async def main() -> None:
-    args = _parse_args()
-    logger.info(f"[gpu] {_GPU_WHY}")
+class OptmEngineStrategy(StrategyPipeline):
+    """``python -m strategy.factors_and_algos._optm_engine`` — nested
+    hybrid param trainer for pluggable algos."""
 
-    setup_utf8_stdout()
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    component = "_optm_engine"
 
-    t0 = time.time()
-    codes = sorted(set(c.strip() for c in args.codes if c.strip()))
-    if not codes:
-        logger.error("error: no codes provided")
-        sys.exit(2)
+    def add_arguments(self, parser) -> None:
+        parser.add_argument("--algo", default="macd",
+                            help="Algo to train (registry name). Default: macd.")
+        parser.add_argument("--sec-type", choices=("index", "etf", "stock"),
+                            default="index")
+        parser.add_argument("--codes", nargs="+", required=True,
+                            help="Security code(s) to train on.")
+        parser.add_argument("--trials", type=int, default=50,
+                            help="Step 1 TPE trial count over Set A. Default: 50.")
+        parser.add_argument("--top-k", type=int, default=5,
+                            help="Step 2 distinct Set A candidates carried into "
+                                 "the Kelly + grid stages. Default: 5.")
+        parser.add_argument("--seed", type=int, default=None,
+                            help="TPESampler seed (reproducibility).")
+        parser.add_argument(
+            "--statics-json", type=str, default=None,
+            help="Static (non-optimized) execution params as a JSON object: "
+                 "fee_rate, slippage_band, buy_notional. Defaults come from "
+                 "strategy/_trading/constants.py.",
+        )
+        parser.add_argument(
+            "--params-json", type=str, default=None,
+            help="Base algo param overrides (JSON object) merged over the "
+                 "algo's DEFAULT_PARAMS before the study — e.g. fixing one "
+                 "model param outside the search.",
+        )
+        parser.add_argument("--oos-frac", type=float, default=0.2,
+                            help="Fraction of each code's rows reserved as the "
+                                 "OUT-OF-SAMPLE segment for the Set B grid "
+                                 "(Calmar). Step 1 (Omega) runs on the remaining "
+                                 "IS rows. 0 disables the split. Clamped to "
+                                 "[0, 0.5]. Default: 0.2.")
+        parser.add_argument("--gpu", choices=("auto", "on", "off"), default="auto",
+                            help="cudf.pandas acceleration mode. Default: auto.")
+        parser.add_argument("--no-upsert", action="store_true",
+                            help="Do not write best params to algo_configs "
+                                 "(study/dry-run only).")
 
-    # Statics: execution-cost assumptions — fixed inputs, not searched.
-    statics: dict = {
-        "fee_rate": FEE_RATE,
-        "slippage_band": SLIPPAGE_BAND,
-        "buy_notional": DEFAULT_BUY_NOTIONAL,
-    }
-    if args.statics_json:
-        overrides = json.loads(args.statics_json)
-        if not isinstance(overrides, dict):
-            raise TypeError("--statics-json must be a JSON object")
-        statics.update(overrides)
+    def apply_args(self) -> None:
+        import optuna
 
-    oos_frac = min(max(float(args.oos_frac), 0.0), 0.5)
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-    algo = get_algo(args.algo)
-    logger.info(f"\n=== nested training '{algo.ALGO_NAME}' on {args.sec_type} "
-          f"{codes} ===")
-    logger.info(f"  trials={args.trials}  top-k={args.top_k}  seed={args.seed}  "
-          f"oos-frac={oos_frac:.2f}  statics={statics}")
-    logger.info(f"  algo TUNABLE_SPACE keys: "
-          f"{sorted(getattr(algo, 'TUNABLE_SPACE', {}) or {}) or '(none)'}")
+        # Dedup + validate the code list BEFORE any DB work.
+        self.codes = sorted(set(c.strip() for c in self.args.codes if c.strip()))
+        if not self.codes:
+            logger.error("error: no codes provided")
+            sys.exit(2)
 
-    conn = await get_db_or_exit()
-    try:
+        # Statics: execution-cost assumptions — fixed inputs, not searched.
+        self.statics: dict = {
+            "fee_rate": FEE_RATE,
+            "slippage_band": SLIPPAGE_BAND,
+            "buy_notional": DEFAULT_BUY_NOTIONAL,
+        }
+        if self.args.statics_json:
+            overrides = json.loads(self.args.statics_json)
+            if not isinstance(overrides, dict):
+                raise TypeError("--statics-json must be a JSON object")
+            self.statics.update(overrides)
+
+        self.oos_frac = min(max(float(self.args.oos_frac), 0.0), 0.5)
+
+    async def run(self) -> None:
+        conn = self.conn
+        args = self.args
+        codes = self.codes
+        statics = self.statics
+        oos_frac = self.oos_frac
+
+        algo = get_algo(args.algo)
+        logger.info(f"\n=== nested training '{algo.ALGO_NAME}' on {args.sec_type} "
+              f"{codes} ===")
+        logger.info(f"  trials={args.trials}  top-k={args.top_k}  seed={args.seed}  "
+              f"oos-frac={oos_frac:.2f}  statics={statics}")
+        logger.info(f"  algo TUNABLE_SPACE keys: "
+              f"{sorted(getattr(algo, 'TUNABLE_SPACE', {}) or {}) or '(none)'}")
+
         # Fetch ONCE — every backtest runs purely in-memory.
         df = await algo.fetch_signal_data(conn, args.sec_type, codes)
         if df.empty:
@@ -332,18 +324,7 @@ async def main() -> None:
                   f"({args.sec_type}, strategy '{algo.ALGO_NAME}', "
                   f"trained row [today, ∞], is_default=FALSE) — next Run "
                   f"Strategy will use them.")
-    finally:
-        try:
-            await asyncio.wait_for(conn.close(), timeout=10)
-        except (asyncio.TimeoutError, Exception):
-            pass
-
-    print_wall_time(t0)
 
 
 if __name__ == "__main__":
-    from _common.post_check import post_check
-    try:
-        asyncio.run(main())
-    finally:
-        post_check()
+    OptmEngineStrategy().execute()

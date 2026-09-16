@@ -26,7 +26,7 @@ is_market_hyped only.
 
 Per (side, hype) subset the horizon aggregates reuse
 wide.aggregate_horizons_sparse against the code's ADAPTIVE reversal bar
-(reverse_thresholds: k_n·σ of the window's n-day forward changes).
+(thresholds: k_n·σ of the window's n-day forward changes).
 The config JSONB records the bucket's mean pe level (mean_metric — raw
 PE ratio) and mean z (motivation magnitude, like margin_ratio's
 mean_ratio / mean_z).
@@ -35,19 +35,22 @@ Yields (stat_month, rows) so __main__ can split each row into the
 pe_state motivation dicts and the forecast_results result dicts and
 write month-major.
 """
+
+
 from __future__ import annotations
 
-import json
+from collections.abc import Iterator
 from datetime import date
-from typing import Iterator
 
 import numpy as np
+import pandas as pd
 
+from analyze.analysis_forecasts._dfengine import (
+    WideDfEngine,
+    _band_ordinal,
+    _finite_mask,
+)
 from analyze.analysis_forecasts.config import (
-    FORWARD_HORIZONS,
-    LOOKBACK_PERIOD,
-    MM_HORIZONS,
-    PE_STATE_SIDE,
     VAL_HIGH_BAR,
     VAL_LOW_BAR,
     VAL_STATES,
@@ -56,176 +59,87 @@ from analyze.analysis_forecasts.config import (
     VAL_Z_MIN_PERIODS,
     VAL_Z_WINDOW,
 )
-from analyze.analysis_forecasts.wide import (
-    MonthWindow,
-    aggregate_horizons_sparse,
-    build_result_rows,
-    iter_bucket_subsets,
-    reverse_thresholds,
-    round6,
-    window_sigmas,
-)
 
-_K = len(VAL_STATES)                        # 5 states on the z axis
+_STATE_OF_ORD = {i: s for i, s in enumerate(VAL_STATES)}
 
-# Contiguous per-side ranges of the state axis (VAL_STATES order:
-# vlow, low | mid | high, vhigh — the pe mapping's side ranges).
-_SIDE_SLICES: dict[str, slice] = {
-    "bottom": slice(0, 2),
-    "flat": slice(2, 3),
-    "top": slice(3, 5),
-}
+
+class _ValStateEngine(WideDfEngine):
+    """Valuation STATE buckets over one standardized series (the z the
+    fetch layer computed vs the code's OWN shifted rolling moments): 5
+    bands vlow..vhigh, ONE family per series with the OPPOSITE side
+    mapping — PE lower-the-better (high z = expensive = bearish 'top'),
+    dividend yield higher-the-better (high z = cheap = bullish
+    'bottom'); mid = 'flat' (NULL reverse_prob). Every qualifying day
+    is its own 1-day signal; band membership has no scalar bar."""
+
+    BUCKET_COLS = ("val_state",)
+    MERGE = False
+    src_col: str = ""          # "pe_z" / "div_z"
+    state_side: dict = {}
+
+    def _extra_window_cols(self) -> list[str]:
+        return [self.src_col]
+
+    def family_constants(self) -> dict:
+        return {
+            "z_window": VAL_Z_WINDOW,
+            "z_min_periods": VAL_Z_MIN_PERIODS,
+            "vlow_bar": VAL_VLOW_BAR,
+            "low_bar": VAL_LOW_BAR,
+            "high_bar": VAL_HIGH_BAR,
+            "vhigh_bar": VAL_VHIGH_BAR,
+        }
+
+    def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
+        z = win[self.src_col]
+        has = _finite_mask(z)
+        if not has.any():
+            return
+        ord_ = _band_ordinal(
+            z, (VAL_VLOW_BAR, VAL_LOW_BAR, VAL_HIGH_BAR, VAL_VHIGH_BAR),
+        )
+        cells = win[has].copy()
+        cells["val_state"] = ord_[has].map(_STATE_OF_ORD)
+        cells["side"] = cells["val_state"].map(self.state_side)
+        cells["excess"] = np.nan          # band membership — no bar
+        yield self._streak_merge(
+            cells, group_cols=["val_state", "side", "code"],
+        )
+
+
+class _PeStateEngine(_ValStateEngine):
+    src_col = "pe_z"
+    state_side = {
+        "vlow": "bottom", "low": "bottom", "mid": "flat",
+        "high": "top", "vhigh": "top",
+    }
+
+
+class _DividendStateEngine(_ValStateEngine):
+    src_col = "div_z"
+    state_side = {
+        "vlow": "top", "low": "top", "mid": "flat",
+        "high": "bottom", "vhigh": "bottom",
+    }
 
 
 def compute_pe_results(
-    mats: dict[str, np.ndarray],
-    chg: dict[str, np.ndarray],
-    windows: list[MonthWindow],
-    codes: list[str],
-    sec_type: str,
-    hype: np.ndarray,
-    first_ord: np.ndarray,
-    grid_ord: np.ndarray | None = None,
+    *, df, first_dates, episodes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, bucket rows) per stat month.
+    """Yield (stat_month, pe_state bucket rows) per month."""
+    engine = _PeStateEngine(
+        df=df, first_dates=first_dates, episodes=episodes, codes=codes,
+        sec_type=sec_type, specs=specs,
+    )
+    return engine.run()
 
-    Args:
-        mats: wide state matrices keyed "z" (the pe's z-score vs the
-              code's own trailing moments — NaN where undefined) and
-              "metric" (the raw pe level — config JSONB magnitude
-              only).
-        chg:  shared change matrices (build_change_matrices):
-              NC0_{n} / FIN_{n} for n in FORWARD_HORIZONS.
-        windows: resolved MonthWindow list for the target months.
-        codes: sorted code list (matrix column order).
-        sec_type: emitted into every row.
-        hype: (T, C) bool matrix of market-hyped (date, code) cells
-              (build_hype_matrix).
-        first_ord: (C,) per-code first data date as ABSOLUTE epoch-day
-              ordinals — a code is live for a window only when
-              first_ord < mw.lo_ord (DATE-space full-window gate).
-        grid_ord: optional (T,) int64 day ordinals of the FULL grid
-              (build_grid) — sliced per window into aggregate_horizons_
-              sparse's win_ord so each emitted row carries its
-              trigger_dates (the calendar dates behind occurrence_count).
-    """
-    C = len(codes)
 
-    for mw in windows:
-        lo, hi = mw.lo, mw.hi
-        if lo >= hi:
-            continue
-        live = first_ord < mw.lo_ord
-        if not live.any():
-            continue
-
-        FINs = {n: chg[f"FIN_{n}"][lo:hi] for n in FORWARD_HORIZONS}
-        NC0s = {n: chg[f"NC0_{n}"][lo:hi] for n in FORWARD_HORIZONS}
-        # Window-sliced PATH-extreme matrices (FMAX0/FMIN0) — the
-        # swing-aware reversal event + max_low_change_ratio inputs.
-        PATH0s = {n: (chg[f"FMAX0_{n}"][lo:hi], chg[f"FMIN0_{n}"][lo:hi])
-                  for n in MM_HORIZONS}
-        # Per-(code, horizon) adaptive reversal bar for this window.
-        thr_n = reverse_thresholds(*window_sigmas(NC0s, FINs))
-        HY = hype[lo:hi]
-        live2 = live[:, None]
-
-        Z = mats["z"][lo:hi]
-        M = mats["metric"][lo:hi]
-        # (K, T, C) state masks stacked in VAL_STATES order — NaN z
-        # compares False, so undefined-z days never join a bucket.
-        with np.errstate(invalid="ignore"):
-            mask = np.stack([
-                Z <= VAL_VLOW_BAR,
-                (Z > VAL_VLOW_BAR) & (Z <= VAL_LOW_BAR),
-                (Z > VAL_LOW_BAR) & (Z <= VAL_HIGH_BAR),
-                (Z > VAL_HIGH_BAR) & (Z <= VAL_VHIGH_BAR),
-                Z > VAL_VHIGH_BAR,
-            ])
-        # (K, T, C) → (T, C, K) with k = the state position.
-        n_rows = hi - lo
-        mask = mask.transpose(1, 2, 0).reshape(n_rows, C, _K)
-
-        rows: list[dict] = []
-        # Streak-merged state signals via the UNIFIED bucket pipeline
-        # (wide.iter_bucket_subsets, merge=True): consecutive grid rows
-        # holding the SAME state collapse into ONE signal at the run's
-        # MID row, run lengths ride along per kept cell for the bucket's
-        # streak_signal_days mean, and the (side, hype) subsets come
-        # back as group-ascending sparse cell lists (the side slices
-        # are the pe mapping's uneven ranges).
-        for (side, hyped, kk, ii, st, sc, fk, L_int, exc, mean_streak
-             ) in iter_bucket_subsets(
-                mask, HY, live2, C,
-                tuple(_SIDE_SLICES), side_slices=_SIDE_SLICES):
-            sl = _SIDE_SLICES[side]
-            P = sl.stop - sl.start
-            agg = aggregate_horizons_sparse(
-                st, sc, fk, C, P, side, NC0s, FINs, thr_n,
-                path0s=PATH0s,
-                win_ord=None if grid_ord is None else grid_ord[lo:hi],
-                lens=L_int,
-            )
-            # Per-bucket mean state magnitudes (config JSONB — the
-            # motivation magnitude, like margin_ratio's mean_ratio /
-            # mean_z). Every sparse cell has a valid z by construction
-            # (NaN compares False upstream), so the all-cell sums are
-            # the per-cell mean numerators; the pe level is gathered
-            # per cell from the raw-pe matrix.
-            cell_cnt = np.bincount(fk, minlength=C * P)
-            cell_z = Z[st, sc]
-            cell_m = M[st, sc]
-            # The bins are CODE-major (flat = i*P + k), so gather each
-            # emitted (code, state) pair's OWN bin — emit cells have
-            # cell_cnt > 0 by construction.
-            emit_flat = ii * P + kk
-            mean_z_vals = np.divide(
-                np.bincount(fk, weights=cell_z, minlength=C * P)[emit_flat],
-                cell_cnt[emit_flat],
-                out=np.full(emit_flat.size, np.nan),
-                where=cell_cnt[emit_flat] > 0,
-            )
-            mean_m_vals = np.divide(
-                np.bincount(fk, weights=cell_m, minlength=C * P)[emit_flat],
-                cell_cnt[emit_flat],
-                out=np.full(emit_flat.size, np.nan),
-                where=cell_cnt[emit_flat] > 0,
-            )
-            base: list[dict] = []
-            for row_n, (k, i) in enumerate(zip(kk.tolist(), ii.tolist())):
-                state = VAL_STATES[sl.start + k]
-                base.append({
-                    "sec_type": sec_type,
-                    "code": codes[i],
-                    "stat_month": mw.stat_month,
-                    "val_state": state,
-                    "side": PE_STATE_SIDE[state],
-                    "is_market_hyped": hyped,
-                    "z_window": VAL_Z_WINDOW,
-                    "z_min_periods": VAL_Z_MIN_PERIODS,
-                    "vlow_bar": VAL_VLOW_BAR,
-                    "low_bar": VAL_LOW_BAR,
-                    "high_bar": VAL_HIGH_BAR,
-                    "vhigh_bar": VAL_VHIGH_BAR,
-                    "lookback_period": LOOKBACK_PERIOD,
-                    # the bucket's MEAN merged-state-run length (the
-                    # identity registry's streak column).
-                    "streak_signal_days": round(
-                        float(mean_streak[row_n]), 2),
-                    # config JSONB — asyncpg COPY needs a JSON text
-                    # string (compute_px_vol precedent).
-                    "config": json.dumps({
-                        "mean_metric": round6(mean_m_vals[row_n]),
-                        "mean_z": round6(mean_z_vals[row_n]),
-                    }),
-                })
-            batch = build_result_rows(agg, kk, ii, base, thr_n)
-            if side == "flat":
-                # No directional claim → the reversal probability is
-                # meaningless (its "against the bucket side" is
-                # undefined); NULL it on all 4 period rows.
-                batch = [{**r, "reverse_prob": None} for r in batch]
-            rows.extend(batch)
-
-        if rows:
-            yield mw.stat_month, rows
+def compute_dividend_results(
+    *, df, first_dates, episodes, codes, sec_type, specs,
+) -> Iterator[tuple[date, list[dict]]]:
+    """Yield (stat_month, dividend_state bucket rows) per month."""
+    engine = _DividendStateEngine(
+        df=df, first_dates=first_dates, episodes=episodes, codes=codes,
+        sec_type=sec_type, specs=specs,
+    )
+    return engine.run()

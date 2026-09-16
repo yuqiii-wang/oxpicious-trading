@@ -22,6 +22,13 @@
  * nearest date (via onCanvasClick), which flows up to the parent and updates
  * the as-of date.
  *
+ * The in-chart dataZoom slider owns the visible window, and it can DRIVE a
+ * sibling date-event strip (the Market Sentiments by AI and News page's idiom, mirroring
+ * the code-trend ↔ strip sync on the DataViz AI page): onVisibleRangeChange
+ * reports the visible [start, end] on every drag/rebuild, focusDateRequest
+ * jumps the window to a strip-dot's date, and onLoaded bridges the strip's
+ * axis with the full row span until the first report lands.
+ *
  * A vertical dashed markLine marks the currently selected date so the user
  * can see which date the attribution plots are showing.
  *
@@ -29,7 +36,7 @@
  * benchmarks, the industries' non_this_industry_* columns are NULL and no
  * shades are drawn (a helper message is shown).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Box,
@@ -52,6 +59,7 @@ import type {
   BenchmarkPriceChartResponse,
   IndustryAttributionPriceSeriesResponse,
 } from "@shared/types";
+import type { ECharts } from "echarts";
 import type { BenchmarkPriceChartProps, RollingDays } from "./types";
 import {
   ROLLING_DAYS,
@@ -69,6 +77,9 @@ export function BenchmarkPriceChart({
   selectedDate,
   onDateSelect,
   selectedIndustries,
+  onLoaded,
+  onVisibleRangeChange,
+  focusDateRequest,
 }: BenchmarkPriceChartProps) {
   const [data, setData] = useState<BenchmarkPriceChartResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -100,6 +111,7 @@ export function BenchmarkPriceChart({
   useEffect(() => {
     if (!benchmarkCode) {
       setData(null);
+      onLoaded?.(null);
       return;
     }
     let cancelled = false;
@@ -109,6 +121,10 @@ export function BenchmarkPriceChart({
       .then((resp) => {
         if (cancelled) return;
         setData(resp);
+        // Fired after each load settles: the FULL row span bridges the gap
+        // until the first visible-range report arrives (null for an empty
+        // load) — the Market Sentiments by AI and News page's date-strip axis bridge.
+        onLoaded?.(resp);
         setLoading(false);
       })
       .catch((e: Error) => {
@@ -248,6 +264,112 @@ export function BenchmarkPriceChart({
     };
   }, [data, onDateSelect]);
 
+  // Chart x-axis dates (category axis — one entry per row, no gap-break
+  // inserts). The visible-range reporter + focus jump map indexes through
+  // these.
+  const chartDates = useMemo(
+    () => data?.rows.map((r) => r.date) ?? [],
+    [data],
+  );
+  const chartRef = useRef<ECharts | null>(null);
+
+  // ---- Visible-window reporter (onVisibleRangeChange) ---------------------
+  // Same idiom as StockOhlcChart: maps the dataZoom's live start/end % back
+  // onto the category-axis dates and reports the visible range. Fired on
+  // ECharts 'datazoom' events AND on every data rebuild (which re-anchors
+  // the window). The callback lives in a ref so the chart.on binding (made
+  // once per callback change) always calls the freshest closure.
+  const visibleRangeCbRef = useRef(onVisibleRangeChange);
+  useEffect(() => {
+    visibleRangeCbRef.current = onVisibleRangeChange;
+  }, [onVisibleRangeChange]);
+
+  const emitVisibleRange = useCallback(() => {
+    const cb = visibleRangeCbRef.current;
+    if (!cb) return;
+    const chart = chartRef.current;
+    const n = chartDates.length;
+    if (!chart || n === 0) {
+      cb(null);
+      return;
+    }
+    try {
+      const dz = (
+        chart.getOption() as
+          | { dataZoom?: Array<{ start?: number; end?: number }> }
+          | undefined
+      )?.dataZoom?.[0];
+      const s = typeof dz?.start === "number" ? dz.start : 0;
+      const e = typeof dz?.end === "number" ? dz.end : 100;
+      const startIdx = Math.max(0, Math.min(n - 1, Math.floor((s / 100) * (n - 1))));
+      const endIdx = Math.max(0, Math.min(n - 1, Math.ceil((e / 100) * (n - 1))));
+      cb({ start: chartDates[startIdx], end: chartDates[endIdx] });
+    } catch {
+      // Instance disposed mid-read (HMR / unmount) — skip this report.
+    }
+  }, [chartDates]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const handler = () => emitVisibleRange();
+    chart.on("datazoom", handler);
+    return () => {
+      chart.off("datazoom", handler);
+    };
+  }, [emitVisibleRange]);
+
+  // Initial report + re-report after data rebuilds ('datazoom' alone never
+  // fires for those).
+  useEffect(() => {
+    emitVisibleRange();
+  }, [emitVisibleRange]);
+
+  // ---- focusDateRequest — jump the dataZoom window to a date --------------
+  // Centers the CURRENT window span on the requested date (non-trading dates
+  // snap forward to the next trading day) and dispatches the dataZoom action
+  // — which re-fires 'datazoom', so onVisibleRangeChange reporters stay in
+  // sync. Guarded by the request's seq so a click is applied exactly once.
+  const lastFocusSeqRef = useRef(-1);
+  useEffect(() => {
+    const req = focusDateRequest;
+    if (!req || req.seq === lastFocusSeqRef.current) return;
+    const chart = chartRef.current;
+    const n = chartDates.length;
+    if (!chart || n === 0) return;
+    let idx = chartDates.indexOf(req.date);
+    if (idx < 0) {
+      idx = chartDates.findIndex((d) => d >= req.date);
+      if (idx < 0) idx = n - 1;
+    }
+    try {
+      const dz = (
+        chart.getOption() as
+          | { dataZoom?: Array<{ start?: number; end?: number }> }
+          | undefined
+      )?.dataZoom?.[0];
+      const span =
+        typeof dz?.start === "number" && typeof dz?.end === "number"
+          ? Math.max(dz.end - dz.start, 1)
+          : 100;
+      const pos = (idx / Math.max(n - 1, 1)) * 100;
+      let start = pos - span / 2;
+      let end = pos + span / 2;
+      if (start < 0) {
+        start = 0;
+        end = span;
+      }
+      if (end > 100) {
+        end = 100;
+        start = 100 - span;
+      }
+      chart.dispatchAction({ type: "dataZoom", start, end });
+      lastFocusSeqRef.current = req.seq;
+    } catch {
+      // Instance disposed mid-dispatch (HMR / unmount) — skip this request.
+    }
+  }, [focusDateRequest, chartDates]);
+
   const subtitle = data
     ? `${data.name} (${data.code}) — click any date to set the as-of date${selectedDate ? ` · selected: ${selectedDate}` : ""}` +
       (hasIndustries
@@ -336,6 +458,9 @@ export function BenchmarkPriceChart({
             option={option}
             height={400}
             onCanvasClick={handleCanvasClick}
+            onReady={(c) => {
+              chartRef.current = c;
+            }}
           />
         </Stack>
       )}

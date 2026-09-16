@@ -43,12 +43,12 @@
 --  mov_rsi / mov_gap (see 02_mov_rsi_mov_std.sql). Results (forward
 --  changes / reversal probabilities) live in
 --  analysis_forecasts.forecast_results via forecast_id (1:N — one
---  forecast_id → 4 period rows: next/5d/20d/60d).
+--  forecast_id → 5 period rows: next/5d/20d/60d/mixed).
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.mov_pairs (
     code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_mov_pairs_forecast_id
+    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_mov_pairs_forecast_id
     pair_window     INTEGER      NOT NULL,  -- slow MA leg of the pair (trading days): 60/120/255 (fast leg fixed ma5)
     side            TEXT         NOT NULL,  -- 'top' (cross up / golden cross) | 'bottom' (cross down / death cross)
 
@@ -105,7 +105,7 @@ BEGIN
         DROP CONSTRAINT IF EXISTS pk_mov_pairs;
     CREATE TABLE analysis_forecasts.mov_pairs_new (
             code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-            forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_mov_pairs_forecast_id
+            forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_mov_pairs_forecast_id
             pair_window     INTEGER      NOT NULL,
             side            TEXT         NOT NULL,
             lookback_period TEXT         NOT NULL DEFAULT '5y',
@@ -148,8 +148,8 @@ CREATE INDEX IF NOT EXISTS idx_mov_pairs_forecast_id
 --  Comments
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis_forecasts.mov_pairs IS 'MA-pair cross (golden/death cross) bucket definitions (motivation): one row per forecast_id — the days of one security-month within the trailing 5-year window ending at the bucket''s stat_month where the stored relative-MA spread analysis.mov_ave_spreads_detail.ma5_vs_ma{pair_window} = (ma5 - ma_{W}) / ma_{W} changes sign: side=top a CROSS UP / golden cross (spread turns > 0 from <= 0, ma5 rises through the slow MA), side=bottom a CROSS DOWN / death cross (spread turns < 0 from >= 0), one-day signals (2026-09: the legacy fixed-5-day cooldown was removed; a cross day''s predecessor sits on the other side of zero so consecutive cross days are mutually exclusive — every cross day is its own forecast signal with streak_signal_days = 1). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / reversal probabilities) live in analysis_forecasts.forecast_results via forecast_id. NO new MA computation — the buckets read the parent mov_ave_spread analysis''s existing spread columns. Source: analysis.mov_ave_spreads_detail (ma5_vs_ma60/120/255).';
-COMMENT ON COLUMN analysis_forecasts.mov_pairs.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
+COMMENT ON COLUMN analysis_forecasts.mov_pairs.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 5 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 5 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
 COMMENT ON COLUMN analysis_forecasts.mov_pairs.pair_window IS 'Slow MA leg of the pair (trading days): 60 / 120 / 255. The fast leg is fixed at ma5; the cross is read off analysis.mov_ave_spreads_detail.ma5_vs_ma{pair_window}.';
-COMMENT ON COLUMN analysis_forecasts.mov_pairs.side IS 'Bucket side: top = cross UP / golden cross (ma5_vs_ma{W}[t] > 0 and ma5_vs_ma{W}[t-1] <= 0 — the pair turns bullish; reversals are changes below the bucket''s FIXED 1% reverse_threshold (0.01 — the period-end n-day close vs ±1%); bottom = cross DOWN / death cross (spread turns < 0 from >= 0 — the pair turns bearish; reversals are changes above it).';
+COMMENT ON COLUMN analysis_forecasts.mov_pairs.side IS 'Bucket side: top = cross UP / golden cross (ma5_vs_ma{W}[t] > 0 and ma5_vs_ma{W}[t-1] <= 0 — the pair turns bullish; reversals are changes below the bucket''s FIXED 1% threshold (0.01 — the period-end n-day close vs ±1%); bottom = cross DOWN / death cross (spread turns < 0 from >= 0 — the pair turns bearish; reversals are changes above it).';
 COMMENT ON COLUMN analysis_forecasts.mov_pairs.is_market_hyped IS 'TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
 COMMENT ON COLUMN analysis_forecasts.mov_pairs.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';

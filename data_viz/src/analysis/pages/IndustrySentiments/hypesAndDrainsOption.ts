@@ -2,21 +2,23 @@
  * Build the ECharts option for the Industry Hypes & Drains SEASONAL chart.
  *
  * PLOT STYLE
- *   Benchmark line (rebased to 100) with each industry's OWN return curve
- *   overlaid. Green shade = curve above benchmark (HYPE), red shade =
- *   curve below benchmark (DRAIN).
+ *   Benchmark line with each ranked industry's SHARED-PORTFOLIO return
+ *   curve overlaid. Green shade = curve above benchmark (HYPE), red shade
+ *   = curve below benchmark (DRAIN).
  *
- * INDUSTRY CURVE FORMULA (industry's own return, NOT ex-industry benchmark)
- *   Given the identity: bench_return = swf × ind_return + (1-swf) × non_ind_return
- *   Solve for ind_return:
- *     ind_return = (bench_return - (1-swf) × non_ind_return) / swf
- *   where swf = benchmark_shared_weight / 100 (0..1)
- *         non_ind_return = rolling / 100 - 1  (from the non-this-industry
- *                        rolling price column, which is a 100-based factor)
- *   The curve is rebased to 100:  curve(t) = 100 × (1 + ind_return(t))
- *
- *   With this formula, HYPE industries (ind_return > bench_return) plot
- *   ABOVE the benchmark, and DRAIN industries plot BELOW — intuitive.
+ * CURVES (both rebased to 100 at the N-day window start)
+ *   industry.rolling (API) = 100 × compounded daily shared return over the
+ *   trailing N trading days — the same quantity the build's hype metric is
+ *   measured on. The benchmark line is rebased the SAME way:
+ *     benchValue(t) = 100 × close(t) / close(t-N)
+ *   so curve-vs-benchmark differences ARE the hype
+ *   (hype = industry_return_Nd - benchmark_return_Nd) and the shade is
+ *   meaningful. (The old plot rebased the benchmark to the series' FIRST
+ *   date while the industry curve was window-rebased — the two were not
+ *   comparable; also the industry curve was recovered by inverting the
+ *   rolling non-industry column, which amplified its construction
+ *   artifacts by (1-swf)/swf into ±hundreds-of-percent noise for narrow
+ *   industries.)
  *
  * SEASONAL STATE MACHINE
  *   Industries are ranked per CALENDAR MONTH. The plot is daily, but WHICH
@@ -26,7 +28,8 @@
  *             Full opacity line + shade.
  *   FADING  — was ranked in a past month, NOT in the current month, but
  *             the curve is still on the SAME side of the benchmark (HYPE:
- *             above, DRAIN: below). Very light transparent line, no shade.
+ *             at/above, DRAIN: at/below). Very light transparent line, no
+ *             shade.
  *   HIDDEN  — curve has CROSSED the benchmark (flipped sides), or the
  *             industry was never ranked. Null (not rendered).
  *
@@ -145,18 +148,21 @@ function buildSeasonMap(
 /**
  * Compute per-date state for one industry using the state machine.
  *
- * With the industry-own-return curve:
- *   HYPE: curve ABOVE benchmark (displayValue > 100) → FADING while above
- *   DRAIN: curve BELOW benchmark (displayValue < 100) → FADING while below
+ * With window-rebased curves (100 = flat over the trailing N days):
+ *   HYPE: industry curve AT/ABOVE the benchmark curve → FADING while so
+ *   DRAIN: industry curve AT/BELOW the benchmark curve → FADING while so
  *
  * @param dates          Benchmark dates (chronological).
- * @param displayValues  Industry's own-return curve (rebased to 100, aligned to dates).
+ * @param displayValues  Industry's shared-portfolio curve (window-rebased,
+ *                       aligned to dates).
+ * @param benchmarkValues Benchmark curve (window-rebased, aligned to dates).
  * @param seasonMap      season_qkey → { rank_side, rank } for this industry.
  * @returns Uint8Array of ACTIVE/FADING/HIDDEN per date.
  */
 function computeStates(
   dates: string[],
   displayValues: Array<number | null>,
+  benchmarkValues: Array<number | null>,
   seasonMap: Map<string, { rank_side: "HYPE" | "DRAIN"; rank: number }>,
 ): { states: Uint8Array; lastRankSide: "HYPE" | "DRAIN" } {
   const n = dates.length;
@@ -168,6 +174,7 @@ function computeStates(
     const season = dateToSeason(dates[i]);
     const ranked = seasonMap.get(season);
     const dv = displayValues[i];
+    const bv = benchmarkValues[i];
 
     if (ranked) {
       // Industry is ranked in this season → ACTIVE
@@ -179,26 +186,26 @@ function computeStates(
       if (currentState === HIDDEN || currentRankSide === null) {
         states[i] = HIDDEN;
       } else {
-        if (dv == null) {
+        if (dv == null || bv == null) {
           currentState = HIDDEN;
           states[i] = HIDDEN;
         } else if (currentRankSide === "HYPE") {
-          // HYPE: curve should be ABOVE benchmark (dv >= 100)
-          if (dv >= 100) {
+          // HYPE: curve should be AT/ABOVE the benchmark curve
+          if (dv >= bv) {
             currentState = FADING;
             states[i] = FADING;
           } else {
-            // Crossed below benchmark → HIDDEN
+            // Crossed below the benchmark → HIDDEN
             currentState = HIDDEN;
             states[i] = HIDDEN;
           }
         } else {
-          // DRAIN: curve should be BELOW benchmark (dv <= 100)
-          if (dv <= 100) {
+          // DRAIN: curve should be AT/BELOW the benchmark curve
+          if (dv <= bv) {
             currentState = FADING;
             states[i] = FADING;
           } else {
-            // Crossed above benchmark → HIDDEN
+            // Crossed above the benchmark → HIDDEN
             currentState = HIDDEN;
             states[i] = HIDDEN;
           }
@@ -236,71 +243,59 @@ export function buildHypesAndDrainsOption(
   // in seasons where their rank exceeds maxRank they fall to FADING/HIDDEN.
   const filteredRankings = data.seasonal_rankings.filter((r) => r.rank <= maxRank);
 
-  // ---- Compute benchmark values (rebase to 100 at first non-null close) ----
-  const firstClose = allCloses.find((v) => v != null && v !== 0) ?? null;
-  const benchmarkValues: Array<number | null> = firstClose
-    ? allCloses.map((v) => (v != null ? (v / firstClose) * 100 : null))
-    : allCloses.map(() => null);
-
-  // ---- Compute benchmark N-day return for each date (for industry return formula) ----
-  // The industry's own return is derived from the identity:
-  //   bench_return = swf × ind_return + (1-swf) × non_ind_return
-  // We compute bench_return from closes: close(t) / close(t-N) - 1
-  // where N = data.period_days.
+  // ---- Benchmark curve, rebased to 100 at the N-day window start ----
+  // benchValue(t) = 100 × close(t) / close(t - periodDays) — the SAME
+  // window-rebasing the industry curves use, so curve-vs-benchmark
+  // differences ARE the hype metric (industry_return_Nd - benchmark_return_Nd).
   const n = totalN;
   const dates = allDates;
   const closes = allCloses;
   const returns = allReturns;
+  const periodDays = data.period_days;
+
+  const benchmarkValues: Array<number | null> = new Array(n).fill(null);
+  const benchReturnsNd: Array<number | null> = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const lookbackIdx = i - periodDays;
+    if (lookbackIdx < 0) continue;
+    const close = closes[i];
+    const closeNago = closes[lookbackIdx];
+    if (close == null || closeNago == null || closeNago === 0) continue;
+    const retNd = close / closeNago - 1;
+    benchReturnsNd[i] = retNd;
+    benchmarkValues[i] = 100 * (1 + retNd);
+  }
 
   // ---- Compute each industry's state + display values ----
+  // displayValue = industry.rolling directly — the API already compounded
+  // the daily shared-return identity into the trailing-N-day 100-based
+  // factor (the same quantity the hype metric is measured on).
   const computed: IndustryComputed[] = [];
 
   for (const ind of data.industry_series) {
-    // Build rolling + shared_weight lookup aligned to benchmark dates
     const rollingByDate = new Map<string, number | null>();
-    const swByDate = new Map<string, number | null>();
     for (const r of ind.rows) {
       rollingByDate.set(r.date, r.rolling);
-      swByDate.set(r.date, r.benchmark_shared_weight);
     }
 
     // Build season map for this industry (using rank-filtered rankings)
     const seasonMap = buildSeasonMap(filteredRankings, ind.industry_id);
     if (seasonMap.size === 0) continue; // industry has no rankings (all > maxRank) — skip
 
-    // Compute industry's own return for each date using the identity:
-    //   bench_return = swf × ind_return + (1-swf) × non_ind_return
-    //   → ind_return = (bench_return - (1-swf) × non_ind_return) / swf
-    //   displayValue = 100 × (1 + ind_return)
-    const periodDays = data.period_days;
-
     const displayValues: Array<number | null> = new Array(n).fill(null);
     const industryReturns: Array<number | null> = new Array(n).fill(null);
 
     for (let i = 0; i < n; i++) {
       const rolling = rollingByDate.get(dates[i]) ?? null;
-      const sw = swByDate.get(dates[i]) ?? null;
-      const close = closes[i];
-      if (rolling == null || sw == null || close == null || sw <= 0 || sw >= 95) continue;
-
-      // Compute benchmark N-day return: close(i) / close(i - periodDays) - 1
-      const lookbackIdx = i - periodDays;
-      if (lookbackIdx < 0) continue;
-      const closeNago = closes[lookbackIdx];
-      if (closeNago == null || closeNago === 0) continue;
-
-      const benchRet = close / closeNago - 1;
-      const nonIndRet = rolling / 100 - 1;
-      const swf = sw / 100;
-
-      // Industry return: (benchRet - (1-swf) × nonIndRet) / swf
-      const indRet = (benchRet - (1 - swf) * nonIndRet) / swf;
-      industryReturns[i] = indRet;
-      displayValues[i] = 100 * (1 + indRet);
+      if (rolling == null) continue;
+      displayValues[i] = rolling;
+      industryReturns[i] = rolling / 100 - 1;
     }
 
     // Compute states
-    const { states, lastRankSide } = computeStates(dates, displayValues, seasonMap);
+    const { states, lastRankSide } = computeStates(
+      dates, displayValues, benchmarkValues, seasonMap,
+    );
 
     // Find latest season's rank for the legend label
     const sortedSeasons = Array.from(seasonMap.keys()).sort();
@@ -489,6 +484,7 @@ export function buildHypesAndDrainsOption(
     const idx = arr[0].dataIndex ?? 0;
     const dt = dates[idx] ?? "—";
     const bv = benchmarkValues[idx];
+    const benchNd = benchReturnsNd[idx];
     const rt = returns[idx];
     const rsign = rt == null ? "" : rt >= 0 ? "▲ " : "▼ ";
     const children: React.ReactNode[] = [];
@@ -496,8 +492,14 @@ export function buildHypesAndDrainsOption(
       React.createElement(tooltipComponents.Header, null, `${data.benchmark_name} (${data.benchmark_code})`),
       React.createElement("div", { style: { marginTop: 2 } }, dt),
       React.createElement("div", null,
-        "Rebased: ",
+        `${data.period_days}d rebased: `,
         React.createElement(tooltipComponents.Bold, null, bv == null ? "—" : fmtNum(bv, 2))
+      ),
+      React.createElement("div", null,
+        `${data.period_days}d return: `,
+        React.createElement(tooltipComponents.Bold, {
+          style: { color: benchNd == null ? c.textColor : benchNd >= 0 ? UP_COLOR : DOWN_COLOR }
+        }, fmtPctSigned(benchNd, 2))
       ),
       React.createElement("div", null,
         rsign,
@@ -517,8 +519,10 @@ export function buildHypesAndDrainsOption(
       }
       const stateLabel = state === ACTIVE ? "●" : state === FADING ? "○" : "✕";
       const stateColor = state === ACTIVE ? c.textColor : state === FADING ? "#999" : "#ccc";
-      const retColor = indRet >= 0 ? UP_COLOR : DOWN_COLOR;
-      const retSign = indRet >= 0 ? "▲ " : "▼ ";
+      // hype = industry_return_Nd - benchmark_return_Nd (the ranking metric)
+      const hype = benchNd == null ? null : indRet - benchNd;
+      const hypeColor = hype != null && hype >= 0 ? UP_COLOR : DOWN_COLOR;
+      const hypeSign = hype != null && hype >= 0 ? "+" : "";
       children.push(
         React.createElement("div", { style: { opacity: state === ACTIVE ? 1 : state === FADING ? 0.5 : 0.3 } },
           React.createElement("span", { style: { color: stateColor } }, stateLabel),
@@ -526,8 +530,9 @@ export function buildHypesAndDrainsOption(
           React.createElement(tooltipComponents.Bold, null, fmtNum(iv, 2)),
           " ",
           React.createElement("span", { style: { opacity: 0.7 } },
-            `${retSign}ret: `,
-            React.createElement(tooltipComponents.Bold, { style: { color: retColor } }, fmtPctSigned(indRet, 2))
+            "hype: ",
+            React.createElement(tooltipComponents.Bold, { style: { color: hypeColor } },
+              hype == null ? "—" : `${hypeSign}${fmtNum(hype * 100, 2)}%`)
           )
         )
       );
@@ -574,7 +579,7 @@ export function buildHypesAndDrainsOption(
       // curves overflow these bounds and are clipped, preventing them from
       // compressing the rest of the plot into a flat band.
       ...(yAxisBounds ? { min: yAxisBounds.min, max: yAxisBounds.max } : {}),
-      name: "Rebased (100)",
+      name: `Rebased (${data.period_days}d = 100)`,
       nameTextStyle: { color: c.textColor, fontSize: 9 },
       axisLine: { lineStyle: { color: c.axisLineColor } },
       axisLabel: {

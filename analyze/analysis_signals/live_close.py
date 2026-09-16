@@ -62,12 +62,13 @@ from analyze.analysis_forecasts.config import (
     GAP_WINDOWS,
     MARGIN_RATIO_Z_MIN_PERIODS,
     MARGIN_RATIO_Z_WINDOW,
-    MOV_PAIRS_EMA_WINDOWS,
-    MOV_PAIRS_WINDOWS,
     RSI_WINDOWS,
 )
 from analyze.analysis_forecasts.fetch import _PRICE_SOURCE
-from analyze.analysis_signals.config import TABLE_SIGNALS
+from analyze.analysis_signals.config import (
+    PAIRS_SIGNAL_WINDOWS,
+    TABLE_SIGNALS,
+)
 from live.live_signals.config import (
     LIVE_SIGNAL_PK,
     LIVE_SIGNALS_TABLE,
@@ -110,9 +111,9 @@ _GAP_SUB_TYPES = np.asarray([f"gap{w}" for w in GAP_WINDOWS])
 # pair{W} / emapair{W} sub_type names for the cross families (same
 # indicator-space lookup; the spread columns arrive aliased to the
 # matrix-key naming pair_{W} / ema_pair_{W}).
-_PAIRS_SUB_TYPES = np.asarray([f"pair{w}" for w in MOV_PAIRS_WINDOWS])
+_PAIRS_SUB_TYPES = np.asarray([f"pair{w}" for w in PAIRS_SIGNAL_WINDOWS])
 _EMA_PAIRS_SUB_TYPES = np.asarray(
-    [f"emapair{w}" for w in MOV_PAIRS_EMA_WINDOWS]
+    [f"emapair{w}" for w in PAIRS_SIGNAL_WINDOWS]
 )
 
 # Half-quantum of analysis_signals.signals.signal_threshold NUMERIC(14,6):
@@ -560,13 +561,13 @@ async def mirror_live_close(conn, sec_type: str) -> int:
             await _fetch_missing_pairs(
                 conn, sec_type, "mov_pairs",
                 "analysis.mov_ave_spreads_detail", "ma5_vs_ma{w}",
-                MOV_PAIRS_WINDOWS, "pair_{w}"),
+                PAIRS_SIGNAL_WINDOWS, "pair_{w}"),
             "mov_pairs", _PAIRS_SUB_TYPES)
         + _records_from_pairs(
             await _fetch_missing_pairs(
                 conn, sec_type, "mov_pairs_ema",
                 "analysis.mov_ave_spreads_detail_ema", "ema6_vs_ema{w}",
-                MOV_PAIRS_EMA_WINDOWS, "ema_pair_{w}"),
+                PAIRS_SIGNAL_WINDOWS, "ema_pair_{w}"),
             "mov_pairs_ema", _EMA_PAIRS_SUB_TYPES)
         + _records_from_signed_bar(
             await _fetch_missing_pxvol(conn, sec_type), "px_vol")

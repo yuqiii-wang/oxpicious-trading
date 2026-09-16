@@ -8,7 +8,8 @@ study"):
      Canonical industry ids are UPPERCASE slugs (BANKS, SEMI, …) — the same
      values stored in stats.sec_classification / stats.industry_basic_stats,
      so ``text.news.industry_id`` / ``text.news_keywords.industry_id`` join
-     against the rest of the project without mapping.
+     against the rest of the project without mapping. The matched industry's
+     parent sector is carried alongside as ``text.news.sector_id``.
 
   2. ``downloads/macro/gov/keywords.json`` — the curated NEWS keyword
      taxonomy. Its industry category names are the catalog industry SLUGS
@@ -69,6 +70,7 @@ class KeywordTaxonomy:
         # both in catalog rule order (dict order = rule order).
         self.slug_to_industry: Dict[str, str] = {}
         self.industry_label: Dict[str, str] = {}
+        self.industry_sector: Dict[str, str] = {}
         self.industry_order: Dict[str, int] = {}
         order = 0
         for _sector_id, sector in catalog.items():
@@ -78,6 +80,7 @@ class KeywordTaxonomy:
                 slug = info.get("slug") or industry_id.lower()
                 self.slug_to_industry[slug] = industry_id
                 self.industry_label[industry_id] = info.get("label", "")
+                self.industry_sector[industry_id] = _sector_id
                 self.industry_order[industry_id] = order
                 order += 1
 
@@ -166,21 +169,44 @@ class KeywordTaxonomy:
             industry_id = min(matched_industries, key=self.industry_order.get)
         return counts, industry_id
 
+    def sector_of(self, industry_id: Optional[str]) -> Optional[str]:
+        """Parent sector_id of *industry_id* in the catalog (None when the
+        industry is unknown or *industry_id* is None)."""
+        if industry_id is None:
+            return None
+        return self.industry_sector.get(industry_id)
+
+
+# Process-wide singleton: the taxonomy is read-only after construction,
+# but construction re-reads two JSON catalogs and rebuilds the compiled
+# matchers — callers that run per-article/per-QA (builds.text loaders,
+# llm_agents stores) share one instance instead of paying that per call.
+_TAXONOMY: Optional["KeywordTaxonomy"] = None
+
+
+def get_taxonomy() -> "KeywordTaxonomy":
+    """The shared KeywordTaxonomy instance (built on first use)."""
+    global _TAXONOMY
+    if _TAXONOMY is None:
+        _TAXONOMY = KeywordTaxonomy()
+    return _TAXONOMY
+
 
 def extract_for_articles(
     rows: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Attach industry_id / word_count / keywords to parsed news rows.
+    """Attach industry_id / sector_id / word_count / keywords to news rows.
 
     Adds in place + returns the same rows, each with:
-      industry_id TEXT | None, word_count INT,
-      keywords: dict keyword -> count (matched keywords only).
+      industry_id TEXT | None, sector_id TEXT | None (its parent sector),
+      word_count INT, keywords: dict keyword -> count (matched keywords only).
     """
-    taxonomy = KeywordTaxonomy()
+    taxonomy = get_taxonomy()
     for row in rows:
         text = row["title"] + "\n" + (row.get("content") or "")
         counts, industry_id = taxonomy.match(text)
         row["industry_id"] = industry_id
+        row["sector_id"] = taxonomy.sector_of(industry_id)
         row["word_count"] = taxonomy.word_count(text)
         row["keywords"] = counts
     return rows

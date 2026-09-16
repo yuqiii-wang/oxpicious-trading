@@ -160,6 +160,17 @@ def detect_gpu() -> GPUInfo:
     The cache means the GPU is probed at most once per process. If the
     GPU state changes (e.g. driver crash), the process must be restarted.
     """
+    # Step -1: explicit opt-out. OXPICIOUS_GPU=0/off/cpu forces the CPU
+    # path BEFORE any probe — no nvidia-smi subprocess, no cuDF import,
+    # no CUDA context (the cudf.pandas hook alone would otherwise hold
+    # VRAM even for workloads whose ops never delegate to the GPU).
+    _gpu_env = os.environ.get("OXPICIOUS_GPU", "").strip().lower()
+    if _gpu_env in ("0", "off", "false", "cpu", "no"):
+        return GPUInfo(
+            available=False,
+            reason=f"OXPICIOUS_GPU={os.environ.get('OXPICIOUS_GPU')} - GPU opted out",
+        )
+
     # Step 0: environment gate. cuDF only runs on Linux/WSL; on native
     # Windows / macOS / any other OS we short-circuit to "unavailable"
     # before running nvidia-smi or importing cuDF. This keeps the CPU

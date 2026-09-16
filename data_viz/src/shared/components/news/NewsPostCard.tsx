@@ -131,10 +131,14 @@ export default function NewsPostCard({ item }: { item: NewsItem }) {
         </Box>
       </Stack>
 
-      {/* ---- chips: source · industry ---- */}
+      {/* ---- chips: source · sector (sector-only items) · industry ---- */}
       <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5, mb: 0.5 }}>
         {item.source && (
           <Chip label={item.source} size="small" color="primary" variant="outlined"
+            sx={{ fontSize: "0.65rem", height: 18 }} />
+        )}
+        {!item.industry_id && item.sector_id && (
+          <Chip label={item.sector_id} size="small" color="secondary" variant="outlined"
             sx={{ fontSize: "0.65rem", height: 18 }} />
         )}
         {item.industry_id && (

@@ -207,6 +207,29 @@ def maybe_enable_cudf_pandas(mode: str = "auto") -> tuple[bool, str]:
             )
     except Exception as exc:
         desc += f" | smoke test FAILED: {exc}"
+
+    # RMM allocator policy (2026-09-15): cuDF's default POOL allocator
+    # retains every freed device block, so nvidia-smi shows the run's
+    # high-water mark forever — "24GB occupied" long after the ops that
+    # allocated it returned. Switching to the plain cudaMallocAsync
+    # resource makes freed VRAM return to the OS (usage tracks live
+    # computation) at the cost of some allocator churn. Must run BEFORE
+    # the first real dataframe allocation (nothing alive references the
+    # smoke-test tensor). OXPICIOUS_RMM_POOL=1 restores the pool.
+    import os as _os
+
+    if _os.environ.get("OXPICIOUS_RMM_POOL", "").strip().lower() not in (
+        "1", "true", "yes", "pool",
+    ):
+        try:
+            import rmm
+
+            rmm.reinitialize(pool_allocator=False)
+            desc += " | RMM: cudaMallocAsync (VRAM tracks live usage)"
+        except Exception as exc:
+            desc += f" | RMM pool retained (reinit failed: {exc})"
+    else:
+        desc += " | RMM: pool allocator (OXPICIOUS_RMM_POOL=1)"
     return True, desc
 
 

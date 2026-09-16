@@ -11,7 +11,10 @@
  *     unbounded on that side. With `frozenFromYears` set the menu swaps
  *     to an END-ONLY variant: one editable end-period input selecting
  *     rows whose month EQUALS it (the end − N years min is frozen as a
- *     caption-only stats window).
+ *     caption-only stats window). END-ONLY filters START ACTIVE — each
+ *     scope reset seeds the end at `defaultEnd` (else the data's latest
+ *     month) — so exactly one period's rows show until the user edits
+ *     or clears the input (Clear = unbounded, all rows).
  *   • "range" — min/max over continuous numeric magnitudes (prices,
  *     amounts, ratios); rows with a null/non-numeric value never match an
  *     active range. NOT for numeric columns with a small discrete value set
@@ -60,7 +63,9 @@ export interface HeaderFilterDef<T> {
   /** date type only — END-ONLY mode: the menu shows a single editable
    *  end-period input and rows match the stats month EQUALING it (the
    *  end − N years lookback min is auto-frozen as a caption-only stats
-   *  window, not a filter bound). */
+   *  window, not a filter bound). The filter STARTS ACTIVE, seeded at
+   *  the hook's `defaultEnd` arg (else the data's latest month) on
+   *  every scope reset. */
   frozenFromYears?: number;
 }
 
@@ -107,13 +112,36 @@ export function useTableHeaderFilters<T>(
   defs: HeaderFilterDef<T>[],
   rows: T[],
   scopeDeps: unknown[] = [],
+  /** END-ONLY date filters seed their end bound at this period on every
+   *  scope reset, falling back to the data's latest month — the
+   *  ForecastTable's forecast-id search focus month, so a jumped-to
+   *  older bucket's rows are shown instead of being hidden behind the
+   *  latest-month seed. */
+  defaultEnd: string | null = null,
 ) {
   const [state, setState] = useState<Record<string, ColFilterState>>({});
   const [order, setOrder] = useState<OrderState>(() => defaultOrder(defs));
   // New scope → the previous column values don't apply: clear all filters
   // and re-default the ordering key (first date column, descending).
+  // END-ONLY date columns (frozenFromYears) additionally START ACTIVE,
+  // seeded at `defaultEnd` (else the data's latest month) — the end input
+  // IS the period selector, so exactly one period's rows show until the
+  // user edits it (or Clears it to unbounded = all months).
   useEffect(() => {
-    setState({});
+    const init: Record<string, ColFilterState> = {};
+    for (const d of defs) {
+      if (d.type !== "date" || d.frozenFromYears == null) continue;
+      let hi: string | null = null;
+      for (const r of rows) {
+        const v = d.value(r);
+        if (v == null) continue;
+        const s = String(v);
+        if (hi == null || s > hi) hi = s;
+      }
+      const end = defaultEnd ?? hi;
+      if (end != null) init[d.key] = { kind: "date", from: end, to: end };
+    }
+    setState(init);
     setOrder(defaultOrder(defs));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, scopeDeps);
