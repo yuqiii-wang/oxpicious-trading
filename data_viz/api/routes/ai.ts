@@ -19,8 +19,19 @@
  *     resolutions joined back to the text.news articles and the average
  *     digestion sentiment across the refs — the feed card's click-to-expand
  *     fetch (mirrors /api/news/item).
+ *
+ *   POST /api/ai/ask
+ *     Interactive chart question (the AI Ask "?" beside chart titles):
+ *     { question, plotInfo, screenshots?, themeMode, onlineSearch? } →
+ *     spawns llm_agents.llm_ask (chart-adviser mode) via the WSL py-runner
+ *     (payload by temp file — see services/ai-ask.service.ts) and returns
+ *     { success, answer, model }. Screenshots ride along as images when
+ *     the model has image input (vision config on the python side);
+ *     onlineSearch=true routes through the online-search agent instead
+ *     (cited [来源：ref_N] answer, text-only).
  */
 import { Router, type Request, type Response } from "express";
+import { askLlm } from "../services/ai-ask.service.js";
 import { getAiQa, listAiCalendar, listAiItems } from "../services/ai.service.js";
 
 const router = Router();
@@ -92,6 +103,43 @@ router.get("/qa", async (req: Request, res: Response) => {
   } catch (err) {
     console.error("[ai/qa] error:", err);
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// POST /api/ai/ask — chart question → llm_agents.llm_ask (via WSL).
+router.post("/ask", async (req: Request, res: Response) => {
+  try {
+    const question =
+      typeof req.body?.question === "string" ? req.body.question.trim() : "";
+    const plotInfo =
+      typeof req.body?.plotInfo === "object" && req.body.plotInfo !== null
+        ? (req.body.plotInfo as Record<string, unknown>)
+        : null;
+    if (!question) {
+      res.status(400).json({ success: false, error: "Missing 'question'" });
+      return;
+    }
+    if (!plotInfo) {
+      res.status(400).json({ success: false, error: "Missing 'plotInfo'" });
+      return;
+    }
+    const screenshots =
+      Array.isArray(req.body?.screenshots) && req.body.screenshots.every((s: unknown) => typeof s === "string")
+        ? (req.body.screenshots as string[])
+        : undefined;
+    const themeMode =
+      typeof req.body?.themeMode === "string" ? req.body.themeMode : undefined;
+    const onlineSearch = req.body?.onlineSearch === true;
+
+    const out = await askLlm({ question, plotInfo, screenshots, themeMode, onlineSearch });
+    if (!out.success) {
+      res.status(500).json({ success: false, error: out.stderrTail ?? "llm_ask failed" });
+      return;
+    }
+    res.json({ success: true, answer: out.answer, model: out.model });
+  } catch (err) {
+    console.error("[ai/ask] error:", err);
+    res.status(500).json({ success: false, error: String(err) });
   }
 });
 

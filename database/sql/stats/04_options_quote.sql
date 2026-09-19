@@ -197,15 +197,9 @@ CREATE INDEX IF NOT EXISTS idx_options_quote_underlying_date
 CREATE INDEX IF NOT EXISTS idx_options_quote_underlying_date_expiry
     ON stats.options_terms (underlying_code, date, expiry_date);
 
--- Legacy (contract_code, date) secondary indexes are now redundant with the
--- code-first PK — drop them and add date-first indexes instead (restores the
--- cross-contract date scans the old date-first PK used to serve).
-DROP INDEX IF EXISTS stats.idx_options_quote_contract_date;
-DROP INDEX IF EXISTS stats.idx_options_strike_contract_date;
-DROP INDEX IF EXISTS stats.idx_options_settlement_contract_date;
-DROP INDEX IF EXISTS stats.idx_options_greeks_contract_date;
-DROP INDEX IF EXISTS stats.idx_options_volume_oi_contract_date;
-DROP INDEX IF EXISTS stats.idx_options_aggregate_contract_date;
+-- The legacy (contract_code, date) secondary indexes are superseded by
+-- the code-first PK; the date-first indexes below restore the
+-- cross-contract date scans the old date-first PK used to serve.
 
 CREATE INDEX IF NOT EXISTS idx_options_identity_date
     ON stats.options_identity (date);

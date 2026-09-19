@@ -8,17 +8,20 @@ import { Box, CircularProgress, Typography } from "@mui/material";
 
 interface ChartSectionProps {
   title: React.ReactNode;
+  /** Rendered inline after the title text (e.g. the AI Ask "?" addon). */
+  titleAddon?: React.ReactNode;
   loading?: boolean;
   error?: string | null;
   errorLabel?: string;
   children: React.ReactNode;
 }
 
-export function ChartSection({ title, loading, error, errorLabel, children }: ChartSectionProps) {
+export function ChartSection({ title, titleAddon, loading, error, errorLabel, children }: ChartSectionProps) {
   return (
     <Box>
       <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
         {title}
+        {titleAddon}
       </Typography>
       {loading && (
         <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>

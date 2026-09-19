@@ -3,6 +3,10 @@
  * Uses React-based tooltip formatters via tooltipComponents.tsx.
  */
 import {
+  baseChartOption,
+  commonTooltip,
+} from "@/shared/charts/base-chart";
+import {
   ATM_GRAY,
   DOWN_COLOR,
   FUTURES_EXPIRY_DOT,
@@ -73,13 +77,10 @@ export function buildPcRatioOption(
   const axisTooltip = makeAxisTooltipFormatter(colors);
   const dotTooltip = makeExpiryDotTooltip(colors);
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 50, right: 20, bottom: 50 }),
     dataZoom: commonDataZoom(),
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
       axisPointer: {
         type: "cross",
         snap: true,
@@ -92,11 +93,8 @@ export function buildPcRatioOption(
           fontSize: 10,
         },
       },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: axisTooltip,
-    },
+    }),
     axisPointer: { link: [{ xAxisIndex: "all" }] },
     legend: commonLegend(themeMode),
     xAxis: {
@@ -170,5 +168,5 @@ export function buildPcRatioOption(
         },
       },
     ],
-  };
+  });
 }

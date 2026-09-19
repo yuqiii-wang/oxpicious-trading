@@ -28,6 +28,7 @@ from _common.build_commons import (
     ymd_to_date,
     TODAY_STR,
 )
+from builds._commons.board_map import stage_stock_boards, upsert_stock_board_rows
 from builds._commons.paths import (
     BSE_TREND_DIR,
     SSE_TREND_DIR,
@@ -535,6 +536,16 @@ async def main() -> None:
         # 5. Compute tech stats (MA/EMA) for all stocks
         # ------------------------------------------------------------------
         await _run_tech_stats_step(conn, args, code_filter, forced)
+
+        # ------------------------------------------------------------------
+        # 6. Refresh the stock board slice (stats.sec_board_map)
+        # Identity rows were just written above — the board lookup reads
+        # the LATEST identity row per code, so new codes/corporate actions
+        # land here in the same run.
+        # ------------------------------------------------------------------
+        await stage_stock_boards(conn)
+        n_board_rows = await upsert_stock_board_rows(conn, force=args.force)
+        logger.info(f"    [BOARD-MAP] stock board rows written: {n_board_rows:,}")
 
     finally:
         await conn.close()

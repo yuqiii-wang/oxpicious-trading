@@ -60,7 +60,11 @@ bootstrap_runtime()
 from _common.build_commons import (
     find_missing_analysis_dates,
 )
-from _common.db_commons import copy_or_upsert_split_async, copy_insert_async
+from _common.db_commons import (
+    copy_or_upsert_split_async,
+    copy_insert_async,
+    copy_frame_chunked_async,
+)
 
 import pandas as pd
 
@@ -114,23 +118,6 @@ def _normalize_stock_codes(df, col: str) -> None:
         df[col] = df[col].str.upper().str.replace(
             r"\.(SS|SZ|SH|BJ|HK)$", "", regex=True
         )
-
-
-def _detail_db_rows(detail_df: pd.DataFrame) -> list[dict]:
-    """Materialize the combined detail frame for asyncpg: the frame keeps
-    its datetime64 ``date`` column until sanitize extracts it host-side
-    (``date_cols=["date"]`` → python date objects) so cuDF never sees an
-    object-date column (pre-converting poisoned every subsequent frame op
-    with MixedTypeError fallbacks). NaN/inf → NULL sanitize. The
-    datetime64 ``detail_df`` itself stays untouched so the monthly-stats
-    compute can reuse it. The WRITER splits each row into its metric's
-    table (analysis.pe / analysis.dividends)."""
-    return sanitize_for_db_insert(
-        detail_df,
-        numeric_cols=["pe", "dividend_yield"],
-        round_to=6,
-        date_cols=["date"],
-    )
 
 
 async def _process_index(
@@ -220,7 +207,7 @@ async def _process_index(
     logger.info(f"  [{st}]   {len(detail_df):,} detail rows")
 
     n_detail = await _write_detail(
-        conn, st, _detail_db_rows(detail_df), force=force,
+        conn, st, detail_df, force=force,
         target_dates_pe=target_dates_pe,
         target_dates_dy=target_dates_dy,
     )
@@ -314,7 +301,7 @@ async def _process_etf(
     logger.info(f"  [{st}]   {len(detail_df):,} detail rows")
 
     n_detail = await _write_detail(
-        conn, st, _detail_db_rows(detail_df), force=force,
+        conn, st, detail_df, force=force,
         target_dates_pe=target_dates_pe,
         target_dates_dy=target_dates_dy,
     )
@@ -399,7 +386,7 @@ async def _process_stock(
     logger.info(f"  [{st}]   {len(detail_df):,} detail rows")
 
     n_detail = await _write_detail(
-        conn, st, _detail_db_rows(detail_df), force=force,
+        conn, st, detail_df, force=force,
         target_dates_pe=target_dates_pe,
         target_dates_dy=target_dates_dy,
     )
@@ -437,17 +424,46 @@ _PROCESSORS = {
 # ---------------------------------------------------------------------------
 
 async def _write_metric_table(
-    conn, sec_type: str, rows: list[dict], *, table: str,
+    conn, sec_type: str, value_col: str, table: str,
+    detail_df: pd.DataFrame, *,
     force: bool, target_dates: set | None,
 ) -> int:
-    """Write one metric's rows (already projected to the table's
-    [sec_type, code, date, value] shape) to ``table``.
+    """Write one metric's column of the combined detail frame to ``table``
+    (rows projected to [sec_type, code, date, value_col]).
 
-    - force: DELETE sec_type rows + COPY-insert.
-    - incremental: filter to target_dates rows + upsert on
+    The date + non-null-value filtering happens VECTORIZED on the frame
+    BEFORE any sanitize — the former flow sanitized the FULL detail frame
+    to dicts first and then python-loop-filtered the dicts, materializing
+    ~3 generations of 6.6M row dicts (~5 GB host RSS + tens of seconds of
+    client CPU) on daily incremental runs that write only ~1 day of rows.
+
+    - force: DELETE sec_type rows + chunked COPY-insert (the sanitized
+      dict list is bounded to one chunk via copy_frame_chunked_async).
+    - incremental: filter the frame to target_dates rows, then upsert on
       (sec_type, code, date). Skipped entirely when target_dates is empty.
+
+    The datetime64 ``detail_df`` stays untouched (slices only) so the
+    monthly-stats / pct-bands compute can reuse it; ``date_cols`` keeps
+    the datetime64 column out of object dtype until sanitize extracts
+    python dates host-side.
     """
-    if not rows:
+    if not force and target_dates is not None:
+        if len(target_dates) == 0:
+            logger.info(f"  [{sec_type}]   {table} up to date; skipping insert.")
+            return 0
+        # fetch.py incremental-filter convention: isin with a datetime64
+        # ndarray (a python-date SET never matches a datetime64 column).
+        td64 = pd.to_datetime(sorted(target_dates)).values
+        sub = detail_df[detail_df["date"].isin(td64)]
+        logger.info(f"  [{sec_type}] Incremental filter: {len(sub):,} of "
+              f"{len(detail_df):,} detail rows are in target_dates")
+    else:
+        sub = detail_df
+
+    sub = sub.loc[
+        sub[value_col].notna(), ["sec_type", "code", "date", value_col],
+    ]
+    if sub.empty:
         logger.info(f"  [{sec_type}]   no rows to write to {table}")
         return 0
 
@@ -457,33 +473,24 @@ async def _write_metric_table(
         await conn.execute(
             f"DELETE FROM {table} WHERE sec_type = $1", sec_type
         )
-        logger.info(f"  [{sec_type}] Inserting {len(rows):,} rows to {table} "
-              f"(COPY)...")
-        n = await copy_insert_async(conn, table, rows)
+        n = await copy_frame_chunked_async(
+            conn, table, sub,
+            columns=["sec_type", "code", "date", value_col],
+            numeric_cols=[value_col], round_to=6,
+            date_cols=["date"],
+            label=table.split(".")[-1],
+        )
         logger.info(f"  [{sec_type}]   inserted {n:,} rows")
         return n
 
-    # Incremental: filter to missing dates only.
-    if target_dates is None:
-        rows_to_write = rows
-    else:
-        if len(target_dates) == 0:
-            logger.info(f"  [{sec_type}]   {table} up to date; skipping insert.")
-            return 0
-        rows_to_write = [
-            r for r in rows if r["date"] in target_dates
-        ]
-        logger.info(f"  [{sec_type}] Incremental filter: {len(rows_to_write):,} of "
-              f"{len(rows):,} rows are in target_dates")
-
-    if not rows_to_write:
-        logger.info(f"  [{sec_type}]   no new rows to upsert into {table}")
-        return 0
-
-    logger.info(f"  [{sec_type}] Upserting {len(rows_to_write):,} rows into "
-          f"{table}...")
+    # Incremental: the frame is already date-filtered — materialize the
+    # (small) row dicts and upsert on the PK.
+    rows = sanitize_for_db_insert(
+        sub, numeric_cols=[value_col], round_to=6, date_cols=["date"],
+    )
+    logger.info(f"  [{sec_type}] Upserting {len(rows):,} rows into {table}...")
     n_copied, n_upserted = await copy_or_upsert_split_async(
-        conn, table, rows_to_write,
+        conn, table, rows,
         key_columns=["sec_type", "code", "date"],
     )
     n = n_copied + n_upserted
@@ -495,39 +502,27 @@ async def _write_metric_table(
 
 
 async def _write_detail(
-    conn, sec_type: str, detail_rows: list[dict], *,
+    conn, sec_type: str, detail_df: pd.DataFrame, *,
     force: bool, target_dates_pe: set | None,
     target_dates_dy: set | None,
 ) -> int:
-    """Split the combined detail rows per metric and write the TWO tables
+    """Split the combined detail FRAME per metric and write the TWO tables
     (2026-09 split of analysis.pe_and_dividends):
 
-      analysis.pe         — rows with a defined pe (dicts projected to
-                            [sec_type, code, date, pe]);
+      analysis.pe         — rows with a defined pe;
       analysis.dividends  — rows with a defined dividend_yield.
 
     Each side carries its own missing-date set (a date can be missing for
     one metric and present for the other — e.g. a newly-listed payer
-    with no PE source yet), and both share the force / incremental
-    contract of the former single-table writer (see _write_metric_table).
-    Returns the TOTAL rows written across both tables.
+    with no PE source yet); both share the force / incremental contract
+    of _write_metric_table. Returns the TOTAL rows written.
     """
-    pe_rows = [
-        {"sec_type": r["sec_type"], "code": r["code"], "date": r["date"],
-         "pe": r["pe"]}
-        for r in detail_rows if r.get("pe") is not None
-    ]
-    dy_rows = [
-        {"sec_type": r["sec_type"], "code": r["code"], "date": r["date"],
-         "dividend_yield": r["dividend_yield"]}
-        for r in detail_rows if r.get("dividend_yield") is not None
-    ]
     n_pe = await _write_metric_table(
-        conn, sec_type, pe_rows, table=PE_TABLE,
+        conn, sec_type, "pe", PE_TABLE, detail_df,
         force=force, target_dates=target_dates_pe,
     )
     n_dy = await _write_metric_table(
-        conn, sec_type, dy_rows, table=DIVIDENDS_TABLE,
+        conn, sec_type, "dividend_yield", DIVIDENDS_TABLE, detail_df,
         force=force, target_dates=target_dates_dy,
     )
     return n_pe + n_dy

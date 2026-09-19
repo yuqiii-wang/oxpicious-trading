@@ -57,6 +57,7 @@ __all__ = [
     "get_max_table_date_async",
     # Key-bounded chunked COPY
     "batched_copy_by_key_async",
+    "copy_frame_chunked_async",
 ]
 
 # -- Internal helpers (exported for sibling modules) --
@@ -121,4 +122,5 @@ from ._copy_or_upsert import (
 # -- Key-bounded chunked COPY --
 from ._batched_copy import (
     batched_copy_by_key_async,
+    copy_frame_chunked_async,
 )

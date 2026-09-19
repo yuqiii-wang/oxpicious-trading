@@ -1,5 +1,10 @@
 ﻿import type { OptionsRow } from "@shared/types";
-import { useStore } from "@/store/filters";
+import {
+  baseChartOption,
+  commonTooltip,
+  emptyChartOption,
+} from "@/shared/charts/base-chart";
+import type { ThemeMode } from "@/store/filters";
 import {
   ATM_GRAY,
   PRICE_SCALE,
@@ -18,22 +23,14 @@ export function buildSmileOption(
   snap: OptionsRow[],
   label: string,
   dateStr: string,
+  mode: ThemeMode,
 ): EChartsOption {
-  const themeMode = useStore.getState().themeMode;
-  const c = axisColors(themeMode);
+  const c = axisColors(mode);
   const textColor = c.textColor;
   const splitColor = c.splitLineColor;
 
   if (snap.length === 0) {
-    return {
-      backgroundColor: "transparent",
-      title: {
-        text: `${label}  (${dateStr || "—"})\n[No data]`,
-        left: "center",
-        top: "center",
-        textStyle: { color: textColor, fontSize: 11, fontWeight: 400 },
-      },
-    };
+    return emptyChartOption(mode, `${label}  (${dateStr || "—"})\n[No data]`);
   }
 
   const valid = snap.filter(
@@ -46,15 +43,7 @@ export function buildSmileOption(
   const S = snap[0].underlying_close / PRICE_SCALE;
 
   if (valid.length === 0) {
-    return {
-      backgroundColor: "transparent",
-      title: {
-        text: `${label}  (${dateStr})\n[No valid IV]`,
-        left: "center",
-        top: "center",
-        textStyle: { color: textColor, fontSize: 11, fontWeight: 400 },
-      },
-    };
+    return emptyChartOption(mode, `${label}  (${dateStr})\n[No valid IV]`);
   }
 
   const expiryMonths = Array.from(
@@ -145,7 +134,7 @@ export function buildSmileOption(
       },
   });
 
-  const skewLine = buildSkewLineSeries(valid, S, themeMode, yMax, PRICE_SCALE);
+  const skewLine = buildSkewLineSeries(valid, S, mode, yMax, PRICE_SCALE);
   if (skewLine) series.push(skewLine as never);
 
   const visibleLegendData = series
@@ -157,17 +146,14 @@ export function buildSmileOption(
     )
     .map((s) => (s as { name: string }).name);
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(mode, {
     grid: commonGrid({ left: 50, right: 12, top: 36, bottom: 36 }),
     title: {
       text: `${label}  (${dateStr})  S=${fmtNum(S)}元`,
       left: "left",
       textStyle: { color: textColor, fontSize: 11, fontWeight: 600 },
     },
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(mode, {
       axisPointer: {
         type: "cross",
         snap: true,
@@ -185,12 +171,9 @@ export function buildSmileOption(
           },
         },
       },
-      backgroundColor: c.tooltipBg,
-      borderColor: splitColor,
-      textStyle: { color: textColor, fontSize: 11 },
       formatter: makeSmileTooltipFormatter(),
-    },
-    legend: commonLegend(themeMode, { top: 14, data: visibleLegendData }),
+    }),
+    legend: commonLegend(mode, { top: 14, data: visibleLegendData }),
     xAxis: {
       type: "value",
       min: 0.7,
@@ -222,5 +205,5 @@ export function buildSmileOption(
       },
     },
     series,
-  };
+  });
 }

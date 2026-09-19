@@ -5,7 +5,7 @@ import type {
   IndustrySentimentsAggRow,
   IndustrySentimentsChartResponse,
 } from "@shared/types";
-import type { ThemeMode } from "@/store/filters";
+import type { BaseChartProps } from "@/shared/charts/base-chart";
 
 /** Pool-size bucket: small <51, mid 51-180, large >180, all = no filter. */
 export type PoolSize = "all" | "small" | "mid" | "large";
@@ -36,7 +36,6 @@ export interface PerIndustryAggregation {
 /** Props for the main IndustrySentimentsPlot card. */
 export interface PlotProps {
   data: IndustrySentimentsChartResponse;
-  themeMode: ThemeMode;
   /** When true, the data is a merge of multiple industries. The single
    *  mean/var overlay is hidden; instead, when meanOnly is ON, one mean
    *  curve per industry is rendered (each in a distinct color). */
@@ -61,12 +60,11 @@ export interface PlotProps {
 }
 
 /** Props for the IndustryBenchmarkAttributionChart component. */
-export interface AttributionChartProps {
+export interface AttributionChartProps extends BaseChartProps {
   industryId: string;
   industryLabel: string;
   /** As-of date for the attribution ("" or null → latest available). */
   date: string | null;
-  themeMode: ThemeMode;
   /** The benchmark code selected in the dropdown (shown as the 1st plot).
    *  Highlighted in the attribution bar chart so the user can see where the
    *  navigation benchmark sits relative to the other benchmarks. */
@@ -74,10 +72,9 @@ export interface AttributionChartProps {
 }
 
 /** Props for the BenchmarkPriceChart component (1st plot in attribution mode). */
-export interface BenchmarkPriceChartProps {
+export interface BenchmarkPriceChartProps extends BaseChartProps {
   /** The benchmark code to fetch + display. */
   benchmarkCode: string | null;
-  themeMode: ThemeMode;
   /** Currently selected date (markLine position). Null → latest date. */
   selectedDate: string | null;
   /** Callback fired when the user clicks a date on the chart. */
@@ -108,22 +105,20 @@ export interface BenchmarkPriceChartProps {
 }
 
 /** Props for the CorrelationChart component. */
-export interface CorrelationChartProps {
+export interface CorrelationChartProps extends BaseChartProps {
   industryIds: string[];
   /** L3-selected member index codes (empty → only industryIds drive the
    *  refresh). Passed to the corr runner's --code arg; codes are resolved
    *  to industry_ids Python-side and unioned with industryIds. */
   codes: string[];
   poolSize: PoolSize;
-  themeMode: ThemeMode;
 }
 
 /** Props for the IndustryEtfPriceChart component (1st plot in ETF Contribution mode). */
-export interface IndustryEtfPriceChartProps {
+export interface IndustryEtfPriceChartProps extends BaseChartProps {
   /** Selected industry IDs — ETFs tracking member indices of these industries
    *  are fetched and plotted. */
   industryIds: string[];
-  themeMode: ThemeMode;
   /** Currently selected date (markLine position). Null → latest date. */
   selectedDate: string | null;
   /** Callback fired when the user clicks a date on the chart. */
@@ -131,31 +126,23 @@ export interface IndustryEtfPriceChartProps {
 }
 
 /** Props for the IndustryEtfContributionChart component (2nd+ plots). */
-export interface IndustryEtfContributionChartProps {
+export interface IndustryEtfContributionChartProps extends BaseChartProps {
   industryId: string;
   industryLabel: string;
   /** As-of date for the bars ("" or null → latest available). */
   date: string | null;
-  themeMode: ThemeMode;
-}
-
-/** Props for the MarketTrendChart component (sole plot in "Market Trend" mode). */
-export interface MarketTrendChartProps {
-  themeMode: ThemeMode;
 }
 
 /** Props for the HypesAndDrainsChart component (sub-view of "Market Trend" mode). */
 export interface HypesAndDrainsChartProps {
   /** Selected broad-market benchmark code (e.g. 000300). */
   benchmarkCode: string;
-  themeMode: ThemeMode;
 }
 
 /** Props for the IndexAllocationView component (the "Index Allocation" mode —
  *  migrated from the standalone "Sec Allocation Perf Attribution" commons
  *  analysis). Reuses the Industry Sentiments classification-nav selection. */
 export interface IndexAllocationViewProps {
-  themeMode: ThemeMode;
   /** Per-industry chart responses already fetched by the Industry Sentiments
    *  page (one per selected industry, including strategy-only codes fetched
    *  by code). The view resolves its target index set from these. */

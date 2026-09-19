@@ -1,15 +1,21 @@
 """MA / EMA-pair cross (golden / death cross) event-bucket monthly
 aggregation (analysis_forecasts) — sparse tensor engine.
 
-The mov_gap engine's streak-merge / hype-split / horizon-aggregation
-machinery applied to the EXISTING relative-MA-spread columns of
-analysis.mov_ave_spreads_detail — ma5_vs_ma{W} = (ma5 - ma_{W}) / ma_{W}
-(fetched as ``pair_{W}``, W ∈ MOV_PAIRS_WINDOWS; the mov_pairs family)
-— and to their EMA siblings, the EXISTING ema6_vs_ema{W} columns of
-analysis.mov_ave_spreads_detail_ema (fetched as ``ema_pair_{W}``, W ∈
-MOV_PAIRS_EMA_WINDOWS; the mov_pairs_ema family). Both are the parent
-mov_ave_spread analysis's own spread definitions — no new MA / EMA
-computation. A day triggers when the stored spread changes sign:
+The percentile engines' streak-merge / hype-split / horizon-aggregation
+machinery applied to the EXISTING relative-spread columns of
+analysis.mov_ave_spreads_detail and its EMA sibling
+analysis.mov_ave_spreads_detail_ema — the parent mov_ave_spread
+analysis's own spread definitions, no new MA / EMA computation. Each
+family (mov_pairs: the MA detail table; mov_pairs_ema: the EMA detail
+table) carries TWO fast legs per slow window W ∈ MOV_PAIRS_WINDOWS /
+MOV_PAIRS_EMA_WINDOWS — the motivation rows' fast_leg column:
+
+  mov_pairs      fast_leg 'ma5'   — ma5_vs_ma{W}   (fetched pair_{W})
+                 fast_leg 'price'  — price_vs_ma{W}  (fetched px_pair_{W})
+  mov_pairs_ema  fast_leg 'ema6'  — ema6_vs_ema{W}  (fetched ema_pair_{W})
+                 fast_leg 'price' — price_vs_ema{W} (fetched px_ema_pair_{W})
+
+A day triggers when the stored spread changes sign:
 
   side top    — CROSS UP   (golden cross): S[t] > 0 and S[t-1] <= 0
   side bottom — CROSS DOWN (death  cross): S[t] < 0 and S[t-1] >= 0
@@ -19,12 +25,11 @@ suspended across a sign flip misses that cross — the same union-grid
 convention the streak-merge's run detection uses). NaN spreads compare
 False, so warming up windows / missing rows never trigger.
 
-The engine is source-agnostic: ``build_pairs_matrices`` scatters the
-fetched spread columns under a ``prefix`` ("pair" for MA, "ema_pair"
-for EMA) and ``compute_pairs_results`` reads the same prefix, so one
-code path serves both families. Row payloads are identical
-(pair_window, side, is_market_hyped); the caller writes
-them to mov_pairs or mov_pairs_ema.
+The engine is leg-agnostic: ``_CrossEngine`` melts every leg's fetched
+spread columns under its (fast_leg, prefix) label and ``compute_pairs_results``
+reads the same legs, so one code path serves both families and all
+fast legs. Row payloads are identical (fast_leg, pair_window, side,
+is_market_hyped); the caller writes them to mov_pairs or mov_pairs_ema.
 
 One-day EVENT signals (the 2026-09 streak migration's "one day"
 branch of the unified pipeline — wide.iter_bucket_subsets with
@@ -36,7 +41,7 @@ the engines skip it; the recorded streak_signal_days is the 1 constant
 and the result rows' streak spans are the signal day itself. Split by
 PK member is_market_hyped, per-code ADAPTIVE reversal bar
 (wide.thresholds: k_n·σ of the window's n-day forward
-changes). No config JSONB payload (compute_gap precedent — the trigger
+changes). No config JSONB payload (the mov_rsi precedent — the trigger
 evidence is the stored spread itself, joinable via the bucket keys).
 
 Yields (stat_month, rows) so __main__ can split each row into the
@@ -54,94 +59,102 @@ from _common.df_utils import grouped_shift
 
 from analyze.analysis_forecasts._dfengine import WideDfEngine, _finite_mask
 from analyze.analysis_forecasts.config import (
+    MOV_PAIRS_EMA_LEGS,
     MOV_PAIRS_EMA_WINDOWS,
+    MOV_PAIRS_LEGS,
     MOV_PAIRS_WINDOWS,
 )
 
 
 class _CrossEngine(WideDfEngine):
     """MA / EMA-pair CROSS event buckets over the EXISTING relative
-    spread columns (ma5_vs_ma{W} fetched as ``pair_{W}``; ema6_vs_ema{W}
-    as ``ema_pair_{W}``) — no new MA computation. A day joins a bucket
-    when the spread flips sign that day: side 'top' a CROSS UP (spread >
-    0 from <= 0 — ma5/ema6 rises through the slow leg), side 'bottom' a
-    CROSS DOWN (spread < 0 from >= 0). NULL spreads (either leg still
-    warming up) never trigger. One-day signals (MERGE=False): a cross
-    day's predecessor sits on the other side of zero, so consecutive
-    cross days are mutually exclusive. The bar is the zero line, so the
-    TRIGGER EXCESS is the day's spread itself. The previous day's
-    spread is shifted ONCE over the full fetched frame (per code on its
-    own row sequence — the same semantics as the legacy scatter-then-
-    slice), so a cross at the window's first row still sees its
-    predecessor."""
+    spread columns — no new MA computation. ``legs`` are the
+    (fast_leg, fetched-spread-prefix) pairs of the family (mov_pairs:
+    ma5→pair / price→px_pair; mov_pairs_ema: ema6→ema_pair /
+    price→px_ema_pair), all sharing ``windows``. A day joins a bucket
+    when a leg's spread flips sign that day: side 'top' a CROSS UP
+    (spread > 0 from <= 0 — the fast leg rises through the slow leg),
+    side 'bottom' a CROSS DOWN (spread < 0 from >= 0). NULL spreads
+    (either leg still warming up) never trigger. One-day signals
+    (MERGE=False): a cross day's predecessor sits on the other side of
+    zero, so consecutive cross days are mutually exclusive. The bar is
+    the zero line, so the TRIGGER EXCESS is the day's spread itself.
+    The previous day's spread is shifted ONCE over the full fetched
+    frame (per code on its own row sequence — the same semantics as
+    the legacy scatter-then-slice), so a cross at the window's first
+    row still sees its predecessor."""
 
-    BUCKET_COLS = ("pair_window",)
+    BUCKET_COLS = ("fast_leg", "pair_window")
     MERGE = False
 
-    def __init__(self, *, spread_prefix: str = "pair",
+    def __init__(self, *, legs: tuple[tuple[str, str], ...] = MOV_PAIRS_LEGS,
                  windows: tuple = MOV_PAIRS_WINDOWS, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.spread_prefix = spread_prefix
+        self.legs = legs
         self.windows = windows
 
     def _extra_window_cols(self) -> list[str]:
-        return [f"{self.spread_prefix}_{w}" for w in self.windows]
+        return [f"{prefix}_{w}"
+                for _, prefix in self.legs for w in self.windows]
 
     def _prepare(self) -> None:
         super()._prepare()
         df = self._prepared
-        for w in self.windows:
-            col = f"{self.spread_prefix}_{w}"
+        for col in self._extra_window_cols():
             grouped_shift(df, ["code"], col, out_names=f"_prev_{col}",
                           periods=1, sort=False)
         self._prepared = df
 
     def _window_cols(self) -> list[str]:
         cols = super()._window_cols()
-        return cols + [f"_prev_{self.spread_prefix}_{w}" for w in self.windows]
+        return cols + [f"_prev_{c}" for c in self._extra_window_cols()]
 
     def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
         id_vars = ["code", "date", "_t", "is_hyped"]
-        value_cols = self._extra_window_cols()
-        long = win.melt(id_vars=id_vars + [f"_prev_{c}" for c in value_cols],
-                        value_vars=value_cols,
-                        var_name="_wcol", value_name="spread")
-        long["pair_window"] = long["_wcol"].map(
-            {col: w for col, w in zip(value_cols, self.windows)}
-        )
-        long["_prev_col"] = "_prev_" + long["_wcol"]
-        long["prev_spread"] = long.lookup-like-placeholder  # noqa — replaced below
-        if long.empty:
+
+        # Each leg's spreads and their 1-row-lagged predecessors melt
+        # separately (tagged fast_leg), then concat — the cross tests
+        # run on the concatenated legs as one frame.
+        longs, prevs = [], []
+        for leg, prefix in self.legs:
+            value_cols = [f"{prefix}_{w}" for w in self.windows]
+            prev_cols = [f"_prev_{c}" for c in value_cols]
+            long = win.melt(id_vars=id_vars, value_vars=value_cols,
+                            var_name="_wcol", value_name="spread")
+            long = long[long["spread"].notna()]
+            if long.empty:
+                continue
+            long["fast_leg"] = leg
+            long["pair_window"] = long["_wcol"].map(
+                {col: w for col, w in zip(value_cols, self.windows)}
+            )
+            longs.append(long)
+            prev = win.melt(id_vars=["code", "date"],
+                            value_vars=prev_cols,
+                            var_name="_pcol", value_name="prev_spread")
+            prev["fast_leg"] = leg
+            prev["pair_window"] = prev["_pcol"].map(
+                {f"_prev_{col}": w
+                 for col, w in zip(value_cols, self.windows)}
+            )
+            prevs.append(prev)
+        if not longs:
             return
-        yield long
-    def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
-        id_vars = ["code", "date", "_t", "is_hyped"]
-        value_cols = self._extra_window_cols()
-        prev_cols = [f"_prev_{c}" for c in value_cols]
+        long = pd.concat(longs, ignore_index=True)
+        prevs = pd.concat(prevs, ignore_index=True)
 
-        # Spreads and their 1-row-lagged predecessors melt in parallel,
-        # then re-join per (code, date, pair_window).
-        long = win.melt(id_vars=id_vars + prev_cols,
-                        value_vars=value_cols,
-                        var_name="_wcol", value_name="spread")
-        long["pair_window"] = long["_wcol"].map(
-            {col: w for col, w in zip(value_cols, self.windows)}
-        )
         long = long[_finite_mask(long["spread"])]
         if long.empty:
             return
 
-        keep = ["code", "date", "_t", "is_hyped", "pair_window", "side"]
-        prevs = win.melt(id_vars=["code", "date"], value_vars=prev_cols,
-                         var_name="_pcol", value_name="prev_spread")
-        prevs["pair_window"] = prevs["_pcol"].map(
-            {f"_prev_{col}": w for col, w in zip(value_cols, self.windows)}
-        )
         cand = long.merge(
-            prevs[["code", "date", "pair_window", "prev_spread"]],
-            on=["code", "date", "pair_window"], how="left",
+            prevs[["code", "date", "fast_leg", "pair_window",
+                   "prev_spread"]],
+            on=["code", "date", "fast_leg", "pair_window"], how="left",
         )
         ok_prev = _finite_mask(cand["prev_spread"])
+        keep = ["code", "date", "_t", "is_hyped",
+                "fast_leg", "pair_window", "side"]
         cells_parts = []
         for side in ("top", "bottom"):
             qual = (
@@ -162,17 +175,20 @@ class _CrossEngine(WideDfEngine):
         # MERGE=False: _streak_merge stamps the 1-day run semantics (the
         # aggregation / row building are the base's).
         yield self._streak_merge(
-            cells, group_cols=["pair_window", "side", "code"],
+            cells,
+            group_cols=["fast_leg", "pair_window", "side", "code"],
         )
 
 
 def compute_pairs_results(
     *, df, first_dates, episodes, codes, sec_type, specs,
-    spread_prefix: str = "pair", windows: tuple = MOV_PAIRS_WINDOWS,
+    legs: tuple[tuple[str, str], ...] = MOV_PAIRS_LEGS,
+    windows: tuple = MOV_PAIRS_WINDOWS,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, bucket rows) per stat month — ``spread_prefix``
-    "pair" (ma5_vs_ma{W}, mov_pairs) or "ema_pair" (ema6_vs_ema{W},
-    mov_pairs_ema)."""
+    """Yield (stat_month, bucket rows) per stat month — ``legs``
+    ((ma5, pair), (price, px_pair)) for mov_pairs (the MA detail
+    table's ma5_vs_ma{W} / price_vs_ma{W} columns) or the EMA sibling
+    for mov_pairs_ema."""
     engine = _CrossEngine(
         df=df,
         first_dates=first_dates,
@@ -180,7 +196,7 @@ def compute_pairs_results(
         codes=codes,
         sec_type=sec_type,
         specs=specs,
-        spread_prefix=spread_prefix,
+        legs=legs,
         windows=windows,
     )
     return engine.run()
@@ -189,9 +205,10 @@ def compute_pairs_results(
 def compute_epairs_results(
     *, df, first_dates, episodes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
-    """mov_pairs_ema — the EMA sibling (ema6_vs_ema{W} spreads)."""
+    """mov_pairs_ema — the EMA sibling (fast legs ema6 / price on the
+    EMA detail table's ema6_vs_ema{W} / price_vs_ema{W} columns)."""
     return compute_pairs_results(
         df=df, first_dates=first_dates, episodes=episodes, codes=codes,
         sec_type=sec_type, specs=specs,
-        spread_prefix="ema_pair", windows=MOV_PAIRS_EMA_WINDOWS,
+        legs=MOV_PAIRS_EMA_LEGS, windows=MOV_PAIRS_EMA_WINDOWS,
     )

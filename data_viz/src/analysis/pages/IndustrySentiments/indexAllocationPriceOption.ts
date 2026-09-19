@@ -21,6 +21,7 @@ import {
   commonGrid,
   commonDataZoom,
 } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
 import { rebaseTo100 } from "./helpers";
 import { renderReactElement } from "@/lib/react-tooltip-renderer";
@@ -98,17 +99,13 @@ export function buildIndexAllocationPriceOption(
     z: 10 + i,
   }));
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 56, right: 24, bottom: 50, top: 32 }),
     dataZoom: commonDataZoom(),
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
+      // Old hand-rolled pointer had no lineStyle/crossStyle — keep the bare
+      // cross+snap shape.
       axisPointer: { type: "cross", snap: true },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           dataIndex?: number;
@@ -141,7 +138,7 @@ export function buildIndexAllocationPriceOption(
         }
         return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
-    },
+    }),
     legend: commonLegend(themeMode, { data: rebasedSeries.map((s) => s.name) }),
     xAxis: {
       type: "category",
@@ -171,5 +168,5 @@ export function buildIndexAllocationPriceOption(
       splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
     },
     series,
-  };
+  });
 }

@@ -79,7 +79,6 @@ SELECT public.create_hash_partitions('analysis', 'industry_hypes_seasonal', 8);
 
 -- idx_hypes_seasonal_bench_period (benchmark_code, period_days) dropped: the
 -- code-first PK prefix already serves benchmark_code-filtered lookups.
-DROP INDEX IF EXISTS analysis.idx_hypes_seasonal_bench_period;
 CREATE INDEX IF NOT EXISTS idx_hypes_seasonal_industry
     ON analysis.industry_hypes_seasonal (industry_id, benchmark_code, period_days);
 

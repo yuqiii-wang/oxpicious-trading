@@ -54,7 +54,6 @@ import {
   ToggleButton,
   ToggleButtonGroup,
 } from "@mui/material";
-import { useStore } from "@/store/filters";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
 import {
@@ -87,8 +86,6 @@ const THEMES_SOURCES = {
 };
 
 export default function IndustrySentimentsPage() {
-  const themeMode = useStore((s) => s.themeMode);
-
   // Shared nav: trees loading + exchange filter + sector/strategy selection.
   // Non-exclusive mode: the LEFT (sector/industry) and RIGHT (strategy/theme)
   // columns can be active simultaneously — both contribute to the merged plot.
@@ -656,7 +653,6 @@ export default function IndustrySentimentsPage() {
               {!chartLoading && !chartError && mergedChartData && (
                 <IndustrySentimentsPlot
                   data={mergedChartData}
-                  themeMode={themeMode}
                   multiIndustry={multiIndustry}
                   numIndustries={chartDataList.length}
                   chartDataList={chartDataList}
@@ -679,7 +675,6 @@ export default function IndustrySentimentsPage() {
                   a date sets the as-of date for the bar charts below. */}
               <BenchmarkPriceChart
                 benchmarkCode={selectedBenchmarkCode}
-                themeMode={themeMode}
                 selectedDate={selectedDate}
                 onDateSelect={(d) => setSelectedDate(d)}
                 selectedIndustries={selectedIndustries}
@@ -699,7 +694,6 @@ export default function IndustrySentimentsPage() {
                   industryId={ind.id}
                   industryLabel={ind.label}
                   date={selectedDate}
-                  themeMode={themeMode}
                   selectedBenchmarkCode={selectedBenchmarkCode}
                 />
               ))}
@@ -725,7 +719,6 @@ export default function IndustrySentimentsPage() {
                   emphasis flips. */}
               <IndustryEtfPriceChart
                 industryIds={selectedIndustryIds}
-                themeMode={themeMode}
                 selectedDate={selectedDate}
                 onDateSelect={(d) => setSelectedDate(d)}
               />
@@ -742,19 +735,17 @@ export default function IndustrySentimentsPage() {
                   industryId={ind.id}
                   industryLabel={ind.label}
                   date={selectedDate}
-                  themeMode={themeMode}
                 />
               ))}
             </Stack>
           )}
 
           {viewMode === "market_trend" && (
-            <MarketTrendChart themeMode={themeMode} />
+            <MarketTrendChart />
           )}
 
           {viewMode === "index_allocation" && (
             <IndexAllocationView
-              themeMode={themeMode}
               chartDataList={chartDataList}
               selectedItemCodes={selectedItemCodes}
             />

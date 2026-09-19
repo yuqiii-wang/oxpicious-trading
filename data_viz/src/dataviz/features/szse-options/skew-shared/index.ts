@@ -1,7 +1,5 @@
 export { default, default as SharedSkewPanel } from "./SharedSkewPanel";
 export { moneynessSpec, modeMeta, greekLabel } from "./skewSpec";
-export { ivSmileSpecFromRows } from "./ivSmileCompute";
-export { computeSmileSlope } from "./smileSlopeCompute";
 export { greekSpecFromSeries, spotByDateFromRows } from "./greekSpec";
 export { buildSharedSkewOption } from "./sharedSkewOption";
 export type {

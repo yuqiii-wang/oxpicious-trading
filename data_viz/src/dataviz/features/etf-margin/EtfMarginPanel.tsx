@@ -14,14 +14,17 @@
  *
  * Return badges shown in the panel header.
  */
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { Alert, Box, Chip, Stack } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import CompositionPieChart from "@/components/CompositionPieChart";
 import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
-import { useStore } from "@/store/filters";
+import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ThemeMode } from "@/store/filters";
 import type { EtfBundle } from "@shared/types";
 import {
   DOWN_COLOR,
@@ -47,7 +50,7 @@ import {
   type OhlcMode,
 } from "@/lib/ohlc";
 import { computeMarginScores } from "@/lib/margin-score";
-import type { EChartsOption } from "echarts";
+import type { ECharts, EChartsOption } from "echarts";
 
 interface Props {
   etf: EtfBundle;
@@ -73,7 +76,7 @@ function retBadge(values: number[], idxFromEnd: number): number | null {
 
 function buildOption(
   etf: EtfBundle,
-  themeMode: "light" | "dark",
+  themeMode: ThemeMode,
   ohlcMode: OhlcMode,
   dataZoomStart = 0,
   dataZoomEnd = 100,
@@ -355,17 +358,10 @@ function buildOption(
     z: 1,
   });
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 50, right: 50, bottom: 50 }),
     dataZoom: commonDataZoom({}, dataZoomStart, dataZoomEnd),
-    tooltip: {
-      trigger: "axis",
-      axisPointer: { type: "cross", snap: true },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
+    tooltip: commonTooltip(themeMode, {
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           axisValue?: string;
@@ -441,7 +437,7 @@ function buildOption(
 
         return renderReactElement(React.createElement(React.Fragment, null, children));
       },
-    },
+    }),
     legend: commonLegend(themeMode, { type: "scroll" }),
     xAxis: {
       type: "category",
@@ -493,7 +489,7 @@ function buildOption(
       },
     ],
     series,
-  };
+  });
 }
 
 function ReturnBadges({ etf }: { etf: EtfBundle }) {
@@ -536,7 +532,7 @@ function ReturnBadges({ etf }: { etf: EtfBundle }) {
 }
 
 export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, onDateClick }: Props) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const allRows = etf.rows;
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
   // handler to map a click index back to a date string. Computed once per
@@ -599,6 +595,60 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
     [etf, themeMode, ohlcMode, dataZoomRange],
   );
 
+  // Chart instance for the AI Ask screenshot.
+  const aiAskChartRef = useRef<ECharts | null>(null);
+
+  // AI Ask — reading guide lifted from the panel header doc; state carries
+  // the CURRENT OHLC mode so the modal / LLM describe the view on screen.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Single-ETF daily chart of ${etf.code} ${etf.name} ` +
+        `(${etf.is_bond ? "bond ETF — rebased close % line with a neutral fill" : "equity ETF — OHLC bars of rebased OHLC %"}): ` +
+        "MA20/MA60/MA120 ride the same left axis; RZ (融资 cash borrow, green up-fill) and RQ " +
+        "(融券 sec borrow, red down-fill) margin balances plot as shifted/clipped scores on a " +
+        "hidden middle axis (tooltip resolves the raw balance); trading-turnover bars " +
+        "(成交金额, 亿元) sit on the visible right axis colored by close-vs-open. In percentage " +
+        "mode prices are rebased to % change from the first valid close (raw prices in " +
+        "absolute mode); equity OHLC uses ADJUSTED prices so dividends/splits leave no fake " +
+        "gaps (gold/teal diamonds mark them). The in-chart dataZoom owns the visible window.",
+      instruments: [{ code: etf.code, name: etf.name, assetClass: "etf" }],
+      series: [
+        ...(etf.is_bond
+          ? [{
+              name: ohlcMode === "percentage" ? "Rebased %" : "Close",
+              unit: ohlcMode === "percentage" ? "%" : "元",
+              description: "adjusted close rebased to % change from the first valid close",
+            }]
+          : [{
+              name: ohlcMode === "percentage" ? "OHLC %" : "OHLC",
+              unit: ohlcMode === "percentage" ? "%" : "元",
+              description: "adjusted OHLC candles, uniformly rebased in percentage mode",
+            }]),
+        { name: "MA20", unit: ohlcMode === "percentage" ? "%" : "元", description: "20-day mean of the rebased close" },
+        { name: "MA60", unit: ohlcMode === "percentage" ? "%" : "元", description: "60-day mean of the rebased close" },
+        { name: "MA120", unit: ohlcMode === "percentage" ? "%" : "元", description: "120-day mean of the rebased close" },
+        { name: "cash borrow balance", description: "RZ 融资 balance — plotted as a shifted/clipped score on the hidden axis; the tooltip shows the raw balance" },
+        { name: "sec borrow balance", description: "RQ 融券 balance — plotted as a shifted/clipped score on the hidden axis; the tooltip shows the raw balance" },
+        { name: "Amount", unit: "亿元", description: "daily trading turnover (成交金额), bar color = close vs open" },
+      ],
+      state: { ohlcMode },
+      notes: [
+        "Percentage mode rebases price series to % change from the first valid close; Amount and margin scores are not rebased.",
+        "Margin fills are scores on a hidden axis, not raw yuan — read balances from the tooltip.",
+        "Diamond markers: gold = dividend, teal = split/conversion.",
+      ],
+    }),
+    [etf.code, etf.name, etf.is_bond, ohlcMode],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: `${etf.code} · ${etf.name}`,
+    subtitle: `${etf.sector_label} / ${etf.industry_label}${etf.is_bond ? " · Bond ETF" : " · Equity ETF"}${etf.index_code ? ` · → ${etf.index_code} ${etf.index_name}` : ""}`,
+    option,
+    spec: aiAskSpec,
+    getInstance: () => aiAskChartRef.current,
+  });
+
   // Dynamic card height: expand when composition panel is open so the pie
   // chart fits inside the parent box; expand further when the per-stock
   // OHLC expansion is open.
@@ -610,6 +660,7 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
     <ChartCard
       title={`${etf.code} · ${etf.name}`}
       subtitle={`${etf.sector_label} / ${etf.industry_label}${etf.is_bond ? " · Bond ETF" : " · Equity ETF"}${etf.index_code ? ` · → ${etf.index_code} ${etf.index_name}` : ""}`}
+      titleAddon={aiAskAddon}
       action={
         <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
           <OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />
@@ -622,6 +673,9 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
         <EChart
           option={option}
           height={250}
+          onReady={(c) => {
+            aiAskChartRef.current = c;
+          }}
           onCanvasClick={onDateClick ? (idx) => {
             const date = chartDates[idx];
             if (date) onDateClick(date);

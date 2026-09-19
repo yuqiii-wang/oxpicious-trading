@@ -4,11 +4,14 @@
  * Uses shared expiryTooltip.ts for tooltip formatters.
  */
 import {
+  baseChartOption,
+  commonTooltip,
+} from "@/shared/charts/base-chart";
+import {
   ATM_GRAY,
   DOWN_COLOR,
   IV_BLUE,
   MA20_COLOR,
-  UP_COLOR,
   axisColors,
   commonLegend,
   commonGrid,
@@ -41,13 +44,10 @@ function buildPcRatioOptionFromBroken(
   const axisTooltip = makeAxisTooltipFormatter(colors);
   const dotTooltip = makeExpiryDotTooltip(colors);
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 50, right: 20, bottom: 50, top: 36 }),
     dataZoom,
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
       axisPointer: {
         type: "cross",
         snap: true,
@@ -60,11 +60,8 @@ function buildPcRatioOptionFromBroken(
           fontSize: 10,
         },
       },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: axisTooltip,
-    },
+    }),
     axisPointer: { link: [{ xAxisIndex: "all" }] },
     legend: commonLegend(themeMode),
     xAxis: {
@@ -141,7 +138,7 @@ function buildPcRatioOptionFromBroken(
         },
       },
     ],
-  };
+  });
 }
 
 export function buildPcRatioOption(

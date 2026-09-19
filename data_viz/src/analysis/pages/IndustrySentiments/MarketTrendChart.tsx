@@ -18,20 +18,20 @@
  * The benchmark dropdown (same Autocomplete as Benchmark Attribution) is
  * only visible in "Hypes & Drains" sub-view.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   Autocomplete,
   Box,
-  CircularProgress,
-  Stack,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ECharts } from "echarts";
 import {
   fetchIndicesCombined,
   fetchIndustryAttributionBenchmarks,
@@ -40,7 +40,6 @@ import type {
   IndexBaselineRow,
   IndustryAttributionBenchmarkEntry,
 } from "@shared/types";
-import type { MarketTrendChartProps } from "./types";
 import { MARKET_TREND_INDICES } from "./constants";
 import {
   buildMarketTrendOption,
@@ -58,7 +57,8 @@ interface IndexData {
   rows: IndexBaselineRow[];
 }
 
-export function MarketTrendChart({ themeMode }: MarketTrendChartProps) {
+export function MarketTrendChart() {
+  const themeMode = useChartThemeMode();
   const [datasets, setDatasets] = useState<IndexData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -175,10 +175,50 @@ export function MarketTrendChart({ themeMode }: MarketTrendChartProps) {
     [benchmarks, benchmarkCode],
   );
 
+  // AI Ask — the overview chart body is a bare BaseChart, so the OUTER card
+  // is wired here. The "?" shows only in the Overview sub-view (the Hypes &
+  // Drains chart is a separate component with its own card). State carries
+  // the CURRENT sub-view / amount toggle / benchmark so the modal and the
+  // LLM describe the view on screen.
+  const trendRef = useRef<ECharts | null>(null);
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "Broad-market combined overview: the four A-share market indices' closes " +
+        "rebased to 100 (left axis) so their relative paths are directly comparable, " +
+        "with each index's trading amount embedded as stacked bars on the right axis " +
+        "(toggle off via Trading Amt). Rising rebased lines = outperformance since the " +
+        "common start; the stacked bars show where turnover concentrated.",
+      instruments: MARKET_TREND_INDICES.map((m) => ({ code: m.code, name: m.name, assetClass: "index" as const })),
+      series: MARKET_TREND_INDICES.flatMap((m) => [
+        { name: m.name, description: "daily close rebased to 100 at the common start" },
+        { name: `${m.name} Amt`, unit: "亿", description: `${m.name} daily trading amount (stacked bar)` },
+      ]),
+      state: {
+        sub_view: subView,
+        trading_amt: showAmt ? "shown (stacked bars)" : "hidden",
+        ...(subView === "hypes_drains" ? { benchmark: benchmarkCode } : {}),
+      },
+      notes: [
+        "Closes are REBASED to 100 — absolute price levels are not comparable across indices.",
+        "A shared date-range slider windows the chart; all four indices share one date axis (union of their dates).",
+      ],
+    }),
+    [subView, showAmt, benchmarkCode],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: "Market Trend",
+    subtitle,
+    option: subView === "overview" ? trendOption : null,
+    spec: subView === "overview" ? aiAskSpec : null,
+    getInstance: () => trendRef.current,
+  });
+
   return (
     <ChartCard
       title="Market Trend"
       subtitle={subtitle}
+      titleAddon={aiAskAddon}
     >
       {/* --- Sub-view toggle: Overview vs Hypes & Drains --- */}
       {/* When Hypes & Drains is active, a benchmark Autocomplete dropdown
@@ -236,64 +276,56 @@ export function MarketTrendChart({ themeMode }: MarketTrendChartProps) {
 
       {/* --- Overview sub-view --- */}
       {subView === "overview" && (
-        <>
-          {loading && (
-            <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-              <CircularProgress size={28} />
+        <BaseChart
+          variant="bare"
+          option={trendOption}
+          loading={loading}
+          error={error ? `Failed to load market trend data: ${error}` : null}
+          height={300}
+          onReady={(c) => {
+            trendRef.current = c;
+          }}
+        >
+          {/* --- Combined close + embedded trading amount --- */}
+          {trendOption && (
+            <Box
+              sx={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 1,
+                mb: -0.5,
+                px: 0.5,
+              }}
+            >
+              <Typography
+                variant="caption"
+                sx={{ fontSize: "0.72rem", fontWeight: 600, display: "block" }}
+              >
+                Close (rebased = 100){showAmt ? " + Trading Amount (stacked)" : ""}
+              </Typography>
+              <ToggleButton
+                size="small"
+                value="showAmt"
+                selected={showAmt}
+                onClick={() => setShowAmt((v) => !v)}
+                sx={{
+                  height: 20,
+                  px: 0.75,
+                  "& .MuiToggleButton-label": { fontSize: "0.7rem" },
+                  textTransform: "none",
+                }}
+              >
+                Trading Amt
+              </ToggleButton>
             </Box>
           )}
-          {error && (
-            <Alert severity="error" sx={{ py: 0.5 }}>
-              Failed to load market trend data: {error}
-            </Alert>
-          )}
-          {!loading && !error && (
-            <Stack spacing={1.5}>
-              {/* --- Combined close + embedded trading amount --- */}
-              {trendOption && (
-                <Box>
-                  <Box
-                    sx={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: 1,
-                      mb: -0.5,
-                      px: 0.5,
-                    }}
-                  >
-                    <Typography
-                      variant="caption"
-                      sx={{ fontSize: "0.72rem", fontWeight: 600, display: "block" }}
-                    >
-                      Close (rebased = 100){showAmt ? " + Trading Amount (stacked)" : ""}
-                    </Typography>
-                    <ToggleButton
-                      size="small"
-                      value="showAmt"
-                      selected={showAmt}
-                      onClick={() => setShowAmt((v) => !v)}
-                      sx={{
-                        height: 20,
-                        px: 0.75,
-                        "& .MuiToggleButton-label": { fontSize: "0.7rem" },
-                        textTransform: "none",
-                      }}
-                    >
-                      Trading Amt
-                    </ToggleButton>
-                  </Box>
-                  <EChart option={trendOption} height={300} />
-                </Box>
-              )}
-            </Stack>
-          )}
-        </>
+        </BaseChart>
       )}
 
       {/* --- Hypes & Drains sub-view --- */}
       {subView === "hypes_drains" && (
-        <HypesAndDrainsChart benchmarkCode={benchmarkCode} themeMode={themeMode} />
+        <HypesAndDrainsChart benchmarkCode={benchmarkCode} />
       )}
     </ChartCard>
   );

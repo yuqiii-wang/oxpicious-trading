@@ -26,10 +26,14 @@ import { Stack, Typography } from "@mui/material";
 import type * as echarts from "echarts";
 import type { EChartsOption } from "echarts";
 import EChart from "@/components/EChart";
+import { useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import type { FuturesCombinedResponse } from "@shared/types";
 import {
   buildFuturesChartOption,
   buildBasisConvergenceChartOption,
+  EXPIRY_DOTS_SERIES_NAME,
   type FuturesChartExtra,
 } from "@/dataviz/features/futures/chartOption";
 import { useFuturesExt } from "./useFuturesExt";
@@ -45,6 +49,7 @@ interface FuturesChartsProps {
 }
 
 export function FuturesCharts({ product, combinedData, viewMode }: FuturesChartsProps) {
+  const themeMode = useChartThemeMode();
   const { extData, loadingExt, errorExt, gapMap, corrMap } = useFuturesExt(product);
 
   // Chart instances for manual cross-chart tooltip sync
@@ -160,14 +165,14 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
           expiryDotsRef: viewMode === "history" ? expiryDotsRef : undefined,
         }
       : undefined;
-    return buildFuturesChartOption(combinedData, viewMode, currentZoom, extra);
-  }, [combinedData, gapMap, currentZoom, viewMode, expiryDotsRef]);
+    return buildFuturesChartOption(themeMode, combinedData, viewMode, currentZoom, extra);
+  }, [themeMode, combinedData, gapMap, currentZoom, viewMode, expiryDotsRef]);
 
   // Second plot — correlation curves (active + matured contracts)
   const corrOption = useMemo<EChartsOption | null>(() => {
     if (!combinedData || !corrMap) return null;
-    return buildCorrelationChartOption(combinedData, corrMap, viewMode, currentZoom);
-  }, [combinedData, corrMap, currentZoom, viewMode]);
+    return buildCorrelationChartOption(themeMode, combinedData, corrMap, viewMode, currentZoom);
+  }, [themeMode, combinedData, corrMap, currentZoom, viewMode]);
 
   // Third plot — basis convergence (contrarian): signed futures−spot gap
   // per contract in bps, decaying into the zero line toward expiry; with
@@ -175,15 +180,102 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
   const convOption = useMemo<EChartsOption | null>(() => {
     if (!combinedData || !gapMap) return null;
     return buildBasisConvergenceChartOption(
+      themeMode,
       combinedData,
       gapMap,
       viewMode,
       currentZoom,
     );
-  }, [combinedData, gapMap, currentZoom, viewMode]);
+  }, [themeMode, combinedData, gapMap, currentZoom, viewMode]);
 
   const nActive = combinedData?.contracts.filter((c) => c.is_alive && c.is_continuous).length ?? 0;
   const nMatured = combinedData?.contracts.filter((c) => !c.is_alive).length ?? 0;
+
+  // AI Ask — one spec per plot; state carries the CURRENT view mode
+  // (future/history) so the modal / LLM always describe the view on screen.
+  const aiInstruments = useMemo<NonNullable<AiAskSpec["instruments"]>>(
+    () => [
+      { code: product, name: combinedData.product_name, assetClass: "futures" },
+      ...(combinedData.underlying_code
+        ? [{ code: combinedData.underlying_code, name: combinedData.underlying_name, assetClass: "index" as const }]
+        : []),
+    ],
+    [product, combinedData],
+  );
+  const spotName = combinedData.underlying_name || combinedData.product_name;
+  const priceSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Futures price curves for product ${product} (${combinedData.product_name}): one ` +
+        "settlement-price line per contract — active contracts in a blue gradient (farther " +
+        "maturity = lighter), matured contracts in grey — plus the underlying spot line for " +
+        "index futures. The tooltip adds each contract's gap vs the underlying; in history mode " +
+        "hovering shows expiry-gap dots. All plots on this page share one synced time slider " +
+        "and crosshair.",
+      instruments: aiInstruments,
+      series: [
+        { name: spotName, unit: "index pts", description: "underlying (spot) daily close" },
+        { name: EXPIRY_DOTS_SERIES_NAME, description: "expiry-gap dots (history mode, hover-triggered)" },
+      ],
+      state: { view_mode: viewMode },
+      notes: [
+        "Blue gradient = active contracts (farther maturity lighter); grey = matured.",
+        "Time slider + hover crosshair are synchronized across the price / correlation / basis plots.",
+      ],
+    }),
+    [product, combinedData.product_name, aiInstruments, spotName, viewMode],
+  );
+  const corrSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "Per-contract 20-day rolling correlation vs the underlying (corr_price_vs_underlying): " +
+        `one line per contract — ${nActive} active · ${nMatured} matured — using the same ` +
+        "per-contract colors as the price curves above, y-axis fixed at -1 to 1. Follows the " +
+        "shared time slider and crosshair of the futures analysis page.",
+      instruments: aiInstruments,
+      state: { view_mode: viewMode },
+      notes: ["+1 = the contract moves in lockstep with the underlying; 0 = no linear relation."],
+    }),
+    [aiInstruments, nActive, nMatured, viewMode],
+  );
+  const convSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "Basis convergence (contrarian): the signed futures − spot gap per contract in basis " +
+        "points, collapsing into the zero line as each contract ages toward expiry (futures " +
+        "meets spot). Dots mark each matured contract's expiry gap (history mode) and each " +
+        "active contract's yesterday gap. Follows the shared time slider and crosshair of the " +
+        "futures analysis page.",
+      instruments: aiInstruments,
+      series: [
+        { name: "__zero_line__", unit: "bps", description: "the convergence target — futures meets spot (gap = 0)" },
+      ],
+      state: { view_mode: viewMode },
+      notes: ["Contract line colors match the price curves above (blue active / grey matured)."],
+    }),
+    [aiInstruments, viewMode],
+  );
+  const priceAddon = useAiAskAddon({
+    title: "Futures Price Curves",
+    subtitle: `${nActive} active · ${nMatured} matured contracts`,
+    option: firstPlotOption,
+    spec: priceSpec,
+    getInstance: () => priceChartRef.current,
+  });
+  const corrAddon = useAiAskAddon({
+    title: "Correlation (corr_price_vs_underlying, 20d rolling)",
+    subtitle: `${nActive} active · ${nMatured} matured contracts`,
+    option: corrOption,
+    spec: corrSpec,
+    getInstance: () => corrChartRef.current,
+  });
+  const convAddon = useAiAskAddon({
+    title: "Basis Convergence (contrarian)",
+    subtitle: "futures − spot gap, bps · zero = futures meets spot",
+    option: convOption,
+    spec: convSpec,
+    getInstance: () => convChartRef.current,
+  });
 
   return (
     <Stack spacing={2}>
@@ -199,6 +291,7 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
             )}
           </>
         )}
+        titleAddon={priceAddon}
       >
         {firstPlotOption && (
           <EChart
@@ -226,6 +319,7 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
         loading={loadingExt}
         error={errorExt}
         errorLabel="Failed to load correlation data"
+        titleAddon={corrAddon}
       >
         {corrOption && (
           <EChart
@@ -255,6 +349,7 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
         loading={loadingExt}
         error={errorExt}
         errorLabel="Failed to load gap data"
+        titleAddon={convAddon}
       >
         {convOption && (
           <EChart

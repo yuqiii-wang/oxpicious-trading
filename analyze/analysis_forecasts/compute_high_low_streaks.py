@@ -65,9 +65,9 @@ from analyze.analysis_forecasts.config import (
     HIGH_LOW_STREAKS_TYPES,
 )
 
-# The family's (band_period, pct_type) config combos — exported for the
-# live signals layer (analyze.analysis_signals.signals.high_low_streaks),
-# which detects on the same axes the forecast buckets audit.
+# The family's (band_period, pct_type) config combos — the same axes
+# the forecast buckets audit (and the future high_low_streaks signal
+# engine would emit on).
 COMBOS = tuple(
     (period, pct_type)
     for period in HIGH_LOW_STREAKS_PERIODS

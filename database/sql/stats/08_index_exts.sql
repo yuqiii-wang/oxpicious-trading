@@ -47,9 +47,8 @@ COMMENT ON COLUMN stats.index_exts.total_etf_trading_amount_ma5 IS '5-trading-da
 COMMENT ON COLUMN stats.index_exts.stock_num        IS 'Number of constituent stocks in this index as of the latest stats.sec_composition snapshot_date <= this date (source_type=''index''). Source: COUNT(DISTINCT stock_code) GROUP BY code, snapshot_date, then LATERAL latest-snapshot lookup per (date, code). NULL when the index has no composition snapshot (e.g. cross-market H-prefixed indices without a CSI closeweight pull). Used by analyze_industry_sentiments.py to classify each index into a pool_size bucket: small (stock_num<51), mid (51-180), large (>180).';
 
 -- Indexes
--- Legacy (code, date) index is redundant with the code-first PK — replaced by
--- a date-first index to keep cross-code date scans cheap.
-DROP INDEX IF EXISTS stats.idx_index_exts_code_date;
+-- The legacy (code, date) index is superseded by the code-first PK; the
+-- date-first index below keeps cross-code date scans cheap.
 CREATE INDEX IF NOT EXISTS idx_index_exts_date
     ON stats.index_exts (date);
 
@@ -122,23 +121,13 @@ CREATE TABLE IF NOT EXISTS stats.exchange_trading_amt (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'exchange_trading_amt', 8);
 
--- Migrate: add the (index_code, date) -> index_identity FK to pre-existing
--- installs (CREATE TABLE IF NOT EXISTS does not retro-fit constraints to
--- an already-existing table). Drops and re-creates the constraint so the
--- migration is idempotent. No-op on fresh installs where the CREATE TABLE
--- already declared the FK.
-ALTER TABLE stats.exchange_trading_amt DROP CONSTRAINT IF EXISTS fk_exchange_trading_amt_date_code;
-ALTER TABLE stats.exchange_trading_amt ADD CONSTRAINT fk_exchange_trading_amt_date_code
-    FOREIGN KEY (index_code, date) REFERENCES stats.index_identity(code, date);
-
 COMMENT ON TABLE  stats.exchange_trading_amt             IS 'Per-(date, exchange) aggregate trading turnover (yuan), proxied by ONE representative broad-market index per exchange. Hardcoded: SZ (SZSE) -> 399001 (深证成指), SS (SSE) -> 000001 (上证指数). total_trading_amount = stats.index_basic_stats.trading_amount of the representative index. Built by builds.index._exchange_trading_amt.';
 COMMENT ON COLUMN stats.exchange_trading_amt.exchange             IS 'Exchange code (matches stats.sec_classification.exchange convention: SZ=SZSE, SS=SSE). Part of PK (exchange, date). Each exchange is represented by exactly one benchmark index (see index_code).';
 COMMENT ON COLUMN stats.exchange_trading_amt.index_code          IS 'Representative index code whose trading_amount is used as this exchange''s total_trading_amount on this date. Hardcoded: SZ->399001 (深证成指), SS->000001 (上证指数). FK references stats.index_identity(code, date).';
 COMMENT ON COLUMN stats.exchange_trading_amt.total_trading_amount IS 'Trading turnover (yuan) of the representative index on this date. Source: stats.index_basic_stats.trading_amount. Rows where the representative index has no trading_amount (estimated-close gaps) are NOT inserted.';
 
 -- Indexes
--- Legacy (exchange, date) index is redundant with the exchange-first PK —
--- replaced by a date-first index.
-DROP INDEX IF EXISTS stats.idx_exchange_trading_amt_exchange_date;
+-- The legacy (exchange, date) index is superseded by the exchange-first
+-- PK; the date-first index below replaces it.
 CREATE INDEX IF NOT EXISTS idx_exchange_trading_amt_date
     ON stats.exchange_trading_amt (date);

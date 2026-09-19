@@ -31,6 +31,7 @@ import {
   DOWN_COLOR,
   PALETTE_HI,
 } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { buildBenchmarkCenteredShadeSeries } from "@/lib/benchmark-shade";
 import {
   buildOhlcBarSeries,
@@ -325,22 +326,17 @@ export function buildMarketMovementsTopOption(
     indPctByTime.set(ind.industry_id, { label: ind.industry_label, pctByTime, diffByTime });
   }
 
-  return {
-    backgroundColor: "transparent",
-    legend: {
-      ...commonLegend(themeMode),
+  return baseChartOption(themeMode, {
+    legend: commonLegend(themeMode, {
       data: legendIndustryLabels.concat([
         benchmarkLabel,
         ...extraLegendLabels,
         ...(prevDayBar ? [prevDayOhlcSeriesName(prevDayBar.label)] : []),
       ]),
-    },
+    }),
     grid: commonGrid({ top: 40, bottom: 50, left: 60, right: 60 }),
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: c.tooltipBg,
+    tooltip: commonTooltip(themeMode, {
       borderColor: c.axisLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       axisPointer: {
         type: "cross",
         crossStyle: { color: c.axisLineColor },
@@ -376,7 +372,7 @@ export function buildMarketMovementsTopOption(
           indPctByTime,
         });
       },
-    },
+    }),
     xAxis: {
       type: "category",
       data: xCategories,
@@ -426,7 +422,7 @@ export function buildMarketMovementsTopOption(
       // SeriesOption | SeriesOption[] union — cast to the array form.
       ...(industrySeries as unknown as SeriesOption[]),
     ],
-  } as EChartsOption;
+  }) as EChartsOption;
 }
 
 // ============================================================================
@@ -463,21 +459,21 @@ export function buildIndustryBarsOption(
   const values = sorted.map((r) => r.industry_price_pct);
   const colors = values.map((v) => (v != null && v >= 0 ? UP_COLOR : DOWN_COLOR));
 
-  return {
-    backgroundColor: "transparent",
+  return baseChartOption(themeMode, {
+    // Single-series bar chart — no legend.
+    legend: null,
     grid: commonGrid({ top: 32, bottom: 80, left: 60, right: 30 }),
-    tooltip: {
+    tooltip: commonTooltip(themeMode, {
       trigger: "item",
-      backgroundColor: c.tooltipBg,
+      axisPointer: undefined,
       borderColor: c.axisLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (p: unknown) => {
         const param = p as { dataIndex: number };
         const r = sorted[param.dataIndex];
         if (!r) return "";
         return renderIndustryBarTooltip(r.industry_label, r.industry_price_pct);
       },
-    },
+    }),
     xAxis: {
       type: "category",
       data: labels,
@@ -525,7 +521,7 @@ export function buildIndustryBarsOption(
         },
       },
     ],
-  } as EChartsOption;
+  }) as EChartsOption;
 }
 
 // ============================================================================
@@ -556,21 +552,21 @@ export function buildMemberBarsOption(
   const values = sorted.map((r) => r.code_price_pct);
   const colors = values.map((v) => (v != null && v >= 0 ? UP_COLOR : DOWN_COLOR));
 
-  return {
-    backgroundColor: "transparent",
+  return baseChartOption(themeMode, {
+    // Single-series bar chart — no legend.
+    legend: null,
     grid: commonGrid({ top: 32, bottom: 80, left: 60, right: 30 }),
-    tooltip: {
+    tooltip: commonTooltip(themeMode, {
       trigger: "item",
-      backgroundColor: c.tooltipBg,
+      axisPointer: undefined,
       borderColor: c.axisLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (p: unknown) => {
         const param = p as { dataIndex: number };
         const r = sorted[param.dataIndex];
         if (!r) return "";
         return renderMemberBarTooltip(r.code_name || r.code, r.code, r.code_price_pct);
       },
-    },
+    }),
     xAxis: {
       type: "category",
       data: labels,
@@ -618,5 +614,5 @@ export function buildMemberBarsOption(
         },
       },
     ],
-  } as EChartsOption;
+  }) as EChartsOption;
 }

@@ -13,7 +13,8 @@
  * inline box right below the citation showing the resolved article
  * (text.llm_qa_refs joined back to text.news): the title link, the
  * exact/relevant typing with its persisted provenance (resolved_via —
- * summary echo / corpus match / ddgs title search) and source as tags,
+ * summary echo / corpus match / ddgs title search), whether the answer
+ * actually cites the article (is_used) and the source as tags,
  * and a scrollable content preview (text.news.content, server-capped at
  * 4000 chars). A cited tag with no resolution row expands to a
  * placeholder instead.
@@ -125,6 +126,9 @@ function viaChipMeta(refItem: AiQaRefItem): { label: string; title: string } {
   if (refItem.resolved_via === "ddgs") {
     return { label: "ddgs", title: "摘要后 ddgs 标题检索 + 正文核验（relevant）" };
   }
+  if (refItem.resolved_via === "zhihu") {
+    return { label: "zhihu", title: "摘要后标题匹配 zhihu 在线检索（relevant）" };
+  }
   if (refItem.resolved_via === "summary") {
     return { label: "summary", title: "来自 ZhiPu summary 响应的引用原文（exact）" };
   }
@@ -136,8 +140,10 @@ function viaChipMeta(refItem: AiQaRefItem): { label: string; title: string } {
 /** The expanded inline box for one cited tag — the resolved article row
  *  (title link, ref_type + provenance + source tags, date) plus a
  *  scrollable content preview (text.news.content, 4000-char server cap),
- *  or a placeholder when the tag has no text.llm_qa_refs resolution. */
-function RefExpandBox({ tag, refItem }: { tag: string; refItem?: AiQaRefItem }) {
+ *  or a placeholder when the tag has no text.llm_qa_refs resolution.
+ *  Also reused by the card's full source list (null-content rows render
+ *  title-only — no content block). */
+export function RefExpandBox({ tag, refItem }: { tag: string; refItem?: AiQaRefItem }) {
   if (!refItem) {
     return (
       <Box
@@ -186,6 +192,18 @@ function RefExpandBox({ tag, refItem }: { tag: string; refItem?: AiQaRefItem }) 
           variant="outlined"
           title={via.title}
           sx={{ ...tagSx, color: "text.secondary" }}
+        />
+        <Chip
+          label={refItem.is_used ? "已引用" : "未引用"}
+          size="small"
+          variant="outlined"
+          color={refItem.is_used ? "success" : "default"}
+          title={
+            refItem.is_used
+              ? "回答正文引用了该文章（inline 引用标记命中）"
+              : "回答未引用该文章 — 检索命中但摘要未采用的参考"
+          }
+          sx={tagSx}
         />
         {refItem.source && !["web", "zhihu"].includes(refItem.source) && refItem.source !== via.label && (
           <Chip

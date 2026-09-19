@@ -46,7 +46,7 @@ Consumers:
   - analysis_forecasts.compute_px_vol — bucket membership + mean_t /
     mean_z (bucket AGGREGATES stay in analysis_forecasts.px_vol_state;
     the dates live here).
-  - analysis_signals.signals px_vol — per-day signal detections.
+  - analysis_forecasts.compute_px_vol — the px_vol forecast buckets.
   - data_viz MA-Spread panel — the Px-Vol States date shading.
 
 Source: NOT the parent DataFrame's price column — the parent's etf /
@@ -80,12 +80,9 @@ import time
 import numpy as np
 import pandas as pd
 
-from _common.build_commons import copy_insert_async
+from _common.db_commons import csv_copy_from_frame_async
 from _common.df_utils import column_subset
-from analyze._common import (
-    sanitize_for_db_insert,
-    upsert_analysis_identity,
-)
+from analyze._common import upsert_analysis_identity
 from analyze.analysis_forecasts.config import (
     PX_VOL_AMT_METRIC,
     PX_VOL_K_SHARP,
@@ -119,9 +116,35 @@ logger = logging.getLogger(__name__)
 _SPEED_IDX = {s: i for i, s in enumerate(PX_VOL_SPEEDS)}
 _VOL_IDX = {v: i for i, v in enumerate(PX_VOL_VOL_STATES)}
 
-# Rows per COPY chunk (margin_changes precedent — bounds the row-dict
-# list materialized between the DataFrame and asyncpg's COPY stream).
+# Rows per COPY chunk (margin_changes precedent — bounds the frame slice
+# + rendered CSV bytes held between the DataFrame and the COPY stream;
+# the CSV path renders whole columns host-side, so no per-row dict list
+# is ever materialized).
 _CHUNK_ROWS = 200_000
+
+# The recorded build-parameter columns (rounded to 4 dp at the write
+# boundary — NUMERIC(4,2)/NUMERIC(6,4) parity with the former dict path).
+# The state-value columns need NO prep: the CSV writer renders NaN as an
+# empty field (SQL NULL) and ±inf as 'inf' / '-inf', which DOUBLE
+# PRECISION COPY accepts — identical to the former dict path, where the
+# state columns were NOT in numeric_cols (only NaN swept to None there;
+# inf passed through to float8).
+_PARAM_COLS = (
+    "k_slow_up", "k_slow_dn", "k_sharp", "z_heavy", "z_shrink",
+    "sigma_floor",
+)
+
+
+def prep_price_vs_amt_frame(rows_df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare the registry frame for the CSV COPY boundary (in place).
+
+    Rounds the NUMERIC(4,2)/NUMERIC(6,4) parameter columns to 4 dp —
+    the only transform the former sanitize_for_db_insert dict path
+    applied beyond the NaN→NULL sweep the CSV writer now handles.
+    """
+    param_cols = list(_PARAM_COLS)
+    rows_df[param_cols] = rows_df[param_cols].round(4)
+    return rows_df
 
 
 def classify_price_vs_amt(df: pd.DataFrame) -> pd.DataFrame:
@@ -190,26 +213,18 @@ def classify_price_vs_amt(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def sanitize_price_vs_amt_rows(df: pd.DataFrame) -> list[dict]:
-    """Sanitize one chunk of the registry frame for asyncpg COPY
-    (NaN/inf -> None + to_dict). The NUMERIC(4,2)/NUMERIC(6,4) parameter
-    columns are rounded; the state values pass through as float8."""
-    if df.empty:
-        return []
-    return sanitize_for_db_insert(
-        df,
-        numeric_cols=["k_slow_up", "k_slow_dn", "k_sharp",
-                      "z_heavy", "z_shrink", "sigma_floor"],
-        round_to=4,
-    )
-
-
 async def _copy_rows_chunked(
     conn, pool, rows_df: pd.DataFrame, *, max_concurrent: int,
 ) -> int:
     """COPY-insert the registry frame in row-count chunks (market_hypes
     precedent — the caller DELETEd the whole scope first, so the
-    inserted rows are guaranteed conflict-free)."""
+    inserted rows are guaranteed conflict-free).
+
+    CSV COPY (csv_copy_from_frame_async): whole-column host rendering —
+    no per-row dict list, ~10x less client CPU than the binary record
+    path. ``prep_price_vs_amt_frame`` ran once on the whole frame
+    upstream, so chunks are plain ``.iloc`` slices.
+    """
     n_total = len(rows_df)
     if n_total == 0:
         return 0
@@ -227,9 +242,9 @@ async def _copy_rows_chunked(
     if not use_parallel:
         total = 0
         for i, (lo, hi) in enumerate(bounds, start=1):
-            rows = sanitize_price_vs_amt_rows(rows_df.iloc[lo:hi])
-            n = await copy_insert_async(
-                conn, PRICE_VS_AMT_TABLE, rows, columns=columns,
+            n = await csv_copy_from_frame_async(
+                conn, PRICE_VS_AMT_TABLE, rows_df.iloc[lo:hi],
+                columns=columns,
             )
             total += n
             logger.info(f"      price_vs_amt chunk {i}/{n_chunks}: COPY {n:,} "
@@ -246,10 +261,10 @@ async def _copy_rows_chunked(
 
     async def _task(i: int, lo: int, hi: int) -> int:
         async with sem:
-            rows = sanitize_price_vs_amt_rows(rows_df.iloc[lo:hi])
             async with pool.acquire() as c:
-                n = await copy_insert_async(
-                    c, PRICE_VS_AMT_TABLE, rows, columns=columns,
+                n = await csv_copy_from_frame_async(
+                    c, PRICE_VS_AMT_TABLE, rows_df.iloc[lo:hi],
+                    columns=columns,
                 )
         async with lock:
             counter[0] += n
@@ -384,6 +399,9 @@ async def run_price_vs_amt(
     rows_df["z_shrink"] = PX_VOL_Z_SHRINK
     rows_df["sigma_floor"] = PX_VOL_SIGMA_FLOOR
     rows_df["amt_metric"] = PX_VOL_AMT_METRIC
+    # CSV-COPY boundary prep: round the parameter columns + null
+    # non-finite state values (once, frame-level — before chunking).
+    rows_df = prep_price_vs_amt_frame(rows_df)
 
     n_codes = rows_df[["sec_type", "code"]].drop_duplicates().shape[0]
     logger.info(f"    -> {len(rows_df):,} state rows across {n_codes:,} "

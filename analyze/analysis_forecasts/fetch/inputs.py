@@ -2,9 +2,10 @@
 .fetch.inputs).
 
 One row per (code, date) with the indicator columns every bucket family
-consumes: price (+ ma / std / rsi / gap / relative-MA + relative-EMA
-spreads), trading_amount + rz_buy (px_vol / margin_ratio) and pe +
-dividend_yield (valuation). The frame the engines scatter into their
+consumes: price (+ ma / std / rsi / relative-MA / relative-EMA /
+price-vs-MA / price-vs-EMA spreads), trading_amount + rz_buy (px_vol /
+margin_ratio) and pe + dividend_yield (valuation). The frame the
+engines scatter into their
 (T, C) grids — loaded through the repo's cudf.pandas contract: every
 numeric column cast ``::float8`` at the SQL source (no Decimal object
 columns), dates as epoch float8 materialized to datetime64[us] in ONE
@@ -22,9 +23,10 @@ from _common.build_commons import rec_cols
 from _common.df_utils import epoch_col_to_dt64
 
 from analyze.analysis_forecasts.config import (
-    GAP_WINDOWS,
     MA_WINDOWS,
+    MOV_PAIRS_EMA_LEGS,
     MOV_PAIRS_EMA_WINDOWS,
+    MOV_PAIRS_LEGS,
     MOV_PAIRS_WINDOWS,
     RSI_WINDOWS,
 )
@@ -33,15 +35,23 @@ from ._sources import AMT_SOURCE, PRICE_SOURCE
 
 logger = logging.getLogger(__name__)
 
+# The (fast_leg, spread-prefix) legs of each pair family → the fetched
+# spread columns {prefix}_{W} (the legs share the family's window grid).
+_PAIR_COLUMNS = tuple(
+    f"{prefix}_{w}"
+    for legs, windows in ((MOV_PAIRS_LEGS, MOV_PAIRS_WINDOWS),
+                          (MOV_PAIRS_EMA_LEGS, MOV_PAIRS_EMA_WINDOWS))
+    for _, prefix in legs
+    for w in windows
+)
+
 # Output column order (matches the SELECT list below).
 _COLUMNS = (
     ["code", "date", "price"]
     + [f"ma_{w}days" for w in MA_WINDOWS]
     + [f"rsi_{w}days" for w in RSI_WINDOWS]
-    + [f"gap_{w}days" for w in GAP_WINDOWS]
     + [f"std_{w}days" for w in MA_WINDOWS]
-    + [f"pair_{w}" for w in MOV_PAIRS_WINDOWS]
-    + [f"ema_pair_{w}" for w in MOV_PAIRS_EMA_WINDOWS]
+    + list(_PAIR_COLUMNS)
     + ["trading_amount", "rz_buy"]
     + ["pe", "dividend_yield"]
 )
@@ -54,9 +64,14 @@ _FAMILY_COLUMNS: dict[str, tuple[str, ...]] = {
     "std": tuple(f"ma_{w}days" for w in MA_WINDOWS)
     + tuple(f"std_{w}days" for w in MA_WINDOWS),
     "rsi": tuple(f"rsi_{w}days" for w in RSI_WINDOWS),
-    "gap": tuple(f"gap_{w}days" for w in GAP_WINDOWS),
-    "pairs": tuple(f"pair_{w}" for w in MOV_PAIRS_WINDOWS),
-    "epairs": tuple(f"ema_pair_{w}" for w in MOV_PAIRS_EMA_WINDOWS),
+    "pairs": tuple(
+        f"{p}_{w}" for p in dict(MOV_PAIRS_LEGS).values()
+        for w in MOV_PAIRS_WINDOWS
+    ),
+    "epairs": tuple(
+        f"{p}_{w}" for p in dict(MOV_PAIRS_EMA_LEGS).values()
+        for w in MOV_PAIRS_EMA_WINDOWS
+    ),
     "mratio": ("trading_amount", "rz_buy"),
     "pe": ("pe",),
     "div": ("dividend_yield",),
@@ -124,20 +139,23 @@ async def fetch_analysis_inputs(
         joins.append(f"""LEFT JOIN analysis.mov_ave_spreads_detail d
                ON d.sec_type = '{sec_type}'
               AND d.code = b.code AND d.date = b.date""")
-    if "rsi" in fams or "gap" in fams:
+    if "rsi" in fams:
         add(",\n       ".join(
             f"r.rsi_{w}days::float8 AS rsi_{w}days" for w in RSI_WINDOWS))
-        add(",\n       ".join(
-            f"r.gap_{w}days::float8 AS gap_{w}days" for w in GAP_WINDOWS))
         joins.append(f"""LEFT JOIN analysis.mov_ave_rsi r
                ON r.sec_type = '{sec_type}'
               AND r.code = b.code AND r.date = b.date""")
     if "pairs" in fams:
+        # the stored spread column IS {fast_leg}_vs_ma{W}
+        # (ma5_vs_ma60 / price_vs_ma60 / ...)
         add(",\n       ".join(
-            f"d.ma5_vs_ma{w}::float8 AS pair_{w}" for w in MOV_PAIRS_WINDOWS))
+            f"d.{leg}_vs_ma{w}::float8 AS {prefix}_{w}"
+            for leg, prefix in MOV_PAIRS_LEGS
+            for w in MOV_PAIRS_WINDOWS))
     if "epairs" in fams:
         add(",\n       ".join(
-            f"e.ema6_vs_ema{w}::float8 AS ema_pair_{w}"
+            f"e.{leg}_vs_ema{w}::float8 AS {prefix}_{w}"
+            for leg, prefix in MOV_PAIRS_EMA_LEGS
             for w in MOV_PAIRS_EMA_WINDOWS))
         joins.append(f"""LEFT JOIN analysis.mov_ave_spreads_detail_ema e
                ON e.sec_type = '{sec_type}'
@@ -177,13 +195,17 @@ async def fetch_analysis_inputs(
 
     # Column-materialized ctor + epoch→datetime64[us] (object python dates
     # would poison every downstream op; ::float8 casts avoid Decimal).
-    df = pd.DataFrame(rec_cols(rows), columns=_columns(families))
+    out_cols = _columns(families)
+    df = pd.DataFrame(rec_cols(rows), columns=out_cols)
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     # SQL-nullable numerics arrive as python None lists; a sec_type with
     # NO rows at all for a column (index: rz_buy is NULL::float8
     # everywhere) makes the ctor build a STRING column — coerce the
-    # nullable numerics to float64 (NaN) once at the boundary.
+    # nullable numerics to float64 (NaN) once at the boundary. The
+    # membership probe stays on the plain python list (an Index `in`
+    # check forces a cudf transfer).
     for col in ("trading_amount", "rz_buy", "pe", "dividend_yield"):
-        if col in df.columns:
+        if col in out_cols:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
     return df

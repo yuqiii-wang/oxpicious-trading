@@ -1,201 +1,239 @@
 -- ============================================================================
---  Table: analysis_signals.signals
+--  Tables: analysis_signals.signal_strategies + analysis_signals.history_signals
 --
---  One row per emitted signal day: (code, sec_type, signal_type,
---  signal_sub_type, date) — the PK. Each row records the day's
---  threshold value, a human-readable reason, the full detection
---  parameter set (JSON), the action, and the forecast confidence.
+--  The SIGNAL STRATEGY tier over analysis_forecasts. A forecast bucket
+--  (code × stat_month snapshot M × config, trailing 5-year window
+--  (M - 5y, M]) whose MIXED forecast_results row passes the plain gate
+--  IS a signal strategy for that forecast period; the bucket's trigger
+--  days inside the snapshot month M are its history signals.
 --
---  signal_type / signal_sub_type combos (current build):
---    mov_rsi + rsi{W}   — rsi_{W}days in the top 1% (side=top →
---                         action=sell) or bottom 1% (side=bottom →
---                         action=buy) of the trailing 5-year window
---                         ending at the snapshot month; W ∈
---                         {6, 10, 14, 20, 60} (mirrors
---                         analysis.mov_ave_rsi), cooldown 5.
---    mov_std + std{W}   — price beyond the 2σ Bollinger band:
---                         upper (price > ma_{W} + 2.0·std_{W}days →
---                         action=sell) or lower (price < ma_{W} −
---                         2.0·std_{W}days → action=buy); W ∈
---                         {5, 20, 60}, cooldown 5.
---    mov_gap + gap{W}   — gap_{W}days (the W-day price return, from
---                         analysis.mov_ave_rsi) in the top 1% (side=top
---                         — sharp W-day rally → action=sell) or bottom
---                         1% (side=bottom — sharp W-day selloff →
---                         action=buy) of the trailing 5-year window;
---                         W ∈ {2, 3}, cooldown 5.
---    mov_pairs + pair{W}   — the CROSS days of the EXISTING relative
---                            MA spread ma5_vs_ma{W} (the parent
---                            mov_ave_spread analysis's own spread
---                            definition, no new MA computation):
---                            side=top a CROSS UP / golden cross
---                            (spread turns > 0 from <= 0 →
---                            action=sell), side=bottom a CROSS DOWN /
---                            death cross (turns < 0 from >= 0 →
---                            action=buy); W ∈ {60, 120, 255}, cooldown
---                            5; signal_threshold = 0 (the crossed
---                            level is the ZERO line).
---    mov_pairs_ema + emapair{W} — the EMA sibling on the EXISTING
---                            ema6_vs_ema{W} spreads (same sides /
---                            cooldown).
---    high_low_streaks + p{band_period}_{pct_type} — the MEAN-MID
---                         anchor day (the ((day_count-1)//2 + 1)-th
---                         trading day of the span; an 8-day streak
---                         anchors its 4th day) of every band-break
---                         excursion streak of
---                         analysis.mov_ave_high_low_pct_streaks, per
---                         band combo (band_period 255/500/750/1275 ×
---                         pct_type 1/5/10 — the analysis_forecasts.
---                         high_low_streaks buckets' trigger days 1:1):
---                         side=top an ABOVE-band excursion (close on
---                         end_date above the end month's high_val band
---                         → action=sell), side=bottom BELOW-band (→
---                         action=buy — mean reversion: below-band
---                         streaks drift UP from the mid anchor, above-
---                         band DOWN). EX-POST anchor: a month is
---                         computed only once every streak anchored in
---                         it is final (2-completed-month resolve lag +
---                         a closed-streak guard). No cooldown.
+--    signal_strategies — one row per QUALIFYING BUCKET (the fixed
+--        setup): which config, over which forecast period
+--        (start_date .. end_date = the snapshot month), which side of
+--        the indicator, buy/sell, the threshold in the value's own
+--        space (live breach target) and the gate confidence.
+--    history_signals — one row per TRIGGER DAY (the event record, a
+--        structural clone of live.live_signals): the day's indicator
+--        value, the threshold it crossed and the excess. Only dates
+--        inside the bucket's own snapshot month M are recorded (one
+--        snapshot owns each date → no cross-month PK conflicts).
 --
---  signal_threshold — the detection threshold that the day crossed:
---    mov_rsi: the window's linear-interpolated percentile of
---             rsi_{W}days (top 1% or bottom 1% quantile, 0–100 RSI
---             scale) — constant within (code, month, sub_type);
---    mov_std: the day's band level ma_{W} ± 2.0·std_{W}days (varies
---             daily with ma/std).
+--  THE GATE (the plain forecast-results rule, identical for every
+--  family): on the bucket's MIXED forecast_results row,
+--    - the sign-aligned blended mean forward change (dir_ave) > 1% —
+--      a MEAN REVERSAL of material size (top/upper → sell → dir_ave =
+--      -ave_change; bottom/lower → buy → dir_ave = +ave_change; the
+--      sign alignment is applied at the Python emit layer, NOT in
+--      SQL), AND
+--    - the blended reverse_prob > 1% (a material reversal probability).
+--  confidence = that mixed row's reverse_prob. The emit currently
+--  covers mov_rsi (pct = 1, top/bottom) and mov_std (MA/σ windows
+--  >= 60d at k >= 2.0σ, upper/lower); other forecast families have no
+--  strategy rows until implemented (naturally unticked everywhere).
 --
---  confidence — the DRIVING-FACTOR COMPOSITE of the matching forecast
---  bucket, at the qualifying forecast_results period with the best
---  composite (the argmax period, recorded in params JSON as
---  conf_period — the horizon the confidence speaks about):
+--  Populated by python -m analyze.analysis_signals (incremental at
+--  stat-month granularity; the newest REFRESH_MONTHS months are
+--  re-emitted every run; --force deletes the sec_type's rows and
+--  re-emits every month present in analysis_forecasts).
 --
---    confidence = 0.30·f_t + 0.30·f_sharpe + 0.25·f_lift_prob
---               + 0.15·f_prior
---
---    f_t       = t / (t + 3)                t = dir_ave·√occ / std_change
---    f_sharpe  = 1 - exp(-sharpe / 1.2)     sharpe = dir_ave / std_change
---    f_lift_p  = 1 - exp(-lift_prob / 0.5)  lift_prob = rp - base_prob
---    f_prior   = the code's prior mean base composite (same
---                code/side/period, months < M, windows pooled;
---                neutral 0.20 below 10 prior bucket-periods)
---
---  every factor computed in the SIGNAL'S direction (dir_ave is
---  sign-flipped for top/upper — a buy row's confidence speaks about
---  the upward reversal, a sell row's about the downward), floored at
---  0, and horizon-free, so values compare across periods / families /
---  sec_types. This replaces the former MAX(reverse_prob): rp
---  saturates at long horizons (gate-passers' 20d/60d rp sits at
---  0.6-1.0 quantized by 5-7 occurrences) so the old confidence mostly
---  ranked buckets by horizon. The full factor breakdown rides in the
---  params JSON under confidence_factors.
---
---  Forecast-confirmation gate (forecast-result rule):
---  a day is RECORDED only when the matching analysis_forecasts bucket
---  (same code/sec_type/stat_month/window/side/pct|k/cooldown) has in
---  ANY forecast period (next / 5d / 20d / 60d) reverse_prob > 1%
---  (a material reversal probability) AND that period's mean forward
---  change is a REVERSAL (dir_ave > 0 — the bucket's average outcome
---  reverses, so the signal holds, not just a fat reversal tail) AND
---  that period's reverse_prob beats the unconditional base rate
---  (probability lift) AND that period's mean forward change beats the
---  base drift (magnitude lift — dropped buckets realize ~half the
---  mean reversal OOS). Each row also carries the per-security
---  calibration: tier ('proven' / 'proven_dir' / 'standard'),
---  code_baseline (the code's prior mean composite for the confidence's
---  argmax period) and code_rank (within-code percentile floor of the
---  confidence).
+--  NO CASE/WHEN anywhere: side is a STORED column (consumers join on
+--  it directly instead of deriving action from the side), and every
+--  other conditional lives in the Python emit layer.
 -- ============================================================================
 
-CREATE TABLE IF NOT EXISTS analysis_signals.signals (
+-- The retired per-day signals table (threshold rows keyed by signal
+-- date) — replaced by the strategy + history design above. CASCADE
+-- removes its 16 hash partitions.
+DROP TABLE IF EXISTS analysis_signals.signals CASCADE;
+
+CREATE TABLE IF NOT EXISTS analysis_signals.signal_strategies (
     code            TEXT         NOT NULL,  -- ticker (etf "510050.SS" / index "000300" / stock)
     sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
     signal_type     TEXT         NOT NULL,  -- 'mov_rsi' | 'mov_std' — the detection family
-    signal_sub_type TEXT         NOT NULL,  -- indicator + window: 'rsi6'..'rsi60' / 'std5'..'std60'
-    date            DATE         NOT NULL,  -- the signal day (only dates inside a snapshot month M of analysis_forecasts)
+    signal_sub_type TEXT         NOT NULL,  -- indicator + window: 'rsi14' / 'std20_2' (k %g-formatted: 2.0 → "2", 2.5 → "2.5")
+    side            TEXT         NOT NULL,  -- the bucket's side: 'top' | 'bottom' (mov_rsi) / 'upper' | 'lower' (mov_std) — STORED so consumers never derive it
+    is_market_hyped BOOLEAN      NOT NULL DEFAULT FALSE,  -- the bucket's hype split (mirrors the forecast bucket's own is_market_hyped — STORED like side, PK member so BOTH splits of one config register)
 
-    action          TEXT         NOT NULL,  -- 'sell' (top RSI / upper band) | 'buy' (bottom RSI / lower band)
-    signal_threshold NUMERIC(14,6),         -- threshold the day crossed (RSI percentile / band level)
-    confidence      NUMERIC(8,6),           -- driving-factor composite at the best qualifying forecast period (evidence t + efficiency sharpe + consistency lift + code prior, action-direction)
-    tier            TEXT,                   -- per-security tier: 'proven' | 'proven_dir' | 'standard'
-    code_baseline   NUMERIC(8,6),           -- the code's prior mean reverse_prob (confidence's argmax period)
-    code_rank       NUMERIC(8,6),           -- within-code percentile floor of the confidence (code's own prior buckets)
-    reason          TEXT,                   -- human-readable explanation of the signal
-    params          JSONB,                  -- full detection params, e.g. {"rsi_window":14,"side":"top","pct":1,"cooldown_days":5}
-    signal_order    INTEGER,                -- 1-based best-first priority rank within (sec_type, stat_month): the 2026-09 findings ladder (family x action measured edge DESC), then confidence DESC; only the top 1/8 of each month survives the trim
-    is_active       BOOLEAN      NOT NULL DEFAULT FALSE,  -- TRUE only on the sec_type's LATEST signal date (refreshed after every run)
+    start_date      DATE         NOT NULL,  -- the forecast period start (stat_month - 5y + 1 day — the bucket's trailing-window first day)
+    end_date        DATE         NOT NULL,  -- the forecast period end (== the snapshot stat_month M of analysis_forecasts)
 
-    CONSTRAINT pk_signals PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, date)
+    action          TEXT         NOT NULL,  -- 'sell' (top/upper — the reversal direction is down) | 'buy' (bottom/lower — the reversal direction is up)
+    signal_threshold NUMERIC(14,6),         -- the strategy's breach bar in the value's own space: mov_rsi the window's top/bottom-1% RSI percentile bar; mov_std the band level ma_W ± k·std_Wdays at the window-end trigger (price space)
+    confidence      NUMERIC(8,6),           -- the bucket's MIXED forecast_results reverse_prob (the gate's own probability)
+    reason          TEXT,                   -- human-readable explanation of the strategy
+    params          JSONB,                  -- full strategy params as JSON: the bucket config + the gate row's blended forward profile (dir_ave / reverse_prob / occurrence_count)
+    signal_order    INTEGER,                -- 1-based best-first rank within (sec_type, end_date) by confidence DESC (1 = the month's most-confident strategy; nothing is trimmed)
+    is_active       BOOLEAN      NOT NULL DEFAULT FALSE,  -- TRUE on the (code, sec_type, signal_type, signal_sub_type)'s LATEST end_date (refreshed after every run) — the live tier's current threshold set
+
+    CONSTRAINT pk_signal_strategies PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, side, is_market_hyped, start_date, end_date),
+    CONSTRAINT chk_signal_strategies_action CHECK (action IN ('buy', 'sell')),
+    CONSTRAINT chk_signal_strategies_sec_type CHECK (sec_type IN ('stock', 'etf', 'index'))
 ) PARTITION BY HASH (code);
 
-SELECT public.create_hash_partitions('analysis_signals', 'signals', 16);
+SELECT public.create_hash_partitions('analysis_signals', 'signal_strategies', 16);
 
--- Date-first lookup (UI / "signals on day X for sec_type Y").
-CREATE INDEX IF NOT EXISTS idx_signals_date
-    ON analysis_signals.signals (sec_type, signal_type, date);
+-- Period-first lookup (UI / active-set fetches by end_date).
+CREATE INDEX IF NOT EXISTS idx_signal_strategies_end_date
+    ON analysis_signals.signal_strategies (sec_type, signal_type, end_date);
 
--- ----------------------------------------------------------------------------
---  Idempotent migrations (pre-existing installs) — MUST precede the
---  Comments section below (comments reference the post-migration names):
---  1. is_active (installs created before is_active existed); ADD COLUMN
---     propagates to all hash partitions.
---  2. price_threshold -> signal_threshold rename.
---  3. confidence (MAX reverse_prob across forecast periods 5d + 20d).
--- ----------------------------------------------------------------------------
-ALTER TABLE analysis_signals.signals
-    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT FALSE;
-
-ALTER TABLE analysis_signals.signals
-    ADD COLUMN IF NOT EXISTS confidence NUMERIC(8,6);
-
--- Per-security calibration columns (gate study 2026-09: prior-vs-future
--- mean rp correlation 0.80-0.97). ADD COLUMN propagates to all hash
--- partitions; pre-existing rows keep NULL until a --force rebuild.
-ALTER TABLE analysis_signals.signals
-    ADD COLUMN IF NOT EXISTS tier TEXT;
-
-ALTER TABLE analysis_signals.signals
-    ADD COLUMN IF NOT EXISTS code_baseline NUMERIC(8,6);
-
-ALTER TABLE analysis_signals.signals
-    ADD COLUMN IF NOT EXISTS code_rank NUMERIC(8,6);
-
--- Signal order (2026-09 pass-2 "reduce to 1/8"): 1 = the month's best
--- signal. ADD COLUMN propagates to all hash partitions; assigned by
--- python -m analyze.analysis_signals after each run's month writes
--- (rows beyond the per-month top-1/8 cut are deleted by the same pass).
--- Consumers read signal_order ASC.
-ALTER TABLE analysis_signals.signals
-    ADD COLUMN IF NOT EXISTS signal_order INTEGER;
-
-DO $$ BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'analysis_signals'
-          AND table_name   = 'signals'
-          AND column_name  = 'price_threshold'
-    ) THEN
-        ALTER TABLE analysis_signals.signals
-            RENAME COLUMN price_threshold TO signal_threshold;
-    END IF;
-END $$;
+-- Existing installs gain the hype-split column here (fresh installs get
+-- it from the CREATE body above) — before the column COMMENT and the PK
+-- migration block below, both of which reference it.
+ALTER TABLE analysis_signals.signal_strategies
+    ADD COLUMN IF NOT EXISTS is_market_hyped BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_signals.signals IS 'Per-day buy/sell signals mirroring the analysis_forecasts extreme-day detection (mov_rsi top/bottom-1% RSI days; mov_std 2σ Bollinger breaches; mov_gap top/bottom-1% N-day price-return days; px_vol price-speed × volume states; margin_ratio margin-buy intensity states; high_low_streaks the MEAN-MID anchor day of every band-break excursion streak — the analysis_forecasts.high_low_streaks buckets'' trigger days 1:1, EX-POST so target months carry a 2-month resolve lag + a closed-streak guard) with the same trailing 5-year window, percentile/band/state thresholds, cooldown suppression (mov_* families) and full-window history gate. A day is recorded ONLY when the matching forecast bucket clears the forecast-confirmation gate (forecast-result rule): in at least one forecast_results period (next/5d/20d/60d) the bucket''s reverse_prob > 1% (a material reversal probability) AND that period''s mean forward change is a REVERSAL (dir_ave > 0 — the bucket''s average outcome reverses, so the signal holds, not just a fat reversal tail) AND that period''s reverse_prob beats the unconditional base rate (probability lift) AND that period''s mean forward change beats the base drift (magnitude lift). Each row carries the driving-factor composite confidence (evidence t-stat + efficiency sharpe + consistency probability lift + per-code prior calibration, computed in the signal''s direction) plus the per-security calibration (tier / code_baseline / code_rank). One row per (code, sec_type, signal_type, signal_sub_type, date); a date is emitted only within its own snapshot month M (the month must already exist in analysis_forecasts for the matching config). Populated incrementally by python -m analyze.analysis_signals; --force deletes the sec_type''s rows and recomputes.';
-COMMENT ON COLUMN analysis_signals.signals.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
-COMMENT ON COLUMN analysis_signals.signals.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
-COMMENT ON COLUMN analysis_signals.signals.signal_type IS 'Detection family: mov_rsi (RSI extreme-percentile day), mov_std (Bollinger band breach day), mov_gap (N-day price-return extreme day), px_vol (price-speed × amount-level state day), margin_ratio (margin-buy intensity state day) or high_low_streaks (the MEAN-MID anchor day of a band-break excursion streak) — mirrors the matching analysis_forecasts bucket table.';
-COMMENT ON COLUMN analysis_signals.signals.signal_sub_type IS 'Indicator + window: rsi{W} for mov_rsi (W = RSI window 6/10/14/20/60), std{W} for mov_std (W = MA/σ window 5/20/60 — band ma_{W} ± 2.0·std_{W}days), gap{W} for mov_gap (W = gap window 2/3 — gap_{W}days N-day return), p{band_period}_{pct_type} for high_low_streaks (the audited band: 255/500/750/1275 trading rows × 1/5/10 percent).';
-COMMENT ON COLUMN analysis_signals.signals.date IS 'The signal day. Only dates inside a snapshot month M whose analysis_forecasts snapshot already exists; the detection window is the trailing 5 years (M - 5y, M].';
-COMMENT ON COLUMN analysis_signals.signals.action IS 'Trading action implied by the side: sell for mov_rsi top (overbought) / mov_std upper breach / mov_gap top (sharp rally), buy for mov_rsi bottom (oversold) / mov_std lower breach / mov_gap bottom (sharp selloff).';
-COMMENT ON COLUMN analysis_signals.signals.signal_threshold IS 'The detection threshold the day crossed: for mov_rsi the window''s linear-interpolated top/bottom-1% quantile of rsi_{W}days (0–100 scale, constant per code/month/sub_type); for mov_std the day''s band level ma_{W} ± 2.0·std_{W}days (price space, varies daily); for mov_gap the window''s linear-interpolated top/bottom-1% quantile of gap_{W}days (fractional return, constant per code/month/sub_type); for high_low_streaks the streak side''s band edge in PRICE space (high_val for side=top / low_val for bottom — the level the close crossed to be out-of-band).';
-COMMENT ON COLUMN analysis_signals.signals.confidence IS 'Driving-factor composite of the matching forecast bucket at its best qualifying period (params JSON conf_period): 0.30·f_t + 0.30·f_sharpe + 0.25·f_lift_prob + 0.15·f_prior, with f_t = t/(t+3), t = dir_ave·√occ/std_change; f_sharpe = 1-exp(-sharpe/1.2), sharpe = dir_ave/std_change; f_lift_prob = 1-exp(-lift_prob/0.5), lift_prob = reverse_prob − base_prob; f_prior = the code''s prior mean base composite (neutral 0.20 below 10 prior bucket-periods). Every factor is computed in the signal''s action direction (buy = upward reversal, sell = downward), floored at 0 and horizon-free, so confidences compare across periods, families and sec_types. Replaces the former MAX(reverse_prob), which saturated at long horizons (0.6-1.0 for 20d/60d). The full breakdown rides in params JSON under confidence_factors. NULL when the forecast bucket has no results.';
-COMMENT ON COLUMN analysis_signals.signals.tier IS 'Per-security tier from the confirmation gate (MAX over the bucket''s qualifying periods; code stats need >= 100 prior bucket-periods): ''proven'' — the code''s prior mean composite >= 0.40 (top ~10% of codes by prior bucket quality); ''proven_dir'' — the code''s prior mean DIRECTIONAL move >= 1%; ''standard'' otherwise.';
-COMMENT ON COLUMN analysis_signals.signals.code_baseline IS 'The code''s prior mean composite for the confidence''s argmax period (rolling M-1 population of the code''s own buckets, same family/side/period; windows pooled). NULL when the code''s prior history is too short. Validated predictive: prior-vs-future mean rp correlation 0.80-0.97.';
-COMMENT ON COLUMN analysis_signals.signals.code_rank IS 'Coarse within-code percentile FLOOR of the confidence: the highest of the code''s own prior P25/P50/P75/P90/P95 composite levels that the confidence clears. NULL below 30 prior bucket-periods.';
-COMMENT ON COLUMN analysis_signals.signals.reason IS 'Human-readable explanation: the day''s indicator value vs the threshold (e.g. "rsi14=88.3 >= top 1% threshold 86.9 of trailing 5y window ending 2026-07-31").';
-COMMENT ON COLUMN analysis_signals.signals.params IS 'Full detection parameters as JSON: mov_rsi {"rsi_window", "side", "pct", "cooldown_days"}; mov_std {"ma_window", "k", "side", "cooldown_days"}; mov_gap {"gap_window", "side", "pct", "cooldown_days"}; high_low_streaks {"band_period", "pct_type", "side", "day_count", "anchor_pos", "start_date", "end_date", "anchor_close", "band_val"}. Values mirror the analysis_forecasts bucket keys of the matching config.';
+COMMENT ON TABLE analysis_signals.signal_strategies IS 'Signal STRATEGIES derived from analysis_forecasts: one row per forecast bucket whose MIXED forecast_results row passes the plain gate (sign-aligned blended mean forward change > 1% AND blended reverse_prob > 1% — the sign alignment applied in the Python emit layer). A strategy covers the bucket''s forecast period (start_date .. end_date = the snapshot stat_month; the trailing 5-year window (M - 5y, M]) and stores the breach bar in the underlying value''s own space for the live tier. Populated incrementally by python -m analyze.analysis_signals (mov_rsi pct = 1; mov_std MA/σ windows >= 60d at k >= 2.0σ; both sides; BOTH hype splits of a bucket — is_market_hyped is a PK member, each split registers on its own gate pass).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN analysis_signals.signal_strategies.signal_type IS 'Detection family: mov_rsi (RSI extreme-percentile strategy) or mov_std (Bollinger band breach strategy) — mirrors the matching analysis_forecasts bucket table.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.signal_sub_type IS 'Indicator + window: rsi{W} for mov_rsi (W = RSI window 6/10/14/20/60), std{W}_{k} for mov_std (W = MA/σ window 5/20/60, k = the σ multiple %g-formatted — 2.0 renders "2", 2.5 renders "2.5" — band ma_{W} ± k·std_{W}days).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.side IS 'The bucket''s own side, STORED (no CASE derivation downstream): top/bottom for mov_rsi (RSI top/bottom-1% percentile), upper/lower for mov_std (above/below the band).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.is_market_hyped IS 'The bucket''s hype split, STORED like side: TRUE rows are calibrated on the bucket''s hyped-day trigger set (days inside the code''s stats.mov_ave_market_hypes episodes), FALSE rows on the normal-day set — each split passes the gates on its OWN MIXED forward profile and registers its own bar/confidence. PK member since 2026-09-19 (both splits of one config coexist); the live tier''s fetch_active_signals returns both, each self-contained (the strongest-breach dedup arbitrates same-bar collisions), and the forecast-table tick joins on the row''s OWN hype state.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.start_date IS 'The forecast period start: stat_month - 5 years + 1 day — the first day of the bucket''s trailing window.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.end_date IS 'The forecast period end: the snapshot stat_month M the strategy was derived from (the analysis_forecasts month; also the tick-join key for the UI forecast tables).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.action IS 'Trading action implied by the side: sell for top/upper extremes (overbought RSI / above-band — the measured reversal is downward), buy for bottom/lower extremes (oversold RSI / below-band — the measured reversal is upward).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.signal_threshold IS 'The strategy''s breach bar in the underlying value''s own space: for mov_rsi the window''s linear-interpolated top/bottom-1% RSI quantile (rsi value at the window-end trigger minus its stored trigger excess — constant per bucket); for mov_std the band level ma_{W} ± k·std_{W}days at the window-end trigger day (price space). The live tier compares the CURRENT value against this bar directly (sell breaches above, buy below).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.confidence IS 'The matching forecast bucket''s MIXED forecast_results reverse_prob: P(the blended forward window''s adverse path extreme crosses the fixed ±1% bar) — the gate rule''s own probability. NULL when the bucket has no results.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.reason IS 'Human-readable explanation: the window-end trigger''s indicator value vs the bar (e.g. "rsi14=88.3 >= top-1% bar 86.9 over the 5y window ending 2026-07-31").';
+COMMENT ON COLUMN analysis_signals.signal_strategies.params IS 'Full strategy parameters as JSON: the bucket config keys (family-specific) + the gate row''s blended forward profile (conf_period = ''mixed'', dir_ave / reverse_prob / occurrence_count).';
+COMMENT ON COLUMN analysis_signals.signal_strategies.signal_order IS 'Best-first rank WITHIN its own (sec_type, end_date) pool: 1 = the month''s most-confident strategy. Ordered by confidence DESC (the gate''s forecast confidence = the bucket''s mixed-row reverse_prob), PK tuple as the deterministic tiebreak. Nothing is trimmed — every gate-passing strategy is kept. Re-stamped by python -m analyze.analysis_signals after every run.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.is_active IS 'TRUE only for each (code, sec_type, signal_type, signal_sub_type)''s LATEST end_date row (the freshest forecast snapshot owning that config); FALSE everywhere else. Refreshed by python -m analyze.analysis_signals after EVERY run (including --force). Consumers (the live breach monitoring, the UI config menu) use the active rows as the current threshold set.';
 
-COMMENT ON COLUMN analysis_signals.signals.is_active IS 'TRUE only for rows on the sec_type''s LATEST signal date (max(date) per sec_type — the latest date the run wrote); FALSE everywhere else. Refreshed by python -m analyze.analysis_signals after EVERY run (including --force), so exactly one date per sec_type is active at a time. Consumers (e.g. live breach monitoring) use the active rows as the current threshold set.';
-COMMENT ON COLUMN analysis_signals.signals.signal_order IS 'Best-first priority rank of the signal WITHIN its own (sec_type, stat_month) pool: 1 = the month''s best signal. Ordered by the 2026-09 findings ladder — the (signal_type, action) groups by their measured pooled mean directional forward return DESCENDING (high_low_streaks sell / mov_rsi buy / high_low_streaks buy / mov_rsi sell / mov_gap buy / mov_gap sell / mov_pairs_ema buy / mov_pairs buy / px_vol sell / mov_std buy / margin_ratio buy / px_vol buy) — then by confidence DESC within a group. After ranking, only the top 1/8 of each month survives (rows beyond the cut are deleted by the run that wrote the month), so consumers reading signal_order ASC always pick up the best signals first. NULL on months not yet re-ranked (pre-migration rows until a --force rebuild).';
+CREATE TABLE IF NOT EXISTS analysis_signals.history_signals (
+    code            TEXT          NOT NULL,  -- ticker (etf "510050.SS" / index "000300" / stock)
+    sec_type        TEXT          NOT NULL,  -- 'etf' | 'index' | 'stock'
+    signal_type     TEXT          NOT NULL,  -- 'mov_rsi' | 'mov_std' — the strategy's detection family
+    signal_sub_type TEXT          NOT NULL,  -- 'rsi6'..'rsi60' / 'std5_2'..'std60_2' — the strategy this event belongs to
+    date            DATE          NOT NULL,  -- the trigger day (inside the strategy's own snapshot month M)
+    time            TIME          NOT NULL,  -- the bar time of the recorded breach (history rows: 15:00:00 day close)
+
+    action          TEXT          NOT NULL,  -- 'sell' (upward breach, signal_excess > 0) | 'buy' (downward breach, signal_excess < 0)
+    signal_excess   NUMERIC(18,6) NOT NULL,  -- signal - signal_threshold: > 0 upward breach (above threshold) | < 0 downward breach (below)
+    signal_excess_pct NUMERIC(12,4),         -- (signal_excess / |signal_threshold|) * 100 — unitless breach depth pct; NULL when signal_threshold = 0
+    signal          NUMERIC(16,4) NOT NULL,  -- the day's indicator value that crossed the bar (mov_rsi: the RSI value; mov_std: the close)
+    signal_threshold NUMERIC(14,6) NOT NULL, -- the threshold crossed (the strategy's bar — denormalized per event)
+    confidence      INTEGER       NOT NULL DEFAULT 100,  -- the strategy's forecast confidence on the 0-100 scale (ROUND(100 × mixed reverse_prob))
+    is_day_close_trigger BOOLEAN  NOT NULL DEFAULT FALSE,  -- TRUE = history row recorded at the day close (time 15:00:00); FALSE = intraday record
+    is_market_hyped BOOLEAN       NOT NULL DEFAULT FALSE,  -- the trigger day sits inside one of the code's stats.mov_ave_market_hypes episodes (any check-in window — the forecast side's union convention)
+
+    created_at      TIMESTAMP     NOT NULL DEFAULT NOW(),  -- record insertion time
+
+    CONSTRAINT pk_history_signals PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, date, time),
+    CONSTRAINT chk_history_signals_action CHECK (action IN ('buy', 'sell')),
+    CONSTRAINT chk_history_signals_sec_type CHECK (sec_type IN ('stock', 'etf', 'index'))
+) PARTITION BY HASH (code);
+
+SELECT public.create_hash_partitions('analysis_signals', 'history_signals', 16);
+
+-- Date-first lookup (UI / "signals on day X for sec_type Y").
+CREATE INDEX IF NOT EXISTS idx_history_signals_date
+    ON analysis_signals.history_signals (sec_type, signal_type, date);
+
+-- ----------------------------------------------------------------------------
+--  Comments
+-- ----------------------------------------------------------------------------
+COMMENT ON TABLE analysis_signals.history_signals IS 'History SIGNAL EVENTS: one row per qualifying trigger day of an analysis_signals.signal_strategies strategy — the day''s indicator value, the bar it crossed and the excess (a structural clone of live.live_signals so the two tiers read identically). Only dates INSIDE the strategy''s own snapshot month M are recorded (one snapshot owns each date → no cross-month PK conflicts). Populated by python -m analyze.analysis_signals together with the strategy rows (same month transaction); mov_rsi pct = 1 and mov_std (>= 60d windows, k >= 2.0) only.';
+COMMENT ON COLUMN analysis_signals.history_signals.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
+COMMENT ON COLUMN analysis_signals.history_signals.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
+COMMENT ON COLUMN analysis_signals.history_signals.signal_type IS 'The strategy''s detection family: mov_rsi or mov_std.';
+COMMENT ON COLUMN analysis_signals.history_signals.signal_sub_type IS 'The strategy this event belongs to: rsi{W} / std{W}_{k} (same %g k-formatting as signal_strategies.signal_sub_type).';
+COMMENT ON COLUMN analysis_signals.history_signals.date IS 'The trigger day — a bucket trigger date inside the strategy''s own snapshot month M.';
+COMMENT ON COLUMN analysis_signals.history_signals.time IS 'The bar time of the recorded breach: 15:00:00 (the day close) for history rows written by the emit pipeline.';
+COMMENT ON COLUMN analysis_signals.history_signals.action IS 'The strategy''s action: sell (top/upper — the day crossed ABOVE its bar, signal_excess > 0) or buy (bottom/lower — crossed BELOW, signal_excess < 0).';
+COMMENT ON COLUMN analysis_signals.history_signals.signal IS 'The day''s indicator value that crossed the bar, in the value''s own space (mov_rsi: the RSI value; mov_std: the close).';
+COMMENT ON COLUMN analysis_signals.history_signals.signal_threshold IS 'The bar crossed: value at the trigger day minus its stored trigger excess (mov_rsi: the window''s percentile bar; mov_std: the day''s band level ma_{W} ± k·std_{W}days).';
+COMMENT ON COLUMN analysis_signals.history_signals.signal_excess IS 'signal - signal_threshold — the signed breach depth (> 0 above the bar, < 0 below).';
+COMMENT ON COLUMN analysis_signals.history_signals.signal_excess_pct IS 'signal_excess / |signal_threshold| * 100 — the unitless breach depth pct; NULL when signal_threshold = 0.';
+COMMENT ON COLUMN analysis_signals.history_signals.confidence IS 'The owning strategy''s forecast confidence on the 0-100 INTEGER scale: ROUND(100 × the bucket''s mixed-row reverse_prob).';
+COMMENT ON COLUMN analysis_signals.history_signals.is_day_close_trigger IS 'TRUE = day-close history row (time 15:00:00, written by the emit pipeline); FALSE = intraday record (reserved — the live tier writes its own live.live_signals table, not this one).';
+COMMENT ON COLUMN analysis_signals.history_signals.is_market_hyped IS 'TRUE when the trigger day falls inside one of the code''s stats.mov_ave_market_hypes episodes (ANY min_checkin_period — the same union convention the forecast bucket splits use). Recorded, never a gate: strategies are calibrated on non-hyped buckets only, so a hyped-day event flags the regime the reversal stats were NOT calibrated on. Structurally FALSE at emit time (the strategy''s bucket is the non-hyped split); kept truthful against the CURRENT episode table — the wholesale episode rebuild can revise history, and the idempotent backfill below re-aligns pre-existing rows.';
+
+-- ----------------------------------------------------------------------------
+--  Data-quality gates (shared helpers, see 00_partition_utils.sql): the
+--  confidence scales (strategies carry the 0-1 reverse_prob; history rows
+--  the 0-100 integer) and the excess-sign convention (sell breaches above
+--  the bar → excess >= 0; buy below → excess <= 0). The sign requirement
+--  carries a 0.0001 rounding tolerance: signal stores 4dp while the bar
+--  stores 6dp, so a genuine breach can sit within half a 4dp ulp of the
+--  bar and the stored excess sign flips inside that slack (observed max
+--  0.00005 — the engine only records rows triggered on the RAW value).
+--  NOT VALID first, validated once by the schema sweep below.
+-- ----------------------------------------------------------------------------
+SELECT public.ensure_check_constraint(
+    'analysis_signals.signal_strategies',
+    'chk_signal_strategies_confidence',
+    $chk$confidence BETWEEN 0 AND 1$chk$);
+SELECT public.ensure_check_constraint(
+    'analysis_signals.history_signals',
+    'chk_history_signals_confidence',
+    $chk$confidence BETWEEN 0 AND 100$chk$);
+SELECT public.ensure_check_constraint(
+    'analysis_signals.history_signals',
+    'chk_history_signals_excess_sign',
+    $chk$(action = 'sell' AND (signal_excess >= 0
+                              OR abs(signal_excess) < 0.0001))
+   OR (action = 'buy'  AND (signal_excess <= 0
+                              OR abs(signal_excess) < 0.0001))$chk$);
+
+SELECT public.validate_pending_checks('analysis_signals');
+
+-- ----------------------------------------------------------------------------
+--  is_market_hyped migration (2026-09-19): the column ships in the CREATE
+--  body above for fresh installs; existing installs gain it here
+--  (metadata-only ADD COLUMN on the partitioned parent — instant). The
+--  backfill then re-aligns pre-existing rows with the CURRENT episode
+--  table (idempotent — rows already TRUE, or with no covering episode,
+--  are untouched).
+-- ----------------------------------------------------------------------------
+ALTER TABLE analysis_signals.history_signals
+    ADD COLUMN IF NOT EXISTS is_market_hyped BOOLEAN NOT NULL DEFAULT FALSE;
+
+UPDATE analysis_signals.history_signals h
+SET is_market_hyped = TRUE
+WHERE NOT h.is_market_hyped
+  AND EXISTS (SELECT 1 FROM stats.mov_ave_market_hypes e
+              WHERE e.sec_type = h.sec_type
+                AND e.code = h.code
+                AND e.start_date <= h.date
+                AND e.end_date >= h.date);
+
+-- ----------------------------------------------------------------------------
+--  is_market_hyped PK migration (2026-09-19): hyped buckets now register
+--  strategies too. The column ships in the CREATE body above for fresh
+--  installs; existing installs gain it here, and the PK is rebuilt to
+--  include it (all pre-existing rows are the FALSE split — one default
+--  value, so the rebuild is conflict-free; DROP + re-ADD on the
+--  partitioned parent cascades the constrained indexes to the children).
+--  Idempotent: the DO block checks the PK's column set first.
+-- ----------------------------------------------------------------------------
+DO $$
+DECLARE
+    pk_cols text;
+BEGIN
+    SELECT string_agg(a.attname, ',' ORDER BY x.ord)
+    INTO pk_cols
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS x(attnum, ord) ON TRUE
+    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = x.attnum
+    WHERE n.nspname = 'analysis_signals'
+      AND t.relname = 'signal_strategies'
+      AND c.contype = 'p';
+    IF pk_cols IS DISTINCT FROM
+       'code,sec_type,signal_type,signal_sub_type,side,is_market_hyped,start_date,end_date'
+    THEN
+        ALTER TABLE analysis_signals.signal_strategies
+            ADD COLUMN IF NOT EXISTS is_market_hyped BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE analysis_signals.signal_strategies
+            DROP CONSTRAINT pk_signal_strategies;
+        ALTER TABLE analysis_signals.signal_strategies
+            ADD CONSTRAINT pk_signal_strategies PRIMARY KEY
+            (code, sec_type, signal_type, signal_sub_type, side,
+             is_market_hyped, start_date, end_date);
+        RAISE NOTICE 'signal_strategies PK rebuilt with is_market_hyped';
+    END IF;
+END $$;

@@ -14,8 +14,7 @@ from __future__ import annotations
 from .base import (
     BENCHMARK_CLOSES_SQL, DEFAULT_BENCHMARK, DEFAULT_PERIOD_DAYS,
     DEFAULT_TOP_N, DEFAULT_WEIGHTING, INDEX_CLOSES_SQL, IndustrySignal,
-    MARKET_GRID_SQL, _f, _ma5, _ma5_slope_pct, _next_td,
-    fetch_market_grid_dates,
+    _f, _ma5, _ma5_slope_pct, _next_td,
 )
 from .market import (
     MARKET_ANNUAL_CAP, MARKET_DAILY_MOVE_PCT, MARKET_DEDUPE_WINDOW,
@@ -28,5 +27,5 @@ from .industry import (
     IND_MA5_DEV_PCT, IND_MIN_SPACING_TD, iter_industry_episodes,
 )
 from .seasonal import (
-    fetch_ranking_dates, fetch_top_industries, latest_signal_date,
+    fetch_ranking_dates, fetch_top_industries,
 )

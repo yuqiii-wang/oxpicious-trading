@@ -37,6 +37,7 @@ import {
 import ChartCard from "@/components/ChartCard";
 import AnalysisRunButton from "@/components/AnalysisRunButton";
 import EChart from "@/components/EChart";
+import { useChartThemeMode } from "@/shared/charts/base-chart";
 import IndexPanel from "@/dataviz/features/index-baseline/IndexPanel";
 import EtfMarginPanel from "@/dataviz/features/etf-margin/EtfMarginPanel";
 import StockPanel from "@/dataviz/features/stock-baseline/StockPanel";
@@ -63,6 +64,9 @@ import type {
   PeAndDividendChartResponse,
 } from "@shared/types";
 import { buildStreakChartOption, type MetricObsRow } from "./chartOption/streakChartOption";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ECharts } from "echarts";
 import type { PanelProps } from "./types";
 import {
   expandedTableBodyCellSx,
@@ -137,8 +141,11 @@ const DEF_BY_KEY = new Map(FILTER_DEFS.map((d) => [d.key, d]));
 export function PeAndDividendPanel({
   code,
   secType,
-  themeMode,
 }: PanelProps) {
+  // Reactive light/dark theme — feeds the streak-chart builder and the
+  // delegated baseline panels (no prop drilling from the page).
+  const themeMode = useChartThemeMode();
+
   // ---- Security baseline bundle (IndexBundle | EtfBundle | StockBundle) ---
   const [bundle, setBundle] = useState<IndexBundle | EtfBundle | StockBundle | null>(null);
   const [bundleLoading, setBundleLoading] = useState(false);
@@ -384,6 +391,56 @@ export function PeAndDividendPanel({
     });
   }, [obsRows, streakMetric, streakPeriod, streakPct, streakAnchorIdx, selectedStreak, themeMode]);
 
+  // ---- Streak chart AI Ask — state carries the CURRENT metric → window →
+  // tightness combo + anchor so the modal / LLM describe the shaded view. --
+  const streakChartRef = useRef<ECharts | null>(null);
+  const streakAiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "Valuation band-break excursion streaks for one security: the selected " +
+        "metric (PE or dividend yield) plotted daily, with its trailing " +
+        "window's static top/bottom tightness-% zones shaded (light purple " +
+        "above, light yellow below) and the CLIENT-SIDE break streaks drawn " +
+        "darker inside. A streak is a maximal run of days above (high) / below " +
+        "(low) the anchor window's static band edge, with in-band gaps of ≤5 " +
+        "trading days bridged. Clicking a streak table row or a chart date " +
+        "re-anchors the trailing window.",
+      instruments: [{ code, assetClass: secType === "etf" ? "etf" : secType === "index" ? "index" : "stock" }],
+      series: [
+        ...(streakMetric === "dividend_yield"
+          ? [{ name: "Dividend yield", description: "daily dividend yield (fraction — 0.035 = 3.5%)" }]
+          : [{ name: "PE", unit: "×", description: "daily price/earnings multiple" }]),
+        { name: "High streaks", description: "merged spans of days above the window's static top band edge" },
+        { name: "Low streaks", description: "merged spans of days below the window's static bottom band edge" },
+        { name: "Selected streak", description: "the archive streak clicked in the table (bordered when it breaks this static edge)" },
+      ],
+      state: {
+        metric: streakMetric ?? "none",
+        window: streakPeriod ?? "none",
+        tightness: streakPct != null ? `${streakPct}%` : "none",
+        anchor: streakAnchorIdx != null ? "clicked chart date" : "latest",
+        selected_streak:
+          selectedStreak != null
+            ? `${selectedStreak.side} ${selectedStreak.startDate}→${selectedStreak.endDate}`
+            : "none",
+      },
+      notes: [
+        "Break bands are detected client-side against the anchor window's STATIC edge; the DB archive streaks (tested against each month's own moving band) only populate the table.",
+        "Shading only covers values inside the drawn zone — break streaks are clipped to the window's vertical extent.",
+      ],
+    }),
+    [code, secType, streakMetric, streakPeriod, streakPct, streakAnchorIdx, selectedStreak],
+  );
+  const streakAiAskAddon = useAiAskAddon({
+    title: "Valuation Streaks (band-break)",
+    subtitle: hasStreakData
+      ? `${allStreaks.length} streaks across all metric × window × tightness combos`
+      : undefined,
+    option: chartBuild?.option ?? null,
+    spec: chartBuild != null && chartBuild.win != null ? streakAiAskSpec : null,
+    getInstance: () => streakChartRef.current,
+  });
+
   // ---- Stats table: highlight + scroll-into-view --------------------------
   // Find the stats row whose month-end is the latest one <= clickedDate.
   const statsRows: PeAndDividendStatsRow[] = statsData?.rows ?? [];
@@ -454,7 +511,7 @@ export function PeAndDividendPanel({
     // onDateClick fires for any click on the chart → highlights the matching
     // month-end row in the stats table below.
     if (secType === "index") {
-      return <IndexPanel index={bundle as IndexBundle} themeMode={themeMode} onDateClick={setClickedDate} />;
+      return <IndexPanel index={bundle as IndexBundle} onDateClick={setClickedDate} />;
     }
     if (secType === "etf") {
       return <EtfMarginPanel etf={bundle as EtfBundle} onDateClick={setClickedDate} />;
@@ -485,6 +542,7 @@ export function PeAndDividendPanel({
             ? `${allStreaks.length} streaks across all metric × window × tightness combos — pick one to list them`
             : undefined
         }
+        titleAddon={streakAiAskAddon}
         height={undefined}
       >
         {streaksLoading && (
@@ -629,6 +687,9 @@ export function PeAndDividendPanel({
                   option={chartBuild.option}
                   height={300}
                   onCanvasClick={handleStreakChartClick}
+                  onReady={(c) => {
+                    streakChartRef.current = c;
+                  }}
                 />
                 <Typography
                   variant="caption"

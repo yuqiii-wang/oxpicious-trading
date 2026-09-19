@@ -4,9 +4,8 @@
  * skew price = S × E[M]) into the unified SharedSkewSpec consumed by
  * sharedSkewOption.ts.
  *
- * The iv_smile adapter lives in ivSmileCompute.ts (25Δ risk reversal,
- * computed in-browser per real expiry group); the greek_* adapter lives
- * in greekSpec.ts (DB-persisted daily skewness via /skewness-series).
+ * The greek_* adapter lives in greekSpec.ts (DB-persisted daily
+ * skewness via /skewness-series).
  */
 import type { DailySkew } from "../vol-smile/types";
 import type {
@@ -38,19 +37,6 @@ const GREEK_MEAN_SERIES: Record<string, string> = {
 export function modeMeta(
   mode: SharedSkewMode,
 ): Pick<SharedSkewSpec, "chartTitle" | "meanSeriesName"> {
-  if (mode === "iv_smile") {
-    return {
-      chartTitle: "Underlying Price & Skew-Adjusted Price (25Δ RR) Over Time",
-      meanSeriesName: "Mean Skew Price (25Δ RR, C−P)",
-    };
-  }
-  if (mode === "smile_slope") {
-    return {
-      chartTitle:
-        "Underlying Price & Skew-Adjusted Price (Full-Smile Slope) Over Time",
-      meanSeriesName: "Mean Skew Price (Smile Slope, +10% − −10% wing)",
-    };
-  }
   if (mode.startsWith("greek_")) {
     const label = greekLabel(mode as GreekSkewMode);
     return {
@@ -78,6 +64,7 @@ export function moneynessSpec(dailySkew: DailySkew[]): SharedSkewSpec {
         skewPrice: pe.skewPrice,
         rawSkew: pe.skewPct != null ? 1 + pe.skewPct / 100 : null,
         skewPct: pe.skewPct,
+        otmShare: pe.otmShare ?? null,
       }),
     ),
   }));

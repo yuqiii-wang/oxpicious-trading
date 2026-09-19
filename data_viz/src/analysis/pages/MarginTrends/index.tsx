@@ -34,7 +34,6 @@ import { ArrowBack } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 import RefreshButton from "@/components/RefreshButton";
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
-import { useStore } from "@/store/filters";
 import {
   fetchMarginTrendThemes,
   fetchMarginTrendStrategyThemes,
@@ -49,7 +48,6 @@ import type { MarginAttribution } from "./constants";
 
 export default function MarginTrendsPage() {
   const navigate = useNavigate();
-  const themeMode = useStore((s) => s.themeMode);
 
   // ---- Classification state ------------------------------------------------
   const [sectors, setSectors] = useState<SectorNode[]>([]);
@@ -252,7 +250,6 @@ export default function MarginTrendsPage() {
       {!loading && !error && effectiveIndustryId && (
         <MarginTrendsCharts
           industryId={effectiveIndustryId}
-          themeMode={themeMode}
           attribution={attribution}
           selectedItemCode={selectedItemCode}
         />

@@ -11,11 +11,13 @@
     ('corpus' / 'ddgs'); unresolvable refs as a NULL-CONTENT placeholder
     news row carrying the echo's own metadata (``exact``) — every ref
     links to a news_id either way;
-  * the per-ref typing lands in ``text.llm_qa_refs`` (qa_id, ref) ->
-    (ref_type, news_id, resolved_url, ref_time — the reference's publish
-    time per the search response, now() when absent, resolved_via — the
-    provenance behind ref_type), upserted so re-storing refreshes the
-    resolution in place;
+  * the per-ref typing lands in ``text.llm_qa_refs`` (qa_id, news_id) ->
+    (ref — the representative citation tag, ref_type, is_used — whether
+    the answer cites the article, resolved_url, ref_time — the
+    reference's publish time per the search response, now() when absent,
+    resolved_via — the provenance behind ref_type), upserted so
+    re-storing refreshes the resolution in place; every hit lands here,
+    cited or not (build_ref_rows collapses same-article refs);
   * Q&A -> text.llm_qa through llm_agents.llm_qa.upsert_qa with the
     resolved news_ids grouped as provenance (text.news_groups ->
     text.news_group_items), the formatted reference list as ``context``,
@@ -45,7 +47,7 @@ from llm_agents.online_search_summary.storage.matching import (
     REF_TYPE_EXACT, VIA_SUMMARY, hit_ref_time,
 )
 from llm_agents.online_search_summary.storage.resolve import (
-    RefResolver, ResolvedRef,
+    RefResolver, ResolvedRef, build_ref_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -117,19 +119,11 @@ class OnlineSearchSummaryStore:
         # key mapping below agree on the (title, source, date) natural key
         # even across a midnight boundary.
         fallback_date = datetime.datetime.now(SHANGHAI_TZ).date()
-        from builds.text.keywords import get_taxonomy
-        taxonomy = get_taxonomy()
         rows = self.build_news_rows(
             hits, industry_id=industry_id,
-            sector_id=taxonomy.sector_of(industry_id),
+            sector_id=self._sector_of(industry_id),
             fallback_date=fallback_date)
-        for row in rows:
-            if industry_id is None:
-                text = row["title"] + "\n" + (row.get("content") or "")
-                _, row["industry_id"] = taxonomy.match(text)
-                row["sector_id"] = taxonomy.sector_of(row["industry_id"])
-            row["word_count"] = taxonomy.word_count(
-                row["title"] + "\n" + (row.get("content") or ""))
+        self._fill_taxonomy(rows, industry_id)
         rows = [{c: r.get(c) for c in self._NEWS_COLUMNS} for r in rows]
         await bulk_upsert_async(self._conn, self.NEWS_TABLE, rows,
                                 ["title", "source", "date"])
@@ -146,11 +140,61 @@ class OnlineSearchSummaryStore:
             key = (h.title, h.media or "web",
                    h.publish_date or fallback_date)
             nid = id_by_key.get(key)
+            if nid is None:
+                # A re-find miss right after the batch upsert means key
+                # drift — rewrite the row alone and fetch by its exact
+                # natural key, so every hit keeps its news_id.
+                nid = await self._reupsert_news_row(h, industry_id,
+                                                    fallback_date)
             if nid is not None:
                 out.append(ResolvedRef(h.refer, REF_TYPE_EXACT, nid,
                                        h.link, hit_ref_time(h),
                                        via=VIA_SUMMARY))
         return out
+
+    @staticmethod
+    def _sector_of(industry_id: Optional[str]) -> Optional[str]:
+        if industry_id is None:
+            return None
+        from builds.text.keywords import get_taxonomy
+        return get_taxonomy().sector_of(industry_id)
+
+    @staticmethod
+    def _fill_taxonomy(rows: List[Dict[str, Any]],
+                       industry_id: Optional[str]) -> None:
+        """In-place taxonomy fill shared by the batch and fallback paths."""
+        from builds.text.keywords import get_taxonomy
+        taxonomy = get_taxonomy()
+        for row in rows:
+            if industry_id is None:
+                text = row["title"] + "\n" + (row.get("content") or "")
+                _, row["industry_id"] = taxonomy.match(text)
+                row["sector_id"] = taxonomy.sector_of(row["industry_id"])
+            row["word_count"] = taxonomy.word_count(
+                row["title"] + "\n" + (row.get("content") or ""))
+
+    async def _reupsert_news_row(
+        self, hit: SearchHit, industry_id: Optional[str],
+        fallback_date: datetime.date,
+    ) -> Optional[int]:
+        """Re-upsert one hit as a single row; return its news_id (None —
+        logged — only if the exact-key fetch still misses, which must not
+        crash the ask)."""
+        rows = self.build_news_rows([hit], industry_id=industry_id,
+                                    sector_id=self._sector_of(industry_id),
+                                    fallback_date=fallback_date)
+        self._fill_taxonomy(rows, industry_id)
+        row = {c: rows[0].get(c) for c in self._NEWS_COLUMNS}
+        await bulk_upsert_async(self._conn, self.NEWS_TABLE, [row],
+                                ["title", "source", "date"])
+        nid = await self._conn.fetchval(
+            f'SELECT news_id FROM {self.NEWS_TABLE} '
+            f'WHERE title = $1 AND source = $2 AND date = $3',
+            row["title"], row["source"], row["date"])
+        if nid is None:
+            logger.error("    [DB] %s: news row re-find failed for %r",
+                         type(self).__name__, hit.title[:60])
+        return nid
 
     # -- text.llm_qa + text.llm_qa_refs --------------------------------------
     async def store_summary(
@@ -217,19 +261,27 @@ class OnlineSearchSummaryStore:
             llm_model=summary.model, language=language, qa_date=qa_date)
         logger.info("    [DB] stored text.llm_qa qa_id=%s (sources=%d)",
                     qa_id, len(group_ids))
-        await self._upsert_qa_refs(qa_id, resolved)
+        # is_used per ref: the answer's own citation tags (the LLM-answer
+        # half of the search/summary separation — refs load regardless).
+        await self._upsert_qa_refs(qa_id, resolved,
+                                   cited=summary.cited_refs)
         return qa_id, resolved
 
-    async def _upsert_qa_refs(self, qa_id: int,
-                              resolved: Sequence[ResolvedRef]) -> bool:
-        """Write text.llm_qa_refs rows (PK qa_id+ref; re-store refreshes)
-        and set text.llm_qa.has_refs to whether ref rows now exist for
-        this qa_id; return the flag.
+    async def _upsert_qa_refs(
+        self, qa_id: int, resolved: Sequence[ResolvedRef],
+        *, cited: Sequence[str],
+    ) -> bool:
+        """Write text.llm_qa_refs rows (PK qa_id+news_id; re-store
+        refreshes) and set text.llm_qa.has_refs to whether ref rows now
+        exist for this qa_id; return the flag.
 
-        ref_time carries the reference's publish time as reported by the
-        search response; refs the response carried no date for get now().
-        resolved_via records the provenance ('summary' | 'corpus' | 'ddgs'
-        | 'zhihu' — see storage.matching) that ref_type is derived from.
+        build_ref_rows collapses same-article refs onto one row per
+        article — representative ref tag, is_used from the answer's cited
+        tags; every resolved ref loads, cited or not. ref_time carries the
+        reference's publish time as reported by the search response; refs
+        the response carried no date for get now(). resolved_via records
+        the provenance ('summary' | 'corpus' | 'ddgs' | 'zhihu' — see
+        storage.matching) that ref_type is derived from.
 
         Deliberately NON-FATAL: the Q&A row is already stored at this
         point, so a failed refs write logs a warning instead of raising
@@ -238,18 +290,14 @@ class OnlineSearchSummaryStore:
         mirrors the table: no ref rows -> false.
         """
         if resolved:
-            now = datetime.datetime.now(SHANGHAI_TZ)
-            rows = [{"qa_id": qa_id, "ref": r.ref, "ref_type": r.ref_type,
-                     "news_id": r.news_id, "resolved_url": r.resolved_url,
-                     "ref_time": r.ref_time or now, "resolved_via": r.via}
-                    for r in resolved]
+            rows = build_ref_rows(qa_id, resolved, cited=cited)
             try:
                 await bulk_upsert_async(self._conn, self.REFS_TABLE, rows,
-                                        ["qa_id", "ref"])
-                n_exact = sum(1 for r in resolved if r.ref_type == "exact")
+                                        ["qa_id", "news_id"])
+                n_used = sum(1 for r in rows if r["is_used"])
                 logger.info("    [DB] %d text.llm_qa_refs row(s) written "
-                            "(exact=%d, relevant=%d)", len(rows), n_exact,
-                            len(rows) - n_exact)
+                            "(used=%d, unused=%d)", len(rows), n_used,
+                            len(rows) - n_used)
             except Exception as e:
                 logger.warning("    [DB] text.llm_qa_refs write FAILED "
                                "for qa_id=%s — keeping the Q&A (has_refs "

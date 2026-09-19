@@ -40,6 +40,7 @@ import {
   commonGrid,
   commonDataZoom,
 } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { createMarkerTooltipFormatter } from "./tooltips";
 import type {
   StrategyBacktestResponse,
@@ -242,9 +243,7 @@ export function buildSingletonStrategyOption({
     stripMixPrefix,
   });
 
-  return {
-    animation: false,
-    backgroundColor: "transparent",
+  return baseChartOption(themeMode, {
     title: {
       text: `${data.code} ${data.name}`,
       subtext: retText,
@@ -306,12 +305,9 @@ export function buildSingletonStrategyOption({
         nameTextStyle: { color: PE_COLOR, fontSize: 10 },
       },
     ],
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "cross" },
-      backgroundColor: c.tooltipBg,
       borderColor: c.axisLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (params: unknown) => {
         const arr = params as Array<{
           seriesName: string;
@@ -383,7 +379,7 @@ export function buildSingletonStrategyOption({
         }
         return renderReactElement(React.createElement(React.Fragment, null, children));
       },
-    },
+    }),
     dataZoom: commonDataZoom({}, 60, 100),
     series: [
       {
@@ -564,5 +560,5 @@ export function buildSingletonStrategyOption({
         },
       },
     ],
-  };
+  });
 }

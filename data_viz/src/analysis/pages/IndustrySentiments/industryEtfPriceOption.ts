@@ -32,6 +32,7 @@ import {
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { buildItemGroupColors } from "@/theme/group-colors";
 import { fmtNum } from "@/lib/series";
 import React from "react";
@@ -417,7 +418,7 @@ export function buildIndustryEtfPriceOption(
   // ---- Legend data ----
   const legendData = [
     ...seriesData.map((s) => s.etf_name),
-    ...industryOrder.map((id, ii) =>
+    ...industryOrder.map((id) =>
       `${industryLabelById.get(id) ?? id} ${maName}`,
     ),
   ];
@@ -455,16 +456,11 @@ export function buildIndustryEtfPriceOption(
     }
   }
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 56, right: 56, bottom: 48, top: 32 }),
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
+      // Old hand-rolled pointer was a bare cross (no snap, no styles) — keep it.
       axisPointer: { type: "cross" },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           dataIndex?: number;
@@ -549,7 +545,7 @@ export function buildIndustryEtfPriceOption(
         }
         return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
-    },
+    }),
     legend: commonLegend(themeMode, {
       itemWidth: 10,
       itemHeight: 6,
@@ -602,5 +598,5 @@ export function buildIndustryEtfPriceOption(
       },
     ],
     series: echartsSeries,
-  };
+  });
 }

@@ -12,10 +12,8 @@
  */
 import { useMemo, useState } from "react";
 import { Alert, Stack } from "@mui/material";
-import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
-import { useStore } from "@/store/filters";
 import type { EtfOhlcvResponse, OptionsRow } from "@shared/types";
 import { buildDailyOi, buildExpiryMarkers } from "./sharedData";
 import { buildPcRatioOption } from "./pcRatioOption";
@@ -31,8 +29,9 @@ interface Props {
 }
 
 export default function AnnualSentimentPanel({ rows, ohlcv }: Props) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const daily = useMemo(() => buildDailyOi(rows), [rows]);
+  const expiryMarkers = useMemo(() => buildExpiryMarkers(rows), [rows]);
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
   if (daily.length === 0) {
@@ -48,50 +47,37 @@ export default function AnnualSentimentPanel({ rows, ohlcv }: Props) {
   const callOi = daily.map((d) => d.callOi);
   const putOi = daily.map((d) => d.putOi);
 
-  const expiryMarkers = useMemo(() => buildExpiryMarkers(rows), [rows]);
-
   return (
     <Stack spacing={2}>
-      <ChartCard
+      <BaseChart
         title="Put/Call OI Ratio (Sentiment)"
         subtitle="Daily P/C ratio + MA5 / MA20 · dotted line at 1.0"
-        height={320}
-      >
-        <EChart
-          option={buildPcRatioOption(dates, pcRatio, themeMode, expiryMarkers)}
-          height={300}
-          group={CHART_GROUP}
-        />
-      </ChartCard>
+        height={300}
+        option={buildPcRatioOption(dates, pcRatio, themeMode, expiryMarkers)}
+        group={CHART_GROUP}
+      />
 
-      <ChartCard
+      <BaseChart
         title="Total Open Interest Trend"
         subtitle="Call OI vs Put OI (mil contracts)"
-        height={320}
-      >
-        <EChart
-          option={buildOiTrendOption(dates, callOi, putOi, themeMode, expiryMarkers)}
-          height={300}
-          group={CHART_GROUP}
-        />
-      </ChartCard>
+        height={300}
+        option={buildOiTrendOption(dates, callOi, putOi, themeMode, expiryMarkers)}
+        group={CHART_GROUP}
+      />
 
-      <ChartCard
+      <BaseChart
         title="ETF Price & Volume"
         subtitle="OHLC + volume (price-up green / price-down red)"
-        height={360}
-        action={<OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />}
-      >
-        {ohlcv && ohlcv.rows.length > 0 ? (
-          <EChart
-            option={buildOhlcOption(ohlcv, themeMode, ohlcMode)}
-            height={340}
-            group={CHART_GROUP}
-          />
-        ) : (
-          <Alert severity="info">No ETF OHLCV data available for this underlying.</Alert>
-        )}
-      </ChartCard>
+        height={340}
+        headerAction={<OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />}
+        option={
+          ohlcv && ohlcv.rows.length > 0
+            ? buildOhlcOption(ohlcv, themeMode, ohlcMode)
+            : null
+        }
+        emptyText="No ETF OHLCV data available for this underlying."
+        group={CHART_GROUP}
+      />
     </Stack>
   );
 }

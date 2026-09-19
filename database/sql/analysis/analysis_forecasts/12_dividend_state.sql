@@ -88,65 +88,6 @@ CREATE INDEX IF NOT EXISTS idx_dividend_state_forecast_id
     ON analysis_forecasts.dividend_state (forecast_id);
 
 -- ----------------------------------------------------------------------------
---  Migration (2026-09): the combined metric-keyed table
---  analysis_forecasts.pe_dividend_state (metric ∈ 'pe' | 'dividend_yield')
---  is SPLIT into the per-metric pe_state (11_pe_state.sql) +
---  dividend_state (this file) — each metric's rows move with their
---  forecast_id into its own table (no metric column anymore) and the
---  forecast_identities registry re-tags bucket 'pe_dividend_state' →
---  'pe_state' / 'dividend_state' per moved forecast_id. Registry rows
---  whose forecast_id did not move (cannot happen under the old NOT NULL
---  metric — defensive) are deleted before the old table drops. The
---  whole block is one transaction (DDL is transactional) guarded by the
---  old table's existence — idempotent, a no-op on fresh installs.
--- ----------------------------------------------------------------------------
-DO $$
-BEGIN
-    IF to_regclass('analysis_forecasts.pe_dividend_state') IS NOT NULL THEN
-        INSERT INTO analysis_forecasts.pe_state
-               (code, forecast_id, val_state, side,
-                z_window, z_min_periods,
-                vlow_bar, low_bar, high_bar, vhigh_bar,
-                lookback_period, is_market_hyped)
-        SELECT  code, forecast_id, val_state, side,
-                z_window, z_min_periods,
-                vlow_bar, low_bar, high_bar, vhigh_bar,
-                lookback_period, is_market_hyped
-        FROM    analysis_forecasts.pe_dividend_state
-        WHERE   metric = 'pe';
-
-        INSERT INTO analysis_forecasts.dividend_state
-               (code, forecast_id, val_state, side,
-                z_window, z_min_periods,
-                vlow_bar, low_bar, high_bar, vhigh_bar,
-                lookback_period, is_market_hyped)
-        SELECT  code, forecast_id, val_state, side,
-                z_window, z_min_periods,
-                vlow_bar, low_bar, high_bar, vhigh_bar,
-                lookback_period, is_market_hyped
-        FROM    analysis_forecasts.pe_dividend_state
-        WHERE   metric = 'dividend_yield';
-
-        UPDATE analysis_forecasts.forecast_identities i
-           SET bucket = 'pe_state'
-         WHERE i.bucket = 'pe_dividend_state'
-           AND EXISTS (SELECT 1 FROM analysis_forecasts.pe_state p
-                       WHERE p.forecast_id = i.forecast_id);
-
-        UPDATE analysis_forecasts.forecast_identities i
-           SET bucket = 'dividend_state'
-         WHERE i.bucket = 'pe_dividend_state'
-           AND EXISTS (SELECT 1 FROM analysis_forecasts.dividend_state d
-                       WHERE d.forecast_id = i.forecast_id);
-
-        DELETE FROM analysis_forecasts.forecast_identities
-         WHERE bucket = 'pe_dividend_state';
-
-        DROP TABLE analysis_forecasts.pe_dividend_state;
-    END IF;
-END $$;
-
--- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis_forecasts.dividend_state IS 'Valuation state buckets (motivation) over the dividend-yield series of analysis.dividends: one row per forecast_id — the window days of one security-month whose trailing-12m D/P (fractional) sits in the named z state of the code''s OWN trailing distribution: z = (dividend_yield - μ)/σ with rolling-1220-row (min 250 non-NULL) moments shifted 1 row. States: vlow z<=-2 / low (-2,-1] / mid (-1,+1] / high (+1,+2] / vhigh z>2. SIDE (yield HIGHER the better — the REVERSE of pe_state''s mapping): vlow/low low-yield states carry side ''top'' (bearish — reverse_prob = P(the forward window''s path low < -threshold)), high/vhigh high-yield states ''bottom'' (bullish); mid = flat (NULL reverse_prob). Non-payer days (NULL yield) form no bucket. The pe sibling lives in analysis_forecasts.pe_state (same z bars, REVERSED side mapping). Streak-merged state signals (consecutive same-state days = ONE mid-anchored signal; mean run length on forecast_identities.streak_signal_days). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / swing-aware reversal probabilities at the FIXED 1% bar) live in analysis_forecasts.forecast_results via forecast_id. Populated by python -m analyze.analysis_forecasts.';
@@ -161,3 +102,14 @@ COMMENT ON COLUMN analysis_forecasts.dividend_state.high_bar IS 'Recorded build 
 COMMENT ON COLUMN analysis_forecasts.dividend_state.vhigh_bar IS 'Recorded build parameter: vhigh lower z-bar (default +2.0).';
 COMMENT ON COLUMN analysis_forecasts.dividend_state.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';
 COMMENT ON COLUMN analysis_forecasts.dividend_state.is_market_hyped IS 'TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
+
+-- ----------------------------------------------------------------------------
+--  Data-quality gate: the dividend_state vocabularies (shared helpers, see
+--  01_forecast_results.sql / 00_partition_utils.sql). NOT VALID first,
+--  validated once by the schema-wide sweep below.
+-- ----------------------------------------------------------------------------
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.dividend_state',
+    'chk_dividend_state_side',
+    $chk$side IN ('top', 'bottom', 'flat')$chk$);
+SELECT public.validate_pending_checks('analysis_forecasts');

@@ -86,3 +86,85 @@ $$;
 
 COMMENT ON FUNCTION public.create_hash_partitions(text, text, int) IS
     'Ensure <schema>.<table> has exactly <modulus> native hash partitions named _p00.._p{mod-1}. Idempotent; returns the number of partitions actually created (0 when all already exist).';
+
+-- ============================================================================
+--  CHECK-constraint helpers — the garbage-in gates for the trading tables
+--  (side / state / period vocabularies, probability and confidence domains,
+--  sign conventions). The two-function split keeps DDL applies non-blocking:
+--
+--    ensure_check_constraint        — idempotent ADD ... NOT VALID (a brief
+--                                     metadata-only lock; concurrent COPY /
+--                                     INSERT is never blocked).
+--    validate_pending_checks        — VALIDATEs only the schema's still-
+--                                     unvalidated chk_% constraints (the
+--                                     full-scan validation runs ONCE; on an
+--                                     already-clean store re-applies are
+--                                     no-ops). A validation failure surfaces
+--                                     REAL data bugs — fix the data, never
+--                                     the gate.
+--
+--  Usage in DDL files (idempotent, safe to re-run):
+--    SELECT public.ensure_check_constraint(
+--        'analysis_forecasts.mov_rsi', 'chk_mov_rsi_side',
+--        $chk$side IN ('top', 'bottom')$chk$);
+--    SELECT public.validate_pending_checks('analysis_forecasts');
+--
+--  Naming convention: the constraint name MUST start with chk_ (the
+--  validator only picks chk_% CHECK constraints in the schema).
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION public.ensure_check_constraint(
+    p_target  regclass,
+    p_name    name,
+    p_check   text
+) RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1
+                   FROM pg_constraint c
+                   WHERE c.conname = ensure_check_constraint.p_name
+                     AND c.conrelid = ensure_check_constraint.p_target
+                     AND c.contype = 'c') THEN
+        EXECUTE format(
+            'ALTER TABLE %s ADD CONSTRAINT %I CHECK (%s) NOT VALID',
+            ensure_check_constraint.p_target,
+            ensure_check_constraint.p_name,
+            ensure_check_constraint.p_check
+        );
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.validate_pending_checks(
+    p_schema text
+) RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    r        record;
+    n        int := 0;
+BEGIN
+    FOR r IN
+        SELECT c.conname, c.conrelid::regclass AS tbl
+        FROM pg_constraint c
+        JOIN pg_class t  ON t.oid = c.conrelid
+        JOIN pg_namespace ns ON ns.oid = t.relnamespace
+        WHERE ns.nspname = p_schema
+          AND c.contype = 'c'
+          AND c.conname LIKE 'chk_%'
+          AND NOT c.convalidated
+        ORDER BY c.conrelid, c.conname
+    LOOP
+        RAISE NOTICE 'validating %.%', r.tbl, r.conname;
+        EXECUTE format('ALTER TABLE %s VALIDATE CONSTRAINT %I', r.tbl, r.conname);
+        n := n + 1;
+    END LOOP;
+    RETURN n;
+END;
+$$;
+
+COMMENT ON FUNCTION public.ensure_check_constraint(regclass, name, text) IS
+    'Idempotently add a CHECK constraint (NOT VALID) to a table. Pairs with validate_pending_checks; the constraint name should start with chk_.';
+COMMENT ON FUNCTION public.validate_pending_checks(text) IS
+    'VALIDATE every still-unvalidated chk_% CHECK constraint of the schema (once — re-applies skip validated ones). Returns the number validated.';

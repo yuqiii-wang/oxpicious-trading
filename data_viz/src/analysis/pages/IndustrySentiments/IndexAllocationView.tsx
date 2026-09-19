@@ -43,16 +43,10 @@ import {
   Box,
   Pagination,
   Stack,
-  Typography,
 } from "@mui/material";
-import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
+import { BaseChart, useChartData, useChartThemeMode } from "@/shared/charts/base-chart";
 import { buildGroupColorScheme } from "@/theme/group-colors";
 import { fetchPerfAttrCodes } from "@/lib/api-client";
-import type {
-  IndustrySentimentsChartResponse,
-  PerfAttrCodeRow,
-} from "@shared/types";
 import { PerfAttrPanel } from "@/analysis/pages/PerfAttr/PerfAttrPanel";
 import type { IndexAllocationViewProps } from "./types";
 import {
@@ -75,10 +69,10 @@ interface TargetIndex {
 }
 
 export function IndexAllocationView({
-  themeMode,
   chartDataList,
   selectedItemCodes,
 }: IndexAllocationViewProps) {
+  const themeMode = useChartThemeMode();
   const [page, setPage] = useState(1);
 
   // Fetch the list of index codes that have rows in
@@ -88,23 +82,10 @@ export function IndexAllocationView({
   // subtitle count. The target set itself is NOT filtered by this — every
   // selected member index appears in both the top plot and the pagination,
   // matching the L2/L3 chip counts exactly.
-  const [perfAttrCodes, setPerfAttrCodes] = useState<PerfAttrCodeRow[] | null>(null);
-  const [codesError, setCodesError] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    fetchPerfAttrCodes("index")
-      .then((resp) => {
-        if (cancelled) return;
-        setPerfAttrCodes(resp.codes);
-      })
-      .catch((e: Error) => {
-        if (cancelled) return;
-        setCodesError(e.message);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const {
+    data: perfAttrCodes,
+    error: codesError,
+  } = useChartData(() => fetchPerfAttrCodes("index").then((resp) => resp.codes), []);
 
   const multiIndustry = chartDataList.length > 1;
 
@@ -242,7 +223,7 @@ export function IndexAllocationView({
       {/* TOP plot — close-price curves for ALL selected member indices
           (matches the L2/L3 chip counts exactly, NOT narrowed to allocation
           data). Rebased to 100 at the visible-window start. */}
-      <ChartCard
+      <BaseChart
         title="Index Close Price"
         subtitle={
           targetIndices.length === 0
@@ -251,21 +232,10 @@ export function IndexAllocationView({
               ? `${targetIndices.length} index${targetIndices.length === 1 ? "" : "es"} · rebased to 100 at window start · actual close in tooltip`
               : `${targetIndices.length} index${targetIndices.length === 1 ? "" : "es"} (${allocationCount} with allocation data) · rebased to 100 at window start · actual close in tooltip`
         }
-      >
-        {targetIndices.length === 0 ? (
-          <Typography
-            variant="body2"
-            color="text.secondary"
-            sx={{ py: 2, textAlign: "center" }}
-          >
-            Select one or more industries (or L3 index chips) to see their close-price curves.
-          </Typography>
-        ) : (
-          <>
-            <EChart option={option ?? {}} height={340} />
-          </>
-        )}
-      </ChartCard>
+        option={targetIndices.length > 0 ? option : null}
+        emptyText="Select one or more industries (or L3 index chips) to see their close-price curves."
+        height={340}
+      />
 
       {/* Per-index attribution panels (paginated). Each PerfAttrPanel fetches
           its own attribution + chart data for one index code (secType=index).
@@ -278,7 +248,6 @@ export function IndexAllocationView({
           code={t.code}
           name={t.name}
           secType="index"
-          themeMode={themeMode}
         />
       ))}
       {totalPages > 1 && (

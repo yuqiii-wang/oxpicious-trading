@@ -8,27 +8,25 @@
  *      one row per (stat_month, rsi_window, side, pct) bucket: bucket keys
  *      + is_market_hyped + the linked forecast_results columns (mean +
  *      std-dev forward changes at the next-day/5d/20d/60d horizons;
- *      close-based max/min forward changes + the best-to-worst n-day
- *      outcome ratio max_low_change_ratio at the 5d/20d/60d horizons;
+ *      close-based max/min forward changes at the 5d/20d/60d horizons;
  *      per-horizon >1% reversal probabilities).
  *    kind = "mov_std" → analysis_forecasts.mov_std ⋈ forecast_results
  *      one row per (stat_month, ma_window, k, side, is_market_hyped)
  *      Bollinger-breach bucket.
- *    kind = "mov_gap" → analysis_forecasts.mov_gap ⋈ forecast_results
- *      one row per (stat_month, gap_window, side, pct, is_market_hyped)
- *      N-day price-return extreme-percentile bucket.
  *    kind = "mov_pairs" → analysis_forecasts.mov_pairs ⋈ forecast_results
- *      one row per (stat_month, pair_window, side,
+ *      one row per (stat_month, fast_leg, pair_window, side,
  *      is_market_hyped) MA-pair cross (golden / death cross) bucket —
  *      the EXISTING analysis.mov_ave_spreads_detail ma5_vs_ma{pair_window}
- *      relative-MA spread changing sign (top = cross up, bottom = cross
- *      down; fast leg fixed ma5).
+ *      (fast_leg "ma5") or price_vs_ma{pair_window} (fast_leg "price",
+ *      the close price) relative-MA spread changing sign (top = cross
+ *      up, bottom = cross down).
  *    kind = "mov_pairs_ema" → analysis_forecasts.mov_pairs_ema ⋈
  *      forecast_results — the EMA sibling of mov_pairs: one row per
- *      (stat_month, pair_window, side, is_market_hyped)
+ *      (stat_month, fast_leg, pair_window, side, is_market_hyped)
  *      cross bucket on the EXISTING
  *      analysis.mov_ave_spreads_detail_ema ema6_vs_ema{pair_window}
- *      relative-EMA spread (fast leg fixed ema6).
+ *      (fast_leg "ema6") or price_vs_ema{pair_window} (fast_leg
+ *      "price", the close price) relative-EMA spread.
  *    kind = "px_vol" → analysis_forecasts.px_vol_state ⋈ forecast_results
  *      one row per (stat_month, px_speed, vol_state, is_market_hyped)
  *      σ-standardized price-speed × z-scored log amount-LEVEL state cell (NO cooldown
@@ -95,16 +93,17 @@
  *  month tick-filter.
  *
  *  Each row also carries `in_signals` — the bucket's MIXED signal bool:
- *  TRUE when the row's own forecast_results period='mixed' row (the
- *  FIXED-weight blend of the four horizon rows: 5d 0.50 / next 0.30 /
- *  20d 0.15 / 60d 0.05) clears the forecast-result gate the
- *  analysis_signals layer applies (material blended reverse P > 1%,
- *  blended mean reversal, probability + magnitude lift over the blended
- *  base_rates row — see the inSignals() helper).
- *  The signals layer emits a bucket's signal days iff its mixed row
- *  passes this same gate (gate.fetch_confirm reads the mixed row), so
- *  the tick means "this bucket is a live signal bucket" — evaluated per
- *  forecast_id, hype split included.
+ *  TRUE when the bucket's own (code × stat_month × config × side)
+ *  emission exists in analysis_signals.signal_strategies — i.e. the
+ *  bucket's MIXED forecast_results row (the FIXED-weight blend of the
+ *  four horizon rows: 5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05)
+ *  passed the plain gate the analysis_signals layer applies
+ *  (sign-aligned blended mean reversal > 0.75% AND material blended
+ *  reverse P > 1% — see the inSignals() helper). The strategies layer
+ *  emits exactly those buckets — each hype split registering on its
+ *  own gate pass — so the tick means "this bucket IS a signal strategy
+ *  over its forecast period", matched to the row's own hype split
+ *  (a ● row ticks iff its hyped strategy exists).
  *
  *  getForecastTriggerDates(forecastId) — one bucket's 4 period rows'
  *  trigger_dates DATE[] (the calendar dates behind occurrence_count;
@@ -131,7 +130,6 @@ import type {
   ForecastTriggerDatesResponse,
   HighLowStreaksForecastRow,
   MarginRatioForecastRow,
-  MovGapForecastRow,
   MovPairsEmaForecastRow,
   MovPairsForecastRow,
   MovRsiForecastRow,
@@ -142,14 +140,14 @@ import type {
 } from "../../../shared/types.js";
 
 const VALID_KINDS: ReadonlySet<string> = new Set([
-  "mov_rsi", "mov_std", "mov_gap", "mov_pairs", "mov_pairs_ema",
+  "mov_rsi", "mov_std", "mov_pairs", "mov_pairs_ema",
   "px_vol", "margin_ratio", "high_low_streaks", "pe", "dividend",
 ]);
 
 // ---- Pivot fragments: 4 periods × consolidated cols → period-suffixed col names ----
 // forecast_results is normalized (forecast_id, period) → these fragments
 // pivot it back to the wide format the UI consumes. NULLs for period='next'
-// on max/min/max_low_change_ratio are handled naturally by CASE WHEN.
+// on max/min are handled naturally by CASE WHEN.
 
 const PERIODS: ReadonlyArray<{ period: string; suffix: string; hasMM: boolean }> = [
   { period: "next", suffix: "next",   hasMM: false },
@@ -178,7 +176,6 @@ function buildPivotCols(): string {
     if (hasMM) {
       parts.push(`MAX(CASE WHEN f.period = '${period}' THEN f.max_change END)::float8 AS max_${suffix}_change`);
       parts.push(`MAX(CASE WHEN f.period = '${period}' THEN f.min_change END)::float8 AS min_${suffix}_change`);
-      parts.push(`MAX(CASE WHEN f.period = '${period}' THEN f.max_low_change_ratio END)::float8 AS max_low_change_ratio_${suffix}`);
     }
   }
   return parts.join(",\n  ");
@@ -187,17 +184,18 @@ function buildPivotCols(): string {
 const PIVOT_COLS = buildPivotCols();
 
 /**
- * The bucket's ``in_signals`` tick — EXISTS into the SIGNALS layer
- * (analysis_signals.signals), i.e. this exact bucket emitted a signal
- * that SURVIVED the 2026-09 reduction pass (forecast-result gate +
- * per-family confidence floors + the emission side/cell filters + the
- * signal_order top-1/8 per-month trim). This replaces the former
- * gate-approximation SQL (a re-implementation of gate.fetch_confirm's
- * mixed-row conjuncts) which could — and did — drift from what the
- * signals layer actually records: the signals layer additionally
- * applies the floors / side filters / trim, so the approximated tick
- * over-counted. No signal row → no tick (trimmed-away family-months
- * and the never-emitted pe / dividend state families stay unticked
+ * The bucket's ``in_signals`` tick — EXISTS into the STRATEGIES layer
+ * (analysis_signals.signal_strategies), i.e. this exact bucket (its
+ * config, side and stat_month) was emitted as a signal strategy: its
+ * MIXED forecast_results row passed the plain gate (sign-aligned
+ * blended mean reversal > 0.75% AND reverse_prob > 1%). The join keys on
+ * the strategies layer's STORED side column (no CASE derivation) and
+ * on end_date = stat_month (one snapshot owns each forecast period).
+ * The join matches the forecast row's OWN hype split
+ * (s.is_market_hyped = m.is_market_hyped): each split registers on its
+ * own gate pass, so a ● row ticks iff its hyped strategy exists.
+ * No strategy row → no tick (family-months the emit does not cover —
+ * e.g. the never-emitted pe / dividend state families — stay unticked
  * naturally).
  */
 function inSignals(
@@ -207,31 +205,21 @@ function inSignals(
 ): string {
   return `(${emittedOnly ? emittedOnly + " AND " : ""}EXISTS (
     SELECT 1
-    FROM analysis_signals.signals s
+    FROM analysis_signals.signal_strategies s
     WHERE s.sec_type = i.sec_type
       AND s.code = i.code
       AND s.signal_type = '${signalType}'
       AND s.signal_sub_type = ${subTypeSql}
-      AND s.action = CASE WHEN m.side IN ('top', 'upper')
-                     THEN 'sell' ELSE 'buy' END
-      AND date_trunc('month', s.date) = date_trunc('month', i.stat_month)
+      AND s.side = m.side
+      AND s.is_market_hyped = m.is_market_hyped
+      AND s.end_date = i.stat_month
   ))`;
-}
-
-interface DbGapRow extends QueryResultRow {
-  forecast_id: number | string;
-  stat_month: Date | string;
-  gap_window: number;
-  side: string;
-  pct: number;
-  is_market_hyped: boolean;
-  in_signals: boolean;
-  [k: string]: unknown;
 }
 
 interface DbPairsRow extends QueryResultRow {
   forecast_id: number | string;
   stat_month: Date | string;
+  fast_leg: string;
   pair_window: number;
   side: string;
   is_market_hyped: boolean;
@@ -375,46 +363,6 @@ function mapRsiRow(r: DbRsiRow): MovRsiForecastRow {
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
     min_60d_change: toNum(r.min_60d_change),
-    max_low_change_ratio_5d: toNum(r.max_low_change_ratio_5d),
-    max_low_change_ratio_20d: toNum(r.max_low_change_ratio_20d),
-    max_low_change_ratio_60d: toNum(r.max_low_change_ratio_60d),
-    reverse_prob: toNum(r.reverse_prob),
-    reverse_prob_5d: toNum(r.reverse_prob_5d),
-    reverse_prob_20d: toNum(r.reverse_prob_20d),
-    reverse_prob_60d: toNum(r.reverse_prob_60d),
-    occurrence_count_next: toNum(r.occurrence_count_next),
-    occurrence_count_5d: toNum(r.occurrence_count_5d),
-    occurrence_count_20d: toNum(r.occurrence_count_20d),
-    occurrence_count_60d: toNum(r.occurrence_count_60d),
-  };
-}
-
-function mapGapRow(r: DbGapRow): MovGapForecastRow {
-  return {
-    forecast_id: Number(r.forecast_id),
-    stat_month: formatDate(r.stat_month),
-    gap_window: r.gap_window,
-    side: r.side as MovGapForecastRow["side"],
-    pct: r.pct,
-    is_market_hyped: r.is_market_hyped === true,
-    in_signals: r.in_signals === true,
-    ave_next_change: toNum(r.ave_next_change),
-    ave_next_5d_change: toNum(r.ave_next_5d_change),
-    ave_next_20d_change: toNum(r.ave_next_20d_change),
-    ave_next_60d_change: toNum(r.ave_next_60d_change),
-    std_next_change: toNum(r.std_next_change),
-    std_next_5d_change: toNum(r.std_next_5d_change),
-    std_next_20d_change: toNum(r.std_next_20d_change),
-    std_next_60d_change: toNum(r.std_next_60d_change),
-    max_5d_change: toNum(r.max_5d_change),
-    max_20d_change: toNum(r.max_20d_change),
-    max_60d_change: toNum(r.max_60d_change),
-    min_5d_change: toNum(r.min_5d_change),
-    min_20d_change: toNum(r.min_20d_change),
-    min_60d_change: toNum(r.min_60d_change),
-    max_low_change_ratio_5d: toNum(r.max_low_change_ratio_5d),
-    max_low_change_ratio_20d: toNum(r.max_low_change_ratio_20d),
-    max_low_change_ratio_60d: toNum(r.max_low_change_ratio_60d),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
@@ -432,6 +380,7 @@ function mapPairsRow(r: DbPairsRow): MovPairsForecastRow {
   return {
     forecast_id: Number(r.forecast_id),
     stat_month: formatDate(r.stat_month),
+    fast_leg: r.fast_leg as MovPairsForecastRow["fast_leg"],
     pair_window: r.pair_window,
     side: r.side as MovPairsForecastRow["side"],
     is_market_hyped: r.is_market_hyped === true,
@@ -450,9 +399,6 @@ function mapPairsRow(r: DbPairsRow): MovPairsForecastRow {
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
     min_60d_change: toNum(r.min_60d_change),
-    max_low_change_ratio_5d: toNum(r.max_low_change_ratio_5d),
-    max_low_change_ratio_20d: toNum(r.max_low_change_ratio_20d),
-    max_low_change_ratio_60d: toNum(r.max_low_change_ratio_60d),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
@@ -487,9 +433,6 @@ function mapStdRow(r: DbStdRow): MovStdForecastRow {
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
     min_60d_change: toNum(r.min_60d_change),
-    max_low_change_ratio_5d: toNum(r.max_low_change_ratio_5d),
-    max_low_change_ratio_20d: toNum(r.max_low_change_ratio_20d),
-    max_low_change_ratio_60d: toNum(r.max_low_change_ratio_60d),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
@@ -527,9 +470,6 @@ function mapPxVolRow(r: DbPxVolRow): PxVolForecastRow {
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
     min_60d_change: toNum(r.min_60d_change),
-    max_low_change_ratio_5d: toNum(r.max_low_change_ratio_5d),
-    max_low_change_ratio_20d: toNum(r.max_low_change_ratio_20d),
-    max_low_change_ratio_60d: toNum(r.max_low_change_ratio_60d),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
@@ -565,9 +505,6 @@ function mapMarginRatioRow(r: DbMarginRatioRow): MarginRatioForecastRow {
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
     min_60d_change: toNum(r.min_60d_change),
-    max_low_change_ratio_5d: toNum(r.max_low_change_ratio_5d),
-    max_low_change_ratio_20d: toNum(r.max_low_change_ratio_20d),
-    max_low_change_ratio_60d: toNum(r.max_low_change_ratio_60d),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
@@ -608,9 +545,6 @@ function mapHighLowStreaksRow(r: DbHighLowStreaksRow): HighLowStreaksForecastRow
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
     min_60d_change: toNum(r.min_60d_change),
-    max_low_change_ratio_5d: toNum(r.max_low_change_ratio_5d),
-    max_low_change_ratio_20d: toNum(r.max_low_change_ratio_20d),
-    max_low_change_ratio_60d: toNum(r.max_low_change_ratio_60d),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
@@ -649,9 +583,6 @@ function mapValStateRow(r: DbValStateRow): PeForecastRow | DividendForecastRow {
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
     min_60d_change: toNum(r.min_60d_change),
-    max_low_change_ratio_5d: toNum(r.max_low_change_ratio_5d),
-    max_low_change_ratio_20d: toNum(r.max_low_change_ratio_20d),
-    max_low_change_ratio_60d: toNum(r.max_low_change_ratio_60d),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
@@ -677,7 +608,7 @@ export async function getForecastTable(
   const k = (kind ?? "").trim().toLowerCase();
   if (!VALID_KINDS.has(k)) {
     throw new Error(
-      `Invalid kind: ${kind}. Expected 'mov_rsi', 'mov_std', 'mov_gap', 'mov_pairs', 'mov_pairs_ema', 'px_vol', 'margin_ratio', 'high_low_streaks', 'pe', or 'dividend'.`,
+      `Invalid kind: ${kind}. Expected 'mov_rsi', 'mov_std', 'mov_pairs', 'mov_pairs_ema', 'px_vol', 'margin_ratio', 'high_low_streaks', 'pe', or 'dividend'.`,
     );
   }
   const m = (month ?? "").trim() || null;
@@ -703,7 +634,6 @@ export async function getForecastTable(
   const TABLES: Record<string, string> = {
     mov_rsi: "mov_rsi",
     mov_std: "mov_std",
-    mov_gap: "mov_gap",
     mov_pairs: "mov_pairs",
     mov_pairs_ema: "mov_pairs_ema",
     px_vol: "px_vol_state",
@@ -731,7 +661,7 @@ export async function getForecastTable(
              m.side,
              m.pct,
              m.is_market_hyped,
-             ${inSignals("mov_rsi", "'rsi' || m.rsi_window", "(m.pct = 1)")} AS in_signals,
+             ${inSignals("mov_rsi", "'rsi' || m.rsi_window || '_' || m.pct::text || 'pct'", "(m.pct = 1)")} AS in_signals,
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.mov_rsi m
@@ -751,44 +681,16 @@ export async function getForecastTable(
     return { kind: "mov_rsi", code, sec_type: st, months, rows: mapped, enable_filters: true };
   }
 
-  if (k === "mov_gap") {
-    const rows = await queryRows<DbGapRow>(
-      `
-      SELECT m.forecast_id,
-             i.stat_month,
-             m.gap_window,
-             m.side,
-             m.pct,
-             m.is_market_hyped,
-             ${inSignals("mov_gap", "'gap' || m.gap_window", "(m.pct = 1)")} AS in_signals,
-             ${PIVOT_COLS}
-      FROM analysis_forecasts.forecast_identities i
-      JOIN analysis_forecasts.mov_gap m
-        ON m.forecast_id = i.forecast_id
-      JOIN analysis_forecasts.forecast_results f
-        ON f.forecast_id = m.forecast_id
-      WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'mov_gap'
-        ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.gap_window, m.side, m.pct,
-               m.is_market_hyped
-      ORDER BY i.stat_month DESC, m.gap_window ASC, m.side ASC, m.pct ASC,
-               m.is_market_hyped ASC
-      `,
-      m ? [st, variants, m] : [st, variants],
-    );
-    const mapped = rows.map(mapGapRow);
-    return { kind: "mov_gap", code, sec_type: st, months, rows: mapped, enable_filters: true };
-  }
-
   if (k === "mov_pairs") {
     const rows = await queryRows<DbPairsRow>(
       `
       SELECT m.forecast_id,
              i.stat_month,
+             m.fast_leg,
              m.pair_window,
              m.side,
              m.is_market_hyped,
-             ${inSignals("mov_pairs", "'pair' || m.pair_window")} AS in_signals,
+             ${inSignals("mov_pairs", "(CASE WHEN m.fast_leg = 'price' THEN 'pxpair' ELSE 'pair' END) || m.pair_window")} AS in_signals,
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.mov_pairs m
@@ -797,9 +699,9 @@ export async function getForecastTable(
         ON f.forecast_id = m.forecast_id
       WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'mov_pairs'
         ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.pair_window, m.side,
+      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.fast_leg, m.pair_window, m.side,
                m.is_market_hyped
-      ORDER BY i.stat_month DESC, m.pair_window ASC, m.side ASC,
+      ORDER BY i.stat_month DESC, m.fast_leg ASC, m.pair_window ASC, m.side ASC,
                m.is_market_hyped ASC
       `,
       m ? [st, variants, m] : [st, variants],
@@ -815,10 +717,11 @@ export async function getForecastTable(
       `
       SELECT m.forecast_id,
              i.stat_month,
+             m.fast_leg,
              m.pair_window,
              m.side,
              m.is_market_hyped,
-             ${inSignals("mov_pairs_ema", "'emapair' || m.pair_window")} AS in_signals,
+             ${inSignals("mov_pairs_ema", "(CASE WHEN m.fast_leg = 'price' THEN 'pxemapair' ELSE 'emapair' END) || m.pair_window")} AS in_signals,
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.mov_pairs_ema m
@@ -827,16 +730,17 @@ export async function getForecastTable(
         ON f.forecast_id = m.forecast_id
       WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'mov_pairs_ema'
         ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.pair_window, m.side,
+      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.fast_leg, m.pair_window, m.side,
                m.is_market_hyped
-      ORDER BY i.stat_month DESC, m.pair_window ASC, m.side ASC,
+      ORDER BY i.stat_month DESC, m.fast_leg ASC, m.pair_window ASC, m.side ASC,
                m.is_market_hyped ASC
       `,
       m ? [st, variants, m] : [st, variants],
     );
-    const mapped: MovPairsEmaForecastRow[] = rows.map(mapPairsRow);
+    const mapped = rows.map(mapPairsRow) as MovPairsEmaForecastRow[];
     return { kind: "mov_pairs_ema", code, sec_type: st, months, rows: mapped, enable_filters: true };
   }
+
 
   if (k === "px_vol") {
     const rows = await queryRows<DbPxVolRow>(
@@ -1011,8 +915,8 @@ export async function getForecastTable(
            m.side,
            m.is_market_hyped,
            ${inSignals("mov_std",
-                 "'std' || m.ma_window || '_' || (m.k::float8::text)",
-                 "(m.k::float8 IN (2.0, 2.5, 3.0))")} AS in_signals,
+                 "'std' || m.ma_window || '_' || (m.k::float8::text) || 'std'",
+                 "(m.ma_window >= 60 AND m.k::float8 >= 2.0)")} AS in_signals,
            ${PIVOT_COLS}
     FROM analysis_forecasts.forecast_identities i
     JOIN analysis_forecasts.mov_std m
@@ -1092,7 +996,6 @@ export async function getForecastTriggerDates(
 const BUCKET_KIND: Record<string, ForecastKind> = {
   mov_rsi: "mov_rsi",
   mov_std: "mov_std",
-  mov_gap: "mov_gap",
   mov_pairs: "mov_pairs",
   mov_pairs_ema: "mov_pairs_ema",
   px_vol_state: "px_vol",

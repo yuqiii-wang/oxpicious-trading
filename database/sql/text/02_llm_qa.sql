@@ -28,38 +28,18 @@ CREATE TABLE IF NOT EXISTS text.llm_qa (
         REFERENCES text.news_groups (news_group_id)
 );
 
--- Upgrade for deployments created before the sector_id column existed.
-ALTER TABLE text.llm_qa ADD COLUMN IF NOT EXISTS sector_id TEXT;
-
 -- Upgrade: has_refs — whether per-reference resolution wrote
 -- text.llm_qa_refs rows for this answer. Set by
 -- llm_agents.online_search_summary.storage.store after the refs upsert
 -- to mirror the table: true iff ref rows exist, false when resolution
 -- surfaced nothing or the refs write failed (refs failure is
 -- deliberately non-fatal — the Q&A itself still stores).
-ALTER TABLE text.llm_qa ADD COLUMN IF NOT EXISTS has_refs
-    BOOLEAN NOT NULL DEFAULT false;
 
 -- Upgrade: is_failed_explanation — the answer is refusal boilerplate
 -- ("无法解释" / "无法提供…实质性原因要点" etc.), not a substantive
 -- explanation. Derived at store time by llm_agents.llm_qa.upsert_qa
 -- from FAILED_EXPLANATION_KEYWORDS: any keyword hit in the answer -> 
 -- true, none -> false. Defaults true (unassessed rows count as failed).
-ALTER TABLE text.llm_qa ADD COLUMN IF NOT EXISTS is_failed_explanation
-    BOOLEAN NOT NULL DEFAULT true;
-
--- Upgrade: created_at (row creation time) became qa_date — the
--- question's OWN data date. For llm_agents.industry_qa_weekly rows that
--- is the （截至…） ranking date the answer is anchored to (Asia/Shanghai
--- midnight); manual/undated rows keep the now() default. Replaces the
--- AI page's created_at trading-day mapping input.
-DO $$ BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_schema = 'text' AND table_name = 'llm_qa'
-                 AND column_name = 'created_at') THEN
-        ALTER TABLE text.llm_qa RENAME COLUMN created_at TO qa_date;
-    END IF;
-END $$;
 
 -- Sector-scope filter for the AI page's L1-only picks.
 CREATE INDEX IF NOT EXISTS ix_llm_qa_sector ON text.llm_qa (sector_id);
@@ -101,6 +81,3 @@ COMMENT ON TABLE text.llm_qa IS
   'Curated Q&A knowledge base for LLM retrieval. One row per question/answer '
   'pair, with news-group provenance (text.news_groups -> text.news_group_items), '
   'optional industry/sector linkage, and the model that generated the answer.';
-
-CREATE TABLE IF NOT EXISTS text.llm_qa_refs (
-);

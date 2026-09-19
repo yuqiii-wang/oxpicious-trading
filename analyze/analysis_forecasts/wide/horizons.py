@@ -2,7 +2,7 @@
 .horizons).
 
 ``aggregate_horizons_sparse`` — batched per-(code, config) mean / std /
-endpoint-extrema / path-extrema / reversal stats of ALL forward horizons
+endpoint-extrema / reversal stats of ALL forward horizons
 over the SPARSE trigger-cell lists of one (side, hyped) bucket subset.
 Bincount / reduceat reductions: work scales with the ACTUAL trigger
 count instead of the dense T·C·P tensor. With ``win_ord`` it also
@@ -22,9 +22,7 @@ from analyze.analysis_forecasts.config import FORWARD_HORIZONS, MM_HORIZONS
 # Per-horizon aggregate bundle returned by ``aggregate_horizons_sparse``
 # (each numeric member a (C, P) array): occurrence counts, sum of changes,
 # sum of SQUARED changes, max / min ENDPOINT change (None at the next-day
-# horizon — the max_change / min_change columns), max / min PATH-extreme
-# change (None likewise — the highest/lowest close any trigger day's
-# forward window reached, the max_low_change_ratio swing inputs),
+# horizon — the max_change / min_change columns),
 # reversal count, and — when ``win_ord`` was passed — the ragged
 # trigger-date lists (dict keyed by flat group id; None otherwise) plus,
 # when ``lens`` was passed too, the parallel STREAK SPAN lists (the
@@ -33,7 +31,6 @@ from analyze.analysis_forecasts.config import FORWARD_HORIZONS, MM_HORIZONS
 # None otherwise), plus — when ``vals`` was passed — the parallel TRIGGER
 # EXCESS lists (each valid cell's value − qualifying bar; None otherwise).
 HorizonAgg = tuple[np.ndarray, np.ndarray, np.ndarray,
-                   np.ndarray | None, np.ndarray | None,
                    np.ndarray | None, np.ndarray | None,
                    np.ndarray,
                    "dict[int, list[date]] | None",
@@ -88,13 +85,11 @@ def aggregate_horizons_sparse(
         thr_n: per horizon n — (C,) reversal bar (reverse_thresholds).
         path0s: per MM horizon n — the (FMAX0, FMIN0) path-extreme
               matrices (build_change_matrices), sliced to the window
-              like NC0s. The SWING-AWARE reversal event and the
-              max_low_change_ratio consume these: at any cell the
+              like NC0s. The SWING-AWARE reversal event consumes
+              these: at any cell the
               ADVERSE PATH EXTREME (the window's lowest close for
               top/upper, highest for bottom/lower — signed) is what
-              crosses the reversal bar, and the swing ratio's extrema
-              are path extrema (never one day's high mixed with another
-              day's low ENDPOINT). None falls back to the endpoint
+              crosses the reversal bar. None falls back to the endpoint
               change everywhere (the 1-day path IS the endpoint).
         win_ord: optional (T,) int64 day ordinals of the window's grid
               rows (grid_ord[lo:hi]). When given, each horizon's bundle
@@ -143,10 +138,6 @@ def aggregate_horizons_sparse(
               the next-day horizon — no MM columns);
         lo_e — min ENDPOINT n-day change (+inf where cnt == 0; None
               likewise);
-        hi_p — max PATH-HIGH n-day change (-inf where cnt == 0; None
-              likewise — the swing ratio's upper extreme);
-        lo_p — min PATH-LOW n-day change (+inf where cnt == 0; None
-              likewise — the swing ratio's lower extreme);
         rev — count of reversal days (the period's ADVERSE PATH EXTREME
               beyond the code's bar against the bucket side — the
               within-period swing, not merely the period-end close)
@@ -270,20 +261,15 @@ def aggregate_horizons_sparse(
         if n in MM_HORIZONS:
             hi_e = np.full(CP, -np.inf)
             lo_e = np.full(CP, np.inf)
-            hi_p = np.full(CP, -np.inf)
-            lo_p = np.full(CP, np.inf)
             # Groups with no valid cell keep the ±inf default (the
             # legacy where(..., ±inf).max semantics).
             hi_e[gid] = np.maximum.reduceat(np.where(v, g, -np.inf), starts)
             lo_e[gid] = np.minimum.reduceat(np.where(v, g, np.inf), starts)
-            hi_p[gid] = np.maximum.reduceat(np.where(v, fh, -np.inf), starts)
-            lo_p[gid] = np.minimum.reduceat(np.where(v, fl, np.inf), starts)
             out[n] = (cnt.reshape(C, P), s.reshape(C, P), s2.reshape(C, P),
                       hi_e.reshape(C, P), lo_e.reshape(C, P),
-                      hi_p.reshape(C, P), lo_p.reshape(C, P),
                       rev.reshape(C, P), td, ss, se, sd, te)
         else:
             out[n] = (cnt.reshape(C, P), s.reshape(C, P), s2.reshape(C, P),
-                      None, None, None, None,
+                      None, None,
                       rev.reshape(C, P), td, ss, se, sd, te)
     return out

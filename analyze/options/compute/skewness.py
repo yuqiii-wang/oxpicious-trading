@@ -7,7 +7,6 @@ Persists per-expiry-group rolling stats:
   gap_skewness_vs_spot_maW = skewness_maW - 1
   gap_skewness_vs_spot_slope — full-history slope of (moneyness - 1)
   gap_skewness_vs_spot_maW_slope — full-history slope of gap_maW
-  corr_skewness_vs_spot — 60-day rolling corr(moneyness, spot)
   cross_count_20d / days_since_last_cross / gap_side_share_20d —
     pre-expiry contrarian metrics on the gap (skewness - neutral):
     trailing 20-session neutral crossings, sessions since the last
@@ -39,8 +38,8 @@ def compute_options_skewness_stats(df: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame with SKEWNESS_RESULT_COLUMNS — one row per
         (date, option_type, underlying_code, expiry_date, skew_type),
-        with rolling MA/STD/gap/slope/correlation stats of OI-weighted
-        mean moneyness. For open (non-matured) expiry groups, expiry_date
+        with rolling MA/STD/gap/slope stats of OI-weighted mean
+        moneyness. For open (non-matured) expiry groups, expiry_date
         is collapsed to the mean of all expiry dates per
         (option_type, underlying_code).
     """

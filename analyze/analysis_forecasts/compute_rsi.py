@@ -1,13 +1,10 @@
-"""RSI / gap extreme-percentile bucket detection (analysis_forecasts)
-— the metric files.
+"""RSI extreme-percentile bucket detection (analysis_forecasts)
+— the metric file.
 
-One shared ``PercentileEngine`` serves BOTH percentile families (they
-differ only in the indicator columns and config axes):
+One shared ``PercentileEngine`` serves the percentile family:
 
   - mov_rsi: value = rsi_{W}days (Wilder RSI, W ∈ RSI_WINDOWS), buckets
-    keyed (rsi_window, pct);
-  - mov_gap: value = gap_{W}days (W-day price return, W ∈ GAP_WINDOWS),
-    buckets keyed (gap_window, pct).
+    keyed (rsi_window, pct).
 
 Per (code, config) the bar is the linearly-interpolated quantile of the
 window's non-NULL values — the cudf.pandas quantile machinery of the
@@ -37,9 +34,6 @@ from analyze.analysis_forecasts._dfengine import (
     _finite_mask,
 )
 from analyze.analysis_forecasts.config import (
-    GAP_PCTS,
-    GAP_SIDES,
-    GAP_WINDOWS,
     RSI_PCTS,
     RSI_SIDES,
     RSI_WINDOWS,
@@ -50,12 +44,12 @@ class PercentileEngine(WideDfEngine):
     """Extreme-percentile buckets for one indicator column family.
 
     Args (subclass constants/params):
-        value_prefix: the fetched columns' prefix ("rsi" / "gap") — the
+        value_prefix: the fetched columns' prefix (e.g. "rsi") — the
             window slice carries f"{prefix}_{w}days" columns.
-        window_col: the mov-table bucket key ("rsi_window" / "gap_window").
-        windows: the W values (RSI_WINDOWS / GAP_WINDOWS).
-        pcts: the percentile widths (RSI_PCTS / GAP_PCTS).
-        sides: ("top", "bottom") for both families.
+        window_col: the mov-table bucket key ("rsi_window").
+        windows: the W values (RSI_WINDOWS).
+        pcts: the percentile widths (RSI_PCTS).
+        sides: ("top", "bottom").
     """
 
     BUCKET_COLS: tuple[str, ...] = ()
@@ -163,18 +157,6 @@ class _RsiEngine(PercentileEngine):
     sides = RSI_SIDES
 
 
-class _GapEngine(PercentileEngine):
-    """mov_gap — N-day price-return extreme-percentile buckets (the gap
-    columns of analysis.mov_ave_rsi; same percentile + streak-mid
-    machinery as mov_rsi)."""
-
-    value_prefix = "gap"
-    window_col = "gap_window"
-    windows = GAP_WINDOWS
-    pcts = GAP_PCTS
-    sides = GAP_SIDES
-
-
 def _run(engine_cls, *, df, first_dates, episodes, codes, sec_type, specs):
     engine = engine_cls(
         df=df,
@@ -193,15 +175,5 @@ def compute_rsi_results(
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, mov_rsi bucket rows) per stat month."""
     return _run(_RsiEngine, df=df, first_dates=first_dates,
-                episodes=episodes, codes=codes, sec_type=sec_type,
-                specs=specs)
-
-
-def compute_gap_results(
-    *,
-    df, first_dates, episodes, codes, sec_type, specs,
-) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, mov_gap bucket rows) per stat month."""
-    return _run(_GapEngine, df=df, first_dates=first_dates,
                 episodes=episodes, codes=codes, sec_type=sec_type,
                 specs=specs)

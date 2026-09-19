@@ -2,9 +2,9 @@
 
 ``WideDfEngine`` — the DataFrame engine behind the forecast bucket
 families (compute_rsi / compute_base today; one metric one file). The
-numpy wide machinery in ``wide/`` + ``_engine.py`` remains the LIVE
-signals layer's ABC (analyze.analysis_signals.signals._base subclasses
-it); the FORECAST path runs entirely on cudf.pandas DataFrames:
+numpy wide machinery in ``wide/`` + ``_engine.py`` remains the
+exactness reference; the FORECAST path runs entirely on cudf.pandas
+DataFrames:
 
   - the (code chunk × stat month) PARTITION lives here — the base owns
     the month loop and the chunking that bounds every frame's device
@@ -455,12 +455,8 @@ class WideDfEngine(ABC):
             if n in MM_HORIZONS:
                 c[f"_hx{n}"] = col.where(fin, -np.inf)
                 c[f"_ln{n}"] = col.where(fin, np.inf)
-                c[f"_phx{n}"] = c[f"path_high_{n}d"].where(fin, -np.inf)
-                c[f"_pln{n}"] = c[f"path_low_{n}d"].where(fin, np.inf)
                 agg[f"max_{n}"] = (f"_hx{n}", "max")
                 agg[f"min_{n}"] = (f"_ln{n}", "min")
-                agg[f"phx_{n}"] = (f"_phx{n}", "max")
-                agg[f"pln_{n}"] = (f"_pln{n}", "min")
         a = c.groupby(keys, sort=False).agg(**agg).reset_index()
         # 'flat' buckets (px_vol's flat speed, valuation mid states)
         # make no directional claim — their reverse counts are junk by
@@ -486,11 +482,6 @@ class WideDfEngine(ABC):
                 "thr": a[f"thr_{n}"],
                 "max": a[f"max_{n}"] if n in MM_HORIZONS else None,
                 "min": a[f"min_{n}"] if n in MM_HORIZONS else None,
-                "mlr": _mlr_col(
-                    a[f"phx_{n}"] if n in MM_HORIZONS else None,
-                    a[f"pln_{n}"] if n in MM_HORIZONS else None,
-                    a[f"cnt_{n}"],
-                ),
             }
             for n in FORWARD_HORIZONS
         }
@@ -614,21 +605,11 @@ def _std_col(s2, s, cnt):
     return np.sqrt(var.clip(lower=0.0)).where(cnt > 0)
 
 
-def _mlr_col(phx, pln, cnt):
-    """(1 + max path high) / (1 + min path low) — the widest realized
-    within-period swing, signed ≥ 1; NULL at the next-day horizon
-    (phx/pln None) or where the path low never rose above −1."""
-    if phx is None:
-        return None
-    return ((1 + phx) / (1 + pln)).where((cnt > 0) & (pln > -1))
-
-
 def _mixed_blend(a, legs: dict[int, dict]):
     """The FIXED-weight blended mixed row (the SQL 01 backfill's blend
     over the 6dp-rounded legs): ave / reverse_prob renormalized over
     the horizons with stats, std the mixture dispersion
     sqrt(Σw·E[x²] / Σw − mean²) — NOT the mean of the stds —
-    max_low_change_ratio renormalized over the MM legs,
     occurrence_count the MIN positive leg count, threshold the
     full-weight mean of the four bars, extrema + arrays NULL. A small
     (R × 4) leg-table algebra — one vectorized pass per column."""
@@ -655,12 +636,6 @@ def _mixed_blend(a, legs: dict[int, dict]):
     ave = _leg("ave", "float64").round(6)
     std = _leg("std", "float64").round(6)
     rev = np.nan_to_num(_leg("rev", "float64").round(6))
-    # max_low_change_ratio exists only on the MM legs ('next' carries
-    # None) — the blend renormalizes over the MM horizons, the SQL's
-    # separate w_mlr denominator.
-    mm = [n for n in FORWARD_HORIZONS if n in MM_HORIZONS]
-    w_mlr = np.array([MIXED_HORIZON_WEIGHTS[n] for n in mm])
-    mlr = _leg("mlr", "float64", ns=mm).round(6)
     thr = np.nan_to_num(_leg("thr", "float64").round(6))
     occ = _leg("occ", "int64")
 
@@ -672,10 +647,6 @@ def _mixed_blend(a, legs: dict[int, dict]):
            * w).sum(axis=1) / safe
     std_m = np.sqrt(np.maximum(ex2 - ave_m ** 2, 0.0))
     rev_m = (rev * w).sum(axis=1) / safe
-    has_mlr = (mlr == mlr)
-    w_mlr_sum = (has_mlr * w_mlr).sum(axis=1)
-    mlr_m = (np.where(has_mlr, np.nan_to_num(mlr), 0.0)
-             * w_mlr).sum(axis=1) / np.where(w_mlr_sum > 0, w_mlr_sum, np.nan)
     pos = occ > 0
     occ_m = np.where(
         pos.any(axis=1),
@@ -689,7 +660,6 @@ def _mixed_blend(a, legs: dict[int, dict]):
         "std": pd.Series(std_m, index=idx),
         "occ": pd.Series(occ_m, index=idx),
         "rev": pd.Series(rev_m, index=idx),
-        "mlr": pd.Series(mlr_m, index=idx),
         "thr": pd.Series(thr_m, index=idx),
         "max": None,
         "min": None,
@@ -713,7 +683,6 @@ def _period_frame(a, keys, payload, period, n, config=None):
     out["min_change"] = (payload["min"] if payload["min"] is not None
                          else np.nan)
     out["occurrence_count"] = payload["occ"].astype("int64")
-    out["max_low_change_ratio"] = payload["mlr"]
     out["reverse_prob"] = payload["rev"]
     out["threshold"] = payload["thr"]
     if n is None:

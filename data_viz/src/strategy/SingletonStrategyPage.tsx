@@ -19,9 +19,12 @@ import {
   Box,
   CircularProgress,
   Stack,
+  Typography,
 } from "@mui/material";
 import EChart from "@/components/EChart";
-import { useStore } from "@/store/filters";
+import { useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import {
   checkExistingStrategy,
   runSingletonStrategy,
@@ -49,7 +52,7 @@ import {
 } from "./singleton";
 
 export default function SingletonStrategyPage() {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
 
   // Per-algo weight selection + fault tolerance
   const [selection, setSelection] = useState<StrategySelection>(DEFAULT_STRATEGY_SELECTION);
@@ -171,6 +174,60 @@ export default function SingletonStrategyPage() {
       data: displayBacktest, themeMode, selectedPeriod,
     });
   }, [displayBacktest, themeMode, selectedPeriod]);
+
+  // AI Ask — semantics for the backtest chart; state carries the CURRENT
+  // algo weights / fault tolerance / selected risk period so the modal and
+  // the LLM always describe the view on screen.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Singleton strategy backtest for ${displayBacktest?.code ?? nav.searchCode ?? ""} ` +
+        "(MA5/MA60 crossover pre-computed by the Python strategy.singleton_trading package): " +
+        "OHLC candles with MA5/MA60 overlays, trading-amount bars on a right axis, a Total P&L " +
+        "curve, and BUY (green) / SELL (red) / LAST DAY SELL (purple) decision markers at each " +
+        "fill price. Every price-derived series is rebased so the FIRST BUY fill = 100 (dashed " +
+        "Base-100 reference; tooltips show actual prices). A period clicked in the Risk " +
+        "Analytics chart below shades the matching date range here.",
+      instruments: displayBacktest?.code
+        ? [{ code: displayBacktest.code, name: displayBacktest.name, assetClass: nav.secType }]
+        : [],
+      window: displayBacktest && displayBacktest.ohlc.length > 0
+        ? {
+            start: displayBacktest.ohlc[0].date,
+            end: displayBacktest.ohlc[displayBacktest.ohlc.length - 1].date,
+            granularity: "daily",
+          }
+        : undefined,
+      series: [
+        { name: "OHLC", unit: "rebased (first BUY = 100)", description: "daily candles, rebased to the first BUY fill" },
+        { name: "MA5", unit: "rebased", description: "5-day moving average of close" },
+        { name: "MA60", unit: "rebased", description: "60-day moving average of close" },
+        { name: "Trading Amt", unit: "元", description: "daily trading amount on its own right axis (not rebased)" },
+        { name: "Total P&L", unit: "元", description: "total P&L curve on its offset axis" },
+        { name: "BUY", description: "buy decision markers at the fill price (dark green = top-3 confidence)" },
+        { name: "SELL", description: "sell decision markers at the fill price (dark red = top-3 losses)" },
+        { name: "LAST DAY SELL", description: "projected final-day sell marker (purple, larger)" },
+      ],
+      state: {
+        algo_weights: Object.entries(selection).map(([k, v]) => `${k}:${v}`).join(","),
+        fault_tolerance: faultTolerance,
+        selected_period: selectedPeriod
+          ? `${selectedPeriod.periodType} ${selectedPeriod.periodValue}`
+          : "none",
+      },
+      notes: [
+        "Rebased axis: price series are normalized to the first BUY fill = 100; tooltips always show actual prices.",
+      ],
+    }),
+    [displayBacktest, nav.searchCode, nav.secType, selection, faultTolerance, selectedPeriod],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: "Singleton Strategy Backtest",
+    subtitle: `${displayBacktest?.code ?? nav.searchCode ?? ""} · MA5/MA60 crossover backtest`,
+    option: chartOption,
+    spec: aiAskSpec,
+    getInstance: () => chartInstanceRef.current,
+  });
 
   // Run Strategy handler
   const handleRun = useCallback(async (force: boolean = false) => {
@@ -349,6 +406,10 @@ export default function SingletonStrategyPage() {
                     p: 1,
                   }}
                 >
+                  <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+                    Backtest — {displayBacktest?.code ?? searchCode}
+                    {aiAskAddon}
+                  </Typography>
                   <EChart
                     option={chartOption}
                     height={520}

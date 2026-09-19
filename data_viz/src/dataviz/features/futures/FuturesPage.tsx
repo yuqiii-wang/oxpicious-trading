@@ -9,9 +9,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import {
-  Alert,
   Box,
-  CircularProgress,
   FormControl,
   InputLabel,
   MenuItem,
@@ -23,7 +21,7 @@ import {
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material";
 import RefreshButton from "@/components/RefreshButton";
-import EChart from "@/components/EChart";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import {
   fetchFuturesProducts,
   fetchFuturesCombined,
@@ -42,10 +40,13 @@ type ViewMode = "future" | "history";
 const DEFAULT_PRODUCT = "IF";
 
 export default function FuturesPage() {
+  const themeMode = useChartThemeMode();
   const [products, setProducts] = useState<FuturesProduct[]>([]);
   const [product, setProduct] = useState<string>(DEFAULT_PRODUCT);
   const [data, setData] = useState<FuturesCombinedResponse | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Starts true: the combined fetch fires on mount, so the first paint shows
+  // the BaseChart spinner (not a misleading "no data" placeholder).
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("future");
   const [refreshKey, setRefreshKey] = useState(0);
@@ -97,8 +98,8 @@ export default function FuturesPage() {
 
   const chartOption = useMemo(() => {
     if (!data) return null;
-    return buildFuturesChartOption(data, viewMode, zoomRange);
-  }, [data, viewMode, zoomRange]);
+    return buildFuturesChartOption(themeMode, data, viewMode, zoomRange);
+  }, [themeMode, data, viewMode, zoomRange]);
 
   const handleDataZoom = (params: unknown) => {
     const p = params as { batch?: Array<{ start?: number; end?: number }> };
@@ -205,32 +206,24 @@ export default function FuturesPage() {
         </ToggleButtonGroup>
       </Box>
 
-      {loading && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
-          <CircularProgress size={32} />
-        </Box>
+      {summary && chartOption && (
+        <Typography variant="caption" color="text.secondary">
+          {summary.active} active · {summary.matured} matured ·{" "}
+          {summary.nDays} trading days · {summary.d0} → {summary.d1} ·{" "}
+          {summary.contractType}
+        </Typography>
       )}
-      {error && (
-        <Alert severity="error" variant="filled">
-          Failed to load futures data: {error}
-        </Alert>
-      )}
-      {!loading && !error && data && chartOption && summary && (
-        <>
-          <Typography variant="caption" color="text.secondary">
-            {summary.active} active · {summary.matured} matured ·{" "}
-            {summary.nDays} trading days · {summary.d0} → {summary.d1} ·{" "}
-            {summary.contractType}
-          </Typography>
 
-          <EChart
-            option={chartOption}
-            height={520}
-            minHeight={360}
-            onEvents={onEvents}
-          />
-        </>
-      )}
+      <BaseChart
+        variant="bare"
+        option={chartOption}
+        height={520}
+        minHeight={360}
+        loading={loading}
+        error={error ? `Failed to load futures data: ${error}` : null}
+        emptyText="No futures data"
+        onEvents={onEvents}
+      />
     </Stack>
   );
 }

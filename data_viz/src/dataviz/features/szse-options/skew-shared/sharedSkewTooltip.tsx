@@ -1,6 +1,6 @@
 /**
  * Shared skew-over-time chart tooltip — works on the unified
- * SharedSkewPoint[] model for both data sources (oi_moneyness / iv_smile).
+ * SharedSkewPoint[] model for all data sources (oi_moneyness / greek_*).
  */
 import React from "react";
 import { fmtNum } from "@/lib/series";

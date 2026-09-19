@@ -28,7 +28,7 @@ interface ZoomWindow {
   end?: number;
 }
 
-interface EChartProps {
+export interface EChartProps {
   option: EChartsOption;
   height?: number | string;
   /** Minimum container height (default 200). Set to a smaller value for

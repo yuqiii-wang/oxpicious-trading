@@ -280,7 +280,7 @@ export async function getAiQa(qaId: number): Promise<AiQaDetail | null> {
   );
   if (rows.length === 0) return null;
   const refs = await queryRows<AiQaRefItem & QueryResultRow>(
-    `SELECT r.ref, r.ref_type, r.resolved_via, r.resolved_url,
+    `SELECT r.ref, r.ref_type, r.resolved_via, r.resolved_url, r.is_used,
            (r.ref_time AT TIME ZONE 'Asia/Shanghai')::text AS ref_time,
            n.news_id, n.title, n.source, n.date::text AS date, n.url,
            LEFT(n.content, 4000) AS content

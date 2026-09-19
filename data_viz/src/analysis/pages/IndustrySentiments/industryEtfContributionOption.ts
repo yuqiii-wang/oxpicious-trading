@@ -26,6 +26,7 @@ import {
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
 import React from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
@@ -67,25 +68,16 @@ export function buildIndustryEtfContributionOption(
   // Max absolute amount for label visibility threshold.
   const maxAmt = amounts.reduce((m, v) => (v == null ? m : Math.max(m, Math.abs(v))), 0);
 
-  const base: Pick<EChartsOption, "backgroundColor" | "animation" | "grid" | "legend"> = {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 64, right: 64, bottom: 96 }),
     legend: commonLegend(themeMode, {
       itemWidth: 12,
       itemHeight: 7,
       data: ["Trading Amt", "Share %"],
     }),
-  };
-
-  return {
-    ...base,
-    tooltip: {
-      trigger: "axis",
+    // Shadow pointer over the bar clusters (old hand-rolled shape).
+    tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "shadow" },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           dataIndex?: number;
@@ -137,7 +129,7 @@ export function buildIndustryEtfContributionOption(
         }
         return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
-    },
+    }),
     xAxis: {
       type: "category",
       data: labels,
@@ -229,5 +221,5 @@ export function buildIndustryEtfContributionOption(
         })),
       },
     ],
-  };
+  });
 }

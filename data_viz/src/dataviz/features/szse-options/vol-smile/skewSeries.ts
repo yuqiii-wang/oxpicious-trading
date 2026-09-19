@@ -1,7 +1,7 @@
 import type { OptionsRow } from "@shared/types";
 import { PRICE_SCALE } from "@/theme/chart-palette";
 import { expiryToYyyyMm, expiryCompare } from "./expiryUtils";
-import type { DailySkew, ExpirySkew } from "./types";
+import type { DailySkew, ExpirySkew, OtmOiShare } from "./types";
 
 export function computeOiWeightedSkew(rows: OptionsRow[], S: number): { skewPrice: number | null; skewPct: number | null } {
   const totalOi = rows.reduce((s, r) => s + Math.max(1, r.open_interest), 0);
@@ -17,6 +17,39 @@ export function computeOiWeightedSkew(rows: OptionsRow[], S: number): { skewPric
   return {
     skewPrice: S * weightedMeanMoneyness,
     skewPct: (weightedMeanMoneyness - 1.0) * 100,
+  };
+}
+
+/**
+ * Share of OI that would expire worthless at spot S (calls strike ≥ S,
+ * puts strike ≤ S), per side and blended. Uses raw OI (a zero-OI contract
+ * must not bias the share) and ALL active rows of the group — the skew
+ * mean's IV-validity filter would drop late-life ITM quotes and force the
+ * share to ~100% OTM.
+ */
+export function computeOtmOiShare(rows: OptionsRow[], S: number): OtmOiShare | null {
+  let callTotal = 0;
+  let putTotal = 0;
+  let callOtm = 0;
+  let putOtm = 0;
+  for (const r of rows) {
+    const oi = Math.max(0, r.open_interest);
+    if (oi === 0) continue;
+    const K = r.strike_price / PRICE_SCALE;
+    if (r.option_type === "CALL") {
+      callTotal += oi;
+      if (K >= S) callOtm += oi;
+    } else {
+      putTotal += oi;
+      if (K <= S) putOtm += oi;
+    }
+  }
+  const total = callTotal + putTotal;
+  if (total === 0) return null;
+  return {
+    callShare: callTotal > 0 ? callOtm / callTotal : null,
+    putShare: putTotal > 0 ? putOtm / putTotal : null,
+    allShare: (callOtm + putOtm) / total,
   };
 }
 
@@ -59,16 +92,28 @@ export function computeDailySkewSeries(
       entry.rows.push(r);
       if (r.expiry_date < entry.expiryDate) entry.expiryDate = r.expiry_date;
     }
+    // OTM/worthless OI shares use ALL active rows of the group — not the
+    // IV-valid subset. On a group's final days deep-ITM contracts often
+    // carry no valid IV quote, so the valid-only share would degenerate
+    // to ~100% OTM and stop discriminating.
+    const activeByExpiry = new Map<string, OptionsRow[]>();
+    for (const r of active) {
+      const key = expiryToYyyyMm(r.expiry_date);
+      if (!activeByExpiry.has(key)) activeByExpiry.set(key, []);
+      activeByExpiry.get(key)!.push(r);
+    }
     const expiryMonths = Array.from(expiryMap.keys()).sort(expiryCompare);
     const perExpiry: ExpirySkew[] = [];
     for (const em of expiryMonths) {
       const { rows: emRows, expiryDate } = expiryMap.get(em)!;
+      const otmShare = computeOtmOiShare(activeByExpiry.get(em) ?? [], S);
       if (emRows.length < 3) {
         perExpiry.push({
           expiry: em,
           expiryDate,
           skewPrice: null,
           skewPct: null,
+          otmShare,
         });
       } else {
         const s = computeOiWeightedSkew(emRows, S);
@@ -76,6 +121,7 @@ export function computeDailySkewSeries(
           expiry: em,
           expiryDate,
           ...s,
+          otmShare,
         });
       }
     }

@@ -38,12 +38,14 @@ import { PieChart as PieChartIcon } from "@mui/icons-material";
 import EChart from "@/components/EChart";
 import RefreshButton from "@/components/RefreshButton";
 import StockOhlcExpansionChart from "@/components/StockOhlcExpansionChart";
-import { useStore } from "@/store/filters";
 import { fetchSecComposition, invalidateCacheForUrl } from "@/lib/api-client";
 import { MUTED_PALETTE, axisColors } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import { fmtNum, fmtPct } from "@/lib/series";
 import type { SecCompositionResponse } from "@shared/types";
-import type { EChartsOption } from "echarts";
+import type { ECharts, EChartsOption } from "echarts";
 
 interface Props {
   /** Security code — ETF code (e.g. "510050") or bare index code (e.g. "000300"). */
@@ -101,7 +103,7 @@ export default function CompositionPieChart({
   refreshKey: externalRefreshKey,
   onLoadingChange,
 }: Props) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SecCompositionResponse | null>(null);
@@ -124,6 +126,10 @@ export default function CompositionPieChart({
   // the latest value without needing to re-bind.
   const selectedStockRef = useRef<SelectedStock | null>(null);
   selectedStockRef.current = selectedStock;
+
+  // Chart instances for the AI Ask screenshots (one per pie layer).
+  const industryChartRef = useRef<ECharts | null>(null);
+  const stockChartRef = useRef<ECharts | null>(null);
 
   // Fetch composition data when the panel is opened. With a `date` prop the
   // fetch is constrained to that date's quarter (seasonal mode).
@@ -202,129 +208,125 @@ export default function CompositionPieChart({
       .sort((a, b) => b.value - a.value);
   }, [data, selectedIndustry]);
 
-  // Layer 1 option: industry pie (always rendered while open)
-  const industryOption = useMemo<EChartsOption>(() => {
-    const c = axisColors(themeMode);
-    const textColor = c.textColor;
-    const tooltipBg = c.tooltipBg;
-    const borderColor = c.splitLineColor;
-
-    return {
-      backgroundColor: "transparent",
-      animation: false,
-      tooltip: {
-        trigger: "item",
-        formatter: (p: unknown) => {
-          const item = p as { name?: string; value?: number };
-          return `${item.name}: ${fmtPct(item.value)}`;
-        },
-        backgroundColor: tooltipBg,
-        borderColor,
-        textStyle: { color: textColor, fontSize: 11 },
-      },
-      legend: {
-        type: "scroll",
-        orient: "vertical",
-        right: 0,
-        top: "middle",
-        textStyle: { color: textColor, fontSize: 9 },
-        itemWidth: 8,
-        itemHeight: 6,
-        pageIconColor: textColor,
-        pageTextStyle: { color: textColor },
-      },
-      series: [
-        {
-          type: "pie",
-          radius: ["25%", "58%"],
-          center: ["38%", "50%"],
-          data: industryData,
-          label: {
-            color: textColor,
-            fontSize: 9,
+  // Shared option for both pie layers (industry / stocks) — same preamble
+  // (base fragments), same vertical legend + muted palette; only the data
+  // differs.
+  const buildPieOption = useMemo(
+    () =>
+      (items: PieItem[]): EChartsOption => {
+        const c = axisColors(themeMode);
+        return baseChartOption(themeMode, {
+          grid: null,
+          tooltip: commonTooltip(themeMode, {
+            trigger: "item",
+            axisPointer: undefined,
             formatter: (p: unknown) => {
-              const item = p as { name?: string; percent?: number };
-              return `${item.name}\n${fmtNum(item.percent)}%`;
+              const item = p as { name?: string; value?: number };
+              return `${item.name}: ${fmtPct(item.value)}`;
             },
+          }),
+          legend: {
+            type: "scroll",
+            orient: "vertical",
+            right: 0,
+            top: "middle",
+            textStyle: { color: c.textColor, fontSize: 9 },
+            itemWidth: 8,
+            itemHeight: 6,
+            pageIconColor: c.textColor,
+            pageTextStyle: { color: c.textColor },
           },
-          labelLine: {
-            lineStyle: { color: textColor, opacity: 0.5 },
-          },
-          emphasis: {
-            itemStyle: {
-              shadowBlur: 10,
-              shadowOffsetX: 0,
-              shadowColor: "rgba(0,0,0,0.3)",
+          series: [
+            {
+              type: "pie",
+              radius: ["25%", "58%"],
+              center: ["38%", "50%"],
+              data: items,
+              label: {
+                color: c.textColor,
+                fontSize: 9,
+                formatter: (p: unknown) => {
+                  const item = p as { name?: string; percent?: number };
+                  return `${item.name}\n${fmtNum(item.percent)}%`;
+                },
+              },
+              labelLine: {
+                lineStyle: { color: c.textColor, opacity: 0.5 },
+              },
+              emphasis: {
+                itemStyle: {
+                  shadowBlur: 10,
+                  shadowOffsetX: 0,
+                  shadowColor: "rgba(0,0,0,0.3)",
+                },
+                scaleSize: 6,
+              },
             },
-            scaleSize: 6,
-          },
-        },
-      ],
-      color: MUTED_PALETTE,
-    };
-  }, [industryData, themeMode]);
+          ],
+          color: MUTED_PALETTE,
+        });
+      },
+    [themeMode],
+  );
+
+  // Layer 1 option: industry pie (always rendered while open)
+  const industryOption = useMemo<EChartsOption>(
+    () => buildPieOption(industryData),
+    [buildPieOption, industryData],
+  );
 
   // Layer 2 option: stocks within the selected industry (rendered beside Layer 1)
-  const stockOption = useMemo<EChartsOption>(() => {
-    const c = axisColors(themeMode);
-    const textColor = c.textColor;
-    const tooltipBg = c.tooltipBg;
-    const borderColor = c.splitLineColor;
+  const stockOption = useMemo<EChartsOption>(
+    () => buildPieOption(stockData),
+    [buildPieOption, stockData],
+  );
 
-    return {
-      backgroundColor: "transparent",
-      animation: false,
-      tooltip: {
-        trigger: "item",
-        formatter: (p: unknown) => {
-          const item = p as { name?: string; value?: number };
-          return `${item.name}: ${fmtPct(item.value)}`;
-        },
-        backgroundColor: tooltipBg,
-        borderColor,
-        textStyle: { color: textColor, fontSize: 11 },
+  // AI Ask — one spec per pie layer; state carries the CURRENT drill-down
+  // selection so the modal / LLM always describe the view on screen.
+  const industrySpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Holdings composition of ${code} by industry (stats.sec_composition, snapshot ` +
+        `${data?.snapshot_date ?? "—"}${data?.quarter ? ` · ${data.quarter}` : ""}): pie slices ` +
+        "are industries aggregated by weight %. Click an industry slice to drill into its " +
+        "individual stocks in the second pie (click it again to close).",
+      instruments: [{ code }],
+      state: {
+        selected_industry: selectedIndustry ?? "none",
       },
-      legend: {
-        type: "scroll",
-        orient: "vertical",
-        right: 0,
-        top: "middle",
-        textStyle: { color: textColor, fontSize: 9 },
-        itemWidth: 8,
-        itemHeight: 6,
-        pageIconColor: textColor,
-        pageTextStyle: { color: textColor },
+      notes: data?.source === "index"
+        ? ["Index-fallback mode: full constituent weights of the tracking index, not fund holdings."]
+        : [],
+    }),
+    [code, data, selectedIndustry],
+  );
+  const stockSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Individual stocks within industry "${selectedIndustry}" of ${code}'s holdings ` +
+        "(stats.sec_composition): slice size = the stock's weight %. Click a slice to open " +
+        "its daily OHLC chart below (click it again to close).",
+      instruments: [{ code }],
+      state: {
+        selected_industry: selectedIndustry ?? "none",
+        selected_stock: selectedStock ? `${selectedStock.code} ${selectedStock.name}` : "none",
       },
-      series: [
-        {
-          type: "pie",
-          radius: ["25%", "58%"],
-          center: ["38%", "50%"],
-          data: stockData,
-          label: {
-            color: textColor,
-            fontSize: 9,
-            formatter: (p: unknown) => {
-              const item = p as { name?: string; percent?: number };
-              return `${item.name}\n${fmtNum(item.percent)}%`;
-            },
-          },
-          labelLine: {
-            lineStyle: { color: textColor, opacity: 0.5 },
-          },
-          emphasis: {
-            itemStyle: {
-              shadowBlur: 10,
-              shadowOffsetX: 0,
-              shadowColor: "rgba(0,0,0,0.3)",
-            },
-            scaleSize: 6,
-          },
-        },
-      ],
-      color: MUTED_PALETTE,
-    };
-  }, [stockData, selectedIndustry, themeMode]);
+    }),
+    [code, selectedIndustry, selectedStock],
+  );
+  const industryAddon = useAiAskAddon({
+    title: "By Industry",
+    subtitle: `${code} holdings by industry`,
+    option: industryOption,
+    spec: industrySpec,
+    getInstance: () => industryChartRef.current,
+  });
+  const stockAddon = useAiAskAddon({
+    title: `Stocks in ${selectedIndustry ?? ""}`,
+    option: stockOption,
+    spec: selectedIndustry ? stockSpec : null,
+    getInstance: () => stockChartRef.current,
+  });
 
   const hasData = data && data.holdings.length > 0;
   const allUnclassified =
@@ -433,11 +435,13 @@ export default function CompositionPieChart({
                     color="text.secondary"
                   >
                     By Industry
+                    {industryAddon}
                   </Typography>
                   <EChart
                     option={industryOption}
                     height={280}
                     onReady={(chart) => {
+                      industryChartRef.current = chart;
                       // Click handler: show the clicked industry's stock pie
                       // beside this chart. Clicking a DIFFERENT industry
                       // switches the stock pie to it; clicking the selected
@@ -474,11 +478,13 @@ export default function CompositionPieChart({
                       color="text.secondary"
                     >
                       Stocks in &quot;{selectedIndustry}&quot;
+                      {stockAddon}
                     </Typography>
                     <EChart
                       option={stockOption}
                       height={280}
                       onReady={(chart) => {
+                        stockChartRef.current = chart;
                         // Click handler: toggle the per-stock OHLC
                         // expansion. Clicking the same stock again closes it;
                         // clicking a different stock switches the chart.

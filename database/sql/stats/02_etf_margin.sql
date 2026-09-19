@@ -26,12 +26,9 @@ SELECT public.create_hash_partitions('stats', 'etf_identity', 8);
 
 -- Idempotent migration: replace the legacy code_suffix column with the
 -- canonical exchange column (mirroring the canonical source-CSV schema).
-ALTER TABLE stats.etf_identity ADD COLUMN IF NOT EXISTS exchange TEXT;
 UPDATE stats.etf_identity
    SET exchange = split_part(code, '.', 2)
  WHERE exchange IS NULL OR exchange = '';
-DROP INDEX IF EXISTS stats.idx_etf_identity_suffix_code_date;
-ALTER TABLE stats.etf_identity DROP COLUMN IF EXISTS code_suffix;
 
 COMMENT ON TABLE  stats.etf_identity                 IS 'ETF identity: one row per (date, etf_code). PK (code, date) shared by all ETF sub-tables. Native HASH partitioned by code.';
 COMMENT ON COLUMN stats.etf_identity.code           IS 'ETF ticker with exchange suffix, e.g. "159007.SZ" (SZSE) or "510050.SS" (SSE).';
@@ -63,14 +60,6 @@ CREATE TABLE IF NOT EXISTS stats.etf_basic_stats (
 -- Native hash partitions (8) keyed by code — created via the shared util
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'etf_basic_stats', 8);
-
--- Idempotent migration: add is_ohl_estimated to pre-existing tables.
-ALTER TABLE stats.etf_basic_stats
-    ADD COLUMN IF NOT EXISTS is_ohl_estimated BOOLEAN NOT NULL DEFAULT FALSE;
-
--- Idempotent migration: add pe column to pre-existing tables.
-ALTER TABLE stats.etf_basic_stats ADD COLUMN IF NOT EXISTS pe NUMERIC(18,4);
-ALTER TABLE stats.etf_basic_stats ADD COLUMN IF NOT EXISTS eps NUMERIC(18,6);
 
 COMMENT ON TABLE  stats.etf_basic_stats                    IS 'ETF raw basic_stats (yuan) + pe (harmonic-weighted constituent PE).';
 COMMENT ON COLUMN stats.etf_basic_stats.is_close_estimated IS 'TRUE when close was estimated (not from source CSV). Estimation: for missing trading days, close is derived from prev_close adjusted by the percentage change of the most-similar index/ETF (highest composition shared weight > 60%). If no proxy qualifies, prev_close is carried forward.';
@@ -107,38 +96,6 @@ CREATE TABLE IF NOT EXISTS stats.etf_tech_stats (
 -- Native hash partitions (8) keyed by code — created via the shared util
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'etf_tech_stats', 8);
-
--- Idempotent migration: add the intraday net-move liquidity ratio to
--- pre-existing tables (no-op on fresh installs).
-ALTER TABLE stats.etf_tech_stats
-    ADD COLUMN IF NOT EXISTS trading_amt_per_pct_change NUMERIC(18,6);
-
--- Idempotent migration: add EMA columns to pre-existing tables.
--- CREATE TABLE IF NOT EXISTS does not add new columns to an existing
--- table, so the ALTER TABLE below is required for production upgrades
--- without a full rebuild. Runs BEFORE the COMMENT statements so the
--- columns exist when the comments are applied.
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'etf_tech_stats' AND column_name = 'ema6'
-    ) THEN
-        ALTER TABLE stats.etf_tech_stats
-            ADD COLUMN ema6  NUMERIC(18,4),
-            ADD COLUMN ema10 NUMERIC(18,4),
-            ADD COLUMN ema20 NUMERIC(18,4),
-            ADD COLUMN ema60 NUMERIC(18,4);
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'etf_tech_stats' AND column_name = 'ema120'
-    ) THEN
-        ALTER TABLE stats.etf_tech_stats
-            ADD COLUMN ema120 NUMERIC(18,4),
-            ADD COLUMN ema255 NUMERIC(18,4);
-    END IF;
-END $$;
 
 COMMENT ON TABLE  stats.etf_tech_stats                    IS 'ETF technical indicators (moving averages + EMAs).';
 COMMENT ON COLUMN stats.etf_tech_stats.ma5               IS '5-day moving average of adj_close.';
@@ -244,11 +201,9 @@ CREATE TABLE IF NOT EXISTS stats.etf_intraday_5min (
 ) PARTITION BY HASH (code);
 
 -- Idempotent migration: replace the legacy code_suffix column with exchange.
-ALTER TABLE stats.etf_intraday_5min ADD COLUMN IF NOT EXISTS exchange TEXT;
 UPDATE stats.etf_intraday_5min
    SET exchange = split_part(code, '.', 2)
  WHERE exchange IS NULL OR exchange = '';
-ALTER TABLE stats.etf_intraday_5min DROP COLUMN IF EXISTS code_suffix;
 COMMENT ON COLUMN stats.etf_intraday_5min.exchange IS 'Exchange of the code suffix: "SZ" or "SS". Set by the streaming loaders; replaces the legacy code_suffix column.';
 
 -- Native hash partitions (16) keyed by code — created via the shared util
@@ -265,20 +220,7 @@ COMMENT ON COLUMN stats.etf_intraday_5min.trading_shares       IS 'Volume traded
 COMMENT ON COLUMN stats.etf_intraday_5min.change       IS 'Absolute change from the bar''s open (close - open).';
 COMMENT ON COLUMN stats.etf_intraday_5min.change_pct   IS 'Percentage change from the bar''s open (%) = (close - open) / open * 100.';
 
--- ----------------------------------------------------------------------------
--- Table: etf_composition_link  (REMOVED)
---   Was a write-only mirror of an in-memory merge_asof comp_match_date column.
---   No reader ever queried it; the composition pipeline now writes directly
---   to sec_composition. Dropped for cleanup; the v_etf_margin view no longer
---   LEFT JOINs it.
---   NOTE: v_etf_margin is dropped first because the old view referenced this
---   table; it is recreated in 99_reconstruct_views.sql without the JOIN.
--- ----------------------------------------------------------------------------
-DROP VIEW IF EXISTS stats.v_etf_margin;
-DROP TABLE IF EXISTS stats.etf_composition_link;
-
 -- Indexes
-DROP INDEX IF EXISTS stats.idx_etf_margin_code_date;
 
 -- (a) Per-code lookups (latest first); INCLUDE (name, exchange) lets the
 --     Index Only Scan return these columns without heap fetches. Mirrors
@@ -299,12 +241,8 @@ CREATE INDEX IF NOT EXISTS idx_etf_identity_date
 CREATE INDEX IF NOT EXISTS idx_etf_identity_exchange_code_date
     ON stats.etf_identity (exchange, code, date DESC);
 
--- Legacy (code, date) secondary indexes are now redundant with the
--- code-first PK — drop them and add date-first indexes instead.
-DROP INDEX IF EXISTS stats.idx_etf_basic_stats_code_date;
-DROP INDEX IF EXISTS stats.idx_etf_tech_stats_code_date;
-DROP INDEX IF EXISTS stats.idx_etf_adjustment_code_date;
-DROP INDEX IF EXISTS stats.idx_etf_liquidity_margin_code_date;
+-- The legacy (code, date) secondary indexes are superseded by the
+-- code-first PK; the date-first indexes below keep cross-code scans cheap.
 
 CREATE INDEX IF NOT EXISTS idx_etf_basic_stats_date
     ON stats.etf_basic_stats (date);
@@ -319,13 +257,8 @@ CREATE INDEX IF NOT EXISTS idx_etf_margin_split_events
     ON stats.etf_adjustment (date)
     WHERE is_split_event_day = 1;
 
--- (c) etf_intraday_5min — PK (code, date, time) now serves the per-code
---     lookups; the old (code, date, time)/(code, date)/(code) secondary
---     indexes are redundant and dropped. A date-first index restores
---     cross-code intraday scans.
-DROP INDEX IF EXISTS stats.idx_etf_intraday_5min_code_date_time;
-DROP INDEX IF EXISTS stats.idx_etf_intraday_5min_code_date;
-DROP INDEX IF EXISTS stats.idx_etf_intraday_5min_code;
+-- (c) etf_intraday_5min — PK (code, date, time) serves the per-code
+--     lookups; a date-first index restores cross-code intraday scans.
 
 CREATE INDEX IF NOT EXISTS idx_etf_intraday_5min_date
     ON stats.etf_intraday_5min (date);

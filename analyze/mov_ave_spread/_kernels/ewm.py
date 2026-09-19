@@ -18,7 +18,7 @@ ignore_na=True).mean()`` — verified in temp_scripts/test_ewm_kernel.py
 
 Contract (caller obligations):
     - groups are CONTIGUOUS blocks of rows (df pre-sorted by
-      [group_key, date]; rsi.py's compute_rsi_and_gaps guarantees this)
+      [group_key, date]; rsi.py's compute_rsi guarantees this)
     - ``starts``/``ends`` = int64 exclusive row bounds per group
     - import this module ONLY when the GPU path is confirmed available
       (rsi.py imports it lazily inside the GPU branch)

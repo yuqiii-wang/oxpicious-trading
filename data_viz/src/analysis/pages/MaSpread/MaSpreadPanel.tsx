@@ -61,22 +61,23 @@
  *
  * Fetches its own chart data on mount via fetchMovAveSpreadChart(code, secType).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
-  Alert,
   Box,
   Chip,
-  CircularProgress,
   MenuItem,
   Select,
   Stack,
   Typography,
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import AnalysisRunButton from "@/components/AnalysisRunButton";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ECharts } from "echarts";
 import { UP_COLOR } from "@/theme/chart-palette";
 import { fmtNum, fmtPct } from "@/lib/series";
 import { fetchMovAveSpreadChart, invalidateCacheForUrl } from "@/lib/api-client";
@@ -91,7 +92,7 @@ import {
   HIGH_LOW_STREAK_PERIODS,
   HIGH_LOW_STREAK_PCTS,
 } from "./constants";
-import { buildPairOption, buildAmtEnvelopeOption, type TradingAmtMode } from "./chartOption";
+import { buildPairOption, buildAmtEnvelopeOption, shortLabel, type TradingAmtMode } from "./chartOption";
 import {
   computePxVolStates,
   pxVolMatchRuns,
@@ -156,7 +157,11 @@ const PERIOD_CHIP_SX: CSSProperties = {
   justifyContent: "center",
 };
 
-export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
+export function MaSpreadPanel({ code, name, secType }: PanelProps) {
+  // Reactive light/dark theme — single source of truth for every option
+  // builder call below (no prop drilling).
+  const themeMode = useChartThemeMode();
+
   // ---- Chart data ---------------------------------------------------------
   const [chartData, setChartData] = useState<MovAveSpreadChartResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -201,12 +206,6 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
-
-  // Hovered date index (into the full rows of the selected pair — the chart's
-  // x-axis is now the full data, with an in-chart dataZoom slider for
-  // viewport control). Drives the single last-extreme triangle marker shown
-  // on hover.
-  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   // Enabled rolling-OHLC window (trading days) — null = off. Selected via
   // the OHLC-window button row beneath the Trading Amt/MA section.
@@ -264,7 +263,6 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
         if (cancelled) return;
         setChartData(d);
         setSelectedPairIdx(0);
-        setHoveredIdx(null);
         setOhlcClickIdx(null);
         setLoading(false);
       })
@@ -278,34 +276,6 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
       cancelled = true;
     };
   }, [code, secType, refreshKey]);
-
-  // Track the hovered date index via ECharts' `updateAxisPointer` event so we
-  // can draw a single last-extreme triangle at the hovered date's
-  // date_of_last_extreme_500days. Fires only when the axis pointer snaps to a new
-  // category (date), not on every pixel move — low overhead.
-  const handleAxisPointer = useCallback((params: unknown) => {
-    const p = params as {
-      axesInfo?: Array<{
-        seriesDataIndices?: Array<{ dataIndex: number }>;
-      }>;
-    };
-    const axes = p?.axesInfo;
-    if (!axes || axes.length === 0) {
-      setHoveredIdx(null);
-      return;
-    }
-    const indices = axes[0]?.seriesDataIndices;
-    if (!indices || indices.length === 0) {
-      setHoveredIdx(null);
-      return;
-    }
-    setHoveredIdx(indices[0].dataIndex);
-  }, []);
-
-  const chartEvents = useMemo(
-    () => ({ updateAxisPointer: handleAxisPointer }),
-    [handleAxisPointer],
-  );
 
   // Canvas-level chart click: sets the anchor date. Only armed while an
   // OHLC window or the High/Low Streaks row is enabled; clicking the
@@ -516,6 +486,163 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     </Stack>
   ) : undefined;
 
+  // Chart option for the selected pair — null while loading / on error / when
+  // the pair has no rows; BaseChart then renders the shared spinner / error
+  // Alert / empty placeholder instead of the chart. Memoized so the AI Ask
+  // plot info derives from the same object the chart renders.
+  const chartOption = useMemo(
+    () =>
+      !loading && !error && selectedPair && selectedPair.rows.length > 0
+        ? amtPairSelected
+          ? buildAmtEnvelopeOption({
+              pair: selectedPair,
+              themeMode,
+              ohlcMode,
+              bollingerK,
+              longStreaks,
+              streakPeriod,
+              streakPct,
+              streakAnchorIdx: ohlcClickIdx,
+              pxVolShade,
+            })
+          : buildPairOption({
+              pair: selectedPair,
+              themeMode,
+              bollingerK,
+              tradingAmtMode,
+              ohlcMode,
+              ohlcWindow,
+              ohlcClickIdx,
+              ohlcRows: chartData?.ohlc ?? null,
+              longStreaks,
+              streakPeriod,
+              streakPct,
+              streakAnchorIdx: ohlcClickIdx,
+              pxVolShade,
+            })
+        : null,
+    [
+      loading,
+      error,
+      selectedPair,
+      amtPairSelected,
+      themeMode,
+      bollingerK,
+      tradingAmtMode,
+      ohlcMode,
+      ohlcWindow,
+      ohlcClickIdx,
+      chartData,
+      longStreaks,
+      streakPeriod,
+      streakPct,
+      pxVolShade,
+    ],
+  );
+
+  // ---- AI Ask — wire the OUTER card (the chart body is a bare BaseChart).
+  // State carries every in-plot control's CURRENT value so the modal / LLM
+  // describe the view on screen.
+  const maAiAskRef = useRef<ECharts | null>(null);
+  const shortName = selectedPair ? shortLabel(selectedPair.ma_short, selectedPair.kind) : "";
+  const longName = selectedPair
+    ? selectedPair.kind === "ema"
+      ? `EMA${selectedPair.ma_long}`
+      : `MA${selectedPair.ma_long}`
+    : "";
+  const streakLabel =
+    streakPeriod != null && streakPct != null ? `Streak(${streakPeriod}d·${streakPct}%)` : "";
+  // Primitive (not the firstPairRows array) so the spec memo below stays
+  // identity-stable.
+  const anchorDate =
+    ohlcClickIdx != null && firstPairRows[ohlcClickIdx]
+      ? firstPairRows[ohlcClickIdx].date
+      : undefined;
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Moving-average spread study for ${code}: the selected pair (${selectedPair?.pair_label ?? "—"}) ` +
+        "plotted as the short curve vs the long MA with green fill when short > long (growth) and red fill when " +
+        "short < long (decline); the tooltip reports each series' slope and curvature. Overlays follow the card " +
+        "controls: a Bollinger ±kσ envelope around the long MA, a rolling OHLC High/Low window whose roof/floor " +
+        "trendlines are anchored by clicking a chart date, trailing-window High/Low break-streak zones, and " +
+        "Px-Vol state shading (price speed × trading-amount state). In percentage mode OHLC + MAs are rebased to " +
+        "% change from the first valid close; the Amt/MA pairs switch to an amount-envelope view with a lowkey " +
+        "price reference.",
+      instruments: [{ code, name: name || undefined }],
+      series: amtPairSelected
+        ? [
+            { name: "Price", description: "lowkey (high+low)/2 close reference for the amt-envelope view" },
+            { name: "Amt Above", unit: "亿", description: "daily trading amount at/above the selected Amt MA" },
+            { name: "Amt Below", unit: "亿", description: "daily trading amount below the selected Amt MA" },
+            ...[5, 20, 60, 120, 255].map((w) => ({
+              name: `Amt MA${w}`,
+              unit: "亿",
+              description: `${w}-day trading-amount moving average (selected window emphasized)`,
+            })),
+          ]
+        : [
+            { name: shortName, description: "the pair's short leg (price or short MA/EMA)" },
+            { name: longName, description: "the pair's long moving average" },
+            { name: "Amt Up", unit: "亿", description: "daily trading amount on up days (lowkey bars)" },
+            { name: "Amt Down", unit: "亿", description: "daily trading amount on down days (lowkey bars)" },
+            { name: `Upper (+${bollingerK}σ)`, description: "long MA + k×σ Bollinger band edge" },
+            { name: `Lower (−${bollingerK}σ)`, description: "long MA − k×σ Bollinger band edge" },
+            ...(ohlcWindow != null
+              ? [
+                  { name: `High(${ohlcWindow}d)`, description: "rolling OHLC window high" },
+                  { name: `Low(${ohlcWindow}d)`, description: "rolling OHLC window low" },
+                  { name: `Roof(${ohlcWindow}d)`, description: "trendline through the window's top+2nd highs, stopping at the anchor date" },
+                  { name: `Floor(${ohlcWindow}d)`, description: "trendline through the window's top+2nd lows, stopping at the anchor date" },
+                ]
+              : []),
+            ...(streakLabel
+              ? [
+                  { name: `High ${streakLabel}`, description: "merged span of closes above the anchor window's static top pct zone" },
+                  { name: `Low ${streakLabel}`, description: "merged span of closes below the anchor window's static bottom pct zone" },
+                ]
+              : []),
+            ...(pxVolShade ? [{ name: pxVolShade.label, description: "dates matching the selected price-speed × amount-state combo" }] : []),
+          ],
+      state: {
+        pair: selectedPair?.pair_label ?? "—",
+        ohlc_mode: ohlcMode === "percentage" ? "% (rebased to first valid close)" : "absolute",
+        bollinger_k: bollingerK,
+        trading_amt: tradingAmtMode,
+        ohlc_window: ohlcWindow ?? "off",
+        anchor_date: anchorDate ?? "none",
+        streak_combo: streakLabel || "off",
+        px_vol: pxVolShade?.label ?? "off",
+      },
+      notes: [
+        "All 9 pairs share one date axis; the in-chart dataZoom windows the view.",
+        "Break streaks are detected client-side against the anchor window's static band edge (≤5-day in-band gaps bridged).",
+      ],
+    }),
+    [
+      code,
+      name,
+      selectedPair,
+      amtPairSelected,
+      shortName,
+      longName,
+      bollingerK,
+      ohlcWindow,
+      streakLabel,
+      pxVolShade,
+      ohlcMode,
+      tradingAmtMode,
+      anchorDate,
+    ],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: selectedPair ? selectedPair.pair_label : "MA-Spread",
+    subtitle,
+    option: chartOption,
+    spec: aiAskSpec,
+    getInstance: () => maAiAskRef.current,
+  });
+
   // Render a single pair chip (used in the 2-row pair grid). The chip fills
   // its grid column: display:flex overrides MUI's default inline-flex so
   // width:100% takes effect, and the label is centered within.
@@ -554,6 +681,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
     <ChartCard
       title={selectedPair ? selectedPair.pair_label : "MA-Spread"}
       subtitle={subtitle}
+      titleAddon={aiAskAddon}
       action={
         bollAction ? (
           <Stack direction="row" alignItems="center">
@@ -577,13 +705,26 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
         )
       }
     >
-      {loading && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
-          <CircularProgress size={24} />
-        </Box>
-      )}
-      {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
-
+      {/* Chart body (loading / error / empty placeholders + the EChart) is
+          owned by the shared BaseChart, embedded bare inside this card; the
+          pair-chip / window / streak / px-vol controls go in its children
+          slot (rendered above the chart body in every state). */}
+      <BaseChart
+        variant="bare"
+        option={chartOption}
+        height={420}
+        loading={loading}
+        error={error}
+        emptyText={
+          selectedPair
+            ? `No data for ${selectedPair.pair_label} in this date range.`
+            : "No data"
+        }
+        onCanvasClick={handleCanvasClick}
+        onReady={(c) => {
+          maAiAskRef.current = c;
+        }}
+      >
       {/* Pair chips — Simple MA section (2 rows) + Exponential MA section
           (2 rows) + optional Trading Amt/MA row. Moved to the top of the
           card so the time slider can sit at the bottom. */}
@@ -960,52 +1101,7 @@ export function MaSpreadPanel({ code, name, secType, themeMode }: PanelProps) {
           )}
         </Box>
       )}
-
-      {!loading && !error && selectedPair && selectedPair.rows.length > 0 && (
-        <EChart
-          option={
-            amtPairSelected
-              ? buildAmtEnvelopeOption({
-                  pair: selectedPair,
-                  themeMode,
-                  ohlcMode,
-                  bollingerK,
-                  longStreaks,
-                  streakPeriod,
-                  streakPct,
-                  streakAnchorIdx: ohlcClickIdx,
-                  pxVolShade,
-                })
-              : buildPairOption({
-                  pair: selectedPair,
-                  themeMode,
-                  bollingerK,
-                  tradingAmtMode,
-                  hoveredIdx,
-                  ohlcMode,
-                  ohlcWindow,
-                  ohlcClickIdx,
-                  ohlcRows: chartData?.ohlc ?? null,
-                  longStreaks,
-                  streakPeriod,
-                  streakPct,
-                  streakAnchorIdx: ohlcClickIdx,
-                  pxVolShade,
-                })
-          }
-          height={420}
-          onEvents={chartEvents}
-          onCanvasClick={handleCanvasClick}
-        />
-      )}
-
-      {!loading && !error && selectedPair && selectedPair.rows.length === 0 && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 6 }}>
-          <Typography variant="caption" color="text.secondary">
-            No data for {selectedPair.pair_label} in this date range.
-          </Typography>
-        </Box>
-      )}
+      </BaseChart>
 
       {/* Latest-snapshot summary line for the selected pair. */}
       {!loading && !error && latestSummary && (

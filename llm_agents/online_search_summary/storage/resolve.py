@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from _common.build_commons import bulk_upsert_async
 
+from llm_agents.online_search_summary.core.citations import ref_number
 from llm_agents.online_search_summary.core.models import (
     SHANGHAI_TZ, SearchHit,
 )
@@ -72,6 +73,51 @@ class ResolvedRef:
                          else None),
             "via": self.via,
         }
+
+
+def build_ref_rows(
+    qa_id: int,
+    resolved: Sequence[ResolvedRef],
+    *,
+    cited: Sequence[str],
+    now: Optional[datetime.datetime] = None,
+) -> List[Dict[str, Any]]:
+    """text.llm_qa_refs rows for one stored Q&A — one per resolved article.
+
+    The table's PK is (qa_id, news_id): refs resolving to the same article
+    (two tags, one page) collapse onto a single row keyed by a
+    REPRESENTATIVE tag — the smallest tag the answer cites among the
+    group, else the smallest tag — and ``is_used`` marks whether any cited
+    tag hit the group. ``cited`` is the answer's own tag set
+    (extract_cited_refs); refs the summarizer never cited are kept too,
+    unused. ``now`` is the ref_time fallback (ref_time stays now() when
+    the response carried no date).
+    """
+    groups: Dict[int, List[ResolvedRef]] = {}
+    order: List[int] = []
+    for r in resolved:
+        if r.news_id not in groups:
+            groups[r.news_id] = []
+            order.append(r.news_id)
+        groups[r.news_id].append(r)
+    fallback = now or datetime.datetime.now(SHANGHAI_TZ)
+    wanted = set(cited)
+    rows: List[Dict[str, Any]] = []
+    for news_id in order:
+        group = groups[news_id]
+        used = [r for r in group if r.ref in wanted]
+        repr_ref = min(used or group, key=lambda r: ref_number(r.ref))
+        rows.append({
+            "qa_id": qa_id,
+            "ref": repr_ref.ref,
+            "ref_type": repr_ref.ref_type,
+            "news_id": news_id,
+            "is_used": bool(used),
+            "resolved_url": repr_ref.resolved_url,
+            "ref_time": repr_ref.ref_time or fallback,
+            "resolved_via": repr_ref.via,
+        })
+    return rows
 
 
 class RefResolver:

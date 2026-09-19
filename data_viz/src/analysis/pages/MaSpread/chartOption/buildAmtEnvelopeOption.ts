@@ -5,7 +5,8 @@
  * on the right y-axis (yuan), with the OHLC/price curve shown lowkey
  * (dimmed) on the left y-axis (price).
  */
-import { fmtNum, fmtPct, fmtYi } from "@/lib/series";
+import { fmtNum, fmtPct } from "@/lib/series";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import {
   MA5_COLOR,
   MA20_COLOR,
@@ -91,12 +92,6 @@ export interface BuildAmtEnvelopeOptionArgs {
     >;
     accent: string;
   } | null;
-}
-
-/** Format a yuan amount as 亿元 (100M yuan). */
-function fmtAmtYi(v: number | null | undefined, digits = 2): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return fmtYi(v, digits);
 }
 
 /** Build the ECharts option for the Amt Envelope chart. */
@@ -497,19 +492,16 @@ export function buildAmtEnvelopeOption({
     fmtPrice,
   );
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  // Shared preamble (transparent bg, animations off, themed fragments) via
+  // baseChartOption; the line-snap axisPointer replaces the common cross one
+  // and the React-element tooltip formatter overrides the default content.
+  return baseChartOption(themeMode, {
     grid,
     dataZoom: commonDataZoom(),
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "line", snap: true },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter,
-    },
+    }),
     legend: commonLegend(themeMode, { itemWidth: 12, itemHeight: 7, data: legendData }),
     xAxis: {
       type: "category",
@@ -552,5 +544,5 @@ export function buildAmtEnvelopeOption({
       },
     ],
     series: echartsSeries,
-  };
+  });
 }

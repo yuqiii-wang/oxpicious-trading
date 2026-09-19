@@ -43,15 +43,10 @@ GREEK_NAMES = ["delta", "gamma", "vega"]
 GREEK_SKEW_TYPES = [f"greek_{g}" for g in GREEK_NAMES]
 
 # No-tilt anchor of each greek_* metric (gap = skewness - neutral;
-# anchors the contrarian metrics, gap columns and the price rebase):
+# anchors the contrarian metrics and gap columns):
 #   greek_delta: 0.5 (balanced put/call directional book)
 #   greek_gamma / greek_vega: 0.0 (balanced call/put wings)
 GREEK_NEUTRAL = {"delta": 0.5, "gamma": 0.0, "vega": 0.0}
-
-# Price-space rebase scale for the greek_* skew metrics (correlation
-# basis + frontend display): skew_price = S * (1 + (skew - neutral) * k),
-# i.e. one full unit of tilt maps to ±10% of spot.
-GREEK_SKEW_PRICE_K = 0.10
 
 SKEW_TYPES = [SKEW_TYPE_MONEYNESS, SKEW_TYPE_IV_SMILE] + GREEK_SKEW_TYPES
 
@@ -89,11 +84,8 @@ SKEWNESS_DESCRIPTION = (
     "neutral (one-sided crowding, in [0,1]). Plus rolling windows "
     "(5/20/60 days): MA, STD, gap-from-neutral (skewness_MA − neutral; "
     "neutral = 1 for oi_moneyness/iv_smile, 0.5 for greek_delta, 0 for "
-    "greek_gamma/greek_vega), linear regression slope of gap, and "
-    "whole-period cumulative correlation with spot (and spot MA). "
-    "Price-space correlation basis: oi_moneyness/iv_smile use "
-    "underlying_close × skewness; greek_* use underlying_close × (1 + "
-    "(skewness − neutral) × 0.10). For open (non-matured) expiry groups, "
+    "greek_gamma/greek_vega) and linear regression slope of gap. "
+    "For open (non-matured) expiry groups, "
     "expiry_date is set to the mean of all expiry dates per (option_type, "
     "underlying_code). FK -> analysis.options_expiry_identity. Built by "
     "analyze.options."
@@ -110,9 +102,6 @@ SKEWNESS_RESULT_COLUMNS = [
     "gap_skewness_vs_spot_slope",
     "gap_skewness_vs_spot_ma5_slope", "gap_skewness_vs_spot_ma20_slope",
     "gap_skewness_vs_spot_ma60_slope",
-    "corr_skewness_ma5_vs_spot_ma5",
-    "corr_skewness_ma20_vs_spot_ma20",
-    "corr_skewness_ma60_vs_spot_ma60",
 ]
 
 SKEWNESS_NUMERIC_COLS = [
@@ -125,9 +114,6 @@ SKEWNESS_NUMERIC_COLS = [
     "gap_skewness_vs_spot_slope",
     "gap_skewness_vs_spot_ma5_slope", "gap_skewness_vs_spot_ma20_slope",
     "gap_skewness_vs_spot_ma60_slope",
-    "corr_skewness_ma5_vs_spot_ma5",
-    "corr_skewness_ma20_vs_spot_ma20",
-    "corr_skewness_ma60_vs_spot_ma60",
 ]
 
 SKEWNESS_WINDOWS = [5, 20, 60]
@@ -154,8 +140,11 @@ IV_SKEW_DESCRIPTION = (
     "iv_call25/iv_put25 (IV of OTM contract nearest |delta|=0.25), "
     "risk_reversal_25d = iv_call25 - iv_put25 (negative = puts richer = "
     "downside hedging demand), put_skew_25d = iv_put25 - atm_iv, "
-    "call_skew_25d = iv_call25 - atm_iv, smile_skewness (OI-weighted 3rd "
-    "standardized moment of IV across strikes). Rolling suite (5/20/60 days) "
+    "call_skew_25d = iv_call25 - atm_iv, iv_call10/iv_put10 (deeper "
+    "|delta|=0.10 wing; NULL where no near-target contract exists on the "
+    "strike grid), risk_reversal_10d = iv_call10 - iv_put10, "
+    "smile_skewness (OI-weighted 3rd standardized moment of IV across "
+    "strikes). Rolling suite (5/20/60 days) "
     "on risk_reversal_25d: MA, STD, full-history slopes, and expanding "
     "correlation with spot MA. For open (non-matured) expiry groups, "
     "expiry_date is collapsed to the mean of all expiry dates per "
@@ -167,6 +156,7 @@ IV_SKEW_RESULT_COLUMNS = [
     "date", "option_type", "underlying_code", "expiry_date",
     "atm_iv", "iv_call25", "iv_put25",
     "risk_reversal_25d", "put_skew_25d", "call_skew_25d",
+    "iv_call10", "iv_put10", "risk_reversal_10d",
     "smile_skewness",
     "rr25_ma5", "rr25_ma20", "rr25_ma60",
     "rr25_std5", "rr25_std20", "rr25_std60",
@@ -180,6 +170,7 @@ IV_SKEW_RESULT_COLUMNS = [
 IV_SKEW_NUMERIC_COLS = [
     "atm_iv", "iv_call25", "iv_put25",
     "risk_reversal_25d", "put_skew_25d", "call_skew_25d",
+    "iv_call10", "iv_put10", "risk_reversal_10d",
     "smile_skewness",
     "rr25_ma5", "rr25_ma20", "rr25_ma60",
     "rr25_std5", "rr25_std20", "rr25_std60",
@@ -258,6 +249,42 @@ WALLS_NUMERIC_COLS = [
 # Wall type constants
 WALL_TYPE_ZONE = "zone"
 WALL_TYPES = [WALL_TYPE_ZONE]
+
+# ---- Options volatility index table ---------------------------------------
+# Daily 30-day model-free implied-volatility index per underlying (CBOE VIX
+# methodology adapted to exchange settlement prices; see
+# docs/options_vol_smile_study.md). Date-granular (NOT expiry-granular) —
+# no FK to options_expiry_identity.
+VOL_INDEX_TABLE_NAME = "analysis.options_vol_index"
+VOL_INDEX_ANALYSIS_NAME = "options_vol_index"
+
+VOL_INDEX_PK_COLUMNS = ["underlying_code", "date"]
+
+# Target constant maturity (calendar days) of the index.
+VOL_INDEX_TARGET_DAYS = 30
+
+VOL_INDEX_DESCRIPTION = (
+    "Daily 30-day model-free implied-volatility index per underlying_code "
+    "(CBOE VIX methodology adapted to exchange settlement prices, r=0.02, "
+    "calendar-day T): per expiry sigma^2 = (2/T) * sum_i e^(rT) * "
+    "(dK_i/K_i^2) * Q(K_i) - (1/T) * (F/K0 - 1)^2 over the OTM strip (puts "
+    "below the forward, calls above, average of both at K0), F = S*exp(rT); "
+    "the two expiries bracketing 30 days are time-interpolated to a "
+    "constant-30-day variance, vol_index_30d = 100*sqrt(variance_30d) in "
+    "vol points. PK (underlying_code, date); no FK (date-granular)."
+)
+
+VOL_INDEX_RESULT_COLUMNS = [
+    "date", "underlying_code",
+    "near_expiry_date", "far_expiry_date",
+    "dte_near", "dte_far",
+    "var_near", "var_far", "variance_30d", "vol_index_30d",
+]
+
+VOL_INDEX_NUMERIC_COLS = [
+    "dte_near", "dte_far",
+    "var_near", "var_far", "variance_30d", "vol_index_30d",
+]
 
 # Zone lifecycle states (analysis.options_walls.state CHECK)
 WALL_STATE_ACTIVE = "ACTIVE"

@@ -1,6 +1,6 @@
 /**
  * Unified skew-over-time chart builder — renders a SharedSkewSpec from
- * EITHER data source (oi_moneyness / iv_smile) with the identical layout:
+ * EITHER data source (oi_moneyness / greek_*) with the identical layout:
  *
  *   • Underlying spot curve (solid blue) + selected-date mark
  *   • Mean (aggregate) skew curve in price space (thick dashed blue)
@@ -11,7 +11,12 @@
  *
  * Generalized from the OI-wtd moneyness skew chart (oiMoneynessOption.ts).
  */
-import { useStore } from "@/store/filters";
+import {
+  baseChartOption,
+  commonTooltip,
+  emptyChartOption,
+} from "@/shared/charts/base-chart";
+import type { ThemeMode } from "@/store/filters";
 import {
   axisColors,
   commonDataZoom,
@@ -28,27 +33,19 @@ import type { EChartsOption } from "echarts";
 
 export function buildSharedSkewOption(
   spec: SharedSkewSpec,
+  mode: ThemeMode,
   selectedDate: string,
   dataZoomStart?: number,
   dataZoomEnd?: number,
 ): EChartsOption {
-  const themeMode = useStore.getState().themeMode;
-  const c = axisColors(themeMode);
+  const c = axisColors(mode);
   const textColor = c.textColor;
   const splitColor = c.splitLineColor;
 
   const { points, chartTitle, meanSeriesName } = spec;
 
   if (points.length === 0) {
-    return {
-      backgroundColor: "transparent",
-      title: {
-        text: `${chartTitle}  [No data]`,
-        left: "center",
-        top: "center",
-        textStyle: { color: textColor, fontSize: 11, fontWeight: 400 },
-      },
-    };
+    return emptyChartOption(mode, `${chartTitle}  [No data]`);
   }
 
   const spotData = points.map((d) => [d.date, d.spot]);
@@ -310,17 +307,14 @@ export function buildSharedSkewOption(
     },
   ];
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(mode, {
     grid: commonGrid({ left: 56, right: 56, top: 36, bottom: 36 }),
     title: {
       text: chartTitle,
       left: "left",
       textStyle: { color: textColor, fontSize: 11, fontWeight: 600 },
     },
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(mode, {
       axisPointer: {
         type: "cross",
         snap: true,
@@ -338,18 +332,15 @@ export function buildSharedSkewOption(
           },
         },
       },
-      backgroundColor: c.tooltipBg,
-      borderColor: splitColor,
-      textStyle: { color: textColor, fontSize: 11 },
       formatter: makeSharedSkewTooltipFormatter(
         points,
         expiryColorMap,
       ),
-    },
+    }),
     // Legend centered: the top-right corner is reserved for the overlay
     // "Neutral Skew/Moneyness Days" toggle (absolute, top: 0, right: 8) —
     // a right-aligned legend would sit underneath it and the texts overlap.
-    legend: commonLegend(themeMode, {
+    legend: commonLegend(mode, {
       top: 14,
       left: "center",
       right: "auto",
@@ -390,5 +381,5 @@ export function buildSharedSkewOption(
       dataZoomEnd ?? 100,
     ),
     series,
-  };
+  });
 }

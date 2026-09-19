@@ -1,7 +1,7 @@
 """Configuration constants for live.sec_alloc_live_attribution.
 
 Live Allocation Attribution — per-5-min-tick member % change vs the
-previous trading day's close, weighted by the PREVIOUS trading day's
+PREVIOUS trading day's close, weighted by the PREVIOUS trading day's
 trading amount (liquidity weight).
 
 Single light table, appended every 5-min run:
@@ -23,6 +23,15 @@ Single light table, appended every 5-min run:
   weights from stats.cross_stats (computed at read time by the API
   service).
 
+Storage model (retention + on-demand backfill):
+  The table is a ROLLING CACHE, not an archive. Only the newest
+  RETENTION_DATES trading dates are kept; older dates are pruned. When a
+  consumer requests a date with no tick rows (selected on the UI date
+  picker), the API service invokes ``--mode compute --date D`` which
+  backfills that date from the base tables (weighted basis, fallback
+  fill) — bounded by the RAW intraday table's own retention
+  (stats.index_intraday_5min), NOT by this table's window.
+
 Sources:
   stats.sec_classification            — member universe + industry_id mapping
   stats.index_basic_stats             — prev-day close + trading_amount
@@ -35,6 +44,13 @@ TICK_TABLE: Final[str] = "live.sec_alloc_live_attribution"
 
 # Registration metadata for live.live_identity.
 PIPELINE_NAME: Final[str] = "sec_alloc_live_attribution"
+
+# live.live_identity row name used as the once-per-trading-day guard for
+# the retention prune in the 5-min LIVE mode (a plain PK probe — the
+# prune's unindexed date scan must not run on every tick). The row's
+# last_run_datetime::date is compared against the latest intraday date:
+# a NEW trading day triggers exactly one prune.
+PRUNE_IDENTITY_NAME: Final[str] = "sec_alloc_live_attribution_prune"
 PIPELINE_DESCRIPTION: Final[str] = (
     "Live per-5-min-tick member attribution under the live schema. Light "
     "per-tick rows (member + benchmark % vs prev-day close, GENERATED "
@@ -62,12 +78,14 @@ PIPELINE_DESCRIPTION: Final[str] = (
 SUPPORTED_SEC_TYPES: Final[tuple[str, ...]] = ("index",)
 
 # Retention window in TRADING DATES: rows older than the Nth-newest
-# distinct intraday date are deleted from the tick table by the prune step
-# in ref/all modes (once per day — never in the 5-min live mode, where the
-# unindexed date scan would run on every tick). The pipeline is strictly
-# latest-date-scoped (all finder queries resolve MAX(date) of the intraday
-# source), so pruned history is never recomputed.
-RETENTION_DATES: Final[int] = 5
+# distinct intraday date are deleted from the tick table by the prune
+# step. The prune runs in ref/all modes (once per run) and in the 5-min
+# LIVE mode guarded to once per NEW trading day via the PRUNE_IDENTITY_NAME
+# live_identity row (so the unindexed date scan never runs on every tick).
+# Dates that fall out of the window are NOT lost: the API service
+# re-backfills any selected date on demand via ``--mode compute`` (bounded
+# by the raw intraday table's own retention).
+RETENTION_DATES: Final[int] = 20
 
 # BENCHMARK UNIVERSE — curated broad-market tags only. The Market
 # Movements page (the only consumer) resolves its benchmark dropdown from
@@ -87,7 +105,7 @@ CURATED_BENCHMARK_FILTER: Final[str] = (
 TICK_CLASS_TYPES: Final[tuple[str, ...]] = ("index", "etf")
 
 # PG advisory-lock keys for single-instance coordination — ONE PER PROCESS
-# (the pipeline is split into two independent processes):
+# (the pipeline is split into three independent processes):
 #
 #   • ADVISORY_LOCK_KEY (LIVE ticks process, --mode live): the 5-min
 #     auto-refresh equal-weight path. A second concurrent instance simply
@@ -96,8 +114,14 @@ TICK_CLASS_TYPES: Final[tuple[str, ...]] = ("index", "etf")
 #     daily-close-basis weighted tick upgrades, triggered manually from the
 #     Market Movements UI button. Waits (bounded) for the lock instead of
 #     skipping.
+#   • COMPUTE_ADVISORY_LOCK_KEY (--mode compute): the on-demand backfill of
+#     a SELECTED date, invoked by the API service when a requested date has
+#     no tick rows. Bounded wait (the work is idempotent — aborting a
+#     duplicate run is safe; the request-path tag dedupe usually prevents
+#     the race entirely).
 ADVISORY_LOCK_KEY: Final[int] = 482311001  # arbitrary stable constant
 REF_ADVISORY_LOCK_KEY: Final[int] = 482311002  # arbitrary stable constant
+COMPUTE_ADVISORY_LOCK_KEY: Final[int] = 482311003  # arbitrary stable constant
 
 # Broad-market industry_ids excluded from the member universe (they are
 # benchmarks, not industries).

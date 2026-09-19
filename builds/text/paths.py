@@ -28,6 +28,10 @@ PBOC_OMA_NEWS_DIR = os.path.join(PROJECT_ROOT, "temps", "pboc_oma_news")
 # zhihu — one JSON per (keyword, target_date), items inside
 ZHIHU_NEWS_DIR = os.path.join(PROJECT_ROOT, "temps", "zhihu_news")
 
+# ai daily — one JSON per target biz date (answer + search references +
+# embedded movers envelope) plus the per-plan *_movers.json envelopes
+AI_DAILY_DIR = os.path.join(PROJECT_ROOT, "temps", "ai_daily")
+
 # Canonical SEC classification inputs used by keywords.py
 SEC_CLASSIFICATION_JSON = os.path.join(
     PROJECT_ROOT, "_common", "sec_statics", "sec_classification.json")

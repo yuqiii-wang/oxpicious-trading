@@ -54,11 +54,6 @@ CREATE TABLE IF NOT EXISTS stats.index_basic_stats (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'index_basic_stats', 8);
 
--- Idempotent migration: add is_ohl_estimated to pre-existing tables.
-ALTER TABLE stats.index_basic_stats
-    ADD COLUMN IF NOT EXISTS is_ohl_estimated BOOLEAN NOT NULL DEFAULT FALSE;
-
-
 COMMENT ON TABLE  stats.index_basic_stats                    IS 'Index daily OHLCV + trading_shares + trading_amount + change metrics.';
 COMMENT ON COLUMN stats.index_basic_stats.trading_shares             IS 'Index trading volume in shares (交易量).';
 COMMENT ON COLUMN stats.index_basic_stats.trading_amount     IS 'Index trading turnover (成交金额, yuan). Source CSV column 成交金额(亿元) is multiplied by 1e8 to convert to yuan.';
@@ -119,11 +114,6 @@ CREATE TABLE IF NOT EXISTS stats.index_tech_stats (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'index_tech_stats', 8);
 
--- Idempotent migration: add the intraday net-move liquidity ratio to
--- pre-existing tables (no-op on fresh installs).
-ALTER TABLE stats.index_tech_stats
-    ADD COLUMN IF NOT EXISTS trading_amt_per_pct_change NUMERIC(18,6);
-
 COMMENT ON TABLE  stats.index_tech_stats                    IS 'Index technical indicators (moving averages + EMAs).';
 COMMENT ON COLUMN stats.index_tech_stats.ma5               IS '5-day moving average of close.';
 COMMENT ON COLUMN stats.index_tech_stats.ma5_ratio         IS 'Close / MA5 - 1 (ratio of price to 5-day MA).';
@@ -172,7 +162,6 @@ COMMENT ON COLUMN stats.index_intraday_5min.change             IS 'Absolute chan
 COMMENT ON COLUMN stats.index_intraday_5min.change_pct         IS 'Percentage change from the bar''s open (%).';
 
 -- Indexes
-DROP INDEX IF EXISTS stats.idx_index_baseline_code_date;
 
 -- (a) Per-code lookups (latest first); INCLUDE (name) lets the
 --     Index Only Scan return the name without heap fetches.
@@ -185,12 +174,8 @@ CREATE INDEX IF NOT EXISTS idx_index_identity_code_date
 CREATE INDEX IF NOT EXISTS idx_index_identity_date
     ON stats.index_identity (date);
 
--- Legacy (code, date) secondary indexes are now redundant with the
--- code-first PK — drop them and add date-first indexes instead.
-DROP INDEX IF EXISTS stats.idx_index_basic_stats_code_date;
-DROP INDEX IF EXISTS stats.idx_index_valuation_code_date;
-DROP INDEX IF EXISTS stats.idx_index_tech_stats_code_date;
-DROP INDEX IF EXISTS stats.idx_index_intraday_5min_code_date_time;
+-- The legacy (code, date) secondary indexes are superseded by the
+-- code-first PK; the date-first indexes below keep cross-code scans cheap.
 
 CREATE INDEX IF NOT EXISTS idx_index_basic_stats_date
     ON stats.index_basic_stats (date);

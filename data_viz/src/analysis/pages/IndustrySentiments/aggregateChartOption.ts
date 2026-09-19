@@ -16,6 +16,7 @@ import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import type { IndustrySentimentsChartResponse } from "@shared/types";
 import { axisColors, commonLegend, commonGrid } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
 import type { PoolSize, PerIndustryAggregation } from "./types";
 import { MEAN_PALETTE, POOL_COLORS } from "./constants";
@@ -99,9 +100,7 @@ export function buildAggregateChartOption(
     });
   }
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 56, right: 24, bottom: 32 }),
     legend: commonLegend(themeMode, {
       data: series.map((s) => s.name as string),
@@ -109,12 +108,10 @@ export function buildAggregateChartOption(
     axisPointer: {
       link: [{ xAxisIndex: "all" }],
     },
-    tooltip: {
-      trigger: "axis",
+    // Old hand-rolled tooltip used a plain snapping LINE pointer (no
+    // crossStyle) — override the default axisPointer to keep it.
+    tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "line", snap: true },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           dataIndex?: number;
@@ -157,7 +154,7 @@ export function buildAggregateChartOption(
           React.createElement("div", { style: { marginTop: 4 } }, ...rowElements)
         ));
       },
-    },
+    }),
     xAxis: {
       type: "category",
       data: visibleDates,
@@ -182,5 +179,5 @@ export function buildAggregateChartOption(
       splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
     },
     series,
-  };
+  });
 }

@@ -32,16 +32,23 @@
  *         ticked season plus its changes (consecutive Δ + Total Δ).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Box, Chip, CircularProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, Chip, Stack, Typography } from "@mui/material";
 import { BarChart as BarChartIcon } from "@mui/icons-material";
 import ChartCard from "@/components/ChartCard";
 import RefreshButton from "@/components/RefreshButton";
 import CompositionPieChart from "@/components/CompositionPieChart";
 import QuarterlyChangesTable from "./QuarterlyChangesTable";
-import EChart from "@/components/EChart";
-import { useStore } from "@/store/filters";
+import {
+  BaseChart,
+  baseChartOption,
+  commonTooltip,
+  useChartThemeMode,
+} from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ECharts } from "echarts";
 import { fetchQuarterlyComposition, invalidateCacheForUrl } from "@/lib/api-client";
-import { axisColors, expiryBlueColor } from "@/theme/chart-palette";
+import { axisColors, commonGrid, expiryBlueColor } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import type {
   QuarterlyCompositionResponse,
@@ -71,7 +78,7 @@ interface Props {
 }
 
 export default function QuarterlyCompositionBars({ code, name }: Props) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const [data, setData] = useState<QuarterlyCompositionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -275,11 +282,8 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
       tooltip: { show: false },
     } satisfies CustomSeriesOption);
 
-    return {
-      backgroundColor: "transparent",
-      animation: false,
-      tooltip: {
-        trigger: "axis",
+    return baseChartOption(themeMode, {
+      tooltip: commonTooltip(themeMode, {
         axisPointer: { type: "shadow" },
         formatter: (params: unknown) => {
           const list = params as Array<{ name?: string; marker?: string; seriesName?: string; value?: number }>;
@@ -333,11 +337,8 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
             `<div style="opacity:0.6;margin-top:4px">Click the bar to tick/untick — 1 tick = pie · 2+ ticks = compare</div>`
           );
         },
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
         confine: true,
-      },
+      }),
       legend: {
         type: "scroll",
         // Pin legend entries to the industry series — keeps the ✓-badge
@@ -352,7 +353,7 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
         pageIconColor: c.textColor,
         pageTextStyle: { color: c.textColor },
       },
-      grid: { left: 40, right: 12, top: 46, bottom: 30 },
+      grid: commonGrid({ left: 40, right: 12, top: 46, bottom: 30 }),
       xAxis: {
         type: "category",
         data: labels,
@@ -372,7 +373,7 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
         splitLine: { lineStyle: { color: c.splitLineColor } },
       },
       series,
-    };
+    });
   }, [quarters, normPctByIndustry, colorByIndustry, themeMode, tickedSet, anyTicked]);
 
   // Bar click → toggle that quarter's TICK (any segment of the stacked bar
@@ -406,10 +407,54 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
       (data?.source === "index" ? " · via tracking index" : "")
     : "No composition snapshots";
 
+  // ---- AI Ask — wire the OUTER card (the chart body is a bare BaseChart).
+  // Series names are the industries (dynamic) — semantics travel via notes.
+  const barsAiAskRef = useRef<ECharts | null>(null);
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Quarterly holdings composition of ${code}${name ? ` (${name})` : ""} by industry: one ` +
+        "100% stacked bar per quarter (every bar sums to exactly 100 — each segment is " +
+        "the industry's weight normalized to % of that quarter's total composition). " +
+        "One series/color per industry on a weight-ordered blue ramp (darkest blue = " +
+        "highest weight in the latest quarter), so an industry keeps its color across " +
+        "quarters. Click a bar to tick it — exactly 1 tick shows that quarter's " +
+        "composition pie below, 2+ ticks show the quarter-over-quarter changes table.",
+      instruments: [{ code, name, assetClass: "etf" }],
+      state: {
+        ticked_quarters: tickedIdxs.map((i) => quarters[i]?.quarter).filter(Boolean).join(", ") || "none",
+        panel_below:
+          tickedIdxs.length === 1
+            ? `composition pie (${quarters[tickedIdxs[0]]?.quarter ?? "—"})`
+            : tickedIdxs.length >= 2
+              ? "quarter-over-quarter changes table"
+              : "none",
+      },
+      notes: [
+        "Each stacked segment = industry weight / quarter total × 100; quarters without a snapshot are absent (no carry-forward in the bars — the tooltip carry-forwards the last available pct).",
+        "Colors are assigned by weight in the LATEST quarter (desc), then max weight across quarters.",
+        ...(data?.source === "index" && data.index_source
+          ? [
+              `The ETF itself has no holdings snapshots — composition comes from its tracking index ${data.index_source.code} (${data.index_source.name || "—"}).`,
+            ]
+          : []),
+      ],
+    }),
+    [code, name, tickedIdxs, quarters, data],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: `${code}${name ? ` · ${name}` : ""} — Quarterly Holdings by Industry`,
+    subtitle: `${subtitle} · every bar = 100% of composition`,
+    option: quarters.length > 0 ? option : null,
+    spec: quarters.length > 0 ? aiAskSpec : null,
+    getInstance: () => barsAiAskRef.current,
+  });
+
   return (
     <ChartCard
       title={`${code}${name ? ` · ${name}` : ""} — Quarterly Holdings by Industry`}
       subtitle={`${subtitle} · every bar = 100% of composition · tick bars: 1 = pie, 2+ = compare`}
+      titleAddon={aiAskAddon}
       action={
         <RefreshButton
           onClick={handleRefresh}
@@ -419,67 +464,54 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
         />
       }
     >
-      {loading && (
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 4 }} justifyContent="center">
-          <CircularProgress size={20} />
-          <Typography variant="caption" color="text.secondary">
-            Loading quarterly composition…
-          </Typography>
-        </Stack>
-      )}
-      {error && (
-        <Alert severity="error" sx={{ py: 0.5 }}>
-          Failed to load quarterly composition: {error}
-        </Alert>
-      )}
-      {!loading && !error && quarters.length === 0 && (
-        <Alert severity="warning" icon={false}>
-          No composition snapshots for {code} — neither direct ETF holdings nor a
-          usable tracking-index composition exists in stats.sec_composition.
-        </Alert>
-      )}
-      {!loading && !error && quarters.length > 0 && (
-        <>
-          {data?.source === "index" && data.index_source && (
-            <Alert severity="info" sx={{ py: 0.25, mb: 0.5 }} icon={false}>
-              This ETF has no direct holdings snapshots — showing the
-              composition of its tracking index{" "}
-              <b>{data.index_source.code}</b> ({data.index_source.name || "—"}).
-            </Alert>
-          )}
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }} flexWrap="wrap" useFlexGap>
-            <Chip
-              icon={<BarChartIcon />}
-              label="100% stacked · per quarter"
-              size="small"
-              variant="outlined"
-              sx={{ fontSize: "0.65rem", height: 20 }}
-            />
-            <Chip
-              label="colors = blue ramp · dark = highest weight"
-              size="small"
-              variant="outlined"
-              sx={{ fontSize: "0.65rem", height: 20 }}
-            />
-            {anyTicked && (
-              <Chip
-                label={`${tickedIdxs.length} ticked · ${
-                  tickedIdxs.length === 1 ? "pie" : "changes table"
-                }`}
-                size="small"
-                color="primary"
-                variant="outlined"
-                onDelete={() => setTickedIdxs([])}
-                sx={{ fontSize: "0.65rem", height: 20 }}
-              />
-            )}
-          </Stack>
-          <EChart
-            option={option}
-            height={360}
-            onEvents={{ click: handleBarClick }}
+      <BaseChart
+        variant="bare"
+        option={quarters.length > 0 ? option : null}
+        loading={loading}
+        error={error ? `Failed to load quarterly composition: ${error}` : null}
+        emptyText={`No composition snapshots for ${code} — neither direct ETF holdings nor a usable tracking-index composition exists in stats.sec_composition.`}
+        height={360}
+        onEvents={{ click: handleBarClick }}
+        onReady={(c) => {
+          barsAiAskRef.current = c;
+        }}
+      >
+        {data?.source === "index" && data.index_source && (
+          <Alert severity="info" sx={{ py: 0.25, mb: 0.5 }} icon={false}>
+            This ETF has no direct holdings snapshots — showing the
+            composition of its tracking index{" "}
+            <b>{data.index_source.code}</b> ({data.index_source.name || "—"}).
+          </Alert>
+        )}
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }} flexWrap="wrap" useFlexGap>
+          <Chip
+            icon={<BarChartIcon />}
+            label="100% stacked · per quarter"
+            size="small"
+            variant="outlined"
+            sx={{ fontSize: "0.65rem", height: 20 }}
           />
-          {selectedQuarter && (
+          <Chip
+            label="colors = blue ramp · dark = highest weight"
+            size="small"
+            variant="outlined"
+            sx={{ fontSize: "0.65rem", height: 20 }}
+          />
+          {anyTicked && (
+            <Chip
+              label={`${tickedIdxs.length} ticked · ${
+                tickedIdxs.length === 1 ? "pie" : "changes table"
+              }`}
+              size="small"
+              color="primary"
+              variant="outlined"
+              onDelete={() => setTickedIdxs([])}
+              sx={{ fontSize: "0.65rem", height: 20 }}
+            />
+          )}
+        </Stack>
+      </BaseChart>
+      {selectedQuarter && (
             <Box sx={{ mt: 2 }}>
               <Typography
                 variant="caption"
@@ -537,8 +569,6 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
               />
             </Box>
           )}
-        </>
-      )}
     </ChartCard>
   );
 }

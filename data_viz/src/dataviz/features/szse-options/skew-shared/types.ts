@@ -4,13 +4,6 @@
  *
  *   • 'oi_moneyness' — OI-weighted mean moneyness (strike/spot), a
  *     POSITIONING metric. Skew price = S × E[M], Δ% = (E[M] − 1) × 100.
- *   • 'iv_smile'     — 25Δ risk reversal (iv_call25 − iv_put25, vol pts)
- *     per expiry group, a PRICING metric. Rebased for display:
- *     S × (1 + rr25 × 0.5%), so rr25 = 0 sits exactly on the spot curve.
- *   • 'smile_slope'  — full-smile OI-weighted least-squares IV tilt per
- *     expiry group (same PRICING family): the fitted IV difference
- *     between the +10% and −10% log-moneyness wings, in vol pts. Same
- *     rebase as iv_smile: S × (1 + tilt × 0.5%).
  *   • 'greek_delta'  — delta-weighted put/call OI ratio dpcr (whole
  *     chain, neutral 0.5 = balanced directional book; the delta-weighted
  *     refinement of the plain put/call ratio). PAIR-level CALL-vs-PUT
@@ -26,11 +19,16 @@
  * tilt maps to ±10% of price. theta/rho have no industry-standard
  * positioning skew and are not computed.
  *
- * Adapters in skewSpec.ts / ivSmileCompute.ts / greekSpec.ts produce
- * SharedSkewSpec from each source; sharedSkewOption.ts renders it
- * identically (spot + per-expiry thin lines + expiry shade bands + mean
- * skew curve + expiry closing lines).
+ * (The IV-smile pricing skew — 25Δ/10Δ risk reversal vs spot over
+ * time — lives in spot-skew/, not here; see
+ * docs/options_vol_smile_study.md.)
+ *
+ * Adapters in skewSpec.ts / greekSpec.ts produce SharedSkewSpec from
+ * each source; sharedSkewOption.ts renders it identically (spot +
+ * per-expiry thin lines + expiry shade bands + mean skew curve + expiry
+ * closing lines).
  */
+import type { OtmOiShare } from "../vol-smile/types";
 
 /** DB-driven greek skew modes (skew_type = 'greek_<name>'). */
 export type GreekSkewMode =
@@ -48,11 +46,7 @@ export const GREEK_NEUTRAL: Record<GreekSkewMode, number> = {
 /** Price-space rebase scale: 1 unit of (skew − neutral) = ±10% of spot. */
 export const GREEK_SKEW_PRICE_K = 0.1;
 
-export type SharedSkewMode =
-  | "oi_moneyness"
-  | "iv_smile"
-  | "smile_slope"
-  | GreekSkewMode;
+export type SharedSkewMode = "oi_moneyness" | GreekSkewMode;
 
 /** True when the mode is one of the DB-driven greek_* skew types. */
 export function isGreekSkewMode(mode: SharedSkewMode): mode is GreekSkewMode {
@@ -70,6 +64,12 @@ export interface SharedSkewPerExpiry {
   rawSkew: number | null;
   /** Deviation from neutral in percent (mode-specific scaling). */
   skewPct: number | null;
+  /**
+   * Share of the group's OI that would expire worthless at the date's
+   * close (oi_moneyness only — raw-quote derived; greek_* adapters have
+   * no per-contract OI, so it stays undefined there).
+   */
+  otmShare?: OtmOiShare | null;
 }
 
 export interface SharedSkewPoint {

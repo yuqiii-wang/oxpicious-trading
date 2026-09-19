@@ -107,46 +107,9 @@ SELECT public.create_hash_partitions('analysis', 'futures_ext', 8);
 --   2. Per-underlying cross-sectional scan (all contracts of a product).
 -- idx_futures_ext_code_date (code, date) dropped:
 -- identical to the code-first PK, which already serves per-contract lookups.
-DROP INDEX IF EXISTS analysis.idx_futures_ext_code_date;
 
 CREATE INDEX IF NOT EXISTS idx_futures_ext_underlying_date
     ON analysis.futures_ext (underlying_code, date);
-
--- ----------------------------------------------------------------------------
---  Migration: stats.futures_ext -> analysis.futures_ext on existing installs.
---  Idempotent (moves the table only when it still lives in stats; preserves
---  data, PK, FK, and indexes). Fresh installs create the table directly in
---  analysis via the CREATE TABLE above, so this DO block is a no-op.
--- ----------------------------------------------------------------------------
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'stats' AND table_name = 'futures_ext'
-    ) AND NOT EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'analysis' AND table_name = 'futures_ext'
-    ) THEN
-        ALTER TABLE stats.futures_ext SET SCHEMA analysis;
-    END IF;
-END $$;
-
--- ----------------------------------------------------------------------------
---  Migration: add gap_max_* columns to existing installs.
---  Idempotent (fresh installs get the columns from CREATE TABLE above).
---  Back-filled by re-running the Python populator with --force.
--- ----------------------------------------------------------------------------
-ALTER TABLE analysis.futures_ext
-    ADD COLUMN IF NOT EXISTS gap_max_price_vs_underlying_over_20days NUMERIC(18,4),
-    ADD COLUMN IF NOT EXISTS gap_max_price_vs_underlying_over_60days NUMERIC(18,4);
-
--- ----------------------------------------------------------------------------
---  Migration: add rolling AR(1) of the basis (slope + half-life).
---  Idempotent; back-filled by re-running the Python populator with --force.
--- ----------------------------------------------------------------------------
-ALTER TABLE analysis.futures_ext
-    ADD COLUMN IF NOT EXISTS gap_ar1_slope_over_60days     NUMERIC(18,4),
-    ADD COLUMN IF NOT EXISTS gap_half_life_over_60days     NUMERIC(18,4);
 
 COMMENT ON TABLE  analysis.futures_ext                          IS 'Futures basis and correlation analysis. One row per (code, date) comparing futures price against underlying (index close for index futures, treasury yield-derived bond price for bond futures). gap_price_vs_underlying = (futures_close - underlying_price) / underlying_price (basis). gap_changing_rate = day-over-day change in the basis (1st-order derivative: negative = converging, positive = diverging). corr = 20-day rolling correlation. gap_max_price_vs_underlying_over_Ndays = rolling maximum of the basis over N trailing trading days per contract. gap_ar1_slope_over_60days / gap_half_life_over_60days = rolling AR(1) of the basis over 60 days (slope < 1 = mean-reverting toward the underlying; half-life in trading days). Built by analyze.futures; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.futures_ext.date                     IS 'Trading date.';

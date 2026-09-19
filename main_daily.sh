@@ -24,6 +24,12 @@ do
   python -m "$m"
 done
 
+# The daily AI market summary is ARTIFACT-ONLY (temps/ai_daily/*.json):
+# the downloader never touches the DB. builds.text below (source
+# ai_daily) loads the artifacts into the text.* tables the UI reads —
+# answers + reference hits into text.news, the Q&A into text.llm_qa
+# (+ llm_qa_refs / news-group provenance).
+
 # download, run on every biz date 19:00 (cont.)
 for m in \
   downloads.index.csindex.quote
@@ -43,15 +49,10 @@ done
 # analysis.industry_etf_contribution (Industry Sentiments ETF chart).
 # builds.industry (stats.industry_basic_stats) must run AFTER builds.index —
 # it aggregates index baseline OHLC across member indices per industry.
-# builds.cross_stats (stats.cross_stats pair + industry grain) must run
-# AFTER builds.index (composition shared weights + index_exts ETF amounts)
-# and builds.stock (stock liquidity feeds the industry-grain trading-amount
-# split); it is the producer that analyze.industry_sentiments' attributions
-# + etf_contribution aggregations read from — its incremental run here makes
-# the analyze step's internal producer a no-op.
-# builds.text loads the downloaded news text (downloads.macro.*.news above)
-# into text.news + text.news_keywords — idempotent upserts, so it is safe
-# on every run even before the first news download.
+# The stats.sec_board_map board tag slices are refreshed INSIDE each
+# build's own pipeline (no standalone build): builds.stock writes the
+# stock rows, builds.etf the ETF mixes, builds.index the index mixes —
+# each reads the data its own run just wrote.
 for m in \
   builds.stock \
   builds.etf \
@@ -79,9 +80,10 @@ done
 # analysis.mov_ave_rsi + analysis.mov_ave_spreads_detail (mov_ave_spread
 # above) + stats.*_tech_stats, so it must run after mov_ave_spread; it is
 # incremental at completed-month granularity (no-ops until a new month
-# closes). analysis_signals reads the forecast buckets (QRp_P90 gate) +
-# the same mov_ave inputs, so it must run after analysis_forecasts; it is
-# also incremental at month granularity. analysis_composites reads
+# closes). analysis_signals reads the forecast buckets (the plain
+# forecast-results rule: mixed-row mean reversal > 1% + reverse P > 1%)
+# + the same mov_ave inputs, so it must run after analysis_forecasts; it
+# is also incremental at month granularity. analysis_composites reads
 # stats.industry_basic_stats + stats.index_basic_stats (builds.industry /
 # builds.index above), so it runs after those; incremental at window-end
 # granularity (opposite industry correlations by benchmark offset).

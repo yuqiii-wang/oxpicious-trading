@@ -3,6 +3,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { EChartsOption } from "echarts";
 import {
+  baseChartOption,
+  commonTooltip,
+} from "@/shared/charts/base-chart";
+import type { ThemeMode } from "@/store/filters";
+import {
   FUTURES_SPOT,
   FUTURES_GREY_DARK,
   FUTURES_EXPIRY_DOT,
@@ -44,6 +49,7 @@ import {
  * history mode.
  */
 export function buildFuturesChartOption(
+  mode: ThemeMode,
   data: FuturesCombinedResponse,
   viewMode: ViewMode,
   zoomRange?: ZoomRange,
@@ -185,17 +191,18 @@ export function buildFuturesChartOption(
   let tooltipEl: HTMLDivElement | null = null;
   let tooltipRoot: Root | null = null;
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(mode, {
+    // No legend: contract codes are read from the per-date hover tooltip.
+    legend: null,
     grid: {
       left: 60,
       right: 24,
       top: 24,
       bottom: 60,
     },
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(mode, {
+      // Line (not cross) pointer + transparent chrome — the FuturesTooltip
+      // React card rendered by the formatter below draws its own frame.
       axisPointer: { type: "line", lineStyle: { color: AXIS_POINTER_LINE, type: "dashed" } },
       confine: true,
       backgroundColor: "transparent",
@@ -254,7 +261,7 @@ export function buildFuturesChartOption(
         });
         return tooltipEl;
       },
-    },
+    }),
     xAxis: {
       type: "category",
       data: dates,
@@ -290,5 +297,5 @@ export function buildFuturesChartOption(
       },
     ],
     series,
-  };
+  });
 }

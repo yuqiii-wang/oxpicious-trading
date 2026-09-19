@@ -15,8 +15,10 @@ SEC_TYPE_IDENTITY_TABLE = {
 
 # ---- Monthly snapshot grid -------------------------------------------------
 
-# "5 y period, incremental monthly": one snapshot per completed month-end,
-# by default the last 60 completed months (~5 years of monthly snapshots),
+# "5 y period, incremental monthly": one snapshot per completed month-end
+# PLUS the running (partial) month — keyed at its month-end but computed
+# only up to the latest available data date — by default the last 60
+# completed months + the running month (~5 years of monthly snapshots),
 # each computed over a trailing 5-year window.
 N_MONTHS = 60
 WINDOW_YEARS = 5
@@ -29,9 +31,11 @@ WINDOW_YEARS = 5
 # but requires a --force rebuild (rows are not re-keyed by lookback).
 LOOKBACK_PERIOD = f"{WINDOW_YEARS}y"
 
-# The most recent completed months refreshed on EVERY run (incremental
-# or force): a month written right after month-end carries permanently
-# truncated 20d/60d occurrence counts (its forward windows were not
+# The trailing specs refreshed on EVERY run (incremental or force): the
+# RUNNING month (always the newest spec — its forward data grows daily,
+# so it is deleted + recomputed every run) plus the last 4 COMPLETED
+# months (a month written right after month-end carries permanently
+# truncated 20d/60d occurrence counts — its forward windows were not
 # complete yet at write time). 4 calendar months > 60 trading days, so
 # after a refresh every 60d forward window is full.
-REFRESH_MONTHS = 4
+REFRESH_MONTHS = 5

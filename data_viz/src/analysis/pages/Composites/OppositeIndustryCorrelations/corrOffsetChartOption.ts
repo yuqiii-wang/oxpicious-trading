@@ -6,6 +6,8 @@
  */
 import React from "react";
 import type { EChartsOption } from "echarts";
+import { baseChartOption } from "@/shared/charts/base-chart";
+import type { ThemeMode } from "@/store/filters";
 import {
   MUTED_PALETTE,
   axisColors,
@@ -20,13 +22,12 @@ import type { CorrWindow, OffsetMetric } from "./constants";
 
 export function buildCorrOffsetChartOption(
   data: IndustryCorrOffsetsResponse,
-  /** "light" | "dark" — same shape axisColors/commonLegend accept. */
-  themeMode: Parameters<typeof axisColors>[0],
+  mode: ThemeMode,
   metric: OffsetMetric,
   win: CorrWindow,
 ): EChartsOption | null {
   if (data.offsets.length === 0) return null;
-  const c = axisColors(themeMode);
+  const c = axisColors(mode);
 
   const byPair = new Map<string, IndustryCorrOffsetRow[]>();
   const pairKeys = new Set<string>();
@@ -62,11 +63,13 @@ export function buildCorrOffsetChartOption(
   });
 
   const isScore = metric === "score";
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  // The tooltip is a plain themed card WITHOUT an axisPointer, so it is
+  // passed as an explicit override rather than commonTooltip(mode, …) —
+  // the kit default would introduce a cross+snap pointer this chart never
+  // had, changing the hover interaction.
+  return baseChartOption(mode, {
     grid: commonGrid({ left: 56, right: 24, bottom: 32 }),
-    legend: commonLegend(themeMode, {
+    legend: commonLegend(mode, {
       data: series.map((s) => s.name as string),
     }),
     tooltip: {
@@ -152,5 +155,5 @@ export function buildCorrOffsetChartOption(
       splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
     },
     series,
-  };
+  });
 }

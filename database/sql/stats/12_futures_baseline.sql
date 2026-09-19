@@ -101,41 +101,8 @@ COMMENT ON COLUMN stats.futures_basic_stats.open_interest IS 'Open interest at e
 COMMENT ON COLUMN stats.futures_basic_stats.open_interest_change IS 'Change in open interest vs previous day (持仓变化).';
 COMMENT ON COLUMN stats.futures_basic_stats.delta         IS 'Delta (always NULL for futures — CFFEX reports "--" which maps to NULL).';
 
--- ----------------------------------------------------------------------------
--- Migration: add underlying_code / underlying_name to existing databases
--- (safe to re-run — uses DO block to check column existence)
--- ----------------------------------------------------------------------------
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'futures_identity' AND column_name = 'underlying_code'
-    ) THEN
-        ALTER TABLE stats.futures_identity ADD COLUMN underlying_code TEXT NOT NULL DEFAULT '';
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'futures_identity' AND column_name = 'underlying_name'
-    ) THEN
-        ALTER TABLE stats.futures_identity ADD COLUMN underlying_name TEXT NOT NULL DEFAULT '';
-    END IF;
-END $$;
-
 COMMENT ON COLUMN stats.futures_identity.underlying_code IS 'Underlying asset code: index futures map to ETF/index codes (e.g. IF→000300 for CSI300); bond futures use synthetic codes (e.g. T→T10 for 10Y Treasury).';
 COMMENT ON COLUMN stats.futures_identity.underlying_name IS 'Underlying asset name matching underlying_code (e.g. "沪深300" for 000300, "10年期国债" for T10).';
-
--- ----------------------------------------------------------------------------
--- Migration: add days_to_expiry to existing databases
--- ----------------------------------------------------------------------------
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats' AND table_name = 'futures_identity' AND column_name = 'days_to_expiry'
-    ) THEN
-        ALTER TABLE stats.futures_identity ADD COLUMN days_to_expiry INTEGER NOT NULL DEFAULT 0;
-    END IF;
-END $$;
 
 COMMENT ON COLUMN stats.futures_identity.days_to_expiry IS 'Calendar days from the trading date to the futures expiry date. Index futures (IC/IF/IH/IM) expire on the 3rd Friday; bond futures (T/TF/TL/TS) expire on the 2nd Friday of the contract month.';
 
@@ -144,8 +111,6 @@ COMMENT ON COLUMN stats.futures_identity.days_to_expiry IS 'Calendar days from t
 --   Legacy (code, date) index is redundant with the code-first PK — replaced
 --   by a date-first index.
 -- ----------------------------------------------------------------------------
-
-DROP INDEX IF EXISTS stats.idx_futures_identity_code_date;
 
 CREATE INDEX IF NOT EXISTS idx_futures_identity_date
     ON stats.futures_identity (date);
@@ -162,8 +127,6 @@ CREATE INDEX IF NOT EXISTS idx_futures_identity_underlying_date
 -- ----------------------------------------------------------------------------
 -- Indexes for futures_basic_stats
 -- ----------------------------------------------------------------------------
-
-DROP INDEX IF EXISTS stats.idx_futures_basic_stats_code_date;
 
 CREATE INDEX IF NOT EXISTS idx_futures_basic_stats_date
     ON stats.futures_basic_stats (date);

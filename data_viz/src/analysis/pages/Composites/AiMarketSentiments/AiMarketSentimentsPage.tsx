@@ -92,7 +92,6 @@ import {
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import { useStore } from "@/store/filters";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
 import { BenchmarkPriceChart } from "@/analysis/pages/IndustrySentiments/BenchmarkPriceChart";
@@ -110,8 +109,6 @@ import { useSentimentFeed } from "./useSentimentFeed";
 import SentimentFeedSection from "./SentimentFeedSection";
 
 export default function AiMarketSentimentsPage() {
-  const themeMode = useStore((s) => s.themeMode);
-
   // ---- Top-level mode toggle ----------------------------------------------
   // "industry" (default — the original UI) vs "market" (Market Trend plot +
   // feed scoped to the top-ranked HYPE/DRAIN industries).
@@ -359,7 +356,6 @@ export default function AiMarketSentimentsPage() {
           </Box>
           <BenchmarkPriceChart
             benchmarkCode={selectedBenchmarkCode}
-            themeMode={themeMode}
             selectedDate={feedState.selectedDate}
             onDateSelect={(d) => feedState.setSelectedDate(d)}
             selectedIndustries={classificationScope.selectedIndustries}
@@ -375,7 +371,7 @@ export default function AiMarketSentimentsPage() {
               Failed to load top-ranked industries (feed deferred): {hdError}
             </Alert>
           )}
-          <MarketTrendChart themeMode={themeMode} />
+          <MarketTrendChart />
         </>
       )}
 

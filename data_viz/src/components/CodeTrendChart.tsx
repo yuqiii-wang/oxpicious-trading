@@ -54,9 +54,12 @@ import {
 import TimeSlider from "@/shared/components/time-slider/TimeSlider";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import StockOhlcChart from "@/components/StockOhlcChart";
+import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
+import type { ECharts } from "echarts";
 import {
   fetchEtfMarginCombined,
   fetchIndicesCombined,
+  fetchSecBoardMap,
   fetchStockBaseline,
 } from "@/lib/api-client";
 import { fetchMarketHypes } from "@/lib/api-client";
@@ -66,6 +69,7 @@ import type {
   MovAveSpreadHypeEpisodes,
   EtfMarginRow,
   IndexBaselineRow,
+  SecBoardTag,
   StockBaselineRow,
   StockDividend,
 } from "@shared/types";
@@ -155,6 +159,29 @@ export function mapIndexRows(rows: IndexBaselineRow[]): CodeTrendRow[] {
 const NO_EPISODES: import("@shared/types").MovAveSpreadHypeEpisode[] = [];
 const NO_DIVIDENDS: StockDividend[] = [];
 
+/** One dim outline chip of the header's board tag ("MAIN", or
+ *  "MAIN 40%" for ETF/index mixes). Percent formatting: integers at
+ *  10%+, one decimal below — shares under 0.5% are dropped by the
+ *  caller so a rounded 0% never renders. */
+function BoardChip({ tag, showPct }: { tag: SecBoardTag; showPct: boolean }) {
+  const pctStr = tag.pct >= 10 ? Math.round(tag.pct).toString()
+    : (Math.round(tag.pct * 10) / 10).toString();
+  return (
+    <span style={{
+      fontSize: "0.62rem",
+      fontWeight: 500,
+      lineHeight: "15px",
+      padding: "0 6px",
+      border: "1px solid var(--chart-subtitle)",
+      borderRadius: 8,
+      color: "var(--chart-subtitle)",
+      whiteSpace: "nowrap",
+    }}>
+      {tag.board}{showPct ? ` ${pctStr}%` : ""}
+    </span>
+  );
+}
+
 export const CODE_TREND_SOURCES: Record<CodeTrendSecType, CodeTrendSource> = {
   stock: {
     fetch: async (code) => {
@@ -230,6 +257,12 @@ export interface CodeTrendChartProps {
   headerAction?: React.ReactNode;
   /** Per-sec_type source overrides (merged over CODE_TREND_SOURCES). */
   sources?: Partial<Record<CodeTrendSecType, CodeTrendSource>>;
+  /** Extra online-search seed keywords for the AI Ask "?" — the page's
+   *  items of interest that live OUTSIDE this chart (e.g. the forecast
+   *  family buttons beneath it: RSI, Bollinger, …). Merged ahead of the
+   *  auto-derived instrument/series keywords; identity-stable (memoized)
+   *  like every other chart input. */
+  aiSearchKeywords?: string[];
   /** Inner-chart option pass-through (dividends, dataZoom, onDateClick, …). */
   chartOptions?: CodeTrendChartOptions;
   /** Fired after each load settles (success or empty; not on error). */
@@ -254,6 +287,11 @@ interface CodeTrendChartState {
   showHypes: boolean;
   hypeEpisodes: MovAveSpreadHypeEpisodes | null;
   hypesLoading: boolean;
+  /** Board tag(s) beside the header title (stats.sec_board_map via
+   *  GET /api/sec-board): a stock's single listing board, or an
+   *  ETF/index's composition-weighted board mix. Fetched in parallel
+   *  with the trend rows; empty when no data / fetch failure. */
+  boardTags: SecBoardTag[];
 }
 
 export default class CodeTrendChart extends React.Component<
@@ -262,6 +300,12 @@ export default class CodeTrendChart extends React.Component<
 > {
   /** Monotonic token — only the newest fetch may settle into state. */
   private loadSeq = 0;
+  /** Separate token for the board-tag fetch (it must not be invalidated
+   *  by the shared loadSeq bumps from the hypes toggle). */
+  private boardSeq = 0;
+  /** Live inner-chart instance — captured via the StockOhlcChart
+   *  onChartReady passthrough for the AI Ask screenshot. */
+  private chartInstance: ECharts | null = null;
 
   state: CodeTrendChartState = {
     data: null,
@@ -272,6 +316,7 @@ export default class CodeTrendChart extends React.Component<
     showHypes: false,
     hypeEpisodes: null,
     hypesLoading: false,
+    boardTags: [],
   };
 
   componentDidMount() {
@@ -331,18 +376,41 @@ export default class CodeTrendChart extends React.Component<
             ? mergeHypeEpisodesAllWindows(this.state.hypeEpisodes)
             : NO_EPISODES
         }
+        onChartReady={(c) => {
+          this.chartInstance = c;
+          chartOptions?.onChartReady?.(c);
+        }}
       />
     );
   }
 
   /** Header title (card variant). */
   protected renderTitle(): React.ReactNode {
-    const { code, name, title } = this.props;
+    const { code, name, secType, title } = this.props;
     if (title !== undefined) return title;
     const displayName = name || this.state.data?.name || "—";
+    // Board tag beside the code title: a stock shows its single listing
+    // board; an ETF/index shows the board mix of its composition
+    // (pct DESC, shares < 0.5% dropped so a rounded 0% never renders).
+    const boardTags = this.state.boardTags.filter((t) => t.pct >= 0.5);
+    const showPct = secType !== "stock";
+    const boardTip = showPct
+      ? "Listing-board mix of the latest composition constituents, weighted by index weight (stats.sec_board_map)"
+      : "Listing board (stats.sec_board_map)";
     return (
-      <span style={{ fontSize: "0.9rem", fontWeight: 600 }}>
-        {code} · {displayName}
+      <span style={{
+        fontSize: "0.9rem", fontWeight: 600,
+        display: "inline-flex", alignItems: "center", gap: 6,
+      }}>
+        <span>{code} · {displayName}</span>
+        {boardTags.length > 0 && (
+          <span
+            title={boardTip}
+            style={{ display: "inline-flex", alignItems: "center", gap: 3 }}
+          >
+            {boardTags.map((t) => <BoardChip key={t.board} tag={t} showPct={showPct} />)}
+          </span>
+        )}
       </span>
     );
   }
@@ -423,10 +491,25 @@ export default class CodeTrendChart extends React.Component<
   // ---- Lifecycle -----------------------------------------------------------
 
   private load() {
-    const { code, onLoaded } = this.props;
+    const { code, secType, onLoaded } = this.props;
     if (!code) return;
     const seq = ++this.loadSeq;
-    this.setState({ loading: true, error: null, data: null, range: [0, 0] });
+    const boardSeq = ++this.boardSeq;
+    this.setState({
+      loading: true, error: null, data: null, range: [0, 0], boardTags: [],
+    });
+    // Board tag — fetched in parallel with the trend rows, guarded by its
+    // own token. A failure (endpoint missing / code without board data)
+    // just leaves the tag absent; it must never block or fail the chart.
+    fetchSecBoardMap(code, secType)
+      .then((d) => {
+        if (boardSeq !== this.boardSeq) return;
+        this.setState({ boardTags: d.boards });
+      })
+      .catch(() => {
+        if (boardSeq !== this.boardSeq) return;
+        this.setState({ boardTags: [] });
+      });
     this.fetchSource(code)
       .then((data) => {
         if (seq !== this.loadSeq) return;
@@ -498,6 +581,65 @@ export default class CodeTrendChart extends React.Component<
       />
     );
 
+    // AI Ask — plot info for the "?" beside the title. The inner
+    // StockOhlcChart builds its option internally, so the intro + live
+    // screenshot carry the value (derivePlotInfo tolerates the omitted
+    // option). A fresh plotInfo per render is fine — the button keeps its
+    // own open state.
+    const { code, name, secType } = this.props;
+    const displayName = name || data?.name || "—";
+    const nBars = allRows.length;
+    const aiAskButton = (
+      <AiAskButton
+        plotInfo={derivePlotInfo({
+          title: `${code} · ${displayName}`,
+          subtitle: nBars > 0
+            ? `${nBars} bars · ${allRows[0].date} → ${allRows[allRows.length - 1].date}`
+            : undefined,
+          spec: {
+            intro:
+              `Daily price trend for ${code} (${secType}): OHLC candles — or a close line when ` +
+              "OHLC is sparse — with MA5/MA20/MA60/MA120 overlays, trading-amount bars on a " +
+              "right axis, and, where the data has them, margin-balance fills (RZ cash borrow " +
+              "up / RQ sec borrow down) and a PE line on an offset axis. Gold diamonds mark " +
+              "ex-dividend dates; the Hyped toggle shades market-hype episode bands. In " +
+              "percentage mode OHLC + MAs are rebased to % change from the first valid close " +
+              "(tooltips keep actual prices), and date gaps are broken so long holidays don't " +
+              "draw artificial cliffs.",
+            instruments: [
+              {
+                code,
+                ...(displayName !== "—" ? { name: displayName } : {}),
+                assetClass: secType,
+              },
+            ],
+            window: windowedRows.length > 0
+              ? {
+                  start: windowedRows[0].date,
+                  end: windowedRows[windowedRows.length - 1].date,
+                  granularity: "daily",
+                }
+              : undefined,
+            state: {
+              mode: ohlcMode,
+              hype_shading: this.state.showHypes,
+              window: sliderOn ? "date-range slider" : "in-chart dataZoom",
+            },
+            searchKeywords: [
+              ...(this.props.aiSearchKeywords ?? []),
+              // the header toggles' active states — items of interest a
+              // web search can use (trend terms + the shaded episodes)
+              ...(this.state.showHypes ? ["market hype"] : []),
+            ],
+            notes: [
+              "MAs are computed client-side from close; Amount bars are in 亿 (raw yuan / 1e8).",
+            ],
+          },
+        })}
+        getInstance={() => this.chartInstance}
+      />
+    );
+
     const body = (
       <Box sx={{ width: "100%" }}>
         {loading && this.renderLoading()}
@@ -517,7 +659,12 @@ export default class CodeTrendChart extends React.Component<
     return (
       <Card>
         <CardHeader
-          title={this.renderTitle()}
+          title={(
+            <>
+              {this.renderTitle()}
+              {aiAskButton}
+            </>
+          )}
           subheader={this.renderSubtitle()}
           action={this.renderHeaderActions()}
           sx={{ pb: 0.5, "& .MuiCardHeader-content": { overflow: "hidden" } }}

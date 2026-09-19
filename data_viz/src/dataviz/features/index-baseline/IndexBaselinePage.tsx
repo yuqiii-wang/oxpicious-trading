@@ -24,7 +24,6 @@ import SecClassificationNav from "@/shared/components/sec-classification/SecClas
 import RefreshButton from "@/components/RefreshButton";
 import IndexPanel from "@/dataviz/features/index-baseline/IndexPanel";
 import { fetchIndexThemes, fetchIndexStrategyThemes, fetchIndicesCombined, invalidateCacheForPrefix } from "@/lib/api-client";
-import { useStore } from "@/store/filters";
 import type {
   SectorNode,
   StrategyNode,
@@ -34,8 +33,6 @@ import type {
 const PAGE_SIZE = 1;
 
 export default function IndexBaselinePage() {
-  const themeMode = useStore((s) => s.themeMode);
-
   const [sectors, setSectors] = useState<SectorNode[]>([]);
   const [sectorId, setSectorId] = useState<string | null>(null);
   const [industrySlug, setIndustrySlug] = useState<string | null>(null);
@@ -316,7 +313,6 @@ export default function IndexBaselinePage() {
                   <IndexPanel
                     key={idx.code}
                     index={idx}
-                    themeMode={themeMode}
                   />
                 ))}
               </Stack>

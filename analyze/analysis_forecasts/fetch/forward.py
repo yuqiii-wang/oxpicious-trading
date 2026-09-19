@@ -4,8 +4,8 @@
 Derives the per-code forward-looking columns the change matrices
 scatter: next_change_{n}d (the endpoint n-day fractional price change)
 and path_high_{n}d / path_low_{n}d (the n-day forward window's signed
-close extremes — the swing-aware reversal event and max_low_change_ratio
-inputs). All ops are vectorized cudf.pandas DataFrame ops over the long
+close extremes — the swing-aware reversal event inputs). All ops are
+vectorized cudf.pandas DataFrame ops over the long
 frame (grouped_shift — cuDF-accelerated; no per-code Python loops).
 """
 from __future__ import annotations
@@ -106,8 +106,8 @@ def add_path_extremes(df: pd.DataFrame) -> pd.DataFrame:
     max(price[t+1..t+n]) / price[t] - 1 (the window's highest close),
     path_low_{n}d = min(...) (the lowest close) — the within-period
     SWING that the endpoint next_change_{n}d (one point of that path)
-    does not capture. Consumed by the swing-aware reversal event and
-    the max_low_change_ratio swing ratio (wide.aggregate_horizons_sparse).
+    does not capture. Consumed by the swing-aware reversal event
+    (wide.aggregate_horizons_sparse).
 
     Per code on its OWN trading-day sequence, so the window is exactly
     n rows whenever next_change_{n}d is finite — these columns are NULL

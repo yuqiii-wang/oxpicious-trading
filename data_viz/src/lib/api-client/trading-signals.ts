@@ -69,6 +69,13 @@ export interface TradingSignal {
   /** TRUE = day-close mirror row (analysis run, time 15:00);
    *  FALSE = intraday live-monitor breach. */
   is_day_close_trigger: boolean;
+  /** TRUE when the breach bar's DATE sits inside one of the code's
+   *  market-hype episodes (stats.mov_ave_market_hypes) — regime
+   *  context; strategies are calibrated on non-hyped buckets only. */
+  is_market_hyped: boolean;
+  /** The code's signal count over the last 20 TRADING DAYS ending on
+   *  `date` (all signal types) — the main table's "20d count" column. */
+  count_20d: number;
 }
 
 export interface TradingSignalsResponse {

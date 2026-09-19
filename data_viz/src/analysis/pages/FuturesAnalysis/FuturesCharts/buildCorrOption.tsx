@@ -9,6 +9,11 @@ import type { EChartsOption } from "echarts";
 import { computeFuturesContractStyles } from "@/dataviz/features/futures/chartOption";
 import type { FuturesCombinedResponse } from "@shared/types";
 import {
+  baseChartOption,
+  commonTooltip,
+} from "@/shared/charts/base-chart";
+import type { ThemeMode } from "@/store/filters";
+import {
   AXIS_POINTER_LINE,
   TOOLTIP_CARD_BG,
   TOOLTIP_CARD_BORDER,
@@ -19,6 +24,7 @@ import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-rende
 type CorrMap = Map<string, Map<string, number | null>>;
 
 export function buildCorrelationChartOption(
+  mode: ThemeMode,
   combinedData: FuturesCombinedResponse,
   corrMap: CorrMap,
   viewMode: "future" | "history",
@@ -63,12 +69,13 @@ export function buildCorrelationChartOption(
     ...matured.map((c) => mkSeries(c.code)),
   ];
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(mode, {
+    // No legend: per-contract identity is read from the hover tooltip.
+    legend: null,
     grid: { left: 60, right: 24, top: 24, bottom: 60 },
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(mode, {
+      // Line (not cross) pointer; the React-element formatter below draws
+      // the shared tooltip-card rows (signed rolling correlation).
       axisPointer: { type: "line", lineStyle: { color: AXIS_POINTER_LINE, type: "dashed" } },
       confine: true,
       backgroundColor: TOOLTIP_CARD_BG,
@@ -104,7 +111,7 @@ export function buildCorrelationChartOption(
         }
         return renderReactElement(React.createElement(React.Fragment, null, children));
       },
-    },
+    }),
     xAxis: {
       type: "category",
       data: dates,
@@ -139,5 +146,5 @@ export function buildCorrelationChartOption(
       },
     ],
     series,
-  };
+  });
 }

@@ -14,11 +14,14 @@
  * and the return badges; `hasOhlc`/`hasPe` are computed here only to drive the
  * subtitle (the chart recomputes them internally).
  */
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Alert, Box, Chip, Stack } from "@mui/material";
+import type { ECharts } from "echarts";
 import ChartCard from "@/components/ChartCard";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import StockOhlcChart from "@/components/StockOhlcChart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import { fmtPct } from "@/lib/series";
 import { type OhlcMode } from "@/lib/ohlc";
 import { UP_COLOR, DOWN_COLOR } from "@/theme/chart-palette";
@@ -140,10 +143,57 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate, on
     ? `${stock.sector_label} / ${stock.industry_label} · OHLC${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120${hasPe ? " · PE" : ""}`
     : `${stock.sector_label} / ${stock.industry_label} · Close${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120${hasPe ? " · PE" : ""}`;
 
+  // AI Ask — the option lives inside StockOhlcChart, so the spec carries the
+  // semantics (the screenshot + intro do the visual work); state tracks the
+  // OHLC/percentage mode toggle.
+  const aiAskChartRef = useRef<ECharts | null>(null);
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Single-stock daily chart of ${stock.code} (${stock.name}, ` +
+        `${stock.industry_label}): ` +
+        (hasOhlc
+          ? "candlesticks (or close line when OHLC is sparse) "
+          : "close line ") +
+        "with MA5/MA20/MA60/MA120 moving averages, amount bars on a twin axis " +
+        "(Amt (亿), close-vs-open colored)" +
+        (hasPe ? ", PE ratio on an offset twin axis" : "") +
+        ", and dividend diamonds on their ex-dates. Percentage mode rebases " +
+        "prices and MAs to % change from the first valid close; the in-chart " +
+        "dataZoom slider windows the history.",
+      instruments: [{ code: stock.code, name: stock.name, assetClass: "stock" }],
+      series: [
+        ...(hasOhlc
+          ? [{ name: "OHLC", description: "daily open/high/low/close candles" }]
+          : [{ name: "Close", unit: "元", description: "daily closing price" }]),
+        { name: "MA5", unit: "元", description: "5-day mean of close" },
+        { name: "MA20", unit: "元", description: "20-day mean of close" },
+        { name: "MA60", unit: "元", description: "60-day mean of close" },
+        { name: "MA120", unit: "元", description: "120-day mean of close" },
+        { name: "Amt (亿)", unit: "亿", description: "daily trading amount" },
+        ...(hasPe ? [{ name: "PE", unit: "×", description: "price/earnings ratio (SZSE stocks)" }] : []),
+        { name: "Dividend", description: "ex-dividend markers" },
+      ],
+      state: { mode: ohlcMode },
+      notes: [
+        "Return badges in the header: 1m/3m/6m/total % change of close.",
+        "Percentage mode rebases from the first VISIBLE close (zoom-dependent).",
+      ],
+    }),
+    [stock.code, stock.name, stock.industry_label, ohlcMode, hasOhlc, hasPe],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: `${stock.code} · ${stock.name}`,
+    subtitle,
+    spec: aiAskSpec,
+    getInstance: () => aiAskChartRef.current,
+  });
+
   return (
     <ChartCard
       title={`${stock.code} · ${stock.name}`}
       subtitle={subtitle}
+      titleAddon={aiAskAddon}
       action={
         <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
           <OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />
@@ -161,6 +211,9 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate, on
           dataZoomStart={dataZoomRange.start}
           dataZoomEnd={dataZoomRange.end}
           onDateClick={onDateClick}
+          onChartReady={(c) => {
+            aiAskChartRef.current = c;
+          }}
         />
         {allRows.length < 40 && (
           <Alert severity="info" sx={{ mt: 0.5, py: 0.25 }} icon={false}>

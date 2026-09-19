@@ -48,11 +48,24 @@
 --  market-movements tables and the UI (×100 at render time).
 --
 --  CONCURRENCY: python -m live.sec_alloc_live_attribution takes a PG
---  advisory lock. The 5-min LIVE process skips when a concurrent
---  instance holds its lock; the yday-ref process waits (bounded).
+--  advisory lock (one per process: LIVE skips when held; REF and COMPUTE
+--  wait bounded).
 --
---  Retention: the pipeline prunes dates outside the newest 5 trading
---  dates (RETENTION_DATES in live/sec_alloc_live_attribution).
+--  RETENTION + ON-DEMAND: the table is a ROLLING CACHE, not an archive.
+--  The pipeline prunes dates outside the newest 20 trading dates
+--  (RETENTION_DATES in live/sec_alloc_live_attribution) — in ref/all
+--  runs and, guarded to once per NEW trading day via a
+--  live.live_identity bookkeeping row ('sec_alloc_live_attribution_prune',
+--  plain PK probe), in the 5-min LIVE runs. A date selected on the UI
+--  that has no tick rows (outside the window / never reached by the
+--  keeper) is BACKFILLED ON DEMAND: the API service invokes
+--  `--mode compute --date D [--benchmark B]`, which recomputes the
+--  date's rows from the base tables (weighted daily-close-basis pass +
+--  fallback fill; idempotent anti-joins) and upserts them here. The
+--  compute path never prunes; the next daily prune reaps the backfilled
+--  date again, and a later request simply recomputes. On-demand
+--  lookback is bounded by the RAW intraday table's own retention
+--  (stats.index_intraday_5min), NOT by this window.
 --
 --  Populated by Python (per project rule: INSERTs live in Python code, not
 --  raw INSERT...SELECT SQL).
@@ -100,30 +113,10 @@ SELECT public.create_hash_partitions('live', 'sec_alloc_live_attribution', 32);
 --   index size).
 CREATE INDEX IF NOT EXISTS idx_sec_alloc_live_attr_bench_dt
     ON live.sec_alloc_live_attribution (benchmark_code, date, time);
-DROP INDEX IF EXISTS idx_sec_alloc_live_attr_ind_bench_dt;
-
--- ----------------------------------------------------------------------------
---  Idempotent migrations (safe to re-run on fresh or upgraded databases):
---    • ensure toggle columns exist on any pre-existing table
---    • DROP the old strict FK — fallback rows (is_without_trading_amt =
---      TRUE) have no ref parent by design
---    • DROP the consolidated-away ref table (2026-09-08) — its values are
---      recomputed at use time from stats.index_basic_stats /
---      stats.cross_stats / stats.sec_classification
--- ----------------------------------------------------------------------------
-ALTER TABLE live.sec_alloc_live_attribution
-    ADD COLUMN IF NOT EXISTS is_without_trading_amt BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS is_without_benchmark     BOOLEAN NOT NULL DEFAULT FALSE;
-
-ALTER TABLE live.sec_alloc_live_attribution
-    DROP CONSTRAINT IF EXISTS fk_sec_alloc_live_attr_ref;
-
-DROP TABLE IF EXISTS live.sec_alloc_live_prev_ref CASCADE;
-
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE  live.sec_alloc_live_attribution IS 'Live per-5-min-tick member attribution (light values only). One row per (code, date, time, sec_type, benchmark_code); tick rows exist ONLY for members classified as index/etf (industry members are indexes with an industry_id); stocks never get tick rows. Stores member + benchmark % vs prev-day close at each tick and the GENERATED diff. is_without_trading_amt marks the prev-close basis: TRUE = fallback (prev-day last 5-min bar close, equal-weight only), FALSE = daily-close basis (official prev-day close from stats.index_basic_stats, computed at tick time — the former live.sec_alloc_live_prev_ref heavy reference table was consolidated away; trading-amount weights and composition-overlap shared weights are computed at READ time from stats.index_basic_stats and stats.cross_stats). Industry-level weighted (SUM weight*shared_weight*pct, renormalized) and equal-weighted (AVG pct) aggregates are computed at query time. All pct columns are fractions (0.01 = 1%).';
+COMMENT ON TABLE  live.sec_alloc_live_attribution IS 'Live per-5-min-tick member attribution (light values only) — a ROLLING CACHE, not an archive. One row per (code, date, time, sec_type, benchmark_code); tick rows exist ONLY for members classified as index/etf (industry members are indexes with an industry_id); stocks never get tick rows. Stores member + benchmark % vs prev-day close at each tick and the GENERATED diff. is_without_trading_amt marks the prev-close basis: TRUE = fallback (prev-day last 5-min bar close, equal-weight only), FALSE = daily-close basis (official prev-day close from stats.index_basic_stats, computed at tick time — the former live.sec_alloc_live_prev_ref heavy reference table was consolidated away; trading-amount weights and composition-overlap shared weights are computed at READ time from stats.index_basic_stats and stats.cross_stats). Industry-level weighted (SUM weight*shared_weight*pct, renormalized) and equal-weighted (AVG pct) aggregates are computed at query time. All pct columns are fractions (0.01 = 1%). Retention: dates outside the newest 20 trading dates are pruned (ref/all runs, plus the 5-min LIVE runs guarded to once per new trading day via the live_identity row sec_alloc_live_attribution_prune); older dates are backfilled ON DEMAND by python -m live.sec_alloc_live_attribution --mode compute --date D, invoked by the API service when a requested (benchmark, date) has no tick rows (bounded by the raw intraday table''s own retention).';
 COMMENT ON COLUMN live.sec_alloc_live_attribution.is_without_trading_amt IS 'TRUE = FALLBACK row computed WITHOUT daily stats (prev close basis = the member''s last 5-min bar close of the latest intraday date before the live date; equal-weighted aggregation only). FALSE = daily-close-basis row (prev close = official prev-day close from stats.index_basic_stats; weighted-capable via read-time weights). Fallback rows are upgraded in place (PK upsert) by the yday-ref mode''s weighted pass.';
 COMMENT ON COLUMN live.sec_alloc_live_attribution.is_without_benchmark IS 'Denormalized toggle column. FALSE = row includes benchmark comparison (pct vs benchmark). TRUE = member-only pct without benchmark comparison.';
 COMMENT ON COLUMN live.sec_alloc_live_attribution.code_price_pct_relative_prev_date_close IS 'Member intraday % change vs prev-day close at this tick (FRACTION): stats.index_intraday_5min.close / prev close - 1. Prev close basis: the member''s official prev-day daily close (FALSE rows) or its prev-day last 5-min bar close (fallback rows).';
@@ -135,7 +128,7 @@ COMMENT ON COLUMN live.sec_alloc_live_attribution.code_price_pct_vs_benchmark_pr
 -- ----------------------------------------------------------------------------
 INSERT INTO live.live_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('sec_alloc_live_attribution', 'sec_alloc_live_attribution', 'sec_alloc_live_attribution', NOW(),
-     'Live per-5-min-tick member attribution under the live schema: light per-tick member + benchmark % vs prev-day close with GENERATED diff in live.sec_alloc_live_attribution (tick rows only for index/etf members). is_without_trading_amt marks the prev-close basis: fallback rows (TRUE, prev-day last 5-min bar close) are written by the 5-min LIVE pass so equal-weighted data flows immediately, and upgraded in place to daily-close-basis rows (FALSE) by the yday-ref mode, which computes prev closes from stats.index_basic_stats at tick time (the former heavy live.sec_alloc_live_prev_ref table was consolidated away — trading-amount weights and composition-overlap shared weights are computed at READ time from stats.index_basic_stats and stats.cross_stats; industry identity from stats.sec_classification). PG advisory locks make the 5-min live process skip and the yday-ref process wait under concurrency. Industry-level weighted (SUM weight*shared_weight*pct, renormalized) and equal-weighted (AVG pct) aggregates are computed at query time. A retention prune (ref/all modes) keeps only the newest 5 trading dates. Sources: stats.sec_classification (member universe), stats.index_basic_stats (prev-day close + trading_amount), stats.index_intraday_5min (tick closes).')
+     'Live per-5-min-tick member attribution under the live schema: light per-tick member + benchmark % vs prev-day close with GENERATED diff in live.sec_alloc_live_attribution (tick rows only for index/etf members). is_without_trading_amt marks the prev-close basis: fallback rows (TRUE, prev-day last 5-min bar close) are written by the 5-min LIVE pass so equal-weighted data flows immediately, and upgraded in place to daily-close-basis rows (FALSE) by the yday-ref mode, which computes prev closes from stats.index_basic_stats at tick time (the former heavy live.sec_alloc_live_prev_ref table was consolidated away — trading-amount weights and composition-overlap shared weights are computed at READ time from stats.index_basic_stats and stats.cross_stats; industry identity from stats.sec_classification). PG advisory locks make the 5-min live process skip and the yday-ref/compute processes wait (bounded) under concurrency. Industry-level weighted (SUM weight*shared_weight*pct, renormalized) and equal-weighted (AVG pct) aggregates are computed at query time. The table is a ROLLING CACHE: a retention prune (ref/all runs, plus 5-min LIVE runs guarded to once per new trading day via the live_identity row sec_alloc_live_attribution_prune) keeps only the newest 20 trading dates; older dates are backfilled ON DEMAND by --mode compute --date D (API-invoked; bounded by the raw intraday table''s retention). Sources: stats.sec_classification (member universe), stats.index_basic_stats (prev-day close + trading_amount), stats.index_intraday_5min (tick closes).')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

@@ -64,34 +64,6 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.base_rates (
 SELECT public.create_hash_partitions('analysis_forecasts', 'base_rates', 16);
 
 -- ----------------------------------------------------------------------------
---  Idempotent migration (pre-existing installs) — ADD COLUMN propagates
---  to all hash partitions; pre-existing rows keep the legacy fixed 1%
---  bar (0.01 = the column default). Adaptive values arrive on rebuild.
--- ----------------------------------------------------------------------------
--- 2026-09-15 rename: reverse_threshold -> threshold — the bar is a
--- plain nonnegative magnitude (the adverse-excursion comparison is
--- side-free: P is non-increasing in the threshold, an inverse
--- correlation uniform across sides/horizons); the "reverse" framing and
--- the disabled adaptive k*sigma machinery are gone.
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'analysis_forecasts'
-          AND table_name   = 'base_rates'
-          AND column_name  = 'reverse_threshold'
-    ) THEN
-        ALTER TABLE analysis_forecasts.base_rates
-            RENAME COLUMN reverse_threshold TO threshold;
-    END IF;
-END $$;
-ALTER TABLE analysis_forecasts.base_rates
-    ADD COLUMN IF NOT EXISTS threshold NUMERIC(8,6) NOT NULL DEFAULT 0.01;
-
-ALTER TABLE analysis_forecasts.base_rates
-    ADD COLUMN IF NOT EXISTS lookback_period TEXT NOT NULL DEFAULT '5y';
-
--- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis_forecasts.base_rates IS 'Unconditional same-window base rates for the forecast analysis: per (sec_type, code, stat_month, period) the mean n-day forward fractional change, P(change < −threshold) and P(change > +threshold) over ALL of the code''s trading days in the trailing 5-year window ending at stat_month (not just the extreme bucket days), plus the valid-day count and the SAME FIXED 1% threshold the bucket rows use (lift stays in one scale). Reference for reading forecast_results.ave_change / reverse_prob as lift. Same window / price space / full-window gate as the mov_* tables. Populated by python -m analyze.analysis_forecasts.';
@@ -164,7 +136,7 @@ WHERE NOT EXISTS (
 );
 COMMENT ON COLUMN analysis_forecasts.base_rates.base_count IS 'Number of the code''s window days with a valid n-trading-day forward change — the denominator of base_ave_change / base_down_prob / base_up_prob.';
 COMMENT ON COLUMN analysis_forecasts.base_rates.base_ave_change IS 'Mean n-trading-day forward fractional change over ALL window days with a valid n-day forward change. Baseline for forecast_results.ave_change (bucket mean − base = conditional edge).';
-COMMENT ON COLUMN analysis_forecasts.base_rates.base_down_prob IS 'P(n-day forward change < −threshold) over ALL window days with a valid n-day forward change. Baseline for the reverse_prob of top (RSI/gap) and upper (Bollinger) buckets.';
-COMMENT ON COLUMN analysis_forecasts.base_rates.base_up_prob IS 'P(n-day forward change > +threshold) over ALL window days with a valid n-day forward change. Baseline for the reverse_prob of bottom (RSI/gap) and lower (Bollinger) buckets.';
-COMMENT ON COLUMN analysis_forecasts.base_rates.threshold IS 'The fractional reversal bar the base probs (and the matching bucket rows of the same code/stat_month/period) are computed at: k_n · σ of the code''s window n-day forward changes per horizon (next 0.5, 5d 0.75, 20d 1.0, 60d 1.0 — study 2026-09), fixed 0.01 fallback / legacy value.';
+COMMENT ON COLUMN analysis_forecasts.base_rates.base_down_prob IS 'P(n-day forward change < −threshold) over ALL window days with a valid n-day forward change. Baseline for the reverse_prob of top (RSI) and upper (Bollinger) buckets.';
+COMMENT ON COLUMN analysis_forecasts.base_rates.base_up_prob IS 'P(n-day forward change > +threshold) over ALL window days with a valid n-day forward change. Baseline for the reverse_prob of bottom (RSI) and lower (Bollinger) buckets.';
+COMMENT ON COLUMN analysis_forecasts.base_rates.threshold IS 'The fractional reversal bar the base probs (and the matching bucket rows of the same code/stat_month/period) are computed at: the FIXED 1% (0.01) bar since 2026-09-08 — the probs read as plain P(> 1%) / P(< -1%) against the period-end close. The earlier adaptive k_n · σ bar (study 2026-09; next 0.5, 5d 0.75, 20d 1.0, 60d 1.0) is disabled in the forecasts config (REVERSE_THRESHOLD_MODE = "fixed"), kept only as a flip-back option.';
 COMMENT ON COLUMN analysis_forecasts.base_rates.lookback_period IS 'Recorded build parameter: the trailing calendar window the rates were computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';

@@ -2,12 +2,14 @@
  * Shared option builder for the Debt Baseline panels. All four panels share
  * the same x-axis (date), quarterly axis labels, and a connected group for
  * cross-chart tooltip sync — matching the matplotlib sharex=True behaviour
- * in plot_debt_baseline.py.
+ * in plot_debt_baseline.py. The option preamble (background / animation /
+ * legend / tooltip / grid) comes from the shared base-chart kit.
  */
 import React from "react";
 import type { EChartsOption, SeriesOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { axisColors, MUTED_PALETTE, commonDataZoom, commonLegend, commonGrid } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip, type BaseChartOptionOverrides } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 
@@ -38,7 +40,11 @@ export function quarterTickFilter(dates: string[]): Set<string> {
 
 /**
  * Build the common x-axis + grid + tooltip + dataset base option shared by
- * all four debt-baseline panels.
+ * all four debt-baseline panels. Rebased on the shared kit's
+ * `baseChartOption` so the preamble (transparent background, animations off,
+ * legend / tooltip / grid fragment slots) is the single app-wide one; the
+ * quarterly x-axis, twin y-axes, group-linked axisPointer and the markerMap
+ * tooltip stay family-specific.
  *
  * If `markerMap` is provided, PBoC operation info (outright repo / MLF) is
  * shown in the tooltip on hover instead of dense vertical markLines.
@@ -46,27 +52,20 @@ export function quarterTickFilter(dates: string[]): Set<string> {
 export function buildBaseOption(
   dates: string[],
   mode: ThemeMode,
-  extra: Partial<EChartsOption> = {},
+  extra: BaseChartOptionOverrides = {},
   markerMap?: Map<string, string[]>,
 ): EChartsOption {
   const c = getAxisColors(mode);
   const quarterTicks = quarterTickFilter(dates);
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(mode, {
     grid: commonGrid({
       left: 64,
       right: 64,
       top: 28,
       bottom: 56,
     }),
-    tooltip: {
-      trigger: "axis",
-      axisPointer: { type: "cross", snap: true },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
+    tooltip: commonTooltip(mode, {
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           axisValue?: string;
@@ -105,7 +104,7 @@ export function buildBaseOption(
         }
         return renderReactElement(React.createElement(React.Fragment, null, children));
       },
-    },
+    }),
     axisPointer: { link: [{ xAxisIndex: "all" }] },
     xAxis: {
       type: "category",
@@ -141,7 +140,7 @@ export function buildBaseOption(
     legend: commonLegend(mode, { left: "right", itemWidth: 14, itemHeight: 8 }),
     dataZoom: commonDataZoom(),
     ...extra,
-  };
+  });
 }
 
 /**

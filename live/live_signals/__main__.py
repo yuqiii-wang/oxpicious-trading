@@ -1,44 +1,71 @@
 """Entry point for live.live_signals.
 
-Run via ``python -m live.live_signals --code 000300 [--signal-scheme analysis]``.
+Run via ``python -m live.live_signals --code 000300 [--signal-scheme analysis]``
+or ``python -m live.live_signals --sec-type index [--date YYYY-MM-DD]``.
 
-Live breach check of the threshold set for ONE code:
+LIVE breach check of the threshold set for ONE code (the LIVE signal
+tier — a breach of an active analysis_signals.signal_strategies
+threshold IS the
+live signal; never a re-detection):
 
   1. Fetch the code's CURRENT intraday close — the latest
      stats.{sec_type}_intraday_5min bar (date, time, close). The
      sec_type is derived from whichever intraday table holds the code.
      NO intraday price → print ``404`` and exit 404.
   2. Load the code's ACTIVE signal configs (``is_active`` rows of
-     analysis_signals.signals — all signal types / sub types of the
-     resolved sec_type) and evaluate each against its
-     signal_threshold (dispatched to per-signal-type evaluators under
-     ``live_signals.analysis``):
-       - mov_std: close vs band level (price space);
-       - mov_rsi: current RSI (latest analysis.mov_ave_rsi row, per
-         window) vs the top/bottom-1% threshold (indicator space — an
-         RSI value is not a price; the record stores the RSI in
-         ``signal``).
+     analysis_signals.signal_strategies — all signal types / sub
+     types of the
+     resolved sec_type) and apply ONE GENERIC rule per config — the
+     row's OWN action vs its OWN signal_threshold, direction by the
+     action (sell breaches above, buy below), confidence copied from
+     the row; NO per-family logic. The current value per config comes
+     from the declarative SIGNAL_VALUE_SOURCE map
+     (live_signals/analysis/fetch): the intraday close (mov_std /
+     high_low_streaks), the latest analysis.mov_ave_rsi RSI
+     column (mov_rsi), the latest spread (mov_pairs /
+     mov_pairs_ema), the registry px_t (px_vol) or the recomputed
+     ratio z (margin_ratio).
   3. Triggered configs are recorded in live.live_signals (one row per
      (code, sec_type, signal_type, signal_sub_type, date, time); PK
      upsert so re-running the same bar updates in place). Every
      config's evaluation (triggered or not) is printed.
   4. Upsert live.live_identity.
 
+ON-DEMAND AS-OF MODE (--date D — invoked by the Trading Signals API
+when a selected date has no live rows): the evaluated bar becomes the
+LAST intraday bar ON D when the intraday table has one (an end-of-day
+replay of the live check), else the code's OFFICIAL DAILY CLOSE on D
+from stats.{sec_type}_basic_stats — recorded at 15:00 with
+is_day_close_trigger = TRUE (the no-intraday-data fallback). Every
+value source is bounded to its latest row at-or-before D, so the
+replay never peeks at later data. Codes with neither an intraday bar
+nor a daily close on D are skipped. Works with --code and --sec-type.
+
 --signal-scheme analysis (default) | strategy — 'strategy' is reserved
 for a future strategy.*-sourced threshold set and exits with code 2.
 
 Exit codes: 0 = checked (breaches recorded or not), 2 = usage error /
-unimplemented scheme, 404 = code has no intraday price.
+unimplemented scheme, 404 = code has no intraday price (no --date) /
+no price on the --date (single-code mode only).
 """
 from __future__ import annotations
 
 
-# resource pre-check — pure asyncpg DB I/O, no GPU needed
+# resource pre-check — pure asyncpg DB I/O, no GPU needed. The system-RAM
+# floor is likewise lowered (the default 36 GiB guards the heavy cudf
+# pipelines; this process peaks at ~1 GiB RSS) — without this, the
+# API-invoked on-demand --date spawns would abort whenever the WSL VM
+# reports < 36 GiB. setdefault: an explicit ANALYZE_MIN_SYS_GB in the
+# environment still wins.
+import os as _os
+
+_os.environ.setdefault("ANALYZE_MIN_SYS_GB", "8")
 from _common.pre_check import pre_check
 
 pre_check(require_gpu=False)
 import argparse
 import asyncio
+import datetime
 import os
 import sys
 import time
@@ -51,6 +78,12 @@ sys.path.insert(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     ),
 )
+
+# cudf.pandas activation — must run before pandas first import (the
+# repo-wide entry-point convention; this pipeline itself is asyncpg-only)
+from _common.df_utils._activate import activate  # noqa: E402
+
+activate()
 
 from _common.build_commons import (  # noqa: E402
     setup_utf8_stdout,
@@ -112,12 +145,15 @@ async def _upsert_live_identity(conn) -> None:
 async def main() -> int:
     ap = argparse.ArgumentParser(
         description="Live breach check of the analysis_signals threshold "
-                    "set: latest intraday close vs every active signal "
-                    "config (mov_std close vs band; mov_rsi current RSI "
-                    "vs top/bottom-1% threshold); triggered breaches are "
-                    "recorded in live.live_signals. Either --code (one "
-                    "code, sec_type probed, 404 exit when no intraday "
-                    "price) or --sec-type (ALL codes with active signal "
+                    "set (the LIVE signal tier): every active signal "
+                    "config's current value (per the declarative "
+                    "value-source map) vs the row's OWN threshold, "
+                    "direction by the row's OWN action — the generic "
+                    "rule, no per-family logic; triggered breaches are "
+                    "recorded in live.live_signals with the row's "
+                    "action and confidence. Either --code (one code, "
+                    "sec_type probed, 404 exit when no intraday price) "
+                    "or --sec-type (ALL codes with active signal "
                     "configs of the given sec_types; codes without "
                     "intraday price are skipped)."
     )
@@ -136,7 +172,24 @@ async def main() -> int:
              "check EVERY code with active signal configs of these "
              "sec_types. Mutually exclusive with --code.",
     )
+    ap.add_argument(
+        "--date", default=None,
+        help="ON-DEMAND as-of date YYYY-MM-DD: evaluate at the last "
+             "intraday bar of that date, falling back to the official "
+             "daily close (15:00, is_day_close_trigger = TRUE) when the "
+             "date has no intraday bar. Value sources are bounded to "
+             "rows at-or-before the date (no peeking at later data).",
+    )
     args = ap.parse_args()
+
+    as_of: datetime.date | None = None
+    if args.date is not None:
+        try:
+            as_of = datetime.date.fromisoformat(args.date)
+        except ValueError:
+            logger.error(f"  [ERROR] --date must be YYYY-MM-DD, got "
+                  f"'{args.date}'.")
+            return EXIT_USAGE
 
     if args.code and args.sec_type:
         logger.error("  [ERROR] --code and --sec-type are mutually exclusive.")
@@ -166,6 +219,8 @@ async def main() -> int:
         tables=f"live.live_signals, {SIGNALS_TABLE} (read)",
         code=args.code or f"sec_types={sec_types}",
         scheme=args.signal_scheme,
+        mode=f"as-of {as_of} (on-demand, daily-close fallback)"
+        if as_of is not None else "live (latest bar)",
     )
 
     conn = await get_db_connection_async()
@@ -174,32 +229,53 @@ async def main() -> int:
 
         if args.code:
             # ---- Single-code mode: probe all sec_types, 404 when none ----
-            hits: list[tuple[str, object, object, float]] = []
-            for st in SEC_TYPE_PROBE_ORDER:
-                bar = await evaluator.fetch_latest_intraday(st, args.code)
-                if bar is not None:
-                    d, tm, close = bar
-                    hits.append((st, d, tm, close))
-            if not hits:
-                logger.info(f"  404: code {args.code} has no intraday price in "
-                      f"any of {list(SEC_TYPE_PROBE_ORDER)} — nothing to "
-                      f"check.")
-                print_wall_time(t0)
-                return EXIT_NOT_FOUND
-            for st, d, tm, close in hits:
-                logger.info(f"  [{st}] latest intraday bar: {d} {tm} "
-                      f"close={close}")
+            if as_of is None:
+                hits: list[tuple[str, object, object, float]] = []
+                for st in SEC_TYPE_PROBE_ORDER:
+                    bar = await evaluator.fetch_latest_intraday(st, args.code)
+                    if bar is not None:
+                        d, tm, close = bar
+                        hits.append((st, d, tm, close))
+                if not hits:
+                    logger.info(f"  404: code {args.code} has no intraday "
+                          f"price in any of {list(SEC_TYPE_PROBE_ORDER)} — "
+                          f"nothing to check.")
+                    print_wall_time(t0)
+                    return EXIT_NOT_FOUND
+                for st, d, tm, close in hits:
+                    logger.info(f"  [{st}] latest intraday bar: {d} {tm} "
+                          f"close={close}")
 
-            total_records: list[dict] = []
-            for st, _d, _tm, _close in hits:
-                recs, _ = await evaluator.process_code(
-                    st, args.code, verbose=True,
-                )
-                total_records.extend(recs)
+                total_records: list[dict] = []
+                for st, _d, _tm, _close in hits:
+                    recs, _ = await evaluator.process_code(
+                        st, args.code, verbose=True,
+                    )
+                    total_records.extend(recs)
+            else:
+                # As-of single code: process_code resolves the bar per
+                # sec_type (last intraday bar of the date, else the
+                # daily-close fallback) — collect from every hit.
+                total_records = []
+                n_price = 0
+                for st in SEC_TYPE_PROBE_ORDER:
+                    recs, has_price = await evaluator.process_code(
+                        st, args.code, verbose=True, as_of=as_of,
+                    )
+                    if has_price:
+                        n_price += 1
+                    total_records.extend(recs)
+                if n_price == 0:
+                    logger.info(f"  404: code {args.code} has no intraday "
+                          f"bar and no daily close on {as_of} in any of "
+                          f"{list(SEC_TYPE_PROBE_ORDER)} — nothing to "
+                          f"check.")
+                    print_wall_time(t0)
+                    return EXIT_NOT_FOUND
         else:
             # ---- Batch mode: every active code of the given sec_types ----
             total_records = await evaluator.process_sec_types(
-                sec_types, verbose=True,
+                sec_types, verbose=True, as_of=as_of,
             )
 
         # ---- Record the breaches (PK upsert — idempotent) ---------------

@@ -52,14 +52,11 @@ import {
   TextField,
   ToggleButton,
   ToggleButtonGroup,
-  Typography,
 } from "@mui/material";
-import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
 import RefreshButton from "@/components/RefreshButton";
 import { DateSelector } from "@/shared/components/date-selector";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import IndexPanel from "@/dataviz/features/index-baseline/IndexPanel";
-import { useStore } from "@/store/filters";
 import {
   fetchIntradayMovements,
   fetchIntradayMovementsBenchmarks,
@@ -103,7 +100,7 @@ const DEFAULT_BENCHMARK = "000300";
 const AUTO_REFRESH_MS = 5 * 60_000; // 5 minutes
 
 export default function LiveDataMarketMovementsPage() {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const [benchmarks, setBenchmarks] = useState<BenchmarkOption[]>([]);
   const [benchmarkCode, setBenchmarkCode] = useState<string>(DEFAULT_BENCHMARK);
   // Date selector: null = LATEST available date (server resolves it on every
@@ -536,11 +533,11 @@ export default function LiveDataMarketMovementsPage() {
   // Memoized IndexPanel ELEMENT — React bails out of re-rendering a subtree
   // when the element reference is unchanged, so the (heavy) member history
   // panel (its own charts + internal state) only re-renders when the member
-  // bundle or theme actually changes — never on 5-min auto-refresh cycles
-  // or other unrelated page state updates.
+  // bundle changes — never on 5-min auto-refresh cycles or other unrelated
+  // page state updates. Theme is resolved reactively INSIDE IndexPanel.
   const memberPanel = useMemo(
-    () => (memberIndex ? <IndexPanel index={memberIndex} themeMode={themeMode} /> : null),
-    [memberIndex, themeMode],
+    () => (memberIndex ? <IndexPanel index={memberIndex} /> : null),
+    [memberIndex],
   );
 
   // ---- Chart options -------------------------------------------------------
@@ -753,8 +750,13 @@ export default function LiveDataMarketMovementsPage() {
         <RefreshButton onClick={handleRefresh} />
       </Stack>
 
-      {/* Top plot: Benchmark % line + per-industry shaded areas */}
-      <ChartCard
+      {/* Top plot: Benchmark % line + per-industry shaded areas.
+          States map onto BaseChart: blocking first load / benchmark switch →
+          full spinner (option nulled); silent 5-min refresh → chart stays
+          mounted. The error Alert lives in the children slot (NOT the error
+          prop) on purpose — a failed SILENT refresh keeps the last painted
+          data visible; the alert banner is the only visible change. */}
+      <BaseChart
         title={noBenchmark
           ? "Market Movements — 0.0% Baseline & Per-Industry Shades"
           : "Market Movements — Benchmark % & Per-Industry Shades"}
@@ -763,7 +765,7 @@ export default function LiveDataMarketMovementsPage() {
           : refMessage
             ? `${topSubtitle} · ${refMessage}`
             : topSubtitle}
-        action={(
+        headerAction={(
           <Button
             size="small"
             variant="outlined"
@@ -778,91 +780,60 @@ export default function LiveDataMarketMovementsPage() {
             {refRunning ? "Building Yday Ref…" : "Build Yday Ref"}
           </Button>
         )}
+        height={460}
+        option={loading ? null : hasBars ? topOption : null}
+        loading={loading}
+        emptyText={
+          data && data.benchmark_series.length === 0
+            ? `No intraday bars for benchmark ${benchmarkCode} on ${data.date}.`
+            : "No data"
+        }
+        onCanvasClick={handleTopCanvasClick}
       >
-        {loading && (
-          <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-            <CircularProgress size={28} />
-          </Box>
-        )}
         {error && (
           <Alert severity="error" sx={{ py: 0.5 }}>
             Failed to load intraday movements: {error}
           </Alert>
         )}
-        {/* NOTE: charts are NOT hidden while `error` is set — a failed
-            silent refresh keeps the last painted data visible; the alert
-            banner above is the only visible change. */}
-        {!loading && hasBars && topOption && (
-          <EChart
-            option={topOption}
-            height={460}
-            onCanvasClick={handleTopCanvasClick}
-          />
-        )}
-        {!loading && data && data.benchmark_series.length === 0 && (
-          <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-            <Typography variant="body2" color="text.secondary">
-              No intraday bars for benchmark {benchmarkCode} on {data.date}.
-            </Typography>
-          </Box>
-        )}
-      </ChartCard>
+      </BaseChart>
 
       {/* Middle plot: ALL industries at selected tick */}
-      <ChartCard
+      <BaseChart
         title="Intraday Attribution — All Industries at Selected Tick"
         subtitle={middleSubtitle}
-        action={(
+        headerAction={(
           <Stack direction="row" spacing={1} alignItems="center">
             {weightingToggle}
             {industryFilterToggle}
           </Stack>
         )}
-      >
-        {!loading && middleOption && (
-          <EChart
-            option={middleOption}
-            height={320}
-            onEvents={{ click: handleIndustryClick }}
-          />
-        )}
-        {!loading && data && !selectedTick && (
-          <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-            <Typography variant="body2" color="text.secondary">
-              Click anywhere on the top plot to pick a 5-min tick.
-            </Typography>
-          </Box>
-        )}
-      </ChartCard>
+        height={320}
+        option={loading ? null : middleOption}
+        loading={loading}
+        emptyText="Click anywhere on the top plot to pick a 5-min tick."
+        onEvents={{ click: handleIndustryClick }}
+      />
 
       {/* Bottom plot: member indices for clicked industry at selected tick.
           Click a bar → fetch that index's full baseline (OHLC + MAs +
           trading_amount + PE) and render an IndexPanel history chart below. */}
-      <ChartCard
+      <BaseChart
         title="Member Indices — Selected Industry at Selected Tick"
         subtitle={
           bottomSubtitle
             ? `${bottomSubtitle} · click a bar to see its full price history`
             : ""
         }
-      >
-        {!loading && bottomOption && (
-          <EChart
-            option={bottomOption}
-            height={320}
-            onEvents={{ click: handleMemberClick }}
-          />
-        )}
-        {!loading && data && !bottomOption && (
-          <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-            <Typography variant="body2" color="text.secondary">
-              {!selectedTick
-                ? "Click anywhere on the top plot to pick a 5-min tick."
-                : "Click an industry bar above to see its member indices."}
-            </Typography>
-          </Box>
-        )}
-      </ChartCard>
+        height={320}
+        option={loading ? null : bottomOption}
+        loading={loading}
+        emptyText={
+          selectedTick
+            ? "Click an industry bar above to see its member indices."
+            : "Click anywhere on the top plot to pick a 5-min tick."
+        }
+        onEvents={{ click: handleMemberClick }}
+      />
 
       {/* Index history chart for the clicked member index — same plot as
           /dataviz/index-baseline (OHLC + MA5/MA20/MA60/MA120 + Trading Amt +

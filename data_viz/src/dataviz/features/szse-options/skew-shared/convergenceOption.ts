@@ -9,27 +9,33 @@
  * price-space rebase the main shared skew chart uses:
  *   oi_moneyness: skew_price = S × E[OI-wtd moneyness]
  *                 → gap% = (E[M] − 1) × 100 (the raw skewPct)
- *   iv_smile:     skew_price = S × (1 + rr25 × 0.5%)
- *                 → gap% = rr25 × 0.5 (the raw skewPct; 0 = on spot)
  *   greek_*:      skew_price = S × (1 + (skew − neutral) × 0.10)
  *                 → gap% = skewPct × GREEK_SKEW_PRICE_K
  * As a group ages toward expiry its gap visibly collapses into zero
  * (OI pinning for oi_moneyness, wing/directional rebalancing for
- * iv_smile / greek_*), making crowded one-sided positioning into expiry
+ * greek_*), making crowded one-sided positioning into expiry
  * obvious as a line that STAYS away from zero.
  *
  * Markers: a dot at each group's LAST observed gap — labelled "expiry"
  * for matured groups (the convergence endpoint) and "now" for active
  * ones (where each group stands now).
  *
- * Tooltip: gap % per expiry group.
+ * Tooltip: gap % per expiry group; hovering a MATURED group's expiry
+ * date (the dot's column) also shows that group's realized "% of OI
+ * expiring OTM (worthless)" per call/put side — calls with strike ≥
+ * settle, puts with strike ≤ settle — so a far-from-zero terminal gap
+ * can be read as actual unexercised OI, not just a blended average.
  *
  * Colors/order follow the main shared skew chart (expiryBlueColor sorted
  * by |expiryDate − selectedDate|) so lines visually tie to their
  * per-expiry skew curves.
  */
 import React from "react";
-import { useStore } from "@/store/filters";
+import {
+  baseChartOption,
+  commonTooltip,
+} from "@/shared/charts/base-chart";
+import type { ThemeMode } from "@/store/filters";
 import { axisColors, expiryBlueColor } from "@/theme/chart-palette";
 import {
   AXIS_POINTER_LINE,
@@ -39,6 +45,7 @@ import {
 } from "@/theme/chart-palette";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { GREEK_SKEW_PRICE_K } from "./types";
+import type { OtmOiShare } from "../vol-smile/types";
 import type { SharedSkewSpec } from "./types";
 import type { EChartsOption } from "echarts";
 
@@ -47,12 +54,6 @@ export function convergenceTitle(mode: SharedSkewSpec["mode"]): string {
   if (mode === "oi_moneyness") {
     return "OI Convergence (contrarian) — OI-weighted strike vs spot gap, %";
   }
-  if (mode === "iv_smile") {
-    return "Vol Skew Convergence (contrarian) — 25Δ RR skew price vs spot gap, %";
-  }
-  if (mode === "smile_slope") {
-    return "Smile Slope Convergence (contrarian) — full-smile skew price vs spot gap, %";
-  }
   const label = mode.slice("greek_".length);
   const cap = label.charAt(0).toUpperCase() + label.slice(1);
   return `${cap} Balance Convergence (contrarian) — skew price vs spot gap, %`;
@@ -60,15 +61,16 @@ export function convergenceTitle(mode: SharedSkewSpec["mode"]): string {
 
 export function buildSkewConvergenceOption(
   spec: SharedSkewSpec,
+  mode: ThemeMode,
   selectedDate: string,
   dataZoomStart?: number,
   dataZoomEnd?: number,
 ): EChartsOption | null {
-  const { points, mode } = spec;
+  // `mode` is the THEME here; the spec's data-source mode is `skewMode`.
+  const { points, mode: skewMode } = spec;
   if (points.length === 0) return null;
 
-  const themeMode = useStore.getState().themeMode;
-  const c = axisColors(themeMode);
+  const c = axisColors(mode);
   const textColor = c.textColor;
   const splitColor = c.splitLineColor;
 
@@ -99,13 +101,23 @@ export function buildSkewConvergenceOption(
   if (expiryList.length === 0) return null;
 
   const fmtPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
+  const fmtShare = (v: number | null): string =>
+    v == null ? "n/a" : `${Math.round(v * 100)}%`;
+
+  // Expiry-dot payloads for the tooltip: per expiry group, its last observed
+  // index (the dot's date), maturity, and the OTM/worthless OI shares at
+  // that final observation (oi_moneyness only; null for greek_* specs).
+  const expiryMeta = new Map<
+    string,
+    { lastIdx: number; matured: boolean; otm: OtmOiShare | null }
+  >();
 
   // Spot-at-zero calibration: convert the spec's per-expiry skewPct into
   // the skew-price-vs-spot gap in % of spot (see header). Only greek_*
   // modes need the price-space rebase; oi_moneyness / iv_smile skewPct is
   // already the % gap vs spot.
   const gapPctOfSpot = (skewPct: number): number =>
-    mode.startsWith("greek_") ? skewPct * GREEK_SKEW_PRICE_K : skewPct;
+    skewMode.startsWith("greek_") ? skewPct * GREEK_SKEW_PRICE_K : skewPct;
 
   const mkSeries = (exp: string, ei: number) => {
     const color = expiryBlueColor(ei, expiryList.length);
@@ -133,6 +145,11 @@ export function buildSkewConvergenceOption(
     // label the current gap.
     const matured = !!expiryDate && expiryDate <= lastDate;
     const stage = matured ? "expiry" : "now";
+    expiryMeta.set(exp, {
+      lastIdx,
+      matured,
+      otm: points[lastIdx].perExpiry.find((p) => p.expiry === exp)?.otmShare ?? null,
+    });
 
     return {
       name: exp,
@@ -182,12 +199,12 @@ export function buildSkewConvergenceOption(
     .filter((s): s is NonNullable<ReturnType<typeof mkSeries>> => s != null);
   if (series.length === 0) return null;
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  // No legend in the original layout — the per-expiry series are read off
+  // the expiry dots/labels; omit the kit's default legend fragment.
+  return baseChartOption(mode, {
+    legend: null,
     grid: { left: 60, right: 24, top: 24, bottom: 48 },
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(mode, {
       axisPointer: {
         type: "line",
         lineStyle: { color: AXIS_POINTER_LINE, type: "dashed" },
@@ -232,12 +249,29 @@ export function buildSkewConvergenceOption(
               ),
             ]),
           );
+          // Hovering a matured group's expiry dot (its last observed date):
+          // realized % of OI that expired worthless, per side.
+          const meta = expiryMeta.get(p.seriesName ?? "");
+          if (
+            meta != null &&
+            meta.matured &&
+            meta.lastIdx === (p.dataIndex ?? -1) &&
+            meta.otm != null
+          ) {
+            children.push(
+              React.createElement(
+                tooltipComponents.Row,
+                { style: { fontSize: 10, color: "#999", marginLeft: 12 } },
+                `↳ OTM at expiry (worthless): calls ${fmtShare(meta.otm.callShare)} · puts ${fmtShare(meta.otm.putShare)} · all ${fmtShare(meta.otm.allShare)} of OI`,
+              ),
+            );
+          }
         }
         return renderReactElement(
           React.createElement(React.Fragment, null, children),
         );
       },
-    },
+    }),
     xAxis: {
       type: "category",
       data: dates,
@@ -288,5 +322,5 @@ export function buildSkewConvergenceOption(
         end: dataZoomEnd ?? 100,
       },
     ],
-  } as EChartsOption;
+  });
 }

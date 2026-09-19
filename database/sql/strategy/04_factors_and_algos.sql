@@ -20,7 +20,7 @@
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
---  Schema + grants (mirrors 01_trade_decision_seqs.sql; idempotent so this
+--  Schema + grants (mirrors trade_decision_seqs/00_schema.sql; idempotent so this
 --  file can run standalone).
 -- ----------------------------------------------------------------------------
 CREATE SCHEMA IF NOT EXISTS strategy;
@@ -61,6 +61,10 @@ CREATE TABLE IF NOT EXISTS strategy.algo_configs (
     params          JSONB         NOT NULL DEFAULT '{}'::jsonb,
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    -- TRUE = the algo's DEFAULT_PARAMS row (reserved wide range
+    -- 1900-01-01..9999-12-31, never overwritten by training); FALSE = a
+    -- trained row written by _optm_engine persist.
+    is_default      BOOLEAN       NOT NULL DEFAULT FALSE,
 
     CONSTRAINT pk_algo_configs
         PRIMARY KEY (sec_code, sec_type, strategy_name, start_date, end_date),

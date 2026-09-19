@@ -2,7 +2,7 @@
 
 These read the UI's "Market Trend → Hypes & Drains" seasonal table
 (analysis.industry_hypes_seasonal / .industry_hypes_and_drains) and are
-kept only for the live weekly run's anchor resolution and any callers
+kept only for the history backfill's seasonal anchor grid and any callers
 that still read the seasonal ranking. The plan-first agent's candidates
 come from the MA5-deviation episodes (signals.industry) and the broad-
 index triggers (signals.market) instead."""
@@ -16,15 +16,6 @@ from .base import DEFAULT_BENCHMARK, DEFAULT_PERIOD_DAYS, \
 
 TABLE = "analysis.industry_hypes_seasonal"
 DATES_TABLE = "analysis.industry_hypes_and_drains"
-
-AS_OF_DATE_SQL = f"""
-    SELECT MAX(date) AS as_of
-    FROM {DATES_TABLE}
-    WHERE benchmark_code = $1::text
-      AND period_days = $2::int
-      AND weighting = $3::text
-      AND date <= $4::date
-"""
 
 RANKING_DATES_SQL = f"""
     SELECT DISTINCT date
@@ -46,19 +37,6 @@ TOP_SIGNALS_SQL = f"""
       AND rank <= $5::int
     ORDER BY rank_side, rank
 """
-
-
-async def latest_signal_date(
-    conn, *, benchmark_code: str = DEFAULT_BENCHMARK,
-    period_days: int = DEFAULT_PERIOD_DAYS,
-    weighting: str = DEFAULT_WEIGHTING,
-    as_of: Optional[datetime.date] = None,
-) -> Optional[datetime.date]:
-    """Latest ranking date <= *as_of* (today when None); None when absent."""
-    as_of = as_of or datetime.date.today()
-    d = await conn.fetchval(AS_OF_DATE_SQL, benchmark_code, period_days,
-                            weighting, as_of)
-    return d
 
 
 async def fetch_ranking_dates(

@@ -5,18 +5,16 @@
  */
 import React, { useMemo, useState } from "react";
 import {
-  Alert,
   Box,
   Card,
   CardContent,
   CardHeader,
-  CircularProgress,
   IconButton,
 } from "@mui/material";
 import { Close } from "@mui/icons-material";
-import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import RefreshButton from "@/components/RefreshButton";
+import { BaseChart, baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
 import {
   ohlcSeries,
   rebasePriceArrays,
@@ -33,7 +31,6 @@ interface Props {
   name: string;
   date: string;
   data: IndexIntraday5minResponse | null;
-  themeMode: "light" | "dark";
   loading: boolean;
   error: string | null;
   onClose: () => void;
@@ -47,12 +44,12 @@ export default function IntradayPanel({
   name,
   date,
   data,
-  themeMode,
   loading,
   error,
   onClose,
   onRefresh,
 }: Props) {
+  const themeMode = useChartThemeMode();
   // OHLC display mode — "percentage" (default) rebases intraday OHLC to %
   // change from the first bar's close; "absolute" shows raw prices.
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
@@ -78,16 +75,11 @@ export default function IntradayPanel({
       rebased.high[i],
     ]);
 
-    return {
-      backgroundColor: "transparent",
-      animation: false,
+    return baseChartOption(themeMode, {
+      // Single-series expansion — no legend.
+      legend: null,
       grid: { left: 50, right: 20, top: 16, bottom: 28 },
-      tooltip: {
-        trigger: "axis",
-        axisPointer: { type: "cross", snap: true },
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
+      tooltip: commonTooltip(themeMode, {
         formatter: (params: unknown) => {
           const arr = (Array.isArray(params) ? params : [params]) as Array<{
             axisValue?: string;
@@ -127,7 +119,7 @@ export default function IntradayPanel({
 
           return renderReactElement(React.createElement(React.Fragment, null, children));
         },
-      },
+      }),
       xAxis: {
         type: "category",
         data: times,
@@ -153,7 +145,7 @@ export default function IntradayPanel({
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
       series: [ohlcSeries(ohlc, { name: "5min" })],
-    };
+    });
   }, [data, themeMode, ohlcMode]);
 
   return (
@@ -188,17 +180,15 @@ export default function IntradayPanel({
         sx={{ pb: 0.5, "& .MuiCardHeader-content": { overflow: "hidden" } }}
       />
       <CardContent sx={{ pt: 0.5, pb: 1.5, height: 280 }}>
-        <Box sx={{ width: "100%" }}>
-          {loading && (
-            <Box sx={{ display: "flex", justifyContent: "center", py: 4 }}>
-              <CircularProgress size={24} />
-            </Box>
-          )}
-          {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
-          {!loading && !error && data && (
-            <EChart option={option} height={260} />
-          )}
-        </Box>
+        {/* Bare BaseChart: the shared loading / error / chart state machine
+            inside this panel's own Card chrome (close button + toggle row). */}
+        <BaseChart
+          variant="bare"
+          option={data ? option : null}
+          loading={loading}
+          error={error}
+          height={260}
+        />
       </CardContent>
     </Card>
   );

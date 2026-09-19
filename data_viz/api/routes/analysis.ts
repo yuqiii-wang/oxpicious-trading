@@ -203,7 +203,8 @@ router.get("/market-hypes", async (req: Request, res: Response) => {
 // ---- Forecast buckets table (Recent Movements page's 2nd plot; migrated
 //      off the MA-Spread panel) ----
 // GET /api/analysis/mov-ave-spread/forecast?sec_type=etf&code=510050&kind=mov_rsi
-//   kind ∈ {mov_rsi, mov_std, mov_gap, mov_pairs, mov_pairs_ema, px_vol} — returns the code's bucket
+//   kind ∈ {mov_rsi, mov_std, mov_pairs, mov_pairs_ema, px_vol,
+//   margin_ratio, high_low_streaks, pe, dividend} — returns the code's bucket
 //   rows (bucket config incl. cooldown_days + is_market_hyped + mean_t +
 //   mean_z for px_vol / mean_ratio + mean_z for margin_ratio, read from
 //   forecast_results.config) joined 1:1 with their

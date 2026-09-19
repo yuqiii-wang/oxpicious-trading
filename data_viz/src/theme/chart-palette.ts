@@ -342,6 +342,33 @@ export function commonDataZoom(
 }
 
 /**
+ * Shared axis-tooltip config — the dominant tooltip shape across the option
+ * builders: axis trigger with a snapping cross pointer, the themed tooltip
+ * card colors, and an 11px body text. Builders whose chart type needs a
+ * different shape (item-trigger scatter, shadow bars, custom formatters)
+ * override individual keys via `extra` instead of re-declaring the block.
+ */
+export function commonTooltip(
+  mode: ThemeMode,
+  extra: Partial<import("echarts").TooltipComponentOption> = {},
+): import("echarts").TooltipComponentOption {
+  const c = axisColors(mode);
+  return {
+    trigger: "axis",
+    axisPointer: {
+      type: "cross",
+      snap: true,
+      lineStyle: { color: AXIS_POINTER_LINE, type: "dashed", opacity: 0.5 },
+      crossStyle: { color: AXIS_POINTER_LINE, opacity: 0.5 },
+    },
+    backgroundColor: c.tooltipBg,
+    borderColor: c.splitLineColor,
+    textStyle: { color: c.textColor, fontSize: 11 },
+    ...extra,
+  };
+}
+
+/**
  * Resolve the axis/grid/tooltip color set for the given theme mode. Replaces
  * the `axisColors()` / `getAxisColors()` helpers that were duplicated across
  * ~8 chart components.

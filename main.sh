@@ -5,6 +5,7 @@ main() {
 # optional to run on daily
 if [ "${FORCE_DOWNLOADS:-0}" = "1" ] || { [ "$_is_biz_date" = "1" ] && [ "$_cur_hm" -ge 1900 ]; }; then
 for m in \
+  builds.market_hypes \
   analyze.analysis_forecasts \
   analyze.analysis_signals \
   analyze.analysis_composites
@@ -38,12 +39,6 @@ python -m downloads.futures.cffex.archive
 # build, run once
 python -m builds.classification
 python -m builds.sec_info
-
-# always run
-python -m downloads.stream.sse.price
-python -m downloads.stream.szse.price
-python -m downloads.stream.csindex.price
-python -m downloads.stream.cnindex.price
 
 # for strategy — discover all available secs in analysis.mov_ave_spreads_detail,
 # backtest them, then compute internal risk metrics for every run.

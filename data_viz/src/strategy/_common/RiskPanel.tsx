@@ -23,17 +23,25 @@
  * Data comes from /api/strategy/singleton/risks (pre-computed by
  * `python -m strategy._risks`).
  */
-import React, { useCallback, useMemo, useState, type ReactNode } from "react";
+import React, { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Accordion, AccordionDetails, AccordionSummary,
   Box, Chip, Collapse, IconButton, Table, TableBody, TableCell, TableRow, Typography,
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
-import type { EChartsOption } from "echarts";
+import type { ECharts, EChartsOption } from "echarts";
 import EChart from "@/components/EChart";
-import { useStore } from "@/store/filters";
-import { axisColors, commonLegend, UP_COLOR, DOWN_COLOR, MA20_COLOR } from "@/theme/chart-palette";
+import {
+  axisColors,
+  commonLegend,
+  UP_COLOR,
+  DOWN_COLOR,
+  MA20_COLOR,
+} from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import type {
   StrategyRiskResponse,
@@ -109,7 +117,7 @@ export default function RiskPanel({
   selectedPeriod = null,
   onPeriodSelect,
 }: RiskPanelProps) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const [periodType, setPeriodType] = useState<StrategyPeriodType>("month");
 
   const { risk_seq: rs, periods } = risks;
@@ -167,8 +175,7 @@ export default function RiskPanel({
       } as const;
     };
 
-    return {
-      backgroundColor: "transparent",
+    return baseChartOption(themeMode, {
       legend: commonLegend(themeMode, {
         data: [
           "Max Unrealized Loss", "Max Unrealized Gain", "Realized P&L",
@@ -176,12 +183,11 @@ export default function RiskPanel({
           ...(hasFtAmp ? ["FT Amplified P&L"] : []),
         ],
       }),
+      // Hand-tuned margins for the accordion layout — intentionally NOT
+      // commonGrid() defaults.
       grid: { left: 64, right: 24, top: 36, bottom: 40 },
-      tooltip: {
-        trigger: "axis",
+      tooltip: commonTooltip(themeMode, {
         axisPointer: { type: "shadow" },
-        backgroundColor: c.tooltipBg,
-        textStyle: { color: c.textColor, fontSize: 11 },
         formatter: (params: unknown) => {
           const arr = params as Array<{
             dataIndex: number;
@@ -227,7 +233,7 @@ export default function RiskPanel({
           }
           return renderReactElement(React.createElement(React.Fragment, null, children));
         },
-      },
+      }),
       xAxis: {
         type: "category",
         data: labels,
@@ -337,12 +343,52 @@ export default function RiskPanel({
           z: 9,
         }] : []),
       ],
-    };
+    });
   }, [rs, periods, periodType, themeMode, selectedPeriod, onPeriodSelect]);
 
-  if (!rs) {
-    return null;
-  }
+  // Chart instance for the AI Ask screenshot.
+  const riskChartRef = useRef<ECharts | null>(null);
+
+  // AI Ask — semantics for the per-period P&L chart; state carries the
+  // CURRENT period-type tab + selected period so the modal / LLM always
+  // describe the view on screen.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "Per-period strategy P&L (risk analytics): each period draws overlapping bars — " +
+        "translucent back bars for the worst intra-period unrealized MTM dip (red) and peak " +
+        "gain (green), and an opaque front bar for realized P&L (sum of SELLs; concentration " +
+        "hotspots at full opacity) — plus the Accumulated Total P&L equity curve (cumulative " +
+        "realized + unrealized). When the fault-tolerance stress test exists, a dashed teal " +
+        "FT Amplified line parallels it — the gap between the two curves is the realized P&L " +
+        "degradation under the amplified strategy.",
+      instruments: risks.code ? [{ code: risks.code, assetClass: risks.sec_type }] : [],
+      series: [
+        { name: "Max Unrealized Loss", unit: "元", description: "worst (most negative) intra-period MTM dip" },
+        { name: "Max Unrealized Gain", unit: "元", description: "peak (most positive) intra-period MTM gain" },
+        { name: "Realized P&L", unit: "元", description: "sum of SELL realized P&L per period" },
+        { name: "Accumulated Total P&L", unit: "元", description: "cumulative realized + unrealized P&L (equity curve)" },
+        { name: "FT Amplified P&L", unit: "元", description: "stress-test cumulative line — gap vs the equity curve = amplification cost" },
+      ],
+      state: {
+        period_type: periodType,
+        selected_period: selectedPeriod
+          ? `${selectedPeriod.periodType} ${selectedPeriod.periodValue}`
+          : "none",
+      },
+      notes: [
+        "Clicking a bar selects that period (outlined) and shades its date range on the main OHLC chart.",
+      ],
+    }),
+    [risks.code, risks.sec_type, periodType, selectedPeriod],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: "Risk Analytics",
+    subtitle: "Per-period P&L bars + accumulated equity curve",
+    option: chartOption,
+    spec: aiAskSpec,
+    getInstance: () => riskChartRef.current,
+  });
 
   // Bar-click handler: toggles the selected period. Clicking the already-
   // selected bar clears the selection (null); clicking another bar selects
@@ -373,6 +419,10 @@ export default function RiskPanel({
   }, [periods, periodType, onPeriodSelect, selectedPeriod]);
   const chartEvents = onPeriodSelect ? { click: handleBarClick } : undefined;
 
+  if (!rs) {
+    return null;
+  }
+
   return (
     <Accordion
       defaultExpanded={false}
@@ -388,6 +438,7 @@ export default function RiskPanel({
         <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap", mr: 2 }}>
           <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
             Risk Analytics
+            {aiAskAddon}
           </Typography>
           {rs.risk_grade && (
             <Chip
@@ -418,7 +469,14 @@ export default function RiskPanel({
         {/* Risk chart */}
         {chartOption && (
           <Box sx={{ mb: 2 }}>
-            <EChart option={chartOption} height={320} onEvents={chartEvents} />
+            <EChart
+              option={chartOption}
+              height={320}
+              onEvents={chartEvents}
+              onReady={(c) => {
+                riskChartRef.current = c;
+              }}
+            />
           </Box>
         )}
 

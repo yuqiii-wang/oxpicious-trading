@@ -4,7 +4,7 @@ from __future__ import annotations
 # Forward-change horizons (trading days): next-day, 5d, 20d, 60d.
 FORWARD_HORIZONS = (1, 5, 20, 60)
 
-# Horizons with max/min forward-change + max_low_change_ratio columns
+# Horizons with max/min forward-change columns
 # (5d/20d/60d — the next-day horizon has none).
 MM_HORIZONS = (5, 20, 60)
 

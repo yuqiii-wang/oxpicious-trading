@@ -16,7 +16,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 /** One code's forecast bucket table (analysis_forecasts) for `kind`:
- *  mov_rsi / mov_std / mov_gap / mov_pairs / mov_pairs_ema / px_vol /
+ *  mov_rsi / mov_std / mov_pairs / mov_pairs_ema / px_vol /
  *  margin_ratio buckets joined 1:1 with their
  *  analysis_forecasts.forecast_results columns. ALL stat_months of the
  *  code are returned (optionally narrowed to stat_months >= `month`).

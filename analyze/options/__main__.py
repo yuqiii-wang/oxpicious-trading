@@ -31,6 +31,10 @@ Pipeline:
      'greek_gamma' (GEX-style gamma balance) and 'greek_vega' (OTM-wing
      vega balance). theta/rho have no standard positioning skew and are
      not computed (compute/ package: one module per greek).
+  6. Compute the daily per-underlying 30-day model-free implied-vol
+     index (CBOE VIX methodology off raw settlement prices) into
+     analysis.options_vol_index (PK (underlying_code, date), no FK —
+     date-granular, not expiry-granular).
 """
 from __future__ import annotations
 
@@ -80,6 +84,12 @@ from analyze.options.config import (  # noqa: E402
     WALLS_DESCRIPTION,
     WALLS_NUMERIC_COLS,
     WALLS_RESULT_COLUMNS,
+    VOL_INDEX_TABLE_NAME,
+    VOL_INDEX_ANALYSIS_NAME,
+    VOL_INDEX_DESCRIPTION,
+    VOL_INDEX_NUMERIC_COLS,
+    VOL_INDEX_PK_COLUMNS,
+    VOL_INDEX_RESULT_COLUMNS,
 )
 from analyze.options.fetch import (  # noqa: E402
     fetch_options_skewness_rows,
@@ -89,12 +99,15 @@ from analyze.options.fetch import (  # noqa: E402
     fetch_missing_walls_groups,
     fetch_iv_skew_rows,
     fetch_missing_iv_skew_groups,
+    fetch_vol_index_rows,
+    fetch_missing_vol_index_dates,
 )
 from analyze.options.compute import (  # noqa: E402
     compute_options_skewness_stats,
     compute_options_walls,
     compute_options_iv_skew_stats,
     compute_options_iv_smile_corr_stats,
+    compute_options_vol_index,
     GREEK_SKEW_COMPUTERS,
 )
 
@@ -180,7 +193,9 @@ async def _write_rows(
     # pipeline deletes identity content BEFORE the write, so a self-join
     # compares fresh rows (possibly new expiry conventions) against the
     # stale pre-delete key set and silently drops almost everything.
-    if table_name != EXPIRY_IDENTITY_TABLE:
+    # options_vol_index is exempt too: it is date-granular (PK
+    # (underlying_code, date), no expiry dimension, no FK).
+    if table_name not in (EXPIRY_IDENTITY_TABLE, VOL_INDEX_TABLE_NAME):
         result_df = await _fk_filter(conn, result_df)
 
     if force:
@@ -279,6 +294,9 @@ async def _run_expiry_identity_pipeline(
         await conn.execute("DELETE FROM analysis.options_skewness_stats")
         await conn.execute("DELETE FROM analysis.options_iv_skew_stats")
         await conn.execute("DELETE FROM analysis.options_oi_stats")
+        # Not FK-dependent, but --force means a full rebuild of every
+        # options analysis table.
+        await conn.execute("DELETE FROM analysis.options_vol_index")
 
     rows = await fetch_expiry_identity_rows(conn, sec_type)
     logger.info(f"    {len(rows):,} distinct expiry groups")
@@ -652,6 +670,62 @@ async def _run_greek_skew_pipeline(
     return total
 
 
+async def _run_vol_index_pipeline(
+    conn,
+    force: bool,
+    sec_type: str | None = None,
+) -> int:
+    """Run the options_vol_index pipeline.
+
+    Computes the daily per-underlying 30-day model-free implied-vol index
+    (CBOE VIX methodology off raw settlement prices; see
+    compute/vix.py) and writes it to analysis.options_vol_index.
+    Returns number of rows written.
+    """
+    target_pairs: set | None = None
+    if not force:
+        logger.info("\n  Detecting missing (underlying, date) pairs for "
+              "vol index...")
+        missing_list = await fetch_missing_vol_index_dates(conn, sec_type)
+        target_pairs = set(missing_list)
+        logger.info(f"    -> {len(target_pairs):,} missing pairs")
+        if len(target_pairs) == 0:
+            logger.info("    -> DB is up to date; nothing to do.")
+            return 0
+
+    logger.info("\n  [1/3] Fetching option contract rows for vol index...")
+    df = await fetch_vol_index_rows(conn, sec_type)
+    logger.info(f"    {len(df):,} contract-date rows")
+    if df.empty:
+        logger.info("    no data; skipping.")
+        return 0
+
+    logger.info("\n  [2/3] Computing 30d model-free vol index...")
+    result_df = compute_options_vol_index(df)
+    logger.info(f"    {len(result_df):,} (underlying, date) result rows")
+
+    logger.info("\n  [3/3] Writing vol index to DB...")
+    n = await _write_rows(
+        conn, result_df,
+        table_name=VOL_INDEX_TABLE_NAME,
+        numeric_cols=VOL_INDEX_NUMERIC_COLS,
+        force=force,
+        target_pairs=target_pairs,
+        pk_columns=VOL_INDEX_PK_COLUMNS,
+        round_to=6,
+    )
+
+    logger.info("\n  -> Upserting analysis.analysis_identity registry...")
+    await upsert_analysis_identity(
+        conn,
+        name=VOL_INDEX_ANALYSIS_NAME,
+        detail_name="options_vol_index",
+        description=VOL_INDEX_DESCRIPTION,
+    )
+
+    return n
+
+
 class OptionsAnalysis(DataAnalysis):
     """``python -m analyze.options`` — six sequential sub-pipelines.
 
@@ -721,11 +795,17 @@ class OptionsAnalysis(DataAnalysis):
         logger.info("=" * 60)
         n5 = await _run_greek_skew_pipeline(conn, force, sec_type)
 
-        total = n_id + n1 + n2 + n3 + n4 + n5
+        # ---- Pipeline 6: options_vol_index ------------------------------
+        logger.info("\n" + "=" * 60)
+        logger.info("PIPELINE 6: options_vol_index (30d model-free vol index)")
+        logger.info("=" * 60)
+        n6 = await _run_vol_index_pipeline(conn, force, sec_type)
+
+        total = n_id + n1 + n2 + n3 + n4 + n5 + n6
         logger.info(f"\n  TOTAL: {total:,} rows written "
               f"(expiry_identity={n_id:,}, "
               f"skewness={n1:,}, oi={n2:,}, walls={n3:,}, "
-              f"iv_skew={n4:,}, greek_skew={n5:,})")
+              f"iv_skew={n4:,}, greek_skew={n5:,}, vol_index={n6:,})")
 
 
 if __name__ == "__main__":

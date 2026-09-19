@@ -21,9 +21,10 @@
 --    - 02_mov_rsi_mov_std.sql — analysis_forecasts.mov_rsi and
 --      analysis_forecasts.mov_std: the MOTIVATION (bucket-defining)
 --      columns. Each motivation row carries a forecast_id that links to
---      its forecast_results row (1:1, indexed, NOT NULL).
---    - 03_mov_gap.sql — analysis_forecasts.mov_gap: a third motivation
---      table (N-day price-return extreme-percentile buckets).
+--      its forecast_results row (1:1, indexed, NOT NULL). Also retires
+--      the former mov_gap family (N-day price-return extreme-percentile
+--      buckets — table dropped 2026-09, its registry + result rows
+--      purged; the former 03_mov_gap.sql is deleted).
 --    - 04_base_rates.sql — analysis_forecasts.base_rates: the
 --      UNCONDITIONAL same-window base rates (mean forward change +
 --      P(<-1%) / P(>+1%) over all window days) the bucket results are

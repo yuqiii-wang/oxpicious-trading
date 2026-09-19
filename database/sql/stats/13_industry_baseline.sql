@@ -111,16 +111,6 @@
 --    over fewer indices when some lack valuation data).
 -- ============================================================================
 
-DROP TABLE IF EXISTS analysis.industry_sentiments;
-
--- Remove the stale analysis.analysis_identity row for the former
--- analysis.industry_sentiments table. The baseline is now a STATS table
--- owned by builds.industry — stats tables don't register in
--- analysis.analysis_identity (only the downstream analysis steps do:
--- industry_correlations, industry_attributions,
--- industry_etf_contribution, industry_hypes_and_drains).
-DELETE FROM analysis.analysis_identity WHERE name = 'industry_sentiments';
-
 CREATE TABLE IF NOT EXISTS stats.industry_basic_stats (
     date                      DATE          NOT NULL,
     industry_id               TEXT          NOT NULL,
@@ -172,11 +162,6 @@ CREATE TABLE IF NOT EXISTS stats.industry_basic_stats (
 -- Native hash partitions (8) keyed by code — created via the shared util
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'industry_basic_stats', 8);
-
--- Idempotent migration: add the intraday net-move liquidity ratio to
--- pre-existing tables (no-op on fresh installs).
-ALTER TABLE stats.industry_basic_stats
-    ADD COLUMN IF NOT EXISTS trading_amt_per_pct_change NUMERIC(18,6);
 
 -- Indexes for the common access patterns:
 --   1. Per-industry + pool_size time series (drives the chart on the

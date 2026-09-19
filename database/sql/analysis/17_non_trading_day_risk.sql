@@ -40,8 +40,9 @@
 --      ON DELETE CASCADE. Rows only exist for dates already in mov_ave_rsi
 --      — data integrity is guaranteed by the parent pipeline's INNER JOIN
 --      on source tables. The CASCADE lets the identity→rsi FK cascade
---      (03_mov_ave_spreads.sql) flow through: deleting an identity row
---      removes its rsi row AND its holiday row instead of erroring.
+--      (mov_ave_spreads/04_mov_ave_rsi.sql) flow through: deleting an
+--      identity row removes its rsi row AND its holiday row instead of
+--      erroring.
 --
 --  Populated by the internal holiday step of `analyze.mov_ave_spread`
 --  (see holiday.py). Incremental upsert by missing dates; --force truncates

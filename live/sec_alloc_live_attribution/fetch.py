@@ -125,6 +125,78 @@ async def find_live_tick_pairs(
 
 
 # ----------------------------------------------------------------------------
+#  Find tick-eligible (benchmark, date) pairs for an ARBITRARY target date
+#  (--mode compute — the on-demand backfill path, invoked by the API service
+#  when a selected date has no tick rows). Same eligibility rules as the LIVE
+#  finder above, but the target date is the $2 parameter instead of the
+#  latest raw intraday date: the benchmark must have bars ON the target date
+#  AND be in the curated broad-market tag set, and at least one tick-eligible
+#  member must have bars on that date. The loaders' anti-joins make pairs
+#  whose rows already exist natural no-ops (idempotent re-runs), and
+#  fallback-only rows get upgraded to daily-close-basis rows.
+# ----------------------------------------------------------------------------
+_COMPUTE_TICK_PAIRS_SQL = """
+WITH target AS MATERIALIZED (
+    SELECT $2::date AS d
+),
+today_bench AS MATERIALIZED (
+    SELECT DISTINCT i5.code
+    FROM stats.index_intraday_5min i5
+    WHERE i5.date = (SELECT d FROM target)
+      AND i5.close IS NOT NULL
+      AND {curated_filter}
+),
+classified_members AS (
+    SELECT DISTINCT sc.code
+    FROM stats.sec_classification sc
+    WHERE sc.is_active = TRUE
+      AND sc.industry_id IS NOT NULL AND sc.industry_id <> ''
+      AND sc.industry_id <> ALL($3::text[])
+),
+today_member AS MATERIALIZED (
+    SELECT DISTINCT cm.code AS benchmark_code
+    FROM classified_members cm
+    JOIN stats.sec_classification sc2
+        ON sc2.code = cm.code
+       AND sc2.type = ANY($4::text[])
+    JOIN stats.index_intraday_5min mi5
+        ON mi5.code = cm.code
+       AND mi5.date = (SELECT d FROM target)
+       AND mi5.close IS NOT NULL
+)
+SELECT tb.code AS benchmark_code, (SELECT d FROM target) AS tick_date
+FROM today_bench tb
+WHERE EXISTS (
+      SELECT 1 FROM today_member tm
+)
+  AND ($1::text[] IS NULL OR tb.code = ANY($1::text[]))
+ORDER BY tb.code
+""".format(curated_filter=CURATED_BENCHMARK_FILTER)
+
+
+async def find_compute_tick_pairs(
+    conn: asyncpg.Connection,
+    benchmarks: Sequence[str] | None,
+    target_date: datetime.date,
+) -> list[tuple[str, datetime.date]]:
+    """Return ALL tick-eligible (benchmark, target_date) pairs (compute mode).
+
+    ``benchmarks`` = None means every curated benchmark with bars on the
+    target date. An empty result means the date has no raw intraday data
+    (outside the raw table's retention, a non-trading day, or the future).
+    """
+    bench_param = list(benchmarks) if benchmarks else None
+    rows = await conn.fetch(
+        _COMPUTE_TICK_PAIRS_SQL,
+        bench_param,
+        target_date,
+        list(BROAD_EXCLUDED),
+        list(TICK_CLASS_TYPES),
+    )
+    return [(r["benchmark_code"], r["tick_date"]) for r in rows]
+
+
+# ----------------------------------------------------------------------------
 #  Find (benchmark, date) pairs with at least one pending WEIGHTED
 #  tick row: either a genuinely missing (code, time) row, or an existing
 #  FALLBACK row (is_without_trading_amt = TRUE) that can now be UPGRADED to

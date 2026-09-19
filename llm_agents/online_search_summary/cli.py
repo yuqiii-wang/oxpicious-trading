@@ -106,9 +106,10 @@ async def main() -> None:
     p_sum = sub.add_parser(
         "summarize", help="search + LLM summary; --store persists to text.*")
     _add_search_args(p_sum)
-    p_sum.add_argument("--mode", default="native", choices=["native", "compose"],
+    p_sum.add_argument("--mode", default="compose", choices=["native", "compose"],
                        help="native = provider one-shot search-in-chat; "
-                            "compose = search then summarize (default native).")
+                            "compose = search then summarize (default "
+                            "compose — the separated two-step).")
     p_sum.add_argument("--model", default=None,
                        help="Chat model for the summary (provider default).")
     p_sum.add_argument("--store", action="store_true",

@@ -21,7 +21,8 @@ import pandas as pd
 from _common.df_utils import grouped_rolling_agg
 from analyze.options.compute._shared import (
     _DELTA_OTM_MAX,
-    _DELTA_TARGET,
+    _DELTA_TARGET_10,
+    _DELTA_TARGET_25,
     _EXPIRY_GROUP_KEY,
     _SMILE_MIN_CONTRACTS,
     _broadcast_slopes,
@@ -92,9 +93,7 @@ def compute_options_iv_smile_corr_stats(df: pd.DataFrame) -> pd.DataFrame:
     Companion to compute_options_iv_skew_stats: takes the same per-contract
     input frame and runs the shared rolling skewness suite
     (_rolling_skew_suite) on the OI-weighted 3rd standardized moment of IV
-    (smile_skewness). Correlations use the S * smile_skew price basis
-    (same formula as the oi_moneyness rows, so the two data sources'
-    correlations are comparable). The 1%-per-unit display rebase
+    (smile_skewness). The 1%-per-unit display rebase
     (S * (1 + (skew-1)/100), skew=1 sits exactly on the spot curve) is
     applied in the frontend chart only.
 
@@ -145,6 +144,11 @@ def compute_options_iv_skew_stats(df: pd.DataFrame) -> pd.DataFrame:
                           (negative = puts richer = downside hedging demand)
       put_skew_25d    = iv_put25 - atm_iv
       call_skew_25d   = iv_call25 - atm_iv
+      iv_call10       IV of the OTM CALL nearest |delta| = 0.10 (deep wing;
+                      NULL when the strike grid has no near-target contract)
+      iv_put10        IV of the OTM PUT nearest |delta| = 0.10 (same)
+      risk_reversal_10d = iv_call10 - iv_put10 (more crash-sensitive than
+                          the 25Δ RR, but thinner quotes / staler marks)
 
     Per (date, option_type, underlying_code, expiry_date):
       smile_skewness  OI-weighted 3rd standardized moment of IV across
@@ -182,17 +186,19 @@ def compute_options_iv_skew_stats(df: pd.DataFrame) -> pd.DataFrame:
         (out["option_type"] == "CALL")
         & (out["delta"] > 0) & (out["delta"] < _DELTA_OTM_MAX)
     ].copy()
-    otm_call["dist_25d"] = (otm_call["delta"] - _DELTA_TARGET).abs()
+    otm_call["dist_25d"] = (otm_call["delta"] - _DELTA_TARGET_25).abs()
+    otm_call["dist_10d"] = (otm_call["delta"] - _DELTA_TARGET_10).abs()
 
     otm_put = out[
         (out["option_type"] == "PUT")
         & (out["delta"] > -_DELTA_OTM_MAX) & (out["delta"] < 0)
     ].copy()
-    otm_put["dist_25d"] = (otm_put["delta"] + _DELTA_TARGET).abs()
+    otm_put["dist_25d"] = (otm_put["delta"] + _DELTA_TARGET_25).abs()
+    otm_put["dist_10d"] = (otm_put["delta"] + _DELTA_TARGET_10).abs()
 
     pair_key = ["date"] + _IV_GROUP_KEY
 
-    # ---- Step 2: pair-level daily metrics (ATM + 25d wings) -------------
+    # ---- Step 2: pair-level daily metrics (ATM + 25d/10d wings) ---------
     atm = _nearest_row_metric(
         out, "dist_atm", "iv_pct", pair_key, "atm_iv",
     )
@@ -201,6 +207,12 @@ def compute_options_iv_skew_stats(df: pd.DataFrame) -> pd.DataFrame:
     )
     put25 = _nearest_row_metric(
         otm_put, "dist_25d", "iv_pct", pair_key, "iv_put25",
+    )
+    call10 = _nearest_row_metric(
+        otm_call, "dist_10d", "iv_pct", pair_key, "iv_call10",
+    )
+    put10 = _nearest_row_metric(
+        otm_put, "dist_10d", "iv_pct", pair_key, "iv_put10",
     )
 
     spot = (
@@ -211,10 +223,15 @@ def compute_options_iv_skew_stats(df: pd.DataFrame) -> pd.DataFrame:
     daily = spot.merge(atm, on=pair_key, how="left")
     daily = daily.merge(call25, on=pair_key, how="left")
     daily = daily.merge(put25, on=pair_key, how="left")
+    daily = daily.merge(call10, on=pair_key, how="left")
+    daily = daily.merge(put10, on=pair_key, how="left")
 
     daily["risk_reversal_25d"] = daily["iv_call25"] - daily["iv_put25"]
     daily["put_skew_25d"] = daily["iv_put25"] - daily["atm_iv"]
     daily["call_skew_25d"] = daily["iv_call25"] - daily["atm_iv"]
+    # Deeper wing stays NaN when either 10Δ-side contract is missing
+    # (sparse strike grids have no near-|delta|=0.10 quote that day).
+    daily["risk_reversal_10d"] = daily["iv_call10"] - daily["iv_put10"]
 
     if daily.empty:
         return pd.DataFrame(columns=IV_SKEW_RESULT_COLUMNS)

@@ -11,7 +11,6 @@
  *     so the pie chart stays inside the parent box.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { Alert, Box, Button } from "@mui/material";
 import { PieChart as PieChartIcon } from "@mui/icons-material";
 import { Link as LinkIcon } from "@mui/icons-material";
@@ -21,6 +20,7 @@ import LinkedEtfsList from "@/components/LinkedEtfsList";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import RefreshButton from "@/components/RefreshButton";
 import EChart from "@/components/EChart";
+import { makeCodeTrendTooltipFormatter } from "@/components/CodeTrendTooltip";
 import { breakArraysAtGaps, fmtNum } from "@/lib/series";
 import {
   ohlcSeries,
@@ -29,6 +29,9 @@ import {
   type OhlcMode,
 } from "@/lib/ohlc";
 import { fetchIndexIntraday5min, invalidateCacheForUrl } from "@/lib/api-client";
+import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import {
   MA20_COLOR,
   MA60_COLOR,
@@ -53,14 +56,14 @@ import IntradayPanel from "./IntradayPanel";
 
 interface Props {
   index: IndexBundle;
-  themeMode: "light" | "dark";
   /** Optional callback fired when the user clicks ANY date on the chart
    *  (not just intraday-enabled dates). Used by the PE & Dividend analysis
    *  page to highlight the matching month-end row in the stats table. */
   onDateClick?: (date: string) => void;
 }
 
-export default function IndexPanel({ index, themeMode, onDateClick }: Props) {
+export default function IndexPanel({ index, onDateClick }: Props) {
+  const themeMode = useChartThemeMode();
   const allRows = index.rows;
   // OHLC display mode — "percentage" (default) rebases OHLC + MAs to % change
   // from the first valid close; "absolute" shows raw prices.
@@ -160,6 +163,10 @@ export default function IndexPanel({ index, themeMode, onDateClick }: Props) {
   const onDateClickRef = useRef(onDateClick);
   onDateClickRef.current = onDateClick;
 
+  // Chart instance for the AI Ask screenshot — composed with the zrender
+  // cursor/click wiring below (one onReady, both consumers).
+  const aiAskChartRef = useRef<echarts.ECharts | null>(null);
+
   // Per-date cursor + click via zrender (the raw rendering layer).
   const handleReady = useCallback((chart: echarts.ECharts) => {
     const zr = chart.getZr();
@@ -250,65 +257,31 @@ export default function IndexPanel({ index, themeMode, onDateClick }: Props) {
       broken.arrays[1][i],
     ]);
 
-    return {
-      backgroundColor: "transparent",
-      animation: false,
+    return baseChartOption(themeMode, {
       grid: commonGrid({ left: 50, right: 50, bottom: 50 }),
       dataZoom: commonDataZoom(),
-      tooltip: {
-        trigger: "axis",
-        axisPointer: { type: "cross", snap: true },
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
-        formatter: (params: unknown) => {
-          const arr = (Array.isArray(params) ? params : [params]) as Array<{
-            axisValue?: string;
-            marker?: string;
-            seriesName?: string;
-            value?: number | Array<number | string | null>;
-          }>;
-          if (arr.length === 0) return "";
-          const dateStr = (arr[0].axisValue as string) || "";
-
-          const makeHeader = (text: string) =>
-            React.createElement(tooltipComponents.Header, null, text);
-          const makeRow = (children: React.ReactNode, style?: React.CSSProperties) =>
-            React.createElement(tooltipComponents.Row, { style }, children);
-          const makeTextRow = (marker: string, name: string, text: React.ReactNode) =>
-            makeRow([marker, " ", name, ": ", text]);
-          const makeBoldRow = (marker: string, name: string, vstr: string) =>
-            makeTextRow(marker, name, React.createElement(tooltipComponents.Bold, null, vstr));
-          const makeOhlcRow = (marker: string, name: string, o: number | null, h: number | null, l: number | null, c: number | null) =>
-            makeTextRow(marker, name,
-              `O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(c, ohlcMode)}`);
-
-          const children: React.ReactNode[] = [];
-          children.push(makeHeader(dateStr));
-
-          const isPriceSeries = (name: string) =>
-            name === "OHLC" || name === "Close" || name.startsWith("MA");
-          for (const p of arr) {
-            if (p.value == null) continue;
-            const name = p.seriesName ?? "";
-            if (Array.isArray(p.value)) {
-              const [o, cl, l, h] = p.value as Array<number | null>;
-              if (o == null && cl == null && l == null && h == null) continue;
-              children.push(makeOhlcRow(p.marker ?? "", name, o, h, l, cl));
-            } else {
-              const v = p.value as number;
-              if (!Number.isFinite(v)) continue;
-              const vstr = isPriceSeries(name)
-                ? formatPriceValue(v, ohlcMode)
-                : fmtNum(v);
-              const unit = name === "Trading Amt" ? " (亿元)" : "";
-              children.push(makeBoldRow(p.marker ?? "", name, `${vstr}${unit}`));
-            }
-          }
-
-          return renderReactElement(React.createElement(React.Fragment, null, children));
-        },
-      },
+      tooltip: commonTooltip(themeMode, {
+        // Shared code-trend tooltip (components/CodeTrendTooltip.ts): every
+        // stat row carries its daily movement "(+/-change)" vs the previous
+        // tick. The broken arrays map 1:1 — index 8 (amount) is already in
+        // 亿, index 9 is PE.
+        formatter: makeCodeTrendTooltipFormatter({
+          ohlcMode,
+          broken: {
+            dates: broken.dates,
+            open: broken.arrays[0],
+            high: broken.arrays[1],
+            low: broken.arrays[2],
+            close: broken.arrays[3],
+            ma5: broken.arrays[4],
+            ma20: broken.arrays[5],
+            ma60: broken.arrays[6],
+            ma120: broken.arrays[7],
+            amount: broken.arrays[8],
+            pe: broken.arrays[9],
+          },
+        }),
+      }),
       legend: commonLegend(themeMode, { type: "scroll" }),
       xAxis: {
         type: "category",
@@ -433,12 +406,55 @@ export default function IndexPanel({ index, themeMode, onDateClick }: Props) {
           z: 6,
         },
       ],
-    };
+    });
   }, [allRows, themeMode, hasOhlc, ohlcMode]);
 
   const subtitle = hasOhlc
     ? `${index.sector_label} / ${index.industry_label} · OHLC${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120 · Volume · PE`
     : `${index.sector_label} / ${index.industry_label} · Close${ohlcMode === "percentage" ? " %" : ""} + MA5/MA20/MA60/MA120 · Volume · PE`;
+
+  // AI Ask — reading guide for the daily OHLC/MAs/Amount/PE chart; state
+  // carries the CURRENT OHLC mode so the modal / LLM describe the view on
+  // screen. Must stay above the is_dummy early return (hook).
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Daily chart of index ${index.code} ${index.name}: ` +
+        (hasOhlc ? "OHLC candles" : "a close line") +
+        " with MA5/MA20/MA60/MA120 on the left price axis, trading-turnover bars (成交金额, 亿元) " +
+        "on the right axis colored by close-vs-open, and the PE ratio on an offset twin axis. " +
+        "In percentage mode the OHLC + MAs are rebased to % change from the first valid close " +
+        "(raw prices in absolute mode); Amount and PE stay in absolute units. The in-chart " +
+        "dataZoom owns the visible window.",
+      instruments: [{ code: index.code, name: index.name, assetClass: "index" }],
+      series: [
+        {
+          name: hasOhlc ? "OHLC" : "Close",
+          unit: ohlcMode === "percentage" ? "%" : "元",
+          description: hasOhlc ? "daily candlesticks (open/high/low/close)" : "daily closing price",
+        },
+        { name: "MA5", unit: ohlcMode === "percentage" ? "%" : "元", description: "5-day mean of close" },
+        { name: "MA20", unit: ohlcMode === "percentage" ? "%" : "元", description: "20-day mean of close" },
+        { name: "MA60", unit: ohlcMode === "percentage" ? "%" : "元", description: "60-day mean of close" },
+        { name: "MA120", unit: ohlcMode === "percentage" ? "%" : "元", description: "120-day mean of close" },
+        { name: "Trading Amt", unit: "亿元", description: "daily trading turnover (成交金额), bar color = close vs open" },
+        { name: "PE", description: "price/earnings ratio on the offset twin axis" },
+      ],
+      state: { ohlcMode },
+      notes: [
+        "Percentage mode rebases OHLC + MAs to % change from the first valid close; Amount and PE are never rebased.",
+        "Clicking a date that has 5-min intraday bars (pointer cursor) expands the intraday chart below.",
+      ],
+    }),
+    [index.code, index.name, hasOhlc, ohlcMode],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: `${index.code} · ${index.name}`,
+    subtitle,
+    option,
+    spec: aiAskSpec,
+    getInstance: () => aiAskChartRef.current,
+  });
 
   // Dummy indices have no OHLC data — show a "No data" placeholder instead
   // of rendering an empty chart.
@@ -468,11 +484,19 @@ export default function IndexPanel({ index, themeMode, onDateClick }: Props) {
     <ChartCard
       title={`${index.code} · ${index.name}`}
       subtitle={subtitle}
+      titleAddon={aiAskAddon}
       height={cardHeight}
       action={<OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />}
     >
       <Box sx={{ width: "100%" }}>
-        <EChart option={option} height={250} onReady={handleReady} />
+        <EChart
+          option={option}
+          height={250}
+          onReady={(c) => {
+            aiAskChartRef.current = c;
+            handleReady(c);
+          }}
+        />
 
         {/* Intraday 5-min expansion */}
         {intradayDate && (
@@ -481,7 +505,6 @@ export default function IndexPanel({ index, themeMode, onDateClick }: Props) {
             name={index.name}
             date={intradayDate}
             data={intradayData}
-            themeMode={themeMode}
             loading={intradayLoading}
             error={intradayError}
             onClose={() => {

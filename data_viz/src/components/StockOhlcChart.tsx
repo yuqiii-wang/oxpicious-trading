@@ -25,10 +25,13 @@
  * shown in the axis tooltip when the user hovers the event day.
  */
 import React, { useCallback, useEffect, useMemo, useRef, memo } from "react";
-import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import EChart from "@/components/EChart";
+import {
+  makeCodeTrendTooltipFormatter,
+  type CodeTrendStreakInfo,
+} from "@/components/CodeTrendTooltip";
 import { useStore } from "@/store/filters";
-import { breakArraysAtGaps, fmtNum, fmtMil, safeMa } from "@/lib/series";
+import { breakArraysAtGaps, fmtNum, safeMa } from "@/lib/series";
 import {
   ohlcSeries,
   rebasePriceArrays,
@@ -47,14 +50,13 @@ import {
   TRIGGER_DATE_COLOR,
   TRIGGER_DATE_FILL,
   TRIGGER_STREAK_FILL,
-  TRIGGER_STREAK_COLOR,
   UP_COLOR,
   DOWN_COLOR,
   axisColors,
-  commonLegend,
   commonGrid,
   commonDataZoom,
 } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import type {
   MovAveSpreadHypeEpisode,
   StockBaselineRow,
@@ -183,9 +185,13 @@ interface Props {
    *  seq is never re-applied); non-trading dates snap to the next trading
    *  day. Only meaningful when dataZoomStart is set. */
   focusDateRequest?: { date: string; seq: number } | null;
+  /** Passthrough fired with the live instance once the chart is ready —
+   *  lets an embedding card capture it (e.g. AI Ask screenshots) without
+   *  touching the option / zoom logic below. */
+  onChartReady?: (instance: ECharts) => void;
 }
 
-function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, hypeEpisodes, tradeSignals = NO_TRADE_SIGNALS, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, onHighlightSettled, onVisibleRangeChange, focusDateRequest }: Props) {
+function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, hypeEpisodes, tradeSignals = NO_TRADE_SIGNALS, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, onHighlightSettled, onVisibleRangeChange, focusDateRequest, onChartReady }: Props) {
   const themeMode = useStore((s) => s.themeMode);
 
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
@@ -205,7 +211,7 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
   // the axis tooltip formatter at hover time (declared here so the
   // option closure can reference it; the overlay memo below refreshes
   // it on every highlight change — no option rebuild on a row click).
-  const streakInfoByDateRef = useRef<Map<string, { days: number | null; start: string; end: string }>>(new Map());
+  const streakInfoByDateRef = useRef<Map<string, CodeTrendStreakInfo>>(new Map());
 
   const option = useMemo<EChartsOption>(() => {
     const c = axisColors(themeMode);
@@ -656,144 +662,42 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
       });
     }
 
-    return {
-      backgroundColor: "transparent",
-      animation: false,
+    return baseChartOption(themeMode, {
       grid: commonGrid({ left: 50, right: hasPe ? 60 : 50, bottom: enableDataZoom ? 50 : 28 }),
-      dataZoom: enableDataZoom ? commonDataZoom({}, dataZoomStart, dataZoomEnd ?? 100) : undefined,
-      tooltip: {
-        trigger: "axis",
-        axisPointer: { type: "cross", snap: true },
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
-        formatter: (params: unknown) => {
-          const arr = (Array.isArray(params) ? params : [params]) as Array<{
-            axisValue?: string;
-            marker?: string;
-            seriesName?: string;
-            value?: Array<number | null> | number;
-          }>;
-          if (arr.length === 0) return "";
-          const dateStr = (arr[0].axisValue as string) || "";
-
-          const makeHeader = (text: string) =>
-            React.createElement(tooltipComponents.Header, null, text);
-          const makeRow = (children: React.ReactNode, style?: React.CSSProperties) =>
-            React.createElement(tooltipComponents.Row, { style }, children);
-          const makeTextRow = (marker: string, name: string, text: React.ReactNode) =>
-            makeRow([marker, " ", name, ": ", text]);
-          const makeBoldRow = (marker: string, name: string, vstr: string) =>
-            makeTextRow(marker, name, React.createElement(tooltipComponents.Bold, null, vstr));
-          const makeOhlcRow = (marker: string, name: string, o: number | null, h: number | null, l: number | null, c: number | null) =>
-            makeTextRow(marker, name,
-              `O=${formatPriceValue(o, ohlcMode)} H=${formatPriceValue(h, ohlcMode)} L=${formatPriceValue(l, ohlcMode)} C=${formatPriceValue(c, ohlcMode)}`);
-
-          const children: React.ReactNode[] = [];
-          children.push(makeHeader(dateStr));
-
-          const div = dividendByDate.get(dateStr);
-          if (div) {
-            const dps = div.dividend_per_share_pre_tax;
-            const dpsStr = dps != null ? `¥${fmtNum(dps, 4)}/share` : "n/a";
-            const totStr = div.total_dividend_wan != null
-              ? ` · ¥${fmtNum(div.total_dividend_wan, 0)}万 total`
-              : "";
-            children.push(makeRow([
-              React.createElement("span", { style: { color: DIVIDEND_COLOR } }, "◆"),
-              " ",
-              React.createElement(tooltipComponents.Bold, { style: { color: DIVIDEND_COLOR } }, "Dividend"),
-              ` · ${dpsStr}${totStr}`,
-            ], { marginBottom: 4 }));
-          }
-
-          // Trade-signal rows — one per live_signals record of the day.
-          const daySignals = signalsByDate.get(dateStr) ?? [];
-          for (const s of daySignals) {
-            const buy = s.action === "buy";
-            const color = buy ? UP_COLOR : DOWN_COLOR;
-            children.push(makeRow([
-              React.createElement("span", { style: { color } }, buy ? "▲" : "▼"),
-              " ",
-              React.createElement(
-                tooltipComponents.Bold,
-                { style: { color } },
-                buy ? "BUY" : "SELL",
-              ),
-              ` · ${s.signal_type} · ${s.signal_sub_type}`,
-              ` (conf ${s.confidence})`,
-            ]));
-          }
-
-          // Forecast streak row — when the hovered day sits inside one of
-          // the trigger overlay's dark-purple streak spans (the qualifying
-          // run behind a merged signal), report the run: its trading-day
-          // count (forecast_results streak_days) and the span. The map is
-          // refreshed by the trigger overlay memo — reading the ref here
-          // keeps the option build independent of the highlight state.
-          const streak = streakInfoByDateRef.current.get(dateStr);
-          if (streak) {
-            const daysStr = streak.days != null ? ` · ${streak.days}d` : "";
-            children.push(makeRow([
-              React.createElement("span", { style: { color: TRIGGER_STREAK_COLOR } }, "▬"),
-              " ",
-              React.createElement(
-                tooltipComponents.Bold,
-                { style: { color: TRIGGER_STREAK_COLOR } },
-                "Streak",
-              ),
-              ` · ${streak.start} → ${streak.end}${daysStr}`,
-            ]));
-          }
-
-          const isPriceSeries = (name: string) =>
-            name === "OHLC" || name === "Close" || name.startsWith("MA");
-          for (const p of arr) {
-            if (p.value == null) continue;
-            const name = p.seriesName ?? "";
-            if (Array.isArray(p.value)) {
-              const [o, cl, l, h] = p.value;
-              if (o == null && cl == null && l == null && h == null) continue;
-              children.push(makeOhlcRow(p.marker ?? "", name, o, h, l, cl));
-            } else {
-              const v = p.value as number;
-              if (!Number.isFinite(v)) continue;
-              let vstr: string;
-              if (name === "Amount") {
-                vstr = fmtNum(v) + " 亿";
-              } else if (name === "cash borrow balance") {
-                vstr = fmtMil(rzByDate.get(dateStr) ?? null);
-              } else if (name === "sec borrow balance") {
-                vstr = fmtMil(rqByDate.get(dateStr) ?? null);
-              } else if (name.includes("remained")) {
-                vstr = fmtMil(v);
-              } else if (name.includes("RZ") || name.includes("RQ")) {
-                vstr = fmtNum(v);
-              } else if (isPriceSeries(name)) {
-                vstr = formatPriceValue(v, ohlcMode);
-              } else if (name === "PE" || name === "PE (est)") {
-                vstr = fmtNum(v, 2);
-              } else {
-                vstr = formatPriceValue(v, ohlcMode);
-              }
-              children.push(makeBoldRow(p.marker ?? "", name, vstr));
-            }
-          }
-
-          const epsVal = epsByDate.get(dateStr);
-          if (epsVal != null && Number.isFinite(epsVal)) {
-            children.push(makeRow([
-              React.createElement("span", { style: { color: PE_COLOR } }, "●"),
-              " ",
-              "EPS: ",
-              React.createElement(tooltipComponents.Bold, null, `¥${fmtNum(epsVal, 4)}`),
-            ]));
-          }
-
-          return renderReactElement(React.createElement(React.Fragment, null, children));
-        },
-      },
-      legend: commonLegend(themeMode, { type: "scroll" }),
+      ...(enableDataZoom
+        ? { dataZoom: commonDataZoom({}, dataZoomStart, dataZoomEnd ?? 100) }
+        : {}),
+      tooltip: commonTooltip(themeMode, {
+        // Shared code-trend tooltip (CodeTrendTooltip.tsx): every stat row
+        // carries its daily movement "(+/-change)" vs the previous tick.
+        // broken.amount is passed in the plotted 亿 scale (raw yuan / 1e8).
+        formatter: makeCodeTrendTooltipFormatter({
+          ohlcMode,
+          broken: {
+            dates: broken.dates,
+            open: broken.arrays[0],
+            high: broken.arrays[1],
+            low: broken.arrays[2],
+            close: broken.arrays[3],
+            ma5: broken.arrays[4],
+            ma20: broken.arrays[5],
+            ma60: broken.arrays[6],
+            ma120: broken.arrays[7],
+            pe: broken.arrays[8],
+            amount: broken.arrays[BROKEN_AMT_IDX].map(
+              (v) => (v != null && Number.isFinite(v) ? v / 1e8 : null),
+            ),
+          },
+          rzByDate,
+          rqByDate,
+          epsByDate,
+          dividendByDate,
+          signalsByDate,
+          streakInfoByDateRef,
+        }),
+      }),
+      // legend: base default commonLegend(mode) == the previous explicit
+      // commonLegend(themeMode, { type: "scroll" }).
       xAxis: {
         type: "category",
         data: broken.dates,
@@ -808,7 +712,7 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
       },
       yAxis,
       series,
-    };
+    });
   }, [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd, hypeEpisodes, tradeSignals]);
 
   // ---- Forecast trigger-day overlay (imperative incremental update) -----
@@ -837,7 +741,7 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
     // qualifying-run span maps to that run's day count + full [start,
     // end] (the span dates, not the clipped ones). Runs of one bucket
     // are disjoint, so first span wins on the (impossible) overlap.
-    const streakInfo = new Map<string, { days: number | null; start: string; end: string }>();
+    const streakInfo = new Map<string, CodeTrendStreakInfo>();
     for (const s of highlightSpans) {
       let a = rowIdx.get(s.start);
       const b = rowIdx.get(s.end);
@@ -1056,6 +960,7 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
       height={height}
       onReady={(c) => {
         chartRef.current = c;
+        onChartReady?.(c);
       }}
       onCanvasClick={onDateClick ? (idx) => {
         const date = chartDates[idx];
@@ -1069,3 +974,4 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
 // chartOptions in callers) let unrelated parent re-renders — chip
 // mounts, spinner flips, row selection — skip this subtree entirely.
 export default memo(StockOhlcChart);
+

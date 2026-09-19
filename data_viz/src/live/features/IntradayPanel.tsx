@@ -14,7 +14,7 @@
  * are rendered below the intraday chart — same shared component used by the
  * Index Baseline and ETF + Margin pages.
  */
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import { Box, Button, Stack } from "@mui/material";
 import { PieChart as PieChartIcon } from "@mui/icons-material";
@@ -36,10 +36,16 @@ import {
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
-import { useStore } from "@/store/filters";
+import {
+  baseChartOption,
+  commonTooltip,
+  useChartThemeMode,
+} from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import { invalidateCacheForUrl } from "@/lib/api-client";
 import type { LiveDataBundle } from "@shared/types";
-import type { EChartsOption, CustomSeriesRenderItem } from "echarts";
+import type { ECharts, EChartsOption, CustomSeriesRenderItem } from "echarts";
 
 interface Props {
   bundle: LiveDataBundle;
@@ -54,7 +60,7 @@ interface Props {
 }
 
 export default function IntradayPanel({ bundle, date, hasVolume, showComposition = false }: Props) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
 
   // Lifted composition panel open state — controls ChartCard height so the
@@ -225,16 +231,9 @@ export default function IntradayPanel({ bundle, date, hasVolume, showComposition
       return mins > 11 * 60 + 30 && mins < 13 * 60;
     };
 
-    return {
-      backgroundColor: "transparent",
-      animation: false,
+    return baseChartOption(themeMode, {
       grid: commonGrid({ left: 50, right: hasVolume ? 56 : 50, bottom: 28 }),
-      tooltip: {
-        trigger: "axis",
-        axisPointer: { type: "cross", snap: true },
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
+      tooltip: commonTooltip(themeMode, {
         formatter: (params: unknown) => {
           const arr = (Array.isArray(params) ? params : [params]) as Array<{
             axisValue?: string | number;
@@ -284,7 +283,7 @@ export default function IntradayPanel({ bundle, date, hasVolume, showComposition
 
           return renderReactElement(React.createElement(React.Fragment, null, children));
         },
-      },
+      }),
       legend: commonLegend(themeMode, { type: "scroll" }),
       xAxis: {
         type: "time",
@@ -301,10 +300,61 @@ export default function IntradayPanel({ bundle, date, hasVolume, showComposition
       },
       yAxis,
       series,
-    };
+    });
   }, [bundle, date, themeMode, ohlcMode, hasVolume]);
 
-  const subtitle = `${bundle.sector_label} / ${bundle.industry_label} · ${date} · 5-min OHLC${hasVolume ? " + Volume" : ""}${ohlcMode === "percentage" ? " (% change)" : ""} · ${bundle.bars.length} bars`;
+  // Card subtitle — operational context only (sector/industry, day, chart
+  // type, mode); the bar count lives in the AI Ask notes below.
+  const subtitle = `${bundle.sector_label} / ${bundle.industry_label} · ${date} · 5-min OHLC${hasVolume ? " + Volume" : ""}${ohlcMode === "percentage" ? " (% change)" : ""}`;
+
+  // Chart instance for the AI Ask screenshot.
+  const aiAskChartRef = useRef<ECharts | null>(null);
+
+  // AI Ask — reading guide lifted from the panel header doc; state carries
+  // the CURRENT OHLC mode so the modal / LLM describe the view on screen.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Single-code 5-minute intraday chart of ${bundle.code} ${bundle.name} for trading day ` +
+        `${date}: OHLC bars colored green/red on close-vs-open on a true time axis pinned to ` +
+        "09:30–15:30 (the lunch break 11:30–13:00 shows as a gap; post-market bars are " +
+        "excluded)" +
+        (hasVolume ? ", with volume bars on a twin right axis sharing the same coloring" : "") +
+        ". In percentage mode the bars are rebased to % change from the first bar's close " +
+        "(raw prices in absolute mode); volume stays in absolute shares.",
+      instruments: [{ code: bundle.code, name: bundle.name }],
+      window: { start: date, end: date, granularity: "intraday" },
+      series: [
+        {
+          name: "OHLC",
+          unit: ohlcMode === "percentage" ? "%" : "元",
+          description: "5-minute candles (open/high/low/close), green when close ≥ open",
+        },
+        ...(hasVolume
+          ? [{ name: "Volume", unit: "shares", description: "5-minute volume bars on the twin axis" }]
+          : []),
+      ],
+      state: { ohlcMode },
+      suggestedQuestions: [
+        "How did price develop versus the open — gap-and-go, fade, or range?",
+        "When did volume cluster today, and what did price do at those bursts?",
+        "Is the tape trending or mean-reverting through the session?",
+      ],
+      notes: [
+        "Percentage mode rebases OHLC to % change from the first bar's close; volume is not rebased.",
+        "The x-axis is pinned to trading hours 09:30–15:30 — the lunch break renders as a gap.",
+        `${bundle.bars.length} 5-minute bars on the day.`,
+      ],
+    }),
+    [bundle.code, bundle.name, bundle.bars.length, date, hasVolume, ohlcMode],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: `${bundle.code} · ${bundle.name}`,
+    subtitle,
+    option,
+    spec: aiAskSpec,
+    getInstance: () => aiAskChartRef.current,
+  });
 
   // Dynamic card height: baseline when collapsed; expand when the composition
   // panel opens; expand further when the per-stock OHLC is open.
@@ -317,6 +367,7 @@ export default function IntradayPanel({ bundle, date, hasVolume, showComposition
     <ChartCard
       title={`${bundle.code} · ${bundle.name}`}
       subtitle={subtitle}
+      titleAddon={aiAskAddon}
       action={
         <Stack direction="row" spacing={0.5} alignItems="center">
           <OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />
@@ -325,7 +376,13 @@ export default function IntradayPanel({ bundle, date, hasVolume, showComposition
       height={cardHeight}
     >
       <Box sx={{ width: "100%" }}>
-        <EChart option={option} height={280} />
+        <EChart
+          option={option}
+          height={280}
+          onReady={(c) => {
+            aiAskChartRef.current = c;
+          }}
+        />
 
         {showComposition && (
           <>

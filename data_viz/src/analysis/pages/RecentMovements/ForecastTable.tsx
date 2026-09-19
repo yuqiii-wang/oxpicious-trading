@@ -2,11 +2,10 @@
  * ForecastTable — the Recent Movements page's 2nd plot (migrated from the
  * MA-Spread panel): one code's extreme-day bucket table from the
  * analysis_forecasts schema, chosen by the parent's dropdown (mov_rsi = RSI
- * extreme-percentile buckets, mov_std = Bollinger breach buckets, mov_gap =
- * N-day price-return extreme-percentile buckets, mov_pairs = MA5-vs-MA
- * golden/death cross buckets, mov_pairs_ema = the EMA6-vs-EMA sibling,
- * px_vol = σ-standardized
- * price-speed × z-scored log amount-LEVEL state cells).
+ * extreme-percentile buckets, mov_std = Bollinger breach buckets,
+ * mov_pairs = MA golden/death cross buckets (fast legs ma5 + the
+ * close price), mov_pairs_ema = the EMA6-vs-EMA sibling (fast legs
+ * ema6 + the close price), px_vol = σ-standardized price-speed × z-scored log amount-LEVEL state cells).
  * Rendered by the globally shared ExpandedTable (layered header + per-column
  * header filters); this file only supplies the column args and the toolbar.
  *
@@ -16,10 +15,11 @@
  *     that month's rows; its min bound (end − 5y — the buckets'
  *     trailing stats window) is auto-frozen as a caption),
  *     window (rsi_window /
- *     ma_window / gap_window, ticks), width (pct / k, ticks), side (ticks),
- *     hyped (ticks); mov_pairs / mov_pairs_ema instead
- *     show the pair ("5 vs {W}" / "6 vs {W}", the ma5_vs_ma{W} /
- *     ema6_vs_ema{W} spread whose sign flip triggers) with
+ *     ma_window, ticks), width (pct / k, ticks), side (ticks),
+ *     hyped (ticks); the pair families (mov_pairs / mov_pairs_ema)
+ *     instead show the pair ("{fast leg} vs {W}" — 5 / 6 / close, the
+ *     ma5_vs_ma{W} / price_vs_ma{W} / ema6_vs_ema{W} /
+ *     price_vs_ema{W} spread whose sign flip triggers) with
  *     the cross side (golden / death); px_vol instead shows speed
  *     (px_speed) × volume (vol_state) with no cooldown (state cells);
  *     high_low_streaks instead shows the audited band (band_period
@@ -83,7 +83,6 @@ import type {
   HighLowStreaksForecastRow,
   MaSpreadSecType,
   MarginRatioForecastRow,
-  MovGapForecastRow,
   MovPairsEmaForecastRow,
   MovPairsForecastRow,
   MovRsiForecastRow,
@@ -94,7 +93,7 @@ import type {
 } from "@shared/types";
 
 /** Union of all bucket row shapes — config columns read via this. */
-type ForecastRow = MovRsiForecastRow | MovStdForecastRow | MovGapForecastRow | MovPairsForecastRow | MovPairsEmaForecastRow | PxVolForecastRow | MarginRatioForecastRow | HighLowStreaksForecastRow | PeForecastRow | DividendForecastRow;
+type ForecastRow = MovRsiForecastRow | MovStdForecastRow | MovPairsForecastRow | MovPairsEmaForecastRow | PxVolForecastRow | MarginRatioForecastRow | HighLowStreaksForecastRow | PeForecastRow | DividendForecastRow;
 
 /** Fractional change → signed % string, colored green/red. */
 function ChangeCell({ v }: { v: number | null }) {
@@ -124,23 +123,9 @@ function ProbCell({ v }: { v: number | null }) {
   return <>{(v * 100).toFixed(1)}%</>;
 }
 
-/** Within-period close SWING ratio (1 + max path high) / (1 + min path
- *  low) across the bucket's trigger days' forward windows — the highest
- *  close reached vs the lowest touched (signed extremes, so ≥ 1 and
- *  larger = a wider realized swing). NOT the row's max/min endpoint
- *  columns (those are single per-horizon endpoints; the swing pairs the
- *  path extremes within each window). */
-function RatioCell({ v }: { v: number | null }) {
-  if (v == null || !Number.isFinite(v)) {
-    return <Typography component="span" variant="inherit" color="text.disabled">—</Typography>;
-  }
-  return <>{v.toFixed(3)}</>;
-}
-
 /** The 4 forward horizons — toggle options + their result column names.
  *  Layout differs: the next-day horizon has only mean + std + P>1% + days,
- *  the 5d/20d/60d horizons add close-based max/min changes and the mean
- *  within-window close swing amplitude (max_low_change_ratio, max/low). */
+ *  the 5d/20d/60d horizons add close-based max/min changes. */
 interface HorizonCols {
   label: string;
   /** forecast_results.period key of this horizon (the clicked row's
@@ -151,8 +136,6 @@ interface HorizonCols {
   changeCols: string[];
   /** Std-dev column of the horizon's forward changes (all horizons). */
   stdCol: string;
-  /** Best-to-worst outcome-ratio column; null at the next horizon. */
-  mlrCol: string | null;
   probCol: string;
   occCol: string;
 }
@@ -163,7 +146,6 @@ const HORIZONS: Record<HorizonKey, HorizonCols> = {
     period: "next",
     changeCols: ["ave_next_change"],
     stdCol: "std_next_change",
-    mlrCol: null,
     probCol: "reverse_prob",
     occCol: "occurrence_count_next",
   },
@@ -172,7 +154,6 @@ const HORIZONS: Record<HorizonKey, HorizonCols> = {
     period: "5d",
     changeCols: ["ave_next_5d_change", "max_5d_change", "min_5d_change"],
     stdCol: "std_next_5d_change",
-    mlrCol: "max_low_change_ratio_5d",
     probCol: "reverse_prob_5d",
     occCol: "occurrence_count_5d",
   },
@@ -181,7 +162,6 @@ const HORIZONS: Record<HorizonKey, HorizonCols> = {
     period: "20d",
     changeCols: ["ave_next_20d_change", "max_20d_change", "min_20d_change"],
     stdCol: "std_next_20d_change",
-    mlrCol: "max_low_change_ratio_20d",
     probCol: "reverse_prob_20d",
     occCol: "occurrence_count_20d",
   },
@@ -190,7 +170,6 @@ const HORIZONS: Record<HorizonKey, HorizonCols> = {
     period: "60d",
     changeCols: ["ave_next_60d_change", "max_60d_change", "min_60d_change"],
     stdCol: "std_next_60d_change",
-    mlrCol: "max_low_change_ratio_60d",
     probCol: "reverse_prob_60d",
     occCol: "occurrence_count_60d",
   },
@@ -252,14 +231,10 @@ interface ConfigCol {
   width: number;
 }
 
-/** mov_rsi / mov_gap bucket-config columns (the pct percentile families
- *  share the same layout; only the window key + label differ) — stat_month,
- *  window, side, pct, is_market_hyped. */
-function pctConfigCols(
-  winKey: "rsi_window" | "gap_window",
-  winLabel: string,
-): ConfigCol[] {
-  const pctRow = (r: ForecastRow) => r as MovRsiForecastRow & MovGapForecastRow;
+/** mov_rsi bucket-config columns (the pct percentile family) —
+ *  stat_month, window, side, pct, is_market_hyped. */
+function pctConfigCols(): ConfigCol[] {
+  const pctRow = (r: ForecastRow) => r as MovRsiForecastRow;
   return [
     {
       key: "stat_month",
@@ -269,7 +244,7 @@ function pctConfigCols(
       align: "left",
       width: 150,
     },
-    { key: winKey, label: winLabel, value: (r) => String(pctRow(r)[winKey]), align: "right", width: 62 },
+    { key: "rsi_window", label: "RSI win", value: (r) => String(pctRow(r).rsi_window), align: "right", width: 62 },
     { key: "pct", label: "pct", value: (r) => String(pctRow(r).pct), render: (r) => `${pctRow(r).pct}%`, align: "right", width: 46 },
     { key: "side", label: "side", value: (r) => r.side, render: (r) => (
         <Box component="span" sx={{ color: r.side === "top" || r.side === "upper" ? UP_COLOR : DOWN_COLOR, fontWeight: 600 }}>
@@ -327,10 +302,15 @@ function stdConfigCols(): ConfigCol[] {
 }
 
 /** mov_pairs / mov_pairs_ema bucket-config columns — stat_month, pair
- *  ("{fastLeg} vs {W}" — the ma5_vs_ma{W} / ema6_vs_ema{W} spread whose
- *  sign flip is the trigger), side, is_market_hyped.
+ *  ("{fastLeg} vs {W}" — the ma5_vs_ma{W} / price_vs_ma{W} /
+ *  ema6_vs_ema{W} / price_vs_ema{W} spread whose sign flip is the
+ *  trigger; the fast leg reads off the row), side, is_market_hyped.
  *  Event buckets (cross days), like the pct families. */
-function pairsConfigCols(fastLeg: number): ConfigCol[] {
+const PAIR_FAST_LEG_LABEL: Record<string, string> = {
+  ma5: "5", ema6: "6", price: "close",
+};
+
+function pairsConfigCols(): ConfigCol[] {
   const pr = (r: ForecastRow) => r as MovPairsForecastRow;
   return [
     {
@@ -345,9 +325,10 @@ function pairsConfigCols(fastLeg: number): ConfigCol[] {
       key: "pair_window",
       label: "pair",
       value: (r) => String(pr(r).pair_window),
-      render: (r) => `${fastLeg} vs ${pr(r).pair_window}`,
+      render: (r) =>
+        `${PAIR_FAST_LEG_LABEL[pr(r).fast_leg] ?? pr(r).fast_leg} vs ${pr(r).pair_window}`,
       align: "right",
-      width: 68,
+      width: 82,
     },
     {
       key: "side",
@@ -768,7 +749,6 @@ function ForecastTableImpl({ code, secType, kind, onRowClick, selectedRowKey, fo
   const columns = useMemo<ExpandedTableColumn<ForecastRow>[]>(
     () => {
     const isRsi = kind === "mov_rsi";
-    const isGap = kind === "mov_gap";
     const isPairs = kind === "mov_pairs";
     const isPairsEma = kind === "mov_pairs_ema";
     const isPxVol = kind === "px_vol";
@@ -778,22 +758,20 @@ function ForecastTableImpl({ code, secType, kind, onRowClick, selectedRowKey, fo
     const isDiv = kind === "dividend";
     const h = HORIZONS[horizon];
     const configCols = isRsi
-      ? pctConfigCols("rsi_window", "RSI win")
-      : isGap
-        ? pctConfigCols("gap_window", "Gap win")
-        : isPairs
-          ? pairsConfigCols(5)
-          : isPairsEma
-            ? pairsConfigCols(6)
-            : isPxVol
-              ? pxVolConfigCols()
-              : isMarginRatio
-                ? marginRatioConfigCols()
-                : isHls
-                  ? hlsConfigCols()
-                  : (isPe || isDiv)
-                    ? valStateConfigCols()
-                    : stdConfigCols();
+      ? pctConfigCols()
+      : isPairs
+        ? pairsConfigCols()
+        : isPairsEma
+          ? pairsConfigCols()
+          : isPxVol
+                ? pxVolConfigCols()
+                : isMarginRatio
+                  ? marginRatioConfigCols()
+                  : isHls
+                    ? hlsConfigCols()
+                    : (isPe || isDiv)
+                      ? valStateConfigCols()
+                      : stdConfigCols();
 
     return [
     ...configCols.map((c) => ({
@@ -931,19 +909,6 @@ function ForecastTableImpl({ code, secType, kind, onRowClick, selectedRowKey, fo
       render: (r: ForecastRow) => <PctCell v={pctVal(r, h.stdCol)} />,
       filter: { type: "range" as const, value: (r: ForecastRow) => pctVal(r, h.stdCol) },
     },
-    ...(h.mlrCol != null
-      ? [
-          {
-            key: h.mlrCol,
-            label: "max/low",
-            align: "right" as const,
-            width: 64,
-            group: h.label,
-            render: (r: ForecastRow) => <RatioCell v={numVal(r, h.mlrCol!)} />,
-            filter: { type: "range" as const, value: (r: ForecastRow) => numVal(r, h.mlrCol!) },
-          },
-        ]
-      : []),
     {
       key: h.probCol,
       label: "P>1%",

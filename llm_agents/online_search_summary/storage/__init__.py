@@ -10,7 +10,9 @@ the per-reference resolution that decides WHERE each citation lands:
     fetch + markitdown extraction (the verification network calls).
   * ``resolve``  — RefResolver: corpus match -> ddgs + markitdown
     verification -> null-content placeholder; one ResolvedRef per
-    citation tag.
+    citation tag. ``build_ref_rows`` projects them onto the
+    text.llm_qa_refs rows (one per resolved article — representative
+    ref tag + is_used).
   * ``store``    — OnlineSearchSummaryStore: references -> text.news, the
     per-ref typing -> text.llm_qa_refs, the Q&A -> text.llm_qa.
 
@@ -25,7 +27,7 @@ from llm_agents.online_search_summary.storage.matching import (
 )
 from llm_agents.online_search_summary.storage.fetching import PageFetcher
 from llm_agents.online_search_summary.storage.resolve import (
-    NEWS_TABLE, RefResolver, ResolvedRef,
+    NEWS_TABLE, RefResolver, ResolvedRef, build_ref_rows,
 )
 from llm_agents.online_search_summary.storage.store import (
     OnlineSearchSummaryStore,
@@ -36,6 +38,6 @@ __all__ = [
     "VIA_SUMMARY", "VIA_CORPUS", "VIA_DDGS",
     "normalize_text", "is_exact_article", "source_from_url", "hit_ref_time",
     "PageFetcher",
-    "NEWS_TABLE", "RefResolver", "ResolvedRef",
+    "NEWS_TABLE", "RefResolver", "ResolvedRef", "build_ref_rows",
     "OnlineSearchSummaryStore",
 ]

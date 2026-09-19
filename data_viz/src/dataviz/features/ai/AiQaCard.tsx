@@ -29,12 +29,56 @@ import {
   Psychology as PsychologyIcon,
 } from "@mui/icons-material";
 import { fetchAiQaDetail } from "@/lib/api-client";
-import type { AiQaDetail, AiQaItem } from "@shared/types";
-import AiQaRefBox from "./AiQaRefBox";
+import type { AiQaDetail, AiQaItem, AiQaRefItem } from "@shared/types";
+import AiQaRefBox, { RefExpandBox } from "./AiQaRefBox";
 
 /** Sentiment chip color by score ([-5, 5] — red bearish, green bullish). */
 function sentimentColor(level: number): "error" | "success" | "default" {
   return level < -0.5 ? "error" : level > 0.5 ? "success" : "default";
+}
+
+function refNum(ref: string): number {
+  const m = /ref_(\d+)/.exec(ref);
+  return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+}
+
+/** Every stored ref of the Q&A in ref-number order — not just the ones the
+ *  answer text cites. Null-content (title-only) news rows render as
+ *  RefExpandBox's no-content shape, so every ref the response carried is
+ *  always inspectable. */
+function AllRefsList({ refs }: { refs: AiQaRefItem[] }) {
+  const sorted = [...refs].sort((a, b) => refNum(a.ref) - refNum(b.ref));
+  return (
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 0.75, mt: 0.5 }}>
+      {sorted.map((r) => (
+        <RefExpandBox key={r.ref} tag={r.ref} refItem={r} />
+      ))}
+    </Box>
+  );
+}
+
+/** Collapsible full source list under the expanded answer — one ref row per
+ *  resolved article (PK qa_id + news_id), so the label shows the article
+ *  count and how many of them the answer actually cites (is_used). */
+function AllSourcesSection({ refs }: { refs: AiQaRefItem[] }) {
+  const [open, setOpen] = useState(false);
+  const nUsed = refs.filter((r) => r.is_used).length;
+  return (
+    <Box sx={{ mt: 0.75 }}>
+      <Button
+        size="small"
+        color="inherit"
+        startIcon={open ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        sx={{ fontSize: "0.7rem", minWidth: 0, px: 0.75, color: "text.secondary" }}
+      >
+        {open
+          ? "收起全部来源"
+          : `全部来源（${refs.length} 篇文章 · 回答引用 ${nUsed}）`}
+      </Button>
+      {open && <AllRefsList refs={refs} />}
+    </Box>
+  );
 }
 
 export default function AiQaCard({ item }: { item: AiQaItem }) {
@@ -148,6 +192,9 @@ export default function AiQaCard({ item }: { item: AiQaItem }) {
                 refs={detail.refs}
                 sx={{ typography: "body2", lineHeight: 1.65 }}
               />
+              {/* The response's full reference list — cited refs only cover
+                  a handful of the stored rows; the rest surface here. */}
+              <AllSourcesSection refs={detail.refs} />
             </>
           ) : (
             <Typography variant="body2" color="text.secondary" sx={{ py: 0.5 }}>

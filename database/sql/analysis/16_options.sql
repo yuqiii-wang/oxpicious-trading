@@ -55,10 +55,6 @@ CREATE TABLE IF NOT EXISTS analysis.options_skewness_stats (
     gap_skewness_vs_spot_ma20_slope  NUMERIC(10,4),
     gap_skewness_vs_spot_ma60_slope  NUMERIC(10,4),
 
-    corr_skewness_ma5_vs_spot_ma5       NUMERIC(10,4),
-    corr_skewness_ma20_vs_spot_ma20       NUMERIC(10,4),
-    corr_skewness_ma60_vs_spot_ma60       NUMERIC(10,4),
-
     CONSTRAINT pk_options_skewness_stats
         PRIMARY KEY (underlying_code, date, option_type, expiry_date, skew_type),
     CONSTRAINT fk_options_skewness_stats_expiry
@@ -77,12 +73,11 @@ SELECT public.create_hash_partitions('analysis', 'options_skewness_stats', 8);
 --   2. Per-expiry scan (all dates of one expiry group).
 -- idx_options_skewness_stats_underlying_date (underlying_code, date) dropped:
 -- a prefix of the underlying_code-first PK, which already serves per-underlying lookups.
-DROP INDEX IF EXISTS analysis.idx_options_skewness_stats_underlying_date;
 
 CREATE INDEX IF NOT EXISTS idx_options_skewness_stats_expiry
     ON analysis.options_skewness_stats (underlying_code, expiry_date, date);
 
-COMMENT ON TABLE  analysis.options_skewness_stats              IS 'Per-(underlying_code, date, option_type, expiry_date, skew_type) store of precomputed rolling skewness statistics for option expiry groups, for multiple skew data sources separated by skew_type: oi_moneyness = OI-weighted mean moneyness (strike_price / underlying_close) — a positioning metric; iv_smile = OI-weighted 3rd standardized moment of implied vol across strikes (from stats.options_greeks) — a pricing metric; greek_delta = delta-weighted put/call OI ratio dpcr (whole chain, neutral 0.5); greek_gamma = normalized GEX-style call-minus-put gamma balance (whole chain, neutral 0); greek_vega = OTM-wing vega balance (0<|delta|<0.5 wings, neutral 0 — the open-interest mirror of the 25d risk reversal). The greek_* metrics are PAIR-level CALL-vs-PUT contrasts (CALL and PUT rows of a pair hold the SAME value), weighted by open_interest with zero OI = zero vote; theta/rho have no industry-standard positioning skew and are not computed. Rolling windows (5/20/60 days) compute MA, STD, gap-from-neutral (skewness_MA − neutral; neutral = 1 / 0.5 / 0 by type), slope of gap, and correlation with spot (price-space basis: underlying_close × skewness for oi_moneyness/iv_smile, underlying_close × (1 + (skewness − neutral) × 0.10) for greek_*). FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.';
+COMMENT ON TABLE  analysis.options_skewness_stats              IS 'Per-(underlying_code, date, option_type, expiry_date, skew_type) store of precomputed rolling skewness statistics for option expiry groups, for multiple skew data sources separated by skew_type: oi_moneyness = OI-weighted mean moneyness (strike_price / underlying_close) — a positioning metric; iv_smile = OI-weighted 3rd standardized moment of implied vol across strikes (from stats.options_greeks) — a pricing metric; greek_delta = delta-weighted put/call OI ratio dpcr (whole chain, neutral 0.5); greek_gamma = normalized GEX-style call-minus-put gamma balance (whole chain, neutral 0); greek_vega = OTM-wing vega balance (0<|delta|<0.5 wings, neutral 0 — the open-interest mirror of the 25d risk reversal). The greek_* metrics are PAIR-level CALL-vs-PUT contrasts (CALL and PUT rows of a pair hold the SAME value), weighted by open_interest with zero OI = zero vote; theta/rho have no industry-standard positioning skew and are not computed. Rolling windows (5/20/60 days) compute MA, STD, gap-from-neutral (skewness_MA − neutral; neutral = 1 / 0.5 / 0 by type) and slope of gap. FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_skewness_stats.date                    IS 'Trading date.';
 COMMENT ON COLUMN analysis.options_skewness_stats.option_type            IS 'Option type: CALL or PUT. For pair-level metrics (greek_*, and the OI/IV-skew tables) the CALL and PUT rows of the same group hold the SAME value.';
 COMMENT ON COLUMN analysis.options_skewness_stats.underlying_code        IS 'Underlying code (unified index codes; SZSE ETF options mapped via ETF->Index, e.g. 159919->000300).';
@@ -102,91 +97,32 @@ COMMENT ON COLUMN analysis.options_skewness_stats.gap_skewness_vs_spot_slope    
 COMMENT ON COLUMN analysis.options_skewness_stats.gap_skewness_vs_spot_ma5_slope   IS 'Linear regression slope of gap_skewness_vs_spot_ma5 vs time.';
 COMMENT ON COLUMN analysis.options_skewness_stats.gap_skewness_vs_spot_ma20_slope  IS 'Linear regression slope of gap_skewness_vs_spot_ma20 vs time.';
 COMMENT ON COLUMN analysis.options_skewness_stats.gap_skewness_vs_spot_ma60_slope  IS 'Linear regression slope of gap_skewness_vs_spot_ma60 vs time.';
-COMMENT ON COLUMN analysis.options_skewness_stats.corr_skewness_ma5_vs_spot_ma5 IS 'Whole-period correlation between MA5 of skew_price (price space) and MA5 of spot price, cumulative since first date of expiry group. Price-space basis: underlying_close × skewness (oi_moneyness/iv_smile) or underlying_close × (1 + (skewness − neutral) × 0.10) (greek_*).';
-COMMENT ON COLUMN analysis.options_skewness_stats.corr_skewness_ma20_vs_spot_ma20 IS 'Whole-period correlation between MA20 of skew_price (price space) and MA20 of spot price, cumulative since first date of expiry group.';
-COMMENT ON COLUMN analysis.options_skewness_stats.corr_skewness_ma60_vs_spot_ma60 IS 'Whole-period correlation between MA60 of skew_price (price space) and MA60 of spot price, cumulative since first date of expiry group.';
 COMMENT ON COLUMN analysis.options_skewness_stats.cross_count_20d          IS 'Pre-expiry contrarian metric: number of neutral crossings in the TRAILING 20 SESSIONS of the gap (skewness − the type''s neutral anchor). A crossing is a day where the gap''s sign bucket (>= 0 vs < 0) differs from the previous day''s; NaN gaps neither cross nor reset. Comparable across expiry groups and recency-weighted (unlike a cumulative counter). High counts = positioning contested around neutral into expiry (choppy, mean-reverting); low counts with a large gap = established one-sided positioning.';
 COMMENT ON COLUMN analysis.options_skewness_stats.days_since_last_cross    IS 'Pre-expiry contrarian metric: trading days since the gap (skewness − neutral) last crossed the neutral anchor, 0 = crossed today. Freshness of the last flip: a small value marks a just-flipped regime; a large value (or the group''s age in days while never crossed) marks an established, unchallenged positioning into expiry.';
 COMMENT ON COLUMN analysis.options_skewness_stats.gap_side_share_20d       IS 'Pre-expiry contrarian metric: fraction of the trailing 20 sessions with the gap (skewness − neutral) at/above neutral, in [0,1]; NaN-gap days are excluded from both numerator and denominator. Measures one-sided crowding: values near 0 or 1 = persistent positioning on one side of neutral into expiry (crowded trade, contrarian fade); values near 0.5 = contested, choppy positioning.';
 
--- Migration for pre-existing tables (idempotent): add skew_type + rebuild PK.
-ALTER TABLE analysis.options_skewness_stats
-    ADD COLUMN IF NOT EXISTS skew_type TEXT NOT NULL DEFAULT 'oi_moneyness';
-UPDATE analysis.options_skewness_stats
-    SET skew_type = 'oi_moneyness' WHERE skew_type IS NULL;
--- Daily raw skewness value (the MA5/20/60 columns are rolling stats of it);
--- needed by the DB-driven charts (greek_* types). Widened to 4 decimals for
--- the greek_* ratio metrics. Superset constraint: drop + re-add is
--- idempotent and safe (existing values remain valid).
-ALTER TABLE analysis.options_skewness_stats
-    ADD COLUMN IF NOT EXISTS skewness NUMERIC(10,4);
--- Per-greek skew redesign: widen value columns to 4 decimals (greek_*
--- ratios die at 2 decimals near their neutral anchor), purge legacy
+-- Legacy-install data fixes (no-ops on fresh installs): backfill rows
+-- whose skew_type predates the column default, and purge the legacy
 -- greek_* rows (old per-side ATM-normalized centroid semantics, incl. the
 -- removed greek_theta/greek_rho) so the incremental pipeline recomputes
--- them with the new PAIR-level metrics, then rebuild the CHECK constraint.
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN skewness TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN skewness_ma5 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN skewness_ma20 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN skewness_ma60 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN skewness_std5 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN skewness_std20 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN skewness_std60 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN gap_skewness_vs_spot_ma5 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN gap_skewness_vs_spot_ma20 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN gap_skewness_vs_spot_ma60 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN gap_skewness_vs_spot_slope TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN gap_skewness_vs_spot_ma5_slope TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN gap_skewness_vs_spot_ma20_slope TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN gap_skewness_vs_spot_ma60_slope TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN corr_skewness_ma5_vs_spot_ma5 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN corr_skewness_ma20_vs_spot_ma20 TYPE NUMERIC(10,4);
-ALTER TABLE analysis.options_skewness_stats
-    ALTER COLUMN corr_skewness_ma60_vs_spot_ma60 TYPE NUMERIC(10,4);
+-- them with the new PAIR-level metrics.
+UPDATE analysis.options_skewness_stats
+    SET skew_type = 'oi_moneyness' WHERE skew_type IS NULL;
 DELETE FROM analysis.options_skewness_stats
     WHERE skew_type LIKE 'greek_%';
-ALTER TABLE analysis.options_skewness_stats
-    DROP CONSTRAINT IF EXISTS ck_options_skewness_stats_skew_type;
-ALTER TABLE analysis.options_skewness_stats
-    ADD CONSTRAINT ck_options_skewness_stats_skew_type
-        CHECK (skew_type IN ('oi_moneyness','iv_smile',
-                             'greek_delta','greek_gamma','greek_vega'));
-ALTER TABLE analysis.options_skewness_stats
-    DROP CONSTRAINT IF EXISTS pk_options_skewness_stats;
-ALTER TABLE analysis.options_skewness_stats
-    ADD CONSTRAINT pk_options_skewness_stats
-        PRIMARY KEY (underlying_code, date, option_type, expiry_date, skew_type);
+
+-- Retired skewness-vs-spot whole-period correlation columns (the
+-- Skewness–Spot Whole-Period Correlation chart was removed; the
+-- rr25-vs-spot correlations of options_iv_skew_stats are unaffected).
+ALTER TABLE analysis.options_skewness_stats DROP COLUMN IF EXISTS corr_skewness_ma5_vs_spot_ma5;
+ALTER TABLE analysis.options_skewness_stats DROP COLUMN IF EXISTS corr_skewness_ma20_vs_spot_ma20;
+ALTER TABLE analysis.options_skewness_stats DROP COLUMN IF EXISTS corr_skewness_ma60_vs_spot_ma60;
 
 -- Pre-expiry contrarian metrics on the gap (skewness − neutral): the
--- recency-aware trio (comparable across expiry groups, unlike the legacy
--- cumulative count_skewness_curve_crossed_spot, which is dropped and NOT
--- restored). Columns are 0/NULL until rebuilt: run
--- `python -m analyze.options --force` (incremental mode only fills MISSING
--- groups, so it would not refresh existing rows).
-ALTER TABLE analysis.options_skewness_stats
-    ADD COLUMN IF NOT EXISTS cross_count_20d INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE analysis.options_skewness_stats
-    ADD COLUMN IF NOT EXISTS days_since_last_cross INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE analysis.options_skewness_stats
-    ADD COLUMN IF NOT EXISTS gap_side_share_20d NUMERIC(6,4);
-ALTER TABLE analysis.options_skewness_stats
-    DROP COLUMN IF EXISTS count_skewness_curve_crossed_spot;
+-- recency-aware trio, comparable across expiry groups (the legacy
+-- cumulative counter was not carried over). Columns are 0/NULL until
+-- rebuilt: run `python -m analyze.options --force` (incremental mode only
+-- fills MISSING groups, so it would not refresh existing rows).
 
 CREATE TABLE IF NOT EXISTS analysis.options_oi_stats (
     date                      DATE          NOT NULL,
@@ -214,7 +150,6 @@ SELECT public.create_hash_partitions('analysis', 'options_oi_stats', 8);
 
 -- idx_options_oi_stats_underlying_date (underlying_code, date) dropped:
 -- a prefix of the underlying_code-first PK, which already serves per-underlying lookups.
-DROP INDEX IF EXISTS analysis.idx_options_oi_stats_underlying_date;
 
 CREATE INDEX IF NOT EXISTS idx_options_oi_stats_expiry
     ON analysis.options_oi_stats (underlying_code, expiry_date, date);
@@ -241,6 +176,9 @@ CREATE TABLE IF NOT EXISTS analysis.options_iv_skew_stats (
     risk_reversal_25d           NUMERIC(10,2),   -- iv_call25 - iv_put25 (negative = puts richer)
     put_skew_25d                NUMERIC(10,2),   -- iv_put25 - atm_iv
     call_skew_25d               NUMERIC(10,2),   -- iv_call25 - atm_iv
+    iv_call10                   NUMERIC(10,2),   -- IV (vol pts %) of OTM CALL nearest |delta| = 0.10
+    iv_put10                    NUMERIC(10,2),   -- IV (vol pts %) of OTM PUT nearest |delta| = 0.10
+    risk_reversal_10d           NUMERIC(10,2),   -- iv_call10 - iv_put10 (deeper wing; NULL when no near-0.10 contract)
     smile_skewness              NUMERIC(10,2),   -- OI-weighted 3rd moment of IV across strikes (per option_type)
 
     rr25_ma5                     NUMERIC(10,2),
@@ -275,10 +213,17 @@ SELECT public.create_hash_partitions('analysis', 'options_iv_skew_stats', 8);
 
 -- idx_options_iv_skew_stats_underlying_date (underlying_code, date) dropped:
 -- a prefix of the underlying_code-first PK, which already serves per-underlying lookups.
-DROP INDEX IF EXISTS analysis.idx_options_iv_skew_stats_underlying_date;
 
 CREATE INDEX IF NOT EXISTS idx_options_iv_skew_stats_expiry
     ON analysis.options_iv_skew_stats (underlying_code, expiry_date, date);
+
+-- Migrate: 10-delta risk reversal added 2026-09-19 (the CREATE TABLE above
+-- includes the columns for fresh installs; ADD COLUMN IF NOT EXISTS
+-- retro-fits an already-existing table without dropping data). ADD COLUMN
+-- propagates to the hash partitions automatically.
+ALTER TABLE analysis.options_iv_skew_stats ADD COLUMN IF NOT EXISTS iv_call10         NUMERIC(10,2);
+ALTER TABLE analysis.options_iv_skew_stats ADD COLUMN IF NOT EXISTS iv_put10          NUMERIC(10,2);
+ALTER TABLE analysis.options_iv_skew_stats ADD COLUMN IF NOT EXISTS risk_reversal_10d NUMERIC(10,2);
 
 COMMENT ON TABLE  analysis.options_iv_skew_stats              IS 'Per-(underlying_code, date, option_type, expiry_date) store of implied-volatility skew statistics for option expiry groups, derived from implied_vol in stats.options_greeks (calibrated from option premiums via Black-76). All IV/skew values are in vol points (percent). Unlike options_skewness_stats (OI-weighted mean moneyness — a positioning metric), this is a pricing metric. FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_iv_skew_stats.atm_iv       IS 'IV (vol points, %) of the contract with moneyness (strike/spot) closest to 1.0 in the expiry group.';
@@ -287,6 +232,9 @@ COMMENT ON COLUMN analysis.options_iv_skew_stats.iv_put25     IS 'IV (vol points
 COMMENT ON COLUMN analysis.options_iv_skew_stats.risk_reversal_25d IS '25-delta risk reversal: iv_call25 - iv_put25 (vol points). Negative = OTM puts richer than OTM calls = downside hedging demand.';
 COMMENT ON COLUMN analysis.options_iv_skew_stats.put_skew_25d  IS 'iv_put25 - atm_iv (vol points); premium paid for downside protection.';
 COMMENT ON COLUMN analysis.options_iv_skew_stats.call_skew_25d IS 'iv_call25 - atm_iv (vol points); upside speculation premium.';
+COMMENT ON COLUMN analysis.options_iv_skew_stats.iv_call10    IS 'IV (vol points, %) of the OTM CALL contract with delta nearest 0.10 (deeper wing; sparser strike grids may have no such contract -> NULL).';
+COMMENT ON COLUMN analysis.options_iv_skew_stats.iv_put10     IS 'IV (vol points, %) of the OTM PUT contract with delta nearest -0.10 (deeper wing; sparser strike grids may have no such contract -> NULL).';
+COMMENT ON COLUMN analysis.options_iv_skew_stats.risk_reversal_10d IS '10-delta risk reversal: iv_call10 - iv_put10 (vol points). More crash-sensitive / steeper in panics than risk_reversal_25d, but thinner quotes and staler marks on deep wings.';
 COMMENT ON COLUMN analysis.options_iv_skew_stats.smile_skewness IS 'OI-weighted 3rd standardized moment of IV across the expiry group''s strikes, per option_type. Negative = higher IV on downside.';
 COMMENT ON COLUMN analysis.options_iv_skew_stats.rr25_ma5     IS '5-day rolling MA of risk_reversal_25d.';
 COMMENT ON COLUMN analysis.options_iv_skew_stats.rr25_ma20    IS '20-day rolling MA of risk_reversal_25d.';
@@ -343,7 +291,6 @@ SELECT public.create_hash_partitions('analysis', 'options_walls', 8);
 
 -- idx_options_walls_underlying_date (underlying_code, date) dropped:
 -- a prefix of the underlying_code-first PK, which already serves per-underlying lookups.
-DROP INDEX IF EXISTS analysis.idx_options_walls_underlying_date;
 
 CREATE INDEX IF NOT EXISTS idx_options_walls_expiry
     ON analysis.options_walls (underlying_code, expiry_date, date);
@@ -368,41 +315,12 @@ COMMENT ON COLUMN analysis.options_walls.state                 IS 'zone only: li
 COMMENT ON COLUMN analysis.options_walls.strength_score        IS 'zone only: strength = mass_share * exp(-max(gap_pct,0)/8) * (1 + 0.25*min(days_persisted,20)/20), in [0,1]. The exponential decay matches the measured hold-rate curve (58% hold at ~1% gap -> 99% at >8%).';
 
 -- ----------------------------------------------------------------------------
---  Migration for pre-existing options_walls tables (idempotent):
---  drop the legacy 80pct/large_num wall types — wall_type must be 'zone'.
---  Safe to re-run.
--- ----------------------------------------------------------------------------
-DELETE FROM analysis.options_walls WHERE wall_type <> 'zone';
--- Drop EVERY legacy wall_type check (the original inline CHECK was
--- auto-renamed with a numeric suffix on name collision) on the parent
--- + hash partitions, then enforce zone-only.
-DO $$
-DECLARE r RECORD;
-BEGIN
-    FOR r IN
-        SELECT con.conrelid::regclass AS tbl, con.conname
-        FROM pg_constraint con
-        JOIN pg_class c ON c.oid = con.conrelid
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'analysis'
-          AND (c.relname = 'options_walls' OR c.relname LIKE 'options_walls_p%')
-          AND con.contype = 'c'
-          AND con.conname LIKE 'options_walls_wall_type_check%'
-    LOOP
-        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname);
-    END LOOP;
-END $$;
-ALTER TABLE analysis.options_walls
-    ADD CONSTRAINT options_walls_wall_type_check
-        CHECK (wall_type = 'zone');
-
--- ----------------------------------------------------------------------------
 --  Register in analysis.analysis_identity
 -- ----------------------------------------------------------------------------
 
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('options_skewness_stats', 'options_skewness_stats', NULL, NOW(),
-     'Per-(date, option_type, underlying_code, expiry_date, skew_type) store of precomputed rolling skewness statistics for option expiry groups, for multiple skew data sources separated by skew_type: oi_moneyness = OI-weighted mean moneyness (strike_price / underlying_close) — a positioning metric; iv_smile = OI-weighted 3rd standardized moment of implied vol across strikes (from stats.options_greeks) — a pricing metric; greek_delta = delta-weighted put/call OI ratio (whole chain, neutral 0.5); greek_gamma = normalized GEX-style call-minus-put gamma balance (whole chain, neutral 0); greek_vega = OTM-wing vega balance (0<|delta|<0.5 wings, neutral 0 — the open-interest mirror of the 25d risk reversal). The greek_* metrics are PAIR-level CALL-vs-PUT contrasts (CALL/PUT rows of a pair hold the same value); theta/rho are not computed (no industry-standard positioning skew). Rolling windows (5/20/60 days) compute MA, STD, gap-from-neutral, linear regression slope of gap, and whole-period cumulative correlation with spot. For open (non-matured) expiry groups, expiry_date is set to the mean of all expiry dates per (option_type, underlying_code). FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.')
+     'Per-(date, option_type, underlying_code, expiry_date, skew_type) store of precomputed rolling skewness statistics for option expiry groups, for multiple skew data sources separated by skew_type: oi_moneyness = OI-weighted mean moneyness (strike_price / underlying_close) — a positioning metric; iv_smile = OI-weighted 3rd standardized moment of implied vol across strikes (from stats.options_greeks) — a pricing metric; greek_delta = delta-weighted put/call OI ratio (whole chain, neutral 0.5); greek_gamma = normalized GEX-style call-minus-put gamma balance (whole chain, neutral 0); greek_vega = OTM-wing vega balance (0<|delta|<0.5 wings, neutral 0 — the open-interest mirror of the 25d risk reversal). The greek_* metrics are PAIR-level CALL-vs-PUT contrasts (CALL/PUT rows of a pair hold the same value); theta/rho are not computed (no industry-standard positioning skew). Rolling windows (5/20/60 days) compute MA, STD, gap-from-neutral, linear regression slope of gap. For open (non-matured) expiry groups, expiry_date is set to the mean of all expiry dates per (option_type, underlying_code). FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,
@@ -436,3 +354,47 @@ ON CONFLICT (name) DO UPDATE SET
     last_run_datetime = NOW(),
     description       = EXCLUDED.description;
 
+
+-- ----------------------------------------------------------------------------
+-- options_vol_index — daily 30-day model-free implied-volatility index per
+-- underlying (CBOE VIX methodology adapted to settlement prices; see
+-- docs/options_vol_smile_study.md). Date-granular (NOT expiry-granular) —
+-- hence no FK to options_expiry_identity.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS analysis.options_vol_index (
+    date                      DATE          NOT NULL,
+    underlying_code           TEXT          NOT NULL,
+
+    near_expiry_date          DATE,             -- expiry with T <= 30d used in the bracket
+    far_expiry_date           DATE,             -- expiry with T > 30d used in the bracket
+    dte_near                  INT,              -- calendar days to near expiry (NULL when single-expiry fallback)
+    dte_far                   INT,              -- calendar days to far expiry  (NULL when single-expiry fallback)
+    var_near                  NUMERIC(12,6),    -- model-free variance of the near expiry (decimal, e.g. 0.0400)
+    var_far                   NUMERIC(12,6),    -- model-free variance of the far expiry
+    variance_30d              NUMERIC(12,6),    -- time-interpolated 30-day variance (single-expiry value on fallback)
+    vol_index_30d             NUMERIC(10,2),    -- 100 * sqrt(variance_30d), in vol points (percent)
+
+    CONSTRAINT pk_options_vol_index
+        PRIMARY KEY (underlying_code, date)
+) PARTITION BY HASH (underlying_code);
+
+SELECT public.create_hash_partitions('analysis', 'options_vol_index', 8);
+
+COMMENT ON TABLE  analysis.options_vol_index IS 'Daily 30-day model-free implied-volatility index per underlying_code (CBOE VIX methodology adapted to exchange settlement prices): per expiry sigma^2 = (2/T) * sum_i e^(rT) * (dK_i / K_i^2) * Q(K_i) - (1/T) * (F/K0 - 1)^2 over the OTM strip (puts below the forward, calls above, average of both at K0), F = S*exp(rT), r = 0.02; two expiries bracketing 30 days are time-interpolated to a constant-30d variance, vol_index_30d = 100*sqrt(variance). No FK (date-granular). Built by analyze.options; all INSERTs in Python per project rule.';
+COMMENT ON COLUMN analysis.options_vol_index.near_expiry_date IS 'Expiry group with the largest T <= 30 days used in the 30-day bracket.';
+COMMENT ON COLUMN analysis.options_vol_index.far_expiry_date  IS 'Expiry group with the smallest T > 30 days used in the 30-day bracket.';
+COMMENT ON COLUMN analysis.options_vol_index.dte_near        IS 'Calendar days from date to near_expiry_date.';
+COMMENT ON COLUMN analysis.options_vol_index.dte_far         IS 'Calendar days from date to far_expiry_date.';
+COMMENT ON COLUMN analysis.options_vol_index.var_near        IS 'Model-free variance (decimal) of the near expiry.';
+COMMENT ON COLUMN analysis.options_vol_index.var_far         IS 'Model-free variance (decimal) of the far expiry.';
+COMMENT ON COLUMN analysis.options_vol_index.variance_30d    IS 'Time-interpolated constant-30-day variance; equals the single nearest expiry variance when no bracket exists (early listings).';
+COMMENT ON COLUMN analysis.options_vol_index.vol_index_30d   IS '100 * sqrt(variance_30d) — the index level in vol points (percent), directly comparable to VIX.';
+
+INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
+    ('options_vol_index', 'options_vol_index', NULL, NOW(),
+     'Daily 30-day model-free implied-volatility index per underlying (CBOE VIX methodology adapted to settlement prices, r=0.02, calendar-day T): OTM-strip variance replication per expiry, time-interpolated to a constant 30-day maturity, vol_index_30d = 100*sqrt(variance_30d) in vol points. PK (underlying_code, date), no FK (date-granular). Built by analyze.options; all INSERTs in Python per project rule.')
+ON CONFLICT (name) DO UPDATE SET
+    detail_name       = EXCLUDED.detail_name,
+    summary_name      = EXCLUDED.summary_name,
+    last_run_datetime = NOW(),
+    description       = EXCLUDED.description;

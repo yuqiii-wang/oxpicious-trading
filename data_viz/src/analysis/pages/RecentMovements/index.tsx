@@ -12,7 +12,7 @@
  *     Forecast section beneath it (migrated from the MA-Spread panel's 2nd
  *     plot) shows the code's analysis_forecasts extreme-day bucket table
  *     via ForecastTable — a card panel whose kind toggle group picks the
- *     bucket family (mov_rsi default / mov_std / mov_gap / px_vol /
+ *     bucket family (mov_rsi default / mov_std / px_vol /
  *     margin_ratio); clicking the active family again hides the table.
  *     Clicking a forecast ROW fetches the bucket's trigger_dates
  *     (forecast_results per-period DATE[] — under the 2026-09
@@ -71,7 +71,6 @@ import type {
   ForecastPeriod,
   HighLowStreaksForecastRow,
   MarginRatioForecastRow,
-  MovGapForecastRow,
   MovPairsEmaForecastRow,
   MovPairsForecastRow,
   MovRsiForecastRow,
@@ -116,23 +115,27 @@ const CACHE_PREFIXES: Record<SecNavSecType, string[]> = {
   stock: ["/api/stock-baseline/themes", "/api/stock-baseline/strategy-themes"],
 };
 
-/** One ForecastTable bucket family — toggle label + full-name tooltip. */
-const FORECAST_KINDS: { kind: ForecastKind; label: string; tooltip: string }[] = [
-  { kind: "mov_rsi", label: "RSI", tooltip: "RSI extreme-percentile buckets (mov_rsi)" },
-  { kind: "mov_std", label: "Bollinger", tooltip: "Bollinger breach buckets (mov_std)" },
-  { kind: "mov_gap", label: "Gap", tooltip: "N-day price-return extreme-percentile buckets (mov_gap)" },
-  { kind: "mov_pairs", label: "MA cross", tooltip: "MA5 vs MA60/120/255 cross buckets (mov_pairs)" },
-  { kind: "mov_pairs_ema", label: "EMA cross", tooltip: "EMA6 vs EMA60/120/255 cross buckets (mov_pairs_ema)" },
-  { kind: "px_vol", label: "Px×Vol", tooltip: "σ-speed × amount-level-z state cells (px_vol)" },
-  { kind: "margin_ratio", label: "Margin", tooltip: "Margin-buy intensity z states (margin_ratio)" },
-  { kind: "high_low_streaks", label: "HL streak", tooltip: "MA-Spread High/Low streak mean-mid anchor buckets (high_low_streaks) — every band-break excursion streak audited at its mid day" },
-  { kind: "pe", label: "PE", tooltip: "PE z states over the raw pe series (pe_state) — high PE = expensive = bearish/top (lower the better), low PE = cheap = bullish/bottom" },
-  { kind: "dividend", label: "Div yld", tooltip: "Dividend-yield z states over the trailing-12m D/P series (dividend_state) — high yield = cheap/well-supported = bullish/bottom (higher the better), low yield = bearish/top" },
+/** One ForecastTable bucket family — toggle label + full-name tooltip +
+ * `search`: the search-engine term fed into the trend chart's AI-ask
+ * online-search seed while this family is active (the toggle row is the
+ * chart's most searchable item of interest). */
+const FORECAST_KINDS: {
+  kind: ForecastKind; label: string; tooltip: string; search: string;
+}[] = [
+  { kind: "mov_rsi", label: "RSI", tooltip: "RSI extreme-percentile buckets (mov_rsi)", search: "RSI" },
+  { kind: "mov_std", label: "Bollinger", tooltip: "Bollinger breach buckets (mov_std)", search: "Bollinger 布林带" },
+  { kind: "mov_pairs", label: "MA cross", tooltip: "MA5 (and close-price) vs MA60/120/255 cross buckets (mov_pairs — fast legs ma5 + price)", search: "MA 均线交叉" },
+  { kind: "mov_pairs_ema", label: "EMA cross", tooltip: "EMA6 (and close-price) vs EMA60/120/255 cross buckets (mov_pairs_ema — fast legs ema6 + price)", search: "EMA 交叉" },
+  { kind: "px_vol", label: "Px×Vol", tooltip: "σ-speed × amount-level-z state cells (px_vol)", search: "量价" },
+  { kind: "margin_ratio", label: "Margin", tooltip: "Margin-buy intensity z states (margin_ratio)", search: "融资余额" },
+  { kind: "high_low_streaks", label: "HL streak", tooltip: "MA-Spread High/Low streak mean-mid anchor buckets (high_low_streaks) — every band-break excursion streak audited at its mid day", search: "high low streak" },
+  { kind: "pe", label: "PE", tooltip: "PE z states over the raw pe series (pe_state) — high PE = expensive = bearish/top (lower the better), low PE = cheap = bullish/bottom", search: "PE 市盈率" },
+  { kind: "dividend", label: "Div yld", tooltip: "Dividend-yield z states over the trailing-12m D/P series (dividend_state) — high yield = cheap/well-supported = bullish/bottom (higher the better), low yield = bearish/top", search: "股息率" },
 ];
 
 /** Union of all bucket row shapes (matches ForecastTable's ForecastRow). */
 type ForecastRow =
-  | MovRsiForecastRow | MovStdForecastRow | MovGapForecastRow
+  | MovRsiForecastRow | MovStdForecastRow
   | MovPairsForecastRow | MovPairsEmaForecastRow | PxVolForecastRow
   | MarginRatioForecastRow | HighLowStreaksForecastRow
   | PeForecastRow | DividendForecastRow;
@@ -160,15 +163,15 @@ type IdSearchState =
   | { status: "found"; identity: ForecastIdentityResponse };
 
 /** Resolved identity → short caption ("→ 000300.SS · mov_rsi · 2026-05").
- *  Industry-pair ids name the dropping industry instead — that family
- *  has no table in this UI. */
+ * Ids of families without a table here (opp_pair industry pairs; retired
+ * mov_gap) name the bucket family instead of jumping. */
 function describeIdentity(i: ForecastIdentityResponse): string {
   const m = i.stat_month.slice(0, 7);
   const streak =
     i.streak_signal_days != null ? ` · ${i.streak_signal_days}d` : "";
   return i.kind != null
     ? `→ ${i.code} · ${i.kind} · ${m}${streak}`
-    : `→ ${m} · opp_pair ${i.code} (industry pair — no table in this UI)`;
+    : `→ ${m} · ${i.bucket} ${i.code} (no table in this UI)`;
 }
 
 /** Stable EMPTY highlight identity — a fresh [] per render would
@@ -193,12 +196,11 @@ function describeBucket(
   } else if (kind === "mov_std") {
     const x = r as MovStdForecastRow;
     cfg = `MA${x.ma_window} · ${x.side} ${x.k}σ`;
-  } else if (kind === "mov_gap") {
-    const x = r as MovGapForecastRow;
-    cfg = `Gap${x.gap_window} · ${x.side} ${x.pct}%`;
   } else if (kind === "mov_pairs" || kind === "mov_pairs_ema") {
     const x = r as MovPairsForecastRow;
-    cfg = `${kind === "mov_pairs" ? "MA" : "EMA"} cross · ${x.side}`;
+    const leg = x.fast_leg === "price" ? "close"
+      : kind === "mov_pairs" ? "MA5" : "EMA6";
+    cfg = `${leg} cross · ${x.side}`;
   } else if (kind === "px_vol") {
     const x = r as PxVolForecastRow;
     cfg = `${x.px_speed} × ${x.vol_state}`;
@@ -439,6 +441,19 @@ export default function RecentMovementsPage() {
     [triggerDates, handleHighlightSettled],
   );
 
+  // Active forecast family → AI-ask online-search seed keyword (the
+  // RSI / Bollinger / … toggle row beneath the trend chart is the view's
+  // most searchable item of interest). Identity-stable for the same
+  // reason as triggerChartOptions.
+  const aiSearchKeywords = useMemo(
+    () =>
+      forecastKind
+        ? [FORECAST_KINDS.find((k) => k.kind === forecastKind)?.search ?? ""]
+            .filter(Boolean)
+        : [],
+    [forecastKind],
+  );
+
   return (
     <SecNavShell
       nav={nav}
@@ -458,6 +473,7 @@ export default function RecentMovementsPage() {
             code={nav.searchCode}
             name={nav.findItemName(nav.searchCode)}
             chartOptions={triggerChartOptions}
+            aiSearchKeywords={aiSearchKeywords}
             headerAction={
               triggerDates || triggerLoading ? (
                 <Chip
@@ -493,8 +509,7 @@ export default function RecentMovementsPage() {
               Card panel beneath the trend chart: header row (icon + kind
               toggle group) + the ForecastTable body. The exclusive toggle
               picks which bucket family to show — RSI extreme-percentile
-              buckets (mov_rsi), Bollinger breach buckets (mov_std), N-day
-              price-return extreme-percentile buckets (mov_gap), MA5-vs-MA
+              buckets (mov_rsi), Bollinger breach buckets (mov_std), MA5-vs-MA
               cross buckets (mov_pairs), EMA6-vs-EMA cross buckets
               (mov_pairs_ema), σ-speed ×
               量比-z state cells (px_vol) or margin-buy intensity z states

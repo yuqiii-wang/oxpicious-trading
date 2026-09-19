@@ -10,8 +10,8 @@
  * data sources (oi_moneyness / iv_smile).
  */
 import { useMemo } from "react";
-import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import type { OptionsRow } from "@shared/types";
 import { fmtNum } from "@/lib/series";
 import { computeSmileSkewness } from "@/lib/options-stats";
@@ -23,11 +23,12 @@ interface Props {
 }
 
 export default function VolSmilePanel({ rows, selectedDate }: Props) {
+  const themeMode = useChartThemeMode();
   const snap = rows.filter((r) => r.date === selectedDate);
   const skewness = computeSmileSkewness(snap);
   const option = useMemo(
-    () => buildSmileOption(snap, "Volatility Smile", selectedDate),
-    [snap, selectedDate],
+    () => buildSmileOption(snap, "Volatility Smile", selectedDate, themeMode),
+    [snap, selectedDate, themeMode],
   );
 
   const skewTags = skewness
@@ -46,17 +47,41 @@ export default function VolSmilePanel({ rows, selectedDate }: Props) {
     })
     .join("  |  ");
 
+  // AI Ask — the legend decoding + per-expiry skewness readout (former
+  // card subtitle) lives in the intro / notes; the card keeps the identity.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "IV (%) vs moneyness (Strike/Spot) for CALL and PUT, grouped by expiry month — blue " +
+        "gradient: dark = near expiry, light = far; CALL is drawn solid, PUT dashed. An ATM " +
+        "vertical line sits at Moneyness=1, with per-expiry OI-weighted skewness (3rd " +
+        "standardized moment) markers on the smile.",
+      instruments: rows[0]?.underlying_code
+        ? [{ code: rows[0].underlying_code }]
+        : [],
+      state: { selectedDate },
+      suggestedQuestions: [
+        "Is the smile skewed to the put wing or the call wing, and which expiry is most skewed?",
+        "How does the OI-weighted skewness term-structure slope across expiries?",
+        "Where does ATM IV sit relative to the wings — smile, smirk, or flat?",
+      ],
+      notes: [
+        "The skew-over-time + correlation charts for this data live in the shared skew panel (skew-shared/).",
+        ...(skewTags
+          ? [`Per-expiry OI-wtd skewness (3rd moment): ${skewTags}`]
+          : []),
+      ],
+    }),
+    [rows, selectedDate, skewTags],
+  );
+
   return (
-    <ChartCard
+    <BaseChart
       title="Volatility Smile · Snapshot"
-      subtitle={
-        skewTags
-          ? `IV vs Moneyness · Blue gradient (dark=near expiry, light=far) · ATM (Moneyness=1) + Skewness markers · Per-expiry OI-wtd skewness (3rd moment): ${skewTags}`
-          : "IV vs Moneyness (Strike/Spot) · CALL (solid) / PUT (dashed) · ATM + Skewness markers"
-      }
-      height={400}
-    >
-      <EChart option={option} height={360} />
-    </ChartCard>
+      subtitle="IV vs Moneyness (Strike/Spot) · blue: dark=near expiry · ATM line + per-expiry skewness markers"
+      aiAsk={aiAskSpec}
+      height={360}
+      option={option}
+    />
   );
 }

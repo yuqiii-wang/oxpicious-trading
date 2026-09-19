@@ -2,13 +2,12 @@
  * Industry Sentiments plot card — multi-line chart + pool-size toggle +
  * benchmark dropdown + mean-only toggle + date-range slider.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Autocomplete,
   Box,
   Chip,
   Checkbox,
-  Stack,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
@@ -16,6 +15,10 @@ import {
 } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ECharts, EChartsOption } from "echarts";
 import { buildGroupColorScheme } from "@/theme/group-colors";
 import type { PoolSize, PerIndustryAggregation, PlotProps } from "./types";
 import { CHART_GROUP, BENCHMARK_COLORS } from "./constants";
@@ -26,13 +29,13 @@ import { CorrelationChart } from "./CorrelationChart";
 
 export function IndustrySentimentsPlot({
   data,
-  themeMode,
   multiIndustry,
   numIndustries,
   chartDataList,
   selectedIndustryIds,
   selectedItemCodes,
 }: PlotProps) {
+  const themeMode = useChartThemeMode();
   const [poolSize, setPoolSize] = useState<PoolSize>("all");
   const [selectedBenchmarks, setSelectedBenchmarks] = useState<string[]>([]);
   const [meanOnly, setMeanOnly] = useState(false);
@@ -145,14 +148,159 @@ export function IndustrySentimentsPlot({
     ).length;
   }, [data.indices, poolSize]);
 
+  // ---- Chart options (hoisted into memos so the AI Ask plot info derives
+  // from the same objects the charts render) ----
+  const mainOption = useMemo<EChartsOption | null>(
+    () =>
+      data.indices.length > 0 && allDates.length > 0
+        ? buildIndustryChartOption(
+            data,
+            allDates,
+            0,
+            lastIdx,
+            poolSize,
+            themeMode,
+            selectedBenchmarks,
+            meanOnly,
+            showAggOverlay,
+            perIndustryAggregations,
+            industryColorFor,
+            indexGroupKey,
+          )
+        : null,
+    [
+      data,
+      allDates,
+      lastIdx,
+      poolSize,
+      themeMode,
+      selectedBenchmarks,
+      meanOnly,
+      showAggOverlay,
+      perIndustryAggregations,
+      industryColorFor,
+      indexGroupKey,
+    ],
+  );
+  const peOption = useMemo<EChartsOption | null>(
+    () =>
+      hasPeData
+        ? buildAggregateChartOption(
+            data,
+            perIndustryAggregations,
+            allDates,
+            0,
+            lastIdx,
+            poolSize,
+            themeMode,
+            multiIndustry,
+            "mean_pe",
+            "PE",
+            industryColorFor,
+          )
+        : null,
+    [
+      hasPeData,
+      data,
+      perIndustryAggregations,
+      allDates,
+      lastIdx,
+      poolSize,
+      themeMode,
+      multiIndustry,
+      industryColorFor,
+    ],
+  );
+  const amtOption = useMemo<EChartsOption | null>(
+    () =>
+      hasAmtData
+        ? buildAggregateChartOption(
+            data,
+            perIndustryAggregations,
+            allDates,
+            0,
+            lastIdx,
+            poolSize,
+            themeMode,
+            multiIndustry,
+            "total_trading_amount",
+            "成交额 (亿元)",
+            industryColorFor,
+          )
+        : null,
+    [
+      hasAmtData,
+      data,
+      perIndustryAggregations,
+      allDates,
+      lastIdx,
+      poolSize,
+      themeMode,
+      multiIndustry,
+      industryColorFor,
+    ],
+  );
+
+  // Chart instances for the AI Ask screenshots (one per stacked chart).
+  const mainRef = useRef<ECharts | null>(null);
+  const peRef = useRef<ECharts | null>(null);
+  const amtRef = useRef<ECharts | null>(null);
+
+  const chartTitle = data.industry_label || data.industry_id;
+  const chartSubtitle = multiIndustry
+    ? `${data.indices.length} member indices across ${numIndustries} industries — ${visibleCount} highlighted (${poolSize} pool)`
+    : `${data.industry_label || data.industry_id} — ${visibleCount} of ${data.indices.length} member indices highlighted (${poolSize} pool)`;
+
+  // AI Ask — state carries the CURRENT pool/benchmark/mean toggles so the
+  // modal and the LLM describe the view on screen.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Industry sentiment view for ${chartTitle}: member index closes rebased to 100 ` +
+        "(start = 100) on a shared date axis, with the pool-size toggle highlighting " +
+        "small/mid/large members and the selected broad-market benchmarks overlaid. " +
+        "The Mean only toggle replaces member lines with the precomputed mean ±1σ band " +
+        "(single industry) or each industry's mean (multi-industry). Sub-plots below: " +
+        "the industry mean PE and total trading amount (亿元).",
+      series: [
+        { name: `mean (${poolSize})`, description: "precomputed cross-member mean close (rebased), dashed" },
+        { name: "+1σ", description: "upper +1σ band edge of the member dispersion" },
+        { name: "-1σ", description: "lower −1σ band edge of the member dispersion" },
+      ],
+      state: {
+        mode: multiIndustry ? `multi-industry (${numIndustries})` : "single-industry",
+        pool: poolSize,
+        benchmarks: selectedBenchmarks.length > 0 ? selectedBenchmarks.join(", ") : "none",
+        mean_only: meanOnly,
+        visible_members: visibleCount,
+      },
+      notes: [
+        "Member lines and benchmark lines are dynamic series names (index/benchmark names); one color per industry in multi-industry mode.",
+        "The PE sub-plot is unitless mean PE per pool; the amount sub-plot is total trading amount in 亿元 (yuan / 1e8).",
+        "Crosshair syncs across the main chart and both sub-plots via the shared chart group.",
+      ],
+    }),
+    [chartTitle, multiIndustry, numIndustries, poolSize, selectedBenchmarks, meanOnly, visibleCount],
+  );
+  const extraOptions = useMemo(
+    () => [peOption, amtOption] as const,
+    [peOption, amtOption],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: chartTitle,
+    subtitle: chartSubtitle,
+    option: mainOption,
+    extraOptions,
+    spec: aiAskSpec,
+    getInstance: () => mainRef.current,
+    getExtraInstances: () => [peRef.current, amtRef.current],
+  });
+
   return (
     <ChartCard
-      title={data.industry_label || data.industry_id}
-      subtitle={
-        multiIndustry
-          ? `${data.indices.length} member indices across ${numIndustries} industries — ${visibleCount} highlighted (${poolSize} pool)`
-          : `${data.industry_label || data.industry_id} — ${visibleCount} of ${data.indices.length} member indices highlighted (${poolSize} pool)`
-      }
+      title={chartTitle}
+      subtitle={chartSubtitle}
+      titleAddon={aiAskAddon}
     >
       <Box sx={{ display: "flex", justifyContent: "space-between", gap: 2, mb: 1, flexWrap: "wrap" }}>
         <ToggleButtonGroup
@@ -235,55 +383,32 @@ export function IndustrySentimentsPlot({
           </ToggleButton>
         </Box>
       </Box>
-      {data.indices.length === 0 || allDates.length === 0 ? (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 2 }}>
-          <Typography variant="body2" color="text.secondary">
-            No member indices with close data for {data.industry_id}.
-          </Typography>
-        </Box>
-      ) : (
-        <>
-          <EChart
-            option={buildIndustryChartOption(
-              data,
-              allDates,
-              0,
-              lastIdx,
-              poolSize,
-              themeMode,
-              selectedBenchmarks,
-              meanOnly,
-              showAggOverlay,
-              perIndustryAggregations,
-              industryColorFor,
-              indexGroupKey,
-            )}
-            height={460}
-            group={CHART_GROUP}
-          />
-        </>
-      )}
+      {/* Main plot — the shared base owns the empty-state placeholder; the
+          card itself stays a hand-rolled composite (it hosts the PE / trading
+          amount sub-plots + the correlation section below the chart, which a
+          single-body BaseChart cannot express). */}
+      <BaseChart
+        variant="bare"
+        option={mainOption}
+        height={460}
+        group={CHART_GROUP}
+        emptyText={`No member indices with close data for ${data.industry_id}.`}
+        onReady={(c) => {
+          mainRef.current = c;
+        }}
+      />
       {hasPeData && (
         <Box sx={{ mt: 2, pt: 1, borderTop: 1, borderColor: "divider" }}>
           <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
             Industry PE {multiIndustry ? `(pool: ${poolSize})` : "(by pool size)"}
           </Typography>
           <EChart
-            option={buildAggregateChartOption(
-              data,
-              perIndustryAggregations,
-              allDates,
-              0,
-              lastIdx,
-              poolSize,
-              themeMode,
-              multiIndustry,
-              "mean_pe",
-              "PE",
-              industryColorFor,
-            )}
+            option={peOption ?? {}}
             height={200}
             group={CHART_GROUP}
+            onReady={(c) => {
+              peRef.current = c;
+            }}
           />
         </Box>
       )}
@@ -293,21 +418,12 @@ export function IndustrySentimentsPlot({
             Industry Total Trading Amount {multiIndustry ? `(pool: ${poolSize})` : "(by pool size)"}
           </Typography>
           <EChart
-            option={buildAggregateChartOption(
-              data,
-              perIndustryAggregations,
-              allDates,
-              0,
-              lastIdx,
-              poolSize,
-              themeMode,
-              multiIndustry,
-              "total_trading_amount",
-              "成交额 (亿元)",
-              industryColorFor,
-            )}
+            option={amtOption ?? {}}
             height={200}
             group={CHART_GROUP}
+            onReady={(c) => {
+              amtRef.current = c;
+            }}
           />
         </Box>
       )}
@@ -320,7 +436,6 @@ export function IndustrySentimentsPlot({
           industryIds={selectedIndustryIds}
           codes={selectedItemCodes}
           poolSize={poolSize}
-          themeMode={themeMode}
         />
       </Box>
     </ChartCard>

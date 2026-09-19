@@ -1,7 +1,7 @@
 """The unified bucket-signal pipeline (analyze.analysis_forecasts
 .wide.signals).
 
-Every mask-driven bucket engine (mov_rsi / mov_std / mov_gap /
+Every mask-driven bucket engine (mov_rsi / mov_std /
 mov_pairs / mov_pairs_ema / px_vol_state) funnels its stacked (T, C, K)
 bucket masks through ``iter_bucket_subsets``: STREAK-MERGE consecutive
 qualifying rows into ONE mid-anchored signal (or one-day signals for
@@ -76,7 +76,7 @@ def apply_streak_midpoints(
     """Collapse each run of CONSECUTIVE qualifying rows into ONE signal
     at the run's MID row — the streak-merge that replaced the legacy
     cooldown suppression in the forecast engines (mov_rsi / mov_std /
-    mov_gap / px_vol_state; consumed via ``iter_bucket_subsets``, the
+    px_vol_state; consumed via ``iter_bucket_subsets``, the
     engines' unified bucket-signal pipeline).
 
     A run of length L starting at row s keeps only row
@@ -135,7 +135,7 @@ def iter_bucket_subsets(
     excess3: np.ndarray | None = None,
 ):
     """The UNIFIED bucket-signal pipeline of the aggregation engines
-    (compute_rsi / compute_std / compute_gap / compute_pairs /
+    (compute_rsi / compute_std / compute_pairs /
     compute_px_vol): streak-merge → sparsify → live-gated per-config
     counts → per-side → per-hype split, yielded as the group-ascending
     sparse cell lists aggregate_horizons_sparse consumes.
@@ -166,7 +166,7 @@ def iter_bucket_subsets(
         excess3: optional (T, C, K_total) signed per-day per-config
               TRIGGER EXCESS (value − qualifying bar) of the same
               window slice — the scalar-bar engines' companion tensor
-              (mov_rsi / mov_gap: the day's indicator minus its
+              (mov_rsi: the day's indicator minus its
               percentile bar; mov_std: the price minus the breached
               band edge; mov_pairs: the day's spread, the bar being the
               zero line). Gathered at the kept cells like ``lens`` and

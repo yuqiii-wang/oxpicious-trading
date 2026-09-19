@@ -1,10 +1,9 @@
 """Shared wide-grid engine base (analyze.analysis_forecasts._engine).
 
 ``WideEngineBase`` — the ABC behind the forecast bucket engines
-(compute_rsi / compute_std / compute_gap / compute_pairs /
-compute_px_vol / compute_margin_ratio / compute_pe / compute_dividend)
-and — via analyze.analysis_signals.signals._base.PctSignalEngine — the
-analysis_signals signal engines. One metric per compute module; the
+(compute_rsi / compute_std / compute_pairs /
+compute_px_vol / compute_margin_ratio / compute_pe / compute_dividend).
+One metric per compute module; the
 module's ``compute_<family>_results`` factory builds its engine
 subclass and returns ``engine.run()``.
 
@@ -24,8 +23,8 @@ inline (the 2026-09-15 engine pass):
     next/5d/20d/60d/mixed) → yield (stat_month, rows) month-major so
     __main__ can write one atomic transaction per month.
   - ``quantile_threshold`` — the column-wise linear-interpolated
-    quantile gather from a sorted window matrix (the mov_rsi /
-    mov_gap percentile machinery; also imported by the signals layer).
+    quantile gather from a sorted window matrix (the mov_rsi percentile
+    machinery; also imported by the signals layer).
 
 Subclasses implement two hooks:
 
@@ -179,7 +178,7 @@ class WideEngineBase(ABC, Generic[Carry]):
         NC0s = {n: self.chg[f"NC0_{n}"][lo:hi] for n in FORWARD_HORIZONS}
         FINs = {n: self.chg[f"FIN_{n}"][lo:hi] for n in FORWARD_HORIZONS}
         # Window-sliced PATH-extreme matrices (FMAX0/FMIN0) — the
-        # swing-aware reversal event + max_low_change_ratio inputs.
+        # swing-aware reversal event inputs.
         PATH0s = {
             n: (self.chg[f"FMAX0_{n}"][lo:hi], self.chg[f"FMIN0_{n}"][lo:hi])
             for n in MM_HORIZONS
@@ -284,10 +283,7 @@ def quantile_threshold(
     compute-side engines resolve the bars through the cudf.pandas
     quantile pass instead (the GPU column sort + interpolation — see
     compute_rsi; pandas-CPU fallback is automatic under cudf.pandas);
-    this numpy form is the exactness reference and the implementation
-    the live signals layer
-    (analyze.analysis_signals.signals._base) imports — keep the
-    signature.
+    this numpy form is the exactness reference — keep the signature.
     """
     n_safe = np.maximum(valid_n, 1)
     pos = q * (n_safe - 1)

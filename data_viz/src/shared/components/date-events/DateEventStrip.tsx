@@ -22,7 +22,6 @@ import { useCallback, useMemo } from "react";
 import { Box, Chip, Stack, Typography } from "@mui/material";
 import React from "react";
 import EChart from "@/components/EChart";
-import { useStore } from "@/store/filters";
 import {
   MUTED_PALETTE,
   axisColors,
@@ -30,6 +29,7 @@ import {
   commonGrid,
   commonLegend,
 } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip, useChartThemeMode } from "@/shared/charts/base-chart";
 import { renderReactElement } from "@/lib/react-tooltip-renderer";
 
 /** One marker on the strip. */
@@ -101,7 +101,7 @@ export default function DateEventStrip({
   defaultWindowDays = DEFAULT_WINDOW_DAYS,
   highlightRange = null,
 }: Props) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
 
   // ---- Zoom window (enableZoom) — in-chart ECharts dataZoom slider via the
   // shared commonDataZoom (identical style to the code-trend charts). The
@@ -190,17 +190,13 @@ export default function DateEventStrip({
     const c = axisColors(themeMode);
     const xMin = axisMin || events[0]?.date || "";
     const xMax = axisMax || events[events.length - 1]?.date || "";
-    return {
-      backgroundColor: "transparent",
-      animation: false,
+    return baseChartOption(themeMode, {
       // Roomier bottom margin when the dataZoom slider renders inside the
       // canvas (slider 18px + axis labels), mirroring the code-trend charts.
       grid: commonGrid({ left: 16, right: 16, top: 16, bottom: enableZoom ? 52 : 28 }),
-      tooltip: {
-        trigger: "item" as const,
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
+      tooltip: commonTooltip(themeMode, {
+        trigger: "item",
+        axisPointer: undefined,
         formatter: (params: unknown) => {
           const p = params as { data?: { event?: DateEvent & { _id: number | string; _label: string } } };
           const e = p.data?.event;
@@ -219,7 +215,7 @@ export default function DateEventStrip({
           }
           return renderReactElement(React.createElement(React.Fragment, null, children));
         },
-      },
+      }),
       xAxis: {
         type: "time" as const,
         min: xMin || undefined,
@@ -261,7 +257,8 @@ export default function DateEventStrip({
             left: "right",
             data: Array.from(seriesByType.keys()).map((t) => typeMeta[t]?.label ?? t),
           })
-        : undefined,
+        // null → the legend fragment is omitted entirely (showLegend=false).
+        : null,
       series: Array.from(seriesByType.entries()).map(([type, points], seriesIdx) => ({
         name: typeMeta[type]?.label ?? type,
         type: "scatter" as const,
@@ -307,7 +304,7 @@ export default function DateEventStrip({
           : undefined,
         z: 3,
       })),
-    };
+    });
   }, [events, themeMode, axisMin, axisMax, seriesByType, typeMeta, showLegend, isSelected, enableZoom, zoomStartPct, highlightRange]);
 
   // Click — resolve the event back for the caller.

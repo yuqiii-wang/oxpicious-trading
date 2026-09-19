@@ -8,9 +8,16 @@
  * Mirrors plot_market_interest_evolution() in plot_szse_options.py.
  */
 
-import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
-import { useStore } from "@/store/filters";
+import { useMemo } from "react";
+import {
+  BaseChart,
+  baseChartOption,
+  commonTooltip,
+  emptyChartOption,
+  useChartThemeMode,
+} from "@/shared/charts/base-chart";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ThemeMode } from "@/store/filters";
 import type { OptionsRow } from "@shared/types";
 import {
   DOWN_COLOR,
@@ -85,24 +92,15 @@ function buildWallOption(
   expiryColorMap: Map<string, string>,
   label: string,
   dateStr: string,
+  mode: ThemeMode,
 ): EChartsOption {
-  const themeMode = useStore.getState().themeMode;
-  const c = axisColors(themeMode);
+  const c = axisColors(mode);
   const textColor = c.textColor;
   const splitColor = c.splitLineColor;
-  const tooltipBg = c.tooltipBg;
 
   const stats = computeSnapshotStats(snap);
   if (!stats) {
-    return {
-      backgroundColor: "transparent",
-      title: {
-        text: `${label}\n[No data]`,
-        left: "center",
-        top: "center",
-        textStyle: { color: textColor, fontSize: 11, fontWeight: 400 },
-      },
-    };
+    return emptyChartOption(mode, `${label}\n[No data]`);
   }
 
   // Per-expiry OI by strike
@@ -239,24 +237,19 @@ function buildWallOption(
   const cwStr = stats.callWall != null ? fmtNum(stats.callWall / PRICE_SCALE) : "—";
   const pwStr = stats.putWall != null ? fmtNum(stats.putWall / PRICE_SCALE) : "—";
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(mode, {
     grid: commonGrid({ left: 70, right: 20, top: 50, bottom: 36 }),
     title: {
       text: `${label}  (${dateStr})  Spot=${fmtNum(stats.S)}  CW=${cwStr}  PW=${pwStr}  P/C=${fmtNum(stats.pcRatio)}  IV=${ivStr}  Skew=${skStr}  GEX=${gexStr}`,
       left: "left",
       textStyle: { color: textColor, fontSize: 10, fontFamily: "monospace" },
     },
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(mode, {
       axisPointer: { type: "shadow" },
-      backgroundColor: tooltipBg,
-      borderColor: splitColor,
       textStyle: { color: textColor, fontSize: 10 },
       formatter: makeWallTooltipFormatter(unifiedStrikes),
-    },
-    legend: commonLegend(themeMode, { top: 22, type: "scroll" }),
+    }),
+    legend: commonLegend(mode, { top: 22, type: "scroll" }),
     xAxis: {
       type: "value",
       name: "OI (contracts)  Call→ | ←Put",
@@ -285,10 +278,11 @@ function buildWallOption(
       splitLine: { show: false },
     },
     series,
-  };
+  });
 }
 
 export default function MarketInterestWallPanel({ rows, selectedDate }: Props) {
+  const themeMode = useChartThemeMode();
   // Build unified strikes + expiry color map from ALL rows so the y-axis and
   // colors stay stable as the user changes the selected date.
   const allDatesSnap = rows;
@@ -301,15 +295,41 @@ export default function MarketInterestWallPanel({ rows, selectedDate }: Props) {
     expiryColorMap,
     "Market Interest Wall",
     selectedDate,
+    themeMode,
+  );
+
+  const underlyingCode = rows[0]?.underlying_code ?? "";
+  // AI Ask — the full wall-decoding guide (former card subtitle) lives in
+  // the intro; the card shows only the concise identity line.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "Per-strike OI stacked by expiry month, calls to the right (positive) and puts to the " +
+        "left (negative) — blue gradient: dark = nearest expiry, light = farthest. Spot / Call " +
+        "Wall / Put Wall / MaxPain / OI-weighted strike lines are overlaid as horizontal " +
+        "markLines. Mirrors plot_market_interest_evolution() in plot_szse_options.py.",
+      instruments: underlyingCode ? [{ code: underlyingCode }] : [],
+      state: { selectedDate },
+      suggestedQuestions: [
+        "Where do the call and put OI walls sit relative to spot, and which strike could pin price into expiry?",
+        "Is open interest concentrated in near or far expiries?",
+        "What do max pain and the OI-weighted strike suggest about expiry magnetism?",
+      ],
+      notes: [
+        "Wall dominance: only the dominant wall is drawn when one side's wall OI is >33% larger; comparable walls (within 33%) draw both — a balanced market.",
+        "The in-chart title carries the selected date's readouts: Spot, Call/Put Wall strikes, P/C ratio, ATM IV, IV skew and net GEX.",
+      ],
+    }),
+    [underlyingCode, selectedDate],
   );
 
   return (
-    <ChartCard
+    <BaseChart
       title="Market Interest Wall (by Expiry)"
-      subtitle="OI by strike, stacked by expiry · Call → (right) · Put ← (left) · Blue gradient: dark=near expiry, light=far expiry · Spot / Call Wall / Put Wall / MaxPain / OI-weighted lines"
-      height={420}
-    >
-      <EChart option={selectedOption} height={400} />
-    </ChartCard>
+      subtitle="Per-strike OI stacked by expiry · Call → / Put ← · blue: dark=near expiry · spot + wall mark lines"
+      aiAsk={aiAskSpec}
+      height={400}
+      option={selectedOption}
+    />
   );
 }

@@ -50,7 +50,7 @@ export function buildDailyOi(rows: OptionsRow[]): DailyOi[] {
   return out;
 }
 
-export function buildExpiryMarkers(rows: OptionsRow[], chartDates: string[]): ExpiryMarker[] {
+export function buildExpiryMarkers(rows: OptionsRow[]): ExpiryMarker[] {
   const contractRows = new Map<string, Map<string, OptionsRow>>();
   const contractExpiry = new Map<string, string>();
   const contractName = new Map<string, string>();

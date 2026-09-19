@@ -109,9 +109,8 @@
 --  source price / trading_amount columns come from the same stats
 --  tables the analyze.mov_ave_spread pipeline reads). MIGRATED from
 --  analysis.mov_ave_market_hypes (formerly an internal step of
---  analyze.mov_ave_spread) — the analysis-schema DDL in
---  database/sql/analysis/03_mov_ave_spreads.sql now only DROPs the
---  old table.
+--  analyze.mov_ave_spread) — the legacy analysis-schema table and its
+--  analysis_identity registration row are gone.
 -- ============================================================================
 
 DROP TABLE IF EXISTS stats.mov_ave_market_hypes CASCADE;

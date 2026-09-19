@@ -21,6 +21,11 @@
 import React from "react";
 import type { EChartsOption } from "echarts";
 import {
+  baseChartOption,
+  commonTooltip,
+} from "@/shared/charts/base-chart";
+import type { ThemeMode } from "@/store/filters";
+import {
   AXIS_POINTER_LINE,
   TOOLTIP_CARD_BG,
   TOOLTIP_CARD_BORDER,
@@ -46,6 +51,7 @@ interface MarkerDataItem {
 }
 
 export function buildBasisConvergenceChartOption(
+  mode: ThemeMode,
   data: FuturesCombinedResponse,
   gapByCodeDate: Map<string, Map<string, number | null>>,
   viewMode: ViewMode,
@@ -191,12 +197,13 @@ export function buildBasisConvergenceChartOption(
     ...matured.map((c) => mkSeries(c.code, c.last_date)),
   ];
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(mode, {
+    // No legend: per-contract identity is read from the hover tooltip.
+    legend: null,
     grid: { left: 60, right: 24, top: 24, bottom: 60 },
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(mode, {
+      // Line (not cross) pointer; the React-element formatter below draws
+      // the shared tooltip-card rows (signed bps + days to expiry).
       axisPointer: { type: "line", lineStyle: { color: AXIS_POINTER_LINE, type: "dashed" } },
       confine: true,
       backgroundColor: TOOLTIP_CARD_BG,
@@ -239,7 +246,7 @@ export function buildBasisConvergenceChartOption(
         }
         return renderReactElement(React.createElement(React.Fragment, null, children));
       },
-    },
+    }),
     xAxis: {
       type: "category",
       data: dates,
@@ -287,5 +294,5 @@ export function buildBasisConvergenceChartOption(
         end: zoomRange?.end ?? 100,
       },
     ],
-  } as EChartsOption;
+  });
 }

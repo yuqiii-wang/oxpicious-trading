@@ -1,19 +1,12 @@
-"""llm_agents.online_search_summary.core.errors — Provider exception type."""
+"""llm_agents.online_search_summary.core.errors — Provider exception type.
+
+The exception lives in ``llm_agents._core.errors`` (``LlmProviderError``)
+since the transport is shared across the llm_agents providers;
+``OnlineSearchError`` is kept as an alias so existing imports and
+``except`` clauses catch the same class the shared transport raises.
+"""
 from __future__ import annotations
 
-from typing import Optional
+from llm_agents._core.errors import LlmProviderError
 
-
-class OnlineSearchError(RuntimeError):
-    """Provider call failed (transport, HTTP, or API error body).
-
-    ``status`` carries the HTTP status when one was received; ``code`` the
-    provider error code (e.g. ZhiPu 1113 balance exhausted, 1701
-    concurrency limit, 1702 engine unavailable, 1703 empty result).
-    """
-
-    def __init__(self, message: str, *, status: Optional[int] = None,
-                 code: Optional[str] = None) -> None:
-        super().__init__(message)
-        self.status = status
-        self.code = code
+OnlineSearchError = LlmProviderError

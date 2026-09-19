@@ -4,9 +4,9 @@ import type {
   OptionsUnderlying,
   OptionsWallsResponse,
   EtfOhlcvResponse,
-  SkewnessCorrResponse,
   SkewnessSeriesResponse,
   IvSkewResponse,
+  VolIndexResponse,
   SkewType,
 } from "@shared/types";
 
@@ -69,23 +69,6 @@ export function fetchEtfOhlcv(
  *  or 'greek_<name>' (OI-wtd mean greek / ATM greek, per greek). */
 export type { SkewType } from "@shared/types";
 
-export function fetchOptionsSkewnessCorr(
-  underlying: string,
-  startDate?: string | null,
-  endDate?: string | null,
-  skewType: SkewType = "oi_moneyness",
-): Promise<SkewnessCorrResponse> {
-  const params = new URLSearchParams();
-  if (underlying) params.set("underlying", underlying);
-  if (startDate) params.set("start_date", startDate);
-  if (endDate) params.set("end_date", endDate);
-  params.set("skew_type", skewType);
-  const qs = params.toString();
-  return fetchJson<SkewnessCorrResponse>(
-    `/api/szse-options/skewness-corr${qs ? `?${qs}` : ""}`,
-  );
-}
-
 export function fetchOptionsSkewnessSeries(
   underlying: string,
   startDate?: string | null,
@@ -115,5 +98,22 @@ export function fetchOptionsIvSkew(
   const qs = params.toString();
   return fetchJson<IvSkewResponse>(
     `/api/szse-options/iv-skew${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** Daily 30d model-free vol index (VIX-style) — omit `underlying` to
+ *  fetch every underlying's series (cross-asset comparison). */
+export function fetchOptionsVolIndex(
+  underlying?: string | null,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<VolIndexResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<VolIndexResponse>(
+    `/api/szse-options/vol-index${qs ? `?${qs}` : ""}`,
   );
 }

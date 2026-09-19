@@ -170,19 +170,6 @@ export const SKEW_TYPES: SkewType[] = [
   "greek_vega",
 ];
 
-export interface SkewnessCorrRow {
-  date: string;
-  expiry_month: string;
-  corr_skewness_ma5_vs_spot_ma5: number | null;
-  corr_skewness_ma20_vs_spot_ma20: number | null;
-  corr_skewness_ma60_vs_spot_ma60: number | null;
-}
-
-export interface SkewnessCorrResponse {
-  underlying_code: string;
-  rows: SkewnessCorrRow[];
-}
-
 /** Daily raw skewness series per (date, expiry month) from the DB. */
 export interface SkewnessSeriesRow {
   date: string;
@@ -209,6 +196,10 @@ export interface IvSkewRow {
   risk_reversal_25d: number | null;
   put_skew_25d: number | null;
   call_skew_25d: number | null;
+  /** Deeper |delta|=0.10 wing (null when the strike grid has no near-target contract). */
+  iv_call10: number | null;
+  iv_put10: number | null;
+  risk_reversal_10d: number | null;
   smile_skewness: number | null;
   rr25_ma5: number | null;
   rr25_ma20: number | null;
@@ -222,6 +213,28 @@ export interface IvSkewRow {
 export interface IvSkewResponse {
   underlying_code: string;
   rows: IvSkewRow[];
+}
+
+export interface VolIndexRow {
+  date: string;
+  underlying_code: string;
+  /** Expiry with T <= 30d used in the constant-maturity bracket (null on fallback). */
+  near_expiry_date: string | null;
+  /** Expiry with T > 30d used in the bracket (null on single-expiry fallback). */
+  far_expiry_date: string | null;
+  dte_near: number | null;
+  dte_far: number | null;
+  var_near: number | null;
+  var_far: number | null;
+  variance_30d: number | null;
+  /** 100 * sqrt(variance_30d) — vol points, comparable to VIX. */
+  vol_index_30d: number | null;
+}
+
+export interface VolIndexResponse {
+  /** null when the request was for ALL underlyings. */
+  underlying_code: string | null;
+  rows: VolIndexRow[];
 }
 
 export interface EtfOhlcvResponse {
@@ -844,35 +857,13 @@ export interface MovAveSpreadDetailRow {
   /** Trading amount in yuan on this date (from basic_stats.trading_amount). */
   trading_amount: number | null;
   /**
-   * The biz date of the most recent local turning point (high/low) detected
-   * by price_slope sign change within the last 500 trading days (from
-   * analysis.mov_ave_rsi). Carried forward from each turning point until the
-   * next one. NULL when no turning point exists in the 500-trading-day
-   * lookback window (early history before the first turn, or the most
-   * recent extreme is older than 500 trading days) or when no mov_ave_rsi
-   * row exists for this date.
-   *
-   * Shared across all 9 pairs for a given date — describes the price curve,
-   * not a specific MA pair. The frontend plots a small green up-triangle
-   * marker at each unique extreme date and surfaces this in the tooltip.
+   * Wilder Relative Strength Index over 3 trading days (alpha=1/3, ewm
+   * adjust=False, min_periods=3) — an ultra-short momentum window.
+   * 0..100. NULL until 3 consecutive gain/loss observations. From
+   * analysis.mov_ave_rsi. Surfaced in the chart tooltip as part of the
+   * per-date RSI info.
    */
-  date_of_last_extreme_500days: string | null;
-  /**
-   * Signed fractional gap from the most recent local turning point within
-   * the last 500 trading days: (price[t] - extreme_price) / extreme_price
-   * (from analysis.mov_ave_rsi). Sign indicates the type of the last
-   * extreme: positive = last extreme was a local MIN (price rebounded
-   * upward), negative = last extreme was a local MAX (price fell). NULL
-   * when no turning point exists in the 500-trading-day lookback window.
-   */
-  gap_since_last_extreme_500days: number | null;
-  /**
-   * Trading days since the most recent local turning point within the last
-   * 500 trading days (from analysis.mov_ave_rsi). 0 on the extreme row
-   * itself. NULL when no turning point exists in the 500-trading-day
-   * lookback window.
-   */
-  days_since_last_extreme_500days: number | null;
+  rsi_3days: number | null;
   /**
    * Wilder Relative Strength Index over 6 trading days (alpha=1/6, ewm
    * adjust=False, min_periods=6). 0..100. NULL until 6 consecutive
@@ -1289,22 +1280,22 @@ export interface MovAveSpreadChartResponse {
 
 // ----------------------------------------------------------------------------
 //  Analysis Commons — Forecast buckets (analysis_forecasts schema)
-//    mov_rsi / mov_std / mov_gap / px_vol — bucket-definition (motivation)
+//    mov_rsi / mov_std / px_vol — bucket-definition (motivation)
 //      tables, each row linking 1:1 via forecast_id to its forecast_results
 //      rows (normalized: 4 period rows next/5d/20d/60d).
 //    Served by GET /api/analysis/mov-ave-spread/forecast — the MA-Spread
 //    panel's second plot: a config→result table beneath the spread chart.
 // ----------------------------------------------------------------------------
 
-/** Which bucket family the forecast table shows. */
-export type ForecastKind = "mov_rsi" | "mov_std" | "mov_gap" | "mov_pairs" | "mov_pairs_ema" | "px_vol" | "margin_ratio" | "high_low_streaks" | "pe" | "dividend";
+/** Which bucket family the forecast table shows. (mov_gap is retired —
+ *  the gap indicator columns were removed from analysis.mov_ave_rsi;
+ *  the family has no tab and no kind here.) */
+export type ForecastKind = "mov_rsi" | "mov_std" | "mov_pairs" | "mov_pairs_ema" | "px_vol" | "margin_ratio" | "high_low_streaks" | "pe" | "dividend";
 
 /** The forecast_results numeric columns: mean + std-dev of the forward
  *  fractional changes at all 4 horizons; close-based max/min forward
- *  changes + the best-to-worst n-day outcome ratio
- *  (max_low_change_ratio — not a within-window path swing) at the
- *  5d/20d/60d horizons only; per-horizon P(>1% reversal) and occurrence
- *  counts. */
+ *  changes at the 5d/20d/60d horizons only; per-horizon P(>1% reversal)
+ *  and occurrence counts. */
 export interface ForecastResultCols {
   /** The bucket's surrogate id into analysis_forecasts.forecast_results —
    *  links to the row-click trigger-dates endpoint
@@ -1327,9 +1318,6 @@ export interface ForecastResultCols {
   min_5d_change: number | null;
   min_20d_change: number | null;
   min_60d_change: number | null;
-  max_low_change_ratio_5d: number | null;
-  max_low_change_ratio_20d: number | null;
-  max_low_change_ratio_60d: number | null;
   reverse_prob: number | null;
   reverse_prob_5d: number | null;
   reverse_prob_20d: number | null;
@@ -1376,31 +1364,19 @@ export interface MovStdForecastRow extends ForecastResultCols {
   in_signals: boolean;
 }
 
-/** One mov_gap bucket row (N-day price-return extreme-percentile bucket)
- *  + its results. Bucket key: (stat_month, gap_window, side, pct,
- *  is_market_hyped). */
-export interface MovGapForecastRow extends ForecastResultCols {
-  stat_month: string;
-  gap_window: number;
-  side: "top" | "bottom";
-  pct: number;
-  is_market_hyped: boolean;
-  /** The bucket's MIXED signal bool — TRUE when the row's own
-   *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
-   *  forecast-result gate the signals layer applies (the same rule that
-   *  emits its signal days). */
-  in_signals: boolean;
-}
-
 /** One mov_pairs bucket row (MA-pair cross bucket — golden / death cross
- *  read off the EXISTING ma5_vs_ma{pair_window} relative-MA spread of
- *  analysis.mov_ave_spreads_detail) + its results. Bucket key:
- *  (stat_month, pair_window, side, is_market_hyped). */
+ *  read off the EXISTING ma5_vs_ma{pair_window} (fast_leg "ma5") or
+ *  price_vs_ma{pair_window} (fast_leg "price", the close price)
+ *  relative-MA spread of analysis.mov_ave_spreads_detail) + its
+ *  results. Bucket key: (stat_month, fast_leg, pair_window, side,
+ *  is_market_hyped). */
 export interface MovPairsForecastRow extends ForecastResultCols {
   stat_month: string;
-  /** Slow MA leg of the pair (trading days): 60 / 120 / 255 (fast leg
-   *  fixed ma5; the cross is the ma5_vs_ma{pair_window} sign flip). */
+  /** Fast leg of the pair: "ma5" — ma5_vs_ma{pair_window}; "price" —
+   *  the close price, price_vs_ma{pair_window}. */
+  fast_leg: "ma5" | "price";
+  /** Slow MA leg of the pair (trading days): 60 / 120 / 255 (the cross
+   *  is the fast leg's price_vs_ma / ma5_vs_ma sign flip). */
   pair_window: number;
   /** Cross side: top = cross UP / golden cross (spread turns > 0 from
    *  <= 0 — ma5 rises through the slow MA) / bottom = cross DOWN /
@@ -1417,13 +1393,17 @@ export interface MovPairsForecastRow extends ForecastResultCols {
 
 /** One mov_pairs_ema bucket row — the EMA sibling of MovPairsForecastRow
  *  (identical shape): golden / death cross read off the EXISTING
- *  ema6_vs_ema{pair_window} relative-EMA spread of
+ *  ema6_vs_ema{pair_window} (fast_leg "ema6") or price_vs_ema{pair_window}
+ *  (fast_leg "price", the close price) relative-EMA spread of
  *  analysis.mov_ave_spreads_detail_ema. Bucket key: (stat_month,
- *  pair_window, side, is_market_hyped). */
+ *  fast_leg, pair_window, side, is_market_hyped). */
 export interface MovPairsEmaForecastRow extends ForecastResultCols {
   stat_month: string;
-  /** Slow EMA leg of the pair (trading days): 60 / 120 / 255 (fast leg
-   *  fixed ema6; the cross is the ema6_vs_ema{pair_window} sign flip). */
+  /** Fast leg of the pair: "ema6" — ema6_vs_ema{pair_window}; "price" —
+   *  the close price, price_vs_ema{pair_window}. */
+  fast_leg: "ema6" | "price";
+  /** Slow EMA leg of the pair (trading days): 60 / 120 / 255 (the cross
+   *  is the fast leg's price_vs_ema / ema6_vs_ema sign flip). */
   pair_window: number;
   /** Cross side: top = cross UP / golden cross (spread turns > 0 from
    *  <= 0 — ema6 rises through the slow EMA) / bottom = cross DOWN /
@@ -1607,7 +1587,7 @@ export interface ForecastResponse {
   sec_type: string;
   /** All distinct stat_months (YYYY-MM-DD) with rows for this code, DESC. */
   months: string[];
-  rows: MovRsiForecastRow[] | MovStdForecastRow[] | MovGapForecastRow[] | MovPairsForecastRow[] | MovPairsEmaForecastRow[] | PxVolForecastRow[] | MarginRatioForecastRow[] | HighLowStreaksForecastRow[] | PeForecastRow[] | DividendForecastRow[];
+  rows: MovRsiForecastRow[] | MovStdForecastRow[] | MovPairsForecastRow[] | MovPairsEmaForecastRow[] | PxVolForecastRow[] | MarginRatioForecastRow[] | HighLowStreaksForecastRow[] | PeForecastRow[] | DividendForecastRow[];
   /** Backend arg for the shared ExpandedTable: whether the table renders
    *  its per-column header filters. Default false (filters disabled). */
   enable_filters: boolean;
@@ -1645,11 +1625,12 @@ export interface ForecastTriggerDatesResponse {
 }
 
 /** Motivation table names registered in
- *  analysis_forecasts.forecast_identities (identity.bucket values). */
+ *  analysis_forecasts.forecast_identities (identity.bucket values).
+ *  (mov_gap was retired 2026-09 — table dropped, its registry rows
+ *  purged.) */
 export type ForecastIdentityBucket =
   | "mov_rsi"
   | "mov_std"
-  | "mov_gap"
   | "mov_pairs"
   | "mov_pairs_ema"
   | "px_vol_state"
@@ -3451,7 +3432,8 @@ export interface AiQaItem {
 
 /** One reference resolution of a Q&A answer, joined to its article. */
 export interface AiQaRefItem {
-  /** Citation tag as cited in the answer (ref_1, …). */
+  /** Representative citation tag of the article (ref_1, …) — the
+   *  smallest tag the answer cites among the refs resolving to it. */
   ref: string;
   /** 'exact' (came with the summary response) | 'relevant' (found
    *  after the summary by title search — corpus match or ddgs). */
@@ -3460,6 +3442,9 @@ export interface AiQaRefItem {
    *  on rows stored before the column existed). */
   resolved_via: string | null;
   resolved_url: string | null;
+  /** Whether the answer cites the article (any of its tags) — search
+   *  results the summarizer did not cite load too, unused. */
+  is_used: boolean;
   /** The reference's publish time per the search response (timestamptz str). */
   ref_time: string | null;
   news_id: number;
@@ -3496,3 +3481,27 @@ export type AiDayCount = NewsDayCount;
 
 /** Response for GET /api/ai/calendar (same shape as the news calendar). */
 export type AiCalendarResponse = NewsCalendarResponse;
+
+// ---------------------------------------------------------------------------
+//  Sec board map (stats.sec_board_map) — the code-trend header's board tag
+// ---------------------------------------------------------------------------
+
+/** One listing-board entry. Stocks carry exactly ONE entry (their own
+ *  listing board, pct=100); ETFs/indices carry one entry per board
+ *  present in their latest composition snapshot, pct = composition-weight
+ *  share. board: "MAIN" | "STAR" | "GEM" | "BSE". */
+export interface SecBoardTag {
+  board: string;
+  pct: number;
+  n_stocks: number;
+}
+
+/** Response for GET /api/sec-board?sec_type=…&code=… */
+export interface SecBoardMapResponse {
+  code: string;
+  sec_type: "etf" | "index" | "stock";
+  /** Sorted pct DESC; empty when the security has no board data. */
+  boards: SecBoardTag[];
+  /** Composition snapshot the mix was computed from (null for stocks). */
+  snapshot_date: string | null;
+}

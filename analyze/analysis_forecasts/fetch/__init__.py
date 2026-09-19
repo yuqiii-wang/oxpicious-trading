@@ -8,7 +8,6 @@ per-family source tables the bucket engines consume:
             index / stock = *_basic_stats.close),
   ma_{W}  — from stats.{sec_type}_tech_stats (ma5/20/60/120/255),
   rsi_{W} — from analysis.mov_ave_rsi (Wilder RSI columns),
-  gap_{W} — from analysis.mov_ave_rsi (N-day price-return columns),
   std_{W} — from analysis.mov_ave_spreads_detail (Bollinger sigma),
   pair_{W} — from analysis.mov_ave_spreads_detail (the EXISTING
             ma5_vs_ma{W} relative-MA spreads, W ∈ MOV_PAIRS_WINDOWS —
@@ -68,8 +67,8 @@ from .opp_pair import (
 )
 from .identity import fetch_forecast_identity
 
-# Legacy private aliases (analyze.analysis_signals.live_close imports
-# the source tables under the historical underscore names).
+# Legacy private aliases (historical underscore names kept for the
+# cross-package importers).
 from ._sources import AMT_SOURCE as _AMT_SOURCE  # noqa: E402
 from ._sources import PRICE_SOURCE as _PRICE_SOURCE  # noqa: E402
 

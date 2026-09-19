@@ -14,13 +14,13 @@ from __future__ import annotations
 import datetime
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
 
+from llm_agents._core.models import SHANGHAI_TZ
 from llm_agents.online_search_summary.core.citations import extract_cited_refs
 
 # Shared "today" reference for fallback dates and prompt anchors — the
-# corpus and the market calendar it serves are Asia/Shanghai.
-SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+# corpus and the market calendar it serves are Asia/Shanghai (re-export
+# of the llm_agents._core constant).
 
 RECENCY_FILTERS = ("oneDay", "oneWeek", "oneMonth", "oneYear", "noLimit")
 CONTENT_SIZES = ("medium", "high")
@@ -140,3 +140,49 @@ class SearchSummary:
             "cited_refs": self.cited_refs,
             "references": [h.to_dict() for h in self.hits],
         }
+
+    @classmethod
+    def from_dict(cls, obj: Dict[str, Any]) -> "SearchSummary":
+        """Rebuild the summary from :meth:`to_dict` output — the ai_daily
+        artifact envelope. Unknown keys (target_date / stored_qa_id /
+        movers / …) are ignored; malformed optional fields degrade to
+        None so a partially-written artifact still stores."""
+        hits: List[SearchHit] = []
+        for h in obj.get("references") or []:
+            if not isinstance(h, dict) or not h.get("title"):
+                continue
+            publish_date = None
+            if h.get("publish_date"):
+                try:
+                    publish_date = datetime.date.fromisoformat(
+                        h["publish_date"])
+                except ValueError:
+                    pass
+            hits.append(SearchHit(
+                refer=h.get("refer") or "",
+                title=h["title"],
+                content=h.get("content"),
+                link=h.get("link"),
+                media=h.get("media"),
+                icon=h.get("icon"),
+                publish_date=publish_date,
+                publish_date_raw=h.get("publish_date_raw"),
+            ))
+        created = None
+        if obj.get("created"):
+            try:
+                created = datetime.datetime.fromisoformat(obj["created"])
+            except ValueError:
+                pass
+        return cls(
+            question=obj.get("question") or "",
+            answer=obj.get("answer") or "",
+            hits=hits,
+            provider=obj.get("provider"),
+            model=obj.get("model"),
+            engine=obj.get("engine"),
+            mode=obj.get("mode"),
+            request_id=obj.get("request_id"),
+            created=created,
+            usage=obj.get("usage"),
+        )

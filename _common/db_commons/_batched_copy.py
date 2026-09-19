@@ -9,7 +9,7 @@ tables) — so chunk boundaries align with the semantic partition unit:
   - a single key's rows are NEVER split across chunks (whole-industry /
     whole-code chunks), and
   - rows are constructed key-major (sorted by the partition key), so
-  each chunk streams a contiguous run of keys through COPY.
+    each chunk streams a contiguous run of keys through COPY.
 
 Why chunk by the partition key rather than one giant COPY: asyncpg's
 ``copy_records_to_table`` materializes the full record iterator inside
@@ -18,6 +18,13 @@ list (~GBs) at once. Chunking bounds peak memory to
 ``chunk_target_rows`` dicts while keeping the 5-10x COPY protocol
 speedup. Chunking does NOT change server-side routing — COPY routes
 each row to its hash partition independently of chunk boundaries.
+
+``copy_frame_chunked_async`` is the DataFrame-flavored sibling: it
+chunks a FRAME by row count and sanitizes each slice INSIDE the loop,
+so the sanitized dict list never exceeds one chunk — the whole-table
+sanitize-then-COPY pattern (e.g. a --force rebuild of a 7M-row table)
+peaked at ~1 KB/row of host RSS (measured, temp_scripts/
+study_inplace_col_reduce.py scenario F) before this helper existed.
 
 SAFE ONLY when the target table has been TRUNCATEd (or is otherwise
 guaranteed conflict-free) — COPY has no ON CONFLICT handling. The
@@ -28,9 +35,12 @@ and analyze.* pipelines can share one implementation.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
+
+import pandas as pd
 
 from ._async_ops import copy_insert_async
+from ..df_utils.sanitize import sanitize_for_db_insert
 
 import logging
 logger = logging.getLogger(__name__)
@@ -111,5 +121,68 @@ async def batched_copy_by_key_async(
     for i, chunk in enumerate(chunks, start=1):
         total += await copy_insert_async(conn, table_name, chunk)
         logger.info(f"{prefix}chunk {i}/{n_chunks}: COPY {len(chunk):,} rows "
+              f"(cumulative {total:,})")
+    return total
+
+
+async def copy_frame_chunked_async(
+    conn,
+    table_name: str,
+    df: pd.DataFrame,
+    *,
+    columns: Sequence[str],
+    numeric_cols: Sequence[str],
+    round_to: int | None = None,
+    date_cols: Sequence[str] | None = None,
+    chunk_target_rows: int = DEFAULT_CHUNK_TARGET_ROWS,
+    label: str = "",
+) -> int:
+    """COPY-insert a DataFrame in row-count chunks, sanitizing each slice
+    INSIDE the loop.
+
+    The DataFrame-flavored force-mode writer: the caller has already
+    DELETEd / TRUNCATEd the target scope (conflict-free COPY contract),
+    and this helper bounds the sanitized dict list to ONE
+    ``chunk_target_rows`` chunk instead of materializing the whole
+    table's dicts at once (~1 KB of host RSS per row — a 7M-row
+    full-frame sanitize peaked at ~6 GB before this helper).
+
+    Args:
+        conn: asyncpg connection (chunks run sequentially on it).
+        table_name: schema-qualified target table.
+        df: the frame to write. May carry extra columns — ``columns``
+            selects the COPY projection (mirroring the former
+            ``sanitize(whole frame) + copy_insert(columns=...)`` pairs);
+            slices are taken with ``.iloc`` so the frame is not copied.
+        columns: explicit COPY column order.
+        numeric_cols: columns sanitize_for_db_insert rounds / NaN-sweeps.
+        round_to: decimal places for the numeric columns (None = skip).
+        date_cols: columns sanitize_for_db_insert emits as python
+            ``datetime.date`` objects (asyncpg DATE columns).
+        chunk_target_rows: rows per COPY chunk.
+        label: optional progress-message prefix.
+
+    Returns:
+        Total rows COPY-inserted.
+    """
+    n_total = len(df)
+    if n_total == 0:
+        return 0
+    bounds = [
+        (lo, min(lo + chunk_target_rows, n_total))
+        for lo in range(0, n_total, chunk_target_rows)
+    ]
+    n_chunks = len(bounds)
+    cols = list(columns)
+    prefix = f"      {label} " if label else "      "
+    total = 0
+    for i, (lo, hi) in enumerate(bounds, start=1):
+        rows = sanitize_for_db_insert(
+            df.iloc[lo:hi], numeric_cols=list(numeric_cols), round_to=round_to,
+            date_cols=list(date_cols) if date_cols is not None else None,
+        )
+        n = await copy_insert_async(conn, table_name, rows, columns=cols)
+        total += n
+        logger.info(f"{prefix}chunk {i}/{n_chunks}: COPY {n:,} rows "
               f"(cumulative {total:,})")
     return total

@@ -13,23 +13,22 @@ schema (see database/sql/analysis/analysis_forecasts/):
     is_market_hyped) Bollinger-breach bucket definitions (band inputs
     join from analysis.mov_ave_spreads_detail / stats.*_tech_stats).
 
-  - mov_gap: per (sec_type, code, stat_month, gap_window, side, pct,
-    is_market_hyped) N-day price-return extreme-percentile bucket
-    definitions (gap_{W}days W ∈ {2, 3} joins from analysis.mov_ave_rsi).
-
-  - mov_pairs: per (sec_type, code, stat_month, pair_window, side,
-    is_market_hyped) MA-pair CROSS (golden / death cross)
+  - mov_pairs: per (sec_type, code, stat_month, fast_leg, pair_window,
+    side, is_market_hyped) MA-pair CROSS (golden / death cross)
     bucket definitions built on the EXISTING relative-MA-spread columns
-    of analysis.mov_ave_spreads_detail (ma5_vs_ma{W} = (ma5 - ma_{W}) /
-    ma_{W}, W ∈ {60, 120, 255}): side=top a CROSS UP (the spread turns
-    > 0 from <= 0 — ma5 rises through the slow MA), side=bottom a CROSS
-    DOWN (the spread turns < 0 from >= 0) — one-day signals (each
-    cross day is its own forecast signal).
+    of analysis.mov_ave_spreads_detail — fast_leg 'ma5' reads
+    ma5_vs_ma{W} = (ma5 - ma_{W}) / ma_{W}, fast_leg 'price' the
+    close-price spread price_vs_ma{W}, W ∈ {60, 120, 255}: side=top a
+    CROSS UP (the spread turns > 0 from <= 0 — the fast leg rises
+    through the slow MA), side=bottom a CROSS DOWN — one-day signals
+    (each cross day is its own forecast signal).
 
   - mov_pairs_ema: the EMA sibling of mov_pairs — identical cross
     machinery on the EXISTING relative-EMA-spread columns of
-    analysis.mov_ave_spreads_detail_ema (ema6_vs_ema{W} = (ema6 -
-    ema_{W}) / ema_{W}, W ∈ {60, 120, 255}).
+    analysis.mov_ave_spreads_detail_ema — fast_leg 'ema6' reads
+    ema6_vs_ema{W} = (ema6 - ema_{W}) / ema_{W}, fast_leg 'price' the
+    close-price spread price_vs_ema{W}, W ∈ {60, 120, 255}.
+
 
   - high_low_streaks: MA-Spread High/Low streak MEAN-MID anchor buckets
     built on the EXISTING band-break excursion streaks of
@@ -64,10 +63,7 @@ schema (see database/sql/analysis/analysis_forecasts/):
 
   - forecast_results: the result data (mean forward changes at
     next/5d/20d/60d horizons; close-based max/min ENDPOINT forward
-    changes and the SWING ratio max_low_change_ratio — (1 + the widest
-    path high) / (1 + the deepest path low across the bucket's trigger
-    days' forward windows, signed; ≥ 1, large = large within-period
-    swing) at the 5d/20d/60d horizons; per-horizon swing-aware reversal
+    changes at the 5d/20d/60d horizons; per-horizon swing-aware reversal
     probabilities at each row's threshold — the period's
     adverse path extreme beyond ±thr, not merely the period-end close),
     keyed by forecast_id; every bucket carries 5 period rows — the four
@@ -75,26 +71,30 @@ schema (see database/sql/analysis/analysis_forecasts/):
     MIXED_HORIZON_WEIGHTS: 5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05 —
     the row the analysis_signals confirmation gate reads, so every
     forecast horizon of the same signal trigger contributes to the
-    signal); every mov_rsi / mov_std / mov_gap row links
+    signal); every mov_rsi / mov_std row links
     1:1 to its result rows via forecast_id.
 
 Pipeline per sec_type (index / etf / stock):
   1. Fetch active-universe codes (recent-data pre-filter).
   2. Incremental: stat_months missing from each target table are
-     computed, and the most recent REFRESH_MONTHS completed months are
-     REFRESHED each run (deleted + recomputed — a month written right
-     after month-end carries permanently truncated 20d/60d occurrence
-     counts because its forward windows were not complete yet).
+     computed, and the RUNNING month (the partial current-month
+     snapshot, keyed at its month-end but computed only up to the
+     latest available data date) plus the most recent REFRESH_MONTHS
+     completed months are REFRESHED each run (deleted + recomputed —
+     the running month's forward data grows daily, and a month written
+     right after month-end carries permanently truncated 20d/60d
+     occurrence counts because its forward windows were not complete
+     yet).
      ``--force`` deletes the sec_type's mov_* rows AND their linked
      forecast_results rows (plus base_rates), then recomputes every
      target month.
-  3. Fetch the joined long input frame (price / ma / rsi / gap / std /
+  3. Fetch the joined long input frame (price / ma / rsi / std /
      ma5-vs-MA + ema6-vs-EMA spread columns; date >= earliest needed
      window start), the compact market-hype EPISODES list, and compute
      per-code forward changes (1/5/20/60 trading days).
   4. Scatter to (date × code) wide matrices + the market-hype flag
      matrix and run the vectorized monthly aggregation engines
-     (compute_rsi / compute_std / compute_gap / compute_pairs /
+     (compute_rsi / compute_std / compute_pairs /
      compute_high_low_streaks / compute_base), writing
      month-major batches: forecast_id allocated from the identity
      sequence, then COPY into forecast_results +
@@ -122,6 +122,14 @@ from __future__ import annotations
 from _common.pre_check import pre_check
 
 pre_check()
+
+# cudf.pandas activation — must run before pandas first import. The
+# _common helpers imported below (build_commons → db_commons →
+# _batched_copy) transitively import pandas at module level, so activating
+# any later would silently skip the cudf proxy ("pandas already imported").
+from _common.df_utils._activate import activate  # noqa: E402
+activate()
+
 import argparse
 import asyncio
 import os
@@ -151,17 +159,12 @@ from _common.db_commons import (  # noqa: E402
 
 setup_utf8_stdout()
 
-# cudf.pandas activation — must run before pandas first import
-from _common.df_utils._activate import activate  # noqa: E402
-activate()
-
 from analyze._common import upsert_analysis_identity  # noqa: E402
 from analyze.analysis_forecasts.config import (  # noqa: E402
     TABLE_FORECAST,
     TABLE_IDENTITIES,
     TABLE_MOV_RSI,
     TABLE_MOV_STD,
-    TABLE_MOV_GAP,
     TABLE_MOV_PAIRS,
     TABLE_MOV_PAIRS_EMA,
     TABLE_HIGH_LOW_STREAKS,
@@ -173,7 +176,6 @@ from analyze.analysis_forecasts.config import (  # noqa: E402
     TABLE_BASE_RATE,
     ANALYSIS_NAME_RSI,
     ANALYSIS_NAME_STD,
-    ANALYSIS_NAME_GAP,
     ANALYSIS_NAME_MOV_PAIRS,
     ANALYSIS_NAME_MOV_PAIRS_EMA,
     ANALYSIS_NAME_HIGH_LOW_STREAKS,
@@ -185,7 +187,6 @@ from analyze.analysis_forecasts.config import (  # noqa: E402
     ANALYSIS_NAME_BASE_RATE,
     DESCRIPTION_RSI,
     DESCRIPTION_STD,
-    DESCRIPTION_GAP,
     DESCRIPTION_MOV_PAIRS,
     DESCRIPTION_MOV_PAIRS_EMA,
     DESCRIPTION_HIGH_LOW_STREAKS,
@@ -198,7 +199,6 @@ from analyze.analysis_forecasts.config import (  # noqa: E402
     SEC_TYPES,
     MOV_RSI_COLUMNS,
     MOV_STD_COLUMNS,
-    MOV_GAP_COLUMNS,
     MOV_PAIRS_COLUMNS,
     MOV_PAIRS_EMA_COLUMNS,
     HIGH_LOW_STREAKS_COLUMNS,
@@ -209,7 +209,6 @@ from analyze.analysis_forecasts.config import (  # noqa: E402
     DIVIDEND_COLUMNS,
     RSI_WINDOWS,
     MA_WINDOWS,
-    GAP_WINDOWS,
     MOV_PAIRS_WINDOWS,
     MOV_PAIRS_EMA_WINDOWS,
     N_MONTHS,
@@ -259,7 +258,6 @@ from analyze.analysis_forecasts.writer import (  # noqa: E402
 # implemented never pays its import.
 from analyze.analysis_forecasts.compute_rsi import compute_rsi_results  # noqa: E402
 from analyze.analysis_forecasts.compute_base import compute_base_rate_rows  # noqa: E402
-from analyze.analysis_forecasts.compute_gap import compute_gap_results  # noqa: E402
 from analyze.analysis_forecasts.compute_std import compute_std_results  # noqa: E402
 from analyze.analysis_forecasts.compute_pairs import (  # noqa: E402
     compute_epairs_results,
@@ -273,7 +271,7 @@ from analyze.analysis_forecasts.compute_high_low_streaks import compute_high_low
 
 # The per-metric stage keys --forecast-metrics accepts (opp_pair runs once outside
 # the per-sec_type loop).
-STAGE_NAMES = ("rsi", "std", "gap", "pairs", "epairs", "hstreaks",
+STAGE_NAMES = ("rsi", "std", "pairs", "epairs", "hstreaks",
                "pxvol", "mratio", "pe", "div", "base", "opp_pair")
 
 from _common.log_setup import setup_logging  # noqa: E402
@@ -292,7 +290,7 @@ async def _process_sec_type(
 ) -> tuple[int, ...]:
     """Process one sec_type end-to-end for the --forecast-metrics-selected metric
     stages (all stages when ``metrics`` is empty).
-    Returns (mov_rsi, mov_std, mov_gap, mov_pairs, mov_pairs_ema,
+    Returns (mov_rsi, mov_std, mov_pairs, mov_pairs_ema,
     high_low_streaks, px_vol, margin_ratio, pe, dividend) bucket rows +
     base_rates."""
     logger.info(f"\n  [{sec_type}] Fetching active codes...")
@@ -304,7 +302,7 @@ async def _process_sec_type(
     logger.info(f"  [{sec_type}]   {len(codes):,} active codes")
     if not codes:
         logger.info(f"  [{sec_type}]   no active codes; skipping.")
-        return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 
     # ---- Emittable-month bound -------------------------------------------
     # The full-window gate (below) means a snapshot month can emit rows
@@ -336,7 +334,6 @@ async def _process_sec_type(
         await _delete_sec_type(conn, sec_type, metrics=metrics or None)
         compute_rsi = list(specs) if "rsi" in metrics else []
         compute_std = list(specs) if "std" in metrics else []
-        compute_gap = list(specs) if "gap" in metrics else []
         compute_pairs = list(specs) if "pairs" in metrics else []
         compute_epairs = list(specs) if "epairs" in metrics else []
         compute_hstreaks = list(specs) if "hstreaks" in metrics else []
@@ -352,9 +349,6 @@ async def _process_sec_type(
         compute_std, refresh_std = (await _compute_months(
             conn, TABLE_MOV_STD, sec_type, specs)
             if "std" in metrics else ([], []))
-        compute_gap, refresh_gap = (await _compute_months(
-            conn, TABLE_MOV_GAP, sec_type, specs)
-            if "gap" in metrics else ([], []))
         compute_pairs, refresh_pairs = (await _compute_months(
             conn, TABLE_MOV_PAIRS, sec_type, specs)
             if "pairs" in metrics else ([], []))
@@ -388,9 +382,6 @@ async def _process_sec_type(
         if refresh_std:
             await _delete_months(conn, TABLE_MOV_STD, sec_type,
                                  refresh_std, linked_results=True)
-        if refresh_gap:
-            await _delete_months(conn, TABLE_MOV_GAP, sec_type,
-                                 refresh_gap, linked_results=True)
         if refresh_pairs:
             await _delete_months(conn, TABLE_MOV_PAIRS, sec_type,
                                  refresh_pairs, linked_results=True)
@@ -417,7 +408,7 @@ async def _process_sec_type(
                                  refresh_base, linked_results=False)
         logger.info(f"  [{sec_type}]   months to compute: "
               f"rsi={len(compute_rsi)} std={len(compute_std)} "
-              f"gap={len(compute_gap)} pairs={len(compute_pairs)} "
+              f"pairs={len(compute_pairs)} "
               f"epairs={len(compute_epairs)} "
               f"hstreaks={len(compute_hstreaks)} "
               f"pxvol={len(compute_pxvol)} "
@@ -426,31 +417,32 @@ async def _process_sec_type(
               f"base={len(compute_base)} "
               f"of {len(specs)} (+ refresh of the last "
               f"{REFRESH_MONTHS})")
-    if not compute_rsi and not compute_std and not compute_gap \
+    if not compute_rsi and not compute_std \
             and not compute_pairs and not compute_epairs \
+\
             and not compute_hstreaks and not compute_pxvol \
             and not compute_mratio and not compute_pe \
             and not compute_div and not compute_base:
         logger.info(f"  [{sec_type}]   up to date; skipping.")
-        return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 
     # ---- Fetch inputs (bounded to the earliest needed window start) ------
     todo = {
         s.stat_month: s
-        for s in compute_rsi + compute_std + compute_gap + compute_pairs
+        for s in compute_rsi + compute_std + compute_pairs
         + compute_epairs + compute_hstreaks + compute_pxvol
         + compute_mratio + compute_pe + compute_div + compute_base
     }
     since = min(s.lower for s in todo.values())
     logger.info(f"  [{sec_type}] Fetching joined inputs (price / ma / rsi / "
-          f"gap / std) for {len(codes):,} codes since "
+          f"std) for {len(codes):,} codes since "
           f"{since.isoformat()}...")
     df = await fetch_analysis_inputs(conn, sec_type, codes, since,
                                      families=set(metrics))
     logger.info(f"  [{sec_type}]   {len(df):,} (code, date) rows")
     if df.empty:
         logger.info(f"  [{sec_type}]   no source data; skipping.")
-        return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     episodes = await fetch_hyped_episodes(conn, sec_type, since)
     logger.info(f"  [{sec_type}]   {len(episodes):,} market-hype episodes")
 
@@ -462,7 +454,7 @@ async def _process_sec_type(
     if "pe" in metrics or "div" in metrics:
         df = add_valuation_features(df)
 
-    n_rsi = n_std = n_gap = n_pairs = n_epairs = n_hstreaks = 0
+    n_rsi = n_std = n_pairs = n_epairs = n_hstreaks = 0
     n_pxvol = n_mratio = n_pe = n_div = 0
     n_base = 0
 
@@ -494,21 +486,7 @@ async def _process_sec_type(
             logger.info(f"    [{stat_month}] mov_std + forecast_results: "
                   f"wrote {n:,} rows")
 
-    # ---- Stage 3: Gap extreme buckets (cudf-native df engine) -------------
-    if compute_gap:
-        logger.info(f"  [{sec_type}] Computing gap extreme buckets "
-              f"(windows={list(GAP_WINDOWS)}) for {len(compute_gap)} "
-              f"months...")
-        for stat_month, rows in compute_gap_results(
-            df=df, first_dates=first_dates, episodes=episodes,
-            codes=codes, sec_type=sec_type, specs=compute_gap,
-        ):
-            n = await _write_month(conn, TABLE_MOV_GAP, MOV_GAP_COLUMNS, rows)
-            n_gap += n
-            logger.info(f"    [{stat_month}] mov_gap + forecast_results: "
-                  f"wrote {n:,} rows")
-
-    # ---- Stage 4: MA-pair cross buckets (cudf-native df engine) -----------
+    # ---- Stage 3: MA-pair cross buckets (cudf-native df engine) -----------
     # CROSS-EVENT buckets on the EXISTING analysis.mov_ave_spreads_detail
     # ma5_vs_ma{W} spreads (fetched as pair_{W}): a trigger is the
     # spread's sign flip (golden / death cross); one-day signals.
@@ -662,7 +640,7 @@ async def _process_sec_type(
             n_base += len(rows)
         logger.info(f"    base_rates: wrote {n_base:,} rows")
 
-    return (n_rsi, n_std, n_gap, n_pairs, n_epairs, n_hstreaks,
+    return (n_rsi, n_std, n_pairs, n_epairs, n_hstreaks,
             n_pxvol, n_mratio, n_pe, n_div, n_base)
 
 
@@ -784,11 +762,14 @@ async def main() -> None:
                     "per-security forecast analysis over a trailing "
                     "5-year window: analysis_forecasts.mov_rsi (RSI "
                     "extreme-percentile buckets), mov_std (Bollinger-"
-                    "breach buckets), mov_gap (gap-extreme buckets), "
+                    "breach buckets), "
                     "mov_pairs (MA5-vs-MA cross / golden-death-cross "
-                    "buckets on the existing ma5_vs_ma{W} spreads) and "
-                    "mov_pairs_ema (the EMA sibling on the existing "
-                    "ema6_vs_ema{W} spreads) and high_low_streaks "
+                    "buckets on the existing ma5_vs_ma{W} / "
+                    "price_vs_ma{W} spreads — fast legs ma5 + the "
+                    "close price), mov_pairs_ema (the EMA sibling on "
+                    "the existing ema6_vs_ema{W} / price_vs_ema{W} "
+                    "spreads — fast legs ema6 + the close price) and "
+                    "high_low_streaks "
                     "(MA-Spread High/Low streak buckets audited at each "
                     "streak's MEAN-MID anchor day — the "
                     "((day_count-1)//2 + 1)-th trading day of the span, "
@@ -803,10 +784,7 @@ async def main() -> None:
                     "forecast_results (linked "
                     "1:1 via forecast_id) holds the result data — mean "
                     "forward changes at next/5d/20d/60d horizons; "
-                    "close-based max/min ENDPOINT forward changes and "
-                    "the swing ratio (max_low_change_ratio — (1 + the "
-                    "widest path high) / (1 + the deepest path low "
-                    "across the bucket's forward windows, signed)) at "
+                    "close-based max/min ENDPOINT forward changes at "
                     "the 5d/20d/60d horizons; per-horizon swing-aware "
                     "reversal probabilities (the period's adverse path "
                     "extreme beyond the reverse_threshold) at each "
@@ -826,7 +804,8 @@ async def main() -> None:
     ap.add_argument(
         "--months", type=int, default=N_MONTHS,
         help=f"Number of completed month-end snapshots to target "
-             f"(default {N_MONTHS} = 5 years, monthly).",
+             f"(default {N_MONTHS} = 5 years, monthly); the RUNNING "
+             f"month (computed up to today) is always appended.",
     )
     ap.add_argument(
         "--search-forecast-id", type=int, default=None, metavar="ID",
@@ -867,11 +846,11 @@ async def main() -> None:
     t0 = time.time()
     print_build_header(
         "ANALYZE FORECASTS (monthly RSI-extreme + Bollinger-breach + "
-        "gap-extreme + MA/EMA-pair-cross + High/Low-streak + valuation "
+        "MA/EMA-pair-cross + High/Low-streak + valuation "
         "PE/dividend-state + industry opposite-pair forecasts)",
         tables=f"{TABLE_FORECAST}, {TABLE_IDENTITIES}, "
                f"{TABLE_MOV_RSI}, {TABLE_MOV_STD}, "
-               f"{TABLE_MOV_GAP}, {TABLE_MOV_PAIRS}, {TABLE_MOV_PAIRS_EMA}, "
+               f"{TABLE_MOV_PAIRS}, {TABLE_MOV_PAIRS_EMA}, "
                f"{TABLE_HIGH_LOW_STREAKS}, "
                f"{TABLE_PX_VOL}, {TABLE_MARGIN_RATIO}, {TABLE_OPP_PAIR}, "
                f"{TABLE_PE}, {TABLE_DIVIDEND}, {TABLE_BASE_RATE}",
@@ -879,8 +858,9 @@ async def main() -> None:
         months=f"{args.months} (window {specs[0].lower} .. "
                f"{specs[-1].stat_month})",
         mode="FORCE (delete + recompute all target months)" if force
-        else f"incremental (missing stat_months + refresh of the last "
-             f"{REFRESH_MONTHS})",
+        else f"incremental (missing stat_months + refresh of the "
+             f"running month and the last {REFRESH_MONTHS - 1} "
+             f"completed months)",
     )
 
     conn = await get_db_connection_async()
@@ -891,16 +871,16 @@ async def main() -> None:
             await _search_forecast_identity(conn, args.search_forecast_id)
             return
 
-        total_rsi = total_std = total_gap = total_pxvol = 0
-        total_pairs = total_epairs = total_hstreaks = 0
+        total_rsi = total_std = total_pxvol = 0
+        total_pairs = total_epairs = 0
+        total_hstreaks = 0
         total_mratio = total_pe = total_div = total_base = 0
         for st in sec_types:
-            r, s, g, pr, ep, hs, p, mr, pe_n, div_n, b = \
+            r, s, pr, ep, hs, p, mr, pe_n, div_n, b = \
                 await _process_sec_type(conn, st, specs, force=force,
                                         metrics=metrics, codes_limit=codes_limit)
             total_rsi += r
             total_std += s
-            total_gap += g
             total_pairs += pr
             total_epairs += ep
             total_hstreaks += hs
@@ -919,11 +899,6 @@ async def main() -> None:
                 await upsert_analysis_identity(
                     conn, name=ANALYSIS_NAME_STD,
                     detail_name=ANALYSIS_NAME_STD, description=DESCRIPTION_STD,
-                )
-            if g or (force and "gap" in metrics):
-                await upsert_analysis_identity(
-                    conn, name=ANALYSIS_NAME_GAP,
-                    detail_name=ANALYSIS_NAME_GAP, description=DESCRIPTION_GAP,
                 )
             if pr or (force and "pairs" in metrics):
                 await upsert_analysis_identity(
@@ -985,8 +960,9 @@ async def main() -> None:
                     description=DESCRIPTION_OPP_PAIR,
                 )
 
-        if total_rsi == 0 and total_std == 0 and total_gap == 0 \
+        if total_rsi == 0 and total_std == 0 \
                 and total_pairs == 0 and total_epairs == 0 \
+\
                 and total_hstreaks == 0 \
                 and total_pxvol == 0 and total_mratio == 0 \
                 and total_pe == 0 and total_div == 0 \
@@ -996,7 +972,7 @@ async def main() -> None:
             return
 
         logger.info(f"\n  TOTAL: {total_rsi:,} mov_rsi + {total_std:,} mov_std "
-              f"+ {total_gap:,} mov_gap + {total_pairs:,} mov_pairs + "
+              f"+ {total_pairs:,} mov_pairs + "
               f"{total_epairs:,} mov_pairs_ema + "
               f"{total_hstreaks:,} high_low_streaks + "
               f"{total_pxvol:,} px_vol + "

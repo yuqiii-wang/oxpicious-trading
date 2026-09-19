@@ -200,13 +200,17 @@ def extract_for_articles(
     Adds in place + returns the same rows, each with:
       industry_id TEXT | None, sector_id TEXT | None (its parent sector),
       word_count INT, keywords: dict keyword -> count (matched keywords only).
+
+    A row that already carries an industry_id keeps it (ai_daily movers
+    rows are pre-set with the movers plan's own industry — stronger than a
+    text match); its sector_id is still resolved from the taxonomy.
     """
     taxonomy = get_taxonomy()
     for row in rows:
         text = row["title"] + "\n" + (row.get("content") or "")
         counts, industry_id = taxonomy.match(text)
-        row["industry_id"] = industry_id
-        row["sector_id"] = taxonomy.sector_of(industry_id)
+        row["industry_id"] = row.get("industry_id") or industry_id
+        row["sector_id"] = taxonomy.sector_of(row["industry_id"])
         row["word_count"] = taxonomy.word_count(text)
         row["keywords"] = counts
     return rows

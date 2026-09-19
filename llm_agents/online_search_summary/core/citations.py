@@ -54,6 +54,14 @@ def normalize_refer(value: Any, position: int) -> str:
     return f"ref_{n}"
 
 
+def ref_number(tag: str) -> int:
+    """The integer of a ``ref_N`` tag, orderable; garbage tags (the empty
+    refer of pre-embedding artifacts) sort last via a sentinel so
+    representative-tag selection stays deterministic."""
+    m = REF_TAG_RE.search(str(tag or ""))
+    return int(m.group(1)) if m else 1 << 30
+
+
 def parse_publish_date(value: Any) -> Optional[datetime.date]:
     """Parse 'YYYY-MM-DD' (embedded in longer text) -> date, or None."""
     if not value:

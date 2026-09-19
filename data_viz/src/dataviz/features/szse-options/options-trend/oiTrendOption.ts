@@ -4,6 +4,10 @@
  * Uses shared expiryTooltip.ts for tooltip formatters.
  */
 import {
+  baseChartOption,
+  commonTooltip,
+} from "@/shared/charts/base-chart";
+import {
   DOWN_COLOR,
   UP_COLOR,
   axisColors,
@@ -38,13 +42,10 @@ function buildOiTrendOptionFromBroken(
   const axisTooltip = makeAxisTooltipFormatter(colors);
   const dotTooltip = makeExpiryDotTooltip(colors, " contracts");
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 56, right: 20, bottom: 50, top: 36 }),
     dataZoom,
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
       axisPointer: {
         type: "cross",
         snap: true,
@@ -57,11 +58,8 @@ function buildOiTrendOptionFromBroken(
           fontSize: 10,
         },
       },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: axisTooltip,
-    },
+    }),
     axisPointer: { link: [{ xAxisIndex: "all" }] },
     legend: commonLegend(themeMode),
     xAxis: {
@@ -126,7 +124,7 @@ function buildOiTrendOptionFromBroken(
         },
       },
     ],
-  };
+  });
 }
 
 export function buildOiTrendOption(

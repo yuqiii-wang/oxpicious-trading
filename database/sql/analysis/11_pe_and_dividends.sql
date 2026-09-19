@@ -151,32 +151,6 @@ COMMENT ON COLUMN analysis.dividends.date            IS 'Trading date.';
 COMMENT ON COLUMN analysis.dividends.dividend_yield  IS 'Trailing-12m dividend yield (D/P) as a FRACTIONAL ratio (0.035 = 3.5%). Close is read live from stats at compute time (NOT stored in this table). stock: SUM(stats.stock_dividends.dividend_per_share_pre_tax WHERE ex_dividend_date in (date-365d, date]) / close. etf: SUM(stats.etf_adjustment.implied_dividend_per_share over trailing 365d) / close. index: cap-weighted average of constituent trailing-12m yields = SUM(weight_fraction x constituent dps / constituent close) using LATEST sec_composition snapshot (source_type=''index'', temporal extrapolation) — per-share numerator and denominator, a true yield (the former weighted-DPS / index-close formula mixed per-share CNY with index POINTS and understated yields ~100x). Strictly positive: rows with an undefined yield (close <= 0 or no dividend data in the trailing 365d window) are NOT inserted.';
 
 -- ----------------------------------------------------------------------------
---  Migration (2026-09): split the former combined analysis.pe_and_dividends
---  (columns pe + dividend_yield) into analysis.pe + analysis.dividends.
---  Rows are carried over one-time (NULL-valued metric cells are dropped —
---  the new tables store only defined values), then the legacy table is
---  dropped. Idempotent: a no-op once the legacy table is gone.
--- ----------------------------------------------------------------------------
-DO $$
-BEGIN
-    IF to_regclass('analysis.pe_and_dividends') IS NOT NULL THEN
-        INSERT INTO analysis.pe (sec_type, code, date, pe)
-        SELECT sec_type, code, date, pe
-        FROM   analysis.pe_and_dividends
-        WHERE  pe IS NOT NULL
-        ON CONFLICT (code, sec_type, date) DO NOTHING;
-
-        INSERT INTO analysis.dividends (sec_type, code, date, dividend_yield)
-        SELECT sec_type, code, date, dividend_yield
-        FROM   analysis.pe_and_dividends
-        WHERE  dividend_yield IS NOT NULL
-        ON CONFLICT (code, sec_type, date) DO NOTHING;
-
-        DROP TABLE analysis.pe_and_dividends;
-    END IF;
-END $$;
-
--- ----------------------------------------------------------------------------
 --  Register in analysis.analysis_identity (one entry per split table; the
 --  legacy combined 'pe_and_dividends' entry is removed)
 -- ----------------------------------------------------------------------------
@@ -309,8 +283,8 @@ DELETE FROM analysis.analysis_identity WHERE name = 'pe_and_dividends';
 --  Register in analysis.analysis_identity (name='pe_and_dividend_stats').
 -- ============================================================================
 
--- DROP + recreate: the PK column was renamed from is_latest to is_active,
--- and ALTER cannot change an existing PK. The table holds no data at this
+-- DROP + recreate: the PK column was renamed from is_latest to is_active
+-- (a PK cannot be changed in place). The table holds no data at this
 -- point (the Python populator has not run yet), so a clean rebuild is safe.
 -- On fresh installs this is a no-op; on upgraded DBs it discards any prior
 -- is_latest-based rows (acceptable — the table is rebuilt monthly anyway).
@@ -354,28 +328,6 @@ CREATE TABLE IF NOT EXISTS analysis.pe_and_dividend_stats (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('analysis', 'pe_and_dividend_stats', 8);
 
--- Idempotent migration for existing DBs. The DROP TABLE + CREATE TABLE
--- above handles fresh installs and the prior is_latest → is_active rename;
--- these ADD COLUMN IF NOT EXISTS statements cover any DB that already has
--- the table from a prior schema version (the min_dividend_5y /
--- max_dividend_5y columns from the prior version are left in place —
--- dropping columns is destructive and the Python populator no longer
--- writes to them).
-ALTER TABLE analysis.pe_and_dividend_stats
-    ADD COLUMN IF NOT EXISTS is_active        BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE analysis.pe_and_dividend_stats
-    ADD COLUMN IF NOT EXISTS min_pe_5y        NUMERIC(10,4);
-ALTER TABLE analysis.pe_and_dividend_stats
-    ADD COLUMN IF NOT EXISTS max_pe_5y        NUMERIC(10,4);
-ALTER TABLE analysis.pe_and_dividend_stats
-    ADD COLUMN IF NOT EXISTS dividend_var_5y  NUMERIC(20,10);
-ALTER TABLE analysis.pe_and_dividend_stats
-    ADD COLUMN IF NOT EXISTS dividend_stability_5y NUMERIC(6,2);
-ALTER TABLE analysis.pe_and_dividend_stats
-    ADD COLUMN IF NOT EXISTS last_dividend_per_share NUMERIC(18,6);
-ALTER TABLE analysis.pe_and_dividend_stats
-    ADD COLUMN IF NOT EXISTS dividend_issued_this_month BOOLEAN NOT NULL DEFAULT FALSE;
-
 -- Partial unique index: at most ONE row per (sec_type, code) with is_active=TRUE.
 -- Enforces the "single latest snapshot" invariant while allowing full monthly
 -- history to accumulate. This is the index that makes is_active queryable
@@ -388,7 +340,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_pe_and_dividend_stats_latest
 -- for a code, ignoring the is_active flag — drives the valuation-band chart).
 -- idx_pe_and_dividend_stats_code_sec_type_date (code, sec_type, date) dropped:
 -- a prefix of the code-first PK, which already serves per-code lookups.
-DROP INDEX IF EXISTS analysis.idx_pe_and_dividend_stats_code_sec_type_date;
 
 COMMENT ON TABLE  analysis.pe_and_dividend_stats                  IS 'Monthly 5-year rolling stats snapshot of PE and dividend_yield. One row per (code, sec_type, month-end trading date, is_active). is_active=TRUE for the most recent monthly snapshot per code (enforced by partial unique index uq_pe_and_dividend_stats_latest). min_pe_5y/max_pe_5y: rolling 5y (~1275 trading days) min/max of stats.index_valuation.pe (index-only, NULL for etf/stock). dividend_var_5y: rolling 5y population std (ddof=0) of dividend_yield x100 as a percentage. last_dividend_per_share: rolling record of the latest single dividend_per_share_pre_tax as of the month-end (stock/etf; NULL for index). dividend_issued_this_month: TRUE if any ex_dividend_date falls in the same (year, month) as the month-end. dividend_stability_5y: frequency-robust stability score (0-100) of per-share dividend AMOUNT over trailing 5 calendar years (annualized per year so payment-frequency changes do not create artificial gaps; CV-based: stability=(1-min(CV,1))×100). Updated MONTHLY by analyze.pe_and_dividends.stats (internal step). All INSERTs/UPDATEs in Python per project rule.';
 COMMENT ON COLUMN analysis.pe_and_dividend_stats.sec_type         IS 'Subject security type: index, etf, or stock.';
@@ -514,39 +465,6 @@ SELECT public.create_hash_partitions('analysis', 'pe_and_dividend_pct_streaks', 
 
 CREATE INDEX IF NOT EXISTS idx_pe_and_dividend_pct_streaks_code
     ON analysis.pe_and_dividend_pct_streaks (sec_type, code, metric, period, pct_type, start_date);
-
--- ----------------------------------------------------------------------------
---  Migration (2026-09): the audited PE metric renamed pe_ma20 (20-day MA)
---  → pe (raw PE). The pct + streaks tables' CHECK constraints swap to the
---  new metric value and the metric='pe_ma20' rows are DELETED (they were
---  computed on the smoothed series and cannot be relabeled) — the builder
---  recomputes them from the raw pe column on its next run (the missing-
---  triple detection treats every (code, month, 'pe') triple as missing).
---  Idempotent: a no-op once the constraints accept 'pe'.
--- ----------------------------------------------------------------------------
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_constraint
-               WHERE conname = 'chk_pe_and_dividend_pct_metric'
-                 AND pg_get_constraintdef(oid) LIKE '%pe_ma20%') THEN
-        DELETE FROM analysis.pe_and_dividend_pct WHERE metric = 'pe_ma20';
-        ALTER TABLE analysis.pe_and_dividend_pct
-            DROP CONSTRAINT chk_pe_and_dividend_pct_metric;
-        ALTER TABLE analysis.pe_and_dividend_pct
-            ADD CONSTRAINT chk_pe_and_dividend_pct_metric
-                CHECK (metric IN ('pe', 'dividend_yield'));
-    END IF;
-    IF EXISTS (SELECT 1 FROM pg_constraint
-               WHERE conname = 'chk_pe_and_dividend_pct_streaks_metric'
-                 AND pg_get_constraintdef(oid) LIKE '%pe_ma20%') THEN
-        DELETE FROM analysis.pe_and_dividend_pct_streaks WHERE metric = 'pe_ma20';
-        ALTER TABLE analysis.pe_and_dividend_pct_streaks
-            DROP CONSTRAINT chk_pe_and_dividend_pct_streaks_metric;
-        ALTER TABLE analysis.pe_and_dividend_pct_streaks
-            ADD CONSTRAINT chk_pe_and_dividend_pct_streaks_metric
-                CHECK (metric IN ('pe', 'dividend_yield'));
-    END IF;
-END $$;
 
 COMMENT ON TABLE  analysis.pe_and_dividend_pct_streaks            IS 'Band-BREAK excursion streaks audited against analysis.pe_and_dividend_pct (the high/low streaks pattern applied to pe / dividend_yield). A day is OUT-OF-BAND when its metric value (pe or dividend_yield) is ABOVE its own month-band high_val or BELOW low_val. An excursion streak is the maximal consolidation of same-side out-of-band TRADING days where re-entries of up to 5 consecutive trading days are TOLERATED (bridged — in-band gap days stay inside the span and count in day_count); a longer in-band gap or a side switch ends the streak. start_date/end_date bound the span (first/last OUT-OF-BAND day). Non-trading vendor rows (ffilled weekday holidays) and NULL-metric rows are excluded before classification — spans, gap tolerance and day_count are in REAL observation days. Streaks can span calendar months (each day is tested against its OWN month''s band); date_year_month records the START month. Episodes shift with new data, so the table is rebuilt WHOLESALE per sec_type (per code in single-code mode) on every run that processes the scope. The side (high/low) is derived at query time from the END month''s band (a streak never switches sides). Internal step of analyze.pe_and_dividends (pct_streaks.py).';
 COMMENT ON COLUMN analysis.pe_and_dividend_pct_streaks.sec_type   IS 'Security type: etf, index, or stock.';

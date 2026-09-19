@@ -38,11 +38,6 @@ CREATE TABLE IF NOT EXISTS text.news (
     CONSTRAINT uq_news_news_id UNIQUE (news_id)
 );
 
--- Upgrade for deployments created before the votes/sector_id columns existed.
-ALTER TABLE text.news ADD COLUMN IF NOT EXISTS votes INTEGER;
-ALTER TABLE text.news ADD COLUMN IF NOT EXISTS sector_id TEXT;
-
-
 -- Uniqueness as a standalone index (not just the table constraint) so it is
 -- also created on deployments where the table already existed without
 -- news_id. The keyword index's news_ids mapping relies on this.
@@ -107,9 +102,6 @@ CREATE TABLE IF NOT EXISTS text.news_comments (
 
 CREATE INDEX IF NOT EXISTS ix_news_comments_news_id
     ON text.news_comments (news_id);
-
--- Upgrade for deployments created before threading existed.
-ALTER TABLE text.news_comments ADD COLUMN IF NOT EXISTS parent_comment_id BIGINT;
 
 COMMENT ON TABLE text.news_comments IS
   'Reader comments per article. Loaded by builds.text (zhihu only for now): '

@@ -1,7 +1,6 @@
 ﻿/**
  * Shared types for the Performance Attribution analysis page sub-modules.
  */
-import type { ThemeMode } from "@/store/filters";
 import type { PerfAttrSecType } from "@shared/types";
 
 /**
@@ -22,7 +21,6 @@ export interface PanelProps {
   code: string;
   name: string;
   secType: PerfAttrSecType;
-  themeMode: ThemeMode;
 }
 
 // Re-export the API types for convenience so callers can import everything

@@ -38,8 +38,6 @@ SELECT public.create_hash_partitions('stats', 'stock_identity', 16);
 -- Idempotent migration: replace the legacy code_suffix column with the
 -- canonical exchange + board columns (mirroring the canonical source-CSV
 -- schema). Existing rows are backfilled from the code suffix / prefix.
-ALTER TABLE stats.stock_identity ADD COLUMN IF NOT EXISTS exchange TEXT;
-ALTER TABLE stats.stock_identity ADD COLUMN IF NOT EXISTS board    TEXT;
 UPDATE stats.stock_identity
    SET exchange = split_part(code, '.', 2)
  WHERE exchange IS NULL OR exchange = '';
@@ -52,8 +50,6 @@ UPDATE stats.stock_identity
         ELSE 'MAIN'
        END
  WHERE board IS NULL OR board = '';
-DROP INDEX IF EXISTS stats.idx_stock_identity_suffix_code_date;
-ALTER TABLE stats.stock_identity DROP COLUMN IF EXISTS code_suffix;
 
 COMMENT ON TABLE  stats.stock_identity            IS 'Stock identity: one row per (date, code). PK (code, date) shared by all stock sub-tables. Native HASH partitioned by code. Mirrors etf_identity.';
 COMMENT ON COLUMN stats.stock_identity.code       IS 'Stock ticker with exchange suffix, e.g. "000001.SZ" (Ping An Bank) or "600000.SS" (Pudong Development Bank).';
@@ -179,11 +175,6 @@ CREATE TABLE IF NOT EXISTS stats.stock_tech_stats (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p15
 SELECT public.create_hash_partitions('stats', 'stock_tech_stats', 16);
 
--- Idempotent migration: add the intraday net-move liquidity ratio to
--- pre-existing tables (no-op on fresh installs).
-ALTER TABLE stats.stock_tech_stats
-    ADD COLUMN IF NOT EXISTS trading_amt_per_pct_change NUMERIC(18,6);
-
 COMMENT ON TABLE  stats.stock_tech_stats                    IS 'Stock technical indicators (moving averages + EMAs), computed from stats.stock_basic_stats.close.';
 COMMENT ON COLUMN stats.stock_tech_stats.ma5                IS '5-day moving average of close.';
 COMMENT ON COLUMN stats.stock_tech_stats.ma5_ratio          IS 'Close / MA5 - 1 (ratio of price to 5-day MA).';
@@ -199,7 +190,6 @@ COMMENT ON COLUMN stats.stock_tech_stats.ema120             IS '120-day exponent
 COMMENT ON COLUMN stats.stock_tech_stats.ema255             IS '255-day exponential moving average of close (span=255, adjust=False).';
 COMMENT ON COLUMN stats.stock_tech_stats.trading_amt_per_pct_change IS 'Intraday net-move liquidity ratio: trading_amount / (close - open), SIGNED — positive on up days, negative on down days (the sign carries the move direction). trading_amount from stats.stock_liquidity_margin (yuan); open/close from stats.stock_basic_stats (yuan). Zero move (close = open — flat / 一字板 limit-locked day): denominator floored to 1.0, so the stored value equals the raw trading amount (mov_ave_spread zero-denominator convention — a pragmatic floor, NOT a true ratio). NULL when any input is NULL or |value| >= 1e12 (NUMERIC(18,6) bound). Reciprocal-Amihud liquidity gauge: HIGH = deep book (much capital absorbed per unit of move), LOW = thin market (little capital moved the price a lot). Computed by builds.stock.tech_stats.';
 
-DROP INDEX IF EXISTS stats.idx_stock_tech_stats_code_date;
 CREATE INDEX IF NOT EXISTS idx_stock_tech_stats_date
     ON stats.stock_tech_stats (date);
 
@@ -229,11 +219,9 @@ CREATE TABLE IF NOT EXISTS stats.stock_intraday_5min (
 ) PARTITION BY HASH (code);
 
 -- Idempotent migration: replace the legacy code_suffix column with exchange.
-ALTER TABLE stats.stock_intraday_5min ADD COLUMN IF NOT EXISTS exchange TEXT;
 UPDATE stats.stock_intraday_5min
    SET exchange = split_part(code, '.', 2)
  WHERE exchange IS NULL OR exchange = '';
-ALTER TABLE stats.stock_intraday_5min DROP COLUMN IF EXISTS code_suffix;
 COMMENT ON COLUMN stats.stock_intraday_5min.exchange IS 'Exchange of the code suffix: "SZ", "SS", or "BJ". Set by the streaming loaders; replaces the legacy code_suffix column.';
 
 -- Native hash partitions (32) keyed by code — created via the shared util
@@ -250,12 +238,8 @@ COMMENT ON COLUMN stats.stock_intraday_5min.trading_shares       IS 'Volume trad
 COMMENT ON COLUMN stats.stock_intraday_5min.change       IS 'Absolute change from the bar''s open (close - open).';
 COMMENT ON COLUMN stats.stock_intraday_5min.change_pct   IS 'Percentage change from the bar''s open (%) = (close - open) / open * 100.';
 
--- PK (code, date, time) serves the per-code lookups; the old
--- (code, date, time)/(code, date)/(code) secondary indexes are redundant
--- and dropped. A date-first index restores cross-code intraday scans.
-DROP INDEX IF EXISTS stats.idx_stock_intraday_5min_code_date_time;
-DROP INDEX IF EXISTS stats.idx_stock_intraday_5min_code_date;
-DROP INDEX IF EXISTS stats.idx_stock_intraday_5min_code;
+-- PK (code, date, time) serves the per-code lookups; a date-first index
+-- restores cross-code intraday scans.
 CREATE INDEX IF NOT EXISTS idx_stock_intraday_5min_date
     ON stats.stock_intraday_5min (date);
 
@@ -308,45 +292,6 @@ COMMENT ON COLUMN stats.stock_liquidity_margin.rz_balance        IS '融资余�
 COMMENT ON COLUMN stats.stock_liquidity_margin.rq_balance_amt    IS '融券余额 (yuan) — borrowed stock value outstanding. SSE detail CSV does NOT publish this column (only 融券余量 qty); it is 0 for SSE stocks. SZSE detail CSV publishes it directly.';
 COMMENT ON COLUMN stats.stock_liquidity_margin.total_balance     IS 'rz_balance + rq_balance_amt — total margin outstanding. SSE detail CSV does NOT publish this column; it is rz_balance + 0 for SSE stocks. SZSE detail CSV publishes it directly.';
 
-DROP INDEX IF EXISTS stats.idx_stock_liquidity_margin_code_date;
 CREATE INDEX IF NOT EXISTS idx_stock_liquidity_margin_date
     ON stats.stock_liquidity_margin (date);
 
--- ----------------------------------------------------------------------------
--- Migration: move trading_shares/trading_amount from stock_basic_stats (legacy
--- location) to stock_liquidity_margin, then drop the legacy columns.
--- Idempotent: safe to re-run (the DO block checks for the column's existence
--- before copying/dropping). The migration preserves existing data so a
--- production DB can be upgraded without re-running the full build.
--- ----------------------------------------------------------------------------
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'stats'
-          AND table_name   = 'stock_basic_stats'
-          AND column_name  = 'trading_shares'
-    ) THEN
-        -- Copy existing liquidity data into stock_liquidity_margin. Margin
-        -- columns default to 0 (the legacy stock_basic_stats had no margin
-        -- data; margin is populated by re-running builds/stock after this
-        -- migration, which reads the margin CSVs and upserts).
-        INSERT INTO stats.stock_liquidity_margin
-            (date, code, trading_shares, trading_amount,
-             rz_buy, rz_balance, rq_sell_qty, rq_balance_qty,
-             rq_balance_amt, total_balance)
-        SELECT
-            date, code,
-            COALESCE(trading_shares, 0),
-            COALESCE(trading_amount, 0),
-            0, 0, 0, 0, 0, 0
-        FROM stats.stock_basic_stats
-        WHERE trading_shares IS NOT NULL OR trading_amount IS NOT NULL
-        ON CONFLICT (date, code) DO UPDATE SET
-            trading_shares = EXCLUDED.trading_shares,
-            trading_amount = EXCLUDED.trading_amount;
-
-        ALTER TABLE stats.stock_basic_stats DROP COLUMN trading_shares;
-        ALTER TABLE stats.stock_basic_stats DROP COLUMN trading_amount;
-    END IF;
-END $$;

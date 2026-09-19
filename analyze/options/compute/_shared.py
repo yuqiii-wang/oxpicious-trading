@@ -19,8 +19,12 @@ _EXPIRY_GROUP_KEY = ["option_type", "underlying_code", "expiry_date"]
 # Non-expiry group key (for mean expiry computation, open group collapsing).
 _EXPIRY_TYPE_UNDERLYING_KEY = ["option_type", "underlying_code"]
 
-# |delta| target for the 25-delta wings (iv_skew).
-_DELTA_TARGET = 0.25
+# |delta| targets for the iv_skew OTM wings: 25Δ (the standard market
+# skew quote — liquid wing) and 10Δ (deeper wing: more crash-sensitive,
+# steeper in panics, but sparser quotes; NULL when no near-target
+# contract exists on the strike grid).
+_DELTA_TARGET_25 = 0.25
+_DELTA_TARGET_10 = 0.10
 # OTM delta band: 0 < |delta| < 0.5 (iv_skew wings + greek_vega wings).
 _DELTA_OTM_MAX = 0.5
 # Minimum contracts for the 3rd-moment smile skewness (iv_skew).
@@ -271,7 +275,6 @@ def _expanding_corr(
 def _rolling_skew_suite(
     agg: pd.DataFrame,
     neutral: float = 1.0,
-    price_k: float | None = None,
 ) -> pd.DataFrame:
     """Apply the rolling skewness stats suite to an expiry-group frame.
 
@@ -285,21 +288,9 @@ def _rolling_skew_suite(
         0.5  — greek_delta (balanced put/call directional book)
         0.0  — greek_gamma / greek_vega (balanced call/put wings)
 
-    Price-space translation for the correlations:
-        price_k=None (legacy basis): skew_price = S * skewness
-          - oi_moneyness: S * E[M]       (deviation ±10% of spot)
-          - iv_smile:     S * smile_skew (deviation ±tens of % of spot)
-        price_k=k (greek_* basis): skew_price = S * (1 + (skew - neutral) * k)
-          - dimensionless call-vs-put balances rebased into price space;
-            k = GREEK_SKEW_PRICE_K (0.10) maps a full tilt of ±1 to ±10%
-            of spot. (The 1%-per-unit display rebase used on the IV chart
-            is frontend-only: as a correlation basis its ±0.3% deviations
-            would make corr ≈ 1 trivially.)
-
     Adds: pre-expiry contrarian metrics (cross_count_20d,
-    days_since_last_cross, gap_side_share_20d), MA/STD (5/20/60),
-    gap-from-neutral stats, slopes, and whole-period price-space
-    correlations with spot.
+    days_since_last_cross, gap_side_share_20d), MA/STD (5/20/60) and
+    gap-from-neutral stats, slopes.
     """
     agg = agg.copy()
 
@@ -309,12 +300,6 @@ def _rolling_skew_suite(
     ).reset_index(drop=True)
 
     agg["_gap"] = agg["skewness"] - neutral
-    if price_k is None:
-        agg["skew_price"] = agg["underlying_close"] * agg["skewness"]
-    else:
-        agg["skew_price"] = agg["underlying_close"] * (
-            1.0 + agg["_gap"] * price_k
-        )
 
     # ---- pre-expiry contrarian metrics on _gap (skewness − neutral) ----
     #   cross_count_20d       — neutral crossings in the trailing
@@ -356,13 +341,6 @@ def _rolling_skew_suite(
             window=w, min_periods=w, agg="mean",
         )
 
-    # ---- rolling MA of underlying_close (spot) over 5/20/60 ------------
-    for w in SKEWNESS_WINDOWS:
-        agg[f"spot_ma{w}"] = grouped_rolling_agg(
-            agg, _EXPIRY_GROUP_KEY, "underlying_close",
-            window=w, min_periods=w, agg="mean",
-        )
-
     # ---- rolling STD of skewness over 5/20/60 days ---------------------
     for w in SKEWNESS_WINDOWS:
         agg[f"skewness_std{w}"] = grouped_rolling_agg(
@@ -389,25 +367,9 @@ def _rolling_skew_suite(
             _EXPIRY_GROUP_KEY,
         )
 
-    # ---- whole-period (cumulative) correlation -------------------------
-    # All correlations are computed in price space (see docstring). Only
-    # MA-based correlations are stored (no daily correlation).
-    for w in SKEWNESS_WINDOWS:
-        agg[f"skew_price_ma{w}"] = grouped_rolling_agg(
-            agg, _EXPIRY_GROUP_KEY, "skew_price",
-            window=w, min_periods=w, agg="mean",
-        )
-        agg[f"corr_skewness_ma{w}_vs_spot_ma{w}"] = _expanding_corr(
-            agg, _EXPIRY_GROUP_KEY,
-            f"skew_price_ma{w}", f"spot_ma{w}",
-            min_periods=w,
-        ).values
-
     # Clean up temporary columns
     agg = agg.drop(
-        columns=["_gap", "_t", "skew_price", "_crossed", "_above_neutral"]
-        + [f"skew_price_ma{w}" for w in SKEWNESS_WINDOWS]
-        + [f"spot_ma{w}" for w in SKEWNESS_WINDOWS]
+        columns=["_gap", "_t", "_crossed", "_above_neutral"]
     )
     return agg
 

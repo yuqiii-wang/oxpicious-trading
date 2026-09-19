@@ -37,6 +37,7 @@ import {
   type StreakMarkAreaDatum,
 } from "@/shared/charts/streakBands";
 import { IV_BLUE, axisColors, commonDataZoom, commonGrid, commonLegend } from "@/theme/chart-palette";
+import { baseChartOption } from "@/shared/charts/base-chart";
 import type { ThemeMode } from "@/store/filters";
 import type { PeAndDividendStreak, PeAndDividendStreakMetric } from "@shared/types";
 
@@ -212,9 +213,11 @@ export function buildStreakChartOption(
     }
   }
 
-  const option: EChartsOption = {
-    animation: false,
-    backgroundColor: "transparent",
+  // Shared preamble via baseChartOption (legend/grid are the common
+  // fragments). The tooltip keeps its ORIGINAL shape (axis trigger + themed
+  // card, valueFormatter, NO axisPointer and no border), so its old fields
+  // are passed verbatim as the tooltip override.
+  const option: EChartsOption = baseChartOption(themeMode, {
     legend: commonLegend(themeMode),
     grid: commonGrid({ bottom: 64 }),
     tooltip: {
@@ -244,7 +247,7 @@ export function buildStreakChartOption(
     },
     dataZoom: commonDataZoom(),
     series,
-  };
+  });
 
   return { option, win, streaks, emphasized };
 }

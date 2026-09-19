@@ -47,10 +47,9 @@ import {
   Stack,
   ToggleButton,
   ToggleButtonGroup,
-  Typography,
 } from "@mui/material";
-import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import {
   fetchBenchmarkPriceChart,
   fetchIndustryAttributionPriceSeries,
@@ -73,7 +72,6 @@ type PriceMode = "rolling" | "today";
 
 export function BenchmarkPriceChart({
   benchmarkCode,
-  themeMode,
   selectedDate,
   onDateSelect,
   selectedIndustries,
@@ -81,6 +79,7 @@ export function BenchmarkPriceChart({
   onVisibleRangeChange,
   focusDateRequest,
 }: BenchmarkPriceChartProps) {
+  const themeMode = useChartThemeMode();
   const [data, setData] = useState<BenchmarkPriceChartResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -382,95 +381,108 @@ export function BenchmarkPriceChart({
         : "")
     : "Select a benchmark to see its price chart";
 
+  // Empty-state caption: which hint to show depends on WHY there is no chart.
+  const emptyText = !benchmarkCode
+    ? "Select a benchmark from the dropdown above."
+    : data && data.rows.length === 0
+      ? `No price data for benchmark ${benchmarkCode}.`
+      : "No data";
+
+  // Rich AI Ask semantics (intro + instruments; series stats auto-derive —
+  // series names here are dynamic: the benchmark name + industry labels).
+  const aiAsk = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Daily price chart of benchmark ${benchmarkCode || "(none selected)"}. ` +
+        (priceMode === "rolling"
+          ? "Percentage mode: curves are rebased to 100 at the visible window's start, so slopes compare cumulative performance. The benchmark curve is the main line; each selected industry's contribution-excluded curve (benchmark minus that industry) is overlaid, and the shaded gap between them is what the industry added/removed over the trailing rolling window."
+          : "Absolute mode: raw daily closes; the benchmark line and each selected industry's non-this-industry price series are plotted on a shared price axis.") +
+        (showTradingAmt
+          ? " The bar overlay (right axis) is the benchmark's daily trading amount in 亿 (hundred-million CNY); the colored segment at each bar's base is the selected industries' shared-weight proportion."
+          : ""),
+      instruments: benchmarkCode
+        ? [{ code: benchmarkCode, assetClass: "index" }]
+        : [],
+      granularity: "daily",
+      series: [
+        { name: "Trading Amt", unit: "亿 CNY", description: "benchmark daily trading amount" },
+      ],
+      notes: [
+        "Clicking the plot selects the as-of date used by the attribution charts below.",
+        `Rolling window for the industry shades: ${ROLLING_DAYS_LABELS[rollingDays]} (${rollingDays} trading days).`,
+      ],
+    }),
+    [benchmarkCode, priceMode, showTradingAmt, rollingDays],
+  );
+
   return (
-    <ChartCard
+    <BaseChart
       title="Benchmark Price"
       subtitle={subtitle}
+      aiAsk={aiAsk}
+      option={data && data.rows.length > 0 ? option : null}
+      loading={loading}
+      error={error ? `Failed to load benchmark price: ${error}` : null}
+      emptyText={emptyText}
+      height={400}
+      onCanvasClick={handleCanvasClick}
+      onReady={(c) => {
+        chartRef.current = c;
+      }}
     >
-      {!benchmarkCode && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-          <Typography variant="body2" color="text.secondary">
-            Select a benchmark from the dropdown above.
-          </Typography>
-        </Box>
-      )}
-      {loading && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-          <CircularProgress size={28} />
-        </Box>
-      )}
-      {error && (
-        <Alert severity="error" sx={{ py: 0.5 }}>Failed to load benchmark price: {error}</Alert>
-      )}
-      {!loading && !error && data && data.rows.length > 0 && option && (
-        <Stack spacing={1}>
-          <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-            {showToggle && (
-              <FormControl size="small" sx={{ minWidth: 150 }}>
-                <Select
-                  size="small"
-                  value={rollingDays}
-                  onChange={(e) => setRollingDays(Number(e.target.value) as RollingDays)}
-                  sx={{ "& .MuiSelect-select": { py: 0.25, fontSize: "0.8rem" } }}
-                  inputProps={{ "aria-label": "Rolling days window" }}
-                >
-                  {ROLLING_DAYS.map((d) => (
-                    <MenuItem key={d} value={d}>{ROLLING_DAYS_LABELS[d]}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            )}
-            {showToggle && (
-              <ToggleButtonGroup
-                value={priceMode}
-                exclusive
+      {/* Controls (always visible — the base renders them in every state) */}
+      <Stack spacing={1}>
+        <Box sx={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+          {showToggle && (
+            <FormControl size="small" sx={{ minWidth: 150 }}>
+              <Select
                 size="small"
-                onChange={(_, v: PriceMode | null) => {
-                  if (v) setPriceMode(v);
-                }}
+                value={rollingDays}
+                onChange={(e) => setRollingDays(Number(e.target.value) as RollingDays)}
+                sx={{ "& .MuiSelect-select": { py: 0.25, fontSize: "0.8rem" } }}
+                inputProps={{ "aria-label": "Rolling days window" }}
               >
-                <ToggleButton value="rolling">Percentage</ToggleButton>
-                <ToggleButton value="today">Absolute</ToggleButton>
-              </ToggleButtonGroup>
-            )}
+                {ROLLING_DAYS.map((d) => (
+                  <MenuItem key={d} value={d}>{ROLLING_DAYS_LABELS[d]}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+          {showToggle && (
             <ToggleButtonGroup
-              value={showTradingAmt ? ["on"] : []}
+              value={priceMode}
+              exclusive
               size="small"
-              onChange={(_, v: string[]) => {
-                setShowTradingAmt(v.includes("on"));
+              onChange={(_, v: PriceMode | null) => {
+                if (v) setPriceMode(v);
               }}
             >
-              <ToggleButton value="on">Trading Amt</ToggleButton>
+              <ToggleButton value="rolling">Percentage</ToggleButton>
+              <ToggleButton value="today">Absolute</ToggleButton>
             </ToggleButtonGroup>
-          </Box>
-          {hasIndustries && !shadesAvailable && industrySeries !== undefined && Object.keys(industrySeries).length > 0 && (
-            <Alert severity="info" sx={{ py: 0.5 }}>
-              Non-industry shades are only available for broad-market (★) benchmarks.
-              Select a starred benchmark to see the shades.
-            </Alert>
           )}
-          {industryLoading && (
-            <Box sx={{ display: "flex", justifyContent: "center", py: 1 }}>
-              <CircularProgress size={20} />
-            </Box>
-          )}
-          <EChart
-            option={option}
-            height={400}
-            onCanvasClick={handleCanvasClick}
-            onReady={(c) => {
-              chartRef.current = c;
+          <ToggleButtonGroup
+            value={showTradingAmt ? ["on"] : []}
+            size="small"
+            onChange={(_, v: string[]) => {
+              setShowTradingAmt(v.includes("on"));
             }}
-          />
-        </Stack>
-      )}
-      {!loading && !error && data && data.rows.length === 0 && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-          <Typography variant="body2" color="text.secondary">
-            No price data for benchmark {benchmarkCode}.
-          </Typography>
+          >
+            <ToggleButton value="on">Trading Amt</ToggleButton>
+          </ToggleButtonGroup>
         </Box>
-      )}
-    </ChartCard>
+        {hasIndustries && !shadesAvailable && industrySeries !== undefined && Object.keys(industrySeries).length > 0 && (
+          <Alert severity="info" sx={{ py: 0.5 }}>
+            Non-industry shades are only available for broad-market (★) benchmarks.
+            Select a starred benchmark to see the shades.
+          </Alert>
+        )}
+        {industryLoading && (
+          <Box sx={{ display: "flex", justifyContent: "center", py: 1 }}>
+            <CircularProgress size={20} />
+          </Box>
+        )}
+      </Stack>
+    </BaseChart>
   );
 }

@@ -203,11 +203,3 @@ ON CONFLICT (name) DO UPDATE SET
     description       = EXCLUDED.description;
 
 
--- ============================================================================
---  Dropped in the margin cleanup
--- ============================================================================
---  analysis.margin_industry_correlation — pairwise security correlation
---  table (never populated; population was deferred and the corr view was
---  removed from the Margin Trends page).
-DELETE FROM analysis.analysis_identity WHERE name = 'margin_industry_correlation';
-DROP TABLE IF EXISTS analysis.margin_industry_correlation;

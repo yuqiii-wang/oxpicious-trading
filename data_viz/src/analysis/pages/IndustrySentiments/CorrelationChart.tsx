@@ -24,7 +24,13 @@ import {
   Typography,
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import EChart from "@/components/EChart";
+import {
+  BaseChart,
+  baseChartOption,
+  commonTooltip,
+  emptyChartOption,
+  useChartThemeMode,
+} from "@/shared/charts/base-chart";
 import {
   fetchIndustryCorrelations,
   runIndustryCorrelationsRefresh,
@@ -49,8 +55,8 @@ export function CorrelationChart({
   industryIds,
   codes,
   poolSize,
-  themeMode,
 }: CorrelationChartProps) {
+  const themeMode = useChartThemeMode();
   const [data, setData] = useState<IndustryCorrelationsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -179,7 +185,15 @@ export function CorrelationChart({
   // just the selected window — lets the user compare short vs long-term
   // co-movement at a glance without toggling windows).
   const option = useMemo<EChartsOption | null>(() => {
-    if (!data || data.correlations.length === 0) return null;
+    // No rows for the selection → centered in-chart empty caption (the
+    // refresh button next to the header recomputes them).
+    if (!data) return null;
+    if (data.correlations.length === 0) {
+      return emptyChartOption(
+        themeMode,
+        "No correlation data available — click the ↻ button to recompute, or run python -m analyze.industry_sentiments.corr",
+      );
+    }
     const c = axisColors(themeMode);
 
     // Group rows by pair key (industry_id, benchmark_industry_id). Each
@@ -237,18 +251,15 @@ export function CorrelationChart({
       };
     });
 
-    return {
-      backgroundColor: "transparent",
-      animation: false,
+    return baseChartOption(themeMode, {
       grid: commonGrid({ left: 56, right: 24, bottom: 32 }),
       legend: commonLegend(themeMode, {
         data: series.map((s) => s.name as string),
       }),
-      tooltip: {
-        trigger: "axis",
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
+      // Old hand-rolled tooltip had NO axisPointer (ECharts default line
+      // pointer) — override with undefined to keep that behavior.
+      tooltip: commonTooltip(themeMode, {
+        axisPointer: undefined,
         formatter: (params: unknown) => {
           const arr = (Array.isArray(params) ? params : [params]) as Array<{
             dataIndex?: number;
@@ -321,7 +332,7 @@ export function CorrelationChart({
           children.push(React.createElement("div", { style: { marginTop: 4 } }, rowChildren));
           return renderReactElement(React.createElement(React.Fragment, null, children));
         },
-      },
+      }),
       xAxis: {
         type: "category",
         data: allDates,
@@ -348,7 +359,7 @@ export function CorrelationChart({
         splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
       },
       series,
-    };
+    });
   }, [data, themeMode, window]);
 
   const numPairs = data
@@ -410,32 +421,17 @@ export function CorrelationChart({
           </Typography>
         </Box>
       ) : (
-        <>
+        <BaseChart
+          variant="bare"
+          option={option}
+          loading={loading}
+          error={error ? `Failed to load correlations: ${error}` : null}
+          height={360}
+        >
           {refreshError && (
             <Alert severity="error" sx={{ py: 0.5 }}>{refreshError}</Alert>
           )}
-          {loading && (
-            <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-              <CircularProgress size={24} />
-            </Box>
-          )}
-          {error && (
-            <Alert severity="error" sx={{ py: 0.5 }}>Failed to load correlations: {error}</Alert>
-          )}
-          {!loading && !error && option && (
-            <EChart option={option} height={360} />
-          )}
-          {!loading && !error && !option && (
-            <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-              <Typography variant="body2" color="text.secondary">
-                No correlation data available for the selected industries. Click the{" "}
-                <RefreshIcon sx={{ fontSize: 13, verticalAlign: "-2px" }} /> button to
-                recompute them, or run{" "}
-                <code>python -m analyze.industry_sentiments.corr</code>.
-              </Typography>
-            </Box>
-          )}
-        </>
+        </BaseChart>
       )}
     </Box>
   );

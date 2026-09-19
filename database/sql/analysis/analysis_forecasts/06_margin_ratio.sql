@@ -82,89 +82,6 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.margin_ratio_state (
 
 SELECT public.create_hash_partitions('analysis_forecasts', 'margin_ratio_state', 16);
 
--- ----------------------------------------------------------------------------
---  Migration (2026-09): forecast_id-keyed rebuild — the composite
---  (code, sec_type, stat_month, ...) PK is replaced by the surrogate
---  forecast_id (PK + hash-partition key); the shared identity lives
---  ONLY in forecast_identities. Legacy-shape tables (they still carry
---  the code column) are rebuilt by swap — rows are carried over via
---  forecast_id and the old secondary forecast_id index dissolves into
---  the new PK. See 02_mov_rsi_mov_std.sql for the full rationale.
--- ----------------------------------------------------------------------------
-DO $$
-DECLARE
-    r          int;
-    v_partkey  text;
-    v_pkdef    text;
-    v_has_code bool;
-BEGIN
-    SELECT pg_get_partkeydef(c.oid),
-           COALESCE((SELECT pg_get_constraintdef(p.oid)
-                     FROM pg_constraint p
-                     WHERE p.conrelid = c.oid AND p.contype = 'p'), '')
-    INTO v_partkey, v_pkdef
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'analysis_forecasts' AND c.relname = 'margin_ratio_state';
-    SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_schema = 'analysis_forecasts'
-                     AND table_name   = 'margin_ratio_state'
-                     AND column_name  = 'code')
-    INTO v_has_code;
-    IF v_partkey IS NULL
-       OR (v_partkey = 'HASH (code)'
-           AND v_pkdef = 'PRIMARY KEY (code, forecast_id)') THEN
-        -- fresh install (created above in the target shape) or already
-        -- migrated
-        RETURN;
-    END IF;
-    ALTER TABLE analysis_forecasts.margin_ratio_state RENAME TO margin_ratio_state_pk_rebuild;
-    ALTER TABLE analysis_forecasts.margin_ratio_state_pk_rebuild
-        DROP CONSTRAINT IF EXISTS pk_margin_ratio_state;
-    CREATE TABLE analysis_forecasts.margin_ratio_state_new (
-            code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-            forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_margin_ratio_state_forecast_id
-            ratio_state     TEXT         NOT NULL,
-            side            TEXT         NOT NULL,
-            z_window        INTEGER      NOT NULL DEFAULT 1220,
-            z_min_periods   INTEGER      NOT NULL DEFAULT 250,
-            vlow_bar        NUMERIC(4,2) NOT NULL DEFAULT -2.00,
-            low_bar         NUMERIC(4,2) NOT NULL DEFAULT -1.00,
-            high_bar        NUMERIC(4,2) NOT NULL DEFAULT 1.00,
-            vhigh_bar       NUMERIC(4,2) NOT NULL DEFAULT 2.00,
-            lookback_period TEXT         NOT NULL DEFAULT '5y',
-            is_market_hyped BOOLEAN      NOT NULL,
-        CONSTRAINT pk_margin_ratio_state PRIMARY KEY (code, forecast_id)
-    ) PARTITION BY HASH (code);
-    PERFORM public.create_hash_partitions('analysis_forecasts',
-                                          'margin_ratio_state_new', 16);
-    ALTER TABLE analysis_forecasts.margin_ratio_state_pk_rebuild
-        ADD COLUMN IF NOT EXISTS lookback_period TEXT NOT NULL DEFAULT '5y';
-    IF v_has_code THEN
-        INSERT INTO analysis_forecasts.margin_ratio_state_new
-               (code, forecast_id, ratio_state, side, z_window, z_min_periods, vlow_bar, low_bar, high_bar, vhigh_bar, lookback_period, is_market_hyped)
-        SELECT  code, forecast_id, ratio_state, side, z_window, z_min_periods, vlow_bar, low_bar, high_bar, vhigh_bar, lookback_period, is_market_hyped
-        FROM    analysis_forecasts.margin_ratio_state_pk_rebuild;
-    ELSE
-        -- intermediate forecast_id-keyed shape (no code column): code
-        -- comes from the identities registry (1 row per forecast_id)
-        INSERT INTO analysis_forecasts.margin_ratio_state_new
-               (code, forecast_id, ratio_state, side, z_window, z_min_periods, vlow_bar, low_bar, high_bar, vhigh_bar, lookback_period, is_market_hyped)
-        SELECT  i.code, m.forecast_id, m.ratio_state, m.side, m.z_window, m.z_min_periods, m.vlow_bar, m.low_bar, m.high_bar, m.vhigh_bar, m.lookback_period, m.is_market_hyped
-        FROM    analysis_forecasts.margin_ratio_state_pk_rebuild m
-        JOIN    analysis_forecasts.forecast_identities i
-          ON    i.forecast_id = m.forecast_id;
-    END IF;
-    DROP TABLE analysis_forecasts.margin_ratio_state_pk_rebuild;
-    ALTER TABLE analysis_forecasts.margin_ratio_state_new RENAME TO margin_ratio_state;
-    FOR r IN 0..15 LOOP
-        EXECUTE format(
-            'ALTER TABLE analysis_forecasts.margin_ratio_state_new_p%s '
-            'RENAME TO margin_ratio_state_p%s',
-            lpad(r::text, 2, '0'), lpad(r::text, 2, '0'));
-    END LOOP;
-END $$;
-
 CREATE INDEX IF NOT EXISTS idx_margin_ratio_state_forecast_id
     ON analysis_forecasts.margin_ratio_state (forecast_id);
 
@@ -183,3 +100,18 @@ COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.high_bar IS 'Recorded bu
 COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.vhigh_bar IS 'Recorded build parameter: vhigh lower z-bar (default +2.0).';
 COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';
 COMMENT ON COLUMN analysis_forecasts.margin_ratio_state.is_market_hyped IS 'TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
+
+-- ----------------------------------------------------------------------------
+--  Data-quality gate: the margin_ratio_state vocabularies (shared helpers, see
+--  01_forecast_results.sql / 00_partition_utils.sql). NOT VALID first,
+--  validated once by the schema-wide sweep below.
+-- ----------------------------------------------------------------------------
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.margin_ratio_state',
+    'chk_margin_ratio_state_side',
+    $chk$side IN ('top', 'bottom', 'flat')$chk$);
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.margin_ratio_state',
+    'chk_margin_ratio_state_ratio_state',
+    $chk$ratio_state IN ('no_buy', 'vlow', 'low', 'mid', 'high', 'vhigh')$chk$);
+SELECT public.validate_pending_checks('analysis_forecasts');

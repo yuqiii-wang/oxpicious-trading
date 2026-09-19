@@ -26,21 +26,30 @@ RELATIVE gaps are what get compared:
   excluded from the movers plan and never cooldown-checked). The asks'
   search window defaults to the same 5d horizon (``RECENCY_5D`` =
   ``oneWeek``).
+* weekly gate — the movers phase is the WEEKLY industry step: it fires
+  at most once per ``MOVERS_WEEK_BD`` (5) trading days. When the latest
+  industry ask of this category sits inside that 5-trading-day window,
+  the run makes NO industry requests (status ``weekly-skip``) — that
+  day's ask is the broadmarket general summary only. The DAILY ask is
+  broadmarket; the WEEKLY ask is industry.
 * staleness guard — when the latest cross_stats date is
   ``MOVERS_MAX_LAG_BD`` (5) BUSINESS days old or more (weekends and
   holidays excluded via the trading calendar), no industry requests are
   made at all (status ``stale``): the move is no longer news.
 
 Each survivor gets its own search+summary ask (the date-embedded
-why-did-X-move question), optionally persisted with the mover's own
-industry_id and ``text.llm_qa.qa_date`` = the plan date, and the whole
-block is stored as ``ai_daily_<plan-date>_movers.json`` under the same
-output dir as the general summary.
+why-did-X-move question) whose outcome carries the ask's FULL reference
+list, and the whole block is stored as ``ai_daily_<plan-date>_movers.json``
+under the same output dir as the general summary — ``builds.text`` loads
+the Q&A into text.llm_qa (+ reference provenance) under the mover's own
+industry_id with ``text.llm_qa.qa_date`` = the plan date, and the ask
+hits into text.news.
 
 Best run after the market close AND after ``python -m
 builds.cross_stats`` has loaded the day's industry grain. Recency-only
 by design — historical sector asks belong to the HISTORY flow
-(``llm_agents.industry_qa_weekly``, seasonal top + MA5-slope episodes).
+(``llm_agents.industry_qa_weekly``'s manual backfill, seasonal top +
+MA5-slope episodes).
 """
 from __future__ import annotations
 
@@ -53,8 +62,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from llm_agents.online_search_summary import (
     DAILY_CATEGORY, DAILY_COUNT, RECENCY_5D, SHANGHAI_TZ,
-    OnlineSearchSummaryStore, SearchOptions, SearchSummary, daily_recency,
-    get_provider,
+    SearchOptions, SearchSummary, daily_recency, get_provider,
 )
 from _common._holidays_and_weekdays import recent_trading_day_cutoff
 
@@ -70,6 +78,11 @@ MOVERS_SEPARATION = 0.51       # consecutive ranks must differ by > 51%
 # window): an industry+side asked within the last 5 trading days is
 # skipped. A direction flip is a different question and never matches.
 MOVERS_COOLDOWN_BD = 5
+# Weekly industry step: the movers phase fires at most once per 5
+# trading days. The DAILY ask is the broadmarket general summary (no
+# gate, no cooldown); the WEEKLY ask is the industry movers — the 5d
+# cooldown IS the week.
+MOVERS_WEEK_BD = 5
 # Staleness guard: when the latest cross_stats date is this many business
 # days old or older (holidays/weekends excluded — trading-day counting),
 # the move is no longer news: NO industry requests are made.
@@ -123,6 +136,17 @@ IN_COOLDOWN_SQL = """
     )
 """
 
+# Weekly gate: the latest industry ask of this job's category (the
+# general summary's BROAD* tag is excluded — it is the daily ask and
+# never gates the industry step).
+LAST_MOVERS_ASK_SQL = """
+    SELECT max((qa_date AT TIME ZONE 'Asia/Shanghai')::date)
+    FROM text.llm_qa
+    WHERE category = $1::text
+      AND industry_id IS NOT NULL
+      AND industry_id NOT LIKE 'BROAD%'
+"""
+
 # The broad-market industry_id the general summary is stored under by
 # default (上证指数 000001's parent classification tag).
 BROAD_INDUSTRY_SQL = """
@@ -171,6 +195,26 @@ def plan_is_stale(
         return True
     today = today or datetime.datetime.now(SHANGHAI_TZ).date()
     return plan_date <= recent_trading_day_cutoff(MOVERS_MAX_LAG_BD, today)
+
+
+def movers_due(
+    last_ask_date: Optional[datetime.date],
+    today: Optional[datetime.date] = None,
+) -> bool:
+    """True when a weekly industry ask-run is due.
+
+    The weekly gate: the trading-day span between ask-runs must cover 5
+    trading days counting the ask day itself (``cutoff`` is the
+    5th-most-recent trading day, so ``[cutoff, today]`` spans exactly
+    ``MOVERS_WEEK_BD`` days and an ask strictly inside it suppresses the
+    phase). An ask therefore repeats on the same weekday of the next
+    trading week — one industry step per 5-trading-day week, the same
+    ask-day-inclusive boundary the per-pick 5d cooldown applies.
+    """
+    today = today or datetime.datetime.now(SHANGHAI_TZ).date()
+    if last_ask_date is None:
+        return True
+    return last_ask_date <= recent_trading_day_cutoff(MOVERS_WEEK_BD, today)
 
 
 def _gate_loaded(sorted_picks: List[Tuple[str, float]],
@@ -302,16 +346,17 @@ async def run_movers(
     model: Optional[str] = None,
     lang: str = "zh",
     count: Optional[int] = None,
-    store: bool = False,
-    resolve: bool = True,
     category: str = COOLDOWN_CATEGORY,
 ) -> Dict[str, Any]:
     """Plan the movers off the latest cross_stats date, ask each survivor.
 
-    Returns the movers envelope: the plan (candidates + cooldown flags),
-    the per-ask outcomes (question, answer, qa_id) and the failures. A
-    failed ask never kills the batch — its outcome carries the error.
-    *conn* is an open pool; the caller owns opening/closing it.
+    Gate order: no-data -> stale (cross_stats too old) -> weekly-skip (an
+    industry ask inside the last MOVERS_WEEK_BD trading days) -> plan,
+    per-pick 5d cooldown, ask. Returns the movers envelope: the plan
+    (candidates + cooldown flags), the per-ask outcomes (question, answer,
+    full reference list) and the failures. A failed ask never kills the
+    batch — its outcome carries the error. *conn* is an open pool; the
+    caller owns opening/closing it.
     """
     plan_date, offsets = await fetch_latest_offsets(conn, benchmark)
     if plan_date is None or not offsets:
@@ -326,6 +371,20 @@ async def run_movers(
         return {"status": "stale", "benchmark": benchmark,
                 "plan_date": plan_date.isoformat(),
                 "max_lag_bd": MOVERS_MAX_LAG_BD,
+                "candidates": {}, "asked": [], "failed": []}
+
+    # Weekly gate: industry asks are the WEEKLY step. An industry ask of
+    # this category inside the last MOVERS_WEEK_BD trading days makes
+    # today's run broadmarket-only (the general summary asks regardless).
+    last_ask_date = await conn.fetchval(LAST_MOVERS_ASK_SQL, category)
+    if not movers_due(last_ask_date):
+        logger.info("movers: last industry ask %s is inside the %d-"
+                    "trading-day weekly window — broadmarket summary only",
+                    last_ask_date, MOVERS_WEEK_BD)
+        return {"status": "weekly-skip", "benchmark": benchmark,
+                "plan_date": plan_date.isoformat(),
+                "week_bd": MOVERS_WEEK_BD,
+                "last_ask_date": last_ask_date.isoformat(),
                 "candidates": {}, "asked": [], "failed": []}
 
     labels = await fetch_labels(conn, list(offsets))
@@ -357,22 +416,15 @@ async def run_movers(
                 "answer": summary.answer,
                 "cited_refs": summary.cited_refs,
                 "n_refs": len(summary.hits),
+                # The ask's FULL hit list — builds.text resolves these into
+                # text.news rows + text.llm_qa provenance, so the artifact
+                # must be self-sufficient (the pre-removal --store path got
+                # them from the live response instead).
+                "references": [h.to_dict() for h in summary.hits],
                 "provider": summary.provider, "model": summary.model,
-                "qa_id": None,
             }
-            if store:
-                qa_store = OnlineSearchSummaryStore(conn)
-                qa_id, resolved = await qa_store.store_summary(
-                    summary, industry_id=p.industry_id, category=category,
-                    language=lang, resolve=resolve,
-                    qa_date=datetime.datetime.combine(
-                        plan_date, datetime.time.min, tzinfo=SHANGHAI_TZ))
-                outcome["qa_id"] = qa_id
-                outcome["n_stored_refs"] = len(resolved)
             asked.append(outcome)
-            logger.info("  [%s] %s -> %s (%s)", p.side, p.question,
-                        f"qa_id={outcome['qa_id']}"
-                        if outcome["qa_id"] else "not stored",
+            logger.info("  [%s] %s -> ok (%s)", p.side, p.question,
                         ", ".join(summary.cited_refs[:3]) or "no cites")
         except Exception as e:  # one failed ask must not kill the batch
             failed.append({**p.to_dict(),

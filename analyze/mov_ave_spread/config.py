@@ -533,7 +533,8 @@ TRADING_AMT_STD_COLUMNS = (
 # NOTE: the 6 liquidity-impact ratio columns previously drafted for this
 # table live in the companion table analysis.mov_ave_trading_amt_ratios
 # (see TRADING_AMT_RATIOS_COLUMNS below) — the shapes of
-# TRADING_AMT_COLUMNS and the CREATE TABLE in 03_mov_ave_spreads.sql
+# TRADING_AMT_COLUMNS and the CREATE TABLE in
+# database/sql/analysis/mov_ave_spreads/05_mov_ave_trading_amt.sql
 # must stay in sync.
 TRADING_AMT_COLUMNS = (
     ("sec_type", "code", "date")
@@ -617,7 +618,8 @@ TRADING_AMT_MA5_OVERNIGHT_GAP_RATIO_COLUMN = (
 
 # All output column names of analysis.mov_ave_trading_amt_ratios in the
 # order they appear in the table (must stay in sync with the CREATE
-# TABLE in 03_mov_ave_spreads.sql — COPY infers columns from these
+# TABLE in database/sql/analysis/mov_ave_spreads/
+# 06_mov_ave_trading_amt_ratios.sql — COPY infers columns from these
 # dict keys).
 TRADING_AMT_RATIOS_COLUMNS = (
     ("sec_type", "code", "date")
@@ -770,7 +772,7 @@ HIGH_LOW_PCT_PERIODS = (255, 500, 750, 1275)
 # percentile of daily high prices — a SYMMETRIC band: 1 = near-full
 # range of the window ([1st pct of lows, 99th pct of highs]), 10 = core
 # envelope ([10th, 90th]). Mirrors the pct_type column (part of the PK)
-# in 03_mov_ave_spreads.sql.
+# in database/sql/analysis/mov_ave_spreads/07_mov_ave_high_low_pct.sql.
 HIGH_LOW_PCT_TYPES = (1, 5, 10)
 
 # Minimum observations for a band: 255 rows (1 trading year), shared by
@@ -787,7 +789,8 @@ HIGH_LOW_PCT_ROWS_PER_PAIR = len(HIGH_LOW_PCT_PERIODS) * len(HIGH_LOW_PCT_TYPES)
 
 # All output column names of analysis.mov_ave_high_low_pct in the order
 # they appear in the table (must stay in sync with the CREATE TABLE in
-# 03_mov_ave_spreads.sql — COPY inserts with this explicit column
+# mov_ave_spreads/07_mov_ave_high_low_pct.sql — COPY inserts with this
+# explicit column
 # order). PK is (sec_type, code, date_year_month, period, pct_type).
 HIGH_LOW_PCT_COLUMNS = (
     "sec_type", "code", "date_year_month", "period", "pct_type",
@@ -845,7 +848,8 @@ HIGH_LOW_PCT_GAP_TOLERANCE = 5
 
 # All output column names of analysis.mov_ave_high_low_pct_streaks in
 # the order they appear in the table (must stay in sync with the
-# CREATE TABLE in 03_mov_ave_spreads.sql — COPY inserts with this
+# CREATE TABLE in mov_ave_spreads/08_mov_ave_high_low_pct_streaks.sql —
+# COPY inserts with this
 # explicit column order). PK is (sec_type, code, date_year_month,
 # period, pct_type, start_date, end_date).
 HIGH_LOW_PCT_STREAKS_COLUMNS = (

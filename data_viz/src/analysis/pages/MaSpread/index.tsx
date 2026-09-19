@@ -26,7 +26,6 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { Alert, Box, Pagination, Stack, Typography } from "@mui/material";
-import { useStore } from "@/store/filters";
 import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import type { SecNavThemesSource } from "@/shared/components/sec-nav";
 import {
@@ -56,8 +55,6 @@ const THEMES_SOURCES: Record<"etf" | "index" | "stock", SecNavThemesSource> = {
 };
 
 export default function MaSpreadPage() {
-  const themeMode = useStore((s) => s.themeMode);
-
   // Shared nav: sec_type toggle + code search + classification selection.
   // MA-Spread has its own themes tree scoped to sec_type, so a shared global
   // sector_id would not map cleanly between ETF and Index themes — the nav
@@ -191,7 +188,6 @@ export default function MaSpreadPage() {
                 code={c.code}
                 name={c.name}
                 secType={nav.secType}
-                themeMode={themeMode}
               />
             ))}
           </Stack>

@@ -54,18 +54,12 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA strategy TO postgres;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA strategy TO postgres;
 
 -- ----------------------------------------------------------------------------
---  ALTER: strategy.algo_configs.is_default
---    TRUE  — the algo's DEFAULT_PARAMS row (reserved wide range).
---    FALSE — a trained row (written by _optm_engine persist).
---    Backfill: pre-existing wide-range rows are promoted to is_default so
---    ensure_default_config keeps treating them as the (single) default row.
---    NOTE: asyncpg encodes Python date(9999,12,31) as PG 'infinity', so the
---    legacy wide rows carry end_date 'infinity' — the backfill matches BOTH
---    spellings.
+--  Backfill: pre-existing wide-range rows are promoted to is_default so
+--  ensure_default_config keeps treating them as the (single) default row.
+--  NOTE: asyncpg encodes Python date(9999,12,31) as PG 'infinity', so the
+--  legacy wide rows carry end_date 'infinity' — the backfill matches BOTH
+--  spellings.
 -- ----------------------------------------------------------------------------
-ALTER TABLE strategy.algo_configs
-    ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE;
-
 UPDATE strategy.algo_configs
    SET is_default = TRUE
  WHERE start_date = DATE '1900-01-01'

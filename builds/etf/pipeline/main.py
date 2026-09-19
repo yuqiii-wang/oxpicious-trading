@@ -26,6 +26,7 @@ from builds.etf.pipeline.universe import build_universe
 from builds.etf.pipeline.writes import filter_missing_rows, write_split_tables
 from builds.etf.pipeline.composition_write import insert_composition
 from builds.etf.pipeline.quality import upsert_quality_metrics
+from builds._commons.board_map import stage_stock_boards, refresh_board_mix
 
 import logging
 logger = logging.getLogger(__name__)
@@ -142,6 +143,13 @@ async def run(args) -> None:
 
         # Post-step: sec_classification quality metrics
         await upsert_quality_metrics(conn, uni_df, merged)
+
+        # Post-step: stats.sec_board_map etf slice — composition-weighted
+        # board mix per ETF (tracking-index fallback for codes without own
+        # snapshots). Must run AFTER insert_composition: mixes read the
+        # latest snapshots this build may have just added.
+        await stage_stock_boards(conn)
+        await refresh_board_mix(conn, "etf", force=args.force)
     finally:
         await conn.close()
 

@@ -546,6 +546,25 @@ function SignalTable({
             <TableCell align="right">Threshold</TableCell>
             <TableCell align="right">Excess</TableCell>
             <TableCell align="right">Confidence</TableCell>
+            <Tooltip
+              title={
+                "The breach day sits inside one of the code's " +
+                "market-hype episodes — the regime the strategy's " +
+                "reversal stats were NOT calibrated on"
+              }
+              arrow
+            >
+              <TableCell align="center">hyped</TableCell>
+            </Tooltip>
+            <Tooltip
+              title={
+                "Signals for this code over the last 20 trading days " +
+                "(all signal types)"
+              }
+              arrow
+            >
+              <TableCell align="right">20d count</TableCell>
+            </Tooltip>
           </TableRow>
         </TableHead>
         <TableBody>
@@ -636,11 +655,35 @@ function SignalTable({
                   >
                     {s.confidence}
                   </TableCell>
+                  <TableCell align="center">
+                    <Box
+                      component="span"
+                      sx={{
+                        color: s.is_market_hyped
+                          ? "text.primary"
+                          : "text.disabled",
+                      }}
+                    >
+                      {s.is_market_hyped ? "●" : "·"}
+                    </Box>
+                  </TableCell>
+                  <TableCell
+                    align="right"
+                    sx={{
+                      whiteSpace: "nowrap",
+                      color: s.count_20d > 1
+                        ? theme.palette.warning.main
+                        : theme.palette.text.secondary,
+                      fontWeight: s.count_20d > 1 ? 600 : 400,
+                    }}
+                  >
+                    {s.count_20d}
+                  </TableCell>
                 </TableRow>
                 {expanded && (
                   <TableRow>
                     <TableCell
-                      colSpan={9}
+                      colSpan={11}
                       sx={{ p: 0, border: "none", bgcolor: "background.default" }}
                     >
                       <SignalExpansion signal={s} />
@@ -760,6 +803,7 @@ function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
                 <TableCell align="right">Threshold</TableCell>
                 <TableCell align="right">Excess</TableCell>
                 <TableCell align="right">Confidence</TableCell>
+                <TableCell align="center">hyped</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -817,6 +861,18 @@ function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
                   </TableCell>
                   <TableCell align="right" sx={{ color: "text.secondary" }}>
                     {s.confidence}
+                  </TableCell>
+                  <TableCell align="center">
+                    <Box
+                      component="span"
+                      sx={{
+                        color: s.is_market_hyped
+                          ? "text.primary"
+                          : "text.disabled",
+                      }}
+                    >
+                      {s.is_market_hyped ? "●" : "·"}
+                    </Box>
                   </TableCell>
                 </TableRow>
               ))}

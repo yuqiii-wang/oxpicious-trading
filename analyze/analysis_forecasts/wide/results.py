@@ -6,7 +6,7 @@ horizons next/5d/20d/60d plus the FIXED-weight blended 'mixed' row the
 analysis_signals confirmation gate reads), bucket-major so the writer
 can stride by len(ALL_PERIODS). The mixed row mirrors the idempotent
 SQL backfill (database/sql/analysis/analysis_forecasts/01_forecast_
-results.sql): ave / reverse_prob / max_low_change_ratio are weight means
+results.sql): ave / reverse_prob are weight means
 renormalized over the horizons whose stats exist, std_change is the
 mixture dispersion sqrt(Σw·E[x²] − (Σw·mean)²) — NOT the mean of the
 stds — occurrence_count the MIN positive leg count, threshold the
@@ -91,7 +91,7 @@ def build_result_rows(
     horizon_payloads: dict[int, dict] = {}
     for n in FORWARD_HORIZONS:
         period = PERIOD_FOR_HORIZON[n]
-        cnt, s, s2, hi_e, lo_e, hi_p, lo_p, rev, td, ss, se, sd, te = agg[n]
+        cnt, s, s2, hi_e, lo_e, rev, td, ss, se, sd, te = agg[n]
         cn = cnt[ii, kk]          # (R,) occurrence counts
         pos = cn > 0
 
@@ -113,24 +113,9 @@ def build_result_rows(
             lo_v = lo_e[ii, kk]   # (R,) min endpoint n-day change
             max_vals = _round_none(hi_v)
             min_vals = _round_none(lo_v)
-            # The SWING ratio: (1 + max path high) / (1 + min path low)
-            # over the bucket's trigger days — the highest close any
-            # trigger day's forward window reached vs the lowest any
-            # window touched (signed, so the ratio is ≥ 1 and grows
-            # with the widest realized within-period swing). NEVER
-            # derivable from the endpoint max/min columns — one day's
-            # window high is never paired with another day's endpoint.
-            sw_hi = hi_p[ii, kk]
-            sw_lo = lo_p[ii, kk]
-            mlr_vals = _round_none(np.divide(
-                1 + sw_hi, 1 + sw_lo,
-                out=np.full(R, np.nan),
-                where=pos & (sw_lo > -1),
-            ))
         else:
             max_vals = [None] * R
             min_vals = [None] * R
-            mlr_vals = [None] * R
 
         rev_vals = _round_none(np.divide(
             rev[ii, kk], cn, out=np.full(R, np.nan), where=pos))
@@ -177,7 +162,6 @@ def build_result_rows(
             "std": std,
             "max": max_vals,
             "min": min_vals,
-            "mlr": mlr_vals,
             "rev": rev_vals,
             "occ": occ_vals,
             "td": td_vals,
@@ -202,9 +186,6 @@ def build_result_rows(
     rev_M = np.array(
         [horizon_payloads[n]["rev"] for n in FORWARD_HORIZONS],
         dtype=np.float64)
-    mlr_M = np.array(
-        [horizon_payloads[n]["mlr"] for n in FORWARD_HORIZONS],
-        dtype=np.float64)
     thr_M = np.array(
         [horizon_payloads[n]["rt"] for n in FORWARD_HORIZONS],
         dtype=np.float64)
@@ -223,13 +204,6 @@ def build_result_rows(
         has_stat, std_M ** 2 + ave_M ** 2, 0.0)).sum(axis=0) / safe_stat
     std_mix = np.sqrt(np.maximum(ex2_mix - ave_mix ** 2, 0.0))
     rev_mix = (w_col * np.where(has_stat, rev_M, 0.0)).sum(axis=0) / safe_stat
-    # max_low_change_ratio renormalizes over the horizons with an mlr
-    # stat (the MM legs — 'next' carries none), the SQL's separate
-    # w_mlr denominator.
-    has_mlr = np.isfinite(mlr_M)
-    w_mlr = (w_col * has_mlr).sum(axis=0)
-    mlr_mix = (w_col * np.where(has_mlr, mlr_M, 0.0)).sum(axis=0) / np.where(
-        w_mlr > 0, w_mlr, np.nan)
     # occurrence_count = the MIN positive leg count (the blend is only
     # as well-observed as its weakest leg), 0 when none.
     pos_occ = occ_M > 0
@@ -248,7 +222,6 @@ def build_result_rows(
         "std": _round_none(std_mix),
         "max": [None] * R,
         "min": [None] * R,
-        "mlr": _round_none(mlr_mix),
         "rev": _round_none(rev_mix),
         "occ": occ_mix.tolist(),
         "td": [None] * R,
@@ -284,7 +257,6 @@ def build_result_rows(
                 "streak_ends": payload["se"][r_idx],
                 "streak_days": payload["sd"][r_idx],
                 "trigger_excess": payload["te"][r_idx],
-                "max_low_change_ratio": payload["mlr"][r_idx],
                 "reverse_prob": payload["rev"][r_idx],
                 "threshold": payload["rt"][r_idx],
             })

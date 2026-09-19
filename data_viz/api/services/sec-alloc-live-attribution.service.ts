@@ -27,10 +27,21 @@
  * computable. While FALSE (prev-day basic_stats lagging), the UI disables
  * the "By Trading Amt" toggle and renders the equal-weighted aggregates.
  *
+ * ON-DEMAND BACKFILL: the tick table is a rolling cache (newest 20 trading
+ * dates). When the requested (benchmark, date) has NO tick rows — a date
+ * selected on the UI that fell out of the retention window, or one the
+ * 5-min keeper never reached — this service invokes the pipeline's
+ * `--mode compute --date D --benchmark B` via the py-runner and then serves
+ * the normal queries. The spawn is deduped by process-id-tag; when a run
+ * is already in flight the request proceeds with whatever rows exist (the
+ * UI's 5-min poll picks the data up on a later tick). Lookback is bounded
+ * by the raw intraday table's retention, not by the cache window.
+ *
  * GET /api/live-data/sec-alloc-live/attribution
  *   ?benchmark_code=000300&date=YYYY-MM-DD&time=HH:MM:SS
  */
 import { queryRows, formatDate, toNum } from "../lib/db.js";
+import { runPythonModule } from "./py-runner.service.js";
 import type { QueryResultRow } from "pg";
 import type {
   SecAllocLiveAttributionIndustry,
@@ -43,6 +54,10 @@ interface DbDateRow extends QueryResultRow {
 
 interface DbAvailabilityRow extends QueryResultRow {
   weighted_available: boolean;
+}
+
+interface DbHasRowsRow extends QueryResultRow {
+  has_tick_rows: boolean;
 }
 
 interface DbAggregateRow extends QueryResultRow {
@@ -166,6 +181,57 @@ FROM live.sec_alloc_live_attribution
 WHERE benchmark_code = $1::text
 `;
 
+/** Latest RAW intraday date for one benchmark — the date-resolution fallback
+ *  when the tick cache has no rows at all for the benchmark (the on-demand
+ *  compute below then backfills it).
+ *  $1 = benchmark_code */
+const RAW_LATEST_DATE_SQL = `
+SELECT MAX(date) AS max_date
+FROM stats.index_intraday_5min
+WHERE code = $1::text AND close IS NOT NULL
+`;
+
+/** Existence probe: does the (benchmark, date) have ANY tick rows? A plain
+ *  indexed lookup (idx_sec_alloc_live_attr_bench_dt) — runs on every request,
+ *  so it must stay O(1)-ish. $1 = benchmark_code, $2 = date */
+const HAS_TICK_ROWS_SQL = `
+SELECT EXISTS (
+    SELECT 1
+    FROM live.sec_alloc_live_attribution
+    WHERE benchmark_code = $1::text
+      AND date = $2::date
+) AS has_tick_rows
+`;
+
+// ----------------------------------------------------------------------------
+//  On-demand backfill — invoked when the requested (benchmark, date) has no
+//  tick rows (outside the rolling retention window / never reached by the
+//  keeper). Runs `python -m live.sec_alloc_live_attribution --mode compute
+//  --date D --benchmark B` and waits for it (a few seconds: subprocess start
+//  + ~1s of per-pair SQL). Deduped by process-id-tag so concurrent requests
+//  for the same date resolve immediately; failures are logged and swallowed
+//  (the response then carries whatever the table holds — same as before this
+//  path existed).
+// ----------------------------------------------------------------------------
+async function backfillDateOnDemand(
+  benchmarkCode: string,
+  targetDate: string,
+): Promise<void> {
+  const tag = `sec-alloc-live:compute:${benchmarkCode}:${targetDate}`;
+  const result = await runPythonModule(
+    "live.sec_alloc_live_attribution",
+    ["--mode", "compute", "--date", targetDate, "--benchmark", benchmarkCode],
+    { processIdTag: tag },
+  );
+  if (!result.success && !result.already_running) {
+    console.error(
+      `[sec-alloc-live/attribution] on-demand compute failed for ` +
+      `${benchmarkCode} @ ${targetDate} (exit ${result.exitCode}):`,
+      result.stderr.slice(-500),
+    );
+  }
+}
+
 // ----------------------------------------------------------------------------
 //  weighted_available — the trading-amount weights are computable for the
 //  (benchmark, date): a resolved prev date exists AND at least one eligible
@@ -203,8 +269,14 @@ export async function getSecAllocLiveAttribution(
 ): Promise<SecAllocLiveAttributionResponse> {
   let targetDate = date;
   if (!targetDate) {
-    const dateRows = await queryRows<DbDateRow>(LATEST_DATE_SQL, [benchmarkCode]);
+    let dateRows = await queryRows<DbDateRow>(LATEST_DATE_SQL, [benchmarkCode]);
     targetDate = formatDate(dateRows[0]?.max_date ?? null);
+    if (!targetDate) {
+      // No cached ticks for the benchmark at all — fall back to the raw
+      // intraday latest and let the on-demand compute below backfill it.
+      dateRows = await queryRows<DbDateRow>(RAW_LATEST_DATE_SQL, [benchmarkCode]);
+      targetDate = formatDate(dateRows[0]?.max_date ?? null);
+    }
     if (!targetDate) {
       return {
         benchmark_code: benchmarkCode,
@@ -214,6 +286,18 @@ export async function getSecAllocLiveAttribution(
         industries: [],
       };
     }
+  }
+
+  // On-demand backfill: a selected date outside the rolling retention window
+  // (or one the 5-min keeper never reached) has no tick rows — recompute it
+  // from the base tables before serving. The probe is an indexed point
+  // lookup, so the normal cached path pays ~nothing for this check.
+  const hasRows = await queryRows<DbHasRowsRow>(HAS_TICK_ROWS_SQL, [
+    benchmarkCode,
+    targetDate,
+  ]);
+  if (hasRows[0]?.has_tick_rows !== true) {
+    await backfillDateOnDemand(benchmarkCode, targetDate);
   }
 
   const [availRows, aggRows] = await Promise.all([

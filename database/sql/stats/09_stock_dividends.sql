@@ -72,7 +72,5 @@ COMMENT ON COLUMN stats.stock_dividends.last_updated                  IS 'When t
 --   (b) ex_dividend_date-ascending: cross-stock queries by date (e.g. "all
 --       dividends announced today") — useful for screener-style pages.
 -- ----------------------------------------------------------------------------
-DROP INDEX IF EXISTS stats.idx_stock_dividends_code_exdate;
-
 CREATE INDEX IF NOT EXISTS idx_stock_dividends_exdate
     ON stats.stock_dividends (ex_dividend_date);

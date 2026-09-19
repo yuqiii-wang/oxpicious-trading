@@ -90,5 +90,10 @@ Standard React + Vite project — write idiomatic React, not ad-hoc DOM code.
   `data_viz/src/components/` (charts, filters, tables, buttons) and
   `data_viz/src/shared/`. If a piece you wrote would serve multiple pages,
   migrate it into a shared directory instead of duplicating it.
+- ANY chart work (new chart component, option builder, chart tooltip/colors)
+  follows the `ui-charts` skill: inherit the base-chart kit in
+  `data_viz/src/shared/charts/base-chart/` (BaseChart props/chrome/states,
+  baseChartOption preamble, useChartThemeMode theme) — never hand-roll chart
+  chrome, option preambles, or theme reads.
 - If a page file has grown too large, refactor it into a directory of smaller
   files (page dir with subcomponents/hooks), reusing shared components as you go.

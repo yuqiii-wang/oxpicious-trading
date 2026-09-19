@@ -33,6 +33,7 @@ import {
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
+import { baseChartOption } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
 import type { ChartMode } from "./types";
 
@@ -159,9 +160,11 @@ export function buildComparisonOption(
         },
       ];
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  // Shared preamble via baseChartOption. The tooltip keeps its ORIGINAL shape
+  // (axis trigger + themed card, NO axisPointer — the default line pointer,
+  // not the common cross-snap one), so its old fields are passed verbatim as
+  // the tooltip override.
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 56, right: 56, bottom: 50 }),
     dataZoom: commonDataZoom(),
     tooltip: {
@@ -254,5 +257,5 @@ export function buildComparisonOption(
         itemStyle: { color: MUTED_PALETTE[1] },
       },
     ],
-  };
+  });
 }

@@ -11,11 +11,13 @@ from typing import Optional
 import pandas as pd
 
 from _common.build_commons import (
-    copy_insert_async,
     truncate_table_async,
     find_missing_analysis_dates,
 )
-from _common.db_commons import copy_or_upsert_split_async
+from _common.db_commons import (
+    copy_or_upsert_split_async,
+    copy_frame_chunked_async,
+)
 from analyze._common import sanitize_for_db_insert
 from analyze.margins.config import (
     TABLE_TECH_STATS,
@@ -253,13 +255,13 @@ async def run_sec_type(
         logger.info("        -> no rows to insert" if force else
               "        -> no new rows to upsert")
     elif force:
-        rows = sanitize_for_db_insert(
-            rows_to_write,
-            numeric_cols=TECH_STATS_NUMERIC_COLS, round_to=6,
-        )
-        n = await copy_insert_async(
-            conn, TABLE_TECH_STATS, rows,
+        # Chunked sanitize+COPY — bounds the dict list to one chunk (the
+        # whole-frame sanitize of a 7M-row force rebuild peaked at ~6 GB).
+        n = await copy_frame_chunked_async(
+            conn, TABLE_TECH_STATS, rows_to_write,
             columns=TECH_STATS_INSERT_COLUMNS,
+            numeric_cols=TECH_STATS_NUMERIC_COLS, round_to=6,
+            label=f"tech_stats[{sec_type}]",
         )
         logger.info(f"        -> COPY-inserted {n:,} rows")
     else:
@@ -343,13 +345,11 @@ async def build_margin_index_series(
     if rows_to_write.empty:
         logger.info("    -> no rows to insert")
     elif force:
-        rows = sanitize_for_db_insert(
-            rows_to_write,
-            numeric_cols=INDEX_SERIES_NUMERIC_COLS, round_to=4,
-        )
-        n = await copy_insert_async(
-            conn, TABLE_INDEX_SERIES, rows,
+        n = await copy_frame_chunked_async(
+            conn, TABLE_INDEX_SERIES, rows_to_write,
             columns=INDEX_SERIES_INSERT_COLUMNS,
+            numeric_cols=INDEX_SERIES_NUMERIC_COLS, round_to=4,
+            label="index_series",
         )
         logger.info(f"    -> COPY-inserted {n:,} rows")
     else:
@@ -438,14 +438,14 @@ async def run_index_tech_stats(
         logger.info("        -> no rows to insert" if force else
               "        -> no new rows to upsert")
     elif force:
-        rows = sanitize_for_db_insert(
-            rows_to_write,
-            numeric_cols=TECH_STATS_NUMERIC_COLS,
-            round_to=6,
-        )
-        n = await copy_insert_async(
-            conn, TABLE_TECH_STATS, rows,
+        # Chunked sanitize+COPY: the dict list never exceeds one chunk
+        # (the whole-frame sanitize of a 7M-row force rebuild peaked at
+        # ~6 GB host RSS — copy_frame_chunked_async bounds it).
+        n = await copy_frame_chunked_async(
+            conn, TABLE_TECH_STATS, rows_to_write,
             columns=TECH_STATS_INSERT_COLUMNS,
+            numeric_cols=TECH_STATS_NUMERIC_COLS, round_to=6,
+            label="tech_stats[index]",
         )
         logger.info(f"        -> COPY-inserted {n:,} rows")
     else:
@@ -507,13 +507,11 @@ async def insert_industry_stats(
         logger.info("    -> no rows to insert" if force else
               "    -> no new rows to upsert")
     elif force:
-        rows = sanitize_for_db_insert(
-            rows_to_write,
-            numeric_cols=INDUSTRY_STATS_NUMERIC_COLS, round_to=4,
-        )
-        n = await copy_insert_async(
-            conn, TABLE_INDUSTRY_STATS, rows,
+        n = await copy_frame_chunked_async(
+            conn, TABLE_INDUSTRY_STATS, rows_to_write,
             columns=INDUSTRY_STATS_INSERT_COLUMNS,
+            numeric_cols=INDUSTRY_STATS_NUMERIC_COLS, round_to=4,
+            label="industry_stats",
         )
         logger.info(f"    -> COPY-inserted {n:,} rows")
     else:

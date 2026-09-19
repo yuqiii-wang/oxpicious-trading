@@ -2,23 +2,20 @@
 
 Usage::
 
-    python -m llm_agents.industry_qa_weekly run [--as-of YYYY-MM-DD] \
+    python -m llm_agents.industry_qa_weekly backfill --start 2020-01-01 \
+        [--end YYYY-MM-DD] [--interval 5] [--newest-first] [--no-cut-off] \
         [--benchmark 000300] [--period 120] [--weighting equal] [--top 5] \
         [--dedupe-window 60] [--provider zhipu] [--model glm-5.2] \
         [--mode native] [--lang zh] [--no-resolve] [--concurrency 3] \
         [--limit 0] [--dry-run]
-    python -m llm_agents.industry_qa_weekly backfill --start 2020-01-01 \
-        [--end YYYY-MM-DD] [--interval 5] [--newest-first] [--no-cut-off] \
-        [+ the run flags]
 
-``run`` is the weekly entry point (idempotent — same-direction re-asks
-within the 60-trading-day window are skipped; a direction flip — rise
-then drop, or drop then rise — is always asked). ``backfill`` replays
-the weekly step over a historical range on the 5-trading-day grid;
-``--newest-first`` walks backwards from the covered present into the
-past and cuts off automatically when a stretch of asks finds no refs
-matching the trend description. ``python -m llm_agents industry-qa …``
-dispatches here too (see llm_agents.__main__).
+``backfill`` replays the weekly step over a historical range on the
+5-trading-day grid; ``--newest-first`` walks backwards from the covered
+present into the past and cuts off automatically when a stretch of asks
+finds no refs matching the trend description. (The live weekly `run`
+step was removed — the live/recency knowledge base is served solely by
+``downloads.macro.ai_daily``; ``python -m llm_agents industry-qa …``
+still dispatches here, see llm_agents.__main__.)
 """
 from __future__ import annotations
 
@@ -38,7 +35,7 @@ import sys  # noqa: E402
 from _common.log_setup import setup_logging  # noqa: E402
 
 from llm_agents.industry_qa_weekly.core.agent import (
-    CATEGORY, PlanTooLargeError, run_backfill, run_week,
+    CATEGORY, PlanTooLargeError, run_backfill,
 )  # noqa: E402
 from llm_agents.industry_qa_weekly.signals import (  # noqa: E402
     DEFAULT_BENCHMARK, DEFAULT_PERIOD_DAYS, DEFAULT_TOP_N,
@@ -133,19 +130,13 @@ async def main() -> None:
         argv = argv[1:]
     ap = argparse.ArgumentParser(
         prog="python -m llm_agents.industry_qa_weekly",
-        description="Weekly Q&A: why are the top hypes & drains industries "
-                    "rising/dropping? (asks the online-search summarize "
-                    f"agent per industry, stores into text.llm_qa with "
-                    f"category={CATEGORY!r} and the data date added).")
+        description="Industry hypes & drains Q&A history backfill: why do "
+                    "the top rising/dropping industries move? (asks the "
+                    "online-search summarize agent per episode, stores into "
+                    f"text.llm_qa with category={CATEGORY!r} and the data "
+                    "date added; the live daily flow is "
+                    "downloads.macro.ai_daily).")
     sub = ap.add_subparsers(dest="cmd", required=True)
-
-    p_run = sub.add_parser(
-        "run", help="one weekly step at the latest ranking date "
-                    "(--as-of to replay a specific week)")
-    _add_common_args(p_run)
-    p_run.add_argument("--as-of", default=None,
-                       help="As-of date (default today; the latest ranking "
-                            "<= it is used).")
 
     p_bf = sub.add_parser(
         "backfill", help="replay the weekly step over a date range")
@@ -173,7 +164,6 @@ async def main() -> None:
     conn = await get_db_or_exit()
     try:
         await _run_tables_check(conn)
-        from llm_agents.industry_qa_weekly.core.agent import run_backfill, run_week
         kwargs = dict(
             benchmark_code=args.benchmark, period_days=args.period,
             weighting=args.weighting, top_n=args.top,
@@ -186,19 +176,15 @@ async def main() -> None:
             annual_only=args.annual_only,
             industry_ids=args.industry_id,
             force_many_requests=args.force_many_requests)
-        if args.cmd == "run":
-            as_of = _parse_date(args.as_of) if args.as_of else None
-            outcomes = await run_week(conn, as_of=as_of, **kwargs)
-        else:
-            try:
-                outcomes = await run_backfill(
-                    conn, start=_parse_date(args.start),
-                    end=(_parse_date(args.end) if args.end else None),
-                    interval=args.interval, newest_first=args.newest_first,
-                    cut_off=not args.no_cut_off, **kwargs)
-            except PlanTooLargeError as e:
-                logger.error("[backfill] STOP: %s", e)
-                sys.exit(2)
+        try:
+            outcomes = await run_backfill(
+                conn, start=_parse_date(args.start),
+                end=(_parse_date(args.end) if args.end else None),
+                interval=args.interval, newest_first=args.newest_first,
+                cut_off=not args.no_cut_off, **kwargs)
+        except PlanTooLargeError as e:
+            logger.error("[backfill] STOP: %s", e)
+            sys.exit(2)
 
         n_asked = sum(1 for c in outcomes if c.skipped is None
                       and c.error is None)

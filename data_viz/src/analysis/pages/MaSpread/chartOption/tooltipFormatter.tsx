@@ -45,9 +45,7 @@ export interface TooltipContext {
   highs: Array<number | null>;
   lows: Array<number | null>;
   tradingAmts: Array<number | null>;
-  dateOfLastExtreme: Array<string | null>;
-  gapSinceLastExtreme: Array<number | null>;
-  daysSinceLastExtreme: Array<number | null>;
+  rsi3: Array<number | null>;
   rsi6: Array<number | null>;
   rsi10: Array<number | null>;
   rsi14: Array<number | null>;
@@ -136,9 +134,7 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     highs,
     lows,
     tradingAmts,
-    dateOfLastExtreme,
-    gapSinceLastExtreme,
-    daysSinceLastExtreme,
+    rsi3,
     rsi6,
     rsi10,
     rsi14,
@@ -384,11 +380,11 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
     }
 
     // Wilder RSI
-    const r6 = rsi6[idx], r10 = rsi10[idx], r14 = rsi14[idx], r20 = rsi20[idx];
-    if (r6 != null || r10 != null || r14 != null || r20 != null) {
+    const r3 = rsi3[idx], r6 = rsi6[idx], r10 = rsi10[idx], r14 = rsi14[idx], r20 = rsi20[idx];
+    if (r3 != null || r6 != null || r10 != null || r14 != null || r20 != null) {
       const fmtRsi = (v: number | null | undefined): string =>
         v != null && Number.isFinite(v) ? v.toFixed(1) : "—";
-      const ref = r14 ?? r10 ?? r6 ?? r20;
+      const ref = r14 ?? r10 ?? r6 ?? r3 ?? r20;
       let rsiColor = "#9E9E9E";
       if (ref != null && Number.isFinite(ref)) {
         if (ref >= 70) rsiColor = "#FB8C00";
@@ -398,42 +394,8 @@ export function buildPairTooltipFormatter(ctx: TooltipContext) {
         React.createElement(Row, {
           key: "rsi",
           style: { marginTop: "2px", color: rsiColor, opacity: 0.9 },
-        }, `RSI: 6d ${fmtRsi(r6)} · 10d ${fmtRsi(r10)} · 14d ${fmtRsi(r14)} · 20d ${fmtRsi(r20)}`),
+        }, `RSI: 3d ${fmtRsi(r3)} · 6d ${fmtRsi(r6)} · 10d ${fmtRsi(r10)} · 14d ${fmtRsi(r14)} · 20d ${fmtRsi(r20)}`),
       );
-    }
-
-    // Last-extreme info
-    const leDate = dateOfLastExtreme[idx];
-    if (leDate != null) {
-      const leGap = gapSinceLastExtreme[idx];
-      const leDays = daysSinceLastExtreme[idx];
-      const isMin = !(leGap != null && Number.isFinite(leGap) && leGap < 0);
-      const leHex = isMin ? "#43A047" : "#E53935";
-      const leMarkIdx = dates.indexOf(leDate);
-      const leMark = leMarkIdx >= 0 ? shorts[leMarkIdx] : null;
-      const arrow = leGap != null && Number.isFinite(leGap)
-        ? (isMin ? "▲ MIN" : "▼ MAX")
-        : "▲";
-      children.push(
-        React.createElement(Row, {
-          key: "leDate",
-          style: { marginTop: "2px", color: leHex, fontWeight: 600 },
-        }, `Last Extreme: ${leDate} (${arrow}${leDays != null && Number.isFinite(leDays) ? `, ${Math.round(leDays)}d` : ""})`),
-      );
-      children.push(
-        React.createElement(Row, {
-          key: "leGap",
-          style: { color: leHex, opacity: 0.9 },
-        }, `gap_since_last_extreme_500days: ${leGap != null && Number.isFinite(leGap) ? fmtPct(leGap * 100, 2) : "—"} · days_since_last_extreme_500days: ${leDays != null && Number.isFinite(leDays) ? Math.round(leDays) : "—"}`),
-      );
-      if (leMark != null && Number.isFinite(leMark)) {
-        children.push(
-          React.createElement(Row, {
-            key: "leMark",
-            style: { color: leHex, opacity: 0.9 },
-          }, `extreme ${sName}: ${fmtPrice(leMark)}`),
-        );
-      }
     }
 
     // Trend classification

@@ -4,6 +4,10 @@
  * Exports buildOhlcOption for use by SzseOptionsPage and other consumers.
  */
 import {
+  baseChartOption,
+  commonTooltip,
+} from "@/shared/charts/base-chart";
+import {
   DOWN_COLOR,
   UP_COLOR,
   axisColors,
@@ -61,13 +65,10 @@ export function buildOhlcOption(
 
   const axisTooltip = makeOhlcAxisTooltipFormatter(colors, ohlcMode);
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 56, right: 56, bottom: 50 }),
     dataZoom: commonDataZoom(),
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
       axisPointer: {
         type: "cross",
         snap: true,
@@ -80,11 +81,8 @@ export function buildOhlcOption(
           fontSize: 10,
         },
       },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: axisTooltip,
-    },
+    }),
     axisPointer: { link: [{ xAxisIndex: "all" }] },
     legend: commonLegend(themeMode),
     xAxis: {
@@ -129,5 +127,5 @@ export function buildOhlcOption(
         z: 1,
       },
     ],
-  };
+  });
 }

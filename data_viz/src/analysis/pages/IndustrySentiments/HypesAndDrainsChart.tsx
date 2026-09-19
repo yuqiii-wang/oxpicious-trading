@@ -17,9 +17,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   Box,
-  CircularProgress,
   FormControl,
   MenuItem,
   Select,
@@ -28,7 +26,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import EChart from "@/components/EChart";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import { fetchIndustryHypesAndDrains } from "@/lib/api-client";
 import type { IndustryHypesAndDrainsResponse, SeasonalRankingRow } from "@shared/types";
 import type { HypesAndDrainsChartProps } from "./types";
@@ -56,7 +54,8 @@ function formatPeak(v: number | null, weighting: Weighting): string {
   return `${sign}¥${absV.toFixed(2)}`;
 }
 
-export function HypesAndDrainsChart({ benchmarkCode, themeMode }: HypesAndDrainsChartProps) {
+export function HypesAndDrainsChart({ benchmarkCode }: HypesAndDrainsChartProps) {
+  const themeMode = useChartThemeMode();
   const [data, setData] = useState<IndustryHypesAndDrainsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -269,44 +268,39 @@ export function HypesAndDrainsChart({ benchmarkCode, themeMode }: HypesAndDrains
         </Box>
       </Box>
 
-      {loading && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-          <CircularProgress size={28} />
-        </Box>
+      {option && (
+        <Typography
+          variant="caption"
+          sx={{ fontSize: "0.72rem", fontWeight: 600, display: "block", mb: -0.5, px: 0.5 }}
+        >
+          Benchmark + Seasonal top-{maxRank} HYPE / bottom-{maxRank} DRAIN industries
+          (curves rebased to 100 over the trailing {data?.period_days ?? "—"}d)
+          (● active · ○ fading · ✕ hidden)
+        </Typography>
       )}
-      {error && (
-        <Alert severity="error" sx={{ py: 0.5 }}>
-          Failed to load hypes & drains data: {error}
-        </Alert>
-      )}
-      {!loading && !error && option && (
-        <Box>
-          <Typography
-            variant="caption"
-            sx={{ fontSize: "0.72rem", fontWeight: 600, display: "block", mb: -0.5, px: 0.5 }}
-          >
-            Benchmark + Seasonal top-{maxRank} HYPE / bottom-{maxRank} DRAIN industries
-            (curves rebased to 100 over the trailing {data?.period_days ?? "—"}d)
-            (● active · ○ fading · ✕ hidden)
-          </Typography>
-          <div ref={chartWrapperRef} style={{ position: "relative" }}>
-            <EChart option={option} height={400} onReady={handleChartReady} />
-          </div>
-          <Typography
-            variant="caption"
-            sx={{ fontSize: "0.68rem", color: "text.secondary", display: "block", mt: -0.5, px: 0.5, fontStyle: "italic" }}
-          >
-            Click any date on the chart to inspect that month's rankings in the table below
-            {selectedDate ? ` · selected: ${selectedDate}` : ""}
-          </Typography>
-        </Box>
-      )}
-      {!loading && !error && data && data.benchmark_series.length === 0 && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-          <Typography variant="body2" color="text.secondary">
-            No hypes & drains data available. Run the industry sentiments pipeline to populate.
-          </Typography>
-        </Box>
+      {/* The wrapper div carries the NATIVE click listener (ZRender's
+          onCanvasClick doesn't fire reliably under the stacked area series).
+          It must wrap ONLY the chart canvas so the pixel→index mapping in the
+          click handler stays aligned with the ECharts container. */}
+      <div ref={chartWrapperRef} style={{ position: "relative" }}>
+        <BaseChart
+          variant="bare"
+          option={option}
+          loading={loading}
+          error={error ? `Failed to load hypes & drains data: ${error}` : null}
+          emptyText="No hypes & drains data available. Run the industry sentiments pipeline to populate."
+          height={400}
+          onReady={handleChartReady}
+        />
+      </div>
+      {option && (
+        <Typography
+          variant="caption"
+          sx={{ fontSize: "0.68rem", color: "text.secondary", display: "block", mt: -0.5, px: 0.5, fontStyle: "italic" }}
+        >
+          Click any date on the chart to inspect that month's rankings in the table below
+          {selectedDate ? ` · selected: ${selectedDate}` : ""}
+        </Typography>
       )}
 
       {/* --- Selected season's ranked industries summary table --- */}

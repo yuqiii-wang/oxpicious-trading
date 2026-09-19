@@ -9,7 +9,7 @@ Pipeline
      (filtered to target_dates in incremental mode).
   3. Upsert detail.
   4. Upsert analysis_identity.
-  5. INTERNAL STEP: compute Wilder RSI (6/10/14/20/60/120/255/500d) + price gaps (2/3d)
+  5. INTERNAL STEP: compute Wilder RSI (3/6/10/14/20/60d)
      from the SAME source price data already loaded in Step 1 ->
      analysis.mov_ave_rsi (see rsi.py). Reuses the same DB connection +
      source DataFrame. This step used to be a standalone
@@ -78,6 +78,7 @@ Default (incremental) mode:
 from __future__ import annotations
 
 import sys
+import time
 
 # Runtime bootstrap — pre-check → silence warnings → cudf.pandas hook →
 # UTF-8 stdout. MUST run before the pandas-importing modules below.
@@ -382,6 +383,7 @@ class MovAveSpreadAnalysis(DataAnalysis):
         }
 
     async def run(self) -> None:
+        t0 = time.time()
         conn = self.conn
         pool = self.pool
         args = self.args

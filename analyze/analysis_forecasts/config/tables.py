@@ -7,12 +7,10 @@ TABLE_FORECAST = "analysis_forecasts.forecast_results"
 TABLE_IDENTITIES = "analysis_forecasts.forecast_identities"
 TABLE_MOV_RSI = "analysis_forecasts.mov_rsi"
 TABLE_MOV_STD = "analysis_forecasts.mov_std"
-TABLE_MOV_GAP = "analysis_forecasts.mov_gap"
 TABLE_BASE_RATE = "analysis_forecasts.base_rates"
 
 ANALYSIS_NAME_RSI = "mov_rsi"
 ANALYSIS_NAME_STD = "mov_std"
-ANALYSIS_NAME_GAP = "mov_gap"
 ANALYSIS_NAME_BASE_RATE = "base_rates"
 
 # ---- Primary keys / write column sets --------------------------------------
@@ -38,18 +36,19 @@ ANALYSIS_NAME_BASE_RATE = "base_rates"
 # pair families' bucket keys are declared in their own sections below.
 BUCKET_KEY_COLUMNS_MOV_RSI = ["rsi_window", "side", "pct", "is_market_hyped"]
 BUCKET_KEY_COLUMNS_MOV_STD = ["ma_window", "k", "side", "is_market_hyped"]
-BUCKET_KEY_COLUMNS_MOV_GAP = ["gap_window", "side", "pct", "is_market_hyped"]
-BUCKET_KEY_COLUMNS_MOV_PAIRS = ["pair_window", "side", "is_market_hyped"]
+BUCKET_KEY_COLUMNS_MOV_PAIRS = [
+    "fast_leg", "pair_window", "side", "is_market_hyped",
+]
 BUCKET_KEY_COLUMNS_HIGH_LOW_STREAKS = [
     "band_period", "pct_type", "side", "is_market_hyped",
 ]
 
 # ---- Motivation-table write columns -----------------------------------------
 
-# mov_rsi / mov_std / mov_gap columns in write order (forecast_id +
+# mov_rsi / mov_std columns in write order (forecast_id +
 # code + bucket keys + lookback). The remaining identity columns are
 # intentionally absent — the underlying indicator values are also NOT
-# stored: rsi_{W}days and gap_{W}days live in analysis.mov_ave_rsi,
+# stored: rsi_{W}days lives in analysis.mov_ave_rsi,
 # ma/std in analysis.mov_ave_spreads_detail + stats.*_tech_stats
 # (joinable via the identities registry + the bucket keys); only the
 # market-hype overlap is materialized here.
@@ -58,9 +57,6 @@ MOV_RSI_COLUMNS = (
 )
 MOV_STD_COLUMNS = (
     ["forecast_id", "code"] + BUCKET_KEY_COLUMNS_MOV_STD + ["lookback_period"]
-)
-MOV_GAP_COLUMNS = (
-    ["forecast_id", "code"] + BUCKET_KEY_COLUMNS_MOV_GAP + ["lookback_period"]
 )
 MOV_PAIRS_COLUMNS = (
     ["forecast_id", "code"] + BUCKET_KEY_COLUMNS_MOV_PAIRS
@@ -95,7 +91,7 @@ HIGH_LOW_STREAKS_COLUMNS = (
 # parallel DATE[] of each merged signal's qualifying-run start / end
 # calendar date and streak_days the parallel BIGINT[] of each run's
 # trading-day count (element-wise parallel to trigger_dates; the
-# streak engines mov_rsi / mov_std / mov_gap / mov_pairs /
+# streak engines mov_rsi / mov_std / mov_pairs /
 # mov_pairs_ema / px_vol — the pairs families' runs are single days,
 # NULL for margin_ratio / opp_pair / high_low_streaks), row-local per
 # period. trigger_excess is the parallel NUMERIC(10,6)[] of each
@@ -103,7 +99,7 @@ HIGH_LOW_STREAKS_COLUMNS = (
 # bucket's qualifying bar (signed, value − bar: the live_signals
 # signal_excess convention; the pairs families' bar is the zero line,
 # so there the excess IS the day's spread) — defined for the
-# scalar-bar engines mov_rsi / mov_std / mov_gap / mov_pairs /
+# scalar-bar engines mov_rsi / mov_std / mov_pairs /
 # mov_pairs_ema only, NULL arrays elsewhere (the state families have
 # no scalar qualifying bar), row-local per period.
 RESULT_COLUMNS: list[str] = [
@@ -121,7 +117,6 @@ RESULT_COLUMNS: list[str] = [
     "streak_ends",
     "streak_days",
     "trigger_excess",
-    "max_low_change_ratio",
     "reverse_prob",
     "threshold",
 ]
@@ -224,7 +219,8 @@ TABLE_MOV_PAIRS_EMA = "analysis_forecasts.mov_pairs_ema"
 ANALYSIS_NAME_MOV_PAIRS_EMA = "mov_pairs_ema"
 
 # Identical write shape as the MA family (the row dicts are source
-# agnostic — only the fetched spread columns differ).
+# agnostic — only the fetched spread columns differ; the fast_leg
+# bucket key discriminates the ma5/ema6 vs close-price crosses).
 MOV_PAIRS_EMA_COLUMNS = MOV_PAIRS_COLUMNS
 
 TABLE_PE = "analysis_forecasts.pe_state"
@@ -256,7 +252,6 @@ DIVIDEND_COLUMNS = PE_COLUMNS
 IDENTITY_BUCKET_TABLES: dict[str, str] = {
     "mov_rsi":            TABLE_MOV_RSI,
     "mov_std":            TABLE_MOV_STD,
-    "mov_gap":            TABLE_MOV_GAP,
     "mov_pairs":          TABLE_MOV_PAIRS,
     "mov_pairs_ema":      TABLE_MOV_PAIRS_EMA,
     "px_vol_state":       TABLE_PX_VOL,

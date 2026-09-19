@@ -23,6 +23,7 @@ import {
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
+import { baseChartOption } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
 
 // ----------------------------------------------------------------------------
@@ -204,19 +205,19 @@ export function buildYAxes(themeMode: ThemeMode) {
 }
 
 /**
- * Build the shared base option (backgroundColor, animation, grid, tooltip
- * trigger, legend). The caller adds the `series` and tooltip `formatter`.
+ * Build the shared base option (backgroundColor, animation, grid, legend)
+ * from the canonical base-chart preamble. The caller adds the `series` and
+ * its own tooltip (shadow-trigger + formatter).
  */
 export function buildBaseOption(
   themeMode: ThemeMode,
   legendData: string[],
 ): Pick<EChartsOption, "backgroundColor" | "animation" | "grid" | "legend"> {
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  const { backgroundColor, animation, grid, legend } = baseChartOption(themeMode, {
     grid: commonGrid({ left: 64, right: 64, bottom: 96 }),
     legend: commonLegend(themeMode, { itemWidth: 12, itemHeight: 7, data: legendData }),
-  };
+  });
+  return { backgroundColor, animation, grid, legend };
 }
 
 /**

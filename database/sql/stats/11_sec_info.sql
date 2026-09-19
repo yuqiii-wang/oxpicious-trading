@@ -264,14 +264,6 @@ COMMENT ON COLUMN stats.sec_owners.type          IS 'Owner type: fund_manager, b
 COMMENT ON COLUMN stats.sec_owners.aliases       IS 'Short-name prefixes used to match ETF names (longest alias wins). e.g. ["南方"] matches "南方中证全指食品交易型...". Includes the name itself by convention.';
 COMMENT ON COLUMN stats.sec_owners.full_names    IS 'Full legal entity names that match the etf_index_map CSV `管理人` column exactly, e.g. ["南方基金管理股份有限公司"].';
 
--- Add type / aliases / full_names columns to existing tables (no-op if already
--- present). Needed because CREATE TABLE IF NOT EXISTS does not add new columns
--- to an existing table — the columns were added to the DDL after the table was
--- first created, so the live table lacks them until these ALTERs run.
-ALTER TABLE stats.sec_owners ADD COLUMN IF NOT EXISTS type       TEXT;
-ALTER TABLE stats.sec_owners ADD COLUMN IF NOT EXISTS aliases    TEXT[] NOT NULL DEFAULT '{}';
-ALTER TABLE stats.sec_owners ADD COLUMN IF NOT EXISTS full_names TEXT[] NOT NULL DEFAULT '{}';
-
 CREATE INDEX IF NOT EXISTS idx_sec_owners_type
     ON stats.sec_owners (type)
     WHERE type IS NOT NULL;

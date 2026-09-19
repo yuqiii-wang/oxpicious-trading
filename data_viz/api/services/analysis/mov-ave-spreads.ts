@@ -174,13 +174,9 @@ interface DbChartRow extends QueryResultRow {
   std_60days: number | null;
   std_120days: number | null;
   std_255days: number | null;
-  // Last-extreme columns from analysis.mov_ave_rsi (joined on
-  // sec_type + code + date). date_of_last_extreme_500days is a DATE column.
-  date_of_last_extreme_500days: Date | string | null;
-  gap_since_last_extreme_500days: number | null;
-  days_since_last_extreme_500days: number | null;
   // Wilder RSI columns (0..100, NULL until N periods) from
   // analysis.mov_ave_rsi — surfaced in the chart tooltip.
+  rsi_3days: number | null;
   rsi_6days: number | null;
   rsi_10days: number | null;
   rsi_14days: number | null;
@@ -866,10 +862,8 @@ function buildChartSql(secType: MaSpreadSecType): string {
       ema.std_5days AS ema_std_5days, ema.std_20days AS ema_std_20days,
       ema.std_60days AS ema_std_60days, ema.std_120days AS ema_std_120days,
       ema.std_255days AS ema_std_255days,
-      rsi.date_of_last_extreme_500days,
-      rsi.gap_since_last_extreme_500days,
-      rsi.days_since_last_extreme_500days,
-      rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days, rsi.rsi_20days,
+      rsi.rsi_3days, rsi.rsi_6days, rsi.rsi_10days, rsi.rsi_14days,
+      rsi.rsi_20days,
       ${ohlcSelectSql()}
     FROM d
     ${src.chartLaterals}
@@ -1277,15 +1271,9 @@ export async function getMovAveSpreadChart(
     const amtStd60  = pickTradingAmtStd(r, 60);
     const amtStd120 = pickTradingAmtStd(r, 120);
     const amtStd255 = pickTradingAmtStd(r, 255);
-    // Last-extreme fields (from analysis.mov_ave_rsi) — shared across all 9
-    // pairs for a given date. date_of_last_extreme_500days is a DATE column.
-    const dateOfLastExtreme = r.date_of_last_extreme_500days != null
-      ? formatDate(r.date_of_last_extreme_500days)
-      : null;
-    const gapSinceLastExtreme = toNum(r.gap_since_last_extreme_500days);
-    const daysSinceLastExtreme = toNum(r.days_since_last_extreme_500days);
-    // Wilder RSI (6/10/14/20 days) — shared across all 9 pairs for a given
+    // Wilder RSI (3/6/10/14/20 days) — shared across all 9 pairs for a given
     // date (describes the price curve, not a specific MA pair).
+    const rsi3 = toNum(r.rsi_3days);
     const rsi6 = toNum(r.rsi_6days);
     const rsi10 = toNum(r.rsi_10days);
     const rsi14 = toNum(r.rsi_14days);
@@ -1337,9 +1325,7 @@ export async function getMovAveSpreadChart(
         high,
         low,
         trading_amount: tradingAmount,
-        date_of_last_extreme_500days: dateOfLastExtreme,
-        gap_since_last_extreme_500days: gapSinceLastExtreme,
-        days_since_last_extreme_500days: daysSinceLastExtreme,
+        rsi_3days: rsi3,
         rsi_6days: rsi6,
         rsi_10days: rsi10,
         rsi_14days: rsi14,
@@ -1417,9 +1403,7 @@ export async function getMovAveSpreadChart(
         high,
         low,
         trading_amount: tradingAmount,
-        date_of_last_extreme_500days: dateOfLastExtreme,
-        gap_since_last_extreme_500days: gapSinceLastExtreme,
-        days_since_last_extreme_500days: daysSinceLastExtreme,
+        rsi_3days: rsi3,
         rsi_6days: rsi6,
         rsi_10days: rsi10,
         rsi_14days: rsi14,
@@ -1495,9 +1479,7 @@ export async function getMovAveSpreadChart(
         high,
         low,
         trading_amount: tradingAmount,
-        date_of_last_extreme_500days: dateOfLastExtreme,
-        gap_since_last_extreme_500days: gapSinceLastExtreme,
-        days_since_last_extreme_500days: daysSinceLastExtreme,
+        rsi_3days: rsi3,
         rsi_6days: rsi6,
         rsi_10days: rsi10,
         rsi_14days: rsi14,

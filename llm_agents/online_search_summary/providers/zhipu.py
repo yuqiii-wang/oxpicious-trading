@@ -24,8 +24,12 @@ Studied reference (docs.bigmodel.cn/cn/guide/tools/web-search +
     generated answer cites sources inline as ``[来源：ref_N]``.
 
 ``search``    — the standalone Web Search API above.
-``summarize`` — native one-shot search-in-chat; falls back to / can be
-forced through the provider-agnostic compose flow (``mode="compose"``).
+``summarize`` — compose two-step (search, then a plain LLM call over the
+formatted references) BY DEFAULT — the search and the LLM answer stay
+separated and the citation tags are under our control, so refs cannot go
+missing. ``mode="native"`` opts into the one-shot search-in-chat, which
+falls back to compose whenever the response's reference echo is missing
+or does not cover the answer's citations.
 """
 from __future__ import annotations
 
@@ -182,9 +186,13 @@ class ZhipuSearchProvider(BaseOnlineSearchProvider):
     async def summarize(
         self, query: str, *, model: Optional[str] = None,
         opts: Optional[SearchOptions] = None,
-        mode: str = "native",
+        mode: str = "compose",
         lang: str = "zh",
     ) -> SearchSummary:
+        """Compose (search -> plain LLM summary) by default; ``native``
+        opts into the one-shot search-in-chat. Native falls back to
+        compose when the echo is missing OR does not cover the answer's
+        citations — the refs-missing failure mode of the coupled flow."""
         if mode not in ("native", "compose"):
             raise ValueError(f"mode must be native|compose, got {mode!r}")
         if mode == "compose":
@@ -241,6 +249,19 @@ class ZhipuSearchProvider(BaseOnlineSearchProvider):
             return await self.summarize_via_compose(query, model=model,
                                                     opts=opts, lang=lang)
         cited = extract_cited_refs(answer)
+        # The echo is the ONLY ref source in native mode: when the answer
+        # cites tags the echo never returned, those refs would be missing
+        # — redo the ask over an explicit search so every cited tag has a
+        # reference row.
+        tags = {h.refer for h in hits}
+        missing = [t for t in cited if t not in tags]
+        if missing:
+            logger.warning("    [%s] native summary cites %s absent from "
+                           "the %d echoed references — falling back to "
+                           "compose mode", self.name, ", ".join(missing),
+                           len(hits))
+            return await self.summarize_via_compose(query, model=model,
+                                                    opts=opts, lang=lang)
         logger.info("    [%s] native summary model=%s hits=%d cited=%s "
                     "request_id=%s", self.name, model, len(hits),
                     cited or "none", data.get("request_id"))

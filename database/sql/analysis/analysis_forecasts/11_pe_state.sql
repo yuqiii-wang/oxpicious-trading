@@ -104,3 +104,14 @@ COMMENT ON COLUMN analysis_forecasts.pe_state.high_bar IS 'Recorded build parame
 COMMENT ON COLUMN analysis_forecasts.pe_state.vhigh_bar IS 'Recorded build parameter: vhigh lower z-bar (default +2.0).';
 COMMENT ON COLUMN analysis_forecasts.pe_state.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';
 COMMENT ON COLUMN analysis_forecasts.pe_state.is_market_hyped IS 'TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
+
+-- ----------------------------------------------------------------------------
+--  Data-quality gate: the pe_state vocabularies (shared helpers, see
+--  01_forecast_results.sql / 00_partition_utils.sql). NOT VALID first,
+--  validated once by the schema-wide sweep below.
+-- ----------------------------------------------------------------------------
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.pe_state',
+    'chk_pe_state_side',
+    $chk$side IN ('top', 'bottom', 'flat')$chk$);
+SELECT public.validate_pending_checks('analysis_forecasts');

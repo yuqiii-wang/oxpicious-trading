@@ -4,16 +4,6 @@
  *
  *   • mode='oi_moneyness' — OI-wtd mean moneyness positioning skew
  *     (in-browser from options rows; OI / Open Interests context).
- *   • mode='iv_smile'     — IV smile 25Δ risk reversal (iv_call25 −
- *     iv_put25) pricing skew rebased to price space (in-browser per REAL
- *     expiry group; Volatility Smile context) — call wing richer plots
- *     ABOVE spot, put wing richer BELOW.
- *   • mode='smile_slope'  — FULL-smile skew: OI-weighted least-squares IV
- *     tilt per expiry group, expressed as the fitted IV difference
- *     between the +10% and −10% moneyness wings (in-browser from the
- *     same quote rows; same rebase as iv_smile) — the whole-curve
- *     companion to the two-point 25Δ RR. Correlations are computed
- *     in-browser (no DB column), same expanding-MA semantics.
  *   • mode='greek_<name>' — PAIR-level CALL-vs-PUT positioning balance
  *     (greek_delta: delta-wtd put/call ratio; greek_gamma: GEX-style
  *     gamma balance; greek_vega: OTM-wing vega balance), computed in the
@@ -21,37 +11,30 @@
  *     the browser only joins stored values with spot and rebases them
  *     around the per-mode neutral: S × (1 + (skew − neutral) × 0.10)).
  *
- * oi_moneyness / iv_smile skew curves are computed in-browser from raw
- * quote rows (real expiry dates — full per-expiry shade bands on all
- * dates, incl. the latest); greek_* curves come fully from the DB. The
- * correlation chart comes from options_skewness_stats for the mode's
- * skew_type — except iv_smile, which uses the rr25-vs-spot correlations
- * of options_iv_skew_stats (the metric actually plotted). dataZoom +
- * tooltip crosshair sync between the charts.
+ * The oi_moneyness skew curve is computed in-browser from raw quote rows
+ * (real expiry dates — full per-expiry shade bands on all dates, incl.
+ * the latest); greek_* curves come fully from the DB.
+ * dataZoom + tooltip crosshair sync between the charts.
+ *
+ * (The IV-smile pricing skew — 25Δ/10Δ risk reversal vs spot over
+ * time — lives in spot-skew/SpotSkewTrendPanel; see
+ * docs/options_vol_smile_study.md.)
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
+import { useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import {
-  fetchOptionsIvSkew,
-  fetchOptionsSkewnessCorr,
   fetchOptionsSkewnessSeries,
 } from "@/lib/api-client/options";
 import {
   computeDailySkewSeries,
 } from "../vol-smile/skewSeries";
 import { moneynessSpec, greekLabel } from "./skewSpec";
-import { ivSmileSpecFromRows } from "./ivSmileCompute";
-import { computeSmileSlope } from "./smileSlopeCompute";
 import { greekSpecFromSeries, spotByDateFromRows } from "./greekSpec";
 import { buildSharedSkewOption } from "./sharedSkewOption";
-import {
-  buildCorrTimeSeriesOption,
-  IV_SKEW_CORR_FIELDS,
-  SKEWNESS_CORR_FIELDS,
-  type CorrMode,
-  type CorrSeriesRow,
-} from "../vol-smile/corrTimeSeriesOption";
 import {
   buildSkewConvergenceOption,
   convergenceTitle,
@@ -61,7 +44,6 @@ import type {
   SkewnessSeriesRow,
 } from "@shared/types";
 import type { GreekSkewMode, SharedSkewMode } from "./types";
-import type { EChartsOption } from "echarts";
 import type { ECharts } from "echarts";
 import {
   Box,
@@ -77,17 +59,36 @@ interface Props {
   onDateChange?: (date: string) => void;
 }
 
-const CORR_MODES: { value: CorrMode; label: string }[] = [
-  { value: "ma5", label: "MA5" },
-  { value: "ma20", label: "MA20" },
-  { value: "ma60", label: "MA60" },
-];
-
 const GREEK_MODES: GreekSkewMode[] = [
   "greek_delta",
   "greek_gamma",
   "greek_vega",
 ];
+
+/** AI Ask question seeds per mode — the actionable angle of the reading
+ *  guide, phrased as the user would ask it. */
+const SUGGESTED_QUESTIONS: Record<SharedSkewMode, string[]> = {
+  oi_moneyness: [
+    "Is OI positioning currently call- or put-tilted, and how extreme is the moneyness skew?",
+    "What do the per-expiry shade-band gaps say about where open interest sits vs spot?",
+    "What does the expiry-convergence chart imply about pinning or roll pressure?",
+  ],
+  greek_delta: [
+    "Is the delta-weighted put/call ratio tilted bullish or bearish right now?",
+    "Which expiries carry the most directional exposure?",
+    "Has the delta balance shifted with the recent spot move — chasing or fading?",
+  ],
+  greek_gamma: [
+    "Are dealers long or short gamma at current spot, and what does that imply for realized volatility?",
+    "Where is gamma concentrated across expiries, and does it suggest pinning?",
+    "Does the gamma balance favor range-bound trading or an amplified move?",
+  ],
+  greek_vega: [
+    "Is volatility demand skewed to the upside or to the downside (crash-hedge) wing?",
+    "Which expiries show the strongest vega imbalance?",
+    "What does the vega-wing balance imply compared with a 25Δ risk reversal?",
+  ],
+};
 
 /** Per-greek metric semantics for the panel subtitle (industry anchors). */
 const GREEK_METRIC_TEXT: Record<GreekSkewMode, string> = {
@@ -108,7 +109,10 @@ const GREEK_METRIC_TEXT: Record<GreekSkewMode, string> = {
 
 function greekPanelMeta(mode: GreekSkewMode): {
   title: string;
+  /** Full reading guide — lives in the AI Ask modal intro. */
   subtitle: string;
+  /** Concise card subtitle — just the decoding essentials. */
+  short: string;
 } {
   const label = greekLabel(mode);
   return {
@@ -117,35 +121,23 @@ function greekPanelMeta(mode: GreekSkewMode): {
       `Spot vs Skew Price = S × (1 + (metric − neutral) × 10%) — ${GREEK_METRIC_TEXT[mode]} ` +
       `(positioning metric computed in the DB pipeline, skew_type=${mode}; neutral sits exactly on the spot curve) · ` +
       `Dashed blue: mean skew price · Thin dashed: per-expiry skew prices · Shade bands: spot↔skew gap per active expiry set · ` +
-      `Expiry marks: dots at expiry · Bottom: Skewness–Spot Whole-Period Correlation + Expiry Convergence (contrarian) per-expiry skew-price vs spot gap · Click to select date`,
+      `Expiry marks: dots at expiry · Bottom: Expiry Convergence (contrarian) per-expiry skew-price vs spot gap · Click to select date`,
+    short:
+      `Spot vs ${label} skew price · dashed: mean + per-expiry · shades: spot↔skew gap · ` +
+      "convergence below · click to select date",
   };
 }
 
-const META: Partial<Record<SharedSkewMode, { title: string; subtitle: string }>> = {
+const META: Partial<
+  Record<SharedSkewMode, { title: string; subtitle: string; short: string }>
+> = {
   oi_moneyness: {
     title: "OI-weighted Moneyness Skew · Underlying Price & Positioning",
     subtitle:
-      "Spot vs Skew‑Adjusted Price = S × E[OI-wtd Moneyness] — where open interest sits relative to spot (positioning metric, no IV involved; skew_type=oi_moneyness) · Dashed blue: OI-wtd skew price · Thin dashed: per-expiry skew prices · Shade bands: spot↔skew gap per active expiry set · Bottom: Skewness–Spot Whole-Period Correlation + OI Convergence (contrarian) per-expiry gap vs spot · Click to select date",
-  },
-  iv_smile: {
-    title: "25Δ Risk Reversal Skew · Underlying Price & Skew-Adjusted Price",
-    subtitle:
-      "Spot vs skew-adjusted price — S × (1 + rr25 × 0.5%/vol-pt), rr25 = IV of the 25Δ OTM call − 25Δ OTM put per real expiry group " +
-      "(computed in-browser from the same quote rows as the smile snapshot; positive = call wing richer → ABOVE spot, negative = put wing " +
-      "richer → BELOW spot, zero on the spot curve; same metric as the IV Skew · 25Δ Risk Reversal chart; thick dashed blue: mean across " +
-      "expiry groups, thin dashed: per expiry-month) · Shade bands: spot↔skew gap per active expiry set · Bottom: RR25–Spot Whole-Period " +
-      "Correlation + Vol Skew Convergence (contrarian) per-expiry skew-price vs spot gap · Click to select date",
-  },
-  smile_slope: {
-    title: "Full-Smile Skew · Underlying Price & Skew-Adjusted Price",
-    subtitle:
-      "Spot vs skew-adjusted price — S × (1 + tilt × 0.5%/vol-pt), tilt = OI-weighted least-squares slope of IV vs log-moneyness ln(K/S) " +
-      "across the WHOLE smile per real expiry group, displayed as the fitted wing difference IV(K=+10%) − IV(K=−10%) in vol pts " +
-      "(computed in-browser from every listed strike, not just the two 25Δ anchors; positive = call wing richer → ABOVE spot, negative = " +
-      "put wing richer → BELOW spot, zero on the spot curve; same rebase scale as the 25Δ RR panel so the two are comparable; thick " +
-      "dashed blue: mean across expiry groups, thin dashed: per expiry-month) · Shade bands: spot↔skew gap per active expiry set · " +
-      "Bottom: Smile-Skew–Spot Whole-Period Correlation (computed in-browser) + Smile Slope Convergence (contrarian) per-expiry " +
-      "skew-price vs spot gap · Click to select date",
+      "Spot vs Skew‑Adjusted Price = S × E[OI-wtd Moneyness] — where open interest sits relative to spot (positioning metric, no IV involved; skew_type=oi_moneyness) · Dashed blue: OI-wtd skew price · Thin dashed: per-expiry skew prices · Shade bands: spot↔skew gap per active expiry set · Bottom: OI Convergence (contrarian) per-expiry gap vs spot · Click to select date",
+    short:
+      "Spot vs OI-wtd skew price · dashed: mean + per-expiry · shades: spot↔skew gap · " +
+      "convergence below · click to select date",
   },
 };
 for (const m of GREEK_MODES) {
@@ -158,10 +150,9 @@ export default function SharedSkewPanel({
   selectedDate,
   onDateChange,
 }: Props) {
+  const themeMode = useChartThemeMode();
   const underlyingCode = rows[0]?.underlying_code ?? "";
-  const [corrRows, setCorrRows] = useState<CorrSeriesRow[]>([]);
   const [seriesRows, setSeriesRows] = useState<SkewnessSeriesRow[]>([]);
-  const [corrMode, setCorrMode] = useState<CorrMode>("ma5");
   const [showConvergence, setShowConvergence] = useState<boolean>(true);
 
   // Track dataZoom range so that clicking a date (which regenerates the
@@ -180,39 +171,22 @@ export default function SharedSkewPanel({
     [rows.length], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
-  // Corr (all modes) + daily skewness series (greek modes only). iv_smile
-  // reads the rr25-vs-spot correlations of options_iv_skew_stats (the
-  // metric its chart plots); the other modes read options_skewness_stats
-  // for their skew_type. smile_slope needs NO fetch — its correlations
-  // are computed in-browser from the quote rows. Reset state on mode
-  // change so the spec is NEVER computed with a mismatched mode/data
-  // pair (old seriesRows + new mode's neutral).
+  // Daily skewness series (greek modes only), read from
+  // options_skewness_stats for the mode's skew_type. Reset state on mode
+  // change so the spec is NEVER computed with a mismatched mode/data pair
+  // (old seriesRows + new mode's neutral).
   useEffect(() => {
-    if (!underlyingCode) return;
-    let cancelled = false;
-    // Reset to empty → forces clean re-render with matching mode/data
-    setCorrRows([]);
     setSeriesRows([]);
-    if (mode === "smile_slope") return;
     const greek = mode.startsWith("greek_");
-    Promise.all([
-      mode === "iv_smile"
-        ? fetchOptionsIvSkew(underlyingCode, startDate, endDate)
-        : fetchOptionsSkewnessCorr(underlyingCode, startDate, endDate, mode),
-      greek
-        ? fetchOptionsSkewnessSeries(underlyingCode, startDate, endDate, mode)
-        : Promise.resolve(null),
-    ])
-      .then(([corrResp, seriesResp]) => {
+    if (!underlyingCode || !greek) return;
+    let cancelled = false;
+    fetchOptionsSkewnessSeries(underlyingCode, startDate, endDate, mode)
+      .then((seriesResp) => {
         if (cancelled) return;
-        setCorrRows(corrResp.rows);
-        setSeriesRows(seriesResp ? seriesResp.rows : []);
+        setSeriesRows(seriesResp.rows);
       })
       .catch(() => {
-        if (!cancelled) {
-          setCorrRows([]);
-          setSeriesRows([]);
-        }
+        if (!cancelled) setSeriesRows([]);
       });
     return () => {
       cancelled = true;
@@ -223,26 +197,10 @@ export default function SharedSkewPanel({
   // skewness series for greek modes.
   const spotByDate = useMemo(() => spotByDateFromRows(rows), [rows]);
 
-  // smile_slope: full computation (spec + in-browser corr rows) from the
-  // raw quote rows; null for every other mode.
-  const smileComputed = useMemo(
-    () => (mode === "smile_slope" ? computeSmileSlope(rows) : null),
-    [mode, rows],
-  );
-
-  // Corr rows actually rendered by this mode: in-browser for smile_slope,
-  // fetched from the DB endpoints for everything else.
-  const corrRowsForMode: CorrSeriesRow[] = useMemo(
-    () =>
-      mode === "smile_slope" ? (smileComputed?.corrRows ?? []) : corrRows,
-    [mode, smileComputed, corrRows],
-  );
-
   // Skew-over-time spec — computed in-browser from raw quote rows for
-  // oi_moneyness / iv_smile / smile_slope (real expiry dates → full
-  // per-expiry lines + shade bands on all dates, incl. the latest; the DB
-  // pipeline collapses open expiry groups); greek_* specs come fully from
-  // the DB series.
+  // oi_moneyness (real expiry dates → full per-expiry lines + shade
+  // bands on all dates, incl. the latest; the DB pipeline collapses open
+  // expiry groups); greek_* specs come fully from the DB series.
   const spec = useMemo(() => {
     if (mode.startsWith("greek_")) {
       return greekSpecFromSeries(
@@ -251,24 +209,19 @@ export default function SharedSkewPanel({
         spotByDate,
       );
     }
-    if (mode === "iv_smile") {
-      return ivSmileSpecFromRows(rows);
-    }
-    if (mode === "smile_slope") {
-      return smileComputed!.spec;
-    }
     return moneynessSpec(computeDailySkewSeries(rows));
-  }, [mode, rows, seriesRows, spotByDate, smileComputed]);
+  }, [mode, rows, seriesRows, spotByDate]);
 
   const skewOption = useMemo(
     () =>
       buildSharedSkewOption(
         spec,
+        themeMode,
         selectedDate,
         dataZoomRangeRef.current?.start,
         dataZoomRangeRef.current?.end,
       ),
-    [spec, selectedDate],
+    [spec, selectedDate, themeMode],
   );
 
   // Expiry-convergence (contrarian) chart — per-expiry skew price vs spot
@@ -280,63 +233,33 @@ export default function SharedSkewPanel({
       showConvergence
         ? buildSkewConvergenceOption(
             spec,
+            themeMode,
             selectedDate,
             dataZoomRangeRef.current?.start,
             dataZoomRangeRef.current?.end,
           )
         : null,
-    [spec, selectedDate, showConvergence],
-  );
-
-  const rowDates = useMemo(
-    () => Array.from(new Set(rows.map((r) => r.date))).sort(),
-    [rows],
-  );
-
-  const corrOption: EChartsOption | null = useMemo(() => {
-    if (corrRowsForMode.length === 0 || rowDates.length === 0) return null;
-    if (mode === "iv_smile") {
-      return buildCorrTimeSeriesOption(
-        rowDates, corrRowsForMode, selectedDate, corrMode,
-        IV_SKEW_CORR_FIELDS, "RR25",
-      );
-    }
-    if (mode === "smile_slope") {
-      return buildCorrTimeSeriesOption(
-        rowDates, corrRowsForMode, selectedDate, corrMode,
-        SKEWNESS_CORR_FIELDS, "Smile Skew",
-      );
-    }
-    return buildCorrTimeSeriesOption(rowDates, corrRowsForMode, selectedDate, corrMode);
-  }, [corrRowsForMode, rowDates, selectedDate, corrMode, mode]);
-
-  const handleCorrModeChange = useCallback(
-    (_e: React.MouseEvent<HTMLElement>, newMode: CorrMode | null) => {
-      if (newMode) setCorrMode(newMode);
-    },
-    [],
+    [spec, selectedDate, showConvergence, themeMode],
   );
 
   // Refs to chart instances for cross-chart dataZoom + tooltip sync
   const skewChartRef = useRef<ECharts | null>(null);
-  const corrChartRef = useRef<ECharts | null>(null);
   const convChartRef = useRef<ECharts | null>(null);
-  const [chartsReady, setChartsReady] = useState(false);
+  const [skewReady, setSkewReady] = useState(false);
+  const [convReady, setConvReady] = useState(false);
 
   useEffect(() => {
-    if (!chartsReady) return;
     const skewChart = skewChartRef.current;
-    const corrChart = corrChartRef.current;
-    const convChart = convChartRef.current;
-    if (!skewChart || !corrChart) return;
+    if (!skewReady || !skewChart) return;
+    const convChart =
+      showConvergence && convReady ? convChartRef.current : null;
 
-    // dataZoom sync (skew → corr + conv) + save zoom range for preservation
+    // dataZoom sync (skew → conv) + save zoom range for preservation
     const dataZoomHandler = (params: unknown) => {
       const p = params as { batch?: Array<{ start?: number; end?: number }> };
       if (p?.batch && p.batch.length > 0) {
         const { start, end } = p.batch[0];
         if (start != null && end != null) {
-          corrChart.dispatchAction({ type: "dataZoom", start, end });
           if (convChart) {
             convChart.dispatchAction({ type: "dataZoom", start, end });
           }
@@ -376,34 +299,25 @@ export default function SharedSkewPanel({
 
     const unbinds = convChart
       ? [
-          bindTooltipSync(skewChart, corrChart),
-          bindTooltipSync(corrChart, skewChart),
           bindTooltipSync(skewChart, convChart),
           bindTooltipSync(convChart, skewChart),
         ]
-      : [
-          bindTooltipSync(skewChart, corrChart),
-          bindTooltipSync(corrChart, skewChart),
-        ];
+      : [];
 
     return () => {
       skewChart.off("dataZoom", dataZoomHandler);
       unbinds.forEach((u) => u());
     };
-  }, [chartsReady]);
+  }, [skewReady, convReady, showConvergence, convOption]);
 
   const handleSkewChartReady = useCallback((chart: ECharts) => {
     skewChartRef.current = chart;
-    if (corrChartRef.current) setChartsReady(true);
-  }, []);
-
-  const handleCorrChartReady = useCallback((chart: ECharts) => {
-    corrChartRef.current = chart;
-    if (skewChartRef.current) setChartsReady(true);
+    setSkewReady(true);
   }, []);
 
   const handleConvChartReady = useCallback((chart: ECharts) => {
     convChartRef.current = chart;
+    setConvReady(true);
   }, []);
 
   const handleCanvasClick = useCallback(
@@ -416,7 +330,45 @@ export default function SharedSkewPanel({
   );
 
   const meta = META[mode] ?? greekPanelMeta(mode as GreekSkewMode);
-  const hasCorr = corrOption != null;
+
+  // AI Ask — the full reading guide (former card subtitle) lives in the
+  // intro; the card now shows only the concise `short` decoding line.
+  // Suggested questions carry the guide's actionable angle.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro: meta.subtitle,
+      instruments: underlyingCode ? [{ code: underlyingCode }] : [],
+      series: [
+        { name: "Underlying Spot", unit: "元", description: "underlying daily closing price (the neutral anchor)" },
+        {
+          name: spec.meanSeriesName,
+          unit: "元",
+          description: `mean skew-adjusted price — spot rebased by the ${mode} positioning metric`,
+        },
+        { name: "Skew price vs spot gap (%)", unit: "%", description: "per-expiry convergence chart: skew price minus spot, collapsing to 0 at expiry" },
+      ],
+      state: {
+        mode,
+        convergence: showConvergence ? "shown" : "hidden",
+        selectedDate,
+      },
+      suggestedQuestions: SUGGESTED_QUESTIONS[mode],
+      notes: [
+        "Shade bands: spot↔skew gap per active expiry set; dots mark expiries; click the chart to select the date.",
+      ],
+    }),
+    [meta.subtitle, underlyingCode, spec.meanSeriesName, mode, showConvergence, selectedDate],
+  );
+  const extraOptions = useMemo(() => [convOption] as const, [convOption]);
+  const aiAskAddon = useAiAskAddon({
+    title: meta.title,
+    subtitle: meta.short,
+    option: skewOption,
+    extraOptions,
+    spec: aiAskSpec,
+    getInstance: () => skewChartRef.current,
+    getExtraInstances: () => [convChartRef.current],
+  });
 
   const toggleSx = {
     bgcolor: "background.paper",
@@ -431,7 +383,8 @@ export default function SharedSkewPanel({
   return (
     <ChartCard
       title={meta.title}
-      subtitle={meta.subtitle}
+      subtitle={meta.short}
+      titleAddon={aiAskAddon}
       height={540}
     >
       <div style={{ position: "relative" }}>
@@ -478,45 +431,6 @@ export default function SharedSkewPanel({
           </Box>
           <EChart option={convOption} height={260} onReady={handleConvChartReady} />
         </Box>
-      ) : null}
-      {hasCorr ? (
-        <div style={{ position: "relative" }}>
-          <div
-            style={{
-              position: "absolute",
-              top: 0,
-              right: 8,
-              zIndex: 10,
-            }}
-          >
-            <ToggleButtonGroup
-              value={corrMode}
-              exclusive
-              onChange={handleCorrModeChange}
-              size="small"
-              sx={{
-                bgcolor: "background.paper",
-                "& .MuiToggleButton-root": {
-                  px: 1.5,
-                  py: 0.25,
-                  fontSize: "0.7rem",
-                  minWidth: 48,
-                },
-              }}
-            >
-              {CORR_MODES.map((m) => (
-                <ToggleButton key={m.value} value={m.value}>
-                  {m.label}
-                </ToggleButton>
-              ))}
-            </ToggleButtonGroup>
-          </div>
-          <EChart
-            option={corrOption}
-            height={200}
-            onReady={handleCorrChartReady}
-          />
-        </div>
       ) : null}
     </ChartCard>
   );

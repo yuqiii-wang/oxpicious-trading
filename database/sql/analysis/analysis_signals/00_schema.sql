@@ -1,39 +1,42 @@
 -- ============================================================================
 --  Schema: analysis_signals
 --
---  Per-DAY trading SIGNALS derived from the same extreme-day detection
---  logic the monthly forecast analysis (analysis_forecasts) uses, but
---  materialized at (code, date) granularity so they can be consumed
---  directly (UI / live trading):
+--  The SIGNAL STRATEGY tier over analysis_forecasts:
 --
---    - mov_rsi signals: a day is a signal when its rsi_{W}days sits in
---      the TOP 1% (action = sell, overbought) or BOTTOM 1% (action =
---      buy, oversold) of the code's trailing 5-year window ending at
---      the signal's own stat_month snapshot.
---    - mov_std signals: a day breaches the UPPER band
---      (price > ma_{W} + 2.0·std_{W}days → action = sell) or the LOWER
---      band (price < ma_{W} - 2.0·std_{W}days → action = buy).
+--    - signal_strategies: one row per forecast bucket (code × stat_month
+--      snapshot M × config) whose MIXED forecast_results row passes the
+--      plain gate (sign-aligned blended mean forward change > 1% AND
+--      blended reverse_prob > 1%). The strategy covers the bucket's
+--      forecast period (start_date .. end_date = the snapshot month; the
+--      trailing 5-year window (M - 5y, M]) and stores the breach bar in
+--      the underlying value's own space — the live tier's threshold set.
+--      side is a STORED column (top/bottom/upper/lower) so no consumer
+--      ever derives it.
+--    - history_signals: one row per qualifying trigger day INSIDE the
+--      strategy's own snapshot month M (one snapshot owns each date →
+--      no cross-month PK conflicts) — the event record (value, bar,
+--      excess), a structural clone of live.live_signals.
+--
+--  Emission slices (current build): mov_rsi pct = 1 (top → sell /
+--  bottom → buy) and mov_std MA/σ windows >= 60d at k >= 2.0σ
+--  (upper → sell / lower → buy), is_market_hyped = FALSE buckets only.
 --
 --  Cooperation contract with analysis_forecasts:
---    signals are produced ONLY for the stat_months that
---    analysis_forecasts already has rows for (mov_rsi at pct = 1 /
---    mov_std at k = 2.0) — the forecasts' start month sets the first
---    signal date. Each month's detection uses the same trailing
---    5-year window (M - 5y, M], the same linear-interpolated
---    percentile thresholds, the same cooldown suppression and the
---    same full-window history gate as the forecast buckets, and a
---    signal date is emitted only within its own snapshot month M
---    (one snapshot owns each date → no cross-month PK conflicts).
+--    strategies are produced ONLY for the stat_months that
+--    analysis_forecasts already has rows for — the forecasts' start
+--    month sets the first strategy period. Each month's emission uses
+--    the forecasts' own buckets and trigger days (never re-detects).
 --
 --  Population convention:
 --    - `python -m analyze.analysis_signals` runs incrementally at
 --      month granularity (only stat_months missing from
---      analysis_signals.signals are computed; months are written
---      atomically in one transaction).
---    - `--force` deletes the sec_type's signal rows and recomputes
---      every stat_month present in analysis_forecasts.
+--      signal_strategies are emitted, plus the newest REFRESH_MONTHS
+--      months re-emitted every run; each month's strategy + history
+--      rows are written atomically in one transaction).
+--    - `--force` deletes the sec_type's rows in both tables and
+--      re-emits every stat_month present in analysis_forecasts.
 -- ============================================================================
 
 CREATE SCHEMA IF NOT EXISTS analysis_signals;
 
-COMMENT ON SCHEMA analysis_signals IS 'Per-day trading signals (buy/sell) mirroring the analysis_forecasts extreme-day detection at signal granularity: mov_rsi top/bottom-1% RSI days and mov_std 2-sigma Bollinger breaches, one row per (code, sec_type, signal_type, signal_sub_type, date). Populated incrementally by python -m analyze.analysis_signals, month-gated to the stat_months present in analysis_forecasts.';
+COMMENT ON SCHEMA analysis_signals IS 'Signal strategy tier over analysis_forecasts: signal_strategies (one row per gate-passing forecast bucket — the fixed setup over its forecast period, with the live breach bar) and history_signals (one row per qualifying trigger day inside the bucket''s own snapshot month — the event record). Populated incrementally by python -m analyze.analysis_signals, month-gated to the stat_months present in analysis_forecasts; mov_rsi pct = 1 and mov_std (>= 60d windows, k >= 2.0) only.';

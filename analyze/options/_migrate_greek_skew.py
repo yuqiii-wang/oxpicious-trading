@@ -59,9 +59,6 @@ _NUM_COLS: list[str] = [
     "gap_skewness_vs_spot_slope",
     "gap_skewness_vs_spot_ma5_slope", "gap_skewness_vs_spot_ma20_slope",
     "gap_skewness_vs_spot_ma60_slope",
-    "corr_skewness_ma5_vs_spot_ma5",
-    "corr_skewness_ma20_vs_spot_ma20",
-    "corr_skewness_ma60_vs_spot_ma60",
 ]
 
 DDL: list[str] = (

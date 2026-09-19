@@ -19,10 +19,10 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, Accordion, AccordionDetails, AccordionSummary, Box, Chip, CircularProgress, Link, Stack, Typography } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
 import RefreshButton from "@/components/RefreshButton";
 import { fetchDebtBaseline, fetchPbocOmaAnnouncements, invalidateCacheForUrl } from "@/lib/api-client";
-import { useStore } from "@/store/filters";
+import { BaseChart, useChartData, useChartThemeMode } from "@/shared/charts/base-chart";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import type {
   DebtBaselineResponse,
   DebtBaselineRow,
@@ -79,7 +79,7 @@ interface OmaNewsPanelProps {
 }
 
 function OmaNewsPanel({ minDate, maxDate }: OmaNewsPanelProps) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const [omaData, setOmaData] = useState<PbocOmaResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -282,7 +282,7 @@ function buildMarkerMap(rows: DebtBaselineRow[]): Map<string, string[]> {
 }
 
 function OutrightRepoPanel({ data, markerMap }: { data: DebtBaselineResponse; markerMap: Map<string, string[]> }) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const option = useMemo(() => {
     const rows = data.rows;
     const dates = rows.map((r) => r.date);
@@ -384,19 +384,43 @@ function OutrightRepoPanel({ data, markerMap }: { data: DebtBaselineResponse; ma
     }, markerMap);
   }, [data, themeMode, markerMap]);
 
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "PBoC medium-term liquidity operations over time: the cumulative net balance " +
+        "(outright repo + MLF, line on the left axis) against daily injections and " +
+        "withdrawals (stacked bars on the right axis — green/red = outright repo " +
+        "start/end, orange = MLF). Rising cumulative balance = net liquidity " +
+        "injection; falling = net withdrawal. PBoC operation dates are surfaced in " +
+        "the tooltip on hover.",
+      series: [
+        { name: "Cumulative balance", unit: "亿元", description: "cumulative net outright repo + MLF balance" },
+        { name: "Outright injection", unit: "亿元", description: "daily outright repo auction buys (start quantity)" },
+        { name: "MLF injection", unit: "亿元", description: "daily MLF lending (start quantity)" },
+        { name: "Outright withdrawal", unit: "亿元", description: "daily outright repo maturities/settlements (end quantity)" },
+        { name: "MLF withdrawal", unit: "亿元", description: "daily MLF maturities (end quantity)" },
+      ],
+      notes: [
+        "Crosshair/tooltip is synchronized with the other debt-baseline panels (same trading-date x-axis).",
+      ],
+    }),
+    [],
+  );
+
   return (
-    <ChartCard
+    <BaseChart
       title="PBoC Outright Repo / MLF — Capital Injection (Auction)"
       subtitle="Cumulative balance (line) · Outright injection/withdrawal (green/red bars) · MLF injection/withdrawal (orange bars)"
-      height={340}
-    >
-      <EChart option={option} height={320} group={CHART_GROUP} />
-    </ChartCard>
+      height={320}
+      option={option}
+      group={CHART_GROUP}
+      aiAsk={aiAskSpec}
+    />
   );
 }
 
 function OmoPanel({ data, markerMap }: { data: DebtBaselineResponse; markerMap: Map<string, string[]> }) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const option = useMemo(() => {
     const rows = data.rows;
     const dates = rows.map((r) => r.date);
@@ -483,19 +507,42 @@ function OmoPanel({ data, markerMap }: { data: DebtBaselineResponse; markerMap: 
     }, markerMap);
   }, [data, themeMode, markerMap]);
 
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "PBoC daily open-market operations: the 7-day reverse-repo policy rate " +
+        "(line, left axis) against the daily repo lifecycle — injections (repo " +
+        "start, green bars), withdrawals (repo end, red bars) and the cumulative " +
+        "net balance (line) on the right axis. Rate cuts lower the policy anchor " +
+        "and typically accompany net injections; the repo bars show how heavily " +
+        "the PBoC smooths intraweek liquidity.",
+      series: [
+        { name: "OMO 7D rev-repo rate (%)", unit: "%", description: "the 7-day reverse-repo auction rate (policy rate)" },
+        { name: "Repo start (injection)", unit: "亿元", description: "daily 7-day reverse-repo lending volume" },
+        { name: "Repo end (withdrawal)", unit: "亿元", description: "daily reverse-repo maturities (absolute value)" },
+        { name: "Cumulative balance", unit: "亿元", description: "cumulative net reverse-repo balance" },
+      ],
+      notes: [
+        "Crosshair/tooltip is synchronized with the other debt-baseline panels (same trading-date x-axis).",
+      ],
+    }),
+    [],
+  );
+
   return (
-    <ChartCard
+    <BaseChart
       title="PBoC Open Market Operations — 7-day Reverse Repo"
       subtitle="OMO rate (line, left axis) · Repo lifecycle volume + cumulative (bars/line, right axis)"
-      height={340}
-    >
-      <EChart option={option} height={320} group={CHART_GROUP} />
-    </ChartCard>
+      height={320}
+      option={option}
+      group={CHART_GROUP}
+      aiAsk={aiAskSpec}
+    />
   );
 }
 
 function ShiborPanel({ data, markerMap }: { data: DebtBaselineResponse; markerMap: Map<string, string[]> }) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const option = useMemo(() => {
     const rows = data.rows;
     const dates = rows.map((r) => r.date);
@@ -538,19 +585,45 @@ function ShiborPanel({ data, markerMap }: { data: DebtBaselineResponse; markerMa
     }, markerMap);
   }, [data, themeMode, markerMap]);
 
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "SHIBOR (Shanghai Interbank Offered Rate) fixings across tenors: " +
+        "overnight, 1-week, 1-month, 3-month, 6-month and 1-year. Short tenors " +
+        "(O/N, 1W) spike when interbank funding tightens; the 3M–1Y curve " +
+        "reflects the market's expected path of policy rates. Compare with the " +
+        "OMO panel above — persistent O/N spikes above the OMO rate signal " +
+        "liquidity stress.",
+      instruments: [{ code: "SHIBOR" }],
+      series: [
+        { name: "O/N", unit: "%", description: "overnight SHIBOR fixing" },
+        { name: "1W", unit: "%", description: "1-week SHIBOR fixing" },
+        { name: "1M", unit: "%", description: "1-month SHIBOR fixing" },
+        { name: "3M", unit: "%", description: "3-month SHIBOR fixing" },
+        { name: "6M", unit: "%", description: "6-month SHIBOR fixing" },
+        { name: "1Y", unit: "%", description: "1-year SHIBOR fixing" },
+      ],
+      notes: [
+        "Crosshair/tooltip is synchronized with the other debt-baseline panels (same trading-date x-axis).",
+      ],
+    }),
+    [],
+  );
+
   return (
-    <ChartCard
+    <BaseChart
       title="SHIBOR — Interbank Offered Rate Fixings"
       subtitle="O/N · 1W · 1M · 3M · 6M · 1Y"
-      height={320}
-    >
-      <EChart option={option} height={300} group={CHART_GROUP} />
-    </ChartCard>
+      height={300}
+      option={option}
+      group={CHART_GROUP}
+      aiAsk={aiAskSpec}
+    />
   );
 }
 
 function ChinaBondPanel({ data, markerMap }: { data: DebtBaselineResponse; markerMap: Map<string, string[]> }) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const option = useMemo(() => {
     const rows = data.rows;
     const dates = rows.map((r) => r.date);
@@ -593,14 +666,38 @@ function ChinaBondPanel({ data, markerMap }: { data: DebtBaselineResponse; marke
     }, markerMap);
   }, [data, themeMode, markerMap]);
 
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "China Treasury (ChinaBond) government bond yields for the 1Y, 5Y, 10Y " +
+        "and 30Y tenors. The 1Y end follows funding/policy expectations (moves " +
+        "with OMO/SHIBOR); the 10Y is the benchmark long rate priced off growth " +
+        "and inflation expectations; 30Y duration sentiment. A flattening " +
+        "1Y→10Y spread anticipates easing; steepening anticipates tightening or " +
+        "reflation.",
+      instruments: [{ code: "CGB", name: "China Treasury Bond yields" }],
+      series: [
+        { name: "1Y", unit: "%", description: "1-year CGB yield" },
+        { name: "5Y", unit: "%", description: "5-year CGB yield" },
+        { name: "10Y", unit: "%", description: "10-year CGB yield (the benchmark long rate)" },
+        { name: "30Y", unit: "%", description: "30-year CGB yield (duration sentiment)" },
+      ],
+      notes: [
+        "Crosshair/tooltip is synchronized with the other debt-baseline panels (same trading-date x-axis).",
+      ],
+    }),
+    [],
+  );
+
   return (
-    <ChartCard
+    <BaseChart
       title="China Treasury Bond Yield Curve (selected tenors)"
       subtitle="1Y · 5Y · 10Y · 30Y"
-      height={320}
-    >
-      <EChart option={option} height={300} group={CHART_GROUP} />
-    </ChartCard>
+      height={300}
+      option={option}
+      group={CHART_GROUP}
+      aiAsk={aiAskSpec}
+    />
   );
 }
 
@@ -613,7 +710,7 @@ function ChinaBondPanel({ data, markerMap }: { data: DebtBaselineResponse; marke
  * announcement date so the user can see exactly when the rate changed.
  */
 function LprPanel({ data, markerMap }: { data: DebtBaselineResponse; markerMap: Map<string, string[]> }) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const option = useMemo(() => {
     const rows = data.rows;
     const dates = rows.map((r) => r.date);
@@ -671,57 +768,58 @@ function LprPanel({ data, markerMap }: { data: DebtBaselineResponse; markerMap: 
     }, markerMap);
   }, [data, themeMode, markerMap]);
 
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "PBoC Loan Prime Rate (LPR) — the monthly lending benchmark announced " +
+        "on the 20th of each month (next business day if it falls on a " +
+        "holiday). Rendered as a STEP line so the hold/cut pattern is visible: " +
+        "the rate stays flat between announcements and circle markers sit on " +
+        "each announcement date. The 1Y LPR anchors corporate short-term " +
+        "lending; the 5Y+ LPR anchors mortgages.",
+      instruments: [{ code: "LPR", name: "Loan Prime Rate" }],
+      series: [
+        { name: "1Y LPR", unit: "%", description: "1-year LPR (monthly step; markers on announcement dates)" },
+        { name: "5Y+ LPR", unit: "%", description: "5-year-plus LPR (mortgage benchmark)" },
+      ],
+      notes: [
+        "Step lines: the rate holds flat between monthly announcements — markers flag the announcement dates.",
+        "Crosshair/tooltip is synchronized with the other debt-baseline panels (same trading-date x-axis).",
+      ],
+    }),
+    [],
+  );
+
   return (
-    <ChartCard
+    <BaseChart
       title="PBoC LPR — Loan Prime Rate (monthly announcement)"
       subtitle="1Y · 5Y+ (step line; markers on announcement dates)"
-      height={300}
-    >
-      <EChart option={option} height={280} group={CHART_GROUP} />
-    </ChartCard>
+      height={280}
+      option={option}
+      group={CHART_GROUP}
+      aiAsk={aiAskSpec}
+    />
   );
 }
 
 export default function DebtBaselinePage() {
-  const [fullData, setFullData] = useState<DebtBaselineResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Page-level refresh key — bumped by the page-header refresh button to
-  // force a cache bypass + refetch of fetchDebtBaseline (drives the 5 main
-  // panels: OutrightRepo / OMO / SHIBOR / ChinaBond / LPR). OmaNewsPanel
-  // has its own plot-level refresh button.
-  const [refreshKey, setRefreshKey] = useState(0);
-
-  // Fetch all data (no date filter — slider handles windowing locally)
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    fetchDebtBaseline(undefined, undefined)
-      .then((d) => {
-        if (cancelled) return;
-        setFullData(d);
-        setLoading(false);
-      })
-      .catch((e: Error) => {
-        if (cancelled) return;
-        setError(e.message);
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshKey]);
+  // Fetch all data (no date filter — slider handles windowing locally).
+  // The shared kit hook owns the loading / error / stale-response lifecycle;
+  // the fetcher has no deps, so it re-runs only on refresh().
+  const { data: fullData, loading, error, refresh } = useChartData(
+    () => fetchDebtBaseline(undefined, undefined),
+    [],
+  );
 
   const handleRefresh = useCallback(() => {
     // The 5 main panels all derive from one fetch: /api/debt-baseline (no
     // query string when called with no date filter). Removing that single
-    // cache entry + bumping refreshKey forces a fresh DB read.
+    // cache entry + refresh() forces a fresh DB read.
     // /api/debt-baseline/oma is a separate cache key and is left untouched —
     // OmaNewsPanel has its own plot-level refresh button.
     invalidateCacheForUrl("/api/debt-baseline");
-    setRefreshKey((k) => k + 1);
-  }, []);
+    refresh();
+  }, [refresh]);
 
   // Build marker map from ALL rows (so hover shows ops even if outside window)
   const markerMap = useMemo(() => {

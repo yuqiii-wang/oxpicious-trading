@@ -261,6 +261,7 @@ CREATE TABLE IF NOT EXISTS analysis.industry_attributions (
     benchmark_non_this_industry_price      NUMERIC(20,4),
     benchmark_non_this_industry_rolling_5days_price        NUMERIC(20,4),
     benchmark_non_this_industry_rolling_20days_price       NUMERIC(20,4),
+    benchmark_non_this_industry_rolling_120days_price      NUMERIC(20,4),
     benchmark_non_this_industry_rolling_60days_price       NUMERIC(20,4),
     benchmark_non_this_industry_rolling_255days_price      NUMERIC(20,4),
     benchmark_non_this_industry_rolling_500days_price      NUMERIC(20,4),
@@ -281,13 +282,6 @@ CREATE TABLE IF NOT EXISTS analysis.industry_attributions (
     CONSTRAINT pk_industry_attributions PRIMARY KEY
         (industry_id, benchmark_code, date, attribution_type)
 ) PARTITION BY HASH (industry_id);
-
--- Offset columns (added 2026-09-07) — idempotent migration for existing
--- deployments; populated by the attributions INSERT from stats.cross_stats.
-ALTER TABLE analysis.industry_attributions
-    ADD COLUMN IF NOT EXISTS code_price_with_benchmark_offset NUMERIC(20,6);
-ALTER TABLE analysis.industry_attributions
-    ADD COLUMN IF NOT EXISTS code_price_with_benchmark_offset_by_weighted_amt NUMERIC(20,6);
 
 -- Native hash partitions (16) keyed by industry_id
 -- Native hash partitions (16) keyed by code — created via the shared util

@@ -38,9 +38,8 @@ from llm_agents.industry_qa_weekly.questions import (
 from llm_agents.industry_qa_weekly.signals import (
     DEFAULT_BENCHMARK, DEFAULT_PERIOD_DAYS, DEFAULT_TOP_N,
     DEFAULT_WEIGHTING, IndustrySignal, fetch_index_parent_tags,
-    iter_industry_episodes, fetch_market_grid_dates,
-    fetch_market_episodes, fetch_market_triggers, fetch_ranking_dates,
-    fetch_top_industries, latest_signal_date, IND_ANNUAL_HIGH_CAP,
+    iter_industry_episodes, fetch_market_episodes, fetch_market_triggers,
+    fetch_ranking_dates, fetch_top_industries, IND_ANNUAL_HIGH_CAP,
     IND_ANNUAL_LOW_CAP, IND_ANNUAL_LOW_STD, MARKET_ANNUAL_CAP,
     MARKET_DEDUPE_WINDOW, MARKET_LOOKBACK_RANKING_DATES,
 )
@@ -53,9 +52,6 @@ CATEGORY = "industry"
 DEFAULT_INTERVAL = 5          # kept for CLI compatibility (plan is episode-based)
 # Same-direction re-ask skip window (trading dates) for industry episodes.
 DEFAULT_DEDUPE_WINDOW = 60
-# Live weekly run: episodes that ended within this many trading days are
-# picked up by `run`.
-RUN_LOOKBACK_TD = 10
 
 # Plan-first guard: a collected plan larger than this stops the backfill
 # before any request is made (skip with --force-many-requests).
@@ -175,145 +171,6 @@ async def ask_one(
         outcome.error = f"{type(e).__name__}: {e}"
         logger.warning("    [ask] %s -> FAILED %s", question, outcome.error)
     return outcome
-
-
-async def run_week(
-    conn, *,
-    as_of: Optional[datetime.date] = None,
-    benchmark_code: str = DEFAULT_BENCHMARK,
-    provider_name: str = "zhipu",
-    model: Optional[str] = None,
-    lang: str = "zh",
-    resolve: bool = True,
-    limit: int = 0,
-    dry_run: bool = False,
-    market_only: bool = False,
-    seasonal_only: bool = False,
-    annual_only: bool = False,
-    industry_ids: Optional[List[str]] = None,
-    force_many_requests: bool = False,
-    period_days: int = DEFAULT_PERIOD_DAYS,
-    weighting: str = DEFAULT_WEIGHTING,
-    top_n: int = DEFAULT_TOP_N,
-    concurrency: int = 3,
-    dedupe_window: int = 60,
-    interval: int = 5,
-    newest_first: bool = False,
-    cut_off: bool = True,
-) -> List[AskOutcome]:
-    """One weekly step: pick up episodes whose ask date falls within the
-    last RUN_LOOKBACK_TD trading days, dedupe against stored rows, ask
-    and store. Episodes are shared with the backfill, so a weekly run
-    never repeats what a backfill already asked (and vice versa)."""
-    del force_many_requests  # the weekly step is bounded by construction
-    grid = await fetch_market_grid_dates(conn)
-    cutoff = datetime.date.today() - datetime.timedelta(
-        days=int(RUN_LOOKBACK_TD * 1.6))
-    recent = {d for d in grid
-              if d >= cutoff and (as_of is None or d <= as_of)}
-
-    market_episodes = await fetch_market_episodes(conn)
-    industry_episodes: Dict[Tuple[str, datetime.date], tuple] = {}
-    if not market_only:
-        # Partitioned per industry: keep only episodes ending within the
-        # weekly lookback window.
-        async for ind, label, _year_std, _year_cap, ind_eps in                 iter_industry_episodes(
-                    conn, benchmark_code=benchmark_code):
-            for ask_date, (side, max_dev, s, e) in ind_eps.items():
-                if ask_date in recent:
-                    industry_episodes[(ind, ask_date)] = (
-                        side, max_dev, label, s, e)
-    parent_industry_id, _parent_sector = await fetch_index_parent_tags(conn)
-
-    candidates: List[AskOutcome] = []
-    do_seasonal = not (annual_only or market_only)
-    do_annual = not (seasonal_only or market_only)
-
-    # Logic 1 — SEASONAL: the top-5 hypes/drains the latest ranking date
-    # shows (the same block the Hypes & Drains view renders), deduped.
-    if do_seasonal:
-        anchor = await latest_signal_date(
-            conn, benchmark_code=benchmark_code, period_days=period_days,
-            weighting=weighting, as_of=as_of)
-        if anchor is not None:
-            tops = await fetch_top_industries(
-                conn, benchmark_code=benchmark_code, period_days=period_days,
-                weighting=weighting, as_of=anchor, top_n=top_n)
-            for s in tops:
-                base = question_base(s.industry_label, s.side)
-                asked = await asked_within(
-                    conn, industry_id=s.industry_id, base=base, anchor=anchor,
-                    window_start=anchor - datetime.timedelta(days=90),
-                    window_end=anchor + datetime.timedelta(days=90))
-                if asked:
-                    continue
-                sig = IndustrySignal(date=anchor, side=s.side, rank=s.rank,
-                                     industry_id=s.industry_id,
-                                     industry_label=s.industry_label,
-                                     metric_value=s.metric_value)
-                candidates.append(AskOutcome(
-                    signal=sig, kind="industry",
-                    question=build_question(s.industry_label, s.side,
-                                            anchor)))
-
-    # Logic 2 — ANNUAL: MA5-deviation episodes ended within the recent
-    # lookback window (rate-limited per industry-year by the caps).
-    if do_annual:
-        for (ind, ask_date), (side, max_dev, label, _s, _e) in sorted(
-                industry_episodes.items()):
-            if ask_date not in recent:
-                continue
-            if industry_ids and ind not in industry_ids:
-                continue
-            base = question_base(label, side)
-            asked = await asked_within(
-                conn, industry_id=ind, base=base, anchor=ask_date,
-                window_start=ask_date - datetime.timedelta(days=90),
-                window_end=ask_date + datetime.timedelta(days=90))
-            if asked:
-                continue
-            sig = IndustrySignal(date=ask_date, side=side, rank=0,
-                                 industry_id=ind, industry_label=label,
-                                 metric_value=max_dev)
-            candidates.append(AskOutcome(
-                signal=sig, kind="industry",
-                question=build_question(label, side, ask_date)))
-    for ask_date, (side, max_pct) in sorted(market_episodes.items()):
-        if ask_date not in recent:
-            continue
-        sig = IndustrySignal(date=ask_date, side=side, rank=0,
-                             industry_id=parent_industry_id or "INDEX",
-                             industry_label=MARKET_INDEX_LABEL,
-                             metric_value=max_pct)
-        base = market_question_base(side)
-        asked = await asked_within(
-            conn, industry_id=sig.industry_id, base=base, anchor=ask_date,
-            window_start=ask_date - datetime.timedelta(days=40),
-            window_end=ask_date + datetime.timedelta(days=40))
-        if asked:
-            continue
-        candidates.append(AskOutcome(signal=sig, kind="market",
-                                     question=build_market_question(
-                                         side, ask_date)))
-
-    if limit and len(candidates) > limit:
-        candidates = candidates[:limit]
-    if dry_run:
-        logger.info("[week] dry-run — %d candidate(s) would be asked",
-                    len(candidates))
-        return candidates
-
-    outcomes: List[AskOutcome] = []
-    for n, item in enumerate(candidates, 1):
-        logger.info("[ask %d/%d] %s", n, len(candidates), item.question)
-        outcome = await ask_one(conn, item.signal, item.question,
-                                provider_name=provider_name, model=model,
-                                lang=lang, resolve=resolve, kind=item.kind)
-        outcomes.append(outcome)
-    n_err = sum(1 for c in outcomes if c.error)
-    logger.info("[week] done: %d/%d stored, %d failed",
-                len(outcomes) - n_err, len(outcomes), n_err)
-    return outcomes
 
 
 async def run_backfill(

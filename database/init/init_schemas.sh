@@ -1,6 +1,14 @@
 #!/bin/bash
 set -e
 
+# FRESH-INIT ONLY: runs once on first container initialization
+# (docker-entrypoint-initdb.d) against an EMPTY volume. This list is a
+# SUBSET of the full schema tree (stats basics + analysis core) — the
+# remaining schemas (analysis_forecasts / analysis_signals / live /
+# strategy / text / the rest of stats) are applied per-file from
+# database/sql/**/00_init.sql master lists. NEVER re-run against a
+# populated database: several applied files are DROP+CREATE refreshes.
+
 echo "Applying schema files to 'oxpicious-stats' database..."
 
 # stats schema (existing tables: debt, etf, sec, options, index baselines + views)

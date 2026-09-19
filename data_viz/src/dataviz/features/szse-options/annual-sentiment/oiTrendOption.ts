@@ -3,6 +3,10 @@
  * Uses React-based tooltip formatters via tooltipComponents.tsx.
  */
 import {
+  baseChartOption,
+  commonTooltip,
+} from "@/shared/charts/base-chart";
+import {
   DOWN_COLOR,
   FUTURES_EXPIRY_DOT,
   UP_COLOR,
@@ -77,13 +81,10 @@ export function buildOiTrendOption(
   const axisTooltip = makeAxisTooltipFormatter(colors);
   const dotTooltip = makeExpiryDotTooltip(colors, " contracts");
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 56, right: 20, bottom: 50 }),
     dataZoom: commonDataZoom(),
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
       axisPointer: {
         type: "cross",
         snap: true,
@@ -96,11 +97,8 @@ export function buildOiTrendOption(
           fontSize: 10,
         },
       },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: axisTooltip,
-    },
+    }),
     axisPointer: { link: [{ xAxisIndex: "all" }] },
     legend: commonLegend(themeMode),
     xAxis: {
@@ -162,5 +160,5 @@ export function buildOiTrendOption(
         },
       },
     ],
-  };
+  });
 }

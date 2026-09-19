@@ -46,6 +46,12 @@ export {
 } from "./ai";
 
 export {
+  askChartAi,
+  type AiAskRequest,
+  type AiAskResponse,
+} from "./aiAsk";
+
+export {
   fetchUnderlyings,
   fetchOptionsCombined,
   fetchOptionsWalls,
@@ -73,6 +79,8 @@ export {
   fetchLinkedEtfs,
   fetchSimilarIndices,
 } from "./sec-composition";
+
+export { fetchSecBoardMap } from "./sec-board";
 
 export {
   fetchStockBaseline,

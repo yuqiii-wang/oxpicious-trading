@@ -17,14 +17,11 @@
  *     - Gap fill stack (3 series: _base, _pos, _neg)
  *     - Trading amount bars on secondary y-axis
  */
-import { fmtNum, fmtPct, fmtYi } from "@/lib/series";
+import { fmtNum, fmtPct } from "@/lib/series";
 import { ohlcSeries, type OhlcMode } from "@/lib/ohlc";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import {
-  MA5_COLOR,
-  MA20_COLOR,
-  MA60_COLOR,
   MA120_COLOR,
-  MA255_COLOR,
   UP_COLOR,
   DOWN_COLOR,
   SPOT_COLOR,
@@ -45,7 +42,6 @@ import {
   computeTrendBands,
   trendBandsToMarkArea,
   shortLabel,
-  type TrendBand,
   TREND_DOWN_COLOR,
   TREND_FLAT_COLOR,
   TREND_UP_COLOR,
@@ -83,8 +79,6 @@ export interface BuildPairOptionArgs {
   bollingerK?: number;
   /** Trading amount display mode. Defaults to "lowkey". */
   tradingAmtMode?: TradingAmtMode;
-  /** Index into pair.rows of the currently hovered date. */
-  hoveredIdx?: number | null;
   /** Display mode for price-derived series. */
   ohlcMode?: OhlcMode;
   /** Enabled rolling-OHLC window (trading days) — null/undefined = off.
@@ -292,18 +286,11 @@ function rollingExtremes(
   return out;
 }
 
-/** Format a yuan amount as 亿元 (100M yuan). */
-function fmtAmtYi(v: number | null | undefined, digits = 2): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  return fmtYi(v, digits);
-}
-
 export function buildPairOption({
   pair,
   themeMode,
   bollingerK = 2,
   tradingAmtMode = "lowkey",
-  hoveredIdx = null,
   ohlcMode = "absolute",
   ohlcWindow = null,
   ohlcClickIdx = null,
@@ -332,9 +319,7 @@ export function buildPairOption({
   const highs = rows.map((r) => r.high);
   const lows = rows.map((r) => r.low);
   const tradingAmts = rows.map((r) => r.trading_amount);
-  const dateOfLastExtreme = rows.map((r) => r.date_of_last_extreme_500days ?? null);
-  const gapSinceLastExtreme = rows.map((r) => r.gap_since_last_extreme_500days ?? null);
-  const daysSinceLastExtreme = rows.map((r) => r.days_since_last_extreme_500days ?? null);
+  const rsi3 = rows.map((r) => r.rsi_3days ?? null);
   const rsi6 = rows.map((r) => r.rsi_6days ?? null);
   const rsi10 = rows.map((r) => r.rsi_10days ?? null);
   const rsi14 = rows.map((r) => r.rsi_14days ?? null);
@@ -399,27 +384,6 @@ export function buildPairOption({
   const isMA60Pair = pair.ma_long === 60;
   const trendBands = isMA60Pair ? computeTrendBands(shorts, longs, longSlopes, longStds) : [];
   const hasTrendBands = trendBands.length > 0;
-
-  // ---- Last-extreme hover marker ----------------------------------------
-  const lastExtremeData: Array<number | null> = new Array(n).fill(null);
-  let lastExtremeRising = true;
-  if (
-    hoveredIdx != null
-    && hoveredIdx >= 0
-    && hoveredIdx < n
-    && dateOfLastExtreme.some((d) => d != null)
-  ) {
-    const ed = dateOfLastExtreme[hoveredIdx];
-    if (ed != null) {
-      const sv = shorts[hoveredIdx];
-      if (sv != null && Number.isFinite(sv)) {
-        lastExtremeData[hoveredIdx] = sv;
-      }
-      const gap = gapSinceLastExtreme[hoveredIdx];
-      lastExtremeRising = !(gap != null && Number.isFinite(gap) && gap < 0);
-    }
-  }
-  const hasLastExtreme = lastExtremeData.some((v) => v != null);
 
   // ---- Percentage mode base --------------------------------------------
   let baseVal: number | null = null;
@@ -821,27 +785,6 @@ export function buildPairOption({
     }
   }
 
-  if (hasLastExtreme) {
-    const leColor = lastExtremeRising
-      ? { rgb: "67, 160, 71", hex: "#43A047" }
-      : { rgb: "229, 57, 53", hex: "#E53935" };
-    echartsSeries.push({
-      type: "scatter",
-      name: "Last Extreme",
-      data: lastExtremeData,
-      symbol: "triangle",
-      symbolSize: 7,
-      symbolRotate: lastExtremeRising ? 0 : 180,
-      itemStyle: {
-        color: `rgba(${leColor.rgb}, 0.55)`,
-        borderColor: leColor.hex,
-        borderWidth: 0.5,
-      },
-      z: 19,
-      tooltip: { show: false },
-    });
-  }
-
   if (hasTrendBands) {
     const trendLegendColors: Record<string, string> = {
       "▼ Downward": TREND_DOWN_COLOR.replace("0.07", "0.6"),
@@ -994,9 +937,7 @@ export function buildPairOption({
     highs,
     lows,
     tradingAmts,
-    dateOfLastExtreme,
-    gapSinceLastExtreme,
-    daysSinceLastExtreme,
+    rsi3,
     rsi6,
     rsi10,
     rsi14,
@@ -1024,19 +965,16 @@ export function buildPairOption({
     ohlcMode,
   };
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  // Shared preamble (transparent bg, animations off, themed fragments) via
+  // baseChartOption; the line-snap axisPointer replaces the common cross one
+  // and the React-element tooltip formatter overrides the default content.
+  return baseChartOption(themeMode, {
     grid,
     dataZoom: commonDataZoom(),
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "line", snap: true },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: buildPairTooltipFormatter(tooltipContext),
-    },
+    }),
     legend: commonLegend(themeMode, { itemWidth: 12, itemHeight: 7, data: legendData }),
     xAxis: {
       type: "category",
@@ -1079,5 +1017,5 @@ export function buildPairOption({
       },
     ],
     series: echartsSeries,
-  };
+  });
 }

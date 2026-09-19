@@ -15,6 +15,7 @@ import type {
   MarginSecurity,
 } from "@shared/types";
 import type { ThemeMode } from "@/store/filters";
+import { baseChartOption } from "@/shared/charts/base-chart";
 import {
   GROUP_MAJOR_COLORS,
   MUTED_PALETTE,
@@ -238,9 +239,12 @@ export function buildTrendChartOption(
   ).filter((s) => s.data.some((v) => v != null));
   const hasRatio = ratioSeries.length > 0;
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  // Shared preamble (transparent bg, animations off) via baseChartOption.
+  // The legend / tooltip / grid fragments below differ from the kit's common
+  // ones (top-anchored selection legend, default line axisPointer instead of
+  // the cross-snap, dual synced grids), so they are passed verbatim as the
+  // per-key overrides.
+  return baseChartOption(themeMode, {
     grid: [
       { left: 64, right: hasRatio ? 56 : 24, top: 32, height: "46%" },
       { left: 64, right: 24, top: "58%", bottom: 28 },
@@ -423,6 +427,6 @@ export function buildTrendChartOption(
         : []),
     ],
     series: [...marginSeries, ...closeSeries, ...ratioSeries],
-  };
+  });
 }
 

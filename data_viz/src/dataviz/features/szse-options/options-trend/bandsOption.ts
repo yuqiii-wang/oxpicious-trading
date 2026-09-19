@@ -11,6 +11,10 @@
  * removed — the zone wall supersedes them.
  */
 import {
+  baseChartOption,
+  commonTooltip,
+} from "@/shared/charts/base-chart";
+import {
   DOWN_COLOR,
   FUTURES_EXPIRY_DOT,
   SPOT_COLOR,
@@ -184,14 +188,11 @@ export function buildBandsOption(
       ]
     : [];
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 56, right: 20, top: 36, bottom: 50 }),
     dataZoom,
     legend: commonLegend(themeMode),
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
       axisPointer: {
         type: "line",
         snap: true,
@@ -206,11 +207,8 @@ export function buildBandsOption(
           fontSize: 10,
         },
       },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: tooltipFormatter,
-    },
+    }),
     xAxis: {
       type: "category",
       data: dates,
@@ -275,5 +273,5 @@ export function buildBandsOption(
         },
       },
     ],
-  };
+  });
 }

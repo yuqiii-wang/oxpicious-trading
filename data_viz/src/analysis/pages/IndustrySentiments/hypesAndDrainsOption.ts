@@ -51,6 +51,7 @@ import {
   commonGrid,
   commonDataZoom,
 } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
 import { buildBenchmarkCenteredShadeSeries } from "@/lib/benchmark-shade";
 import React from "react";
@@ -540,19 +541,14 @@ export function buildHypesAndDrainsOption(
     return renderReactElement(React.createElement(React.Fragment, null, ...children));
   };
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 64, right: 24, bottom: 50, top: 32 }),
     dataZoom: commonDataZoom(),
-    tooltip: {
-      trigger: "axis",
+    // Old hand-rolled pointer was a bare cross (no snap, no styles) — keep it.
+    tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "cross" },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: tooltipFormatter,
-    },
+    }),
     legend: commonLegend(themeMode, {
       itemWidth: 12,
       itemHeight: 7,
@@ -590,5 +586,5 @@ export function buildHypesAndDrainsOption(
       splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
     },
     series,
-  };
+  });
 }

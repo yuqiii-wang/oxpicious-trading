@@ -18,17 +18,15 @@
  */
 import React, { useMemo } from "react";
 import {
-  Alert,
   Autocomplete,
   Box,
   Chip,
-  CircularProgress,
   TextField,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
 } from "@mui/material";
-import EChart from "@/components/EChart";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import type { EChartsOption } from "echarts";
 import type { MarginSecurity } from "@shared/types";
 import { useMarginData } from "./useMarginData";
@@ -37,7 +35,8 @@ import type { MarginTrendsChartsProps } from "./types";
 import { SERIES_OPTIONS } from "./constants";
 import type { MarginSeries } from "./constants";
 
-export function MarginTrendsCharts({ industryId, themeMode, attribution, selectedItemCode }: MarginTrendsChartsProps) {
+export function MarginTrendsCharts({ industryId, attribution, selectedItemCode }: MarginTrendsChartsProps) {
+  const themeMode = useChartThemeMode();
   const isSingleItemMode = !!selectedItemCode;
 
   const {
@@ -162,46 +161,42 @@ export function MarginTrendsCharts({ industryId, themeMode, attribution, selecte
         )}
       </Box>
 
-      {/* ---- Errors ---- */}
-      {errorSeries && (
-        <Alert severity="error" sx={{ py: 0.5 }}>
-          Failed to load series: {errorSeries}
-        </Alert>
-      )}
-
-      {/* ---- Main plot: margin trends ---- */}
-      {loadingSeries && (
-        <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
-          <CircularProgress size={28} />
-        </Box>
-      )}
-      {!loadingSeries && seriesData && seriesData.rows.length > 0 && (
-        <Box>
-          <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
-            {seriesData.industry_label} — {attribution === "index" ? "Index" : "ETF"}{" "}
-            RONGZI {series === "balance" ? "Balance (融资余额)" : "Buy (融资买入额)"}{" "}
-            + Close Price
-            {isSingleItemMode && selectedItemCode && (
-              <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                · {selectedItemCode}
-              </Typography>
-            )}
-            {!isSingleItemMode && selectedCodes.length > 0 && (
-              <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
-                ({seriesData.securities.length} securities; {selectedCodes.length} selected)
-              </Typography>
-            )}
-          </Typography>
-          {trendsOption && <EChart option={trendsOption} height={560} />}
-        </Box>
-      )}
-
-      {!loadingSeries && !errorSeries && seriesData && seriesData.rows.length === 0 && (
-        <Alert severity="warning">
-          No margin data for industry "{industryId}" under {attribution} attribution.
-          Run the Python build script (analyze.margins) to populate.
-        </Alert>
-      )}
+      {/* ---- Main plot: margin trends ----
+          The loading / error / empty placeholders and the EChart are owned by
+          the shared BaseChart (bare variant — embedded in this page layout);
+          the section title rides in its children slot. */}
+      <BaseChart
+        variant="bare"
+        option={trendsOption}
+        height={560}
+        loading={loadingSeries}
+        error={errorSeries ? `Failed to load series: ${errorSeries}` : null}
+        emptyText={
+          seriesData
+            ? `No margin data for industry "${industryId}" under ${attribution} attribution. Run the Python build script (analyze.margins) to populate.`
+            : "No data"
+        }
+      >
+        {!loadingSeries && seriesData && seriesData.rows.length > 0 && (
+          <Box>
+            <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5 }}>
+              {seriesData.industry_label} — {attribution === "index" ? "Index" : "ETF"}{" "}
+              RONGZI {series === "balance" ? "Balance (融资余额)" : "Buy (融资买入额)"}{" "}
+              + Close Price
+              {isSingleItemMode && selectedItemCode && (
+                <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                  · {selectedItemCode}
+                </Typography>
+              )}
+              {!isSingleItemMode && selectedCodes.length > 0 && (
+                <Typography component="span" variant="body2" color="text.secondary" sx={{ ml: 1 }}>
+                  ({seriesData.securities.length} securities; {selectedCodes.length} selected)
+                </Typography>
+              )}
+            </Typography>
+          </Box>
+        )}
+      </BaseChart>
     </Box>
   );
 }

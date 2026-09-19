@@ -4,9 +4,10 @@
  *   • SnapshotControls — underlying ETF selector + snapshot date picker
  *   • StatTable — 4 auto-derived snapshot columns (Q4 Start / Last Quarter / Last Month / Latest)
  *   • VolSmilePanel — IV smile snapshot for the selected date
- *   • SharedSkewPanel (iv_smile) — IV smile skew (25Δ risk reversal) over time + correlation
- *   • SharedSkewPanel (smile_slope) — full-smile IV tilt skew over time + in-browser correlation
- *   • SharedSkewPanel (oi_moneyness) — OI-wtd moneyness skew over time + correlation
+ *   • SpotSkewTrendPanel — smile chronology: spot vs ATM IV level vs
+ *     25Δ/10Δ risk-reversal skew over time (see docs/options_vol_smile_study.md)
+ *   • VolIndexPanel — 30d model-free vol index for the selected underlying (VIX-style)
+ *   • SharedSkewPanel (oi_moneyness) — OI-wtd moneyness skew over time
  *   • MarketInterestWallPanel — OI wall by expiry for the selected snapshot date
  *   • OptionsTrendPanel — OI bands + P/C Ratio + Total OI (merged card)
  *   • AnnualSentimentPanel — ETF OHLC price & volume (separate card)
@@ -22,13 +23,14 @@ import {
 import SnapshotControls, { autoDeriveSnapshots } from "@/components/SnapshotControls";
 import StatTable from "@/components/StatTable";
 import RefreshButton from "@/components/RefreshButton";
+import { BaseChart, useChartThemeMode } from "@/shared/charts/base-chart";
 import VolSmilePanel from "@/dataviz/features/szse-options/VolSmilePanel";
+import SpotSkewTrendPanel from "@/dataviz/features/szse-options/spot-skew/SpotSkewTrendPanel";
+import VolIndexPanel from "@/dataviz/features/szse-options/vol-index/VolIndexPanel";
 import SharedSkewPanel from "@/dataviz/features/szse-options/skew-shared/SharedSkewPanel";
 import MarketInterestWallPanel from "@/dataviz/features/szse-options/MarketInterestWallPanel";
 import { OptionsTrendPanel } from "@/dataviz/features/szse-options/options-trend";
 import { buildOhlcOption } from "@/dataviz/features/szse-options/annual-sentiment";
-import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
 import OhlcModeToggle from "@/components/OhlcModeToggle";
 import {
   fetchEtfOhlcv,
@@ -52,7 +54,7 @@ export default function SzseOptionsPage() {
   const underlyingCode = useStore((s) => s.underlyingCode);
   const setUnderlyingCode = useStore((s) => s.setUnderlyingCode);
   const optionsTargetType = useStore((s) => s.optionsTargetType);
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const snapshotDates = useStore((s) => s.snapshotDates);
   const setSnapshotDates = useStore((s) => s.setSnapshotDates);
 
@@ -195,18 +197,13 @@ export default function SzseOptionsPage() {
                 rows={optionsData.rows}
                 selectedDate={selectedDate}
               />
-              <SharedSkewPanel
-                mode="iv_smile"
+              <SpotSkewTrendPanel
                 rows={optionsData.rows}
                 selectedDate={selectedDate}
                 onDateChange={setSelectedDate}
+                underlyingCode={underlyingCode}
               />
-              <SharedSkewPanel
-                mode="smile_slope"
-                rows={optionsData.rows}
-                selectedDate={selectedDate}
-                onDateChange={setSelectedDate}
-              />
+              <VolIndexPanel />
               <SharedSkewPanel
                 mode="oi_moneyness"
                 rows={optionsData.rows}
@@ -216,21 +213,18 @@ export default function SzseOptionsPage() {
               <MarketInterestWallPanel rows={optionsData.rows} selectedDate={selectedDate} />
               <OptionsTrendPanel rows={optionsData.rows} walls={wallsData?.rows ?? []} />
 
-              <ChartCard
+              <BaseChart
                 title="ETF Price & Volume"
                 subtitle="OHLC + volume (price-up green / price-down red)"
-                height={360}
-                action={<OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />}
-              >
-                {ohlcv && ohlcv.rows.length > 0 ? (
-                  <EChart
-                    option={buildOhlcOption(ohlcv, themeMode, ohlcMode)}
-                    height={340}
-                  />
-                ) : (
-                  <Alert severity="info">No ETF OHLCV data available for this underlying.</Alert>
-                )}
-              </ChartCard>
+                height={340}
+                headerAction={<OhlcModeToggle value={ohlcMode} onChange={setOhlcMode} />}
+                option={
+                  ohlcv && ohlcv.rows.length > 0
+                    ? buildOhlcOption(ohlcv, themeMode, ohlcMode)
+                    : null
+                }
+                emptyText="No ETF OHLCV data available for this underlying."
+              />
             </>
           )}
         </>

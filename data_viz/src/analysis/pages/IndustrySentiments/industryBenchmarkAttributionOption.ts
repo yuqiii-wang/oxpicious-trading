@@ -25,6 +25,7 @@ import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import type { IndustryBenchmarkAttributionResponse } from "@shared/types";
 import { MUTED_PALETTE, UP_COLOR, DOWN_COLOR, axisColors } from "@/theme/chart-palette";
+import { commonTooltip } from "@/shared/charts/base-chart";
 import {
   type AttributionBarRow,
   type AttributionBarContext,
@@ -90,12 +91,9 @@ export function buildIndustryBenchmarkAttributionOption(
 
   return {
     ...base,
-    tooltip: {
-      trigger: "axis",
+    // Shadow pointer over the bar clusters (old hand-rolled shape).
+    tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "shadow" },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           dataIndex?: number;
@@ -118,7 +116,7 @@ export function buildIndustryBenchmarkAttributionOption(
           <div>Industry Shared Wt (in benchmark): ${iw == null ? "—" : fmtNum(iw, 2) + "%"}</div>
         `;
       },
-    },
+    }),
     xAxis: buildXAxis(labels, codes, broadFlags, ctx),
     yAxis: buildYAxes(themeMode),
     series: [

@@ -41,8 +41,8 @@
 --  RESULT DATA
 --    analysis_forecasts.forecast_results via forecast_id (1:N — one
 --    forecast_id → 5 period rows next/5d/20d/60d/mixed): B's forward offset
---    change stats (ave/std/max/min, occurrence_count,
---    max_low_change_ratio) and reverse_prob at B's ADAPTIVE
+--    change stats (ave/std/max/min, occurrence_count) and reverse_prob
+--    at B's ADAPTIVE
 --    threshold (k_n·σ of B's window forward offset changes).
 --    side='bottom' → reverse_prob = P(B's change > +threshold)
 --    = the pair forecast's CONFIRMATION probability (B rises when A
@@ -104,87 +104,6 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.opp_pair_state (
 ) PARTITION BY HASH (industry_id);
 
 SELECT public.create_hash_partitions('analysis_forecasts', 'opp_pair_state', 16);
-
--- ----------------------------------------------------------------------------
---  Migration (2026-09): forecast_id-keyed rebuild — the composite
---  (sec_type, industry_id, pair_industry_id, stat_month, trend_window)
---  PK is replaced by the surrogate forecast_id (PK + hash-partition
---  key); the shared identity lives ONLY in forecast_identities (code =
---  the dropping industry_id; pair_industry_id stays on this table).
---  Legacy-shape tables (they still carry the industry_id column) are
---  rebuilt by swap — rows are carried over via forecast_id and the old
---  secondary forecast_id index dissolves into the new PK. See
---  02_mov_rsi_mov_std.sql for the full rationale.
--- ----------------------------------------------------------------------------
-DO $$
-DECLARE
-    r          int;
-    v_partkey  text;
-    v_pkdef    text;
-    v_has_code bool;
-BEGIN
-    SELECT pg_get_partkeydef(c.oid),
-           COALESCE((SELECT pg_get_constraintdef(p.oid)
-                     FROM pg_constraint p
-                     WHERE p.conrelid = c.oid AND p.contype = 'p'), '')
-    INTO v_partkey, v_pkdef
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'analysis_forecasts' AND c.relname = 'opp_pair_state';
-    SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_schema = 'analysis_forecasts'
-                     AND table_name   = 'opp_pair_state'
-                     AND column_name  = 'industry_id')
-    INTO v_has_code;
-    IF v_partkey IS NULL
-       OR (v_partkey = 'HASH (industry_id)'
-           AND v_pkdef = 'PRIMARY KEY (industry_id, forecast_id)') THEN
-        -- fresh install (created above in the target shape) or already
-        -- migrated
-        RETURN;
-    END IF;
-    ALTER TABLE analysis_forecasts.opp_pair_state RENAME TO opp_pair_state_pk_rebuild;
-    ALTER TABLE analysis_forecasts.opp_pair_state_pk_rebuild
-        DROP CONSTRAINT IF EXISTS pk_opp_pair_state;
-    CREATE TABLE analysis_forecasts.opp_pair_state_new (
-            industry_id     TEXT    NOT NULL,  -- hash partition key + PK lead (the DROPPING industry, registered as identities.code); sec_type / stat_month live in forecast_identities
-            forecast_id       BIGINT  NOT NULL,  -- PK + hash key; 1:N link → forecast_results (5 period rows); identity (sec_type, code = dropping industry_id, stat_month) + bucket family live in forecast_identities
-            pair_industry_id  TEXT         NOT NULL,
-            trend_window      INTEGER      NOT NULL,
-            side              TEXT         NOT NULL,
-            benchmark_code    TEXT         NOT NULL DEFAULT '000300',
-            pool_size         TEXT         NOT NULL DEFAULT 'all',
-            lookback_period   TEXT         NOT NULL DEFAULT '5y',
-        CONSTRAINT pk_opp_pair_state PRIMARY KEY (industry_id, forecast_id)
-    ) PARTITION BY HASH (industry_id);
-    PERFORM public.create_hash_partitions('analysis_forecasts',
-                                          'opp_pair_state_new', 16);
-    ALTER TABLE analysis_forecasts.opp_pair_state_pk_rebuild
-        ADD COLUMN IF NOT EXISTS lookback_period TEXT NOT NULL DEFAULT '5y';
-    IF v_has_code THEN
-        INSERT INTO analysis_forecasts.opp_pair_state_new
-               (industry_id, forecast_id, pair_industry_id, trend_window, side, benchmark_code, pool_size, lookback_period)
-        SELECT  industry_id, forecast_id, pair_industry_id, trend_window, side, benchmark_code, pool_size, lookback_period
-        FROM    analysis_forecasts.opp_pair_state_pk_rebuild;
-    ELSE
-        -- intermediate forecast_id-keyed shape (no industry_id column): code
-        -- comes from the identities registry (1 row per forecast_id)
-        INSERT INTO analysis_forecasts.opp_pair_state_new
-               (industry_id, forecast_id, pair_industry_id, trend_window, side, benchmark_code, pool_size, lookback_period)
-        SELECT  i.code, m.forecast_id, m.pair_industry_id, m.trend_window, m.side, m.benchmark_code, m.pool_size, m.lookback_period
-        FROM    analysis_forecasts.opp_pair_state_pk_rebuild m
-        JOIN    analysis_forecasts.forecast_identities i
-          ON    i.forecast_id = m.forecast_id;
-    END IF;
-    DROP TABLE analysis_forecasts.opp_pair_state_pk_rebuild;
-    ALTER TABLE analysis_forecasts.opp_pair_state_new RENAME TO opp_pair_state;
-    FOR r IN 0..15 LOOP
-        EXECUTE format(
-            'ALTER TABLE analysis_forecasts.opp_pair_state_new_p%s '
-            'RENAME TO opp_pair_state_p%s',
-            lpad(r::text, 2, '0'), lpad(r::text, 2, '0'));
-    END LOOP;
-END $$;
 
 CREATE INDEX IF NOT EXISTS idx_opp_pair_state_forecast_id
     ON analysis_forecasts.opp_pair_state (forecast_id);

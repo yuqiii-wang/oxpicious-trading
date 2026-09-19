@@ -26,20 +26,7 @@ BENCHMARK_CLOSES_SQL = """
     ORDER BY date
 """
 
-MARKET_GRID_SQL = """
-    SELECT DISTINCT date FROM stats.index_basic_stats
-    WHERE code = $1::text ORDER BY date
-"""
-
 MARKET_INDEX_CODE = "000001"   # 上证指数 — the walk calendar + market asks
-
-
-async def fetch_market_grid_dates(
-    conn, *, code: str = MARKET_INDEX_CODE,
-) -> List[datetime.date]:
-    """The index's trading-day calendar — the walk grid (reaches back to
-    2020-01-01; the hypes-drains ranking grid only starts 2020-07-03)."""
-    return [r["date"] for r in await conn.fetch(MARKET_GRID_SQL, code)]
 
 
 @dataclass(frozen=True)

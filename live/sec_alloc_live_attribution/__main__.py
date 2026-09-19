@@ -1,8 +1,8 @@
 """Entry point for live.sec_alloc_live_attribution.
 
-Run via ``python -m live.sec_alloc_live_attribution [--mode {all,live,ref}]``.
+Run via ``python -m live.sec_alloc_live_attribution [--mode {all,live,ref,compute}]``.
 
-The pipeline is split into TWO INDEPENDENT PROCESSES (plus a back-compat
+The pipeline is split into THREE INDEPENDENT PROCESSES (plus a back-compat
 combined mode), each with its own PG advisory lock so they never block
 each other:
 
@@ -15,7 +15,10 @@ each other:
         dependency). The loader's anti-join skips (code, time) rows that
         already exist with ANY flag, so pairs covered by daily-close-basis
         rows are natural no-ops. If the live lock is held by a concurrent
-        instance, exits fast (next 5-min run catches up).
+        instance, exits fast (next 5-min run catches up). Also runs the
+        RETENTION PRUNE, guarded to once per NEW trading day via a
+        live_identity bookkeeping row (a plain PK probe — the prune's
+        unindexed date scan must not run on every 5-min tick).
 
   REF   (--mode ref — the manual yday-ref path, fired by the "Build Yday
         Ref" button on the Market Movements page):
@@ -28,12 +31,27 @@ each other:
         daily-close-basis (FALSE) rows, upgrading fallback rows in place.
         Waits (bounded) for its lock instead of skipping.
 
+  COMPUTE (--mode compute --date YYYY-MM-DD — the on-demand backfill path,
+        invoked by the API service when a requested (benchmark, date) has
+        NO tick rows — a date selected on the UI that has fallen out of
+        the RETENTION_DATES window, or one the 5-min keeper never
+        reached): computes that date's rows from the base tables exactly
+        like ref mode does for the latest date (weighted daily-close-basis
+        pass + fallback fill for members without a basic_stats prev
+        close) and upserts them into the tick table. Idempotent — the
+        loaders' anti-joins make existing rows no-ops and upgrade
+        fallback rows in place. Never prunes (a per-request path must not
+        delete the date it was asked to build). Bounded by the RAW
+        intraday table's retention, not by this table's window.
+
   ALL   (--mode all — combined back-compat behavior for CLI runs):
         weighted ticks + fallback fill for any rows still missing,
         exactly as before the split.
 
 --force: truncate tick table first, then recompute (all/ref modes;
-ignored in live mode). Respects the same latest-date scope.
+rejected in compute mode — the request path must never truncate).
+
+--date YYYY-MM-DD: required by (and only valid with) --mode compute.
 
 --benchmark CODE[,CODE,...]: limit scope to specific benchmark codes.
 """
@@ -44,12 +62,20 @@ from __future__ import annotations
 # This pipeline is pure asyncpg DB I/O (no cudf/GPU work) — the GPU VRAM
 # check is skipped so the 5-min UI-keeper run is never killed by heavy
 # GPU-resident jobs holding the card (which silently starved the Market
-# Movements page of live tick rows).
+# Movements page of live tick rows). The system-RAM floor is likewise
+# lowered (default 36 GiB guards the heavy cudf pipelines; this process
+# peaks at ~0.5 GiB RSS) — without this, the API-invoked on-demand
+# compute spawns would abort whenever the WSL VM reports < 36 GiB.
+# setdefault: an explicit ANALYZE_MIN_SYS_GB in the environment still wins.
+import os as _os
+
+_os.environ.setdefault("ANALYZE_MIN_SYS_GB", "8")
 from _common.pre_check import pre_check
 
 pre_check(require_gpu=False)
 import argparse
 import asyncio
+import datetime
 import os
 import sys
 import time
@@ -77,13 +103,16 @@ from live.sec_alloc_live_attribution.config import (  # noqa: E402
     PIPELINE_NAME,
     PIPELINE_DESCRIPTION,
     RETENTION_DATES,
+    PRUNE_IDENTITY_NAME,
     ADVISORY_LOCK_KEY,
     REF_ADVISORY_LOCK_KEY,
+    COMPUTE_ADVISORY_LOCK_KEY,
 )
 from live.sec_alloc_live_attribution.fetch import (  # noqa: E402
     fetch_latest_intraday_dates,
     find_live_tick_pairs,
     find_pairs_with_missing_ticks,
+    find_compute_tick_pairs,
 )
 from live.sec_alloc_live_attribution.ticks import (  # noqa: E402
     load_fallback_ticks,
@@ -99,6 +128,11 @@ setup_utf8_stdout()
 # How long --mode ref waits for its advisory lock before aborting (another
 # ref run is still running; its work is idempotent so aborting is safe).
 REF_LOCK_WAIT_S = 300
+
+# How long --mode compute waits for its advisory lock before aborting
+# (another backfill of the same scope is still running; the API-side
+# process-id-tag dedupe usually prevents the race entirely).
+COMPUTE_LOCK_WAIT_S = 120
 
 
 async def _upsert_live_identity(conn, mode: str) -> None:
@@ -130,9 +164,12 @@ async def _prune_old_dates(conn) -> int:
     intraday dates in the SOURCE table (the pipeline writes the latest
     date only, so the tick table always tracks those dates).
 
-    Runs in ref/all modes only (once-per-day cadence) — never in the
-    5-min live mode, where the tick table's unindexed date scan would
-    run on every tick.
+    Runs in ref/all modes and (guarded to once per new trading day by
+    _maybe_prune_for_new_day) in the 5-min live mode. Dates that fall out
+    of the window are re-computable on demand via --mode compute.
+
+    Touches the PRUNE_IDENTITY_NAME live_identity row afterwards so the
+    live-mode guard knows the prune ran for this trading date.
 
     Returns tick_rows_deleted.
     """
@@ -152,23 +189,58 @@ async def _prune_old_dates(conn) -> int:
     else:
         logger.info(f"    -> retention prune: within the newest "
               f"{RETENTION_DATES}-date window; nothing deleted")
+    await conn.execute(
+        """
+        INSERT INTO live.live_identity
+            (name, detail_name, summary_name, last_run_datetime, description)
+        VALUES ($1, NULL, NULL, NOW(), $2)
+        ON CONFLICT (name) DO UPDATE SET last_run_datetime = NOW()
+        """,
+        PRUNE_IDENTITY_NAME,
+        "Retention-prune bookkeeping row for live.sec_alloc_live_attribution: "
+        "last_run_datetime marks the trading date the rolling-window prune "
+        "(RETENTION_DATES in live/sec_alloc_live_attribution) last ran for, "
+        "so the 5-min LIVE mode probes this row (plain PK lookup) and prunes "
+        "at most once per NEW trading day instead of scanning on every tick.",
+    )
     return n_tick
 
 
-async def _acquire_ref_lock_blocking(conn) -> bool:
-    """Bounded-blocking acquire of the REF advisory lock.
+async def _maybe_prune_for_new_day(conn, latest_date) -> None:
+    """Run the retention prune only when a NEW trading day is seen (live mode).
+
+    The guard is a PK probe on the PRUNE_IDENTITY_NAME live_identity row:
+    when its last_run_datetime::date already covers the latest intraday
+    date, the prune is skipped — the unindexed DELETE date scan must not
+    run on every 5-min tick.
+    """
+    last_prune_date = await conn.fetchval(
+        """
+        SELECT last_run_datetime::date FROM live.live_identity
+        WHERE name = $1
+        """,
+        PRUNE_IDENTITY_NAME,
+    )
+    if last_prune_date is not None and last_prune_date >= latest_date:
+        return
+    await _prune_old_dates(conn)
+
+
+async def _acquire_lock_bounded(conn, lock_key: int, wait_s: int,
+                                label: str) -> bool:
+    """Bounded-blocking acquire of an advisory lock.
 
     Sets a per-statement timeout so pg_advisory_lock() gives up after
-    REF_LOCK_WAIT_S instead of hanging forever, then restores no timeout.
-    Returns False when another ref run still holds the lock.
+    wait_s instead of hanging forever, then restores no timeout.
+    Returns False when another run still holds the lock.
     """
-    await conn.execute(f"SET statement_timeout = '{REF_LOCK_WAIT_S * 1000}ms'")
+    await conn.execute(f"SET statement_timeout = '{wait_s * 1000}ms'")
     try:
-        await conn.execute("SELECT pg_advisory_lock($1)", REF_ADVISORY_LOCK_KEY)
+        await conn.execute("SELECT pg_advisory_lock($1)", lock_key)
         return True
     except Exception as e:  # QueryCanceledError on timeout
-        logger.info(f"    -> ref lock not acquired within {REF_LOCK_WAIT_S}s "
-              f"({type(e).__name__}); aborting this ref run.")
+        logger.info(f"    -> {label} lock not acquired within {wait_s}s "
+              f"({type(e).__name__}); aborting this run.")
         return False
     finally:
         await conn.execute("SET statement_timeout = '0'")
@@ -186,13 +258,24 @@ async def main() -> None:
     ap.add_argument(
         "--mode",
         type=str,
-        choices=("all", "live", "ref"),
+        choices=("all", "live", "ref", "compute"),
         default="all",
         help=(
             "live = 5-min equal-weight fallback ticks only (self-contained, "
             "no daily-stats dependency); ref = weighted tick upgrades "
             "(prev closes from index_basic_stats at tick time; manual "
-            "button); all = combined (back-compat CLI)."
+            "button); compute = on-demand backfill of --date (invoked by "
+            "the API service for selected dates with no tick rows); "
+            "all = combined (back-compat CLI)."
+        ),
+    )
+    ap.add_argument(
+        "--date",
+        type=str,
+        default="",
+        help=(
+            "Target date YYYY-MM-DD for --mode compute (the on-demand "
+            "backfill). Required with compute, invalid with other modes."
         ),
     )
     ap.add_argument(
@@ -218,6 +301,23 @@ async def main() -> None:
     )
     args = ap.parse_args()
 
+    # --date is compute-only; --force must never ride the request path.
+    if args.mode == "compute":
+        if not args.date:
+            ap.error("--mode compute requires --date YYYY-MM-DD")
+        if args.force:
+            ap.error("--force is not supported with --mode compute "
+                     "(the request path must never truncate the table)")
+    elif args.date:
+        ap.error("--date is only valid with --mode compute")
+
+    target_compute_date: datetime.date | None = None
+    if args.mode == "compute":
+        try:
+            target_compute_date = datetime.date.fromisoformat(args.date)
+        except ValueError:
+            ap.error(f"--date must be YYYY-MM-DD, got '{args.date}'")
+
     benchmarks = [
         s.strip() for s in args.benchmark.split(",") if s.strip()
     ] or None
@@ -225,6 +325,64 @@ async def main() -> None:
     t0 = time.time()
 
     conn = await get_db_connection_async()
+
+    # ======================== COMPUTE mode ===========================
+    # On-demand backfill of a SELECTED date (API-invoked): weighted
+    # daily-close-basis pass + fallback fill, exactly the ref/all passes
+    # but scoped to an arbitrary date instead of the latest. Idempotent
+    # (loader anti-joins); never prunes (a per-request path must not
+    # delete the date it was asked to build — the daily prune will reap
+    # it again on the next new trading day, and the next request for the
+    # date simply recomputes).
+    # =================================================================
+    if args.mode == "compute":
+        assert target_compute_date is not None  # validated above
+        lock_acquired = await _acquire_lock_bounded(
+            conn, COMPUTE_ADVISORY_LOCK_KEY, COMPUTE_LOCK_WAIT_S, "compute"
+        )
+        if not lock_acquired:
+            print_wall_time(t0)
+            try:
+                await asyncio.wait_for(conn.close(), timeout=10)
+            except (asyncio.TimeoutError, Exception):
+                pass
+            return
+
+        print_build_header(
+            "LIVE SEC ALLOC ATTRIBUTION — COMPUTE "
+            "(on-demand backfill of a selected date)",
+            index_table=TICK_TABLE,
+            mode=f"COMPUTE (date = {target_compute_date})",
+        )
+        pairs = await find_compute_tick_pairs(
+            conn, benchmarks, target_compute_date
+        )
+        logger.info(f"\n[1/3] Compute pass: {len(pairs)} tick-eligible "
+              f"(benchmark, date) pairs for {target_compute_date}...")
+        if not pairs:
+            logger.info("    -> no tick-eligible pairs (no raw intraday "
+                  "bars for that date — outside the raw table's retention, "
+                  "a non-trading day, or no curated benchmark traded); "
+                  "nothing written.")
+        n_ticks = await load_missing_ticks(conn, pairs)
+        logger.info(f"    -> weighted total: {n_ticks:,} rows")
+        logger.info("\n[2/3] Fallback fill (members without a basic_stats "
+              "prev close)...")
+        n_fb = await load_fallback_ticks(conn, pairs)
+        logger.info(f"    -> fallback total: {n_fb:,} TRUE tick rows")
+        logger.info("\n[3/3] Registering in live.live_identity...")
+        await _upsert_live_identity(conn, args.mode)
+        print_wall_time(t0)
+        try:
+            await conn.execute("SELECT pg_advisory_unlock($1)",
+                               COMPUTE_ADVISORY_LOCK_KEY)
+        except Exception:
+            pass  # connection close releases the lock anyway
+        try:
+            await asyncio.wait_for(conn.close(), timeout=10)
+        except (asyncio.TimeoutError, Exception):
+            pass
+        return
 
     # ---- Resolve the live date -------------------------------------
     target_dates = await fetch_latest_intraday_dates(conn, n_dates=1)
@@ -253,9 +411,9 @@ async def main() -> None:
                 else "SKIPPED (another live instance holds the advisory lock)"
             ),
         )
-        logger.info(f"\n[1/2] Latest intraday date = {latest_date}")
+        logger.info(f"\n[1/3] Latest intraday date = {latest_date}")
         if not lock_acquired:
-            logger.info("[2/2] Lock held — exiting fast; the next 5-min run "
+            logger.info("[2/3] Lock held — exiting fast; the next 5-min run "
                   "catches up.")
             print_wall_time(t0)
             try:
@@ -265,13 +423,18 @@ async def main() -> None:
             return
 
         pairs = await find_live_tick_pairs(conn, benchmarks)
-        logger.info(f"[2/2] LIVE fallback tick pass: {len(pairs)} tick-eligible "
-              "(benchmark, date) pairs...")
+        logger.info(f"[2/3] LIVE fallback tick pass: {len(pairs)} tick-eligible "
+              f"(benchmark, date) pairs...")
         if pairs:
             n_fb = await load_fallback_ticks(conn, pairs)
             logger.info(f"    -> fallback total: {n_fb:,} TRUE tick rows")
         else:
             logger.info("    -> no tick-eligible pairs; nothing to do.")
+        # Retention prune, at most once per NEW trading day (the guard is a
+        # plain PK probe on the prune bookkeeping identity row — see
+        # _maybe_prune_for_new_day). Dates outside the window stay
+        # re-computable on demand via --mode compute.
+        await _maybe_prune_for_new_day(conn, latest_date)
         await _upsert_live_identity(conn, "live")
         print_wall_time(t0)
         try:
@@ -289,7 +452,9 @@ async def main() -> None:
     # Weighted (daily-close-basis) tick upgrades (ref), optionally
     # combined with the fallback fill (all).
     # =================================================================
-    lock_acquired = await _acquire_ref_lock_blocking(conn)
+    lock_acquired = await _acquire_lock_bounded(
+        conn, REF_ADVISORY_LOCK_KEY, REF_LOCK_WAIT_S, "ref"
+    )
     if not lock_acquired:
         print_wall_time(t0)
         try:

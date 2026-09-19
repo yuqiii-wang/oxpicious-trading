@@ -30,6 +30,7 @@ import {
   commonLegend,
   commonGrid,
 } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { fmtNum, fmtYi } from "@/lib/series";
 
 export function buildFluctuationOption(
@@ -100,16 +101,13 @@ export function buildFluctuationOption(
   const fmtPctSigned = (v: number | null, digits = 2): string =>
     v == null ? "—" : (v >= 0 ? "+" : "") + fmtNum(v * 100, digits) + "%";
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  // Shared preamble via baseChartOption; the shadow axisPointer replaces the
+  // common cross one (bar-chart hover) and the HTML formatter overrides the
+  // default tooltip content.
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 64, right: 64, bottom: 96 }),
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "shadow" },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           dataIndex?: number;
@@ -137,7 +135,7 @@ export function buildFluctuationOption(
           <div>ETF Amt Ratio (bench/code): ${er == null ? "—" : fmtNum(er, 4)}${share == null ? "" : ` · share ${fmtNum(share, 4)}`}</div>
         `;
       },
-    },
+    }),
     legend: commonLegend(themeMode, { itemWidth: 12, itemHeight: 7, data: ["Contribution", "Shared Wt"] }),
     xAxis: {
       type: "category",
@@ -252,5 +250,5 @@ export function buildFluctuationOption(
         barMaxWidth: 28,
       },
     ],
-  };
+  });
 }

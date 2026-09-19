@@ -94,6 +94,7 @@ export function computeTrendBands(
       }
     }
     if (t === curTrend) {
+      // same trend as the previous row — the run simply continues
     } else {
       if (curTrend !== null) {
         rawBands.push({ startIdx: curStart, endIdx: idx - 1, trend: curTrend });

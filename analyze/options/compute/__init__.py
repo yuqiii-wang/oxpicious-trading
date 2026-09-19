@@ -8,6 +8,8 @@ metric semantics and industry anchors):
   walls.py      — strength-scored OI wall zones with lifecycle
   iv_skew.py    — IV skew stats (ATM/25d wings/risk reversal) + iv_smile
                  (OI-wtd 3rd moment of IV, pricing)
+  vix.py        — 30d model-free implied-vol index per underlying
+                 (CBOE VIX methodology off raw settlement prices)
   greek_delta.py — delta-weighted put/call OI ratio dpcr (PCR refinement,
                  neutral 0.5)
   greek_gamma.py — GEX-style call-minus-put gamma balance (neutral 0)
@@ -41,6 +43,7 @@ from analyze.options.compute.iv_skew import (
 )
 from analyze.options.compute.oi_stats import compute_options_oi_stats
 from analyze.options.compute.skewness import compute_options_skewness_stats
+from analyze.options.compute.vix import compute_options_vol_index
 from analyze.options.compute.walls import compute_options_walls
 
 # Per-greek dispatch for the greek skew pipeline (__main__), keyed by
@@ -56,6 +59,7 @@ __all__ = [
     "compute_options_oi_stats",
     "compute_options_walls",
     "compute_options_iv_skew_stats",
+    "compute_options_vol_index",
     "compute_options_iv_smile_corr_stats",
     "compute_options_greek_delta_skew_stats",
     "compute_options_greek_gamma_skew_stats",

@@ -18,7 +18,6 @@ from analyze.analysis_forecasts.config import (
     TABLE_HIGH_LOW_STREAKS,
     TABLE_IDENTITIES,
     TABLE_MARGIN_RATIO,
-    TABLE_MOV_GAP,
     TABLE_MOV_PAIRS,
     TABLE_MOV_PAIRS_EMA,
     TABLE_MOV_RSI,
@@ -57,7 +56,7 @@ def _identity_rows(bucket_rows: list[dict], mov_table: str) -> list[dict]:
     with the bucket family (the motivation table's short name) and the
     bucket's mean streak length (streak_signal_days — the 2026-09
     streak semantics: the multi-day streak families mov_rsi / mov_std /
-    mov_gap / px_vol_state record the MEAN run length of their merged
+    px_vol_state record the MEAN run length of their merged
     mid-anchored signals, mov_pairs / mov_pairs_ema the 1-day constant,
     margin_ratio / opp_pair a constant 1, high_low_streaks its config
     mean_day_count). Reads the UNFILTERED bucket payload dicts (the
@@ -94,8 +93,9 @@ async def _compute_months(
     ``table`` / sec_type.
 
     compute = stat_months MISSING from the table plus the PRESENT
-    months inside the refresh window (the most recent REFRESH_MONTHS
-    completed months). A month written right after month-end carries
+    months inside the refresh window (the RUNNING month — always the
+    newest spec — plus the most recent REFRESH_MONTHS - 1 completed
+    months). A month written right after month-end carries
     permanently truncated 20d/60d occurrence counts — its forward
     windows were not complete yet at write time — so present
     refresh-window months are deleted and recomputed on every run
@@ -193,7 +193,6 @@ async def _delete_months(
 _STAGE_OF_TABLE: dict[str, str] = {
     TABLE_MOV_RSI: "rsi",
     TABLE_MOV_STD: "std",
-    TABLE_MOV_GAP: "gap",
     TABLE_MOV_PAIRS: "pairs",
     TABLE_MOV_PAIRS_EMA: "epairs",
     TABLE_HIGH_LOW_STREAKS: "hstreaks",
@@ -214,7 +213,7 @@ async def _delete_sec_type(conn, sec_type: str, metrics: set[str] | None = None)
     restricts the deletion to the selected families — None (default)
     deletes every family."""
     for table, linked in ((TABLE_MOV_RSI, True), (TABLE_MOV_STD, True),
-                          (TABLE_MOV_GAP, True), (TABLE_MOV_PAIRS, True),
+                          (TABLE_MOV_PAIRS, True),
                           (TABLE_MOV_PAIRS_EMA, True),
                           (TABLE_HIGH_LOW_STREAKS, True),
                           (TABLE_PX_VOL, True),

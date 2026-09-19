@@ -18,14 +18,11 @@ from __future__ import annotations
 import datetime
 from typing import Optional
 
+from llm_agents._core.prompts import LANG_LABELS, lang_label
 from llm_agents.online_search_summary.core.models import SHANGHAI_TZ
 
-# lang arg -> human label used inside prompts; unknown codes pass through.
-LANG_LABELS = {"zh": "中文", "en": "English"}
-
-
-def lang_label(lang: str) -> str:
-    return LANG_LABELS.get((lang or "zh").lower(), lang or "中文")
+# lang arg -> human label used inside prompts; unknown codes pass through
+# (re-export of the llm_agents._core vocabulary).
 
 
 SUMMARY_FORMAT_RULES = (

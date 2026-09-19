@@ -10,6 +10,10 @@ Pipeline (all steps reuse one DB connection):
   4. Upsert text.news, refresh text.news_keywords for new/changed articles,
      recompute doc_freq/idf corpus-wide, fill today_industry_change from
      stats.industry_basic_stats.
+  5. ai_daily source: store the downloaded Q&A envelopes into
+     text.llm_qa (+ text.llm_qa_refs / news-group provenance) via
+     builds.text.ai_daily_qa — idempotent per (question, qa_date), the
+     DB half of downloads.macro.ai_daily since its --store removal.
 
 Incremental semantics: text.news upserts are idempotent; keyword rows are
 rewritten only for articles whose stored word_count/industry_id changed
@@ -41,6 +45,7 @@ from _common.data_build import DataBuild
 from _common.log_setup import setup_logging
 
 from builds.text import upsert
+from builds.text.ai_daily_qa import sync_ai_daily_qa
 from builds.text.keywords import extract_for_articles
 from builds.text.loaders import ALL_SOURCES, load_news, load_zhihu_comments
 
@@ -141,8 +146,11 @@ class TextBuild(DataBuild):
         logger.info("\n[3/4] Connecting to database …")
         conn = await self.connect_db()
         try:
-            missing = await _tables_exist(
-                conn, ["text.news", "text.news_keywords"])
+            tables = ["text.news", "text.news_keywords"]
+            if self.sources is None or "ai_daily" in self.sources:
+                tables += ["text.llm_qa", "text.news_groups",
+                           "text.news_group_items", "text.llm_qa_refs"]
+            missing = await _tables_exist(conn, tables)
             if missing:
                 logger.error("    [FATAL] missing tables %s — run "
                              "database/sql/text/*.sql first", missing)
@@ -173,6 +181,16 @@ class TextBuild(DataBuild):
                 logger.info("    [DB] comments: %d parsed, %d resolved to news, "
                             "%d new", len(comment_rows), len(comments), len(new_comments))
                 await upsert.insert_comments(conn, new_comments)
+
+            # --- text.llm_qa (ai_daily envelopes) --------------------------
+            # The DB half of downloads.macro.ai_daily (artifact-only since
+            # its --store removal): answers -> text.llm_qa, references ->
+            # provenance, deduped on (question, qa_date). Runs AFTER the
+            # news upsert — refs resolve to the news_ids just written.
+            if self.sources is None or "ai_daily" in self.sources:
+                n_qa, n_skip = await sync_ai_daily_qa(conn)
+                logger.info("    [DB] ai_daily Q&A: %d stored, %d already "
+                            "present", n_qa, n_skip)
 
             # --- 4. text.news_keywords --------------------------------------
             if self.args.no_keywords:

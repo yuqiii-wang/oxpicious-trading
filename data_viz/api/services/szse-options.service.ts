@@ -16,12 +16,12 @@ import type {
   OptionsWallsResponse,
   EtfOhlcvResponse,
   SkewType,
-  SkewnessCorrRow,
-  SkewnessCorrResponse,
   SkewnessSeriesRow,
   SkewnessSeriesResponse,
   IvSkewRow,
   IvSkewResponse,
+  VolIndexRow,
+  VolIndexResponse,
 } from "../../shared/types.js";
 
 export interface OptionsQuery {
@@ -381,68 +381,6 @@ export async function getEtfOhlcv(
 }
 
 // ----------------------------------------------------------------------------
-//  Options Skewness Stats — per-expiry whole-period correlation
-// ----------------------------------------------------------------------------
-
-interface DbSkewnessCorrRow extends QueryResultRow {
-  date: Date | string;
-  underlying_code: string;
-  expiry_month: Date | string;
-  corr_skewness_ma5_vs_spot_ma5: number | null;
-  corr_skewness_ma20_vs_spot_ma20: number | null;
-  corr_skewness_ma60_vs_spot_ma60: number | null;
-}
-
-export async function getOptionsSkewnessCorr(
-  underlying: string,
-  startDate?: string,
-  endDate?: string,
-  skewType: SkewType = "oi_moneyness",
-): Promise<SkewnessCorrResponse> {
-  const cleanedCode = stripExchangeSuffix(underlying).trim();
-  const sd = toDateParam(startDate);
-  const ed = toDateParam(endDate);
-
-  const params: unknown[] = [cleanedCode, skewType];
-  const where: string[] = ["underlying_code = $1", "skew_type = $2"];
-  let i = 3;
-
-  if (sd) {
-    where.push(`date >= $${i++}::date`);
-    params.push(sd);
-  }
-  if (ed) {
-    where.push(`date <= $${i++}::date`);
-    params.push(ed);
-  }
-
-  const sql = `
-    SELECT
-      date,
-      underlying_code,
-      DATE_TRUNC('month', expiry_date) AS expiry_month,
-      AVG(corr_skewness_ma5_vs_spot_ma5) AS corr_skewness_ma5_vs_spot_ma5,
-      AVG(corr_skewness_ma20_vs_spot_ma20) AS corr_skewness_ma20_vs_spot_ma20,
-      AVG(corr_skewness_ma60_vs_spot_ma60) AS corr_skewness_ma60_vs_spot_ma60
-    FROM analysis.options_skewness_stats
-    WHERE ${where.join(" AND ")}
-    GROUP BY date, underlying_code, DATE_TRUNC('month', expiry_date)
-    ORDER BY date ASC, DATE_TRUNC('month', expiry_date) ASC
-  `;
-
-  const rows = await queryRows<DbSkewnessCorrRow>(sql, params);
-  const transformed: SkewnessCorrRow[] = rows.map((r) => ({
-    date: formatDate(r.date),
-    expiry_month: formatDate(r.expiry_month),
-    corr_skewness_ma5_vs_spot_ma5: toNum(r.corr_skewness_ma5_vs_spot_ma5),
-    corr_skewness_ma20_vs_spot_ma20: toNum(r.corr_skewness_ma20_vs_spot_ma20),
-    corr_skewness_ma60_vs_spot_ma60: toNum(r.corr_skewness_ma60_vs_spot_ma60),
-  }));
-
-  return { underlying_code: cleanedCode, rows: transformed };
-}
-
-// ----------------------------------------------------------------------------
 //  Options Skewness Series — daily raw skewness per (date, expiry month)
 // ----------------------------------------------------------------------------
 
@@ -517,6 +455,9 @@ interface DbIvSkewRow extends QueryResultRow {
   risk_reversal_25d: number | null;
   put_skew_25d: number | null;
   call_skew_25d: number | null;
+  iv_call10: number | null;
+  iv_put10: number | null;
+  risk_reversal_10d: number | null;
   smile_skewness: number | null;
   rr25_ma5: number | null;
   rr25_ma20: number | null;
@@ -564,6 +505,9 @@ export async function getOptionsIvSkew(
       AVG(risk_reversal_25d) AS risk_reversal_25d,
       AVG(put_skew_25d) AS put_skew_25d,
       AVG(call_skew_25d) AS call_skew_25d,
+      AVG(iv_call10) AS iv_call10,
+      AVG(iv_put10) AS iv_put10,
+      AVG(risk_reversal_10d) AS risk_reversal_10d,
       AVG(smile_skewness) AS smile_skewness,
       AVG(rr25_ma5) AS rr25_ma5,
       AVG(rr25_ma20) AS rr25_ma20,
@@ -588,6 +532,9 @@ export async function getOptionsIvSkew(
     risk_reversal_25d: toNum(r.risk_reversal_25d),
     put_skew_25d: toNum(r.put_skew_25d),
     call_skew_25d: toNum(r.call_skew_25d),
+    iv_call10: toNum(r.iv_call10),
+    iv_put10: toNum(r.iv_put10),
+    risk_reversal_10d: toNum(r.risk_reversal_10d),
     smile_skewness: toNum(r.smile_skewness),
     rr25_ma5: toNum(r.rr25_ma5),
     rr25_ma20: toNum(r.rr25_ma20),
@@ -598,4 +545,78 @@ export async function getOptionsIvSkew(
   }));
 
   return { underlying_code: cleanedCode, rows: transformed };
+}
+
+// ----------------------------------------------------------------------------
+//  Vol index (30d model-free, VIX-style) — analysis.options_vol_index
+// ----------------------------------------------------------------------------
+interface DbVolIndexRow extends QueryResultRow {
+  date: Date | string;
+  underlying_code: string;
+  near_expiry_date: Date | string | null;
+  far_expiry_date: Date | string | null;
+  dte_near: number | null;
+  dte_far: number | null;
+  var_near: number | null;
+  var_far: number | null;
+  variance_30d: number | null;
+  vol_index_30d: number | null;
+}
+
+/**
+ * Daily 30-day model-free implied-vol index per underlying
+ * (analysis.options_vol_index). `underlying` optional — omitting it
+ * returns every underlying's series for the cross-asset chart.
+ */
+export async function getOptionsVolIndex(
+  underlying?: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<VolIndexResponse> {
+  const params: unknown[] = [];
+  const where: string[] = [];
+  let i = 1;
+
+  if (underlying) {
+    where.push(`underlying_code = $${i++}`);
+    params.push(stripExchangeSuffix(underlying).trim());
+  }
+  const sd = toDateParam(startDate);
+  if (sd) {
+    where.push(`date >= $${i++}::date`);
+    params.push(sd);
+  }
+  const ed = toDateParam(endDate);
+  if (ed) {
+    where.push(`date <= $${i++}::date`);
+    params.push(ed);
+  }
+
+  const sql = `
+    SELECT date, underlying_code,
+           near_expiry_date, far_expiry_date,
+           dte_near, dte_far,
+           var_near, var_far, variance_30d, vol_index_30d
+    FROM analysis.options_vol_index
+    ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY date ASC, underlying_code ASC
+  `;
+
+  const rows = await queryRows<DbVolIndexRow>(sql, params);
+  const transformed: VolIndexRow[] = rows.map((r) => ({
+    date: formatDate(r.date),
+    underlying_code: r.underlying_code,
+    near_expiry_date:
+      r.near_expiry_date != null ? formatDate(r.near_expiry_date) : null,
+    far_expiry_date:
+      r.far_expiry_date != null ? formatDate(r.far_expiry_date) : null,
+    dte_near: toNum(r.dte_near),
+    dte_far: toNum(r.dte_far),
+    var_near: toNum(r.var_near),
+    var_far: toNum(r.var_far),
+    variance_30d: toNum(r.variance_30d),
+    vol_index_30d: toNum(r.vol_index_30d),
+  }));
+
+  return { underlying_code: underlying ?? null, rows: transformed };
 }

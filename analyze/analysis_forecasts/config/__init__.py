@@ -14,23 +14,16 @@ and RESULT tables:
     ma_{W} ± k·std_{W}days) within the same window (band inputs join
     from analysis.mov_ave_spreads_detail / stats.*_tech_stats).
 
-  - mov_gap: per (sec_type, code, stat_month, gap_window, side, pct,
-    is_market_hyped) the days whose gap_{W}days (W-day price return,
-    W ∈ {2, 3}, joined from analysis.mov_ave_rsi) sits in the top/bottom
-    pct% of the trailing 5-year window ending at stat_month (same
-    percentile + streak-mid machinery as mov_rsi).
-
   - forecast_results: the RESULT data keyed by the surrogate
     forecast_id — mean forward changes at the next, 5d, 20d, 60d
     horizons; max/min forward changes (close-based) at the 5d/20d/60d
-    horizons only; the swing ratio (max_low_change_ratio — (1 + the widest path high) / (1 + the deepest path low across the bucket's trigger days' n-day forward windows, signed; ≥ 1, large = a large within-period close swing)) at the
-    5d/20d/60d horizons; per-horizon swing-aware reversal
+    horizons only; per-horizon swing-aware reversal
     probabilities — P(the n-day forward window's adverse path extreme
     beyond the fixed 1% bar: the window swung past ±1% against the
     side at some close; at the 5d horizon about the closes of the 5
     days after the signal) — and
     occurrence counts. Each mov_rsi /
-    mov_std / mov_gap row carries a
+    mov_std row carries a
     forecast_id linking 1:1 to its result rows (5 periods — the four horizons plus the weight-blended mixed row, see PERIOD_MIXED).
 
   - base_rates: per (sec_type, code, stat_month, period) the
@@ -40,15 +33,19 @@ and RESULT tables:
     window trading days — so bucket ave_change / reverse_prob read
     as lift vs base rate.
 
-Each stat month is a COMPLETED calendar month-end; results are immutable
-once written (closes / RSI / MA / std inside the window are historical
-facts), so the run is incremental at month granularity.
+Each stat month is a COMPLETED calendar month-end, plus the RUNNING
+month (keyed at its own month-end, computed only up to the latest
+available data date — refreshed on every run while its forward windows
+grow, and re-derived with complete data once the month completes, so
+the incremental contract holds at month granularity). Completed
+months' results are immutable once written (closes / RSI / MA / std
+inside the window are historical facts).
 """
 from __future__ import annotations
 
 # The package re-exports every public constant so the historical
 # ``analyze.analysis_forecasts.config.X`` import paths keep working
-# (analysis_signals.live_close, analyze.mov_ave_spread.price_vs_amt,
+# (analyze.analysis_signals, analyze.mov_ave_spread.price_vs_amt,
 # live.live_signals.analysis.fetch, ...).
 
 from .grid import *  # noqa: F401,F403

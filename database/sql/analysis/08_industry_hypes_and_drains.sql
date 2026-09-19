@@ -58,9 +58,8 @@
 --  PERIODS
 --    period_days ∈ {5, 20, 60, 120, 255, 500} trading days. 120d is the
 --    UI default (see ROLLING_DAYS in the frontend constants). The 120d
---    column on analysis.industry_attributions is added below via ALTER
---    TABLE and populated by the attributions step (which now includes 120
---    in ROLLING_WINDOWS).
+--    column on analysis.industry_attributions is populated by the
+--    attributions step (which includes 120 in ROLLING_WINDOWS).
 --
 --  SOURCE
 --    analysis.industry_attributions  (benchmark_non_this_industry_rolling_{N}days_price
@@ -79,16 +78,6 @@
 --
 --  Register in analysis.analysis_identity (name='industry_hypes_and_drains').
 -- ============================================================================
-
--- ----------------------------------------------------------------------------
---  Add the 120-day rolling column to analysis.industry_attributions.
---  Idempotent: ADD COLUMN IF NOT EXISTS. Populated by the attributions step
---  (ROLLING_WINDOWS now includes 120). Existing rows get NULL until a
---  backfill / force run; the hypes_and_drains step skips period=120 rows
---  whose contribution source column is NULL.
--- ----------------------------------------------------------------------------
-ALTER TABLE analysis.industry_attributions
-    ADD COLUMN IF NOT EXISTS benchmark_non_this_industry_rolling_120days_price NUMERIC(20,4);
 
 COMMENT ON COLUMN analysis.industry_attributions.benchmark_non_this_industry_rolling_120days_price IS 'Non-industry benchmark price rebased to 100, computed over the trailing 120-trading-day window ending on `date`. Computed ONLY for broad-market benchmarks (is_broad_market=TRUE); NULL otherwise. = 100 × cumprod(1 + non_industry_return) over the last 120 trading days (~6 months). Returns outside [-0.5, 0.5] are treated as 0 to prevent compounding artifacts. Default period for the BenchmarkPriceChart shade overlay and for analysis.industry_hypes_and_drains.';
 

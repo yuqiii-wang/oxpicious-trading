@@ -39,6 +39,7 @@ import {
   fetchTriggeredSignals,
   fetchTradingSignalDates,
   fetchTradingSignalHistory,
+  isTradingSignalComputeEligible,
 } from "../services/trading-signals.service.js";
 
 const router = Router();
@@ -215,7 +216,7 @@ router.get("/sec-alloc-live/attribution", async (req: Request, res: Response) =>
 });
 
 // ---- Sec-Alloc Live Attribution pipeline trigger.
-//      The pipeline is split into TWO processes, selected via body.mode:
+//      The pipeline is split into THREE processes, selected via body.mode:
 //        • "live" (default) — the 5-min equal-weight tick path. Fired by
 //          the App-root keeper (every route) + the Market Movements page
 //          refresh. No yday-ref dependency: prev close = prev-day last
@@ -244,17 +245,65 @@ router.get("/sec-alloc-live/attribution", async (req: Request, res: Response) =>
 //      ("sec-alloc-live:<mode>") — the py-runner registry dedupes
 //      concurrent spawns of the SAME tag and exposes running-state via
 //      the status endpoint below so a page refresh can restore the
-//      button's spinning state. The two modes use separate PG advisory
+//      button's spinning state. The modes use separate PG advisory
 //      locks in Python so they never block each other.
+//        • "compute" — ON-DEMAND backfill of a selected date (body.date
+//          REQUIRED, optional body.benchmark csv): recomputes that
+//          date's tick rows from the base tables (weighted pass +
+//          fallback fill; idempotent). This is the same py main the
+//          attribution GET service auto-invokes when a requested
+//          (benchmark, date) has no tick rows — exposed here for
+//          explicit/manual triggering and status tracking.
 
 /** POST /api/live-data/sec-alloc-live/run
- *  body: { mode?: "live" | "ref", process_id_tag?: string } */
+ *  body: { mode?: "live" | "ref" | "compute", date?: string,
+ *          benchmark?: string, process_id_tag?: string } */
 router.post("/sec-alloc-live/run", async (req: Request, res: Response) => {
-  const mode: "live" | "ref" = req.body?.mode === "ref" ? "ref" : "live";
-  const tag: string =
-    (typeof req.body?.process_id_tag === "string" && req.body.process_id_tag.trim())
-    || `sec-alloc-live:${mode}`;
+  const mode: "live" | "ref" | "compute" =
+    req.body?.mode === "ref" ? "ref"
+    : req.body?.mode === "compute" ? "compute"
+    : "live";
   try {
+    if (mode === "compute") {
+      const computeDate: string =
+        typeof req.body?.date === "string" ? req.body.date.trim() : "";
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(computeDate)) {
+        res.status(400).json({
+          success: false,
+          mode,
+          stderr_tail: "mode 'compute' requires body.date as YYYY-MM-DD",
+        });
+        return;
+      }
+      const benchmark: string =
+        typeof req.body?.benchmark === "string" && req.body.benchmark.trim()
+          ? req.body.benchmark.trim()
+          : "";
+      const tag: string =
+        (typeof req.body?.process_id_tag === "string" && req.body.process_id_tag.trim())
+        || `sec-alloc-live:compute:${benchmark || "all"}:${computeDate}`;
+      const args = ["--mode", "compute", "--date", computeDate];
+      if (benchmark) {
+        args.push("--benchmark", benchmark);
+      }
+      const result = await runPythonModule(
+        "live.sec_alloc_live_attribution",
+        args,
+        { processIdTag: tag },
+      );
+      res.json({
+        success: result.success,
+        mode,
+        process_id_tag: tag,
+        already_running: result.already_running === true,
+        stdout_tail: result.stdout.slice(-2000),
+        stderr_tail: result.stderr.slice(-2000),
+      });
+      return;
+    }
+    const tag: string =
+      (typeof req.body?.process_id_tag === "string" && req.body.process_id_tag.trim())
+      || `sec-alloc-live:${mode}`;
     if (mode === "ref") {
       // Whole-chain dedupe: if ANY phase of another ref chain is running
       // (CSV downloads, baseline rebuild, or the ref process itself),
@@ -358,7 +407,7 @@ router.get("/sec-alloc-live/run/status", async (req: Request, res: Response) => 
 
 // ---------------------------------------------------------------------------
 //  Trading Signals (analysis scheme) — live breach records for the
-//  analysis_signals threshold set.
+//  analysis_signals.signal_strategies threshold set.
 // ---------------------------------------------------------------------------
 
 /** Asia/Shanghai "biz today" (YYYY-MM-DD) — UTC+8 year-round, so the
@@ -377,7 +426,8 @@ const TRADING_SIGNALS_RUN_ANALYSIS_TAG = "trading-signals:run-analysis";
 /** POST /api/live-data/trading-signals/run
  *  body: { sec_types?: string[] } — spawns
  *  `python -m live.live_signals --sec-type <csv>` (batch mode: every code
- *  with ACTIVE analysis_signals configs of the given sec_types; codes
+ *  with ACTIVE analysis_signals.signal_strategies configs of the given
+ *  sec_types; codes
  *  without intraday price are skipped server-side). Fired by the page's
  *  Refresh button and the once-per-biz-day 13:30 scheduler. Deduped by
  *  process-id-tag. */
@@ -412,12 +462,12 @@ router.post("/trading-signals/run", async (req: Request, res: Response) => {
 
 /** POST /api/live-data/trading-signals/run-analysis
  *  body: { sec_types?: string[] } — spawns
- *  `python -m analyze.analysis_signals --live --sec-type <csv>`: the
- *  analysis-signal pipeline + day-close mirror (every not-yet-recorded
- *  signal day becomes ONE live.live_signals observation at that day's
- *  close, time 15:00, is_day_close_trigger = TRUE). Fired by the page's
- *  old-date refresh when no intraday data exists for that date. Deduped
- *  by process-id-tag. */
+ *  `python -m analyze.analysis_signals --sec-type <csv>`: the signals
+ *  pipeline (re-emits analysis_signals.signal_strategies +
+ *  analysis_signals.history_signals for the missing months plus the
+ *  newest refresh months, from the analysis_forecasts buckets).
+ *  Fired by the page's old-date refresh when no intraday data exists
+ *  for that date. Deduped by process-id-tag. */
 router.post("/trading-signals/run-analysis", async (req: Request, res: Response) => {
   const valid = new Set(["index", "etf", "stock"]);
   const secTypes = Array.isArray(req.body?.sec_types)
@@ -430,7 +480,7 @@ router.post("/trading-signals/run-analysis", async (req: Request, res: Response)
   try {
     const result = await runPythonModule(
       "analyze.analysis_signals",
-      ["--live", "--sec-type", secTypes.join(",")],
+      ["--sec-type", secTypes.join(",")],
       { processIdTag: tag },
     );
     res.json({
@@ -449,7 +499,7 @@ router.post("/trading-signals/run-analysis", async (req: Request, res: Response)
 
 /** GET /api/live-data/trading-signals/run/status
  *  → { status: { [tag]: boolean } } — running-state of BOTH run tags
- *  (intraday run + analysis day-close run) so a page refresh can restore
+ *  (intraday run + signals-pipeline run) so a page refresh can restore
  *  the Refresh button's spinning state. */
 router.get("/trading-signals/run/status", async (_req: Request, res: Response) => {
   try {
@@ -465,7 +515,8 @@ router.get("/trading-signals/run/status", async (_req: Request, res: Response) =
 
 /** GET /api/live-data/trading-signals/configs?sec_type=index
  *  → { sec_type, configs: [{signal_type, signal_sub_type, n_configs}] } —
- *  the ACTIVE analysis_signals configs (signal menu; default = all). */
+ *  the ACTIVE analysis_signals.signal_strategies configs (signal menu;
+ *  default = all). */
 router.get("/trading-signals/configs", async (req: Request, res: Response) => {
   try {
     const secType = typeof req.query.sec_type === "string"
@@ -518,9 +569,31 @@ router.get("/trading-signals/history", async (req: Request, res: Response) => {
   }
 });
 
+// ---- Trading-signals ON-DEMAND compute (selected-date backfill) -------------
+//      When the requested (sec_type, date) has NO live_signals rows, the
+//      route spawns `python -m live.live_signals --sec-type X --date D`
+//      (the as-of evaluation: last intraday bar of the date when the
+//      intraday table covers it, else the official daily close at 15:00
+//      with is_day_close_trigger = TRUE) and re-reads the table. Guards:
+//        • eligibility probe first (ACTIVE strategies + daily closes for
+//          the date — otherwise every request would spawn pointlessly),
+//        • per (sec_type, date) cooldown (a compute that legitimately
+//          yields ZERO breaches must not respawn on every poll),
+//        • bounded wait — the spawn keeps running past the cap (deduped
+//          by process-id-tag) and later requests pick its rows up.
+const TRADING_SIGNALS_COMPUTE_WAIT_MS = 90_000;
+const TRADING_SIGNALS_COMPUTE_COOLDOWN_MS = 10 * 60_000;
+const tradingSignalsComputeAt = new Map<string, number>();
+
+function tradingSignalsComputeAllowed(key: string): boolean {
+  const last = tradingSignalsComputeAt.get(key) ?? 0;
+  return Date.now() - last >= TRADING_SIGNALS_COMPUTE_COOLDOWN_MS;
+}
+
 /** GET /api/live-data/trading-signals?sec_type=index&date=YYYY-MM-DD
  *  → { sec_type, date (resolved: param || biz today), available_dates,
- *      signals: [...] } — one day's triggered breaches, confidence DESC. */
+ *      signals: [...] } — one day's triggered breaches, confidence DESC.
+ *  A date with no rows is computed ON DEMAND (see the block above). */
 router.get("/trading-signals", async (req: Request, res: Response) => {
   try {
     const secType = typeof req.query.sec_type === "string"
@@ -529,10 +602,32 @@ router.get("/trading-signals", async (req: Request, res: Response) => {
       && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
       ? req.query.date
       : shanghaiToday();
-    const [signals, availableDates] = await Promise.all([
+    let [signals, availableDates] = await Promise.all([
       fetchTriggeredSignals(secType, dateParam),
       fetchTradingSignalDates(secType),
     ]);
+    if (
+      signals.length === 0
+      && dateParam <= shanghaiToday()
+      && tradingSignalsComputeAllowed(`${secType}:${dateParam}`)
+      && await isTradingSignalComputeEligible(secType, dateParam)
+    ) {
+      tradingSignalsComputeAt.set(`${secType}:${dateParam}`, Date.now());
+      const tag = `trading-signals:compute:${secType}:${dateParam}`;
+      console.info(
+        `[live-data/trading-signals] no rows for ${secType} @ ${dateParam} — ` +
+        "spawning on-demand as-of compute",
+      );
+      await Promise.race([
+        runPythonModule(
+          "live.live_signals",
+          ["--sec-type", secType, "--date", dateParam],
+          { processIdTag: tag },
+        ),
+        new Promise((resolve) => setTimeout(resolve, TRADING_SIGNALS_COMPUTE_WAIT_MS)),
+      ]);
+      signals = await fetchTriggeredSignals(secType, dateParam);
+    }
     res.json({ sec_type: sec_type_valid(secType), date: dateParam, available_dates: availableDates, signals });
   } catch (err) {
     const status = (err as { status?: number })?.status ?? 500;

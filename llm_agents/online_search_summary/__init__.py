@@ -9,7 +9,9 @@ lands in ``text.llm_qa`` with news-group provenance via the existing
 Package layout — three layered subpackages plus the CLI, dependencies
 pointing one way (providers/storage/cli -> core, never back):
 
-  ``core/``      — the pure domain layer (no network, no DB):
+  ``core/``      — the pure domain layer (no network, no DB); the shared
+    primitives (the provider error type, SHANGHAI_TZ, the language
+    labels) live in ``llm_agents._core`` and are re-exported here:
     * ``core.errors``    — OnlineSearchError (status + provider error code).
     * ``core.models``    — normalized, provider-independent result models
       (SearchHit / SearchIntent / SearchOptions / SearchResponse /
@@ -24,13 +26,12 @@ pointing one way (providers/storage/cli -> core, never back):
       latest-biz-date trigger, date-embedded market + sector question,
       anchor-aware recency): what ``downloads.macro.ai_daily`` runs.
   ``providers/`` — the search/chat provider integrations (network):
-    * ``providers.transport`` — RetryingJsonClient: the Bearer-auth
-      retrying JSON POST (retries ONLY genuinely transient failures) and
-      the project-.env loader; ``providers.base`` — BaseOnlineSearchProvider:
-      the abstract contract (search / _chat_complete / summarize), API-key
-      resolution, and the provider-agnostic summarize_via_compose flow
-      (the documented ``{search_result}`` prompt pattern under our
-      control).
+    * ``providers.base`` — BaseOnlineSearchProvider: the abstract contract
+      (search / _chat_complete / summarize) and the provider-agnostic
+      summarize_via_compose flow (the documented ``{search_result}``
+      prompt pattern under our control); the client plumbing (retrying
+      JSON transport, API-key resolution, POST helpers) is inherited from
+      the shared ``llm_agents._core`` layer.
     * ``providers.zhipu``  — ZhiPu BigModel web_search + native
       search-in-chat.
     * ``providers.zhihu``  — Zhihu content-search API via the shared
@@ -50,9 +51,10 @@ pointing one way (providers/storage/cli -> core, never back):
       ddgs search + markitdown content verification -> ``exact``;
       unresolvable -> a null-content placeholder text.news row typed
       ``exact`` (the metadata IS the response's own). Outcomes land in
-      ``text.llm_qa_refs`` (qa_id, ref) ->
-      (ref_type, news_id, resolved_url, ref_time — the reference's publish
-      time per the search response, now() when absent); DDL:
+      ``text.llm_qa_refs`` (qa_id, news_id) -> (ref — the representative
+      citation tag, ref_type, is_used — whether the answer cites the
+      article, resolved_url, ref_time — the reference's publish time per
+      the search response, now() when absent); DDL:
       database/sql/text/03_llm_qa_refs.sql.
     * ``storage.store``    — OnlineSearchSummaryStore: persists references
       into text.news and the Q&A into text.llm_qa with news-group

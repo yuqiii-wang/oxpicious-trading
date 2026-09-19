@@ -11,9 +11,10 @@ pandas→numpy boundary — from there the engine math never pays a
 GPU↔CPU transfer or a cudf fallback.
 
 Pipeline per sec_type:
-  1. ``build_month_specs`` — the target stat months (completed month-ends)
-     and each month's inclusive trailing-window start (month-end
-     minus WINDOW_YEARS + 1 day).
+  1. ``build_month_specs`` — the target stat months (the completed
+     month-ends plus the RUNNING month, keyed at its month-end but
+     window-bounded at today) and each month's inclusive trailing-window
+     start (month-end minus WINDOW_YEARS + 1 day).
   2. ``build_grid`` — factorize the long frame into the (T, C) grid.
   3. ``scatter_column`` — long column → wide matrix (one fancy-index
      assignment; NaN where the code has no row on a grid date).

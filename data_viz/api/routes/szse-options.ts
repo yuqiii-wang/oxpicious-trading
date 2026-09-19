@@ -7,9 +7,9 @@ import {
   getOptionsCombined,
   getOptionsWalls,
   getEtfOhlcv,
-  getOptionsSkewnessCorr,
   getOptionsSkewnessSeries,
   getOptionsIvSkew,
+  getOptionsVolIndex,
 } from "../services/szse-options.service.js";
 import { SKEW_TYPES, type SkewType } from "../../shared/types.js";
 
@@ -82,28 +82,6 @@ router.get("/etf-ohlcv", async (req: Request, res: Response) => {
   }
 });
 
-router.get("/skewness-corr", async (req: Request, res: Response) => {
-  try {
-    const underlying =
-      typeof req.query.underlying === "string" ? req.query.underlying : "";
-    if (!underlying) {
-      res.status(400).json({ error: "Missing 'underlying' query parameter" });
-      return;
-    }
-    const skewType = parseSkewType(req.query.skew_type);
-    const data = await getOptionsSkewnessCorr(
-      underlying,
-      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
-      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
-      skewType,
-    );
-    res.json(data);
-  } catch (err) {
-    console.error("[szse-options/skewness-corr] error:", err);
-    res.status(500).json({ error: String(err) });
-  }
-});
-
 router.get("/skewness-series", async (req: Request, res: Response) => {
   try {
     const underlying =
@@ -142,6 +120,26 @@ router.get("/iv-skew", async (req: Request, res: Response) => {
     res.json(data);
   } catch (err) {
     console.error("[szse-options/iv-skew] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/vol-index", async (req: Request, res: Response) => {
+  try {
+    // underlying optional — omitting it returns every underlying's series
+    // (cross-asset comparison chart).
+    const underlying =
+      typeof req.query.underlying === "string" && req.query.underlying
+        ? req.query.underlying
+        : undefined;
+    const data = await getOptionsVolIndex(
+      underlying,
+      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
+      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+    );
+    res.json(data);
+  } catch (err) {
+    console.error("[szse-options/vol-index] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

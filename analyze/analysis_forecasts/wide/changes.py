@@ -32,17 +32,9 @@ def build_change_matrices(
               WINDOW's signed close extremes vs the signal close
               (fetch.add_path_extremes path_high_{n}d / path_low_{n}d)
               with NaN→0 (invalid days never fire a threshold compare),
-              the swing the reversal event and max_low_change_ratio
-              consume. At the next-day horizon the path IS the endpoint
+              the swing the reversal event consumes. At the next-day
+              horizon the path IS the endpoint
               (NC0_1), so no separate matrices exist there.
-
-    Note: max_low_change_ratio is derived at aggregation time from the
-    bucket's PATH-extreme forward changes as (1 + max path high) /
-    (1 + min path low): the widest realized within-window swing across
-    the bucket's trigger days — highest close reached vs lowest close
-    touched (signed, so a large ratio always signifies a large swing;
-    the extrema of one trigger day's window never mix with another's
-    endpoint).
     """
     mats: dict[str, np.ndarray] = {}
     for n in FORWARD_HORIZONS:

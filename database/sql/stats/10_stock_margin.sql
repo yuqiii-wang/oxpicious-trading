@@ -50,8 +50,6 @@ COMMENT ON COLUMN stats.stock_adjustment.adj_close     IS 'Split-adjusted close;
 
 -- Legacy (code, date) index is redundant with the code-first PK — replaced by
 -- a date-first index.
-DROP INDEX IF EXISTS stats.idx_stock_adjustment_code_date;
-
 CREATE INDEX IF NOT EXISTS idx_stock_adjustment_date
     ON stats.stock_adjustment (date);
 
@@ -91,8 +89,6 @@ COMMENT ON COLUMN stats.stock_margin.total_balance IS 'rz_balance + rq_balance_a
 
 -- Legacy (code, date) index is redundant with the code-first PK — replaced by
 -- a date-first index.
-DROP INDEX IF EXISTS stats.idx_stock_margin_code_date;
-
 CREATE INDEX IF NOT EXISTS idx_stock_margin_date
     ON stats.stock_margin (date);
 

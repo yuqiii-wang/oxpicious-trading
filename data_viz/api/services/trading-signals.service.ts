@@ -7,8 +7,14 @@
 //    is_active (the current threshold set).
 //  • triggered(sec_type, date) — one day's rows from live.live_signals,
 //    ordered by confidence DESC (the page's main list).
-//  • availableDates(sec_type) — dates present in live_signals (roster,
-//    newest first) for the date selector.
+//  • availableDates(sec_type) — the date-selector roster (newest first):
+//    dates present in live_signals UNION the newest close dates of the
+//    sec_type's basic_stats baseline — the selector stays populated even
+//    when no live breach has been recorded yet (every recent trading day
+//    is selectable; empty days are computed on demand by the route).
+//  • computeEligible(sec_type, date) — can the on-demand as-of evaluation
+//    run for the date? (ACTIVE strategies exist AND the date has daily
+//    closes.)
 //  • history(sec_type, code) — EVERY live_signals row of one code (newest
 //    first) behind the row-expansion panel: the history-signals table +
 //    the buy/sell markers on the code-trend chart.
@@ -45,6 +51,14 @@ export interface TradingSignalRow {
   signal_threshold: number;
   confidence: number;
   is_day_close_trigger: boolean;
+  /** TRUE when the breach bar's DATE sits inside one of the code's
+   *  stats.mov_ave_market_hypes episodes (any check-in window) — regime
+   *  context: strategies are calibrated on non-hyped buckets only. */
+  is_market_hyped: boolean;
+  /** The code's live_signals count over the LAST 20 TRADING DAYS ending on
+   *  `date` (all signal types, intraday + day-close rows) — the main
+   *  table's "20d count" column. */
+  count_20d: number;
 }
 
 const VALID_SEC_TYPES = new Set(["index", "etf", "stock"]);
@@ -68,7 +82,7 @@ export async function fetchTradingSignalConfigs(
   const st = assertSecType(secType);
   const rows = await queryRows<TradingSignalConfigRow & QueryResultRow>(
     `SELECT signal_type, signal_sub_type, count(*)::int AS n_configs
-     FROM analysis_signals.signals
+     FROM analysis_signals.signal_strategies
      WHERE sec_type = $1 AND is_active
      GROUP BY signal_type, signal_sub_type
      ORDER BY signal_type, signal_sub_type`,
@@ -86,10 +100,21 @@ const IDENTITY_TABLE: Record<string, string> = {
   stock: "stats.stock_identity",
 };
 
+/** sec_type → daily-close baseline (the date-selector roster source and
+ *  the on-demand evaluation's daily-close fallback basis). */
+const BASIC_STATS_TABLE: Record<string, string> = {
+  index: "stats.index_basic_stats",
+  etf: "stats.etf_basic_stats",
+  stock: "stats.stock_basic_stats",
+};
+
 /** One day's triggered signals for a sec_type, confidence DESC then time
  *  DESC. `date` is 'YYYY-MM-DD' (the UI pre-resolves biz today).
  *  Joins the sec_type's identity table (latest row per code) to resolve
- *  the display name; falls back to NULL when no identity row exists. */
+ *  the display name; falls back to NULL when no identity row exists.
+ *  Each row also carries count_20d — the code's live_signals count over
+ *  the last 20 TRADING DAYS ending on `date` (window anchored on the
+ *  sec_type's daily-close baseline; all signal types). */
 export async function fetchTriggeredSignals(
   secType: string | null | undefined,
   date: string,
@@ -97,7 +122,18 @@ export async function fetchTriggeredSignals(
   const st = assertSecType(secType);
   const idt = IDENTITY_TABLE[st]!;
   const rows = await queryRows<TradingSignalRow & QueryResultRow>(
-    `SELECT s.code,
+    `WITH win AS (
+        -- 20th-most-recent DISTINCT close date <= the anchor:
+        -- (win_start, anchor] spans exactly the last 20 trading days.
+        -- DISTINCT: the baseline is per-(code, date) — one date has many
+        -- rows, and OFFSET over raw rows would land less than a day back.
+        SELECT DISTINCT date AS win_start
+        FROM ${BASIC_STATS_TABLE[st]!}
+        WHERE date <= $2::date AND close IS NOT NULL
+        ORDER BY win_start DESC
+        OFFSET 19 LIMIT 1
+     )
+     SELECT s.code,
             n.name                       AS code_name,
             s.sec_type,
             s.signal_type,
@@ -110,7 +146,16 @@ export async function fetchTriggeredSignals(
             s.signal::float8              AS signal,
             s.signal_threshold::float8     AS signal_threshold,
             s.confidence,
-            s.is_day_close_trigger
+            s.is_day_close_trigger,
+            s.is_market_hyped,
+            (SELECT count(*)::int
+             FROM live.live_signals ls
+             WHERE ls.sec_type = s.sec_type
+               AND ls.code = s.code
+               AND ls.date <= $2::date
+               AND ls.date > COALESCE(
+                     (SELECT win_start FROM win), '1900-01-01'::date)
+            ) AS count_20d
      FROM live.live_signals s
      LEFT JOIN LATERAL (
        SELECT i.name FROM ${idt} i
@@ -131,13 +176,42 @@ export async function fetchTradingSignalDates(
 ): Promise<string[]> {
   const st = assertSecType(secType);
   const rows = await queryRows<{ date: string } & QueryResultRow>(
-    `SELECT DISTINCT date FROM live.live_signals
-     WHERE sec_type = $1
+    `SELECT date FROM (
+        SELECT date FROM live.live_signals WHERE sec_type = $1
+        UNION
+        SELECT date FROM (
+            SELECT DISTINCT date FROM ${BASIC_STATS_TABLE[st]!}
+            WHERE close IS NOT NULL
+            ORDER BY date DESC LIMIT 120
+        ) roster
+     ) u
      ORDER BY date DESC
      LIMIT 120`,
     [st],
   );
   return rows.map((r) => formatDate(r.date));
+}
+
+/** Can the on-demand as-of evaluation run for (sec_type, date)?
+ *  TRUE iff the sec_type has ACTIVE signal strategies (a threshold set
+ *  to breach) AND the date carries daily closes (an evaluation basis:
+ *  intraday-last-bar replay when the intraday table covers the date,
+ *  official daily close otherwise — the python-side fallback). */
+export async function isTradingSignalComputeEligible(
+  secType: string | null | undefined,
+  date: string,
+): Promise<boolean> {
+  const st = assertSecType(secType);
+  const rows = await queryRows<{ eligible: boolean } & QueryResultRow>(
+    `SELECT (
+        EXISTS (SELECT 1 FROM analysis_signals.signal_strategies
+                WHERE sec_type = $1 AND is_active)
+        AND EXISTS (SELECT 1 FROM ${BASIC_STATS_TABLE[st]!}
+                    WHERE date = $2::date AND close IS NOT NULL)
+     ) AS eligible`,
+    [st, date],
+  );
+  return rows[0]?.eligible === true;
 }
 
 /** Every live_signals row of ONE code (newest first, confidence DESC within
@@ -179,7 +253,8 @@ export async function fetchTradingSignalHistory(
             s.signal::float8              AS signal,
             s.signal_threshold::float8     AS signal_threshold,
             s.confidence,
-            s.is_day_close_trigger
+            s.is_day_close_trigger,
+            s.is_market_hyped
      FROM live.live_signals s
      LEFT JOIN LATERAL (
        SELECT i.name FROM ${IDENTITY_TABLE[st]!} i

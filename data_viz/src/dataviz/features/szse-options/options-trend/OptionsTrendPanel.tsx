@@ -18,11 +18,14 @@
  * The ETF Price & Volume chart from AnnualSentimentPanel is intentionally
  * NOT included here — it remains a separate ChartCard below.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, Stack } from "@mui/material";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
-import { useStore } from "@/store/filters";
+import { useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ECharts, EChartsOption } from "echarts";
 import type { OptionsRow, OptionsWallRow } from "@shared/types";
 import { buildCohorts, buildCells, buildZoneWalls, remapCells, remapZones } from "./bandData";
 import { buildDailyOi, buildExpiryMarkers } from "./sharedData";
@@ -42,12 +45,12 @@ interface Props {
 }
 
 export default function OptionsTrendPanel({ rows, walls = [] }: Props) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const { buildDataZoom, buildInsideDataZoom, handleDataZoom } = useDataZoomSync();
 
   const daily = useMemo(() => buildDailyOi(rows), [rows]);
   const allDates = useMemo(() => daily.map((d) => d.date), [daily]);
-  const expiryMarkers = useMemo(() => buildExpiryMarkers(rows, allDates), [rows, allDates]);
+  const expiryMarkers = useMemo(() => buildExpiryMarkers(rows), [rows]);
 
   const cohorts = useMemo(() => buildCohorts(rows), [rows]);
   const [cohortMode, setCohortMode] = useState<"active" | "history">("active");
@@ -237,6 +240,118 @@ export default function OptionsTrendPanel({ rows, walls = [] }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, walls, realExpiries, selectedExpiryKeysKey, lastDate, allDates, brokenData.dates]);
 
+  // Chart instances for the AI Ask screenshots (one per stacked chart).
+  const bandsRef = useRef<ECharts | null>(null);
+  const pcRef = useRef<ECharts | null>(null);
+  const oiRef = useRef<ECharts | null>(null);
+
+  // Options hoisted into memos (was inline per render) so the AI Ask plot
+  // info derives from the same objects the charts render.
+  const bandsOption = useMemo<EChartsOption | null>(
+    () =>
+      built && built.cells.length > 0
+        ? buildBandsOption(
+            built.dates,
+            built.cells,
+            built.spot,
+            themeMode,
+            buildDataZoom(),
+            expiryMarkers,
+            built.zones,
+          )
+        : null,
+    [built, themeMode, buildDataZoom, expiryMarkers],
+  );
+  const pcRatioOption = useMemo<EChartsOption | null>(
+    () =>
+      selectedExpiryKeys.length > 0
+        ? buildPcRatioOptionWithBroken(
+            brokenData.dates,
+            brokenData.pcRatio,
+            brokenData.ma5,
+            brokenData.ma20,
+            themeMode,
+            selectedExpiryMarkers,
+            buildInsideDataZoom(),
+            yAxisRanges.pcRange,
+          )
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [brokenData, themeMode, selectedExpiryMarkers, buildInsideDataZoom, yAxisRanges.pcRange, selectedExpiryKeysKey],
+  );
+  const oiTrendOption = useMemo<EChartsOption | null>(
+    () =>
+      selectedExpiryKeys.length > 0
+        ? buildOiTrendOptionWithBroken(
+            brokenData.dates,
+            brokenData.callMil,
+            brokenData.putMil,
+            themeMode,
+            selectedExpiryMarkers,
+            buildInsideDataZoom(),
+            yAxisRanges.oiRange,
+          )
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [brokenData, themeMode, selectedExpiryMarkers, buildInsideDataZoom, yAxisRanges.oiRange, selectedExpiryKeysKey],
+  );
+  const extraOptions = useMemo(
+    () => [pcRatioOption, oiTrendOption] as const,
+    [pcRatioOption, oiTrendOption],
+  );
+
+  const underlyingCode = rows[0]?.underlying_code ?? "";
+  // AI Ask — intro + series semantics; state carries the CURRENT cohort
+  // selection so the modal / LLM always describe the view on screen.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Three synchronized option-flow charts for underlying ${underlyingCode || "(n/a)"}: ` +
+        "(1) Expiry OI Bands — per-expiry open-interest bands against the spot price line " +
+        "(where OI concentrates by expiry; call/put zone walls shade the strike ladder); " +
+        "(2) Put/Call OI Ratio — the selected cohorts' aggregate daily put/call OI ratio with " +
+        "MA5/MA20 (>1 put-tilted / hedging sentiment, <1 call-tilted, dashed neutral at 1); " +
+        "(3) Total OI Trend — call vs put open interest in millions of contracts. All three " +
+        "follow the expiry-cohort selection below, share one time slider and crosshair, and " +
+        "mark expiry dates with dots.",
+      instruments: underlyingCode ? [{ code: underlyingCode }] : [],
+      series: [
+        { name: "Spot", unit: "元", description: "underlying daily closing price" },
+        { name: "OI Bands", description: "per-expiry open-interest bands by strike over time" },
+        { name: "P/C OI Ratio", unit: "ratio", description: "put OI / call OI of the selected cohorts" },
+        { name: "MA5", unit: "ratio", description: "5-day mean of the P/C ratio" },
+        { name: "MA20", unit: "ratio", description: "20-day mean of the P/C ratio" },
+        { name: "Call OI", unit: "mil contracts", description: "daily total call open interest" },
+        { name: "Put OI", unit: "mil contracts", description: "daily total put open interest" },
+      ],
+      state: {
+        "expiry cohorts": cohortMode === "active" ? "Active (unexpired)" : "History (expired)",
+        month: monthFilter,
+        expiries_selected: selectedExpiryKeys.length,
+      },
+      suggestedQuestions: [
+        "Is options sentiment put- or call-tilted right now, per the P/C ratio and its MAs?",
+        "Where is OI concentrated across strikes and expiries, and what does that wall imply for spot?",
+        "Is total OI rising into expiry — positioning buildup or unwind?",
+      ],
+      notes: [
+        "Charts 2 and 3 aggregate ONLY the selected expiry cohorts; lines break on dates where the selection has no data.",
+        "All three charts share one time slider and a synchronized crosshair/tooltip.",
+        `Latest data date: ${lastDate || "—"}.`,
+      ],
+    }),
+    [underlyingCode, cohortMode, monthFilter, selectedExpiryKeys.length, lastDate],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: "Options Trend — OI Bands · P/C Ratio · Total OI",
+    subtitle: "Expiry OI evolution vs spot, put/call sentiment, and total OI trend",
+    option: bandsOption,
+    extraOptions,
+    spec: aiAskSpec,
+    getInstance: () => bandsRef.current,
+    getExtraInstances: () => [pcRef.current, oiRef.current],
+  });
+
   if (cohorts.length === 0 || daily.length === 0) {
     return (
       <ChartCard
@@ -256,13 +371,11 @@ export default function OptionsTrendPanel({ rows, walls = [] }: Props) {
           selectedExpiryKeys.length === 1 ? "expiry" : "expiries"
         })`;
 
-  const dataZoomOpt = buildDataZoom();
-  const insideDataZoomOpt = buildInsideDataZoom();
-
   return (
     <ChartCard
       title="Options Trend — OI Bands · P/C Ratio · Total OI"
-      subtitle="Expiry OI evolution vs spot · Put/Call sentiment · Total OI — all three follow the Active/History + month selection · slider + tooltip synchronized"
+      subtitle="Expiry OI bands vs spot · P/C sentiment · total OI — all follow the cohort selection"
+      titleAddon={aiAskAddon}
       height={960}
     >
       <Stack spacing={1}>
@@ -277,20 +390,15 @@ export default function OptionsTrendPanel({ rows, walls = [] }: Props) {
         </Box>
 
         {/* Chart 1: Expiry OI Bands (top) */}
-        {built && built.cells.length > 0 ? (
+        {bandsOption ? (
           <EChart
-            option={buildBandsOption(
-              built.dates,
-              built.cells,
-              built.spot,
-              themeMode,
-              dataZoomOpt,
-              expiryMarkers,
-              built.zones,
-            )}
+            option={bandsOption}
             height={340}
             group={CHART_GROUP}
             onEvents={{ dataZoom: handleDataZoom }}
+            onReady={(c) => {
+              bandsRef.current = c;
+            }}
           />
         ) : (
           <Alert severity="info" sx={{ height: 340 }}>
@@ -301,21 +409,15 @@ export default function OptionsTrendPanel({ rows, walls = [] }: Props) {
         )}
 
         {/* Chart 2: Put/Call OI Ratio (middle) — same cohort selection as chart 1 */}
-        {selectedExpiryKeys.length > 0 ? (
+        {pcRatioOption ? (
           <EChart
-            option={buildPcRatioOptionWithBroken(
-              brokenData.dates,
-              brokenData.pcRatio,
-              brokenData.ma5,
-              brokenData.ma20,
-              themeMode,
-              selectedExpiryMarkers,
-              insideDataZoomOpt,
-              yAxisRanges.pcRange,
-            )}
+            option={pcRatioOption}
             height={300}
             group={CHART_GROUP}
             onEvents={{ dataZoom: handleDataZoom }}
+            onReady={(c) => {
+              pcRef.current = c;
+            }}
           />
         ) : (
           <Alert severity="info" sx={{ height: 300 }}>
@@ -324,20 +426,15 @@ export default function OptionsTrendPanel({ rows, walls = [] }: Props) {
         )}
 
         {/* Chart 3: Total Open Interest Trend (bottom) — same cohort selection as chart 1 */}
-        {selectedExpiryKeys.length > 0 ? (
+        {oiTrendOption ? (
           <EChart
-            option={buildOiTrendOptionWithBroken(
-              brokenData.dates,
-              brokenData.callMil,
-              brokenData.putMil,
-              themeMode,
-              selectedExpiryMarkers,
-              insideDataZoomOpt,
-              yAxisRanges.oiRange,
-            )}
+            option={oiTrendOption}
             height={300}
             group={CHART_GROUP}
             onEvents={{ dataZoom: handleDataZoom }}
+            onReady={(c) => {
+              oiRef.current = c;
+            }}
           />
         ) : (
           <Alert severity="info" sx={{ height: 300 }}>

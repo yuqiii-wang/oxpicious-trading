@@ -2,113 +2,195 @@
 
 Run via ``python -m analyze.analysis_signals``.
 
-Per-DAY trading signals in the ``analysis_signals`` schema (see
-database/sql/analysis/analysis_signals/): one row per
-(code, sec_type, signal_type, signal_sub_type, date) with the crossed
-threshold (signal_threshold), a human-readable reason, the full
-detection params (JSON) and the action:
+Signal STRATEGIES + history signals over analysis_forecasts (see
+database/sql/analysis/analysis_signals/00_schema.sql and
+01_signals.sql):
 
-  - mov_rsi (sub_type rsi{W}): rsi_{W}days in the top 1% (action=sell)
-    or bottom 1% (action=buy) of the trailing 5-year window ending at
-    the snapshot month; W mirrors analysis.mov_ave_rsi.
-  - mov_std (sub_type std{W}): price beyond the 2σ Bollinger band
-    ma_{W} ± 2.0·std_{W}days (upper → sell, lower → buy); W in 20/60 —
-    W=5 is not emitted (its ~1-day buckets carry no base-rate lift:
-    pure detection noise).
+  - A forecast bucket (code × stat_month snapshot M × config, trailing
+    5-year window (M - 5y, M]) whose MIXED forecast_results row passes
+    the plain gate — the sign-aligned blended mean forward change
+    (dir_ave) > 0.75% AND the blended reverse_prob > 1% (confidence =
+    reverse_prob) — IS a signal strategy: ONE
+    analysis_signals.signal_strategies row over the bucket's forecast
+    period (start_date .. end_date = the snapshot month), carrying the
+    breach bar in the underlying value's own space (the live tier's
+    threshold set) and the bucket's OWN side as a STORED column.
 
-  - high_low_streaks (sub_type p{band_period}_{pct_type}): the MEAN-MID
-    anchor day of every MA-Spread band-break excursion streak — the
-    analysis_forecasts.high_low_streaks buckets' trigger days 1:1 (the
-    forecasts engine's own anchor machinery reused verbatim). side top
-    an ABOVE-band excursion → sell, bottom BELOW-band → buy (the
-    mean-reversion reading the forecasts study measured from the mid
-    anchor). The anchor is EX-POST: target months carry a
-    HL_STREAKS_RESOLVE_LAG_MONTHS resolve lag and still-open streaks'
-    anchors are dropped, so a write-once month never carries a
-    provisional mid.
+  - The bucket's trigger days INSIDE the snapshot month M are its
+    history signals: ONE analysis_signals.history_signals row per day
+    (the day's value, the bar it crossed, the excess — a structural
+    clone of live.live_signals; one snapshot owns each date, so no
+    cross-month PK conflicts).
 
-  - mov_pairs (sub_type pair{W}) / mov_pairs_ema (sub_type
-    emapair{W}): the CROSS days of the EXISTING relative spreads
-    ma5_vs_ma{W} / ema6_vs_ema{W} (fetched as pair_{W} / ema_pair_{W})
-    — side top a CROSS UP / golden cross → sell, bottom a CROSS DOWN /
-    death cross → buy; W in 60/120/255, cooldown 5 (the forecast event
-    buckets' own machinery via build_pairs_matrices).
+  - Emission slices (current build): mov_rsi pct = 1 (top → sell /
+    bottom → buy), mov_std MA/σ windows >= 60d at k >= 2.0σ
+    (upper → sell / lower → buy), and the two pair-cross families —
+    mov_pairs / mov_pairs_ema, each covering BOTH its fast legs
+    (ma5/ema6 and the close price) — at slow-leg windows >= 120d,
+    cross-down (bottom → buy) side only. All slices cover both hype
+    splits. Other forecast families get strategies as their engines
+    land.
 
-  (The former opp_pair industry-pair family was removed — its buckets
-  average ~600 trigger days yet ~0 pooled mean forward offset change;
-  the OOS study showed zero mean confirmation content even for
-  statistically-strengthened buckets. Forecasts keep computing the
-  opp_pair_state buckets; see analysis_signals.config.)
+  - NO CASE/WHEN anywhere in the SQL: side is stored, and every other
+    conditional lives in this package's vectorized cudf.pandas engines
+    (engines/ — one SignalEngine subclass per family, dispatched
+    through the registry).
 
-Cooperation with analyze.analysis_forecasts (the gates are read, never
-recomputed here):
-  1. Target stat_months = the months ALREADY PRESENT in
-     analysis_forecasts.mov_rsi (at pct = 1) / mov_std (at k = 2.0)
-     for the sec_type — the forecasts' start month sets the first
-     signal date.
-  2. Incremental: a target month is computed only when
-     analysis_signals.signals has no rows for it yet (month-level
-     DISTINCT check per signal_type; months are written atomically in
-     ONE transaction, so a crash can never leave a half-written
-     month). ``--force`` deletes the sec_type's signal rows and
-     recomputes every target month.
-  3. Detection reuses the forecast machinery: the same trailing 5y
-     window (M - 5y, M], linear-interpolated window percentile
-     thresholds (RSI) / band levels (std), cooldown suppression and
-     full-5y-history gate (first data strictly before the window
-     start). Each date is emitted only within its own snapshot month.
-  4. Forecast-confirmation gate (gate.fetch_confirm): a detected day
-     is RECORDED only when the matching forecast bucket (same
-     code/sec_type/stat_month/window/side/pct|k/cooldown config)
-     qualifies on its MIXED forecast_results row — the weight-blended
-     forward profile (5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05,
-     materialized by analysis_forecasts) whose reverse_prob exceeds
-     GATE_RP_MIN (reverse P > 1% — a material reversal probability)
-     AND whose blended mean forward change is a REVERSAL (dir_ave > 0
-     — the bucket's average outcome reverses, so the signal holds)
-     AND whose reverse_prob beats the unconditional blended base rate
-     (base_rates period='mixed', per side — probability lift; the
-     conjunct falls back to TRUE when the code has no base_rates row)
-     AND whose mean forward change beats the base drift (magnitude
-     lift — the mean reversal must be bigger than the window's own;
-     same fallback), read from analysis_forecasts
-     via the bucket's forecast_id. occurrence / t-stat bars were
-     removed 2026-09 (the streak-merge leaves pct-width buckets only
-     ~3-6 merged signals — the bars dropped ~96% of the strongest-edge
-     pct=1 buckets); occ / std_change still feed the confidence's
-     evidence / efficiency factors. Reading the gate on the blended row
-     is what makes EVERY forecast horizon of the same signal trigger
-     contribute to the signal. The row's confidence is NOT the reverse
-     probability (it saturates at long horizons) but the DRIVING-FACTOR
-     COMPOSITE on that mixed row: a weighted blend of evidence
-     (t-stat), efficiency (sharpe), consistency (probability lift over
-     the base rate) and the code's prior mean composite — all computed
-     in the signal's direction (buy = upward reversal, sell =
-     downward), all horizon-free; the period ('mixed') + factor
-     breakdown ride in the params JSON (conf_period /
-     confidence_factors); see analysis_signals.config.
-     Detection stays identical to the buckets; the gate only filters
-     which days get written. NOTE: months written by an earlier
-     (ungated) build keep their rows — ``--force`` rebuilds them
-     under the gate.
-
-``--live`` additionally runs the day-close mirror
-(live_close.mirror_live_close): every signal row not yet recorded gets
-one live.live_signals observation at the session close (time 15:00:00,
-is_day_close_trigger = TRUE) — mov_std close vs band level, mov_rsi
-day RSI vs threshold; PK-checked, so re-running backfills exactly the
-missing rows. The signal pipeline itself stays incremental either way.
-
-Pipeline per sec_type (index / etf / stock):
-  1. Fetch active-universe codes + true first-data dates.
-  2. Resolve target months (forecast presence − signal presence).
-  3. Fetch the joined long input frame (price / ma / rsi / std; date >=
-     earliest needed window start) and scatter to (date × code) wide
-     matrices.
-  4. Fetch the reverse-confirmed code sets from forecast_results.
-  5. Run the vectorized signal engines (compute_rsi_signals /
-     compute_std_signals), writing month-major, one transaction per
-     month.
-  6. Upsert analysis.analysis_identity; with --live, mirror day-close
-     observations into live.live_signals.
+Pipeline per sec_type (index / etf / stock), every step owned by the
+family's engine (engines/signal_families/<family>/ — one
+SignalEngine subclass per family, dispatched through the registry;
+see engines/_base):
+  1. Resolve the target months per family: the stat_months PRESENT in
+     analysis_forecasts.forecast_identities (bucket-filtered) that are
+     missing from signal_strategies, plus the newest REFRESH_MONTHS
+     months re-emitted every run (long-horizon mixed legs complete
+     late). ``--force`` purges the sec_type's family rows and
+     re-emits every present month.
+  2. Per month: fetch the buckets (long, carrying the quality
+     periods' forward profiles) + the indicator values at exactly the
+     trigger points (wide) → vectorized plain gate → the FINAL
+     SignalQuality gate (engines/_quality — breach coherence +
+     sign-aligned per-period forward means on every period, plus the
+     0.75 risk cap as ONE weight-blended verdict over the quality
+     periods 50% 5d / 15% 20d / 5% 60d at bar 0.50 (the 5d bar
+     carries the decision — long-horizon failures alone can't kill);
+     only quality-passing buckets register as strategies) →
+     vectorized strategy/history
+     frames → ONE transaction: purge the month, COPY both tables.
+  3. After every run: refresh is_active (each config's latest
+     end_date) and rank signal_order (confidence DESC within each
+     (sec_type, end_date) pool) — 02_is_active.sql /
+     03_signal_order_rank.sql — and each engine upserts its own
+     analysis.analysis_identity row.
 """
+from __future__ import annotations
+
+import argparse
+import logging
+import time
+
+# cudf.pandas activation — must run before pandas first import. The
+# _common helpers imported below (build_commons → db_commons →
+# _batched_copy) transitively import pandas at module level, so activating
+# any later would silently skip the cudf proxy ("pandas already imported").
+from _common.df_utils._activate import activate  # noqa: E402
+activate()
+
+from _common.build_commons import (
+    add_force_arg,
+    get_db_connection_async,
+    print_build_header,
+    print_wall_time,
+    setup_utf8_stdout,
+)
+
+setup_utf8_stdout()
+
+from _common.log_setup import setup_logging  # noqa: E402
+
+from analyze.analysis_forecasts.config import SEC_TYPES  # noqa: E402
+from analyze.analysis_signals.config import (  # noqa: E402
+    STAGE_NAMES,
+)
+from analyze.analysis_signals.engines import (  # noqa: E402
+    RunStats,
+    engines_for,
+)
+from analyze.analysis_signals.run import process_sec_type  # noqa: E402
+
+logger = setup_logging("analysis_signals")
+
+
+async def main() -> None:
+    ap = argparse.ArgumentParser(
+        description="Analysis Signals (signal strategies + history "
+                    "signals over analysis_forecasts): one "
+                    "signal_strategies row per forecast bucket whose "
+                    "MIXED forecast_results row passes the plain gate "
+                    "(sign-aligned blended mean forward change > 0.75% "
+                    "AND blended reverse_prob > 1%), covering the "
+                    "bucket's forecast period (the trailing 5-year "
+                    "snapshot month), plus the bucket's trigger days "
+                    "inside its own snapshot month as "
+                    "history_signals rows. Emission slices: mov_rsi "
+                    "pct = 1; mov_std >= 60d windows at k >= 2.0σ; "
+                    "the two pair-cross families (mov_pairs / "
+                    "mov_pairs_ema, both fast legs) at >= 120d slow "
+                    "legs, cross-down side; both hype splits.",
+    )
+    ap.add_argument(
+        "--sec-type", choices=SEC_TYPES, default=None,
+        help="Process only this sec_type (for testing). Default: all.",
+    )
+    ap.add_argument(
+        "--metrics", type=str, default=None,
+        help="Comma-separated signal families to run (choices: "
+             f"{', '.join(STAGE_NAMES)}). Default: all.",
+    )
+    ap.add_argument(
+        "--months", type=int, default=None, metavar="N",
+        help="Cap the target stat_months to the newest N present in "
+             "analysis_forecasts (default: all present months).",
+    )
+    add_force_arg(ap)
+    args = ap.parse_args()
+    force = args.force
+
+    if args.metrics:
+        requested = {s.strip() for s in args.metrics.split(",")
+                     if s.strip()}
+        unknown = requested - set(STAGE_NAMES)
+        if unknown:
+            ap.error(f"--metrics: unknown family(ies) {sorted(unknown)} "
+                     f"(choices: {', '.join(STAGE_NAMES)})")
+        metrics = frozenset(requested)
+    else:
+        metrics = None
+
+    sec_types = (args.sec_type,) if args.sec_type else SEC_TYPES
+
+    t0 = time.time()
+    print_build_header(
+        "ANALYZE SIGNALS (signal strategies + history signals over "
+        "the analysis_forecasts buckets)",
+        tables="analysis_signals.signal_strategies, "
+               "analysis_signals.history_signals",
+        sec_types=", ".join(sec_types),
+        metrics=", ".join(sorted(metrics)) if metrics else "all",
+        mode="FORCE (purge + re-emit every present month)" if force
+        else "incremental (missing months + refresh of the newest "
+             "months)",
+    )
+
+    conn = await get_db_connection_async()
+    try:
+        totals = {"strategies": 0, "history": 0}
+        for st in sec_types:
+            stats = await process_sec_type(
+                conn, st, force=force, metrics=metrics, months=args.months,
+            )
+            for engine in engines_for(metrics):
+                run = stats.get(engine.stage_key, RunStats(0, 0, 0))
+                totals["strategies"] += run.strategies
+                totals["history"] += run.history
+
+        if totals["strategies"] == 0 and totals["history"] == 0 \
+                and not force:
+            logger.info("\n  DB is up to date; nothing to do.")
+            print_wall_time(t0)
+            return
+
+        logger.info(
+            f"\n  TOTAL: {totals['strategies']:,} signal_strategies + "
+            f"{totals['history']:,} history_signals rows written "
+            f"(is_active + signal_order refreshed per sec_type)",
+        )
+        print_wall_time(t0)
+    finally:
+        await conn.close()
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    asyncio.run(main())

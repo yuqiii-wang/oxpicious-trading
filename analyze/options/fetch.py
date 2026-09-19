@@ -501,6 +501,136 @@ async def fetch_missing_iv_skew_groups(
     return _missing_pk_tuples(collapsed, existing_pks, _PK_COLUMNS)
 
 
+# ---- Volatility index fetchers ----------------------------------------------
+
+VOL_INDEX_FETCH_COLUMNS = [
+    "date", "option_type", "underlying_code", "underlying_target_type",
+    "expiry_date", "days_to_expiry",
+    "strike_price", "underlying_close", "settle",
+]
+
+# Model-free variance replication prices the OTM strip off raw settlement
+# quotes only — no IV/delta calibration involved (K, S, Q > 0 suffice).
+_VOL_INDEX_VALID_WHERE = """
+    k.strike_price > 0
+    AND s.underlying_close > 0
+    AND s.settle > 0
+    AND t.days_to_expiry > 0
+"""
+
+
+async def fetch_vol_index_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
+    """Fetch valid option contract rows for the vol-index computation.
+
+    Returns a DataFrame with columns:
+        date, option_type, underlying_code, underlying_target_type,
+        expiry_date, days_to_expiry, strike_price, underlying_close, settle
+
+    ``underlying_target_type`` resolves the venue unit convention (CFFEX
+    index quotes are native points; SZSE ETF quotes are x1000 strike /
+    x10000 settle — scaled in compute/vix.py exactly like
+    ``compute_iv_and_greeks``).
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+    """
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT
+            extract(epoch from t.date)::float8 AS date,
+            t.contract_code,
+            t.option_type,
+            t.underlying_code,
+            t.underlying_target_type,
+            extract(epoch from t.expiry_date)::float8 AS expiry_date,
+            t.days_to_expiry,
+            k.strike_price,
+            s.underlying_close,
+            s.settle
+        FROM stats.options_terms t
+        JOIN stats.options_strike k
+          ON k.date = t.date AND k.contract_code = t.contract_code
+        JOIN stats.options_settlement s
+          ON s.date = t.date AND s.contract_code = t.contract_code
+        JOIN stats.options_volume_oi v
+          ON v.date = t.date AND v.contract_code = t.contract_code
+        WHERE {_VOL_INDEX_VALID_WHERE}
+          {sec_filter}
+        ORDER BY t.underlying_code, t.date, t.expiry_date,
+                 k.strike_price, t.option_type
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return pd.DataFrame(columns=VOL_INDEX_FETCH_COLUMNS)
+
+    df = _records_frame(
+        rows,
+        ["date", "contract_code", "option_type", "underlying_code",
+         "underlying_target_type", "expiry_date", "days_to_expiry",
+         "strike_price", "underlying_close", "settle"],
+    )
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
+    for col in ("days_to_expiry", "strike_price", "underlying_close",
+                "settle"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+async def fetch_missing_vol_index_dates(
+    conn,
+    sec_type: str | None = None,
+) -> list:
+    """Fetch (underlying_code, date) pairs missing from options_vol_index.
+
+    Date-granular (no expiry dimension, no open-expiry collapse): a date is
+    computable whenever any valid contract row exists for the underlying.
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+    """
+    from analyze.options.config import (
+        VOL_INDEX_PK_COLUMNS,
+        VOL_INDEX_TABLE_NAME,
+    )
+
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT DISTINCT t.underlying_code,
+               extract(epoch from t.date)::float8 AS date
+        FROM stats.options_terms t
+        JOIN stats.options_strike k
+          ON k.date = t.date AND k.contract_code = t.contract_code
+        JOIN stats.options_settlement s
+          ON s.date = t.date AND s.contract_code = t.contract_code
+        WHERE {_VOL_INDEX_VALID_WHERE}
+          {sec_filter}
+        ORDER BY t.underlying_code, date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return []
+
+    df = _records_frame(rows, VOL_INDEX_PK_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    candidates = df[VOL_INDEX_PK_COLUMNS].drop_duplicates()
+
+    existing_pks: list = []
+    try:
+        existing_pks = await conn.fetch(
+            f"SELECT underlying_code, "
+            f"extract(epoch from date)::float8 AS date "
+            f"FROM {VOL_INDEX_TABLE_NAME}"
+        )
+    except Exception:
+        pass
+
+    return _missing_pk_tuples(candidates, existing_pks, VOL_INDEX_PK_COLUMNS)
+
+
 # ---- Options walls fetchers -----------------------------------------------
 
 WALLS_FETCH_COLUMNS = [

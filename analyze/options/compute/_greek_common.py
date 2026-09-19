@@ -18,7 +18,7 @@ that day". This preserves the incremental-detection contract
 ("every valid source group has a row" — fetch_missing_iv_skew_groups
 checks PK presence, not values), so runs without --force settle
 quietly instead of re-detecting the same zero-OI groups forever. The
-frontend series/corr queries all filter
+frontend series queries all filter
 `skewness IS NOT NULL`, so NULL rows are invisible downstream;
 - the pair-level value is duplicated onto CALL and PUT rows (the
 table PK includes option_type; same convention as
@@ -49,7 +49,6 @@ def compute_pair_greek_balance(
     *,
     skew_type: str,
     neutral: float,
-    price_k: float,
     otm_wings_only: bool,
     metric: Callable[[pd.Series, pd.Series], pd.Series],
 ) -> pd.DataFrame:
@@ -65,10 +64,7 @@ def compute_pair_greek_balance(
         greek: greek column to weight by ('delta'/'gamma'/'vega').
         skew_type: skew_type label ('greek_<name>').
         neutral: no-tilt anchor of the metric (gap = skewness - neutral;
-            anchors the contrarian metrics, gap columns and the price
-            rebase).
-        price_k: price-space rebase scale for the correlation basis
-            (skew_price = S * (1 + (skewness - neutral) * price_k)).
+            anchors the contrarian metrics and gap columns).
         otm_wings_only: restrict to OTM wings (calls 0 < delta < 0.5,
             puts -0.5 < delta < 0 — the same band as the iv_call25 /
             iv_put25 pickers); False = whole chain (PCR / GEX convention).
@@ -138,5 +134,5 @@ def compute_pair_greek_balance(
     agg = pd.concat([call_rows, put_rows], ignore_index=True)
 
     agg["skew_type"] = skew_type
-    agg = _rolling_skew_suite(agg, neutral=neutral, price_k=price_k)
+    agg = _rolling_skew_suite(agg, neutral=neutral)
     return _finalize_skew_result(agg)

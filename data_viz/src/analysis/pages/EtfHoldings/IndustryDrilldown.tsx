@@ -25,15 +25,22 @@
  * stats.sec_classification (same industry_id space), so the industry_id the
  * composition join resolved for the table row drives both feeds directly.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import EChart from "@/components/EChart";
-import { useStore } from "@/store/filters";
+import {
+  baseChartOption,
+  commonTooltip,
+  useChartThemeMode,
+} from "@/shared/charts/base-chart";
+import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ECharts } from "echarts";
 import {
   fetchIndustrySentimentsChart,
   fetchIndustryWeightSeries,
 } from "@/lib/api-client";
-import { PALETTE_HI, MA20_COLOR, MUTED_PALETTE, axisColors } from "@/theme/chart-palette";
+import { PALETTE_HI, MA20_COLOR, MUTED_PALETTE, axisColors, commonGrid } from "@/theme/chart-palette";
 import { fmtNum } from "@/lib/series";
 import { rebaseTo100 } from "@/analysis/pages/IndustrySentiments/helpers";
 import type {
@@ -60,7 +67,7 @@ export default function IndustryDrilldown({
   industryLabel,
   color,
 }: Props) {
-  const themeMode = useStore((s) => s.themeMode);
+  const themeMode = useChartThemeMode();
   const [chart, setChart] = useState<IndustrySentimentsChartResponse | null>(null);
   const [weights, setWeights] = useState<IndustryWeightSeriesResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -153,11 +160,8 @@ export default function IndustryDrilldown({
     };
     const dot = (col: string) =>
       `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${col};margin-right:4px"></span>`;
-    return {
-      backgroundColor: "transparent",
-      animation: false,
-      tooltip: {
-        trigger: "axis",
+    return baseChartOption(themeMode, {
+      tooltip: commonTooltip(themeMode, {
         axisPointer: { type: "line" },
         // Custom formatter: the ETF pct series is SPARSE (snapshot dates
         // only) — hovering BETWEEN points must still show it. Both series
@@ -190,11 +194,8 @@ export default function IndustryDrilldown({
             [mcRow, pctRow].filter(Boolean).join("<br/>")
           );
         },
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
         confine: true,
-      },
+      }),
       legend: {
         top: 0,
         left: "center",
@@ -203,7 +204,7 @@ export default function IndustryDrilldown({
         itemHeight: 8,
         itemGap: 12,
       },
-      grid: { left: 52, right: 52, top: 28, bottom: 28 },
+      grid: commonGrid({ left: 52, right: 52, top: 28, bottom: 28 }),
       xAxis: {
         type: "time",
         axisLabel: { color: c.textColor, fontSize: 10, hideOverlap: true },
@@ -255,7 +256,7 @@ export default function IndustryDrilldown({
           emphasis: { focus: "series" },
         },
       ],
-    };
+    });
   }, [themeMode, color, industryLabel, etfCode, meanClose, etfPct]);
 
   const curvesOption = useMemo<EChartsOption>(() => {
@@ -272,18 +273,12 @@ export default function IndustryDrilldown({
           emphasis: { focus: "series" },
         }) as LineSeriesOption,
     );
-    return {
-      backgroundColor: "transparent",
-      animation: false,
-      tooltip: {
-        trigger: "axis",
+    return baseChartOption(themeMode, {
+      tooltip: commonTooltip(themeMode, {
         axisPointer: { type: "line" },
-        backgroundColor: c.tooltipBg,
-        borderColor: c.splitLineColor,
-        textStyle: { color: c.textColor, fontSize: 11 },
         confine: true,
         valueFormatter: (v: unknown) => fmtNum(v as number, 1),
-      },
+      }),
       legend: {
         type: "scroll",
         top: 0,
@@ -295,7 +290,7 @@ export default function IndustryDrilldown({
         pageIconColor: c.textColor,
         pageTextStyle: { color: c.textColor },
       },
-      grid: { left: 44, right: 12, top: 30, bottom: 28 },
+      grid: commonGrid({ left: 44, right: 12, top: 30, bottom: 28 }),
       xAxis: {
         type: "time",
         axisLabel: { color: c.textColor, fontSize: 10, hideOverlap: true },
@@ -310,8 +305,80 @@ export default function IndustryDrilldown({
       },
       dataZoom: [{ type: "inside" }],
       series,
-    };
+    });
   }, [themeMode, memberSeries]);
+
+  // ---- AI Ask — raw ECharts under Typography captions: one "?" per plot,
+  // rendered inline after the caption text. (Hooks stay above the early
+  // return below.) ----
+  const dualRef = useRef<ECharts | null>(null);
+  const curvesRef = useRef<ECharts | null>(null);
+  const dualAiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Industry drill-down for ${industryLabel}: the industry's composite mean close ` +
+        "(stats.industry_basic_stats, pool_size='all', rebased-to-100 composite) on the " +
+        `left axis against this industry's % of ${etfCode}'s total composition on the ` +
+        "right axis (weight_pct / total_weight_pct × 100 per snapshot — the quarterly " +
+        "table's normalization, at snapshot granularity). Read the two axes together: " +
+        "rising mean close with rising ETF pct = the ETF added exposure into strength.",
+      instruments: [
+        { code: etfCode, assetClass: "etf" },
+        { code: industryId, name: industryLabel, assetClass: "industry" },
+      ],
+      series: [
+        { name: `${industryLabel} mean_close (all pools)`, description: "industry composite mean close (rebased), all pools" },
+        { name: `${industryLabel} in ${etfCode} (pct of total)`, unit: "%", description: "industry weight as % of the ETF's total composition (step line — carry-forward between snapshots)" },
+      ],
+      notes: [
+        "The ETF pct series is SPARSE (snapshot dates only) — the step line holds the last value until the next snapshot; tooltips carry the last available value with its as-of date.",
+        weights?.source === "index" && weights.index_source
+          ? `Weights come from the ETF's tracking index ${weights.index_source.code} (${weights.index_source.name || "—"}).`
+          : "Weights come from the ETF's own composition snapshots.",
+      ],
+    }),
+    [industryLabel, industryId, etfCode, weights],
+  );
+  const dualPlotInfo = useMemo(
+    () =>
+      dualOption
+        ? derivePlotInfo({
+            title: `${industryLabel} · industry mean close vs % in ${etfCode}`,
+            option: dualOption,
+            spec: dualAiAskSpec,
+          })
+        : null,
+    [dualOption, dualAiAskSpec, industryLabel, etfCode],
+  );
+  const curvesAiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        `Member index curves of ${industryLabel}: every index classified into this ` +
+        "industry, each rebased to 100 at its own first non-null close (the same " +
+        "convention as stats.industry_basic_stats and the Industry Sentiments page), " +
+        "so relative member performance is directly comparable despite different " +
+        "price levels. Hover for values; scroll-legend toggles members.",
+      instruments: [{ code: industryId, name: industryLabel, assetClass: "industry" }],
+      state: {
+        member_indices: memberSeries.length,
+      },
+      notes: [
+        "Series names are the member index names (dynamic); each curve is rebased to its OWN first close.",
+      ],
+    }),
+    [industryLabel, industryId, memberSeries.length],
+  );
+  const curvesPlotInfo = useMemo(
+    () =>
+      curvesOption
+        ? derivePlotInfo({
+            title: `${industryLabel} · member index curves (rebased to 100)`,
+            option: curvesOption,
+            spec: curvesAiAskSpec,
+          })
+        : null,
+    [curvesOption, curvesAiAskSpec, industryLabel],
+  );
 
   if (!industryId) {
     return (
@@ -357,8 +424,16 @@ export default function IndustryDrilldown({
             {weights?.source === "index" && weights.index_source
               ? ` · via tracking index ${weights.index_source.code}`
               : ""}
+            <AiAskButton plotInfo={dualPlotInfo} getInstance={() => dualRef.current} />
           </Typography>
-          <EChart option={dualOption} height={240} minHeight={160} />
+          <EChart
+            option={dualOption}
+            height={240}
+            minHeight={160}
+            onReady={(c) => {
+              dualRef.current = c;
+            }}
+          />
         </Box>
       )}
       {!loading && !error && !noCurves && (
@@ -370,8 +445,16 @@ export default function IndustryDrilldown({
           >
             {industryLabel} · member index curves (rebased to 100 at each index&apos;s
             first close) · {memberSeries.length} indices
+            <AiAskButton plotInfo={curvesPlotInfo} getInstance={() => curvesRef.current} />
           </Typography>
-          <EChart option={curvesOption} height={280} minHeight={180} />
+          <EChart
+            option={curvesOption}
+            height={280}
+            minHeight={180}
+            onReady={(c) => {
+              curvesRef.current = c;
+            }}
+          />
         </Box>
       )}
     </Box>

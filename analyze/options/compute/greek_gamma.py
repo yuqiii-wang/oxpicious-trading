@@ -48,14 +48,11 @@ def compute_options_greek_gamma_skew_stats(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with SKEWNESS_RESULT_COLUMNS for skew_type='greek_gamma'
         — written to analysis.options_skewness_stats.
     """
-    from analyze.options.config import GREEK_SKEW_PRICE_K
-
     return compute_pair_greek_balance(
         df,
         _GREEK,
         skew_type=_SKEW_TYPE,
         neutral=_NEUTRAL,
-        price_k=GREEK_SKEW_PRICE_K,
         otm_wings_only=False,
         metric=lambda call_sum, put_sum: (call_sum - put_sum)
         / (call_sum + put_sum),

@@ -113,28 +113,6 @@ COMMENT ON COLUMN stats.sec_classification.owner_id             IS 'Logical refe
 COMMENT ON COLUMN stats.sec_classification.is_dummy             IS 'TRUE for synthetic industry dummy indices (type=''index'', code like DUMMY_BANKS). Created one per industry_id to serve as parent_index_code for orphan ETFs (ETFs with no CSV-mapped tracking index). FALSE for all real indices, ETFs, and stocks.';
 COMMENT ON COLUMN stats.sec_classification.is_active            IS 'TRUE iff the security has >=1 record in the last year (trailing 365 days) in its identity table: index→stats.index_identity (bare 6-digit code), stock→stats.stock_identity (.SZ/.SS suffix), etf→stats.etf_identity (.SS/.SZ suffix). FALSE for delisted ETFs, dead indices, and old stocks with no recent data. Dummy indices (is_dummy=TRUE) are always TRUE — they are synthetic parents for orphan ETFs and have no identity records of their own. Populated by build_classification (sector_industry/upsert.py) as a post-upsert SQL UPDATE.';
 
--- Migrate: add is_dummy column to pre-existing installs.
-ALTER TABLE stats.sec_classification ADD COLUMN IF NOT EXISTS is_dummy BOOLEAN NOT NULL DEFAULT FALSE;
-
--- Migrate: add is_active column to pre-existing installs.
-ALTER TABLE stats.sec_classification ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
-
--- Migrate: add is_primary_exchange column to pre-existing installs.
--- Derived flag (never set manually): TRUE for SS/STAR/SZ/GEM/BJ, FALSE for
--- HK/OVERSEAS, NULL when exchange IS NULL. Populated by a post-upsert UPDATE
--- in build_classification (sector_industry/upsert.py) — same pattern as
--- is_active. No DEFAULT so NULLs stay NULL until the build backfills them.
-ALTER TABLE stats.sec_classification ADD COLUMN IF NOT EXISTS is_primary_exchange BOOLEAN;
-
--- Migrate: relax the exchange CHECK constraint to include 'OVERSEAS'
--- (non-Greater-China QDII targets — US/Japan/Europe/emerging markets).
--- Drops and re-creates the constraint so existing installs pick up the new
--- allowed value. No-op on fresh installs where the CREATE TABLE already
--- includes 'OVERSEAS'.
-ALTER TABLE stats.sec_classification DROP CONSTRAINT IF EXISTS chk_sec_classification_exchange;
-ALTER TABLE stats.sec_classification ADD CONSTRAINT chk_sec_classification_exchange
-    CHECK (exchange IN ('SZ', 'SS', 'GEM', 'STAR', 'BJ', 'HK', 'OVERSEAS'));
-
 CREATE INDEX IF NOT EXISTS idx_sec_classification_type
     ON stats.sec_classification (type);
 
@@ -180,6 +158,9 @@ CREATE TABLE IF NOT EXISTS stats.sec_index_tags (
     sector_id                 TEXT          NOT NULL,
     industry_id               TEXT          NOT NULL,
     is_broad_market           BOOL,
+    -- Denormalized from sec_classification; context for the
+    -- is_broad_market derivation.
+    is_industry_not_strategy  BOOL NOT NULL DEFAULT TRUE,
     CONSTRAINT pk_sec_index_tags PRIMARY KEY (code, sector_id, industry_id)
 ) PARTITION BY HASH (code);
 
@@ -192,22 +173,6 @@ COMMENT ON COLUMN stats.sec_index_tags.code         IS 'Index code (bare 6-digit
 COMMENT ON COLUMN stats.sec_index_tags.sector_id    IS 'L1 sector id (e.g. DIV, MIL, AERO, BROAD, TECH).';
 COMMENT ON COLUMN stats.sec_index_tags.industry_id  IS 'L2 industry id (e.g. DIV_SOE, MIL_DEFENSE, AERO_SPACE, BROAD_CSI300, BROAD_SSE50).';
 COMMENT ON COLUMN stats.sec_index_tags.is_broad_market IS 'TRUE iff this index''s PRIMARY classification is the BROAD strategy (is_industry_not_strategy = FALSE AND the primary sector_id = ''BROAD''). Since sector_id now carries EITHER industry OR strategy based on is_industry_not_strategy, a strategy-primary index has sector_id=''BROAD'' directly. Industry-primary indices whose secondary tag happens to be BROAD (e.g. 中证银行 → FIN/BANKS primary + BROAD_CSI secondary tag) do NOT set this flag on any row. An index is considered broad-market if ANY of its tags has is_broad_market=TRUE. Populated by build_classification.py. BROAD themes are flagship index series (BROAD_SSE50/180/380, BROAD_CSI300/500/800/1000/2000, BROAD_CSI_A, BROAD_GEM, BROAD_STAR, BROAD_BSE, BROAD_TECH_INNOV, plus generic BROAD_SSE/BROAD_CSI/BROAD_SZSE catch-alls); each broad index carries exactly ONE BROAD theme (the most specific match wins, catch-alls dropped on collision).';
-
--- Add is_broad_market column to existing tables (no-op if already present).
--- Needed because CREATE TABLE IF NOT EXISTS does not add new columns to an
--- existing table — the column was added to the DDL after the table was first
--- created, so the live table lacks it until this ALTER runs.
-ALTER TABLE stats.sec_index_tags ADD COLUMN IF NOT EXISTS is_broad_market BOOL;
-
--- Add is_industry_not_strategy column to sec_index_tags (denormalized from
--- sec_classification). Needed for is_broad_market derivation context.
-ALTER TABLE stats.sec_index_tags ADD COLUMN IF NOT EXISTS is_industry_not_strategy BOOLEAN NOT NULL DEFAULT TRUE;
-
--- Drop legacy strategy columns from sec_index_tags. The tags table stores
--- ALL classifications per index in sector_id/industry_id (both industry and
--- strategy tags), so separate strategy columns were redundant denormalization.
-ALTER TABLE stats.sec_index_tags DROP COLUMN IF EXISTS strategy_id;
-ALTER TABLE stats.sec_index_tags DROP COLUMN IF EXISTS theme_id;
 
 CREATE INDEX IF NOT EXISTS idx_sec_index_tags_sector_industry
     ON stats.sec_index_tags (sector_id, industry_id);

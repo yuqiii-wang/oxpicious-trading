@@ -59,6 +59,7 @@ import {
   commonGrid,
   commonDataZoom,
 } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { fmtNum } from "@/lib/series";
 import React from "react";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
@@ -423,17 +424,12 @@ export function buildBenchmarkPriceOption(
     legendData.push(ind.industry_label);
   }
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 64, right: showTradingAmt ? 56 : 24, bottom: 50, top: 32 }),
     dataZoom: commonDataZoom(),
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(themeMode, {
+      // Old hand-rolled pointer was a bare cross (no snap, no styles) — keep it.
       axisPointer: { type: "cross" },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           dataIndex?: number;
@@ -509,7 +505,7 @@ export function buildBenchmarkPriceOption(
         }
         return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
-    },
+    }),
     legend: commonLegend(themeMode, {
       itemWidth: 12,
       itemHeight: 7,
@@ -561,5 +557,5 @@ export function buildBenchmarkPriceOption(
       }] : []),
     ],
     series,
-  };
+  });
 }

@@ -57,7 +57,10 @@ import {
 } from "@mui/material";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import EChart from "@/components/EChart";
-import { useTheme } from "@/hooks/useTheme";
+import { useChartThemeMode } from "@/shared/charts/base-chart";
+import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ECharts } from "echarts";
 import { useSecNav } from "@/shared/components/sec-nav";
 import SecClassificationNavMulti from "@/shared/components/sec-classification/SecClassificationNavMulti";
 import {
@@ -83,7 +86,7 @@ import {
 import type { CorrWindow, OffsetMetric, PoolSize } from "./constants";
 
 export default function OppositeIndustryCorrelationsPage() {
-  const { theme: themeMode } = useTheme();
+  const themeMode = useChartThemeMode();
 
   // ---- Selection state ---------------------------------------------------
   // Shared nav kit (same as Industry Sentiments): loads the sector→industry
@@ -283,6 +286,54 @@ export default function OppositeIndustryCorrelationsPage() {
     ? new Set(data.offsets.map((r) => `${r.industry_id}|${r.benchmark_industry_id}`)).size
     : 0;
 
+  // ---- AI Ask — raw EChart under the page caption: the "?" rides the
+  // metric/window controls row. State carries the CURRENT metric / window /
+  // pool / benchmark so the modal and the LLM describe the view on screen.
+  const chartRef = useRef<ECharts | null>(null);
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "Benchmark-offset industry correlations: each selected industry's MA trend has " +
+        "the broad-market benchmark rebased to its level at each window start and " +
+        "SUBTRACTED (the common market factor removed; prices recomputed from 100), " +
+        "then every industry PAIR's Pearson correlation is charted per rolling " +
+        "20/60/255-trading-day window as horizontal segments starting at each window " +
+        "date. The metric toggle switches what a segment encodes: Overall = raw " +
+        "correlation (benchmark still in), Offset = correlation after the removal, " +
+        "Opposite = the score (1 − offset)/2 in [0, 1] — 1 = perfectly opposite once " +
+        "the market factor is removed, 0.5 = uncorrelated, 0 = co-moving.",
+      instruments: [
+        { code: benchmark, assetClass: "index" },
+        ...selectedIds.map((id) => ({ code: id, assetClass: "industry" as const })),
+      ],
+      state: {
+        metric: METRIC_LABELS[metric],
+        window: win,
+        pool,
+        benchmark,
+        industries_selected: selectedIds.length,
+        pairs: numPairs,
+      },
+      notes: [
+        "One line per industry pair (dynamic series names); windows start every 20 trading days.",
+        "An industry up while the benchmark rises MORE is DOWN after the offset — that is the opposite-industry detector.",
+      ],
+    }),
+    [metric, win, pool, benchmark, selectedIds, numPairs],
+  );
+  const aiAskPlotInfo = useMemo(
+    () =>
+      option
+        ? derivePlotInfo({
+            title: "Opposite Industry Correlations",
+            subtitle: `${METRIC_LABELS[metric]} · ${win} windows · benchmark ${benchmark}`,
+            option,
+            spec: aiAskSpec,
+          })
+        : null,
+    [option, aiAskSpec, metric, win, benchmark],
+  );
+
   return (
     <Box>
       <Typography variant="h5" sx={{ fontWeight: 700, mb: 0.5 }}>
@@ -388,6 +439,7 @@ export default function OppositeIndustryCorrelationsPage() {
           <Typography variant="body2" color="text.secondary">
             {numPairs} pair{numPairs === 1 ? "" : "s"} · {data.offsets.length.toLocaleString()} rows ·
             pool={data.pool_size} · benchmark={data.benchmark_code}
+            <AiAskButton plotInfo={aiAskPlotInfo} getInstance={() => chartRef.current} />
           </Typography>
         )}
       </Box>
@@ -408,7 +460,15 @@ export default function OppositeIndustryCorrelationsPage() {
               <CircularProgress size={24} />
             </Box>
           )}
-          {!loading && option && <EChart option={option} height={380} />}
+          {!loading && option && (
+            <EChart
+              option={option}
+              height={380}
+              onReady={(c) => {
+                chartRef.current = c;
+              }}
+            />
+          )}
           {!loading && !option && !error && (
             <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
               <Typography variant="body2" color="text.secondary">

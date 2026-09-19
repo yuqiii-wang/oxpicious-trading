@@ -22,7 +22,6 @@ import {
   Box,
   CircularProgress,
   Popover,
-  Stack,
   ToggleButton,
   ToggleButtonGroup,
   Typography,
@@ -30,6 +29,9 @@ import {
 import * as echarts from "echarts";
 import ChartCard from "@/components/ChartCard";
 import EChart from "@/components/EChart";
+import { useChartThemeMode } from "@/shared/charts/base-chart";
+import { useAiAskAddon } from "@/shared/ai-ask";
+import type { AiAskSpec } from "@/shared/ai-ask";
 import {
   fetchPerfAttrAttribution,
   fetchPerfAttrChart,
@@ -43,7 +45,10 @@ import { buildFluctuationOption } from "./fluctuationOption";
 import { buildComparisonOption } from "./comparisonOption";
 import { buildAmountContributionOption } from "./amountContributionOption";
 
-export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
+export function PerfAttrPanel({ code, name, secType }: PanelProps) {
+  // Reactive light/dark theme for the option builders below.
+  const themeMode = useChartThemeMode();
+
   const [data, setData] = useState<PerfAttrAttributionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -133,6 +138,27 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
     [data, themeMode, showBroadMarket],
   );
 
+  // Memoized expanded time-series options (hoisted from inline JSX so the
+  // AI Ask plot info derives from the same objects the charts render).
+  const amountOption = useMemo(
+    () =>
+      chartData ? buildAmountContributionOption(chartData, themeMode, chartMode) : null,
+    [chartData, themeMode, chartMode],
+  );
+  const comparisonOption = useMemo(
+    () => (chartData ? buildComparisonOption(chartData, themeMode, chartMode) : null),
+    [chartData, themeMode, chartMode],
+  );
+  const extraOptions = useMemo(
+    () => [amountOption, comparisonOption] as const,
+    [amountOption, comparisonOption],
+  );
+
+  // Chart instances for the AI Ask screenshots (one per stacked chart).
+  const fluctuationRef = useRef<echarts.ECharts | null>(null);
+  const amountRef = useRef<echarts.ECharts | null>(null);
+  const comparisonRef = useRef<echarts.ECharts | null>(null);
+
   // Fetch attribution data (benchmark list for the selector) on mount.
   // NOTE: no auto-select — the expanded time-series charts are shown ONLY
   // after the user clicks a bar in the Fluctuation Attribution chart.
@@ -206,8 +232,74 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
     ? `${data.code} · ${data.name || name || "—"} · ${data.latest_date || "—"}`
     : `${code} · ${name || "—"}`;
 
+  // AI Ask — intro + series semantics; state carries the CURRENT toggle /
+  // benchmark selection so the modal and the LLM describe the view on screen.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "Performance attribution for one subject index against its benchmark " +
+        "family. Top chart: each benchmark's shared-weight contribution " +
+        "(fractional benchmark return × composition overlap) as bars, with the " +
+        "overlap % behind — click a bar to expand that benchmark's time series. " +
+        "Below (after a bar click): benchmark vs subject index ETF turnover " +
+        "(liquidity ratio in the tooltip), and the close-price trend of subject " +
+        "vs benchmark — % mode rebases both curves to 0% at the first common " +
+        "date, Abs mode shows raw closes on dual axes.",
+      instruments: [
+        { code, name: name || data?.name, assetClass: "index" },
+        ...(selectedBenchmark
+          ? [{ code: selectedBenchmark.code, name: selectedBenchmark.name, assetClass: "index" as const }]
+          : []),
+      ],
+      series: [
+        { name: "Contribution", unit: "%", description: "benchmark fractional return × composition overlap (shared weight)" },
+        { name: "Shared Wt %", unit: "%", description: "share of the subject's composition the benchmark overlaps" },
+        ...(chartData
+          ? [
+              {
+                name: `${chartData.benchmark_name || chartData.benchmark_code} ETF Amt`,
+                unit: "亿元",
+                description: "benchmark index ETF turnover (click tooltip for the bench/code liquidity ratio)",
+              },
+              {
+                name: `${chartData.name || chartData.code} ETF Amt`,
+                unit: "亿元",
+                description: "subject index ETF turnover",
+              },
+              { name: chartData.name || chartData.code, description: "subject close / % change vs the common base date" },
+              {
+                name: chartData.benchmark_name || chartData.benchmark_code,
+                description: "benchmark close / % change vs the common base date",
+              },
+            ]
+          : []),
+      ],
+      state: {
+        benchmarks: showBroadMarket ? "all (incl. broad-market)" : "sector/industry only",
+        benchmark_selected: selectedBenchmark
+          ? `${selectedBenchmark.code} ${selectedBenchmark.name}`
+          : "none — click a bar above",
+        comparison_mode: chartMode === "percentage" ? "% (rebased to first common date)" : "absolute",
+      },
+      notes: [
+        "Returns are computed on the fly in SQL (fractional, scale-invariant) — not stored in the DB.",
+        "The %/Abs toggle applies to both expanded charts; tooltips surface rolling 5/20/60/255-day close correlations.",
+      ],
+    }),
+    [code, name, data, chartData, showBroadMarket, selectedBenchmark, chartMode],
+  );
+  const aiAskAddon = useAiAskAddon({
+    title: "Perf Attribution",
+    subtitle,
+    option: fluctuationOption,
+    extraOptions,
+    spec: aiAskSpec,
+    getInstance: () => fluctuationRef.current,
+    getExtraInstances: () => [amountRef.current, comparisonRef.current],
+  });
+
   return (
-    <ChartCard title="Perf Attribution" subtitle={subtitle}>
+    <ChartCard title="Perf Attribution" subtitle={subtitle} titleAddon={aiAskAddon}>
       {loading && (
         <Box sx={{ display: "flex", justifyContent: "center", py: 3 }}>
           <CircularProgress size={20} />
@@ -262,7 +354,10 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
             <EChart
               option={fluctuationOption ?? {}}
               height={300}
-              onReady={handleFluctuationReady}
+              onReady={(chart) => {
+                fluctuationRef.current = chart;
+                handleFluctuationReady(chart);
+              }}
             />
           </Box>
 
@@ -400,17 +495,23 @@ export function PerfAttrPanel({ code, name, secType, themeMode }: PanelProps) {
                   </Popover>
                 </Box>
                 <EChart
-                  option={buildAmountContributionOption(chartData, themeMode, chartMode)}
+                  option={amountOption ?? {}}
                   height={170}
                   group={`perf-attr-${code}-${selectedBenchmark.code}`}
+                  onReady={(chart) => {
+                    amountRef.current = chart;
+                  }}
                 />
                 <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1, mb: 0.25 }}>
                   Close price history trend (subject vs benchmark)
                 </Typography>
                 <EChart
-                  option={buildComparisonOption(chartData, themeMode, chartMode)}
+                  option={comparisonOption ?? {}}
                   height={200}
                   group={`perf-attr-${code}-${selectedBenchmark.code}`}
+                  onReady={(chart) => {
+                    comparisonRef.current = chart;
+                  }}
                 />
               </Box>
             </>

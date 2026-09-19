@@ -141,15 +141,6 @@ CREATE TABLE IF NOT EXISTS stats.cross_stats (
 -- (database/sql/00_partition_utils.sql); children are named _p00.._p07
 SELECT public.create_hash_partitions('stats', 'cross_stats', 8);
 
--- Offset columns (added 2026-09-07) — idempotent migration for
--- deployments created before they existed (fast default-free ADD COLUMN,
--- no table rewrite; existing rows backfilled by the one-off
--- builds.cross_stats --backfill-offsets pass).
-ALTER TABLE stats.cross_stats
-    ADD COLUMN IF NOT EXISTS code_price_with_benchmark_offset NUMERIC(20,6);
-ALTER TABLE stats.cross_stats
-    ADD COLUMN IF NOT EXISTS code_price_with_benchmark_offset_by_weighted_amt NUMERIC(20,6);
-
 -- ----------------------------------------------------------------------------
 --  Dates map: one row per date loaded into cross_stats (pair grain drives
 --  the map; industry grain shares the same dates by construction). Missing-

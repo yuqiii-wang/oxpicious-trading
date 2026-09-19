@@ -139,6 +139,14 @@ async def _run_composition(force: bool, code_filter: str | None = None,
             logger.info(f"    [DB] Inserted {total:,} rows into stats.sec_composition via {via}")
         else:
             logger.info("    [DB] No new rows to insert")
+
+        # Post-step: stats.sec_board_map index slice — composition-weighted
+        # board mix per index. Must run AFTER the composition upsert: mixes
+        # read the latest snapshots this phase may have just added.
+        from builds._commons.board_map import stage_stock_boards, refresh_board_mix
+        await stage_stock_boards(conn)
+        await refresh_board_mix(conn, "index", force=force,
+                                codes=[code_filter] if code_filter else None)
     finally:
         await conn.close()
 

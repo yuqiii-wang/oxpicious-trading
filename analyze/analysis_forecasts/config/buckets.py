@@ -4,7 +4,7 @@ from __future__ import annotations
 # ---- Bucket definitions ----------------------------------------------------
 
 # RSI windows — mirrors analysis.mov_ave_rsi (Wilder RSI columns).
-RSI_WINDOWS = (6, 10, 14, 20, 60)
+RSI_WINDOWS = (3, 6, 10, 14, 20, 60)
 
 # Percentile widths for the RSI extreme buckets (percent).
 RSI_PCTS = (1, 5, 10, 25)
@@ -23,24 +23,12 @@ STD_MULTIPLES = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0)
 # Breach sides: upper = price > ma + k*std, lower = price < ma - k*std.
 STD_SIDES = ("upper", "lower")
 
-# N-day price-return windows for the gap buckets — mirrors
-# analysis.mov_ave_rsi.gap_{W}days (GAP_WINDOWS in analyze.mov_ave_spread.rsi).
-GAP_WINDOWS = (2, 3)
-
-# Percentile widths for the gap extreme buckets (percent) — same widths
-# as the RSI family.
-GAP_PCTS = RSI_PCTS
-
-# Bucket sides: top = sharp W-day rally (highest-pct% gap days),
-#               bottom = sharp W-day selloff (lowest-pct% gap days).
-GAP_SIDES = RSI_SIDES
-
 # ---- Streak-merge signal semantics (2026-09; replaces cooldown) -------
 #
 # The bucket engines share ONE unified signal pipeline
 # (wide.iter_bucket_subsets) with two modes:
 #
-#   MULTI-DAY STREAK (merge=True — mov_rsi / mov_std / mov_gap /
+#   MULTI-DAY STREAK (merge=True — mov_rsi / mov_std /
 #   px_vol_state): dates that keep satisfying the bucket condition
 #   CONTINUOUSLY are treated as ONE forecast signal — the run collapses
 #   to its MID day (the ((L-1)//2 + 1)-th day, the high_low_streaks
@@ -244,30 +232,64 @@ OPP_PAIR_SIDE = "bottom"
 #
 # Seventh bucket family (see database/sql/analysis/analysis_forecasts/
 # 08_mov_pairs.sql): CROSS-EVENT buckets built on the EXISTING
-# relative-MA-spread columns of analysis.mov_ave_spreads_detail —
-# ma5_vs_ma{W} = (ma5 - ma_{W}) / ma_{W}, the parent mov_ave_spread
-# analysis's own spread definition (no new MA computation). A day joins
-# a bucket when the stored spread changes sign that day: side 'top' a
-# CROSS UP / golden cross (spread[t] > 0 and spread[t-1] <= 0 — ma5
-# rises through the slow MA), side 'bottom' a CROSS DOWN / death cross
-# (spread[t] < 0 and spread[t-1] >= 0). NULL spreads never trigger
-# (either MA still warming up); triggers are streak-merged (dates that
-# keep crossing CONTINUOUSLY collapse to their MID day — the 2026-09
-# streak migration that replaced the fixed 5-day cooldown) and
-# hype-split exactly like the mov_rsi / mov_std / mov_gap event
-# families.
+# relative-MA-spread columns of analysis.mov_ave_spreads_detail — the
+# parent mov_ave_spread analysis's own spread definitions (no new MA
+# computation). TWO fast legs share the family (the motivation rows'
+# fast_leg column): 'ma5' reads the ma5_vs_ma{W} = (ma5 - ma_{W}) /
+# ma_{W} columns, 'price' the price_vs_ma{W} = (price - ma_{W}) / ma_{W}
+# columns (the close-price cross). A day joins a bucket when the stored
+# spread changes sign that day: side 'top' a CROSS UP / golden cross
+# (spread[t] > 0 and spread[t-1] <= 0 — the fast leg rises through the
+# slow MA), side 'bottom' a CROSS DOWN / death cross (spread[t] < 0 and
+# spread[t-1] >= 0). NULL spreads never trigger (either leg still
+# warming up); triggers are ONE-DAY signals (a cross day's predecessor
+# sits on the other side of zero, so consecutive cross days are
+# mutually exclusive — streak_signal_days is the 1 constant) and
+# hype-split exactly like the mov_rsi / mov_std event families.
 
 # Slow MA leg of the pair (trading days) — selects the
-# analysis.mov_ave_spreads_detail.ma5_vs_ma{W} column. The fast leg is
-# fixed at ma5 (the spread columns' definition). ma5_vs_ma20 exists in
-# the source too but is not built (5-vs-20 flips too often to be a
-# regime cross; widen the tuple to add it).
+# analysis.mov_ave_spreads_detail {fast_leg}_vs_ma{W} column (ma5_vs_ma{W}
+# / price_vs_ma{W}). The 5/20 windows exist in the source too but are
+# not built (5-vs-20 / price-vs-5 flip too often to be a regime cross;
+# widen the tuple to add them).
 MOV_PAIRS_WINDOWS = (60, 120, 255)
+
+# (fast_leg, fetched-spread-column prefix) pairs of the family — the
+# engine melts each leg's pair_{W} / px_pair_{W} columns under its
+# fast_leg label.
+MOV_PAIRS_LEGS: tuple[tuple[str, str], ...] = (
+    ("ma5", "pair"),
+    ("price", "px_pair"),
+)
 
 # Cross sides: top = cross up (golden cross, the pair turns bullish),
 # bottom = cross down (death cross, the pair turns bearish) — the same
 # side semantics the gate and the other mov_* families use.
 MOV_PAIRS_SIDES = ("top", "bottom")
+
+# ---- mov_pairs_ema: EMA-pair cross buckets (mov_pairs' EMA sibling) ---------
+#
+# The identical cross-event machinery on the EXISTING relative-EMA-spread
+# columns of analysis.mov_ave_spreads_detail_ema (fast legs 'ema6' on
+# ema6_vs_ema{W} = (ema6 - ema_{W}) / ema_{W} and 'price' on
+# price_vs_ema{W} = (price - ema_{W}) / ema_{W} — the close-price cross,
+# the source table has no ema5). Same table shape, PK, fast_leg column,
+# sides and one-day signal semantics as mov_pairs.
+
+# Slow EMA leg of the pair (trading days) — selects the
+# analysis.mov_ave_spreads_detail_ema {fast_leg}_vs_ema{W} column
+# (ema6_vs_ema{W} / price_vs_ema{W}). The 6/20 windows exist too but are
+# not built (same rationale as the MA family).
+MOV_PAIRS_EMA_WINDOWS = (60, 120, 255)
+
+# (fast_leg, fetched-spread-column prefix) pairs of the EMA family.
+MOV_PAIRS_EMA_LEGS: tuple[tuple[str, str], ...] = (
+    ("ema6", "ema_pair"),
+    ("price", "px_ema_pair"),
+)
+
+# Same cross sides as the MA family.
+MOV_PAIRS_EMA_SIDES = MOV_PAIRS_SIDES
 
 # ---- high_low_streaks: MA-Spread High/Low streak mean-mid anchor buckets ----
 #
@@ -307,24 +329,6 @@ HIGH_LOW_STREAKS_TYPES = (1, 5, 10)
 # month band's high_val), bottom = below-band (< low_val) — the same
 # side semantics the gate and the other families use.
 HIGH_LOW_STREAKS_SIDES = ("top", "bottom")
-
-# ---- mov_pairs_ema: EMA-pair cross buckets (mov_pairs' EMA sibling) ---------
-#
-# The identical cross-event machinery on the EXISTING relative-EMA-spread
-# columns of analysis.mov_ave_spreads_detail_ema — ema6_vs_ema{W} =
-# (ema6 - ema_{W}) / ema_{W} (fast leg fixed ema6; the source table has no
-# ema5). Same table shape, PK, sides and one-day signal semantics as
-# mov_pairs; its own
-# table + identity so the two families stay separately refreshable.
-
-# Slow EMA leg of the pair (trading days) — selects the
-# analysis.mov_ave_spreads_detail_ema.ema6_vs_ema{W} column.
-# ema6_vs_ema20 exists too but is not built (same rationale as the
-# ma5-vs-ma20 pair).
-MOV_PAIRS_EMA_WINDOWS = (60, 120, 255)
-
-# Same cross sides as the MA family.
-MOV_PAIRS_EMA_SIDES = MOV_PAIRS_SIDES
 
 # ---- pe_state / dividend_state: valuation state bucket families ------------
 #

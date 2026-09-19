@@ -21,12 +21,13 @@ from analyze.analysis_forecasts.config import N_MONTHS, WINDOW_YEARS
 
 @dataclass(frozen=True)
 class MonthSpec:
-    """One target stat month: the completed month-end plus the inclusive
+    """One target stat month: the month-end key plus the inclusive
     start of its trailing window (= month-end - WINDOW_YEARS + 1 day,
     i.e. the window covers exactly WINDOW_YEARS of calendar dates)."""
     stat_month: date
     lower: date  # inclusive window start
-    upper: date  # inclusive window end (== stat_month)
+    upper: date  # inclusive window end (== stat_month; the RUNNING
+                 # month's upper is today — the latest available date)
 
 
 @dataclass(frozen=True)
@@ -58,13 +59,17 @@ def build_month_specs(
     n_months: int = N_MONTHS,
     window_years: int = WINDOW_YEARS,
 ) -> list[MonthSpec]:
-    """The last ``n_months`` COMPLETED month-ends as MonthSpec list
-    (ascending, oldest first).
+    """The last ``n_months`` COMPLETED month-ends PLUS the running
+    (partial) month as MonthSpec list (ascending, oldest first).
 
-    The current (partial) month is excluded: its stats would change every
-    day and break the month-granular incremental contract. Window lower =
-    month-end - window_years + 1 day (inclusive), so the window spans
-    exactly ``window_years`` of calendar dates: (M - 5y, M].
+    The running month is keyed at its own month-end (the same key the
+    completed snapshot will carry) but its window ends TODAY — the
+    latest available data date. It therefore recomputes "till today",
+    sits inside the refresh window (deleted + recomputed on every run
+    while its forward windows still grow), and after month-end the
+    SAME key re-derives with complete data. Window lower = month-end
+    - window_years + 1 day (inclusive), so each window spans exactly
+    ``window_years`` of calendar dates: (M - window_years, M].
     """
     today = date.today()
     # Last COMPLETED month-end: first-of-current-month - 1 day (even on
@@ -81,6 +86,15 @@ def build_month_specs(
         if m == 0:
             y, m = y - 1, 12
     specs.reverse()
+    # The RUNNING month (newest, so appended after the reverse):
+    # month-end key, window bounded at today (on the month's last day
+    # this degenerates to the completed spec — the key carries over and
+    # the refresh window re-derives it next run).
+    me = date(today.year, today.month,
+              calendar.monthrange(today.year, today.month)[1])
+    specs.append(MonthSpec(
+        me, _shift_years(me, -window_years) + timedelta(days=1), today,
+    ))
     return specs
 
 

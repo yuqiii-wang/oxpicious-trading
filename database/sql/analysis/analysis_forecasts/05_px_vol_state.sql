@@ -44,10 +44,10 @@
 --  and each result row's streak_starts / streak_ends / streak_days
 --  carry the merged runs — split by is_market_hyped (ANY bucket date
 --  inside a mov_ave_market_hypes episode) exactly like
---  mov_rsi / mov_std / mov_gap. Results live in
+--  mov_rsi / mov_std. Results live in
 --  analysis_forecasts.forecast_results via forecast_id (1:N — one
 --  forecast_id → 5 period rows next/5d/20d/60d/mixed: ave/std/max/min
---  forward change, occurrence_count, max_low_change_ratio and
+--  forward change, occurrence_count and
 --  reverse_prob at the bucket's ADAPTIVE threshold
 --  (k_n·σ of the code's window forward changes)). The reversal side
 --  follows the ``side`` column: top (up speeds) reverses on change
@@ -99,92 +99,6 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.px_vol_state (
 
 SELECT public.create_hash_partitions('analysis_forecasts', 'px_vol_state', 16);
 
--- ----------------------------------------------------------------------------
---  Migration (2026-09): forecast_id-keyed rebuild — the composite
---  (code, sec_type, stat_month, ...) PK is replaced by the surrogate
---  forecast_id (PK + hash-partition key); the shared identity lives
---  ONLY in forecast_identities. Legacy-shape tables (they still carry
---  the code column) are rebuilt by swap — rows are carried over via
---  forecast_id and the old secondary forecast_id index dissolves into
---  the new PK. See 02_mov_rsi_mov_std.sql for the full rationale.
--- ----------------------------------------------------------------------------
-DO $$
-DECLARE
-    r          int;
-    v_partkey  text;
-    v_pkdef    text;
-    v_has_code bool;
-BEGIN
-    SELECT pg_get_partkeydef(c.oid),
-           COALESCE((SELECT pg_get_constraintdef(p.oid)
-                     FROM pg_constraint p
-                     WHERE p.conrelid = c.oid AND p.contype = 'p'), '')
-    INTO v_partkey, v_pkdef
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'analysis_forecasts' AND c.relname = 'px_vol_state';
-    SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_schema = 'analysis_forecasts'
-                     AND table_name   = 'px_vol_state'
-                     AND column_name  = 'code')
-    INTO v_has_code;
-    IF v_partkey IS NULL
-       OR (v_partkey = 'HASH (code)'
-           AND v_pkdef = 'PRIMARY KEY (code, forecast_id)') THEN
-        -- fresh install (created above in the target shape) or already
-        -- migrated
-        RETURN;
-    END IF;
-    ALTER TABLE analysis_forecasts.px_vol_state RENAME TO px_vol_state_pk_rebuild;
-    ALTER TABLE analysis_forecasts.px_vol_state_pk_rebuild
-        DROP CONSTRAINT IF EXISTS pk_px_vol_state;
-    CREATE TABLE analysis_forecasts.px_vol_state_new (
-            code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-            forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_px_vol_state_forecast_id
-            px_speed        TEXT         NOT NULL,
-            vol_state       TEXT         NOT NULL,
-            side            TEXT         NOT NULL,
-            sigma_window    INTEGER      NOT NULL DEFAULT 255,
-            lb_window       INTEGER      NOT NULL DEFAULT 5,
-            k_slow_up       NUMERIC(4,2) NOT NULL DEFAULT 1.26,
-            k_slow_dn       NUMERIC(4,2) NOT NULL DEFAULT 1.29,
-            k_sharp         NUMERIC(4,2) NOT NULL DEFAULT 2.00,
-            z_heavy         NUMERIC(4,2) NOT NULL DEFAULT 2.00,
-            z_shrink        NUMERIC(4,2) NOT NULL DEFAULT -0.92,
-            sigma_floor     NUMERIC(6,4) NOT NULL DEFAULT 0.005,
-            lookback_period TEXT         NOT NULL DEFAULT '5y',
-            is_market_hyped BOOLEAN      NOT NULL,
-        CONSTRAINT pk_px_vol_state PRIMARY KEY (code, forecast_id)
-    ) PARTITION BY HASH (code);
-    PERFORM public.create_hash_partitions('analysis_forecasts',
-                                          'px_vol_state_new', 16);
-    ALTER TABLE analysis_forecasts.px_vol_state_pk_rebuild
-        ADD COLUMN IF NOT EXISTS lookback_period TEXT NOT NULL DEFAULT '5y';
-    IF v_has_code THEN
-        INSERT INTO analysis_forecasts.px_vol_state_new
-               (code, forecast_id, px_speed, vol_state, side, sigma_window, lb_window, k_slow_up, k_slow_dn, k_sharp, z_heavy, z_shrink, sigma_floor, lookback_period, is_market_hyped)
-        SELECT  code, forecast_id, px_speed, vol_state, side, sigma_window, lb_window, k_slow_up, k_slow_dn, k_sharp, z_heavy, z_shrink, sigma_floor, lookback_period, is_market_hyped
-        FROM    analysis_forecasts.px_vol_state_pk_rebuild;
-    ELSE
-        -- intermediate forecast_id-keyed shape (no code column): code
-        -- comes from the identities registry (1 row per forecast_id)
-        INSERT INTO analysis_forecasts.px_vol_state_new
-               (code, forecast_id, px_speed, vol_state, side, sigma_window, lb_window, k_slow_up, k_slow_dn, k_sharp, z_heavy, z_shrink, sigma_floor, lookback_period, is_market_hyped)
-        SELECT  i.code, m.forecast_id, m.px_speed, m.vol_state, m.side, m.sigma_window, m.lb_window, m.k_slow_up, m.k_slow_dn, m.k_sharp, m.z_heavy, m.z_shrink, m.sigma_floor, m.lookback_period, m.is_market_hyped
-        FROM    analysis_forecasts.px_vol_state_pk_rebuild m
-        JOIN    analysis_forecasts.forecast_identities i
-          ON    i.forecast_id = m.forecast_id;
-    END IF;
-    DROP TABLE analysis_forecasts.px_vol_state_pk_rebuild;
-    ALTER TABLE analysis_forecasts.px_vol_state_new RENAME TO px_vol_state;
-    FOR r IN 0..15 LOOP
-        EXECUTE format(
-            'ALTER TABLE analysis_forecasts.px_vol_state_new_p%s '
-            'RENAME TO px_vol_state_p%s',
-            lpad(r::text, 2, '0'), lpad(r::text, 2, '0'));
-    END LOOP;
-END $$;
-
 CREATE INDEX IF NOT EXISTS idx_px_vol_state_forecast_id
     ON analysis_forecasts.px_vol_state (forecast_id);
 
@@ -206,3 +120,22 @@ COMMENT ON COLUMN analysis_forecasts.px_vol_state.z_shrink IS 'Recorded build pa
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.sigma_floor IS 'Recorded build parameter: minimum σ_ret for a day to join any bucket (default 0.005). Bond-like indices (σ_ret ≈ 0.01–0.02%) would classify tiny wiggles as extremes — they are excluded by the floor.';
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.is_market_hyped IS 'TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
+
+-- ----------------------------------------------------------------------------
+--  Data-quality gate: the px_vol_state vocabularies (shared helpers, see
+--  01_forecast_results.sql / 00_partition_utils.sql). NOT VALID first,
+--  validated once by the schema-wide sweep below.
+-- ----------------------------------------------------------------------------
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.px_vol_state',
+    'chk_px_vol_state_side',
+    $chk$side IN ('top', 'bottom', 'flat')$chk$);
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.px_vol_state',
+    'chk_px_vol_state_px_speed',
+    $chk$px_speed IN ('sharp_up', 'slow_up', 'flat', 'slow_dn', 'sharp_dn')$chk$);
+SELECT public.ensure_check_constraint(
+    'analysis_forecasts.px_vol_state',
+    'chk_px_vol_state_vol_state',
+    $chk$vol_state IN ('heavy', 'normal', 'shrink')$chk$);
+SELECT public.validate_pending_checks('analysis_forecasts');

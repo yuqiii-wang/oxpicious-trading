@@ -21,6 +21,7 @@ import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import type { IndustrySentimentsChartResponse } from "@shared/types";
 import { axisColors, commonLegend, commonGrid, commonDataZoom } from "@/theme/chart-palette";
+import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import { variantColorOf } from "@/theme/group-colors";
 import { fmtNum } from "@/lib/series";
 import type { PoolSize, PerIndustryAggregation } from "./types";
@@ -252,7 +253,7 @@ export function buildIndustryChartOption(
   // per-index lines). When meanOnly is OFF in multi-industry mode, only the
   // per-index lines are shown (no mean overlay).
   if (perIndustryAggregations.length > 0 && meanOnly) {
-    perIndustryAggregations.forEach((agg, i) => {
+    perIndustryAggregations.forEach((agg) => {
       const color = industryColorFor(agg.industry_id);
       const shortLabel = (agg.industry_label || agg.industry_id).split("  ")[0] || agg.industry_id;
       const aggByDate = new Map<string, { mean: number | null; var: number | null }>();
@@ -319,9 +320,7 @@ export function buildIndustryChartOption(
     });
   }
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(themeMode, {
     grid: commonGrid({ left: 56, right: 24, bottom: 50 }),
     dataZoom: commonDataZoom(),
     legend: commonLegend(themeMode, {
@@ -330,12 +329,10 @@ export function buildIndustryChartOption(
     axisPointer: {
       link: [{ xAxisIndex: "all" }],
     },
-    tooltip: {
-      trigger: "axis",
+    // Old hand-rolled tooltip used a plain snapping LINE pointer (no
+    // crossStyle) — override the default axisPointer to keep it.
+    tooltip: commonTooltip(themeMode, {
       axisPointer: { type: "line", snap: true },
-      backgroundColor: c.tooltipBg,
-      borderColor: c.splitLineColor,
-      textStyle: { color: c.textColor, fontSize: 11 },
       formatter: (params: unknown) => {
         const arr = (Array.isArray(params) ? params : [params]) as Array<{
           dataIndex?: number;
@@ -537,7 +534,7 @@ export function buildIndustryChartOption(
 
         return renderReactElement(React.createElement(React.Fragment, null, ...children));
       },
-    },
+    }),
     xAxis: {
       type: "category",
       data: visibleDates,
@@ -562,5 +559,5 @@ export function buildIndustryChartOption(
       splitLine: { lineStyle: { color: c.splitLineColor, type: "dashed", opacity: 0.4 } },
     },
     series,
-  };
+  });
 }

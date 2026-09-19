@@ -1,16 +1,17 @@
 """DB I/O for margin_changes: truncate-then-COPY-insert.
 
 Sanitizes numeric columns (NaN → NULL, round to 4 decimals), restores
-the table-schema column order, and COPY-inserts all episodes in a single
-batch. The table is always TRUNCATEd first — new dates shift trend
+the table-schema column order, and COPY-inserts the episodes in
+row-count chunks — the sanitized dict list never exceeds one chunk.
+The table is always TRUNCATEd first — new dates shift trend
 boundaries, so a full recompute is the only correct option.
 """
 from __future__ import annotations
 
 import pandas as pd
 
-from _common.build_commons import copy_insert_async, truncate_table_async
-from analyze._common import sanitize_for_db_insert
+from _common.build_commons import truncate_table_async
+from _common.db_commons import copy_frame_chunked_async
 
 from analyze.margins.changes.constants import (
     INSERT_COLUMNS,
@@ -34,13 +35,9 @@ async def truncate_and_insert(conn, episodes: pd.DataFrame) -> int:
     # Ensure days_of_trend is int (groupby may produce float).
     episodes["days_of_trend"] = episodes["days_of_trend"].astype(int)
 
-    rows = sanitize_for_db_insert(
-        episodes,
-        numeric_cols=NUMERIC_COLS,
-        round_to=4,
-    )
-    n = await copy_insert_async(
-        conn, TABLE_CHANGES, rows,
+    return await copy_frame_chunked_async(
+        conn, TABLE_CHANGES, episodes,
         columns=INSERT_COLUMNS,
+        numeric_cols=NUMERIC_COLS, round_to=4,
+        label="margin_changes",
     )
-    return n

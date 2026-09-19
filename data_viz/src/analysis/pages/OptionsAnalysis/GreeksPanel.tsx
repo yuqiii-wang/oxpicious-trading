@@ -4,10 +4,16 @@
  * Displays per-expiry Greek values vs moneyness (strike/spot) for CALL and PUT,
  * grouped by expiry month.
  */
-import React from "react";
-import ChartCard from "@/components/ChartCard";
-import EChart from "@/components/EChart";
-import { useStore } from "@/store/filters";
+import React, { useMemo } from "react";
+import {
+  BaseChart,
+  baseChartOption,
+  commonTooltip,
+  emptyChartOption,
+  useChartThemeMode,
+} from "@/shared/charts/base-chart";
+import type { AiAskSpec } from "@/shared/ai-ask";
+import type { ThemeMode } from "@/store/filters";
 import type { OptionsRow } from "@shared/types";
 import {
   PRICE_SCALE,
@@ -105,26 +111,46 @@ const GREEK_METRIC_META: Record<GreekMetricKey, GreekMetricMeta> = {
   },
 };
 
+/** AI Ask question seeds per greek — the actionable angle of the surface,
+ *  phrased as the user would ask it. */
+const SUGGESTED_QUESTIONS: Record<Props["greekKey"], string[]> = {
+  delta: [
+    "Does the dPCR positioning metric put call-side or put-side directional exposure in charge of the book?",
+    "Where does delta flip sign across strikes, and how does that shift across expiries?",
+  ],
+  theta: [
+    "Which strikes and expiries bleed the most time value at the selected date?",
+    "Is decay concentrated ATM or on the wings?",
+  ],
+  gamma: [
+    "Is the book long or short gamma around spot per the GammaBal metric — pinning regime or move amplification?",
+    "Where is gamma concentrated across moneyness and expiries?",
+  ],
+  vega: [
+    "Does the VegaBal metric point to upside or downside (crash-hedge) vol demand on the OTM wings?",
+    "Which expiry carries the most vol exposure, and where per strike?",
+  ],
+  rho: [
+    "How rate-sensitive is this chain across moneyness and expiries?",
+    "Where does rho peak relative to ATM?",
+  ],
+};
+
 function buildGreekOption(
   snap: OptionsRow[],
   greekKey: "delta" | "theta" | "gamma" | "vega" | "rho",
   dateStr: string,
+  mode: ThemeMode,
 ): EChartsOption {
-  const themeMode = useStore.getState().themeMode;
-  const c = axisColors(themeMode);
+  const c = axisColors(mode);
   const textColor = c.textColor;
   const splitColor = c.splitLineColor;
 
   if (snap.length === 0) {
-    return {
-      backgroundColor: "transparent",
-      title: {
-        text: `${GREEK_LABELS[greekKey]}  (${dateStr || "—"})\n[No data]`,
-        left: "center",
-        top: "center",
-        textStyle: { color: textColor, fontSize: 11, fontWeight: 400 },
-      },
-    };
+    return emptyChartOption(
+      mode,
+      `${GREEK_LABELS[greekKey]}  (${dateStr || "—"})\n[No data]`,
+    );
   }
 
   const valid = snap.filter(
@@ -132,15 +158,10 @@ function buildGreekOption(
   );
 
   if (valid.length === 0) {
-    return {
-      backgroundColor: "transparent",
-      title: {
-        text: `${GREEK_LABELS[greekKey]}  (${dateStr})\n[No valid ${greekKey} values]`,
-        left: "center",
-        top: "center",
-        textStyle: { color: textColor, fontSize: 11, fontWeight: 400 },
-      },
-    };
+    return emptyChartOption(
+      mode,
+      `${GREEK_LABELS[greekKey]}  (${dateStr})\n[No valid ${greekKey} values]`,
+    );
   }
 
   const S = snap[0].underlying_close / PRICE_SCALE;
@@ -364,17 +385,14 @@ function buildGreekOption(
     })
     .map((s) => (s as { name: string }).name);
 
-  return {
-    backgroundColor: "transparent",
-    animation: false,
+  return baseChartOption(mode, {
     grid: commonGrid({ left: 50, right: 12, top: 36, bottom: 36 }),
     title: {
       text: `${GREEK_LABELS[greekKey]}  (${dateStr})  S=${fmtNum(S)}元`,
       left: "left",
       textStyle: { color: textColor, fontSize: 11, fontWeight: 600 },
     },
-    tooltip: {
-      trigger: "axis",
+    tooltip: commonTooltip(mode, {
       axisPointer: {
         type: "cross",
         snap: true,
@@ -388,9 +406,6 @@ function buildGreekOption(
           },
         },
       },
-      backgroundColor: c.tooltipBg,
-      borderColor: splitColor,
-      textStyle: { color: textColor, fontSize: 11 },
       formatter: (p: unknown) => {
         const params = Array.isArray(p) ? p : [p];
         const validParams = params.filter((param) => {
@@ -461,8 +476,8 @@ function buildGreekOption(
         });
         return renderReactElement(React.createElement(React.Fragment, null, children));
       },
-    },
-    legend: commonLegend(themeMode, { top: 14, data: visibleLegendData }),
+    }),
+    legend: commonLegend(mode, { top: 14, data: visibleLegendData }),
     xAxis: {
       type: "value",
       min: 0.7,
@@ -488,20 +503,43 @@ function buildGreekOption(
       max: yMax + yPad,
     },
     series,
-  };
+  });
 }
 
 export default function GreeksPanel({ rows, selectedDate, greekKey }: Props) {
+  const themeMode = useChartThemeMode();
   const snap = rows.filter((r) => r.date === selectedDate);
-  const option = buildGreekOption(snap, greekKey, selectedDate);
+  const option = buildGreekOption(snap, greekKey, selectedDate, themeMode);
+
+  const underlyingCode = rows[0]?.underlying_code ?? "";
+  // AI Ask — the legend decoding + positioning-metric guide (former card
+  // subtitle) lives in the intro; the card keeps identity + units only.
+  const aiAskSpec = useMemo<AiAskSpec>(
+    () => ({
+      intro:
+        "Per-expiry Greek values vs moneyness (strike/spot) for CALL and PUT, grouped by expiry " +
+        "month — blue gradient: dark = near expiry, light = far; CALL is drawn solid, PUT dashed. " +
+        `Y-axis units:${GREEK_UNITS[greekKey] || " dimensionless"}.` +
+        (greekKey === "delta" || greekKey === "gamma" || greekKey === "vega"
+          ? ` A single vertical line at the OI-weighted mean moneyness of the combined active ` +
+            `CALL+PUT book is labeled with the whole-chain positioning metric ` +
+            `${GREEK_METRIC_META[greekKey].tag} (${GREEK_METRIC_META[greekKey].formula}); ` +
+            `its tooltip reports the current tilt.`
+          : " Theta and rho have no industry-standard positioning metric — no metric line."),
+      instruments: underlyingCode ? [{ code: underlyingCode }] : [],
+      state: { greek: greekKey, selectedDate },
+      suggestedQuestions: SUGGESTED_QUESTIONS[greekKey],
+    }),
+    [greekKey, selectedDate, underlyingCode],
+  );
 
   return (
-    <ChartCard
+    <BaseChart
       title={GREEK_LABELS[greekKey]}
-      subtitle={`${GREEK_LABELS[greekKey]} vs Moneyness · Blue gradient (dark=near expiry, light=far) · CALL (solid) / PUT (dashed)${GREEK_UNITS[greekKey]}`}
-      height={420}
-    >
-      <EChart option={option} height={400} />
-    </ChartCard>
+      subtitle={`${GREEK_LABELS[greekKey]} vs Moneyness (Strike/Spot)${GREEK_UNITS[greekKey]}`}
+      aiAsk={aiAskSpec}
+      option={option}
+      height={400}
+    />
   );
 }
