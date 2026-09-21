@@ -306,14 +306,13 @@ export default function OptionsTrendPanel({ rows, walls = [] }: Props) {
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        `Three synchronized option-flow charts for underlying ${underlyingCode || "(n/a)"}: ` +
-        "(1) Expiry OI Bands — per-expiry open-interest bands against the spot price line " +
-        "(where OI concentrates by expiry; call/put zone walls shade the strike ladder); " +
-        "(2) Put/Call OI Ratio — the selected cohorts' aggregate daily put/call OI ratio with " +
-        "MA5/MA20 (>1 put-tilted / hedging sentiment, <1 call-tilted, dashed neutral at 1); " +
-        "(3) Total OI Trend — call vs put open interest in millions of contracts. All three " +
-        "follow the expiry-cohort selection below, share one time slider and crosshair, and " +
-        "mark expiry dates with dots.",
+        `Three synchronized option-flow charts for ${underlyingCode || "(n/a)"}: ` +
+        "(1) Expiry OI Bands — per-expiry OI vs the spot line (where exposure concentrates " +
+        "by expiry); (2) P/C OI ratio = put OI / call OI of the selected cohorts, with " +
+        "MA5/MA20, dashed neutral at 1; (3) call vs put total OI (mil contracts). " +
+        "Indication: ratio >1 = hedging tilt (bear lean), <1 = chase; band walls mark the " +
+        "strike zones spot grinds against. All follow the cohort selection, one slider + " +
+        "crosshair; dots = expiries.",
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
       series: [
         { name: "Spot", unit: "元", description: "underlying daily closing price" },
@@ -329,11 +328,6 @@ export default function OptionsTrendPanel({ rows, walls = [] }: Props) {
         month: monthFilter,
         expiries_selected: selectedExpiryKeys.length,
       },
-      suggestedQuestions: [
-        "Is options sentiment put- or call-tilted right now, per the P/C ratio and its MAs?",
-        "Where is OI concentrated across strikes and expiries, and what does that wall imply for spot?",
-        "Is total OI rising into expiry — positioning buildup or unwind?",
-      ],
       notes: [
         "Charts 2 and 3 aggregate ONLY the selected expiry cohorts; lines break on dates where the selection has no data.",
         "All three charts share one time slider and a synchronized crosshair/tooltip.",

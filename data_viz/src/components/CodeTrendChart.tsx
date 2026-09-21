@@ -62,11 +62,13 @@ import {
   fetchSecBoardMap,
   fetchStockBaseline,
 } from "@/lib/api-client";
-import { fetchMarketHypes } from "@/lib/api-client";
-import { mergeHypeEpisodesAllWindows, HYPE_ACCENT_COLOR } from "@/shared/charts/hypeBands";
-import type { OhlcMode } from "@/lib/ohlc";
+import { fetchMarketRegimeSpans } from "@/lib/api-client";
+import {
+  REGIME_ACCENT_COLORS,
+  shadedRegimeSpans,
+} from "@/shared/charts/regimeBands";import type { OhlcMode } from "@/lib/ohlc";
 import type {
-  MovAveSpreadHypeEpisodes,
+  MarketRegimeSpans,
   EtfMarginRow,
   IndexBaselineRow,
   SecBoardTag,
@@ -156,7 +158,7 @@ export function mapIndexRows(rows: IndexBaselineRow[]): CodeTrendRow[] {
  * full ~1 s notMerge rebuild of the 1700-candle chart each time
  * (measured 2026-09) — the props must stay identity-stable when their
  * CONTENT is unchanged. */
-const NO_EPISODES: import("@shared/types").MovAveSpreadHypeEpisode[] = [];
+const NO_SPANS: Partial<MarketRegimeSpans> = {};
 const NO_DIVIDENDS: StockDividend[] = [];
 
 /** One dim outline chip of the header's board tag ("MAIN", or
@@ -280,13 +282,14 @@ interface CodeTrendChartState {
   ohlcMode: OhlcMode;
   /** Date-range slider window (row indices) — [0, len-1] = full history. */
   range: [number, number];
-  /** Market-hype EPISODE shading toggle (stats.mov_ave_market_hypes) —
-   *  the light-purple hyped-period bands beside the Absolute/% Change
-   *  toggle. Off by default; the first enable fetches the code's episodes
-   *  once (GET /api/analysis/market-hypes) and caches them per code. */
-  showHypes: boolean;
-  hypeEpisodes: MovAveSpreadHypeEpisodes | null;
-  hypesLoading: boolean;
+  /** Market-regime SPAN shading toggle (stats.market_regimes) — the
+   *  per-regime bands (hot purple / panic red / quiet blue) beside the
+   *  Absolute/% Change toggle. Off by default; the first enable fetches
+   *  the code's spans once (GET /api/analysis/market-regimes) and caches
+   *  them per code. */
+  showRegimes: boolean;
+  regimeSpans: Partial<MarketRegimeSpans> | null;
+  regimesLoading: boolean;
   /** Board tag(s) beside the header title (stats.sec_board_map via
    *  GET /api/sec-board): a stock's single listing board, or an
    *  ETF/index's composition-weighted board mix. Fetched in parallel
@@ -301,7 +304,7 @@ export default class CodeTrendChart extends React.Component<
   /** Monotonic token — only the newest fetch may settle into state. */
   private loadSeq = 0;
   /** Separate token for the board-tag fetch (it must not be invalidated
-   *  by the shared loadSeq bumps from the hypes toggle). */
+   *  by the shared loadSeq bumps from the regimes toggle). */
   private boardSeq = 0;
   /** Live inner-chart instance — captured via the StockOhlcChart
    *  onChartReady passthrough for the AI Ask screenshot. */
@@ -313,9 +316,9 @@ export default class CodeTrendChart extends React.Component<
     error: null,
     ohlcMode: "percentage",
     range: [0, 0],
-    showHypes: false,
-    hypeEpisodes: null,
-    hypesLoading: false,
+    showRegimes: false,
+    regimeSpans: null,
+    regimesLoading: false,
     boardTags: [],
   };
 
@@ -327,9 +330,9 @@ export default class CodeTrendChart extends React.Component<
     if (prev.secType !== this.props.secType || prev.code !== this.props.code) {
       this.setState({
         ohlcMode: this.props.defaultOhlcMode ?? "percentage",
-        showHypes: false,
-        hypeEpisodes: null,
-        hypesLoading: false,
+        showRegimes: false,
+        regimeSpans: null,
+        regimesLoading: false,
       });
       this.load();
     }
@@ -371,10 +374,10 @@ export default class CodeTrendChart extends React.Component<
         {...chartOptions}
         {...dataZoom}
         dividends={chartOptions?.dividends ?? this.state.data?.dividends ?? NO_DIVIDENDS}
-        hypeEpisodes={
-          this.state.showHypes
-            ? mergeHypeEpisodesAllWindows(this.state.hypeEpisodes)
-            : NO_EPISODES
+        regimeSpans={
+          this.state.showRegimes
+            ? shadedRegimeSpans(this.state.regimeSpans)
+            : NO_SPANS
         }
         onChartReady={(c) => {
           this.chartInstance = c;
@@ -429,9 +432,10 @@ export default class CodeTrendChart extends React.Component<
     );
   }
 
-  /** Header actions (card variant) — mode toggle + Hypes toggle + prop
-   *  extras. The Hypes toggle sits beside the Absolute / % Change toggle
-   *  so every page's code trend can shade the market-hype episodes. */
+  /** Header actions (card variant) — mode toggle + Regimes toggle +
+   *  prop extras. The Regimes toggle sits beside the Absolute / % Change
+   *  toggle
+   *  so every page's code trend can shade the market-regime spans. */
   protected renderHeaderActions(): React.ReactNode {
     const { showModeToggle = true, headerAction } = this.props;
     return (
@@ -443,25 +447,25 @@ export default class CodeTrendChart extends React.Component<
           />
         )}
         <ToggleButton
-          value="hypes"
+          value="regimes"
           size="small"
-          selected={this.state.showHypes}
-          onChange={this.handleHypesToggle}
-          title="Market-hype episodes — shade the hyped date periods (stats.mov_ave_market_hypes)"
+          selected={this.state.showRegimes}
+          onChange={this.handleRegimesToggle}
+          title="Market regimes — shade hot (purple) / panic (red) / quiet (blue) spans (stats.market_regimes)"
           sx={{
             px: 1,
             py: 0.25,
             fontSize: "0.7rem",
-            ...(this.state.showHypes
+            ...(this.state.showRegimes
               ? {
-                  color: HYPE_ACCENT_COLOR,
-                  borderColor: HYPE_ACCENT_COLOR,
+                  color: REGIME_ACCENT_COLORS.hot,
+                  borderColor: REGIME_ACCENT_COLORS.hot,
                   bgcolor: "rgba(126, 87, 194, 0.12)",
                 }
               : {}),
           }}
         >
-          {this.state.hypesLoading ? "Hyped…" : "Hyped"}
+          {this.state.regimesLoading ? "Regimes…" : "Regimes"}
         </ToggleButton>
         {headerAction}
       </Box>
@@ -527,24 +531,26 @@ export default class CodeTrendChart extends React.Component<
     this.props.onOhlcModeChange?.(mode);
   };
 
-  /** Toggle the market-hype shading; the first enable fetches the code's
-   *  episodes once and caches them (per code — reset on code change). */
-  private handleHypesToggle = () => {
-    const showHypes = !this.state.showHypes;
-    this.setState({ showHypes });
-    if (showHypes && this.state.hypeEpisodes == null && !this.state.hypesLoading) {
+  /** Toggle the market-regime shading; the first enable fetches the
+   *  code's spans once and caches them (per code — reset on code
+   *  change). */
+  private handleRegimesToggle = () => {
+    const showRegimes = !this.state.showRegimes;
+    this.setState({ showRegimes });
+    if (showRegimes && this.state.regimeSpans == null && !this.state.regimesLoading) {
       const seq = ++this.loadSeq;
-      this.setState({ hypesLoading: true });
-      fetchMarketHypes(this.props.code, this.props.secType)
+      this.setState({ regimesLoading: true });
+      fetchMarketRegimeSpans(this.props.code, this.props.secType)
         .then((d) => {
           if (seq !== this.loadSeq) return;
-          this.setState({ hypeEpisodes: d.episodes, hypesLoading: false });
+          this.setState({ regimeSpans: d.spans, regimesLoading: false });
         })
         .catch(() => {
           if (seq !== this.loadSeq) return;
-          // No hype data (endpoint error / never built) — toggle stays on
-          // with empty shading; clearing hypeEpisodes refetches on retry.
-          this.setState({ hypeEpisodes: {}, hypesLoading: false });
+          // No regime data (endpoint error / never built) — toggle stays
+          // on with empty shading; clearing regimeSpans refetches on
+          // retry.
+          this.setState({ regimeSpans: {}, regimesLoading: false });
         });
     }
   };
@@ -598,14 +604,14 @@ export default class CodeTrendChart extends React.Component<
             : undefined,
           spec: {
             intro:
-              `Daily price trend for ${code} (${secType}): OHLC candles — or a close line when ` +
-              "OHLC is sparse — with MA5/MA20/MA60/MA120 overlays, trading-amount bars on a " +
-              "right axis, and, where the data has them, margin-balance fills (RZ cash borrow " +
-              "up / RQ sec borrow down) and a PE line on an offset axis. Gold diamonds mark " +
-              "ex-dividend dates; the Hyped toggle shades market-hype episode bands. In " +
-              "percentage mode OHLC + MAs are rebased to % change from the first valid close " +
-              "(tooltips keep actual prices), and date gaps are broken so long holidays don't " +
-              "draw artificial cliffs.",
+              `Daily trend for ${code} (${secType}): OHLC candles (close line when sparse) ` +
+              "with MA5/20/60/120 overlays and turnover bars on the right; where data " +
+              "allows, margin fills (RZ cash borrow up / RQ sec borrow down) and a PE line " +
+              "on an offset axis. Gold diamonds = ex-dividend dates; Regimes toggle shades " +
+              "market-regime bands. % mode: OHLC + MAs as % change from the first valid " +
+              "close (tooltips keep prices); date gaps broken so holidays draw no cliffs. " +
+              "Indication: price commanding the MA stack = trend regime; RZ swelling = " +
+              "leveraged chase, RQ swelling = short pressure — squeeze fuel either way.",
             instruments: [
               {
                 code,
@@ -622,14 +628,14 @@ export default class CodeTrendChart extends React.Component<
               : undefined,
             state: {
               mode: ohlcMode,
-              hype_shading: this.state.showHypes,
+              regime_shading: this.state.showRegimes,
               window: sliderOn ? "date-range slider" : "in-chart dataZoom",
             },
             searchKeywords: [
               ...(this.props.aiSearchKeywords ?? []),
               // the header toggles' active states — items of interest a
               // web search can use (trend terms + the shaded episodes)
-              ...(this.state.showHypes ? ["market hype"] : []),
+              ...(this.state.showRegimes ? ["market regimes"] : []),
             ],
             notes: [
               "MAs are computed client-side from close; Amount bars are in 亿 (raw yuan / 1e8).",

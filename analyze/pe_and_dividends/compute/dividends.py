@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from _common.df_utils import to_dt64
+from _common.df_utils import host_array, host_unique, to_dt64
 from _common.df_utils.rolling import grouped_rolling_agg
 from analyze.pe_and_dividends.config import (
     TRAILING_DIVIDEND_DAYS,
@@ -107,12 +107,15 @@ def compute_trailing_12m_dps(
         return pd.DataFrame(columns=["code", "date", "trailing_dps"])
 
     # Date grid: one row per (code, trading_date). [us] unit — merge_asof
-    # requires EXACTLY matching dtypes with the event stream.
-    codes = events["code"].unique()
-    td = to_dt64(sorted(trading_dates))
-    date_grid = pd.MultiIndex.from_product(
-        [codes, td], names=["code", "date"]
-    ).to_frame(index=False)
+    # requires EXACTLY matching dtypes with the event stream. Built with
+    # raw numpy repeat/tile (same product ordering as the former
+    # MultiIndex.from_product, which logs a cudf fallback per call).
+    codes = host_unique(events["code"])
+    td = host_array(to_dt64(sorted(trading_dates)))
+    date_grid = pd.DataFrame({
+        "code": np.repeat(codes, td.size),
+        "date": np.tile(td, len(codes)),
+    })
 
     # merge_asof requires the `on` column to be globally sorted.
     # Sort both DataFrames by date (the `on` key) — the `by` key (code)

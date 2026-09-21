@@ -9,9 +9,8 @@
  *   • Stack of MaSpreadPanel cards — one per code on the current page.
  *     Each panel renders (top → bottom):
  *       1. 9 pair chips arranged as a 2-row grid aligned by long MA (Price
- *          row + MA5 row), with a "Trend Study" column header above the
- *          MA60 column (shared by Price/MA60 and MA5/MA60). Clicking a chip
- *          selects the pair shown in the chart below.
+ *          row + MA5 row). Clicking a chip selects the pair shown in the
+ *          chart below.
  *       2. Two-curve chart (short + long MA) with green fill when short > long
  *          (growth) and red fill when short < long (decline).
  *       3. Latest-snapshot summary line for the selected pair (date, short,

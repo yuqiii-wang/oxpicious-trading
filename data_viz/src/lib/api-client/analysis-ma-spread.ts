@@ -4,6 +4,8 @@ import type {
   StrategyNode,
   MovAveSpreadCodesResponse,
   MovAveSpreadChartResponse,
+  MovAveSpreadExtrasResponse,
+  MovAveSpreadMetric,
   MaSpreadSecType,
 } from "@shared/types";
 
@@ -67,5 +69,24 @@ export function fetchMovAveSpreadChart(
   const qs = params.toString();
   return fetchJson<MovAveSpreadChartResponse>(
     `/api/analysis/mov-ave-spread/chart${qs ? `?${qs}` : ""}`,
+  );
+}
+
+/** On-demand metric groups for the MA-Spread panel. Each group feeds one
+ *  control section (amt → Amt/MA chips, ohlc → OHLC Window,
+ *  streaks → High/Low Streaks, pxvol → Px-Vol States) and is fetched the
+ *  first time one of its buttons is picked. */
+export function fetchMovAveSpreadExtras(
+  code: string,
+  secType: MaSpreadSecType,
+  metrics: MovAveSpreadMetric[],
+): Promise<MovAveSpreadExtrasResponse> {
+  const params = new URLSearchParams();
+  if (code) params.set("code", code);
+  if (secType) params.set("sec_type", secType);
+  if (metrics.length > 0) params.set("metrics", metrics.join(","));
+  const qs = params.toString();
+  return fetchJson<MovAveSpreadExtrasResponse>(
+    `/api/analysis/mov-ave-spread/extras${qs ? `?${qs}` : ""}`,
   );
 }

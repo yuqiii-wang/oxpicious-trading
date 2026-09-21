@@ -16,8 +16,9 @@ Pipeline:
          the trailing 20 sessions), days_since_last_cross (sessions
          since the last crossing) and gap_side_share_20d (share of the
          trailing 20 sessions at/above neutral) per expiry group.
-  2. Compute per-expiry-group OI stats and write to
-     analysis.options_oi_stats (same PK/FK pattern).
+  2. Compute per-expiry OI level/changes into analysis.options_oi_stats
+     (same PK pattern; keyed by REAL expiry date — the dedicated
+     per-expiry table, no open-expiry collapse, no FK).
   3. Compute per-expiry-group options wall zones (strength-scored
      zone with lifecycle) and write to analysis.options_walls
      (PK includes wall_type).
@@ -49,8 +50,9 @@ from _common.db_commons import (
     copy_or_upsert_split_async,
     copy_insert_async,
 )
-from _common.df_utils import to_py_dates
+from _common.df_utils import host_array
 
+import numpy as np
 import pandas as pd
 
 from analyze._common import (
@@ -120,6 +122,28 @@ logger = setup_logging("options")
 _CHUNK_SIZE = 10000
 
 
+def _pk_mask_host(df: pd.DataFrame, pk_columns: list[str], keys: set) -> np.ndarray:
+    """Boolean mask of the rows whose pk_columns tuple is in ``keys``.
+
+    Host-pure membership (replaces to_py_dates + MultiIndex.from_frame
+    + Index.isin — each logged a cudf fallback: the astype pair on the
+    proxy ndarray, the MixedTypeError ctor on object-date frames, and
+    the transfer-blocked isin). One host transfer per column, date
+    columns materialized as python dates to match the DB-sourced key
+    tuples, then a python tuple-set probe.
+    """
+    cols = []
+    for c in pk_columns:
+        arr = host_array(df[c].to_numpy())
+        if arr.dtype.kind == "M":
+            arr = arr.astype("datetime64[D]").astype(object)
+        cols.append(arr.tolist())
+    return np.fromiter(
+        (tuple(vals) in keys for vals in zip(*cols)),
+        dtype=bool, count=len(cols[0]),
+    )
+
+
 async def _fk_filter(conn, result_df: pd.DataFrame) -> pd.DataFrame:
     """Anti-join result rows against the options_expiry_identity key set.
 
@@ -138,13 +162,7 @@ async def _fk_filter(conn, result_df: pd.DataFrame) -> pd.DataFrame:
     if not ident_rows:
         return result_df
     ident_keys = set(tuple(r) for r in ident_rows)
-    pk_df = result_df[EXPIRY_PK_COLUMNS].copy()
-    pk_df = to_py_dates(
-        pk_df,
-        [c for c in EXPIRY_PK_COLUMNS
-         if pd.api.types.is_datetime64_any_dtype(pk_df[c])],
-    )
-    mask = pd.MultiIndex.from_frame(pk_df).isin(ident_keys)
+    mask = _pk_mask_host(result_df, EXPIRY_PK_COLUMNS, ident_keys)
     n_before = len(result_df)
     result_df = result_df.loc[mask].reset_index(drop=True)
     if len(result_df) != n_before:
@@ -195,7 +213,13 @@ async def _write_rows(
     # stale pre-delete key set and silently drops almost everything.
     # options_vol_index is exempt too: it is date-granular (PK
     # (underlying_code, date), no expiry dimension, no FK).
-    if table_name not in (EXPIRY_IDENTITY_TABLE, VOL_INDEX_TABLE_NAME):
+    # options_oi_stats is exempt as well: it is the dedicated
+    # per-REAL-expiry table — its open-group rows carry the real expiry
+    # dates, which the collapsed identity intentionally does not contain
+    # (see 16_options.sql).
+    if table_name not in (
+        EXPIRY_IDENTITY_TABLE, VOL_INDEX_TABLE_NAME, OI_TABLE_NAME,
+    ):
         result_df = await _fk_filter(conn, result_df)
 
     if force:
@@ -215,17 +239,10 @@ async def _write_rows(
 
         if target_pairs is not None:
             n_before = len(result_df)
-            # Vectorized PK membership filter (B-A4): materialize the PK
-            # date columns as python dates (ONE numpy pass each — the
-            # target_pairs tuples hold datetime.date objects), then a
-            # single MultiIndex.isin instead of per-row apply.
-            pk_df = result_df[pk_columns].copy()
-            pk_df = to_py_dates(
-                pk_df,
-                [c for c in pk_columns
-                 if pd.api.types.is_datetime64_any_dtype(pk_df[c])],
-            )
-            mask = pd.MultiIndex.from_frame(pk_df).isin(target_pairs)
+            # Host-pure PK membership filter: target_pairs tuples hold
+            # python date objects from asyncpg; materialize the frame's
+            # date columns the same way and probe the tuple set.
+            mask = _pk_mask_host(result_df, pk_columns, target_pairs)
             result_df = result_df.loc[mask].reset_index(drop=True)
             logger.info(f"  Incremental filter: {len(result_df):,} of "
                   f"{n_before:,} rows are in target pairs")
@@ -402,20 +419,19 @@ async def _run_oi_pipeline(
 ) -> int:
     """Run the options_oi_stats pipeline.
 
-    Computes put/call OI ratio correlation stats per expiry group.
-    Returns number of rows written.
+    Computes per-expiry OI level/changes (oi_total, oi_delta_5d/20d,
+    oi_max_20d) per REAL expiry date — the dedicated per-expiry table,
+    no open-expiry collapse. Returns number of rows written.
     """
-    from analyze.options.fetch import fetch_oi_rows
+    from analyze.options.fetch import fetch_oi_rows, fetch_missing_oi_groups
     from analyze.options.compute import compute_options_oi_stats
 
     target_pairs: set | None = None
     if not force:
         logger.info("\n  Detecting missing expiry groups "
               "for OI stats...")
-        # Same detection as skewness, but checked against the OI table
-        missing_list = await fetch_missing_skewness_groups(
-            conn, sec_type, table_name=OI_TABLE_NAME,
-        )
+        # Per-real-expiry detection (no collapse — see 16_options.sql).
+        missing_list = await fetch_missing_oi_groups(conn, sec_type)
         target_pairs = set(missing_list)
         logger.info(f"    -> {len(target_pairs):,} missing expiry groups")
         if len(target_pairs) == 0:
@@ -429,7 +445,7 @@ async def _run_oi_pipeline(
         logger.info("    no data; skipping.")
         return 0
 
-    logger.info("\n  [2/3] Computing OI put/call ratio correlation stats...")
+    logger.info("\n  [2/3] Computing per-expiry OI level/changes...")
     result_df = compute_options_oi_stats(df)
     logger.info(f"    {len(result_df):,} expiry-group result rows")
 

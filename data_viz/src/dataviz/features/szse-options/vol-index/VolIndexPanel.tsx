@@ -43,16 +43,14 @@ export default function VolIndexPanel() {
     [rows, themeMode],
   );
 
-  // AI Ask — the formula + reading guide (former card subtitle) lives in the
-  // intro; the card shows only the concise identity line.
+  // AI Ask — concise formula + pointer; the card shows only the identity.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "The CBOE-VIX analogue for the SELECTED underlying: the daily 30-day constant-maturity " +
-        "model-free implied-volatility index — 100·√(30-day constant-maturity model-free variance) " +
-        "from the OTM-strip replication on settlement prices (CBOE VIX methodology, r=2%) — the " +
-        "smile LEVEL of the selected underlying (see docs/options_vol_smile_study.md §9). One " +
-        "curve, driven by the page's Underlying selector.",
+        "CBOE-VIX analog for the selected underlying: 100·√(30d constant-maturity model-free " +
+        "variance) from the OTM-strip replication on settlement prices (CBOE method, r = 2%) " +
+        "— the smile LEVEL. Indication: swell = fear bid, hedges chased; trough = " +
+        "complacency — both extremes revert. docs/options_vol_smile_study.md §9.",
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
       series: [
         {
@@ -60,11 +58,6 @@ export default function VolIndexPanel() {
           unit: "vol pts",
           description: "daily 30-day model-free implied-volatility index (the smile LEVEL)",
         },
-      ],
-      suggestedQuestions: [
-        "Is the 30-day model-free vol index elevated or compressed versus its recent range?",
-        "How has the smile level evolved — rising risk pricing or vol crush?",
-        "Does the vol index level confirm or diverge from the underlying's recent realized move?",
       ],
       notes: [
         "SZSE ETF legs inherit the known ETF settle-data condition; CFFEX index legs carry the deep history.",

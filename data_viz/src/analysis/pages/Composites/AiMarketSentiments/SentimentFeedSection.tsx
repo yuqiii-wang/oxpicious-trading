@@ -8,10 +8,8 @@
  */
 import {
   Box,
-  CircularProgress,
   IconButton,
   InputAdornment,
-  Pagination,
   Stack,
   TextField,
   ToggleButton,
@@ -23,9 +21,11 @@ import {
   Search as SearchIcon,
 } from "@mui/icons-material";
 import DateEventStrip from "@/shared/components/date-events/DateEventStrip";
+import PostFeed from "@/shared/components/post-feed/PostFeed";
 import AiQaCard from "@/dataviz/features/ai/AiQaCard";
 import NewsPostCard from "@/shared/components/news/NewsPostCard";
 import type { useSentimentFeed } from "./useSentimentFeed";
+import { PAGE_SIZE } from "./constants";
 
 export default function SentimentFeedSection({
   mode,
@@ -67,7 +67,6 @@ export default function SentimentFeedSection({
     activeItemsError,
     aiItems,
     newsItems,
-    totalPages,
   } = feedState;
 
   return (
@@ -169,49 +168,31 @@ export default function SentimentFeedSection({
         />
       </Stack>
 
-      {/* ---- Feed header: scope label · day window · keyword · total + pager ---- */}
-      <Box sx={{ display: "flex", alignItems: "center", mb: 1 }}>
-        <Typography variant="subtitle2" color="text.secondary">
-          {scopeLabel}
-          {dateWindow ? ` · ${dateWindow.from} ~ ${dateWindow.to}` : ""}
-          {search ? ` · “${search}”` : ""}
-          {" · "}
-          {(activeItems?.total ?? 0).toLocaleString()} {feed === "ai" ? "条问答" : "条新闻"}
-          {(activeItemsLoading || hdLoading) && (
-            <CircularProgress size={12} sx={{ ml: 1, verticalAlign: "middle" }} />
-          )}
-        </Typography>
-        {totalPages > 1 && (
-          <Pagination
-            count={totalPages}
-            page={page}
-            onChange={(_, v) => setPage(v)}
-            size="small"
-            siblingCount={1}
-            boundaryCount={1}
-            sx={{ ml: "auto" }}
-          />
-        )}
-      </Box>
-      {activeItemsError && (
-        <Box component="pre" sx={{ color: "error.main", fontSize: "0.75rem", whiteSpace: "pre-wrap", mb: 1 }}>
-          {feed === "ai" ? "Failed to load Q&A: " : "Failed to load news: "}
-          {activeItemsError}
-        </Box>
-      )}
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
+      {/* ---- Feed (shared PostFeed chrome): scope label · day window ·
+              keyword · total + pager, error alert, and the post cards for
+              the ACTIVE source (AiQaCard / NewsPostCard). ---- */}
+      <PostFeed
+        total={activeItems?.total ?? 0}
+        page={page}
+        pageSize={PAGE_SIZE}
+        onPageChange={setPage}
+        loading={activeItemsLoading || hdLoading}
+        error={activeItemsError}
+        errorLabel={feed === "ai" ? "Failed to load Q&A" : "Failed to load news"}
+        scopeLabel={`${scopeLabel}${dateWindow ? ` · ${dateWindow.from} ~ ${dateWindow.to}` : ""}${search ? ` · “${search}”` : ""}`}
+        countNoun={feed === "ai" ? "条问答" : "条新闻"}
+        empty={!activeItemsLoading && (activeItems?.items ?? []).length === 0}
+        emptyText={
+          (feed === "ai" ? "没有匹配的 AI 问答 — " : "没有匹配的新闻 — ") +
+          (mode === "market"
+            ? "调整 Top N / 日期 / 关键词后再试。"
+            : "调整行业 / 日期 / 关键词后再试。")
+        }
+      >
         {feed === "ai"
           ? (aiItems ?? []).map((it) => <AiQaCard key={it.qa_id} item={it} />)
           : (newsItems ?? []).map((it) => <NewsPostCard key={it.news_id} item={it} />)}
-        {!activeItemsLoading && (activeItems?.items ?? []).length === 0 && (
-          <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: "center" }}>
-            {feed === "ai" ? "没有匹配的 AI 问答 — " : "没有匹配的新闻 — "}
-            {mode === "market"
-              ? "调整 Top N / 日期 / 关键词后再试。"
-              : "调整行业 / 日期 / 关键词后再试。"}
-          </Typography>
-        )}
-      </Box>
+      </PostFeed>
     </>
   );
 }

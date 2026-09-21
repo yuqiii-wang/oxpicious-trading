@@ -64,7 +64,7 @@ from _common.build_commons import (
     copy_or_upsert_split_async,
     rec_cols,
 )
-from _common.df_utils import epoch_col_to_dt64, to_py_dates
+from _common.df_utils import epoch_col_to_dt64
 from analyze._common import (
     grouped_rolling_agg,
     sanitize_for_db_insert,
@@ -318,16 +318,19 @@ async def run_etf_contribution(
         df, grp_keys, "industry_etf_trading_amount",
         window=20, min_periods=1, agg="mean", sort=False,
     )
-    # Convert date to python datetime.date for asyncpg — ONE host numpy
-    # pass (a cudf-backed .dt.date falls back per element).
-    to_py_dates(df, ["date"])
+    # Convert date to python datetime.date for asyncpg — done INSIDE
+    # sanitize_for_db_insert below (date_cols branch, ONE host numpy
+    # pass). Keeping the column datetime64 through the frame's life is
+    # the cudf.pandas convention: an object-date column poisons every
+    # subsequent op on the frame (MixedTypeError fallbacks per access).
     logger.info(f"    -> MA5 / MA20 computed for {len(df):,} rows "
           f"({time.time() - t_ma:.1f}s)")
 
     # ---- Step 5: upsert ---------------------------------------------
     logger.info(f"\n[e5/5] Upserting into {TABLE}...")
     # Sanitize the DataFrame for asyncpg upsert via the shared helper:
-    # NaN/inf -> None for numeric cols, non-numeric cols pass through.
+    # NaN/inf -> None for numeric cols, date -> python date objects
+    # (date_cols), non-numeric cols pass through.
     # Replaces the per-row iterrows dict construction with a single
     # vectorized to_dict pass.
     data = sanitize_for_db_insert(
@@ -338,6 +341,7 @@ async def run_etf_contribution(
             "industry_etf_trading_amount_ma5",
             "industry_etf_trading_amount_ma20",
         ],
+        date_cols=["date"],
     )
     n_copied, n_upserted = await copy_or_upsert_split_async(
         conn, TABLE, data,

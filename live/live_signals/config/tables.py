@@ -20,14 +20,14 @@ RSI_TABLE = "analysis.mov_ave_rsi"
 # is_day_close_trigger: FALSE on intraday-bar observations (live monitor
 # AND the on-demand --date mode's intraday replay), TRUE on the --date
 # mode's daily-close fallback rows (time 15:00).
-# is_market_hyped: the breach bar's DATE sits inside one of the code's
-# stats.mov_ave_market_hypes episodes (any check-in window) — recorded
+# regime_state: the breach bar's DATE market regime — the
+# stats.market_regimes day label (calm/hot/panic/quiet) — recorded
 # regime context, never a gate.
 LIVE_SIGNAL_COLUMNS = [
     "code", "sec_type", "signal_type", "signal_sub_type", "date", "time",
     "action", "signal_excess", "signal_excess_pct", "signal",
     "signal_threshold", "confidence", "is_day_close_trigger",
-    "is_market_hyped",
+    "regime_state",
 ]
 
 # PK of live.live_signals (upsert arbiter).

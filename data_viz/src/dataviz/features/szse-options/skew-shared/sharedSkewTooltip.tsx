@@ -3,7 +3,7 @@
  * SharedSkewPoint[] model for all data sources (oi_moneyness / greek_*).
  */
 import React from "react";
-import { fmtNum } from "@/lib/series";
+import { fmtCompact, fmtNum } from "@/lib/series";
 import { renderTooltip } from "../vol-smile/renderTooltip";
 import type { SharedSkewPoint } from "./types";
 
@@ -34,6 +34,11 @@ function ColoredDot({ color }: { color: string }) {
       }}
     />
   );
+}
+
+/** Signed compact form — explicit "+" for non-negative OI deltas. */
+function signedCompact(v: number): string {
+  return (v >= 0 ? "+" : "") + fmtCompact(v);
 }
 
 function SharedSkewTooltipContent({
@@ -70,6 +75,18 @@ function SharedSkewTooltipContent({
     );
   }
 
+  // Absolute OI context: chain-wide total plus each group's share — the
+  // curves' thickness encodes the same numbers (peak OI per expiry).
+  const oiRows = d.perExpiry.filter((pe) => pe.oiTotal != null);
+  if (oiRows.length > 0) {
+    const chainOi = oiRows.reduce((s, pe) => s + (pe.oiTotal ?? 0), 0);
+    children.push(
+      <div key="chain-oi">
+        Chain OI: <b>{fmtCompact(chainOi)}</b> contracts
+      </div>,
+    );
+  }
+
   if (d.perExpiry.length > 0) {
     children.push(
       <div key="per-expiry-label" style={{ opacity: 0.7 }}>
@@ -95,6 +112,15 @@ function SharedSkewTooltipContent({
           <ColoredDot color={expiryColorMap.get(pe.expiry) ?? "#888"} />
           {pe.expiry}: <b>{sign}</b>{" "}
           ΔSpot=<b>{gapSpotStr}</b>
+          {pe.oiTotal != null && (
+            <span style={{ opacity: 0.75 }}>
+              {" "}
+              · OI {fmtCompact(pe.oiTotal)}
+              {pe.oiDelta5d != null && <> · Δ5d {signedCompact(pe.oiDelta5d)}</>}
+              {pe.oiDelta20d != null && <> · Δ20d {signedCompact(pe.oiDelta20d)}</>}
+              {pe.oiMax20d != null && <> · 20d max {fmtCompact(pe.oiMax20d)}</>}
+            </span>
+          )}
         </div>,
       );
     });

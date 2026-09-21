@@ -182,12 +182,13 @@ export default function SingletonStrategyPage() {
     () => ({
       intro:
         `Singleton strategy backtest for ${displayBacktest?.code ?? nav.searchCode ?? ""} ` +
-        "(MA5/MA60 crossover pre-computed by the Python strategy.singleton_trading package): " +
-        "OHLC candles with MA5/MA60 overlays, trading-amount bars on a right axis, a Total P&L " +
-        "curve, and BUY (green) / SELL (red) / LAST DAY SELL (purple) decision markers at each " +
-        "fill price. Every price-derived series is rebased so the FIRST BUY fill = 100 (dashed " +
-        "Base-100 reference; tooltips show actual prices). A period clicked in the Risk " +
-        "Analytics chart below shades the matching date range here.",
+        "(MA5/MA60 crossover, precomputed by strategy.singleton_trading): OHLC candles + " +
+        "MA5/MA60, amount bars on the right, Total P&L curve, and BUY (green) / SELL (red) / " +
+        "LAST DAY SELL (purple) markers at fill prices. All price-derived series rebased so " +
+        "the FIRST BUY fill = 100 (dashed Base-100 line; tooltips show actual prices). " +
+        "Clicking a period in the Risk Analytics chart shades the matching range here. " +
+        "Indication: marker clusters show where the crossover acted — entries chasing " +
+        "strength, exits banking it; the P&L curve's drawdowns = the pain budget.",
       instruments: displayBacktest?.code
         ? [{ code: displayBacktest.code, name: displayBacktest.name, assetClass: nav.secType }]
         : [],

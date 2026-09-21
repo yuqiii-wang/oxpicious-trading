@@ -12,16 +12,19 @@ finished pipeline reports and hands back the memory it borrowed:
   driver) and reset the RMM current resource, then report free VRAM
   before -> after via the same nvidia-smi query ``pre_check`` uses.
 
-KNOWN LIMIT (probed 2026-08-30, temp_scripts/probe_rmm_release*.py):
-when cudf.pandas is active it pre-reserves a giant RMM
-``PoolMemoryResource`` at install time (``initial_pool_size = free
-VRAM``, ~24 GiB on a 32 GB card) and that pool NEVER returns blocks to
-the driver mid-process — no public RMM API shrinks it
-(``rmm.reinitialize()`` / resource swap / ``del`` + ``gc`` all verified
-ineffective in-process). The reservation is returned when the process
-exits, which is immediately after this check in every entry point.
-In-context ``memGetInfo`` therefore shows the reservation as "used" and
-the report calls it out instead of treating it as a leak.
+RESOLVED (2026-09-20, docs/gpu_residual_memory_study.md): the large
+idle device-memory floor this check used to report was cudf.pandas'
+install-time PoolMemoryResource pre-reservation (~≈ all free VRAM),
+pinned for the process lifetime by any allocation made through it —
+the 2026-09-15 reinitialize ran too late (after the activation smoke
+test). _cudf_pandas.py now reinitializes RMM to CudaMemoryResource
+immediately after install(), BEFORE any allocation: activation idles
+at the ~1.6 GiB CUDA-context baseline and freed VRAM returns to the
+driver (usage tracks live computation). OXPICIOUS_RMM_POOL=1 restores
+the pool (and the floor). In-context ``memGetInfo`` under WSL reports
+DEVICE-WIDE usage, not per-process — the remaining post-run number is
+live references until this release pass, then the context baseline
+until exit.
 
 Best-effort by design: every release step is individually guarded so a
 missing CuPy / RMM / nvidia-smi (or a CPU-only host) degrades to a

@@ -99,7 +99,7 @@ import pandas as pd
 from _common.db_commons import csv_copy_from_frame_async
 from _common.df_utils import host_array
 from analyze._common import upsert_analysis_identity
-from builds.market_hypes.compute import _grouped_rolling_quantile
+from _common.df_utils import grouped_rolling_quantile
 from analyze.pe_and_dividends.config import (
     DIVIDENDS_TABLE,
     PD_PCT_COLUMNS,
@@ -370,14 +370,14 @@ def _bands_for_metric(mdf: pd.DataFrame, metric: str) -> pd.DataFrame:
     per_combo: list[pd.DataFrame] = []
     for period in PD_PCT_PERIODS:
         for pct in PD_PCT_TYPES:
-            low_q = _grouped_rolling_quantile(
-                mdf, "value",
+            low_q = grouped_rolling_quantile(
+                mdf, ["sec_type", "code"], "value",
                 window=period,
                 min_periods=PD_PCT_MIN_PERIODS,
                 q=pct / 100.0,
             )
-            high_q = _grouped_rolling_quantile(
-                mdf, "value",
+            high_q = grouped_rolling_quantile(
+                mdf, ["sec_type", "code"], "value",
                 window=period,
                 min_periods=PD_PCT_MIN_PERIODS,
                 q=(100 - pct) / 100.0,

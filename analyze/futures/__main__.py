@@ -37,7 +37,7 @@ from _common.db_commons import (
     copy_or_upsert_split_async,
     copy_insert_async,
 )
-
+import numpy as np
 import pandas as pd
 
 from analyze._common import (
@@ -113,14 +113,22 @@ async def _write_rows(
             return 0
 
         if target_pairs is not None:
-            # Filter rows to only those in target_pairs
+            # Semi-join against the target (date, code) pairs — replaces
+            # the former per-row df.apply membership test. Pairs' dates
+            # (python date objects from asyncpg) become a datetime64[us]
+            # array OUTSIDE the frame ctor — an object-date column here
+            # would poison the ctor with cudf fallbacks.
             n_before = len(result_df)
-            result_df = result_df[
-                result_df.apply(
-                    lambda r: (r["date"], r["code"]) in target_pairs,
-                    axis=1,
-                )
-            ].reset_index(drop=True)
+            pairs = sorted(target_pairs)
+            tgt = pd.DataFrame({
+                "date": np.array(
+                    [p[0] for p in pairs], dtype="datetime64[D]",
+                ).astype("datetime64[us]"),
+                "code": np.array([p[1] for p in pairs], dtype=object),
+            })
+            result_df = result_df.merge(
+                tgt, on=["date", "code"], how="inner",
+            )
             logger.info(f"  Incremental filter: {len(result_df):,} of "
                   f"{n_before:,} rows are in target dates")
 
@@ -144,6 +152,7 @@ async def _write_rows(
             chunk,
             numeric_cols=NUMERIC_COLS,
             round_to=4,
+            date_cols=["date"],
         )
         if not rows:
             continue
@@ -189,6 +198,7 @@ async def _write_quintile_summary(
         summary_df,
         numeric_cols=QUINTILE_NUMERIC_COLS,
         round_to=4,
+        date_cols=["asof_date"],
     )
     if not rows:
         return 0
@@ -200,8 +210,9 @@ async def _write_quintile_summary(
         date_column="asof_date",
     )
     n = n_copied + n_upserted
-    logger.info(f"  upserted {n:,} quintile summary rows into "
-          f"{QUINTILE_TABLE_NAME} (asof_date={rows[0]['asof_date']})")
+    logger.info("  upserted %s quintile summary rows into %s "
+                "(asof_date=%s)", n, QUINTILE_TABLE_NAME,
+                rows[0]["asof_date"])
     return n
 
 

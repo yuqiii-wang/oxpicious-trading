@@ -6,11 +6,13 @@
  * as a post card (NewsPostCard) — click to expand the full article body and
  * open the threaded comments (CommentThread), which expand further per root.
  *
- * Lives in shared/components so any page can embed a news feed, not just the
- * dataviz News page.
+ * The feed chrome (count line + pager + error + empty state) is the shared
+ * PostFeed; this wrapper only maps NewsItems to NewsPostCards. Lives in
+ * shared/components so any page can embed a news feed, not just the dataviz
+ * News page.
  */
-import { Alert, Box, CircularProgress, Pagination, Typography } from "@mui/material";
 import type { NewsItem } from "@shared/types";
+import PostFeed from "@/shared/components/post-feed/PostFeed";
 import NewsPostCard from "./NewsPostCard";
 
 /** Server-side page size — also imported by NewsPage for the offset math. */
@@ -39,43 +41,23 @@ export default function NewsFeedPage({
   scopeLabel,
   emptyText = "没有匹配的新闻 — 调整行业 / 日期 / 关键词后再试。",
 }: Props) {
-  if (error) {
-    return <Alert severity="error" variant="filled" sx={{ mb: 2 }}>Failed to load news: {error}</Alert>;
-  }
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
   return (
-    <Box>
-      <Box sx={{ display: "flex", alignItems: "center", mb: 1 }}>
-        <Typography variant="subtitle2" color="text.secondary">
-          {scopeLabel} · {total.toLocaleString()} 篇
-          {loading && (
-            <CircularProgress size={12} sx={{ ml: 1, verticalAlign: "middle" }} />
-          )}
-        </Typography>
-        {totalPages > 1 && (
-          <Pagination
-            count={totalPages}
-            page={page}
-            onChange={(_, v) => onPageChange(v)}
-            size="small"
-            siblingCount={1}
-            boundaryCount={1}
-            sx={{ ml: "auto" }}
-          />
-        )}
-      </Box>
-
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-        {items.map((it) => (
-          <NewsPostCard key={it.news_id} item={it} />
-        ))}
-        {!loading && items.length === 0 && (
-          <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: "center" }}>
-            {emptyText}
-          </Typography>
-        )}
-      </Box>
-    </Box>
+    <PostFeed
+      total={total}
+      page={page}
+      pageSize={PAGE_SIZE}
+      onPageChange={onPageChange}
+      loading={loading}
+      error={error}
+      errorLabel="Failed to load news"
+      scopeLabel={scopeLabel}
+      countNoun="篇"
+      empty={items.length === 0}
+      emptyText={emptyText}
+    >
+      {items.map((it) => (
+        <NewsPostCard key={it.news_id} item={it} />
+      ))}
+    </PostFeed>
   );
 }

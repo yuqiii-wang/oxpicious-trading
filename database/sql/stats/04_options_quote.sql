@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS stats.options_identity (
     date                      DATE          NOT NULL,
     contract_code             TEXT          NOT NULL,
     contract_name             TEXT          NOT NULL,
+    exchange                  TEXT          NOT NULL
+        CONSTRAINT chk_options_identity_exchange
+        CHECK (exchange IN ('SSE','SZSE','CFFEX')),
 
     CONSTRAINT pk_options_identity PRIMARY KEY (contract_code, date)
 ) PARTITION BY HASH (contract_code);
@@ -66,6 +69,9 @@ COMMENT ON COLUMN stats.options_terms.expiry_month    IS 'Chinese month label fr
 CREATE TABLE IF NOT EXISTS stats.options_strike (
     date                      DATE          NOT NULL,
     contract_code             TEXT          NOT NULL,
+    exchange                  TEXT          NOT NULL
+        CONSTRAINT chk_options_strike_exchange
+        CHECK (exchange IN ('SSE','SZSE','CFFEX')),
     strike_str                TEXT,
     strike_price_raw          NUMERIC(18,4),
     strike_price              NUMERIC(18,4) NOT NULL DEFAULT 0,
@@ -91,6 +97,9 @@ COMMENT ON COLUMN stats.options_strike.strike_price   IS 'Normalized strike in �
 CREATE TABLE IF NOT EXISTS stats.options_settlement (
     date                      DATE          NOT NULL,
     contract_code             TEXT          NOT NULL,
+    exchange                  TEXT          NOT NULL
+        CONSTRAINT chk_options_settlement_exchange
+        CHECK (exchange IN ('SSE','SZSE','CFFEX')),
     prev_settle               NUMERIC(18,4),
     close                     NUMERIC(18,4),
     settle                    NUMERIC(18,4),
@@ -119,6 +128,9 @@ COMMENT ON COLUMN stats.options_settlement.settle    IS 'Daily settlement price 
 CREATE TABLE IF NOT EXISTS stats.options_greeks (
     date                      DATE          NOT NULL,
     contract_code             TEXT          NOT NULL,
+    exchange                  TEXT          NOT NULL
+        CONSTRAINT chk_options_greeks_exchange
+        CHECK (exchange IN ('SSE','SZSE','CFFEX')),
     implied_vol               NUMERIC(12,8),
     delta                     NUMERIC(18,8),
     theta                     NUMERIC(18,8),
@@ -144,6 +156,9 @@ COMMENT ON COLUMN stats.options_greeks.implied_vol   IS 'Black-Scholes implied v
 CREATE TABLE IF NOT EXISTS stats.options_volume_oi (
     date                      DATE          NOT NULL,
     contract_code             TEXT          NOT NULL,
+    exchange                  TEXT          NOT NULL
+        CONSTRAINT chk_options_volume_oi_exchange
+        CHECK (exchange IN ('SSE','SZSE','CFFEX')),
     volume                    NUMERIC(24,4) NOT NULL DEFAULT 0,
     volume_wan                NUMERIC(24,4) NOT NULL DEFAULT 0,
     open_interest             NUMERIC(24,4) NOT NULL DEFAULT 0,
@@ -167,6 +182,9 @@ COMMENT ON COLUMN stats.options_volume_oi.open_interest IS 'Open interest at end
 CREATE TABLE IF NOT EXISTS stats.options_aggregate (
     date                      DATE          NOT NULL,
     contract_code             TEXT          NOT NULL,
+    exchange                  TEXT          NOT NULL
+        CONSTRAINT chk_options_aggregate_exchange
+        CHECK (exchange IN ('SSE','SZSE','CFFEX')),
     total_volume_underlying   NUMERIC(24,4),
     total_oi_underlying       NUMERIC(24,4),
     volume_pct                NUMERIC(10,6),
@@ -213,3 +231,68 @@ CREATE INDEX IF NOT EXISTS idx_options_volume_oi_date
     ON stats.options_volume_oi (date);
 CREATE INDEX IF NOT EXISTS idx_options_aggregate_date
     ON stats.options_aggregate (date);
+
+-- ----------------------------------------------------------------------------
+-- Migration (idempotent): exchange on EVERY options_* table
+--   04 originally carried exchange only on options_terms. It now lives on all
+--   7 tables (see CREATE TABLEs above) so venue filters/joins (SZSE vs CFFEX
+--   vs SSE missing-date detection, future SSE loader) hit the table directly.
+--   Existing rows are backfilled from options_terms — every identity row has
+--   a terms row (FK + verified in prod), so the SET NOT NULL below is safe;
+--   it fails loudly if that invariant ever regresses.
+-- ----------------------------------------------------------------------------
+DO $$
+DECLARE
+    tbl TEXT;
+BEGIN
+    FOREACH tbl IN ARRAY ARRAY[
+        'options_identity', 'options_strike', 'options_settlement',
+        'options_greeks', 'options_volume_oi', 'options_aggregate'
+    ] LOOP
+        EXECUTE format('ALTER TABLE stats.%I ADD COLUMN IF NOT EXISTS exchange TEXT', tbl);
+    END LOOP;
+END $$;
+
+COMMENT ON COLUMN stats.options_identity.exchange IS 'Venue of the contract: SSE / SZSE / CFFEX. Same value as options_terms.exchange, denormalized onto every options_* table so venue filters need no join.';
+
+UPDATE stats.options_identity x SET exchange = t.exchange
+  FROM stats.options_terms t
+ WHERE x.contract_code = t.contract_code AND x.date = t.date
+   AND (x.exchange IS NULL OR x.exchange = '');
+UPDATE stats.options_strike x SET exchange = t.exchange
+  FROM stats.options_terms t
+ WHERE x.contract_code = t.contract_code AND x.date = t.date
+   AND (x.exchange IS NULL OR x.exchange = '');
+UPDATE stats.options_settlement x SET exchange = t.exchange
+  FROM stats.options_terms t
+ WHERE x.contract_code = t.contract_code AND x.date = t.date
+   AND (x.exchange IS NULL OR x.exchange = '');
+UPDATE stats.options_greeks x SET exchange = t.exchange
+  FROM stats.options_terms t
+ WHERE x.contract_code = t.contract_code AND x.date = t.date
+   AND (x.exchange IS NULL OR x.exchange = '');
+UPDATE stats.options_volume_oi x SET exchange = t.exchange
+  FROM stats.options_terms t
+ WHERE x.contract_code = t.contract_code AND x.date = t.date
+   AND (x.exchange IS NULL OR x.exchange = '');
+UPDATE stats.options_aggregate x SET exchange = t.exchange
+  FROM stats.options_terms t
+ WHERE x.contract_code = t.contract_code AND x.date = t.date
+   AND (x.exchange IS NULL OR x.exchange = '');
+
+ALTER TABLE stats.options_identity  ALTER COLUMN exchange SET NOT NULL;
+ALTER TABLE stats.options_strike    ALTER COLUMN exchange SET NOT NULL;
+ALTER TABLE stats.options_settlement ALTER COLUMN exchange SET NOT NULL;
+ALTER TABLE stats.options_greeks    ALTER COLUMN exchange SET NOT NULL;
+ALTER TABLE stats.options_volume_oi ALTER COLUMN exchange SET NOT NULL;
+ALTER TABLE stats.options_aggregate ALTER COLUMN exchange SET NOT NULL;
+
+-- CHECK constraints via the shared guarded helper (NOT VALID, then validated
+-- schema-wide below) — naming must keep the chk_ prefix for the validator.
+SELECT public.ensure_check_constraint('stats.options_identity',   'chk_options_identity_exchange',   'exchange IN (''SSE'',''SZSE'',''CFFEX'')');
+SELECT public.ensure_check_constraint('stats.options_strike',     'chk_options_strike_exchange',     'exchange IN (''SSE'',''SZSE'',''CFFEX'')');
+SELECT public.ensure_check_constraint('stats.options_settlement', 'chk_options_settlement_exchange', 'exchange IN (''SSE'',''SZSE'',''CFFEX'')');
+SELECT public.ensure_check_constraint('stats.options_greeks',     'chk_options_greeks_exchange',     'exchange IN (''SSE'',''SZSE'',''CFFEX'')');
+SELECT public.ensure_check_constraint('stats.options_volume_oi',  'chk_options_volume_oi_exchange',  'exchange IN (''SSE'',''SZSE'',''CFFEX'')');
+SELECT public.ensure_check_constraint('stats.options_aggregate',  'chk_options_aggregate_exchange',  'exchange IN (''SSE'',''SZSE'',''CFFEX'')');
+SELECT public.validate_pending_checks('stats');

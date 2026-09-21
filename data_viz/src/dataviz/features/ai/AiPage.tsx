@@ -2,12 +2,20 @@
  * AI page (DataViz > AI tab) — /dataviz/ai.
  *
  * Browses the LLM Q&A knowledge base (text.llm_qa / text.llm_qa_refs /
- * text.news_digestions, written by llm_agents) through the same nav kit as
- * the other nav pages — it sits next to the News page, whose date-event
- * strip and feed idioms it reuses. Layout, top to bottom:
+ * text.news_digestions, written by llm_agents) OR the persisted interactive
+ * ask history (text.llm_qa_by_ask family + multi_media.src_images, written
+ * by llm_agents.llm_ask.storage for every AI Ask modal submit) through the
+ * same nav kit as the other nav pages — it sits next to the News page,
+ * whose date-event strip and feed idioms it reuses. The header's source
+ * toggle ("LLM QA" / "QA by Ask") switches which feed the strip + cards
+ * read; everything below it (nav scope, code trend, search, pagination)
+ * is shared. Layout, top to bottom:
  *
  *   1. Header — Index / Stock sec_type toggle (CodeSearchBar + Refresh):
  *      the toggle switches BOTH nav trees and the code trend's data source.
+ *   1b. Source toggle — "LLM QA" (knowledge base) vs "QA by Ask"
+ *      (interactive ask history). In ask mode a picked code filters the
+ *      asks' own code column directly.
  *   2. SecClassificationNav — the security classification (L1 sector → L2
  *      industry + parallel strategy → theme + exchange + L3 security chips),
  *      from the baseline registries per sec_type (same sources as Recent
@@ -32,9 +40,12 @@
  *      dragging the trend's slider re-windows the dots in lockstep). With
  *      no code picked the strip's own time slider comes back over its
  *      calendar range.
- *   5. Q&A feed — the LLM Q&A content items (AiQaCard post cards: question,
- *      answer snippet; click expands the full answer + context + per-ref
- *      citation list with the average digestion sentiment).
+ *   5. Q&A feed — the content items: AiQaCard post cards in knowledge-base
+ *      mode (question, answer snippet; click expands the full answer +
+ *      context + per-ref citation list with the average digestion
+ *      sentiment), AskQaCard post cards in by-ask mode (question, answer
+ *      snippet; click expands the full answer + chart context + keyword
+ *      chips + the stored screenshots).
  *
  * Nav trees sources per sec_type (baseline registries — no ETF on this
  * page, the toggle is Index vs Stock only):
@@ -44,13 +55,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
-  CircularProgress,
   IconButton,
   InputAdornment,
-  Pagination,
   Stack,
   TextField,
   ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -64,9 +74,13 @@ import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import type { SecNavThemesSource } from "@/shared/components/sec-nav";
 import SecClassificationNav from "@/shared/components/sec-classification/SecClassificationNav";
 import DateEventStrip, { type DateEvent } from "@/shared/components/date-events/DateEventStrip";
+import PostFeed from "@/shared/components/post-feed/PostFeed";
 import CodeTrendChart from "@/components/CodeTrendChart";
 import AiQaCard from "./AiQaCard";
+import AskQaCard from "./AskQaCard";
 import {
+  fetchAiAskCalendar,
+  fetchAiAskItems,
   fetchAiCalendar,
   fetchAiItems,
   fetchIndexStrategyThemes,
@@ -75,7 +89,13 @@ import {
   fetchStockThemes,
   invalidateCacheForPrefix,
 } from "@/lib/api-client";
-import type { AiCalendarResponse, AiQaItemsResponse } from "@shared/types";
+import type {
+  AiAskHistoryItem,
+  AiAskHistoryItemsResponse,
+  AiCalendarResponse,
+  AiQaItem,
+  AiQaItemsResponse,
+} from "@shared/types";
 
 /** Nav trees endpoints per sec_type (baseline classification registries). */
 const THEMES_SOURCES: Partial<Record<"index" | "stock", SecNavThemesSource>> = {
@@ -120,7 +140,13 @@ export default function AiPage() {
   });
 
   // ---- Q&A feed filters ----------------------------------------------------
-  /** Keyword filter over question OR answer (Enter submits). */
+  /** Feed source — the header toggle: "kb" = the curated knowledge base
+   *  (text.llm_qa), "ask" = the persisted interactive ask history
+   *  (text.llm_qa_by_ask). Everything below (scope, search, date strip,
+   *  pagination) is shared between the two. */
+  const [source, setSource] = useState<"kb" | "ask">("kb");
+  /** Keyword filter over question OR answer (Enter submits); in ask mode a
+   *  term also hits the derived keyword rows (codes, product, items). */
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState<string | null>(null);
   /** Picked day from the date-event strip (null = all days). */
@@ -272,12 +298,19 @@ export default function AiPage() {
     () => ({ ...scope, search }),
     [scopeKey, search], // eslint-disable-line react-hooks/exhaustive-deps -- scopeKey is the canonical scope identity
   );
+  // Ask-mode params: a picked code filters the asks' own code column
+  // directly (it wins over the industry mapping in the service), so the
+  // by-ask feed follows the exact security the user picked.
+  const askParams = useMemo(
+    () => ({ ...scopeParams, code: nav.searchCode ?? null }),
+    [scopeParams, nav.searchCode],
+  );
 
-  // Scope/search changes reset the day pick + pagination.
+  // Scope/search/source changes reset the day pick + pagination.
   useEffect(() => {
     setSelectedDate(null);
     setPage(1);
-  }, [scopeKey, search]);
+  }, [scopeKey, search, source]);
 
   // ---- Calendar (date-event strip dots) ------------------------------------
   const [calendar, setCalendar] = useState<AiCalendarResponse | null>(null);
@@ -287,7 +320,9 @@ export default function AiPage() {
     let cancelled = false;
     setCalendarLoading(true);
     setCalendarError(null);
-    fetchAiCalendar(scopeParams)
+    const req =
+      source === "kb" ? fetchAiCalendar(scopeParams) : fetchAiAskCalendar(askParams);
+    req
       .then((d) => {
         if (cancelled) return;
         setCalendar(d);
@@ -299,7 +334,7 @@ export default function AiPage() {
         setCalendarLoading(false);
       });
     return () => { cancelled = true; };
-  }, [scopeParams, nav.refreshKey]);
+  }, [source, scopeParams, askParams, nav.refreshKey]);
 
   // The strip's axis pins: the trend's VISIBLE window while live (falling
   // back to the full span, then the calendar, until the first report
@@ -313,19 +348,19 @@ export default function AiPage() {
     : calendar?.max_date ?? null;
 
   // ---- Q&A items (one page) -------------------------------------------------
-  const [itemsData, setItemsData] = useState<AiQaItemsResponse | null>(null);
+  const [itemsData, setItemsData] = useState<AiQaItemsResponse | AiAskHistoryItemsResponse | null>(null);
   const [itemsLoading, setItemsLoading] = useState(false);
   const [itemsError, setItemsError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     setItemsLoading(true);
     setItemsError(null);
-    fetchAiItems({
-      ...scopeParams,
-      date: selectedDate,
-      limit: PAGE_SIZE,
-      offset: (page - 1) * PAGE_SIZE,
-    })
+    const base = source === "kb" ? scopeParams : askParams;
+    const req =
+      source === "kb"
+        ? fetchAiItems({ ...base, date: selectedDate, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE })
+        : fetchAiAskItems({ ...base, date: selectedDate, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE });
+    req
       .then((d) => {
         if (cancelled) return;
         setItemsData(d);
@@ -337,18 +372,18 @@ export default function AiPage() {
         setItemsLoading(false);
       });
     return () => { cancelled = true; };
-  }, [scopeParams, selectedDate, page, nav.refreshKey]);
+  }, [source, scopeParams, askParams, selectedDate, page, nav.refreshKey]);
 
-  // Date-strip events: one dot per day with Q&A rows (dot size ~ count).
+  // Date-strip events: one dot per day with rows (dot size ~ count).
   const stripEvents = useMemo<DateEvent[]>(
     () =>
       (calendar?.days ?? []).map((d) => ({
         date: d.date,
         id: d.date, // the date string IS the selection id
         type: "qa",
-        title: `${d.count} 条 AI 问答`,
+        title: source === "kb" ? `${d.count} 条 AI 问答` : `${d.count} 条交互问答`,
       })),
-    [calendar],
+    [calendar, source],
   );
 
   // Feed scope label — mirrors the scope mapping above: the picked
@@ -368,19 +403,44 @@ export default function AiPage() {
     nav.searchCode, nav.strategyId, nav.themeSlug,
     nav.industrySlug, nav.sectorId, nav.headerLabel, codeToIndustry, nav.findItemName,
   ]);
-  const totalPages = Math.max(1, Math.ceil((itemsData?.total ?? 0) / PAGE_SIZE));
 
   return (
     <SecNavShell
       nav={nav}
       title="AI"
       backPath="/dataviz"
-      subtitle={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : " · 全部日期"} — LLM 问答知识库（text.llm_qa）· 点选日期圆点筛选当日问答`}
+      subtitle={
+        `${scopeLabel}${selectedDate ? ` · ${selectedDate}` : " · 全部日期"} — ` +
+        (source === "kb"
+          ? "LLM 问答知识库（text.llm_qa）· 点选日期圆点筛选当日问答"
+          : "交互问答历史（text.llm_qa_by_ask）· 图表上点 “?” 提问的记录 · 点选日期圆点筛选当日提问")
+      }
       secTypes={["index", "stock"]}
       refreshTooltip="Refresh the classification trees (bypass cache)"
       errorPrefix="classification data"
       navSlot={
         <Box sx={{ mb: 1.5 }}>
+          {/* ---- Source row — the feed-source toggle (knowledge base vs
+                  persisted interactive asks); everything below shares the
+                  nav scope + search + strip. ---- */}
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mb: 0.75 }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 600, minWidth: 56, fontSize: "0.75rem" }}>
+              Source
+            </Typography>
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={source}
+              onChange={(_, v: "kb" | "ask" | null) => { if (v) setSource(v); }}
+            >
+              <ToggleButton value="kb" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
+                LLM QA
+              </ToggleButton>
+              <ToggleButton value="ask" sx={{ px: 1, py: 0.25, fontSize: "0.7rem" }}>
+                QA by Ask
+              </ToggleButton>
+            </ToggleButtonGroup>
+          </Stack>
           <SecClassificationNav
             sectors={nav.sectors}
             sectorId={nav.sectorId}
@@ -498,7 +558,11 @@ export default function AiPage() {
                   to its calendar range + own time slider. ---- */}
           <DateEventStrip
             events={stripEvents}
-            typeMeta={{ qa: { label: "AI 问答", color: "#9a60b4" } }}
+            typeMeta={
+              source === "kb"
+                ? { qa: { label: "AI 问答", color: "#9a60b4" } }
+                : { qa: { label: "交互问答", color: "#2e8b6f" } }
+            }
             minDate={stripMin}
             maxDate={stripMax}
             selectedId={selectedDate}
@@ -509,7 +573,7 @@ export default function AiPage() {
             }}
             height={72}
             showLegend={false}
-            emptyText={calendarLoading ? "加载中…" : "无 AI 问答记录"}
+            emptyText={calendarLoading ? "加载中…" : source === "kb" ? "无 AI 问答记录" : "无交互问答记录"}
             enableZoom={!trendLive}
             defaultWindowDays={92}
           />
@@ -521,45 +585,35 @@ export default function AiPage() {
         </Box>
       }
     >
-      {/* ---- Q&A content items (the feed) ---- */}
-      <Box sx={{ display: "flex", alignItems: "center", mb: 1 }}>
-        <Typography variant="subtitle2" color="text.secondary">
-          {scopeLabel}
-          {selectedDate ? ` · ${selectedDate}` : ""}
-          {search ? ` · “${search}”` : ""}
-          {" · "}
-          {(itemsData?.total ?? 0).toLocaleString()} 条问答
-          {itemsLoading && (
-            <CircularProgress size={12} sx={{ ml: 1, verticalAlign: "middle" }} />
-          )}
-        </Typography>
-        {totalPages > 1 && (
-          <Pagination
-            count={totalPages}
-            page={page}
-            onChange={(_, v) => setPage(v)}
-            size="small"
-            siblingCount={1}
-            boundaryCount={1}
-            sx={{ ml: "auto" }}
-          />
-        )}
-      </Box>
-      {itemsError && (
-        <Box component="pre" sx={{ color: "error.main", fontSize: "0.75rem", whiteSpace: "pre-wrap", mb: 1 }}>
-          Failed to load Q&A: {itemsError}
-        </Box>
-      )}
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-        {(itemsData?.items ?? []).map((it) => (
-          <AiQaCard key={it.qa_id} item={it} />
-        ))}
-        {!itemsLoading && (itemsData?.items ?? []).length === 0 && (
-          <Typography variant="body2" color="text.secondary" sx={{ py: 4, textAlign: "center" }}>
-            没有匹配的 AI 问答 — 调整行业 / 日期 / 关键词后再试。
-          </Typography>
-        )}
-      </Box>
+      {/* ---- Q&A content items (the feed) — AiQaCard for the knowledge
+              base, AskQaCard for the persisted interactive asks. The feed
+              chrome (count line + pager + error + empty state) is the
+              shared PostFeed, same as the News page's feed. ---- */}
+      <PostFeed
+        total={itemsData?.total ?? 0}
+        page={page}
+        pageSize={PAGE_SIZE}
+        onPageChange={setPage}
+        loading={itemsLoading}
+        error={itemsError}
+        errorLabel="Failed to load Q&A"
+        scopeLabel={`${scopeLabel}${selectedDate ? ` · ${selectedDate}` : ""}${search ? ` · “${search}”` : ""}`}
+        countNoun={source === "kb" ? "条问答" : "条提问"}
+        empty={!itemsLoading && (itemsData?.items ?? []).length === 0}
+        emptyText={
+          source === "kb"
+            ? "没有匹配的 AI 问答 — 调整行业 / 日期 / 关键词后再试。"
+            : "没有匹配的交互问答 — 在图表标题旁点 “?” 向 AI 提问后，问答会记录在这里。"
+        }
+      >
+        {source === "kb"
+          ? ((itemsData?.items ?? []) as AiQaItem[]).map((it) => (
+              <AiQaCard key={it.qa_id} item={it} />
+            ))
+          : ((itemsData?.items ?? []) as AiAskHistoryItem[]).map((it) => (
+              <AskQaCard key={it.ask_id} item={it} />
+            ))}
+      </PostFeed>
     </SecNavShell>
   );
 }

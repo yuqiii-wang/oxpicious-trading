@@ -21,7 +21,7 @@ path keeps working: this package re-exports the full former surface.
 from ._active import (
     fetch_active_codes,
     fetch_active_signals,
-    fetch_is_market_hyped,
+    fetch_regime_state,
 )
 from ._bars import (
     fetch_daily_close_on,
@@ -41,7 +41,7 @@ from ._values import (
 __all__ = [
     "fetch_active_codes",
     "fetch_active_signals",
-    "fetch_is_market_hyped",
+    "fetch_regime_state",
     "fetch_daily_close_on",
     "fetch_intraday_bar_on",
     "fetch_current_values",

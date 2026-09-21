@@ -36,6 +36,7 @@ import {
   fetchUnderlyings,
   fetchOptionsCombined,
   invalidateCacheForPrefix,
+  venueToTargetType,
 } from "@/lib/api-client";
 import type {
   OptionsCombinedResponse,
@@ -65,8 +66,9 @@ export default function OptionsAnalysisPage() {
 
   const underlyingCode = useStore((s) => s.underlyingCode);
   const setUnderlyingCode = useStore((s) => s.setUnderlyingCode);
-  const optionsTargetType = useStore((s) => s.optionsTargetType);
-  const setOptionsTargetType = useStore((s) => s.setOptionsTargetType);
+  const optionsVenue = useStore((s) => s.optionsVenue);
+  const setOptionsVenue = useStore((s) => s.setOptionsVenue);
+  const optionsTargetType = venueToTargetType(optionsVenue);
 
   const [underlyings, setUnderlyings] = useState<OptionsUnderlying[]>([]);
   const [data, setData] = useState<OptionsCombinedResponse | null>(null);
@@ -79,7 +81,7 @@ export default function OptionsAnalysisPage() {
 
   // Load underlyings list
   useEffect(() => {
-    fetchUnderlyings(optionsTargetType)
+    fetchUnderlyings(optionsTargetType, optionsVenue)
       .then((list) => {
         setUnderlyings(list);
         if (list.length > 0 && !list.some((u) => u.code === underlyingCode)) {
@@ -87,14 +89,14 @@ export default function OptionsAnalysisPage() {
         }
       })
       .catch((e: Error) => setError(e.message));
-  }, [optionsTargetType, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [optionsVenue, optionsTargetType, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load options data
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchOptionsCombined(underlyingCode, null, null, optionsTargetType)
+    fetchOptionsCombined(underlyingCode, null, null, optionsTargetType, optionsVenue)
       .then((d) => {
         if (cancelled) return;
         setData(d);
@@ -109,7 +111,7 @@ export default function OptionsAnalysisPage() {
     return () => {
       cancelled = true;
     };
-  }, [underlyingCode, optionsTargetType, refreshKey]);
+  }, [underlyingCode, optionsVenue, optionsTargetType, refreshKey]);
 
   const handleRefresh = () => {
     invalidateCacheForPrefix("/api/szse-options/");
@@ -161,7 +163,12 @@ export default function OptionsAnalysisPage() {
           </Box>
           <Typography variant="body2" color="text.secondary">
             {underlyingName} ({underlyingCode}) —{" "}
-            {optionsTargetType === "INDEX" ? "CFFEX index options" : "SZSE ETF options"} analytics
+            {optionsVenue === "CFFEX"
+              ? "CFFEX index options"
+              : optionsVenue === "SSE"
+                ? "SSE ETF options"
+                : "SZSE ETF options"}{" "}
+            analytics
           </Typography>
         </Box>
         <RefreshButton
@@ -189,15 +196,18 @@ export default function OptionsAnalysisPage() {
         <ToggleButtonGroup
           size="small"
           exclusive
-          value={optionsTargetType}
+          value={optionsVenue}
           onChange={(_, v) => {
-            if (v) setOptionsTargetType(v as "ETF" | "INDEX");
+            if (v) setOptionsVenue(v as "SZSE" | "SSE" | "CFFEX");
           }}
         >
-          <ToggleButton value="ETF" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
+          <ToggleButton value="SZSE" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
             ETF · SZSE
           </ToggleButton>
-          <ToggleButton value="INDEX" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
+          <ToggleButton value="SSE" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
+            ETF · SSE
+          </ToggleButton>
+          <ToggleButton value="CFFEX" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
             Index · CFFEX
           </ToggleButton>
         </ToggleButtonGroup>

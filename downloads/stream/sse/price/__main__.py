@@ -25,6 +25,16 @@ This service streams all three:
     - filtered to indices that already exist in stats.index_identity, so
       only tracked indices are streamed (SSE publishes ~200 indices; we
       only care about the subset we already have daily history for)
+  * 期权 (options) → stats.options_intraday_5min  (see ._options)
+    - sweeps ALL (underlying, expiry-month) tstyle endpoints behind
+      https://www.sse.com.cn/assortment/options/price/ each cycle (5 ETF
+      underlyings × their live months ≈ 20 requests)
+    - source volume (张) and amount (元) are DAY-CUMULATIVE → per-bar
+      values are SUBTRACTED across samples
+    - contract codes are the numeric 合约编码 (via the 当日合约 map); the
+      stream writes its own options_identity rows (exchange='SSE')
+    - ``--options-eod`` captures the post-close snapshot once as the
+      15:00 EOD bars (idempotent; the daily build reuses this path)
 
 Every 5 one-minute samples are aggregated into one 5-minute OHLCV bar per
 security and upserted into the corresponding intraday table:
@@ -57,8 +67,11 @@ Usage:
   python -m downloads.stream.sse.price --interval 10    # dev: 10s poll interval
   python -m downloads.stream.sse.price --once           # emit one 5-sample bar then exit
   python -m downloads.stream.sse.price --bar-window 3   # dev: 3-sample bars
-  python -m downloads.stream.sse.price --no-index       # stream stocks + ETFs only
-  python -m downloads.stream.sse.price --no-etf         # stream stocks + indices only
+  python -m downloads.stream.sse.price --no-index       # stream stocks + ETFs + options
+  python -m downloads.stream.sse.price --no-etf         # stream stocks + indices + options
+  python -m downloads.stream.sse.price --no-options     # stream stocks + ETFs + indices
+  python -m downloads.stream.sse.price --options-eod    # capture today's options EOD
+                                                        # bars once (post-close), exit
 """
 from __future__ import annotations
 
@@ -107,6 +120,16 @@ from ._index import (
     prepopulate_index_finished_codes,
     sync_index_has_intraday_flag,
 )
+from ._options import (
+    aggregate_options_bars,
+    build_options_asset,
+    load_options_bars,
+    prepopulate_options_finished_codes,
+    refresh_options_universe,
+    run_options_eod_capture,
+    write_options_snapshot_csv,
+)
+from downloads._common.exchanges.sse_options import fetch_options_snapshot
 
 # ---------------------------------------------------------------------------
 # stdout encoding (Windows)
@@ -134,6 +157,7 @@ def stream(
     once: bool = False,
     enable_index: bool = True,
     enable_etf: bool = True,
+    enable_options: bool = True,
 ) -> None:
     session = build_default_session(SSE_HEADERS)
     host_tracker = HostStatusTracker()
@@ -179,6 +203,21 @@ def stream(
                 "index_identity, then restart this service)."
             )
 
+    # Options stream on by default: sweeps the (underlying, expiry-month)
+    # tstyle endpoints each cycle. Universe discovery (underlyings, months,
+    # contract-code map) happens here and again on every trade-date rollover.
+    options_asset = None
+    if enable_options:
+        t0 = _time.time()
+        options_asset = build_options_asset(session, host_tracker)
+        if options_asset is not None:
+            assets.append(options_asset)
+        else:
+            logger.warning(
+                "Options universe discovery failed; options streaming "
+                "disabled for this run."
+            )
+
     current_trade_date = None
     last_backfill_time = 0.0
 
@@ -211,6 +250,8 @@ def stream(
                 prepopulate_stock_finished_codes(conn, today, asset.finished_codes)
             elif asset.name == "etf":
                 prepopulate_etf_finished_codes(conn, today, asset.finished_codes)
+            elif asset.name == "options":
+                prepopulate_options_finished_codes(conn, asset, today)
             else:
                 prepopulate_index_finished_codes(conn, today, asset.finished_codes)
             logger.info(
@@ -239,16 +280,26 @@ def stream(
                     logger.info("Session ended; flushing %d partial %s samples.", len(asset.buffer), asset.name)
                     update_dt = asset.buffer[-1][0]
                     trade_date = update_dt.date()
-                    identity_rows, bar_rows, bar_time = aggregate_bars(
-                        asset, trade_date, etf_member_codes=etf_member_codes,
-                    )
-                    if bar_rows:
-                        conn = _ensure_conn(conn)
-                        load_bars(conn, asset, identity_rows, bar_rows)
-                        logger.info(
-                            "flushed %d %s bars for %s %s",
-                            len(bar_rows), asset.name, trade_date, bar_time,
+                    if asset.name == "options":
+                        identity_rows, bar_rows, bar_time = aggregate_options_bars(asset, trade_date)
+                        if bar_rows:
+                            conn = _ensure_conn(conn)
+                            load_options_bars(conn, asset, identity_rows, bar_rows)
+                            logger.info(
+                                "flushed %d %s bars for %s %s",
+                                len(bar_rows), asset.name, trade_date, bar_time,
+                            )
+                    else:
+                        identity_rows, bar_rows, bar_time = aggregate_bars(
+                            asset, trade_date, etf_member_codes=etf_member_codes,
                         )
+                        if bar_rows:
+                            conn = _ensure_conn(conn)
+                            load_bars(conn, asset, identity_rows, bar_rows)
+                            logger.info(
+                                "flushed %d %s bars for %s %s",
+                                len(bar_rows), asset.name, trade_date, bar_time,
+                            )
                     asset.buffer.clear()
                 if once:
                     logger.info("--once set and outside trading hours; exiting.")
@@ -321,27 +372,44 @@ def stream(
                     asset.prev_bar_cumvol.clear()
                     asset.finished_codes.clear()
                     asset.buffer.clear()
+                    if asset.name == "options":
+                        asset.prev_bar_cumamt.clear()
+                if options_asset is not None:
+                    # New listings/expiries roll daily — re-discover the
+                    # universe (underlyings, months, contract-code map).
+                    refresh_options_universe(options_asset, session, host_tracker)
                 logger.info("New trading day %s; per-asset state reset.", current_trade_date)
 
             cycle_start = _time.time()
             once_done = False  # set when --once emits a bar this cycle
             for asset in assets:
-                update_dt, snapshot = fetch_snapshot(
-                    session,
-                    list_url=asset.list_url,
-                    host_tracker=host_tracker,
-                    allowed_codes=asset.allowed_codes,
-                )
+                if asset.name == "options":
+                    update_dt, snapshot = fetch_options_snapshot(
+                        session, asset.months, host_tracker=host_tracker,
+                    )
+                else:
+                    update_dt, snapshot = fetch_snapshot(
+                        session,
+                        list_url=asset.list_url,
+                        host_tracker=host_tracker,
+                        allowed_codes=asset.allowed_codes,
+                    )
 
                 if update_dt is None or not snapshot:
                     logger.warning("Poll returned no %s data; skipping cycle.", asset.name)
                     continue
 
                 asset.buffer.append((update_dt, snapshot))
-                csv_path = write_snapshot_csv(
-                    update_dt, snapshot,
-                    csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
-                )
+                if asset.name == "options":
+                    csv_path = write_options_snapshot_csv(
+                        update_dt, snapshot, asset.contract_map,
+                        csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
+                    )
+                else:
+                    csv_path = write_snapshot_csv(
+                        update_dt, snapshot,
+                        csv_subdir=asset.csv_subdir, csv_prefix=asset.csv_prefix,
+                    )
                 logger.info(
                     "sample %d/%d @ %s: %d %ss -> %s",
                     len(asset.buffer), bar_window,
@@ -351,25 +419,37 @@ def stream(
                 )
                 if len(asset.buffer) >= bar_window:
                     trade_date = update_dt.date()
-                    identity_rows, bar_rows, bar_time = aggregate_bars(
-                        asset, trade_date, etf_member_codes=etf_member_codes,
-                    )
-                    if bar_rows:
-                        conn = _ensure_conn(conn)
-                        load_bars(conn, asset, identity_rows, bar_rows)
-                        logger.info(
-                            "emitted %d %s bars for %s %s (vol baseline=%d codes)",
-                            len(bar_rows), asset.name, trade_date, bar_time,
-                            len(asset.prev_bar_cumvol),
+                    if asset.name == "options":
+                        identity_rows, bar_rows, bar_time = aggregate_options_bars(
+                            asset, trade_date,
                         )
-                        # Index bars landed: sync the has_intraday_5mins flag
-                        # on index_basic_stats for this date so the frontend
-                        # knows intraday data is available (replaces the former
-                        # csindex.sync_has_intraday_flag post-build step).
-                        if asset.name == "index":
-                            n = sync_index_has_intraday_flag(conn, trade_date)
-                            if n:
-                                logger.info("synced has_intraday_5mins=TRUE for %d index rows", n)
+                        if bar_rows:
+                            conn = _ensure_conn(conn)
+                            load_options_bars(conn, asset, identity_rows, bar_rows)
+                            logger.info(
+                                "emitted %d %s bars for %s %s",
+                                len(bar_rows), asset.name, trade_date, bar_time,
+                            )
+                    else:
+                        identity_rows, bar_rows, bar_time = aggregate_bars(
+                            asset, trade_date, etf_member_codes=etf_member_codes,
+                        )
+                        if bar_rows:
+                            conn = _ensure_conn(conn)
+                            load_bars(conn, asset, identity_rows, bar_rows)
+                            logger.info(
+                                "emitted %d %s bars for %s %s (vol baseline=%d codes)",
+                                len(bar_rows), asset.name, trade_date, bar_time,
+                                len(asset.prev_bar_cumvol),
+                            )
+                            # Index bars landed: sync the has_intraday_5mins flag
+                            # on index_basic_stats for this date so the frontend
+                            # knows intraday data is available (replaces the former
+                            # csindex.sync_has_intraday_flag post-build step).
+                            if asset.name == "index":
+                                n = sync_index_has_intraday_flag(conn, trade_date)
+                                if n:
+                                    logger.info("synced has_intraday_5mins=TRUE for %d index rows", n)
                     asset.buffer.clear()
                     if once:
                         logger.info("--once set; exiting after first bar.")
@@ -395,7 +475,7 @@ def stream(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Stream SSE prices into 5-min OHLCV bars (stocks + ETFs + indices).")
+    ap = argparse.ArgumentParser(description="Stream SSE prices into 5-min OHLCV bars (stocks + ETFs + indices + options).")
     ap.add_argument("--interval", type=float, default=DEFAULT_POLL_INTERVAL_SEC,
                     help=f"Poll interval in seconds (default {DEFAULT_POLL_INTERVAL_SEC}).")
     ap.add_argument("--bar-window", type=int, default=DEFAULT_BAR_WINDOW,
@@ -403,16 +483,35 @@ def main() -> None:
     ap.add_argument("--once", action="store_true",
                     help="Emit one bar then exit (dev/test).")
     ap.add_argument("--no-index", action="store_true",
-                    help="Skip the 指数 tab / index_intraday_5min (stream stocks + ETFs only).")
+                    help="Skip the 指数 tab / index_intraday_5min (stream stocks + ETFs + options only).")
     ap.add_argument("--no-etf", action="store_true",
-                    help="Skip the 基金 tab / etf_intraday_5min (stream stocks + indices only).")
+                    help="Skip the 基金 tab / etf_intraday_5min (stream stocks + indices + options only).")
+    ap.add_argument("--no-options", action="store_true",
+                    help="Skip the 期权 endpoints / options_intraday_5min (stream stocks + ETFs + indices only).")
+    ap.add_argument("--options-eod", action="store_true",
+                    help="Capture the current SSE options snapshot once as today's 15:00 EOD bars, then exit (post-close daily capture; idempotent).")
     args = ap.parse_args()
+
+    if args.options_eod:
+        session = build_default_session(SSE_HEADERS)
+        conn = get_db_connection()
+        try:
+            run_options_eod_capture(session, conn, host_tracker=HostStatusTracker())
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            session.close()
+        return
+
     stream(
         poll_interval=args.interval,
         bar_window=args.bar_window,
         once=args.once,
         enable_index=not args.no_index,
         enable_etf=not args.no_etf,
+        enable_options=not args.no_options,
     )
 
 

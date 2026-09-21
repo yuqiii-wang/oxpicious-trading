@@ -33,6 +33,7 @@ BEGIN
         WHERE table_schema = 'stats'
           AND table_name IN ('etf_intraday_5min',
                              'index_intraday_5min',
+                             'options_intraday_5min',
                              'stock_intraday_5min')
         ORDER BY table_name
     LOOP

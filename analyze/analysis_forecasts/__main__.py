@@ -6,15 +6,15 @@ Monthly per-security forecast analysis in the ``analysis_forecasts``
 schema (see database/sql/analysis/analysis_forecasts/):
 
   - mov_rsi: per (sec_type, code, stat_month, rsi_window, side, pct,
-    is_market_hyped) RSI extreme-percentile bucket definitions (RSI
+    regime_state) RSI extreme-percentile bucket definitions (RSI
     values join from analysis.mov_ave_rsi).
 
   - mov_std: per (sec_type, code, stat_month, ma_window, k, side,
-    is_market_hyped) Bollinger-breach bucket definitions (band inputs
+    regime_state) Bollinger-breach bucket definitions (band inputs
     join from analysis.mov_ave_spreads_detail / stats.*_tech_stats).
 
   - mov_pairs: per (sec_type, code, stat_month, fast_leg, pair_window,
-    side, is_market_hyped) MA-pair CROSS (golden / death cross)
+    side, regime_state) MA-pair CROSS (golden / death cross)
     bucket definitions built on the EXISTING relative-MA-spread columns
     of analysis.mov_ave_spreads_detail — fast_leg 'ma5' reads
     ma5_vs_ma{W} = (ma5 - ma_{W}) / ma_{W}, fast_leg 'price' the
@@ -62,13 +62,13 @@ schema (see database/sql/analysis/analysis_forecasts/):
     pair forecast's CONFIRMATION probability).
 
   - forecast_results: the result data (mean forward changes at
-    next/5d/20d/60d horizons; close-based max/min ENDPOINT forward
-    changes at the 5d/20d/60d horizons; per-horizon swing-aware reversal
+    next/5d/20d horizons; close-based max/min ENDPOINT forward
+    changes at the 5d/20d horizons; per-horizon swing-aware reversal
     probabilities at each row's threshold — the period's
     adverse path extreme beyond ±thr, not merely the period-end close),
-    keyed by forecast_id; every bucket carries 5 period rows — the four
+    keyed by forecast_id; every bucket carries 4 period rows — the three
     horizons plus the weight-blended 'mixed' row (config's
-    MIXED_HORIZON_WEIGHTS: 5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05 —
+    MIXED_HORIZON_WEIGHTS: 5d 0.65 / next 0.25 / 20d 0.10 —
     the row the analysis_signals confirmation gate reads, so every
     forecast horizon of the same signal trigger contributes to the
     signal); every mov_rsi / mov_std row links
@@ -82,7 +82,7 @@ Pipeline per sec_type (index / etf / stock):
      latest available data date) plus the most recent REFRESH_MONTHS
      completed months are REFRESHED each run (deleted + recomputed —
      the running month's forward data grows daily, and a month written
-     right after month-end carries permanently truncated 20d/60d
+     right after month-end carries permanently truncated 20d
      occurrence counts because its forward windows were not complete
      yet).
      ``--force`` deletes the sec_type's mov_* rows AND their linked
@@ -90,9 +90,9 @@ Pipeline per sec_type (index / etf / stock):
      target month.
   3. Fetch the joined long input frame (price / ma / rsi / std /
      ma5-vs-MA + ema6-vs-EMA spread columns; date >= earliest needed
-     window start), the compact market-hype EPISODES list, and compute
-     per-code forward changes (1/5/20/60 trading days).
-  4. Scatter to (date × code) wide matrices + the market-hype flag
+     window start), the daily market-regime states, and compute
+     per-code forward changes (1/5/20 trading days).
+  4. Scatter to (date × code) wide matrices + the market-regime label
      matrix and run the vectorized monthly aggregation engines
      (compute_rsi / compute_std / compute_pairs /
      compute_high_low_streaks / compute_base), writing
@@ -217,6 +217,7 @@ from analyze.analysis_forecasts.config import (  # noqa: E402
     OPP_PAIR_SEC_TYPE,
     OPP_PAIR_TREND_WINDOWS,
     REFRESH_MONTHS,
+    VAL_PCTS,
     WINDOW_YEARS,
     LOOKBACK_PERIOD,
 )
@@ -225,14 +226,13 @@ from analyze.analysis_forecasts.fetch import (  # noqa: E402
     fetch_analysis_inputs,
     fetch_first_dates,
     fetch_forecast_identity,
-    fetch_hyped_episodes,
+    fetch_market_regimes,
     fetch_high_low_streaks,
     fetch_price_vs_amt_states,
     assert_price_vs_amt_params,
     add_forward_changes,
     add_path_extremes,
     add_margin_ratio_features,
-    add_valuation_features,
     fetch_benchmark_closes,
     fetch_industry_closes,
     fetch_industry_first_dates,
@@ -243,7 +243,6 @@ from analyze.analysis_forecasts.wide import (  # noqa: E402
     build_month_specs,
     first_ords_from_dates,
     month_row_windows,
-    split_forecast_rows,
     MonthSpec,
     _shift_years,
 )
@@ -277,6 +276,26 @@ STAGE_NAMES = ("rsi", "std", "pairs", "epairs", "hstreaks",
 from _common.log_setup import setup_logging  # noqa: E402
 logger = setup_logging("analysis_forecasts")
 
+
+
+async def _release_between_stages(label: str) -> None:
+    """Drop retained cuDF/pandas references + return pooled device
+    memory between family stages. The 2026-09 residual-VRAM study
+    (temp_scripts/study_gpu_residual_mem.py): device usage grows
+    monotonically to the card high-water ACROSS months/families even
+    with RMM CudaMemoryResource active (no pool) and stays there
+    through long DB-write stretches — live engine references keep
+    device frames alive; an explicit release pass flattens the curve
+    (everything IS returned at process exit — no permanent leak)."""
+    from _common.post_check import release_memory
+
+    stats = release_memory()
+    ctx = stats.get("ctx_used_after")
+    rss = stats.get("rss_after")
+    logger.info(f"    [release:{label}] RSS="
+          f"{rss / 1024**3:.1f}GiB ctx={ctx / 1024**3:.1f}GiB"
+          if rss is not None and ctx is not None else
+          f"    [release:{label}] stats unavailable")
 
 
 async def _process_sec_type(
@@ -443,16 +462,14 @@ async def _process_sec_type(
     if df.empty:
         logger.info(f"  [{sec_type}]   no source data; skipping.")
         return 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
-    episodes = await fetch_hyped_episodes(conn, sec_type, since)
-    logger.info(f"  [{sec_type}]   {len(episodes):,} market-hype episodes")
+    regimes = await fetch_market_regimes(conn, sec_type, since)
+    logger.info(f"  [{sec_type}]   {len(regimes):,} daily market-regime rows")
 
     # ---- Long-frame feature adds (every family's shared input) -----------
     df = add_forward_changes(df)
     df = add_path_extremes(df)
     if "mratio" in metrics:
         df = add_margin_ratio_features(df)
-    if "pe" in metrics or "div" in metrics:
-        df = add_valuation_features(df)
 
     n_rsi = n_std = n_pairs = n_epairs = n_hstreaks = 0
     n_pxvol = n_mratio = n_pe = n_div = 0
@@ -464,7 +481,7 @@ async def _process_sec_type(
               f"(windows={list(RSI_WINDOWS)}) for {len(compute_rsi)} "
               f"months...")
         for stat_month, rows in compute_rsi_results(
-            df=df, first_dates=first_dates, episodes=episodes,
+            df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_rsi,
         ):
             n = await _write_month(conn, TABLE_MOV_RSI, MOV_RSI_COLUMNS, rows)
@@ -473,12 +490,14 @@ async def _process_sec_type(
                   f"wrote {n:,} rows")
 
     # ---- Stage 2: Bollinger-breach buckets (cudf-native df engine) --------
+    await _release_between_stages("std")
+
     if compute_std:
         logger.info(f"  [{sec_type}] Computing Bollinger-breach buckets "
               f"(ma_windows={list(MA_WINDOWS)}) for {len(compute_std)} "
               f"months...")
         for stat_month, rows in compute_std_results(
-            df=df, first_dates=first_dates, episodes=episodes,
+            df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_std,
         ):
             n = await _write_month(conn, TABLE_MOV_STD, MOV_STD_COLUMNS, rows)
@@ -490,12 +509,14 @@ async def _process_sec_type(
     # CROSS-EVENT buckets on the EXISTING analysis.mov_ave_spreads_detail
     # ma5_vs_ma{W} spreads (fetched as pair_{W}): a trigger is the
     # spread's sign flip (golden / death cross); one-day signals.
+    await _release_between_stages("pairs")
+
     if compute_pairs:
         logger.info(f"  [{sec_type}] Computing MA-pair cross buckets "
               f"(pair_windows={list(MOV_PAIRS_WINDOWS)}) for "
               f"{len(compute_pairs)} months...")
         for stat_month, rows in compute_pairs_results(
-            df=df, first_dates=first_dates, episodes=episodes,
+            df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_pairs,
         ):
             n = await _write_month(conn, TABLE_MOV_PAIRS,
@@ -508,12 +529,14 @@ async def _process_sec_type(
     # The identical cross machinery on the EXISTING
     # analysis.mov_ave_spreads_detail_ema ema6_vs_ema{W} spreads (fast
     # leg fixed ema6).
+    await _release_between_stages("epairs")
+
     if compute_epairs:
         logger.info(f"  [{sec_type}] Computing EMA-pair cross buckets "
               f"(pair_windows={list(MOV_PAIRS_EMA_WINDOWS)}) for "
               f"{len(compute_epairs)} months...")
         for stat_month, rows in compute_epairs_results(
-            df=df, first_dates=first_dates, episodes=episodes,
+            df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_epairs,
         ):
             n = await _write_month(conn, TABLE_MOV_PAIRS_EMA,
@@ -527,6 +550,8 @@ async def _process_sec_type(
     # streaks table (run python -m analyze.mov_ave_spread first); every
     # streak is audited at its MEAN-MID anchor day, resolved against the
     # union trading-day calendar by the df engine.
+    await _release_between_stages("hstreaks")
+
     if compute_hstreaks:
         streaks_df = await fetch_high_low_streaks(
             conn, sec_type, codes, since
@@ -541,7 +566,7 @@ async def _process_sec_type(
                   f"mean-mid anchor buckets from {len(streaks_df):,} "
                   f"streaks for {len(compute_hstreaks)} months...")
             for stat_month, rows in compute_high_low_streaks_results(
-                df=df, first_dates=first_dates, episodes=episodes,
+                df=df, first_dates=first_dates, regimes=regimes,
                 codes=codes, sec_type=sec_type, specs=compute_hstreaks,
                 streaks_df=streaks_df,
             ):
@@ -560,6 +585,8 @@ async def _process_sec_type(
     # recorded states instead of re-deriving them, and the registry's
     # recorded build parameters are verified against the engine
     # constants before consuming.
+    await _release_between_stages("pxvol")
+
     if compute_pxvol:
         await assert_price_vs_amt_params(conn, sec_type)
         states_df = await fetch_price_vs_amt_states(
@@ -575,7 +602,7 @@ async def _process_sec_type(
                   f"(speeds×volumes, adaptive σ/z bars) for "
                   f"{len(compute_pxvol)} months...")
             for stat_month, rows in compute_px_vol_results(
-                df=df, first_dates=first_dates, episodes=episodes,
+                df=df, first_dates=first_dates, regimes=regimes,
                 codes=codes, sec_type=sec_type, specs=compute_pxvol,
                 states_df=states_df,
             ):
@@ -586,12 +613,14 @@ async def _process_sec_type(
                       f"forecast_results: wrote {n:,} rows")
 
     # ---- Stage 8: margin-buy intensity states (cudf-native df engine) -----
+    await _release_between_stages("mratio")
+
     if compute_mratio:
         logger.info(f"  [{sec_type}] Computing margin_ratio state buckets "
               f"(融资买入额/成交额 z states) for {len(compute_mratio)} "
               f"months...")
         for stat_month, rows in compute_margin_ratio_results(
-            df=df, first_dates=first_dates, episodes=episodes,
+            df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_mratio,
         ):
             n = await _write_month(conn, TABLE_MARGIN_RATIO,
@@ -600,12 +629,15 @@ async def _process_sec_type(
             logger.info(f"    [{stat_month}] margin_ratio_state + "
                   f"forecast_results: wrote {n:,} rows")
 
-    # ---- Stage 9: valuation PE state buckets (cudf-native df engine) ------
+    # ---- Stage 9: valuation PE extreme-percentile buckets (cudf-native) --
+    await _release_between_stages("pe")
+
     if compute_pe:
-        logger.info(f"  [{sec_type}] Computing pe state buckets "
-              f"(raw PE z states) for {len(compute_pe)} months...")
+        logger.info(f"  [{sec_type}] Computing pe extreme-percentile "
+              f"buckets (pcts={list(VAL_PCTS)}) for {len(compute_pe)} "
+              f"months...")
         for stat_month, rows in compute_pe_results(
-            df=df, first_dates=first_dates, episodes=episodes,
+            df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_pe,
         ):
             n = await _write_month(conn, TABLE_PE, PE_COLUMNS, rows)
@@ -613,13 +645,15 @@ async def _process_sec_type(
             logger.info(f"    [{stat_month}] pe_state + "
                   f"forecast_results: wrote {n:,} rows")
 
-    # ---- Stage 10: valuation dividend-yield states (cudf-native) ----------
+    # ---- Stage 10: dividend-yield extreme-percentile buckets (cudf) ------
+    await _release_between_stages("div")
+
     if compute_div:
-        logger.info(f"  [{sec_type}] Computing dividend state buckets "
-              f"(dividend_yield z states) for {len(compute_div)} "
+        logger.info(f"  [{sec_type}] Computing dividend extreme-percentile "
+              f"buckets (pcts={list(VAL_PCTS)}) for {len(compute_div)} "
               f"months...")
         for stat_month, rows in compute_dividend_results(
-            df=df, first_dates=first_dates, episodes=episodes,
+            df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_div,
         ):
             n = await _write_month(conn, TABLE_DIVIDEND, DIVIDEND_COLUMNS,
@@ -629,16 +663,20 @@ async def _process_sec_type(
                   f"forecast_results: wrote {n:,} rows")
 
     # ---- Stage 11: unconditional base rates (cudf-native df engine) -------
+    await _release_between_stages("base")
+
     if compute_base:
         logger.info(f"  [{sec_type}] Computing base rates for "
               f"{len(compute_base)} months...")
         for stat_month, rows in compute_base_rate_rows(
-            df=df, first_dates=first_dates, episodes=episodes,
+            df=df, first_dates=first_dates, regimes=regimes,
             codes=codes, sec_type=sec_type, specs=compute_base,
         ):
             await copy_insert_async(conn, TABLE_BASE_RATE, rows)
             n_base += len(rows)
         logger.info(f"    base_rates: wrote {n_base:,} rows")
+
+    await _release_between_stages("sec_type-done")
 
     return (n_rsi, n_std, n_pairs, n_epairs, n_hstreaks,
             n_pxvol, n_mratio, n_pe, n_div, n_base)
@@ -743,7 +781,8 @@ async def _search_forecast_identity(conn, forecast_id: int) -> None:
         return
     logger.info(f"forecast_id {forecast_id}:")
     for key in ("sec_type", "code", "stat_month", "bucket",
-                "streak_signal_days", "lookback_period"):
+                "streak_signal_days", "delayed_signal_days",
+                "lookback_period"):
         logger.info(f"  {key:15s} {ident[key]}")
     motivation = ident.get("motivation")
     if motivation is not None:
@@ -776,16 +815,18 @@ async def main() -> None:
                     "e.g. an 8-day streak anchors its 4th day — from "
                     "the existing analysis.mov_ave_high_low_pct_streaks) "
                     "and pe_state / dividend_state (valuation PE / "
-                    "dividend-yield z-state buckets over analysis.pe / "
-                    "analysis.dividends — OPPOSITE side mappings: PE "
-                    "lower-the-better → high-PE states bearish/top; "
-                    "dividend yield higher-the-better → high-yield "
-                    "states bullish/bottom) hold the motivation cols; "
+                    "dividend-yield extreme-percentile buckets over "
+                    "analysis.pe / analysis.dividends — the mov_rsi pct "
+                    "convention, OPPOSITE side mappings: PE "
+                    "lower-the-better → top-pct% (expensive) PE days "
+                    "bearish/top; dividend yield higher-the-better → "
+                    "top-pct% (high-yield) days bullish/bottom) hold "
+                    "the motivation cols; "
                     "forecast_results (linked "
                     "1:1 via forecast_id) holds the result data — mean "
-                    "forward changes at next/5d/20d/60d horizons; "
+                    "forward changes at next/5d/20d horizons; "
                     "close-based max/min ENDPOINT forward changes at "
-                    "the 5d/20d/60d horizons; per-horizon swing-aware "
+                    "the 5d/20d horizons; per-horizon swing-aware "
                     "reversal probabilities (the period's adverse path "
                     "extreme beyond the reverse_threshold) at each "
                     "row's bar; base_rates "
@@ -879,6 +920,12 @@ async def main() -> None:
             r, s, pr, ep, hs, p, mr, pe_n, div_n, b = \
                 await _process_sec_type(conn, st, specs, force=force,
                                         metrics=metrics, codes_limit=codes_limit)
+            # Per-code self-adaptive regime weights (evidence/display
+            # tier — the study rejected them as the ordering key).
+            from analyze.analysis_forecasts.regime_weights import (
+                run_regime_weights,
+            )
+            await run_regime_weights(conn, st, force=force)
             total_rsi += r
             total_std += s
             total_pairs += pr

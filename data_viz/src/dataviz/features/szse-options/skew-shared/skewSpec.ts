@@ -65,6 +65,10 @@ export function moneynessSpec(dailySkew: DailySkew[]): SharedSkewSpec {
         rawSkew: pe.skewPct != null ? 1 + pe.skewPct / 100 : null,
         skewPct: pe.skewPct,
         otmShare: pe.otmShare ?? null,
+        oiTotal: pe.oiTotal,
+        oiDelta5d: pe.oiDelta5d ?? null,
+        oiDelta20d: pe.oiDelta20d ?? null,
+        oiMax20d: pe.oiMax20d ?? null,
       }),
     ),
   }));

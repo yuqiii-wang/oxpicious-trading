@@ -2,7 +2,7 @@
 (analyze.analysis_signals.engines.signal_families.mov_rsi._engine).
 
 Emission slice: the top/bottom-1% RSI percentile buckets, BOTH sides,
-BOTH hype splits. A bucket whose MIXED forecast_results row
+every regime split. A bucket whose MIXED forecast_results row
 passes the plain gate (sign-aligned dir_ave > 0.75% AND reverse_prob
 > 1%) AND the final SignalQuality gate becomes ONE strategy row over
 the bucket's forecast period (start_date .. end_date = the snapshot
@@ -51,7 +51,7 @@ class MovRsiEngine(SignalEngine):
     bucket = "mov_rsi"
     stage_key = "rsi"
     identity_name = "signals_mov_rsi"
-    bucket_keys = ("code", "rsi_window", "side", "is_market_hyped")
+    bucket_keys = ("code", "rsi_window", "side", "regime_state")
     identity_description = (
         "mov_rsi signal strategies over analysis_forecasts: the "
         "top/bottom-1% RSI percentile buckets whose MIXED forecast row "
@@ -59,7 +59,7 @@ class MovRsiEngine(SignalEngine):
         "0.75% AND reverse_prob > 1%) AND the final SignalQuality gate "
         "(breach coherence and sign-aligned per-period forward means "
         "on every quality period, plus the 0.75 risk cap as ONE "
-        "weight-blended verdict over 5d/20d/60d — bar 0.50, the 5d "
+        "weight-blended verdict over 5d/20d — bar 0.50, the 5d "
         "bar carries the decision), "
         "one strategy per bucket over its forecast period + the "
         "strategy's trigger days inside its own snapshot month as "

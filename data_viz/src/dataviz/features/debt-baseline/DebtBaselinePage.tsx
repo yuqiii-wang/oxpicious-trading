@@ -387,12 +387,11 @@ function OutrightRepoPanel({ data, markerMap }: { data: DebtBaselineResponse; ma
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "PBoC medium-term liquidity operations over time: the cumulative net balance " +
-        "(outright repo + MLF, line on the left axis) against daily injections and " +
-        "withdrawals (stacked bars on the right axis — green/red = outright repo " +
-        "start/end, orange = MLF). Rising cumulative balance = net liquidity " +
-        "injection; falling = net withdrawal. PBoC operation dates are surfaced in " +
-        "the tooltip on hover.",
+        "PBoC medium-term liquidity ops: cumulative net balance (outright repo + MLF, left " +
+        "line) vs daily injections/withdrawals (stacked bars, right — green/red = outright " +
+        "repo start/end, orange = MLF). Tooltips carry PBoC operation dates. Indication: " +
+        "a steepening balance = liquidity tailwind for risk assets; an ebbing one = the " +
+        "tide receding.",
       series: [
         { name: "Cumulative balance", unit: "亿元", description: "cumulative net outright repo + MLF balance" },
         { name: "Outright injection", unit: "亿元", description: "daily outright repo auction buys (start quantity)" },
@@ -510,12 +509,11 @@ function OmoPanel({ data, markerMap }: { data: DebtBaselineResponse; markerMap: 
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "PBoC daily open-market operations: the 7-day reverse-repo policy rate " +
-        "(line, left axis) against the daily repo lifecycle — injections (repo " +
-        "start, green bars), withdrawals (repo end, red bars) and the cumulative " +
-        "net balance (line) on the right axis. Rate cuts lower the policy anchor " +
-        "and typically accompany net injections; the repo bars show how heavily " +
-        "the PBoC smooths intraweek liquidity.",
+        "PBoC daily OMO: the 7-day reverse-repo policy rate (left line) vs the repo " +
+        "lifecycle on the right — injections (repo start, green), withdrawals (repo end, " +
+        "red), cumulative net balance (line). Indication: rate cuts lower the funding " +
+        "anchor — risk assets ordinarily cheer; the bars telegraph how heavily the PBoC " +
+        "smooths intraweek liquidity.",
       series: [
         { name: "OMO 7D rev-repo rate (%)", unit: "%", description: "the 7-day reverse-repo auction rate (policy rate)" },
         { name: "Repo start (injection)", unit: "亿元", description: "daily 7-day reverse-repo lending volume" },

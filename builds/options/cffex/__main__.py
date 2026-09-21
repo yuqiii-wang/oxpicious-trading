@@ -146,10 +146,6 @@ async def load_index_ohlcv(
         return None
 
 
-# CFFEX option contract code prefixes to distinguish from SZSE contracts
-_CFFEX_PREFIXES = ["IO%", "HO%", "MO%", "CO%"]
-
-
 async def find_missing_cffex_dates(
     conn,
     source_dates: set[date],
@@ -157,10 +153,8 @@ async def find_missing_cffex_dates(
 ) -> set[date]:
     """Find dates from source_dates that do NOT already have CFFEX options data.
 
-    Unlike find_missing_dates (which checks for ANY data in the table),
-    this function only checks for rows whose contract_code starts with
-    a CFFEX option product prefix (IO, HO, MO, CO). This prevents SZSE
-    options data from masking dates that still need CFFEX data.
+    Scoped to ``exchange = 'CFFEX'`` on the options tables (every options_*
+    table carries the venue column) — SZSE/SSE rows never mask CFFEX gaps.
 
     With code_filter (bare underlying index code), the check is scoped to
     that underlying via stats.options_terms — dates loaded for OTHER
@@ -169,19 +163,15 @@ async def find_missing_cffex_dates(
     if not source_dates:
         return set()
 
-    n = len(_CFFEX_PREFIXES)
-    conditions = " OR ".join(
-        [f'contract_code LIKE ${i+1}' for i in range(n)]
-    )
     if code_filter:
         sql = (
-            f'SELECT DISTINCT date FROM stats.options_terms '
-            f'WHERE underlying_code = ${n+1} AND ({conditions})'
+            'SELECT DISTINCT date FROM stats.options_terms '
+            "WHERE underlying_code = $1 AND exchange = 'CFFEX'"
         )
-        existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES, code_filter)
+        existing_rows = await conn.fetch(sql, code_filter)
     else:
-        sql = f'SELECT DISTINCT date FROM stats.options_identity WHERE {conditions}'
-        existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES)
+        sql = "SELECT DISTINCT date FROM stats.options_identity WHERE exchange = 'CFFEX'"
+        existing_rows = await conn.fetch(sql)
     existing_dates = {r["date"] for r in existing_rows if r["date"] is not None}
 
     return source_dates - existing_dates

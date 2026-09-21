@@ -428,3 +428,57 @@ def grouped_rolling_agg(
     )
     # Reindex back to df's original order (sort may have reordered).
     return result.reindex(df.index)
+
+
+# ---------------------------------------------------------------------------
+#  Grouped (optionally centered) rolling quantile (analyze path)
+# ---------------------------------------------------------------------------
+
+def grouped_rolling_quantile(
+    df: pd.DataFrame,
+    group_keys: str | list[str],
+    col: str,
+    window: int,
+    min_periods: int,
+    q: float,
+    *,
+    center: bool = False,
+) -> pd.Series:
+    """(Optionally centered) grouped rolling quantile, aligned to df.index.
+
+    ``groupby(keys)[col].rolling(window, min_periods, center=center)
+    .quantile(q)`` with the MultiIndex group-key levels stripped and the
+    result reindexed to df.index — the same alignment contract as
+    ``grouped_rolling_agg``.
+
+    ``center=True`` slides the window symmetrically around each row (odd
+    ``window`` = exactly (window-1)/2 rows on each side); the grouping
+    still isolates windows within one group, so centered windows never
+    span two groups. Near group edges the window is naturally truncated
+    on the missing side (counts against min_periods).
+
+    cuDF lacks rolling-quantile support, so under cudf.pandas this op
+    transparently falls back to CPU pandas (one CPU pass per call — the
+    accepted convention since the retired builds.market_hypes build and
+    the mov_ave_spread high_low_pct / pe_and_dividends pct_bands steps).
+    NaN input values are skipped by the rolling window and count against
+    min_periods.
+
+    Relocated 2026-09 from builds.market_hypes.compute
+    ._grouped_rolling_quantile (the build was retired by the
+    market-regime refactor; the helper's consumers live in
+    analyze.mov_ave_spread.high_low_pct and analyze.pe_and_dividends
+    .pct_bands).
+    """
+    if isinstance(group_keys, str):
+        group_keys = [group_keys]
+    s = pd.to_numeric(df[col], errors="coerce")
+    res = (
+        s.groupby([df[k] for k in group_keys], sort=False)
+        .rolling(window=window, min_periods=min_periods, center=center)
+        .quantile(q)
+    )
+    res = res.reset_index(
+        level=list(range(len(group_keys))), drop=True
+    )
+    return res.reindex(df.index)

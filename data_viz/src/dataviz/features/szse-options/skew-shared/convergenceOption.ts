@@ -26,9 +26,15 @@
  * settle, puts with strike ≤ settle — so a far-from-zero terminal gap
  * can be read as actual unexercised OI, not just a blended average.
  *
- * Colors/order follow the main shared skew chart (expiryBlueColor sorted
- * by |expiryDate − selectedDate|) so lines visually tie to their
- * per-expiry skew curves.
+ * Colors/order/thickness follow the main shared skew chart (expiryBlueColor
+ * sorted by |expiryDate − selectedDate|; line width ∝ the expiry's
+ * absolute OI) so lines visually tie to their per-expiry skew curves.
+ *
+ * No time slider of its own: the x-axis mirrors the main skew chart's
+ * (sharedSkewAxisDates, incl. the future-expiry tail) and the window is
+ * set from the panel's shared zoom state — the main chart's slider drives
+ * this chart. The inside dataZoom exists only to receive that window
+ * (setOption), with all user interaction disabled.
  */
 import React from "react";
 import {
@@ -44,7 +50,9 @@ import {
   TOOLTIP_CARD_TEXT,
 } from "@/theme/chart-palette";
 import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
+import { fmtCompact } from "@/lib/series";
 import { GREEK_SKEW_PRICE_K } from "./types";
+import { expiryOiWidths, sharedSkewAxisDates } from "./sharedSkewOption";
 import type { OtmOiShare } from "../vol-smile/types";
 import type { SharedSkewSpec } from "./types";
 import type { EChartsOption } from "echarts";
@@ -75,6 +83,9 @@ export function buildSkewConvergenceOption(
   const splitColor = c.splitLineColor;
 
   const dates = points.map((d) => d.date);
+  // Same axis as the main skew chart (data dates + future-expiry tail) so
+  // the shared zoom percent covers the same dates on both charts.
+  const axisDates = sharedSkewAxisDates(spec, selectedDate);
   const anchorDate =
     selectedDate && dates.includes(selectedDate)
       ? selectedDate
@@ -111,6 +122,10 @@ export function buildSkewConvergenceOption(
     string,
     { lastIdx: number; matured: boolean; otm: OtmOiShare | null }
   >();
+
+  // Line thickness ∝ the expiry's ABSOLUTE open interest (same encoding
+  // as the main skew chart); the plotted gap% stays the ratio signal.
+  const oiWidths = expiryOiWidths(spec);
 
   // Spot-at-zero calibration: convert the spec's per-expiry skewPct into
   // the skew-price-vs-spot gap in % of spot (see header). Only greek_*
@@ -159,7 +174,7 @@ export function buildSkewConvergenceOption(
       sampling: "lttb" as const,
       data: values,
       itemStyle: { color },
-      lineStyle: { width: 1.2, color, opacity: 0.75 },
+      lineStyle: { width: oiWidths.get(exp) ?? 1.2, color, opacity: 0.75 },
       z: matured ? 5 : 10,
       markPoint:
         lastVal != null
@@ -203,7 +218,8 @@ export function buildSkewConvergenceOption(
   // the expiry dots/labels; omit the kit's default legend fragment.
   return baseChartOption(mode, {
     legend: null,
-    grid: { left: 60, right: 24, top: 24, bottom: 48 },
+    // No bottom slider anymore — the plot can use the full card height.
+    grid: { left: 60, right: 24, top: 24, bottom: 24 },
     tooltip: commonTooltip(mode, {
       axisPointer: {
         type: "line",
@@ -223,7 +239,8 @@ export function buildSkewConvergenceOption(
           color?: string;
         }>;
         if (arr.length === 0) return "";
-        const dateStr = arr[0].axisValue ?? dates[arr[0].dataIndex ?? 0] ?? "";
+        const dateStr =
+          arr[0].axisValue ?? axisDates[arr[0].dataIndex ?? 0] ?? "";
         const filtered = arr.filter((p) => {
           const v = Array.isArray(p.value) ? p.value[1] : p.value;
           return v != null && Number.isFinite(v as number);
@@ -234,6 +251,12 @@ export function buildSkewConvergenceOption(
         );
         for (const p of filtered) {
           const v = (Array.isArray(p.value) ? p.value[1] : p.value) as number;
+          // The group's absolute OI at the hovered date (oi_moneyness only)
+          const hoveredOi = (() => {
+            const di = p.dataIndex ?? -1;
+            const point = di >= 0 && di < points.length ? points[di] : undefined;
+            return point?.perExpiry.find((pe) => pe.expiry === p.seriesName)?.oiTotal;
+          })();
           children.push(
             React.createElement(tooltipComponents.Row, null, [
               React.createElement(
@@ -247,6 +270,9 @@ export function buildSkewConvergenceOption(
                 null,
                 fmtPct(v),
               ),
+              ...(hoveredOi != null
+                ? [` · OI ${fmtCompact(hoveredOi)}`]
+                : []),
             ]),
           );
           // Hovering a matured group's expiry dot (its last observed date):
@@ -274,7 +300,7 @@ export function buildSkewConvergenceOption(
     }),
     xAxis: {
       type: "category",
-      data: dates,
+      data: axisDates,
       axisLine: { lineStyle: { color: splitColor } },
       axisLabel: { fontSize: 11, color: textColor },
       splitLine: { show: false },
@@ -307,19 +333,20 @@ export function buildSkewConvergenceOption(
         tooltip: { show: false },
       },
     ],
+    // Slider-free window: driven by the main skew chart's time slider via
+    // the panel's shared zoom state. The inside component receives the
+    // window through setOption only — wheel zoom / drag pan are disabled
+    // so this chart can never drift out of sync.
     dataZoom: [
       {
         type: "inside",
+        xAxisIndex: 0,
         start: dataZoomStart ?? 0,
         end: dataZoomEnd ?? 100,
-        zoomLock: false,
-      },
-      {
-        type: "slider",
-        height: 18,
-        bottom: 6,
-        start: dataZoomStart ?? 0,
-        end: dataZoomEnd ?? 100,
+        filterMode: "none",
+        zoomOnMouseWheel: false,
+        moveOnMouseWheel: false,
+        moveOnMouseMove: false,
       },
     ],
   });

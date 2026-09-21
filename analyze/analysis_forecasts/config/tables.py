@@ -32,15 +32,16 @@ ANALYSIS_NAME_BASE_RATE = "base_rates"
 # streak-merge migration — dropped.
 
 # Bucket-key columns per family (refine the identities row's bucket;
-# is_market_hyped splits the buckets by hype overlap). The state /
+# regime_state splits the buckets by the market regime of their
+# trigger days — stats.market_regimes' 4-state label). The state /
 # pair families' bucket keys are declared in their own sections below.
-BUCKET_KEY_COLUMNS_MOV_RSI = ["rsi_window", "side", "pct", "is_market_hyped"]
-BUCKET_KEY_COLUMNS_MOV_STD = ["ma_window", "k", "side", "is_market_hyped"]
+BUCKET_KEY_COLUMNS_MOV_RSI = ["rsi_window", "side", "pct", "regime_state"]
+BUCKET_KEY_COLUMNS_MOV_STD = ["ma_window", "k", "side", "regime_state"]
 BUCKET_KEY_COLUMNS_MOV_PAIRS = [
-    "fast_leg", "pair_window", "side", "is_market_hyped",
+    "fast_leg", "pair_window", "side", "regime_state",
 ]
 BUCKET_KEY_COLUMNS_HIGH_LOW_STREAKS = [
-    "band_period", "pct_type", "side", "is_market_hyped",
+    "band_period", "pct_type", "side", "regime_state",
 ]
 
 # ---- Motivation-table write columns -----------------------------------------
@@ -51,7 +52,7 @@ BUCKET_KEY_COLUMNS_HIGH_LOW_STREAKS = [
 # stored: rsi_{W}days lives in analysis.mov_ave_rsi,
 # ma/std in analysis.mov_ave_spreads_detail + stats.*_tech_stats
 # (joinable via the identities registry + the bucket keys); only the
-# market-hype overlap is materialized here.
+# market-regime split is materialized here.
 MOV_RSI_COLUMNS = (
     ["forecast_id", "code"] + BUCKET_KEY_COLUMNS_MOV_RSI + ["lookback_period"]
 )
@@ -67,7 +68,7 @@ MOV_PAIRS_EMA_COLUMNS = MOV_PAIRS_COLUMNS
 # Columns in write order (forecast_id + bucket keys + lookback).
 # band_period (NOT "period" — RESERVED by the shared result-row
 # pipeline: build_result_rows stamps forecast_results' period
-# 'next'/'5d'/'20d'/'60d'/'mixed' onto every row dict, overwriting any
+# 'next'/'5d'/'20d'/'mixed' onto every row dict, overwriting any
 # same-named motivation key). No cooldown_days member — each streak
 # contributes exactly ONE trigger and streaks are inherently separated
 # (a streak ends only after a 6+-day in-band gap or a side switch), so
@@ -81,13 +82,14 @@ HIGH_LOW_STREAKS_COLUMNS = (
 
 # ---- forecast_results / base_rates column sets -------------------------------
 
-# forecast_results columns in write order (forecast_id, period first).
-# config is duplicated across all period rows of the same forecast_id.
+# forecast_results columns in write order (forecast_id, period, delay
+# first). config is duplicated across all rows of the same forecast_id.
 # threshold is the bar that row's reverse_prob was computed against
 # (the fixed 0.01 bar in "fixed" mode, the adaptive k·σ bar in "std"
 # mode / fallback). trigger_dates is the DATE[] of the row's own bucket
 # days (ascending, length == occurrence_count — NULL when the count is
-# 0/NULL), row-local per period. streak_starts / streak_ends are the
+# 0/NULL), row-local per (period, delay).
+# streak_starts / streak_ends are the
 # parallel DATE[] of each merged signal's qualifying-run start / end
 # calendar date and streak_days the parallel BIGINT[] of each run's
 # trading-day count (element-wise parallel to trigger_dates; the
@@ -95,16 +97,26 @@ HIGH_LOW_STREAKS_COLUMNS = (
 # mov_pairs_ema / px_vol — the pairs families' runs are single days,
 # NULL for margin_ratio / opp_pair / high_low_streaks), row-local per
 # period. trigger_excess is the parallel NUMERIC(10,6)[] of each
-# signal's TRIGGER EXCESS — the mid day's trigger value minus the
+# signal's TRIGGER EXCESS — the anchor day's trigger value minus the
 # bucket's qualifying bar (signed, value − bar: the live_signals
 # signal_excess convention; the pairs families' bar is the zero line,
 # so there the excess IS the day's spread) — defined for the
 # scalar-bar engines mov_rsi / mov_std / mov_pairs /
 # mov_pairs_ema only, NULL arrays elsewhere (the state families have
 # no scalar qualifying bar), row-local per period.
+#
+# delay (PK member): the ANCHOR DELAY this row's forecast is measured
+# from — the trading-day offset of the trigger within its qualifying
+# streak (0 = the streak's first qualifying day, the moment the signal
+# becomes observable; up to TRIGGER_DELAY_MAX). A persistent streak
+# contributes one trigger per day 0..min(run_len-1, TRIGGER_DELAY_MAX),
+# so each delay row's stats are conditioned on the signal having
+# lasted that long; rows exist only for (bucket, delay) pairs the
+# bucket's streaks actually reached.
 RESULT_COLUMNS: list[str] = [
     "forecast_id",
     "period",
+    "delay",
     "lookback_period",
     "config",
     "ave_change",
@@ -142,7 +154,11 @@ BASE_RATE_COLUMNS: list[str] = [
 # stat_month) keyed by the surrogate forecast_id, tagged with the
 # bucket family (the motivation table name) and the bucket's mean
 # streak length (streak_signal_days — the merged-signal semantics of
-# the 2026-09 streak migration; 1 for the state families). Since the
+# the 2026-09 streak migration; 1 for the state families) + the mean
+# anchor delay (delayed_signal_days — the mean trading-day offset of
+# the bucket's emitted trigger anchors within their streaks, 0 = the
+# streak's first qualifying day, capped at TRIGGER_DELAY_MAX; 0 for
+# 1-day signals). Both INTEGER whole days. Since the
 # 2026-09 forecast_id-keyed rebuild this is the ONLY table storing the
 # identity (the motivation tables carry forecast_id + their
 # family-unique bucket keys alone), written by _write_month in the
@@ -159,6 +175,7 @@ IDENTITY_COLUMNS: list[str] = [
     "stat_month",
     "bucket",
     "streak_signal_days",
+    "delayed_signal_days",
     "lookback_period",
 ]
 
@@ -167,7 +184,7 @@ ANALYSIS_NAME_PX_VOL = "px_vol"
 
 # px_vol_state columns in write order (forecast_id + code + bucket keys
 # + side + recorded build parameters + lookback).
-BUCKET_KEY_COLUMNS_PX_VOL = ["px_speed", "vol_state", "is_market_hyped"]
+BUCKET_KEY_COLUMNS_PX_VOL = ["px_speed", "vol_state", "regime_state"]
 PX_VOL_COLUMNS = ["forecast_id", "code"] + BUCKET_KEY_COLUMNS_PX_VOL + [
     "side",
     "sigma_window", "lb_window",
@@ -181,7 +198,7 @@ ANALYSIS_NAME_MARGIN_RATIO = "margin_ratio"
 
 # PK + write columns (forecast_id + code + bucket keys + side +
 # recorded build parameters + lookback).
-BUCKET_KEY_COLUMNS_MARGIN_RATIO = ["ratio_state", "is_market_hyped"]
+BUCKET_KEY_COLUMNS_MARGIN_RATIO = ["ratio_state", "regime_state"]
 MARGIN_RATIO_COLUMNS = (
     ["forecast_id", "code"] + BUCKET_KEY_COLUMNS_MARGIN_RATIO + [
         "side",
@@ -195,8 +212,8 @@ TABLE_OPP_PAIR = "analysis_forecasts.opp_pair_state"
 ANALYSIS_NAME_OPP_PAIR = "opp_pair"
 
 # PK + write columns (forecast_id + industry_id + bucket keys + side +
-# recorded build parameters). No is_market_hyped split — industries
-# have no hype source. industry_id (the dropping side) is the
+# recorded build parameters). No regime_state split — industries
+# have no stats.market_regimes source. industry_id (the dropping side) is the
 # partition key + PK lead, and plays the identities row's code; the
 # remaining identity columns (sec_type = constant 'index', stat_month)
 # live ONLY in forecast_identities. pair_industry_id (the forecast
@@ -229,16 +246,14 @@ ANALYSIS_NAME_PE = "pe"
 TABLE_DIVIDEND = "analysis_forecasts.dividend_state"
 ANALYSIS_NAME_DIVIDEND = "dividend"
 
-# PK + write columns (forecast_id + code + bucket keys + side + recorded
-# build parameters + lookback) — identical for both families.
-BUCKET_KEY_COLUMNS_PE = ["val_state", "is_market_hyped"]
+# PK + write columns (forecast_id + code + bucket keys + lookback) —
+# identical for both families, the mov_rsi shape minus the window axis
+# (the extreme-percentile buckets key on side + pct alone; no recorded
+# build-parameter columns — the former z bars are gone with the pct
+# refactor).
+BUCKET_KEY_COLUMNS_PE = ["side", "pct", "regime_state"]
 PE_COLUMNS = (
-    ["forecast_id", "code"] + BUCKET_KEY_COLUMNS_PE + [
-        "side",
-        "z_window", "z_min_periods",
-        "vlow_bar", "low_bar", "high_bar", "vhigh_bar",
-        "lookback_period",
-    ]
+    ["forecast_id", "code"] + BUCKET_KEY_COLUMNS_PE + ["lookback_period"]
 )
 BUCKET_KEY_COLUMNS_DIVIDEND = BUCKET_KEY_COLUMNS_PE
 DIVIDEND_COLUMNS = PE_COLUMNS

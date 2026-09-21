@@ -1,4 +1,4 @@
-import type { OptionsRow } from "@shared/types";
+import type { OptionsOiStatsRow, OptionsRow } from "@shared/types";
 import { PRICE_SCALE } from "@/theme/chart-palette";
 import { expiryToYyyyMm, expiryCompare } from "./expiryUtils";
 import type { DailySkew, ExpirySkew, OtmOiShare } from "./types";
@@ -18,6 +18,34 @@ export function computeOiWeightedSkew(rows: OptionsRow[], S: number): { skewPric
     skewPrice: S * weightedMeanMoneyness,
     skewPct: (weightedMeanMoneyness - 1.0) * 100,
   };
+}
+
+/**
+ * DB-backed per-expiry OI stats lookup (analysis.options_oi_stats via
+ * /oi-stats), keyed `${date}|${expiry month YYYY-MM}`. The absolute OI
+ * figures — level, Δ5d/Δ20d, trailing-20d max — are PIPELINE-computed
+ * (session-offset deltas over the underlying's option calendar); the
+ * browser only joins them onto the in-browser skew series.
+ */
+export type OiStatsLookup = Map<string, OptionsOiStatsRow>;
+
+/** Lookup key for a (date, expiry month) pair. */
+export function oiStatsKey(date: string, expiryMonth: string): string {
+  return `${date}|${expiryMonth}`;
+}
+
+/**
+ * Build the lookup from /oi-stats rows (expiry_month is a truncation
+ * date "YYYY-MM-06" — the same YYYY-MM slice the expiry grouping uses).
+ */
+export function oiStatsLookupFromRows(
+  rows: OptionsOiStatsRow[],
+): OiStatsLookup {
+  const m: OiStatsLookup = new Map();
+  for (const r of rows) {
+    m.set(oiStatsKey(r.date, r.expiry_month.slice(0, 7)), r);
+  }
+  return m;
 }
 
 /**
@@ -55,6 +83,7 @@ export function computeOtmOiShare(rows: OptionsRow[], S: number): OtmOiShare | n
 
 export function computeDailySkewSeries(
   rows: OptionsRow[],
+  oiStats?: OiStatsLookup,
 ): DailySkew[] {
   const byDate = new Map<string, OptionsRow[]>();
   for (const r of rows) {
@@ -107,6 +136,9 @@ export function computeDailySkewSeries(
     for (const em of expiryMonths) {
       const { rows: emRows, expiryDate } = expiryMap.get(em)!;
       const otmShare = computeOtmOiShare(activeByExpiry.get(em) ?? [], S);
+      // Absolute OI level/changes come from the DB pipeline
+      // (analysis.options_oi_stats) — the browser never recomputes them.
+      const stats = oiStats?.get(oiStatsKey(date, em));
       if (emRows.length < 3) {
         perExpiry.push({
           expiry: em,
@@ -114,6 +146,10 @@ export function computeDailySkewSeries(
           skewPrice: null,
           skewPct: null,
           otmShare,
+          oiTotal: stats?.oi_total ?? null,
+          oiDelta5d: stats?.oi_delta_5d ?? null,
+          oiDelta20d: stats?.oi_delta_20d ?? null,
+          oiMax20d: stats?.oi_max_20d ?? null,
         });
       } else {
         const s = computeOiWeightedSkew(emRows, S);
@@ -122,6 +158,10 @@ export function computeDailySkewSeries(
           expiryDate,
           ...s,
           otmShare,
+          oiTotal: stats?.oi_total ?? null,
+          oiDelta5d: stats?.oi_delta_5d ?? null,
+          oiDelta20d: stats?.oi_delta_20d ?? null,
+          oiMax20d: stats?.oi_max_20d ?? null,
         });
       }
     }

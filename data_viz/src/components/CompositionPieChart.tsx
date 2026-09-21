@@ -289,7 +289,8 @@ export default function CompositionPieChart({
         `Holdings composition of ${code} by industry (stats.sec_composition, snapshot ` +
         `${data?.snapshot_date ?? "—"}${data?.quarter ? ` · ${data.quarter}` : ""}): pie slices ` +
         "are industries aggregated by weight %. Click an industry slice to drill into its " +
-        "individual stocks in the second pie (click it again to close).",
+        "individual stocks in the second pie (click it again to close). Indication: a " +
+        "dominant slice = concentration risk; a swelling share = rotation into it.",
       instruments: [{ code }],
       state: {
         selected_industry: selectedIndustry ?? "none",
@@ -305,7 +306,8 @@ export default function CompositionPieChart({
       intro:
         `Individual stocks within industry "${selectedIndustry}" of ${code}'s holdings ` +
         "(stats.sec_composition): slice size = the stock's weight %. Click a slice to open " +
-        "its daily OHLC chart below (click it again to close).",
+        "its daily OHLC chart below (click it again to close). Indication: a heavy single " +
+        "name = idiosyncratic risk to the whole position.",
       instruments: [{ code }],
       state: {
         selected_industry: selectedIndustry ?? "none",

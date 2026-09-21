@@ -316,12 +316,11 @@ export default function IndustryDrilldown({
   const dualAiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        `Industry drill-down for ${industryLabel}: the industry's composite mean close ` +
-        "(stats.industry_basic_stats, pool_size='all', rebased-to-100 composite) on the " +
-        `left axis against this industry's % of ${etfCode}'s total composition on the ` +
-        "right axis (weight_pct / total_weight_pct × 100 per snapshot — the quarterly " +
-        "table's normalization, at snapshot granularity). Read the two axes together: " +
-        "rising mean close with rising ETF pct = the ETF added exposure into strength.",
+        `Industry drill-down for ${industryLabel}: left = industry composite mean close ` +
+        "(rebased to 100, all pools — stats.industry_basic_stats); right = the industry's " +
+        `% of ${etfCode}'s total composition (weight_pct / total_weight_pct × 100 per ` +
+        "snapshot). Indication: rising close + swelling % = the ETF accumulating into " +
+        "strength — the bullish pairing; divergent pair = price without sponsorship.",
       instruments: [
         { code: etfCode, assetClass: "etf" },
         { code: industryId, name: industryLabel, assetClass: "industry" },
@@ -353,11 +352,11 @@ export default function IndustryDrilldown({
   const curvesAiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        `Member index curves of ${industryLabel}: every index classified into this ` +
-        "industry, each rebased to 100 at its own first non-null close (the same " +
-        "convention as stats.industry_basic_stats and the Industry Sentiments page), " +
-        "so relative member performance is directly comparable despite different " +
-        "price levels. Hover for values; scroll-legend toggles members.",
+        `Member curves of ${industryLabel}: each member index rebased to ` +
+        "100 × P_t/P_own-first-close (same convention as stats.industry_basic_stats), so " +
+        "relative performance compares despite price-level disparities. Legend click " +
+        "toggles members. Indication: fanning curves = dispersion widening (a " +
+        "stock-picker's tape); convergence = beta catch-up.",
       instruments: [{ code: industryId, name: industryLabel, assetClass: "industry" }],
       state: {
         member_indices: memberSeries.length,

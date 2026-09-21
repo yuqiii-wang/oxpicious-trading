@@ -50,8 +50,8 @@ def build_split_tables(
     Args:
         options_db: deduped frame with datetime.date ``date`` /
             ``expiry_date`` columns and all derived columns.
-        underlying_target_type: 'ETF' (SZSE) or 'INDEX' (CFFEX).
-        exchange: 'SZSE' or 'CFFEX'.
+        underlying_target_type: 'ETF' (SZSE/SSE) or 'INDEX' (CFFEX).
+        exchange: 'SSE', 'SZSE' or 'CFFEX' — stamped on every table's rows.
 
     Returns:
         Ordered dict {table_name: list of row dicts}, FK parent
@@ -75,6 +75,7 @@ def build_split_tables(
         "date": "date",
         "contract_code": "contract_code",
         "contract_name": "contract_name",
+        "exchange": const(exchange),
     })
 
     terms = recs({
@@ -93,6 +94,7 @@ def build_split_tables(
     strike = recs({
         "date": "date",
         "contract_code": "contract_code",
+        "exchange": const(exchange),
         "strike_str": "strike_str",
         "strike_price_raw": "strike_price_raw",
         "strike_price": "strike_price",
@@ -102,6 +104,7 @@ def build_split_tables(
     settlement = recs({
         "date": "date",
         "contract_code": "contract_code",
+        "exchange": const(exchange),
         "prev_settle": "prev_settle",
         "close": "close",
         "settle": "settle",
@@ -116,6 +119,7 @@ def build_split_tables(
     greeks = recs({
         "date": "date",
         "contract_code": "contract_code",
+        "exchange": const(exchange),
         "implied_vol": "implied_vol",
         "delta": "delta",
         "theta": "theta",
@@ -127,6 +131,7 @@ def build_split_tables(
     volume_oi = recs({
         "date": "date",
         "contract_code": "contract_code",
+        "exchange": const(exchange),
         "volume": "volume",
         "volume_wan": "volume_wan",
         "open_interest": "open_interest",
@@ -136,6 +141,7 @@ def build_split_tables(
     aggregate = recs({
         "date": "date",
         "contract_code": "contract_code",
+        "exchange": const(exchange),
         "total_volume_underlying": "total_volume_underlying",
         "total_oi_underlying": "total_oi_underlying",
         "volume_pct": "volume_pct",

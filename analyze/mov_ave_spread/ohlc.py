@@ -107,6 +107,7 @@ from _common.df_utils import (
     column_subset,
     grouped_shift,
     host_array,
+    host_unique,
     safe_columns,
 )
 from analyze.mov_ave_spread.helpers import null_if_overflow_counted
@@ -681,7 +682,7 @@ async def run_ohlc(
     if sec_type is not None:
         sec_types = (sec_type,)
     else:
-        sec_types = tuple(sorted(ohlc_df["sec_type"].unique()))
+        sec_types = tuple(host_unique(ohlc_df["sec_type"]))
 
     # ---- Step 0: determine target dates (per-sec_type) --------------
     if code_filter is not None:

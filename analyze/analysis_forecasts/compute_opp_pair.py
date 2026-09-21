@@ -49,6 +49,7 @@ from typing import Iterator
 import numpy as np
 import pandas as pd
 
+from _common.df_utils import host_array
 from analyze.analysis_forecasts.config import (
     FORWARD_HORIZONS,
     LOOKBACK_PERIOD,
@@ -169,10 +170,17 @@ def _pair_axis(
         dtype=np.float64)
     corrs = pd.to_numeric(p["pair_corr"], errors="coerce").to_numpy(
         dtype=np.float64)
+    # HOST unwrapping ONCE here (the sanctioned boundary pattern): the
+    # per-(pair, window) bucket loop indexes these arrays per bucket —
+    # proxy-backed ndarrays would fall back to host on EVERY scalar
+    # getitem (the datetime64[s] score_date one logged 207,900
+    # [cudf fallback] lines in one index rebuild). a_ids / b_ids are
+    # already host lists via tolist.
     return (
         a_idx, b_idx,
         p["industry_id"].tolist(), p["pair_industry_id"].tolist(),
-        scores, corrs, p["score_date"].to_numpy(),
+        host_array(scores), host_array(corrs),
+        host_array(p["score_date"].to_numpy()),
     )
 
 
@@ -309,8 +317,12 @@ def compute_opp_pair_results(
                 "lookback_period": [LOOKBACK_PERIOD] * ii.size,
                 # state cells admit every qualifying day (no
                 # streak-merge — 1-day signals): the identity
-                # registry's streak_signal_days constant.
+                # registry's streak_signal_days constant, and the
+                # trigger = the signal day itself (delay 0 — no
+                # incremental anchors).
                 "streak_signal_days": [1] * ii.size,
+                "delayed_signal_days": [0] * ii.size,
+                "delay": [0] * ii.size,
                 # config JSONB — asyncpg COPY needs a JSON text
                 # string (compute_std / compute_px_vol precedent).
                 "config": [

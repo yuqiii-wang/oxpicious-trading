@@ -21,12 +21,12 @@ async def fetch_forecast_identity(
     """Resolve one forecast_id against the identities registry.
 
     Returns the identity row (forecast_id, sec_type, code, stat_month,
-    bucket, streak_signal_days, lookback_period — code = the forecast
-    subject: the security ticker, or the DROPPING industry_id for
-    opp_pair rows) plus, when the bucket's motivation table
-    is one of the known families, the full motivation row joined from it
-    under the ``motivation`` key (dates arrive as ISO strings via the
-    to_jsonb cast). None when the id is not registered.
+    bucket, streak_signal_days, delayed_signal_days, lookback_period —
+    code = the forecast subject: the security ticker, or the DROPPING
+    industry_id for opp_pair rows) plus, when the bucket's motivation
+    table is one of the known families, the full motivation row joined
+    from it under the ``motivation`` key (dates arrive as ISO strings
+    via the to_jsonb cast). None when the id is not registered.
 
     Backs ``python -m analyze.analysis_forecasts --search-forecast-id``
     (the bucket table name is validated against the config's known set
@@ -35,7 +35,7 @@ async def fetch_forecast_identity(
     row = await conn.fetchrow(
         f"""
         SELECT forecast_id, sec_type, code, stat_month, bucket,
-               streak_signal_days, lookback_period
+               streak_signal_days, delayed_signal_days, lookback_period
         FROM {TABLE_IDENTITIES}
         WHERE forecast_id = $1
         """,

@@ -8,6 +8,7 @@ import {
   getOptionsWalls,
   getEtfOhlcv,
   getOptionsSkewnessSeries,
+  getOptionsOiStats,
   getOptionsIvSkew,
   getOptionsVolIndex,
 } from "../services/szse-options.service.js";
@@ -26,7 +27,9 @@ router.get("/underlyings", async (req: Request, res: Response) => {
   try {
     const targetType =
       typeof req.query.target_type === "string" ? req.query.target_type : undefined;
-    res.json(await listUnderlyings(targetType));
+    const exchange =
+      typeof req.query.exchange === "string" ? req.query.exchange : undefined;
+    res.json(await listUnderlyings(targetType, exchange));
   } catch (err) {
     console.error("[szse-options/underlyings] error:", err);
     res.status(500).json({ error: String(err) });
@@ -40,6 +43,7 @@ router.get("/combined", async (req: Request, res: Response) => {
       start_date: typeof req.query.start_date === "string" ? req.query.start_date : undefined,
       end_date: typeof req.query.end_date === "string" ? req.query.end_date : undefined,
       target_type: typeof req.query.target_type === "string" ? req.query.target_type : undefined,
+      exchange: typeof req.query.exchange === "string" ? req.query.exchange : undefined,
     };
     res.json(await getOptionsCombined(query));
   } catch (err) {
@@ -100,6 +104,26 @@ router.get("/skewness-series", async (req: Request, res: Response) => {
     res.json(data);
   } catch (err) {
     console.error("[szse-options/skewness-series] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+router.get("/oi-stats", async (req: Request, res: Response) => {
+  try {
+    const underlying =
+      typeof req.query.underlying === "string" ? req.query.underlying : "";
+    if (!underlying) {
+      res.status(400).json({ error: "Missing 'underlying' query parameter" });
+      return;
+    }
+    const data = await getOptionsOiStats(
+      underlying,
+      typeof req.query.start_date === "string" ? req.query.start_date : undefined,
+      typeof req.query.end_date === "string" ? req.query.end_date : undefined,
+    );
+    res.json(data);
+  } catch (err) {
+    console.error("[szse-options/oi-stats] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });

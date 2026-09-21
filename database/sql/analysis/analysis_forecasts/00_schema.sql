@@ -12,7 +12,7 @@
 --  Layout (motivation / result split):
 --    - 01_forecast_results.sql — analysis_forecasts.forecast_results:
 --      the RESULT data only (mean / high / low forward changes for
---      next, 5d, 20d, 60d horizons + per-horizon >1% reversal
+--      next, 5d, 20d horizons + per-horizon >1% reversal
 --      probabilities), keyed by the surrogate forecast_id — plus
 --      analysis_forecasts.forecast_identities: the shared-PK REGISTRY
 --      (one row per forecast_id: sec_type, code, stat_month, bucket
@@ -37,15 +37,16 @@
 --      audit anchor: the streak length is known only after the streak
 --      closes).
 --    - 11_pe_state.sql — analysis_forecasts.pe_state: valuation
---      z-STATE buckets over the PE series of analysis.pe (raw PE,
---      LOWER the better — high-PE states are bearish, side top);
+--      extreme-percentile buckets over the PE series of analysis.pe
+--      (raw PE, LOWER the better — the top-pct% (expensive) PE days
+--      are bearish, side top; the mov_rsi pct convention);
 --    - 12_dividend_state.sql — analysis_forecasts.dividend_state: the
 --      sibling family over the dividend-yield series of
---      analysis.dividends (HIGHER the better — high-yield states are
---      bullish, side bottom; same z bars as pe_state, REVERSED side
---      mapping). Each family's table carries ONE metric — the combined
---      pe_dividend_state's metric column is gone (its rows migrate per
---      metric into the two tables).
+--      analysis.dividends (HIGHER the better — the top-pct%
+--      (high-yield) days are bullish, side bottom; same pct grid as
+--      pe_state, REVERSED side mapping). Each family's table carries
+--      ONE metric — the combined pe_dividend_state's metric column is
+--      gone (its rows migrate per metric into the two tables).
 --
 --  Population convention:
 --    - `python -m analyze.analysis_forecasts` computes one snapshot per
@@ -63,7 +64,7 @@
 --
 --  Change semantics (shared by all horizons):
 --    next (1d) change    = (close[t+1] - close[t]) / close[t]
---    5d/20d/60d change   = (close[t+N] - close[t]) / close[t]
+--    5d/20d change      = (close[t+N] - close[t]) / close[t]
 --    (signed fractional ratios, e.g. 0.05 = +5%; computed per code on
 --    its own trading-day sequence — calendar gaps do not count as rows)
 --

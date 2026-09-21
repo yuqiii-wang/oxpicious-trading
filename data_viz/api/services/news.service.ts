@@ -453,11 +453,19 @@ export async function listNewsComments(newsId: number): Promise<NewsCommentsResp
       ORDER BY c.date ASC, c.comment_id ASC`,
     [newsId],
   );
+  // node-pg serves BIGINT (int8) as strings — normalize the id columns to
+  // numbers so the NewsComment contract holds and the votes/`comment_id`
+  // sort below stays numeric.
+  const comments: NewsComment[] = rows.map((r) => ({
+    ...r,
+    comment_id: Number(r.comment_id),
+    parent_comment_id: r.parent_comment_id == null ? null : Number(r.parent_comment_id),
+  }));
   // Rebuild the thread: replies nest under their root (conversation order);
   // roots surface by votes so the best comments lead.
   const byId = new Map<number, NewsComment>();
   const roots: NewsComment[] = [];
-  for (const r of rows) {
+  for (const r of comments) {
     byId.set(r.comment_id, { ...r, replies: [] });
   }
   for (const c of byId.values()) {

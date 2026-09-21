@@ -42,11 +42,11 @@
 --  collapse into ONE forecast signal anchored at the run's MID day —
 --  the mean run length lives on forecast_identities.streak_signal_days
 --  and each result row's streak_starts / streak_ends / streak_days
---  carry the merged runs — split by is_market_hyped (ANY bucket date
---  inside a mov_ave_market_hypes episode) exactly like
+--  carry the merged runs — split by regime_state (the stats.
+--  market_regimes day label of each trigger day) exactly like
 --  mov_rsi / mov_std. Results live in
 --  analysis_forecasts.forecast_results via forecast_id (1:N — one
---  forecast_id → 5 period rows next/5d/20d/60d/mixed: ave/std/max/min
+--  forecast_id → 4 period rows next/5d/20d/mixed: ave/std/max/min
 --  forward change, occurrence_count and
 --  reverse_prob at the bucket's ADAPTIVE threshold
 --  (k_n·σ of the code's window forward changes)). The reversal side
@@ -74,7 +74,7 @@
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.px_vol_state (
     code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-    forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_px_vol_state_forecast_id
+    forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_px_vol_state_forecast_id
     px_speed        TEXT         NOT NULL,  -- 'sharp_up' | 'slow_up' | 'flat' | 'slow_dn' | 'sharp_dn' (t = ret/σ_ret bars)
     vol_state       TEXT         NOT NULL,  -- 'heavy' | 'normal' | 'shrink' (amount-level z bars)
     side            TEXT         NOT NULL,  -- 'top' (up speeds) | 'bottom' (down speeds) | 'flat' — reversal direction of reverse_prob
@@ -92,7 +92,10 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.px_vol_state (
     lookback_period TEXT         NOT NULL DEFAULT '5y', -- trailing window the bucket was computed over ('5y' = stat_month - 5y .. stat_month)
 
     -- motivation cols
-    is_market_hyped BOOLEAN      NOT NULL,  -- ANY bucket date inside a mov_ave_market_hypes episode (any check-in period)
+    regime_state    TEXT         NOT NULL,  -- the bucket's market-regime split (stats.market_regimes day label of its bucket days)
+
+    CONSTRAINT ck_px_vol_state_regime
+        CHECK (regime_state IN ('calm', 'hot', 'panic', 'quiet')),
 
     CONSTRAINT pk_px_vol_state PRIMARY KEY (code, forecast_id)
 ) PARTITION BY HASH (code);
@@ -106,7 +109,7 @@ CREATE INDEX IF NOT EXISTS idx_px_vol_state_forecast_id
 --  Comments
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis_forecasts.px_vol_state IS 'Recent-day price-change × trading-amount state buckets (motivation): one row per forecast_id — the window days of one security-month whose σ-standardized 1-day price change (t = ret_1d / rolling-255 σ_ret of the code, shifted 1 row) and z-scored log trading-amount LEVEL (z vs rolling-255 moments of log(trading_amount), shifted 1 row — a LEVEL statement vs the code''s own trailing-year amount distribution) simultaneously fall in the named states, with a σ_ret floor of 0.005 excluding bond-like indices. Adaptive per-code thresholds recorded in the row (k_slow_up 1.26 / k_slow_dn 1.29 / k_sharp 2.0 / z_heavy 2.0 / z_shrink -0.92 — calibrated to the legacy ±2% / 量比 1.5 / 0.8 trigger rates). State runs streak-merge into ONE mid-anchored forecast signal (2026-09 — consecutive same-state days collapse to the run''s MID day; mean run length on forecast_identities.streak_signal_days). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / FIXED 1% threshold — period-end n-day close vs ±1% — reversal probabilities) live in analysis_forecasts.forecast_results via forecast_id; flat rows carry side=''flat'' and NULL reverse_prob. Sources: stats.*_basic_stats (close, trading_amount), stats.*_liquidity_margin (etf/stock trading_amount). Populated by python -m analyze.analysis_forecasts.';
-COMMENT ON COLUMN analysis_forecasts.px_vol_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 5 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 5 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
+COMMENT ON COLUMN analysis_forecasts.px_vol_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.px_speed IS 'Price-speed state of the day: t = ret_1d / σ_ret(code, 255 rows ending t-1, min 60). sharp_up t > 2.0; slow_up 1.26 < t <= 2.0; flat -1.29 <= t <= 1.26; slow_dn -2.0 <= t < -1.29; sharp_dn t < -2.0. Never fires when σ_ret is NaN or below sigma_floor (0.005).';
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.vol_state IS 'Trading-amount state of the day: z = (log(trading_amount[t]) - μ) / σ where μ/σ are the code''s rolling-255 (min 60) moments of log(trading_amount), shifted 1 row — a LEVEL statement vs the code''s own trailing-year amount distribution. heavy z > 2.0; normal -0.92 <= z <= 2.0; shrink z < -0.92. NULL trading_amount → no bucket.';
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.side IS 'Reversal side of the bucket''s forecast_results.reverse_prob: top (sharp_up/slow_up — reversal = n-day change below -threshold), bottom (slow_dn/sharp_dn — reversal above +threshold), flat (no directional claim; reverse_prob NULL). Mirrors the mov_* side semantics so analysis_signals.gate can consume the table unchanged.';
@@ -119,7 +122,7 @@ COMMENT ON COLUMN analysis_forecasts.px_vol_state.z_heavy IS 'Recorded build par
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.z_shrink IS 'Recorded build parameter: shrink (Amt Down) z-bar (default -0.92).';
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.sigma_floor IS 'Recorded build parameter: minimum σ_ret for a day to join any bucket (default 0.005). Bond-like indices (σ_ret ≈ 0.01–0.02%) would classify tiny wiggles as extremes — they are excluded by the floor.';
 COMMENT ON COLUMN analysis_forecasts.px_vol_state.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';
-COMMENT ON COLUMN analysis_forecasts.px_vol_state.is_market_hyped IS 'TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
+COMMENT ON COLUMN analysis_forecasts.px_vol_state.regime_state IS 'The bucket''s market-regime split: the stats.market_regimes day label (calm / hot / panic / quiet) carried by the bucket''s trigger days — every trigger day joins exactly one regime, so each (config, regime) pair is its own bucket. Replaces the retired is_market_hyped boolean (stats.mov_ave_market_hypes episode overlap); hot is the closest successor of the old TRUE split.';
 
 -- ----------------------------------------------------------------------------
 --  Data-quality gate: the px_vol_state vocabularies (shared helpers, see

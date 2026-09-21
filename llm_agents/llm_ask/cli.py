@@ -42,6 +42,7 @@ from llm_agents.llm_ask.core.models import AskOptions  # noqa: E402
 from llm_agents.llm_ask.payload import (  # noqa: E402
     ask_online_search, build_ask_request, read_payload_file,
 )
+from llm_agents.llm_ask.storage import persist_ask  # noqa: E402
 from llm_agents.llm_ask.providers.registry import (  # noqa: E402
     PROVIDERS, get_provider,
 )
@@ -95,20 +96,31 @@ async def main() -> None:
 
     if args.payload_file:
         payload = read_payload_file(args.payload_file)
-        if payload.online_search:
-            logger.info("ask (payload online-search chart=%s screenshots=0 "
-                        "theme=%s)",
-                        (payload.plot_info.get("chart") or {}).get("title"),
-                        payload.theme_mode)
-            result = await ask_online_search(
-                payload, provider, model=args.model)
-        else:
-            question, opts, context = build_ask_request(
-                payload, provider.name, model=args.model)
-            logger.info("ask (payload chart=%s screenshots=%d theme=%s)",
-                        (payload.plot_info.get("chart") or {}).get("title"),
-                        len(payload.screenshots), payload.theme_mode)
-            result = await provider.ask(question, opts, context=context)
+        # Payload-mode asks are persisted to the ask-history tables
+        # (text.llm_qa_by_ask + context/images/keywords — see
+        # llm_agents.llm_ask.storage) after the answer exists; failures
+        # persist too (status='failed'), then re-raise so the service
+        # still reports them. Persistence itself is fail-soft.
+        try:
+            if payload.online_search:
+                logger.info("ask (payload online-search chart=%s screenshots=0 "
+                            "theme=%s)",
+                            (payload.plot_info.get("chart") or {}).get("title"),
+                            payload.theme_mode)
+                result = await ask_online_search(
+                    payload, provider, model=args.model)
+            else:
+                question, opts, context = build_ask_request(
+                    payload, provider.name, model=args.model)
+                logger.info("ask (payload chart=%s screenshots=%d theme=%s)",
+                            (payload.plot_info.get("chart") or {}).get("title"),
+                            len(payload.screenshots), payload.theme_mode)
+                result = await provider.ask(question, opts, context=context)
+        except Exception as exc:
+            await persist_ask(
+                payload, error_tail=f"{type(exc).__name__}: {exc}")
+            raise
+        await persist_ask(payload, result)
     else:
         opts = AskOptions(model=args.model, lang=args.lang, system=args.system,
                           temperature=args.temperature)

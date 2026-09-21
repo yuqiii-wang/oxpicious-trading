@@ -185,6 +185,30 @@ export interface SkewnessSeriesResponse {
   rows: SkewnessSeriesRow[];
 }
 
+/** Per-expiry OI stats per (date, expiry month) from the dedicated
+ *  per-real-expiry table analysis.options_oi_stats (expiry months with
+ *  several expiries — CFFEX weeklies — aggregate via SUM / MAX; the
+ *  CALL/PUT duplicated rows are deduped server-side). */
+export interface OptionsOiStatsRow {
+  date: string;
+  expiry_month: string;
+  /** Latest exact expiry date in the month group (null when absent). */
+  expiry_date: string | null;
+  /** Calls+puts OI of the expiry group on the date (contracts). */
+  oi_total: number | null;
+  /** OI change vs 5 / 20 trading sessions earlier (contracts; NULL when
+   *  the group had no row at the offset session). */
+  oi_delta_5d: number | null;
+  oi_delta_20d: number | null;
+  /** Max OI over the trailing 20 sessions incl. the date (contracts). */
+  oi_max_20d: number | null;
+}
+
+export interface OptionsOiStatsResponse {
+  underlying_code: string;
+  rows: OptionsOiStatsRow[];
+}
+
 export interface IvSkewRow {
   date: string;
   expiry_month: string;
@@ -819,128 +843,79 @@ export interface SnapshotDate {
 /** Security type discriminator for the MA-spread analysis. */
 export type MaSpreadSecType = "etf" | "index" | "stock";
 
-/** One row in the per-date per-pair detail series. */
-export interface MovAveSpreadDetailRow {
+/**
+ * One row in a pair's date-level series — the TRIMMED per-pair columns the
+ * Simple-MA / EMA charts draw (values, derivatives, Bollinger σ, OHLC,
+ * trading amount). Per-date tooltip metrics that are IDENTICAL across all
+ * pairs (RSI, trading-amt MA slopes / market shares, rolling-window OHLC)
+ * live ONE copy in MovAveSpreadChartResponse.shared — the former
+ * MovAveSpreadDetailRow duplicated them into every pair's rows, which
+ * tripled the payload.
+ */
+export interface MovAveSpreadPairRow {
   date: string;
-  /** Value of the short series on this date (adj_close ?? close for price; MA value for MA). */
+  /** Value of the short series on this date (adj_close ?? close for price; MA/EMA value for MA pairs; trading_amount for amt pairs). */
   short_value: number | null;
-  /** Value of the long MA on this date. */
+  /** Value of the long MA/EMA on this date. */
   long_value: number | null;
   /** (short_value - long_value) / long_value — signed fractional gap. */
   gap_value: number | null;
-  /** 1st derivative of the short MA on this date. NULL when ma_short = 0 (price has no slope). */
+  /** 1st derivative of the short series on this date. NULL when ma_short = 0 (price has no slope). */
   short_slope: number | null;
-  /** 2nd derivative of the short MA on this date. NULL when ma_short = 0. */
+  /** 2nd derivative of the short series on this date. NULL when ma_short = 0. */
   short_curvature: number | null;
-  /** 1st derivative of the long MA on this date. */
+  /** 1st derivative of the long MA/EMA on this date. */
   long_slope: number | null;
-  /** 2nd derivative of the long MA on this date. */
+  /** 2nd derivative of the long MA/EMA on this date. */
   long_curvature: number | null;
   /**
-   * Rolling population σ (ddof=0) of price over the long MA's window
-   * (e.g. std_20days when ma_long = 20). In price units. Used to draw the
-   * Bollinger-style envelope (long_value ± k × long_std) on Price/MA and
-   * Price/EMA charts. NULL until the rolling window is fully populated.
-   * For SMA pairs, sourced from analysis.mov_ave_spreads_detail.std_*days;
-   * for EMA pairs, from analysis.mov_ave_spreads_detail_ema.std_*days (same
-   * source data — σ of price over W days). MA5/MA and EMA6/EMA charts also
-   * carry this field but the envelope is only drawn around the long MA/EMA
-   * on Price/MA and Price/EMA charts by convention.
+   * Rolling population σ (ddof=0) of price over the long window's span —
+   * the Bollinger envelope (long_value ± k × long_std). For SMA pairs from
+   * analysis.mov_ave_spreads_detail.std_*days; for EMA pairs from
+   * analysis.mov_ave_spreads_detail_ema.std_*days (same price σ); for amt
+   * pairs the σ of trading_amt_maW (the amt Bollinger band).
    */
   long_std: number | null;
-  /** Open price on this date (from basic_stats.open). */
+  /** Open price on this date (null on amt rows — the amt view uses high/low only). */
   open: number | null;
-  /** High price on this date (from basic_stats.high). */
+  /** High price on this date. */
   high: number | null;
-  /** Low price on this date (from basic_stats.low). */
+  /** Low price on this date. */
   low: number | null;
-  /** Trading amount in yuan on this date (from basic_stats.trading_amount). */
+  /** Trading amount in yuan on this date. */
   trading_amount: number | null;
-  /**
-   * Wilder Relative Strength Index over 3 trading days (alpha=1/3, ewm
-   * adjust=False, min_periods=3) — an ultra-short momentum window.
-   * 0..100. NULL until 3 consecutive gain/loss observations. From
-   * analysis.mov_ave_rsi. Surfaced in the chart tooltip as part of the
-   * per-date RSI info.
-   */
+}
+
+/**
+ * Per-date tooltip metrics shared by every pair series — ONE copy in the
+ * chart response, index-aligned with each pair's rows (all pairs share one
+ * date axis). These are tooltip-only readouts; the drawn curves come from
+ * the pair rows themselves.
+ */
+export interface MovAveSpreadSharedMetricsRow {
+  date: string;
+  /** Wilder RSI over 3/6/10/14/20 trading days (analysis.mov_ave_rsi). */
   rsi_3days: number | null;
-  /**
-   * Wilder Relative Strength Index over 6 trading days (alpha=1/6, ewm
-   * adjust=False, min_periods=6). 0..100. NULL until 6 consecutive
-   * gain/loss observations. From analysis.mov_ave_rsi. Surfaced in the
-   * chart tooltip as part of the per-date RSI info.
-   */
   rsi_6days: number | null;
-  /** Wilder RSI over 10 trading days. 0..100. NULL until 10 periods. */
   rsi_10days: number | null;
-  /** Wilder RSI over 14 trading days — the classic Wilder window. 0..100. */
   rsi_14days: number | null;
-  /** Wilder RSI over 20 trading days. 0..100. */
   rsi_20days: number | null;
-  /**
-   * 5-trading-day moving average of trading_amount (yuan) from
-   * analysis.mov_ave_spreads_detail.trading_amt_ma5. NULL until 5
-   * consecutive rows. Used for the Trading Amt/MA envelope chart.
-   */
-  trading_amt_ma5: number | null;
-  /** 20-trading-day MA of trading_amount (yuan). NULL until 20 rows. */
-  trading_amt_ma20: number | null;
-  /** 60-trading-day MA of trading_amount (yuan). NULL until 60 rows. */
-  trading_amt_ma60: number | null;
-  /** 120-trading-day MA of trading_amount (yuan). NULL until 120 rows. */
-  trading_amt_ma120: number | null;
-  /** 255-trading-day MA of trading_amount (yuan). NULL until 255 rows. */
-  trading_amt_ma255: number | null;
-  /**
-   * Fractional daily change of trading_amt_ma5: (ma5[t] - ma5[t-1]) / ma5[t-1].
-   * Signed ratio (e.g. 0.02 = +2%). NULL on first date or when ma is NULL/<=0.
-   * Surfaced in the chart tooltip when trading-amt display is enabled.
-   */
+  /** Fractional daily change of trading_amt_ma{W} — tooltip readout when
+   *  the trading-amt display is on (analysis.mov_ave_spreads_detail). */
   trading_amt_ma5_slope: number | null;
-  /** Fractional daily change of trading_amt_ma20 (see trading_amt_ma5_slope). */
   trading_amt_ma20_slope: number | null;
-  /** Fractional daily change of trading_amt_ma60 (see trading_amt_ma5_slope). */
   trading_amt_ma60_slope: number | null;
-  /** Fractional daily change of trading_amt_ma120 (see trading_amt_ma5_slope). */
   trading_amt_ma120_slope: number | null;
-  /** Fractional daily change of trading_amt_ma255 (see trading_amt_ma5_slope). */
   trading_amt_ma255_slope: number | null;
-  /**
-   * 5-trading-day moving average of trading_amt_market_share (dimensionless
-   * ratio 0..1). market_share = trading_amount / denominator, where
-   * denominator = SUM(stats.exchange_trading_amt.total_trading_amount) across
-   * primary exchanges. Surfaced in the chart tooltip as a percentage when
-   * trading-amt display is enabled.
-   */
+  /** Trading-amount market-share MA (ratio 0..1) — tooltip percentage. */
   trading_amt_market_share_ma5: number | null;
-  /** 20-trading-day MA of trading_amt_market_share (see trading_amt_market_share_ma5). */
   trading_amt_market_share_ma20: number | null;
-  /** 60-trading-day MA of trading_amt_market_share (see trading_amt_market_share_ma5). */
   trading_amt_market_share_ma60: number | null;
-  /** 120-trading-day MA of trading_amt_market_share (see trading_amt_market_share_ma5). */
   trading_amt_market_share_ma120: number | null;
-  /** 255-trading-day MA of trading_amt_market_share (see trading_amt_market_share_ma5). */
   trading_amt_market_share_ma255: number | null;
-
-  /**
-   * 5-trading-day rolling population σ (ddof=0) of trading_amt_ma5
-   *  (yuan). Bollinger band width for trading-amount MA5 envelope.
-   *  Used with long_std on Amt/MA pair rows to draw Bollinger bands.
-   */
-  trading_amt_std5: number | null;
-  /** 20-trading-day σ of trading_amt_ma20 (see trading_amt_std5). */
-  trading_amt_std20: number | null;
-  /** 60-trading-day σ of trading_amt_ma60 (see trading_amt_std5). */
-  trading_amt_std60: number | null;
-  /** 120-trading-day σ of trading_amt_ma120 (see trading_amt_std5). */
-  trading_amt_std120: number | null;
-  /** 255-trading-day σ of trading_amt_ma255 (see trading_amt_std5). */
-  trading_amt_std255: number | null;
-
-  // Rolling OHLC columns from analysis.mov_ave_spreads_detail_ohlc.
-  // These show the Open, High, Low for the selected MA's window.
-  // E.g., when MA60 is selected, open_60d shows the open 60 days ago,
-  // high_60d shows the max high over the last 60 days, etc.
+  /** Rolling OHLC of the pair-matching windows (analysis.mov_ave_spreads_detail_ohlc):
+   *  open W trading days ago + max high / min low over the window. Shown in
+   *  the tooltip of SMA pairs whose ma_long matches the window. */
   open_20d: number | null;
   high_20d: number | null;
   low_20d: number | null;
@@ -953,12 +928,21 @@ export interface MovAveSpreadDetailRow {
   open_255d: number | null;
   high_255d: number | null;
   low_255d: number | null;
-  open_500d: number | null;
-  high_500d: number | null;
-  low_500d: number | null;
-  open_750d: number | null;
-  high_750d: number | null;
-  low_750d: number | null;
+}
+
+/**
+ * One row of an Amt/MA pair series (loaded on demand via /extras): the
+ * trimmed pair columns plus the 5 trading-amount MA values the envelope
+ * draws. long_std holds trading_amt_stdW (amt Bollinger band, from
+ * analysis.mov_ave_trading_amt); slopes / market shares come from the chart
+ * response's `shared` rows — not duplicated here.
+ */
+export interface MovAveSpreadAmtRow extends MovAveSpreadPairRow {
+  trading_amt_ma5: number | null;
+  trading_amt_ma20: number | null;
+  trading_amt_ma60: number | null;
+  trading_amt_ma120: number | null;
+  trading_amt_ma255: number | null;
 }
 
 /**
@@ -1106,7 +1090,7 @@ export interface MovAveSpreadPairSeries {
    * Defaults to "price" for backward compatibility.
    */
   kind?: MovAveSpreadPairKind;
-  rows: MovAveSpreadDetailRow[];
+  rows: MovAveSpreadPairRow[];
 }
 
 /** Latest snapshot of one pair's gap_value at the asset's most recent date. */
@@ -1140,51 +1124,42 @@ export interface MovAveSpreadCodesResponse {
   codes: MovAveSpreadCodeRow[];
 }
 
-/** One market-hype EPISODE from stats.mov_ave_market_hypes: a
- *  CONCATENATED span of trading dates anchored on a maximal run of
- *  consecutive hyped dates and extended through the surrounding
- *  check-in evidence (the W rows before the run's first hyped date,
- *  back to its first check-in, and the W rows after the last hyped
- *  date, to its last check-in). startDate / endDate bracket the span;
- *  hypeDays is the span length in trading dates, BUCKETED into
- *  [minCheckinPeriod, next window) — minCheckinPeriod is the bucket's
- *  MINIMUM span, the next check-in window (5100 = the whole ±10y base
- *  for 255d) its exclusive maximum, so one calendar turmoil lands in
- *  exactly the bucket matching its length. A date is hyped when,
- *  within the last W (min_checkin_period) trading rows ending at it, more
- *  than min_checkin_satisfaction_threshold percent of the dates are
- *  check-ins (trading_amount AND std_{W}days both above their centered
- *  20-year — ±10 trading years around each audited date — percentile
- *  thresholds). */
-export interface MovAveSpreadHypeEpisode {
+/** The market-regime taxonomy (stats.market_regimes — the daily
+ *  4-state label built by builds.market_regimes with shift-1 trailing
+ *  inputs, no look-ahead): hot = elevated volatility WITH volume
+ *  expansion (the retired boolean "hyped"), panic = elevated volatility
+ *  WITHOUT volume expansion (exhaustion/unwind — invisible to the old
+ *  AND-gated hype boolean), quiet = volume expansion without price
+ *  movement, calm = everything else. */
+export type MarketRegime = "calm" | "hot" | "panic" | "quiet";
+
+/** One CONTIGUOUS same-regime run from the stats.market_regime_spans
+ *  table (materialized by builds.market_regimes over the daily
+ *  registry): startDate / endDate bracket the span (inclusive),
+ *  spanDays is its trading-date count. The UI shading source that
+ *  replaces the retired hype episodes. */
+export interface MarketRegimeSpan {
+  regime: MarketRegime;
   startDate: string;
   endDate: string;
-  hypeDays: number;
-  /** Days within the episode span on which the liquidity leg
-   *  (trading_amount > its centered-20y percentile) individually
-   *  checked in. Optional: absent on rows built before the column
-   *  existed. */
-  tradingAmtHypeDays?: number;
-  /** Days within the episode span on which the volatility leg
-   *  (std_{W}days > its centered-20y percentile) individually checked
-   *  in. Optional: absent on rows built before the column existed. */
-  stdHypeDays?: number;
+  spanDays: number;
 }
 
-/** Market-hype episodes keyed by check-in window (5/20/60/120/255) — one
- *  episode list per window; windows with no episodes are absent from the
- *  map. Source: stats.mov_ave_market_hypes. */
-export type MovAveSpreadHypeEpisodes = Record<number, MovAveSpreadHypeEpisode[]>;
+/** Regime spans keyed by regime — one span list per regime; regimes
+ *  with no spans are absent from the map. Source:
+ *  stats.market_regime_spans. */
+export type MarketRegimeSpans = Record<MarketRegime, MarketRegimeSpan[]>;
 
-/** Response for GET /api/analysis/market-hypes?sec_type=…&code=… — one
- *  (sec_type, code)'s market-hype EPISODES, keyed by check-in window.
- *  Serves the shared CodeTrendChart's Hypes toggle: every page's code
- *  trend can shade the code's hyped date periods (light purple) from the
- *  same endpoint, regardless of which analysis page owns the chart. */
-export interface MarketHypeEpisodesResponse {
+/** Response for GET /api/analysis/market-regimes?sec_type=…&code=… —
+ *  one (sec_type, code)'s contiguous regime spans, keyed by regime.
+ *  Serves the shared CodeTrendChart's Regimes toggle and the MA-Spread
+ *  panel's regime chip shading from the same endpoint, regardless of
+ *  which analysis page owns the chart. Replaces the retired
+ *  MarketHypeEpisodesResponse. */
+export interface MarketRegimeSpansResponse {
   secType: string;
   code: string;
-  episodes: MovAveSpreadHypeEpisodes;
+  spans: Partial<MarketRegimeSpans>;
 }
 
 /** One band-BREAK excursion streak from
@@ -1254,27 +1229,53 @@ export interface MovAveSpreadPriceVsAmtDay {
   vol: MovAveSpreadPxVolVolState;
 }
 
-/** Response for GET /chart?sec_type=etf&code=510050 — all pair time series for one asset. */
+/** Which optional metric group the /extras endpoint loads. Each group feeds
+ *  one of the MA-Spread panel's on-demand control sections:
+ *    amt     — the 5 Trading Amt/MA pair series (Amt/MA chips → envelope view)
+ *    ohlc    — rolling-window OHLC extrema (OHLC Window buttons → high/low
+ *              envelope + roof/floor trendlines)
+ *    streaks — band-break streaks (High/Low Streaks buttons' availability)
+ *    pxvol   — per-date Price × Trading-Amount states (Px-Vol States shading) */
+export type MovAveSpreadMetric = "amt" | "ohlc" | "streaks" | "pxvol";
+
+/** All metric groups, in canonical order (used to normalize the query param). */
+export const MOV_AVE_SPREAD_METRICS = ["amt", "ohlc", "streaks", "pxvol"] as const;
+
+/**
+ * Response for GET /chart — the DEFAULT load: the 18 Simple-MA + EMA pair
+ * series with trimmed rows, plus the ONE shared per-date tooltip-metrics
+ * array. The Amt/MA pairs, OHLC extrema, streaks, and px-vol states are
+ * NOT included — they load on demand via /extras so the panel renders as
+ * soon as the pair views are ready.
+ */
 export interface MovAveSpreadChartResponse {
   code: string;
   name: string;
-  /** Pair time series (9 Simple MA + 9 EMA + 5 trading-amt = 23 total). */
+  /** 18 pair time series (9 Simple MA + 9 EMA). */
   pairs: MovAveSpreadPairSeries[];
-  /** Rolling-window OHLC extrema, one row per date, index-aligned with every
-   *  pair's rows (all pairs share one date axis). Source:
-   *  analysis.mov_ave_spreads_detail_ohlc — used by the OHLC-window
-   *  roof/floor trendline overlay. */
-  ohlc: MovAveSpreadOhlcRow[];
-  /** High/low band-BREAK excursion streaks shipped FLAT for ALL
-   *  (period, pctType) combos — the client filters by its nested
-   *  period→pct selection (source: analysis.mov_ave_high_low_pct_streaks,
-   *  side derived at query time). Optional so older cached responses
-   *  without the field still typecheck. */
+  /** Per-date tooltip metrics shared by every pair series — index-aligned
+   *  with each pair's rows (all pairs share one date axis). ONE copy instead
+   *  of duplicated into every pair's rows. */
+  shared: MovAveSpreadSharedMetricsRow[];
+}
+
+/** Response for GET /extras?sec_type=…&code=…&metrics=amt,ohlc — only the
+ *  requested groups are present (the rest is undefined). */
+export interface MovAveSpreadExtrasResponse {
+  code: string;
+  sec_type: MaSpreadSecType;
+  /** The groups served in this response (normalized to canonical order). */
+  metrics: MovAveSpreadMetric[];
+  /** 5 trading-amount pair series (kind "amt"; rows are MovAveSpreadAmtRow). */
+  amtPairs?: MovAveSpreadPairSeries[];
+  /** Rolling-window OHLC extrema (all 7 windows), index-aligned with the
+   *  chart response's pair rows. */
+  ohlc?: MovAveSpreadOhlcRow[];
+  /** High/low band-BREAK excursion streaks, flat across all (period,
+   *  pctType) combos — gates the High/Low Streaks buttons. */
   highLowStreaks?: MovAveSpreadHighLowStreak[];
-  /** Per-date Price × Trading-Amount state registry rows (source:
-   *  analysis.mov_ave_price_vs_amt) — drives the Px-Vol States button
-   *  row's date shading. Optional so older cached responses without
-   *  the field still typecheck. */
+  /** Per-date Price × Trading-Amount state registry rows — drives the
+   *  Px-Vol States shading. */
   priceVsAmt?: MovAveSpreadPriceVsAmtDay[];
 }
 
@@ -1282,7 +1283,8 @@ export interface MovAveSpreadChartResponse {
 //  Analysis Commons — Forecast buckets (analysis_forecasts schema)
 //    mov_rsi / mov_std / px_vol — bucket-definition (motivation)
 //      tables, each row linking 1:1 via forecast_id to its forecast_results
-//      rows (normalized: 4 period rows next/5d/20d/60d).
+//      rows (normalized: 3 period rows next/5d/20d + the blended
+//      'mixed' row).
 //    Served by GET /api/analysis/mov-ave-spread/forecast — the MA-Spread
 //    panel's second plot: a config→result table beneath the spread chart.
 // ----------------------------------------------------------------------------
@@ -1292,9 +1294,33 @@ export interface MovAveSpreadChartResponse {
  *  the family has no tab and no kind here.) */
 export type ForecastKind = "mov_rsi" | "mov_std" | "mov_pairs" | "mov_pairs_ema" | "px_vol" | "margin_ratio" | "high_low_streaks" | "pe" | "dividend";
 
+/** One anchor-delay rung of the bucket's delay ladder (the
+ *  forecast_results delay 0..5 axis — the 2026-09-21 incremental-anchor
+ *  convention: a persistent qualifying streak re-forecasts from EACH of
+ *  its first 6 days, so delay d's stats are conditioned on the signal
+ *  having lasted d + 1 days). */
+export interface DelayLadderRung {
+  /** The anchor delay: 0 = the streak's first qualifying day (the
+   *  moment the signal becomes observable). */
+  delay: number;
+  /** Trigger anchors with a valid blended forward change — the mixed
+   *  row's occurrence count at this delay. */
+  n: number;
+  /** Sign-aligned blended mean forward change (top → −ave_change,
+   *  bottom → +; flat sides raw) — the "expected reversal return if
+   *  the signal is `delay` days old" number the decay rule reads. */
+  dir_ave: number | null;
+  /** Sign-aligned per-horizon means for the rung tooltip. */
+  dir_ave_next: number | null;
+  dir_ave_5d: number | null;
+  dir_ave_20d: number | null;
+  /** Blended reversal probability at the fixed 1% bar. */
+  reverse_prob: number | null;
+}
+
 /** The forecast_results numeric columns: mean + std-dev of the forward
- *  fractional changes at all 4 horizons; close-based max/min forward
- *  changes at the 5d/20d/60d horizons only; per-horizon P(>1% reversal)
+ *  fractional changes at all 3 horizons; close-based max/min forward
+ *  changes at the 5d/20d horizons only; per-horizon P(>1% reversal)
  *  and occurrence counts. */
 export interface ForecastResultCols {
   /** The bucket's surrogate id into analysis_forecasts.forecast_results —
@@ -1302,46 +1328,62 @@ export interface ForecastResultCols {
    *  (fetchForecastTriggerDates) and to the 4 period rows behind these
    *  pivoted columns. */
   forecast_id: number;
+  /** The bucket's mean TRIGGER DELAY (from the identities registry via
+   *  the row's forecast_id): the mean trading-day offset of the
+   *  bucket's emitted anchor triggers within their streaks, CAPPED at
+   *  5. 0 for 1-day / state-family signals. null on rows written
+   *  before the column existed. */
+  delayed_signal_days: number | null;
+  /** The bucket's anchor-delay ladder (the delay 0..5 forecast rows,
+   *  sign-aligned, ASC by delay; delay 0 first — the row's pivoted
+   *  columns above ARE the delay-0 stats). Null when the ladder query
+   *  returned nothing for the bucket. */
+  delay_ladder?: DelayLadderRung[] | null;
+  /** The highest delay whose sign-aligned blended mean is still
+   *  DECAYING (strictly below the previous rung's and positive — the
+   *  reversal edge fades as the signal ages; per the study rule the
+   *  ladder "stops" at the first rung that breaks the decay). null =
+   *  no positive edge at delay 0 or a flat side (no directional
+   *  claim). Rungs past decay_stop render de-emphasized. */
+  decay_stop?: number | null;
   ave_next_change: number | null;
   ave_next_5d_change: number | null;
   ave_next_20d_change: number | null;
-  ave_next_60d_change: number | null;
   /** Std-dev of the n-day forward fractional change over the same
    *  bucket days as the ave (NULL for pre-std_change rows). */
   std_next_change: number | null;
   std_next_5d_change: number | null;
   std_next_20d_change: number | null;
-  std_next_60d_change: number | null;
   max_5d_change: number | null;
   max_20d_change: number | null;
-  max_60d_change: number | null;
   min_5d_change: number | null;
   min_20d_change: number | null;
-  min_60d_change: number | null;
   reverse_prob: number | null;
   reverse_prob_5d: number | null;
   reverse_prob_20d: number | null;
-  reverse_prob_60d: number | null;
   /** Bucket days with a valid {n}-day forward change — the mean/prob
    *  denominator per horizon. NULL for pre-migration rows. */
   occurrence_count_next: number | null;
   occurrence_count_5d: number | null;
   occurrence_count_20d: number | null;
-  occurrence_count_60d: number | null;
 }
 
 /** One mov_rsi bucket row (RSI extreme-percentile bucket) + its results.
  *  Bucket key: (stat_month, rsi_window, side, pct,
- *  is_market_hyped). */
+ *  regime_state). */
 export interface MovRsiForecastRow extends ForecastResultCols {
   stat_month: string;
   rsi_window: number;
   side: "top" | "bottom";
   pct: number;
-  is_market_hyped: boolean;
+  regime_state: MarketRegime;
+  /** Per-code self-adaptive regime weight
+   *  (analysis_forecasts.regime_weights) — evidence tier; null when
+   *  no fit window exists. */
+  regime_weight?: number | null;
   /** The bucket's MIXED signal bool — TRUE when the row's own
    *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  profile: 5d 65% / next 25% / 20d 10%) clears the
    *  forecast-result gate the signals layer applies (the same rule that
    *  emits its signal days). */
   in_signals: boolean;
@@ -1349,16 +1391,20 @@ export interface MovRsiForecastRow extends ForecastResultCols {
 
 /** One mov_std bucket row (Bollinger-breach bucket) + its results.
  *  Bucket key: (stat_month, ma_window, k, side,
- *  is_market_hyped). */
+ *  regime_state). */
 export interface MovStdForecastRow extends ForecastResultCols {
   stat_month: string;
   ma_window: number;
   k: number;
   side: "upper" | "lower";
-  is_market_hyped: boolean;
+  regime_state: MarketRegime;
+  /** Per-code self-adaptive regime weight
+   *  (analysis_forecasts.regime_weights) — evidence tier; null when
+   *  no fit window exists. */
+  regime_weight?: number | null;
   /** The bucket's MIXED signal bool — TRUE when the row's own
    *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  profile: 5d 65% / next 25% / 20d 10%) clears the
    *  forecast-result gate the signals layer applies (the same rule that
    *  emits its signal days). */
   in_signals: boolean;
@@ -1369,7 +1415,7 @@ export interface MovStdForecastRow extends ForecastResultCols {
  *  price_vs_ma{pair_window} (fast_leg "price", the close price)
  *  relative-MA spread of analysis.mov_ave_spreads_detail) + its
  *  results. Bucket key: (stat_month, fast_leg, pair_window, side,
- *  is_market_hyped). */
+ *  regime_state). */
 export interface MovPairsForecastRow extends ForecastResultCols {
   stat_month: string;
   /** Fast leg of the pair: "ma5" — ma5_vs_ma{pair_window}; "price" —
@@ -1382,10 +1428,14 @@ export interface MovPairsForecastRow extends ForecastResultCols {
    *  <= 0 — ma5 rises through the slow MA) / bottom = cross DOWN /
    *  death cross (spread turns < 0 from >= 0). */
   side: "top" | "bottom";
-  is_market_hyped: boolean;
+  regime_state: MarketRegime;
+  /** Per-code self-adaptive regime weight
+   *  (analysis_forecasts.regime_weights) — evidence tier; null when
+   *  no fit window exists. */
+  regime_weight?: number | null;
   /** The bucket's MIXED signal bool — TRUE when the row's own
    *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  profile: 5d 65% / next 25% / 20d 10%) clears the
    *  forecast-result gate the signals layer applies (the same rule that
    *  emits its signal days). */
   in_signals: boolean;
@@ -1396,7 +1446,7 @@ export interface MovPairsForecastRow extends ForecastResultCols {
  *  ema6_vs_ema{pair_window} (fast_leg "ema6") or price_vs_ema{pair_window}
  *  (fast_leg "price", the close price) relative-EMA spread of
  *  analysis.mov_ave_spreads_detail_ema. Bucket key: (stat_month,
- *  fast_leg, pair_window, side, is_market_hyped). */
+ *  fast_leg, pair_window, side, regime_state). */
 export interface MovPairsEmaForecastRow extends ForecastResultCols {
   stat_month: string;
   /** Fast leg of the pair: "ema6" — ema6_vs_ema{pair_window}; "price" —
@@ -1409,10 +1459,14 @@ export interface MovPairsEmaForecastRow extends ForecastResultCols {
    *  <= 0 — ema6 rises through the slow EMA) / bottom = cross DOWN /
    *  death cross (spread turns < 0 from >= 0). */
   side: "top" | "bottom";
-  is_market_hyped: boolean;
+  regime_state: MarketRegime;
+  /** Per-code self-adaptive regime weight
+   *  (analysis_forecasts.regime_weights) — evidence tier; null when
+   *  no fit window exists. */
+  regime_weight?: number | null;
   /** The bucket's MIXED signal bool — TRUE when the row's own
    *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  profile: 5d 65% / next 25% / 20d 10%) clears the
    *  forecast-result gate the signals layer applies (the same rule that
    *  emits its signal days). */
   in_signals: boolean;
@@ -1420,7 +1474,7 @@ export interface MovPairsEmaForecastRow extends ForecastResultCols {
 
 /** One px_vol bucket row (σ-standardized price-speed × z-scored 量比
  *  state cell) + its results. Bucket key: (stat_month, px_speed,
- *  vol_state, is_market_hyped). State cells — NO cooldown (every
+ *  vol_state, regime_state). State cells — NO cooldown (every
  *  qualifying day joins). */
 export interface PxVolForecastRow extends ForecastResultCols {
   stat_month: string;
@@ -1432,10 +1486,14 @@ export interface PxVolForecastRow extends ForecastResultCols {
   /** Reversal side of reverse_prob: top (up speeds) / bottom (down
    *  speeds) / flat (no directional claim — reverse_prob NULL). */
   side: "top" | "bottom" | "flat";
-  is_market_hyped: boolean;
+  regime_state: MarketRegime;
+  /** Per-code self-adaptive regime weight
+   *  (analysis_forecasts.regime_weights) — evidence tier; null when
+   *  no fit window exists. */
+  regime_weight?: number | null;
   /** The bucket's MIXED signal bool — TRUE when the row's own
    *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  profile: 5d 65% / next 25% / 20d 10%) clears the
    *  forecast-result gate the signals layer applies (the same rule that
    *  emits its signal days). */
   in_signals: boolean;
@@ -1448,7 +1506,7 @@ export interface PxVolForecastRow extends ForecastResultCols {
 
 /** One margin_ratio bucket row (margin-buy intensity z-score state —
  *  融资买入额/成交额 ratio vs the code's own trailing distribution) + its
- *  results. Bucket key: (stat_month, ratio_state, is_market_hyped).
+ *  results. Bucket key: (stat_month, ratio_state, regime_state).
  *  State cells — NO cooldown (every qualifying day joins). ETF + Stock
  *  only (index has no margin data). */
 export interface MarginRatioForecastRow extends ForecastResultCols {
@@ -1462,10 +1520,14 @@ export interface MarginRatioForecastRow extends ForecastResultCols {
    *  study's bearish reading) / bottom (vlow/low/no_buy) / flat (mid —
    *  reverse_prob NULL). */
   side: "top" | "bottom" | "flat";
-  is_market_hyped: boolean;
+  regime_state: MarketRegime;
+  /** Per-code self-adaptive regime weight
+   *  (analysis_forecasts.regime_weights) — evidence tier; null when
+   *  no fit window exists. */
+  regime_weight?: number | null;
   /** The bucket's MIXED signal bool — TRUE when the row's own
    *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  profile: 5d 65% / next 25% / 20d 10%) clears the
    *  forecast-result gate the signals layer applies (the same rule that
    *  emits its signal days). */
   in_signals: boolean;
@@ -1478,64 +1540,63 @@ export interface MarginRatioForecastRow extends ForecastResultCols {
   mean_z: number | null;
 }
 
-/** One pe bucket row (PE z-score state — the raw pe series of
- *  analysis.pe vs the code's own trailing distribution) + its results.
- *  Bucket key: (stat_month, val_state, is_market_hyped). State cells —
- *  STREAK-MERGED (consecutive same-state days = ONE mid-anchored
- *  signal). */
+/** One pe bucket row (PE extreme-percentile bucket — the raw pe series
+ *  of analysis.pe vs the code's own trailing distribution, the mov_rsi
+ *  pct convention) + its results. Bucket key: (stat_month, side, pct,
+ *  regime_state). Qualifying runs STREAK-MERGED (consecutive
+ *  qualifying days = ONE mid-anchored signal). */
 export interface PeForecastRow extends ForecastResultCols {
   stat_month: string;
-  /** Valuation z state: vlow (z <= -2) / low (-2,-1] / mid (-1,+1] /
-   *  high (+1,+2] / vhigh (z > +2) of the code's rolling-1220-row
-   *  (min 250) pe moments shifted 1 row. */
-  val_state: "vlow" | "low" | "mid" | "high" | "vhigh";
-  /** Reversal side of reverse_prob — pe is LOWER the better: high/vhigh
-   *  (expensive) = top (bearish), vlow/low (cheap) = bottom; mid = flat
-   *  (reverse_prob NULL). */
-  side: "top" | "bottom" | "flat";
-  is_market_hyped: boolean;
+  /** Reversal side of reverse_prob — pe is LOWER the better: the
+   *  top-pct% (expensive) days = top (bearish), the bottom-pct% (cheap)
+   *  days = bottom (bullish). */
+  side: "top" | "bottom";
+  /** Percentile width of the extreme bucket: 1 / 5 / 10 / 25. The
+   *  threshold is the trailing 5-year window's (linearly-interpolated)
+   *  percentile of pe over non-NULL values. */
+  pct: number;
+  regime_state: MarketRegime;
+  /** Per-code self-adaptive regime weight
+   *  (analysis_forecasts.regime_weights) — evidence tier; null when
+   *  no fit window exists. */
+  regime_weight?: number | null;
   /** The bucket's MIXED signal bool — TRUE when the row's own
    *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  profile: 5d 65% / next 25% / 20d 10%) clears the
    *  forecast-result gate the signals layer applies (the same rule that
    *  emits its signal days). */
   in_signals: boolean;
-  /** Mean raw pe ratio over the bucket's days (from the linked
-   *  forecast_results.config JSONB). */
-  mean_metric: number | null;
-  /** Mean z-score over the bucket's days (same config JSONB). */
-  mean_z: number | null;
 }
 
-/** One dividend bucket row (dividend-yield z-score state — the
- *  trailing-12m D/P series of analysis.dividends vs the code's own
- *  trailing distribution) + its results. Bucket key: (stat_month,
- *  val_state, is_market_hyped). State cells — STREAK-MERGED
- *  (consecutive same-state days = ONE mid-anchored signal). Dividend
- *  rows exist only where the code has payout history. */
+/** One dividend bucket row (dividend-yield extreme-percentile bucket —
+ *  the trailing-12m D/P series of analysis.dividends vs the code's own
+ *  trailing distribution, the mov_rsi pct convention) + its results.
+ *  Bucket key: (stat_month, side, pct, regime_state). Qualifying
+ *  runs STREAK-MERGED (consecutive qualifying days = ONE mid-anchored
+ *  signal). Dividend rows exist only where the code has payout
+ *  history. */
 export interface DividendForecastRow extends ForecastResultCols {
   stat_month: string;
-  /** Valuation z state: vlow (z <= -2) / low (-2,-1] / mid (-1,+1] /
-   *  high (+1,+2] / vhigh (z > +2) of the code's rolling-1220-row
-   *  (min 250) dividend_yield moments shifted 1 row. */
-  val_state: "vlow" | "low" | "mid" | "high" | "vhigh";
   /** Reversal side of reverse_prob — the yield is HIGHER the better
-   *  (the REVERSE of the pe family's mapping): high/vhigh (cheap,
-   *  well-supported) = bottom (bullish), vlow/low = top (bearish);
-   *  mid = flat (reverse_prob NULL). */
-  side: "top" | "bottom" | "flat";
-  is_market_hyped: boolean;
+   *  (the REVERSE of the pe family's mapping): the top-pct% (cheap,
+   *  well-supported) days = bottom (bullish), the bottom-pct% days =
+   *  top (bearish). */
+  side: "top" | "bottom";
+  /** Percentile width of the extreme bucket: 1 / 5 / 10 / 25. The
+   *  threshold is the trailing 5-year window's (linearly-interpolated)
+   *  percentile of dividend_yield over non-NULL values. */
+  pct: number;
+  regime_state: MarketRegime;
+  /** Per-code self-adaptive regime weight
+   *  (analysis_forecasts.regime_weights) — evidence tier; null when
+   *  no fit window exists. */
+  regime_weight?: number | null;
   /** The bucket's MIXED signal bool — TRUE when the row's own
    *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  profile: 5d 65% / next 25% / 20d 10%) clears the
    *  forecast-result gate the signals layer applies (the same rule that
    *  emits its signal days). */
   in_signals: boolean;
-  /** Mean fractional dividend yield (D/P) over the bucket's days (from
-   *  the linked forecast_results.config JSONB). */
-  mean_metric: number | null;
-  /** Mean z-score over the bucket's days (same config JSONB). */
-  mean_z: number | null;
 }
 
 /** One high_low_streaks bucket row (MA-Spread High/Low streak — a
@@ -1543,7 +1604,7 @@ export interface DividendForecastRow extends ForecastResultCols {
  *  ((day_count-1)//2 + 1)-th trading day of the span, e.g. an 8-day
  *  streak anchors its 4th day; EX-POST anchor — the streak length is
  *  known only after the streak closes) + its results. Bucket key:
- *  (stat_month, band_period, pct_type, side, is_market_hyped). One
+ *  (stat_month, band_period, pct_type, side, regime_state). One
  *  trigger per streak — NO cooldown. */
 export interface HighLowStreaksForecastRow extends ForecastResultCols {
   stat_month: string;
@@ -1558,10 +1619,14 @@ export interface HighLowStreaksForecastRow extends ForecastResultCols {
    *  BELOW-band (reverse_prob counts UP moves — the mean-reversion
    *  reading). */
   side: "top" | "bottom";
-  is_market_hyped: boolean;
+  regime_state: MarketRegime;
+  /** Per-code self-adaptive regime weight
+   *  (analysis_forecasts.regime_weights) — evidence tier; null when
+   *  no fit window exists. */
+  regime_weight?: number | null;
   /** The bucket's MIXED signal bool — TRUE when the row's own
    *  forecast_results period='mixed' row (the weight-blended forward
-   *  profile: 5d 50% / next 30% / 20d 15% / 60d 5%) clears the
+   *  profile: 5d 65% / next 25% / 20d 10%) clears the
    *  forecast-result gate the signals layer applies (the same rule that
    *  emits its signal days). */
   in_signals: boolean;
@@ -1594,7 +1659,7 @@ export interface ForecastResponse {
 }
 
 /** One forecast horizon period (forecast_results.period values). */
-export type ForecastPeriod = "next" | "5d" | "20d" | "60d";
+export type ForecastPeriod = "next" | "5d" | "20d";
 
 /** One merged forecast signal's qualifying streak period (the run of
  *  consecutive days that produced the mid-anchored signal), inclusive. */
@@ -1659,9 +1724,16 @@ export interface ForecastIdentityResponse {
   kind: ForecastKind | null;
   /** The bucket's mean streak length per merged signal (the 2026-09
    *  streak-merge: consecutive qualifying days are ONE mid-anchored
-   *  signal). 1 for the state families (every qualifying day is a
-   *  1-day signal); high_low_streaks reports its config mean_day_count. */
+   *  signal) — whole trading days. 1 for the state families (every
+   *  qualifying day is a 1-day signal); high_low_streaks reports its
+   *  config mean_day_count. */
   streak_signal_days: number | null;
+  /** The bucket's mean TRIGGER DELAY: whole trading days from a merged
+   *  signal's FIRST qualifying day (streak start) to the MID day the
+   *  forecast actually triggers at — mean((run_len − 1) // 2), CAPPED
+   *  at 5. 0 for 1-day / state-family signals (trigger = the signal
+   *  day itself). */
+  delayed_signal_days: number | null;
   lookback_period: string;
 }
 
@@ -3481,6 +3553,90 @@ export type AiDayCount = NewsDayCount;
 
 /** Response for GET /api/ai/calendar (same shape as the news calendar). */
 export type AiCalendarResponse = NewsCalendarResponse;
+
+// ----------------------------------------------------------------------------
+// AI ask history (text.llm_qa_by_ask family + multi_media.src_images, written
+// by llm_agents.llm_ask.storage — every data_viz "AI Ask" modal submit). The
+// AiPage "QA by Ask" feed renders it with the same shape conventions as the
+// knowledge-base endpoints above; the ask "date" is ask_date mapped to the
+// latest trading day on/before it.
+// ----------------------------------------------------------------------------
+
+/** One persisted ask (item-list shape — answer truncated to a 240-char
+ *  snippet; failed asks carry the error tail there instead). */
+export interface AiAskHistoryItem {
+  ask_id: number;
+  question: string;
+  answer_snippet: string | null;
+  /** 'answered' | 'failed' — failed asks surface with their error tail. */
+  status: string;
+  online_search: boolean;
+  /** The ask's primary instrument code (first scope instrument). */
+  code: string | null;
+  /** Product identity tag (spec product id, else the submitting page path). */
+  product: string | null;
+  llm_model: string | null;
+  language: string | null;
+  /** ask_date as a YYYY-MM-DD Asia/Shanghai day, mapped to the latest
+   *  trading day on/before it (the calendar key). */
+  date: string;
+  /** updated_at as an Asia/Shanghai timestamp string. */
+  updated_at: string;
+  /** Screenshots linked through text.llm_qa_ask_context_images. */
+  n_images: number;
+  /** Derived keyword rows (text.llm_qa_keywords_by_ask). */
+  n_keywords: number;
+}
+
+/** One keyword row of an ask (derived at persist time from the payload). */
+export interface AiAskHistoryKeyword {
+  keyword: string;
+  /** 'code' | 'name' | 'product' | 'item' | 'series' — where the keyword
+   *  came from (see text.llm_qa_keywords_by_ask.kind). */
+  kind: string;
+}
+
+/** One screenshot of an ask (metadata only — bytes come from
+ *  GET /api/ai/ask-image?image_id=). */
+export interface AiAskHistoryImage {
+  image_id: number;
+  /** Screenshot slot order within the ask. */
+  position: number;
+  mime_type: string;
+  byte_size: number;
+  width: number | null;
+  height: number | null;
+  /** Producer hint, e.g. 'ai-ask screenshot 2/4'. */
+  label: string | null;
+}
+
+/** Full ask row for the feed card's click-to-expand fetch. */
+export interface AiAskHistoryDetail extends Omit<AiAskHistoryItem, "answer_snippet"> {
+  /** Complete answer (null when status = 'failed'). */
+  answer: string | null;
+  /** Failure detail when status = 'failed'. */
+  error_tail: string | null;
+  search_query: string | null;
+  provider: string | null;
+  // Context summary (from text.llm_qa_ask_context; the full plotInfo JSONB
+  // stays server-side — these are the display/searchable fields).
+  chart_kind: string | null;
+  chart_title: string | null;
+  /** Route path the ask was submitted from. */
+  page: string | null;
+  industry_id: string | null;
+  sector_id: string | null;
+  window_start: string | null;
+  window_end: string | null;
+  keywords: AiAskHistoryKeyword[];
+  images: AiAskHistoryImage[];
+}
+
+/** Response for GET /api/ai/ask-items. */
+export interface AiAskHistoryItemsResponse {
+  total: number;
+  items: AiAskHistoryItem[];
+}
 
 // ---------------------------------------------------------------------------
 //  Sec board map (stats.sec_board_map) — the code-trend header's board tag

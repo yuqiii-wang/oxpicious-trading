@@ -78,6 +78,7 @@ import CodeTrendChart, {
 } from "@/components/CodeTrendChart";
 import type { OhlcTradeSignal } from "@/components/StockOhlcChart";
 import { DateSelector } from "@/shared/components/date-selector";
+import { regimeAccentColor } from "@/shared/charts/regimeBands";
 
 type SignalsMode = "analysis" | "strategy";
 type SecType = "index" | "etf" | "stock";
@@ -659,12 +660,13 @@ function SignalTable({
                     <Box
                       component="span"
                       sx={{
-                        color: s.is_market_hyped
-                          ? "text.primary"
-                          : "text.disabled",
+                        color:
+                          regimeAccentColor(s.regime_state) ??
+                          "text.disabled",
+                        fontWeight: 600,
                       }}
                     >
-                      {s.is_market_hyped ? "●" : "·"}
+                      {s.regime_state === "calm" ? "·" : "●"}
                     </Box>
                   </TableCell>
                   <TableCell
@@ -866,12 +868,13 @@ function HistorySignalsTable({ rows }: { rows: TradingSignal[] }) {
                     <Box
                       component="span"
                       sx={{
-                        color: s.is_market_hyped
-                          ? "text.primary"
-                          : "text.disabled",
+                        color:
+                          regimeAccentColor(s.regime_state) ??
+                          "text.disabled",
+                        fontWeight: 600,
                       }}
                     >
-                      {s.is_market_hyped ? "●" : "·"}
+                      {s.regime_state === "calm" ? "·" : "●"}
                     </Box>
                   </TableCell>
                 </TableRow>

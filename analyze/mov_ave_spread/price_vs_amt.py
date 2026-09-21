@@ -81,7 +81,7 @@ import numpy as np
 import pandas as pd
 
 from _common.db_commons import csv_copy_from_frame_async
-from _common.df_utils import column_subset
+from _common.df_utils import column_subset, host_unique
 from analyze._common import upsert_analysis_identity
 from analyze.analysis_forecasts.config import (
     PX_VOL_AMT_METRIC,
@@ -352,7 +352,9 @@ async def run_price_vs_amt(
     if sec_type is not None:
         sec_types = (sec_type,)
     else:
-        sec_types = tuple(sorted(df["sec_type"].unique()))
+        sec_types = tuple(sorted(set(host_array(
+            df["sec_type"].to_numpy()
+        ).tolist())))
 
     # ---- Step 1: fetch clean source + features + classification ------
     # add_px_vol_features groups by ``code`` — codes are unique within
@@ -365,11 +367,10 @@ async def run_price_vs_amt(
           f"{PX_VOL_Z_SHRINK}, σ floor {PX_VOL_SIGMA_FLOOR})...")
     parts: list[pd.DataFrame] = []
     for st in sec_types:
-        codes = (
-            df.loc[df["sec_type"] == st, "code"].unique().tolist()
-            if code_filter is None
-            else [code_filter]
-        )
+        if code_filter is None:
+            codes = host_unique(df.loc[df["sec_type"] == st, "code"])
+        else:
+            codes = [code_filter]
         if not codes:
             continue
         src = await fetch_price_vs_amt_source(conn, st, codes)

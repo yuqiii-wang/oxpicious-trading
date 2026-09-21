@@ -393,12 +393,12 @@ export function BenchmarkPriceChart({
   const aiAsk = useMemo<AiAskSpec>(
     () => ({
       intro:
-        `Daily price chart of benchmark ${benchmarkCode || "(none selected)"}. ` +
+        `Benchmark ${benchmarkCode || "(none selected)"} daily price. ` +
         (priceMode === "rolling"
-          ? "Percentage mode: curves are rebased to 100 at the visible window's start, so slopes compare cumulative performance. The benchmark curve is the main line; each selected industry's contribution-excluded curve (benchmark minus that industry) is overlaid, and the shaded gap between them is what the industry added/removed over the trailing rolling window."
-          : "Absolute mode: raw daily closes; the benchmark line and each selected industry's non-this-industry price series are plotted on a shared price axis.") +
+          ? "Rebased mode: 100 × P_t/P_window-start so slopes compare cumulative performance; each selected industry overlays its contribution-excluded curve (benchmark − industry); the shaded gap = that industry's added/removed return over the trailing rolling window. Indication: swelling shade = the industry propels the benchmark; ebbing shade = its pull decays."
+          : "Absolute mode: raw daily closes on a shared price axis (benchmark + each selected industry's ex-this-industry series).") +
         (showTradingAmt
-          ? " The bar overlay (right axis) is the benchmark's daily trading amount in 亿 (hundred-million CNY); the colored segment at each bar's base is the selected industries' shared-weight proportion."
+          ? " Bars (right axis): benchmark turnover, 亿 CNY; colored base segment = selected industries' shared weight."
           : ""),
       instruments: benchmarkCode
         ? [{ code: benchmarkCode, assetClass: "index" }]

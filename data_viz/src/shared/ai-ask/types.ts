@@ -33,6 +33,11 @@ export interface AiAskSpec {
   /** What this chart shows and how to read it — shown in the modal and
    *  sent to the LLM as the chart explanation. */
   intro: string;
+  /** Stable product identity for the persisted ask history (keyword
+   *  search / the AiPage "QA by Ask" feed), e.g. "forecast",
+   *  "options-greeks". When omitted the ask falls back to the submitting
+   *  page's route path (plotInfo.page, set by AiAskModal). */
+  product?: string;
   /** The instruments / scopes plotted (any dimension the LLM should treat
    *  as the tradeable subject). */
   instruments?: AiAskInstrument[];
@@ -58,14 +63,6 @@ export interface AiAskSpec {
    * put the ACTIVE toggle labels here and memo on the control variables.
    */
   searchKeywords?: string[];
-  /**
-   * Chart-specific question seeds, phrased as the user would ask them
-   * (max ~3). Shown as click-to-fill chips above the question box; the
-   * first one becomes the box's placeholder. This is where a chart's
-   * former long reading-guide subtitle gets repurposed — the guide moves
-   * to `intro`, its actionable angle becomes these questions.
-   */
-  suggestedQuestions?: string[];
   /** Free-form caveats worth telling the LLM (e.g. "rebased to 100"). */
   notes?: string[];
 }
@@ -85,6 +82,11 @@ export interface AiAskSeriesInfo {
   name: string;
   /** ECharts series type (line, bar, candlestick, pie, …). */
   kind: string;
+  /** Value unit. Auto-derived as "%" when the series' value axis is
+   *  percent-encoded (its label formatter renders "%") — in that case the
+   *  stats are rescaled into what the axis displays (percent points, e.g.
+   *  0.61 for a plotted fraction of 0.0061). The spec's per-series unit
+   *  overrides it. */
   unit?: string;
   description?: string;
   stats?: AiAskSeriesStat;
@@ -113,8 +115,11 @@ export interface AiAskPlotInfo {
    *  spec, auto-derived from instruments + series names when the author
    *  provides none) — instrument names + active indicator tags. */
   searchKeywords?: string[];
-  /** Chart-specific question seeds (from the spec) — click-to-fill chips in
-   *  the modal; UI affordance, the backend ignores them. */
-  suggestedQuestions?: string[];
   notes: string[];
+  /** Product identity for the persisted ask history (the spec's `product`;
+   *  absent when the author gave none — the backend then uses `page`). */
+  product?: string;
+  /** Route path the ask was submitted from (set by AiAskModal at submit) —
+   *  the product fallback for ask-history keyword search. */
+  page?: string;
 }

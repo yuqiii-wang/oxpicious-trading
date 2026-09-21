@@ -355,13 +355,13 @@ export default function RiskPanel({
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "Per-period strategy P&L (risk analytics): each period draws overlapping bars — " +
-        "translucent back bars for the worst intra-period unrealized MTM dip (red) and peak " +
-        "gain (green), and an opaque front bar for realized P&L (sum of SELLs; concentration " +
-        "hotspots at full opacity) — plus the Accumulated Total P&L equity curve (cumulative " +
-        "realized + unrealized). When the fault-tolerance stress test exists, a dashed teal " +
-        "FT Amplified line parallels it — the gap between the two curves is the realized P&L " +
-        "degradation under the amplified strategy.",
+        "Per-period strategy P&L (risk analytics): per period, translucent back bars = worst " +
+        "intra-period unrealized MTM dip (red) and peak gain (green); opaque front bar = " +
+        "realized P&L (Σ SELLs, opacity = concentration); plus the Accumulated Total P&L " +
+        "equity curve = Σ realized + unrealized. Where the stress test exists, a dashed teal " +
+        "FT Amplified line parallels it. Indication: wide red back bars = fragile periods; " +
+        "a widening FT gap = the strategy thinning under stress. Clicking a bar selects the " +
+        "period and shades its range on the main OHLC chart.",
       instruments: risks.code ? [{ code: risks.code, assetClass: risks.sec_type }] : [],
       series: [
         { name: "Max Unrealized Loss", unit: "元", description: "worst (most negative) intra-period MTM dip" },

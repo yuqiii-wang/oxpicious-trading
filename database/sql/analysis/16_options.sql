@@ -124,6 +124,20 @@ ALTER TABLE analysis.options_skewness_stats DROP COLUMN IF EXISTS corr_skewness_
 -- rebuilt: run `python -m analyze.options --force` (incremental mode only
 -- fills MISSING groups, so it would not refresh existing rows).
 
+-- Dedicated per-expiry OI stats — analysis.options_oi_stats.
+--
+-- Unlike the sibling expiry tables, rows are keyed by the REAL expiry
+-- date (NOT the collapsed open-group convention): the per-expiry
+-- tooltips need per-contract-expiry OI levels/changes, which the pooled
+-- open-group collapse (all currently-open expiries of a
+-- (option_type, underlying) merged into one mean-dated bucket) cannot
+-- represent. The collapsed identity table therefore cannot host these
+-- keys for open groups — hence NO FK to options_expiry_identity (the
+-- same exemption as options_vol_index, for the mirror reason).
+-- option_type is kept in the PK: CALL and PUT rows of a group hold the
+-- SAME value (the stats pool calls + puts), matching the sibling
+-- tables' duplicated-row convention.
+
 CREATE TABLE IF NOT EXISTS analysis.options_oi_stats (
     date                      DATE          NOT NULL,
     option_type               TEXT          NOT NULL
@@ -131,16 +145,13 @@ CREATE TABLE IF NOT EXISTS analysis.options_oi_stats (
     underlying_code           TEXT          NOT NULL,
     expiry_date               DATE          NOT NULL,
 
-    corr_put_call_ratio_vs_spot_ma5  NUMERIC(10,2),
-    corr_put_call_ratio_vs_spot_ma20  NUMERIC(10,2),
-    corr_put_call_ratio_vs_spot_ma60  NUMERIC(10,2),
+    oi_total                  NUMERIC(14,2),   -- calls+puts OI of the group on the date (contracts)
+    oi_delta_5d               NUMERIC(14,2),   -- oi_total - oi_total 5 trading sessions earlier (NULL when the group had no row then)
+    oi_delta_20d              NUMERIC(14,2),   -- oi_total - oi_total 20 trading sessions earlier
+    oi_max_20d                NUMERIC(14,2),   -- max oi_total over the trailing 20 sessions incl. the date (NULL when none)
 
     CONSTRAINT pk_options_oi_stats
-        PRIMARY KEY (underlying_code, date, option_type, expiry_date),
-    CONSTRAINT fk_options_oi_stats_expiry
-        FOREIGN KEY (underlying_code, date, option_type, expiry_date)
-        REFERENCES analysis.options_expiry_identity
-            (underlying_code, date, option_type, expiry_date)
+        PRIMARY KEY (underlying_code, date, option_type, expiry_date)
 ) PARTITION BY HASH (underlying_code);
 
 -- Native hash partitions (8) keyed by underlying_code
@@ -154,14 +165,34 @@ SELECT public.create_hash_partitions('analysis', 'options_oi_stats', 8);
 CREATE INDEX IF NOT EXISTS idx_options_oi_stats_expiry
     ON analysis.options_oi_stats (underlying_code, expiry_date, date);
 
-COMMENT ON TABLE  analysis.options_oi_stats                       IS 'Per-(underlying_code, date, option_type, expiry_date) store of precomputed options OI-related statistics for expiry groups. Stores MA5/MA20/MA60 whole-period cumulative correlation between put/call OI ratio and underlying spot price. FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.';
+-- Repurpose migration (no-op on fresh installs, where the CREATE TABLE
+-- above already has the target shape): the legacy whole-period
+-- put/call-ratio corr columns were removed as unused, and the table now
+-- stores per-REAL-expiry OI levels/changes — so the collapsed-key FK is
+-- dropped and legacy rows (collapsed keys + corr values only, detected
+-- as oi_total IS NULL after the ADD COLUMN) are purged for the
+-- incremental pipeline to rebuild with real-expiry semantics (missing-PK
+-- detection then finds every group missing). ADD COLUMN propagates to
+-- the hash partitions automatically.
+ALTER TABLE analysis.options_oi_stats DROP CONSTRAINT IF EXISTS fk_options_oi_stats_expiry;
+ALTER TABLE analysis.options_oi_stats DROP COLUMN IF EXISTS corr_put_call_ratio_vs_spot_ma5;
+ALTER TABLE analysis.options_oi_stats DROP COLUMN IF EXISTS corr_put_call_ratio_vs_spot_ma20;
+ALTER TABLE analysis.options_oi_stats DROP COLUMN IF EXISTS corr_put_call_ratio_vs_spot_ma60;
+ALTER TABLE analysis.options_oi_stats ADD COLUMN IF NOT EXISTS oi_total     NUMERIC(14,2);
+ALTER TABLE analysis.options_oi_stats ADD COLUMN IF NOT EXISTS oi_delta_5d  NUMERIC(14,2);
+ALTER TABLE analysis.options_oi_stats ADD COLUMN IF NOT EXISTS oi_delta_20d NUMERIC(14,2);
+ALTER TABLE analysis.options_oi_stats ADD COLUMN IF NOT EXISTS oi_max_20d   NUMERIC(14,2);
+DELETE FROM analysis.options_oi_stats WHERE oi_total IS NULL;
+
+COMMENT ON TABLE  analysis.options_oi_stats                       IS 'Dedicated per-expiry options OI statistics (per-real-expiry-date — NOT the collapsed open-group convention; see the header note). Per (underlying_code, date, option_type, expiry_date) row: oi_total (calls+puts OI of the expiry group on the date, contracts), oi_delta_5d / oi_delta_20d (change vs 5/20 trading SESSIONS earlier — session offsets index the underlying''s option calendar; NULL when the group had no row at the offset session, e.g. not yet listed), oi_max_20d (max oi_total over the trailing 20 sessions incl. the date; oi_total = oi_max_20d marks a 20-session OI high). CALL and PUT rows hold the SAME value (stats pool calls + puts). No FK to options_expiry_identity (open groups'' real expiry keys are not in the collapsed identity). Built by analyze.options; all INSERTs in Python per project rule.';
 COMMENT ON COLUMN analysis.options_oi_stats.date                    IS 'Trading date.';
-COMMENT ON COLUMN analysis.options_oi_stats.option_type            IS 'Option type: CALL or PUT.';
+COMMENT ON COLUMN analysis.options_oi_stats.option_type            IS 'Option type: CALL or PUT. The CALL and PUT rows of a group hold the SAME value (group-level stats).';
 COMMENT ON COLUMN analysis.options_oi_stats.underlying_code         IS 'Underlying code (unified index codes; SZSE ETF options mapped via ETF->Index).';
-COMMENT ON COLUMN analysis.options_oi_stats.expiry_date             IS 'Exact contract expiry date.';
-COMMENT ON COLUMN analysis.options_oi_stats.corr_put_call_ratio_vs_spot_ma5 IS 'Whole-period cumulative Pearson correlation between 5-day MA of put/call OI ratio and 5-day MA of underlying spot price for this expiry group.';
-COMMENT ON COLUMN analysis.options_oi_stats.corr_put_call_ratio_vs_spot_ma20 IS 'Whole-period cumulative correlation between MA20 of put/call OI ratio and MA20 of spot price.';
-COMMENT ON COLUMN analysis.options_oi_stats.corr_put_call_ratio_vs_spot_ma60 IS 'Whole-period cumulative correlation between MA60 of put/call OI ratio and MA60 of spot price.';
+COMMENT ON COLUMN analysis.options_oi_stats.expiry_date             IS 'REAL contract expiry date (no open-group collapse). CFFEX and SZSE expiry conventions differ within a month.';
+COMMENT ON COLUMN analysis.options_oi_stats.oi_total                IS 'Total open interest of the expiry group on the date, contracts (sum over ALL active calls + puts). Feeds the per-expiry line-width encoding and the tooltip''s OI figure.';
+COMMENT ON COLUMN analysis.options_oi_stats.oi_delta_5d             IS 'oi_total minus oi_total 5 trading sessions earlier (contracts; + = positions added, − = closed/rolled away). NULL when the group has no row at the offset session.';
+COMMENT ON COLUMN analysis.options_oi_stats.oi_delta_20d            IS 'oi_total minus oi_total 20 trading sessions earlier (contracts). NULL when the group has no row at the offset session.';
+COMMENT ON COLUMN analysis.options_oi_stats.oi_max_20d              IS 'Max oi_total over the trailing 20 sessions incl. the date (contracts). oi_total == oi_max_20d ⇒ the group sits at a 20-session OI high.';
 
 CREATE TABLE IF NOT EXISTS analysis.options_iv_skew_stats (
     date                      DATE          NOT NULL,
@@ -329,7 +360,7 @@ ON CONFLICT (name) DO UPDATE SET
 
 INSERT INTO analysis.analysis_identity (name, detail_name, summary_name, last_run_datetime, description) VALUES
     ('options_oi_stats', 'options_oi_stats', NULL, NOW(),
-     'Per-(date, option_type, underlying_code, expiry_date) store of precomputed options OI-related statistics for expiry groups. Currently stores corr_put_call_ratio_vs_spot — rolling correlation between put/call OI ratio and underlying spot price. FK -> analysis.options_expiry_identity. Built by analyze.options; all INSERTs in Python per project rule.')
+     'Dedicated per-expiry options OI statistics, keyed by REAL expiry date (not the collapsed open-group convention; no FK to options_expiry_identity for that reason). Per (date, option_type, underlying_code, expiry_date): oi_total = calls+puts open interest of the expiry group (contracts), oi_delta_5d / oi_delta_20d = change vs 5/20 trading sessions earlier (NULL when the group had no row at the offset session), oi_max_20d = max oi_total over the trailing 20 sessions incl. the date. Serves the per-expiry OI tooltip stats (OI / Δ5d / Δ20d / 20d max) of the OI-weighted moneyness skew panel. Built by analyze.options; all INSERTs in Python per project rule.')
 ON CONFLICT (name) DO UPDATE SET
     detail_name       = EXCLUDED.detail_name,
     summary_name      = EXCLUDED.summary_name,

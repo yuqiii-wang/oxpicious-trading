@@ -31,6 +31,7 @@ def write_snapshot_csv(
     snapshot: dict,
     csv_subdir: str = "sse_intraday",
     csv_prefix: str = "sse_intraday",
+    fieldnames: Optional[List[str]] = None,
 ) -> Path:
     """Append one polled snapshot to the daily CSV file under temps/<subdir>/.
 
@@ -38,7 +39,10 @@ def write_snapshot_csv(
     update date). Every poll appends rows to the same daily file; the header
     is written only when the file is created (or is empty). Volume and amount
     are stored raw (shares / yuan) as returned by the endpoint.
+    ``fieldnames`` overrides the column schema (defaults to the equity
+    CSV_COLUMNS; the options asset passes OPTIONS_CSV_COLUMNS).
     """
+    columns = fieldnames if fieldnames is not None else CSV_COLUMNS
     out_dir = resolve_out_dir(__file__, csv_subdir, None)
     ds = update_dt.strftime("%Y%m%d")
     out_file = out_dir / f"{csv_prefix}_{ds}.csv"
@@ -46,12 +50,12 @@ def write_snapshot_csv(
 
     needs_header = (not out_file.exists()) or out_file.stat().st_size == 0
     with open(out_file, "a", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
+        writer = csv.DictWriter(f, fieldnames=columns, extrasaction="ignore")
         if needs_header:
             writer.writeheader()
         for code, rec in snapshot.items():
             row = {"update_time": iso, "code": code}
-            for col in CSV_COLUMNS:
+            for col in columns:
                 if col in ("update_time", "code"):
                     continue
                 row[col] = rec.get(col)

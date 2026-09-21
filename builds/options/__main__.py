@@ -1,13 +1,13 @@
-"""builds/options/__main__.py — Build both SZSE and CFFEX options data.
+"""builds/options/__main__.py — Build SZSE, CFFEX and SSE options data.
 
-Orchestrates the two sub-builders sequentially:
+Orchestrates the three sub-builders sequentially:
   1. builds.options.szse  — SZSE ETF options (native ETF codes, 1599xx)
   2. builds.options.cffex — CFFEX index options (IO/HO/MO/CO → index codes)
+  3. builds.options.sse   — SSE ETF options (native ETF codes, 510xxx/588xxx)
 
-Both write into the same 7 options_* tables. SZSE and CFFEX are
-separated by underlying_code space: SZSE keeps native ETF codes
-(e.g. 159919), CFFEX uses index codes (e.g. 000300), distinguished
-further by underlying_target_type ('ETF' vs 'INDEX').
+All three write into the same 7 options_* tables, separated by the
+exchange column (and underlying code space: SZSE 1599xx, CFFEX index codes,
+SSE 510050/510300/510500/588000/588080).
 
 With --force: truncates all 7 tables ONCE upfront, then runs both
 builders in normal (non-force) mode so they repopulate from scratch.
@@ -173,8 +173,15 @@ class OptionsBuild(DataBuild):
         from builds.options.cffex.__main__ import CffexOptionsBuild
         await self._run_child(CffexOptionsBuild, "CFFEX builder")
 
+        # ---- 3. SSE ETF options ----
         logger.info("\n" + "=" * 60)
-        logger.info("OPTIONS BUILD COMPLETE (SZSE + CFFEX)")
+        logger.info("PHASE 3: SSE ETF OPTIONS")
+        logger.info("=" * 60)
+        from builds.options.sse.__main__ import SseOptionsBuild
+        await self._run_child(SseOptionsBuild, "SSE builder")
+
+        logger.info("\n" + "=" * 60)
+        logger.info("OPTIONS BUILD COMPLETE (SZSE + CFFEX + SSE)")
         logger.info("=" * 60)
 
 

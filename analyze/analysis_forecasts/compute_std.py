@@ -11,8 +11,8 @@ grid, each MA window W and each sigma multiple k:
 band never enter a bucket.) Codes whose own history does not span the
 full window (first data date > window start) are gated out — no
 partial-window stats. Each (code, w, k, side) bucket is SPLIT into
-two rows by the PK member is_market_hyped — whether the bucket's breach
-dates fall inside the code's stats.mov_ave_market_hypes episodes:
+buckets split by regime_state — the stats.market_regimes day label
+(calm/hot/panic/quiet) of the bucket's breach days:
 one row for the hyped breach days and one for the non-hyped breach days
 (each subset emitted only where non-empty — no breach, no record).
 
@@ -60,7 +60,8 @@ class _StdEngine(WideDfEngine):
     price < ma − k·σ (NaN compares False — band-warming-up days never
     enter). The band edge is the qualifying bar, so the TRIGGER EXCESS
     is price − band. Streak-merged (consecutive breach days are ONE
-    mid-anchored signal)."""
+    signal with incremental anchor triggers at delays
+    0..TRIGGER_DELAY_MAX)."""
 
     BUCKET_COLS = ("ma_window", "k")
     MERGE = True
@@ -72,7 +73,7 @@ class _StdEngine(WideDfEngine):
         return cols
 
     def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
-        id_vars = ["code", "date", "_t", "is_hyped", "price"]
+        id_vars = ["code", "date", "_t", "regime", "price"]
         value_cols = [f"ma_{w}days" for w in MA_WINDOWS]
         long = win.melt(id_vars=id_vars, value_vars=value_cols,
                         var_name="_wcol", value_name="ma")
@@ -102,20 +103,21 @@ class _StdEngine(WideDfEngine):
         if long.empty:
             return
 
+        # The k configs cross the melted long frame ONCE — the SIDE axis
+        # must NOT ride the cross: the per-side passes below already
+        # filter + relabel this shared cand frame, so side-labeled rows
+        # would DOUBLE every qualifying day (two same-_t cells per
+        # group) and shred the streak merge into fake 1–2 day runs.
         k_small = pd.DataFrame({
-            "ma_window": [w for w in MA_WINDOWS for _ in STD_MULTIPLES
-                          for _ in STD_SIDES],
-            "side": [s for _ in MA_WINDOWS for _ in STD_MULTIPLES
-                     for s in STD_SIDES],
-            "k": [k for _ in MA_WINDOWS for k in STD_MULTIPLES
-                  for _ in STD_SIDES],
+            "ma_window": [w for w in MA_WINDOWS for _ in STD_MULTIPLES],
+            "k": [k for _ in MA_WINDOWS for k in STD_MULTIPLES],
         })
         groups = long[["ma_window", "code"]].drop_duplicates()
         cand = long.merge(
             groups.merge(k_small, on="ma_window", how="inner"),
             on=["ma_window", "code"], how="inner",
         )
-        keep = ["code", "date", "_t", "is_hyped", "ma_window", "side", "k"]
+        keep = ["code", "date", "_t", "regime", "ma_window", "side", "k"]
         cells_parts = []
         for side in STD_SIDES:
             sign = 1.0 if side == "upper" else -1.0
@@ -131,21 +133,27 @@ class _StdEngine(WideDfEngine):
         cells = pd.concat(cells_parts, ignore_index=True)
         if cells.empty:
             return
+        # regime is in the run group so each regime bucket's anchor
+        # ladder stays contiguous 0..max (a regime flip starts a fresh
+        # signal).
         yield self._streak_merge(
-            cells, group_cols=["ma_window", "k", "side", "code"],
+            cells, group_cols=["ma_window", "k", "side", "regime", "code"],
         )
 
 
 def compute_std_results(
-    *, df, first_dates, episodes, codes, sec_type, specs,
+    *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, mov_std bucket rows) per stat month."""
     engine = _StdEngine(
         df=df,
         first_dates=first_dates,
-        episodes=episodes,
+        regimes=regimes,
         codes=codes,
         sec_type=sec_type,
         specs=specs,
     )
     return engine.run()
+
+
+

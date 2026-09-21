@@ -256,12 +256,12 @@ export function IndustrySentimentsPlot({
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        `Industry sentiment view for ${chartTitle}: member index closes rebased to 100 ` +
-        "(start = 100) on a shared date axis, with the pool-size toggle highlighting " +
-        "small/mid/large members and the selected broad-market benchmarks overlaid. " +
-        "The Mean only toggle replaces member lines with the precomputed mean ±1σ band " +
-        "(single industry) or each industry's mean (multi-industry). Sub-plots below: " +
-        "the industry mean PE and total trading amount (亿元).",
+        `Industry sentiment for ${chartTitle}: member closes rebased to 100 × P_t/P_0 on a ` +
+        "shared date axis; pool-size toggle isolates small/mid/large members; selected " +
+        "broad-market benchmarks overlaid. Mean only: member lines → precomputed mean ±1σ " +
+        "band (single industry) or per-industry means (multi-industry). Sub-plots: industry " +
+        "mean PE, total trading amount (亿元). Indication: tight band = consensus tape, " +
+        "wide σ = dispersion; benchmark outrunning members = industry lagging its own beta.",
       series: [
         { name: `mean (${poolSize})`, description: "precomputed cross-member mean close (rebased), dashed" },
         { name: "+1σ", description: "upper +1σ band edge of the member dispersion" },

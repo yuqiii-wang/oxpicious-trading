@@ -28,7 +28,7 @@ import type { EChartsOption } from "echarts";
 import type { ThemeMode } from "@/store/filters";
 import { ohlcSeries } from "@/lib/ohlc";
 import { fmtNum, fmtPct } from "@/lib/series";
-import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
+import { escapeTooltipText, renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
 import {
   MA5_COLOR,
   MA60_COLOR,
@@ -320,19 +320,24 @@ export function buildSingletonStrategyOption({
         const date = dates[di] ?? "";
         const row: StrategyOhlcRow | undefined = data.ohlc[di];
         if (!row) return "";
-        const children: React.ReactNode[] = [
+        // Vertical layout: one row (div) per semantic item.
+        const rows: React.ReactNode[] = [
           tooltipComponents.Header({ children: date }),
         ];
         for (const p of arr) {
           if (p.seriesName === "OHLC") {
-            children.push(React.createElement(React.Fragment, null,
-              `${p.marker}O ${fmtNum(row.open)}  H ${fmtNum(row.high)}  L ${fmtNum(row.low)}  C ${fmtNum(row.close)}`));
+            rows.push(
+              React.createElement(React.Fragment, null, `${p.marker}O: ${fmtNum(row.open)}`),
+              `H: ${fmtNum(row.high)}`,
+              `L: ${fmtNum(row.low)}`,
+              `C: ${fmtNum(row.close)}`,
+            );
           } else if (p.seriesName === "MA5") {
-            children.push(React.createElement(React.Fragment, null, `${p.marker}MA5: ${fmtNum(row.ma5)}`));
+            rows.push(React.createElement(React.Fragment, null, `${p.marker}MA5: ${fmtNum(row.ma5)}`));
           } else if (p.seriesName === "MA60") {
-            children.push(React.createElement(React.Fragment, null, `${p.marker}MA60: ${fmtNum(row.ma60)}`));
+            rows.push(React.createElement(React.Fragment, null, `${p.marker}MA60: ${fmtNum(row.ma60)}`));
           } else if (p.seriesName === "Trading Amt") {
-            children.push(React.createElement(React.Fragment, `${p.marker}Amt: ${fmtNum((p.data as number) / 1e8, 2)}亿`));
+            rows.push(React.createElement(React.Fragment, null, `${p.marker}Amt: ${fmtNum((p.data as number) / 1e8, 2)}亿`));
           }
         }
         const decision = data.decisions.find((d) => d.exec_date === date);
@@ -342,10 +347,11 @@ export function buildSingletonStrategyOption({
             : isLastDaySell(decision)
               ? LAST_DAY_SELL_COLOR
               : DOWN_COLOR;
-          children.push(
+          rows.push(
             React.createElement("b", { style: { color: sc } },
               `${decision.side} #${decision.decision_no}`),
-            ` @ ${fmtNum(decision.fill_price, 4)} | ${stripMixPrefix(decision.signal_reason)}`,
+            `Fill Price: ${fmtNum(decision.fill_price, 4)}`,
+            `Signal: ${escapeTooltipText(stripMixPrefix(decision.signal_reason))}`,
           );
         }
         const daily = dailyByDate.get(date);
@@ -353,30 +359,28 @@ export function buildSingletonStrategyOption({
           const upColor = daily.unrealized_pnl >= 0 ? UP_COLOR : DOWN_COLOR;
           const tpColor = daily.total_pnl >= 0 ? UP_COLOR : DOWN_COLOR;
           const rrColor = daily.return_rate >= 0 ? UP_COLOR : DOWN_COLOR;
-          children.push(
-            React.createElement(React.Fragment, null, [
+          rows.push(
+            React.createElement(React.Fragment, null,
               "Unrealized: ",
               React.createElement("b", { style: { color: upColor } },
-                `${daily.unrealized_pnl >= 0 ? "+" : ""}${fmtNum(daily.unrealized_pnl, 2)}`),
-              " | Total: ",
+                `${daily.unrealized_pnl >= 0 ? "+" : ""}${fmtNum(daily.unrealized_pnl, 2)}`)),
+            React.createElement(React.Fragment, null,
+              "Total P&L: ",
               React.createElement("b", { style: { color: tpColor } },
-                `${daily.total_pnl >= 0 ? "+" : ""}${fmtNum(daily.total_pnl, 2)}`),
-              ` | Pos: ${fmtNum(daily.position_value, 2)} (${fmtNum(daily.total_qty, 1)})`,
-            ]),
-          );
-          children.push(
-            React.createElement(React.Fragment, null, [
+                `${daily.total_pnl >= 0 ? "+" : ""}${fmtNum(daily.total_pnl, 2)}`)),
+            `Position: ${fmtNum(daily.position_value, 2)}`,
+            `Total Qty: ${fmtNum(daily.total_qty, 1)}`,
+            React.createElement(React.Fragment, null,
               "Return: ",
               React.createElement("b", { style: { color: rrColor } },
-                `${daily.return_rate >= 0 ? "+" : ""}${fmtNum(daily.return_rate * 100, 2)}%`),
-              "/yr",
-              ` | Hold: ${fmtNum(daily.normalized_mean_buy_period, 1)}d`,
-              ` | Sharpe: full=${fmtNum(daily.sharpe_ratio, 2)}`,
-              ` | 255d=${fmtNum(daily.sharpe_ratio_255d, 2)}`,
-              ` | 500d=${fmtNum(daily.sharpe_ratio_500d, 2)}`,
-            ]),
+                `${daily.return_rate >= 0 ? "+" : ""}${fmtNum(daily.return_rate * 100, 2)}%/yr`)),
+            `Hold: ${fmtNum(daily.normalized_mean_buy_period, 1)}d`,
+            `Sharpe (full): ${fmtNum(daily.sharpe_ratio, 2)}`,
+            `Sharpe (255d): ${fmtNum(daily.sharpe_ratio_255d, 2)}`,
+            `Sharpe (500d): ${fmtNum(daily.sharpe_ratio_500d, 2)}`,
           );
         }
+        const children: React.ReactNode[] = rows.map((rowItem) => React.createElement("div", null, rowItem));
         return renderReactElement(React.createElement(React.Fragment, null, children));
       },
     }),

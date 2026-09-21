@@ -76,7 +76,7 @@ from typing import NamedTuple
 import pandas as pd
 
 from analyze._common import upsert_analysis_identity
-from analyze.analysis_forecasts.fetch import fetch_hyped_episodes
+from analyze.analysis_forecasts.fetch import fetch_market_regimes
 from analyze.analysis_signals.engines._frame import FrameMachinery
 from analyze.analysis_signals.engines._months import MonthSelection
 from analyze.analysis_signals.engines._primitives import FramePrimitives
@@ -153,7 +153,7 @@ class SignalEngine(
     ) -> tuple[list[dict], list[dict]]:
         """The emission template for one (sec_type, month): the buckets
         (long) + the indicator values at exactly the trigger points
-        (wide) + the code's hype episodes (the REUSED forecast-side
+        (wide) + the code's daily regime states (the REUSED forecast-side
         fetcher) through the machinery into build — returns (strategy
         records, history records). detect's plain gate yields the
         candidate strategies; ONLY those that ALSO pass the final
@@ -162,10 +162,10 @@ class SignalEngine(
         passing = self.detect(buckets)
         passing = self.quality.gate(passing)
         month_trig = self.month_triggers(buckets, passing, month)
-        episodes = await fetch_hyped_episodes(
+        regimes = await fetch_market_regimes(
             conn, sec_type, self.window_start(month),
         )
-        month_trig = self.hype_flag(month_trig, episodes)
+        month_trig = self.regime_label(month_trig, regimes)
         codes, dates = self.value_points(passing, month_trig)
         values = await self.fetch_values(conn, sec_type, codes, dates)
         return self.build(sec_type, month, passing, month_trig, values)

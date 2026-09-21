@@ -29,7 +29,7 @@ The engine is leg-agnostic: ``_CrossEngine`` melts every leg's fetched
 spread columns under its (fast_leg, prefix) label and ``compute_pairs_results``
 reads the same legs, so one code path serves both families and all
 fast legs. Row payloads are identical (fast_leg, pair_window, side,
-is_market_hyped); the caller writes them to mov_pairs or mov_pairs_ema.
+regime_state); the caller writes them to mov_pairs or mov_pairs_ema.
 
 One-day EVENT signals (the 2026-09 streak migration's "one day"
 branch of the unified pipeline — wide.iter_bucket_subsets with
@@ -39,7 +39,7 @@ predecessor sits on the OTHER side of zero, so consecutive cross days
 are mutually exclusive and a streak-merge pass would be a no-op — so
 the engines skip it; the recorded streak_signal_days is the 1 constant
 and the result rows' streak spans are the signal day itself. Split by
-PK member is_market_hyped, per-code ADAPTIVE reversal bar
+PK member regime_state, per-code ADAPTIVE reversal bar
 (wide.thresholds: k_n·σ of the window's n-day forward
 changes). No config JSONB payload (the mov_rsi precedent — the trigger
 evidence is the stored spread itself, joinable via the bucket keys).
@@ -110,7 +110,7 @@ class _CrossEngine(WideDfEngine):
         return cols + [f"_prev_{c}" for c in self._extra_window_cols()]
 
     def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
-        id_vars = ["code", "date", "_t", "is_hyped"]
+        id_vars = ["code", "date", "_t", "regime"]
 
         # Each leg's spreads and their 1-row-lagged predecessors melt
         # separately (tagged fast_leg), then concat — the cross tests
@@ -153,7 +153,7 @@ class _CrossEngine(WideDfEngine):
             on=["code", "date", "fast_leg", "pair_window"], how="left",
         )
         ok_prev = _finite_mask(cand["prev_spread"])
-        keep = ["code", "date", "_t", "is_hyped",
+        keep = ["code", "date", "_t", "regime",
                 "fast_leg", "pair_window", "side"]
         cells_parts = []
         for side in ("top", "bottom"):
@@ -181,7 +181,7 @@ class _CrossEngine(WideDfEngine):
 
 
 def compute_pairs_results(
-    *, df, first_dates, episodes, codes, sec_type, specs,
+    *, df, first_dates, regimes, codes, sec_type, specs,
     legs: tuple[tuple[str, str], ...] = MOV_PAIRS_LEGS,
     windows: tuple = MOV_PAIRS_WINDOWS,
 ) -> Iterator[tuple[date, list[dict]]]:
@@ -192,7 +192,7 @@ def compute_pairs_results(
     engine = _CrossEngine(
         df=df,
         first_dates=first_dates,
-        episodes=episodes,
+        regimes=regimes,
         codes=codes,
         sec_type=sec_type,
         specs=specs,
@@ -203,12 +203,12 @@ def compute_pairs_results(
 
 
 def compute_epairs_results(
-    *, df, first_dates, episodes, codes, sec_type, specs,
+    *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
     """mov_pairs_ema — the EMA sibling (fast legs ema6 / price on the
     EMA detail table's ema6_vs_ema{W} / price_vs_ema{W} columns)."""
     return compute_pairs_results(
-        df=df, first_dates=first_dates, episodes=episodes, codes=codes,
+        df=df, first_dates=first_dates, regimes=regimes, codes=codes,
         sec_type=sec_type, specs=specs,
         legs=MOV_PAIRS_EMA_LEGS, windows=MOV_PAIRS_EMA_WINDOWS,
     )

@@ -28,10 +28,10 @@ bar fetch.assert_price_vs_amt_params enforces before consuming.)
 Like the mov_* EVENT buckets the state signals are STREAK-MERGED
 (2026-09, the unified bucket-signal pipeline wide.iter_bucket_subsets):
 consecutive grid rows holding the SAME (speed, vol) cell collapse into
-ONE forecast signal at the run's MID row — the high_low_streaks
-mean-mid anchor — the bucket's MEAN run length recorded on
+ONE forecast signal emitting incremental anchor triggers at delays
+0..TRIGGER_DELAY_MAX — the bucket's MEAN run length recorded on
 forecast_identities.streak_signal_days, and the bucket split is by PK
-member is_market_hyped only. Config axis: k = speed_idx * 3 + state_idx
+member regime_state only. Config axis: k = speed_idx * 3 + state_idx
 with PX_VOL_SPEEDS × PX_VOL_VOL_STATES ordering.
 
 Per (side, hype) subset the horizon aggregates reuse
@@ -81,7 +81,8 @@ class _PxVolEngine(WideDfEngine):
     (code, date)), never re-derived. Speed decides the side (flat
     carries side 'flat' and a NULL reverse_prob — no directional
     claim). Streak-merged since 2026-09: a state run of consecutive
-    days is ONE mid-anchored signal. The bucket's config JSONB records
+    days is ONE signal with incremental anchor triggers at delays
+    0..TRIGGER_DELAY_MAX. The bucket's config JSONB records
     the bucket mean px_t / px_z (the calibration evidence)."""
 
     BUCKET_COLS = ("px_speed", "vol_state")
@@ -122,8 +123,12 @@ class _PxVolEngine(WideDfEngine):
         cells = win[has].copy()
         cells["side"] = cells["px_speed"].map(PX_VOL_SPEED_SIDE)
         cells["excess"] = np.nan          # state cells — no scalar bar
+        # regime is in the run group so each regime bucket's anchor
+        # ladder stays contiguous 0..max (a regime flip starts a fresh
+        # signal).
         yield self._streak_merge(
-            cells, group_cols=["px_speed", "vol_state", "side", "code"],
+            cells,
+            group_cols=["px_speed", "vol_state", "side", "regime", "code"],
         )
 
     def bucket_extras(self, cells, keys):
@@ -141,11 +146,11 @@ class _PxVolEngine(WideDfEngine):
 
 
 def compute_px_vol_results(
-    *, df, first_dates, episodes, codes, sec_type, specs, states_df,
+    *, df, first_dates, regimes, codes, sec_type, specs, states_df,
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, px_vol_state bucket rows) per month."""
     engine = _PxVolEngine(
-        df=df, first_dates=first_dates, episodes=episodes, codes=codes,
+        df=df, first_dates=first_dates, regimes=regimes, codes=codes,
         sec_type=sec_type, specs=specs, states_df=states_df,
     )
     return engine.run()

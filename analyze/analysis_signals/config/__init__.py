@@ -58,7 +58,7 @@ GATE_REVERSE_PROB_MIN = 0.01
 # run (mirrors analysis_forecasts' REFRESH_MONTHS: the RUNNING month —
 # present there as a partial snapshot keyed at its month-end, recomputed
 # daily — plus the last 4 COMPLETED months, whose long-horizon mixed
-# rows carry truncated 20d/60d forward legs right after month-end).
+# rows carry truncated 20d forward legs right after month-end).
 REFRESH_MONTHS = 5
 
 # ---- Stage keys (--metrics) ------------------------------------------------------
@@ -70,14 +70,14 @@ STAGE_NAMES = ("rsi", "std", "pairs", "epairs")
 # signal_strategies columns in write order (PK first).
 STRATEGY_COLUMNS = [
     "code", "sec_type", "signal_type", "signal_sub_type", "side",
-    "is_market_hyped",
+    "regime_state",
     "start_date", "end_date",
     "action", "signal_threshold", "confidence", "reason", "params",
     "signal_order", "is_active",
 ]
 STRATEGY_PK = [
     "code", "sec_type", "signal_type", "signal_sub_type", "side",
-    "is_market_hyped",
+    "regime_state",
     "start_date", "end_date",
 ]
 
@@ -87,7 +87,7 @@ HISTORY_COLUMNS = [
     "code", "sec_type", "signal_type", "signal_sub_type", "date", "time",
     "action", "signal_excess", "signal_excess_pct", "signal",
     "signal_threshold", "confidence", "is_day_close_trigger",
-    "is_market_hyped",
+    "regime_state",
 ]
 HISTORY_PK = [
     "code", "sec_type", "signal_type", "signal_sub_type", "date", "time",

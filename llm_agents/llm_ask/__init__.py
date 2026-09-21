@@ -3,9 +3,10 @@
 Sends one question to a registered chat provider as a PLAIN LLM request —
 ``chat/completions`` with no tools attached, so no web search is ever
 involved — and returns the normalized answer. Architectural mirror of
-``llm_agents.online_search_summary`` with the search half removed and no
-persistence layer (nothing is stored; callers consume the AskResult);
-the shared client plumbing lives in ``llm_agents._core``.
+``llm_agents.online_search_summary`` with the search half removed; the
+shared client plumbing lives in ``llm_agents._core``. Payload-mode
+(data_viz) asks ARE persisted to the ask-history tables by
+``storage.persist_ask`` — plain ``--question`` asks are not.
 
 Package layout — two layered subpackages plus the CLI, dependencies
 pointing one way (providers/cli -> core, never back):
@@ -40,6 +41,9 @@ pointing one way (providers/cli -> core, never back):
     (read/validate/delete the Express service's payload file, build the
     adviser ask request; screenshots default the model to the
     provider's vision model).
+  ``storage.py``  — ask-history persistence: every payload-mode ask is
+    appended to text.llm_qa_by_ask (+ ask context, screenshots in
+    multi_media.src_images, derived keywords) — fail-soft.
   ``cli.py``     — argparse CLI (ask via --question or --payload-file,
     --json).
 

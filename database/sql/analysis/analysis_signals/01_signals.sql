@@ -52,21 +52,22 @@ CREATE TABLE IF NOT EXISTS analysis_signals.signal_strategies (
     signal_type     TEXT         NOT NULL,  -- 'mov_rsi' | 'mov_std' — the detection family
     signal_sub_type TEXT         NOT NULL,  -- indicator + window: 'rsi14' / 'std20_2' (k %g-formatted: 2.0 → "2", 2.5 → "2.5")
     side            TEXT         NOT NULL,  -- the bucket's side: 'top' | 'bottom' (mov_rsi) / 'upper' | 'lower' (mov_std) — STORED so consumers never derive it
-    is_market_hyped BOOLEAN      NOT NULL DEFAULT FALSE,  -- the bucket's hype split (mirrors the forecast bucket's own is_market_hyped — STORED like side, PK member so BOTH splits of one config register)
+    regime_state    TEXT         NOT NULL DEFAULT 'calm',  -- the bucket's market-regime split (stats.market_regimes day label: calm/hot/panic/quiet) — STORED like side, PK member so every regime split of one config registers
 
     start_date      DATE         NOT NULL,  -- the forecast period start (stat_month - 5y + 1 day — the bucket's trailing-window first day)
     end_date        DATE         NOT NULL,  -- the forecast period end (== the snapshot stat_month M of analysis_forecasts)
 
     action          TEXT         NOT NULL,  -- 'sell' (top/upper — the reversal direction is down) | 'buy' (bottom/lower — the reversal direction is up)
     signal_threshold NUMERIC(14,6),         -- the strategy's breach bar in the value's own space: mov_rsi the window's top/bottom-1% RSI percentile bar; mov_std the band level ma_W ± k·std_Wdays at the window-end trigger (price space)
-    confidence      NUMERIC(8,6),           -- the bucket's MIXED forecast_results reverse_prob (the gate's own probability)
+    confidence      NUMERIC(8,6),           -- the bucket's MIXED forecast_results reverse_prob (the gate's own probability — also the signal_order key; the regime-weighted score was tested and NOT adopted, see 03_signal_order_rank.sql)
     reason          TEXT,                   -- human-readable explanation of the strategy
     params          JSONB,                  -- full strategy params as JSON: the bucket config + the gate row's blended forward profile (dir_ave / reverse_prob / occurrence_count)
-    signal_order    INTEGER,                -- 1-based best-first rank within (sec_type, end_date) by confidence DESC (1 = the month's most-confident strategy; nothing is trimmed)
+    signal_order    INTEGER,                -- 1-based best-first rank within (sec_type, end_date) by score DESC (1 = the month's best regime-weighted strategy; nothing is trimmed)
     is_active       BOOLEAN      NOT NULL DEFAULT FALSE,  -- TRUE on the (code, sec_type, signal_type, signal_sub_type)'s LATEST end_date (refreshed after every run) — the live tier's current threshold set
 
-    CONSTRAINT pk_signal_strategies PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, side, is_market_hyped, start_date, end_date),
+    CONSTRAINT pk_signal_strategies PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, side, regime_state, start_date, end_date),
     CONSTRAINT chk_signal_strategies_action CHECK (action IN ('buy', 'sell')),
+    CONSTRAINT chk_signal_strategies_regime CHECK (regime_state IN ('calm', 'hot', 'panic', 'quiet')),
     CONSTRAINT chk_signal_strategies_sec_type CHECK (sec_type IN ('stock', 'etf', 'index'))
 ) PARTITION BY HASH (code);
 
@@ -76,30 +77,30 @@ SELECT public.create_hash_partitions('analysis_signals', 'signal_strategies', 16
 CREATE INDEX IF NOT EXISTS idx_signal_strategies_end_date
     ON analysis_signals.signal_strategies (sec_type, signal_type, end_date);
 
--- Existing installs gain the hype-split column here (fresh installs get
--- it from the CREATE body above) — before the column COMMENT and the PK
--- migration block below, both of which reference it.
+-- Existing installs gain the regime-split column here (fresh installs
+-- get it from the CREATE body above) — before the column COMMENT and
+-- the PK migration block below, both of which reference it.
 ALTER TABLE analysis_signals.signal_strategies
-    ADD COLUMN IF NOT EXISTS is_market_hyped BOOLEAN NOT NULL DEFAULT FALSE;
+    ADD COLUMN IF NOT EXISTS regime_state TEXT NOT NULL DEFAULT 'calm';
 
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_signals.signal_strategies IS 'Signal STRATEGIES derived from analysis_forecasts: one row per forecast bucket whose MIXED forecast_results row passes the plain gate (sign-aligned blended mean forward change > 1% AND blended reverse_prob > 1% — the sign alignment applied in the Python emit layer). A strategy covers the bucket''s forecast period (start_date .. end_date = the snapshot stat_month; the trailing 5-year window (M - 5y, M]) and stores the breach bar in the underlying value''s own space for the live tier. Populated incrementally by python -m analyze.analysis_signals (mov_rsi pct = 1; mov_std MA/σ windows >= 60d at k >= 2.0σ; both sides; BOTH hype splits of a bucket — is_market_hyped is a PK member, each split registers on its own gate pass).';
+COMMENT ON TABLE analysis_signals.signal_strategies IS 'Signal STRATEGIES derived from analysis_forecasts: one row per forecast bucket whose MIXED forecast_results row passes the plain gate (sign-aligned blended mean forward change > 1% AND blended reverse_prob > 1% — the sign alignment applied in the Python emit layer). A strategy covers the bucket''s forecast period (start_date .. end_date = the snapshot stat_month; the trailing 5-year window (M - 5y, M]) and stores the breach bar in the underlying value''s own space for the live tier. Populated incrementally by python -m analyze.analysis_signals (mov_rsi pct = 1; mov_std MA/σ windows >= 60d at k >= 2.0σ; both sides; EVERY regime split of a bucket — regime_state is a PK member, each split registers on its own gate pass).';
 COMMENT ON COLUMN analysis_signals.signal_strategies.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis_signals.signal_strategies.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis_signals.signal_strategies.signal_type IS 'Detection family: mov_rsi (RSI extreme-percentile strategy) or mov_std (Bollinger band breach strategy) — mirrors the matching analysis_forecasts bucket table.';
 COMMENT ON COLUMN analysis_signals.signal_strategies.signal_sub_type IS 'Indicator + window: rsi{W} for mov_rsi (W = RSI window 6/10/14/20/60), std{W}_{k} for mov_std (W = MA/σ window 5/20/60, k = the σ multiple %g-formatted — 2.0 renders "2", 2.5 renders "2.5" — band ma_{W} ± k·std_{W}days).';
 COMMENT ON COLUMN analysis_signals.signal_strategies.side IS 'The bucket''s own side, STORED (no CASE derivation downstream): top/bottom for mov_rsi (RSI top/bottom-1% percentile), upper/lower for mov_std (above/below the band).';
-COMMENT ON COLUMN analysis_signals.signal_strategies.is_market_hyped IS 'The bucket''s hype split, STORED like side: TRUE rows are calibrated on the bucket''s hyped-day trigger set (days inside the code''s stats.mov_ave_market_hypes episodes), FALSE rows on the normal-day set — each split passes the gates on its OWN MIXED forward profile and registers its own bar/confidence. PK member since 2026-09-19 (both splits of one config coexist); the live tier''s fetch_active_signals returns both, each self-contained (the strongest-breach dedup arbitrates same-bar collisions), and the forecast-table tick joins on the row''s OWN hype state.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.regime_state IS 'The bucket''s market-regime split, STORED like side: the stats.market_regimes day label (calm / hot / panic / quiet) carried by the bucket''s trigger days — each regime split passes the gates on its OWN MIXED forward profile and registers its own bar/confidence. PK member (every split of one config coexists); the live tier''s fetch_active_signals returns all, each self-contained (the strongest-breach dedup arbitrates same-bar collisions), and the forecast-table tick joins on the row''s OWN regime. Replaces the retired is_market_hyped boolean (TRUE mapped to hot, FALSE to calm in the 2026-09 migration).';
 COMMENT ON COLUMN analysis_signals.signal_strategies.start_date IS 'The forecast period start: stat_month - 5 years + 1 day — the first day of the bucket''s trailing window.';
 COMMENT ON COLUMN analysis_signals.signal_strategies.end_date IS 'The forecast period end: the snapshot stat_month M the strategy was derived from (the analysis_forecasts month; also the tick-join key for the UI forecast tables).';
 COMMENT ON COLUMN analysis_signals.signal_strategies.action IS 'Trading action implied by the side: sell for top/upper extremes (overbought RSI / above-band — the measured reversal is downward), buy for bottom/lower extremes (oversold RSI / below-band — the measured reversal is upward).';
 COMMENT ON COLUMN analysis_signals.signal_strategies.signal_threshold IS 'The strategy''s breach bar in the underlying value''s own space: for mov_rsi the window''s linear-interpolated top/bottom-1% RSI quantile (rsi value at the window-end trigger minus its stored trigger excess — constant per bucket); for mov_std the band level ma_{W} ± k·std_{W}days at the window-end trigger day (price space). The live tier compares the CURRENT value against this bar directly (sell breaches above, buy below).';
-COMMENT ON COLUMN analysis_signals.signal_strategies.confidence IS 'The matching forecast bucket''s MIXED forecast_results reverse_prob: P(the blended forward window''s adverse path extreme crosses the fixed ±1% bar) — the gate rule''s own probability. NULL when the bucket has no results.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.confidence IS 'The matching forecast bucket''s MIXED forecast_results reverse_prob: P(the blended forward window''s adverse path extreme crosses the fixed ±1% bar) — the gate rule''s own probability. NULL when the bucket has no results. Also the signal_order key: the regime-weighted score (confidence × analysis_forecasts.regime_weights) was tested against it in the 2026-09 market-regimes study and did NOT beat it out-of-sample, so the weights ship as evidence/display, not as the ordering key.';
 COMMENT ON COLUMN analysis_signals.signal_strategies.reason IS 'Human-readable explanation: the window-end trigger''s indicator value vs the bar (e.g. "rsi14=88.3 >= top-1% bar 86.9 over the 5y window ending 2026-07-31").';
 COMMENT ON COLUMN analysis_signals.signal_strategies.params IS 'Full strategy parameters as JSON: the bucket config keys (family-specific) + the gate row''s blended forward profile (conf_period = ''mixed'', dir_ave / reverse_prob / occurrence_count).';
-COMMENT ON COLUMN analysis_signals.signal_strategies.signal_order IS 'Best-first rank WITHIN its own (sec_type, end_date) pool: 1 = the month''s most-confident strategy. Ordered by confidence DESC (the gate''s forecast confidence = the bucket''s mixed-row reverse_prob), PK tuple as the deterministic tiebreak. Nothing is trimmed — every gate-passing strategy is kept. Re-stamped by python -m analyze.analysis_signals after every run.';
+COMMENT ON COLUMN analysis_signals.signal_strategies.signal_order IS 'Best-first rank WITHIN its own (sec_type, end_date) pool: 1 = the month''s most-confident strategy. Ordered by confidence DESC (the gate''s forecast confidence = the bucket''s mixed-row reverse_prob), PK tuple as the deterministic tiebreak. Nothing is trimmed — every gate-passing strategy is kept. Re-stamped by python -m analyze.analysis_signals after every run. (The regime-weighted score was tested as the ordering key in the 2026-09 market-regimes study and NOT adopted — see 03_signal_order_rank.sql.)';
 COMMENT ON COLUMN analysis_signals.signal_strategies.is_active IS 'TRUE only for each (code, sec_type, signal_type, signal_sub_type)''s LATEST end_date row (the freshest forecast snapshot owning that config); FALSE everywhere else. Refreshed by python -m analyze.analysis_signals after EVERY run (including --force). Consumers (the live breach monitoring, the UI config menu) use the active rows as the current threshold set.';
 
 CREATE TABLE IF NOT EXISTS analysis_signals.history_signals (
@@ -117,12 +118,13 @@ CREATE TABLE IF NOT EXISTS analysis_signals.history_signals (
     signal_threshold NUMERIC(14,6) NOT NULL, -- the threshold crossed (the strategy's bar — denormalized per event)
     confidence      INTEGER       NOT NULL DEFAULT 100,  -- the strategy's forecast confidence on the 0-100 scale (ROUND(100 × mixed reverse_prob))
     is_day_close_trigger BOOLEAN  NOT NULL DEFAULT FALSE,  -- TRUE = history row recorded at the day close (time 15:00:00); FALSE = intraday record
-    is_market_hyped BOOLEAN       NOT NULL DEFAULT FALSE,  -- the trigger day sits inside one of the code's stats.mov_ave_market_hypes episodes (any check-in window — the forecast side's union convention)
+    regime_state    TEXT          NOT NULL DEFAULT 'calm',  -- the trigger day's market regime (stats.market_regimes day label: calm/hot/panic/quiet)
 
     created_at      TIMESTAMP     NOT NULL DEFAULT NOW(),  -- record insertion time
 
     CONSTRAINT pk_history_signals PRIMARY KEY (code, sec_type, signal_type, signal_sub_type, date, time),
     CONSTRAINT chk_history_signals_action CHECK (action IN ('buy', 'sell')),
+    CONSTRAINT chk_history_signals_regime CHECK (regime_state IN ('calm', 'hot', 'panic', 'quiet')),
     CONSTRAINT chk_history_signals_sec_type CHECK (sec_type IN ('stock', 'etf', 'index'))
 ) PARTITION BY HASH (code);
 
@@ -131,6 +133,11 @@ SELECT public.create_hash_partitions('analysis_signals', 'history_signals', 16);
 -- Date-first lookup (UI / "signals on day X for sec_type Y").
 CREATE INDEX IF NOT EXISTS idx_history_signals_date
     ON analysis_signals.history_signals (sec_type, signal_type, date);
+
+-- Existing installs gain the regime column here — BEFORE the COMMENT
+-- below references it (fresh installs get it from the CREATE body).
+ALTER TABLE analysis_signals.history_signals
+    ADD COLUMN IF NOT EXISTS regime_state TEXT NOT NULL DEFAULT 'calm';
 
 -- ----------------------------------------------------------------------------
 --  Comments
@@ -149,7 +156,7 @@ COMMENT ON COLUMN analysis_signals.history_signals.signal_excess IS 'signal - si
 COMMENT ON COLUMN analysis_signals.history_signals.signal_excess_pct IS 'signal_excess / |signal_threshold| * 100 — the unitless breach depth pct; NULL when signal_threshold = 0.';
 COMMENT ON COLUMN analysis_signals.history_signals.confidence IS 'The owning strategy''s forecast confidence on the 0-100 INTEGER scale: ROUND(100 × the bucket''s mixed-row reverse_prob).';
 COMMENT ON COLUMN analysis_signals.history_signals.is_day_close_trigger IS 'TRUE = day-close history row (time 15:00:00, written by the emit pipeline); FALSE = intraday record (reserved — the live tier writes its own live.live_signals table, not this one).';
-COMMENT ON COLUMN analysis_signals.history_signals.is_market_hyped IS 'TRUE when the trigger day falls inside one of the code''s stats.mov_ave_market_hypes episodes (ANY min_checkin_period — the same union convention the forecast bucket splits use). Recorded, never a gate: strategies are calibrated on non-hyped buckets only, so a hyped-day event flags the regime the reversal stats were NOT calibrated on. Structurally FALSE at emit time (the strategy''s bucket is the non-hyped split); kept truthful against the CURRENT episode table — the wholesale episode rebuild can revise history, and the idempotent backfill below re-aligns pre-existing rows.';
+COMMENT ON COLUMN analysis_signals.history_signals.regime_state IS 'The trigger day''s market regime — the stats.market_regimes day label (calm / hot / panic / quiet) looked up per (code, date). Recorded, never a gate: the strategy''s bucket is the SAME regime''s split (PK-joined), so the event flags which regime produced it; regime weights order the strategy pool, not the event.';
 
 -- ----------------------------------------------------------------------------
 --  Data-quality gates (shared helpers, see 00_partition_utils.sql): the
@@ -181,33 +188,54 @@ SELECT public.ensure_check_constraint(
 SELECT public.validate_pending_checks('analysis_signals');
 
 -- ----------------------------------------------------------------------------
---  is_market_hyped migration (2026-09-19): the column ships in the CREATE
---  body above for fresh installs; existing installs gain it here
---  (metadata-only ADD COLUMN on the partitioned parent — instant). The
---  backfill then re-aligns pre-existing rows with the CURRENT episode
---  table (idempotent — rows already TRUE, or with no covering episode,
---  are untouched).
+--  market-regime migration (2026-09): regime_state ships in the CREATE
+--  bodies above for fresh installs; existing installs gain it here
+--  (metadata-only ADD COLUMN, default 'calm'), the retired boolean is
+--  folded in (TRUE -> 'hot', FALSE -> 'calm' — the closest successor
+--  semantics), and the daily states table realigns history rows that
+--  had no boolean (all-FALSE backfill) with their true day label.
+--  Idempotent.
 -- ----------------------------------------------------------------------------
 ALTER TABLE analysis_signals.history_signals
-    ADD COLUMN IF NOT EXISTS is_market_hyped BOOLEAN NOT NULL DEFAULT FALSE;
+    ADD COLUMN IF NOT EXISTS regime_state TEXT NOT NULL DEFAULT 'calm';
 
-UPDATE analysis_signals.history_signals h
-SET is_market_hyped = TRUE
-WHERE NOT h.is_market_hyped
-  AND EXISTS (SELECT 1 FROM stats.mov_ave_market_hypes e
-              WHERE e.sec_type = h.sec_type
-                AND e.code = h.code
-                AND e.start_date <= h.date
-                AND e.end_date >= h.date);
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'analysis_signals'
+                 AND table_name = 'history_signals'
+                 AND column_name = 'is_market_hyped') THEN
+        UPDATE analysis_signals.history_signals h
+        SET regime_state = CASE WHEN h.is_market_hyped
+                                THEN 'hot' ELSE 'calm' END;
+        ALTER TABLE analysis_signals.history_signals
+            DROP COLUMN is_market_hyped;
+    END IF;
+END $$;
+
+-- Realign history rows with the CURRENT daily states table (rows
+-- carried the old boolean's default, or predate the regime build).
+-- Guarded: no-op until stats.market_regimes exists (18_market_regimes).
+DO $$
+BEGIN
+    IF to_regclass('stats.market_regimes') IS NOT NULL THEN
+        UPDATE analysis_signals.history_signals h
+        SET regime_state = r.regime
+        FROM stats.market_regimes r
+        WHERE r.sec_type = h.sec_type
+          AND r.code = h.code
+          AND r.date = h.date
+          AND h.regime_state <> r.regime;
+    END IF;
+END $$;
 
 -- ----------------------------------------------------------------------------
---  is_market_hyped PK migration (2026-09-19): hyped buckets now register
---  strategies too. The column ships in the CREATE body above for fresh
---  installs; existing installs gain it here, and the PK is rebuilt to
---  include it (all pre-existing rows are the FALSE split — one default
---  value, so the rebuild is conflict-free; DROP + re-ADD on the
---  partitioned parent cascades the constrained indexes to the children).
---  Idempotent: the DO block checks the PK's column set first.
+--  signal_strategies PK migration (2026-09 regime refactor): regime_state
+--  replaces is_market_hyped as the split PK member. The column ships in
+--  the CREATE body above for fresh installs; existing installs gain it
+--  above, the boolean is folded in (TRUE -> 'hot'), and the PK is
+--  rebuilt to include it. Idempotent: the DO block checks the PK's
+--  column set first.
 -- ----------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -224,16 +252,44 @@ BEGIN
       AND t.relname = 'signal_strategies'
       AND c.contype = 'p';
     IF pk_cols IS DISTINCT FROM
-       'code,sec_type,signal_type,signal_sub_type,side,is_market_hyped,start_date,end_date'
+       'code,sec_type,signal_type,signal_sub_type,side,regime_state,start_date,end_date'
     THEN
         ALTER TABLE analysis_signals.signal_strategies
-            ADD COLUMN IF NOT EXISTS is_market_hyped BOOLEAN NOT NULL DEFAULT FALSE;
+            ADD COLUMN IF NOT EXISTS regime_state TEXT NOT NULL DEFAULT 'calm';
+        IF EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'analysis_signals'
+                     AND table_name = 'signal_strategies'
+                     AND column_name = 'is_market_hyped') THEN
+            UPDATE analysis_signals.signal_strategies s
+            SET regime_state = CASE WHEN s.is_market_hyped
+                                    THEN 'hot' ELSE 'calm' END;
+            ALTER TABLE analysis_signals.signal_strategies
+                DROP COLUMN is_market_hyped;
+        END IF;
+        -- (dropping the boolean column above ALREADY dropped the old
+        -- PK — Postgres auto-drops constraints involving a dropped
+        -- column; IF EXISTS for the fresh-install path where the
+        -- CREATE body owns the PK.)
         ALTER TABLE analysis_signals.signal_strategies
-            DROP CONSTRAINT pk_signal_strategies;
+            DROP CONSTRAINT IF EXISTS pk_signal_strategies;
         ALTER TABLE analysis_signals.signal_strategies
             ADD CONSTRAINT pk_signal_strategies PRIMARY KEY
             (code, sec_type, signal_type, signal_sub_type, side,
-             is_market_hyped, start_date, end_date);
-        RAISE NOTICE 'signal_strategies PK rebuilt with is_market_hyped';
+             regime_state, start_date, end_date);
+        RAISE NOTICE 'signal_strategies PK rebuilt with regime_state';
     END IF;
 END $$;
+
+-- ----------------------------------------------------------------------------
+--  regime vocab gates on existing installs (fresh installs get them from
+--  the CREATE bodies above). NOT VALID first, validated by the sweep.
+-- ----------------------------------------------------------------------------
+SELECT public.ensure_check_constraint(
+    'analysis_signals.signal_strategies',
+    'chk_signal_strategies_regime',
+    $chk$regime_state IN ('calm', 'hot', 'panic', 'quiet')$chk$);
+SELECT public.ensure_check_constraint(
+    'analysis_signals.history_signals',
+    'chk_history_signals_regime',
+    $chk$regime_state IN ('calm', 'hot', 'panic', 'quiet')$chk$);
+SELECT public.validate_pending_checks('analysis_signals');

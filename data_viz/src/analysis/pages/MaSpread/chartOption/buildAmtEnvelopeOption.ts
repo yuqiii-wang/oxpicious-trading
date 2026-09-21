@@ -27,6 +27,8 @@ import type { ThemeMode } from "@/store/filters";
 import type { EChartsOption } from "echarts";
 import type {
   MovAveSpreadPairSeries,
+  MovAveSpreadAmtRow,
+  MovAveSpreadSharedMetricsRow,
 } from "@shared/types";
 import type { OhlcMode } from "@/lib/ohlc";
 import {
@@ -54,8 +56,13 @@ const AMT_MA_COLORS: Record<number, string> = {
 };
 
 export interface BuildAmtEnvelopeOptionArgs {
-  /** The selected Amt/MA pair's full time series. */
-  pair: MovAveSpreadPairSeries;
+  /** The selected Amt/MA pair's full time series (rows carry the 5
+   *  trading_amt_ma envelope columns). */
+  pair: Omit<MovAveSpreadPairSeries, "rows"> & { rows: MovAveSpreadAmtRow[] };
+  /** Per-date tooltip metrics shared across pairs (chart response `shared`)
+   *  — the amt MA slopes / market shares the tooltip shows. Index-aligned
+   *  with pair.rows; null renders those readouts as "—". */
+  shared: MovAveSpreadSharedMetricsRow[] | null;
   /** Current theme mode (light / dark). */
   themeMode: ThemeMode;
   /** Display mode for the lowkey price series (absolute / percentage). */
@@ -92,11 +99,24 @@ export interface BuildAmtEnvelopeOptionArgs {
     >;
     accent: string;
   } | null;
+  /** Market-regime overlays (stats.market_regime_spans — each picked
+   *  regime's contiguous spans), rendered identically. */
+  regimeShades?: Array<{
+    label: string;
+    data: Array<
+      [
+        { xAxis: string; itemStyle: { color: string } },
+        { xAxis: string },
+      ]
+    >;
+    accent: string;
+  }>;
 }
 
 /** Build the ECharts option for the Amt Envelope chart. */
 export function buildAmtEnvelopeOption({
   pair,
+  shared,
   themeMode,
   ohlcMode = "absolute",
   bollingerK = 2,
@@ -105,6 +125,7 @@ export function buildAmtEnvelopeOption({
   streakPct = null,
   streakAnchorIdx = null,
   pxVolShade = null,
+  regimeShades = null,
 }: BuildAmtEnvelopeOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
@@ -126,20 +147,34 @@ export function buildAmtEnvelopeOption({
     120: rows.map((r) => r.trading_amt_ma120),
     255: rows.map((r) => r.trading_amt_ma255),
   };
-  const amtMaSlopeArrays: Record<number, Array<number | null>> = {
-    5:   rows.map((r) => r.trading_amt_ma5_slope),
-    20:  rows.map((r) => r.trading_amt_ma20_slope),
-    60:  rows.map((r) => r.trading_amt_ma60_slope),
-    120: rows.map((r) => r.trading_amt_ma120_slope),
-    255: rows.map((r) => r.trading_amt_ma255_slope),
+  // Slopes / market shares are per-date values shared across pairs — read
+  // from the chart response's `shared` row at the same index.
+  const AMT_SLOPE_KEYS: Record<number, keyof MovAveSpreadSharedMetricsRow> = {
+    5: "trading_amt_ma5_slope",
+    20: "trading_amt_ma20_slope",
+    60: "trading_amt_ma60_slope",
+    120: "trading_amt_ma120_slope",
+    255: "trading_amt_ma255_slope",
   };
-  const amtMarketShareArrays: Record<number, Array<number | null>> = {
-    5:   rows.map((r) => r.trading_amt_market_share_ma5),
-    20:  rows.map((r) => r.trading_amt_market_share_ma20),
-    60:  rows.map((r) => r.trading_amt_market_share_ma60),
-    120: rows.map((r) => r.trading_amt_market_share_ma120),
-    255: rows.map((r) => r.trading_amt_market_share_ma255),
+  const AMT_SHARE_KEYS: Record<number, keyof MovAveSpreadSharedMetricsRow> = {
+    5: "trading_amt_market_share_ma5",
+    20: "trading_amt_market_share_ma20",
+    60: "trading_amt_market_share_ma60",
+    120: "trading_amt_market_share_ma120",
+    255: "trading_amt_market_share_ma255",
   };
+  const amtMaSlopeArrays: Record<number, Array<number | null>> = Object.fromEntries(
+    AMT_MA_WINDOWS.map((w) => [
+      w,
+      rows.map((_, i) => (shared?.[i]?.[AMT_SLOPE_KEYS[w]] as number | null | undefined) ?? null),
+    ]),
+  );
+  const amtMarketShareArrays: Record<number, Array<number | null>> = Object.fromEntries(
+    AMT_MA_WINDOWS.map((w) => [
+      w,
+      rows.map((_, i) => (shared?.[i]?.[AMT_SHARE_KEYS[w]] as number | null | undefined) ?? null),
+    ]),
+  );
 
   // Envelope band
   const envUpper: Array<number | null> = new Array(n).fill(null);
@@ -456,22 +491,27 @@ export function buildAmtEnvelopeOption({
     }
   }
 
-  // Px-Vol States shading (selected speed × vol combo) — same
-  // rect-legend + markArea pattern as the streak shading above.
-  if (pxVolShade != null && pxVolShade.data.length > 0) {
-    legendData.push(pxVolShade.label);
+  // Px-Vol States + market-regime shading — same rect-legend + markArea
+  // pattern as the streak shading above (one legend series per overlay).
+  const amtShadeOverlays = [
+    ...(pxVolShade != null ? [pxVolShade] : []),
+    ...(regimeShades ?? []),
+  ];
+  for (const so of amtShadeOverlays) {
+    if (so.data.length === 0) continue;
+    legendData.push(so.label);
     echartsSeries.push({
       type: "scatter",
-      name: pxVolShade.label,
+      name: so.label,
       data: [null],
       symbol: "rect",
       symbolSize: [10, 8],
-      itemStyle: { color: pxVolShade.accent, opacity: 0.45 },
+      itemStyle: { color: so.accent, opacity: 0.45 },
       z: 0,
       markArea: {
         silent: true as const,
         itemStyle: { borderWidth: 0 },
-        data: pxVolShade.data,
+        data: so.data,
       },
     });
   }

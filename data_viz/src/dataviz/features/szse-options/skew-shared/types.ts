@@ -70,6 +70,29 @@ export interface SharedSkewPerExpiry {
    * no per-contract OI, so it stays undefined there).
    */
   otmShare?: OtmOiShare | null;
+  /**
+   * The group's total open interest on the date in contracts (calls +
+   * puts; oi_moneyness only). Carries the ABSOLUTE position size: the
+   * per-expiry curves' line thickness scales with it (peak OI over the
+   * curve) while the curve VALUE stays the ratio-based skew. Greek_*
+   * adapters leave it undefined.
+   */
+  oiTotal?: number | null;
+  /**
+   * Change of the group's total OI vs 5/20 trading sessions earlier, in
+   * contracts (positive = positions added, negative = closed/rolled
+   * away; null when the group has no OI record at the offset session).
+   * oi_moneyness only — greek_* adapters leave it undefined.
+   */
+  oiDelta5d?: number | null;
+  oiDelta20d?: number | null;
+  /**
+   * Max of the group's total OI over the trailing 20 sessions incl. the
+   * date, in contracts (null when no OI record in the window). Current
+   * OI == this value ⇒ the group sits at a 20-session OI high.
+   * oi_moneyness only.
+   */
+  oiMax20d?: number | null;
 }
 
 export interface SharedSkewPoint {

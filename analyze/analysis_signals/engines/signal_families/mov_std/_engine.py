@@ -1,9 +1,9 @@
 """MovStdEngine — the mov_std signal-family engine
 (analyze.analysis_signals.engines.signal_families.mov_std._engine).
 
-Emission slice: the Bollinger-breach buckets on 60d-or-longer MA/σ
+Emission slice: the Bollinger-breach buckets on 20d-or-longer MA/σ
 windows at 2.0σ-or-tighter bands, BOTH sides (upper/lower), BOTH
-hype splits. Same strategy/history split as mov_rsi (see
+regime splits. Same strategy/history split as mov_rsi (see
 mov_rsi._engine): a gate-passing bucket becomes ONE strategy row over
 its forecast period; the strategy's trigger days inside the snapshot
 month become history rows. Row construction sits in _strategies /
@@ -38,23 +38,23 @@ logger = logging.getLogger(__name__)
 
 
 class MovStdEngine(SignalEngine):
-    """mov_std: Bollinger-breach strategies (60d+ windows, 2σ+ bands)
+    """mov_std: Bollinger-breach strategies (20d+ windows, 2σ+ bands)
     + history."""
 
     signal_type = "mov_std"
     bucket = "mov_std"
     stage_key = "std"
     identity_name = "signals_mov_std"
-    bucket_keys = ("code", "ma_window", "k", "side", "is_market_hyped")
+    bucket_keys = ("code", "ma_window", "k", "side", "regime_state")
     identity_description = (
         "mov_std signal strategies over analysis_forecasts: the "
-        "Bollinger-breach buckets on 60d-or-longer MA/σ windows at "
+        "Bollinger-breach buckets on 20d-or-longer MA/σ windows at "
         "2.0σ-or-tighter bands (both sides) whose MIXED forecast row "
         "passes the plain gate (sign-aligned blended mean reversal > "
         "0.75% AND reverse_prob > 1%) AND the final SignalQuality gate "
         "(breach coherence and sign-aligned per-period forward means "
         "on every quality period, plus the 0.75 risk cap as ONE "
-        "weight-blended verdict over 5d/20d/60d — bar 0.50, the 5d "
+        "weight-blended verdict over 5d/20d — bar 0.50, the 5d "
         "bar carries the decision), "
         "one strategy per bucket over its forecast period + the "
         "strategy's trigger days inside its own snapshot month as "

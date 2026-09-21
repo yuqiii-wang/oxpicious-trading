@@ -23,7 +23,7 @@
  * The trigger button + items are styled for a primary.main header cell
  * (white icon/badge) — all tables using these menus have blue headers.
  */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import FilterListIcon from "@mui/icons-material/FilterList";
@@ -67,6 +67,10 @@ export interface HeaderFilterMenuProps {
   /** This column's row-order direction (the ordering key's real dir;
    *  other columns display the default "desc" they'd apply on click). */
   sortDir: "asc" | "desc";
+  /** Optional per-item content override — receives the tick value and
+   *  returns the item's label node (a colored dot + name, ...). Default
+   *  renders the raw value string. */
+  renderItem?: (v: string) => ReactNode;
   /** Order-row click — makes this column the table's ordering key and
    *  flips its direction asc ⇄ desc (shared hook state, see
    *  useTableHeaderFilters). */
@@ -79,6 +83,7 @@ export function HeaderFilterMenu({
   values,
   selected,
   sortDir,
+  renderItem,
   onToggleSort,
   onChange,
 }: HeaderFilterMenuProps) {
@@ -173,7 +178,10 @@ export function HeaderFilterMenu({
                 sx={{ p: 0.25, mr: 0.5 }}
                 checked={allShown || selected.includes(v)}
               />
-              <ListItemText primary={v} primaryTypographyProps={{ fontSize: "0.66rem" }} />
+              <ListItemText
+                primary={renderItem ? renderItem(v) : v}
+                primaryTypographyProps={{ fontSize: "0.66rem" }}
+              />
             </MenuItem>
           ))}
         </MenuList>

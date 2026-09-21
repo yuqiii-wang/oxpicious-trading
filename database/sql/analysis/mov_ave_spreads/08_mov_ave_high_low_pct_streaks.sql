@@ -44,7 +44,7 @@ CREATE TABLE analysis.mov_ave_high_low_pct_streaks (
     sec_type                        TEXT          NOT NULL,  -- 'etf' | 'index' | 'stock'
     code                            TEXT          NOT NULL,
     date_year_month                 DATE          NOT NULL,  -- the streak's START month FIRST day (band month context)
-    period                          INTEGER       NOT NULL,  -- 255, 500, 750, 1275
+    period                          INTEGER       NOT NULL,  -- 60, 120, 255, 500, 750, 1275
     pct_type                        INTEGER       NOT NULL,  -- 1 | 5 | 10 (percent)
 
     start_date                      DATE          NOT NULL,  -- the first trading row in the streak
@@ -68,7 +68,7 @@ COMMENT ON TABLE  analysis.mov_ave_high_low_pct_streaks            IS 'Band-BREA
 COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.sec_type   IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.code       IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.date_year_month IS 'The streak''s START month, stored as the month''s FIRST day — the band-month context in which the excursion began (the first out-of-band day is tested against this month''s band row). Streaks may span later months; each day is tested against its OWN month''s band. Part of the PK.';
-COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.period     IS 'Lookback window length of the audited band in trading rows: 255 / 500 / 750 / 1275 (~1 / 2 / 3 / 5 trading years) — the band''s `period` in analysis.mov_ave_high_low_pct. Part of the PK (streaks are audited per band period).';
+COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.period     IS 'Lookback window length of the audited band in trading rows: 60 / 120 / 255 / 500 / 750 / 1275 (~0.25 / 0.5 / 1 / 2 / 3 / 5 trading years) — the band''s `period` in analysis.mov_ave_high_low_pct. Part of the PK (streaks are audited per band period).';
 COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.pct_type   IS 'Band tightness parameter of the audited band in percent: 1 / 5 / 10 — the band''s `pct_type` in analysis.mov_ave_high_low_pct (the band whose high_val/low_val the close breaks). Part of the PK (streaks are audited per band level).';
 COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.start_date IS 'First trading row of the streak: the first OUT-OF-BAND day (adjusted close above high_val or below low_val). Part of the PK.';
 COMMENT ON COLUMN analysis.mov_ave_high_low_pct_streaks.end_date   IS 'Last trading row of the streak: the last OUT-OF-BAND day. Bridged in-band days (<= 5-day tolerated re-entries) lie strictly between start_date and end_date; trailing in-band days after end_date are NOT part of the streak (they may later become a bridged gap — episodes shift, hence the wholesale rebuild). Part of the PK.';

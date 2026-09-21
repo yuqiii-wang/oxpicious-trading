@@ -38,6 +38,7 @@ import {
   fetchOptionsWalls,
   fetchUnderlyings,
   invalidateCacheForPrefix,
+  venueToTargetType,
 } from "@/lib/api-client";
 import { useStore } from "@/store/filters";
 import type {
@@ -53,10 +54,11 @@ import type { OhlcMode } from "@/lib/ohlc";
 export default function SzseOptionsPage() {
   const underlyingCode = useStore((s) => s.underlyingCode);
   const setUnderlyingCode = useStore((s) => s.setUnderlyingCode);
-  const optionsTargetType = useStore((s) => s.optionsTargetType);
+  const optionsVenue = useStore((s) => s.optionsVenue);
   const themeMode = useChartThemeMode();
   const snapshotDates = useStore((s) => s.snapshotDates);
   const setSnapshotDates = useStore((s) => s.setSnapshotDates);
+  const optionsTargetType = venueToTargetType(optionsVenue);
 
   const [underlyings, setUnderlyings] = useState<OptionsUnderlying[]>([]);
   const [optionsData, setOptionsData] = useState<OptionsCombinedResponse | null>(null);
@@ -68,9 +70,9 @@ export default function SzseOptionsPage() {
   const [ohlcMode, setOhlcMode] = useState<OhlcMode>("percentage");
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Load underlyings list once (and on refresh / target-type change).
+  // Load underlyings list once (and on refresh / venue change).
   useEffect(() => {
-    fetchUnderlyings(optionsTargetType)
+    fetchUnderlyings(optionsTargetType, optionsVenue)
       .then((list) => {
         setUnderlyings(list);
         if (list.length > 0 && !list.some((u) => u.code === underlyingCode)) {
@@ -78,7 +80,7 @@ export default function SzseOptionsPage() {
         }
       })
       .catch((e: Error) => setError(e.message));
-  }, [optionsTargetType, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [optionsVenue, optionsTargetType, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load ALL options + OHLCV data (no date filter — trend plots need full history)
   useEffect(() => {
@@ -86,7 +88,7 @@ export default function SzseOptionsPage() {
     setLoading(true);
     setError(null);
     Promise.all([
-      fetchOptionsCombined(underlyingCode, null, null, optionsTargetType),
+      fetchOptionsCombined(underlyingCode, null, null, optionsTargetType, optionsVenue),
       fetchEtfOhlcv(underlyingCode, null, null, optionsTargetType),
       // Zone walls are optional — don't fail the page when the walls table
       // is missing or empty for this underlying.
@@ -108,7 +110,7 @@ export default function SzseOptionsPage() {
     return () => {
       cancelled = true;
     };
-  }, [underlyingCode, optionsTargetType, refreshKey]);
+  }, [underlyingCode, optionsVenue, optionsTargetType, refreshKey]);
 
   const handleRefresh = () => {
     invalidateCacheForPrefix("/api/szse-options/");
@@ -150,7 +152,12 @@ export default function SzseOptionsPage() {
           </Typography>
           <Typography variant="body2" color="text.secondary">
             {underlyingName} ({underlyingCode}) —{" "}
-            {optionsTargetType === "INDEX" ? "CFFEX index options" : "SZSE ETF options"} analytics
+            {optionsVenue === "CFFEX"
+              ? "CFFEX index options"
+              : optionsVenue === "SSE"
+                ? "SSE ETF options"
+                : "SZSE ETF options"}{" "}
+            analytics
             dashboard
           </Typography>
         </Box>

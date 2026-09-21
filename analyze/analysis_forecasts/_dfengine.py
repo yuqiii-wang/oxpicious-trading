@@ -14,7 +14,7 @@ DataFrames:
     (base_rates) override it directly,
   - ``emit_signals(win)`` — THE subclass hook: consumes one month
     window's long frame and yields long-format TRIGGER-CELL frames
-    (one row per qualifying signal: code / date / _t / is_hyped / side
+    (one row per qualifying signal: code / date / _t / regime / side
     / excess / run_len / streak spans + the family's BUCKET_COLS).
     Metric files hold ONLY their own detection logic (compute_rsi:
     melt + quantile bars + top/bottom tests),
@@ -23,22 +23,24 @@ DataFrames:
     the weight-blended mixed row and the row emission are shared and
     vectorized: groupby / merge / boolean algebra — no numpy tensor
     stack, no per-code / per-config Python loops. The only scalar
-    materializations are the asyncpg COPY boundary (the final row
-    dicts) and the per-bucket ragged date/excess lists the DB array
-    columns require (host-numpy slicing — DB arrays are Python objects
-    by nature).
+    materialization is the per-bucket ragged date/excess array
+    LITERALS the DB array columns require (host-numpy slicing +
+    C-speed string joins — the CSV writer's wire format; the engine
+    hands the writer result FRAMES, not row dicts).
 
 Semantics are the historic numpy pipeline's: consecutive qualifying
-UNION-CALENDAR days merge into ONE mid-anchored signal (a suspended
+UNION-CALENDAR days merge into ONE signal with incremental anchor
+triggers at delays 0..TRIGGER_DELAY_MAX (a suspended
 day's missing row breaks the run), the full-window live gate is
 date-space (first data strictly precedes the window start), the
 reversal event is the forward window's adverse PATH extreme beyond the
-bar, and the mixed row blends the four horizons at MIXED_HORIZON_WEIGHTS
+bar, and the mixed row blends the three horizons at MIXED_HORIZON_WEIGHTS
 renormalized over the legs with stats (the SQL 01 backfill's blend,
 over 6dp-rounded legs).
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from datetime import date
@@ -47,6 +49,10 @@ import numpy as np
 import pandas as pd
 
 from _common.df_utils import host_array
+from _common.df_utils._detector import is_gpu_available
+
+import logging
+logger = logging.getLogger(__name__)
 
 from analyze.analysis_forecasts.config import (
     FORWARD_HORIZONS,
@@ -57,14 +63,44 @@ from analyze.analysis_forecasts.config import (
     REVERSE_THRESHOLD_MODE,
     REVERSE_THRESHOLD_STD_K,
     REVERSE_THRESHOLD_STD_MIN_DAYS,
+    TRIGGER_DELAY_MAX,
 )
 
-# Live codes per partition: a (~1,220 × 2,048) window keeps every
-# intermediate (the melted long values, the ×8 bar join) well inside
-# the device budget regardless of the universe size.
-CODE_CHUNK = 2048
+# ---- Memory-aware partition budgets (2026-09 regime refactor) ---------------
+#
+# One (month × code-chunk) partition's working-set budget, expressed in
+# float64 CELLS of the partition's primary window slice. The in-flight
+# intermediates (the melted per-config long frames, the ×8 bar join,
+# the ragged-array host passes) hold a small multiple of the slice, so
+# a slice budget bounds every intermediate's footprint. GPU mode
+# budgets TIGHTER than CPU: the device also holds the FULL prepared
+# frame (the whole sec_type universe — the stock frame alone is
+# ~6.5M rows) plus the cudf pool, while the host only mirrors slices.
+#
+# The chunk size derives from the frame's OWN shape — mean rows per
+# code × the window width — so long histories / wide families get
+# proportionally smaller chunks:
+#
+#   chunk = clamp(budget / (rows_per_code × width), MIN, MAX)
+#
+# The budget already covers the melted long frames of the wide
+# families: a melt fans rows ×K while SHRINKING to ~5 narrow columns,
+# so the melted frame's cell count stays the same ORDER as the primary
+# slice — the working set is 2-4× the slice either way. Multiplying
+# the width by the melt factor would double-count and over-partition
+# small universes (index measured 3 partitions where the historic
+# single partition was already well inside budget).
+#
+# Semantics are UNCHANGED — the partitioning only bounds memory; the
+# month loop, live gate and aggregation are per-(chunk, month) worlds
+# exactly as before (the historic flat CODE_CHUNK = MAX_CODE_CHUNK =
+# 2048 remains the ceiling for small universes, which stay whole).
+GPU_PARTITION_CELL_BUDGET = 40_000_000   # ~320 MiB slice → ~1.3 GiB device working set
+CPU_PARTITION_CELL_BUDGET = 80_000_000   # ~640 MiB slice → ~2.6 GiB host working set
+MIN_CODE_CHUNK = 128
+MAX_CODE_CHUNK = 2048
 
-_PERIOD_NAME = {1: "next", 5: "5d", 20: "20d", 60: "60d"}
+_PERIOD_NAME = {1: "next", 5: "5d", 20: "20d"}
 
 
 def _finite_mask(s: pd.Series) -> pd.Series:
@@ -95,25 +131,17 @@ def _band_ordinal(
     )
 
 
-def _py_series(s: pd.Series) -> np.ndarray:
-    """Series → REAL host object ndarray of python `date`s (the
-    vectorized datetime64→date materialization for the DB arrays;
-    asarray strips the cudf.pandas proxy subclass)."""
-    return np.asarray(
-        host_array(s.to_numpy()).astype("datetime64[D]").astype(object)
-    )
-
-
 class WideDfEngine(ABC):
     """The (code chunk × stat month) partitioned DataFrame engine."""
 
     # Family bucket-key columns riding on every trigger cell (besides
-    # the standard cell columns). ``side`` is standard; is_market_hyped
-    # is the cells' is_hyped flag.
+    # the standard cell columns). ``side`` is standard; regime_state is
+    # the cells' per-day market-regime label (stats.market_regimes).
     BUCKET_COLS: tuple[str, ...] = ()
 
-    # Consecutive qualifying days merge into ONE mid-anchored signal
-    # (the 2026-09 streak semantics); False = every qualifying day is
+    # Consecutive qualifying days merge into ONE signal emitting
+    # incremental anchor triggers at delays 0..TRIGGER_DELAY_MAX (the
+    # 2026-09-21 streak semantics); False = every qualifying day is
     # its own 1-day signal (the cross-event / state families).
     MERGE: bool = True
 
@@ -122,44 +150,65 @@ class WideDfEngine(ABC):
         *,
         df: pd.DataFrame,
         first_dates: dict[str, date],
-        episodes: pd.DataFrame,
+        regimes: pd.DataFrame,
         codes: list[str],
         sec_type: str,
         specs: list,
     ) -> None:
         self.df = df
         self.first_dates = first_dates
-        self.episodes = episodes
+        self.regimes = regimes
         self.codes = codes
         self.sec_type = sec_type
         self.specs = specs
         self._cal: pd.DataFrame | None = None
         self._prepared: pd.DataFrame | None = None
         self._codes_frame_cache: pd.DataFrame | None = None
+        self._code_chunk: int | None = None
 
     # ------------------------------------------------------------------
     #  Partition machinery (the base owns the loops)
     # ------------------------------------------------------------------
 
-    def run(self) -> Iterator[tuple[date, list[dict]]]:
-        """Yield (stat_month, bucket rows) per stat month — month-major,
-        so __main__ writes one atomic transaction per month."""
+    def run(self) -> Iterator[tuple[date, object]]:
+        """Yield (stat_month, payload) per stat month — month-major, so
+        __main__ writes one atomic transaction per month. The payload is
+        a bucket-major result FRAME for the bucket families (the
+        writer's fast path: CSV render + frame-firsts mov/identity
+        rows) or a list of row dicts for the families that override
+        ``month_rows`` directly (base_rates). Frame payloads from the
+        month's code chunks are concatenated with the ``_bkt`` writer
+        tag offset so bucket groups stay unique across the month."""
         self._prepare()
         for spec in self.specs:
-            rows: list[dict] = []
+            items: list = []
+            offset = 0
             for win in self._month_chunks(spec):
-                rows.extend(self.month_rows(win, spec))
-            if rows:
-                yield spec.stat_month, rows
+                chunk = self.month_rows(win, spec)
+                if chunk and isinstance(chunk[0], pd.DataFrame):
+                    for f in chunk:
+                        f["_bkt"] = f["_bkt"] + offset
+                        offset = int(f["_bkt"].max()) + 1
+                items.extend(chunk)
+            if not items:
+                continue
+            if isinstance(items[0], pd.DataFrame):
+                yield (spec.stat_month,
+                       items[0] if len(items) == 1
+                       else pd.concat(items, ignore_index=True))
+            else:
+                yield spec.stat_month, items
 
-    def month_rows(self, win: pd.DataFrame, spec) -> list[dict]:
+    def month_rows(self, win: pd.DataFrame, spec) -> list:
         """One (month × code chunk) partition — the bucket pipeline:
-        detect (emit_signals) → aggregate → rows. Bucket-free families
-        override this directly."""
-        rows: list[dict] = []
+        detect (emit_signals) → aggregate → result frames (bucket-major,
+        ``_bkt``-tagged, shared constants stamped — the writer's fast
+        path). Bucket-free families override this directly and return
+        row dicts."""
+        frames: list[pd.DataFrame] = []
         for cells in self.emit_signals(win):
-            rows.extend(self._cells_to_rows(cells, win, spec))
-        return rows
+            frames.append(self._cells_to_rows(cells, win, spec))
+        return frames
 
     @abstractmethod
     def emit_signals(self, win: pd.DataFrame) -> Iterable[pd.DataFrame]:
@@ -169,8 +218,8 @@ class WideDfEngine(ABC):
 
     def _prepare(self) -> None:
         """One-time frame prep: the union trading-day calendar (date →
-        ordinal _t — the streak continuity axis) and the market-hype
-        flags, both vectorized joins onto the fetched frame."""
+        ordinal _t — the streak continuity axis) and the market-regime
+        day labels, both vectorized joins onto the fetched frame."""
         cal = (
             self.df[["date"]]
             .drop_duplicates()
@@ -181,29 +230,26 @@ class WideDfEngine(ABC):
         self._cal = cal
 
         df = self.df.merge(cal, on="date", how="left")
-        df["_row"] = np.arange(len(df), dtype="int64")
-        # Hype flags: one vectorized interval join — (row ↔ episodes of
-        # the same code), keep the pairs whose range covers the row's
-        # date, deduplicate to a row flag.
-        if not self.episodes.empty:
-            j = df[["_row", "code", "date"]].merge(
-                self.episodes, on="code", how="inner",
+        # Regime labels: one plain (code, date) merge against the DAILY
+        # states table (stats.market_regimes — every trading day of the
+        # build's universe carries a row; 'calm' is the table's own
+        # no-state label). Days outside the regimes build's universe
+        # default to 'calm' (the retired boolean's never-hyped
+        # semantics).
+        if not self.regimes.empty:
+            df = df.merge(
+                self.regimes[["code", "date", "regime"]],
+                on=["code", "date"], how="left",
             )
-            j = j[(j["date"] >= j["start_date"])
-                  & (j["date"] <= j["end_date"])]
-            hyp = j[["_row"]].drop_duplicates()
-            hyp["is_hyped"] = True
-            df = df.merge(hyp, on="_row", how="left")
         else:
-            df["is_hyped"] = False
-        df["is_hyped"] = df["is_hyped"].fillna(False).astype(bool)
+            df["regime"] = None
+        df["regime"] = df["regime"].fillna("calm")
         df = df.merge(
             self._codes_frame()[["code", "_pc", "first_date"]].rename(
                 columns={"first_date": "_fd"}),
             on="code", how="left",
         )
-        df = df.drop(columns=["_row"]).sort_values(
-            ["code", "date"]).reset_index(drop=True)
+        df = df.sort_values(["code", "date"]).reset_index(drop=True)
         self._prepared = df
 
     def _month_chunks(self, spec) -> Iterator[pd.DataFrame]:
@@ -240,7 +286,7 @@ class WideDfEngine(ABC):
     def _window_cols(self) -> list[str]:
         """The prepared frame's columns one month window needs: cell
         identity + the family's extra columns + forward changes."""
-        cols = ["code", "date", "_t", "is_hyped"] + self._extra_window_cols()
+        cols = ["code", "date", "_t", "regime"] + self._extra_window_cols()
         for n in FORWARD_HORIZONS:
             cols.append(f"next_change_{n}d")
         for n in MM_HORIZONS:
@@ -252,10 +298,34 @@ class WideDfEngine(ABC):
         the rsi_{W}days columns)."""
         return []
 
+    def _compute_code_chunk(self) -> int:
+        """The memory-aware codes-per-partition size (see the budget
+        block at the module head): the frame's own mean rows-per-code
+        and window width against the GPU/CPU cell budget."""
+        n_codes = max(1, len(self.codes))
+        rows_per_code = max(1.0, len(self.df) / n_codes)
+        width = max(1, len(self._window_cols()))
+        gpu = is_gpu_available()
+        budget = (GPU_PARTITION_CELL_BUDGET if gpu
+                  else CPU_PARTITION_CELL_BUDGET)
+        chunk = int(budget / max(1.0, rows_per_code * width))
+        chunk = max(MIN_CODE_CHUNK, min(MAX_CODE_CHUNK, chunk))
+        logger.info(
+            "  memory-aware partitioning: %s codes/chunk "
+            "(budget %s cells, %s mode, ~%.0f rows/code, width %d) "
+            "-> %d partitions over %d codes",
+            chunk, f"{budget:,}", "GPU" if gpu else "CPU",
+            rows_per_code, width,
+            -(-n_codes // chunk), n_codes,
+        )
+        return chunk
+
     def _codes_frame(self) -> pd.DataFrame:
         """(code, first_date) — the universe with its true first-data
         dates (datetime64; the full-window live gate's input)."""
         if self._codes_frame_cache is None:
+            if self._code_chunk is None:
+                self._code_chunk = self._compute_code_chunk()
             cf = pd.DataFrame({
                 "code": list(self.first_dates.keys()),
                 "first_date": pd.to_datetime(
@@ -266,7 +336,7 @@ class WideDfEngine(ABC):
             # assigned once here, merged onto the frame once in
             # _prepare; _month_chunks never slices code lists inline.
             cf["_pc"] = (
-                np.arange(len(cf), dtype="int64") // CODE_CHUNK
+                np.arange(len(cf), dtype="int64") // self._code_chunk
             )
             self._codes_frame_cache = cf
         return self._codes_frame_cache
@@ -282,13 +352,16 @@ class WideDfEngine(ABC):
     ) -> pd.DataFrame:
         """Gaps-and-islands over the union calendar: consecutive
         qualifying days (_t increments by exactly 1 within the group)
-        of each (group, code) run collapse to ONE row at the run's MID
-        day (the ((L-1)//2 + 1)-th day); the run's day count and its
-        [start, end] calendar dates ride along. MERGE=False keeps every
-        qualifying day as a 1-day signal."""
+        of each (group, code) run emit ONE TRIGGER ANCHOR PER DAY
+        0..TRIGGER_DELAY_MAX (delay = the day's offset within the run;
+        0 is the run's first qualifying day, when the signal becomes
+        observable) — each anchor row carries the run's day count and
+        its [start, end] calendar dates. MERGE=False keeps every
+        qualifying day as its own 1-day delay-0 signal."""
         if not self.MERGE:
             cells = cells.copy()
             cells["run_len"] = 1
+            cells["delay"] = 0
             cells["streak_start"] = cells["date"]
             cells["streak_end"] = cells["date"]
             return cells
@@ -299,20 +372,25 @@ class WideDfEngine(ABC):
         runs = c.groupby("_run", sort=False).agg(
             _t0=("_t", "min"), run_len=("_t", "size"),
         )
-        runs["_mid"] = runs["_t0"] + (runs["run_len"] - 1) // 2
         out = c.merge(runs, on="_run", how="left")
-        out = out[out["_t"] == out["_mid"]]
-        for col, before_mid in (("streak_start", True), ("streak_end", False)):
-            if before_mid:
-                out["_pos"] = out["_t"] - (out["run_len"] - 1) // 2
+        # The incremental anchors: the run's first TRIGGER_DELAY_MAX + 1
+        # days each carry the signal (the delay-d forecast is conditioned
+        # on the run having lasted d + 1 days). Filter on the int64
+        # offset BEFORE any narrowing cast — long runs would overflow a
+        # small int and wrap into the kept range.
+        out["delay"] = out["_t"] - out["_t0"]
+        out = out[out["delay"] <= TRIGGER_DELAY_MAX]
+        for col in ("streak_start", "streak_end"):
+            if col == "streak_start":
+                out["_pos"] = out["_t0"]
             else:
-                out["_pos"] = out["_t"] + out["run_len"] // 2
+                out["_pos"] = out["_t0"] + out["run_len"] - 1
             lookup = self._cal.rename(columns={"date": col})
             out = out.merge(
                 lookup, left_on="_pos", right_on="_t",
                 how="left", suffixes=("", "_cal"),
             ).drop(columns=["_pos", "_t_cal"])
-        return out
+        return out.drop(columns=["_t0"])
 
     def _quantile_bars(
         self,
@@ -394,12 +472,14 @@ class WideDfEngine(ABC):
         cells: pd.DataFrame,
         win: pd.DataFrame,
         spec,
-    ) -> list[dict]:
-        """One trigger-cell frame → the (5·R,) result row dicts:
-        forward-change join, per-horizon groupby aggregation, the
-        ragged date/excess arrays, the weight-blended mixed row and the
-        motivation fan-out."""
-        keys = ["code", "is_hyped", "side"] + list(self.BUCKET_COLS)
+    ) -> pd.DataFrame:
+        """One trigger-cell frame → the (4·D·R,) result rows: forward-
+        change join, per-(bucket, delay) groupby aggregation, the
+        ragged date/excess array literals, the weight-blended mixed row
+        and the motivation fan-out — as the bucket-major shared-stamp
+        FRAME the writer's fast path consumes."""
+        ids = ["code", "regime", "side"] + list(self.BUCKET_COLS)
+        keys = ids + ["delay"]
         thr_frame = self._reverse_thresholds(win)
 
         # Forward changes ride each trigger's own row — one keyed join.
@@ -458,6 +538,19 @@ class WideDfEngine(ABC):
                 agg[f"max_{n}"] = (f"_hx{n}", "max")
                 agg[f"min_{n}"] = (f"_ln{n}", "min")
         a = c.groupby(keys, sort=False).agg(**agg).reset_index()
+        # Bucket-major order: bucket groups contiguous, each bucket's
+        # delays consecutive — the writer's _bkt grouping assumes it.
+        a = a.sort_values(keys, kind="stable")
+        # The writer's bucket tag: ONE forecast_id per identity bucket,
+        # shared across its delay rows — factorized via group-boundary
+        # detection over the string-cast identity keys (the
+        # _ragged_arrays trick; the shifted first row carries nulls, a
+        # null-propagating compare would break cudf's row-wise any).
+        kid = a[ids].astype(str)
+        a["_bkt"] = (
+            (kid.shift().fillna("") != kid).any(axis=1)
+            .astype("int64").cumsum()
+        )
         # 'flat' buckets (px_vol's flat speed, valuation mid states)
         # make no directional claim — their reverse counts are junk by
         # construction (no top/bottom test applies); null them.
@@ -471,7 +564,7 @@ class WideDfEngine(ABC):
         has_config = "bucket_config" in a.columns
         a = a.merge(self._ragged_arrays(c, keys), on=keys, how="left")
 
-        # ---- period rows (next/5d/20d/60d) + the blended mixed row ----
+        # ---- period rows (next/5d/20d) + the blended mixed row ----
         legs = {
             n: {
                 "ave": (a[f"s_{n}"] / a[f"cnt_{n}"]).where(a[f"cnt_{n}"] > 0),
@@ -498,30 +591,62 @@ class WideDfEngine(ABC):
                           **period_kwargs)
         )
         out = pd.concat(periods, ignore_index=True)
-        out["_b"] = np.tile(np.arange(len(a)), len(periods))
-        out = out.sort_values("_b", kind="stable").drop(columns=["_b"])
+        # Bucket-major row order for the writer: consecutive equal-_bkt
+        # runs share one bucket; within a bucket the delays ascend and
+        # the 4 period rows keep their concat order (stable sort).
+        out["_bkt"] = np.tile(a["_bkt"].to_numpy(), len(periods))
+        out = out.sort_values(["_bkt", "delay"], kind="stable")
         out = out.round(6)
-        out["is_market_hyped"] = out["is_hyped"].astype(bool)
+        out["regime_state"] = out["regime"]
 
         # Motivation fan-out: the bucket identity + the MEAN streak
-        # length per bucket (one groupby over the kept cells).
-        streak = (
-            cells.groupby(keys, sort=False)["run_len"].mean().round(2)
-            .rename("streak_signal_days").reset_index()
+        # length per MERGED SIGNAL (one row per run PER BUCKET — runs
+        # span regime changes, so a multi-regime run must count toward
+        # every bucket that owns one of its anchors; dedupe on
+        # (identity, run id) — the anchors otherwise multiply each run
+        # by up to TRIGGER_DELAY_MAX + 1) and the MEAN ANCHOR DELAY
+        # (the mean trading-day offset of the bucket's emitted triggers
+        # within their runs; 0 = the streak's first qualifying day).
+        # Both registry columns are INTEGER whole trading days; the
+        # fractional means round HALF-UP ((x + 0.5) truncated matches
+        # Postgres ROUND's half-away-from-zero on these non-negative
+        # means, keeping the SQL 01 backfill digit-consistent). The
+        # delay mean stays under TRIGGER_DELAY_MAX by construction.
+        per_run = (
+            cells if not self.MERGE
+            else cells.drop_duplicates(subset=ids + ["_run"])
         )
-        out = out.merge(streak, on=keys, how="left")
-        # The constant scalars ride the COPY boundary as shared keys —
-        # assigning a python-date/object column into the frame would
-        # trip a cudf normalize fallback per partition.
-        return _to_records(
-            out.drop(columns=["is_hyped"]),
-            shared={
-                "sec_type": self.sec_type,
-                "stat_month": spec.stat_month,
-                "lookback_period": LOOKBACK_PERIOD,
-                **self.family_constants(),
-            },
-        )
+        streak = per_run.groupby(ids, sort=False).agg(
+            streak_signal_days=("run_len", "mean"),
+        ).reset_index()
+        anchor_delays = cells.groupby(ids, sort=False).agg(
+            delayed_signal_days=("delay", "mean"),
+        ).reset_index()
+        streak = streak.merge(anchor_delays, on=ids, how="inner")
+        for col in ("streak_signal_days", "delayed_signal_days"):
+            streak[col] = (streak[col] + 0.5).astype("int64")
+        streak["delayed_signal_days"] = streak["delayed_signal_days"].clip(
+            upper=TRIGGER_DELAY_MAX)
+        out = out.merge(streak, on=ids, how="left")
+        return self._shared_frame(out.drop(columns=["regime"]), spec)
+
+    def _shared_frame(self, out: pd.DataFrame, spec) -> pd.DataFrame:
+        """Stamp the shared constants (identity + family parameters) as
+        plain scalar columns so the FRAME alone reaches the writer — the
+        per-row dict COPY boundary is gone for the df-engine families
+        (the writer renders forecast_results via the CSV path and
+        extracts the mov/identity rows from each bucket group's first
+        row). stat_month lands as a datetime64 scalar (the CSV
+        renderer's np.datetime_as_string path); no object-date
+        columns."""
+        for k, v in {
+            "sec_type": self.sec_type,
+            "stat_month": np.datetime64(spec.stat_month),
+            "lookback_period": LOOKBACK_PERIOD,
+            **self.family_constants(),
+        }.items():
+            out[k] = v
+        return out
 
     def _config_jsonb(self):
         """The family's constant config JSONB payload (None = NULL)."""
@@ -545,11 +670,24 @@ class WideDfEngine(ABC):
         return None
 
     def _ragged_arrays(self, c: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
-        """Per-bucket trigger_dates / trigger_excess / streak-span lists
-        over the VALID cells of each horizon, parallel per horizon and
-        per bucket (the forecast_results array columns). The list
-        assembly is the asyncpg boundary — one host-numpy slicing pass
-        over the group-ascending cells."""
+        """Per-bucket trigger_dates / trigger_excess / streak-span
+        values, parallel per horizon and per bucket — as PostgreSQL
+        array-literal TEXT (``{2025-01-02,...}``), the CSV writer's
+        wire format. The assembly runs at host C speed: dates are
+        pre-rendered once via ``np.datetime_as_string`` (no python
+        ``date`` objects), each horizon's per-bucket slices join into
+        their literal in one pass, and buckets fill by POSITION over
+        the group-ascending key rows (``arr[u] = literals`` — no
+        per-horizon merges). Keeping the arrays as plain object-string
+        columns (never cudf list dtype) is the point: list columns
+        poison every downstream frame op (round / sort / to_dict
+        fallbacks) and the per-element host conversions dominated the
+        old boundary.
+
+        NULL semantics preserved: a bucket with no valid cell at a
+        horizon gets None (NULL array); an empty slice keeps ``{}`` (an
+        empty array, as before); NaN excess elements and NaT dates
+        render as NULL elements."""
         c = c.sort_values(keys + ["date"])
         # Group-boundary detection over STRING-cast keys: the shifted
         # first row would carry nulls (a null-propagating compare would
@@ -559,10 +697,21 @@ class WideDfEngine(ABC):
         new_grp = (k.shift().fillna("") != k).any(axis=1)
         gid = np.asarray(new_grp.cumsum().to_numpy(), dtype="int64") - 1
         key_rows = c.loc[new_grp, keys].reset_index(drop=True)
+        G = len(key_rows)
 
-        dates = _py_series(c["date"])
-        ss = _py_series(c["streak_start"])
-        se = _py_series(c["streak_end"])
+        def day_str(col: str) -> np.ndarray:
+            """Host datetime column → 'YYYY-MM-DD' object strings
+            (C-speed); NaT → 'NULL' (a NULL array ELEMENT)."""
+            arr = np.asarray(
+                host_array(c[col].to_numpy())
+            ).astype("datetime64[D]")
+            s = np.datetime_as_string(arr, unit="D").astype(object)
+            s[np.isnat(arr)] = "NULL"
+            return s
+
+        d_s = day_str("date")
+        ss_s = day_str("streak_start")
+        se_s = day_str("streak_end")
         ex = np.asarray(np.round(
             np.asarray(host_array(c["excess"].to_numpy()), dtype="float64"),
             6,
@@ -571,7 +720,11 @@ class WideDfEngine(ABC):
             host_array(c["run_len"].to_numpy()), dtype="int64",
         )
 
-        out = key_rows
+        def ex_lit(v: float) -> str:
+            # NaN excess element → NULL element (the old None mapping).
+            return "NULL" if v != v else repr(v)
+
+        out_cols: dict[str, np.ndarray] = {}
         for n in FORWARD_HORIZONS:
             fin = np.asarray(c[f"_fin{n}"].to_numpy(), dtype=bool)
             gv = gid[fin]
@@ -580,21 +733,30 @@ class WideDfEngine(ABC):
             hi = np.searchsorted(gv, u, side="right")
             sel = list(zip(lo.tolist(), hi.tolist()))
             # one WHOLESALE numpy→python conversion per column (the
-            # masks stay vectorized numpy; the per-bucket slices are
-            # plain C-speed list slices — no per-slice numpy indexing).
-            d_v = dates[fin].tolist()
-            ss_v = ss[fin].tolist()
-            se_v = se[fin].tolist()
-            ex_v = [None if x != x else x for x in ex[fin].tolist()]
+            # masks stay vectorized numpy; the per-bucket literal joins
+            # are plain C-speed str joins).
+            d_v = d_s[fin].tolist()
+            ss_v = ss_s[fin].tolist()
+            se_v = se_s[fin].tolist()
+            ex_v = [ex_lit(x) for x in ex[fin].tolist()]
             rl_v = rl[fin].tolist()
-            part = key_rows.take(u).reset_index(drop=True)  # vectorized gather
-            part[f"trigger_dates_{n}"] = [d_v[a:b] for a, b in sel]
-            part[f"trigger_excess_{n}"] = [ex_v[a:b] for a, b in sel]
-            part[f"streak_starts_{n}"] = [ss_v[a:b] for a, b in sel]
-            part[f"streak_ends_{n}"] = [se_v[a:b] for a, b in sel]
-            part[f"streak_days_{n}"] = [rl_v[a:b] for a, b in sel]
-            out = out.merge(part, on=keys, how="left")
-        return out
+
+            def fill(make) -> np.ndarray:
+                arr_: np.ndarray = np.full(G, None, dtype=object)
+                arr_[u] = [make(a, b) for a, b in sel]
+                return arr_
+
+            out_cols[f"trigger_dates_{n}"] = fill(
+                lambda a, b: "{" + ",".join(d_v[a:b]) + "}")
+            out_cols[f"trigger_excess_{n}"] = fill(
+                lambda a, b: "{" + ",".join(ex_v[a:b]) + "}")
+            out_cols[f"streak_starts_{n}"] = fill(
+                lambda a, b: "{" + ",".join(ss_v[a:b]) + "}")
+            out_cols[f"streak_ends_{n}"] = fill(
+                lambda a, b: "{" + ",".join(se_v[a:b]) + "}")
+            out_cols[f"streak_days_{n}"] = fill(
+                lambda a, b: "{" + ",".join(map(str, rl_v[a:b])) + "}")
+        return key_rows.assign(**out_cols)
 
 
 def _std_col(s2, s, cnt):
@@ -611,11 +773,11 @@ def _mixed_blend(a, legs: dict[int, dict]):
     the horizons with stats, std the mixture dispersion
     sqrt(Σw·E[x²] / Σw − mean²) — NOT the mean of the stds —
     occurrence_count the MIN positive leg count, threshold the
-    full-weight mean of the four bars, extrema + arrays NULL. A small
-    (R × 4) leg-table algebra — one vectorized pass per column."""
+    full-weight mean of the three bars, extrema + arrays NULL. A small
+    (R × 3) leg-table algebra — one vectorized pass per column."""
     # NOTE: the weight vector stays 1-D — cudf.pandas' numpy interop
-    # breaks column-vector (4,1) broadcasts against (R, 4) tables (the
-    # probe in temp_scripts), while last-axis (4,) broadcasts are fine.
+    # breaks column-vector (3,1) broadcasts against (R, 3) tables (the
+    # probe in temp_scripts), while last-axis (3,) broadcasts are fine.
     w = np.array([MIXED_HORIZON_WEIGHTS[n] for n in FORWARD_HORIZONS])
 
     def _leg(key: str, dtype, ns=tuple(FORWARD_HORIZONS)) -> np.ndarray:
@@ -623,7 +785,7 @@ def _mixed_blend(a, legs: dict[int, dict]):
         unwrapped ONCE here (to_numpy + host_array + asarray — asarray
         strips the cudf.pandas proxy subclass so the blend is plain
         host numpy), the blend itself is host algebra over the small
-        (R × 4) table."""
+        (R × 3) table."""
         return np.stack(
             [np.asarray(
                 host_array(legs[n][key].to_numpy(dtype=dtype,
@@ -668,7 +830,7 @@ def _mixed_blend(a, legs: dict[int, dict]):
 
 def _period_frame(a, keys, payload, period, n, config=None):
     """One period's row frame — the motivation key columns (the caller's
-    ``keys``: code / is_hyped / side / family bucket cols) + the
+    ``keys``: code / regime / side / family bucket cols) + the
     consolidated forecast_results fields of the payload. Numeric NULLs
     are NaN placeholders (uniform float dtypes through the concat; the
     asyncpg boundary maps NaN → None). ``config`` is the bucket's JSONB

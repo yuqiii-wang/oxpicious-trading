@@ -304,17 +304,14 @@ export default function MarketInterestWallPanel({ rows, selectedDate }: Props) {
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "Per-strike OI stacked by expiry month, calls to the right (positive) and puts to the " +
-        "left (negative) — blue gradient: dark = nearest expiry, light = farthest. Spot / Call " +
-        "Wall / Put Wall / MaxPain / OI-weighted strike lines are overlaid as horizontal " +
-        "markLines. Mirrors plot_market_interest_evolution() in plot_szse_options.py.",
+        "Per-strike OI stacked by expiry month — calls right (+), puts left (−); blue " +
+        "gradient: dark = nearest. Bar height = raw OI contracts per strike (not premium- " +
+        "or notional-weighted): walls locate where contracts sit, not dollar exposure. " +
+        "Horizontal marks: spot, call/put wall, MaxPain, OI-wtd strike. Indication: spot " +
+        "gravitates toward MaxPain into expiry; a wall's surrender fuels the move. " +
+        "Mirrors plot_market_interest_evolution() in plot_szse_options.py.",
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
       state: { selectedDate },
-      suggestedQuestions: [
-        "Where do the call and put OI walls sit relative to spot, and which strike could pin price into expiry?",
-        "Is open interest concentrated in near or far expiries?",
-        "What do max pain and the OI-weighted strike suggest about expiry magnetism?",
-      ],
       notes: [
         "Wall dominance: only the dominant wall is drawn when one side's wall OI is >33% larger; comparable walls (within 33%) draw both — a balanced market.",
         "The in-chart title carries the selected date's readouts: Spot, Call/Put Wall strikes, P/C ratio, ATM IV, IV skew and net GEX.",

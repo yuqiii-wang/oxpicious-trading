@@ -58,14 +58,17 @@ import {
 } from "@/theme/chart-palette";
 import { baseChartOption, commonTooltip } from "@/shared/charts/base-chart";
 import type {
-  MovAveSpreadHypeEpisode,
+  MarketRegimeSpans,
   StockBaselineRow,
   StockDividend,
 } from "@shared/types";
 import {
-  HYPE_ACCENT_COLOR,
-  hypeEpisodesToMarkArea,
-} from "@/shared/charts/hypeBands";
+  REGIME_ACCENT_COLORS,
+  REGIME_LABELS,
+  REGIME_SHADE_COLORS,
+  SHADED_REGIMES,
+  regimeSpansToMarkArea,
+} from "@/shared/charts/regimeBands";
 import type { ECharts, EChartsOption } from "echarts";
 
 /** One historical trade signal to mark on the chart (from
@@ -134,11 +137,12 @@ interface Props {
    *  Used by the PE & Dividend analysis page to highlight the matching
    *  month-end row in the stats table. */
   onDateClick?: (date: string) => void;
-  /** Market-hype EPISODES to shade (light purple full-height bands), as a
-   *  sorted DISJOINT span list — callers merge all check-in windows with
-   *  mergeHypeEpisodesAllWindows (shared hypeBands helper) so overlapping
-   *  windows' shades don't stack. Empty/omitted = no shading. */
-  hypeEpisodes?: MovAveSpreadHypeEpisode[];
+  /** Market-regime SPANS to shade per regime (full-height bands in the
+   *  regime's color — hot purple / panic red / quiet blue), as the
+   *  endpoint's per-regime span map (Partial<MarketRegimeSpans>; calm is
+   *  dropped by the shared regimeBands helper). One chart series per
+   *  regime. Empty/omitted = no shading. */
+  regimeSpans?: Partial<MarketRegimeSpans>;
   /** Historical trade signals to mark: green up-triangle (buy) below the
    *  low / red down-triangle (sell) above the high, and a per-day signal
    *  block in the axis tooltip. Same (date, action) pairs share a marker. */
@@ -191,7 +195,7 @@ interface Props {
   onChartReady?: (instance: ECharts) => void;
 }
 
-function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, hypeEpisodes, tradeSignals = NO_TRADE_SIGNALS, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, onHighlightSettled, onVisibleRangeChange, focusDateRequest, onChartReady }: Props) {
+function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS, dataZoomStart, dataZoomEnd, onDateClick, regimeSpans, tradeSignals = NO_TRADE_SIGNALS, highlightDates = NO_HIGHLIGHT_DATES, highlightSpans = NO_HIGHLIGHT_SPANS, highlightHorizonDays = 1, onHighlightSettled, onVisibleRangeChange, focusDateRequest, onChartReady }: Props) {
   const themeMode = useStore((s) => s.themeMode);
 
   // Chart x-axis dates (with gap-break inserts) — used by the onCanvasClick
@@ -580,23 +584,27 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
       z: 1,
     });
 
-    // --- Market-hype shading (light purple full-height bands) -----------
-    // Empty-data series hosting the markArea (the same
+    // --- Market-regime shading (per-regime full-height bands) ------------
+    // Empty-data series hosting each regime's markArea (the same
     // rect-legend + markArea pattern as the MA-Spread charts) — sits
-    // behind everything; the "Hyped" legend entry toggles the shading.
-    if (hypeEpisodes && hypeEpisodes.length > 0) {
-      series.push({
-        type: "line",
-        name: "Hyped",
-        yAxisIndex: 0,
-        data: [],
-        markArea: {
-          silent: true,
-          data: hypeEpisodesToMarkArea(hypeEpisodes),
-        },
-        itemStyle: { color: HYPE_ACCENT_COLOR, opacity: 0.45 },
-        z: 0,
-      });
+    // behind everything; each regime's legend entry toggles its shade.
+    if (regimeSpans) {
+      for (const r of SHADED_REGIMES) {
+        const spans = regimeSpans[r];
+        if (!spans || spans.length === 0) continue;
+        series.push({
+          type: "line",
+          name: REGIME_LABELS[r],
+          yAxisIndex: 0,
+          data: [],
+          markArea: {
+            silent: true,
+            data: regimeSpansToMarkArea(spans, REGIME_SHADE_COLORS[r]),
+          },
+          itemStyle: { color: REGIME_ACCENT_COLORS[r], opacity: 0.45 },
+          z: 0,
+        });
+      }
     }
 
     // --- Forecast trigger-day overlay host (clicked forecast row) --------
@@ -713,7 +721,7 @@ function StockOhlcChart({ rows, ohlcMode, height = 250, dividends = NO_DIVIDENDS
       yAxis,
       series,
     });
-  }, [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd, hypeEpisodes, tradeSignals]);
+  }, [rows, themeMode, ohlcMode, dividends, dataZoomStart, dataZoomEnd, regimeSpans, tradeSignals]);
 
   // ---- Forecast trigger-day overlay (imperative incremental update) -----
   // The overlay payload for the placeholder series above: pinpoint

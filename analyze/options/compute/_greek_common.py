@@ -32,6 +32,8 @@ from collections.abc import Callable
 import numpy as np
 import pandas as pd
 
+from _common.df_utils import safe_columns
+
 from analyze.options.compute._shared import (
     _DELTA_OTM_MAX,
     _collapse_open_expiry_rows,
@@ -78,7 +80,7 @@ def compute_pair_greek_balance(
     """
     from analyze.options.config import SKEWNESS_RESULT_COLUMNS
 
-    if df.empty or greek not in df.columns:
+    if df.empty or greek not in set(safe_columns(df)):
         return pd.DataFrame(columns=SKEWNESS_RESULT_COLUMNS)
 
     out = _collapse_open_expiry_rows(df)

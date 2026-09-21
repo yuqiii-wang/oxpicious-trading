@@ -36,16 +36,13 @@ Pipeline per sec_type:
      ragged TRIGGER-DATE lists (the calendar dates behind
      occurrence_count — the forecast_results.trigger_dates column).
   8. ``build_result_rows`` — expand one batch's gathered aggregates into
-     the forecast_results fields of its emitted rows — 5 period rows
-     per bucket (the four horizons plus the weight-blended 'mixed' row),
+     the forecast_results fields of its emitted rows — 4 period rows
+     per bucket (the three horizons plus the weight-blended 'mixed' row),
      vectorized (no per-row scalar rounding calls).
-  9. ``split_forecast_rows`` — split computed bucket rows into the
-     motivation (mov_rsi / ...) and result (forecast_results) dicts.
-
 Module map: months (specs + window resolution) · grid (factorization +
 scatters) · changes (forward-change matrices) · thresholds (reversal
 bars) · signals (streak-merge + bucket subsets) · horizons (sparse
-aggregation) · results (row expansion + splits).
+aggregation) · results (row expansion).
 """
 from __future__ import annotations
 
@@ -58,7 +55,6 @@ from .months import (
 )
 from .grid import (
     build_grid,
-    build_hype_matrix,
     build_px_vol_state_matrices,
     date_ordinals,
     first_ords_from_dates,
@@ -76,7 +72,6 @@ from .results import (
     _round_none,
     build_result_rows,
     round6,
-    split_forecast_rows,
 )
 
 __all__ = [
@@ -86,7 +81,6 @@ __all__ = [
     "build_month_specs",
     "month_row_windows",
     "build_grid",
-    "build_hype_matrix",
     "build_px_vol_state_matrices",
     "date_ordinals",
     "first_ords_from_dates",
@@ -102,5 +96,4 @@ __all__ = [
     "_round_none",
     "build_result_rows",
     "round6",
-    "split_forecast_rows",
 ]

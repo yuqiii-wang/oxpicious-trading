@@ -1,28 +1,18 @@
 /**
  * NewsPostCard — one social-media-style post in the shared NewsFeedPage.
  *
- * Collapsed it shows the header (author avatar + date + votes), chips and
- * the 2-line snippet. Clicking the card expands it: the full article body
- * is lazily fetched (GET /api/news/item) and rendered; a comments toggle
- * lazily fetches the threaded comments (GET /api/news/comments) which
- * themselves expand further per root comment (see CommentThread).
+ * Built on the shared PostCard base (expand-on-click, lazy detail fetch):
+ * the header carries the author avatar + date + votes chip + 原文 link,
+ * the chips row the source/sector/industry tags, and the expanded body
+ * the full article text. The comments toggle lives in the action bar and
+ * lazily fetches the threaded comments (GET /api/news/comments) into the
+ * section below it — see CommentThread for the per-root expansion.
  */
 import { useState } from "react";
-import {
-  Avatar,
-  Box,
-  Button,
-  Chip,
-  CircularProgress,
-  Stack,
-  Typography,
-} from "@mui/material";
-import {
-  ChatBubbleOutline as ChatIcon,
-  ExpandLess as ExpandLessIcon,
-  ExpandMore as ExpandMoreIcon,
-  OpenInNew as OpenInNewIcon,
-} from "@mui/icons-material";
+import { Avatar, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
+import { ChatBubbleOutline as ChatIcon, OpenInNew as OpenInNewIcon } from "@mui/icons-material";
+import PostCard from "@/shared/components/post-feed/PostCard";
+import PostChip from "@/shared/components/post-feed/PostChip";
 import { fetchNewsComments, fetchNewsItem } from "@/lib/api-client";
 import type { NewsComment, NewsItem, NewsItemDetail } from "@shared/types";
 import CommentThread from "./CommentThread";
@@ -36,214 +26,136 @@ function avatarColor(seed: string): string {
 }
 
 export default function NewsPostCard({ item }: { item: NewsItem }) {
-  const [expanded, setExpanded] = useState(false);
-  const [detail, setDetail] = useState<NewsItemDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  // Comments state — a separate lazy fetch (below the expand toggle).
   const [showComments, setShowComments] = useState(false);
   const [comments, setComments] = useState<NewsComment[] | null>(null);
   const [commentsTotal, setCommentsTotal] = useState<number | null>(null);
   const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentsError, setCommentsError] = useState<string | null>(null);
 
   const name = item.author ?? item.source ?? "新闻";
-  const commentCount = detail?.comment_count ?? item.comment_count ?? 0;
 
-  const toggleExpand = async () => {
-    const next = !expanded;
-    setExpanded(next);
-    if (next && detail === null && !detailLoading) {
-      setDetailLoading(true);
-      try {
-        setDetail(await fetchNewsItem(item.news_id));
-      } catch {
-        setDetail(null);
-      } finally {
-        setDetailLoading(false);
-      }
+  const loadComments = async () => {
+    if (commentsLoading) return;
+    setCommentsLoading(true);
+    setCommentsError(null);
+    try {
+      const resp = await fetchNewsComments(item.news_id);
+      setComments(resp.comments);
+      setCommentsTotal(resp.total);
+    } catch (e) {
+      // Stay in the error state (comments stays null) so the retry button —
+      // or collapsing and re-expanding — refetches instead of caching a
+      // failure as "no comments".
+      setCommentsError(e instanceof Error ? e.message : "网络错误");
+    } finally {
+      setCommentsLoading(false);
     }
   };
 
-  const toggleComments = async () => {
+  const toggleComments = () => {
     const next = !showComments;
     setShowComments(next);
-    if (next && comments === null && !commentsLoading) {
-      setCommentsLoading(true);
-      try {
-        const resp = await fetchNewsComments(item.news_id);
-        setComments(resp.comments);
-        setCommentsTotal(resp.total);
-      } catch {
-        setComments([]);
-      } finally {
-        setCommentsLoading(false);
-      }
-    }
+    if (next && comments === null) void loadComments();
   };
 
   return (
-    <Box
-      onClick={() => { if (!expanded) void toggleExpand(); }}
-      sx={{
-        p: 1.25,
-        border: "1px solid",
-        borderColor: "divider",
-        borderRadius: 1.5,
-        bgcolor: "background.paper",
-        cursor: expanded ? "default" : "pointer",
-        "&:hover": { bgcolor: "action.hover" },
+    <PostCard<NewsItemDetail>
+      header={{
+        icon: (
+          <Avatar sx={{ width: 28, height: 28, fontSize: "0.8rem", bgcolor: avatarColor(name) }}>
+            {name.slice(0, 1).toUpperCase()}
+          </Avatar>
+        ),
+        title: name,
+        date: item.date,
+        trailing: (
+          <>
+            {item.votes != null && item.votes > 0 && (
+              <PostChip label={`▲ ${item.votes.toLocaleString()}`} sx={{ fontSize: "0.7rem" }} />
+            )}
+            {item.url && (
+              <Typography
+                component="a"
+                href={item.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                aria-label="原文"
+                sx={{ color: "text.secondary", display: "flex", "&:hover": { color: "primary.main" } }}
+              >
+                <OpenInNewIcon sx={{ fontSize: 15 }} />
+              </Typography>
+            )}
+          </>
+        ),
       }}
-    >
-      {/* ---- header: avatar · author · date ..... ▲ votes ---- */}
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 0.75 }}>
-        <Avatar
+      chips={
+        <>
+          {item.source && <PostChip label={item.source} color="primary" />}
+          {!item.industry_id && item.sector_id && <PostChip label={item.sector_id} color="secondary" />}
+          {item.industry_id && <PostChip label={item.industry_id} color="secondary" />}
+        </>
+      }
+      headline={item.title}
+      headlineHref={item.url}
+      snippet={item.snippet}
+      fetchDetail={() => fetchNewsItem(item.news_id)}
+      renderDetail={(detail) => (
+        <Typography
+          variant="body2"
           sx={{
-            width: 28,
-            height: 28,
-            fontSize: "0.8rem",
-            bgcolor: avatarColor(name),
+            whiteSpace: "pre-wrap",
+            lineHeight: 1.65,
+            maxHeight: 520,
+            overflowY: "auto",
+            pr: 1,
           }}
         >
-          {name.slice(0, 1).toUpperCase()}
-        </Avatar>
-        <Typography variant="subtitle2" sx={{ fontWeight: 700, fontSize: "0.8rem" }}>
-          {name}
-        </Typography>
-        <Typography variant="subtitle2" color="text.secondary" sx={{ fontSize: "0.7rem" }}>
-          {item.date}
-        </Typography>
-        <Box sx={{ ml: "auto", display: "flex", alignItems: "center", gap: 0.5 }}>
-          {item.votes != null && item.votes > 0 && (
-            <Chip label={`▲ ${item.votes.toLocaleString()}`} size="small" variant="outlined"
-              sx={{ fontSize: "0.7rem" }} />
-          )}
-          {item.url && (
-            <Typography
-              component="a"
-              href={item.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              aria-label="原文"
-              sx={{ color: "text.secondary", display: "flex", "&:hover": { color: "primary.main" } }}
-            >
-              <OpenInNewIcon sx={{ fontSize: 15 }} />
-            </Typography>
-          )}
-        </Box>
-      </Stack>
-
-      {/* ---- chips: source · sector (sector-only items) · industry ---- */}
-      <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5, mb: 0.5 }}>
-        {item.source && (
-          <Chip label={item.source} size="small" color="primary" variant="outlined"
-            sx={{ fontSize: "0.65rem", height: 18 }} />
-        )}
-        {!item.industry_id && item.sector_id && (
-          <Chip label={item.sector_id} size="small" color="secondary" variant="outlined"
-            sx={{ fontSize: "0.65rem", height: 18 }} />
-        )}
-        {item.industry_id && (
-          <Chip label={item.industry_id} size="small" color="secondary" variant="outlined"
-            sx={{ fontSize: "0.65rem", height: 18 }} />
-        )}
-      </Stack>
-
-      {/* ---- title (post headline) ---- */}
-      <Typography
-        component={item.url ? "a" : "div"}
-        href={item.url ?? undefined}
-        target={item.url ? "_blank" : undefined}
-        rel="noopener noreferrer"
-        onClick={(e) => { if (item.url) e.stopPropagation(); }}
-        sx={{
-          display: "block",
-          fontWeight: 700,
-          fontSize: "0.9rem",
-          lineHeight: 1.35,
-          color: "text.primary",
-          textDecoration: "none",
-          mb: item.snippet || expanded ? 0.5 : 0,
-          "&:hover": item.url ? { textDecoration: "underline" } : {},
-        }}
-      >
-        {item.title}
-      </Typography>
-
-      {/* ---- body: snippet when collapsed, full content when expanded ---- */}
-      {!expanded && item.snippet && (
-        <Typography variant="body2" color="text.secondary"
-          sx={{
-            display: "-webkit-box",
-            WebkitLineClamp: 2,
-            WebkitBoxOrient: "vertical",
-            overflow: "hidden",
-          }}>
-          {item.snippet}
+          {detail.content}
         </Typography>
       )}
-      {expanded && (
-        <Box sx={{ my: 0.75 }}>
-          {detailLoading ? (
-            <Stack direction="row" spacing={1} sx={{ alignItems: "center", py: 1 }}>
-              <CircularProgress size={14} thickness={5} />
-              <Typography variant="body2" color="text.secondary">加载中…</Typography>
-            </Stack>
-          ) : detail?.content ? (
-            <Typography
-              variant="body2"
-              sx={{
-                whiteSpace: "pre-wrap",
-                lineHeight: 1.65,
-                maxHeight: 520,
-                overflowY: "auto",
-                pr: 1,
-              }}>
-              {detail.content}
-            </Typography>
-          ) : (
-            <Typography variant="body2" color="text.secondary" sx={{ py: 0.5 }}>
-              （无正文内容）
-            </Typography>
-          )}
-        </Box>
-      )}
-
-      {/* ---- actions: expand toggle · comments toggle ---- */}
-      <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.75 }}>
-        <Button
-          size="small"
-          color="inherit"
-          startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-          onClick={(e) => { e.stopPropagation(); void toggleExpand(); }}
-          sx={{ fontSize: "0.7rem", minWidth: 0, px: 0.75, color: "text.secondary" }}
-        >
-          {expanded ? "收起" : "展开全文"}
-        </Button>
-        <Button
-          size="small"
-          color="inherit"
-          startIcon={<ChatIcon sx={{ fontSize: 14 }} />}
-          onClick={(e) => { e.stopPropagation(); void toggleComments(); }}
-          sx={{ fontSize: "0.7rem", minWidth: 0, px: 0.75, color: "text.secondary" }}
-        >
-          {commentsTotal != null ? commentsTotal : commentCount} 条评论
-        </Button>
-      </Stack>
-
+      detailEmptyText="（无正文内容）"
+      renderActions={(detail) => {
+        const commentCount = detail?.comment_count ?? item.comment_count ?? 0;
+        return (
+          <Button
+            size="small"
+            color="inherit"
+            startIcon={<ChatIcon sx={{ fontSize: 14 }} />}
+            onClick={(e) => { e.stopPropagation(); toggleComments(); }}
+            sx={{ fontSize: "0.7rem", minWidth: 0, px: 0.75, color: "text.secondary" }}
+          >
+            {commentsTotal != null ? commentsTotal : commentCount} 条评论
+          </Button>
+        );
+      }}
+    >
       {/* ---- comments section (lazily loaded, threads expand further) ---- */}
       {showComments && (
         <Box
           onClick={(e) => e.stopPropagation()}
-          sx={{
-            mt: 1,
-            pt: 1,
-            borderTop: "1px solid",
-            borderColor: "divider",
-          }}
+          sx={{ mt: 1, pt: 1, borderTop: "1px solid", borderColor: "divider" }}
         >
           {commentsLoading ? (
             <Stack direction="row" spacing={1} sx={{ alignItems: "center", py: 1 }}>
               <CircularProgress size={14} thickness={5} />
               <Typography variant="body2" color="text.secondary">评论加载中…</Typography>
+            </Stack>
+          ) : commentsError ? (
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center", py: 1 }}>
+              <Typography variant="body2" color="error.main">
+                评论加载失败：{commentsError}
+              </Typography>
+              <Button
+                size="small"
+                color="inherit"
+                variant="outlined"
+                onClick={() => void loadComments()}
+                sx={{ fontSize: "0.7rem", minWidth: 0, px: 0.75, color: "text.secondary" }}
+              >
+                重试
+              </Button>
             </Stack>
           ) : (comments?.length ?? 0) === 0 ? (
             <Typography variant="body2" color="text.secondary" sx={{ py: 1 }}>
@@ -254,6 +166,6 @@ export default function NewsPostCard({ item }: { item: NewsItem }) {
           )}
         </Box>
       )}
-    </Box>
+    </PostCard>
   );
 }

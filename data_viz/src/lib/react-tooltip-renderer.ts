@@ -56,6 +56,14 @@ export function renderReactElement(el: React.ReactElement): string {
   return renderEl(el);
 }
 
+/**
+ * Escape &, <, > in interpolated text so it renders literally inside tooltip
+ * HTML (the custom renderer above does NOT escape string children).
+ */
+export function escapeTooltipText(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export const tooltipComponents = {
   Row: ({ children, style }: { children?: React.ReactNode; style?: React.CSSProperties }) =>
     React.createElement("div", { style: { marginTop: 1, ...style } }, children),

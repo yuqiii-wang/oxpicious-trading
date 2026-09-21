@@ -206,12 +206,12 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
   const priceSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        `Futures price curves for product ${product} (${combinedData.product_name}): one ` +
-        "settlement-price line per contract — active contracts in a blue gradient (farther " +
-        "maturity = lighter), matured contracts in grey — plus the underlying spot line for " +
-        "index futures. The tooltip adds each contract's gap vs the underlying; in history mode " +
-        "hovering shows expiry-gap dots. All plots on this page share one synced time slider " +
-        "and crosshair.",
+        `Futures price curves for ${product} (${combinedData.product_name}): one ` +
+        "settlement-price line per contract — active in a blue gradient (farther maturity " +
+        "= lighter), matured in grey — plus the underlying spot line for index futures. " +
+        "Tooltip: per-contract gap vs the underlying; history-mode hover shows expiry-gap " +
+        "dots. Indication: the contract fan at any date = the term structure — ascending " +
+        "= contango (carry cost), inverted = tension.",
       instruments: aiInstruments,
       series: [
         { name: spotName, unit: "index pts", description: "underlying (spot) daily close" },
@@ -228,10 +228,11 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
   const corrSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "Per-contract 20-day rolling correlation vs the underlying (corr_price_vs_underlying): " +
-        `one line per contract — ${nActive} active · ${nMatured} matured — using the same ` +
-        "per-contract colors as the price curves above, y-axis fixed at -1 to 1. Follows the " +
-        "shared time slider and crosshair of the futures analysis page.",
+        "20-day rolling correlation vs the underlying (corr_price_vs_underlying): " +
+        `one line per contract — ${nActive} active · ${nMatured} matured — same colors ` +
+        "as the price curves, y ∈ [−1, 1]. Indication: ρ ebbing toward 0 = the contract " +
+        "decoupling from spot (idiosyncratic drift); pinned near 1 = pure beta. Follows " +
+        "the shared slider/crosshair.",
       instruments: aiInstruments,
       state: { view_mode: viewMode },
       notes: ["+1 = the contract moves in lockstep with the underlying; 0 = no linear relation."],
@@ -241,11 +242,11 @@ export function FuturesCharts({ product, combinedData, viewMode }: FuturesCharts
   const convSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "Basis convergence (contrarian): the signed futures − spot gap per contract in basis " +
-        "points, collapsing into the zero line as each contract ages toward expiry (futures " +
-        "meets spot). Dots mark each matured contract's expiry gap (history mode) and each " +
-        "active contract's yesterday gap. Follows the shared time slider and crosshair of the " +
-        "futures analysis page.",
+        "Basis convergence (contrarian): per-contract signed gap (futures − spot) in bps, " +
+        "collapsing to 0 as each contract ages toward expiry. Dots: matured contracts' " +
+        "expiry gaps and active contracts' yesterday gap (history mode). Indication: fat " +
+        "positive basis = carry-rich short-vs-spot; the collapse into expiry is the " +
+        "tradable decay.",
       instruments: aiInstruments,
       series: [
         { name: "__zero_line__", unit: "bps", description: "the convergence target — futures meets spot (gap = 0)" },

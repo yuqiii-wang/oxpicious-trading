@@ -38,7 +38,7 @@ from live.live_signals.analysis.fetch import (
     fetch_current_values,
     fetch_daily_close_on,
     fetch_intraday_bar_on,
-    fetch_is_market_hyped,
+    fetch_regime_state,
     resolve_threshold,
     resolve_value,
 )
@@ -147,10 +147,11 @@ class AnalysisEvaluator:
         if verbose:
             logger.info(f"  [{sec_type}] {code}: {len(sigs)} active signal configs")
 
-        # The bar date's hype verdict (one point probe against the
-        # episode table — recorded regime context on every breach row,
-        # never a gate: a hyped-day breach still fires, flagged).
-        is_hyped = await fetch_is_market_hyped(
+        # The bar date's market regime (one point probe against the
+        # daily states table — recorded regime context on every breach
+        # row, never a gate: a hot/panic-day breach still fires,
+        # labeled).
+        regime_state = await fetch_regime_state(
             self._conn, sec_type, code, bar_date,
         )
 
@@ -227,9 +228,9 @@ class AnalysisEvaluator:
                 # rows (time 15:00); FALSE on every intraday-bar
                 # observation (live monitor AND as-of replay).
                 "is_day_close_trigger": day_close,
-                # the breach bar's date sits inside a market-hype
-                # episode of the code (regime context, not a gate)
-                "is_market_hyped": is_hyped,
+                # the breach bar's date market regime
+                # (stats.market_regimes day label; context, not a gate)
+                "regime_state": regime_state,
             })
         # The live PK carries no side: when BOTH sides of one
         # (code, signal_sub_type) breach the same bar (their strategy

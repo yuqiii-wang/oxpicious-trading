@@ -34,13 +34,13 @@
 --    trend_window W ∈ {20, 60} (the composites' short/medium trend
 --    scale; 255 is a regime filter, too slow for day-level buckets).
 --    STATE buckets: every qualifying day joins — no cooldown, no
---    is_market_hyped split (industries have no hype source). The side
---    is the constant 'bottom' so the shared gate machinery reads the
---    table unchanged.
+--    regime_state split (industries have no stats.market_regimes
+--    source). The side is the constant 'bottom' so the shared gate
+--    machinery reads the table unchanged.
 --
 --  RESULT DATA
 --    analysis_forecasts.forecast_results via forecast_id (1:N — one
---    forecast_id → 5 period rows next/5d/20d/60d/mixed): B's forward offset
+--    forecast_id → 4 period rows next/5d/20d/mixed): B's forward offset
 --    change stats (ave/std/max/min, occurrence_count) and reverse_prob
 --    at B's ADAPTIVE
 --    threshold (k_n·σ of B's window forward offset changes).
@@ -85,7 +85,7 @@
 
 CREATE TABLE IF NOT EXISTS analysis_forecasts.opp_pair_state (
     industry_id     TEXT    NOT NULL,  -- hash partition key + PK lead (the DROPPING industry, registered as identities.code); sec_type / stat_month live in forecast_identities
-    forecast_id       BIGINT  NOT NULL,  -- PK + hash key; 1:N link → forecast_results (5 period rows); identity (sec_type, code = dropping industry_id, stat_month) + bucket family live in forecast_identities
+    forecast_id       BIGINT  NOT NULL,  -- PK + hash key; 1:N link → forecast_results (4 period rows); identity (sec_type, code = dropping industry_id, stat_month) + bucket family live in forecast_identities
     pair_industry_id  TEXT    NOT NULL,  -- the OTHER side — whose future trend the forecast_results rows describe (bucket metric, NOT identity)
     trend_window      INTEGER NOT NULL,  -- W of the MA curves (20 | 60)
 
@@ -112,7 +112,7 @@ CREATE INDEX IF NOT EXISTS idx_opp_pair_state_forecast_id
 --  Comments
 -- ----------------------------------------------------------------------------
 COMMENT ON TABLE analysis_forecasts.opp_pair_state IS 'Industry opposite-pair trend buckets (motivation): one row per forecast_id — the trailing-5y-window days where industry A''s W-day benchmark-offset MA trend is dropping (rel_A(t) = MA_A[t]/MA_A[t-W] - MA_M[t]/MA_M[t-W] < 0, the composites'' offset math normalized to a relative MA return), with the OTHER side industry B (pair_industry_id)''s forward offset change (MA_B[t+n]/MA_B[t] - MA_M[t+n]/MA_M[t]) as the forecast result in analysis_forecasts.forecast_results via forecast_id. Every unordered pair of analysis_composites.industry_corr_benchmark_offsets (pool ''all'', benchmark 000300), both directions; state buckets (no cooldown, no hype split); side constant ''bottom'' so reverse_prob = P(B rises beyond B''s FIXED 1% threshold — the period-end n-day offset change vs ±1%) — the pair forecast''s CONFIRMATION probability. Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type=''index'', code = the DROPPING industry_id, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Sources: stats.industry_basic_stats.mean_close + stats.index_basic_stats.close + analysis_composites.industry_corr_benchmark_offsets. Populated by python -m analyze.analysis_forecasts.';
-COMMENT ON COLUMN analysis_forecasts.opp_pair_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 5 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 5 periods). The bucket''s identity (sec_type=''index'', code = the DROPPING industry_id, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id; the forecast-target pair_industry_id stays on this row.';
+COMMENT ON COLUMN analysis_forecasts.opp_pair_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type=''index'', code = the DROPPING industry_id, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id; the forecast-target pair_industry_id stays on this row.';
 COMMENT ON COLUMN analysis_forecasts.opp_pair_state.pair_industry_id IS 'The OTHER side of the pair — the forecast TARGET: the linked forecast_results rows describe THIS industry''s forward offset trend changes. The confirmation-gate calibration (analysis_signals.gate) groups by this column, and signal rows are emitted on it. (The DROPPING industry_id is identity — registered as the identities row''s code.)';
 COMMENT ON COLUMN analysis_forecasts.opp_pair_state.trend_window IS 'Trend window W (trading-day rows) of the MA curves the relative MA returns are computed on: 20 | 60.';
 COMMENT ON COLUMN analysis_forecasts.opp_pair_state.side IS 'Constant ''bottom'': reverse_prob = P(the other side industry''s forward offset change > +threshold) — the pair forecast''s CONFIRMATION probability (B rises when A drops), at B''s FIXED 1% threshold (the period-end n-day offset change vs ±1%). Mirrors the mov_* side semantics so analysis_signals.gate consumes the table unchanged (bottom → action buy on the target).';

@@ -293,15 +293,13 @@ export default function OppositeIndustryCorrelationsPage() {
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "Benchmark-offset industry correlations: each selected industry's MA trend has " +
-        "the broad-market benchmark rebased to its level at each window start and " +
-        "SUBTRACTED (the common market factor removed; prices recomputed from 100), " +
-        "then every industry PAIR's Pearson correlation is charted per rolling " +
-        "20/60/255-trading-day window as horizontal segments starting at each window " +
-        "date. The metric toggle switches what a segment encodes: Overall = raw " +
-        "correlation (benchmark still in), Offset = correlation after the removal, " +
-        "Opposite = the score (1 − offset)/2 in [0, 1] — 1 = perfectly opposite once " +
-        "the market factor is removed, 0.5 = uncorrelated, 0 = co-moving.",
+        "Benchmark-offset industry correlations: each industry's MA trend has the benchmark " +
+        "rebased to its window-start level subtracted (common market factor removed), then " +
+        "every industry PAIR's Pearson r is charted per rolling 20/60/255-day window as " +
+        "horizontal segments from each window date. Metric toggle: Overall = raw r (benchmark " +
+        "still in); Offset = r after removal; Opposite = (1 − r)/2 ∈ [0, 1] — 1 = perfectly " +
+        "opposite ex-market, 0.5 = uncorrelated, 0 = co-moving. Indication: Opposite ≈ 1 " +
+        "pairs are natural market-neutral candidates — long one, hedge with the other.",
       instruments: [
         { code: benchmark, assetClass: "index" },
         ...selectedIds.map((id) => ({ code: id, assetClass: "industry" as const })),

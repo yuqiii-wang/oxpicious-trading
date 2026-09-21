@@ -39,12 +39,22 @@
  *     (opp_pair_state) ids resolve to a caption only — that family has
  *     no table in this UI.
  *
+ *   • Forecast header AI Ask — a shared-kit "?" beside the Forecast title
+ *     (AiAskButton + derivePlotInfo) whose payload is MAPPED FROM THE
+ *     TOGGLES: the active family toggle supplies the state tag + the intro
+ *     reading guide (its tooltip) + the online-search seed keyword (the
+ *     same aiSearchKeywords the trend chart's "?" gets), and ForecastTable's
+ *     horizon toggle — controlled from here so the mirror cannot desync
+ *     when the table remounts — supplies the horizon state tag; an active
+ *     row highlight adds the trigger-days tag.
+ *
  * Nav trees sources per sec_type (baseline registries):
  *   ETF   → /api/etf-margin/themes + /api/etf-margin/strategy-themes
  *   Index → /api/index-baseline/themes + /api/index-baseline/strategy-themes
  *   Stock → /api/stock-baseline/themes + /api/stock-baseline/strategy-themes
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ECharts } from "echarts";
 import {
   Box,
   Card,
@@ -63,6 +73,7 @@ import { SecNavShell, useSecNav } from "@/shared/components/sec-nav";
 import type { SecNavSecType, SecNavThemesSource } from "@/shared/components/sec-nav";
 import CodeTrendChart from "@/components/CodeTrendChart";
 import { findCodeInStrategyThemes, findCodeInThemes } from "@/components/CodeSearchBar";
+import { AiAskButton, derivePlotInfo } from "@/shared/ai-ask";
 import { ForecastTable } from "./ForecastTable";
 import { TRIGGER_DATE_COLOR } from "@/theme/chart-palette";
 import type {
@@ -116,9 +127,10 @@ const CACHE_PREFIXES: Record<SecNavSecType, string[]> = {
 };
 
 /** One ForecastTable bucket family — toggle label + full-name tooltip +
- * `search`: the search-engine term fed into the trend chart's AI-ask
- * online-search seed while this family is active (the toggle row is the
- * chart's most searchable item of interest). */
+ * `search`: the search-engine term fed into the AI-ask online-search seeds
+ * while this family is active — both the trend chart's "?" (via
+ * aiSearchKeywords) and the Forecast card's own "?" (the toggle row is the
+ * view's most searchable item of interest). */
 const FORECAST_KINDS: {
   kind: ForecastKind; label: string; tooltip: string; search: string;
 }[] = [
@@ -129,8 +141,8 @@ const FORECAST_KINDS: {
   { kind: "px_vol", label: "Px×Vol", tooltip: "σ-speed × amount-level-z state cells (px_vol)", search: "量价" },
   { kind: "margin_ratio", label: "Margin", tooltip: "Margin-buy intensity z states (margin_ratio)", search: "融资余额" },
   { kind: "high_low_streaks", label: "HL streak", tooltip: "MA-Spread High/Low streak mean-mid anchor buckets (high_low_streaks) — every band-break excursion streak audited at its mid day", search: "high low streak" },
-  { kind: "pe", label: "PE", tooltip: "PE z states over the raw pe series (pe_state) — high PE = expensive = bearish/top (lower the better), low PE = cheap = bullish/bottom", search: "PE 市盈率" },
-  { kind: "dividend", label: "Div yld", tooltip: "Dividend-yield z states over the trailing-12m D/P series (dividend_state) — high yield = cheap/well-supported = bullish/bottom (higher the better), low yield = bearish/top", search: "股息率" },
+  { kind: "pe", label: "PE", tooltip: "PE extreme-percentile buckets over the raw pe series (pe_state) — top-pct% PE days = expensive = bearish/top (lower the better), bottom-pct% = cheap = bullish/bottom", search: "PE 市盈率" },
+  { kind: "dividend", label: "Div yld", tooltip: "Dividend-yield extreme-percentile buckets over the trailing-12m D/P series (dividend_state) — top-pct% yield days = cheap/well-supported = bullish/bottom (higher the better), bottom-pct% = bearish/top", search: "股息率" },
 ];
 
 /** Union of all bucket row shapes (matches ForecastTable's ForecastRow). */
@@ -143,13 +155,13 @@ type ForecastRow =
 /** Horizon period → "+n" label (the forward forecast window in trading
  *  days — the chart shades each signal day through this window). */
 const PERIOD_PLUS: Record<ForecastPeriod, string> = {
-  next: "+1", "5d": "+5", "20d": "+20", "60d": "+60",
+  next: "+1", "5d": "+5", "20d": "+20",
 };
 
 /** Horizon period → forward-window length in trading rows (feeds the
  *  chart's signal + forecast-window shading width). */
 const PERIOD_DAYS: Record<ForecastPeriod, number> = {
-  next: 1, "5d": 5, "20d": 20, "60d": 60,
+  next: 1, "5d": 5, "20d": 20,
 };
 
 /** forecast_id search status (Forecast header). `found` keeps the whole
@@ -162,15 +174,20 @@ type IdSearchState =
   | { status: "error"; message: string }
   | { status: "found"; identity: ForecastIdentityResponse };
 
-/** Resolved identity → short caption ("→ 000300.SS · mov_rsi · 2026-05").
- * Ids of families without a table here (opp_pair industry pairs; retired
- * mov_gap) name the bucket family instead of jumping. */
+/** Resolved identity → short caption ("→ 000300.SS · mov_rsi · 2026-05
+ * · 2d · delay 1d"). Ids of families without a table here (opp_pair
+ * industry pairs; retired mov_gap) name the bucket family instead of
+ * jumping. */
 function describeIdentity(i: ForecastIdentityResponse): string {
   const m = i.stat_month.slice(0, 7);
   const streak =
     i.streak_signal_days != null ? ` · ${i.streak_signal_days}d` : "";
+  const delay =
+    i.delayed_signal_days != null && i.delayed_signal_days > 0
+      ? ` · delay ${i.delayed_signal_days}d`
+      : "";
   return i.kind != null
-    ? `→ ${i.code} · ${i.kind} · ${m}${streak}`
+    ? `→ ${i.code} · ${i.kind} · ${m}${streak}${delay}`
     : `→ ${m} · ${i.bucket} ${i.code} (no table in this UI)`;
 }
 
@@ -209,10 +226,10 @@ function describeBucket(
     cfg = `HL${x.band_period} · ${x.side === "top" ? "above" : "below"} ${x.pct_type}%`;
   } else if (kind === "pe") {
     const x = r as PeForecastRow;
-    cfg = `PE · ${x.val_state} · ${x.side}`;
+    cfg = `PE · ${x.side} ${x.pct}%`;
   } else if (kind === "dividend") {
     const x = r as DividendForecastRow;
-    cfg = `Div · ${x.val_state} · ${x.side}`;
+    cfg = `Div · ${x.side} ${x.pct}%`;
   } else {
     const x = r as MarginRatioForecastRow;
     cfg = `margin · ${x.ratio_state}`;
@@ -239,6 +256,15 @@ export default function RecentMovementsPage() {
   // shows. Defaults to RSI (mov_rsi) so the section is populated on arrival;
   // clicking the active family again deselects it (exclusive toggle → null).
   const [forecastKind, setForecastKind] = useState<ForecastKind | "">("mov_rsi");
+
+  // The ForecastTable's horizon toggle, mirrored here (controlled) so the
+  // Forecast header's AI-ask state tag can report it. The table unmounts on
+  // family change and restarts at Next — the effect below resets the mirror
+  // in step, so the tag never describes a horizon the table no longer shows.
+  const [forecastHorizon, setForecastHorizon] = useState<ForecastPeriod>("next");
+  useEffect(() => {
+    setForecastHorizon("next");
+  }, [forecastKind]);
 
   // Trigger-day highlight from the LAST clicked forecast row: the row's
   // trigger_dates (the exact days its stats were computed over) shaded
@@ -427,6 +453,14 @@ export default function RecentMovementsPage() {
   // Identity-stable chartOptions: a fresh object per render would
   // re-render (and re-run effect bookkeeping in) the chart subtree on
   // every page state change.
+  // onChartReady captures the live trend-chart instance for the Forecast
+  // card's AI ask — the table has no canvas of its own, so its screenshot
+  // is the shaded trend chart above (trigger days / streaks / forward
+  // window).
+  const trendChartRef = useRef<ECharts | null>(null);
+  const handleTrendChartReady = useCallback((c: ECharts | null) => {
+    trendChartRef.current = c;
+  }, []);
   const triggerChartOptions = useMemo(
     () => ({
       highlightDates: triggerDates?.dates ?? NO_HIGHLIGHT,
@@ -437,8 +471,9 @@ export default function RecentMovementsPage() {
       // (+1/+5/+20/+60 of the clicked horizon).
       highlightHorizonDays: triggerDates ? PERIOD_DAYS[triggerDates.period] : 1,
       onHighlightSettled: handleHighlightSettled,
+      onChartReady: handleTrendChartReady,
     }),
-    [triggerDates, handleHighlightSettled],
+    [triggerDates, handleHighlightSettled, handleTrendChartReady],
   );
 
   // Active forecast family → AI-ask online-search seed keyword (the
@@ -453,6 +488,64 @@ export default function RecentMovementsPage() {
         : [],
     [forecastKind],
   );
+
+  /** Stable identity for the horizon-toggle mirror (ForecastTable is
+   *  memoized — a fresh callback would re-render the 100+ row body on
+   *  every page state flip). */
+  const handleForecastHorizonChange = useCallback(
+    (period: ForecastPeriod) => setForecastHorizon(period),
+    [],
+  );
+
+  // The Forecast card's AI-ask payload — the "?" beside the Forecast
+  // title. The toggles ARE the panel's view state, so they map straight
+  // into the spec: the active family supplies the state tag + the intro's
+  // reading guide (its tooltip) + the online-search seed keyword (the same
+  // aiSearchKeywords the trend chart's "?" gets), the horizon toggle the
+  // horizon tag, and an active row highlight the trigger-days tag.
+  // Table-only surface — the screenshot comes from the trend chart above
+  // (trendChartRef, captured via chartOptions.onChartReady): its trigger-
+  // day / streak / forward-window shading IS the visual this ask reasons
+  // about. searchCode is nullable — findItemName normalizes via
+  // toUpperCase, so guard it.
+  const securityName = nav.searchCode ? nav.findItemName(nav.searchCode) : undefined;
+  const forecastAiAskPlotInfo = useMemo(() => {
+    const fam = FORECAST_KINDS.find((k) => k.kind === forecastKind);
+    return derivePlotInfo({
+      title: `Forecast · ${nav.searchCode}${securityName ? ` · ${securityName}` : ""}`,
+      spec: {
+        product: "forecast",
+        intro:
+          `Extreme-day forecast buckets for ${nav.searchCode}` +
+          (securityName ? ` (${securityName})` : "") +
+          (fam ? ` — family: ${fam.tooltip}.` : " — no family selected.") +
+          " Each row = one bucket config; stats span the trailing 5y ending at its" +
+          " stat_month. Horizon toggle (Next/5d/20d) picks the forward columns —" +
+          " mean/max/min/std forward change, P>1%, days. signal ✓ = the weight-blended" +
+          " forward profile clears the signals-layer gate — the tradable subset;" +
+          " clicking a row shades its trigger days, streaks and forward window on the" +
+          " trend chart.",
+        instruments: [
+          {
+            code: nav.searchCode,
+            ...(securityName ? { name: securityName } : {}),
+            assetClass: nav.secType,
+          },
+        ],
+        state: {
+          family: fam?.label ?? "none",
+          horizon: PERIOD_PLUS[forecastHorizon],
+          ...(triggerDates ? { trigger_days: triggerDates.base } : {}),
+        },
+        searchKeywords: aiSearchKeywords,
+        notes: [
+          "All change columns (mean/max/min/std) and P>1% are percent points; days is the qualifying trading-day count.",
+          "P>1% = swing-aware reversal probability — the share of the bucket's historical forward windows that swung ≥1% AGAINST the bucket's side.",
+          "signal ✓ = the weight-blended forward profile (5d 65% / next 25% / 20d 10%) clears the signals-layer gate.",
+        ],
+      },
+    });
+  }, [forecastKind, forecastHorizon, aiSearchKeywords, triggerDates, nav.searchCode, nav.secType, securityName]);
 
   return (
     <SecNavShell
@@ -515,7 +608,7 @@ export default function RecentMovementsPage() {
               量比-z state cells (px_vol) or margin-buy intensity z states
               (margin_ratio); clicking the active one again hides the table.
               Selecting one mounts ForecastTable, which lists ALL stat_months
-              of this code's buckets (config + is_market_hyped [+ excess/
+              of this code's buckets (config + regime_state [+ excess/
               mean-t-z cols] → forecast results). */}
           <Card variant="outlined" sx={{ mt: 1.5 }}>
             <Stack
@@ -539,6 +632,17 @@ export default function RecentMovementsPage() {
                 <Typography sx={{ fontSize: "0.78rem", fontWeight: 700 }}>
                   Forecast
                 </Typography>
+                {/* AI Ask "?" — the toggles map into the ask payload
+                    (family → state tag + intro + search seed, horizon →
+                    state tag); the screenshot is the trend chart above
+                    (its trigger-day shading is the visual context).
+                    Hidden with the table when no family is picked. */}
+                {forecastKind && (
+                  <AiAskButton
+                    plotInfo={forecastAiAskPlotInfo}
+                    getInstance={() => trendChartRef.current}
+                  />
+                )}
               </Stack>
               <ToggleButtonGroup
                 size="small"
@@ -617,6 +721,8 @@ export default function RecentMovementsPage() {
                   code={nav.searchCode}
                   secType={nav.secType}
                   kind={forecastKind}
+                  horizon={forecastHorizon}
+                  onHorizonChange={handleForecastHorizonChange}
                   onRowClick={handleForecastRowClick}
                   selectedRowKey={
                     selectedForecastId != null

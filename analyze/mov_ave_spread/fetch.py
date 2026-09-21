@@ -24,7 +24,7 @@ from _common.build_commons import (
     recent_trading_day_cutoff,
     rec_cols,
 )
-from _common.df_utils import epoch_col_to_dt64
+from _common.df_utils import epoch_col_to_dt64, to_dt64
 
 from analyze.mov_ave_spread.config import SEC_TYPE_IDENTITY_TABLE
 from analyze.mov_ave_spread.helpers import (
@@ -409,7 +409,7 @@ async def fetch_source_data(
         # datetime64 ndarray comparison — isin with a python-date SET
         # falls back (values won't convert); with a datetime64 ndarray it
         # hits the GPU hash join.
-        td64 = pd.to_datetime(sorted(target_dates)).values
+        td64 = to_dt64(sorted(target_dates))
         df = df[df["date"].isin(td64)].reset_index(drop=True)
         logger.info(f"      incremental filter: {len(df):,} of {n_before:,} rows "
               f"are in target_dates (slope/curv context rows dropped)")

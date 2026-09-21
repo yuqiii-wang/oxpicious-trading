@@ -5,9 +5,10 @@ and their underlying data (index close / treasury yield).
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
-from _common.df_utils import to_py_dates
+from _common.df_utils import epoch_col_to_dt64, safe_columns
 from analyze.futures.config import (
     BOND_PRODUCT_TENOR,
     INDEX_PRODUCT_UNDERLYING,
@@ -35,15 +36,18 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
     ]
 
     # Step 1: fetch futures identity + basic stats
+    # ::float8 casts — the DB-read convention: numerics land as NATIVE
+    # float64 columns (NULL -> NaN) instead of Decimal object columns,
+    # which would poison every downstream op with cudf fallbacks.
     futures_sql = """
         SELECT
-            i.date,
+            extract(epoch from i.date)::float8 AS date,
             i.code,
             i.product_code,
             i.contract_type,
             i.underlying_code,
             i.days_to_expiry,
-            b.close AS futures_close
+            b.close::float8 AS futures_close
         FROM stats.futures_identity i
         JOIN stats.futures_basic_stats b
           ON b.date = i.date AND b.code = i.code
@@ -55,22 +59,23 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
         return pd.DataFrame(columns=_empty_cols)
 
     df = pd.DataFrame([dict(r) for r in fut_rows])
-    # python-date contract (serialization boundary) via the host-pass
-    # helper — .dt.date is NOT implemented by cuDF (per-element fallback)
-    df["date"] = pd.to_datetime(df["date"])
-    df = to_py_dates(df, ["date"])
-    df["futures_close"] = pd.to_numeric(df["futures_close"], errors="coerce")
+    # Dates stay datetime64[us] through ALL compute (the B-A2 convention:
+    # an object-date column turns every later op into a cudf fallback);
+    # the python-date materialization happens in the write path.
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
 
-    # Initialize columns that may not be populated
-    df["index_close"] = pd.NA
-    df["bond_theoretical_price"] = pd.NA
+    # Initialize columns that may not be populated (float64 NaN — pd.NA
+    # would create an object column, a cudf fallback per later op).
+    df["index_close"] = np.nan
+    df["bond_theoretical_price"] = np.nan
 
     # Step 2: fetch index close prices for index futures
     index_underlyings = sorted(set(
         INDEX_PRODUCT_UNDERLYING.values()
     ))
     index_close_sql = """
-        SELECT date, code, close
+        SELECT extract(epoch from date)::float8 AS date,
+               code, close::float8 AS close
         FROM stats.index_basic_stats
         WHERE code = ANY($1::text[]) AND close IS NOT NULL
         ORDER BY code, date
@@ -78,11 +83,8 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
     idx_rows = await conn.fetch(index_close_sql, index_underlyings)
     if idx_rows:
         index_close_df = pd.DataFrame([dict(r) for r in idx_rows])
-        index_close_df["date"] = pd.to_datetime(index_close_df["date"])
-        index_close_df = to_py_dates(index_close_df, ["date"])
-        index_close_df["close"] = pd.to_numeric(
-            index_close_df["close"], errors="coerce"
-        )
+        index_close_df["date"] = epoch_col_to_dt64(
+            index_close_df["date"], index=index_close_df.index)
         index_close_df = index_close_df.rename(
             columns={"close": "index_close", "code": "underlying_code"}
         )
@@ -92,15 +94,16 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
             on=["date", "underlying_code"],
             how="left",
         )
-        # Drop the old index_close column (pd.NA) — replace with merged data
-        if "index_close_x" in df.columns:
+        # Drop the old index_close column (NaN) — replace with merged data
+        if "index_close_x" in set(safe_columns(df)):
             df = df.drop(columns=["index_close_x"])
             df = df.rename(columns={"index_close_y": "index_close"})
 
     # Step 3: fetch treasury yields for bond futures
     yield_cols = [v[0] for v in BOND_PRODUCT_TENOR.values()]
     treasury_sql = f"""
-        SELECT date, {", ".join(yield_cols)}
+        SELECT extract(epoch from date)::float8 AS date,
+               {", ".join(f"{c}::float8 AS {c}" for c in yield_cols)}
         FROM stats.debt_treasury
         WHERE date IS NOT NULL
         ORDER BY date
@@ -108,26 +111,35 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
     tr_rows = await conn.fetch(treasury_sql)
     if tr_rows:
         treasury_df = pd.DataFrame([dict(r) for r in tr_rows])
-        treasury_df["date"] = pd.to_datetime(treasury_df["date"])
-        treasury_df = to_py_dates(treasury_df, ["date"])
-        for col in yield_cols:
-            treasury_df[col] = pd.to_numeric(
-                treasury_df[col], errors="coerce"
-            )
+        treasury_df["date"] = epoch_col_to_dt64(
+            treasury_df["date"], index=treasury_df.index)
         # Merge treasury yields
         df = df.merge(treasury_df, on="date", how="left")
 
-    # Step 4: compute bond theoretical price from yield
-    # price = 100 / (1 + yield/2)^(2·tenor_years)
+    # Step 4: compute bond theoretical price from yield (vectorized —
+    # replaces the former per-row .apply of _compute_bond_price, one
+    # proxy fallback per row): price = 100 / (1 + yield/2)^(2·tenor).
+    # Rows with a missing yield or yield <= -100% stay NaN (the former
+    # None), as do non-bond rows and unknown product codes.
     bond_mask = df["contract_type"] == "bond"
-    if bond_mask.any():
-        df.loc[bond_mask, "bond_theoretical_price"] = df[bond_mask].apply(
-            lambda row: _compute_bond_price(
-                row.get("product_code", ""),
-                row,
-            ),
-            axis=1,
-        )
+    if bool(bond_mask.any()):
+        bond_cols = set(safe_columns(df))
+        for pc, (yield_col, tenor_years) in BOND_PRODUCT_TENOR.items():
+            if yield_col not in bond_cols:
+                continue
+            y = df[yield_col] / 100.0
+            m = (
+                bond_mask
+                & df["product_code"].eq(pc)
+                & df[yield_col].notna()
+                & (y > -1.0)
+            )
+            if not bool(m.any()):
+                continue
+            y = y[m]
+            df.loc[m, "bond_theoretical_price"] = (
+                100.0 / (1.0 + y / 2.0) ** (2.0 * tenor_years)
+            )
 
     # Step 5: fill is_index_future flag
     df["is_index_future"] = df["contract_type"] == "index"
@@ -154,38 +166,6 @@ async def fetch_futures_data(conn) -> pd.DataFrame:
     df = df[cols_order]
 
     return df
-
-
-def _compute_bond_price(product_code: str, row: pd.Series) -> float | None:
-    """Convert treasury yield to a zero-coupon bond price proxy.
-
-    price = 100 / (1 + yield/2)^(2·tenor_years)
-
-    Args:
-        product_code: e.g. 'T', 'TF', 'TL', 'TS'.
-        row: pandas Series with yield columns.
-
-    Returns:
-        Theoretical bond price or None if data is missing.
-    """
-    if product_code not in BOND_PRODUCT_TENOR:
-        return None
-
-    yield_col, tenor_years = BOND_PRODUCT_TENOR[product_code]
-    if yield_col not in row.index:
-        return None
-
-    y = row.get(yield_col)
-    if y is None or pd.isna(y):
-        return None
-
-    y = float(y) / 100.0  # convert from % to decimal, e.g. 2.5% → 0.025
-    if y <= -1.0:
-        return None
-
-    n_periods = 2.0 * tenor_years
-    price = 100.0 / ((1.0 + y / 2.0) ** n_periods)
-    return price
 
 
 async def fetch_futures_identity_dates(conn) -> list:

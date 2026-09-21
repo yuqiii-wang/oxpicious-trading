@@ -421,11 +421,11 @@ export default function IndexPanel({ index, onDateClick }: Props) {
       intro:
         `Daily chart of index ${index.code} ${index.name}: ` +
         (hasOhlc ? "OHLC candles" : "a close line") +
-        " with MA5/MA20/MA60/MA120 on the left price axis, trading-turnover bars (成交金额, 亿元) " +
-        "on the right axis colored by close-vs-open, and the PE ratio on an offset twin axis. " +
-        "In percentage mode the OHLC + MAs are rebased to % change from the first valid close " +
-        "(raw prices in absolute mode); Amount and PE stay in absolute units. The in-chart " +
-        "dataZoom owns the visible window.",
+        " + MA5/20/60/120 on the left price axis, turnover bars (亿元, colored by " +
+        "close-vs-open) on the right, PE on an offset twin axis. % mode: OHLC + MAs " +
+        "rebased to % change from the first valid close (Amount and PE stay absolute). " +
+        "The in-chart dataZoom owns the visible window. Indication: PE at its " +
+        "historical tail = valuation stretch; price vs the MA120 = the regime line.",
       instruments: [{ code: index.code, name: index.name, assetClass: "index" }],
       series: [
         {

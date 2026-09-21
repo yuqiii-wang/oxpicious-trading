@@ -24,14 +24,15 @@ per-family source tables the bucket engines consume:
             a NULL join means "no bucket" — invalid-PE days have no pe
             row and non-payers no dividend_yield row).
 
-Plus the compact market-hype EPISODES list (stats.mov_ave_market_hypes)
-and the per-family source-of-truth loaders (price_vs_amt registry,
+Plus the DAILY market-regime states (stats.market_regimes — the
+4-state calm/hot/panic/quiet label every bucket family splits by) and
+the per-family source-of-truth loaders (price_vs_amt registry,
 high/low streaks, industry opposite pairs).
 
 One source family per module — codes (universe + first dates) · inputs
 (the joined frame) · forward (forward changes + path extremes, derived
-on the cudf.pandas frame) · hype · px_vol · margin · valuation ·
-streaks · opp_pair · identity.
+on the cudf.pandas frame) · regimes · px_vol · margin · streaks ·
+opp_pair · identity.
 
 All NUMERIC columns are cast to native float8 in SQL (Decimal objects
 would poison the cudf.pandas fast path) and the date columns arrive as
@@ -48,7 +49,7 @@ from .forward import (
     add_forward_changes,
     add_path_extremes,
 )
-from .hype import fetch_hyped_episodes
+from .regimes import fetch_market_regimes
 from .px_vol import (
     add_px_vol_features,
     assert_price_vs_amt_params,
@@ -56,7 +57,6 @@ from .px_vol import (
     fetch_price_vs_amt_states,
 )
 from .margin import add_margin_ratio_features
-from .valuation import add_valuation_features
 from .streaks import fetch_high_low_streaks
 from .opp_pair import (
     fetch_benchmark_closes,
@@ -78,12 +78,11 @@ __all__ = [
     "fetch_analysis_inputs",
     "add_forward_changes",
     "add_path_extremes",
-    "fetch_hyped_episodes",
+    "fetch_market_regimes",
     "assert_price_vs_amt_params",
     "fetch_price_vs_amt_source",
     "fetch_price_vs_amt_states",
     "add_margin_ratio_features",
-    "add_valuation_features",
     "fetch_high_low_streaks",
     "fetch_benchmark_closes",
     "fetch_industry_closes",

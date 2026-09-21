@@ -3,7 +3,9 @@
  *
  * Public surface:
  *   - `<AiAskButton>`  — the "?" beside a chart title; owns the modal.
- *   - `<AiAskModal>`   — intro + question box + screenshot capture + answer.
+ *   - `<AiAskModal>`   — intro + question box + screenshot capture + answer;
+ *     clicking the intro turns to the full description view (back arrow in
+ *     the dialog's upper-left corner returns).
  *   - `derivePlotInfo` — auto plot-info from a built ECharts option, merged
  *     with the author's `AiAskSpec`.
  *

@@ -16,7 +16,8 @@ pass per side:
     bottom → value ≤ τ(q = pct/100)         (lowest pct% of values)
 
 Everything else — the (code chunk × stat month) partition, the
-streak-merge (consecutive qualifying days → ONE mid-anchored signal),
+streak-merge (consecutive qualifying days → ONE signal with
+incremental anchor triggers at delays 0..TRIGGER_DELAY_MAX),
 the market-hype split, the forward-change aggregation, the blended
 mixed row and the row emission — is inherited from
 ``_dfengine.WideDfEngine``. Yields (stat_month, rows) month-major.
@@ -53,7 +54,7 @@ class PercentileEngine(WideDfEngine):
     """
 
     BUCKET_COLS: tuple[str, ...] = ()
-    MERGE = True               # consecutive qualifying days → ONE mid signal
+    MERGE = True               # consecutive qualifying days → ONE incremental-anchor signal
     value_prefix: str = ""
     window_col: str = ""
     windows: tuple = ()
@@ -68,7 +69,7 @@ class PercentileEngine(WideDfEngine):
         return [f"{self.value_prefix}_{w}days" for w in self.windows]
 
     def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
-        id_vars = ["code", "date", "_t", "is_hyped"]
+        id_vars = ["code", "date", "_t", "regime"]
         value_cols = self._extra_window_cols()
 
         # the window's own bounds — the cache needs the exclusive start
@@ -121,7 +122,7 @@ class PercentileEngine(WideDfEngine):
         # never reach here; a NaN bar never forms — so they never enter
         # a bucket). Codes whose own history does not span the full
         # window were already gated out by the partition's live filter.
-        keep = ["code", "date", "_t", "is_hyped",
+        keep = ["code", "date", "_t", "regime",
                 self.window_col, "side", "pct"]
         cells_parts = []
         for side, test in (("top", "ge"), ("bottom", "le")):
@@ -141,9 +142,12 @@ class PercentileEngine(WideDfEngine):
             return
 
         # Streak-merge + the forward aggregation / row building are the
-        # base's — month_rows consumes what this yields.
+        # base's — month_rows consumes what this yields. regime is in
+        # the run group so each regime bucket's anchor ladder stays
+        # contiguous 0..max (a regime flip starts a fresh signal).
         yield self._streak_merge(
-            cells, group_cols=[self.window_col, "side", "pct", "code"],
+            cells,
+            group_cols=[self.window_col, "side", "pct", "regime", "code"],
         )
 
 
@@ -157,11 +161,11 @@ class _RsiEngine(PercentileEngine):
     sides = RSI_SIDES
 
 
-def _run(engine_cls, *, df, first_dates, episodes, codes, sec_type, specs):
+def _run(engine_cls, *, df, first_dates, regimes, codes, sec_type, specs):
     engine = engine_cls(
         df=df,
         first_dates=first_dates,
-        episodes=episodes,
+        regimes=regimes,
         codes=codes,
         sec_type=sec_type,
         specs=specs,
@@ -171,9 +175,9 @@ def _run(engine_cls, *, df, first_dates, episodes, codes, sec_type, specs):
 
 def compute_rsi_results(
     *,
-    df, first_dates, episodes, codes, sec_type, specs,
+    df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, mov_rsi bucket rows) per stat month."""
     return _run(_RsiEngine, df=df, first_dates=first_dates,
-                episodes=episodes, codes=codes, sec_type=sec_type,
+                regimes=regimes, codes=codes, sec_type=sec_type,
                 specs=specs)

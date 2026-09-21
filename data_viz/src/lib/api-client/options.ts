@@ -3,6 +3,7 @@ import type {
   OptionsCombinedResponse,
   OptionsUnderlying,
   OptionsWallsResponse,
+  OptionsOiStatsResponse,
   EtfOhlcvResponse,
   SkewnessSeriesResponse,
   IvSkewResponse,
@@ -12,9 +13,22 @@ import type {
 
 export type OptionsTargetType = "ETF" | "INDEX";
 
-export function fetchUnderlyings(targetType?: OptionsTargetType): Promise<OptionsUnderlying[]> {
+/** Venue selector for the options dashboards. SZSE/SSE are both ETF-target
+ *  venues (separated by the options tables' exchange column); CFFEX is the
+ *  index-target venue. */
+export type OptionsVenue = "SZSE" | "SSE" | "CFFEX";
+
+export function venueToTargetType(v: OptionsVenue): OptionsTargetType {
+  return v === "CFFEX" ? "INDEX" : "ETF";
+}
+
+export function fetchUnderlyings(
+  targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
+): Promise<OptionsUnderlying[]> {
   const params = new URLSearchParams();
   if (targetType) params.set("target_type", targetType);
+  if (exchange) params.set("exchange", exchange);
   const qs = params.toString();
   return fetchJson<OptionsUnderlying[]>(`/api/szse-options/underlyings${qs ? `?${qs}` : ""}`);
 }
@@ -24,12 +38,14 @@ export function fetchOptionsCombined(
   startDate?: string | null,
   endDate?: string | null,
   targetType?: OptionsTargetType,
+  exchange?: OptionsVenue,
 ): Promise<OptionsCombinedResponse> {
   const params = new URLSearchParams();
   if (underlying) params.set("underlying", underlying);
   if (startDate) params.set("start_date", startDate);
   if (endDate) params.set("end_date", endDate);
   if (targetType) params.set("target_type", targetType);
+  if (exchange) params.set("exchange", exchange);
   const qs = params.toString();
   return fetchJson<OptionsCombinedResponse>(`/api/szse-options/combined${qs ? `?${qs}` : ""}`);
 }
@@ -47,6 +63,24 @@ export function fetchOptionsWalls(
   if (endDate) params.set("end_date", endDate);
   const qs = params.toString();
   return fetchJson<OptionsWallsResponse>(`/api/szse-options/walls${qs ? `?${qs}` : ""}`);
+}
+
+/** Per-expiry OI stats from the dedicated per-real-expiry table
+ *  analysis.options_oi_stats (OI level, Δ5d/Δ20d, trailing-20d max —
+ *  month-aggregated to match the frontend's expiry-month grouping). */
+export function fetchOptionsOiStats(
+  underlying: string,
+  startDate?: string | null,
+  endDate?: string | null,
+): Promise<OptionsOiStatsResponse> {
+  const params = new URLSearchParams();
+  if (underlying) params.set("underlying", underlying);
+  if (startDate) params.set("start_date", startDate);
+  if (endDate) params.set("end_date", endDate);
+  const qs = params.toString();
+  return fetchJson<OptionsOiStatsResponse>(
+    `/api/szse-options/oi-stats${qs ? `?${qs}` : ""}`,
+  );
 }
 
 export function fetchEtfOhlcv(

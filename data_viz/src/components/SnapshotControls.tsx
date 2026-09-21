@@ -18,6 +18,7 @@ import {
 } from "@mui/material";
 import dayjs from "dayjs";
 import { useStore } from "@/store/filters";
+import type { OptionsVenue } from "@/lib/api-client/options";
 import { DateSelector } from "@/shared/components/date-selector";
 import { UNDERLYING_LABELS } from "@/theme/chart-palette";
 
@@ -82,8 +83,8 @@ export function autoDeriveSnapshots(dates: string[]): { label: string; date: str
 export default function SnapshotControls({ underlyings, dates, selectedDate, onSelectedDateChange }: Props) {
   const underlyingCode = useStore((s) => s.underlyingCode);
   const setUnderlyingCode = useStore((s) => s.setUnderlyingCode);
-  const optionsTargetType = useStore((s) => s.optionsTargetType);
-  const setOptionsTargetType = useStore((s) => s.setOptionsTargetType);
+  const optionsVenue = useStore((s) => s.optionsVenue);
+  const setOptionsVenue = useStore((s) => s.setOptionsVenue);
 
   return (
     <Stack
@@ -104,15 +105,18 @@ export default function SnapshotControls({ underlyings, dates, selectedDate, onS
       <ToggleButtonGroup
         size="small"
         exclusive
-        value={optionsTargetType}
+        value={optionsVenue}
         onChange={(_, v) => {
-          if (v) setOptionsTargetType(v as "ETF" | "INDEX");
+          if (v) setOptionsVenue(v as OptionsVenue);
         }}
       >
-        <ToggleButton value="ETF" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
+        <ToggleButton value="SZSE" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
           ETF · SZSE
         </ToggleButton>
-        <ToggleButton value="INDEX" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
+        <ToggleButton value="SSE" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
+          ETF · SSE
+        </ToggleButton>
+        <ToggleButton value="CFFEX" sx={{ px: 1.5, py: 0.25, fontSize: "0.7rem" }}>
           Index · CFFEX
         </ToggleButton>
       </ToggleButtonGroup>

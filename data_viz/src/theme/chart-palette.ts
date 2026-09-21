@@ -451,7 +451,9 @@ export const FUTURES_HISTORY_OPACITY = parseFloat(cssVar("--futures-history-opac
 
 // Underlying display names (for options dashboard)
 // SZSE ETF options use native ETF codes (1599xx); CFFEX index options
-// use index codes — the two venues load different code sets.
+// use index codes; SSE (510050/510300/510500/588000/588080) and SZSE
+// (1599xx) ETF options share the ETF code space — the underlyings list is
+// data-driven from the API, this map only provides display labels.
 export const UNDERLYING_LABELS: Record<string, string> = {
   "000016": "上证50",
   "000300": "沪深300",
@@ -459,6 +461,13 @@ export const UNDERLYING_LABELS: Record<string, string> = {
   "000905": "中证500",
   "399006": "创业板",
   "399330": "深证100",
+  // SSE ETF options
+  "510050": "上证50ETF",
+  "510300": "沪深300ETF",
+  "510500": "中证500ETF",
+  "588000": "科创50ETF",
+  "588080": "科创板50ETF",
+  // SZSE ETF options
   "159901": "深证100ETF",
   "159915": "创业板ETF",
   "159919": "沪深300ETF",

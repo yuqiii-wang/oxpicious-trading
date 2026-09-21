@@ -2,36 +2,29 @@
 --  Table: analysis_forecasts.pe_state
 --
 --  Tenth MOTIVATION (bucket-defining) table of the forecast analysis:
---  valuation STATE buckets over the PE series of analysis.pe (raw PE —
---  index PE from stats.index_valuation.pe, etf/stock PE pre-computed by
---  builds.etf / builds.stock; NULL on no-earnings / invalid-PE days →
---  no bucket there), standardized by the code's OWN trailing moments:
+--  valuation extreme-PERCENTILE buckets over the PE series of
+--  analysis.pe (raw PE — index PE from stats.index_valuation.pe,
+--  etf/stock PE pre-computed by builds; NULL on no-earnings /
+--  invalid-PE days → no bucket there) — the mov_rsi pct convention
+--  (2026-09 refactor of the former z-STATE buckets):
 --
---    z = (pe - μ) / σ with μ/σ = the code's rolling
---        z_window-row (default 1220 = 5y of trading rows),
---        min_periods z_min_periods (default 250 non-NULL pe
---        observations) moments of the pe, SHIFTED 1 row
---        (no look-ahead — px_vol / margin_ratio convention).
---        Undefined where pe is NULL or the history is short
---        → no bucket.
---
---    val_state: vlow z <= vlow_bar   (default -2.0)
---               low  vlow_bar < z <= low_bar  (-2.0 / -1.0)
---               mid  low_bar  < z <= high_bar (central bulk — no claim)
---               high high_bar < z <= vhigh_bar (1.0 / 2.0)
---               vhigh z > vhigh_bar   (default +2.0)
+--    a day is in the bucket when pe sits in the top pct% (side=top
+--    bucket) or bottom pct% (side=bottom bucket) of the window's
+--    non-NULL pe values — the percentile computed per code over the
+--    trailing 5-year window (stat_month - 5y, stat_month] with linear
+--    interpolation; pct ∈ {1, 5, 10, 25}. Only EXTREME days form
+--    buckets (the central bulk has none — the RSI semantics; the
+--    former z ladder's mid/flat state is gone).
 --
 --  SIDE (pe is LOWER the better — a high PE is an expensive, stretched
 --  valuation, the family's defining reading):
---    vlow/low (cheap) = 'bottom' (bullish — reverse_prob = P(the n-day
---              forward window's path high > +threshold)),
---    high/vhigh (expensive) = 'top' (bearish — reverse_prob =
---              P(path low < -threshold)),
---    mid = 'flat' with reverse_prob NULL (no directional claim — the
---              central bulk carries none, margin_ratio / px_vol
---              precedent). The dividend_yield sibling lives in
---              12_dividend_state.sql — same z bars, REVERSED side
---              mapping (the two families' "better" direction differs).
+--    top-pct% (expensive) days = 'top' (bearish — reverse_prob =
+--              P(the n-day forward window's path low < -threshold)),
+--    bottom-pct% (cheap) days = 'bottom' (bullish — reverse_prob =
+--              P(path high > +threshold)).
+--    The dividend_yield sibling lives in 12_dividend_state.sql — same
+--    pct grid, REVERSED side mapping (the two families' "better"
+--    direction differs).
 --
 --  side is MATERIALIZED per row, so analysis_signals.gate and every
 --  other consumer read the tables unchanged (dir_ave = -ave_change for
@@ -39,18 +32,21 @@
 --
 --  Universe: index + etf + stock (NULL pe days simply form no bucket).
 --
---  Buckets are STATE cells with STREAK-MERGE (2026-09 unified pipeline,
---  px_vol convention): consecutive grid rows holding the same val_state
+--  Buckets are STREAK-MERGED (the 2026-09 unified pipeline, mov_rsi
+--  convention): consecutive grid days qualifying for the same bucket
 --  collapse into ONE forecast signal anchored at the run's MID day —
 --  the bucket's mean run length is recorded on
 --  analysis_forecasts.forecast_identities.streak_signal_days — and the
---  bucket split is by PK member is_market_hyped exactly like the other
+--  bucket split is by regime_state (stats.market_regimes) exactly like
+--  the other
 --  engines. Results live in analysis_forecasts.forecast_results via
---  forecast_id (1:N — 5 period rows next/5d/20d/60d/mixed).
+--  forecast_id (1:N — 4 period rows next/5d/20d/mixed); each
+--  signal's trigger excess (the mid day's pe minus the bucket's
+--  quantile bar) rides forecast_results.trigger_excess.
 --
---  Threshold columns are RECORDED BUILD PARAMETERS (NOT part of the
---  PK — rebuilding with different values requires --force). The
---  full-5y window gate is identical to the other engines.
+--  lookback_period is a RECORDED BUILD PARAMETER (NOT part of the PK —
+--  rebuilding with a different value requires --force). The full-5y
+--  window gate is identical to the other engines.
 --  CODE-CLUSTERED, forecast_id-keyed (2026-09 shape): PK (code,
 --  forecast_id) on HASH (code) partitions — the code-clustered
 --  read/write axis; forecast_id-only joins/searches use the secondary
@@ -60,28 +56,45 @@
 --  (see 02_mov_rsi_mov_std.sql).
 -- ============================================================================
 
+-- ----------------------------------------------------------------------------
+--  Shape migration (2026-09 pct refactor): the z-state bucket shape is
+--  retired — the val_state column and the recorded z bars (z_window /
+--  z_min_periods / vlow_bar / low_bar / high_bar / vhigh_bar) are gone,
+--  the buckets are extreme-percentile cells (side, pct) keyed exactly
+--  like mov_rsi. Purge the linked result + registry rows FIRST (the
+--  result delete resolves (sec_type, bucket) through the registry),
+--  then DROP the table with its 16 hash partitions (CASCADE — the
+--  mov_gap retirement precedent, 02_mov_rsi_mov_std.sql). Idempotent:
+--  no-ops once the table is gone; the pipeline repopulates.
+-- ----------------------------------------------------------------------------
+
+DELETE FROM analysis_forecasts.forecast_results f
+USING analysis_forecasts.forecast_identities i
+WHERE i.forecast_id = f.forecast_id AND i.bucket = 'pe_state';
+
+DELETE FROM analysis_forecasts.forecast_identities
+WHERE bucket = 'pe_state';
+
+DROP TABLE IF EXISTS analysis_forecasts.pe_state CASCADE;
+
 CREATE TABLE IF NOT EXISTS analysis_forecasts.pe_state (
     code            TEXT         NOT NULL,  -- hash partition key + PK lead; sec_type / stat_month live in forecast_identities
-    forecast_id     BIGINT      NOT NULL,  -- 1:N link to the bucket's 5 forecast_results period rows; id-only joins/searches use idx_pe_state_forecast_id
-    val_state       TEXT         NOT NULL,  -- 'vlow' | 'low' | 'mid' | 'high' | 'vhigh' (z bars of the raw PE vs the code's own trailing moments)
-    side            TEXT         NOT NULL,  -- pe LOWER the better: vlow/low (cheap) → 'bottom' (bullish), high/vhigh (expensive) → 'top' (bearish); mid → 'flat'
+    forecast_id     BIGINT       NOT NULL,  -- 1:N link to the bucket's 4 forecast_results period rows; id-only joins/searches use idx_pe_state_forecast_id
+    side            TEXT         NOT NULL,  -- pe LOWER the better: top-pct% (expensive) days → 'top' (bearish), bottom-pct% (cheap) days → 'bottom' (bullish)
+    pct             INTEGER      NOT NULL,  -- percentile width of the extreme bucket: 1 / 5 / 10 / 25
 
-    -- Recorded build parameters (NOT PK — recorded for provenance; a
-    -- rebuild with different values requires --force).
-    z_window        INTEGER      NOT NULL DEFAULT 1220,  -- rolling μ/σ window of the pe (rows ≈ 5y of trading days)
-    z_min_periods   INTEGER      NOT NULL DEFAULT 250,   -- min non-NULL pe observations in the window
-    vlow_bar        NUMERIC(4,2) NOT NULL DEFAULT -2.00, -- vlow upper z-bar (z <= vlow_bar)
-    low_bar         NUMERIC(4,2) NOT NULL DEFAULT -1.00, -- low upper z-bar (vlow_bar < z <= low_bar)
-    high_bar        NUMERIC(4,2) NOT NULL DEFAULT 1.00,  -- high lower z-bar (high_bar < z <= vhigh_bar)
-    vhigh_bar       NUMERIC(4,2) NOT NULL DEFAULT 2.00,  -- vhigh lower z-bar (z > vhigh_bar)
-    lookback_period TEXT         NOT NULL DEFAULT '5y',  -- trailing window the bucket was computed over ('5y' = stat_month - 5y .. stat_month)
+    -- recorded build parameter (NOT PK): trailing window the bucket was
+    -- computed over — '5y' = (stat_month - 5y, stat_month]
+    lookback_period TEXT         NOT NULL DEFAULT '5y',
 
     -- motivation cols
-    is_market_hyped BOOLEAN      NOT NULL,  -- ANY bucket date inside a mov_ave_market_hypes episode (any check-in period)
+    regime_state    TEXT         NOT NULL,  -- the bucket's market-regime split (stats.market_regimes day label of its bucket days)
+
+    CONSTRAINT ck_pe_state_regime
+        CHECK (regime_state IN ('calm', 'hot', 'panic', 'quiet')),
 
     CONSTRAINT pk_pe_state PRIMARY KEY (code, forecast_id),
-    CONSTRAINT chk_pe_state_val_state
-        CHECK (val_state IN ('vlow', 'low', 'mid', 'high', 'vhigh'))
+    CONSTRAINT chk_pe_state_side CHECK (side IN ('top', 'bottom'))
 ) PARTITION BY HASH (code);
 
 SELECT public.create_hash_partitions('analysis_forecasts', 'pe_state', 16);
@@ -92,18 +105,12 @@ CREATE INDEX IF NOT EXISTS idx_pe_state_forecast_id
 -- ----------------------------------------------------------------------------
 --  Comments
 -- ----------------------------------------------------------------------------
-COMMENT ON TABLE analysis_forecasts.pe_state IS 'Valuation state buckets (motivation) over the PE series of analysis.pe: one row per forecast_id — the window days of one security-month whose raw pe (index PE from stats.index_valuation.pe, etf/stock PE pre-computed by builds) sits in the named z state of the code''s OWN trailing distribution: z = (pe - μ)/σ with rolling-1220-row (min 250 non-NULL) moments shifted 1 row. States: vlow z<=-2 / low (-2,-1] / mid (-1,+1] / high (+1,+2] / vhigh z>2. SIDE (pe LOWER the better): vlow/low cheap states carry side ''bottom'' (bullish), high/vhigh expensive states ''top'' (bearish — reverse_prob = P(the forward window''s path low < -threshold)); mid = flat (NULL reverse_prob). The dividend_yield sibling lives in analysis_forecasts.dividend_state (same z bars, REVERSED side mapping). Streak-merged state signals (consecutive same-state days = ONE mid-anchored signal; mean run length on forecast_identities.streak_signal_days). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / swing-aware reversal probabilities at the FIXED 1% bar) live in analysis_forecasts.forecast_results via forecast_id. Populated by python -m analyze.analysis_forecasts.';
-COMMENT ON COLUMN analysis_forecasts.pe_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 5 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 5 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
-COMMENT ON COLUMN analysis_forecasts.pe_state.val_state IS 'Valuation z state of the day: z = (pe - μ)/σ of the code''s rolling-1220-row (min 250 non-NULL pe observations) moments shifted 1 row: vlow z <= -2; low -2 < z <= -1; mid -1 < z <= +1; high +1 < z <= +2; vhigh z > +2. Undefined z (pe NULL — no-earnings / invalid-PE days — or short history) → no bucket.';
-COMMENT ON COLUMN analysis_forecasts.pe_state.side IS 'Reversal side of the bucket''s forecast_results.reverse_prob — pe is LOWER the better (a high PE is an expensive, stretched valuation): vlow/low (cheap) = ''bottom'' (bullish — reversal counts n-day changes above +threshold), high/vhigh (expensive) = ''top'' (bearish — reversal below -threshold); mid = ''flat'' (no directional claim; reverse_prob NULL). Mirrors the mov_* / px_vol / margin_ratio side semantics so analysis_signals.gate consumes the table unchanged.';
-COMMENT ON COLUMN analysis_forecasts.pe_state.z_window IS 'Recorded build parameter: rolling window (rows) of the pe moments μ/σ (default 1220 ≈ 5y of trading rows). Shifted 1 row before use (no look-ahead).';
-COMMENT ON COLUMN analysis_forecasts.pe_state.z_min_periods IS 'Recorded build parameter: minimum non-NULL pe observations inside z_window for z to be defined (default 250).';
-COMMENT ON COLUMN analysis_forecasts.pe_state.vlow_bar IS 'Recorded build parameter: vlow upper z-bar (default -2.0).';
-COMMENT ON COLUMN analysis_forecasts.pe_state.low_bar IS 'Recorded build parameter: low upper z-bar (default -1.0).';
-COMMENT ON COLUMN analysis_forecasts.pe_state.high_bar IS 'Recorded build parameter: high lower z-bar (default +1.0).';
-COMMENT ON COLUMN analysis_forecasts.pe_state.vhigh_bar IS 'Recorded build parameter: vhigh lower z-bar (default +2.0).';
+COMMENT ON TABLE analysis_forecasts.pe_state IS 'Valuation extreme-percentile buckets (motivation) over the PE series of analysis.pe: one row per forecast_id — the days of one security-month whose raw pe (index PE from stats.index_valuation.pe, etf/stock PE pre-computed by builds) sits in the top pct% or bottom pct% of the trailing 5-year window''s non-NULL pe values, per the code''s OWN distribution (linearly-interpolated quantile bars — the mov_rsi pct convention; pct ∈ {1, 5, 10, 25}; only extreme days form buckets). SIDE (pe LOWER the better): top-pct% (expensive) days carry side ''top'' (bearish — reverse_prob = P(the forward window''s path low < -threshold)), bottom-pct% (cheap) days ''bottom'' (bullish). The dividend_yield sibling lives in analysis_forecasts.dividend_state (same pct grid, REVERSED side mapping). Streak-merged signals (consecutive qualifying days = ONE mid-anchored signal; mean run length on forecast_identities.streak_signal_days). Keyed by the surrogate forecast_id (hash partition key); the shared identity (sec_type, code, stat_month) + bucket family live in analysis_forecasts.forecast_identities. Results (forward changes / swing-aware reversal probabilities at the FIXED 1% bar) live in analysis_forecasts.forecast_results via forecast_id. Populated by python -m analyze.analysis_forecasts.';
+COMMENT ON COLUMN analysis_forecasts.pe_state.forecast_id IS 'Surrogate PK + hash-partition key (1:N link to the bucket''s 4 period rows in analysis_forecasts.forecast_results, allocated by the writer, shared across all 4 periods). The bucket''s identity (sec_type, code, stat_month) + bucket family are registered in analysis_forecasts.forecast_identities under this id.';
+COMMENT ON COLUMN analysis_forecasts.pe_state.side IS 'Reversal side of the bucket''s forecast_results.reverse_prob — pe is LOWER the better (a high PE is an expensive, stretched valuation): the top-pct% (expensive) bucket days = ''top'' (bearish — reversal counts n-day changes below -threshold), the bottom-pct% (cheap) days = ''bottom'' (bullish — reversal above +threshold). Mirrors the mov_* side semantics so analysis_signals.gate consumes the table unchanged.';
+COMMENT ON COLUMN analysis_forecasts.pe_state.pct IS 'Percentile width of the extreme bucket: 1, 5, 10 or 25 (percent). The threshold is the window''s (linearly-interpolated) percentile of pe over non-NULL values: the top bucket''s bar at q = 1 - pct/100, the bottom bucket''s at q = pct/100.';
 COMMENT ON COLUMN analysis_forecasts.pe_state.lookback_period IS 'Recorded build parameter (NOT a PK member): the trailing calendar window the bucket was computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';
-COMMENT ON COLUMN analysis_forecasts.pe_state.is_market_hyped IS 'TRUE when ANY of the bucket''s dates falls inside one of the code''s stats.mov_ave_market_hypes episodes (any min_checkin_period).';
+COMMENT ON COLUMN analysis_forecasts.pe_state.regime_state IS 'The bucket''s market-regime split: the stats.market_regimes day label (calm / hot / panic / quiet) carried by the bucket''s trigger days — every trigger day joins exactly one regime, so each (config, regime) pair is its own bucket. Replaces the retired is_market_hyped boolean (stats.mov_ave_market_hypes episode overlap); hot is the closest successor of the old TRUE split.';
 
 -- ----------------------------------------------------------------------------
 --  Data-quality gate: the pe_state vocabularies (shared helpers, see
@@ -113,5 +120,5 @@ COMMENT ON COLUMN analysis_forecasts.pe_state.is_market_hyped IS 'TRUE when ANY 
 SELECT public.ensure_check_constraint(
     'analysis_forecasts.pe_state',
     'chk_pe_state_side',
-    $chk$side IN ('top', 'bottom', 'flat')$chk$);
+    $chk$side IN ('top', 'bottom')$chk$);
 SELECT public.validate_pending_checks('analysis_forecasts');

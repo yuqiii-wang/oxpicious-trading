@@ -2,7 +2,7 @@
  * Barrel re-export for the analysis service modules.
  * Extracted from the former analysis.service.ts.
  */
-export { listMovAveSpreadCodes, getMovAveSpreadChart, getMarketHypeEpisodes, listMovAveSpreadThemes, listMovAveSpreadStrategyThemes } from "./mov-ave-spreads.js";
+export { listMovAveSpreadCodes, getMovAveSpreadChart, getMovAveSpreadChartExtras, getMarketRegimeSpans, listMovAveSpreadThemes, listMovAveSpreadStrategyThemes } from "./mov-ave-spreads.js";
 export { getForecastTable, getForecastTriggerDates, getForecastIdentity } from "./analysis-forecasts.js";
 export { listPerfAttrCodes, getPerfAttrAttribution, listPerfAttrThemes, getPerfAttrChart, listPerfAttrStrategyThemes } from "./perf-attribution.js";
 export { listIndustrySentimentsThemes, listIndustrySentimentsStrategyThemes, getIndustrySentimentsChart, getIndustrySentimentsChartByCode } from "./industry-sentiments.js";

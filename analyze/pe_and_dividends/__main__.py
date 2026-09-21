@@ -69,7 +69,8 @@ from _common.db_commons import (
 import pandas as pd
 
 from analyze._common.sanitize import sanitize_for_db_insert
-from _common.df_utils.sanitize import safe_columns
+from _common.df_utils import to_dt64
+from _common.df_utils.sanitize import host_unique, safe_columns
 from analyze.pe_and_dividends.config import (
     ANALYSIS_NAME_PE,
     ANALYSIS_NAME_DIVIDENDS,
@@ -158,7 +159,7 @@ async def _process_index(
 
     # Get unique constituent stock codes (original format, before normalization)
     if not comp_df.empty:
-        constituent_codes = sorted(comp_df["stock_code"].unique().tolist())
+        constituent_codes = host_unique(comp_df["stock_code"])
     else:
         constituent_codes = []
     logger.info(f"  [{st}]   {len(constituent_codes):,} unique constituent stocks")
@@ -453,7 +454,7 @@ async def _write_metric_table(
             return 0
         # fetch.py incremental-filter convention: isin with a datetime64
         # ndarray (a python-date SET never matches a datetime64 column).
-        td64 = pd.to_datetime(sorted(target_dates)).values
+        td64 = to_dt64(sorted(target_dates))
         sub = detail_df[detail_df["date"].isin(td64)]
         logger.info(f"  [{sec_type}] Incremental filter: {len(sub):,} of "
               f"{len(detail_df):,} detail rows are in target_dates")

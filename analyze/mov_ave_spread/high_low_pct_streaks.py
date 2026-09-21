@@ -9,9 +9,9 @@ analysis.mov_ave_high_low_pct_streaks.
   FINANCIAL SEMANTICS
 =======================================================================
 
-For each (period, pct_type) band — 255/500/750/1275 trading rows x
-pct_type 1/5/10 — each banded TRADING day is tested with a CLOSE-based
-breakout: a day is OUT-OF-BAND when its adjusted close (the parent
+For each (period, pct_type) band — 60/120/255/500/750/1275 trading
+rows x pct_type 1/5/10 — each banded TRADING day is tested with a
+CLOSE-based breakout: a day is OUT-OF-BAND when its adjusted close (the parent
 ``price`` column) falls ABOVE the day's own month-band ``high_val`` or
 BELOW ``low_val``. Intraday spikes do not trigger a streak; the
 streak's own high/low columns carry that information.
@@ -69,7 +69,7 @@ Vectorization: the whole episode construction per (period, pct_type)
 is column ops only — side classification, consecutive-in-band
 run-length via groupby-cumcount, episode ids via cumsum of
 break-events, trailing-in-band drop via per-streak max out-position,
-and one groupby aggregation. No python row loops; the 12 (period,
+and one groupby aggregation. No python row loops; the 18 (period,
 pct_type) combos iterate a vectorized body (the rolling-quantile
 precedent — passes cannot be merged).
 
@@ -89,7 +89,7 @@ import pandas as pd
 from _common._holidays_and_weekdays import is_trading_day
 from _common.build_commons import rec_cols
 from _common.db_commons import csv_copy_from_frame_async
-from _common.df_utils import host_array
+from _common.df_utils import host_array, host_unique
 from analyze._common import upsert_analysis_identity
 from analyze.mov_ave_spread.config import (
     HIGH_LOW_PCT_GAP_TOLERANCE,
@@ -192,14 +192,17 @@ def compute_band_excursion_streaks(
     # holidays (NULL trading_amount) — they would classify as in-band
     # "trading" days and split streaks across holidays (e.g. the 8-row
     # golden week between Sep 30 and Oct 9). Keep only real trading days
-    # per the project CN calendar (one python loop over the frame's
-    # UNIQUE dates — a few thousand — then a vectorized isin).
-    _norm = day["date"].dt.normalize()
-    _uniq = _norm.unique()
-    _ok = pd.DatetimeIndex(
-        [u for u in _uniq if is_trading_day(pd.Timestamp(u).date())]
+    # per the project CN calendar — ALL host numpy: .dt.normalize() /
+    # Series.unique() / DatetimeIndex construction / pd.Timestamp().date()
+    # each log a cudf fallback per call (cuDF lacks the ops), while the
+    # raw-array equivalents dispatch nowhere.
+    dates_day = host_array(day["date"].to_numpy()).astype("datetime64[D]")
+    uniq_days = np.unique(dates_day)
+    ok_days = np.array(
+        [d for d in uniq_days if is_trading_day(d.item())],
+        dtype="datetime64[D]",
     )
-    day = day[_norm.isin(_ok)]
+    day = day[np.isin(dates_day, ok_days)]
     # Month key shared by the day rows and the bands (year*100+month —
     # the bands step's anchor convention).
     day["_ym"] = (
@@ -230,16 +233,19 @@ def compute_band_excursion_streaks(
             ).reset_index(drop=True)
 
             # ---- Host unwrap (one pass per combo) --------------------
+            # Plain to_numpy() takes the cudf fast path; requesting
+            # dtype=float64 directly raises on missing values (one
+            # ValueError fallback per column) — cast on the host instead.
             sec = host_array(m["sec_type"].to_numpy())
             code = host_array(m["code"].to_numpy())
             dates = host_array(m["date"].to_numpy())
-            opens = host_array(m["open"].to_numpy(dtype="float64"))
-            highs = host_array(m["high"].to_numpy(dtype="float64"))
-            lows = host_array(m["low"].to_numpy(dtype="float64"))
-            closes = host_array(m["price"].to_numpy(dtype="float64"))
-            amts = host_array(m["trading_amount"].to_numpy(dtype="float64"))
-            high_vals = host_array(m["high_val"].to_numpy(dtype="float64"))
-            low_vals = host_array(m["low_val"].to_numpy(dtype="float64"))
+            opens = host_array(m["open"].to_numpy()).astype("float64")
+            highs = host_array(m["high"].to_numpy()).astype("float64")
+            lows = host_array(m["low"].to_numpy()).astype("float64")
+            closes = host_array(m["price"].to_numpy()).astype("float64")
+            amts = host_array(m["trading_amount"].to_numpy()).astype("float64")
+            high_vals = host_array(m["high_val"].to_numpy()).astype("float64")
+            low_vals = host_array(m["low_val"].to_numpy()).astype("float64")
 
             # ---- Side classification: +1 above band, -1 below, 0 in-band
             n = len(m)
@@ -299,11 +305,15 @@ def compute_band_excursion_streaks(
             new_ep = out & ~cont_out
             # Episode id: cumsum of break-events, scoped per code group.
             gcum = np.cumsum(new_ep)
-            grp_start = (
+            # host_array unwrap BEFORE the arithmetic: the proxy-subclass
+            # ndarray that to_numpy() returns makes `gcum - grp_start`
+            # dispatch through the cudf interop and log one fallback per
+            # combo ("Unsupported type <class 'numpy.ndarray'>").
+            grp_start = host_array(
                 pd.Series(gcum.astype(np.float64))
                 .where(pd.Series(gc)).ffill().fillna(0.0)
-                .to_numpy(dtype=np.int64)
-            )
+                .to_numpy()
+            ).astype(np.int64)
             ep_id = gcum - grp_start  # 0 = before the group's first streak
 
             # ---- Episode rows: out rows + bridged in-band rows -------
@@ -373,9 +383,12 @@ def compute_band_excursion_streaks(
     if not frames:
         return pd.DataFrame(columns=out_cols)
     out = pd.concat(frames, ignore_index=True)
-    # date_year_month = the streak's START month first day.
+    # date_year_month = the streak's START month first day. Host numpy
+    # casts — chained astype on the proxy-subclass to_numpy() ndarray
+    # logs one fallback per unit ([us] -> [M] -> [ns]).
     out["date_year_month"] = (
-        out["start_date"].to_numpy().astype("datetime64[M]")
+        host_array(out["start_date"].to_numpy())
+        .astype("datetime64[M]")
         .astype("datetime64[ns]")
     )
     for c in ("open", "close", "high", "low", "std_dev",
@@ -472,7 +485,7 @@ async def run_high_low_pct_streaks(
     if sec_type is not None:
         sec_types = (sec_type,)
     else:
-        sec_types = tuple(sorted(df["sec_type"].unique()))
+        sec_types = tuple(host_unique(df["sec_type"]))
 
     n_total = 0
     for st in sec_types:

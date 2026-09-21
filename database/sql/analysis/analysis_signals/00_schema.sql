@@ -19,7 +19,7 @@
 --
 --  Emission slices (current build): mov_rsi pct = 1 (top → sell /
 --  bottom → buy) and mov_std MA/σ windows >= 60d at k >= 2.0σ
---  (upper → sell / lower → buy), is_market_hyped = FALSE buckets only.
+--  (upper → sell / lower → buy), every regime_state split.
 --
 --  Cooperation contract with analysis_forecasts:
 --    strategies are produced ONLY for the stat_months that

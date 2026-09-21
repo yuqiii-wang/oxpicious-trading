@@ -61,10 +61,29 @@ export default function SpotSkewTrendPanel({
   underlyingCode,
 }: Props) {
   const themeMode = useChartThemeMode();
-  const optionsTargetType = useStore((s) => s.optionsTargetType);
+  const optionsVenue = useStore((s) => s.optionsVenue);
   const [delta, setDelta] = useState<SkewDelta>(25);
   const [view, setView] = useState<ViewMode>("today");
   const [volIndexRows, setVolIndexRows] = useState<VolIndexRow[] | null>(null);
+  // History legend selection — the unified tooltip filters hidden series
+  // out and the option re-applies it across notMerge rebuilds (EChart.tsx).
+  const [legendSel, setLegendSel] = useState<Record<string, boolean>>({});
+
+  // A delta toggle renames the RR series (RR25↔RR10) — stale keys would
+  // pin hidden state onto names that no longer exist.
+  useEffect(() => setLegendSel({}), [delta]);
+
+  const handleLegendChanged = useCallback((raw: unknown) => {
+    const e = raw as { selected?: Record<string, boolean> };
+    if (e?.selected) setLegendSel(e.selected);
+  }, []);
+  const onEvents = useMemo(
+    () =>
+      view === "history"
+        ? { legendselectchanged: handleLegendChanged }
+        : undefined,
+    [view, handleLegendChanged],
+  );
 
   // 30d model-free vol index for the LEVEL grid overlay (silent when the
   // table/underlying has no data — the overlay is optional context).
@@ -87,9 +106,9 @@ export default function SpotSkewTrendPanel({
     };
   }, [underlyingCode]);
 
-  // SZSE ETF closes are stored in 厘 (÷1000 → yuan); CFFEX index closes
-  // are native index points already.
-  const priceScale = optionsTargetType === "INDEX" ? 1 : PRICE_SCALE;
+  // ETF closes (SZSE/SSE) are stored in 厘 (÷1000 → yuan); CFFEX index
+  // closes are native index points already.
+  const priceScale = optionsVenue === "CFFEX" ? 1 : PRICE_SCALE;
 
   // One pass over the quote rows → per (date × real expiry) anchors for
   // BOTH wings; the delta dropdown then only re-derives the series.
@@ -136,13 +155,12 @@ export default function SpotSkewTrendPanel({
     },
   } as const;
 
-  // Card subtitle — concise identity + interaction hint per view; the full
-  // reading guide (RR formula, LEVEL/TILT decomposition, overlay decoding)
-  // lives in the AI Ask intro below.
+  // Card subtitle — concise identity + interaction hint per view; the
+  // concise reading guide lives in the AI Ask intro below.
   const shortSubtitle =
     view === "today"
       ? `RR${delta} per real expiry, vol pts · green = call wing richer, red = put wing richer · line: ATM IV`
-      : `RR${delta} front (solid) vs all-expiry mean (dashed), vol pts · ±2σ(20d) extreme band · click to select date`;
+      : `RR${delta} front (solid) vs all-expiry mean (dashed), vol pts · ±2σ(20d) extreme band · hover lists all 3 grids · click to select date`;
 
   // The panel renders exactly one chart body (Today or History); the empty
   // branches keep the prior hand-rolled messages as the shared placeholder.
@@ -159,6 +177,7 @@ export default function SpotSkewTrendPanel({
             delta,
             themeMode,
             volIndexAligned,
+            legendSel,
           );
   const emptyText =
     points.length === 0
@@ -167,24 +186,23 @@ export default function SpotSkewTrendPanel({
         ? `No expiry groups on ${selectedDate || "the selected date"}.`
         : "No data";
 
-  // AI Ask — the full per-view reading guide (former card subtitle) lives
-  // in the intro; state carries the CURRENT view / delta / date.
+  // AI Ask — concise per-view guide (the long-form rationale lives in
+  // docs/options_vol_smile_study.md); state carries the CURRENT view /
+  // delta / date.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "The chronological companion to the Volatility Smile · Snapshot: instead of overplotting " +
-        "full smiles over time (unreadable — strikes drift with spot), it tracks the spot-centered " +
-        "skew SCALAR (risk reversal measured in delta space around ATM) against spot and the " +
-        "smile level. Today view: just today's skew — " +
-        `RR${delta} = IV(${delta}Δ OTM call) − IV(${delta}Δ OTM put) per real expiry, vol pts ` +
-        "(green = call wing richer, red = put wing richer / downside hedging demand); the line " +
-        "is each expiry's ATM IV; delta-space is spot-centered so expiries are directly " +
-        "comparable. History view: 3 stacked grids on a shared time axis — spot / ATM IV " +
-        "(smile LEVEL — the VIX analog) / RR skew (smile TILT — the SKEW analog) with front " +
-        "expiry (≥7 DTE), all-expiry mean and a ±2σ(20d) extreme-skew envelope (sentiment " +
-        "extremes that tend to mean-revert); skew moves can't be read without the level. " +
-        "Click any History date to move the snapshot. Semantics + rationale (why 25Δ default, " +
-        "10Δ optional; VIX vs SKEW decomposition): docs/options_vol_smile_study.md.",
+        "Smile skew vs time in delta space — strikes drift with spot, so full smiles overplot; " +
+        "we track the spot-centered scalar instead. Today: " +
+        `RR${delta} = IV(${delta}Δ call) − IV(${delta}Δ put) per real expiry, vol pts — ` +
+        "green = call wing rich, red = put wing rich; line = ATM IV. Nearest-|δ| contract per " +
+        "expiry, no OI weighting; IVs Black-76 off settlements (OI-wtd positioning skews: " +
+        "shared skew panel). History: 3 grids, shared time axis — spot / ATM IV (level, VIX " +
+        "analog) / RR (tilt, SKEW analog); hover any grid for one tooltip listing all three; " +
+        "solid = front expiry (≥7 DTE), dashed = all-expiry " +
+        "mean, ±2σ(20d) = extreme band. Indication: fade ±2σ skew extremes — they historically " +
+        "mean-revert; RR rising on a falling level = fear premium, quick to bleed. Click a " +
+        "History date to move the snapshot. Rationale: docs/options_vol_smile_study.md.",
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
       series:
         view === "today"
@@ -225,11 +243,6 @@ export default function SpotSkewTrendPanel({
                 : []),
             ],
       state: { view, delta, selectedDate },
-      suggestedQuestions: [
-        "Is the risk reversal tilted to the call or the put wing right now, and how does it slope across expiries?",
-        "Is skew stretched beyond its ±2σ(20d) envelope — a sentiment extreme prone to mean-reverting?",
-        "Are the smile level (ATM IV) and the tilt (RR) moving together or diverging recently?",
-      ],
       notes: [
         `Gaps in the RR series = no contract with |δ| near ${delta / 100} that day` +
           (delta === 10 ? " (the deep wing is sparse)" : "") +
@@ -281,6 +294,7 @@ export default function SpotSkewTrendPanel({
       }
       option={option}
       emptyText={emptyText}
+      onEvents={onEvents}
       onCanvasClick={view === "history" ? handleCanvasClick : undefined}
     />
   );

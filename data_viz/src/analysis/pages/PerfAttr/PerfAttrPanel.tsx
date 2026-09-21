@@ -237,14 +237,13 @@ export function PerfAttrPanel({ code, name, secType }: PanelProps) {
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "Performance attribution for one subject index against its benchmark " +
-        "family. Top chart: each benchmark's shared-weight contribution " +
-        "(fractional benchmark return × composition overlap) as bars, with the " +
-        "overlap % behind — click a bar to expand that benchmark's time series. " +
-        "Below (after a bar click): benchmark vs subject index ETF turnover " +
-        "(liquidity ratio in the tooltip), and the close-price trend of subject " +
-        "vs benchmark — % mode rebases both curves to 0% at the first common " +
-        "date, Abs mode shows raw closes on dual axes.",
+        `Performance attribution for ${code} vs its benchmark family. Top: per-benchmark ` +
+        "bars of shared-weight contribution = fractional benchmark return × composition " +
+        "overlap, with overlap % behind — click a bar to expand its time series. Below: " +
+        "benchmark vs subject ETF turnover (liquidity ratio in tooltip) and close trends — " +
+        "% mode rebases both to 0% at the first common date, Abs = raw closes on dual " +
+        "axes. Indication: contribution earned on thin overlap = concentrated edge; fat " +
+        "overlap with thin contribution = dead weight.",
       instruments: [
         { code, name: name || data?.name, assetClass: "index" },
         ...(selectedBenchmark

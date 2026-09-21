@@ -1,9 +1,13 @@
 /**
  * API client for the DataViz AI page (text-schema LLM Q&A endpoints
- * under /api/ai — text.llm_qa / text.llm_qa_refs / text.news_digestions).
+ * under /api/ai — text.llm_qa / text.llm_qa_refs / text.news_digestions)
+ * and the persisted ask history (text.llm_qa_by_ask family — the
+ * "QA by Ask" feed).
  */
 import { fetchJson } from "./_cache";
 import type {
+  AiAskHistoryDetail,
+  AiAskHistoryItemsResponse,
   AiCalendarResponse,
   AiQaDetail,
   AiQaItemsResponse,
@@ -64,4 +68,47 @@ export function fetchAiQaDetail(qaId: number): Promise<AiQaDetail | null> {
   return fetchJson<AiQaDetail | null>(
     `/api/ai/qa?qa_id=${encodeURIComponent(String(qaId))}`,
   );
+}
+
+/** Ask-history params: the knowledge-base scope plus `code` — a picked
+ *  security filters the ask's primary instrument code directly (more
+ *  precise than the industry mapping). `search` ANDs the whitespace terms
+ *  over question OR answer OR the derived keyword rows. */
+export interface AiAskHistoryParams extends AiScopeParams {
+  code?: string | null;
+}
+
+/** Per-day persisted-ask counts (the "QA by Ask" strip's dots). */
+export function fetchAiAskCalendar(
+  params: AiAskHistoryParams,
+): Promise<AiCalendarResponse> {
+  return fetchJson<AiCalendarResponse>(`/api/ai/ask-calendar${qs(params)}`);
+}
+
+/** One page of persisted asks for the scope (same date params as the
+ *  knowledge-base items). */
+export function fetchAiAskItems(
+  params: AiAskHistoryParams & {
+    date?: string | null;
+    date_from?: string | null;
+    date_to?: string | null;
+    limit?: number;
+    offset?: number;
+  },
+): Promise<AiAskHistoryItemsResponse> {
+  return fetchJson<AiAskHistoryItemsResponse>(`/api/ai/ask-items${qs(params)}`);
+}
+
+/** Full ask row + keywords + image list — the by-ask card's expand fetch.
+ *  Null when the ask_id is unknown. Cached like the other GET lookups. */
+export function fetchAiAskDetail(askId: number): Promise<AiAskHistoryDetail | null> {
+  return fetchJson<AiAskHistoryDetail | null>(
+    `/api/ai/ask-qa?ask_id=${encodeURIComponent(String(askId))}`,
+  );
+}
+
+/** The URL of one persisted screenshot's bytes (an <img> src — the browser
+ *  fetches and caches it; not a fetchJson call). */
+export function aiAskImageUrl(imageId: number): string {
+  return `/api/ai/ask-image?image_id=${encodeURIComponent(String(imageId))}`;
 }

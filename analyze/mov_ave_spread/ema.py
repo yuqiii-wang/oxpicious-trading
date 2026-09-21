@@ -72,7 +72,7 @@ from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
 )
-from _common.df_utils import column_subset, should_use_gpu
+from _common.df_utils import column_subset, host_unique, should_use_gpu, to_dt64
 from analyze.mov_ave_spread.helpers import null_if_overflow_counted
 from analyze._common import (
     build_and_insert_chunked,
@@ -301,7 +301,7 @@ async def run_ema(
     if sec_type is not None:
         sec_types = (sec_type,)
     else:
-        sec_types = tuple(sorted(ema_df["sec_type"].unique()))
+        sec_types = tuple(host_unique(ema_df["sec_type"]))
 
     # ---- Step 0: determine target dates (per-sec_type) --------------
     if code_filter is not None:
@@ -367,7 +367,7 @@ async def run_ema(
         # datetime64 ndarray comparison — isin with a python-date SET
         # never matches a datetime64 column (fetch.py incremental-filter
         # convention).
-        td64 = pd.to_datetime(sorted(target_dates_union)).values
+        td64 = to_dt64(sorted(target_dates_union))
         ema_df = ema_df[ema_df["date"].isin(td64)].reset_index(drop=True)
         logger.info(f"    -> incremental filter: {len(ema_df):,} of {n_before:,} "
               f"rows are in target_dates_union")

@@ -143,6 +143,88 @@ function seriesList(option: EChartsOption): readonly unknown[] {
   return s !== undefined ? [s] : [];
 }
 
+/** How one value axis renders its values, probed from the label formatter. */
+interface AxisValueFormat {
+  /** The formatter's output carries a "%" sign — series stats print as
+   *  percent (unit "%" is set on the series). */
+  percent: boolean;
+  /** Multiplier mapping a plotted value to what the axis DISPLAYS — 100
+   *  when the formatter does `(v * 100).toFixed(2) + "%"` over fraction-
+   *  encoded data (the common repo pattern), 1 when values are already
+   *  percent points. Stats are scaled by this so tags speak the same
+   *  numbers the chart shows. */
+  scale: number;
+}
+
+const AXIS_NOT_PERCENT: AxisValueFormat = { percent: false, scale: 1 };
+
+/** First number in a formatted label, tolerant of symbols/separators. */
+function parseLabelText(out: unknown): number | undefined {
+  if (typeof out !== "string") return undefined;
+  const m = out.match(/-?\d[\d,]*(?:\.\d+)?/);
+  if (!m) return undefined;
+  const n = parseFloat(m[0].replace(/,/g, ""));
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** Probe one value axis by feeding a known value (1) through the chart's
+ *  own formatter: the mapping it applies to that input is exactly the
+ *  mapping the raw stats need to read like the chart. String templates
+ *  insert the raw value, so a "%" there means percent with scale 1. */
+function probeValueAxis(axis: unknown): AxisValueFormat {
+  const a = axis as
+    | { type?: unknown; axisLabel?: { formatter?: unknown } }
+    | string
+    | undefined;
+  if (!a || typeof a === "string") return AXIS_NOT_PERCENT;
+  if (a.type !== undefined && a.type !== "value" && a.type !== "log") {
+    return AXIS_NOT_PERCENT;
+  }
+  const fmt = a.axisLabel?.formatter;
+  if (typeof fmt === "string") {
+    return fmt.includes("%") ? { percent: true, scale: 1 } : AXIS_NOT_PERCENT;
+  }
+  if (typeof fmt !== "function") return AXIS_NOT_PERCENT;
+  try {
+    const out = (fmt as (v: number) => unknown)(1);
+    // No "%" in the label → not a percent axis, whatever the scaling is
+    // (e.g. "(v / 1e8).toFixed(1) + \"亿\"" amount axes).
+    if (typeof out !== "string" || !out.includes("%")) return AXIS_NOT_PERCENT;
+    const shown = parseLabelText(out);
+    if (shown === undefined || shown === 0) return AXIS_NOT_PERCENT;
+    return { percent: true, scale: shown };
+  } catch {
+    return AXIS_NOT_PERCENT;
+  }
+}
+
+/** Per-yAxisIndex percent formats of one option's value axes. */
+function valueAxisFormats(opt: EChartsOption): AxisValueFormat[] {
+  const axes = opt.yAxis as unknown;
+  if (axes === undefined || axes === null) return [];
+  const list = Array.isArray(axes) ? axes : [axes];
+  return list.map(probeValueAxis);
+}
+
+/** Is this series a shade COMPANION (one of the pos/neg stacked fills the
+ *  benchmark-centered shade builder emits alongside each industry's base
+ *  curve)? Signature: stacked, draws no line (opacity 0), only fills an
+ *  area — it re-derives its base's data, so it would just duplicate the
+ *  tag. The base (invisible line, no area) is kept. */
+function isShadeCompanion(s: {
+  stack?: unknown;
+  lineStyle?: unknown;
+  areaStyle?: unknown;
+}): boolean {
+  const lineStyle = s.lineStyle as { opacity?: unknown } | undefined;
+  return (
+    s.stack !== undefined &&
+    s.stack !== null &&
+    lineStyle?.opacity === 0 &&
+    !!s.areaStyle
+  );
+}
+
 /** Search keywords cap — the online-search seed is one line; beyond this
  *  the extra terms are noise, not signal. */
 const MAX_SEARCH_KEYWORDS = 8;
@@ -199,9 +281,25 @@ export function derivePlotInfo(input: {
     const options = [option, ...(extraOptions ?? [])];
     for (const opt of options) {
       const raw = opt ? seriesList(opt) : [];
+      const axisFormats = opt ? valueAxisFormats(opt) : [];
       raw.forEach((s) => {
         if (typeof s !== "object" || s === null) return;
-        const obj = s as { name?: unknown; type?: unknown; data?: unknown };
+        const obj = s as {
+          name?: unknown;
+          type?: unknown;
+          data?: unknown;
+          yAxisIndex?: unknown;
+          stack?: unknown;
+          lineStyle?: unknown;
+          areaStyle?: unknown;
+        };
+        if (isShadeCompanion(obj)) return;
+        // Custom (renderItem) series carry bespoke data shapes contracted
+        // with their own renderer — a leading category index, OHLC field
+        // order, … — which generic stats would misread (they read as
+        // noise, e.g. the prev-day OHLC bar's pinned 0.0 close). Not
+        // tag-worthy data series.
+        if (obj.type === "custom") return;
         const name =
           typeof obj.name === "string" && obj.name !== ""
             ? obj.name
@@ -209,10 +307,24 @@ export function derivePlotInfo(input: {
         const kind = typeof obj.type === "string" ? obj.type : "line";
         kinds.add(kind);
         const data = Array.isArray(obj.data) ? obj.data : [];
+        const stats = deriveSeriesStats(kind, data);
+        // Percent-encoded axis → rescale the raw stats into the units the
+        // chart actually displays (percent points) and mark the series %.
+        const fmt =
+          axisFormats[
+            typeof obj.yAxisIndex === "number" ? obj.yAxisIndex : 0
+          ] ?? AXIS_NOT_PERCENT;
+        if (stats && fmt.percent && fmt.scale !== 1) {
+          for (const k of ["first", "last", "min", "max"] as const) {
+            const v = stats[k];
+            if (v !== undefined) stats[k] = v * fmt.scale;
+          }
+        }
         series.push({
           name,
           kind,
-          stats: deriveSeriesStats(kind, data),
+          stats,
+          ...(fmt.percent ? { unit: "%" } : {}),
         });
       });
     }
@@ -265,8 +377,8 @@ export function derivePlotInfo(input: {
       state: spec?.state,
       searchKeywords: deriveSearchKeywords(
         titleText, instruments, series, spec?.searchKeywords),
-      suggestedQuestions: spec?.suggestedQuestions,
       notes: spec?.notes ?? [],
+      product: spec?.product,
     };
   } catch {
     // Unrecognized option shape — degrade to the minimal payload.
@@ -283,8 +395,8 @@ export function derivePlotInfo(input: {
       state: spec?.state,
       searchKeywords: deriveSearchKeywords(
         titleText, spec?.instruments ?? [], [], spec?.searchKeywords),
-      suggestedQuestions: spec?.suggestedQuestions,
       notes: spec?.notes ?? [],
+      product: spec?.product,
     };
   }
 }

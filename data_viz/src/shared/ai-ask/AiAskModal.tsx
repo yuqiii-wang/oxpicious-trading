@@ -23,15 +23,24 @@
  * charts can carry 100+ series chips); submitted screenshots shrink to
  * thumbnails that open a zoom lightbox on click; the answer box takes most
  * of the remaining dialog height.
+ *
+ * The clamped intro is the doorway to the full description view: clicking
+ * it (or the "full description" hint under it) replaces the ask UI with a
+ * documentation-style page — the intro as separated paragraphs, then the
+ * per-series descriptions and the author's notes — with a back arrow in
+ * the dialog's upper-left corner returning to the ask view (question /
+ * answer state is kept). The page body is the shared DescriptionView
+ * (shared/components/description), so it renders exactly what the adviser
+ * knows — the same authored text feeds the LLM.
  */
 import { useLayoutEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import type { ECharts } from "echarts";
 import {
   Alert,
   Box,
   Button,
   Checkbox,
-  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -42,13 +51,17 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import KeyboardDoubleArrowDownIcon from "@mui/icons-material/KeyboardDoubleArrowDown";
 import KeyboardDoubleArrowUpIcon from "@mui/icons-material/KeyboardDoubleArrowUp";
+import { Close as CloseIcon } from "@mui/icons-material";
 import { askChartAi } from "@/lib/api-client/aiAsk";
+import { DescriptionView } from "@/shared/components/description";
 // Leaf-module import (not the base-chart barrel): BaseChart imports this
 // package, so going through the barrel would close a module cycle.
 import { useChartThemeMode } from "@/shared/charts/base-chart/useChartThemeMode";
-import type { AiAskPlotInfo } from "./types";
+import type { AiAskPlotInfo, AiAskSeriesInfo } from "./types";
 import { useStore } from "@/store/filters";
 
 /** Paper colors the chart cards sit on (mui-theme.ts fallbacks) — the chart
@@ -64,7 +77,7 @@ const TAGS_COLLAPSED_PX = 64;
 const TAGS_MASK = "linear-gradient(180deg, #000 46px, transparent 64px)";
 
 /** Two-line clamp for the chart intro — long intros must not push the
- *  question box below the fold (full text stays in the title tooltip). */
+ *  question box below the fold (clicking it opens the description view). */
 const CLAMP_2 = {
   display: "-webkit-box",
   WebkitBoxOrient: "vertical",
@@ -79,13 +92,23 @@ function fmtNum(v: number | undefined): string {
     : String(Math.round(v * 100) / 100);
 }
 
-/** "12.3 → 15.6 (+26.8%)" — the one number a trader reads first. */
-function seriesLine(
-  name: string,
-  stats: { first?: number; last?: number; min?: number; max?: number } | undefined,
-): string {
+/** "12.3 → 15.6 (+26.8%)" — the one number a trader reads first. Percent
+ *  series (unit "%", stats already in percent points) instead print the
+ *  move as a Δ in percentage points: a ratio between two near-zero
+ *  percent changes is meaningless ("−0.12% → −0.07%" is a flat day, not
+ *  "−44.5%"). */
+function seriesLine(s: AiAskSeriesInfo): string {
+  const { name, stats, unit } = s;
   if (!stats || stats.first === undefined || stats.last === undefined) {
     return name;
+  }
+  if (unit === "%") {
+    const move = stats.last - stats.first;
+    const sign = move >= 0 ? "+" : "";
+    return (
+      `${name}: ${stats.first.toFixed(2)}% → ${stats.last.toFixed(2)}% ` +
+      `(Δ${sign}${move.toFixed(2)}pp)`
+    );
   }
   const pct =
     stats.first !== 0
@@ -119,6 +142,7 @@ export default function AiAskModal({
   getExtraInstances,
 }: Props) {
   const themeMode = useChartThemeMode();
+  const pathname = useLocation().pathname;
   const [question, setQuestion] = useState("");
   const [onlineSearch, setOnlineSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -129,17 +153,34 @@ export default function AiAskModal({
   const [zoomed, setZoomed] = useState<string | null>(null);
   const [tagsExpanded, setTagsExpanded] = useState(false);
   const [tagsOverflow, setTagsOverflow] = useState(false);
-  const tagsRef = useRef<HTMLDivElement | null>(null);
+  // Description view (clicked intro) vs ask view — ask-side state below is
+  // kept alive across the round trip so going back resumes where it left.
+  const [showDescription, setShowDescription] = useState(false);
+  // Callback-ref + state (not a plain ref): the strip mounts with the open
+  // dialog, possibly AFTER the open-flip effect ran, so the element itself
+  // must re-trigger the measurement when it appears.
+  const [tagsEl, setTagsEl] = useState<HTMLDivElement | null>(null);
   const answerRef = useRef<HTMLDivElement | null>(null);
 
   // Overflow check + reset whenever the plot info changes or the dialog
-  // opens (MUI mounts the dialog content only when open — the ref is null
-  // while closed, so the open flip must re-trigger the measurement).
+  // opens (MUI mounts the dialog content only when open). A one-shot
+  // layout-effect read races the dialog's portal mount/transition and
+  // measured ~0, leaving the expand toggle hidden even when the tags
+  // clearly overflow — so re-measure after layout settles (rAF) and again
+  // whenever the strip's box changes (fonts, transition, data refresh).
   useLayoutEffect(() => {
+    if (!open || !tagsEl) return;
     setTagsExpanded(false);
-    const el = tagsRef.current;
-    setTagsOverflow(!!el && el.scrollHeight > TAGS_COLLAPSED_PX + 2);
-  }, [plotInfo, open]);
+    const measure = () => setTagsOverflow(tagsEl.scrollHeight > TAGS_COLLAPSED_PX + 2);
+    measure();
+    const raf = requestAnimationFrame(measure);
+    const ro = new ResizeObserver(measure);
+    ro.observe(tagsEl);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+  }, [plotInfo, open, tagsEl]);
 
   const close = () => {
     if (submitting) return; // one ask at a time — don't orphan an in-flight POST
@@ -147,6 +188,7 @@ export default function AiAskModal({
     setError(null);
     setScreenshots([]);
     setZoomed(null);
+    setShowDescription(false);
     // the modal component outlives its Dialog — reset the tick so every
     // fresh open starts with online search OFF (the default), and the
     // search line so it re-seeds from the current chart on the next tick.
@@ -206,7 +248,9 @@ export default function AiAskModal({
       setScreenshots(shots);
 
       // Global filter context — read at submit time (handler-scope getState
-      // is the reactive-correct pattern here, matching the theme rule).
+      // is the reactive-correct pattern here, matching the theme rule). The
+      // page path rides along as the ask-history product fallback (persisted
+      // with the ask — see llm_agents/llm_ask/storage.py).
       const s = useStore.getState();
       const payloadPlotInfo: AiAskPlotInfo = {
         ...plotInfo,
@@ -220,6 +264,7 @@ export default function AiAskModal({
           start: plotInfo.window.start ?? s.startDate ?? undefined,
           end: plotInfo.window.end ?? s.endDate ?? undefined,
         },
+        page: plotInfo.page ?? pathname,
       };
 
       const res = await askChartAi({
@@ -258,18 +303,84 @@ export default function AiAskModal({
   return (
     <>
       <Dialog open={open} onClose={close} maxWidth="md" fullWidth>
-        <DialogTitle sx={{ fontSize: "1rem", fontWeight: 600 }}>
-          Ask AI · {plotInfo.chart.title || "Chart"}
+        <DialogTitle
+          sx={{
+            position: "relative",
+            fontSize: "1rem",
+            fontWeight: 600,
+            pr: 6, // clear of the close X (and back arrow sits at the left)
+          }}
+        >
+          {showDescription && (
+            <IconButton
+              aria-label="back to ask"
+              onClick={() => setShowDescription(false)}
+              disabled={submitting}
+              title="Back to Ask AI"
+              sx={{ position: "absolute", left: 8, top: 8, color: "var(--chart-subtitle)" }}
+            >
+              <ArrowBackIcon />
+            </IconButton>
+          )}
+          <Box component="span" sx={showDescription ? { pl: 5 } : undefined}>
+            {showDescription ? "Description" : "Ask AI"} · {plotInfo.chart.title || "Chart"}
+          </Box>
+          <IconButton
+            aria-label="close"
+            onClick={close}
+            disabled={submitting}
+            title="Close"
+            sx={{ position: "absolute", right: 8, top: 8, color: "var(--chart-subtitle)" }}
+          >
+            <CloseIcon />
+          </IconButton>
         </DialogTitle>
         <DialogContent dividers sx={{ display: "flex", flexDirection: "column", gap: 1, pb: 1.5 }}>
-          {/* chart context — intro + current view, compact */}
-          <Typography
-            variant="body2"
-            title={plotInfo.chart.intro}
-            sx={{ color: "var(--chart-subtitle)", ...CLAMP_2 }}
-          >
-            {plotInfo.chart.intro}
-          </Typography>
+          {showDescription ? (
+            /* ---- description view — the chart's full authored description,
+               replaces the ask UI until the upper-left back arrow ---- */
+            <DescriptionView
+              intro={plotInfo.chart.intro}
+              series={plotInfo.series}
+              notes={plotInfo.notes}
+            />
+          ) : (
+            /* ---- ask view ---- */
+            <>
+              {/* chart context — intro + current view, compact; the intro
+                  itself is the doorway to the full description view */}
+              {plotInfo.chart.intro && (
+                <Box>
+                  <Typography
+                    variant="body2"
+                    onClick={() => setShowDescription(true)}
+                    title="Click to read the full description"
+                    sx={{
+                      color: "var(--chart-subtitle)",
+                      cursor: "pointer",
+                      ...CLAMP_2,
+                      "&:hover": { color: "primary.main" },
+                    }}
+                  >
+                    {plotInfo.chart.intro}
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    onClick={() => setShowDescription(true)}
+                    sx={{
+                      color: "var(--chart-subtitle)",
+                      cursor: "pointer",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      userSelect: "none",
+                      "&:hover": { color: "primary.main", textDecoration: "underline" },
+                    }}
+                  >
+                    Full description
+                    <ChevronRightIcon sx={{ fontSize: "0.9rem" }} />
+                  </Typography>
+                </Box>
+              )}
 
           {plotInfo.state && Object.keys(plotInfo.state).length > 0 && (
             <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center" }}>
@@ -295,7 +406,7 @@ export default function AiAskModal({
           {seriesCount > 0 && (
             <Box>
               <Box
-                ref={tagsRef}
+                ref={setTagsEl}
                 sx={{
                   display: "flex",
                   flexWrap: "wrap",
@@ -318,8 +429,8 @@ export default function AiAskModal({
                       py: 0.25,
                     }}
                   >
-                    {seriesLine(s.name, s.stats)}
-                    {s.unit ? ` ${s.unit}` : ""}
+                    {seriesLine(s)}
+                    {s.unit && s.unit !== "%" ? ` ${s.unit}` : ""}
                   </Typography>
                 ))}
               </Box>
@@ -340,30 +451,9 @@ export default function AiAskModal({
             </Box>
           )}
 
-          {(plotInfo.suggestedQuestions ?? []).length > 0 && (
-            <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5, alignItems: "center" }}>
-              {(plotInfo.suggestedQuestions ?? []).slice(0, 3).map((q) => (
-                <Chip
-                  key={q}
-                  label={q}
-                  size="small"
-                  variant="outlined"
-                  onClick={() => setQuestion(q)}
-                  sx={{
-                    maxWidth: "100%",
-                    "& .MuiChip-label": {
-                      whiteSpace: "normal",
-                      fontSize: "0.72rem",
-                    },
-                  }}
-                />
-              ))}
-            </Box>
-          )}
-
           <TextField
             label="Ask a question about this chart"
-            placeholder={plotInfo.suggestedQuestions?.[0] ?? "e.g. What does the current level imply for entry?"}
+            placeholder="Type your question…"
             multiline
             minRows={2}
             maxRows={4}
@@ -434,8 +524,11 @@ export default function AiAskModal({
               <Typography variant="body2">{answer}</Typography>
             </Box>
           )}
+            </>
+          )}
         </DialogContent>
-        <DialogActions>
+        {!showDescription && (
+          <DialogActions>
           <Button onClick={close} disabled={submitting}>
             Close
           </Button>
@@ -465,7 +558,8 @@ export default function AiAskModal({
           >
             {submitting ? "Asking…" : "Ask"}
           </Button>
-        </DialogActions>
+          </DialogActions>
+        )}
       </Dialog>
 
       {/* screenshot zoom lightbox — click the image or backdrop to close */}

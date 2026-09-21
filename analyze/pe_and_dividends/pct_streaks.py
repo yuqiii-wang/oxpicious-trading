@@ -101,7 +101,7 @@ import pandas as pd
 from _common._holidays_and_weekdays import is_trading_day
 from _common.build_commons import rec_cols
 from _common.db_commons import csv_copy_from_frame_async
-from _common.df_utils import host_array
+from _common.df_utils import host_array, safe_columns
 from analyze._common import upsert_analysis_identity
 from analyze.pe_and_dividends.config import (
     PD_PCT_GAP_TOLERANCE,
@@ -202,8 +202,9 @@ def compute_pct_excursion_streaks(
     df = df[list(_DAY_SRC_COLS)]
     day_frames: list[pd.DataFrame] = []
     base_cols = list(("sec_type", "code", "date"))
+    col_set = set(safe_columns(df))
     for metric in PD_PCT_METRICS:
-        if metric not in df.columns:
+        if metric not in col_set:
             continue
         mdf = df[base_cols + [metric]].dropna(subset=[metric]).rename(
             columns={metric: "value"}
@@ -220,14 +221,17 @@ def compute_pct_excursion_streaks(
     # holidays — they would classify as in-band "trading" days and split
     # streaks across holidays (e.g. the 8-row golden week between Sep 30
     # and Oct 9). Keep only real trading days per the project CN calendar
-    # (one python loop over the frame's UNIQUE dates — a few thousand —
-    # then a vectorized isin).
-    _norm = day["date"].dt.normalize()
-    _uniq = _norm.unique()
-    _ok = pd.DatetimeIndex(
-        [u for u in _uniq if is_trading_day(pd.Timestamp(u).date())]
+    # — ALL host numpy: .dt.normalize() / Series.unique() / DatetimeIndex
+    # construction / pd.Timestamp().date() each log a cudf fallback per
+    # call (cuDF lacks the ops), while the raw-array equivalents
+    # dispatch nowhere.
+    dates_day = host_array(day["date"].to_numpy()).astype("datetime64[D]")
+    uniq_days = np.unique(dates_day)
+    ok_days = np.array(
+        [d for d in uniq_days if is_trading_day(d.item())],
+        dtype="datetime64[D]",
     )
-    day = day[_norm.isin(_ok)].reset_index(drop=True)
+    day = day[np.isin(dates_day, ok_days)].reset_index(drop=True)
     if day.empty:
         return pd.DataFrame(columns=out_cols)
 
@@ -267,6 +271,10 @@ def compute_pct_excursion_streaks(
                 ).reset_index(drop=True)
 
                 # ---- Host unwrap (one pass per combo) ---------------
+                # Plain to_numpy() takes the cudf fast path; requesting
+                # dtype=float64 directly raises on missing values (one
+                # ValueError fallback per column) — cast on the host
+                # instead.
                 sec = host_array(m["sec_type"].to_numpy())
                 code = host_array(m["code"].to_numpy())
                 dates = host_array(m["date"].to_numpy())
@@ -279,13 +287,13 @@ def compute_pct_excursion_streaks(
                 # values round equal (dividend_yield at index scale,
                 # ~1e-7) would yield no side at query time.
                 values = np.round(
-                    host_array(m["value"].to_numpy(dtype="float64")), 6
+                    host_array(m["value"].to_numpy()).astype("float64"), 6
                 )
                 high_vals = np.round(
-                    host_array(m["high_val"].to_numpy(dtype="float64")), 6
+                    host_array(m["high_val"].to_numpy()).astype("float64"), 6
                 )
                 low_vals = np.round(
-                    host_array(m["low_val"].to_numpy(dtype="float64")), 6
+                    host_array(m["low_val"].to_numpy()).astype("float64"), 6
                 )
 
                 # ---- Side classification: +1 above band, -1 below,
@@ -356,13 +364,16 @@ def compute_pct_excursion_streaks(
                 # and its bridged in-band rows would fail the ep_id > 0
                 # keep-test below.
                 gcum = np.cumsum(new_ep)
-                grp_start = (
+                # host_array unwrap BEFORE the arithmetic — the proxy
+                # ndarray from to_numpy() would make `gcum - grp_start`
+                # log one cudf interop fallback per combo.
+                grp_start = host_array(
                     pd.Series(
                         (gcum - new_ep.astype(np.int64)).astype(np.float64)
                     )
                     .where(pd.Series(gc)).ffill().fillna(0.0)
-                    .to_numpy(dtype=np.int64)
-                )
+                    .to_numpy()
+                ).astype(np.int64)
                 ep_id = gcum - grp_start  # 1-based per-code episode ordinal
 
                 # ---- Episode rows: out rows + bridged in-band rows ---
@@ -431,9 +442,12 @@ def compute_pct_excursion_streaks(
     if not frames:
         return pd.DataFrame(columns=out_cols)
     out = pd.concat(frames, ignore_index=True)
-    # date_year_month = the streak's START month first day.
+    # date_year_month = the streak's START month first day. Host numpy
+    # casts — chained astype on the proxy-subclass to_numpy() ndarray
+    # logs one fallback per unit ([us] -> [M] -> [ns]).
     out["date_year_month"] = (
-        out["start_date"].to_numpy().astype("datetime64[M]")
+        host_array(out["start_date"].to_numpy())
+        .astype("datetime64[M]")
         .astype("datetime64[ns]")
     )
     for c in ("start_value", "end_value", "max_value", "min_value",

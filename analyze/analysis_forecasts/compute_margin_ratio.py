@@ -22,7 +22,7 @@ There is NO cooldown (a state cell admits every qualifying day —
 1-day signals, the identity registry's streak_signal_days constant;
 px_vol_state moved onto the event families' streak-merge in 2026-09,
 margin_ratio did not), and the bucket split is by PK member
-is_market_hyped only. The bucket is etf/stock only — index rz_buy is
+regime_state only. The bucket is etf/stock only — index rz_buy is
 NULL so every mask is False and no rows emit.
 
 Per (side, hype) subset the horizon aggregates reuse
@@ -118,13 +118,13 @@ class _MarginRatioEngine(WideDfEngine):
 
 
 def compute_margin_ratio_results(
-    *, df, first_dates, episodes, codes, sec_type, specs,
+    *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, margin_ratio_state bucket rows) per month."""
     engine = _MarginRatioEngine(
         df=df,
         first_dates=first_dates,
-        episodes=episodes,
+        regimes=regimes,
         codes=codes,
         sec_type=sec_type,
         specs=specs,

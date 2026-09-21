@@ -8,6 +8,16 @@
 --  Executed by python -m analyze.analysis_signals after EVERY run
 --  (over the whole sec_type: the refresh-month rewrites can change the
 --  pool's confidence ordering).
+--
+--  NOT score-ordered (2026-09 market-regimes study,
+--  docs/market_regimes_study.md): the walk-forward regime-weighted
+--  score (confidence × analysis_forecasts.regime_weights) was tested
+--  head-to-head against this confidence ordering and did NOT beat it
+--  out-of-sample (pooled top-1% 1.50% equal vs 1.36% weighted; monthly
+--  win rate 23/55) — the regime split itself carries the value, the
+--  in-window metric already encodes the regime lift, and the weights
+--  ship as evidence/display (analysis_forecasts.regime_weights + the
+--  forecasts UI), not as the ordering key.
 -- ============================================================================
 
 WITH ranked AS (

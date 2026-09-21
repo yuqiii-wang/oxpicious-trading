@@ -18,7 +18,8 @@ import { Router, type Request, type Response } from "express";
 import {
   listMovAveSpreadCodes,
   getMovAveSpreadChart,
-  getMarketHypeEpisodes,
+  getMovAveSpreadChartExtras,
+  getMarketRegimeSpans,
   getForecastTable,
   getForecastTriggerDates,
   getForecastIdentity,
@@ -181,21 +182,47 @@ router.get("/mov-ave-spread/chart", async (req: Request, res: Response) => {
   }
 });
 
-// ---- Market-hype EPISODES (stats.mov_ave_market_hypes) ----
-// GET /api/analysis/market-hypes?sec_type=etf&code=510050
-//   One (sec_type, code)'s hype episodes keyed by check-in window. MIGRATED
-//   off the mov-ave-spread/chart payload: the shared CodeTrendChart's
-//   Hypes toggle fetches episodes on demand for ANY page's code trend.
-router.get("/market-hypes", async (req: Request, res: Response) => {
+// ---- MA-Spread on-demand metric groups ----
+// GET /api/analysis/mov-ave-spread/extras?sec_type=etf&code=510050&metrics=amt,ohlc
+//   metrics = comma-separated subset of amt | ohlc | streaks | pxvol. Only
+//   the requested groups are queried and present in the response. The panel
+//   fetches a group the first time one of its control buttons is picked
+//   (Amt/MA chips, OHLC Window, High/Low Streaks, Px-Vol States) so the
+//   default page load carries just the pair series.
+router.get("/mov-ave-spread/extras", async (req: Request, res: Response) => {
   try {
     const code = parseCode(req);
     if (!code) {
       res.status(400).json({ error: "Missing 'code' parameter" });
       return;
     }
-    res.json(await getMarketHypeEpisodes(code, parseSecType(req)));
+    const metrics = typeof req.query.metrics === "string" ? req.query.metrics : "";
+    res.json(await getMovAveSpreadChartExtras(code, parseSecType(req), metrics));
   } catch (err) {
-    console.error("[analysis/market-hypes] error:", err);
+    console.error("[analysis/mov-ave-spread/extras] error:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- Market-regime SPANS (stats.market_regime_spans table) ----
+// GET /api/analysis/market-regimes?sec_type=etf&code=510050
+//   One (sec_type, code)'s contiguous same-regime spans (calm/hot/
+//   panic/quiet), grouped per regime — the shading source for the
+//   shared CodeTrendChart's Regimes toggle and the MA-Spread panel's
+//   regime chip group. Pure row read — spans are materialized by
+//   builds.market_regimes alongside the daily registry. Replaces the
+//   retired /market-hypes episodes endpoint (stats.mov_ave_market_hypes
+//   — dropped).
+router.get("/market-regimes", async (req: Request, res: Response) => {
+  try {
+    const code = parseCode(req);
+    if (!code) {
+      res.status(400).json({ error: "Missing 'code' parameter" });
+      return;
+    }
+    res.json(await getMarketRegimeSpans(code, parseSecType(req)));
+  } catch (err) {
+    console.error("[analysis/market-regimes] error:", err);
     res.status(500).json({ error: String(err) });
   }
 });
@@ -205,7 +232,7 @@ router.get("/market-hypes", async (req: Request, res: Response) => {
 // GET /api/analysis/mov-ave-spread/forecast?sec_type=etf&code=510050&kind=mov_rsi
 //   kind ∈ {mov_rsi, mov_std, mov_pairs, mov_pairs_ema, px_vol,
 //   margin_ratio, high_low_streaks, pe, dividend} — returns the code's bucket
-//   rows (bucket config incl. cooldown_days + is_market_hyped + mean_t +
+//   rows (bucket config incl. cooldown_days + regime_state + mean_t +
 //   mean_z for px_vol / mean_ratio + mean_z for margin_ratio, read from
 //   forecast_results.config) joined 1:1 with their
 //   analysis_forecasts.forecast_results columns. ALL stat_months are

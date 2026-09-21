@@ -23,11 +23,11 @@ database/sql/analysis/analysis_signals/00_schema.sql and
     cross-month PK conflicts).
 
   - Emission slices (current build): mov_rsi pct = 1 (top → sell /
-    bottom → buy), mov_std MA/σ windows >= 60d at k >= 2.0σ
+    bottom → buy), mov_std MA/σ windows >= 20d at k >= 2.0σ
     (upper → sell / lower → buy), and the two pair-cross families —
     mov_pairs / mov_pairs_ema, each covering BOTH its fast legs
     (ma5/ema6 and the close price) — at slow-leg windows >= 120d,
-    cross-down (bottom → buy) side only. All slices cover both hype
+    cross-down (bottom → buy) side only. All slices cover every regime
     splits. Other forecast families get strategies as their engines
     land.
 
@@ -52,7 +52,7 @@ see engines/_base):
      SignalQuality gate (engines/_quality — breach coherence +
      sign-aligned per-period forward means on every period, plus the
      0.75 risk cap as ONE weight-blended verdict over the quality
-     periods 50% 5d / 15% 20d / 5% 60d at bar 0.50 (the 5d bar
+     periods 65% 5d / 10% 20d at bar 0.50 (the 5d bar
      carries the decision — long-horizon failures alone can't kill);
      only quality-passing buckets register as strategies) →
      vectorized strategy/history
@@ -113,10 +113,10 @@ async def main() -> None:
                     "snapshot month), plus the bucket's trigger days "
                     "inside its own snapshot month as "
                     "history_signals rows. Emission slices: mov_rsi "
-                    "pct = 1; mov_std >= 60d windows at k >= 2.0σ; "
+                    "pct = 1; mov_std >= 20d windows at k >= 2.0σ; "
                     "the two pair-cross families (mov_pairs / "
                     "mov_pairs_ema, both fast legs) at >= 120d slow "
-                    "legs, cross-down side; both hype splits.",
+                    "legs, cross-down side; every regime split.",
     )
     ap.add_argument(
         "--sec-type", choices=SEC_TYPES, default=None,

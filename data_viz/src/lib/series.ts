@@ -177,6 +177,19 @@ export function fmtMil(v: number | null | undefined, digits = 3): string {
 }
 
 /**
+ * Compact count formatting (e.g. option open-interest contract counts):
+ * 12,345 → "12.3K", 1,234,567 → "1.23M". Returns "—" for null/NaN.
+ */
+export function fmtCompact(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const a = Math.abs(v);
+  if (a >= 1e9) return (v / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
+  if (a >= 1e3) return (v / 1e3).toFixed(1) + "K";
+  return String(Math.round(v));
+}
+
+/**
  * Format a 万-unit volume (1 万 = 10,000) as "X mil" (1 mil = 100 万).
  * Uses at most `digits` decimals. Returns "—" for null/NaN.
  */

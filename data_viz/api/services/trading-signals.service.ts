@@ -51,10 +51,10 @@ export interface TradingSignalRow {
   signal_threshold: number;
   confidence: number;
   is_day_close_trigger: boolean;
-  /** TRUE when the breach bar's DATE sits inside one of the code's
-   *  stats.mov_ave_market_hypes episodes (any check-in window) — regime
-   *  context: strategies are calibrated on non-hyped buckets only. */
-  is_market_hyped: boolean;
+  /** The breach bar's DATE market regime — the stats.market_regimes
+   *  day label (calm/hot/panic/quiet). Context, not a gate: the breach
+   *  still fires; the label matches the strategy's own regime split. */
+  regime_state: string;
   /** The code's live_signals count over the LAST 20 TRADING DAYS ending on
    *  `date` (all signal types, intraday + day-close rows) — the main
    *  table's "20d count" column. */
@@ -147,7 +147,7 @@ export async function fetchTriggeredSignals(
             s.signal_threshold::float8     AS signal_threshold,
             s.confidence,
             s.is_day_close_trigger,
-            s.is_market_hyped,
+            s.regime_state,
             (SELECT count(*)::int
              FROM live.live_signals ls
              WHERE ls.sec_type = s.sec_type
@@ -254,7 +254,7 @@ export async function fetchTradingSignalHistory(
             s.signal_threshold::float8     AS signal_threshold,
             s.confidence,
             s.is_day_close_trigger,
-            s.is_market_hyped
+            s.regime_state
      FROM live.live_signals s
      LEFT JOIN LATERAL (
        SELECT i.name FROM ${IDENTITY_TABLE[st]!} i

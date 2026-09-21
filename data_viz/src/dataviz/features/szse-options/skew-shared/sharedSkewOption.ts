@@ -4,7 +4,9 @@
  *
  *   • Underlying spot curve (solid blue) + selected-date mark
  *   • Mean (aggregate) skew curve in price space (thick dashed blue)
- *   • Per-expiry thin dashed blue-gradient lines
+ *   • Per-expiry blue-gradient dashed lines — line WIDTH encodes the
+ *     expiry's absolute OI (peak daily calls+puts, sqrt-scaled) while the
+ *     plotted value stays the ratio-based skew
  *   • Expiry shade bands from the selected date to each active expiry
  *     (band between spot and that expiry's skew curve)
  *   • Expiry dot marking each active expiry's closing boundary
@@ -30,6 +32,77 @@ import { fmtNum } from "@/lib/series";
 import { makeSharedSkewTooltipFormatter } from "./sharedSkewTooltip";
 import type { SharedSkewSpec } from "./types";
 import type { EChartsOption } from "echarts";
+
+/** Expiry-set boundary dates active ON the selected date (deduped, sorted). */
+export function activeExpiryDatesOf(
+  spec: SharedSkewSpec,
+  selectedDate: string,
+): string[] {
+  const dates = spec.points.map((d) => d.date);
+  const selectedIdx = dates.indexOf(selectedDate);
+  if (selectedIdx < 0) return [];
+  return Array.from(
+    new Set(
+      spec.points[selectedIdx].perExpiry
+        .map((pe) => pe.expiryDate)
+        .filter((ed) => ed && ed >= selectedDate),
+    ),
+  ).sort();
+}
+
+/**
+ * Category axis shared by BOTH skew panels: real data dates plus active
+ * expiry dates past the last data date (so shade bands reach the true
+ * expiry instead of being clipped). The convergence chart mirrors it, so a
+ * shared dataZoom {start,end} percent covers the SAME dates on both charts
+ * and cross-chart tooltip indices line up.
+ */
+export function sharedSkewAxisDates(
+  spec: SharedSkewSpec,
+  selectedDate: string,
+): string[] {
+  const dates = spec.points.map((d) => d.date);
+  const lastDate = dates[dates.length - 1];
+  return [
+    ...dates,
+    ...activeExpiryDatesOf(spec, selectedDate).filter((ed) => ed > lastDate),
+  ];
+}
+
+/** Line-width range of the per-expiry OI-thickness encoding. */
+export const OI_WIDTH_MIN = 0.7;
+export const OI_WIDTH_MAX = 3.0;
+
+/**
+ * Per-expiry line width ∝ the expiry's ABSOLUTE open interest: the peak
+ * daily total OI (calls + puts) over the curve, sqrt-scaled so perceived
+ * thickness (area) grows with position size. The curves' VALUES stay the
+ * ratio-based skew — thickness adds the size dimension. Expiries without
+ * OI data (greek_* specs) are absent from the map; callers fall back to
+ * their neutral width.
+ */
+export function expiryOiWidths(spec: SharedSkewSpec): Map<string, number> {
+  const peak = new Map<string, number>();
+  for (const p of spec.points) {
+    for (const pe of p.perExpiry) {
+      if (pe.oiTotal == null || !Number.isFinite(pe.oiTotal)) continue;
+      const cur = peak.get(pe.expiry) ?? 0;
+      if (pe.oiTotal > cur) peak.set(pe.expiry, pe.oiTotal);
+    }
+  }
+  let max = 0;
+  for (const v of peak.values()) if (v > max) max = v;
+  const widths = new Map<string, number>();
+  if (max <= 0) return widths;
+  for (const [exp, v] of peak) {
+    widths.set(
+      exp,
+      OI_WIDTH_MIN +
+        (OI_WIDTH_MAX - OI_WIDTH_MIN) * Math.sqrt(Math.max(0, v) / max),
+    );
+  }
+  return widths;
+}
 
 export function buildSharedSkewOption(
   spec: SharedSkewSpec,
@@ -78,23 +151,13 @@ export function buildSharedSkewOption(
   // expiryDate is its boundary): one shade per set, from the selected
   // date till that expiry. Overlapping layers make near-term regions
   // darker and far regions lighter.
-  const activeExpiryDates =
-    selectedIdx >= 0
-      ? Array.from(
-          new Set(
-            points[selectedIdx].perExpiry
-              .map((pe) => pe.expiryDate)
-              .filter((ed) => ed && ed >= selectedDate),
-          ),
-        ).sort()
-      : [];
+  const activeExpiryDates = activeExpiryDatesOf(spec, selectedDate);
 
   // Stretch the x-axis past the data range so every shade reaches its
   // contract's true expiry (e.g. 3/6/9-month sets) instead of being
   // clipped at the last data date. Real data dates stay the axis prefix.
-  const lastDate = dates[dates.length - 1];
-  const futureExpiryDates = activeExpiryDates.filter((ed) => ed > lastDate);
-  const axisDates = [...dates, ...futureExpiryDates];
+  // Shared with the convergence chart (see sharedSkewAxisDates).
+  const axisDates = sharedSkewAxisDates(spec, selectedDate);
 
   // Expiry dates within the range but not on the plotted category axis
   // (non-trading days) clamp to the nearest earlier plotted date.
@@ -112,6 +175,10 @@ export function buildSharedSkewOption(
     expiryColorMap.set(exp, expiryBlueColor(ei, nExpiries));
   });
 
+  // Thickness ∝ absolute OI (peak daily total per expiry); ratio values
+  // unchanged. Greek specs carry no OI → neutral width 1.
+  const oiWidths = expiryOiWidths(spec);
+
   const perExpirySeries: EChartsOption["series"] = expiryList.map((exp, ei) => {
     const data: (number | null)[] = points.map((d) => {
       const pe = d.perExpiry.find((p) => p.expiry === exp);
@@ -125,7 +192,12 @@ export function buildSharedSkewOption(
       showSymbol: false,
       smooth: false,
       connectNulls: false,
-      lineStyle: { color, width: 1, type: "dashed" as const, opacity: 0.45 },
+      lineStyle: {
+        color,
+        width: oiWidths.get(exp) ?? 1,
+        type: "dashed" as const,
+        opacity: 0.45,
+      },
       itemStyle: { color },
       data,
       z: 1,

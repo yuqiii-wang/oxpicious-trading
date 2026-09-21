@@ -80,8 +80,9 @@ def read_payload_file(path: str) -> AiAskPayload:
 
     Raises ``ValueError`` on a malformed payload (the CLI turns that into
     a failed marker-free exit the service reports via its stderr tail).
-    The file is deleted after a successful read — screenshots are
-    throwaway payload, not state.
+    The file is deleted after a successful read — screenshots travel the
+    file exactly once; afterwards they are persisted (if at all) by
+    llm_agents.llm_ask.storage, so the payload file itself stays throwaway.
     """
     with open(path, "r", encoding="utf-8") as fh:
         body = json.load(fh)

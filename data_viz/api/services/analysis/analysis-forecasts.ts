@@ -6,42 +6,42 @@
  *  getForecastTable(secType, code, kind, month?)
  *    kind = "mov_rsi" → analysis_forecasts.mov_rsi ⋈ forecast_results
  *      one row per (stat_month, rsi_window, side, pct) bucket: bucket keys
- *      + is_market_hyped + the linked forecast_results columns (mean +
- *      std-dev forward changes at the next-day/5d/20d/60d horizons;
- *      close-based max/min forward changes at the 5d/20d/60d horizons;
+ *      + regime_state + the linked forecast_results columns (mean +
+ *      std-dev forward changes at the next-day/5d/20d horizons;
+ *      close-based max/min forward changes at the 5d/20d horizons;
  *      per-horizon >1% reversal probabilities).
  *    kind = "mov_std" → analysis_forecasts.mov_std ⋈ forecast_results
- *      one row per (stat_month, ma_window, k, side, is_market_hyped)
+ *      one row per (stat_month, ma_window, k, side, regime_state)
  *      Bollinger-breach bucket.
  *    kind = "mov_pairs" → analysis_forecasts.mov_pairs ⋈ forecast_results
  *      one row per (stat_month, fast_leg, pair_window, side,
- *      is_market_hyped) MA-pair cross (golden / death cross) bucket —
+ *      regime_state) MA-pair cross (golden / death cross) bucket —
  *      the EXISTING analysis.mov_ave_spreads_detail ma5_vs_ma{pair_window}
  *      (fast_leg "ma5") or price_vs_ma{pair_window} (fast_leg "price",
  *      the close price) relative-MA spread changing sign (top = cross
  *      up, bottom = cross down).
  *    kind = "mov_pairs_ema" → analysis_forecasts.mov_pairs_ema ⋈
  *      forecast_results — the EMA sibling of mov_pairs: one row per
- *      (stat_month, fast_leg, pair_window, side, is_market_hyped)
+ *      (stat_month, fast_leg, pair_window, side, regime_state)
  *      cross bucket on the EXISTING
  *      analysis.mov_ave_spreads_detail_ema ema6_vs_ema{pair_window}
  *      (fast_leg "ema6") or price_vs_ema{pair_window} (fast_leg
  *      "price", the close price) relative-EMA spread.
  *    kind = "px_vol" → analysis_forecasts.px_vol_state ⋈ forecast_results
- *      one row per (stat_month, px_speed, vol_state, is_market_hyped)
+ *      one row per (stat_month, px_speed, vol_state, regime_state)
  *      σ-standardized price-speed × z-scored log amount-LEVEL state cell (NO cooldown
  *      — state buckets admit every qualifying day), additionally carrying
  *      the cell's mean_t / mean_z state magnitudes from the linked
  *      forecast_results.config JSONB.
  *    kind = "margin_ratio" → analysis_forecasts.margin_ratio_state ⋈
  *      forecast_results — one row per (stat_month, ratio_state,
- *      is_market_hyped) margin-buy intensity (融资买入额/成交额 ratio)
+ *      regime_state) margin-buy intensity (融资买入额/成交额 ratio)
  *      z-score state cell (NO cooldown; etf + stock only), additionally
  *      carrying the cell's mean_ratio / mean_z state magnitudes from the
  *      linked forecast_results.config JSONB.
  *    kind = "high_low_streaks" → analysis_forecasts.high_low_streaks ⋈
  *      forecast_results — one row per (stat_month, band_period,
- *      pct_type, side, is_market_hyped) MA-Spread High/Low streak
+ *      pct_type, side, regime_state) MA-Spread High/Low streak
  *      bucket: every band-break excursion streak of
  *      analysis.mov_ave_high_low_pct_streaks audited at its MEAN-MID
  *      anchor day (the ((day_count-1)//2 + 1)-th trading day of the
@@ -51,25 +51,22 @@
  *      streak-length context (mean / min / max day_count) from the
  *      linked forecast_results.config JSONB.
  *    kind = "pe" → analysis_forecasts.pe_state ⋈
- *      forecast_results — one row per (stat_month, val_state,
- *      is_market_hyped) PE z-state bucket over the raw pe series of
- *      analysis.pe. PE is LOWER the better: high/vhigh (expensive)
- *      states are bearish (side top), vlow/low (cheap) bullish (side
- *      bottom), carried on the row's side column; additionally
- *      carrying the cell's mean_metric (raw PE ratio) / mean_z state
- *      magnitudes from the linked forecast_results.config JSONB.
+ *      forecast_results — one row per (stat_month, side, pct,
+ *      regime_state) PE extreme-percentile bucket over the raw pe
+ *      series of analysis.pe (the mov_rsi pct convention). PE is LOWER
+ *      the better: the top-pct% (expensive) days are bearish (side
+ *      top), the bottom-pct% (cheap) days bullish (side bottom).
  *    kind = "dividend" → analysis_forecasts.dividend_state ⋈
- *      forecast_results — one row per (stat_month, val_state,
- *      is_market_hyped) dividend-yield z-state bucket over the
- *      trailing-12m D/P series of analysis.dividends. The yield is
- *      HIGHER the better (the REVERSE of the pe mapping): high/vhigh
- *      (cheap, well-supported) states are bullish (side bottom),
- *      vlow/low bearish (side top); additionally carrying the cell's
- *      mean_metric (fractional D/P) / mean_z state magnitudes from the
- *      linked forecast_results.config JSONB.
+ *      forecast_results — one row per (stat_month, side, pct,
+ *      regime_state) dividend-yield extreme-percentile bucket over
+ *      the trailing-12m D/P series of analysis.dividends. The yield is
+ *      HIGHER the better (the REVERSE of the pe mapping): the top-pct%
+ *      (cheap, well-supported) days are bullish (side bottom), the
+ *      bottom-pct% days bearish (side top).
  *
  *  forecast_results is now NORMALIZED (1 row per forecast_id × period) —
- *  one forecast bucket has 4 period rows (next/5d/20d/60d). This service
+ *  one forecast bucket has 3 period rows (next/5d/20d) plus the blended
+ *  'mixed' row. This service
  *  uses GROUP BY + conditional aggregation to pivot back to the wide
  *  format the UI consumes (1 row per bucket, period-suffixed columns).
  *
@@ -96,7 +93,7 @@
  *  TRUE when the bucket's own (code × stat_month × config × side)
  *  emission exists in analysis_signals.signal_strategies — i.e. the
  *  bucket's MIXED forecast_results row (the FIXED-weight blend of the
- *  four horizon rows: 5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05)
+ *  three horizon rows: 5d 0.65 / next 0.25 / 20d 0.10)
  *  passed the plain gate the analysis_signals layer applies
  *  (sign-aligned blended mean reversal > 0.75% AND material blended
  *  reverse P > 1% — see the inSignals() helper). The strategies layer
@@ -137,6 +134,7 @@ import type {
   PeForecastRow,
   DividendForecastRow,
   PxVolForecastRow,
+  MarketRegime,
 } from "../../../shared/types.js";
 
 const VALID_KINDS: ReadonlySet<string> = new Set([
@@ -144,7 +142,7 @@ const VALID_KINDS: ReadonlySet<string> = new Set([
   "px_vol", "margin_ratio", "high_low_streaks", "pe", "dividend",
 ]);
 
-// ---- Pivot fragments: 4 periods × consolidated cols → period-suffixed col names ----
+// ---- Pivot fragments: 3 periods × consolidated cols → period-suffixed col names ----
 // forecast_results is normalized (forecast_id, period) → these fragments
 // pivot it back to the wide format the UI consumes. NULLs for period='next'
 // on max/min are handled naturally by CASE WHEN.
@@ -153,7 +151,6 @@ const PERIODS: ReadonlyArray<{ period: string; suffix: string; hasMM: boolean }>
   { period: "next", suffix: "next",   hasMM: false },
   { period: "5d",   suffix: "5d",     hasMM: true  },
   { period: "20d",  suffix: "20d",    hasMM: true  },
-  { period: "60d",  suffix: "60d",    hasMM: true  },
 ];
 
 // Build the conditional-aggregation pivot fragment dynamically so the
@@ -192,7 +189,7 @@ const PIVOT_COLS = buildPivotCols();
  * the strategies layer's STORED side column (no CASE derivation) and
  * on end_date = stat_month (one snapshot owns each forecast period).
  * The join matches the forecast row's OWN hype split
- * (s.is_market_hyped = m.is_market_hyped): each split registers on its
+ * (s.regime_state = m.regime_state): each split registers on its
  * own gate pass, so a ● row ticks iff its hyped strategy exists.
  * No strategy row → no tick (family-months the emit does not cover —
  * e.g. the never-emitted pe / dividend state families — stay unticked
@@ -211,7 +208,7 @@ function inSignals(
       AND s.signal_type = '${signalType}'
       AND s.signal_sub_type = ${subTypeSql}
       AND s.side = m.side
-      AND s.is_market_hyped = m.is_market_hyped
+      AND s.regime_state = m.regime_state
       AND s.end_date = i.stat_month
   ))`;
 }
@@ -219,10 +216,12 @@ function inSignals(
 interface DbPairsRow extends QueryResultRow {
   forecast_id: number | string;
   stat_month: Date | string;
+  delayed_signal_days: number | null;
   fast_leg: string;
   pair_window: number;
   side: string;
-  is_market_hyped: boolean;
+  regime_state: string;
+  regime_weight: number | null;
   in_signals: boolean;
   [k: string]: unknown;
 }
@@ -230,10 +229,12 @@ interface DbPairsRow extends QueryResultRow {
 interface DbRsiRow extends QueryResultRow {
   forecast_id: number | string;
   stat_month: Date | string;
+  delayed_signal_days: number | null;
   rsi_window: number;
   side: string;
   pct: number;
-  is_market_hyped: boolean;
+  regime_state: string;
+  regime_weight: number | null;
   in_signals: boolean;
   [k: string]: unknown;
 }
@@ -241,10 +242,12 @@ interface DbRsiRow extends QueryResultRow {
 interface DbStdRow extends QueryResultRow {
   forecast_id: number | string;
   stat_month: Date | string;
+  delayed_signal_days: number | null;
   ma_window: number;
   k: number;
   side: string;
-  is_market_hyped: boolean;
+  regime_state: string;
+  regime_weight: number | null;
   in_signals: boolean;
   [k: string]: unknown;
 }
@@ -252,10 +255,12 @@ interface DbStdRow extends QueryResultRow {
 interface DbPxVolRow extends QueryResultRow {
   forecast_id: number | string;
   stat_month: Date | string;
+  delayed_signal_days: number | null;
   px_speed: string;
   vol_state: string;
   side: string;
-  is_market_hyped: boolean;
+  regime_state: string;
+  regime_weight: number | null;
   in_signals: boolean;
   mean_t: number | null;
   mean_z: number | null;
@@ -265,9 +270,11 @@ interface DbPxVolRow extends QueryResultRow {
 interface DbMarginRatioRow extends QueryResultRow {
   forecast_id: number | string;
   stat_month: Date | string;
+  delayed_signal_days: number | null;
   ratio_state: string;
   side: string;
-  is_market_hyped: boolean;
+  regime_state: string;
+  regime_weight: number | null;
   in_signals: boolean;
   mean_ratio: number | null;
   mean_z: number | null;
@@ -277,10 +284,12 @@ interface DbMarginRatioRow extends QueryResultRow {
 interface DbHighLowStreaksRow extends QueryResultRow {
   forecast_id: number | string;
   stat_month: Date | string;
+  delayed_signal_days: number | null;
   band_period: number;
   pct_type: number;
   side: string;
-  is_market_hyped: boolean;
+  regime_state: string;
+  regime_weight: number | null;
   in_signals: boolean;
   mean_day_count: number | null;
   min_day_count: number | null;
@@ -288,20 +297,20 @@ interface DbHighLowStreaksRow extends QueryResultRow {
   [k: string]: unknown;
 }
 
-interface DbValStateRow extends QueryResultRow {
+interface DbValPctRow extends QueryResultRow {
   forecast_id: number | string;
   stat_month: Date | string;
-  val_state: string;
+  delayed_signal_days: number | null;
   side: string;
-  is_market_hyped: boolean;
+  pct: number;
+  regime_state: string;
+  regime_weight: number | null;
   in_signals: boolean;
-  mean_metric: number | null;
-  mean_z: number | null;
   [k: string]: unknown;
 }
 
 /** px_vol state magnitudes live in the linked forecast_results.config
- *  JSONB (duplicated across all 4 period rows per forecast_id) — the
+ *  JSONB (duplicated across all 3 period rows per forecast_id) — the
  *  MIN(text) trick casts to text (PG can MIN text, not jsonb), MINs,
  *  and casts back to jsonb for ->> access. */
 const CONFIG_PX_VOL_COLS = `
@@ -310,7 +319,7 @@ const CONFIG_PX_VOL_COLS = `
 `;
 
 /** margin_ratio state magnitudes live in the linked forecast_results.config
- *  JSONB (duplicated across all 4 period rows per forecast_id) — same
+ *  JSONB (duplicated across all 3 period rows per forecast_id) — same
  *  MIN(text) trick as CONFIG_PX_VOL_COLS above. */
 const CONFIG_MARGIN_RATIO_COLS = `
   NULLIF(MIN(f.config::text)::jsonb->>'mean_ratio', '')::float8 AS mean_ratio,
@@ -326,16 +335,6 @@ const CONFIG_HIGH_LOW_STREAKS_COLS = `
   NULLIF(MIN(f.config::text)::jsonb->>'max_day_count', '')::float8 AS max_day_count
 `;
 
-/** pe_state / dividend_state state magnitudes live in the linked
- *  forecast_results.config JSONB (duplicated across all 4 period rows
- *  per forecast_id) — same MIN(text) trick as CONFIG_PX_VOL_COLS.
- *  mean_metric is per family: raw PE ratio for pe rows, fractional D/P
- *  for dividend rows (the UI renders per kind). */
-const CONFIG_VAL_STATE_COLS = `
-  NULLIF(MIN(f.config::text)::jsonb->>'mean_metric', '')::float8 AS mean_metric,
-  NULLIF(MIN(f.config::text)::jsonb->>'mean_z', '')::float8 AS mean_z
-`;
-
 // ---- Column-to-field mapping (wide format — matches ForecastResultCols) ----
 // The API response shape is unchanged from the old wide table: one row
 // per bucket, all periods as period-suffixed columns.
@@ -344,33 +343,29 @@ function mapRsiRow(r: DbRsiRow): MovRsiForecastRow {
   return {
     forecast_id: Number(r.forecast_id),
     stat_month: formatDate(r.stat_month),
+    delayed_signal_days: toNum(r.delayed_signal_days),
     rsi_window: r.rsi_window,
     side: r.side as MovRsiForecastRow["side"],
     pct: r.pct,
-    is_market_hyped: r.is_market_hyped === true,
+    regime_state: r.regime_state as MarketRegime,
+    regime_weight: r.regime_weight ?? null,
     in_signals: r.in_signals === true,
     ave_next_change: toNum(r.ave_next_change),
     ave_next_5d_change: toNum(r.ave_next_5d_change),
     ave_next_20d_change: toNum(r.ave_next_20d_change),
-    ave_next_60d_change: toNum(r.ave_next_60d_change),
     std_next_change: toNum(r.std_next_change),
     std_next_5d_change: toNum(r.std_next_5d_change),
     std_next_20d_change: toNum(r.std_next_20d_change),
-    std_next_60d_change: toNum(r.std_next_60d_change),
     max_5d_change: toNum(r.max_5d_change),
     max_20d_change: toNum(r.max_20d_change),
-    max_60d_change: toNum(r.max_60d_change),
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
-    min_60d_change: toNum(r.min_60d_change),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
-    reverse_prob_60d: toNum(r.reverse_prob_60d),
     occurrence_count_next: toNum(r.occurrence_count_next),
     occurrence_count_5d: toNum(r.occurrence_count_5d),
     occurrence_count_20d: toNum(r.occurrence_count_20d),
-    occurrence_count_60d: toNum(r.occurrence_count_60d),
   };
 }
 
@@ -380,33 +375,29 @@ function mapPairsRow(r: DbPairsRow): MovPairsForecastRow {
   return {
     forecast_id: Number(r.forecast_id),
     stat_month: formatDate(r.stat_month),
+    delayed_signal_days: toNum(r.delayed_signal_days),
     fast_leg: r.fast_leg as MovPairsForecastRow["fast_leg"],
     pair_window: r.pair_window,
     side: r.side as MovPairsForecastRow["side"],
-    is_market_hyped: r.is_market_hyped === true,
+    regime_state: r.regime_state as MarketRegime,
+    regime_weight: r.regime_weight ?? null,
     in_signals: r.in_signals === true,
     ave_next_change: toNum(r.ave_next_change),
     ave_next_5d_change: toNum(r.ave_next_5d_change),
     ave_next_20d_change: toNum(r.ave_next_20d_change),
-    ave_next_60d_change: toNum(r.ave_next_60d_change),
     std_next_change: toNum(r.std_next_change),
     std_next_5d_change: toNum(r.std_next_5d_change),
     std_next_20d_change: toNum(r.std_next_20d_change),
-    std_next_60d_change: toNum(r.std_next_60d_change),
     max_5d_change: toNum(r.max_5d_change),
     max_20d_change: toNum(r.max_20d_change),
-    max_60d_change: toNum(r.max_60d_change),
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
-    min_60d_change: toNum(r.min_60d_change),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
-    reverse_prob_60d: toNum(r.reverse_prob_60d),
     occurrence_count_next: toNum(r.occurrence_count_next),
     occurrence_count_5d: toNum(r.occurrence_count_5d),
     occurrence_count_20d: toNum(r.occurrence_count_20d),
-    occurrence_count_60d: toNum(r.occurrence_count_60d),
   };
 }
 
@@ -414,33 +405,29 @@ function mapStdRow(r: DbStdRow): MovStdForecastRow {
   const base: MovStdForecastRow = {
     forecast_id: Number(r.forecast_id),
     stat_month: formatDate(r.stat_month),
+    delayed_signal_days: toNum(r.delayed_signal_days),
     ma_window: r.ma_window,
     k: toNum(r.k) ?? 0,
     side: r.side as MovStdForecastRow["side"],
-    is_market_hyped: r.is_market_hyped === true,
+    regime_state: r.regime_state as MarketRegime,
+    regime_weight: r.regime_weight ?? null,
     in_signals: r.in_signals === true,
     ave_next_change: toNum(r.ave_next_change),
     ave_next_5d_change: toNum(r.ave_next_5d_change),
     ave_next_20d_change: toNum(r.ave_next_20d_change),
-    ave_next_60d_change: toNum(r.ave_next_60d_change),
     std_next_change: toNum(r.std_next_change),
     std_next_5d_change: toNum(r.std_next_5d_change),
     std_next_20d_change: toNum(r.std_next_20d_change),
-    std_next_60d_change: toNum(r.std_next_60d_change),
     max_5d_change: toNum(r.max_5d_change),
     max_20d_change: toNum(r.max_20d_change),
-    max_60d_change: toNum(r.max_60d_change),
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
-    min_60d_change: toNum(r.min_60d_change),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
-    reverse_prob_60d: toNum(r.reverse_prob_60d),
     occurrence_count_next: toNum(r.occurrence_count_next),
     occurrence_count_5d: toNum(r.occurrence_count_5d),
     occurrence_count_20d: toNum(r.occurrence_count_20d),
-    occurrence_count_60d: toNum(r.occurrence_count_60d),
   };
   return base;
 }
@@ -449,35 +436,31 @@ function mapPxVolRow(r: DbPxVolRow): PxVolForecastRow {
   return {
     forecast_id: Number(r.forecast_id),
     stat_month: formatDate(r.stat_month),
+    delayed_signal_days: toNum(r.delayed_signal_days),
     px_speed: r.px_speed as PxVolForecastRow["px_speed"],
     vol_state: r.vol_state as PxVolForecastRow["vol_state"],
     side: r.side as PxVolForecastRow["side"],
-    is_market_hyped: r.is_market_hyped === true,
+    regime_state: r.regime_state as MarketRegime,
+    regime_weight: r.regime_weight ?? null,
     in_signals: r.in_signals === true,
     mean_t: toNum(r.mean_t),
     mean_z: toNum(r.mean_z),
     ave_next_change: toNum(r.ave_next_change),
     ave_next_5d_change: toNum(r.ave_next_5d_change),
     ave_next_20d_change: toNum(r.ave_next_20d_change),
-    ave_next_60d_change: toNum(r.ave_next_60d_change),
     std_next_change: toNum(r.std_next_change),
     std_next_5d_change: toNum(r.std_next_5d_change),
     std_next_20d_change: toNum(r.std_next_20d_change),
-    std_next_60d_change: toNum(r.std_next_60d_change),
     max_5d_change: toNum(r.max_5d_change),
     max_20d_change: toNum(r.max_20d_change),
-    max_60d_change: toNum(r.max_60d_change),
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
-    min_60d_change: toNum(r.min_60d_change),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
-    reverse_prob_60d: toNum(r.reverse_prob_60d),
     occurrence_count_next: toNum(r.occurrence_count_next),
     occurrence_count_5d: toNum(r.occurrence_count_5d),
     occurrence_count_20d: toNum(r.occurrence_count_20d),
-    occurrence_count_60d: toNum(r.occurrence_count_60d),
   };
 }
 
@@ -485,34 +468,30 @@ function mapMarginRatioRow(r: DbMarginRatioRow): MarginRatioForecastRow {
   return {
     forecast_id: Number(r.forecast_id),
     stat_month: formatDate(r.stat_month),
+    delayed_signal_days: toNum(r.delayed_signal_days),
     ratio_state: r.ratio_state as MarginRatioForecastRow["ratio_state"],
     side: r.side as MarginRatioForecastRow["side"],
-    is_market_hyped: r.is_market_hyped === true,
+    regime_state: r.regime_state as MarketRegime,
+    regime_weight: r.regime_weight ?? null,
     in_signals: r.in_signals === true,
     mean_ratio: toNum(r.mean_ratio),
     mean_z: toNum(r.mean_z),
     ave_next_change: toNum(r.ave_next_change),
     ave_next_5d_change: toNum(r.ave_next_5d_change),
     ave_next_20d_change: toNum(r.ave_next_20d_change),
-    ave_next_60d_change: toNum(r.ave_next_60d_change),
     std_next_change: toNum(r.std_next_change),
     std_next_5d_change: toNum(r.std_next_5d_change),
     std_next_20d_change: toNum(r.std_next_20d_change),
-    std_next_60d_change: toNum(r.std_next_60d_change),
     max_5d_change: toNum(r.max_5d_change),
     max_20d_change: toNum(r.max_20d_change),
-    max_60d_change: toNum(r.max_60d_change),
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
-    min_60d_change: toNum(r.min_60d_change),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
-    reverse_prob_60d: toNum(r.reverse_prob_60d),
     occurrence_count_next: toNum(r.occurrence_count_next),
     occurrence_count_5d: toNum(r.occurrence_count_5d),
     occurrence_count_20d: toNum(r.occurrence_count_20d),
-    occurrence_count_60d: toNum(r.occurrence_count_60d),
   };
 }
 
@@ -523,10 +502,12 @@ function mapHighLowStreaksRow(r: DbHighLowStreaksRow): HighLowStreaksForecastRow
   return {
     forecast_id: Number(r.forecast_id),
     stat_month: formatDate(r.stat_month),
+    delayed_signal_days: toNum(r.delayed_signal_days),
     band_period: r.band_period,
     pct_type: r.pct_type,
     side: r.side as HighLowStreaksForecastRow["side"],
-    is_market_hyped: r.is_market_hyped === true,
+    regime_state: r.regime_state as MarketRegime,
+    regime_weight: r.regime_weight ?? null,
     in_signals: r.in_signals === true,
     mean_day_count: toNum(r.mean_day_count),
     min_day_count: toNum(r.min_day_count),
@@ -534,67 +515,156 @@ function mapHighLowStreaksRow(r: DbHighLowStreaksRow): HighLowStreaksForecastRow
     ave_next_change: toNum(r.ave_next_change),
     ave_next_5d_change: toNum(r.ave_next_5d_change),
     ave_next_20d_change: toNum(r.ave_next_20d_change),
-    ave_next_60d_change: toNum(r.ave_next_60d_change),
     std_next_change: toNum(r.std_next_change),
     std_next_5d_change: toNum(r.std_next_5d_change),
     std_next_20d_change: toNum(r.std_next_20d_change),
-    std_next_60d_change: toNum(r.std_next_60d_change),
     max_5d_change: toNum(r.max_5d_change),
     max_20d_change: toNum(r.max_20d_change),
-    max_60d_change: toNum(r.max_60d_change),
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
-    min_60d_change: toNum(r.min_60d_change),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
-    reverse_prob_60d: toNum(r.reverse_prob_60d),
     occurrence_count_next: toNum(r.occurrence_count_next),
     occurrence_count_5d: toNum(r.occurrence_count_5d),
     occurrence_count_20d: toNum(r.occurrence_count_20d),
-    occurrence_count_60d: toNum(r.occurrence_count_60d),
   };
 }
 
-/** One pe / dividend bucket row → API shape (config cols + the pivoted
+/** One pe / dividend bucket row → API shape (the pivoted
  *  forecast_results columns). The two families share the row shape —
  *  only the source table + signal family differ. */
-function mapValStateRow(r: DbValStateRow): PeForecastRow | DividendForecastRow {
+function mapValPctRow(r: DbValPctRow): PeForecastRow | DividendForecastRow {
   return {
     forecast_id: Number(r.forecast_id),
     stat_month: formatDate(r.stat_month),
-    val_state: r.val_state as PeForecastRow["val_state"],
+    delayed_signal_days: toNum(r.delayed_signal_days),
     side: r.side as PeForecastRow["side"],
-    is_market_hyped: r.is_market_hyped === true,
+    pct: r.pct,
+    regime_state: r.regime_state as MarketRegime,
+    regime_weight: r.regime_weight ?? null,
     in_signals: r.in_signals === true,
-    mean_metric: toNum(r.mean_metric),
-    mean_z: toNum(r.mean_z),
     ave_next_change: toNum(r.ave_next_change),
     ave_next_5d_change: toNum(r.ave_next_5d_change),
     ave_next_20d_change: toNum(r.ave_next_20d_change),
-    ave_next_60d_change: toNum(r.ave_next_60d_change),
     std_next_change: toNum(r.std_next_change),
     std_next_5d_change: toNum(r.std_next_5d_change),
     std_next_20d_change: toNum(r.std_next_20d_change),
-    std_next_60d_change: toNum(r.std_next_60d_change),
     max_5d_change: toNum(r.max_5d_change),
     max_20d_change: toNum(r.max_20d_change),
-    max_60d_change: toNum(r.max_60d_change),
     min_5d_change: toNum(r.min_5d_change),
     min_20d_change: toNum(r.min_20d_change),
-    min_60d_change: toNum(r.min_60d_change),
     reverse_prob: toNum(r.reverse_prob),
     reverse_prob_5d: toNum(r.reverse_prob_5d),
     reverse_prob_20d: toNum(r.reverse_prob_20d),
-    reverse_prob_60d: toNum(r.reverse_prob_60d),
     occurrence_count_next: toNum(r.occurrence_count_next),
     occurrence_count_5d: toNum(r.occurrence_count_5d),
     occurrence_count_20d: toNum(r.occurrence_count_20d),
-    occurrence_count_60d: toNum(r.occurrence_count_60d),
   };
 }
 
 export async function getForecastTable(
+  secType: string | undefined,
+  code: string | null,
+  kind: string | undefined,
+  month: string | null,
+): Promise<ForecastResponse> {
+  const resp = await getForecastTableBase(secType, code, kind, month);
+  await attachDelayLadders(resp.rows);
+  return resp;
+}
+
+/**
+ * Attach each row's delay ladder — the bucket's delay 0..5
+ * forecast_results rows (the 2026-09-21 incremental anchors; the row's
+ * own pivoted columns are the delay-0 stats), one generic keyed query
+ * over the rows' forecast_ids. Each rung's means are SIGN-ALIGNED
+ * (top → −ave, bottom → +; the gate's dir_ave convention) so the UI
+ * can read the decay rule off one number, and `decay_stop` is the
+ * highest delay whose aligned blended mean is still strictly below the
+ * previous rung's and positive — past it the reversal edge has decayed
+ * and the ladder "stops".
+ */
+async function attachDelayLadders(rows: ForecastResponse["rows"]): Promise<void> {
+  if (!rows.length) return;
+  // forecast_id normalization: pg returns int8 as STRING, the row mappers
+  // expose it as NUMBER — key both sides by Number() (ids here are far
+  // below Number.MAX_SAFE_INTEGER).
+  const ids = [...new Set(rows.map((r) => Number(r.forecast_id)))];
+  const ladders = await queryRows<{
+    forecast_id: number;
+    delay: number;
+    period: string;
+    ave_change: number | null;
+    occurrence_count: number | null;
+    reverse_prob: number | null;
+  }>(
+    `SELECT forecast_id, delay, period,
+            ave_change::float8 AS ave_change,
+            occurrence_count,
+            reverse_prob::float8 AS reverse_prob
+     FROM analysis_forecasts.forecast_results
+     WHERE forecast_id = ANY($1::bigint[])`,
+    [ids],
+  );
+  const byId = new Map<number, Map<number, {
+    ave: Record<string, number | null>;
+    n: number | null;
+    rev: number | null;
+  }>>();
+  for (const r of ladders) {
+    let perDelay = byId.get(Number(r.forecast_id));
+    if (!perDelay) {
+      perDelay = new Map();
+      byId.set(Number(r.forecast_id), perDelay);
+    }
+    let rung = perDelay.get(r.delay);
+    if (!rung) {
+      rung = { ave: {}, n: null, rev: null };
+      perDelay.set(r.delay, rung);
+    }
+    if (r.period === "mixed") {
+      rung.n = r.occurrence_count == null ? null : Number(r.occurrence_count);
+      rung.rev = r.reverse_prob;
+    }
+    rung.ave[r.period] = r.ave_change;
+  }
+  const align = (side: string, v: number | null): number | null =>
+    v == null ? null : side === "top" ? -v : v;
+  for (const row of rows) {
+    const perDelay = byId.get(Number(row.forecast_id));
+    if (!perDelay?.size) {
+      row.delay_ladder = null;
+      row.decay_stop = null;
+      continue;
+    }
+    const rungs = [...perDelay.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([delay, rung]) => ({
+        delay,
+        n: rung.n ?? 0,
+        dir_ave: align(row.side, rung.ave["mixed"] ?? null),
+        dir_ave_next: align(row.side, rung.ave["next"] ?? null),
+        dir_ave_5d: align(row.side, rung.ave["5d"] ?? null),
+        dir_ave_20d: align(row.side, rung.ave["20d"] ?? null),
+        reverse_prob: rung.rev,
+      }));
+    row.delay_ladder = rungs;
+    let stop: number | null = null;
+    if (rungs.length && (rungs[0].dir_ave ?? 0) > 0) {
+      stop = rungs[0].delay;
+      for (let i = 1; i < rungs.length; i++) {
+        const cur = rungs[i].dir_ave;
+        const prev = rungs[i - 1].dir_ave;
+        if (cur == null || prev == null || cur <= 0 || cur >= prev) break;
+        stop = rungs[i].delay;
+      }
+    }
+    row.decay_stop = stop;
+  }
+}
+
+async function getForecastTableBase(
   secType: string | undefined,
   code: string | null,
   kind: string | undefined,
@@ -657,23 +727,30 @@ export async function getForecastTable(
       `
       SELECT m.forecast_id,
              i.stat_month,
+             i.delayed_signal_days,
              m.rsi_window,
              m.side,
              m.pct,
-             m.is_market_hyped,
+             m.regime_state,
+             w.weight::float8 AS regime_weight,
              ${inSignals("mov_rsi", "'rsi' || m.rsi_window || '_' || m.pct::text || 'pct'", "(m.pct = 1)")} AS in_signals,
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.mov_rsi m
         ON m.forecast_id = i.forecast_id
       JOIN analysis_forecasts.forecast_results f
-        ON f.forecast_id = m.forecast_id
+        ON f.forecast_id = m.forecast_id AND f.delay = 0
+      LEFT JOIN analysis_forecasts.regime_weights w
+        ON w.stat_month = i.stat_month AND w.sec_type = i.sec_type
+       AND w.code = i.code AND w.family = 'mov_rsi'
+       AND w.regime = m.regime_state
       WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'mov_rsi'
         ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.rsi_window, m.side, m.pct,
-               m.is_market_hyped
+      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, i.delayed_signal_days, m.rsi_window, m.side, m.pct,
+               m.regime_state,
+w.weight
       ORDER BY i.stat_month DESC, m.rsi_window ASC, m.side ASC, m.pct ASC,
-               m.is_market_hyped ASC
+               m.regime_state ASC
       `,
       m ? [st, variants, m] : [st, variants],
     );
@@ -686,23 +763,30 @@ export async function getForecastTable(
       `
       SELECT m.forecast_id,
              i.stat_month,
+             i.delayed_signal_days,
              m.fast_leg,
              m.pair_window,
              m.side,
-             m.is_market_hyped,
+             m.regime_state,
+             w.weight::float8 AS regime_weight,
              ${inSignals("mov_pairs", "(CASE WHEN m.fast_leg = 'price' THEN 'pxpair' ELSE 'pair' END) || m.pair_window")} AS in_signals,
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.mov_pairs m
         ON m.forecast_id = i.forecast_id
       JOIN analysis_forecasts.forecast_results f
-        ON f.forecast_id = m.forecast_id
+        ON f.forecast_id = m.forecast_id AND f.delay = 0
+      LEFT JOIN analysis_forecasts.regime_weights w
+        ON w.stat_month = i.stat_month AND w.sec_type = i.sec_type
+       AND w.code = i.code AND w.family = 'mov_pairs'
+       AND w.regime = m.regime_state
       WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'mov_pairs'
         ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.fast_leg, m.pair_window, m.side,
-               m.is_market_hyped
+      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, i.delayed_signal_days, m.fast_leg, m.pair_window, m.side,
+               m.regime_state,
+w.weight
       ORDER BY i.stat_month DESC, m.fast_leg ASC, m.pair_window ASC, m.side ASC,
-               m.is_market_hyped ASC
+               m.regime_state ASC
       `,
       m ? [st, variants, m] : [st, variants],
     );
@@ -717,23 +801,30 @@ export async function getForecastTable(
       `
       SELECT m.forecast_id,
              i.stat_month,
+             i.delayed_signal_days,
              m.fast_leg,
              m.pair_window,
              m.side,
-             m.is_market_hyped,
+             m.regime_state,
+             w.weight::float8 AS regime_weight,
              ${inSignals("mov_pairs_ema", "(CASE WHEN m.fast_leg = 'price' THEN 'pxemapair' ELSE 'emapair' END) || m.pair_window")} AS in_signals,
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.mov_pairs_ema m
         ON m.forecast_id = i.forecast_id
       JOIN analysis_forecasts.forecast_results f
-        ON f.forecast_id = m.forecast_id
+        ON f.forecast_id = m.forecast_id AND f.delay = 0
+      LEFT JOIN analysis_forecasts.regime_weights w
+        ON w.stat_month = i.stat_month AND w.sec_type = i.sec_type
+       AND w.code = i.code AND w.family = 'mov_pairs_ema'
+       AND w.regime = m.regime_state
       WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'mov_pairs_ema'
         ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.fast_leg, m.pair_window, m.side,
-               m.is_market_hyped
+      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, i.delayed_signal_days, m.fast_leg, m.pair_window, m.side,
+               m.regime_state,
+w.weight
       ORDER BY i.stat_month DESC, m.fast_leg ASC, m.pair_window ASC, m.side ASC,
-               m.is_market_hyped ASC
+               m.regime_state ASC
       `,
       m ? [st, variants, m] : [st, variants],
     );
@@ -747,10 +838,12 @@ export async function getForecastTable(
       `
       SELECT m.forecast_id,
              i.stat_month,
+             i.delayed_signal_days,
              m.px_speed,
              m.vol_state,
              m.side,
-             m.is_market_hyped,
+             m.regime_state,
+             w.weight::float8 AS regime_weight,
              ${inSignals("px_vol", "m.px_speed || '_' || m.vol_state")} AS in_signals,
              ${CONFIG_PX_VOL_COLS},
              ${PIVOT_COLS}
@@ -758,18 +851,23 @@ export async function getForecastTable(
       JOIN analysis_forecasts.px_vol_state m
         ON m.forecast_id = i.forecast_id
       JOIN analysis_forecasts.forecast_results f
-        ON f.forecast_id = m.forecast_id
+        ON f.forecast_id = m.forecast_id AND f.delay = 0
+      LEFT JOIN analysis_forecasts.regime_weights w
+        ON w.stat_month = i.stat_month AND w.sec_type = i.sec_type
+       AND w.code = i.code AND w.family = 'px_vol_state'
+       AND w.regime = m.regime_state
       WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'px_vol_state'
         ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.px_speed, m.vol_state, m.side,
-               m.is_market_hyped
+      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, i.delayed_signal_days, m.px_speed, m.vol_state, m.side,
+               m.regime_state,
+w.weight
       ORDER BY i.stat_month DESC,
                CASE m.px_speed WHEN 'sharp_up' THEN 1 WHEN 'slow_up' THEN 2
                                WHEN 'flat' THEN 3 WHEN 'slow_dn' THEN 4
                                ELSE 5 END ASC,
                CASE m.vol_state WHEN 'heavy' THEN 1 WHEN 'normal' THEN 2
                                 ELSE 3 END ASC,
-               m.is_market_hyped ASC
+               m.regime_state ASC
       `,
       m ? [st, variants, m] : [st, variants],
     );
@@ -782,9 +880,11 @@ export async function getForecastTable(
       `
       SELECT m.forecast_id,
              i.stat_month,
+             i.delayed_signal_days,
              m.ratio_state,
              m.side,
-             m.is_market_hyped,
+             m.regime_state,
+             w.weight::float8 AS regime_weight,
              ${inSignals("margin_ratio", "'ratio_' || m.ratio_state")} AS in_signals,
              ${CONFIG_MARGIN_RATIO_COLS},
              ${PIVOT_COLS}
@@ -792,16 +892,21 @@ export async function getForecastTable(
       JOIN analysis_forecasts.margin_ratio_state m
         ON m.forecast_id = i.forecast_id
       JOIN analysis_forecasts.forecast_results f
-        ON f.forecast_id = m.forecast_id
+        ON f.forecast_id = m.forecast_id AND f.delay = 0
+      LEFT JOIN analysis_forecasts.regime_weights w
+        ON w.stat_month = i.stat_month AND w.sec_type = i.sec_type
+       AND w.code = i.code AND w.family = 'margin_ratio_state'
+       AND w.regime = m.regime_state
       WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'margin_ratio_state'
         ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.ratio_state, m.side,
-               m.is_market_hyped
+      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, i.delayed_signal_days, m.ratio_state, m.side,
+               m.regime_state,
+w.weight
       ORDER BY i.stat_month DESC,
                CASE m.ratio_state WHEN 'vlow' THEN 1 WHEN 'low' THEN 2
                                   WHEN 'mid' THEN 3 WHEN 'high' THEN 4
                                   WHEN 'vhigh' THEN 5 ELSE 6 END ASC,
-               m.is_market_hyped ASC
+               m.regime_state ASC
       `,
       m ? [st, variants, m] : [st, variants],
     );
@@ -810,68 +915,74 @@ export async function getForecastTable(
   }
 
   if (k === "pe") {
-    // State ordering runs low → high z within each state family
-    // (the reversed side semantics are carried per row).
-    const rows = await queryRows<DbValStateRow>(
+    // Side ordering puts the bearish top rows first (the reversed
+    // side semantics are carried per row).
+    const rows = await queryRows<DbValPctRow>(
       `
       SELECT m.forecast_id,
              i.stat_month,
-             m.val_state,
+             i.delayed_signal_days,
              m.side,
-             m.is_market_hyped,
+             m.pct,
+             m.regime_state,
+             w.weight::float8 AS regime_weight,
              FALSE AS in_signals,
-             ${CONFIG_VAL_STATE_COLS},
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.pe_state m
         ON m.forecast_id = i.forecast_id
       JOIN analysis_forecasts.forecast_results f
-        ON f.forecast_id = m.forecast_id
+        ON f.forecast_id = m.forecast_id AND f.delay = 0
+      LEFT JOIN analysis_forecasts.regime_weights w
+        ON w.stat_month = i.stat_month AND w.sec_type = i.sec_type
+       AND w.code = i.code AND w.family = 'pe_state'
+       AND w.regime = m.regime_state
       WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'pe_state'
         ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.val_state, m.side,
-               m.is_market_hyped
-      ORDER BY i.stat_month DESC,
-               CASE m.val_state WHEN 'vlow' THEN 1 WHEN 'low' THEN 2
-                                WHEN 'mid' THEN 3 WHEN 'high' THEN 4
-                                ELSE 5 END ASC,
-               m.is_market_hyped ASC
+      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, i.delayed_signal_days, m.side, m.pct,
+               m.regime_state,
+w.weight
+      ORDER BY i.stat_month DESC, m.side ASC, m.pct ASC,
+               m.regime_state ASC
       `,
       m ? [st, variants, m] : [st, variants],
     );
-    const mapped = rows.map(mapValStateRow) as PeForecastRow[];
+    const mapped = rows.map(mapValPctRow) as PeForecastRow[];
     return { kind: "pe", code, sec_type: st, months, rows: mapped, enable_filters: true };
   }
 
   if (k === "dividend") {
-    const rows = await queryRows<DbValStateRow>(
+    const rows = await queryRows<DbValPctRow>(
       `
       SELECT m.forecast_id,
              i.stat_month,
-             m.val_state,
+             i.delayed_signal_days,
              m.side,
-             m.is_market_hyped,
+             m.pct,
+             m.regime_state,
+             w.weight::float8 AS regime_weight,
              FALSE AS in_signals,
-             ${CONFIG_VAL_STATE_COLS},
              ${PIVOT_COLS}
       FROM analysis_forecasts.forecast_identities i
       JOIN analysis_forecasts.dividend_state m
         ON m.forecast_id = i.forecast_id
       JOIN analysis_forecasts.forecast_results f
-        ON f.forecast_id = m.forecast_id
+        ON f.forecast_id = m.forecast_id AND f.delay = 0
+      LEFT JOIN analysis_forecasts.regime_weights w
+        ON w.stat_month = i.stat_month AND w.sec_type = i.sec_type
+       AND w.code = i.code AND w.family = 'dividend_state'
+       AND w.regime = m.regime_state
       WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'dividend_state'
         ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.val_state, m.side,
-               m.is_market_hyped
-      ORDER BY i.stat_month DESC,
-               CASE m.val_state WHEN 'vlow' THEN 1 WHEN 'low' THEN 2
-                                WHEN 'mid' THEN 3 WHEN 'high' THEN 4
-                                ELSE 5 END ASC,
-               m.is_market_hyped ASC
+      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, i.delayed_signal_days, m.side, m.pct,
+               m.regime_state,
+w.weight
+      ORDER BY i.stat_month DESC, m.side ASC, m.pct ASC,
+               m.regime_state ASC
       `,
       m ? [st, variants, m] : [st, variants],
     );
-    const mapped = rows.map(mapValStateRow) as DividendForecastRow[];
+    const mapped = rows.map(mapValPctRow) as DividendForecastRow[];
     return { kind: "dividend", code, sec_type: st, months, rows: mapped, enable_filters: true };
   }
 
@@ -880,10 +991,12 @@ export async function getForecastTable(
       `
       SELECT m.forecast_id,
              i.stat_month,
+             i.delayed_signal_days,
              m.band_period,
              m.pct_type,
              m.side,
-             m.is_market_hyped,
+             m.regime_state,
+             w.weight::float8 AS regime_weight,
              ${inSignals("high_low_streaks", "'p' || m.band_period || '_' || m.pct_type")} AS in_signals,
              ${CONFIG_HIGH_LOW_STREAKS_COLS},
              ${PIVOT_COLS}
@@ -891,13 +1004,18 @@ export async function getForecastTable(
       JOIN analysis_forecasts.high_low_streaks m
         ON m.forecast_id = i.forecast_id
       JOIN analysis_forecasts.forecast_results f
-        ON f.forecast_id = m.forecast_id
+        ON f.forecast_id = m.forecast_id AND f.delay = 0
+      LEFT JOIN analysis_forecasts.regime_weights w
+        ON w.stat_month = i.stat_month AND w.sec_type = i.sec_type
+       AND w.code = i.code AND w.family = 'high_low_streaks'
+       AND w.regime = m.regime_state
       WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'high_low_streaks'
         ${m ? "AND i.stat_month >= $3::date" : ""}
-      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.band_period, m.pct_type,
-               m.side, m.is_market_hyped
+      GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, i.delayed_signal_days, m.band_period, m.pct_type,
+               m.side, m.regime_state,
+w.weight
       ORDER BY i.stat_month DESC, m.band_period ASC, m.pct_type ASC,
-               m.side ASC, m.is_market_hyped ASC
+               m.side ASC, m.regime_state ASC
       `,
       m ? [st, variants, m] : [st, variants],
     );
@@ -910,10 +1028,12 @@ export async function getForecastTable(
     `
     SELECT m.forecast_id,
            i.stat_month,
+           i.delayed_signal_days,
            m.ma_window,
            m.k::float8 AS k,
            m.side,
-           m.is_market_hyped,
+           m.regime_state,
+           w.weight::float8 AS regime_weight,
            ${inSignals("mov_std",
                  "'std' || m.ma_window || '_' || (m.k::float8::text) || 'std'",
                  "(m.ma_window >= 60 AND m.k::float8 >= 2.0)")} AS in_signals,
@@ -922,13 +1042,18 @@ export async function getForecastTable(
     JOIN analysis_forecasts.mov_std m
       ON m.forecast_id = i.forecast_id
     JOIN analysis_forecasts.forecast_results f
-      ON f.forecast_id = m.forecast_id
+      ON f.forecast_id = m.forecast_id AND f.delay = 0
+    LEFT JOIN analysis_forecasts.regime_weights w
+      ON w.stat_month = i.stat_month AND w.sec_type = i.sec_type
+     AND w.code = i.code AND w.family = 'mov_std'
+     AND w.regime = m.regime_state
     WHERE m.code = ANY($2::text[]) AND i.sec_type = $1 AND i.code = ANY($2::text[]) AND i.bucket = 'mov_std'
       ${m ? "AND i.stat_month >= $3::date" : ""}
-    GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, m.ma_window, m.k, m.side,
-             m.is_market_hyped
+    GROUP BY i.code, i.sec_type, m.forecast_id, i.stat_month, i.delayed_signal_days, m.ma_window, m.k, m.side,
+             m.regime_state,
+             w.weight
     ORDER BY i.stat_month DESC, m.ma_window ASC, m.k ASC, m.side ASC,
-             m.is_market_hyped ASC
+             m.regime_state ASC
     `,
     m ? [st, variants, m] : [st, variants],
   );
@@ -958,20 +1083,18 @@ export async function getForecastTriggerDates(
   }>(
     `SELECT period, trigger_dates, streak_starts, streak_ends, streak_days
      FROM analysis_forecasts.forecast_results
-     WHERE forecast_id = $1`,
+     WHERE forecast_id = $1 AND delay = 0`,
     [forecastId],
   );
   const periods: ForecastTriggerDatesResponse["periods"] = {
     next: null,
     "5d": null,
     "20d": null,
-    "60d": null,
   };
   const streaks: ForecastTriggerDatesResponse["streaks"] = {
     next: null,
     "5d": null,
     "20d": null,
-    "60d": null,
   };
   for (const r of rows) {
     if (r.period in periods) {
@@ -1008,11 +1131,15 @@ const BUCKET_KIND: Record<string, ForecastKind> = {
 /** One forecast_id → its shared-PK registry row
  *  (analysis_forecasts.forecast_identities): sec_type / code /
  *  stat_month / bucket family + the bucket's mean streak length per
- *  merged signal (streak_signal_days; code is the DROPPING industry for
- *  opp_pair rows — their forecast-target pair_industry_id lives on the
- *  opp_pair_state motivation row). Null when the id is not registered.
- *  Powers the UI's search-by-forecast_id jump: no probing of the nine
- *  motivation tables. */
+ *  merged signal (streak_signal_days) and mean trigger delay
+ *  (delayed_signal_days — the trading days from a signal's first
+ *  qualifying day to its mid-anchored actual trigger, capped at 5;
+ *  code is the
+ *  DROPPING industry for opp_pair rows — their forecast-target
+ *  pair_industry_id lives on the opp_pair_state motivation row).
+ *  Null when the id is not registered. Powers the UI's
+ *  search-by-forecast_id jump: no probing of the nine motivation
+ *  tables. */
 export async function getForecastIdentity(
   forecastId: number,
 ): Promise<ForecastIdentityResponse | null> {
@@ -1023,10 +1150,11 @@ export async function getForecastIdentity(
     stat_month: Date | string;
     bucket: string;
     streak_signal_days: number | string | null;
+    delayed_signal_days: number | string | null;
     lookback_period: string;
   }>(
     `SELECT forecast_id, sec_type, code, stat_month, bucket,
-            streak_signal_days, lookback_period
+            streak_signal_days, delayed_signal_days, lookback_period
      FROM analysis_forecasts.forecast_identities
      WHERE forecast_id = $1`,
     [forecastId],
@@ -1041,6 +1169,7 @@ export async function getForecastIdentity(
     bucket: r.bucket as ForecastIdentityResponse["bucket"],
     kind: BUCKET_KIND[r.bucket] ?? null,
     streak_signal_days: toNum(r.streak_signal_days),
+    delayed_signal_days: toNum(r.delayed_signal_days),
     lookback_period: r.lookback_period,
   };
 }

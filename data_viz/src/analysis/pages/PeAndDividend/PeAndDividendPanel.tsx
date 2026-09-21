@@ -397,14 +397,13 @@ export function PeAndDividendPanel({
   const streakAiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "Valuation band-break excursion streaks for one security: the selected " +
-        "metric (PE or dividend yield) plotted daily, with its trailing " +
-        "window's static top/bottom tightness-% zones shaded (light purple " +
-        "above, light yellow below) and the CLIENT-SIDE break streaks drawn " +
-        "darker inside. A streak is a maximal run of days above (high) / below " +
-        "(low) the anchor window's static band edge, with in-band gaps of ≤5 " +
-        "trading days bridged. Clicking a streak table row or a chart date " +
-        "re-anchors the trailing window.",
+        "Valuation band-break streaks: the selected metric (PE or dividend yield) plotted " +
+        "daily with the trailing window's static tightness-% zones shaded (light purple " +
+        "above, light yellow below); client-side break streaks drawn darker. Streak = " +
+        "maximal run of days above (high) / below (low) the anchor window's static band " +
+        "edge, bridging in-band gaps of ≤5 trading days. Click a table row or chart date " +
+        "to re-anchor. Indication: long excursions = valuation stretched past its recent " +
+        "envelope — historically snaps back once the band re-anchors.",
       instruments: [{ code, assetClass: secType === "etf" ? "etf" : secType === "index" ? "index" : "stock" }],
       series: [
         ...(streakMetric === "dividend_yield"

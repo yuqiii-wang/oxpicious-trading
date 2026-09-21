@@ -195,6 +195,13 @@ export function buildTodayOption(
  * crosshair link and a markLine at the selected snapshot date on every
  * grid. `volIndex` (optional, aligned to `points` by date) overlays the
  * 30-day model-free VIX-style index on the LEVEL grid.
+ *
+ * The tooltip is UNIFIED across grids: axis trigger only reports the
+ * hovered grid's own series, so the formatter synthesizes every grid's
+ * rows from the shared date index instead. `legendSelected` (the panel's
+ * legendselectchanged state) filters hidden series out of the tooltip and
+ * is written back into legend.selected so the notMerge rebuilds don't
+ * reset the user's toggles.
  */
 export function buildHistoryOption(
   points: SkewDayPoint[],
@@ -202,6 +209,7 @@ export function buildHistoryOption(
   delta: SkewDelta,
   themeMode: ThemeMode,
   volIndex?: (number | null)[],
+  legendSelected?: Record<string, boolean>,
 ): EChartsOption {
   const c = axisColors(themeMode);
   const rr = RR_LABEL[delta];
@@ -263,33 +271,54 @@ export function buildHistoryOption(
         const p = idx >= 0 ? points[idx] : undefined;
         if (!p) return "";
 
-        // Units per series; RR rows color their value green/red like the
-        // bars (positive = call wing richer, negative = put wing richer).
-        const unitOf: Record<string, string> = {
-          Spot: "",
-          "ATM IV": " %",
-          "MF Vol 30d": " %",
-          [`${rr} front`]: " vp",
-          [`${rr} mean`]: " vp",
-        };
-        const rows = list
-          .filter((item) => item.value != null)
-          .map((item) => {
-            const v = item.value as number;
-            const valueColor =
-              item.seriesName.startsWith(rr) ? (v >= 0 ? UP_COLOR : DOWN_COLOR) : undefined;
-            return tooltipRow(
-              item.color ?? null,
-              item.seriesName,
-              item.value,
-              unitOf[item.seriesName] ?? "",
-              valueColor,
-            );
-          });
-        if (p.rrMa20 != null) {
-          rows.push(tooltipRow(null, `${rr} MA20`, p.rrMa20, " vp"));
+        // One body for all three grids at the hovered date, grouped like
+        // the stacked plots (Spot | Level | Skew) with thin separators.
+        // Hidden legend series drop out; nulls stay hidden (honest gaps);
+        // RR rows color their value green/red like the bars (positive =
+        // call wing richer, negative = put wing richer).
+        const on = (name: string) => legendSelected?.[name] !== false;
+        const sep = `<div style="border-top:1px solid ${c.splitLineColor};margin:3px 0;"></div>`;
+        const rrColor = (v: number) => (v >= 0 ? UP_COLOR : DOWN_COLOR);
+
+        const spotRows: string[] = [];
+        if (p.spot != null && on("Spot")) {
+          spotRows.push(tooltipRow(SPOT_COLOR, "Spot", p.spot, ""));
         }
-        return tooltipHeader(c, p.date) + rows.join("");
+
+        const levelRows: string[] = [];
+        if (p.atmIvFront != null && on("ATM IV")) {
+          levelRows.push(tooltipRow(IV_BLUE, "ATM IV", p.atmIvFront, " %"));
+        }
+        const mf = volIndex != null ? volIndex[idx] : null;
+        if (mf != null && on("MF Vol 30d")) {
+          levelRows.push(tooltipRow(MUTED_PALETTE[4], "MF Vol 30d", mf, " %"));
+        }
+
+        const rrRows: string[] = [];
+        if (p.rrFront != null && on(`${rr} front`)) {
+          rrRows.push(
+            tooltipRow(
+              FUTURES_SPOT,
+              `${rr} front`,
+              p.rrFront,
+              " vp",
+              rrColor(p.rrFront),
+            ),
+          );
+        }
+        if (p.rrMean != null && on(`${rr} mean`)) {
+          rrRows.push(
+            tooltipRow(ATM_GRAY, `${rr} mean`, p.rrMean, " vp", rrColor(p.rrMean)),
+          );
+        }
+        if (p.rrMa20 != null) {
+          rrRows.push(tooltipRow(null, `${rr} MA20`, p.rrMa20, " vp"));
+        }
+
+        const groups = [spotRows, levelRows, rrRows].filter(
+          (g) => g.length > 0,
+        );
+        return tooltipHeader(c, p.date) + groups.map((g) => g.join("")).join(sep);
       },
     }),
     legend: commonLegend(themeMode, {
@@ -301,6 +330,11 @@ export function buildHistoryOption(
         `${rr} mean`,
         "±2σ (20d)",
       ],
+      // notMerge rebuilds reset legend selection — re-apply the panel's
+      // tracked state so toggles survive the tooltip-state re-render.
+      ...(legendSelected != null && Object.keys(legendSelected).length > 0
+        ? { selected: legendSelected }
+        : {}),
     }),
     dataZoom: commonDataZoom({ xAxisIndex: [0, 1, 2] }),
     // Multi-grid stacked layout (3 grids, one per sub-plot).

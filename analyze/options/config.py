@@ -182,27 +182,35 @@ IV_SKEW_NUMERIC_COLS = [
 ]
 
 # ---- Options OI stats table ------------------------------------------------
+# Dedicated per-expiry OI statistics, keyed by the REAL expiry date (NOT
+# the collapsed open-group convention — per-expiry tooltips need
+# per-contract-expiry OI levels/changes, which the pooled open-group
+# collapse cannot represent; hence no FK to options_expiry_identity,
+# whose open-group keys are collapsed mean dates). option_type is kept in
+# the PK: CALL and PUT rows hold the SAME value (stats pool calls+puts).
 OI_TABLE_NAME = "analysis.options_oi_stats"
 OI_ANALYSIS_NAME = "options_oi_stats"
 
 OI_DESCRIPTION = (
-    "Per-(date, option_type, underlying_code, expiry_date) store of precomputed "
-    "options OI-related statistics for expiry groups. Stores MA5/MA20/MA60 "
-    "whole-period cumulative correlation between put/call OI ratio and "
-    "underlying spot price. FK -> analysis.options_expiry_identity."
+    "Dedicated per-expiry options OI statistics, keyed by REAL expiry date "
+    "(not the collapsed open-group convention; no FK to "
+    "options_expiry_identity for that reason). Per (date, option_type, "
+    "underlying_code, expiry_date): oi_total = calls+puts open interest of "
+    "the expiry group (contracts), oi_delta_5d / oi_delta_20d = change vs "
+    "5/20 trading sessions earlier (session offsets index the underlying's "
+    "option calendar; NULL when the group had no row at the offset "
+    "session), oi_max_20d = max oi_total over the trailing 20 sessions "
+    "incl. the date. Serves the per-expiry OI tooltip stats of the "
+    "OI-weighted moneyness skew panel."
 )
 
 OI_RESULT_COLUMNS = [
     "date", "option_type", "underlying_code", "expiry_date",
-    "corr_put_call_ratio_vs_spot_ma5",
-    "corr_put_call_ratio_vs_spot_ma20",
-    "corr_put_call_ratio_vs_spot_ma60",
+    "oi_total", "oi_delta_5d", "oi_delta_20d", "oi_max_20d",
 ]
 
 OI_NUMERIC_COLS = [
-    "corr_put_call_ratio_vs_spot_ma5",
-    "corr_put_call_ratio_vs_spot_ma20",
-    "corr_put_call_ratio_vs_spot_ma60",
+    "oi_total", "oi_delta_5d", "oi_delta_20d", "oi_max_20d",
 ]
 
 # ---- Options walls table -------------------------------------------------

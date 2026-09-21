@@ -47,24 +47,20 @@ export default function VolSmilePanel({ rows, selectedDate }: Props) {
     })
     .join("  |  ");
 
-  // AI Ask — the legend decoding + per-expiry skewness readout (former
-  // card subtitle) lives in the intro / notes; the card keeps the identity.
+  // AI Ask — concise legend decoding; per-expiry skewness readout rides in
+  // the notes, the card keeps the identity.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "IV (%) vs moneyness (Strike/Spot) for CALL and PUT, grouped by expiry month — blue " +
-        "gradient: dark = near expiry, light = far; CALL is drawn solid, PUT dashed. An ATM " +
-        "vertical line sits at Moneyness=1, with per-expiry OI-weighted skewness (3rd " +
-        "standardized moment) markers on the smile.",
+        "IV (%) vs moneyness m = K/S — calls solid, puts dashed, grouped by expiry month " +
+        "(blue gradient: dark = near). ATM line at m = 1; markers = per-expiry OI-weighted " +
+        "smile skewness γ₁ = μ₃/σ³, IV weighted by raw OI count (floored at 1) — premium " +
+        "never weights. Indication: fat negative γ₁ = put-wing bid (crash-hedge demand); " +
+        "stretched positive = call chase — crowded wings both snap back.",
       instruments: rows[0]?.underlying_code
         ? [{ code: rows[0].underlying_code }]
         : [],
       state: { selectedDate },
-      suggestedQuestions: [
-        "Is the smile skewed to the put wing or the call wing, and which expiry is most skewed?",
-        "How does the OI-weighted skewness term-structure slope across expiries?",
-        "Where does ATM IV sit relative to the wings — smile, smirk, or flat?",
-      ],
       notes: [
         "The skew-over-time + correlation charts for this data live in the shared skew panel (skew-shared/).",
         ...(skewTags

@@ -18,6 +18,8 @@ import type {
   SkewType,
   SkewnessSeriesRow,
   SkewnessSeriesResponse,
+  OptionsOiStatsRow,
+  OptionsOiStatsResponse,
   IvSkewRow,
   IvSkewResponse,
   VolIndexRow,
@@ -28,8 +30,10 @@ export interface OptionsQuery {
   underlying?: string;
   start_date?: string;
   end_date?: string;
-  /** 'ETF' (SZSE ETF options) or 'INDEX' (CFFEX index options). */
+  /** 'ETF' (SZSE/SSE ETF options) or 'INDEX' (CFFEX index options). */
   target_type?: string;
+  /** Venue filter on the options tables' exchange column ('SZSE'|'SSE'|'CFFEX'). */
+  exchange?: string;
 }
 
 // ----------------------------------------------------------------------------
@@ -127,20 +131,33 @@ const OPTIONS_COLUMNS = `
 // ----------------------------------------------------------------------------
 //  List underlyings — SELECT DISTINCT from v_options_quote
 //
-//  SZSE ETF options keep native ETF codes (1599xx); CFFEX index options
-//  use index codes (000xxx/399xxx). The two venues load different code
-//  sets via the underlying_target_type filter — no code mapping needed.
+//  SZSE/SSE ETF options keep native ETF codes (1599xx / 510xxx/588xxx);
+//  CFFEX index options use index codes (000xxx/399xxx). The venues load
+//  via the underlying_target_type filter, and the two ETF venues are
+//  separated by the exchange column.
 // ----------------------------------------------------------------------------
-export async function listUnderlyings(targetType?: string): Promise<OptionsUnderlying[]> {
+export async function listUnderlyings(targetType?: string, exchange?: string): Promise<OptionsUnderlying[]> {
   const t = (targetType ?? "").trim().toUpperCase();
+  const ex = (exchange ?? "").trim().toUpperCase();
+
+  const params: unknown[] = [];
+  const where: string[] = ["underlying_code IS NOT NULL", "underlying_code != ''"];
+  if (t === "ETF" || t === "INDEX") {
+    params.push(t);
+    where.push(`underlying_target_type = $${params.length}`);
+  }
+  if (ex === "SSE" || ex === "SZSE" || ex === "CFFEX") {
+    params.push(ex);
+    where.push(`exchange = $${params.length}`);
+  }
+
   const sql = `
     SELECT DISTINCT underlying_code, underlying_name
     FROM stats.v_options_quote
-    WHERE underlying_code IS NOT NULL AND underlying_code != ''
-      ${t === "ETF" || t === "INDEX" ? "AND underlying_target_type = $1" : ""}
+    WHERE ${where.join(" AND ")}
     ORDER BY underlying_code
   `;
-  const rows = await queryRows<DbUnderlyingRow>(sql, t === "ETF" || t === "INDEX" ? [t] : []);
+  const rows = await queryRows<DbUnderlyingRow>(sql, params);
   return rows.map((r) => ({
     code: r.underlying_code,
     name: r.underlying_name,
@@ -155,6 +172,7 @@ export async function getOptionsCombined(
 ): Promise<OptionsCombinedResponse> {
   const underlying = (q.underlying ?? "").trim();
   const targetType = (q.target_type ?? "").trim().toUpperCase();
+  const exchange = (q.exchange ?? "").trim().toUpperCase();
 
   const params: unknown[] = [];
   const where: string[] = [];
@@ -163,6 +181,10 @@ export async function getOptionsCombined(
   if (targetType === "ETF" || targetType === "INDEX") {
     where.push(`underlying_target_type = $${i++}`);
     params.push(targetType);
+  }
+  if (exchange === "SSE" || exchange === "SZSE" || exchange === "CFFEX") {
+    where.push(`exchange = $${i++}`);
+    params.push(exchange);
   }
   if (underlying) {
     where.push(`underlying_code = $${i++}`);
@@ -435,6 +457,86 @@ export async function getOptionsSkewnessSeries(
     expiry_month: formatDate(r.expiry_month),
     expiry_date: r.expiry_date ? formatDate(r.expiry_date) : null,
     skewness: toNum(r.skewness),
+  }));
+
+  return { underlying_code: cleanedCode, rows: transformed };
+}
+
+// ----------------------------------------------------------------------------
+//  Options OI Stats — per-expiry OI level/changes (analysis.options_oi_stats)
+// ----------------------------------------------------------------------------
+
+interface DbOiStatsRow extends QueryResultRow {
+  date: Date | string;
+  underlying_code: string;
+  expiry_month: Date | string;
+  expiry_date: Date | string | null;
+  oi_total: number | null;
+  oi_delta_5d: number | null;
+  oi_delta_20d: number | null;
+  oi_max_20d: number | null;
+}
+
+export async function getOptionsOiStats(
+  underlying: string,
+  startDate?: string,
+  endDate?: string,
+): Promise<OptionsOiStatsResponse> {
+  const cleanedCode = stripExchangeSuffix(underlying).trim();
+  const sd = toDateParam(startDate);
+  const ed = toDateParam(endDate);
+
+  const params: unknown[] = [cleanedCode];
+  const where: string[] = ["underlying_code = $1"];
+  let i = 2;
+
+  if (sd) {
+    where.push(`date >= $${i++}::date`);
+    params.push(sd);
+  }
+  if (ed) {
+    where.push(`date <= $${i++}::date`);
+    params.push(ed);
+  }
+
+  // options_oi_stats stores per-REAL-expiry rows duplicated per option_type
+  // (CALL/PUT hold the same value). The inner DISTINCT dedupes the
+  // option_type duplication; the outer GROUP BY aggregates the month group
+  // the frontend keys on: SUM across the month's expiries (1 per month for
+  // the monthly ETF convention — exact; CFFEX weeklies sum to the month
+  // group's total), MAX of the per-expiry trailing maxes (approximate for
+  // multi-expiry months).
+  const sql = `
+    SELECT
+      date,
+      underlying_code,
+      expiry_month,
+      MAX(expiry_date) AS expiry_date,
+      SUM(oi_total) AS oi_total,
+      SUM(oi_delta_5d) AS oi_delta_5d,
+      SUM(oi_delta_20d) AS oi_delta_20d,
+      MAX(oi_max_20d) AS oi_max_20d
+    FROM (
+      SELECT DISTINCT date, underlying_code,
+             DATE_TRUNC('month', expiry_date) AS expiry_month,
+             expiry_date,
+             oi_total, oi_delta_5d, oi_delta_20d, oi_max_20d
+      FROM analysis.options_oi_stats
+      WHERE ${where.join(" AND ")}
+    ) t
+    GROUP BY date, underlying_code, expiry_month
+    ORDER BY date ASC, expiry_month ASC
+  `;
+
+  const rows = await queryRows<DbOiStatsRow>(sql, params);
+  const transformed: OptionsOiStatsRow[] = rows.map((r) => ({
+    date: formatDate(r.date),
+    expiry_month: formatDate(r.expiry_month),
+    expiry_date: r.expiry_date != null ? formatDate(r.expiry_date) : null,
+    oi_total: toNum(r.oi_total),
+    oi_delta_5d: toNum(r.oi_delta_5d),
+    oi_delta_20d: toNum(r.oi_delta_20d),
+    oi_max_20d: toNum(r.oi_max_20d),
   }));
 
   return { underlying_code: cleanedCode, rows: transformed };

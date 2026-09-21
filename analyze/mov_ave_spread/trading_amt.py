@@ -50,7 +50,7 @@ from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
 )
-from _common.df_utils import column_subset, grouped_rolling_agg
+from _common.df_utils import column_subset, grouped_rolling_agg, host_unique, to_dt64
 from analyze._common import (
     build_and_insert_chunked,
     upsert_analysis_identity,
@@ -249,7 +249,7 @@ async def run_trading_amt(
     if sec_type is not None:
         sec_types = (sec_type,)
     else:
-        sec_types = tuple(sorted(ta_df["sec_type"].unique()))
+        sec_types = tuple(host_unique(ta_df["sec_type"]))
 
     # ---- Step 0: determine target dates (per-sec_type) --------------
     if code_filter is not None:
@@ -317,7 +317,7 @@ async def run_trading_amt(
         # datetime64 ndarray comparison — isin with a python-date SET
         # never matches a datetime64 column (fetch.py incremental-filter
         # convention).
-        td64 = pd.to_datetime(sorted(target_dates_union)).values
+        td64 = to_dt64(sorted(target_dates_union))
         ta_df = ta_df[ta_df["date"].isin(td64)].reset_index(drop=True)
         logger.info(f"    -> incremental filter: {len(ta_df):,} of {n_before:,} "
               f"rows are in target_dates_union")

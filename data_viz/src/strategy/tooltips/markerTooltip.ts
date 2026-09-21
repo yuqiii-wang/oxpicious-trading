@@ -1,5 +1,5 @@
 import React from "react";
-import { renderReactElement, tooltipComponents } from "@/lib/react-tooltip-renderer";
+import { escapeTooltipText, renderReactElement } from "@/lib/react-tooltip-renderer";
 import type { StrategyDecision } from "@shared/types";
 
 interface CreateMarkerTooltipFormatterParams {
@@ -41,32 +41,39 @@ export function createMarkerTooltipFormatter({
       ? `${fmtNum(d.fill_price, 4)} (idx ${fmtNum(d.normalized_fill_price, 1)})`
       : fmtNum(d.fill_price, 4);
 
-    const children: React.ReactNode[] = [
+    // Vertical layout: one row (div) per semantic item.
+    const rows: React.ReactNode[] = [
       React.createElement("b", { style: { color: sideColor } }, `${d.side} #${d.decision_no}`),
-      React.createElement("br"),
       `Exec: ${d.exec_date}`,
-      React.createElement("br"),
-      `Confidence: ${fmtNum(confidence, 1)} / 100 | Qty: ${fmtNum(d.qty, 2)} @ ${priceStr}`,
-      React.createElement("br"),
+      `Confidence: ${fmtNum(confidence, 1)} / 100`,
+      `Qty: ${fmtNum(d.qty, 2)}`,
+      `Fill Price: ${priceStr}`,
       `Position: ${fmtNum(d.position_before, 2)} → ${fmtNum(d.position_after, 2)}`,
-      React.createElement("br"),
       `Cash: ${fmtNum(d.cash_before, 2)} → ${fmtNum(d.cash_after, 2)}`,
     ];
 
     if (d.side === "SELL") {
-      children.push(
-        React.createElement("br"),
-        "Realized P&L: ",
-        React.createElement("b", { style: { color: d.realized_pnl >= 0 ? upColor : downColor } },
-          `${d.realized_pnl >= 0 ? "+" : ""}${fmtNum(d.realized_pnl, 2)}`),
-        ` | Mean Buy idx: ${fmtNum(d.normalized_mean_buy_price, 1)}`,
+      rows.push(
+        React.createElement(
+          React.Fragment,
+          null,
+          "Realized P&L: ",
+          React.createElement("b", { style: { color: d.realized_pnl >= 0 ? upColor : downColor } },
+            `${d.realized_pnl >= 0 ? "+" : ""}${fmtNum(d.realized_pnl, 2)}`),
+        ),
+        `Mean Buy idx: ${fmtNum(d.normalized_mean_buy_price, 1)}`,
       );
     }
 
-    children.push(
-      React.createElement("br"),
-      React.createElement("span", { style: { color: textColor, fontSize: 11 } }, stripMixPrefix(d.signal_reason)),
+    rows.push(
+      React.createElement(
+        "span",
+        { style: { color: textColor, fontSize: 11 } },
+        escapeTooltipText(stripMixPrefix(d.signal_reason)),
+      ),
     );
+
+    const children: React.ReactNode[] = rows.map((row) => React.createElement("div", null, row));
 
     return renderReactElement(React.createElement(React.Fragment, null, children));
   };

@@ -1,145 +1,153 @@
 """pe_state bucket monthly aggregation (analysis_forecasts) —
-sparse tensor engine.
+extreme-percentile engine.
 
-The valuation STATE buckets over the PE series of analysis.pe (see
-database/sql/analysis/analysis_forecasts/11_pe_state.sql): per stat
-month's trailing 5-year window [lo, hi) of the (T, C) wide grid, a
-(code, date) joins ONE of the 5 z states — the raw PE standardized by
-the code's OWN trailing moments (the fetch layer computes z = (pe - μ)/σ
-on the rolling-1220-row shifted moments, min 250 non-NULL observations,
-so NaN here means "no bucket" — no-earnings / invalid-PE days):
+The valuation extreme-PERCENTILE buckets over the PE series of
+analysis.pe (see database/sql/analysis/analysis_forecasts/
+11_pe_state.sql): per stat month's trailing 5-year window [lo, hi) of
+the (T, C) wide grid, a (code, date) joins a bucket when its raw PE
+sits in the top pct% (bucket extreme 'top' — the linearly-interpolated
+quantile of the window's non-NULL pe values at q = 1 - pct/100) or
+bottom pct% (extreme 'bottom', q = pct/100) of the window, per the
+code's OWN distribution (the fetch layer's raw `pe` column; NaN here
+means "no bucket" — no-earnings / invalid-PE days). Only EXTREME days
+form buckets — the mov_rsi pct convention (the 2026-09 refactor of the
+former z-STATE buckets; the mid/flat central bulk forms no bucket).
 
-  vlow z <= -2 | low (-2,-1] | mid (-1,+1] | high (+1,+2] | vhigh z > +2
+The family's defining semantics: pe is LOWER-the-better — the
+top-pct% (expensive, stretched) days are bearish (side 'top'), the
+bottom-pct% (cheap) days bullish (side 'bottom'); the bucket extreme
+maps to the family side IDENTITY (the dividend-yield sibling,
+compute_dividend, REVERSES the mapping).
 
-The family's defining semantics: pe is LOWER-the-better — high z = an
-expensive, stretched valuation → the extreme high states are bearish
-(side 'top'), the cheap low states bullish (side 'bottom'); mid is
-'flat' (reverse_prob NULL — no directional claim). The dividend-yield
-sibling (compute_dividend) reverses the mapping.
-
-Signals are STREAK-MERGED via the UNIFIED bucket pipeline
-(wide.iter_bucket_subsets, merge=True — the 2026-09 px_vol convention):
-consecutive grid rows holding the same state collapse into ONE forecast
-signal at the run's MID row, the bucket's MEAN run length recorded on
-forecast_identities.streak_signal_days, the bucket split by PK member
-is_market_hyped only.
-
-Per (side, hype) subset the horizon aggregates reuse
-wide.aggregate_horizons_sparse against the code's ADAPTIVE reversal bar
-(thresholds: k_n·σ of the window's n-day forward changes).
-The config JSONB records the bucket's mean pe level (mean_metric — raw
-PE ratio) and mean z (motivation magnitude, like margin_ratio's
-mean_ratio / mean_z).
-
-Yields (stat_month, rows) so __main__ can split each row into the
-pe_state motivation dicts and the forecast_results result dicts and
-write month-major.
+Everything else — the (code chunk × stat month) partition, the
+streak-merge (consecutive qualifying days → ONE signal with
+incremental anchor triggers at delays 0..TRIGGER_DELAY_MAX;
+the bucket's mean run length recorded on
+forecast_identities.streak_signal_days), the market-hype split, the
+forward-change aggregation, the blended mixed row and the row
+emission — is inherited from ``_dfengine.WideDfEngine``. Yields
+(stat_month, rows) month-major. Each anchor's trigger excess (the
+anchor day's pe minus the bucket's quantile bar, value − bar) rides
+forecast_results.trigger_excess — the family now has a scalar
+qualifying bar (the quantile), unlike the former band membership.
 """
 
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from datetime import date
 
-import numpy as np
 import pandas as pd
 
 from analyze.analysis_forecasts._dfengine import (
     WideDfEngine,
-    _band_ordinal,
     _finite_mask,
 )
 from analyze.analysis_forecasts.config import (
-    VAL_HIGH_BAR,
-    VAL_LOW_BAR,
-    VAL_STATES,
-    VAL_VHIGH_BAR,
-    VAL_VLOW_BAR,
-    VAL_Z_MIN_PERIODS,
-    VAL_Z_WINDOW,
+    VAL_PCTS,
+    VAL_SIDES,
 )
 
-_STATE_OF_ORD = {i: s for i, s in enumerate(VAL_STATES)}
 
+class ValPctEngine(WideDfEngine):
+    """Valuation extreme-percentile buckets over ONE series (the
+    compute_rsi.PercentileEngine's detection, no window axis — one
+    value column per family). Per (side, pct) the bar is the window's
+    linearly-interpolated quantile (the base ``_quantile_bars``) and
+    the test is one boolean pass per side; the bucket extreme maps to
+    the family side via ``side_of_bucket`` (pe: identity — high PE =
+    expensive = 'top'; dividend: flipped — high yield = cheap =
+    'bottom'). Consecutive qualifying days streak-merge into ONE
+    incremental-anchor signal (mov_rsi convention); the excess is the
+    trigger value minus the bucket's quantile bar."""
 
-class _ValStateEngine(WideDfEngine):
-    """Valuation STATE buckets over one standardized series (the z the
-    fetch layer computed vs the code's OWN shifted rolling moments): 5
-    bands vlow..vhigh, ONE family per series with the OPPOSITE side
-    mapping — PE lower-the-better (high z = expensive = bearish 'top'),
-    dividend yield higher-the-better (high z = cheap = bullish
-    'bottom'); mid = 'flat' (NULL reverse_prob). Every qualifying day
-    is its own 1-day signal; band membership has no scalar bar."""
-
-    BUCKET_COLS = ("val_state",)
-    MERGE = False
-    src_col: str = ""          # "pe_z" / "div_z"
-    state_side: dict = {}
+    BUCKET_COLS = ("pct",)
+    MERGE = True
+    src_col: str = ""            # "pe" / "dividend_yield"
+    side_of_bucket: dict = {}    # bucket extreme → family side
+    pcts: tuple = VAL_PCTS       # the percentile widths (percent)
+    sides: tuple = VAL_SIDES     # the bucket extremes ("top", "bottom")
 
     def _extra_window_cols(self) -> list[str]:
         return [self.src_col]
 
-    def family_constants(self) -> dict:
-        return {
-            "z_window": VAL_Z_WINDOW,
-            "z_min_periods": VAL_Z_MIN_PERIODS,
-            "vlow_bar": VAL_VLOW_BAR,
-            "low_bar": VAL_LOW_BAR,
-            "high_bar": VAL_HIGH_BAR,
-            "vhigh_bar": VAL_VHIGH_BAR,
-        }
-
-    def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
-        z = win[self.src_col]
-        has = _finite_mask(z)
+    def emit_signals(self, win: pd.DataFrame) -> Iterable[pd.DataFrame]:
+        has = _finite_mask(win[self.src_col])
         if not has.any():
             return
-        ord_ = _band_ordinal(
-            z, (VAL_VLOW_BAR, VAL_LOW_BAR, VAL_HIGH_BAR, VAL_VHIGH_BAR),
+        base = win.loc[has, ["code", "date", "_t", "regime"]].copy()
+        base["value"] = win.loc[has, self.src_col]
+
+        # ---- the per-config bars: one (code × side × pct) table joined
+        # against the code ranks (the base's sort + gather quantile) —
+        # all sides × pcts resolve in ONE pass (the constant-key merge
+        # fans the (side, pct, q) grid out per code, the PercentileEngine
+        # window-join idiom without a window axis).
+        q_small = pd.DataFrame({
+            "side": [s for _ in self.pcts for s in self.sides],
+            "pct": [p for p in self.pcts for _ in self.sides],
+            "q": [(1.0 - p / 100.0 if s == "top" else p / 100.0)
+                  for p in self.pcts for s in self.sides],
+        })
+        groups = base[["code"]].drop_duplicates()
+        groups["_k"] = 1
+        q_spec = groups.merge(q_small.assign(_k=1), on="_k").drop(
+            columns=["_k"],
         )
-        cells = win[has].copy()
-        cells["val_state"] = ord_[has].map(_STATE_OF_ORD)
-        cells["side"] = cells["val_state"].map(self.state_side)
-        cells["excess"] = np.nan          # band membership — no bar
+        bars = self._quantile_bars(
+            base[["code", "value"]],
+            group_cols=["code"],
+            q_spec=q_spec,
+        )
+        # NaN bar = the code had no valid value at all — no bucket.
+        bars = bars[bars["bar"].notna()]
+        if bars.empty:
+            return
+
+        # ---- bucket tests, one vectorized pass per side (invalid days
+        # never reach here; a NaN bar never forms — so they never enter
+        # a bucket). Codes whose own history does not span the full
+        # window were already gated out by the partition's live filter.
+        keep = ["code", "date", "_t", "regime", "side", "pct"]
+        cells_parts = []
+        for side, test in (("top", "ge"), ("bottom", "le")):
+            sb = bars[bars["side"] == side][["code", "pct", "bar"]]
+            cand = base.merge(sb, on="code", how="inner")
+            qual = (
+                (cand["value"] >= cand["bar"]) if test == "ge"
+                else (cand["value"] <= cand["bar"])
+            )
+            hit = cand[qual].copy()
+            hit["side"] = self.side_of_bucket[side]
+            hit["excess"] = hit["value"] - hit["bar"]
+            cells_parts.append(hit[keep + ["excess"]])
+        cells = pd.concat(cells_parts, ignore_index=True)
+        if cells.empty:
+            return
+
+        # Streak-merge + the forward aggregation / row building are the
+        # base's — month_rows consumes what this yields. regime is in
+        # the run group so each regime bucket's anchor ladder stays
+        # contiguous 0..max (a regime flip starts a fresh signal).
         yield self._streak_merge(
-            cells, group_cols=["val_state", "side", "code"],
+            cells, group_cols=["side", "pct", "regime", "code"],
         )
 
 
-class _PeStateEngine(_ValStateEngine):
-    src_col = "pe_z"
-    state_side = {
-        "vlow": "bottom", "low": "bottom", "mid": "flat",
-        "high": "top", "vhigh": "top",
-    }
-
-
-class _DividendStateEngine(_ValStateEngine):
-    src_col = "div_z"
-    state_side = {
-        "vlow": "top", "low": "top", "mid": "flat",
-        "high": "bottom", "vhigh": "bottom",
-    }
+class _PeValPctEngine(ValPctEngine):
+    src_col = "pe"
+    # pe LOWER-the-better: the top-pct% (expensive) extremes are the
+    # bearish 'top' side, the bottom-pct% (cheap) extremes 'bottom'.
+    side_of_bucket = {"top": "top", "bottom": "bottom"}
 
 
 def compute_pe_results(
-    *, df, first_dates, episodes, codes, sec_type, specs,
+    *, df, first_dates, regimes, codes, sec_type, specs,
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, pe_state bucket rows) per month."""
-    engine = _PeStateEngine(
-        df=df, first_dates=first_dates, episodes=episodes, codes=codes,
-        sec_type=sec_type, specs=specs,
-    )
-    return engine.run()
-
-
-def compute_dividend_results(
-    *, df, first_dates, episodes, codes, sec_type, specs,
-) -> Iterator[tuple[date, list[dict]]]:
-    """Yield (stat_month, dividend_state bucket rows) per month."""
-    engine = _DividendStateEngine(
-        df=df, first_dates=first_dates, episodes=episodes, codes=codes,
+    engine = _PeValPctEngine(
+        df=df, first_dates=first_dates, regimes=regimes, codes=codes,
         sec_type=sec_type, specs=specs,
     )
     return engine.run()

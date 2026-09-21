@@ -73,7 +73,7 @@ def strategy_rows(
         "code": bucket["code"],
         "signal_sub_type": sub_type,
         "side": bucket["side"],
-        "is_market_hyped": bucket["is_market_hyped"],
+        "regime_state": bucket["regime_state"],
         "action": engine.action_of(bucket["side"]),
         "signal_threshold": threshold,
         "confidence": bucket["reverse_prob"].round(6),
@@ -97,7 +97,7 @@ def strategy_rows(
         rec["params"] = json.dumps({
             "rsi_window": rec.pop("rsi_window"),
             "side": rec["side"],
-            "is_market_hyped": rec["is_market_hyped"],
+            "regime_state": rec["regime_state"],
             "pct": RSI_PCT,
             "lookback_period": LOOKBACK_PERIOD,
             "conf_period": "mixed",

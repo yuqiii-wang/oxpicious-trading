@@ -72,7 +72,7 @@ export interface TradingSignal {
   /** TRUE when the breach bar's DATE sits inside one of the code's
    *  market-hype episodes (stats.mov_ave_market_hypes) — regime
    *  context; strategies are calibrated on non-hyped buckets only. */
-  is_market_hyped: boolean;
+  regime_state: string;
   /** The code's signal count over the last 20 TRADING DAYS ending on
    *  `date` (all signal types) — the main table's "20d count" column. */
   count_20d: number;

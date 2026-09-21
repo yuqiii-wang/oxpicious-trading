@@ -315,13 +315,13 @@ export default function IntradayPanel({ bundle, date, hasVolume, showComposition
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        `Single-code 5-minute intraday chart of ${bundle.code} ${bundle.name} for trading day ` +
-        `${date}: OHLC bars colored green/red on close-vs-open on a true time axis pinned to ` +
-        "09:30–15:30 (the lunch break 11:30–13:00 shows as a gap; post-market bars are " +
-        "excluded)" +
-        (hasVolume ? ", with volume bars on a twin right axis sharing the same coloring" : "") +
-        ". In percentage mode the bars are rebased to % change from the first bar's close " +
-        "(raw prices in absolute mode); volume stays in absolute shares.",
+        `5-min intraday chart of ${bundle.code} ${bundle.name} on ${date}: OHLC bars, ` +
+        "green/red on close-vs-open, on a time axis pinned to 09:30–15:30 (lunch break " +
+        "11:30–13:00 = gap; post-market bars excluded)" +
+        (hasVolume ? ", volume bars on a twin right axis" : "") +
+        ". % mode: bars rebased to % change from the first bar's close (volume stays " +
+        "absolute). Indication: volume bursts at session extremes = conviction; the " +
+        "close's place in the day range = carry into the next open.",
       instruments: [{ code: bundle.code, name: bundle.name }],
       window: { start: date, end: date, granularity: "intraday" },
       series: [
@@ -335,11 +335,6 @@ export default function IntradayPanel({ bundle, date, hasVolume, showComposition
           : []),
       ],
       state: { ohlcMode },
-      suggestedQuestions: [
-        "How did price develop versus the open — gap-and-go, fade, or range?",
-        "When did volume cluster today, and what did price do at those bursts?",
-        "Is the tape trending or mean-reverting through the session?",
-      ],
       notes: [
         "Percentage mode rebases OHLC to % change from the first bar's close; volume is not rebased.",
         "The x-axis is pinned to trading hours 09:30–15:30 — the lunch break renders as a gap.",

@@ -25,27 +25,30 @@
  *     high_low_streaks instead shows the audited band (band_period
  *     rows × pct_type %) with the excursion side (above / below band)
  *     and no cooldown (one trigger per streak);
- *     pe / dividend instead show state (val_state z band) with the
- *     family's forecast side (pe: high PE = top/bearish, lower the
- *     better; dividend: high yield = bottom/bullish, higher the
- *     better);
+ *     pe / dividend instead show the extreme width (pct, ticks) with
+ *     the family's forecast side (pe: the top-pct% expensive PE days =
+ *     top/bearish, lower the better; dividend: the top-pct% high-yield
+ *     days = bottom/bullish, higher the better);
+ *   • delay ladder (standalone, every family — the bucket's
+ *     forecast_results delay 0..5 anchor rows fetched per forecast_id):
+ *     one rung per day a persistent qualifying streak re-forecast from,
+ *     each rung's sign-aligned blended mean; rungs past decay_stop (the
+ *     reversal edge has decayed) de-emphasized (ticks filter on reach);
  *   • px_vol state magnitudes (standalone) — mean t / mean z (numeric
  *     ranges, raw); margin_ratio state magnitudes (standalone) — mean
  *     ratio (percent points) / mean z (raw); high_low_streaks
  *     streak-length context (standalone) — mean len / max len
- *     (numeric ranges, raw day counts); pe / dividend state magnitudes
- *     (standalone) — mean val (raw PE ratio for the pe family / D/P
- *     percent points for the dividend family) / mean z;
- *   • horizon result columns grouped under the horizon label (Next/5d/20d/
- *     60d) — mean / max / min forward endpoint changes (ranges, percent
+ *     (numeric ranges, raw day counts);
+ *   • horizon result columns grouped under the horizon label (Next/5d/20d)
+ *     — mean / max / min forward endpoint changes (ranges, percent
  *     points), std (range, percent points), max/low path-swing ratio
  *     (range, raw), P>1% — the swing-aware reversal probability P(the
  *     period's forward window swings ≥ 1% against the side) — (range,
  *     percent points), days (range, raw). The group follows the
  *     toolbar's horizon toggle;
  *   • signal (standalone, last) — ✓ when the bucket's MIXED forecast row
- *     (the weight-blended forward profile: 5d 50% / next 30% / 20d 15% /
- *     60d 5%) clears the forecast-result gate the signals layer applies —
+ *     (the weight-blended forward profile: 5d 65% / next 25% / 20d 10%)
+ *     clears the forecast-result gate the signals layer applies —
  *     the same rule that emits its signal days (ticks filter signal/none).
  *
  * The month filter doubles as the month selector: all available stat_months
@@ -71,9 +74,28 @@ import {
   CircularProgress,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import { UP_COLOR, DOWN_COLOR, TRIGGER_DATE_COLOR } from "@/theme/chart-palette";
+import { regimeAccentColor } from "@/shared/charts/regimeBands";
+
+/** Regime ticks-menu item — the regime's colored dot (the shared
+ *  regimeBands palette: hot purple / panic red / quiet blue / calm grey,
+ *  the same palette as the table's regime cells) followed by its name. */
+function regimeTickItem(v: string): ReactNode {
+  return (
+    <Box component="span" sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}>
+      <Box
+        component="span"
+        sx={{ color: regimeAccentColor(v) ?? "text.disabled", fontSize: "0.6rem", lineHeight: 1 }}
+      >
+        ●
+      </Box>
+      {v}
+    </Box>
+  );
+}
 import { fetchAnalysisForecast } from "@/lib/api-client";
 import ExpandedTable, { type ExpandedTableColumn } from "@/shared/components/ExpandedTable";
 import type {
@@ -123,16 +145,95 @@ function ProbCell({ v }: { v: number | null }) {
   return <>{(v * 100).toFixed(1)}%</>;
 }
 
-/** The 4 forward horizons — toggle options + their result column names.
+/** The delay ladder's header info-mark description — what a rung is, the
+ *  rung value's formula (per-delay horizon means → fixed mixed-weight
+ *  blend → sign alignment) and the decay / fallback reading. */
+const DELAY_LADDER_INFO = `Each rung is one anchor day of the bucket's qualifying streaks: delay d forecasts from a signal that has already persisted d + 1 days (delay 0 is the fresh signal — the row's own pivoted columns). Rungs stop at the longest streak the bucket actually produced, capped at 5.
+
+Rung value = the sign-aligned blended mean forward return: the trigger days' next / 5d / 20d endpoint changes are averaged per delay, blended with the fixed mixed weights (5d 65% / next 25% / 20d 10%), then sign-aligned (bottom → +, top → −) so positive always reads a favorable reversal. Hover a rung for its trigger count n and reversal probability.
+
+Rungs past decay_stop — the aligned mean stopped falling or went non-positive, the reversal edge has decayed — render dimmed. Legacy rows without a ladder show the bucket's mean trigger delay instead.`;
+
+/** The bucket's anchor-delay ladder — the delay 0..5 forecast rows the
+ *  bucket's streaks actually reached (delay 0 = the streak's first
+ *  qualifying day). One column per rung: the delay digit over the
+ *  rung's sign-aligned blended mean (the "expected reversal return if
+ *  the signal is d days old" — top rows negated so both sides read
+ *  positive). Rungs past decay_stop (the edge has decayed — the mean
+ *  stopped falling / went non-positive) render de-emphasized. Hover a
+ *  rung for its n / reverse_prob. Falls back to the legacy mean-delay
+ *  number when the ladder is absent. */
+function DelayLadderCell({ r }: { r: ForecastRow }) {
+  const ladder = r.delay_ladder;
+  if (!ladder?.length) {
+    return r.delayed_signal_days == null
+      ? dash()
+      : <>{r.delayed_signal_days}</>;
+  }
+  return (
+    <Box sx={{ display: "inline-flex", gap: 0.5 }}>
+      {ladder.map((g) => {
+        const v = g.dir_ave != null && Number.isFinite(g.dir_ave)
+          ? g.dir_ave * 100 : null;
+        const decayed = r.decay_stop != null && g.delay > r.decay_stop;
+        return (
+          <Tooltip
+            key={g.delay}
+            title={
+              `delay ${g.delay} · n=${g.n}` +
+              (v == null ? "" : ` · dir ${v >= 0 ? "+" : ""}${v.toFixed(2)}%`) +
+              (g.reverse_prob == null
+                ? ""
+                : ` · rev ${(g.reverse_prob * 100).toFixed(1)}%`)
+            }
+            arrow
+          >
+            <Box
+              sx={{
+                display: "inline-flex",
+                flexDirection: "column",
+                alignItems: "center",
+                lineHeight: 1.15,
+                ...(decayed && { opacity: 0.35 }),
+              }}
+            >
+              <Typography
+                component="span"
+                variant="inherit"
+                sx={{ fontSize: "0.62rem", color: "text.secondary" }}
+              >
+                {g.delay}
+              </Typography>
+              <Box
+                component="span"
+                sx={{
+                  fontWeight: 600,
+                  fontSize: "0.72rem",
+                  color: v == null
+                    ? "text.disabled"
+                    : v > 0 ? UP_COLOR : v < 0 ? DOWN_COLOR : "text.primary",
+                }}
+              >
+                {v == null ? "·" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}`}
+              </Box>
+            </Box>
+          </Tooltip>
+        );
+      })}
+    </Box>
+  );
+}
+
+/** The 3 forward horizons — toggle options + their result column names.
  *  Layout differs: the next-day horizon has only mean + std + P>1% + days,
- *  the 5d/20d/60d horizons add close-based max/min changes. */
+ *  the 5d/20d horizons add close-based max/min changes. */
 interface HorizonCols {
   label: string;
   /** forecast_results.period key of this horizon (the clicked row's
    *  trigger-dates fetch is keyed by it). */
   period: ForecastPeriod;
   /** Forward-change columns rendered as signed % cells — mean first,
-   *  then max / min (only the 5d/20d/60d horizons have those). */
+   *  then max / min (only the 5d/20d horizons have those). */
   changeCols: string[];
   /** Std-dev column of the horizon's forward changes (all horizons). */
   stdCol: string;
@@ -165,17 +266,9 @@ const HORIZONS: Record<HorizonKey, HorizonCols> = {
     probCol: "reverse_prob_20d",
     occCol: "occurrence_count_20d",
   },
-  "60d": {
-    label: "60d",
-    period: "60d",
-    changeCols: ["ave_next_60d_change", "max_60d_change", "min_60d_change"],
-    stdCol: "std_next_60d_change",
-    probCol: "reverse_prob_60d",
-    occCol: "occurrence_count_60d",
-  },
 };
 
-type HorizonKey = "next" | "5d" | "20d" | "60d";
+type HorizonKey = "next" | "5d" | "20d";
 
 /** Sub-column headers matching a horizon's changeCols (+ max/low). */
 const CHANGE_HEADS = ["mean", "max", "min"];
@@ -196,12 +289,6 @@ function numVal(r: ForecastRow, col: string): number | null {
  *  and the exc cells display, so a range bound typed "1.5" means 1.5%). */
 function pctVal(r: ForecastRow, col: string): number | null {
   const v = numVal(r, col);
-  return v == null ? null : v * 100;
-}
-
-/** Bare fractional value → percent points (null passthrough — the
- *  dividend family's mean_metric level is a fractional D/P). */
-function pctFracVal(v: number | null): number | null {
   return v == null ? null : v * 100;
 }
 
@@ -232,7 +319,7 @@ interface ConfigCol {
 }
 
 /** mov_rsi bucket-config columns (the pct percentile family) —
- *  stat_month, window, side, pct, is_market_hyped. */
+ *  stat_month, window, side, pct, regime_state. */
 function pctConfigCols(): ConfigCol[] {
   const pctRow = (r: ForecastRow) => r as MovRsiForecastRow;
   return [
@@ -252,22 +339,30 @@ function pctConfigCols(): ConfigCol[] {
         </Box>
       ), align: "center", width: 60 },
     {
-      key: "is_market_hyped",
-      label: "hyped",
-      value: (r) => (r.is_market_hyped ? "hyped" : "normal"),
+      key: "regime_state",
+      label: "regime",
+      value: (r) => r.regime_state,
       render: (r) => (
-        <Box component="span" sx={{ color: r.is_market_hyped ? "text.primary" : "text.disabled" }}>
-          {r.is_market_hyped ? "●" : "·"}
+        <Box component="span" sx={{ color: regimeAccentColor(r.regime_state) ?? "text.disabled", fontWeight: 600 }}>
+          ●
         </Box>
       ),
       align: "center",
       width: 46,
     },
+    {
+      key: "regime_weight",
+      label: "w",
+      value: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      render: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      align: "right",
+      width: 40,
+    },
   ];
 }
 
 /** mov_std bucket-config columns — stat_month, ma_window, side, k,
- *  is_market_hyped. */
+ *  regime_state. */
 function stdConfigCols(): ConfigCol[] {
   const std = (r: ForecastRow) => r as MovStdForecastRow;
   return [
@@ -287,16 +382,24 @@ function stdConfigCols(): ConfigCol[] {
         </Box>
       ), align: "center", width: 60 },
     {
-      key: "is_market_hyped",
-      label: "hyped",
-      value: (r) => (r.is_market_hyped ? "hyped" : "normal"),
+      key: "regime_state",
+      label: "regime",
+      value: (r) => r.regime_state,
       render: (r) => (
-        <Box component="span" sx={{ color: r.is_market_hyped ? "text.primary" : "text.disabled" }}>
-          {r.is_market_hyped ? "●" : "·"}
+        <Box component="span" sx={{ color: regimeAccentColor(r.regime_state) ?? "text.disabled", fontWeight: 600 }}>
+          ●
         </Box>
       ),
       align: "center",
       width: 46,
+    },
+    {
+      key: "regime_weight",
+      label: "w",
+      value: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      render: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      align: "right",
+      width: 40,
     },
   ];
 }
@@ -304,7 +407,7 @@ function stdConfigCols(): ConfigCol[] {
 /** mov_pairs / mov_pairs_ema bucket-config columns — stat_month, pair
  *  ("{fastLeg} vs {W}" — the ma5_vs_ma{W} / price_vs_ma{W} /
  *  ema6_vs_ema{W} / price_vs_ema{W} spread whose sign flip is the
- *  trigger; the fast leg reads off the row), side, is_market_hyped.
+ *  trigger; the fast leg reads off the row), side, regime_state.
  *  Event buckets (cross days), like the pct families. */
 const PAIR_FAST_LEG_LABEL: Record<string, string> = {
   ma5: "5", ema6: "6", price: "close",
@@ -343,16 +446,24 @@ function pairsConfigCols(): ConfigCol[] {
       width: 68,
     },
     {
-      key: "is_market_hyped",
-      label: "hyped",
-      value: (r) => (r.is_market_hyped ? "hyped" : "normal"),
+      key: "regime_state",
+      label: "regime",
+      value: (r) => r.regime_state,
       render: (r) => (
-        <Box component="span" sx={{ color: r.is_market_hyped ? "text.primary" : "text.disabled" }}>
-          {r.is_market_hyped ? "●" : "·"}
+        <Box component="span" sx={{ color: regimeAccentColor(r.regime_state) ?? "text.disabled", fontWeight: 600 }}>
+          ●
         </Box>
       ),
       align: "center",
       width: 46,
+    },
+    {
+      key: "regime_weight",
+      label: "w",
+      value: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      render: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      align: "right",
+      width: 40,
     },
   ];
 }
@@ -364,32 +475,17 @@ function RawCell({ v }: { v: number | null }) {
   return <>{v.toFixed(2)}</>;
 }
 
-/** pe / dividend bucket-config columns — stat_month, state (val_state —
- *  the valuation series' z band vs the code's own trailing moments),
- *  side, is_market_hyped. Streak-merged state cells (no cooldown
- *  column). The side cell is colored by the FORECAST direction like
- *  margin_ratio (side top = the bearish reading → down color, bottom =
- *  bullish → up color) — which is the point of the two families: the
- *  SAME z band reads OPPOSITE between them (high PE = expensive = top
- *  in the pe family; high yield = cheap = bottom in the dividend
- *  family). Shared by both families — only the mean-val column below
- *  differs per kind (unit). */
-function valStateConfigCols(): ConfigCol[] {
-  const vs = (r: ForecastRow) => r as PeForecastRow;
-  const STATE_COLOR: Record<PeForecastRow["val_state"], string> = {
-    vlow: "text.secondary",
-    low: UP_COLOR,
-    mid: "text.disabled",
-    high: DOWN_COLOR,
-    vhigh: DOWN_COLOR,
-  };
-  const STATE_LABEL: Record<PeForecastRow["val_state"], string> = {
-    vlow: "z≤-2",
-    low: "-2<z≤-1",
-    mid: "-1<z≤+1",
-    high: "+1<z≤+2",
-    vhigh: "z>+2",
-  };
+/** pe / dividend bucket-config columns (the valuation extreme-percentile
+ *  families) — stat_month, pct, side, regime_state. Streak-merged
+ *  buckets (no cooldown column). The side cell is colored by the
+ *  FORECAST direction like margin_ratio (side top = the bearish reading
+ *  → down color, bottom = bullish → up color) — which is the point of
+ *  the two families: the SAME pct extreme reads OPPOSITE between them
+ *  (the top-pct% PE days = expensive = top in the pe family; the
+ *  top-pct% yield days = cheap = bottom in the dividend family). Shared
+ *  by both families. */
+function valPctConfigCols(): ConfigCol[] {
+  const vp = (r: ForecastRow) => r as PeForecastRow;
   return [
     {
       key: "stat_month",
@@ -399,59 +495,54 @@ function valStateConfigCols(): ConfigCol[] {
       align: "left",
       width: 150,
     },
-    {
-      key: "val_state",
-      label: "val z",
-      value: (r) => vs(r).val_state,
-      render: (r) => (
-        <Box component="span" sx={{ color: STATE_COLOR[vs(r).val_state], fontWeight: 600 }}>
-          {STATE_LABEL[vs(r).val_state]}
-        </Box>
-      ),
-      align: "left",
-      width: 88,
-    },
+    { key: "pct", label: "pct", value: (r) => String(vp(r).pct), render: (r) => `${vp(r).pct}%`, align: "right", width: 46 },
     {
       key: "side",
       label: "side",
-      value: (r) => vs(r).side,
+      value: (r) => vp(r).side,
       render: (r) => (
         <Box
           component="span"
           sx={{
             color:
-              vs(r).side === "flat"
-                ? "text.disabled"
-                // Forecast-direction coloring (margin_ratio precedent):
-                // side top = the bearish reading (expensive PE / low
-                // yield), bottom = the bullish one.
-                : vs(r).side === "top" ? DOWN_COLOR : UP_COLOR,
+              // Forecast-direction coloring (margin_ratio precedent):
+              // side top = the bearish reading (expensive PE / low
+              // yield), bottom = the bullish one.
+              vp(r).side === "top" ? DOWN_COLOR : UP_COLOR,
             fontWeight: 600,
           }}
         >
-          {vs(r).side}
+          {vp(r).side}
         </Box>
       ),
       align: "center",
       width: 60,
     },
     {
-      key: "is_market_hyped",
-      label: "hyped",
-      value: (r) => (r.is_market_hyped ? "hyped" : "normal"),
+      key: "regime_state",
+      label: "regime",
+      value: (r) => r.regime_state,
       render: (r) => (
-        <Box component="span" sx={{ color: r.is_market_hyped ? "text.primary" : "text.disabled" }}>
-          {r.is_market_hyped ? "●" : "·"}
+        <Box component="span" sx={{ color: regimeAccentColor(r.regime_state) ?? "text.disabled", fontWeight: 600 }}>
+          ●
         </Box>
       ),
       align: "center",
       width: 46,
     },
+    {
+      key: "regime_weight",
+      label: "w",
+      value: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      render: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      align: "right",
+      width: 40,
+    },
   ];
 }
 
 /** px_vol bucket-config columns — stat_month, px_speed, vol_state, side,
- *  is_market_hyped. No cooldown column: state cells admit every
+ *  regime_state. No cooldown column: state cells admit every
  *  qualifying day (no cooldown in the bucket family). */
 function pxVolConfigCols(): ConfigCol[] {
   const px = (r: ForecastRow) => r as PxVolForecastRow;
@@ -506,16 +597,24 @@ function pxVolConfigCols(): ConfigCol[] {
       width: 60,
     },
     {
-      key: "is_market_hyped",
-      label: "hyped",
-      value: (r) => (r.is_market_hyped ? "hyped" : "normal"),
+      key: "regime_state",
+      label: "regime",
+      value: (r) => r.regime_state,
       render: (r) => (
-        <Box component="span" sx={{ color: r.is_market_hyped ? "text.primary" : "text.disabled" }}>
-          {r.is_market_hyped ? "●" : "·"}
+        <Box component="span" sx={{ color: regimeAccentColor(r.regime_state) ?? "text.disabled", fontWeight: 600 }}>
+          ●
         </Box>
       ),
       align: "center",
       width: 46,
+    },
+    {
+      key: "regime_weight",
+      label: "w",
+      value: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      render: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      align: "right",
+      width: 40,
     },
   ];
 }
@@ -528,7 +627,7 @@ function ShareCell({ v }: { v: number | null }) {
 }
 
 /** margin_ratio bucket-config columns — stat_month, ratio_state, side,
- *  is_market_hyped. No cooldown column: state cells admit every
+ *  regime_state. No cooldown column: state cells admit every
  *  qualifying day (no cooldown in the bucket family). */
 function marginRatioConfigCols(): ConfigCol[] {
   const mr = (r: ForecastRow) => r as MarginRatioForecastRow;
@@ -594,16 +693,24 @@ function marginRatioConfigCols(): ConfigCol[] {
       width: 60,
     },
     {
-      key: "is_market_hyped",
-      label: "hyped",
-      value: (r) => (r.is_market_hyped ? "hyped" : "normal"),
+      key: "regime_state",
+      label: "regime",
+      value: (r) => r.regime_state,
       render: (r) => (
-        <Box component="span" sx={{ color: r.is_market_hyped ? "text.primary" : "text.disabled" }}>
-          {r.is_market_hyped ? "●" : "·"}
+        <Box component="span" sx={{ color: regimeAccentColor(r.regime_state) ?? "text.disabled", fontWeight: 600 }}>
+          ●
         </Box>
       ),
       align: "center",
       width: 46,
+    },
+    {
+      key: "regime_weight",
+      label: "w",
+      value: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      render: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      align: "right",
+      width: 40,
     },
   ];
 }
@@ -611,7 +718,7 @@ function marginRatioConfigCols(): ConfigCol[] {
 /** high_low_streaks bucket-config columns — stat_month, band
  *  (band_period — the audited band's lookback rows), pct (pct_type —
  *  the band tightness), side (top = ABOVE-band excursion / bottom =
- *  BELOW-band), is_market_hyped. No cooldown column: one trigger per
+ *  BELOW-band), regime_state. No cooldown column: one trigger per
  *  streak (the mean-mid anchor day). */
 function hlsConfigCols(): ConfigCol[] {  const hl = (r: ForecastRow) => r as HighLowStreaksForecastRow;
   return [
@@ -638,16 +745,24 @@ function hlsConfigCols(): ConfigCol[] {  const hl = (r: ForecastRow) => r as Hig
       width: 62,
     },
     {
-      key: "is_market_hyped",
-      label: "hyped",
-      value: (r) => (r.is_market_hyped ? "hyped" : "normal"),
+      key: "regime_state",
+      label: "regime",
+      value: (r) => r.regime_state,
       render: (r) => (
-        <Box component="span" sx={{ color: r.is_market_hyped ? "text.primary" : "text.disabled" }}>
-          {r.is_market_hyped ? "●" : "·"}
+        <Box component="span" sx={{ color: regimeAccentColor(r.regime_state) ?? "text.disabled", fontWeight: 600 }}>
+          ●
         </Box>
       ),
       align: "center",
       width: 46,
+    },
+    {
+      key: "regime_weight",
+      label: "w",
+      value: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      render: (r) => (r.regime_weight == null ? "–" : r.regime_weight.toFixed(2)),
+      align: "right",
+      width: 40,
     },
   ];
 }
@@ -656,6 +771,13 @@ interface Props {
   code: string;
   secType: MaSpreadSecType;
   kind: ForecastKind;
+  /** Which horizon's result columns show — CONTROLLED by the parent (it
+   *  mirrors the selection into the Forecast header's AI-ask state tag, so
+   *  the two can never desync when this table remounts). */
+  horizon: ForecastPeriod;
+  /** Horizon toggle change (controlled). Keep identity stable (useCallback)
+   *  — this component is memoized. */
+  onHorizonChange: (period: ForecastPeriod) => void;
   /** Fired when a bucket row is CLICKED — receives the row and the
    *  period of the currently selected horizon toggle, so the parent can
    *  fetch the row's trigger_dates and mark them on the trend chart.
@@ -677,14 +799,12 @@ interface Props {
   frozen?: boolean;
 }
 
-function ForecastTableImpl({ code, secType, kind, onRowClick, selectedRowKey, focusStatMonth = null, frozen = false }: Props) {
+function ForecastTableImpl({ code, secType, kind, horizon, onHorizonChange, onRowClick, selectedRowKey, focusStatMonth = null, frozen = false }: Props) {
   const [data, setData] = useState<ForecastResponse | null>(null);
   // Starts TRUE so the spinner shows on first mount (before the first
   // effect tick) instead of flashing the empty-state message.
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Which horizon's result columns the table shows.
-  const [horizon, setHorizon] = useState<HorizonKey>("next");
 
   // One fetch for ALL stat_months of the code — the month header's
   // end-period filter (see columns' month entry) then picks which months
@@ -770,7 +890,7 @@ function ForecastTableImpl({ code, secType, kind, onRowClick, selectedRowKey, fo
                   : isHls
                     ? hlsConfigCols()
                     : (isPe || isDiv)
-                      ? valStateConfigCols()
+                      ? valPctConfigCols()
                       : stdConfigCols();
 
     return [
@@ -796,8 +916,42 @@ function ForecastTableImpl({ code, secType, kind, onRowClick, selectedRowKey, fo
               frozenFromYears: 5,
               value: (r: ForecastRow) => r.stat_month.slice(0, 7),
             }
-          : { type: "ticks" as const, value: (r: ForecastRow) => c.value(r) },
+          : c.key === "regime_state"
+            ? {
+                type: "ticks" as const,
+                value: (r: ForecastRow) => c.value(r),
+                // Colored dot per regime in the tick menu (matches the
+                // cells' dots).
+                renderItem: regimeTickItem,
+              }
+            : { type: "ticks" as const, value: (r: ForecastRow) => c.value(r) },
     })),
+    {
+      // The bucket's anchor-delay LADDER (forecast_results.delay 0..5 via
+      // the API's per-bucket ladder attach): one rung per day a persistent
+      // qualifying streak re-forecast from — delay 0 (the row's pivoted
+      // columns above ARE the delay-0 stats) up to the run length, capped
+      // at 5. Each rung shows its sign-aligned blended mean; rungs past
+      // decay_stop (the mean stopped falling / went non-positive — the
+      // reversal edge has decayed) are de-emphasized. Contiguous from 0 by
+      // construction (the writer enforces the invariant). Legacy rows
+      // without a ladder fall back to the identities' mean trigger delay.
+      key: "delay_ladder",
+      label: "delay ladder",
+      align: "left" as const,
+      width: 120,
+      render: (r: ForecastRow) => <DelayLadderCell r={r} />,
+      info: DELAY_LADDER_INFO,
+      filter: {
+        type: "ticks" as const,
+        value: (r: ForecastRow) =>
+          r.delay_ladder?.length
+            ? String(r.delay_ladder.length)
+            : r.delayed_signal_days == null
+              ? "–"
+              : `mean ${r.delayed_signal_days}`,
+      },
+    },
     ...(isPxVol
       ? [
           {
@@ -827,34 +981,6 @@ function ForecastTableImpl({ code, secType, kind, onRowClick, selectedRowKey, fo
             width: 78,
             render: (r: ForecastRow) => <ShareCell v={numVal(r, "mean_ratio")} />,
             filter: { type: "range" as const, value: (r: ForecastRow) => numVal(r, "mean_ratio") },
-          },
-          {
-            key: "mean_z",
-            label: "mean z",
-            align: "right" as const,
-            width: 62,
-            render: (r: ForecastRow) => <RawCell v={numVal(r, "mean_z")} />,
-            filter: { type: "range" as const, value: (r: ForecastRow) => numVal(r, "mean_z") },
-          },
-        ]
-      : []),
-    // pe / dividend state magnitudes (from the linked
-    // forecast_results.config JSONB): the bucket's mean valuation
-    // level + mean z — the level's unit is per KIND (raw PE ratio for
-    // the pe family, D/P percent points for the dividend family).
-    ...(isPe || isDiv
-      ? [
-          {
-            key: "mean_metric",
-            label: isPe ? "mean pe" : "mean yld",
-            align: "right" as const,
-            width: 72,
-            render: (r: ForecastRow) => (
-              isPe
-                ? <RawCell v={numVal(r, "mean_metric")} />
-                : <PctCell v={pctFracVal(numVal(r, "mean_metric"))} />
-            ),
-            filter: { type: "range" as const, value: (r: ForecastRow) => numVal(r, "mean_metric") },
           },
           {
             key: "mean_z",
@@ -977,7 +1103,7 @@ function ForecastTableImpl({ code, secType, kind, onRowClick, selectedRowKey, fo
           exclusive
           value={horizon}
           onChange={(_, v) => {
-            if (v) setHorizon(v as HorizonKey);
+            if (v) onHorizonChange(v as ForecastPeriod);
           }}
         >
           {(Object.keys(HORIZONS) as HorizonKey[]).map((hk) => (

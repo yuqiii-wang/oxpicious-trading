@@ -42,7 +42,12 @@ export {
   fetchAiCalendar,
   fetchAiItems,
   fetchAiQaDetail,
+  fetchAiAskCalendar,
+  fetchAiAskItems,
+  fetchAiAskDetail,
+  aiAskImageUrl,
   type AiScopeParams,
+  type AiAskHistoryParams,
 } from "./ai";
 
 export {
@@ -56,6 +61,9 @@ export {
   fetchOptionsCombined,
   fetchOptionsWalls,
   fetchEtfOhlcv,
+  venueToTargetType,
+  type OptionsTargetType,
+  type OptionsVenue,
 } from "./options";
 
 export {
@@ -99,11 +107,12 @@ export {
   fetchMovAveSpreadThemes,
   fetchMovAveSpreadStrategyThemes,
   fetchMovAveSpreadChart,
+  fetchMovAveSpreadExtras,
 } from "./analysis-ma-spread";
 
 export { fetchAnalysisForecast, fetchForecastTriggerDates, fetchForecastIdentity } from "./analysis-forecasts";
 
-export { fetchMarketHypes } from "./analysis-market-hypes";
+export { fetchMarketRegimeSpans } from "./analysis-market-regimes";
 
 export {
   fetchPeAndDividendCodes,

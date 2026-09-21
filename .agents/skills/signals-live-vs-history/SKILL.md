@@ -26,10 +26,11 @@ breaches the bars the strategy tier already wrote.
 analysis_forecasts (HISTORY study)
   forecast buckets per (code, stat_month snapshot M, config)
   trailing 5-year window (M − 5y, M]; forward profiles at
-  next/5d/20d/60d → forecast_results rows
+  next/5d/20d → forecast_results rows (the 60d horizon was retired
+        │  2026-09-20)
         │
-        │  MIXED row: the FIXED-weight blend of the four horizons
-        │  (next 0.30 / 5d 0.50 / 20d 0.15 / 60d 0.05 — config
+        │  MIXED row: the FIXED-weight blend of the three horizons
+        │  (5d 0.65 / next 0.25 / 20d 0.10 — config
         │  MIXED_HORIZON_WEIGHTS, materialized on every bucket)
         ▼
 analyze.analysis_signals (THE SIGNALS TIER — python -m analyze.analysis_signals)
@@ -59,7 +60,7 @@ analyze.analysis_signals (THE SIGNALS TIER — python -m analyze.analysis_signal
     15:00:00, is_day_close_trigger = TRUE, confidence = ROUND(100 ×
     reverse_prob).
   Emission slices (current build): mov_rsi pct = 1 (top/bottom) and
-  mov_std MA/σ windows >= 60d at k >= 2.0σ (upper/lower), both sides,
+  mov_std MA/σ windows >= 20d at k >= 2.0σ (upper/lower), both sides,
   BOTH hype splits. The strategy parameter rides IN
   the sub_type as a literal suffix — rsi{W}_{pct}pct ("1pct") and
   std{W}_{k}std (k %g-formatted — "2", "2.5" — matching the API tick

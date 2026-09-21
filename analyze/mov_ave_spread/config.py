@@ -697,7 +697,7 @@ HOLIDAY_COLUMNS = (
 #  Internal step of the parent mov_ave_spread pipeline (see
 #  price_vs_amt.py) — reuses the parent source DataFrame's price +
 #  trading_amount columns; REBUILT WHOLESALE per sec_type (ETF
-#  adj_close back-adjustments rewrite price history — market_hypes
+#  adj_close back-adjustments rewrite price history — market_regimes
 #  precedent).
 # ============================================================================
 
@@ -738,7 +738,7 @@ PRICE_VS_AMT_DESCRIPTION = (
     "the analysis_signals px_vol detections and the MA-Spread UI "
     "shading all audit against this table. Rows are REBUILT WHOLESALE "
     "per sec_type on every pipeline run (ETF adj_close back-adjustments "
-    "rewrite price history — the market_hypes precedent). Source: the "
+    "rewrite price history — the market_regimes precedent). Source: the "
     "forecast engine's own price/amt series (COALESCE(adj_close, close) "
     "for ETF, estimated closes excluded — identical conventions to "
     "analysis_forecasts.fetch_analysis_inputs, so the buckets audit "
@@ -762,10 +762,10 @@ HIGH_LOW_PCT_TABLE = "analysis.mov_ave_high_low_pct"
 HIGH_LOW_PCT_ANALYSIS_NAME = "mov_ave_high_low_pct"
 
 # Lookback window lengths in trading rows (the `period` PK column):
-# 255 / 500 / 750 / 1275 = ~1 / 2 / 3 / 5 trading years (the ma255
-# yearly-window precedent). The window is TRAILING (backward-only),
-# ending inclusive at the month's last trading row.
-HIGH_LOW_PCT_PERIODS = (255, 500, 750, 1275)
+# 60 / 120 / 255 / 500 / 750 / 1275 = ~0.25 / 0.5 / 1 / 2 / 3 / 5 trading
+# years (the ma255 yearly-window precedent). The window is TRAILING
+# (backward-only), ending inclusive at the month's last trading row.
+HIGH_LOW_PCT_PERIODS = (60, 120, 255, 500, 750, 1275)
 
 # Band tightness levels (percent). The LOW leg uses the pct_type-th
 # percentile of daily low prices; the HIGH leg the (100 - pct_type)-th
@@ -775,15 +775,17 @@ HIGH_LOW_PCT_PERIODS = (255, 500, 750, 1275)
 # in database/sql/analysis/mov_ave_spreads/07_mov_ave_high_low_pct.sql.
 HIGH_LOW_PCT_TYPES = (1, 5, 10)
 
-# Minimum observations for a band: 255 rows (1 trading year), shared by
-# all periods. Windows near a code's history start are naturally
-# truncated; fewer than 255 rows yields no band (the month is skipped —
+# Minimum observations for a band: 255 rows (1 trading year) shared by
+# all periods >= 255; shorter windows (60 / 120) use their own window
+# length (pandas requires min_periods <= window). Windows near a code's
+# history start are naturally truncated; fewer than 255 rows yields no
+# pair EXPECTATION at detection time (the month is skipped —
 # high_val/low_val are NOT NULL).
 HIGH_LOW_PCT_MIN_PERIODS = 255
 
 # Rows per (sec_type, code, date_year_month) pair when complete: one
 # band per (period, pct_type). The missing-pair detection counts rows
-# against this (a pair with any of the 12 rows absent is re-computed —
+# against this (a pair with any rows absent is re-computed —
 # crash-consistency guard against partially-inserted pairs).
 HIGH_LOW_PCT_ROWS_PER_PAIR = len(HIGH_LOW_PCT_PERIODS) * len(HIGH_LOW_PCT_TYPES)
 
@@ -805,18 +807,20 @@ HIGH_LOW_PCT_DESCRIPTION = (
     "percentile of daily LOW prices, high_val = the (100 - pct_type)-"
     "th percentile of daily HIGH prices (linear interpolation), both "
     "over the TRAILING (backward-only) window of `period` trading "
-    "rows (255/500/750/1275 = ~1/2/3/5 trading years — the ma255 "
-    "yearly-window precedent) ENDING at date_year_month's last trading "
-    "row. pct_type 1 = near-full range of the window ([1st pct of "
-    "lows, 99th pct of highs]); pct_type 10 = core envelope ([10th, "
-    "90th]). One band per calendar month, anchored at the month's last "
-    "trading row and stored under the month's first day — 12 bands (4 "
-    "periods x 3 pct_types) per (sec_type, code, month). Windows near "
-    "a code's history start are naturally truncated; fewer than 255 "
-    "rows (1 trading year) of history yields no band. Trailing windows "
-    "make historical bands immutable once computed — only missing "
+    "rows (60/120/255/500/750/1275 = ~0.25/0.5/1/2/3/5 trading years "
+    "— the ma255 yearly-window precedent) ENDING at date_year_month's "
+    "last trading row. pct_type 1 = near-full range of the window "
+    "([1st pct of lows, 99th pct of highs]); pct_type 10 = core "
+    "envelope ([10th, 90th]). One band per calendar month, anchored at "
+    "the month's last trading row and stored under the month's first "
+    "day — 18 bands (6 periods x 3 pct_types) per (sec_type, code, "
+    "month). Windows near a code's history start are naturally "
+    "truncated (a period needs only its own window length of "
+    "observations); pair detection expects a month only once 255 rows "
+    "(1 trading year) of history exist. Trailing windows make "
+    "historical bands immutable once computed — only missing "
     "(code, month) pairs are computed incrementally (a pair is "
-    "complete when all 12 rows exist); --force rebuilds the whole "
+    "complete when all 18 rows exist); --force rebuilds the whole "
     "scope. Internal step of analyze.mov_ave_spread (high_low_pct.py), "
     "reusing the parent source DataFrame's high/low columns (no second "
     "DB round-trip). The sec_type column discriminates the source "
@@ -878,7 +882,7 @@ HIGH_LOW_PCT_STREAKS_DESCRIPTION = (
     "open-ended until a 6+-day in-band gap or side switch closes it, "
     "and trailing in-band days may become a bridged gap later), so "
     "streaks are rebuilt WHOLESALE per sec_type on every run that "
-    "processes the sec_type (mov_ave_market_hypes episodes / "
+    "processes the sec_type (the daily-registries /"
     "margin_changes precedent). Internal step of "
     "analyze.mov_ave_spread (high_low_pct_streaks.py), joining the "
     "parent source DataFrame against the bands table computed earlier "

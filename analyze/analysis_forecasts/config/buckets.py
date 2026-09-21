@@ -30,29 +30,42 @@ STD_SIDES = ("upper", "lower")
 #
 #   MULTI-DAY STREAK (merge=True — mov_rsi / mov_std /
 #   px_vol_state): dates that keep satisfying the bucket condition
-#   CONTINUOUSLY are treated as ONE forecast signal — the run collapses
-#   to its MID day (the ((L-1)//2 + 1)-th day, the high_low_streaks
-#   mean-mid anchor; a 1-day run anchors itself), the forward changes
-#   are measured from that mid day, and the bucket's MEAN run length is
-#   recorded on
-#   analysis_forecasts.forecast_identities.streak_signal_days (the
-#   result rows' streak_starts / streak_ends / streak_days carry each
-#   merged signal's run span). px_vol_state moved onto this convention
-#   in 2026-09 (its state runs used to admit every qualifying day at a
-#   constant streak_signal_days = 1).
+#   CONTINUOUSLY are treated as ONE forecast signal with INCREMENTAL
+#   anchors (2026-09-21: replaces the single mid anchor): the run emits
+#   one trigger at EACH of its first TRIGGER_DELAY_MAX + 1 days (delay
+#   0 = the run's first qualifying day, the moment the signal becomes
+#   observable — up to delay min(run_len - 1, TRIGGER_DELAY_MAX)).
+#   Each (bucket, delay) forecast row's forward stats are conditioned
+#   on the signal having lasted that long, so a persistent streak can
+#   be checked one day at a time as it live extends. The bucket's MEAN
+#   run length is recorded on
+#   analysis_forecasts.forecast_identities.streak_signal_days and its
+#   mean anchor delay on delayed_signal_days (the result rows'
+#   streak_starts / streak_ends / streak_days carry each merged
+#   signal's run span). px_vol_state moved onto the streak convention
+#   in 2026-09 (its state runs used to admit every qualifying day at
+#   a constant streak_signal_days = 1); pe_state / dividend_state
+#   joined in the same year's pct refactor (their former z-state
+#   cells were one-day signals).
 #
 #   ONE-DAY (merge=False — mov_pairs / mov_pairs_ema): every qualifying
-#   day is its own signal with a 1-day run. A cross day's predecessor
-#   sits on the other side of zero, so consecutive cross days are
-#   mutually exclusive and a streak-merge pass would be a no-op — the
-#   engines skip it and streak_signal_days is the 1 constant.
+#   day is its own signal with a 1-day run — a single delay-0 anchor.
+#   A cross day's predecessor sits on the other side of zero, so
+#   consecutive cross days are mutually exclusive and a streak-merge
+#   pass would be a no-op — the engines skip it and
+#   streak_signal_days is the 1 constant.
 #
 # margin_ratio / opp_pair (state families without run semantics) and
 # high_low_streaks (its own ex-post streak anchors) keep their bespoke
-# loops. The mov tables' cooldown_days PK column was dropped with the
-# 2026-09 migration; the SIGNALS layer keeps its own detection-side
-# COOLDOWN (a live trigger cannot know an ongoing streak's mid ex-post
-# — see analyze.analysis_signals.config).
+# loops, all at delay 0. The mov tables' cooldown_days PK column was
+# dropped with the 2026-09 migration; the SIGNALS layer keeps its own
+# detection-side COOLDOWN (a live trigger cannot know an ongoing
+# streak's length ex-post — see analyze.analysis_signals.config).
+
+# The trigger anchors a streak emits: one per day 0..TRIGGER_DELAY_MAX
+# while it keeps qualifying (the forecast_results.delay axis; the
+# identities' delayed_signal_days cap matches).
+TRIGGER_DELAY_MAX = 5
 
 # ---- px_vol_state: recent price-change × trading-amount state buckets -------
 #
@@ -322,7 +335,7 @@ MOV_PAIRS_EMA_SIDES = MOV_PAIRS_SIDES
 # Band axes mirroring the source table (mov_ave_spread config's
 # HIGH_LOW_PCT_PERIODS / HIGH_LOW_PCT_TYPES — re-declared locally to
 # keep the import direction one-way, the RSI_WINDOWS precedent).
-HIGH_LOW_STREAKS_PERIODS = (255, 500, 750, 1275)
+HIGH_LOW_STREAKS_PERIODS = (60, 120, 255, 500, 750, 1275)
 HIGH_LOW_STREAKS_TYPES = (1, 5, 10)
 
 # Streak sides: top = above-band excursion (close[end_date] > the end
@@ -330,57 +343,36 @@ HIGH_LOW_STREAKS_TYPES = (1, 5, 10)
 # side semantics the gate and the other families use.
 HIGH_LOW_STREAKS_SIDES = ("top", "bottom")
 
-# ---- pe_state / dividend_state: valuation state bucket families ------------
+# ---- pe_state / dividend_state: valuation extreme-percentile buckets -------
 #
 # Tenth and eleventh bucket families (see database/sql/analysis/
-# analysis_forecasts/11_pe_state.sql + 12_dividend_state.sql): z-STATE
-# buckets over the two valuation series of analysis.pe /
-# analysis.dividends, ONE FAMILY PER METRIC (the 2026-09 split of the
-# former combined pe_dividend family — each table carries one series and
-# no metric column): pe_state over the raw PE (lower the better), and
-# dividend_state over the trailing-12m dividend yield (higher the
-# better). Each is standardized by the code's OWN trailing moments (the
-# margin_ratio convention: rolling z bars, shifted 1 row — no
-# look-ahead). The families' defining semantics is the OPPOSITE side
-# mapping: PE is LOWER-the-better (a high-PE day is an expensive /
-# stretched valuation → its extreme states are BEARISH, side 'top'),
-# while the yield is HIGHER-the-better (a high-yield day is a cheap,
-# well-supported valuation → its extreme states are BULLISH, side
-# 'bottom') — the side is materialized on every row so the gate / UI
-# read it unchanged.
+# analysis_forecasts/11_pe_state.sql + 12_dividend_state.sql):
+# extreme-PERCENTILE buckets over the two valuation series of
+# analysis.pe / analysis.dividends, ONE FAMILY PER METRIC (each table
+# carries one series and no metric column) — the mov_rsi pct
+# convention (2026-09 refactor of the former z-STATE buckets): per
+# stat month's trailing 5-year window, a day joins a bucket when its
+# series value sits in the top pct% (bucket extreme 'top', the
+# window's linearly-interpolated quantile bar at q = 1 - pct/100) or
+# bottom pct% (extreme 'bottom', q = pct/100) of the window's non-NULL
+# values, per the code's OWN distribution. Only EXTREME days form
+# buckets (the central bulk has none — the RSI semantics; the former
+# z ladder's mid/flat state is gone).
+#
+# The families' defining semantics is the OPPOSITE side mapping: PE is
+# LOWER-the-better (a high-PE day is an expensive / stretched valuation
+# → its top extreme is BEARISH, family side 'top'; the bottom extreme
+# cheap → 'bottom'), while the yield is HIGHER-the-better (a high-yield
+# day is a cheap, well-supported valuation → its top extreme is BULLISH,
+# family side 'bottom'; the bottom extreme → 'top'). The side is
+# materialized on every row so the gate / UI read it unchanged.
 
-# z states in ascending order (the margin_ratio state ladder, no no_buy
-# analog — a NULL series day simply has no bucket).
-VAL_STATES: tuple[str, ...] = ("vlow", "low", "mid", "high", "vhigh")
+# Percentile widths for the extreme buckets (percent) — the RSI_PCTS
+# grid; one calibration shared by both families.
+VAL_PCTS: tuple[int, ...] = (1, 5, 10, 25)
 
-# Rolling moments of the series (rows ≈ 5y of trading days; shifted 1
-# row — the margin_ratio Z_WINDOW/MIN_PERIODS convention: a slow
-# valuation series needs ~1y of non-NULL observations before its z is
-# trusted). One calibration shared by both families (the former
-# pe_dividend family's bars); recorded on every row of either table.
-VAL_Z_WINDOW = 1220
-VAL_Z_MIN_PERIODS = 250
-
-# z state bars (recorded on every row).
-VAL_VLOW_BAR = -2.0
-VAL_LOW_BAR = -1.0
-VAL_HIGH_BAR = 1.0
-VAL_VHIGH_BAR = 2.0
-
-# state → side — pe LOWER-the-better (high z = expensive = bearish
-# 'top', low z = cheap = bullish 'bottom'); mid = 'flat' (no
-# directional claim, reverse_prob NULL).
-PE_STATE_SIDE: dict[str, str] = {
-    "vlow": "bottom", "low": "bottom",
-    "mid": "flat",
-    "high": "top", "vhigh": "top",
-}
-
-# state → side — the dividend family REVERSES the pe mapping (yield
-# HIGHER-the-better: high z = cheap / well-supported = bullish
-# 'bottom'); mid = 'flat'.
-DIVIDEND_STATE_SIDE: dict[str, str] = {
-    "vlow": "top", "low": "top",
-    "mid": "flat",
-    "high": "bottom", "vhigh": "bottom",
-}
+# Bucket extremes of the series (the RSI_SIDES semantics: 'top' = the
+# highest-pct% values of the window, 'bottom' = the lowest). The family
+# side each extreme carries is the engines' side map (pe: identity;
+# dividend: flipped — the mappings above).
+VAL_SIDES: tuple[str, ...] = ("top", "bottom")

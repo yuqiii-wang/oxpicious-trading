@@ -49,7 +49,7 @@ from _common.build_commons import (
     truncate_table_async,
     find_missing_analysis_dates,
 )
-from _common.df_utils import column_subset, host_array
+from _common.df_utils import column_subset, host_array, host_unique, to_dt64
 from analyze._common import (
     build_and_insert_chunked,
     upsert_analysis_identity,
@@ -364,7 +364,7 @@ async def run_holiday(
     if sec_type is not None:
         sec_types = (sec_type,)
     else:
-        sec_types = tuple(sorted(holiday_df["sec_type"].unique()))
+        sec_types = tuple(host_unique(holiday_df["sec_type"]))
 
     # ---- Step 0: determine target dates (per-sec_type) --------------
     if code_filter is not None:
@@ -427,7 +427,7 @@ async def run_holiday(
         # datetime64 ndarray comparison — isin with a python-date SET
         # never matches a datetime64 column (fetch.py incremental-filter
         # convention).
-        td64 = pd.to_datetime(sorted(target_dates_union)).values
+        td64 = to_dt64(sorted(target_dates_union))
         holiday_df = holiday_df[
             holiday_df["date"].isin(td64)
         ].reset_index(drop=True)

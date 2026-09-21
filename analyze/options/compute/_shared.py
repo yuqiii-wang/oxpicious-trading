@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from _common.df_utils import should_use_gpu  # noqa: F401 — per project convention
-from _common.df_utils import grouped_rolling_agg
+from _common.df_utils import grouped_rolling_agg, host_array
 from analyze.options.config import SKEWNESS_CROSS_WINDOW, SKEWNESS_WINDOWS
 
 # Expiry group key for skewness aggregation and rolling (per option_type).
@@ -41,6 +41,11 @@ def _mean_expiry_dates_frame(df: pd.DataFrame) -> pd.DataFrame:
     (an integer day offset between ordinal and epoch-day counts cancels
     exactly in the mean, so the rounded result is identical).
 
+    All datetime casts run on RAW host arrays (the ``host_array`` unwrap
+    first): chained ``.astype`` on the proxy-subclass ``to_numpy()``
+    ndarray logs a cudf fallback per unit ("Unsupported dtype
+    datetime64[us]" / "[D]").
+
     Args:
         df: DataFrame with columns option_type, underlying_code,
             expiry_date (datetime64 preferred; object dates converted).
@@ -50,13 +55,13 @@ def _mean_expiry_dates_frame(df: pd.DataFrame) -> pd.DataFrame:
         (datetime64[ns]), one row per (option_type, underlying_code).
     """
     uniq = df[["option_type", "underlying_code", "expiry_date"]].drop_duplicates()
-    if not pd.api.types.is_datetime64_any_dtype(uniq["expiry_date"]):
-        uniq["expiry_date"] = pd.to_datetime(uniq["expiry_date"])
+    expiry = host_array(uniq["expiry_date"].to_numpy())
+    if expiry.dtype.kind != "M":
+        # object (python date/datetime/None) input: ONE plain numpy cast
+        # (the to_dt64 convention — pd.to_datetime would log a fallback).
+        expiry = np.asarray(expiry, dtype="datetime64[us]")
     # ONE host numpy pass: datetime64 -> day ordinals (epoch days).
-    ord_arr = (
-        uniq["expiry_date"].to_numpy()
-        .astype("datetime64[D]").astype(np.int64)
-    )
+    ord_arr = expiry.astype("datetime64[D]").astype(np.int64)
     uniq = uniq.assign(_ord=ord_arr)
     means = (
         uniq.groupby(["option_type", "underlying_code"], sort=False)["_ord"]
@@ -64,9 +69,13 @@ def _mean_expiry_dates_frame(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     mean_days = np.round(
-        means["_ord"].to_numpy(dtype=np.float64)
+        host_array(means["_ord"].to_numpy()).astype(np.float64)
     ).astype(np.int64)
-    means["mean_expiry_date"] = mean_days.astype("datetime64[D]")
+    # datetime64[ns] (cuDF-native) — a [D] column assignment logs an
+    # "Unsupported dtype datetime64[D]" __setitem__ fallback.
+    means["mean_expiry_date"] = (
+        mean_days.astype("datetime64[D]").astype("datetime64[ns]")
+    )
     return means[["option_type", "underlying_code", "mean_expiry_date"]]
 
 
@@ -95,12 +104,17 @@ def _apply_open_expiry_collapse(
     if df.empty:
         return df
     if dataset_max_date is None:
-        dataset_max_date = df["date"].max()
+        dataset_max_date = host_array(df["date"].to_numpy()).max()
     means = _mean_expiry_dates_frame(df)
     out = df.merge(
         means, on=["option_type", "underlying_code"], how="left",
     )
-    open_mask = out["expiry_date"] > dataset_max_date
+    # Host compare — Series > Timestamp on a proxied datetime column
+    # logs a cudf __gt__ fallback; raw numpy compares dispatch nowhere.
+    open_mask = (
+        host_array(out["expiry_date"].to_numpy())
+        > np.asarray(dataset_max_date, dtype="datetime64[us]")
+    )
     if open_mask.any():
         out["expiry_date"] = out["expiry_date"].where(
             ~open_mask, out["mean_expiry_date"]
@@ -124,8 +138,10 @@ def _compute_mean_expiry_dates(df: pd.DataFrame) -> dict:
     means = _mean_expiry_dates_frame(df)
     keys = np.asarray(means["option_type"].to_numpy()).tolist()
     codes = np.asarray(means["underlying_code"].to_numpy()).tolist()
+    # Host unwrap BEFORE the cast — the proxy-subclass ndarray's astype
+    # logs a "Unsupported dtype datetime64[us]" fallback.
     dates = (
-        means["mean_expiry_date"].to_numpy()
+        host_array(means["mean_expiry_date"].to_numpy())
         .astype("datetime64[D]").astype(object).tolist()
     )
     return {
@@ -172,20 +188,36 @@ def _broadcast_slopes(
 ) -> pd.DataFrame:
     """Compute per-group full-history slope of value_col and broadcast.
 
+    Closed form per group: slope = (n·Σty − Σt·Σy) / (n·Σtt − (Σt)²),
+    computed with one groupby-transform pass over [t, y, ty, tt] sums
+    (same result as the former per-group ``apply`` of the two-moment
+    regression — which logged a cudf fallback per group: the fast path
+    cannot broadcast ``pd.Series(scalar, index=g.index)``). NaN groups:
+    < 2 rows, zero time variance, or any NaN value (the NaN propagates
+    through the sums, as it did through the former per-group means).
+
     Returns a DataFrame with target_col added (same length as df).
     """
-    slopes = (
-        df.groupby(group_key, sort=False)
-        .apply(
-            lambda g: pd.Series(
-                _compute_full_history_slope(g, value_col),
-                index=g.index,
-            )
+    tmp = df[group_key + ["_t"]].copy()
+    tmp["_t"] = tmp["_t"].astype("float64")
+    tmp["_y"] = df[value_col].astype("float64")
+    tmp["_ty"] = tmp["_t"] * tmp["_y"]
+    tmp["_tt"] = tmp["_t"] * tmp["_t"]
+    g = tmp.groupby(group_key, sort=False)
+    # GPU groupby-transform sums, then ONE host unwrap per moment — all
+    # downstream arithmetic is raw numpy (no proxy dispatch).
+    n = host_array(g["_t"].transform("size").to_numpy()).astype("float64")
+    st = host_array(g["_t"].transform("sum").to_numpy())
+    sy = host_array(g["_y"].transform("sum").to_numpy())
+    sty = host_array(g["_ty"].transform("sum").to_numpy())
+    stt = host_array(g["_tt"].transform("sum").to_numpy())
+    denom = n * stt - st * st
+    numer = n * sty - st * sy
+    with np.errstate(divide="ignore", invalid="ignore"):
+        slope = np.where(
+            (n >= 2.0) & (denom != 0.0), numer / denom, np.nan,
         )
-        .reset_index(level=list(range(len(group_key))), drop=True)
-        .sort_index()
-    )
-    df[target_col] = slopes.values
+    df[target_col] = slope
     return df
 
 
@@ -312,7 +344,9 @@ def _rolling_skew_suite(
     #                           neutral (one-sided crowding, in [0,1])
     ind = (
         agg.groupby(_EXPIRY_GROUP_KEY, sort=False, group_keys=False)
-        .apply(_cross_indicators, gap_col="_gap")
+        # lambda (not apply kwargs — the cudf fast path rejects kwargs
+        # and logs a fallback per call).
+        .apply(lambda g: _cross_indicators(g, "_gap"))
         .reindex(agg.index)
     )
     agg["_crossed"] = ind["crossed"].astype(np.int64)

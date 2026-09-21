@@ -149,18 +149,17 @@ export default function StockPanel({ stock, defaultStartDate, defaultEndDate, on
   const aiAskChartRef = useRef<ECharts | null>(null);
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      product: "stock-baseline",
       intro:
         `Single-stock daily chart of ${stock.code} (${stock.name}, ` +
         `${stock.industry_label}): ` +
-        (hasOhlc
-          ? "candlesticks (or close line when OHLC is sparse) "
-          : "close line ") +
-        "with MA5/MA20/MA60/MA120 moving averages, amount bars on a twin axis " +
-        "(Amt (亿), close-vs-open colored)" +
-        (hasPe ? ", PE ratio on an offset twin axis" : "") +
-        ", and dividend diamonds on their ex-dates. Percentage mode rebases " +
-        "prices and MAs to % change from the first valid close; the in-chart " +
-        "dataZoom slider windows the history.",
+        (hasOhlc ? "candles (close line when sparse) " : "close line ") +
+        "+ MA5/20/60/120, amount bars on a twin axis (亿, close-vs-open colored)" +
+        (hasPe ? ", PE on an offset axis" : "") +
+        ", dividend diamonds on ex-dates. % mode: prices + MAs rebased to % change " +
+        "from the first valid close; the dataZoom slider windows the history. " +
+        "Indication: MA stack fanned upward = entrenched uptrend; ex-dividend gaps are " +
+        "mechanical, not flow.",
       instruments: [{ code: stock.code, name: stock.name, assetClass: "stock" }],
       series: [
         ...(hasOhlc

@@ -184,34 +184,3 @@ def build_px_vol_state_matrices(
     )[ok]
     return {"speed": speed, "vol": vol, "t": t, "z": z}
 
-
-def build_hype_matrix(
-    episodes: pd.DataFrame,
-    grid_ord: np.ndarray,
-    codes: list[str],
-    shape: tuple[int, int],
-) -> np.ndarray:
-    """(T, C) bool matrix of market-hyped (grid date, code) cells.
-
-    An episode (code, start_date..end_date inclusive, any
-    min_checkin_period) marks every grid date it spans. Episodes of codes
-    outside the active universe (delisted) are ignored; interval marking
-    is a small per-episode slice loop on real host ndarrays (irregular
-    intervals — not vectorizable without a blow-up to calendar rows).
-    """
-    H = np.zeros(shape, dtype=bool)
-    if episodes.empty:
-        return H
-    codes_arr = np.asarray(codes)
-    ep_codes = host_array(episodes["code"].to_numpy())
-    cidx = np.searchsorted(codes_arr, ep_codes)
-    ok = cidx < len(codes_arr)
-    ok[ok] = codes_arr[cidx[ok]] == ep_codes[ok]
-    s = date_ordinals(episodes["start_date"])
-    e = date_ordinals(episodes["end_date"])
-    lo = np.searchsorted(grid_ord, s)
-    hi = np.searchsorted(grid_ord, e, side="right")
-    for l, h, c in zip(lo[ok].tolist(), hi[ok].tolist(), cidx[ok].tolist()):
-        if h > l:
-            H[l:h, c] = True
-    return H

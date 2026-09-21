@@ -8,7 +8,9 @@ Open expiry handling: for each (option_type, underlying_code), the mean
 of all expiry dates is computed. Contract rows where expiry_date >
 dataset_max_date (still open/not matured) get their expiry_date replaced
 with this mean. This collapses all open expiry groups into a single
-representative group.
+representative group. EXCEPTION: options_oi_stats is the dedicated
+per-REAL-expiry table (fetch_missing_oi_groups / compute_options_oi_stats
+work on raw expiry dates, no collapse) — see 16_options.sql for why.
 
 B-A4 / B-A2 conventions:
   - dates stay ``datetime64`` from fetch through compute (cuDF-native
@@ -26,13 +28,14 @@ from __future__ import annotations
 import pandas as pd
 
 from _common.build_commons import rec_cols
-from _common.df_utils import epoch_col_to_dt64, to_py_dates
+from _common.df_utils import epoch_col_to_dt64, host_array
 from analyze.options.compute._shared import _apply_open_expiry_collapse
 from analyze.options.config import (
     SKEWNESS_TABLE_NAME,
     EXPIRY_IDENTITY_TABLE,
     WALLS_TABLE_NAME,
     IV_SKEW_TABLE_NAME,
+    OI_TABLE_NAME,
 )
 
 # PK columns shared by the expiry-group tables.
@@ -105,9 +108,9 @@ async def fetch_options_skewness_rows(conn, sec_type: str | None = None) -> pd.D
             t.option_type,
             t.underlying_code,
             extract(epoch from t.expiry_date)::float8 AS expiry_date,
-            k.strike_price,
-            s.underlying_close,
-            v.open_interest
+            k.strike_price::float8 AS strike_price,
+            s.underlying_close::float8 AS underlying_close,
+            v.open_interest::float8 AS open_interest
         FROM stats.options_terms t
         JOIN stats.options_strike k
           ON k.date = t.date AND k.contract_code = t.contract_code
@@ -127,8 +130,6 @@ async def fetch_options_skewness_rows(conn, sec_type: str | None = None) -> pd.D
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     df["expiry_date"] = epoch_col_to_dt64(
         df["expiry_date"], index=df.index)
-    for col in ("strike_price", "underlying_close", "open_interest"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 
@@ -169,9 +170,16 @@ def _missing_pk_tuples(
     else:
         missing = collapsed[pk_columns].copy()
 
-    # ONE host numpy pass per date column at the tuple boundary.
-    missing = to_py_dates(missing, date_cols)
-    return list(zip(*[missing[c].tolist() for c in pk_columns]))
+    # Host-pure tuple materialization: ONE numpy transfer per column,
+    # date columns -> python date objects (the to_py_dates convention
+    # without the object-column __setitem__ fallback on the frame).
+    cols = []
+    for c in pk_columns:
+        arr = host_array(missing[c].to_numpy())
+        if c in date_cols and arr.dtype.kind == "M":
+            arr = arr.astype("datetime64[D]").astype(object)
+        cols.append(arr.tolist())
+    return list(zip(*cols))
 
 
 async def fetch_missing_skewness_groups(
@@ -283,16 +291,19 @@ async def fetch_expiry_identity_rows(conn, sec_type: str | None = None) -> list:
     # Vectorized open expiry collapse + unique PK rows
     collapsed = _apply_open_expiry_collapse(df)[_PK_COLUMNS].drop_duplicates()
 
-    # Materialize python dates (ONE numpy pass per column), then tuples.
-    collapsed = to_py_dates(collapsed, ["date", "expiry_date"])
-    return list(
-        zip(
-            collapsed["date"].tolist(),
-            collapsed["option_type"].tolist(),
-            collapsed["underlying_code"].tolist(),
-            collapsed["expiry_date"].tolist(),
-        )
-    )
+    # Host-pure tuple materialization (ONE numpy transfer per column;
+    # date columns -> python date objects — the to_py_dates convention
+    # without the object-column __setitem__ fallback on the frame).
+    vals = {}
+    for c in _PK_COLUMNS:
+        arr = host_array(collapsed[c].to_numpy())
+        if c in ("date", "expiry_date"):
+            arr = arr.astype("datetime64[D]").astype(object)
+        vals[c] = arr.tolist()
+    return list(zip(
+        vals["date"], vals["option_type"], vals["underlying_code"],
+        vals["expiry_date"],
+    ))
 
 
 # ---- OI stats fetchers ---------------------------------------------------
@@ -324,8 +335,8 @@ async def fetch_oi_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
             t.option_type,
             t.underlying_code,
             extract(epoch from t.expiry_date)::float8 AS expiry_date,
-            v.open_interest,
-            s.underlying_close
+            v.open_interest::float8 AS open_interest,
+            s.underlying_close::float8 AS underlying_close
         FROM stats.options_terms t
         JOIN stats.options_strike k
           ON k.date = t.date AND k.contract_code = t.contract_code
@@ -345,9 +356,64 @@ async def fetch_oi_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     df["expiry_date"] = epoch_col_to_dt64(
         df["expiry_date"], index=df.index)
-    for col in ("open_interest", "underlying_close"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
+
+
+async def fetch_missing_oi_groups(
+    conn,
+    sec_type: str | None = None,
+) -> list:
+    """Fetch (date, option_type, underlying_code, expiry_date) tuples
+    missing from analysis.options_oi_stats.
+
+    NO open expiry collapse — options_oi_stats is the dedicated
+    per-REAL-expiry table (its rows are keyed by the real contract expiry
+    date, not the collapsed open-group convention), so candidates are the
+    raw distinct source tuples and existing rows are matched as-is.
+
+    Args:
+        conn: async DB connection.
+        sec_type: Optional filter ('index' or 'etf') on underlying_target_type.
+    """
+    sec_filter = _sec_type_where(sec_type)
+    sql = f"""
+        SELECT DISTINCT extract(epoch from t.date)::float8 AS date,
+               t.option_type, t.underlying_code,
+               extract(epoch from t.expiry_date)::float8 AS expiry_date
+        FROM stats.options_terms t
+        JOIN stats.options_strike k
+          ON k.date = t.date AND k.contract_code = t.contract_code
+        JOIN stats.options_settlement s
+          ON s.date = t.date AND s.contract_code = t.contract_code
+        JOIN stats.options_volume_oi v
+          ON v.date = t.date AND v.contract_code = t.contract_code
+        WHERE {_SKEWNESS_VALID_WHERE}
+          {sec_filter}
+        ORDER BY date, option_type, underlying_code, expiry_date
+    """
+    rows = await conn.fetch(sql)
+    if not rows:
+        return []
+
+    df = _records_frame(rows, _PK_COLUMNS)
+    df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
+    df["expiry_date"] = epoch_col_to_dt64(
+        df["expiry_date"], index=df.index)
+
+    candidates = df[_PK_COLUMNS].drop_duplicates()
+
+    existing_pks: list = []
+    try:
+        existing_pks = await conn.fetch(
+            f"SELECT extract(epoch from date)::float8 AS date, "
+            f"option_type, underlying_code, "
+            f"extract(epoch from expiry_date)::float8 AS expiry_date "
+            f"FROM {OI_TABLE_NAME}"
+        )
+    except Exception:
+        pass
+
+    return _missing_pk_tuples(candidates, existing_pks, _PK_COLUMNS)
 
 
 # ---- Options IV skew fetchers ---------------------------------------------
@@ -393,15 +459,15 @@ async def fetch_iv_skew_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
             t.option_type,
             t.underlying_code,
             extract(epoch from t.expiry_date)::float8 AS expiry_date,
-            k.strike_price,
-            s.underlying_close,
-            v.open_interest,
-            g.implied_vol,
-            g.delta,
-            g.theta,
-            g.gamma,
-            g.vega,
-            g.rho
+            k.strike_price::float8 AS strike_price,
+            s.underlying_close::float8 AS underlying_close,
+            v.open_interest::float8 AS open_interest,
+            g.implied_vol::float8 AS implied_vol,
+            g.delta::float8 AS delta,
+            g.theta::float8 AS theta,
+            g.gamma::float8 AS gamma,
+            g.vega::float8 AS vega,
+            g.rho::float8 AS rho
         FROM stats.options_terms t
         JOIN stats.options_strike k
           ON k.date = t.date AND k.contract_code = t.contract_code
@@ -423,9 +489,6 @@ async def fetch_iv_skew_rows(conn, sec_type: str | None = None) -> pd.DataFrame:
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     df["expiry_date"] = epoch_col_to_dt64(
         df["expiry_date"], index=df.index)
-    for col in ("strike_price", "underlying_close", "open_interest",
-                "implied_vol", "delta", "theta", "gamma", "vega", "rho"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 
@@ -528,8 +591,8 @@ async def fetch_vol_index_rows(conn, sec_type: str | None = None) -> pd.DataFram
 
     ``underlying_target_type`` resolves the venue unit convention (CFFEX
     index quotes are native points; SZSE ETF quotes are x1000 strike /
-    x10000 settle — scaled in compute/vix.py exactly like
-    ``compute_iv_and_greeks``).
+    underlying with settle already yuan per share — scaled in
+    compute/vix.py).
 
     Args:
         conn: async DB connection.
@@ -545,9 +608,9 @@ async def fetch_vol_index_rows(conn, sec_type: str | None = None) -> pd.DataFram
             t.underlying_target_type,
             extract(epoch from t.expiry_date)::float8 AS expiry_date,
             t.days_to_expiry,
-            k.strike_price,
-            s.underlying_close,
-            s.settle
+            k.strike_price::float8 AS strike_price,
+            s.underlying_close::float8 AS underlying_close,
+            s.settle::float8 AS settle
         FROM stats.options_terms t
         JOIN stats.options_strike k
           ON k.date = t.date AND k.contract_code = t.contract_code
@@ -573,9 +636,6 @@ async def fetch_vol_index_rows(conn, sec_type: str | None = None) -> pd.DataFram
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     df["expiry_date"] = epoch_col_to_dt64(
         df["expiry_date"], index=df.index)
-    for col in ("days_to_expiry", "strike_price", "underlying_close",
-                "settle"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 
@@ -663,9 +723,9 @@ async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.Data
             t.option_type,
             t.underlying_code,
             extract(epoch from t.expiry_date)::float8 AS expiry_date,
-            k.strike_price,
-            v.open_interest,
-            s.underlying_close
+            k.strike_price::float8 AS strike_price,
+            v.open_interest::float8 AS open_interest,
+            s.underlying_close::float8 AS underlying_close
         FROM stats.options_terms t
         JOIN stats.options_strike k
           ON k.date = t.date AND k.contract_code = t.contract_code
@@ -685,8 +745,6 @@ async def fetch_options_walls_rows(conn, sec_type: str | None = None) -> pd.Data
     df["date"] = epoch_col_to_dt64(df["date"], index=df.index)
     df["expiry_date"] = epoch_col_to_dt64(
         df["expiry_date"], index=df.index)
-    for col in ("strike_price", "open_interest", "underlying_close"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 

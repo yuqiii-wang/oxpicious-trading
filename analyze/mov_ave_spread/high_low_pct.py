@@ -12,9 +12,9 @@ the security's daily prices traded over its recent history.
 For each calendar month m of a code's history, anchor the window at the
 month's LAST trading row and look BACK over a TRAILING window of
 `period` trading rows ending there, for each period in
-HIGH_LOW_PCT_PERIODS (255 / 500 / 750 / 1275 trading rows = ~1 / 2 / 3
-/ 5 trading years — the ma255 yearly-window precedent). Over that
-window:
+HIGH_LOW_PCT_PERIODS (60 / 120 / 255 / 500 / 750 / 1275 trading rows
+= ~0.25 / 0.5 / 1 / 2 / 3 / 5 trading years — the ma255 yearly-window
+precedent). Over that window:
 
     low_val[m, period, pct]  = pct-th percentile (linear
                                interpolation) of the window's daily
@@ -27,7 +27,7 @@ near-full range of the window ([1st pct of lows, 99th pct of highs]);
 10 = core envelope ([10th, 90th]). The band is SYMMETRIC — the same
 pct_type trims both tails.
 
-One row per (code, month, period, pct_type) — 12 bands per (code,
+One row per (code, month, period, pct_type) — 18 bands per (code,
 month). Bands are sampled MONTHLY (at the month-end anchor) and stored
 under the month's FIRST day (date_year_month). Two consequences drive
 the rebuild semantics:
@@ -39,7 +39,7 @@ the rebuild semantics:
    missing pairs are detected against the analysis table's PK
    ((sec_type, code, date_year_month, period, pct_type) — detected at
    (code, month) granularity, where a pair counts as present only when
-   all HIGH_LOW_PCT_ROWS_PER_PAIR (12) rows exist — a crash-consistency
+   all HIGH_LOW_PCT_ROWS_PER_PAIR (18) rows exist — a crash-consistency
    guard that recomputes partially-inserted pairs), computed, and
    COPY-inserted; no historical row ever needs refreshing.
 
@@ -79,7 +79,7 @@ GPU note: the trailing percentiles use pandas ``groupby(...).rolling
 cudf.pandas is active this op transparently falls back to the CPU
 pandas implementation (same contract as the centered rolling-quantile
 in market_hypes.py, whose helper is reused here; one CPU pass per
-(period, pct_type, leg) = 24 per frame). The month keys, anchor
+(period, pct_type, leg) = 36 per frame). The month keys, anchor
 detection (shift-compare) and per-group max months stay on GPU-native
 column ops; the final long-frame assembly unwraps to host numpy once
 at the write boundary.
@@ -97,7 +97,7 @@ from _common.build_commons import (
     fetch_codes_with_recent_data_async,
 )
 from _common.db_commons import csv_copy_from_frame_async
-from _common.df_utils import column_subset, host_array
+from _common.df_utils import column_subset, host_array, host_unique
 from analyze._common import upsert_analysis_identity
 from analyze.mov_ave_spread.config import (
     HIGH_LOW_PCT_ANALYSIS_NAME,
@@ -110,7 +110,7 @@ from analyze.mov_ave_spread.config import (
     HIGH_LOW_PCT_TYPES,
     SEC_TYPE_IDENTITY_TABLE,
 )
-from builds.market_hypes.compute import _grouped_rolling_quantile
+from _common.df_utils import grouped_rolling_quantile
 
 import logging
 logger = logging.getLogger(__name__)
@@ -311,17 +311,23 @@ def compute_high_low_pct_bands(df: pd.DataFrame) -> pd.DataFrame:
     # leg, so the passes cannot be merged.
     frames: list[pd.DataFrame] = []
     for period in HIGH_LOW_PCT_PERIODS:
+        # min_periods = the full-window floor (255 obs = 1 trading year
+        # for every period >= 255), clamped to the window — the 60/120-row
+        # (~0.25/0.5y) windows cannot satisfy a 255-row min_periods (pandas
+        # requires min_periods <= window), so they band on their own full
+        # window instead.
+        min_obs = min(HIGH_LOW_PCT_MIN_PERIODS, period)
         for pct in HIGH_LOW_PCT_TYPES:
-            low_q = _grouped_rolling_quantile(
-                df, "low",
+            low_q = grouped_rolling_quantile(
+                df, ["sec_type", "code"], "low",
                 window=period,
-                min_periods=HIGH_LOW_PCT_MIN_PERIODS,
+                min_periods=min_obs,
                 q=pct / 100.0,
             )
-            high_q = _grouped_rolling_quantile(
-                df, "high",
+            high_q = grouped_rolling_quantile(
+                df, ["sec_type", "code"], "high",
                 window=period,
-                min_periods=HIGH_LOW_PCT_MIN_PERIODS,
+                min_periods=min_obs,
                 q=(100 - pct) / 100.0,
             )
             low_v = host_array(low_q.to_numpy())[pos]
@@ -496,7 +502,7 @@ async def run_high_low_pct(
     if sec_type is not None:
         sec_types = (sec_type,)
     else:
-        sec_types = tuple(sorted(hlp_df["sec_type"].unique()))
+        sec_types = tuple(host_unique(hlp_df["sec_type"]))
 
     # ---- Step 0: missing-pair detection (skip compute when current) --
     if code_filter is not None or force:

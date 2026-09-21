@@ -413,13 +413,12 @@ export default function QuarterlyCompositionBars({ code, name }: Props) {
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        `Quarterly holdings composition of ${code}${name ? ` (${name})` : ""} by industry: one ` +
-        "100% stacked bar per quarter (every bar sums to exactly 100 — each segment is " +
-        "the industry's weight normalized to % of that quarter's total composition). " +
-        "One series/color per industry on a weight-ordered blue ramp (darkest blue = " +
-        "highest weight in the latest quarter), so an industry keeps its color across " +
-        "quarters. Click a bar to tick it — exactly 1 tick shows that quarter's " +
-        "composition pie below, 2+ ticks show the quarter-over-quarter changes table.",
+        `Quarterly holdings of ${code}${name ? ` (${name})` : ""} by industry: one 100% ` +
+        "stacked bar per quarter — each segment = industry weight / quarter total × 100. " +
+        "One color per industry on a weight-ordered blue ramp (darkest = heaviest in the " +
+        "latest quarter). Click bars to tick: 1 tick → composition pie below, 2+ ticks → " +
+        "quarter-over-quarter changes table. Indication: a swelling slice = the fund " +
+        "rotating in; a shrinking one = trimmed.",
       instruments: [{ code, name, assetClass: "etf" }],
       state: {
         ticked_quarters: tickedIdxs.map((i) => quarters[i]?.quarter).filter(Boolean).join(", ") || "none",

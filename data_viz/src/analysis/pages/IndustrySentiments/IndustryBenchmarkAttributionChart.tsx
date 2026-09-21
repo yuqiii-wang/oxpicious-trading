@@ -42,15 +42,12 @@ export function IndustryBenchmarkAttributionChart({
   const aiAsk = useMemo<AiAskSpec>(
     () => ({
       intro:
-        `Benchmark attribution for the ${industryLabel || industryId} industry: ` +
-        "each bar shows how much of one benchmark index's return is contributed " +
-        "by this industry (Contribution, left axis) and how the industry's " +
-        "weight inside the benchmark compares to its broad-market weight " +
-        "(Benchmark Wt / Industry Wt, right axis). The highlighted bar is the " +
-        "currently selected navigation benchmark; other bars are dimmed. " +
-        "Compare bars to see which benchmarks this industry drives most — a " +
-        "high contribution vs weight means the industry over-drives that " +
-        "benchmark.",
+        `Benchmark attribution for ${industryLabel || industryId}: per benchmark index, ` +
+        "Contribution (left) = the industry's share of that benchmark's return; right axis " +
+        "pits the industry's weight inside the benchmark (Benchmark Wt) against its " +
+        "broad-market weight (Industry Wt). Contribution ≫ weight ⇒ the industry " +
+        "over-drives that benchmark; ≪ ⇒ it merely rides. Selected benchmark's bar " +
+        "highlighted.",
       instruments: [{ code: industryId, name: industryLabel || undefined, assetClass: "industry" }],
       series: [
         { name: "Contribution", unit: "pp", description: "return contribution to the benchmark index, percentage points" },

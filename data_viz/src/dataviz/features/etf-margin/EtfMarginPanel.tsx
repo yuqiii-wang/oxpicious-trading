@@ -604,14 +604,14 @@ export default function EtfMarginPanel({ etf, defaultStartDate, defaultEndDate, 
     () => ({
       intro:
         `Single-ETF daily chart of ${etf.code} ${etf.name} ` +
-        `(${etf.is_bond ? "bond ETF — rebased close % line with a neutral fill" : "equity ETF — OHLC bars of rebased OHLC %"}): ` +
-        "MA20/MA60/MA120 ride the same left axis; RZ (融资 cash borrow, green up-fill) and RQ " +
-        "(融券 sec borrow, red down-fill) margin balances plot as shifted/clipped scores on a " +
-        "hidden middle axis (tooltip resolves the raw balance); trading-turnover bars " +
-        "(成交金额, 亿元) sit on the visible right axis colored by close-vs-open. In percentage " +
-        "mode prices are rebased to % change from the first valid close (raw prices in " +
-        "absolute mode); equity OHLC uses ADJUSTED prices so dividends/splits leave no fake " +
-        "gaps (gold/teal diamonds mark them). The in-chart dataZoom owns the visible window.",
+        `(${etf.is_bond ? "bond ETF — rebased close % line, neutral fill" : "equity ETF — adjusted OHLC bars, so dividends/splits draw no fake gaps"}): ` +
+        "MA20/60/120 on the same left axis; RZ (融资, green up-fill) and RQ (融券, red " +
+        "down-fill) margin balances as shifted/clipped scores on a hidden axis (tooltip = " +
+        "raw balance); turnover bars (亿元) on the right, close-vs-open colored. % mode: " +
+        "prices rebased to % change from the first valid close. Gold/teal diamonds = " +
+        "dividend / split markers; the dataZoom owns the visible window. Indication: RZ " +
+        "swelling = leveraged longs crowding; RQ swelling = shorts building — watch the " +
+        "balance inflection against price.",
       instruments: [{ code: etf.code, name: etf.name, assetClass: "etf" }],
       series: [
         ...(etf.is_bond

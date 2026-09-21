@@ -147,19 +147,13 @@ class _HlStreaksEngine(WideDfEngine):
         return ["_is_anchor", "side", "band_period", "pct_type",
                 "run_len", "streak_start", "streak_end", "excess"]
 
-    def _window_cols(self) -> list[str]:
-        cols = ["code", "date", "_t", "is_hyped"]
-        cols += self._extra_window_cols()
-        for n in (1, 5, 20, 60):
-            cols.append(f"next_change_{n}d")
-        for n in (5, 20, 60):
-            cols.extend((f"path_high_{n}d", f"path_low_{n}d"))
-        return cols
-
     def emit_signals(self, win: pd.DataFrame) -> Iterator[pd.DataFrame]:
-        cells = win[win["_is_anchor"]]
+        cells = win[win["_is_anchor"]].copy()
         if cells.empty:
             return
+        # The anchors are pre-resolved ex-post streak ends — one trigger
+        # per streak at the constant delay 0 (no incremental anchors).
+        cells["delay"] = 0
         yield cells
 
     def bucket_extras(self, cells, keys):
@@ -183,11 +177,11 @@ class _HlStreaksEngine(WideDfEngine):
 
 
 def compute_high_low_streaks_results(
-    *, df, first_dates, episodes, codes, sec_type, specs, streaks_df,
+    *, df, first_dates, regimes, codes, sec_type, specs, streaks_df,
 ) -> Iterator[tuple[date, list[dict]]]:
     """Yield (stat_month, high_low_streaks bucket rows) per month."""
     engine = _HlStreaksEngine(
-        df=df, first_dates=first_dates, episodes=episodes, codes=codes,
+        df=df, first_dates=first_dates, regimes=regimes, codes=codes,
         sec_type=sec_type, specs=specs, streaks_df=streaks_df,
     )
     return engine.run()

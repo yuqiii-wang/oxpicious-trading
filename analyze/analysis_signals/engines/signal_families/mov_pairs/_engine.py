@@ -10,7 +10,7 @@ family lifecycle; each concrete engine names its identity (signal_type
 (the forecast side's own source-agnostic cross engine).
 
 Emission slice: the CROSS-DOWN (death cross, side bottom → buy) buckets
-on 120d-or-longer slow legs, BOTH fast legs, BOTH hype splits. A bucket
+on 120d-or-longer slow legs, BOTH fast legs, every regime split. A bucket
 whose MIXED forecast_results row passes the plain gate (sign-aligned
 dir_ave > 0.75% AND reverse_prob > 1%) AND the final SignalQuality gate
 becomes ONE strategy row over the bucket's forecast period (start_date
@@ -68,13 +68,13 @@ _IDENTITY_DESCRIPTION = (
     "(sign-aligned blended mean reversal > 0.75% AND reverse_prob > 1%) "
     "AND the final SignalQuality gate (breach coherence and sign-"
     "aligned per-period forward means on every quality period, plus "
-    "the 0.75 risk cap as ONE weight-blended verdict over 5d/20d/60d — "
+    "the 0.75 risk cap as ONE weight-blended verdict over 5d/20d — "
     "bar 0.50, the 5d bar carries the decision), one strategy per "
     "bucket over its forecast period + the strategy's trigger days "
     "(the cross days) inside its own snapshot month as history "
     "signals. The bar is the ZERO line. Emission slice: BOTH fast legs "
     "({legs}), slow-leg windows >= 120d, cross-down (bottom) side, "
-    "both hype splits."
+    "every regime split."
 )
 
 
@@ -85,7 +85,7 @@ class _PairsEngineBase(SignalEngine):
     grid."""
 
     bucket_keys = ("code", "fast_leg", "pair_window", "side",
-                   "is_market_hyped")
+                   "regime_state")
 
     # fast_leg → the sub_type's literal prefix ("pair" / "pxpair" ...)
     # and the spread-column stem for the reason string.

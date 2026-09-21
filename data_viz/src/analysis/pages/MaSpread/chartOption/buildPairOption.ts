@@ -37,14 +37,11 @@ import type { EChartsOption } from "echarts";
 import type {
   MovAveSpreadOhlcRow,
   MovAveSpreadPairSeries,
+  MovAveSpreadSharedMetricsRow,
 } from "@shared/types";
 import {
   computeTrendBands,
-  trendBandsToMarkArea,
   shortLabel,
-  TREND_DOWN_COLOR,
-  TREND_FLAT_COLOR,
-  TREND_UP_COLOR,
 } from "./trendBands";
 import {
   computeStreakBandWindow,
@@ -70,9 +67,28 @@ const FLOOR_COLOR = "#1E88E5";
 
 export type TradingAmtMode = "off" | "lowkey";
 
+/** One full-height markArea band overlay: precomputed rects + a legend
+ *  label + the accent color (the Px-Vol combo and the market-regime
+ *  spans share the shape). */
+export interface ShadeOverlay {
+  label: string;
+  data: Array<
+    [
+      { xAxis: string; itemStyle: { color: string } },
+      { xAxis: string },
+    ]
+  >;
+  accent: string;
+}
+
 export interface BuildPairOptionArgs {
-  /** The pair's full time series. */
+  /** The pair's full time series (trimmed rows — the drawn curves). */
   pair: MovAveSpreadPairSeries;
+  /** Per-date tooltip metrics shared across pairs (the chart response's
+   *  `shared` array) — RSI, trading-amt MA slopes/market shares, rolling-
+   *  window OHLC. Index-aligned with pair.rows; null renders those tooltip
+   *  readouts as "—". */
+  shared: MovAveSpreadSharedMetricsRow[] | null;
   /** Current theme mode (light / dark) for axis + tooltip colors. */
   themeMode: ThemeMode;
   /** Bollinger multiplier k in MA ± k × σ. Default 2. */
@@ -111,16 +127,11 @@ export interface BuildPairOptionArgs {
   /** Px-Vol States overlay (selected speed × vol combo): precomputed
    *  markArea rects over the consecutive runs of matching dates + the
    *  legend label + the accent color. Null when the row is off. */
-  pxVolShade?: {
-    label: string;
-    data: Array<
-      [
-        { xAxis: string; itemStyle: { color: string } },
-        { xAxis: string },
-      ]
-    >;
-    accent: string;
-  } | null;
+  pxVolShade?: ShadeOverlay | null;
+  /** Market-regime overlay (stats.market_regime_spans — the selected
+   *  regime's contiguous spans): same markArea shape, one per picked
+   *  regime. Rendered identically to pxVolShade. */
+  regimeShades?: Array<ShadeOverlay>;
 }
 
 /** Per-window OHLC extrema fields picked from a MovAveSpreadOhlcRow. */
@@ -288,6 +299,7 @@ function rollingExtremes(
 
 export function buildPairOption({
   pair,
+  shared,
   themeMode,
   bollingerK = 2,
   tradingAmtMode = "lowkey",
@@ -300,6 +312,7 @@ export function buildPairOption({
   streakPct = null,
   streakAnchorIdx = null,
   pxVolShade = null,
+  regimeShades = null,
 }: BuildPairOptionArgs): EChartsOption {
   const c = axisColors(themeMode);
   const rows = pair.rows;
@@ -319,68 +332,49 @@ export function buildPairOption({
   const highs = rows.map((r) => r.high);
   const lows = rows.map((r) => r.low);
   const tradingAmts = rows.map((r) => r.trading_amount);
-  const rsi3 = rows.map((r) => r.rsi_3days ?? null);
-  const rsi6 = rows.map((r) => r.rsi_6days ?? null);
-  const rsi10 = rows.map((r) => r.rsi_10days ?? null);
-  const rsi14 = rows.map((r) => r.rsi_14days ?? null);
-  const rsi20 = rows.map((r) => r.rsi_20days ?? null);
 
-  const amtMaSlopeOfLong = rows.map((r) => {
-    switch (pair.ma_long) {
-      case 5:   return r.trading_amt_ma5_slope ?? null;
-      case 20:  return r.trading_amt_ma20_slope ?? null;
-      case 60:  return r.trading_amt_ma60_slope ?? null;
-      case 120: return r.trading_amt_ma120_slope ?? null;
-      case 255: return r.trading_amt_ma255_slope ?? null;
-      default:  return null;
-    }
-  });
+  // Tooltip-only per-date metrics (RSI, trading-amt slopes/shares, rolling-
+  // window OHLC) are shared across all pairs — one copy in the chart
+  // response's `shared` array, read here at the same index.
+  const SHARED_SLOPE_KEYS: Record<number, keyof MovAveSpreadSharedMetricsRow> = {
+    5: "trading_amt_ma5_slope",
+    20: "trading_amt_ma20_slope",
+    60: "trading_amt_ma60_slope",
+    120: "trading_amt_ma120_slope",
+    255: "trading_amt_ma255_slope",
+  };
+  const SHARED_SHARE_KEYS: Record<number, keyof MovAveSpreadSharedMetricsRow> = {
+    5: "trading_amt_market_share_ma5",
+    20: "trading_amt_market_share_ma20",
+    60: "trading_amt_market_share_ma60",
+    120: "trading_amt_market_share_ma120",
+    255: "trading_amt_market_share_ma255",
+  };
+  const sharedNum = (i: number, key: keyof MovAveSpreadSharedMetricsRow): number | null =>
+    (shared?.[i]?.[key] as number | null | undefined) ?? null;
 
-  const amtMarketShareOfLong = rows.map((r) => {
-    switch (pair.ma_long) {
-      case 5:   return r.trading_amt_market_share_ma5 ?? null;
-      case 20:  return r.trading_amt_market_share_ma20 ?? null;
-      case 60:  return r.trading_amt_market_share_ma60 ?? null;
-      case 120: return r.trading_amt_market_share_ma120 ?? null;
-      case 255: return r.trading_amt_market_share_ma255 ?? null;
-      default:  return null;
-    }
-  });
+  const rsi3 = rows.map((_, i) => sharedNum(i, "rsi_3days"));
+  const rsi6 = rows.map((_, i) => sharedNum(i, "rsi_6days"));
+  const rsi10 = rows.map((_, i) => sharedNum(i, "rsi_10days"));
+  const rsi14 = rows.map((_, i) => sharedNum(i, "rsi_14days"));
+  const rsi20 = rows.map((_, i) => sharedNum(i, "rsi_20days"));
 
-  const ohlcOpens = rows.map((r) => {
-    switch (pair.ma_long) {
-      case 20:  return r.open_20d ?? null;
-      case 60:  return r.open_60d ?? null;
-      case 120: return r.open_120d ?? null;
-      case 255: return r.open_255d ?? null;
-      case 500: return r.open_500d ?? null;
-      case 750: return r.open_750d ?? null;
-      default:  return null;
-    }
-  });
-  const ohlcHighs = rows.map((r) => {
-    switch (pair.ma_long) {
-      case 20:  return r.high_20d ?? null;
-      case 60:  return r.high_60d ?? null;
-      case 120: return r.high_120d ?? null;
-      case 255: return r.high_255d ?? null;
-      case 500: return r.high_500d ?? null;
-      case 750: return r.high_750d ?? null;
-      default:  return null;
-    }
-  });
-  const ohlcLows = rows.map((r) => {
-    switch (pair.ma_long) {
-      case 20:  return r.low_20d ?? null;
-      case 60:  return r.low_60d ?? null;
-      case 120: return r.low_120d ?? null;
-      case 255: return r.low_255d ?? null;
-      case 500: return r.low_500d ?? null;
-      case 750: return r.low_750d ?? null;
-      default:  return null;
-    }
-  });
+  const amtMaSlopeOfLong = rows.map((_, i) =>
+    sharedNum(i, SHARED_SLOPE_KEYS[pair.ma_long] ?? "trading_amt_ma255_slope"),
+  );
 
+  const amtMarketShareOfLong = rows.map((_, i) =>
+    sharedNum(i, SHARED_SHARE_KEYS[pair.ma_long] ?? "trading_amt_market_share_ma255"),
+  );
+
+  const ohlcOpens = rows.map((_, i) => sharedNum(i, `open_${pair.ma_long}d` as keyof MovAveSpreadSharedMetricsRow));
+  const ohlcHighs = rows.map((_, i) => sharedNum(i, `high_${pair.ma_long}d` as keyof MovAveSpreadSharedMetricsRow));
+  const ohlcLows = rows.map((_, i) => sharedNum(i, `low_${pair.ma_long}d` as keyof MovAveSpreadSharedMetricsRow));
+
+  // Trend classification (60d ma/ema pairs) — tooltip readout ONLY since
+  // the trend background shades were removed from the UI (the py-side
+  // classification is untouched; trendBandsToMarkArea stays available in
+  // trendBands.ts for a future reintroduction).
   const isMA60Pair = pair.ma_long === 60;
   const trendBands = isMA60Pair ? computeTrendBands(shorts, longs, longSlopes, longStds) : [];
   const hasTrendBands = trendBands.length > 0;
@@ -607,12 +601,12 @@ export function buildPairOption({
   if (streakData != null) {
     legendData.push(`High ${streakLabel}`, `Low ${streakLabel}`);
   }
-  if (pxVolShade != null) {
-    legendData.push(pxVolShade.label);
-  }
-  const trendLegendNames = hasTrendBands ? ["▼ Downward", "▬ Flat", "▲ Upward"] : [];
-  if (hasTrendBands) {
-    legendData.push(...trendLegendNames);
+  const shadeOverlays: ShadeOverlay[] = [
+    ...(pxVolShade != null ? [pxVolShade] : []),
+    ...(regimeShades ?? []),
+  ];
+  for (const so of shadeOverlays) {
+    legendData.push(so.label);
   }
 
   const amtBarData: Array<number | null> = tradingAmts.map((v) =>
@@ -642,15 +636,6 @@ export function buildPairOption({
     symbol: "none",
     lineStyle: { color: lColor, width: 1.4 },
     z: 5,
-    ...(hasTrendBands
-      ? {
-          markArea: {
-            silent: true,
-            itemStyle: { borderWidth: 0 },
-            data: trendBandsToMarkArea(trendBands, dates),
-          },
-        }
-      : {}),
     ...(ohlcClickMarkLine != null ? ohlcClickMarkLine : {}),
   });
 
@@ -785,29 +770,10 @@ export function buildPairOption({
     }
   }
 
-  if (hasTrendBands) {
-    const trendLegendColors: Record<string, string> = {
-      "▼ Downward": TREND_DOWN_COLOR.replace("0.07", "0.6"),
-      "▬ Flat": TREND_FLAT_COLOR.replace("0.07", "0.6"),
-      "▲ Upward": TREND_UP_COLOR.replace("0.05", "0.6"),
-    };
-    for (const name of trendLegendNames) {
-      echartsSeries.push({
-        type: "scatter",
-        name,
-        data: [null],
-        symbol: "circle",
-        symbolSize: 7,
-        itemStyle: { color: trendLegendColors[name] },
-        z: 0,
-      });
-    }
-  }
-
   // Per-side high/low streak shading series (rect legend marker + that
   // side's markArea: light window zone + the darker whole-window long
-  // streak band) — same toggle-per-legend-entry pattern as the trend-band
-  // shading above. Both sides always carry the window zone rect when the
+  // streak band) — same toggle-per-legend-entry pattern as the
+  // shade overlays below. Both sides always carry the window zone rect when the
   // combo is selected; the dark band only when that side broke the band.
   if (streakData != null) {
     const streakSides: Array<{
@@ -855,22 +821,24 @@ export function buildPairOption({
   // legend series carrying the matched runs' markArea — same
   // toggle-per-legend-entry pattern as the streak shading above.
   // z=0 so the shade sits behind the streak layers it may overlap.
-  if (pxVolShade != null && pxVolShade.data.length > 0) {
+  for (const so of shadeOverlays) {
+    if (so.data.length === 0) continue;
     echartsSeries.push({
       type: "scatter",
-      name: pxVolShade.label,
+      name: so.label,
       data: [null],
       symbol: "rect",
       symbolSize: [10, 8],
-      itemStyle: { color: pxVolShade.accent, opacity: 0.45 },
+      itemStyle: { color: so.accent, opacity: 0.45 },
       z: 0,
       markArea: {
         silent: true as const,
         itemStyle: { borderWidth: 0 },
-        data: pxVolShade.data,
+        data: so.data,
       },
     });
   }
+
 
   if (tradingAmtMode !== "off") {
     const barOpacity = 0.15;

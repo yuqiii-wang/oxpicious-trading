@@ -134,6 +134,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "compute_moving_averages": ("_common.df_utils.rolling", "compute_moving_averages"),
     "compute_emas": ("_common.df_utils.rolling", "compute_emas"),
     "grouped_rolling_agg": ("_common.df_utils.rolling", "grouped_rolling_agg"),
+    "grouped_rolling_quantile": ("_common.df_utils.rolling", "grouped_rolling_quantile"),
     # Pairwise rolling corr — CuPy fallback for the op cuDF lacks
     "pairwise_rolling_corr": ("_common.df_utils.rolling_corr", "pairwise_rolling_corr"),
     # Return CuPy pooled VRAM to the driver after a GPU burst
@@ -155,6 +156,9 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "host_dtypes": ("_common.df_utils.sanitize", "host_dtypes"),
     # host-pure NaN/None/NaT mask (replaces proxied pd.isna on ndarrays)
     "host_isna": ("_common.df_utils.sanitize", "host_isna"),
+    # sorted unique column values as a python list (replaces
+    # series.unique().tolist() — cudf fallbacks on non-numeric columns)
+    "host_unique": ("_common.df_utils.sanitize", "host_unique"),
     # float8 epoch-seconds column -> datetime64[unit] (DB read boundary;
     # default [us] = DB convention, unit="ns" only at wide-op sites)
     "epoch_col_to_dt64": ("_common.df_utils.sanitize", "epoch_col_to_dt64"),

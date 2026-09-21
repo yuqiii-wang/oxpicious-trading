@@ -158,11 +158,11 @@ SELECT
     i.date,
     i.contract_code,
     i.contract_name,
+    i.exchange,
     -- Terms
     t.underlying_code,
     t.underlying_name,
     t.underlying_target_type,
-    t.exchange,
     t.option_type,
     t.expiry_month,
     t.expiry_date,

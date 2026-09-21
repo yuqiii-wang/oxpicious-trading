@@ -32,12 +32,15 @@
  *     change. Each filter popup also carries an order row (Ascending ⇄
  *     Descending) that makes its column the table's ORDERING KEY — rows
  *     render sorted by it, defaulting to the first date column descending.
+ *   • info              — optional header description; renders an InfoMark
+ *     beside the header content whose popover explains the column.
  *
  * Rows are zebra-striped; when every row is filtered out a single muted
  * row says so; when `rows` is empty from the start `emptyState` renders.
  */
 import { memo, useMemo, type ReactNode } from "react";
 import {
+  Box,
   Table,
   TableBody,
   TableCell,
@@ -47,6 +50,7 @@ import {
   Typography,
 } from "@mui/material";
 import useTableHeaderFilters, { type HeaderFilterDef } from "@/hooks/table-header-filters";
+import { InfoMark } from "@/shared/components/description/InfoMark";
 import {
   expandedTableBodyCellSx,
   expandedTableBodyRowSx,
@@ -68,6 +72,11 @@ export interface ExpandedTableFilter<T> {
   /** The row's filterable value (ticks: string; date: comparable
    *  "YYYY-MM"/"YYYY-MM-DD"; range: number). */
   value: (row: T) => string | number | null;
+  /** ticks only — optional per-item content override in the tick menu
+   *  (a colored dot before each regime name, ...); default renders the
+   *  raw value string. Cosmetic only — filtering still matches on
+   *  `value`. */
+  renderItem?: (v: string) => ReactNode;
 }
 
 export interface ExpandedTableColumn<T> {
@@ -85,6 +94,11 @@ export interface ExpandedTableColumn<T> {
    *  one top-row group cell. */
   group?: string;
   filter?: ExpandedTableFilter<T>;
+  /** Header info-mark description — when set, an InfoMark renders beside
+   *  the header content (label or filter menu); clicking it opens the
+   *  description popover (the "what does this column mean" affordance).
+   *  Newlines split into paragraphs. */
+  info?: string;
 }
 
 export interface ExpandedTableProps<T> {
@@ -219,6 +233,7 @@ export function ExpandedTableImpl<T>({
               granularity: c.filter!.granularity,
               frozenFromYears: c.filter!.frozenFromYears,
               value: c.filter!.value,
+              renderItem: c.filter!.renderItem,
             }))
         : [],
     [columns, enableFilters],
@@ -259,8 +274,16 @@ export function ExpandedTableImpl<T>({
   const subSx = { ...expandedTableHeadCellSx, position: "sticky", top: HEAD_ROW_H, py: 0.4 } as const;
   const groupSx = { ...headSx, textAlign: "center" } as const;
 
-  const headContent = (c: ExpandedTableColumn<T>, def?: HeaderFilterDef<T>): ReactNode =>
-    c.filter != null && def != null ? menuFor(def) : c.label;
+  const headContent = (c: ExpandedTableColumn<T>, def?: HeaderFilterDef<T>): ReactNode => {
+    const content = c.filter != null && def != null ? menuFor(def) : c.label;
+    if (c.info == null) return content;
+    return (
+      <Box component="span" sx={{ display: "inline-flex", alignItems: "center" }}>
+        {content}
+        <InfoMark title={c.label} description={c.info} />
+      </Box>
+    );
+  };
 
   const defByKey = new Map(filterDefs.map((d) => [d.key, d]));
 

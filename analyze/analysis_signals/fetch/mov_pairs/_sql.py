@@ -40,12 +40,11 @@ from analyze.analysis_forecasts.config import (
 
 MOV_PAIRS_BUCKET_COLUMNS = [
     "code", "stat_month", "fast_leg", "pair_window", "side",
-    "is_market_hyped",
+    "regime_state",
     "ave_change", "reverse_prob", "occurrence_count",
     "ave_next",
     "ave_5d", "max_5d", "min_5d",
     "ave_20d", "max_20d", "min_20d",
-    "ave_60d", "max_60d", "min_60d",
     "trig_date", "trig_excess",
 ]
 MOV_PAIRS_BUCKET_EPOCH_COLS = ("stat_month", "trig_date")
@@ -63,7 +62,7 @@ def mov_pairs_buckets_sql(bucket_table: str, bucket: str) -> str:
            m.fast_leg,
            m.pair_window::int                       AS pair_window,
            m.side,
-           m.is_market_hyped,
+           m.regime_state,
            fmx.ave_change::float8                   AS ave_change,
            fmx.reverse_prob::float8                 AS reverse_prob,
            fmx.occurrence_count::float8             AS occurrence_count,
@@ -74,9 +73,6 @@ def mov_pairs_buckets_sql(bucket_table: str, bucket: str) -> str:
            q20.ave_20d                              AS ave_20d,
            q20.max_20d                              AS max_20d,
            q20.min_20d                              AS min_20d,
-           q60.ave_60d                              AS ave_60d,
-           q60.max_60d                              AS max_60d,
-           q60.min_60d                              AS min_60d,
            extract(epoch from u.trig_date)::float8  AS trig_date,
            u.trig_excess::float8                    AS trig_excess
     FROM {TABLE_IDENTITIES} i
@@ -85,13 +81,13 @@ def mov_pairs_buckets_sql(bucket_table: str, bucket: str) -> str:
     CROSS JOIN LATERAL (
         SELECT f.ave_change, f.reverse_prob, f.occurrence_count
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'mixed'
+        WHERE f.forecast_id = i.forecast_id AND f.period = 'mixed' AND f.delay = 0
         OFFSET 0
     ) fmx
     LEFT JOIN LATERAL (
         SELECT f.trigger_dates, f.trigger_excess
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'next'
+        WHERE f.forecast_id = i.forecast_id AND f.period = 'next' AND f.delay = 0
         OFFSET 0
     ) fnx ON TRUE
     LEFT JOIN LATERAL unnest(fnx.trigger_dates, fnx.trigger_excess)
@@ -102,7 +98,7 @@ def mov_pairs_buckets_sql(bucket_table: str, bucket: str) -> str:
         -- close-based max/min — its max/min check is not applicable)
         SELECT f.ave_change::float8 AS ave_next
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = 'next'
+        WHERE f.forecast_id = i.forecast_id AND f.period = 'next' AND f.delay = 0
         OFFSET 0
     ) qn ON TRUE
     LEFT JOIN LATERAL (
@@ -110,7 +106,7 @@ def mov_pairs_buckets_sql(bucket_table: str, bucket: str) -> str:
                f.max_change::float8 AS max_5d,
                f.min_change::float8 AS min_5d
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = '5d'
+        WHERE f.forecast_id = i.forecast_id AND f.period = '5d' AND f.delay = 0
         OFFSET 0
     ) q5 ON TRUE
     LEFT JOIN LATERAL (
@@ -118,17 +114,9 @@ def mov_pairs_buckets_sql(bucket_table: str, bucket: str) -> str:
                f.max_change::float8 AS max_20d,
                f.min_change::float8 AS min_20d
         FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = '20d'
+        WHERE f.forecast_id = i.forecast_id AND f.period = '20d' AND f.delay = 0
         OFFSET 0
     ) q20 ON TRUE
-    LEFT JOIN LATERAL (
-        SELECT f.ave_change::float8 AS ave_60d,
-               f.max_change::float8 AS max_60d,
-               f.min_change::float8 AS min_60d
-        FROM {TABLE_FORECAST} f
-        WHERE f.forecast_id = i.forecast_id AND f.period = '60d'
-        OFFSET 0
-    ) q60 ON TRUE
     WHERE i.sec_type = $1
       AND i.bucket = '{bucket}'
       AND i.stat_month = $2

@@ -283,6 +283,19 @@ def backfill_all_csvs(
     """
     total_bars = 0
     for asset in assets:
+        if asset.name == "options":
+            # Options need their own path: bars subtract day-cumulative
+            # volume AND amount, codes are numeric contract ids from the
+            # day-contract map, and completeness is MAX(time)-based (the
+            # identity table also holds SZSE/CFFEX rows that never stream,
+            # so the generic ratio check can never pass).
+            from ._options import backfill_options_asset
+
+            try:
+                total_bars += backfill_options_asset(conn, asset, asset.contract_map)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("backfill options failed: %s", e)
+            continue
         out_dir = resolve_out_dir(
             None,  # __file__ not needed; resolve_out_dir uses project root
             asset.csv_subdir,

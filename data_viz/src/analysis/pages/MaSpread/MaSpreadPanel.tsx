@@ -5,9 +5,7 @@
  * Each panel renders (top → bottom):
  *   1. 9 pair chips arranged as a 2-row grid aligned by long MA — the Price
  *      row (Price/MA5 … Price/MA255) above the MA5 row (MA5/MA20 …
- *      MA5/MA255, with the MA5 column empty). A "Trend Study" column header
- *      sits above the MA60 column (shared by Price/MA60 and MA5/MA60) and
- *      highlights when either MA60 pair is active. Clicking a chip selects
+ *      MA5/MA255, with the MA5 column empty). Clicking a chip selects
  *      the pair shown in the chart below.
  *   2. Two-curve chart (short + long MA) with green fill when short > long
  *      (growth) and red fill when short < long (decline). The tooltip shows
@@ -31,7 +29,8 @@
  *      clicked date (two points determining a line).
  *   5. High/Low Streaks section beneath the OHLC Window row — NESTED
  *      buttons: the first layer holds the band lookback periods
- *      (255/500/750/1275, period-column aligned with the OHLC row);
+ *      (60/120/255/500/750/1275, period-column aligned with the OHLC
+ *      row);
  *      clicking one expands a second layer of band tightness pcts
  *      (1/5/10%). Selecting a pct fills the LATEST date's trailing
  *      period-row window with its top/bottom pct% price zones (light
@@ -59,7 +58,17 @@
  *      combo strength (sharp × heavy = darkest, e.g. rising price +
  *      increasing amount = strong growth).
  *
- * Fetches its own chart data on mount via fetchMovAveSpreadChart(code, secType).
+ * Fetches its own chart data on mount via fetchMovAveSpreadChart(code, secType)
+ * — the DEFAULT load carries just the 18 Simple-MA + EMA pair series and the
+ * shared per-date tooltip metrics. The other metric groups load ON DEMAND:
+ * the first pick of an Amt/MA chip, an OHLC Window button, a High/Low
+ * Streaks period, or a Px-Vol state fetches that group via
+ * fetchMovAveSpreadExtras; while any group is in flight every control in
+ * the panel is disabled and the plot shows the shared spinner.
+ *
+ * Every button-group title carries a small info mark (SectionLabel) that
+ * opens a popover with the group's description — the texts live in
+ * groupDescriptions.ts, keyed by group id.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
@@ -79,14 +88,34 @@ import { useAiAskAddon } from "@/shared/ai-ask";
 import type { AiAskSpec } from "@/shared/ai-ask";
 import type { ECharts } from "echarts";
 import { UP_COLOR } from "@/theme/chart-palette";
+import {
+  REGIME_ACCENT_COLORS,
+  REGIME_LABELS,
+  REGIME_SHADE_COLORS,
+  ALL_REGIMES,
+  regimeSpansToMarkArea,
+} from "@/shared/charts/regimeBands";
+import type { MarketRegime, MarketRegimeSpans } from "@shared/types";
 import { fmtNum, fmtPct } from "@/lib/series";
-import { fetchMovAveSpreadChart, invalidateCacheForUrl } from "@/lib/api-client";
+import {
+  fetchMovAveSpreadChart,
+  fetchMovAveSpreadExtras,
+  fetchMarketRegimeSpans,
+  invalidateCacheForPrefix,
+  invalidateCacheForUrl,
+} from "@/lib/api-client";
 import type { OhlcMode } from "@/lib/ohlc";
 import type {
   MovAveSpreadChartResponse,
   MovAveSpreadPairSeries,
+  MovAveSpreadAmtRow,
+  MovAveSpreadOhlcRow,
+  MovAveSpreadHighLowStreak,
+  MovAveSpreadPriceVsAmtDay,
+  MovAveSpreadMetric,
 } from "@shared/types";
 import type { PanelProps } from "./types";
+import { SectionLabel } from "./SectionLabel";
 import {
   OHLC_WINDOWS,
   HIGH_LOW_STREAK_PERIODS,
@@ -116,13 +145,33 @@ import {
 const BOLL_K_OPTIONS = [0, 0.5, 1, 1.5, 2, 2.5, 3];
 
 /**
+ * The on-demand metric groups (MovAveSpreadMetric) → the ExtrasState key
+ * they populate. Each group feeds one control section and is fetched the
+ * first time one of its buttons is picked:
+ *   amt → the 5 Amt/MA chips · ohlc → the OHLC Window row ·
+ *   streaks → the High/Low Streaks row · pxvol → the Px-Vol States row.
+ */
+const METRIC_STATE_KEY: Record<MovAveSpreadMetric, "amtPairs" | "ohlc" | "highLowStreaks" | "priceVsAmt"> = {
+  amt: "amtPairs",
+  ohlc: "ohlc",
+  streaks: "highLowStreaks",
+  pxvol: "priceVsAmt",
+};
+
+/** On-demand metric groups loaded so far (per code + refresh). */
+interface ExtrasState {
+  amtPairs?: MovAveSpreadPairSeries[];
+  ohlc?: MovAveSpreadOhlcRow[];
+  highLowStreaks?: MovAveSpreadHighLowStreak[];
+  priceVsAmt?: MovAveSpreadPriceVsAmtDay[];
+}
+
+/**
  * Long-MA column order used to lay out the 9 pair chips as a 2-row grid
  * aligned by long MA (so Price/MA60 and MA5/MA60 share one column). The
  * MA5 row leaves the MA5 column empty (no MA5/MA5 pair exists).
  */
 const LONG_MA_ORDER = [5, 20, 60, 120, 255] as const;
-/** Column index of MA60 in LONG_MA_ORDER — gets the "Trend Study" header. */
-const TREND_STUDY_COL = 2;
 
 /**
  * Long-EMA column order for the 9 EMA pair chips. EMA windows are
@@ -172,6 +221,18 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // the completion handler).
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // ---- On-demand metric groups (see METRIC_STATE_KEY) ---------------------
+  // The default chart load carries just the 18 pair series + the shared
+  // tooltip metrics. The Amt/MA pairs, OHLC extrema, streak rows, and
+  // px-vol states load lazily: picking a section's button fetches its
+  // group, and while ANY group is in flight every control is disabled and
+  // the plot shows the shared spinner (see extrasLoading).
+  const [extras, setExtras] = useState<ExtrasState>({});
+  const [loadingMetrics, setLoadingMetrics] = useState<MovAveSpreadMetric[]>([]);
+  const [metricError, setMetricError] = useState<string | null>(null);
+  const extrasLoading = loadingMetrics.length > 0;
+  const amtLoaded = extras.amtPairs != null;
+
   // Which of the 9 pairs is shown in the single plot (default 0 = Price/MA5).
   const [selectedPairIdx, setSelectedPairIdx] = useState(0);
 
@@ -185,13 +246,38 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   const hasAnalysisData = loading || firstPairRows.length > 0;
 
   // Refetch after a per-security analysis rebuild (AnalysisRunButton):
-  // drop the cached chart response, then bump the refresh key.
+  // drop the cached chart + extras responses, then bump the refresh key.
   const handleAnalysisRunCompleted = useCallback(() => {
     invalidateCacheForUrl(
       `/api/analysis/mov-ave-spread/chart?code=${code}&sec_type=${secType}`,
     );
+    invalidateCacheForPrefix("/api/analysis/mov-ave-spread/extras");
     setRefreshKey((k) => k + 1);
   }, [code, secType]);
+
+  // Fetch ONE on-demand metric group (no-op when already loaded or in
+  // flight). Resolves after the group lands — callers chain their button's
+  // state change onto it so the pick applies the moment the spinner stops.
+  const ensureMetric = useCallback(
+    (metric: MovAveSpreadMetric): Promise<void> => {
+      if (extras[METRIC_STATE_KEY[metric]] != null) return Promise.resolve();
+      setLoadingMetrics((prev) =>
+        prev.includes(metric) ? prev : [...prev, metric],
+      );
+      setMetricError(null);
+      return fetchMovAveSpreadExtras(code, secType, [metric])
+        .then((d) => {
+          setExtras((prev) => ({ ...prev, [METRIC_STATE_KEY[metric]]: d[METRIC_STATE_KEY[metric]] }));
+        })
+        .catch((e: Error) => {
+          setMetricError(e.message);
+        })
+        .finally(() => {
+          setLoadingMetrics((prev) => prev.filter((m) => m !== metric));
+        });
+    },
+    [extras, code, secType],
+  );
 
   // Bollinger multiplier k in MA ± k×σ. Default 2 (standard Bollinger).
   // 0 hides the envelope. Affects Price/MA and Price/EMA pairs (ma_short === 0);
@@ -239,6 +325,58 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     setPxVolVol((prev) => (prev === v ? null : v));
   }, []);
 
+  // Market Regimes buttons (stats.market_regimes): multi-select among ALL
+  // regimes — calm included (its grey shade marks the market's calm
+  // stretches; the other charts keep calm as the never-shaded background
+  // via the shared SHADED_REGIMES). The first pick fetches the code's
+  // contiguous same-regime spans once (GET /api/analysis/market-regimes)
+  // and caches them per code.
+  const [regimePicks, setRegimePicks] = useState<Set<MarketRegime>>(new Set());
+  const [regimeSpans, setRegimeSpans] = useState<Partial<MarketRegimeSpans> | null>(null);
+  const [regimesLoading, setRegimesLoading] = useState(false);
+
+  // Tracks the panel's current (secType, code) so a slow regime-span
+  // response for a previous code never lands after a switch.
+  const regimeCodeKeyRef = useRef(`${secType}:${code}`);
+  useEffect(() => {
+    regimeCodeKeyRef.current = `${secType}:${code}`;
+  }, [code, secType]);
+
+  // Picking a regime fetches the spans ONCE (imperatively — an effect that
+  // both sets and depends on its own loading flag would kill its in-flight
+  // fetch on the very re-render it triggers, leaving the row stuck
+  // disabled with the shades never drawn).
+  const toggleRegime = useCallback(
+    (r: MarketRegime) => {
+      setRegimePicks((prev) => {
+        const next = new Set(prev);
+        if (next.has(r)) next.delete(r);
+        else next.add(r);
+        return next;
+      });
+      if (regimeSpans != null || regimesLoading) return;
+      setRegimesLoading(true);
+      const reqKey = `${secType}:${code}`;
+      fetchMarketRegimeSpans(code, secType)
+        .then((d) => {
+          if (regimeCodeKeyRef.current === reqKey) setRegimeSpans(d.spans ?? {});
+        })
+        .catch(() => {
+          if (regimeCodeKeyRef.current === reqKey) setRegimeSpans({});
+        })
+        .finally(() => {
+          if (regimeCodeKeyRef.current === reqKey) setRegimesLoading(false);
+        });
+    },
+    [code, secType, regimeSpans, regimesLoading],
+  );
+
+  useEffect(() => {
+    setRegimePicks(new Set());
+    setRegimeSpans(null);
+    setRegimesLoading(false);
+  }, [code, secType]);
+
   const toggleStreakPeriod = useCallback((w: number) => {
     setStreakPeriod((prev) => {
       if (prev === w) {
@@ -253,11 +391,66 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     setStreakPct((prev) => (prev === p ? null : p));
   }, []);
 
-  // Fetch chart data on mount and whenever the code/sec_type changes.
+  // ---- Click-through handlers: the FIRST pick of an unloaded section
+  // loads its metric group first and applies the pick as soon as the fetch
+  // resolves; later picks toggle directly. While the fetch is in flight
+  // the freeze disables every control, so at most one load runs at a time.
+  const handleOhlcWindowClick = useCallback(
+    (w: number) => {
+      if (extras.ohlc == null) {
+        void ensureMetric("ohlc").then(() =>
+          setOhlcWindow((prev) => (prev === w ? null : w)),
+        );
+      } else {
+        setOhlcWindow((prev) => (prev === w ? null : w));
+      }
+    },
+    [ensureMetric, extras.ohlc],
+  );
+
+  const handleStreakPeriodClick = useCallback(
+    (w: number) => {
+      if (extras.highLowStreaks == null) {
+        void ensureMetric("streaks").then(() => toggleStreakPeriod(w));
+      } else {
+        toggleStreakPeriod(w);
+      }
+    },
+    [ensureMetric, extras.highLowStreaks, toggleStreakPeriod],
+  );
+
+  const handlePxVolSpeedClick = useCallback(
+    (s: PxVolSpeed) => {
+      if (extras.priceVsAmt == null) {
+        void ensureMetric("pxvol").then(() => togglePxVolSpeed(s));
+      } else {
+        togglePxVolSpeed(s);
+      }
+    },
+    [ensureMetric, extras.priceVsAmt, togglePxVolSpeed],
+  );
+
+  const handlePxVolVolClick = useCallback(
+    (v: PxVolVolState) => {
+      if (extras.priceVsAmt == null) {
+        void ensureMetric("pxvol").then(() => togglePxVolVol(v));
+      } else {
+        togglePxVolVol(v);
+      }
+    },
+    [ensureMetric, extras.priceVsAmt, togglePxVolVol],
+  );
+
+  // Fetch chart data on mount and whenever the code/sec_type changes. The
+  // on-demand metric groups reset with it — a new code starts from the
+  // default pairs-only load.
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setExtras({});
+    setLoadingMetrics([]);
+    setMetricError(null);
     fetchMovAveSpreadChart(code, secType)
       .then((d) => {
         if (cancelled) return;
@@ -289,10 +482,14 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     [ohlcWindow, streakPeriod],
   );
 
-  // The full pairs list (no slicing — the chart's in-chart dataZoom handles
-  // viewport control). Used for the pair chips, the pair index lookup, and the
-  // chart option builder.
-  const pairs = chartData?.pairs ?? [];
+  // The full pairs list — the 18 default series plus the 5 Amt/MA series
+  // once the "amt" extras group has loaded (no slicing — the chart's
+  // in-chart dataZoom handles viewport control). Used for the pair chips,
+  // the pair index lookup, and the chart option builder.
+  const pairs = useMemo(
+    () => [...(chartData?.pairs ?? []), ...(extras.amtPairs ?? [])],
+    [chartData, extras.amtPairs],
+  );
 
   // Lookup from `${kind}-${ma_short}-${ma_long}` → index in pairs, used to
   // place each pair chip in its long-MA column of the 2-row pair grid.
@@ -308,16 +505,16 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     return m;
   }, [pairs]);
 
-  // ---- High/Low Streaks data (analysis.mov_ave_high_low_pct_streaks via
-  // chartData.highLowStreaks) ----
+  // ---- High/Low Streaks data ("streaks" extras group — loaded on demand
+  // the first time a High/Low Streaks period button is picked) ----
   // FLAT per-streak list across ALL (period, pctType) combos — the nested
   // buttons select a combo, and the WINDOW-CONFINED subset is merged per
   // DB band-break streak rows (analysis.mov_ave_high_low_pct_streaks,
   // tested against each month's OWN moving band) — NOT used for shading
   // (the break bands are detected client-side vs the anchor window's
   // static edge, see longStreaks below); they only gate the buttons'
-  // availability.
-  const highLowStreaks = chartData?.highLowStreaks ?? null;
+  // availability caption.
+  const highLowStreaks = extras.highLowStreaks ?? null;
   const hasStreakData = highLowStreaks != null && highLowStreaks.length > 0;
 
   // The anchor-date band window shown by default (latest date) or when a
@@ -362,7 +559,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // button picked).
   const pxVolStates = useMemo(() => {
     if (pxVolSpeed == null && pxVolVol == null) return null;
-    const dbDays = chartData?.priceVsAmt;
+    const dbDays = extras.priceVsAmt;
     if (dbDays != null) {
       const byDate = new Map(dbDays.map((d) => [d.date, d]));
       return firstPairRows.map((r) => {
@@ -374,7 +571,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       firstPairRows.map((r) => r.short_value),
       firstPairRows.map((r) => r.trading_amount),
     );
-  }, [chartData, firstPairRows, pxVolSpeed, pxVolVol]);
+  }, [chartData, extras.priceVsAmt, firstPairRows, pxVolSpeed, pxVolVol]);
 
   // The selected combo's consecutive matched runs + the chart overlay
   // (legend label + markArea rects shaded by the combo's strength color).
@@ -400,12 +597,26 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
     };
   }, [pxVolSpeed, pxVolVol, pxVolRuns]);
 
+  // The picked regimes' span overlays (one legend series each — the
+  // regimeBands palette's per-regime shade color, calm's grey included).
+  const regimeShades = useMemo(() => {
+    if (regimePicks.size === 0 || regimeSpans == null) return [];
+    const out: Array<{ label: string; data: ReturnType<typeof regimeSpansToMarkArea>; accent: string }> = [];
+    for (const r of ALL_REGIMES) {
+      if (!regimePicks.has(r)) continue;
+      const spans = regimeSpans[r] ?? [];
+      out.push({
+        label: `Regime(${REGIME_LABELS[r]})`,
+        accent: REGIME_ACCENT_COLORS[r],
+        data: regimeSpansToMarkArea(spans, REGIME_SHADE_COLORS[r]),
+      });
+    }
+    return out;
+  }, [regimePicks, regimeSpans]);
+
   // Clamp selectedPairIdx to valid range.
   const safePairIdx = Math.min(selectedPairIdx, Math.max(0, pairs.length - 1));
   const selectedPair = pairs[safePairIdx];
-  // True when the active pair is a Price/MA60 or MA5/MA60 "trend study" pair —
-  // highlights the Trend Study column header.
-  const trendStudyActive = selectedPair?.ma_long === 60 && selectedPair?.kind === "price";
   // True when an Amt/MA pair is selected — price chips are frozen (disabled).
   const amtPairSelected = selectedPair?.kind === "amt";
 
@@ -495,7 +706,8 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       !loading && !error && selectedPair && selectedPair.rows.length > 0
         ? amtPairSelected
           ? buildAmtEnvelopeOption({
-              pair: selectedPair,
+              pair: selectedPair as Omit<MovAveSpreadPairSeries, "rows"> & { rows: MovAveSpreadAmtRow[] },
+              shared: chartData?.shared ?? null,
               themeMode,
               ohlcMode,
               bollingerK,
@@ -504,21 +716,24 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
               streakPct,
               streakAnchorIdx: ohlcClickIdx,
               pxVolShade,
+              regimeShades,
             })
           : buildPairOption({
               pair: selectedPair,
+              shared: chartData?.shared ?? null,
               themeMode,
               bollingerK,
               tradingAmtMode,
               ohlcMode,
               ohlcWindow,
               ohlcClickIdx,
-              ohlcRows: chartData?.ohlc ?? null,
+              ohlcRows: extras.ohlc ?? null,
               longStreaks,
               streakPeriod,
               streakPct,
               streakAnchorIdx: ohlcClickIdx,
               pxVolShade,
+              regimeShades,
             })
         : null,
     [
@@ -526,17 +741,19 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       error,
       selectedPair,
       amtPairSelected,
+      chartData,
+      extras.ohlc,
       themeMode,
       bollingerK,
       tradingAmtMode,
       ohlcMode,
       ohlcWindow,
       ohlcClickIdx,
-      chartData,
       longStreaks,
       streakPeriod,
       streakPct,
       pxVolShade,
+      regimeShades,
     ],
   );
 
@@ -561,14 +778,14 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        `Moving-average spread study for ${code}: the selected pair (${selectedPair?.pair_label ?? "—"}) ` +
-        "plotted as the short curve vs the long MA with green fill when short > long (growth) and red fill when " +
-        "short < long (decline); the tooltip reports each series' slope and curvature. Overlays follow the card " +
-        "controls: a Bollinger ±kσ envelope around the long MA, a rolling OHLC High/Low window whose roof/floor " +
-        "trendlines are anchored by clicking a chart date, trailing-window High/Low break-streak zones, and " +
-        "Px-Vol state shading (price speed × trading-amount state). In percentage mode OHLC + MAs are rebased to " +
-        "% change from the first valid close; the Amt/MA pairs switch to an amount-envelope view with a lowkey " +
-        "price reference.",
+        `MA-spread study for ${code} — pair ${selectedPair?.pair_label ?? "—"}: short curve vs ` +
+        "long MA, green fill when short > long, red when short < long; tooltips report each " +
+        "series' slope and curvature. Control overlays: Bollinger ±kσ envelope on the long " +
+        "MA, click-anchored rolling High/Low trendlines (roof/floor), break-streak zones, " +
+        "Px-Vol state shading (price speed × amount state). % mode: OHLC + MAs rebased to " +
+        "% change from the first valid close; Amt pairs switch to an amount-envelope view " +
+        "with a lowkey price reference. Indication: green fill = momentum regime long; " +
+        "roof/floor breach = breakout; a deep streak = stretched — fade-prone.",
       instruments: [{ code, name: name || undefined }],
       series: amtPairSelected
         ? [
@@ -646,11 +863,12 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
   // Render a single pair chip (used in the 2-row pair grid). The chip fills
   // its grid column: display:flex overrides MUI's default inline-flex so
   // width:100% takes effect, and the label is centered within.
-  // Price and Amt chips are ALWAYS clickable. Clicking an already-active
-  // Amt/MA chip toggles it off ("unclick") and recovers the normal OHLC
-  // price style by falling back to Price/MA5 (pair index 0). Clicking an
-  // Amt chip switches the chart to the amt-envelope style with a lowkey
-  // OHLC reference.
+  // Price and EMA chips are always loaded with the default chart. Amt/MA
+  // chips belong to the "amt" extras group: the FIRST pick loads the group
+  // (freezing every control until it resolves) and selects the chip as
+  // soon as the data lands. Clicking an already-active Amt/MA chip toggles
+  // it off ("unclick") and recovers the normal OHLC price style by falling
+  // back to Price/MA5 (pair index 0).
   const renderPairChip = (
     pair: MovAveSpreadPairSeries,
     idx: number,
@@ -662,9 +880,14 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         label={pair.pair_label}
         clickable
         size="small"
+        disabled={extrasLoading}
         color={active ? "primary" : "default"}
         variant={active ? "filled" : "outlined"}
         onClick={() => {
+          if (isAmt && !amtLoaded) {
+            void ensureMetric("amt").then(() => setSelectedPairIdx(idx));
+            return;
+          }
           // Toggle off an active Amt/MA chip → recover OHLC price style.
           if (active && isAmt) {
             setSelectedPairIdx(0);
@@ -713,7 +936,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
         variant="bare"
         option={chartOption}
         height={420}
-        loading={loading}
+        loading={loading || extrasLoading}
         error={error}
         emptyText={
           selectedPair
@@ -731,43 +954,8 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
       {!loading && !error && pairs.length > 0 && (
         <Box sx={{ mt: 1, mb: 0.5 }}>
           {/* ---- Simple MA section ---- */}
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{ mb: 0.5, display: "block", fontSize: "0.7rem" }}
-          >
-            Pairs (Simple MA) — click to switch
-          </Typography>
+          <SectionLabel id="pairsSimple" standalone suffix=" — click to switch" />
           <Box sx={PERIOD_GRID_SX}>
-            {/* Header row: "Trend Study" label above the MA60 column. */}
-            {LONG_MA_ORDER.map((maLong, col) => (
-              <Box
-                key={`hdr-${maLong}`}
-                sx={{ gridColumn: col + 1, textAlign: "center", minHeight: 18 }}
-              >
-                {col === TREND_STUDY_COL && (
-                  <Typography
-                    variant="caption"
-                    component="span"
-                    sx={{
-                      fontSize: "0.65rem",
-                      fontWeight: 700,
-                      px: 1,
-                      py: 0.25,
-                      borderRadius: 1,
-                      display: "inline-block",
-                      color: trendStudyActive ? "#fff" : "#B71C1C",
-                      bgcolor: trendStudyActive
-                        ? "rgba(229, 57, 53, 0.85)"
-                        : "rgba(229, 57, 53, 0.10)",
-                      border: "1px solid rgba(229, 57, 53, 0.35)",
-                    }}
-                  >
-                    Trend Study
-                  </Typography>
-                )}
-              </Box>
-            ))}
             {/* Price row (ma_short = 0): one chip per long-MA column.
                 Always clickable — selecting one recovers the normal OHLC
                 price style (exits the amt-envelope view). */}
@@ -795,13 +983,7 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
           </Box>
 
           {/* ---- Exponential MA section ---- */}
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{ mt: 1, mb: 0.5, display: "block", fontSize: "0.7rem" }}
-          >
-            Pairs (Exponential MA) — click to switch
-          </Typography>
+          <SectionLabel id="pairsEma" standalone mt={1} suffix=" — click to switch" />
           <Box sx={PERIOD_GRID_SX}>
             {/* Price/EMA row (ma_short = 0): one chip per long-EMA column. */}
             {LONG_EMA_ORDER.map((emaLong, col) => {
@@ -831,21 +1013,44 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
             <Box sx={{ mt: 1 }}>
               <Box sx={PERIOD_GRID_SX}>
                 {/* Row label */}
-                <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
-                  <Typography
-                    variant="caption"
-                    component="span"
-                    sx={{
-                      fontSize: "0.65rem",
-                      color: amtPairSelected ? "primary.main" : "text.secondary",
-                      fontWeight: amtPairSelected ? 700 : 400,
-                    }}
-                  >
-                    Trading Amt/MA
-                  </Typography>
-                </Box>
+                <SectionLabel
+                  id="tradingAmt"
+                  active={amtPairSelected}
+                  suffix={
+                    extrasLoading && !amtLoaded
+                      ? " — loading…"
+                      : !amtLoaded
+                        ? " — click an Amt/MA chip to load"
+                        : ""
+                  }
+                />
                 {LONG_MA_ORDER.map((maLong, col) => {
                   const idx = pairIndexMap.get(`amt--1-${maLong}`);
+                  if (idx == null && !amtLoaded) {
+                    // Placeholder chip — the "amt" extras group isn't loaded
+                    // yet. Clicking it fetches the group (freezing every
+                    // control until it resolves) and selects the pair as
+                    // soon as it lands (amt series append after the 18
+                    // defaults, in this row's column order).
+                    return (
+                      <Box key={`amt-${col}`} sx={{ gridColumn: col + 1 }}>
+                        <Chip
+                          label={`Amt/MA${maLong}`}
+                          size="small"
+                          clickable
+                          disabled={extrasLoading}
+                          color="default"
+                          variant="outlined"
+                          onClick={() => {
+                            void ensureMetric("amt").then(() =>
+                              setSelectedPairIdx(18 + col),
+                            );
+                          }}
+                          sx={PERIOD_CHIP_SX}
+                        />
+                      </Box>
+                    );
+                  }
                   return (
                     <Box key={`amt-${col}`} sx={{ gridColumn: col + 1 }}>
                       {idx != null && renderPairChip(pairs[idx], idx)}
@@ -864,30 +1069,17 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
               MA20 column, …, 1275d in the last column. */}
           <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
             {/* Row label */}
-            <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
-              <Typography
-                variant="caption"
-                component="span"
-                sx={{
-                  fontSize: "0.65rem",
-                  color: ohlcWindow != null ? "primary.main" : "text.secondary",
-                  fontWeight: ohlcWindow != null ? 700 : 400,
-                }}
-              >
-                OHLC Window
-              </Typography>
-            </Box>
+            <SectionLabel id="ohlcWindow" active={ohlcWindow != null} />
             {OHLC_WINDOWS.map((w, col) => (
               <Chip
                 key={w}
                 label={`${w}d`}
                 size="small"
                 clickable
+                disabled={extrasLoading}
                 color={ohlcWindow === w ? "primary" : "default"}
                 variant={ohlcWindow === w ? "filled" : "outlined"}
-                onClick={() =>
-                  setOhlcWindow((prev) => (prev === w ? null : w))
-                }
+                onClick={() => handleOhlcWindowClick(w)}
                 sx={{ gridColumn: col + 2, ...PERIOD_CHIP_SX }}
               />
             ))}
@@ -908,47 +1100,36 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
           {/* ---- High/Low Streaks buttons (nested, single-select) ----
               Same grid and chip style as the other button rows: the row
               label spans the full width, then the first layer holds the
-              band lookback periods (255/500/750/1275d) aligned with the
-              OHLC row's matching columns. Clicking a period EXPANDS the
-              second layer — band tightness pcts (1/5/10%) on the row
-              beneath — and clicking the active period collapses it again.
-              Selecting a pct fills the LATEST date's trailing-period window
-              with its top/bottom pct% price zones (light purple above
-              high_val, light yellow below low_val) and draws that combo's
-              break streaks darker inside; clicking a chart date anchors
-              the window to the trailing rows before that date. */}
+              band lookback periods (60/120/255/500/750/1275d) aligned
+              with the OHLC row's matching columns. Clicking a period
+              EXPANDS the second layer — band tightness pcts (1/5/10%)
+              on the row beneath — and clicking the active period
+              collapses it again. Selecting a pct fills the LATEST date's
+              trailing-period window with its top/bottom pct% price zones
+              (light purple above high_val, light yellow below low_val)
+              and draws that combo's break streaks darker inside;
+              clicking a chart date anchors the window to the trailing
+              rows before that date. */}
           <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
             {/* Row label */}
-            <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
-              <Typography
-                variant="caption"
-                component="span"
-                sx={{
-                  fontSize: "0.65rem",
-                  color: streakPeriod != null ? "primary.main" : "text.secondary",
-                  fontWeight: streakPeriod != null ? 700 : 400,
-                }}
-              >
-                High/Low Streaks
-              </Typography>
-            </Box>
-            {/* Layer 1 — periods, columns 5-8 (aligned with the OHLC row's
-                255d/500d/750d/1275d buttons). */}
+            <SectionLabel id="highLowStreaks" active={streakPeriod != null} />
+            {/* Layer 1 — periods, columns 3-8 (aligned with the OHLC row's
+                60d/120d/255d/500d/750d/1275d buttons). */}
             {HIGH_LOW_STREAK_PERIODS.map((w, col) => (
               <Chip
                 key={w}
                 label={`${w}d`}
                 size="small"
                 clickable
-                disabled={!hasStreakData}
+                disabled={extrasLoading}
                 color={streakPeriod === w ? "primary" : "default"}
                 variant={streakPeriod === w ? "filled" : "outlined"}
-                onClick={() => toggleStreakPeriod(w)}
-                sx={{ gridColumn: col + 5, ...PERIOD_CHIP_SX }}
+                onClick={() => handleStreakPeriodClick(w)}
+                sx={{ gridColumn: col + 3, ...PERIOD_CHIP_SX }}
               />
             ))}
             {/* Layer 2 — pcts, expanded beneath the periods when one is
-                active (columns 5-7, under the first three periods). */}
+                active (columns 3-5, under the first three periods). */}
             {streakPeriod != null &&
               HIGH_LOW_STREAK_PCTS.map((p, col) => (
                 <Chip
@@ -956,10 +1137,11 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                   label={`${p}%`}
                   size="small"
                   clickable
+                  disabled={extrasLoading}
                   color={streakPct === p ? "primary" : "default"}
                   variant={streakPct === p ? "filled" : "outlined"}
                   onClick={() => toggleStreakPct(p)}
-                  sx={{ gridColumn: col + 5, ...PERIOD_CHIP_SX }}
+                  sx={{ gridColumn: col + 3, ...PERIOD_CHIP_SX }}
                 />
               ))}
           </Box>
@@ -1002,13 +1184,13 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                 : ""}
             </Typography>
           )}
-          {!hasStreakData && (
+          {extras.highLowStreaks != null && !hasStreakData && (
             <Typography
               variant="caption"
               color="text.secondary"
               sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
             >
-              no streak data yet — run{" "}
+              no streak data for this code — run{" "}
               <code>python -m analyze.mov_ave_spread</code> to build
               analysis.mov_ave_high_low_pct_streaks
             </Typography>
@@ -1032,19 +1214,10 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
               toward pastel. */}
           <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
             {/* Row label */}
-            <Box sx={{ gridColumn: "1 / -1", mb: 0.5 }}>
-              <Typography
-                variant="caption"
-                component="span"
-                sx={{
-                  fontSize: "0.65rem",
-                  color: pxVolSpeed != null || pxVolVol != null ? "primary.main" : "text.secondary",
-                  fontWeight: pxVolSpeed != null || pxVolVol != null ? 700 : 400,
-                }}
-              >
-                Px-Vol States (Price × Amt)
-              </Typography>
-            </Box>
+            <SectionLabel
+              id="pxVolStates"
+              active={pxVolSpeed != null || pxVolVol != null}
+            />
             {/* Layer 1 — price speed (columns 1-5). */}
             {PX_VOL_SPEED_OPTIONS.map((o, col) => (
               <Chip
@@ -1052,9 +1225,10 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                 label={o.label}
                 size="small"
                 clickable
+                disabled={extrasLoading}
                 color={pxVolSpeed === o.key ? "primary" : "default"}
                 variant={pxVolSpeed === o.key ? "filled" : "outlined"}
-                onClick={() => togglePxVolSpeed(o.key)}
+                onClick={() => handlePxVolSpeedClick(o.key)}
                 sx={{ gridColumn: col + 1, ...PERIOD_CHIP_SX }}
               />
             ))}
@@ -1067,13 +1241,75 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                 label={o.label}
                 size="small"
                 clickable
+                disabled={extrasLoading}
                 color={pxVolVol === o.key ? "primary" : "default"}
                 variant={pxVolVol === o.key ? "filled" : "outlined"}
-                onClick={() => togglePxVolVol(o.key)}
+                onClick={() => handlePxVolVolClick(o.key)}
                 sx={{ gridColumn: col + 1, ...PERIOD_CHIP_SX }}
               />
             ))}
           </Box>
+          {/* ---- Market Regimes buttons (multi-select) ---- The
+              stats.market_regimes daily label's contiguous spans (the
+              market_regime_spans table): calm = the market's quiet
+              background stretches, hot = elevated volatility WITH volume
+              expansion, panic = elevated volatility without it, quiet =
+              volume expansion without price movement. Each picked regime
+              shades its spans in its palette color (calm grey / hot
+              purple / panic red / quiet blue — the same accents the
+              forecast tables color their regime cells with). Multi-select
+              — regimes can overlap in time (a hot span followed by a
+              quiet span). */}
+          <Box sx={{ ...PERIOD_GRID_SX, mt: 1 }}>
+            <SectionLabel
+              id="marketRegimes"
+              active={regimePicks.size > 0}
+              suffix={regimesLoading ? " — loading…" : ""}
+            />
+            {ALL_REGIMES.map((r, col) => (
+              <Chip
+                key={r}
+                label={REGIME_LABELS[r]}
+                size="small"
+                clickable
+                disabled={extrasLoading || regimesLoading}
+                color={regimePicks.has(r) ? "primary" : "default"}
+                variant={regimePicks.has(r) ? "filled" : "outlined"}
+                onClick={() => toggleRegime(r)}
+                sx={{
+                  gridColumn: col + 1,
+                  ...PERIOD_CHIP_SX,
+                  ...(regimePicks.has(r)
+                    ? {
+                        color: REGIME_ACCENT_COLORS[r],
+                        borderColor: REGIME_ACCENT_COLORS[r],
+                      }
+                    : {}),
+                }}
+              />
+            ))}
+          </Box>
+          {regimePicks.size > 0 && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              {regimeSpans == null
+                ? "fetching the code's regime spans…"
+                : ALL_REGIMES.filter((r) => regimePicks.has(r))
+                    .map((r) => {
+                      const spans = regimeSpans[r] ?? [];
+                      const days = spans.reduce((a, sp) => a + sp.spanDays, 0);
+                      return `${REGIME_LABELS[r]}: ${
+                        spans.length === 0
+                          ? "no spans"
+                          : `${spans.length} span${spans.length === 1 ? "" : "s"} · ${days}d · last ${spans[spans.length - 1].endDate}`
+                      }`;
+                    })
+                    .join(" · ") + " · source: stats.market_regimes (vol_z / amt_z vs own trailing 255d, bars ±1.0σ)"}
+            </Typography>
+          )}
           {(pxVolSpeed != null || pxVolVol != null) && (
             <Typography
               variant="caption"
@@ -1093,10 +1329,20 @@ export function MaSpreadPanel({ code, name, secType }: PanelProps) {
                         ` · longest ${Math.max(...pxVolRuns.map((r) => r.days))}d` +
                         ` · last ${pxVolRuns[pxVolRuns.length - 1].endDate}`
                   } · thresholds t ±2.0σ (sharp) / ±1.26σ (slow) · z_amt(log-level) +2.0 / −0.92 · source: ${
-                    chartData?.priceVsAmt != null
+                    extras.priceVsAmt != null
                       ? "analysis.mov_ave_price_vs_amt"
-                      : "client-side replication (registry rows not in response)"
+                      : "client-side replication (registry rows not loaded)"
                   }`}
+            </Typography>
+          )}
+          {metricError != null && (
+            <Typography
+              variant="caption"
+              color="error"
+              sx={{ display: "block", mt: 0.5, fontSize: "0.65rem" }}
+            >
+              metric load failed: {metricError} — click the section's button
+              again to retry
             </Typography>
           )}
         </Box>

@@ -12,11 +12,11 @@ bucket rows use (``_dfengine._reverse_thresholds``), so lift
 exactly what the bucket reverse_prob counts; at the next-day horizon
 the path IS the endpoint change.
 
-Per horizon the writer emits the 'next'/'5d'/'20d'/'60d' rows, then ONE
-weight-blended 'mixed' row per code (the FIXED-weight blend of the four
+Per horizon the writer emits the 'next'/'5d'/'20d' rows, then ONE
+weight-blended 'mixed' row per code (the FIXED-weight blend of the three
 horizon rates — weights renormalized over the horizons with valid
 stats; base_count the MIN valid leg count; threshold the full-weight
-mean of the four bars) — the unconditional reference of the bucket
+mean of the three bars) — the unconditional reference of the bucket
 rows' blended period='mixed' profile, so the analysis_signals gate reads
 bucket and base on the same blended row.
 
@@ -177,7 +177,7 @@ def compute_base_rate_rows(
     *,
     df: pd.DataFrame,
     first_dates: dict[str, date],
-    episodes: pd.DataFrame,
+    regimes: pd.DataFrame,
     codes: list[str],
     sec_type: str,
     specs: list,
@@ -190,7 +190,7 @@ def compute_base_rate_rows(
             columns added).
         first_dates: per-code TRUE first data date — the full-window
             live gate.
-        episodes: the market-hype episode list (unused by the base
+        regimes: the daily market-regime states (unused by the base
             rates — the unconditional reference carries no hype split;
             consumed for engine-contract parity).
         codes: the sorted active-code universe.
@@ -200,7 +200,7 @@ def compute_base_rate_rows(
     engine = _BaseRateEngine(
         df=df,
         first_dates=first_dates,
-        episodes=episodes,
+        regimes=regimes,
         codes=codes,
         sec_type=sec_type,
         specs=specs,

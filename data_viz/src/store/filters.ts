@@ -2,6 +2,7 @@
  * Global filter / theme state for the data_viz dashboard.
  */
 import { create } from "zustand";
+import type { OptionsVenue } from "@/lib/api-client/options";
 
 export type ThemeMode = "light" | "dark";
 
@@ -27,9 +28,10 @@ interface AppState {
   underlyingCode: string;
   setUnderlyingCode: (code: string) => void;
 
-  /** Options — underlying target type toggle: 'ETF' (SZSE) or 'INDEX' (CFFEX). */
-  optionsTargetType: "ETF" | "INDEX";
-  setOptionsTargetType: (t: "ETF" | "INDEX") => void;
+  /** Options — venue toggle: 'SZSE' (ETF) / 'SSE' (ETF) / 'CFFEX' (index).
+   *  Map to the API's target_type via venueToTargetType (SZSE+SSE → ETF). */
+  optionsVenue: OptionsVenue;
+  setOptionsVenue: (v: OptionsVenue) => void;
 
   /** Options — 4 snapshot dates (Q4 start / last quarter / last month / latest). */
   snapshotDates: SnapshotDate[];
@@ -72,12 +74,12 @@ export const useStore = create<AppState>((set) => ({
   setEndDate: (d) => set({ endDate: d }),
   setDateRange: (start, end) => set({ startDate: start, endDate: end }),
 
-  // Default matches the default optionsTargetType='ETF' (SZSE ETF codes).
+  // Default matches the default optionsVenue='SZSE' (SZSE ETF codes).
   underlyingCode: "159919",
   setUnderlyingCode: (code) => set({ underlyingCode: code }),
 
-  optionsTargetType: "ETF",
-  setOptionsTargetType: (t) => set({ optionsTargetType: t }),
+  optionsVenue: "SZSE",
+  setOptionsVenue: (v) => set({ optionsVenue: v }),
 
   snapshotDates: DEFAULT_SNAPSHOTS,
   setSnapshotDate: (idx, date) =>

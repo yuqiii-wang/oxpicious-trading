@@ -35,7 +35,7 @@ LOOKBACK_PERIOD = f"{WINDOW_YEARS}y"
 # RUNNING month (always the newest spec — its forward data grows daily,
 # so it is deleted + recomputed every run) plus the last 4 COMPLETED
 # months (a month written right after month-end carries permanently
-# truncated 20d/60d occurrence counts — its forward windows were not
-# complete yet at write time). 4 calendar months > 60 trading days, so
-# after a refresh every 60d forward window is full.
+# truncated 20d occurrence counts — its forward windows were not
+# complete yet at write time). 4 calendar months ≫ 20 trading days, so
+# after a refresh every forward window is full.
 REFRESH_MONTHS = 5

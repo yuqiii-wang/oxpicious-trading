@@ -17,6 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from _common.df_utils import host_array
 from analyze.options.compute._shared import (
     _EXPIRY_GROUP_KEY,
     _apply_open_expiry_collapse,
@@ -68,8 +69,15 @@ def compute_options_skewness_stats(df: pd.DataFrame) -> pd.DataFrame:
     # ---- Step 2b: collapse open expiry groups to mean expiry_date ------
     # Vectorized shared helper (merge + where). Re-aggregate only when
     # open rows existed so collapsed groups are properly summed.
-    dataset_max_date = agg["date"].max()
-    has_open = bool((agg["expiry_date"] > dataset_max_date).any())
+    # Host max + host compare — Series.max()/__gt__ on proxied datetime
+    # columns each log a cudf fallback per call.
+    dataset_max_date = host_array(agg["date"].to_numpy()).max()
+    has_open = bool(
+        (
+            host_array(agg["expiry_date"].to_numpy())
+            > np.asarray(dataset_max_date, dtype="datetime64[us]")
+        ).any()
+    )
     agg = _apply_open_expiry_collapse(agg, dataset_max_date)
     if has_open:
         agg = (

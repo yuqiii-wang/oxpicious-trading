@@ -25,8 +25,8 @@
 --                        changes; fixed 0.01 fallback/legacy), so lift
 --                        stays in one scale
 --
---  A fixed ±1% reversal threshold is nearly saturated at the 20d/60d
---  horizons (close to the unconditional rate)
+--  A fixed ±1% reversal threshold is nearly saturated at the 20d
+--  horizon (close to the unconditional rate)
 --  (study 2026-09, temp_scripts/study_threshold.py) keeps the
 --  probabilities comparable across horizons; comparing reverse_prob
 --  against base_down_prob / base_up_prob at the SAME bar is what makes
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS analysis_forecasts.base_rates (
     sec_type        TEXT         NOT NULL,  -- 'etf' | 'index' | 'stock'
     code            TEXT         NOT NULL,
     stat_month      DATE         NOT NULL,  -- completed month-end; window (stat_month - 5y, stat_month]
-    period          TEXT         NOT NULL,  -- 'next' | '5d' | '20d' | '60d' | 'mixed'
+    period          TEXT         NOT NULL,  -- 'next' | '5d' | '20d' | 'mixed'
 
     -- Trailing calendar window the rates were computed over (recorded
     -- build parameter): '5y' = (stat_month - 5y, stat_month]
@@ -70,18 +70,22 @@ COMMENT ON TABLE analysis_forecasts.base_rates IS 'Unconditional same-window bas
 COMMENT ON COLUMN analysis_forecasts.base_rates.sec_type IS 'Security type: etf (ETF), index (CSI-style index), or stock (individual equity).';
 COMMENT ON COLUMN analysis_forecasts.base_rates.code IS 'Ticker. ETFs use exchange suffix (e.g. "510050.SS"); indices use bare code (e.g. "000300").';
 COMMENT ON COLUMN analysis_forecasts.base_rates.stat_month IS 'Completed month-end date. The rates are computed over the trailing 5-year window (stat_month - 5 years, stat_month] of the code''s own trading days.';
-COMMENT ON COLUMN analysis_forecasts.base_rates.period IS 'Forward horizon period: ''next'' (next-day), ''5d'' (5 trading days), ''20d'' (20 trading days), ''60d'' (60 trading days), or ''mixed'' — the FIXED-weight blend of the four horizon rows (5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05; weights renormalized over the horizons with valid data, base_count = the MIN valid count over those legs, threshold = the full-weight mean of the four bars) — the unconditional reference of the bucket rows'' blended period=''mixed'' profile. PK member.';
+COMMENT ON COLUMN analysis_forecasts.base_rates.period IS 'Forward horizon period: ''next'' (next-day), ''5d'' (5 trading days), ''20d'' (20 trading days), or ''mixed'' — the FIXED-weight blend of the three horizon rows (5d 0.65 / next 0.25 / 20d 0.10; weights renormalized over the horizons with valid data, base_count = the MIN valid count over those legs, threshold = the full-weight mean of the three bars) — the unconditional reference of the bucket rows'' blended period=''mixed'' profile. PK member.';
 
 -- ----------------------------------------------------------------------------
---  Migration (2026-09 mixed period): every (sec_type, code, stat_month)
---  gains the weight-blended 'mixed' base-rate row — the FIXED-weight
---  blend of its four horizon rows at 5d 0.50 / next 0.30 / 20d 0.15 /
---  60d 0.05 (the MIXED_HORIZON_WEIGHTS of
+--  Migration (2026-09-20 horizon-60d removal + mixed rebalance): the
+--  retired '60d' rows are purged, and every (sec_type, code, stat_month)
+--  has its weight-blended 'mixed' base-rate row REGENERATED — the
+--  FIXED-weight blend of its (now three) horizon rows at 5d 0.65 /
+--  next 0.25 / 20d 0.10 (the MIXED_HORIZON_WEIGHTS of
 --  analyze.analysis_forecasts.config) — the unconditional reference the
 --  bucket rows' blended 'mixed' period is read against (lift stays in
---  one scale; the analysis_signals gate consumes both). Idempotent:
---  keys already carrying a mixed row are skipped; the forecasts writer
---  emits the row natively from its next run (or --force rebuild).
+--  one scale; the analysis_signals gate consumes both). Existing mixed
+--  rows are deleted first — they were blended under the retired
+--  5d 0.50 / next 0.30 / 20d 0.15 / 60d 0.05 weights and over a 60d
+--  leg. Idempotent: re-applies re-blend deterministically from the
+--  horizon legs; the forecasts writer emits the row natively from its
+--  next run (or --force rebuild).
 --
 --  Blend semantics (mirroring compute_base.compute_base_rate_rows):
 --    base_ave_change / base_down_prob / base_up_prob — the weight mean
@@ -89,11 +93,14 @@ COMMENT ON COLUMN analysis_forecasts.base_rates.period IS 'Forward horizon perio
 --        with a positive base_count;
 --    base_count — MIN over those legs (the blend is only as
 --        well-observed as its weakest leg), 0 when none;
---    threshold — the full-weight mean of the four bars.
+--    threshold — the full-weight mean of the three bars.
 -- ----------------------------------------------------------------------------
+DELETE FROM analysis_forecasts.base_rates WHERE period = '60d';
+DELETE FROM analysis_forecasts.base_rates WHERE period = 'mixed';
+
 WITH w(period, wt) AS (
-    VALUES ('next', 0.30::float8), ('5d', 0.50::float8),
-           ('20d', 0.15::float8), ('60d', 0.05::float8)
+    VALUES ('next', 0.25::float8), ('5d', 0.65::float8),
+           ('20d', 0.10::float8)
 ), leg AS (
     SELECT b.sec_type, b.code, b.stat_month,
            w.wt,
@@ -138,5 +145,5 @@ COMMENT ON COLUMN analysis_forecasts.base_rates.base_count IS 'Number of the cod
 COMMENT ON COLUMN analysis_forecasts.base_rates.base_ave_change IS 'Mean n-trading-day forward fractional change over ALL window days with a valid n-day forward change. Baseline for forecast_results.ave_change (bucket mean − base = conditional edge).';
 COMMENT ON COLUMN analysis_forecasts.base_rates.base_down_prob IS 'P(n-day forward change < −threshold) over ALL window days with a valid n-day forward change. Baseline for the reverse_prob of top (RSI) and upper (Bollinger) buckets.';
 COMMENT ON COLUMN analysis_forecasts.base_rates.base_up_prob IS 'P(n-day forward change > +threshold) over ALL window days with a valid n-day forward change. Baseline for the reverse_prob of bottom (RSI) and lower (Bollinger) buckets.';
-COMMENT ON COLUMN analysis_forecasts.base_rates.threshold IS 'The fractional reversal bar the base probs (and the matching bucket rows of the same code/stat_month/period) are computed at: the FIXED 1% (0.01) bar since 2026-09-08 — the probs read as plain P(> 1%) / P(< -1%) against the period-end close. The earlier adaptive k_n · σ bar (study 2026-09; next 0.5, 5d 0.75, 20d 1.0, 60d 1.0) is disabled in the forecasts config (REVERSE_THRESHOLD_MODE = "fixed"), kept only as a flip-back option.';
+COMMENT ON COLUMN analysis_forecasts.base_rates.threshold IS 'The fractional reversal bar the base probs (and the matching bucket rows of the same code/stat_month/period) are computed at: the FIXED 1% (0.01) bar since 2026-09-08 — the probs read as plain P(> 1%) / P(< -1%) against the period-end close. The earlier adaptive k_n · σ bar (study 2026-09; next 0.5, 5d 0.75, 20d 1.0) is disabled in the forecasts config (REVERSE_THRESHOLD_MODE = "fixed"), kept only as a flip-back option.';
 COMMENT ON COLUMN analysis_forecasts.base_rates.lookback_period IS 'Recorded build parameter: the trailing calendar window the rates were computed over — ''5y'' = (stat_month - 5 years, stat_month]. Default ''5y''; a rebuild with a different lookback requires --force.';

@@ -58,6 +58,11 @@ export interface HeaderFilterDef<T> {
    *  string ("YYYY-MM" / "YYYY-MM-DD"); range: number. null values are
    *  excluded from ticks options and never match an active date/range. */
   value: (r: T) => string | number | null;
+  /** ticks only — optional per-item content override for the tick list
+   *  (a colored dot before each regime name, ...); default renders the
+   *  raw value string. Cosmetic only — filtering still matches on
+   *  `value`. */
+  renderItem?: (v: string) => ReactNode;
   /** date type only — input granularity (default "date"). */
   granularity?: "date" | "month";
   /** date type only — END-ONLY mode: the menu shows a single editable
@@ -276,6 +281,7 @@ export function useTableHeaderFilters<T>(
           label={d.label}
           values={tickValues.get(d.key) ?? []}
           selected={s.kind === "ticks" ? s.selected : []}
+          renderItem={d.renderItem}
           sortDir={sortDir}
           onToggleSort={onToggleSort}
           onChange={(selected) => setFilter(d.key, { kind: "ticks", selected })}

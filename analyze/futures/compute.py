@@ -14,7 +14,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from _common.df_utils import should_use_gpu  # noqa: F401 — per project convention
+from _common.df_utils import (  # noqa: F401 — should_use_gpu per project convention
+    epoch_col_to_dt64,
+    host_array,
+    host_unique,
+    should_use_gpu,
+)
 from analyze.futures.config import (
     AR1_WINDOW,
     CORR_WINDOW,
@@ -312,9 +317,21 @@ def compute_gap_quintile_summary(
     if d.empty:
         return pd.DataFrame(columns=cols)
 
-    asof = d["date"].max()
+    # Snapshot stamp as epoch seconds (float column — object dates in
+    # the rows dicts would poison the frame ctor with cudf fallbacks);
+    # converted to datetime64 below and to python dates in the writer.
+    asof_epoch = float(
+        host_array(d["date"].to_numpy())
+        .max()
+        .astype("datetime64[s]")
+        .astype(np.int64)
+    )
     rows = []
-    for ct, g in d.groupby("contract_type", sort=True):
+    # Host-side group iteration: GroupBy.__iter__ on a proxied frame
+    # falls back to slow-path transfers; a host-unique + boolean mask
+    # keeps the per-group slice on the GPU path.
+    for ct in host_unique(d["contract_type"]):
+        g = d[d["contract_type"] == ct]
         g = g.sort_values(["code", "date"]).reset_index(drop=True)
         for h in QUINTILE_HORIZONS:
             gap = g["gap_price_vs_underlying"]
@@ -336,15 +353,29 @@ def compute_gap_quintile_summary(
                 mean_gap=("gap", "mean"),
                 mean_fwd_chg=("gap_fwd_chg", "mean"),
             )
-            for quintile, r in stats.iterrows():
+            # Host column extraction (iterrows falls back per call).
+            for quintile, n_obs, mg, mf in zip(
+                host_array(stats.index.to_numpy()),
+                host_array(stats["n_obs"].to_numpy()),
+                host_array(stats["mean_gap"].to_numpy()),
+                host_array(stats["mean_fwd_chg"].to_numpy()),
+            ):
                 rows.append({
-                    "asof_date": asof,
+                    "asof_date": asof_epoch,
                     "contract_type": ct,
                     "horizon_days": h,
                     "quintile": int(quintile),
-                    "n_obs": int(r["n_obs"]),
-                    "mean_gap_bps": float(r["mean_gap"]) * 1e4,
-                    "mean_fwd_chg_bps": float(r["mean_fwd_chg"]) * 1e4,
+                    "n_obs": int(n_obs),
+                    "mean_gap_bps": float(mg) * 1e4,
+                    "mean_fwd_chg_bps": float(mf) * 1e4,
                 })
 
-    return pd.DataFrame(rows, columns=cols)
+    out = pd.DataFrame(rows, columns=cols)
+    if not out.empty:
+        # float8 epoch seconds -> datetime64[us] (the epoch_col_to_dt64
+        # convention); the write path materializes python dates via
+        # sanitize's date_cols.
+        out["asof_date"] = epoch_col_to_dt64(
+            out["asof_date"], index=out.index,
+        )
+    return out

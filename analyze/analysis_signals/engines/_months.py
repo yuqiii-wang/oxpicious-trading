@@ -40,7 +40,7 @@ class MonthSelection:
 
         compute = the months MISSING from signal_strategies plus the
         newest REFRESH_MONTHS present months (a month written right after
-        month-end carries a permanently truncated mixed row — its 20d/60d
+        month-end carries a permanently truncated mixed row — its 20d
         forward legs were not complete yet — so it is deleted + re-emitted
         on every run, mirroring analysis_forecasts' refresh window).
         --force recomputes every target month (the caller purges first).

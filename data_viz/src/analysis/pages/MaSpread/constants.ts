@@ -24,7 +24,7 @@ export const OHLC_WINDOWS = [20, 60, 120, 255, 500, 750, 1275] as const;
  * HIGH_LOW_PCT_PERIODS in analyze/mov_ave_spread/config.py and the
  * analysis.mov_ave_high_low_pct period values.
  */
-export const HIGH_LOW_STREAK_PERIODS = [255, 500, 750, 1275] as const;
+export const HIGH_LOW_STREAK_PERIODS = [60, 120, 255, 500, 750, 1275] as const;
 
 /**
  * High/low band-BREAK streak tightness buttons (percent) — the second

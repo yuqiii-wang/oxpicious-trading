@@ -184,11 +184,11 @@ export function MarketTrendChart() {
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
       intro:
-        "Broad-market combined overview: the four A-share market indices' closes " +
-        "rebased to 100 (left axis) so their relative paths are directly comparable, " +
-        "with each index's trading amount embedded as stacked bars on the right axis " +
-        "(toggle off via Trading Amt). Rising rebased lines = outperformance since the " +
-        "common start; the stacked bars show where turnover concentrated.",
+        "Broad-market overview: the four A-share indices' closes rebased to " +
+        "100 × P_t/P_0 (left axis) for direct relative comparison; each index's " +
+        "turnover embedded as stacked bars on the right (toggle: Trading Amt). " +
+        "Indication: the ascendant rebased line flags leadership; rotation between " +
+        "lines = cross-market money migration; bars expose where turnover pools.",
       instruments: MARKET_TREND_INDICES.map((m) => ({ code: m.code, name: m.name, assetClass: "index" as const })),
       series: MARKET_TREND_INDICES.flatMap((m) => [
         { name: m.name, description: "daily close rebased to 100 at the common start" },

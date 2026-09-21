@@ -16,6 +16,8 @@ from datetime import date
 
 import pandas as pd
 
+from _common.df_utils import host_array
+
 from analyze.analysis_signals.config import GATE_DIR_AVE_MIN, GATE_REVERSE_PROB_MIN
 from analyze.analysis_signals.engines._primitives import SELL_SIDES
 
@@ -90,46 +92,44 @@ class FrameMachinery:
         frames = [f for f in (passing, month_trig) if not f.empty]
         if not frames:
             return [], []
+        # host_array unwraps the cudf.pandas proxy ONCE at the
+        # pandas→numpy boundary — `.tolist()` on the PROXIED object-dtype
+        # ndarray (string codes / strftime output) raises
+        # "Unsupported dtype object" and falls back to the slow path per
+        # month; the real host ndarray's tolist is instant.
         codes = sorted(set(
-            pd.concat([f["code"] for f in frames])
-            .to_numpy().tolist(),
+            host_array(
+                pd.concat([f["code"] for f in frames]).to_numpy()
+            ).tolist(),
         ))
-        iso = pd.concat(
-            [f["trig_date"] for f in frames],
-        ).dt.strftime("%Y-%m-%d").to_numpy().tolist()
+        iso = host_array(
+            pd.concat(
+                [f["trig_date"] for f in frames],
+            ).dt.strftime("%Y-%m-%d").to_numpy()
+        ).tolist()
         return codes, sorted({date.fromisoformat(str(v)) for v in iso})
 
-    def hype_flag(
-        self, month_trig: pd.DataFrame, episodes: pd.DataFrame,
+    def regime_label(
+        self, month_trig: pd.DataFrame, regimes: pd.DataFrame,
     ) -> pd.DataFrame:
-        """The month-owned trigger days' hype verdicts: TRUE where the
-        day sits inside one of the code's episodes (ANY check-in window
-        — the forecast side's union convention). Vectorized interval
-        join (the _dfengine._prepare idiom): merge triggers × episodes
-        on code, keep covering intervals, dedupe back to one row per
-        trigger with an ``is_hyped`` bool column (missing → FALSE).
-        Structurally FALSE today (strategies come from the non-hyped
-        bucket split) — the true check keeps the recorded flag honest
-        against the CURRENT episode table. Episodes of codes not in the
-        trigger set simply never join."""
-        if month_trig.empty or episodes.empty:
-            out = month_trig.copy()
-            out["is_hyped"] = False
+        """The month-owned trigger days' market regimes: the
+        stats.market_regimes DAY label (calm/hot/panic/quiet) joined by
+        (code, date) — one plain merge (the daily states table replaces
+        the retired episode spans; no interval join). Days with no
+        state row default to 'calm' (the retired boolean's never-hyped
+        semantics). Regime rows of codes not in the trigger set simply
+        never join."""
+        out = month_trig.copy()
+        if out.empty or regimes.empty:
+            out["regime"] = "calm"
             return out
-        covers = month_trig.merge(
-            episodes, on="code", how="left", sort=False,
-        )
-        inside = (
-            covers["start_date"].notna()
-            & (covers["trig_date"] >= covers["start_date"])
-            & (covers["trig_date"] <= covers["end_date"])
-        )
-        covers["is_hyped"] = inside
-        flagged = covers.groupby(
-            list(month_trig.columns), sort=False, as_index=False,
-            dropna=False,
-        )["is_hyped"].any()
-        return flagged.reset_index(drop=True)
+        out = out.merge(
+            regimes[["code", "date", "regime"]],
+            left_on=["code", "trig_date"], right_on=["code", "date"],
+            how="left", sort=False,
+        ).drop(columns=["date"])
+        out["regime"] = out["regime"].fillna("calm")
+        return out.reset_index(drop=True)
 
     # ---- private helpers --------------------------------------------------------
 

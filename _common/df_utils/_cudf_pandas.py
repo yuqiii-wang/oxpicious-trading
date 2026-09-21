@@ -192,6 +192,40 @@ def maybe_enable_cudf_pandas(mode: str = "auto") -> tuple[bool, str]:
         f"{vram_gb:.0f} GB VRAM, cuDF {info.cudf_version})"
     )
 
+    # RMM allocator policy (fixed 2026-09-20 — the residual-VRAM study,
+    # docs/gpu_residual_memory_study.md): cudf.pandas.install() EAGERLY
+    # pre-reserves ~ALL free VRAM into a per-device PoolMemoryResource
+    # (measured 25.8 GiB of 32 on a fresh install), and that pool
+    # returns its blocks ONLY when the resource is destroyed — which
+    # rmm.reinitialize(pool_allocator=False) does — UNLESS any
+    # allocation already went through the pool (then the pool object
+    # stays alive holding the reservation until process exit; the
+    # 2026-09-15 placement of this reinitialize AFTER the smoke test
+    # had exactly that effect — the "26 GiB floor through idle
+    # stretches"). Therefore the reinitialize MUST run immediately
+    # after install(), BEFORE the smoke test (or any other allocation):
+    # measured 25.8 GiB -> 1.6 GiB the moment it runs, with the later
+    # smoke test allocating through plain CudaMemoryResource
+    # (cudaMalloc/cudaFree — freed VRAM returns to the driver, usage
+    # tracks live computation). OXPICIOUS_RMM_POOL=1 keeps the pool.
+    import os as _os
+
+    if _os.environ.get("OXPICIOUS_RMM_POOL", "").strip().lower() not in (
+        "1", "true", "yes", "pool",
+    ):
+        try:
+            import gc
+
+            import rmm
+
+            gc.collect()      # drop any install-time transients first
+            rmm.reinitialize(pool_allocator=False)
+            desc += " | RMM: cudaMallocAsync (VRAM tracks live usage)"
+        except Exception as exc:
+            desc += f" | RMM pool retained (reinit failed: {exc})"
+    else:
+        desc += " | RMM: pool allocator (OXPICIOUS_RMM_POOL=1)"
+
     # Compute smoke test — distinguishes "hook installed" from "ops
     # actually running on GPU". If CPU(fallback) calls appear even for
     # this trivially cuDF-compatible workload, something environmental
@@ -208,28 +242,10 @@ def maybe_enable_cudf_pandas(mode: str = "auto") -> tuple[bool, str]:
     except Exception as exc:
         desc += f" | smoke test FAILED: {exc}"
 
-    # RMM allocator policy (2026-09-15): cuDF's default POOL allocator
-    # retains every freed device block, so nvidia-smi shows the run's
-    # high-water mark forever — "24GB occupied" long after the ops that
-    # allocated it returned. Switching to the plain cudaMallocAsync
-    # resource makes freed VRAM return to the OS (usage tracks live
-    # computation) at the cost of some allocator churn. Must run BEFORE
-    # the first real dataframe allocation (nothing alive references the
-    # smoke-test tensor). OXPICIOUS_RMM_POOL=1 restores the pool.
-    import os as _os
-
-    if _os.environ.get("OXPICIOUS_RMM_POOL", "").strip().lower() not in (
-        "1", "true", "yes", "pool",
-    ):
-        try:
-            import rmm
-
-            rmm.reinitialize(pool_allocator=False)
-            desc += " | RMM: cudaMallocAsync (VRAM tracks live usage)"
-        except Exception as exc:
-            desc += f" | RMM pool retained (reinit failed: {exc})"
-    else:
-        desc += " | RMM: pool allocator (OXPICIOUS_RMM_POOL=1)"
+    # (The RMM allocator policy runs BEFORE this smoke test — see the
+    # block right after install() above. Allocation-free idle: with the
+    # policy active, idle device usage sits at the ~1.6 GiB CUDA-context
+    # baseline instead of the install-time ~free-VRAM pool reservation.)
     return True, desc
 
 

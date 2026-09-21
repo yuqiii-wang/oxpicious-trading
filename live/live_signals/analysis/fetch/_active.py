@@ -3,7 +3,7 @@
 
 The is_active rows of analysis_signals.signal_strategies ARE the
 current threshold set the live tier breaches, plus the per-code
-market-hype probe recorded as breach context. Plain SELECTs — the
+market-regime label recorded as breach context. Plain SELECTs — the
 direction / decision live on the stored rows.
 """
 from __future__ import annotations
@@ -15,28 +15,28 @@ from asyncpg import Connection
 from live.live_signals.config import SIGNALS_TABLE
 
 
-async def fetch_is_market_hyped(
+async def fetch_regime_state(
     conn: Connection, sec_type: str, code: str,
     on_date: datetime.date,
-) -> bool:
-    """Whether ``on_date`` sits inside one of the code's
-    stats.mov_ave_market_hypes episodes (ANY min_checkin_period — the
-    same union convention the forecast bucket splits use; the batch-side
-    sibling is analysis_forecasts' fetch_hyped_episodes, this is the
-    per-code point-probe shape the live tier needs). Partition-pruned by
-    the code-leading PK. As-of-safe by construction: episodes are static
-    historical intervals, so a --date D replay sees exactly the D
-    verdict. RECORD context for the breach row, never a gate."""
+) -> str:
+    """The code's market regime ON ``on_date`` — the
+    stats.market_regimes day label (calm / hot / panic / quiet;
+    replaces the retired fetch_is_market_hyped episode probe). A single
+    (code, date) point lookup, partition-pruned by the code-leading PK.
+    As-of-safe by construction: the daily labels are static historical
+    rows built from shift-1 trailing inputs (every label is known at
+    its own day's close), so a --date D replay sees exactly the D
+    verdict. RECORD context for the breach row, never a gate; 'calm'
+    when the day has no state row."""
     row = await conn.fetchrow(
         """
-        SELECT 1 FROM stats.mov_ave_market_hypes e
-        WHERE e.sec_type = $1 AND e.code = $2
-          AND e.start_date <= $3 AND e.end_date >= $3
+        SELECT regime FROM stats.market_regimes r
+        WHERE r.sec_type = $1 AND r.code = $2 AND r.date = $3
         LIMIT 1
         """,
         sec_type, code, on_date,
     )
-    return row is not None
+    return row["regime"] if row is not None else "calm"
 
 
 async def fetch_active_signals(

@@ -4,7 +4,7 @@
 Every mask-driven bucket engine (mov_rsi / mov_std /
 mov_pairs / mov_pairs_ema / px_vol_state) funnels its stacked (T, C, K)
 bucket masks through ``iter_bucket_subsets``: STREAK-MERGE consecutive
-qualifying rows into ONE mid-anchored signal (or one-day signals for
+qualifying rows into ONE incremental-anchor signal (or one-day signals for
 the cross-event families), sparsify with a single np.nonzero, live-gate
 per-config counts, split per side and per market-hype, and yield the
 group-ascending sparse trigger-cell lists that
@@ -175,7 +175,7 @@ def iter_bucket_subsets(
               None (state families — no scalar qualifying bar) yields
               None excess, and the result rows write NULL arrays.
 
-    Yields per non-empty (side, is_market_hyped) subset — a tuple
+    Yields per non-empty (side, regime_state) subset — a tuple
         (side, hyped, kk, ii, st, sc, fk, lens, exc, mean_streak)
       side / hyped — the subset keys;
       kk, ii — (R,) config / code indices of the EMITTED buckets

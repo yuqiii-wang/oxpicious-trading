@@ -78,10 +78,10 @@ def history_rows(
         "signal_threshold": threshold,
         "confidence": (rows["reverse_prob"] * 100).round().astype(int),
         "date": rows["trig_date"],
-        # the trigger day's hype verdict (FrameMachinery.hype_flag —
-        # structurally FALSE for non-hyped-bucket strategies, kept true
+        # the trigger day's regime (FrameMachinery.regime_label —
+        # matches the strategy's own regime split (joined 1:1 by the
         # against the current episode table)
-        "is_market_hyped": rows["is_hyped"],
+        "regime_state": rows["regime"],
     })
     records = engine.frame_records(out, date_cols=("date",))
     for rec in records:

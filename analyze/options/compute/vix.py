@@ -27,9 +27,9 @@ mid-quotes (no zero-bid truncation needed — settle > 0 enforced at fetch);
 calendar-day T instead of minute precision; r fixed at 0.02 like the rest
 of the repo's option analytics.
 
-Venue units mirror ``compute_iv_and_greeks`` exactly: CFFEX index quotes
-are native index points; SZSE ETF quotes are x1000 strike/underlying (厘)
-and x10000 settle (-> yuan per share) — Q and K end up in the same
+Venue units: CFFEX index quotes are native index points; SZSE ETF
+strike/underlying quotes are x1000 (厘 -> yuan) while settle is stored
+as yuan per share already (no scaling) — Q and K end up in the same
 per-underlying-unit basis, which is all the ratio dK*K^-2*Q requires.
 """
 from __future__ import annotations
@@ -45,9 +45,9 @@ from analyze.options.config import (
 # Matches black_scholes.DEFAULT_RISK_FREE_RATE used across options builds.
 RISK_FREE_RATE = 0.02
 
-# Venue unit scales (mirror compute_iv_and_greeks defaults).
-_SZSE_PRICE_SCALE = 1000.0   # SZSE strike/underlying: 厘 -> yuan
-_SZSE_OPT_SCALE = 10000.0    # SZSE settle -> yuan per share
+# Venue unit scale: SZSE ETF strike/underlying quotes are 厘 (x1000 yuan);
+# SZSE settle is stored as yuan per share already — no scaling.
+_SZSE_PRICE_SCALE = 1000.0
 
 _GROUP_KEY = ["date", "underlying_code", "expiry_date"]
 _PAIR_KEY = ["date", "underlying_code"]
@@ -66,10 +66,9 @@ def _strike_level_frame(df: pd.DataFrame) -> pd.DataFrame:
               "settle", "underlying_target_type"]].copy()
     is_etf = out["underlying_target_type"].eq("ETF")
     price_scale = np.where(is_etf, _SZSE_PRICE_SCALE, 1.0)
-    opt_scale = np.where(is_etf, _SZSE_OPT_SCALE, 1.0)
     out["S"] = out["underlying_close"].to_numpy() / price_scale
     out["K"] = out["strike_price"].to_numpy() / price_scale
-    q = out["settle"].to_numpy() / opt_scale
+    q = out["settle"].to_numpy()
     out["Q"] = q
     out["dte"] = out["days_to_expiry"]
     out["T"] = out["dte"] / _DAYS_PER_YEAR

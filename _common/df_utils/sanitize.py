@@ -75,6 +75,19 @@ def host_array(x) -> np.ndarray:
     return np.asarray(unwrapped)
 
 
+def host_unique(series) -> list:
+    """Sorted unique values of a column as a plain python list (host-pure).
+
+    Replaces ``series.unique().tolist()`` on string/datetime columns —
+    under cudf.pandas ``Series.unique()`` logs a fallback
+    ("cudf does not support ExtensionArrays" on object/arrow-string
+    columns, "cuDF does not implement DatetimeArray" on datetimes) and
+    the follow-up ``.tolist()`` another one. One ``to_numpy`` transfer,
+    then raw numpy unique + a host sort.
+    """
+    return sorted(set(host_array(series.to_numpy()).tolist()))
+
+
 def host_dtypes(df: pd.DataFrame) -> list[np.dtype]:
     """Column dtypes as a plain list of numpy dtypes (ONE transfer).
 
@@ -232,14 +245,20 @@ def to_py_dates(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     round-trips through a host numpy array instead: a single proxy
     dispatch per column, zero per-element calls.
 
+    The dtype probe and BOTH casts run on the RAW host array (the
+    ``host_array`` unwrap FIRST) — chaining ``.astype`` on the
+    proxy-subclass ndarray that ``Series.to_numpy()`` returns dispatches
+    every cast through the cudf fast/slow machinery, which raises
+    "Unsupported dtype datetime64[us]" / "[D]" and logs one fallback per
+    call (the astype fast path cannot represent non-[ns] units).
+
     Returns the same DataFrame with the listed columns replaced
     in place (datetime64[ns]/[us] -> object dtype of datetime.date).
     """
     for c in columns:
-        s = df[c]
-        if pd.api.types.is_datetime64_any_dtype(s):
-            arr = s.to_numpy().astype("datetime64[D]").astype(object)
-            df[c] = arr
+        arr = host_array(df[c].to_numpy())
+        if arr.dtype.kind == "M":
+            df[c] = arr.astype("datetime64[D]").astype(object)
     return df
 
 
@@ -332,8 +351,14 @@ def sanitize_for_db_insert(
         elif c in numeric_set:
             # Non-float numeric (ints — rounding is a no-op): NaN sweep
             # only. Never coerce to float64: asyncpg would encode int
-            # values as float8 for integer DB columns.
-            arr = host_array(df[c].to_numpy())
+            # values as float8 for integer DB columns. dtype=object +
+            # na_value=None keeps nullable-int columns on the clean
+            # single-pass to_numpy (without it, nulls raise ValueError
+            # and log a fallback); values stay python ints, nulls become
+            # None — asyncpg encodes by value, not dtype.
+            arr = host_array(
+                df[c].to_numpy(dtype="object", na_value=None)
+            )
             bad = host_isna(arr)
             if bad.any():
                 oa = arr.astype(object)

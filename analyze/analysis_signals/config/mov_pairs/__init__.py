@@ -3,7 +3,7 @@ engines: mov_pairs / mov_pairs_ema — each covering BOTH its fast legs,
 the ma5/ema6 indicator leg and the close-price leg).
 
 Emission slice: the CROSS-DOWN (death cross, side bottom → buy) buckets
-on 120d-or-longer slow legs, BOTH hype splits (is_market_hyped is a
+on 120d-or-longer slow legs, every regime split (regime_state is a
 signal_strategies PK member — each split registers on its own gate
 pass). The 60d cross is excluded from the emission (the per-metric
 slice: too noisy at signal granularity — price crossing a 60d leg

@@ -111,31 +111,6 @@ const GREEK_METRIC_META: Record<GreekMetricKey, GreekMetricMeta> = {
   },
 };
 
-/** AI Ask question seeds per greek — the actionable angle of the surface,
- *  phrased as the user would ask it. */
-const SUGGESTED_QUESTIONS: Record<Props["greekKey"], string[]> = {
-  delta: [
-    "Does the dPCR positioning metric put call-side or put-side directional exposure in charge of the book?",
-    "Where does delta flip sign across strikes, and how does that shift across expiries?",
-  ],
-  theta: [
-    "Which strikes and expiries bleed the most time value at the selected date?",
-    "Is decay concentrated ATM or on the wings?",
-  ],
-  gamma: [
-    "Is the book long or short gamma around spot per the GammaBal metric — pinning regime or move amplification?",
-    "Where is gamma concentrated across moneyness and expiries?",
-  ],
-  vega: [
-    "Does the VegaBal metric point to upside or downside (crash-hedge) vol demand on the OTM wings?",
-    "Which expiry carries the most vol exposure, and where per strike?",
-  ],
-  rho: [
-    "How rate-sensitive is this chain across moneyness and expiries?",
-    "Where does rho peak relative to ATM?",
-  ],
-};
-
 function buildGreekOption(
   snap: OptionsRow[],
   greekKey: "delta" | "theta" | "gamma" | "vega" | "rho",
@@ -512,23 +487,23 @@ export default function GreeksPanel({ rows, selectedDate, greekKey }: Props) {
   const option = buildGreekOption(snap, greekKey, selectedDate, themeMode);
 
   const underlyingCode = rows[0]?.underlying_code ?? "";
-  // AI Ask — the legend decoding + positioning-metric guide (former card
-  // subtitle) lives in the intro; the card keeps identity + units only.
+  // AI Ask — concise legend decoding + positioning-metric guide; the card
+  // keeps identity + units only.
   const aiAskSpec = useMemo<AiAskSpec>(
     () => ({
+      product: "options-greeks",
       intro:
-        "Per-expiry Greek values vs moneyness (strike/spot) for CALL and PUT, grouped by expiry " +
-        "month — blue gradient: dark = near expiry, light = far; CALL is drawn solid, PUT dashed. " +
-        `Y-axis units:${GREEK_UNITS[greekKey] || " dimensionless"}.` +
+        "Per-expiry Greek vs moneyness m = K/S — calls solid, puts dashed, grouped by expiry " +
+        "month (blue: dark = near). Units:" +
+        `${GREEK_UNITS[greekKey] || " dimensionless"}.` +
         (greekKey === "delta" || greekKey === "gamma" || greekKey === "vega"
-          ? ` A single vertical line at the OI-weighted mean moneyness of the combined active ` +
-            `CALL+PUT book is labeled with the whole-chain positioning metric ` +
-            `${GREEK_METRIC_META[greekKey].tag} (${GREEK_METRIC_META[greekKey].formula}); ` +
-            `its tooltip reports the current tilt.`
-          : " Theta and rho have no industry-standard positioning metric — no metric line."),
+          ? ` Vertical line = OI-weighted mean moneyness of the combined CALL+PUT book, ` +
+            `labeled with the chain positioning metric ${GREEK_METRIC_META[greekKey].tag} ` +
+            `(${GREEK_METRIC_META[greekKey].formula}); tooltip reports the tilt. ` +
+            "Indication: the tilt flags the crowded side — crowded books unwind fastest."
+          : " Theta/rho have no positioning metric — no metric line."),
       instruments: underlyingCode ? [{ code: underlyingCode }] : [],
       state: { greek: greekKey, selectedDate },
-      suggestedQuestions: SUGGESTED_QUESTIONS[greekKey],
     }),
     [greekKey, selectedDate, underlyingCode],
   );

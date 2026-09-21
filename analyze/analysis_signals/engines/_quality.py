@@ -10,10 +10,10 @@ The composite quality score of one bucket has TWO components:
 
     score = (1 - RISK_WEIGHT_TOTAL) · hard score   (breach coherence +
              mean alignment, blended by PERIOD WEIGHTS — short
-             horizons carry the decision: 5d 50% · next 30% ·
-             20d 15% · 60d 5%)
+             horizons carry the decision: 5d 65% · next 25% ·
+             20d 10%)
           + RISK_WEIGHT_TOTAL · risk-cap verdict    (ONE weight-blended
-             bit over the 5d/20d/60d periods)
+             bit over the 5d/20d periods)
 
 The gate holds at MIN_SCORE — 1.0 strict, so the hard score must be
 perfect: breach coherence and mean alignment pass on EVERY weighted
@@ -22,9 +22,9 @@ contribution at half weight, which cannot reach 1.0). The risk cap is
 the ONE soft component: its per-period bits blend by PERIOD_WEIGHTS
 into a single verdict that fails only when the weighted sum drops
 under RISK_WEIGHT_MIN. With the current weights the achievable sums
-are {0, .05, .15, .20, .50, .55, .65, .70}: the 5d bar carries the
-decision — 5d failing can never reach the bar, while 20d/60d failures
-(alone or together) stay at or above it. Long-horizon adverse
+are {0, .10, .65, .75}: the 5d bar carries the
+decision — 5d failing can never reach the bar, while a 20d failure
+alone stays above it. Long-horizon adverse
 extremes alone can no longer kill a strategy whose 5d risk profile is
 sound.
 
@@ -58,19 +58,20 @@ import pandas as pd
 from analyze.analysis_signals.config import SELL_SIDES
 
 # The per-period weights of the composite quality score (sum = 1) —
-# they blend BOTH the hard score and the risk-cap verdict.
+# they blend BOTH the hard score and the risk-cap verdict. Mirrors the
+# forecast config's MIXED_HORIZON_WEIGHTS (5d 0.65 / next 0.25 /
+# 20d 0.10 — the 2026-09-20 rebalance that retired the 60d leg).
 PERIOD_WEIGHTS: dict[str, float] = {
-    "5d": 0.50,
-    "next": 0.30,
-    "20d": 0.15,
-    "60d": 0.05,
+    "5d": 0.65,
+    "next": 0.25,
+    "20d": 0.10,
 }
 
 # The periods whose close-based max/min forward change exists — the
 # risk cap is NOT APPLICABLE to 'next' (NULL at the 1-day horizon);
 # non-applicable periods are excluded from the weighted sum rather
 # than failed.
-MAXMIN_PERIODS: tuple[str, ...] = ("5d", "20d", "60d")
+MAXMIN_PERIODS: tuple[str, ...] = ("5d", "20d")
 
 # The adverse extreme must stay under this fraction of the favorable
 # extreme in EVERY risk period — the reward must dominate the risk by
@@ -85,9 +86,8 @@ RISK_WEIGHT_TOTAL: float = sum(
 
 # The passing bar of the weight-blended risk-cap verdict: the check
 # fails only when Σ_p weight_p · risk_bit_p drops under this. With
-# the current weights the achievable sums are {0, .05, .15, .20,
-# .50, .55, .65, .70} — 5d must pass; 20d/60d failures alone (or
-# together) stay at or above the bar.
+# the current weights the achievable sums are {0, .10, .65, .75} —
+# 5d must pass; a 20d failure alone stays at or above the bar.
 RISK_WEIGHT_MIN: float = 0.50
 
 # The passing bar of the composite score — 1.0 strict: the hard score

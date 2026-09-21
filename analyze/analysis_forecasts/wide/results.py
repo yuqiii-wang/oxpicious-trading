@@ -1,8 +1,8 @@
 """Result-row expansion (analyze.analysis_forecasts.wide.results).
 
 ``build_result_rows`` expands one emit batch's gathered aggregates into
-the forecast_results payload dicts — 5 period rows per bucket (the four
-horizons next/5d/20d/60d plus the FIXED-weight blended 'mixed' row the
+the forecast_results payload dicts — 4 period rows per bucket (the three
+horizons next/5d/20d plus the FIXED-weight blended 'mixed' row the
 analysis_signals confirmation gate reads), bucket-major so the writer
 can stride by len(ALL_PERIODS). The mixed row mirrors the idempotent
 SQL backfill (database/sql/analysis/analysis_forecasts/01_forecast_
@@ -10,14 +10,12 @@ results.sql): ave / reverse_prob are weight means
 renormalized over the horizons whose stats exist, std_change is the
 mixture dispersion sqrt(Σw·E[x²] − (Σw·mean)²) — NOT the mean of the
 stds — occurrence_count the MIN positive leg count, threshold the
-full-weight mean of the four bars, and the extrema + per-period date /
+full-weight mean of the three bars, and the extrema + per-period date /
 excess arrays are NULL (they do not blend). Blends run over the same
 6dp-rounded leg values the rows carry (the NUMERIC(10,6) scale — the
 compute_base._leg_matrix precedent), so python and SQL backfill agree
 digit-for-digit.
 
-``split_forecast_rows`` splits computed rows into the motivation
-(mov_*) and result (forecast_results) write dicts.
 """
 from __future__ import annotations
 
@@ -75,8 +73,8 @@ def build_result_rows(
               reverse_prob was computed against).
 
     Returns:
-        (5·R,) dicts — 5 period rows per bucket (next → 5d → 20d → 60d
-        → mixed), period-major (all 5 periods of bucket 0, then all 5
+        (4·R,) dicts — 4 period rows per bucket (next → 5d → 20d
+        → mixed), period-major (all 4 periods of bucket 0, then all 4
         of bucket 1, ...) so the caller can stride by len(ALL_PERIODS)
         to group periods per bucket.
     """
@@ -176,10 +174,10 @@ def build_result_rows(
     # over the SAME 6dp-rounded leg values the horizon rows carry) —
     # the row the analysis_signals confirmation gate reads.
     w = np.array([MIXED_HORIZON_WEIGHTS[n] for n in FORWARD_HORIZONS])
-    w_col = w[:, None]                                    # (4, 1)
+    w_col = w[:, None]                                    # (3, 1)
     ave_M = np.array(
         [horizon_payloads[n]["ave"] for n in FORWARD_HORIZONS],
-        dtype=np.float64)                                 # (4, R) NaN=leg NULL
+        dtype=np.float64)                                 # (3, R) NaN=leg NULL
     std_M = np.array(
         [horizon_payloads[n]["std"] for n in FORWARD_HORIZONS],
         dtype=np.float64)
@@ -193,7 +191,7 @@ def build_result_rows(
         [horizon_payloads[n]["occ"] for n in FORWARD_HORIZONS],
         dtype=np.int64)
 
-    has_stat = np.isfinite(ave_M)                         # (4, R)
+    has_stat = np.isfinite(ave_M)                         # (3, R)
     w_stat = (w_col * has_stat).sum(axis=0)               # (R,)
     safe_stat = np.where(w_stat > 0, w_stat, np.nan)
     ave_mix = (w_col * np.where(has_stat, ave_M, 0.0)).sum(axis=0) / safe_stat
@@ -212,7 +210,7 @@ def build_result_rows(
         np.where(pos_occ, occ_M, np.iinfo(np.int64).max).min(axis=0),
         0,
     )
-    # threshold = the FULL-weight mean of the four bars (the bars are
+    # threshold = the FULL-weight mean of the three bars (the bars are
     # finite everywhere — no renormalization).
     thr_mix = (w_col * thr_M).sum(axis=0)
 
@@ -232,10 +230,10 @@ def build_result_rows(
         "rt": _round_none(thr_mix),
     }
 
-    # ...then emit bucket-major: [b0-next, b0-5d, b0-20d, b0-60d,
+    # ...then emit bucket-major: [b0-next, b0-5d, b0-20d,
     # b0-mixed, b1-next, ...] so forecast_id can stride by
     # len(ALL_PERIODS). The motivation columns fan out per bucket once
-    # (shared scalars across the 5 period rows — no per-field re-merge).
+    # (shared scalars across the 4 period rows — no per-field re-merge).
     base_items = list(base.items())
     out: list[dict] = []
     for r_idx in range(R):
@@ -273,34 +271,3 @@ def round6(x: float) -> float | None:
     x = float(x)
     return round(x, 6) if np.isfinite(x) else None
 
-
-def split_forecast_rows(
-    rows: list[dict],
-    mov_columns: list[str],
-) -> tuple[list[dict], list[dict]]:
-    """Split computed bucket rows into the two write targets.
-
-    Input: (len(ALL_PERIODS)·R,) dicts emitted by ``build_result_rows``
-    — bucket-major (len(ALL_PERIODS) consecutive period rows per
-    bucket), each dict carries the full motivation fields + config +
-    period + consolidated result columns.
-
-    Returns:
-        mov_rows    — (R,) dicts: UNIQUE rows per bucket (the 1st of
-                      each period group), filtered to ``mov_columns``
-                      (mov_rsi / mov_std columns). The forecast_id was
-                      already assigned by the caller (1 per bucket,
-                      shared across all period rows).
-        result_rows — (len(ALL_PERIODS)·R,) dicts: every input row
-                      filtered to ``RESULT_COLUMNS`` (forecast_results
-                      columns).
-    """
-    stride = len(ALL_PERIODS)
-    mov_rows = [
-        {k: rows[i][k] for k in mov_columns}
-        for i in range(0, len(rows), stride)   # 1 per bucket
-    ]
-    result_rows = [
-        {k: r[k] for k in RESULT_COLUMNS} for r in rows
-    ]
-    return mov_rows, result_rows

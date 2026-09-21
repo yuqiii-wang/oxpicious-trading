@@ -561,10 +561,6 @@ def add_derived_columns(df, etf_ohlcv=None, verbose=True):
     return df
 
 
-# SZSE option contract codes are 6-digit numeric codes that do NOT
-# start with CFFEX product prefixes (IO, HO, MO, CO).
-_CFFEX_PREFIXES = ["IO%", "HO%", "MO%", "CO%"]
-
 # CFFEX index-option underlying codes (IO/HO/MO/CO → index codes) — used
 # to skip this SZSE-only builder when --code targets a CFFEX underlying.
 from builds.options.cffex.config import PRODUCT_UNDERLYING as _CFFEX_PRODUCT_UNDERLYING  # noqa: E402
@@ -583,10 +579,8 @@ async def find_missing_szse_dates(
 ):
     """Find dates from source_dates that do NOT already have SZSE options data.
 
-    Unlike the generic find_missing_dates (which checks for ANY data in the
-    table), this function only checks for rows whose contract_code does NOT
-    start with a CFFEX option product prefix. This prevents CFFEX options
-    data from masking dates that still need SZSE data.
+    Scoped to ``exchange = 'SZSE'`` on the options tables (every options_*
+    table carries the venue column) — CFFEX/SSE rows never mask SZSE gaps.
 
     With code_filter (bare underlying code), the check is scoped to that
     underlying via stats.options_terms — dates loaded for OTHER underlyings
@@ -595,19 +589,15 @@ async def find_missing_szse_dates(
     if not source_dates:
         return set()
 
-    n = len(_CFFEX_PREFIXES)
-    conditions = " AND ".join(
-        [f'contract_code NOT LIKE ${i+1}' for i in range(n)]
-    )
     if code_filter:
         sql = (
-            f'SELECT DISTINCT date FROM stats.options_terms '
-            f'WHERE underlying_code = ${n+1} AND {conditions}'
+            'SELECT DISTINCT date FROM stats.options_terms '
+            "WHERE underlying_code = $1 AND exchange = 'SZSE'"
         )
-        existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES, code_filter)
+        existing_rows = await conn.fetch(sql, code_filter)
     else:
-        sql = f'SELECT DISTINCT date FROM stats.options_identity WHERE {conditions}'
-        existing_rows = await conn.fetch(sql, *_CFFEX_PREFIXES)
+        sql = "SELECT DISTINCT date FROM stats.options_identity WHERE exchange = 'SZSE'"
+        existing_rows = await conn.fetch(sql)
     existing_dates = {r["date"] for r in existing_rows if r["date"] is not None}
 
     return source_dates - existing_dates
