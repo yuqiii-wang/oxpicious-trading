@@ -164,6 +164,12 @@ def _read_dividend_csv(path: str, exchange: str, source: str) -> List[Dict[str, 
                 if ex_date is None:
                     continue  # malformed row, skip
                 code_raw = str(raw.get("证券代码", "")).strip()
+                # SSE CSVs are canonicalized to "NNNNNN.SS" by
+                # ensure_canonical_csv; SZSE CSVs keep the bare 6-digit
+                # code. Accept both — the directory's exchange arg stays
+                # authoritative for the DB suffix.
+                if "." in code_raw:
+                    code_raw = code_raw.split(".")[0]
                 if not code_raw or not code_raw.isdigit():
                     continue
                 code = f"{code_raw.zfill(6)}.{exchange}"
@@ -387,7 +393,7 @@ class StockDividendsBuild(DataBuild):
                     if result is None:
                         continue
                     bare_code = result[0]
-                    full_code = f"{bare_code}{suffix}"
+                    full_code = f"{bare_code}.{suffix}"
                     if full_code in active_codes:
                         filtered.append((path, suffix, source))
                     else:
